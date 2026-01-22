@@ -89,27 +89,20 @@ def process_file(scope: coco.Scope, file: localfs.File) -> None:
     # ... process the file content ...
 ```
 
-## As Target (Effects)
+## As Target
 
-The `localfs` connector provides effect-based APIs for writing files. Effects ensure that CocoIndex tracks what files should exist and automatically handles creation, updates, and deletion.
+The `localfs` connector provides target state APIs for writing files. With it, CocoIndex tracks what files should exist and automatically handles creation, updates, and deletion.
 
-File writing follows a two-level effect hierarchy:
+File writing follows a two-level state hierarchy:
 
-- **Parent effect:** Directory exists — declared via `declare_dir_target()`
-- **Child effects:** Files in the directory — declared via `DirTarget.declare_file()`
+- **Parent state:** Directory exists — declared via `declare_dir_target()`
+- **Child states:** Files in the directory — declared via `DirTarget.declare_file()`
 
-```text
-output/                      ← Parent effect (directory)
-├── intro.html               ← Child effect (file)
-├── chapter1.html            ← Child effect (file)
-└── chapter2.html            ← Child effect (file)
-```
-
-The directory effect must be declared and resolved before files can be declared within it.
+The directory state must be declared and resolved before files can be declared within it.
 
 ### declare_dir_target
 
-Declares a directory as an effect target. Returns a `DirTarget` for declaring files.
+Declares a directory as a target state. Returns a `DirTarget` for declaring files.
 
 ```python
 @coco.function

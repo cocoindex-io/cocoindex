@@ -156,15 +156,15 @@ async def app_main(scope: coco.Scope, pool: asyncpg.Pool) -> None:
         coco.mount(process_product, scope / "product" / product.product_id, product)
 ```
 
-## As Target (Effects)
+## As Target
 
-The `postgres` connector provides effect-based APIs for writing rows to tables. Effects ensure that CocoIndex tracks what rows should exist and automatically handles upserts and deletions.
+The `postgres` connector provides target state APIs for writing rows to tables. With it, CocoIndex tracks what rows should exist and automatically handles upserts and deletions.
 
-### Declaring Effects
+### Declaring Target States
 
 #### Database Registration
 
-Before declaring effects, register the connection pool with a stable key that identifies the logical database. This key allows CocoIndex to recognize the same database even when connection details change (e.g., username, password, or host address).
+Before declaring target states, register the connection pool with a stable key that identifies the logical database. This key allows CocoIndex to recognize the same database even when connection details change (e.g., username, password, or host address).
 
 ```python
 def register_db(key: str, pool: asyncpg.Pool) -> PgDatabase
@@ -175,21 +175,21 @@ def register_db(key: str, pool: asyncpg.Pool) -> PgDatabase
 - `key` — A stable identifier for this database (e.g., `"main_db"`). Must be unique.
 - `pool` — An asyncpg connection pool.
 
-**Returns:** A `PgDatabase` handle for declaring effects.
+**Returns:** A `PgDatabase` handle for declaring target states.
 
 The `PgDatabase` can be used as a context manager to automatically unregister on exit:
 
 ```python
 async with await postgres.create_pool(DATABASE_URL) as pool:
     with postgres.register_db("my_db", pool) as db:
-        # Use db to declare effects
+        # Use db to declare target states
         ...
     # db is automatically unregistered here
 ```
 
-#### Tables (Parent Effect)
+#### Tables (Parent State)
 
-Declares a table as an effect target. Returns a `TableTarget` for declaring rows.
+Declares a table as a target state. Returns a `TableTarget` for declaring rows.
 
 ```python
 def PgDatabase.declare_table_target(
@@ -212,7 +212,7 @@ def PgDatabase.declare_table_target(
 
 **Returns:** A pending `TableTarget`. Use `mount_run(...).result()` to wait for resolution.
 
-#### Rows (Child Effects)
+#### Rows (Child States)
 
 Once a `TableTarget` is resolved, declare rows to be upserted:
 
@@ -402,7 +402,7 @@ async def coco_lifespan(builder: coco_aio.EnvironmentBuilder) -> AsyncIterator[N
 async def app_main(scope: coco.Scope) -> None:
     db = scope.use(PG_DB)
 
-    # Declare table target (resolves the table effect)
+    # Declare table target state
     table = await coco_aio.mount_run(
         db.declare_table_target,
         scope / "setup" / "table",

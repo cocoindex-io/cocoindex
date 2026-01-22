@@ -1,40 +1,40 @@
 ---
-title: Effect
-description: Understanding effects as units of desired external state, effect hierarchies, and how to declare effects.
+title: Target State
+description: Understanding target states as units of desired external state, target state hierarchies, and how to declare target states.
 ---
 
-# Effect
+# Target State
 
-An **Effect** is a unit of desired external state produced by your transformations. On each run, CocoIndex compares the newly declared effects with those from the previous run and applies the necessary changes — creating, updating, or deleting — so that external systems match your intent.
+A **Target State** is a unit of desired external state produced by your transformations. On each run, CocoIndex compares the newly declared target states with those from the previous run and applies the necessary changes — creating, updating, or deleting — so that external systems match your intent.
 
-Effects can form hierarchies (e.g., a table contains rows). CocoIndex connectors provide specific APIs to declare effects at each level.
+Target states can form hierarchies (e.g., a table contains rows). CocoIndex connectors provide specific APIs to declare target states at each level.
 
-See [Core Concepts](./core_concepts.md#target-states-desired-targets-in-external-systems) for examples of how effects map to external system operations.
+See [Core Concepts](./core_concepts.md#target-states-desired-targets-in-external-systems) for examples of how target states map to external system operations.
 
-## Declaring Effects with Target Connectors
+## Declaring Target States with Target Connectors
 
-CocoIndex connectors provide **effect providers** with specific `declare_*` methods for declaring effects. For example:
+CocoIndex connectors provide **target state providers** with specific `declare_*` methods for declaring target states. For example:
 
 - `postgres.TableTarget` provides `declare_row()` to declare a row in a table
 - `localfs.DirTarget` provides `declare_file()` to declare a file in a directory
 
 ```python
-# Declare a row effect
+# Declare a row target state
 table_target.declare_row(scope, row=DocEmbedding(...))
 
-# Declare a file effect
+# Declare a file target state
 dir_target.declare_file(scope, filename="output.html", content=html)
 ```
 
-## Obtaining Effect Providers
+## Obtaining Target State Providers
 
-Some effect providers are created once a parent effect is ready. For example, you can only declare rows after the table exists, or files after the directory exists.
+Some target state providers are created once a parent target state is ready. For example, you can only declare rows after the table exists, or files after the directory exists.
 
 The pattern is:
 
-1. **Mount** a processing component that declares the parent effect
-2. **Call `.result()`** to wait until the parent effect is applied and get the provider
-3. **Use the provider** to declare child effects
+1. **Mount** a processing component that declares the parent target state
+2. **Call `.result()`** to wait until the parent target state is applied and get the provider
+3. **Use the provider** to declare child target states
 
 ### Example: Writing Rows to PostgreSQL
 
@@ -45,7 +45,7 @@ from cocoindex.connectors import postgres
 def app_main(scope: coco.Scope, sourcedir: pathlib.Path) -> None:
     db = scope.use(PG_DB)
 
-    # Declare the table effect, wait for it, get back a TableTarget provider
+    # Declare the table target state, wait for it, get back a TableTarget provider
     table = coco.mount_run(
         db.declare_table_target,
         scope / "setup" / "table",
@@ -53,7 +53,7 @@ def app_main(scope: coco.Scope, sourcedir: pathlib.Path) -> None:
         table_schema=postgres.TableSchema(DocEmbedding, primary_key=["filename", "chunk_start"]),
     ).result()
 
-    # Use the provider to declare row effects
+    # Use the provider to declare row target states
     for file in localfs.walk_dir(sourcedir, ...):
         coco.mount(process_file, scope / "file" / str(file.relative_path), file, table)
 
@@ -71,7 +71,7 @@ from cocoindex.connectors import localfs
 
 @coco.function
 def app_main(scope: coco.Scope, sourcedir: pathlib.Path, outdir: pathlib.Path) -> None:
-    # Declare the directory effect, wait for it, get back a DirTarget provider
+    # Declare the directory target state, wait for it, get back a DirTarget provider
     target = coco.mount_run(
         localfs.declare_dir_target, scope / "setup", outdir
     ).result()
@@ -87,27 +87,27 @@ def process_file(scope: coco.Scope, file: FileLike, target: localfs.DirTarget) -
 
 See [Processing Component](./processing_component.md) for more on `mount_run()`.
 
-:::tip Type Safety for Effect Providers
-Effect providers have two states: **pending** (just created) and **resolved** (after the parent effect is applied). The type system tracks this — if you try to use a pending provider in the same processing component that declares the parent effect, type checkers like mypy will flag the error.
+:::tip Type Safety for Target State Providers
+Target state providers have two statuses: **pending** (just created) and **resolved** (after the parent target state is applied). The type system tracks this — if you try to use a pending provider in the same processing component that declares the parent target state, type checkers like mypy will flag the error.
 :::
 
-## Effect Hierarchies
+## Target State Hierarchies
 
-The pattern above reflects that effects often form **hierarchies** — a parent effect creates the container, and child effects populate it:
+The pattern above reflects that target states often form **hierarchies** — a parent target state creates the container, and child target states populate it:
 
-| Parent Effect | Child Effects |
-|---------------|---------------|
+| Parent Target State | Child Target States |
+|---------------------|---------------------|
 | A directory on disk | Files in that directory |
 | A relational database table (schema, columns) | Rows in that table |
 | A graph database table | Nodes and relationships in that graph |
 
 CocoIndex ensures the parent exists before children are added, and properly cleans up children when the parent changes.
 
-## Generic Effect APIs
+## Generic Target State APIs
 
-CocoIndex also provides generic effect APIs for cases where connector-specific APIs don't cover your needs:
+CocoIndex also provides generic target state APIs for cases where connector-specific APIs don't cover your needs:
 
-- `declare_target_state()` — declare a leaf effect
-- `declare_target_state_with_child()` — declare an effect that provides child effects
+- `declare_target_state()` — declare a leaf target state
+- `declare_target_state_with_child()` — declare a target state that provides child target states
 
-These are exported from `cocoindex` and used internally by connectors like `postgres` and `localfs`. For defining custom effect providers, see [Target State Provider](../advanced_topics/target_state_provider.md).
+These are exported from `cocoindex` and used internally by connectors like `postgres` and `localfs`. For defining custom target state providers, see [Target State Provider](../advanced_topics/target_state_provider.md).

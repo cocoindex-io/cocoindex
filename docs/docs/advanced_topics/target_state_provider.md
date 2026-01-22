@@ -1,7 +1,7 @@
 ---
-title: Effect Provider
+title: Target State Provider
 ---
 
-# Effect Provider
+# Target State Provider
 
 TODO: Add content.

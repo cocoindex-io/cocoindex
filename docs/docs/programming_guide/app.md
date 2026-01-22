@@ -69,7 +69,7 @@ When you update an App, CocoIndex:
 
 1. Runs the lifespan setup (if not already done)
 2. Executes the main function, which mounts child processing components
-3. Syncs all declared effects to external systems
+3. Syncs all declared target states to external systems
 4. Compares with the previous run and applies only necessary changes
 
 Given the same code and inputs, updates are repeatable. When data or code changes, only the affected parts re-execute.
@@ -94,7 +94,7 @@ async def coco_lifespan(builder: coco_aio.EnvironmentBuilder) -> AsyncIterator[N
     # Cleanup happens automatically when the context exits
 ```
 
-The `db_path` setting specifies where CocoIndex stores its internal database. CocoIndex uses this database to track effects and memoized results from previous runs, enabling it to compute what changed and apply only the necessary updates. You should provide a path on your local filesystem.
+The `db_path` setting specifies where CocoIndex stores its internal database. CocoIndex uses this database to track target states and memoized results from previous runs, enabling it to compute what changed and apply only the necessary updates. You should provide a path on your local filesystem.
 
 The lifespan function can be sync or async:
 
@@ -149,22 +149,22 @@ CocoIndex provides a CLI for managing your apps without writing additional code.
 
 ### Update an App
 
-Run your app once to sync all effects:
+Run your app once to sync all target states:
 
 ```bash
 cocoindex update main.py
 ```
 
-This executes your pipeline and applies all declared effects to external systems.
+This executes your pipeline and applies all declared target states to external systems.
 
 ### Drop an App
 
-Remove an app and revert all its effects:
+Remove an app and revert all its target states:
 
 ```bash
 cocoindex drop main.py
 ```
 
-This will delete all effects created by the app (e.g., drop tables, delete rows) and clear its internal state.
+This will delete all target states created by the app (e.g., drop tables, delete rows) and clear its internal state.
 
 See [CLI Reference](../cli) for more commands and options.

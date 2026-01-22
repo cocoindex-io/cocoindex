@@ -43,9 +43,9 @@ from cocoindex.resources.chunk import Chunk
 `Scope` is a handle that many CocoIndex APIs require. It carries:
 
 - A **stable path** that uniquely identifies the current position in the processing tree
-- Context for accessing provided resources and declaring effects
+- Context for accessing provided resources and declaring target states
 
-You'll use `Scope` as the first argument for declaring effects, mounting processing components, accessing context values, etc. When your function requires `Scope`, pass it explicitly as the first argument.
+You'll use `Scope` as the first argument for declaring target states, mounting processing components, accessing context values, etc. When your function requires `Scope`, pass it explicitly as the first argument.
 
 You create child scopes using the `/` operator:
 
@@ -54,7 +54,7 @@ scope / "setup" / "table"    # Creates path like /setup/table
 scope / "file" / filename    # Creates path like /file/readme.md
 ```
 
-The stable path should be consistent across runs — CocoIndex uses it to match effects from previous runs and determine what changed.
+The stable path should be consistent across runs — CocoIndex uses it to match target states from previous runs and determine what changed.
 
 ### StableKey
 
@@ -77,7 +77,7 @@ The two packages relate as follows:
 
 - **APIs with async/sync variants** — Some core APIs have separate async and sync implementations. For example, the `App` class exists in both packages — `cocoindex.asyncio.App` provides an async `run()` method you call with `await`, while `cocoindex.App` provides a blocking `run()` method.
 
-- **Shared APIs** — Many APIs are non-blocking and work identically in both contexts. For instance, `Scope` and effect declaration APIs are shared between both packages. Decorators like `@function` and `@lifespan` are also shared — they accept both sync and async functions. You can import these from either `cocoindex.asyncio` or `cocoindex`.
+- **Shared APIs** — Many APIs are non-blocking and work identically in both contexts. For instance, `Scope` and target state declaration APIs are shared between both packages. Decorators like `@function` and `@lifespan` are also shared — they accept both sync and async functions. You can import these from either `cocoindex.asyncio` or `cocoindex`.
 
 ### Mixing Sync and Async
 
