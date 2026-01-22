@@ -17,7 +17,7 @@ pub struct EnvironmentSettings {
 struct EnvironmentInner<Prof: EngineProfile> {
     db_env: heed::Env,
     app_names: Mutex<BTreeSet<String>>,
-    effect_providers: Arc<Mutex<TargetStateProviderRegistry<Prof>>>,
+    target_states_providers: Arc<Mutex<TargetStateProviderRegistry<Prof>>>,
     host_runtime_ctx: Prof::HostRuntimeCtx,
 }
 
@@ -29,7 +29,7 @@ pub struct Environment<Prof: EngineProfile> {
 impl<Prof: EngineProfile> Environment<Prof> {
     pub fn new(
         settings: EnvironmentSettings,
-        effect_providers: Arc<Mutex<TargetStateProviderRegistry<Prof>>>,
+        target_states_providers: Arc<Mutex<TargetStateProviderRegistry<Prof>>>,
         host_runtime_ctx: Prof::HostRuntimeCtx,
     ) -> Result<Self> {
         // Create the directory if not exists.
@@ -48,7 +48,7 @@ impl<Prof: EngineProfile> Environment<Prof> {
         let state = Arc::new(EnvironmentInner {
             db_env,
             app_names: Mutex::new(BTreeSet::new()),
-            effect_providers,
+            target_states_providers,
             host_runtime_ctx,
         });
         Ok(Self { inner: state })
@@ -58,8 +58,8 @@ impl<Prof: EngineProfile> Environment<Prof> {
         &self.inner.db_env
     }
 
-    pub fn effect_providers(&self) -> &Arc<Mutex<TargetStateProviderRegistry<Prof>>> {
-        &self.inner.effect_providers
+    pub fn target_states_providers(&self) -> &Arc<Mutex<TargetStateProviderRegistry<Prof>>> {
+        &self.inner.target_states_providers
     }
 
     pub fn host_runtime_ctx(&self) -> &Prof::HostRuntimeCtx {

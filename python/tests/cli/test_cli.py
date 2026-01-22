@@ -120,7 +120,7 @@ class TestSingleApp:
         assert "[+]" not in result.stdout
 
     def test_drop_removes_app(self) -> None:
-        """Drop should remove the app's effects."""
+        """Drop should remove the app's target states."""
         run_cli("update", "./single_app.py")
 
         result = run_cli("drop", "./single_app.py", "-f")

@@ -8,8 +8,8 @@ use crate::engine::stats::ProcessingStats;
 use crate::engine::target_state::{TargetStateProvider, TargetStateProviderRegistry};
 use crate::prelude::*;
 
-use crate::state::effect_path::EffectPath;
 use crate::state::stable_path_set::ChildStablePathSet;
+use crate::state::target_state_path::TargetStatePath;
 use crate::{
     engine::environment::{AppRegistration, Environment},
     state::stable_path::StablePath,
@@ -57,15 +57,15 @@ pub(crate) struct DeclaredEffect<Prof: EngineProfile> {
     pub child_provider: Option<TargetStateProvider<Prof>>,
 }
 
-pub(crate) struct ComponentEffectContext<Prof: EngineProfile> {
-    pub declared_effects: BTreeMap<EffectPath, DeclaredEffect<Prof>>,
+pub(crate) struct ComponentTargetStatesContext<Prof: EngineProfile> {
+    pub declared_effects: BTreeMap<TargetStatePath, DeclaredEffect<Prof>>,
     pub provider_registry: TargetStateProviderRegistry<Prof>,
 }
 
 pub struct FnCallMemo<Prof: EngineProfile> {
     pub ret: Prof::FunctionData,
     pub(crate) child_components: Vec<StablePath>,
-    pub(crate) effect_paths: Vec<EffectPath>,
+    pub(crate) target_state_paths: Vec<TargetStatePath>,
     pub(crate) dependency_memo_entries: HashSet<Fingerprint>,
     pub(crate) already_stored: bool,
 }
@@ -73,7 +73,7 @@ pub struct FnCallMemo<Prof: EngineProfile> {
 pub enum FnCallMemoEntry<Prof: EngineProfile> {
     /// Memoization result is pending, i.e. the function call is not finished yet.
     Pending,
-    /// Memoization result is ready. None means memoization is disabled, e.g. it creates effect providers.
+    /// Memoization result is ready. None means memoization is disabled, e.g. it creates target states providers.
     Ready(Option<FnCallMemo<Prof>>),
 }
 
@@ -84,13 +84,13 @@ impl<Prof: EngineProfile> Default for FnCallMemoEntry<Prof> {
 }
 
 pub(crate) struct ComponentBuildingState<Prof: EngineProfile> {
-    pub effect: ComponentEffectContext<Prof>,
+    pub target_states: ComponentTargetStatesContext<Prof>,
     pub child_path_set: ChildStablePathSet,
     pub fn_call_memos: HashMap<Fingerprint, Arc<tokio::sync::RwLock<FnCallMemoEntry<Prof>>>>,
 }
 
 pub(crate) struct ComponentDeleteContext<Prof: EngineProfile> {
-    pub providers: rpds::HashTrieMapSync<EffectPath, TargetStateProvider<Prof>>,
+    pub providers: rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -122,14 +122,14 @@ pub struct ComponentProcessorContext<Prof: EngineProfile> {
 impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
     pub(crate) fn new(
         component: Component<Prof>,
-        providers: rpds::HashTrieMapSync<EffectPath, TargetStateProvider<Prof>>,
+        providers: rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
         parent_context: Option<ComponentProcessorContext<Prof>>,
         processing_stats: ProcessingStats,
         mode: ComponentProcessingMode,
     ) -> Self {
         let processing_state = if mode == ComponentProcessingMode::Build {
             ComponentProcessingAction::Build(Mutex::new(Some(ComponentBuildingState {
-                effect: ComponentEffectContext {
+                target_states: ComponentTargetStatesContext {
                     declared_effects: Default::default(),
                     provider_registry: TargetStateProviderRegistry::new(providers),
                 },
@@ -216,9 +216,9 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
 
 #[derive(Default)]
 pub struct FnCallContextInner {
-    /// Effects that are declared by the function.
-    pub effect_paths: Vec<EffectPath>,
-    /// Dependency entries that are declared by the function. Only needs to keep dependencies with side effects (child components / effects / dependency entries with side effects).
+    /// Target states that are declared by the function.
+    pub target_state_paths: Vec<TargetStatePath>,
+    /// Dependency entries that are declared by the function. Only needs to keep dependencies with side effects (child components / target states / dependency entries with side effects).
     pub dependency_memo_entries: HashSet<Fingerprint>,
 
     pub child_components: Vec<StablePath>,
@@ -234,7 +234,9 @@ impl FnCallContext {
         // Take the child's inner first to keep lock scope small (and avoid deadlock).
         let child_inner = child_fn_ctx.update(std::mem::take);
         self.update(|inner| {
-            inner.effect_paths.extend(child_inner.effect_paths);
+            inner
+                .target_state_paths
+                .extend(child_inner.target_state_paths);
             inner
                 .dependency_memo_entries
                 .extend(child_inner.dependency_memo_entries);

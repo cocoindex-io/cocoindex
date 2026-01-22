@@ -6,7 +6,7 @@ import pytest
 from typing import Any, Collection
 
 from .. import common
-from ..common.effects import DictsTarget, DictDataWithPrev, AsyncDictsTarget
+from ..common.target_states import DictsTarget, DictDataWithPrev, AsyncDictsTarget
 
 coco_env = common.create_test_env(__file__)
 
@@ -24,7 +24,9 @@ def _declare_dicts_data_together(scope: coco.Scope) -> None:
             name,
         ).result()
         for key, value in data.items():
-            coco.declare_target_state(scope, single_dict_provider.effect(key, value))
+            coco.declare_target_state(
+                scope, single_dict_provider.target_state(key, value)
+            )
 
 
 def test_dicts_data_together_insert() -> None:
@@ -212,7 +214,7 @@ def _declare_one_dict(scope: coco.Scope, name: str) -> None:
         DictsTarget.declare_dict_target, scope / "setup", name
     ).result()
     for key, value in _source_data[name].items():
-        coco.declare_target_state(scope, dict_provider.effect(key, value))
+        coco.declare_target_state(scope, dict_provider.target_state(key, value))
 
 
 def _declare_dicts_in_sub_components(scope: coco.Scope) -> None:
@@ -419,7 +421,7 @@ def _declare_one_dict_data(
     scope: coco.Scope, name: str, provider: coco.TargetStateProvider[str]
 ) -> None:
     for key, value in _source_data[name].items():
-        coco.declare_target_state(scope, provider.effect(key, value))
+        coco.declare_target_state(scope, provider.target_state(key, value))
 
 
 def _declare_dict_containers_together(scope: coco.Scope) -> None:
@@ -838,7 +840,7 @@ def _declare_one_dict_w_exception(scope: coco.Scope, name: str) -> None:
         DictsTarget.declare_dict_target, scope / "setup", name
     ).result()
     for key, value in _source_data[name].items():
-        coco.declare_target_state(scope, dict_provider.effect(key, value))
+        coco.declare_target_state(scope, dict_provider.target_state(key, value))
     raise ValueError("injected test exception (which is expected)")
 
 
@@ -965,7 +967,7 @@ def test_restore_from_gc_failed_components() -> None:
 
 
 ##################################################################################
-# Test for async effects
+# Test for async target states
 
 
 async def _declare_async_dicts_data_together(scope: coco.Scope) -> None:
@@ -976,7 +978,9 @@ async def _declare_async_dicts_data_together(scope: coco.Scope) -> None:
             name,
         ).result()
         for key, value in data.items():
-            coco.declare_target_state(scope, single_dict_provider.effect(key, value))
+            coco.declare_target_state(
+                scope, single_dict_provider.target_state(key, value)
+            )
 
 
 @pytest.mark.asyncio

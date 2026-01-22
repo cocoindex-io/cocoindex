@@ -1,7 +1,7 @@
 """
 LanceDB target for CocoIndex.
 
-This module provides a two-level effect system for LanceDB:
+This module provides a two-level target state system for LanceDB:
 1. Table level: Creates/drops tables in the database
 2. Row level: Upserts/deletes rows within tables
 """
@@ -333,7 +333,7 @@ class _RowAction(NamedTuple):
 
 
 class _RowHandler(coco.TargetHandler[_RowKey, _RowValue, _RowFingerprint]):
-    """Handler for row-level effects within a table."""
+    """Handler for row-level target states within a table."""
 
     _db_key: str
     _table_name: str
@@ -458,23 +458,23 @@ class _RowHandler(coco.TargetHandler[_RowKey, _RowValue, _RowFingerprint]):
     def reconcile(
         self,
         key: _RowKey,
-        desired_effect: _RowValue | coco.NonExistenceType,
+        desired_state: _RowValue | coco.NonExistenceType,
         prev_possible_states: Collection[_RowFingerprint],
         prev_may_be_missing: bool,
         /,
     ) -> coco.TargetReconcileOutput[_RowAction, _RowFingerprint] | None:
-        if coco.is_non_existence(desired_effect):
+        if coco.is_non_existence(desired_state):
             # Delete case - only if it might exist
             if not prev_possible_states and not prev_may_be_missing:
                 return None
             return coco.TargetReconcileOutput(
                 action=_RowAction(key=key, value=None),
                 sink=self._sink,
-                state=coco.NON_EXISTENCE,
+                tracking_record=coco.NON_EXISTENCE,
             )
 
         # Upsert case
-        target_fp = self._compute_fingerprint(desired_effect)
+        target_fp = self._compute_fingerprint(desired_state)
         if not prev_may_be_missing and all(
             prev == target_fp for prev in prev_possible_states
         ):
@@ -482,9 +482,9 @@ class _RowHandler(coco.TargetHandler[_RowKey, _RowValue, _RowFingerprint]):
             return None
 
         return coco.TargetReconcileOutput(
-            action=_RowAction(key=key, value=desired_effect),
+            action=_RowAction(key=key, value=desired_state),
             sink=self._sink,
-            state=target_fp,
+            tracking_record=target_fp,
         )
 
 
@@ -530,20 +530,20 @@ def _fts_index_subkey(col_name: str) -> str:
     return f"{_FTS_INDEX_SUBKEY_PREFIX}{col_name}"
 
 
-_TableSubState = _ColumnState | _IndexState | None
+_TableSubTrackingRecord = _ColumnState | _IndexState | None
 
 
-def _table_composite_state_from_spec(
+def _table_composite_tracking_record_from_spec(
     spec: _TableSpec,
-) -> statediff.CompositeState[tuple[str, ...], str, _TableSubState]:
+) -> statediff.CompositeTrackingRecord[tuple[str, ...], str, _TableSubTrackingRecord]:
     """Build composite state from table spec."""
     schema = spec.table_schema
 
     # Main state: primary key column names (simplified - just names)
     pk_sig = tuple(schema.primary_key)
 
-    # Sub-states: each column and each index
-    sub: dict[str, _TableSubState] = {}
+    # Sub-tracking-records: each column and each index
+    sub: dict[str, _TableSubTrackingRecord] = {}
 
     # Add column states
     for col_name, col_def in schema.columns.items():
@@ -564,11 +564,11 @@ def _table_composite_state_from_spec(
         sub_key = _fts_index_subkey(col_name)
         sub[sub_key] = _IndexState(column_name=col_name, index_type="fts")
 
-    return statediff.CompositeState(main=pk_sig, sub=sub)
+    return statediff.CompositeTrackingRecord(main=pk_sig, sub=sub)
 
 
-_TableState = statediff.MutualState[
-    statediff.CompositeState[tuple[str, ...], str, _TableSubState]
+_TableTrackingRecord = statediff.MutualTrackingRecord[
+    statediff.CompositeTrackingRecord[tuple[str, ...], str, _TableSubTrackingRecord]
 ]
 
 
@@ -616,9 +616,9 @@ def _unregister_db(key: str) -> None:
 
 
 class _TableHandler(
-    coco.TargetHandler[_TableKey, _TableSpec, _TableState, _RowHandler]
+    coco.TargetHandler[_TableKey, _TableSpec, _TableTrackingRecord, _RowHandler]
 ):
-    """Handler for table-level effects."""
+    """Handler for table-level target states."""
 
     _sink: coco.TargetActionSink[_TableAction, _RowHandler]
 
@@ -792,24 +792,29 @@ class _TableHandler(
     def reconcile(
         self,
         key: _TableKey,
-        desired_effect: _TableSpec | coco.NonExistenceType,
-        prev_possible_states: Collection[_TableState],
+        desired_state: _TableSpec | coco.NonExistenceType,
+        prev_possible_states: Collection[_TableTrackingRecord],
         prev_may_be_missing: bool,
         /,
-    ) -> coco.TargetReconcileOutput[_TableAction, _TableState, _RowHandler] | None:
-        desired_state: _TableState | coco.NonExistenceType
+    ) -> (
+        coco.TargetReconcileOutput[_TableAction, _TableTrackingRecord, _RowHandler]
+        | None
+    ):
+        tracking_record: _TableTrackingRecord | coco.NonExistenceType
 
-        if coco.is_non_existence(desired_effect):
-            desired_state = coco.NON_EXISTENCE
+        if coco.is_non_existence(desired_state):
+            tracking_record = coco.NON_EXISTENCE
         else:
-            desired_state = statediff.MutualState(
-                state=_table_composite_state_from_spec(desired_effect),
-                managed_by=desired_effect.managed_by,
+            tracking_record = statediff.MutualTrackingRecord(
+                tracking_record=_table_composite_tracking_record_from_spec(
+                    desired_state
+                ),
+                managed_by=desired_state.managed_by,
             )
 
         resolved = statediff.resolve_system_transition(
-            statediff.StateTransition(
-                desired_state,
+            statediff.TrackingRecordTransition(
+                tracking_record,
                 prev_possible_states,
                 prev_may_be_missing,
             )
@@ -826,17 +831,17 @@ class _TableHandler(
         return coco.TargetReconcileOutput(
             action=_TableAction(
                 key=key,
-                spec=desired_effect,
+                spec=desired_state,
                 main_action=main_action,
                 sub_actions=sub_actions,
             ),
             sink=self._sink,
-            state=desired_state,
+            tracking_record=tracking_record,
         )
 
 
-# Register the root effect provider
-_table_provider = coco.register_root_target_state_provider(
+# Register the root target states provider
+_table_provider = coco.register_root_target_states_provider(
     "cocoindex.io/lancedb/table", _TableHandler()
 )
 
@@ -847,7 +852,7 @@ class TableTarget(
     """
     A target for writing rows to a LanceDB table.
 
-    The table is managed as an effect, with the scope used to scope the effect.
+    The table is managed as a target state, with the scope used to scope the target state.
 
     Type Parameters:
         RowT: The type of row objects (dict, dataclass, NamedTuple, or Pydantic model).
@@ -871,14 +876,16 @@ class TableTarget(
         Declare a row to be upserted to this table.
 
         Args:
-            scope: The scope for effect declaration.
+            scope: The scope for target state declaration.
             row: A row object (dict, dataclass, NamedTuple, or Pydantic model).
                  Must include all primary key columns.
         """
         row_dict = self._row_to_dict(row)
         # Extract primary key values
         pk_values = tuple(row_dict[pk] for pk in self._table_schema.primary_key)
-        coco.declare_target_state(scope, self._provider.effect(pk_values, row_dict))
+        coco.declare_target_state(
+            scope, self._provider.target_state(pk_values, row_dict)
+        )
 
     def _row_to_dict(self, row: RowT) -> dict[str, Any]:
         """
@@ -954,7 +961,7 @@ class LanceDatabase:
         Create a TableTarget for writing rows to a LanceDB table.
 
         Args:
-            scope: The scope for effect declaration.
+            scope: The scope for target state declaration.
             table_name: Name of the table.
             table_schema: Schema definition including columns and primary key.
             managed_by: Whether the table is managed by "system" (CocoIndex creates/drops it)
@@ -969,7 +976,7 @@ class LanceDatabase:
             managed_by=managed_by,
         )
         provider = coco.declare_target_state_with_child(
-            scope, _table_provider.effect(key, spec)
+            scope, _table_provider.target_state(key, spec)
         )
         return TableTarget(provider, table_schema)
 

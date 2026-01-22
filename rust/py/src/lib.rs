@@ -44,7 +44,7 @@ fn core_module(m: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()>
         m
     )?)?;
     m.add_function(wrap_pyfunction!(
-        target_state::register_root_target_state_provider,
+        target_state::register_root_target_states_provider,
         m
     )?)?;
 

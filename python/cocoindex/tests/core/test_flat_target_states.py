@@ -5,7 +5,11 @@ import pytest
 import cocoindex as coco
 
 from .. import common
-from ..common.effects import GlobalDictTarget, AsyncGlobalDictTarget, DictDataWithPrev
+from ..common.target_states import (
+    GlobalDictTarget,
+    AsyncGlobalDictTarget,
+    DictDataWithPrev,
+)
 
 coco_env = common.create_test_env(__file__)
 
@@ -14,16 +18,18 @@ _source_data: dict[str, Any] = {}
 
 def declare_global_dict_entries(scope: coco.Scope) -> None:
     for key, value in _source_data.items():
-        coco.declare_target_state(scope, GlobalDictTarget.effect(key, value))
+        coco.declare_target_state(scope, GlobalDictTarget.target_state(key, value))
 
 
-def test_global_dict_effect_insert() -> None:
+def test_global_dict_target_state_insert() -> None:
     GlobalDictTarget.store.clear()
     _source_data.clear()
 
     app = coco.App(
         declare_global_dict_entries,
-        coco.AppConfig(name="test_global_dict_effect_insert", environment=coco_env),
+        coco.AppConfig(
+            name="test_global_dict_target_state_insert", environment=coco_env
+        ),
     )
 
     _source_data["a"] = 1
@@ -42,13 +48,15 @@ def test_global_dict_effect_insert() -> None:
     assert GlobalDictTarget.store.metrics.collect() == {"sink": 1, "upsert": 1}
 
 
-def test_global_dict_effect_upsert() -> None:
+def test_global_dict_target_state_upsert() -> None:
     GlobalDictTarget.store.clear()
     _source_data.clear()
 
     app = coco.App(
         declare_global_dict_entries,
-        coco.AppConfig(name="test_global_dict_effect_upsert", environment=coco_env),
+        coco.AppConfig(
+            name="test_global_dict_target_state_upsert", environment=coco_env
+        ),
     )
 
     _source_data["a"] = 1
@@ -69,13 +77,15 @@ def test_global_dict_effect_upsert() -> None:
     assert GlobalDictTarget.store.metrics.collect() == {"sink": 1, "upsert": 1}
 
 
-def test_global_dict_effect_delete() -> None:
+def test_global_dict_target_state_delete() -> None:
     GlobalDictTarget.store.clear()
     _source_data.clear()
 
     app = coco.App(
         declare_global_dict_entries,
-        coco.AppConfig(name="test_global_dict_effect_delete", environment=coco_env),
+        coco.AppConfig(
+            name="test_global_dict_target_state_delete", environment=coco_env
+        ),
     )
 
     _source_data["a"] = 1
@@ -91,13 +101,15 @@ def test_global_dict_effect_delete() -> None:
     assert GlobalDictTarget.store.metrics.collect() == {"sink": 1, "delete": 1}
 
 
-def test_global_dict_effect_no_change() -> None:
+def test_global_dict_target_state_no_change() -> None:
     GlobalDictTarget.store.clear()
     _source_data.clear()
 
     app = coco.App(
         declare_global_dict_entries,
-        coco.AppConfig(name="test_global_dict_effect_no_change", environment=coco_env),
+        coco.AppConfig(
+            name="test_global_dict_target_state_no_change", environment=coco_env
+        ),
     )
 
     _source_data["a"] = 1
@@ -136,17 +148,17 @@ def test_global_dict_effect_no_change() -> None:
 
 def declare_async_global_dict_entries(scope: coco.Scope) -> None:
     for key, value in _source_data.items():
-        coco.declare_target_state(scope, AsyncGlobalDictTarget.effect(key, value))
+        coco.declare_target_state(scope, AsyncGlobalDictTarget.target_state(key, value))
 
 
-def test_async_global_dict_effect_insert() -> None:
+def test_async_global_dict_target_state_insert() -> None:
     AsyncGlobalDictTarget.store.clear()
     _source_data.clear()
 
     app = coco.App(
         declare_async_global_dict_entries,
         coco.AppConfig(
-            name="test_async_global_dict_effect_insert", environment=coco_env
+            name="test_async_global_dict_target_state_insert", environment=coco_env
         ),
     )
 
@@ -166,14 +178,15 @@ def test_async_global_dict_effect_insert() -> None:
     assert AsyncGlobalDictTarget.store.metrics.collect() == {"sink": 1, "upsert": 1}
 
 
-def test_global_dict_effect_proceed_with_exception() -> None:
+def test_global_dict_target_state_proceed_with_exception() -> None:
     GlobalDictTarget.store.clear()
     _source_data.clear()
 
     app = coco.App(
         declare_global_dict_entries,
         coco.AppConfig(
-            name="test_global_dict_effect_proceed_with_exception", environment=coco_env
+            name="test_global_dict_target_state_proceed_with_exception",
+            environment=coco_env,
         ),
     )
 

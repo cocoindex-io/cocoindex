@@ -12,7 +12,7 @@ from .target_state import (
     PendingTargetStateProvider,
     declare_target_state,
     declare_target_state_with_child,
-    register_root_target_state_provider,
+    register_root_target_states_provider,
 )
 
 from .environment import Environment, EnvironmentBuilder, LifespanFn
@@ -49,7 +49,7 @@ __all__ = [
     "PendingTargetStateProvider",
     "declare_target_state",
     "declare_target_state_with_child",
-    "register_root_target_state_provider",
+    "register_root_target_states_provider",
     # .environment
     "Environment",
     "EnvironmentBuilder",

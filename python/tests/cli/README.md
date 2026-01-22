@@ -77,7 +77,7 @@ cocoindex update ./multi_app.py
 cocoindex update ./multi_app.py:MultiApp1
 cocoindex update ./multi_app.py:MultiApp2
 
-# Verify effects
+# Verify target states
 ls out_multi_1/
 ls out_multi_2/
 
@@ -105,7 +105,7 @@ cocoindex ls ./app_not_bound.py
 # Update - should work
 cocoindex update ./app_not_bound.py
 
-# Verify effect
+# Verify target state
 ls out_unbound/
 
 # Clean up
@@ -133,7 +133,7 @@ cocoindex update ./multi_env.py:DB2App
 # List again - should show both without [+]
 cocoindex ls ./multi_env.py
 
-# Verify effects in different directories
+# Verify target states in different directories
 ls out_db1/
 ls out_db2/
 
@@ -165,7 +165,7 @@ cocoindex update ./same_name_diff_env.py:MyApp
 cocoindex update ./same_name_diff_env.py:MyApp@alpha
 cocoindex update ./same_name_diff_env.py:MyApp@default
 
-# Verify effects in different directories
+# Verify target states in different directories
 ls out_alpha/
 ls out_default/
 

@@ -2,15 +2,15 @@ use crate::prelude::*;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct EffectPath(Arc<[utils::fingerprint::Fingerprint]>);
+pub struct TargetStatePath(Arc<[utils::fingerprint::Fingerprint]>);
 
-impl std::borrow::Borrow<[utils::fingerprint::Fingerprint]> for EffectPath {
+impl std::borrow::Borrow<[utils::fingerprint::Fingerprint]> for TargetStatePath {
     fn borrow(&self) -> &[utils::fingerprint::Fingerprint] {
         &self.0
     }
 }
 
-impl std::fmt::Display for EffectPath {
+impl std::fmt::Display for TargetStatePath {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for part in self.0.iter() {
             write!(f, "/{part}")?;
@@ -19,7 +19,7 @@ impl std::fmt::Display for EffectPath {
     }
 }
 
-impl storekey::Encode for EffectPath {
+impl storekey::Encode for TargetStatePath {
     fn encode<W: std::io::Write>(
         &self,
         e: &mut storekey::Writer<W>,
@@ -28,7 +28,7 @@ impl storekey::Encode for EffectPath {
     }
 }
 
-impl storekey::Decode for EffectPath {
+impl storekey::Decode for TargetStatePath {
     fn decode<D: std::io::BufRead>(
         d: &mut storekey::Reader<D>,
     ) -> Result<Self, storekey::DecodeError> {
@@ -37,7 +37,7 @@ impl storekey::Decode for EffectPath {
     }
 }
 
-impl EffectPath {
+impl TargetStatePath {
     pub fn new(key_part: utils::fingerprint::Fingerprint, parent: Option<&Self>) -> Self {
         let inner: Arc<[utils::fingerprint::Fingerprint]> = match parent {
             Some(parent) => parent

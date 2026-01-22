@@ -445,12 +445,12 @@ def update(app_target: str) -> None:
 )
 def drop(app_target: str, force: bool = False) -> None:
     """
-    Drop an app and all its effects.
+    Drop an app and all its target states.
 
     This will:
 
     \b
-    - Revert all effects created by the app (e.g., drop tables, delete rows)
+    - Revert all target states created by the app (e.g., drop tables, delete rows)
     - Clear the app's internal state database
 
     `APP_TARGET`: `path/to/app.py`, `module`, `path/to/app.py:app_name`, or `module:app_name`.
@@ -471,7 +471,7 @@ def drop(app_target: str, force: bool = False) -> None:
 
     if not force:
         if not _confirm_yes(
-            f"Type 'yes' to drop app '{app._name}' and all its effects"
+            f"Type 'yes' to drop app '{app._name}' and all its target states"
         ):
             click.echo("Drop operation aborted.")
             return
@@ -482,7 +482,7 @@ def drop(app_target: str, force: bool = False) -> None:
         finally:
             await _stop_all_environments()
         click.echo(
-            f"Dropped app '{app._name}' from environment '{env.name}' and reverted its effects."
+            f"Dropped app '{app._name}' from environment '{env.name}' and reverted its target states."
         )
 
     env_loop = default_env_loop()

@@ -40,28 +40,28 @@ class _FileHandler(coco.TargetHandler[_FileName, _FileContent, _FileFingerprint]
     def reconcile(
         self,
         key: _FileName,
-        desired_effect: _FileContent | coco.NonExistenceType,
+        desired_state: _FileContent | coco.NonExistenceType,
         prev_possible_states: Collection[_FileFingerprint],
         prev_may_be_missing: bool,
         /,
     ) -> coco.TargetReconcileOutput[_FileAction, _FileFingerprint] | None:
-        if coco.is_non_existence(desired_effect):
+        if coco.is_non_existence(desired_state):
             return coco.TargetReconcileOutput(
                 action=_FileAction(path=pathlib.PurePath(key), content=None),
                 sink=self._sink,
-                state=coco.NON_EXISTENCE,
+                tracking_record=coco.NON_EXISTENCE,
             )
 
         # TODO: Replace with fingerprinting offered by CocoIndex core engine (e.g. the same mechanism used to detect cached function argument changes).
-        target_fp = blake2b(desired_effect).digest()
+        target_fp = blake2b(desired_state).digest()
         if not prev_may_be_missing and all(
             prev == target_fp for prev in prev_possible_states
         ):
             return None
         return coco.TargetReconcileOutput(
-            action=_FileAction(path=pathlib.PurePath(key), content=desired_effect),
+            action=_FileAction(path=pathlib.PurePath(key), content=desired_state),
             sink=self._sink,
-            state=target_fp,
+            tracking_record=target_fp,
         )
 
 
@@ -113,27 +113,27 @@ class _DirHandler(coco.TargetHandler[_DirKey, _DirSpec, _DirSpec, _FileHandler])
     def reconcile(
         self,
         key: _DirKey,
-        desired_effect: _DirSpec | coco.NonExistenceType,
+        desired_state: _DirSpec | coco.NonExistenceType,
         prev_possible_states: Collection[_DirSpec],
         prev_may_be_missing: bool,
         /,
     ) -> coco.TargetReconcileOutput[_DirAction, _DirSpec, _FileHandler]:
         curr_path: pathlib.Path | None = None
         curr_path_action: Literal["insert", "upsert"] | None = None
-        if not coco.is_non_existence(desired_effect):
-            if desired_effect.managed_by == "system":
+        if not coco.is_non_existence(desired_state):
+            if desired_state.managed_by == "system":
                 may_exists = any(
-                    prev.path == desired_effect.path for prev in prev_possible_states
+                    prev.path == desired_state.path for prev in prev_possible_states
                 )
                 must_exists = not prev_may_be_missing and all(
-                    prev.path == desired_effect.path and prev.managed_by == "system"
+                    prev.path == desired_state.path and prev.managed_by == "system"
                     for prev in prev_possible_states
                 )
                 if not must_exists:
                     curr_path_action = "upsert" if may_exists else "insert"
 
         curr_path = (
-            desired_effect.path if not coco.is_non_existence(desired_effect) else None
+            desired_state.path if not coco.is_non_existence(desired_state) else None
         )
 
         to_delete: set[pathlib.Path] = set()
@@ -148,11 +148,11 @@ class _DirHandler(coco.TargetHandler[_DirKey, _DirSpec, _DirSpec, _FileHandler])
                 to_delete=to_delete,
             ),
             sink=self._sink,
-            state=desired_effect,
+            tracking_record=desired_state,
         )
 
 
-_dir_provider = coco.register_root_target_state_provider(
+_dir_provider = coco.register_root_target_states_provider(
     "cocoindex.io/localfs/dir", _DirHandler()
 )
 
@@ -161,7 +161,7 @@ class DirTarget(Generic[coco.MaybePendingS], coco.ResolvesTo["DirTarget"]):
     """
     A target for writing files to a local directory.
 
-    The directory is managed as an effect, with the scope used to scope the effect.
+    The directory is managed as a target state, with the scope used to scope the target state.
     """
 
     _provider: coco.TargetStateProvider[
@@ -183,13 +183,13 @@ class DirTarget(Generic[coco.MaybePendingS], coco.ResolvesTo["DirTarget"]):
         Declare a file to be written to this directory.
 
         Args:
-            scope: The scope for effect declaration.
+            scope: The scope for target state declaration.
             filename: The name of the file.
             content: The content of the file (bytes or str).
         """
         if isinstance(content, str):
             content = content.encode()
-        coco.declare_target_state(scope, self._provider.effect(filename, content))
+        coco.declare_target_state(scope, self._provider.target_state(filename, content))
 
     def __coco_memo_key__(self) -> object:
         return self._provider.memo_key
@@ -207,7 +207,7 @@ def declare_dir_target(
     Create a DirTarget.
 
     Args:
-        scope: The scope for effect declaration.
+        scope: The scope for target state declaration.
         stable_key: Optional stable key for identifying the directory.
         path: The filesystem path for the directory.
         managed_by: Whether the directory is managed by "system" or "user".
@@ -217,7 +217,7 @@ def declare_dir_target(
     )
     spec = _DirSpec(path=path, managed_by=managed_by)
     provider = coco.declare_target_state_with_child(
-        scope, _dir_provider.effect(key, spec)
+        scope, _dir_provider.target_state(key, spec)
     )
     return DirTarget(provider)
 

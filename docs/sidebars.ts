@@ -57,7 +57,7 @@ const sidebars: SidebarsConfig = {
       collapsed: false,
       items: [
         'advanced_topics/memoization_keys',
-        'advanced_topics/target_state_provider',
+        'advanced_topics/target_states_provider',
       ],
     },
     {

@@ -16,9 +16,9 @@ use crate::engine::profile::{EngineProfile, Persist, StableFingerprint};
 use crate::engine::target_state::{
     TargetActionSink, TargetHandler, TargetStateProvider, TargetStateProviderRegistry,
 };
-use crate::state::effect_path::EffectPath;
 use crate::state::stable_path::{StableKey, StablePath, StablePathRef};
 use crate::state::stable_path_set::{ChildStablePathSet, StablePathSet};
+use crate::state::target_state_path::TargetStatePath;
 use cocoindex_utils::deser::from_msgpack_slice;
 use cocoindex_utils::fingerprint::Fingerprint;
 
@@ -122,7 +122,7 @@ fn write_fn_call_memo<Prof: EngineProfile>(
     let fn_call_memo = db_schema::FunctionMemoizationEntry {
         return_value: db_schema::MemoizedValue::Inlined(Cow::Borrowed(ret_bytes.as_ref())),
         child_components: memo.child_components,
-        effect_paths: memo.effect_paths,
+        target_state_paths: memo.target_state_paths,
         dependency_memo_entries: memo.dependency_memo_entries.into_iter().collect(),
     };
     let encoded = rmp_serde::to_vec_named(&fn_call_memo)?;
@@ -154,7 +154,7 @@ fn read_fn_call_memo_with_txn<Prof: EngineProfile>(
     Ok(Some(FnCallMemo {
         ret,
         child_components: fn_call_memo.child_components,
-        effect_paths: fn_call_memo.effect_paths,
+        target_state_paths: fn_call_memo.target_state_paths,
         dependency_memo_entries: fn_call_memo.dependency_memo_entries.into_iter().collect(),
         already_stored: true,
     }))
@@ -176,7 +176,7 @@ pub fn declare_target_state<Prof: EngineProfile>(
     key: Prof::TargetStateKey,
     value: Prof::TargetStateValue,
 ) -> Result<()> {
-    let effect_path = make_effect_path(&provider, &key);
+    let target_state_path = make_target_state_path(&provider, &key);
     let declared_effect = DeclaredEffect {
         provider,
         key,
@@ -185,9 +185,9 @@ pub fn declare_target_state<Prof: EngineProfile>(
     };
     comp_ctx.update_building_state(|building_state| {
         match building_state
-            .effect
+            .target_states
             .declared_effects
-            .entry(effect_path.clone())
+            .entry(target_state_path.clone())
         {
             btree_map::Entry::Occupied(entry) => {
                 client_bail!(
@@ -201,7 +201,7 @@ pub fn declare_target_state<Prof: EngineProfile>(
         }
         Ok(())
     })?;
-    fn_ctx.update(|inner| inner.effect_paths.push(effect_path));
+    fn_ctx.update(|inner| inner.target_state_paths.push(target_state_path));
     Ok(())
 }
 
@@ -212,12 +212,12 @@ pub fn declare_target_state_with_child<Prof: EngineProfile>(
     key: Prof::TargetStateKey,
     value: Prof::TargetStateValue,
 ) -> Result<TargetStateProvider<Prof>> {
-    let effect_path = make_effect_path(&provider, &key);
+    let target_state_path = make_target_state_path(&provider, &key);
     let child_provider = comp_ctx.update_building_state(|building_state| {
         let child_provider = building_state
-            .effect
+            .target_states
             .provider_registry
-            .register_lazy(effect_path.clone())?;
+            .register_lazy(target_state_path.clone())?;
         let declared_effect = DeclaredEffect {
             provider,
             key,
@@ -225,9 +225,9 @@ pub fn declare_target_state_with_child<Prof: EngineProfile>(
             child_provider: Some(child_provider.clone()),
         };
         match building_state
-            .effect
+            .target_states
             .declared_effects
-            .entry(effect_path.clone())
+            .entry(target_state_path.clone())
         {
             btree_map::Entry::Occupied(entry) => {
                 client_bail!(
@@ -242,17 +242,17 @@ pub fn declare_target_state_with_child<Prof: EngineProfile>(
         Ok(child_provider)
     })?;
     fn_ctx.update(|inner| {
-        inner.effect_paths.push(effect_path);
+        inner.target_state_paths.push(target_state_path);
     });
     Ok(child_provider)
 }
 
-fn make_effect_path<Prof: EngineProfile>(
+fn make_target_state_path<Prof: EngineProfile>(
     provider: &TargetStateProvider<Prof>,
     key: &Prof::TargetStateKey,
-) -> EffectPath {
+) -> TargetStatePath {
     let fp = key.stable_fingerprint();
-    provider.effect_path().concat(fp)
+    provider.target_state_path().concat(fp)
 }
 
 struct ChildrenPathInfo {
@@ -270,7 +270,7 @@ struct ChildPathInfo {
 struct Committer<'a, Prof: EngineProfile> {
     component_ctx: &'a ComponentProcessorContext<Prof>,
     db: &'a db_schema::Database,
-    effect_providers: &'a rpds::HashTrieMapSync<EffectPath, TargetStateProvider<Prof>>,
+    target_states_providers: &'a rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
 
     component_path: &'a StablePath,
 
@@ -285,7 +285,10 @@ struct Committer<'a, Prof: EngineProfile> {
 impl<'a, Prof: EngineProfile> Committer<'a, Prof> {
     fn new(
         component_ctx: &'a ComponentProcessorContext<Prof>,
-        effect_providers: &'a rpds::HashTrieMapSync<EffectPath, TargetStateProvider<Prof>>,
+        target_states_providers: &'a rpds::HashTrieMapSync<
+            TargetStatePath,
+            TargetStateProvider<Prof>,
+        >,
         demote_component_only: bool,
     ) -> Result<Self> {
         let component_path = component_ctx.stable_path();
@@ -297,7 +300,7 @@ impl<'a, Prof: EngineProfile> Committer<'a, Prof> {
         Ok(Self {
             component_ctx,
             db: component_ctx.app_ctx().db(),
-            effect_providers,
+            target_states_providers,
             component_path,
             encoded_tombstone_key_prefix,
             existence_processing_queue: VecDeque::new(),
@@ -564,7 +567,7 @@ impl<'a, Prof: EngineProfile> Committer<'a, Prof> {
             let stable_path = self.component_path.concat(relative_path.as_ref());
             let component = self.component_ctx.component().get_child(stable_path);
             let delete_ctx = component.new_processor_context_for_delete(
-                self.effect_providers.clone(),
+                self.target_states_providers.clone(),
                 Some(&self.component_ctx),
                 self.component_ctx.processing_stats().clone(),
             );
@@ -662,7 +665,7 @@ impl<Prof: EngineProfile> SinkInput<Prof> {
 }
 
 pub(crate) struct SubmitOutput<Prof: EngineProfile> {
-    pub built_effect_providers: Option<TargetStateProviderRegistry<Prof>>,
+    pub built_target_states_providers: Option<TargetStateProviderRegistry<Prof>>,
     pub memos_with_mounts_to_store: Vec<(Fingerprint, FnCallMemo<Prof>)>,
     pub touched_previous_states: bool,
 }
@@ -675,9 +678,9 @@ pub(crate) async fn submit<Prof: EngineProfile>(
 ) -> Result<SubmitOutput<Prof>> {
     let processor_name = processor.map(|p| p.processor_info().name.as_str());
 
-    let mut built_effect_providers: Option<TargetStateProviderRegistry<Prof>> = None;
+    let mut built_target_states_providers: Option<TargetStateProviderRegistry<Prof>> = None;
     let mut memos_with_mounts_to_store: Vec<(Fingerprint, FnCallMemo<Prof>)> = Vec::new();
-    let (effect_providers, declared_effects, child_path_set, finalized_fn_call_memos) =
+    let (target_states_providers, declared_effects, child_path_set, finalized_fn_call_memos) =
         match comp_ctx.processing_state() {
             ComponentProcessingAction::Build(building_state) => {
                 let mut building_state = building_state.lock().unwrap();
@@ -696,10 +699,10 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                     &mut child_path_set,
                 )?;
                 (
-                    &built_effect_providers
-                        .get_or_insert(building_state.effect.provider_registry)
+                    &built_target_states_providers
+                        .get_or_insert(building_state.target_states.provider_registry)
                         .providers,
-                    building_state.effect.declared_effects,
+                    building_state.target_states.declared_effects,
                     Some(child_path_set),
                     finalized_fn_call_memos,
                 )
@@ -723,7 +726,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
     let mut actions_by_sinks = HashMap::<Prof::TargetActionSink, SinkInput<Prof>>::new();
     let mut demote_component_only = false;
 
-    // Reconcile and pre-commit effects
+    // Reconcile and pre-commit target states
     let (curr_version, touched_previous_states) = {
         let mut wtxn = db_env.write_txn()?;
 
@@ -747,7 +750,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                     match node_type {
                         Some(db_schema::StablePathNodeType::Component) => {
                             return Ok(SubmitOutput {
-                                built_effect_providers: None,
+                                built_target_states_providers: None,
                                 memos_with_mounts_to_store,
                                 touched_previous_states: false,
                             });
@@ -780,10 +783,10 @@ pub(crate) async fn submit<Prof: EngineProfile>(
         let curr_version = if let Some(mut tracking_info) = tracking_info {
             let curr_version = tracking_info.version + 1;
             tracking_info.version = curr_version;
-            let mut declared_effects_to_process = declared_effects;
+            let mut declared_target_states_to_process = declared_effects;
 
-            // Deal with existing effects
-            for (effect_path, item) in tracking_info.effect_items.iter_mut() {
+            // Deal with existing target states
+            for (target_state_path, item) in tracking_info.effect_items.iter_mut() {
                 let prev_may_be_missing = item.states.iter().any(|(_, s)| s.is_deleted());
                 let prev_states = item
                     .states
@@ -792,9 +795,10 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                     .map(|s_bytes| Prof::TargetStateTrackingRecord::from_bytes(s_bytes))
                     .collect::<Result<Vec<_>>>()?;
 
-                let declared_effect = declared_effects_to_process.remove(effect_path);
-                let (effect_provider, effect_key, declared_decl, child_provider) =
-                    match declared_effect {
+                let declared_target_state =
+                    declared_target_states_to_process.remove(target_state_path);
+                let (target_states_provider, effect_key, declared_decl, child_provider) =
+                    match declared_target_state {
                         Some(declared_effect) => (
                             Cow::Owned(declared_effect.provider),
                             declared_effect.key,
@@ -803,33 +807,38 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                         ),
                         None => {
                             if finalized_fn_call_memos
-                                .contained_effect_paths
-                                .contains(effect_path)
+                                .contained_target_state_paths
+                                .contains(target_state_path)
                             {
                                 for (version, _) in item.states.iter_mut() {
                                     *version = curr_version;
                                 }
                                 continue;
                             }
-                            let Some(effect_provider) =
-                                effect_providers.get(effect_path.provider_path())
+                            let Some(target_states_provider) =
+                                target_states_providers.get(target_state_path.provider_path())
                             else {
                                 // TODO: Verify the parent is gone.
                                 trace!(
-                                    "skip deleting effect with path {effect_path} in {} because effect provider not found",
+                                    "skip deleting target states with path {target_state_path} in {} because target states provider not found",
                                     comp_ctx.stable_path()
                                 );
                                 continue;
                             };
                             let effect_key = Prof::TargetStateKey::from_bytes(item.key.as_ref())?;
-                            (Cow::Borrowed(effect_provider), effect_key, None, None)
+                            (
+                                Cow::Borrowed(target_states_provider),
+                                effect_key,
+                                None,
+                                None,
+                            )
                         }
                     };
-                let recon_output = effect_provider
+                let recon_output = target_states_provider
                     .handler()
                     .ok_or_else(|| {
                         internal_error!(
-                            "effect provider not ready for effect with key {effect_key:?}"
+                            "provider not ready for target state with key {effect_key:?}"
                         )
                     })?
                     .reconcile(effect_key, declared_decl, &prev_states, prev_may_be_missing)?;
@@ -840,7 +849,11 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                         .add_action(recon_output.action, child_provider);
                     item.states.push((
                         curr_version,
-                        match recon_output.state.map(|s| s.to_bytes()).transpose()? {
+                        match recon_output
+                            .tracking_record
+                            .map(|s| s.to_bytes())
+                            .transpose()?
+                        {
                             Some(s) => {
                                 db_schema::EffectInfoItemState::Existing(Cow::Owned(s.into()))
                             }
@@ -854,21 +867,21 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                 }
             }
 
-            // Deal with new effects
-            for (effect_path, effect) in declared_effects_to_process {
-                let effect_key_bytes = effect.key.to_bytes()?;
-                let Some(recon_output) = effect
+            // Deal with new target states
+            for (target_state_path, target_state) in declared_target_states_to_process {
+                let effect_key_bytes = target_state.key.to_bytes()?;
+                let Some(recon_output) = target_state
                     .provider
                     .handler()
                     .ok_or_else(|| {
                         internal_error!(
-                            "effect provider not ready for effect with key {:?}",
-                            effect.key
+                            "provider not ready for target state with key {:?}",
+                            target_state.key
                         )
                     })?
                     .reconcile(
-                        effect.key,
-                        Some(effect.value),
+                        target_state.key,
+                        Some(target_state.value),
                         /*&prev_states=*/ &[],
                         /*prev_may_be_missing=*/ true,
                     )?
@@ -878,9 +891,9 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                 actions_by_sinks
                     .entry(recon_output.sink)
                     .or_default()
-                    .add_action(recon_output.action, effect.child_provider);
+                    .add_action(recon_output.action, target_state.child_provider);
                 let Some(new_state) = recon_output
-                    .state
+                    .tracking_record
                     .map(|s| s.to_bytes())
                     .transpose()?
                     .map(|s| Cow::Owned(s.into()))
@@ -897,7 +910,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                         ),
                     ],
                 };
-                tracking_info.effect_items.insert(effect_path, item);
+                tracking_info.effect_items.insert(target_state_path, item);
             }
 
             let data_bytes = rmp_serde::to_vec_named(&tracking_info)?;
@@ -942,7 +955,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
         }
     }
 
-    let mut committer = Committer::new(comp_ctx, &effect_providers, demote_component_only)?;
+    let mut committer = Committer::new(comp_ctx, &target_states_providers, demote_component_only)?;
     committer.commit(
         child_path_set,
         &effect_info_key,
@@ -952,7 +965,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
     )?;
 
     Ok(SubmitOutput {
-        built_effect_providers,
+        built_target_states_providers,
         memos_with_mounts_to_store,
         touched_previous_states,
     })
@@ -1083,9 +1096,9 @@ struct FinalizedFnCallMemoization<Prof: EngineProfile> {
     memos_without_mounts_to_store: Vec<(Fingerprint, FnCallMemo<Prof>)>,
     // Fingerprints of all memos, including dependencies that is not populated in the current processing.
     all_memos_fps: HashSet<Fingerprint>,
-    // Effect paths covered by memos but not explicitly declared in the current run, because of contained by memos that already stored, including dependency memos of already stored ones.
-    // We collect them to avoid GC of these effects.
-    contained_effect_paths: HashSet<EffectPath>,
+    // Target state paths covered by memos but not explicitly declared in the current run, because of contained by memos that already stored, including dependency memos of already stored ones.
+    // We collect them to avoid GC of these target states.
+    contained_target_state_paths: HashSet<TargetStatePath>,
 }
 
 fn finalize_fn_call_memoization<Prof: EngineProfile>(
@@ -1114,8 +1127,8 @@ fn finalize_fn_call_memoization<Prof: EngineProfile>(
                 stable_path_set.add_child(child_component.as_ref(), StablePathSet::Component)?;
             }
             result
-                .contained_effect_paths
-                .extend(memo.effect_paths.into_iter());
+                .contained_target_state_paths
+                .extend(memo.target_state_paths.into_iter());
             deps_to_process.extend(memo.dependency_memo_entries.into_iter());
         } else if memo.child_components.is_empty() {
             result.memos_without_mounts_to_store.push((*fp, memo));
@@ -1127,7 +1140,7 @@ fn finalize_fn_call_memoization<Prof: EngineProfile>(
     }
 
     // Transitively expand deps of already-stored memos (read from DB).
-    // Collect their effect_paths so those effects are not GC'd.
+    // Collect their target_state_paths so those target states are not GC'd.
     // Use a single read transaction for all DB reads.
     let db_env = comp_ctx.app_ctx().env().db_env();
     let rtxn = db_env.read_txn()?;
@@ -1143,8 +1156,8 @@ fn finalize_fn_call_memoization<Prof: EngineProfile>(
             stable_path_set.add_child(child_component.as_ref(), StablePathSet::Component)?;
         }
         result
-            .contained_effect_paths
-            .extend(memo.effect_paths.into_iter());
+            .contained_target_state_paths
+            .extend(memo.target_state_paths.into_iter());
         deps_to_process.extend(memo.dependency_memo_entries.into_iter());
     }
     Ok(result)

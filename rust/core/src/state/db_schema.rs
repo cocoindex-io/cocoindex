@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 use serde_with::{Bytes, serde_as};
 
 use crate::state::{
-    effect_path::EffectPath,
     stable_path::{StableKey, StablePath},
+    target_state_path::TargetStatePath,
 };
 
 pub type Database = heed::Database<heed::types::Bytes, heed::types::Bytes>;
@@ -93,7 +93,7 @@ pub enum DbEntryKey<'a> {
     StablePathPrefixPrefix(StablePathPrefix<'a>),
     StablePathPrefix(StablePathRef<'a>),
     StablePath(StablePath, StablePathEntryKey),
-    Effect(EffectPath),
+    TargetState(TargetStatePath),
 }
 
 impl<'a> storekey::Encode for DbEntryKey<'a> {
@@ -114,7 +114,7 @@ impl<'a> storekey::Encode for DbEntryKey<'a> {
                 key.encode(e)?;
             }
 
-            DbEntryKey::Effect(path) => {
+            DbEntryKey::TargetState(path) => {
                 e.write_u8(0x20)?;
                 path.encode(e)?;
             }
@@ -134,8 +134,8 @@ impl<'a> storekey::Decode for DbEntryKey<'a> {
                 DbEntryKey::StablePath(path, key)
             }
             0x20 => {
-                let path: EffectPath = storekey::Decode::decode(d)?;
-                DbEntryKey::Effect(path)
+                let path: TargetStatePath = storekey::Decode::decode(d)?;
+                DbEntryKey::TargetState(path)
             }
             _ => return Err(storekey::DecodeError::InvalidFormat),
         };
@@ -178,11 +178,11 @@ pub struct FunctionMemoizationEntry<'a> {
     /// Relative paths to the parent components.
     #[serde(rename = "C")]
     pub child_components: Vec<StablePath>,
-    /// Effects that are declared by the function.
+    /// Target states that are declared by the function.
     #[serde(rename = "E")]
-    pub effect_paths: Vec<EffectPath>,
+    pub target_state_paths: Vec<TargetStatePath>,
     /// Dependency entries that are declared by the function.
-    /// Only needs to keep dependencies with side effects (child components / effects / dependency entries with side effects).
+    /// Only needs to keep dependencies with side effects other than return value (child components / target states / dependency entries with side effects).
     #[serde(rename = "D")]
     pub dependency_memo_entries: Vec<Fingerprint>,
 }
@@ -234,7 +234,7 @@ pub struct StablePathEntryTrackingInfo<'a> {
     #[serde(rename = "V")]
     pub version: u64,
     #[serde(rename = "I", borrow)]
-    pub effect_items: BTreeMap<EffectPath, EffectInfoItem<'a>>,
+    pub effect_items: BTreeMap<TargetStatePath, EffectInfoItem<'a>>,
     #[serde(rename = "N", borrow, default = "unknown_processor_name")]
     pub processor_name: Cow<'a, str>,
 }

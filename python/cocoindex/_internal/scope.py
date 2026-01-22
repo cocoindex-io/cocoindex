@@ -20,7 +20,7 @@ class Scope:
     Explicit scope object passed to orchestration APIs.
 
     Combines the stable path for component identification with the processor context
-    for effect declaration and component mounting.
+    for target state declaration and component mounting.
 
     Supports path composition via the `/` operator:
         scope / "part" / "subpart"

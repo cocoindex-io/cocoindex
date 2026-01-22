@@ -1,7 +1,7 @@
 """
 Qdrant target for CocoIndex.
 
-This module provides a two-level effect system for Qdrant:
+This module provides a two-level target state system for Qdrant:
 1. Collection level: Creates/drops collections in Qdrant
 2. Row level: Upserts/deletes points within collections
 """
@@ -296,30 +296,30 @@ class _RowHandler(coco.TargetHandler[_RowKey, _RowValue, _RowFingerprint]):
     def reconcile(
         self,
         key: _RowKey,
-        desired_effect: _RowValue | coco.NonExistenceType,
+        desired_state: _RowValue | coco.NonExistenceType,
         prev_possible_states: Collection[_RowFingerprint],
         prev_may_be_missing: bool,
         /,
     ) -> coco.TargetReconcileOutput[_RowAction, _RowFingerprint] | None:
-        if coco.is_non_existence(desired_effect):
+        if coco.is_non_existence(desired_state):
             if not prev_possible_states and not prev_may_be_missing:
                 return None
             return coco.TargetReconcileOutput(
                 action=_RowAction(key=key, value=None),
                 sink=self._sink,
-                state=coco.NON_EXISTENCE,
+                tracking_record=coco.NON_EXISTENCE,
             )
 
-        target_fp = self._compute_fingerprint(desired_effect)
+        target_fp = self._compute_fingerprint(desired_state)
         if not prev_may_be_missing and all(
             prev == target_fp for prev in prev_possible_states
         ):
             return None
 
         return coco.TargetReconcileOutput(
-            action=_RowAction(key=key, value=desired_effect),
+            action=_RowAction(key=key, value=desired_state),
             sink=self._sink,
-            state=target_fp,
+            tracking_record=target_fp,
         )
 
 
@@ -340,11 +340,13 @@ class _VectorState(NamedTuple):
     distance: str
 
 
-class _CollectionStateCore(NamedTuple):
+class _CollectionTrackingRecordCore(NamedTuple):
     vectors: dict[str, _VectorState]
 
 
-_CollectionState = statediff.MutualState[_CollectionStateCore]
+_CollectionTrackingRecord = statediff.MutualTrackingRecord[
+    _CollectionTrackingRecordCore
+]
 
 
 class _CollectionAction(NamedTuple):
@@ -387,16 +389,20 @@ def _unregister_db(key: str) -> None:
         _db_registry.pop(key, None)
 
 
-def _collection_state_from_spec(spec: _CollectionSpec) -> _CollectionStateCore:
+def _collection_tracking_record_from_spec(
+    spec: _CollectionSpec,
+) -> _CollectionTrackingRecordCore:
     vectors = {
         name: _VectorState(name=name, dim=vs.dim, distance=vs.distance)
         for name, vs in spec.table_schema.vector_schemas.items()
     }
-    return _CollectionStateCore(vectors=vectors)
+    return _CollectionTrackingRecordCore(vectors=vectors)
 
 
 class _CollectionHandler(
-    coco.TargetHandler[_CollectionKey, _CollectionSpec, _CollectionState, _RowHandler]
+    coco.TargetHandler[
+        _CollectionKey, _CollectionSpec, _CollectionTrackingRecord, _RowHandler
+    ]
 ):
     _sink: coco.TargetActionSink[_CollectionAction, _RowHandler]
 
@@ -490,26 +496,28 @@ class _CollectionHandler(
     def reconcile(
         self,
         key: _CollectionKey,
-        desired_effect: _CollectionSpec | coco.NonExistenceType,
-        prev_possible_states: Collection[_CollectionState],
+        desired_state: _CollectionSpec | coco.NonExistenceType,
+        prev_possible_states: Collection[_CollectionTrackingRecord],
         prev_may_be_missing: bool,
         /,
     ) -> (
-        coco.TargetReconcileOutput[_CollectionAction, _CollectionState, _RowHandler]
+        coco.TargetReconcileOutput[
+            _CollectionAction, _CollectionTrackingRecord, _RowHandler
+        ]
         | None
     ):
-        desired_state: _CollectionState | coco.NonExistenceType
+        tracking_record: _CollectionTrackingRecord | coco.NonExistenceType
 
-        if coco.is_non_existence(desired_effect):
-            desired_state = coco.NON_EXISTENCE
+        if coco.is_non_existence(desired_state):
+            tracking_record = coco.NON_EXISTENCE
         else:
-            desired_state = statediff.MutualState(
-                state=_collection_state_from_spec(desired_effect),
-                managed_by=desired_effect.managed_by,
+            tracking_record = statediff.MutualTrackingRecord(
+                tracking_record=_collection_tracking_record_from_spec(desired_state),
+                managed_by=desired_state.managed_by,
             )
 
-        transition = statediff.StateTransition(
-            desired_state,
+        transition = statediff.TrackingRecordTransition(
+            tracking_record,
             prev_possible_states,
             prev_may_be_missing,
         )
@@ -519,15 +527,15 @@ class _CollectionHandler(
         return coco.TargetReconcileOutput(
             action=_CollectionAction(
                 key=key,
-                spec=desired_effect,
+                spec=desired_state,
                 main_action=main_action,
             ),
             sink=self._sink,
-            state=desired_state,
+            tracking_record=tracking_record,
         )
 
 
-_collection_provider = coco.register_root_target_state_provider(
+_collection_provider = coco.register_root_target_states_provider(
     "cocoindex.io/qdrant/collection", _CollectionHandler()
 )
 
@@ -551,7 +559,9 @@ class TableTarget(
     def declare_row(self: "TableTarget[RowT]", scope: coco.Scope, *, row: RowT) -> None:
         row_dict = self._row_to_dict(row)
         pk_values = tuple(row_dict[pk] for pk in self._table_schema.primary_key)
-        coco.declare_target_state(scope, self._provider.effect(pk_values, row_dict))
+        coco.declare_target_state(
+            scope, self._provider.target_state(pk_values, row_dict)
+        )
 
     def _row_to_dict(self, row: RowT) -> dict[str, Any]:
         out: dict[str, Any] = {}
@@ -610,7 +620,7 @@ class QdrantDatabase:
         key = _CollectionKey(db_key=self._key, collection_name=collection_name)
         spec = _CollectionSpec(table_schema=table_schema, managed_by=managed_by)
         provider = coco.declare_target_state_with_child(
-            scope, _collection_provider.effect(key, spec)
+            scope, _collection_provider.target_state(key, spec)
         )
         return TableTarget(provider, table_schema)
 
