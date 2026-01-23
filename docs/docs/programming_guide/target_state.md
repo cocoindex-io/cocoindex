@@ -1,147 +1,125 @@
 ---
 title: Target State
-description: Understanding target states as units of desired external state, target state hierarchies, and how to declare target states.
+description: Understanding target states as what you want to exist in external systems and how to declare them.
 ---
 
-# Target State
 
-A **Target State** is a unit of desired external state produced by your transformations. On each run, CocoIndex compares the newly declared target states with those from the previous run and applies the necessary changes so that external systems match your intent (including removals when something is no longer declared).
+A **target state** represents what you want to exist in an external system. You *declare* target states in your code; CocoIndex keeps them in sync with your intent — creating, updating, or removing them as needed.
 
-Here are examples of how target states map to external system operations:
+Examples of target states:
 
-<table>
-  <thead>
-    <tr>
-      <th rowspan="2">Target State you declare</th>
-      <th colspan="3">CocoIndex's action on the target</th>
-    </tr>
-    <tr>
-      <th>on first declaration</th>
-      <th>when declared differently</th>
-      <th>when no longer declared</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td>a SQL table</td>
-      <td>create the table</td>
-      <td>alter the table</td>
-      <td>drop the table</td>
-    </tr>
-    <tr>
-      <td>a row in a SQL table</td>
-      <td>insert the row</td>
-      <td>update the row</td>
-      <td>delete the row</td>
-    </tr>
-    <tr>
-      <td>a change-feed record (e.g., message in a Kafka topic)</td>
-      <td>publish an "insert" event</td>
-      <td>publish an "update" event</td>
-      <td>publish a "delete/tombstone" event</td>
-    </tr>
-  </tbody>
-</table>
+- A file in a directory
+- A row in a database table
+- An embedding vector in a vector store
 
-Target states can form hierarchies (e.g., a table contains rows). CocoIndex connectors provide specific APIs to declare target states at each level.
+When your source data changes, CocoIndex compares the newly declared target states with those from the previous run and applies only the necessary changes.
 
-## Declaring Target States with Target Connectors
+## Declaring Target States
 
-CocoIndex connectors provide **target states providers** with specific `declare_*` methods for declaring target states. For example:
-
-- `postgres.TableTarget` provides `declare_row()` to declare a row in a table
-- `localfs.DirTarget` provides `declare_file()` to declare a file in a directory
+CocoIndex connectors provide **targets** with `declare_*` methods:
 
 ```python
-# Declare a row target state
-table_target.declare_row(scope, row=DocEmbedding(...))
-
 # Declare a file target state
 dir_target.declare_file(scope, filename="output.html", content=html)
+
+# Declare a row target state
+table_target.declare_row(scope, row=DocEmbedding(...))
 ```
 
-## Obtaining Target States Providers
+### Where Do Targets Come From?
 
-Some target states providers are created once a parent target state is ready. For example, you can only declare rows after the table exists, or files after the directory exists.
+Target states can be nested — a directory contains files, a table contains rows. The container itself is a target state you declare, and once it's ready, you get a target to declare child target states within it.
+
+Container target states (like a directory or table) are typically top-level — you can declare them directly. Child target states (like files or rows) require the container to be ready first.
 
 The pattern is:
 
-1. **Mount** a processing component that declares the parent target state
-2. **Call `.result()`** to wait until the parent target state is applied and get the provider
-3. **Use the provider** to declare child target states
+1. **Declare the container target state** (e.g., a directory or table) using `mount_run()`
+2. **Call `.result()`** to wait until it's ready and get a target (e.g., `DirTarget`, `TableTarget`)
+3. **Use the target** to declare child target states (e.g., files or rows)
 
-### Example: Writing Rows to PostgreSQL
-
-```python
-from cocoindex.connectors import postgres
-
-@coco.function
-def app_main(scope: coco.Scope, sourcedir: pathlib.Path) -> None:
-    db = scope.use(PG_DB)
-
-    # Declare the table target state, wait for it, get back a TableTarget provider
-    table = coco.mount_run(
-        db.declare_table_target,
-        scope / "setup" / "table",
-        table_name="doc_embeddings",
-        table_schema=postgres.TableSchema(DocEmbedding, primary_key=["filename", "chunk_start"]),
-    ).result()
-
-    # Use the provider to declare row target states
-    for file in localfs.walk_dir(sourcedir, ...):
-        coco.mount(process_file, scope / "file" / str(file.relative_path), file, table)
-
-@coco.function(memo=True)
-def process_file(scope: coco.Scope, file: FileLike, table: postgres.TableTarget) -> None:
-    # ... process file into chunks ...
-    for chunk in chunks:
-        table.declare_row(scope, row=DocEmbedding(...))
-```
-
-### Example: Writing Files to a Directory
+### Example: Writing a File to a Directory
 
 ```python
 from cocoindex.connectors import localfs
 
-@coco.function
-def app_main(scope: coco.Scope, sourcedir: pathlib.Path, outdir: pathlib.Path) -> None:
-    # Declare the directory target state, wait for it, get back a DirTarget provider
-    target = coco.mount_run(
-        localfs.declare_dir_target, scope / "setup", outdir
-    ).result()
+# Declare the directory target state, get a DirTarget
+dir_target = coco.mount_run(
+    localfs.declare_dir_target, scope / "setup", outdir
+).result()
 
-    for file in localfs.walk_dir(sourcedir, ...):
-        coco.mount(process_file, scope / "file" / str(file.relative_path), file, target)
+# Declare a child target state (a file)
+dir_target.declare_file(scope, filename="output.html", content=html)
+```
 
-@coco.function(memo=True)
-def process_file(scope: coco.Scope, file: FileLike, target: localfs.DirTarget) -> None:
-    html = render_markdown(file.read_text())
-    target.declare_file(scope, filename=file.name + ".html", content=html)
+### Example: Writing a Row to PostgreSQL
+
+```python
+from cocoindex.connectors import postgres
+
+# Declare the table target state, get a TableTarget
+table = coco.mount_run(
+    db.declare_table_target,
+    scope / "setup" / "table",
+    table_name="doc_embeddings",
+    table_schema=postgres.TableSchema(DocEmbedding, primary_key=["filename", "chunk_start"]),
+).result()
+
+# Declare a child target state (a row)
+table.declare_row(scope, row=DocEmbedding(...))
 ```
 
 See [Processing Component](./processing_component.md) for more on `mount_run()`.
 
-:::tip Type Safety for Target States Providers
-Target state providers have two statuses: **pending** (just created) and **resolved** (after the parent target state is applied). The type system tracks this — if you try to use a pending provider in the same processing component that declares the parent target state, type checkers like mypy will flag the error.
+:::tip Type Safety
+Targets like `DirTarget` and `TableTarget` have two statuses: **pending** (just created) and **resolved** (after the container target state is ready). The type system tracks this — if you try to use a pending target before it's resolved, type checkers like mypy will flag the error.
 :::
 
-## Target State Hierarchies
+## How CocoIndex Syncs Target States
 
-The pattern above reflects that target states often form **hierarchies** — a parent target state creates the container, and child target states populate it:
+Under the hood, CocoIndex compares your declared target states with the previous run and applies the minimal changes needed:
 
-| Parent Target State | Child Target States |
-|---------------------|---------------------|
-| A directory on disk | Files in that directory |
-| A relational database table (schema, columns) | Rows in that table |
-| A graph database table | Nodes and relationships in that graph |
+<table>
+  <thead>
+    <tr>
+      <th rowspan="2">Target State</th>
+      <th colspan="3" style={{textAlign: 'center'}}>CocoIndex's Action</th>
+    </tr>
+    <tr>
+      <th>On first declaration</th>
+      <th>When declared differently</th>
+      <th>When no longer declared</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>A SQL table</td>
+      <td>Create the table</td>
+      <td>Alter the table</td>
+      <td>Drop the table</td>
+    </tr>
+    <tr>
+      <td>A row in a SQL table</td>
+      <td>Insert the row</td>
+      <td>Update the row</td>
+      <td>Delete the row</td>
+    </tr>
+    <tr>
+      <td>A file in a directory</td>
+      <td>Create the file</td>
+      <td>Update the file</td>
+      <td>Delete the file</td>
+    </tr>
+  </tbody>
+</table>
 
-CocoIndex ensures the parent exists before children are added, and properly cleans up children when the parent changes.
+CocoIndex ensures containers exist before their contents are added, and properly cleans up contents when the container changes.
 
 ## Generic Target State APIs
 
-CocoIndex also provides generic target state APIs for cases where connector-specific APIs don't cover your needs:
+For cases where connector-specific APIs don't cover your needs, CocoIndex provides generic APIs:
 
 - `declare_target_state()` — declare a leaf target state
 - `declare_target_state_with_child()` — declare a target state that provides child target states
 
-These are exported from `cocoindex` and used internally by connectors like `postgres` and `localfs`. For defining custom target states providers, see [Target States Provider](../advanced_topics/target_states_provider.md).
+These are exported from `cocoindex` and used internally by connectors. For defining custom targets, see [Target States Provider](../advanced_topics/target_states_provider.md).
