@@ -1,6 +1,7 @@
 import os
 import sys
 from typing import Any, NamedTuple
+import pathlib
 
 import click
 from dotenv import find_dotenv, load_dotenv
@@ -290,6 +291,119 @@ def _load_app(app_target: str) -> AppBase[Any, Any]:
     return app
 
 
+def _create_project_files(project_name: str, project_dir: str) -> None:
+    """Create project files for a new CocoIndex project."""
+
+    project_path = pathlib.Path(project_dir)
+    project_path.mkdir(parents=True, exist_ok=True)
+
+    # Create main.py
+    main_py_content = f'''"""CocoIndex app template."""
+import pathlib
+from typing import Iterator
+
+import cocoindex as coco
+
+
+@coco.lifespan
+def coco_lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
+    """Configure the CocoIndex environment."""
+    builder.settings.db_path = pathlib.Path("./cocoindex.db")
+    yield
+
+
+@coco.function
+def app_main(scope: coco.Scope) -> None:
+    """Define your data processing pipeline here."""
+    # Example:
+    # source = coco.mount(source_function, scope / "source")
+    # processed = coco.mount(process_function, scope / "process", source)
+    # target = coco.mount_run(target_function, scope / "target", processed).result()
+    pass
+
+
+app = coco.App(
+    app_main,
+    coco.AppConfig(name="{project_name}"),
+)
+'''
+    (project_path / "main.py").write_text(main_py_content)
+
+    # Create pyproject.toml
+    pyproject_toml_content = f"""[project]
+name = "{project_name}"
+version = "0.1.0"
+description = "A CocoIndex application"
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.uv]
+prerelease = "allow"
+
+[tool.setuptools]
+packages = []
+"""
+    (project_path / "pyproject.toml").write_text(pyproject_toml_content)
+
+    # Create README.md
+    readme_content = f"""# {project_name}
+
+A CocoIndex application.
+
+## Getting Started
+
+1. Install dependencies:
+   ```bash
+   pip install -e .
+   ```
+
+2. Run the app:
+   ```bash
+   python main.py
+   ```
+
+   Or use the CLI:
+   ```bash
+   cocoindex update ./main.py
+   ```
+
+## Project Structure
+
+- `main.py` - Main application file with your CocoIndex app definition
+- `pyproject.toml` - Project metadata and dependencies
+"""
+    (project_path / "README.md").write_text(readme_content)
+
+    # Create .gitignore
+    gitignore_content = """# CocoIndex
+cocoindex.db
+cocoindex.db-lock
+*.db
+*.db-lock
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment
+.env
+.env.local
+"""
+    (project_path / ".gitignore").write_text(gitignore_content)
+
+
 # ---------------------------------------------------------------------------
 # CLI group
 # ---------------------------------------------------------------------------
@@ -487,6 +601,72 @@ def drop(app_target: str, force: bool = False) -> None:
 
     env_loop = default_env_loop()
     asyncio.run_coroutine_threadsafe(_do(), env_loop).result()
+
+
+@cli.command()
+@click.argument("project_name", type=str, required=False)
+@click.option(
+    "--dir",
+    type=click.Path(file_okay=False, dir_okay=True, writable=True),
+    default=None,
+    help="Directory to create the project in. Defaults to PROJECT_NAME in current directory.",
+)
+def init(project_name: str | None, dir: str | None) -> None:
+    """
+    Initialize a new CocoIndex project.
+
+    Creates a new project directory with starter files:
+    1. main.py (Main application file)
+    2. pyproject.toml (Project metadata and dependencies)
+    3. README.md (Quick start guide)
+    4. .gitignore (Git ignore file)
+
+    PROJECT_NAME: Name of the project (defaults to current directory name if not specified).
+    """
+    # Determine project directory
+    if dir:
+        project_dir = dir
+        if not project_name:
+            project_name = pathlib.Path(dir).resolve().name
+    elif project_name:
+        project_dir = project_name
+    else:
+        # Use current directory
+        project_dir = "."
+        project_name = pathlib.Path.cwd().resolve().name
+
+    # Validate project name
+    if project_name and not project_name.replace("_", "").replace("-", "").isalnum():
+        raise click.BadParameter(
+            f"Invalid project name '{project_name}'. "
+            "Project name must contain only alphanumeric characters, hyphens, and underscores.",
+            param_hint="PROJECT_NAME",
+        )
+
+    project_path = pathlib.Path(project_dir)
+
+    # Check if directory exists and has files
+    if project_path.exists() and any(project_path.iterdir()):
+        if not click.confirm(
+            f"Directory '{project_dir}' already exists and is not empty. "
+            "Continue and overwrite existing files?"
+        ):
+            click.echo("Init cancelled.")
+            return
+
+    try:
+        _create_project_files(project_name, project_dir)
+        click.echo(f"Created CocoIndex project '{project_name}' in '{project_dir}'")
+        click.echo("\nNext steps:")
+        if project_dir != ".":
+            click.echo(f"  1. cd {project_dir}")
+            click.echo("  2. pip install -e .")
+            click.echo("  3. cocoindex update ./main.py")
+        else:
+            click.echo("  1. pip install -e .")
+            click.echo("  2. cocoindex update ./main.py")
+    except Exception as e:
+        raise click.ClickException(f"Failed to create project: {e}") from e
 
 
 if __name__ == "__main__":
