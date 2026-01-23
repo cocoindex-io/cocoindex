@@ -3,53 +3,51 @@ title: Processing Component
 description: Understanding processing components as the sync boundaries for target states, including mounting APIs.
 ---
 
-# Processing Component
-
 Your pipeline often processes many items — files, rows, entities — where each can be handled independently.
 A **Processing Component** groups an item's processing together with its output target states.
 Each Processing Component runs on its own and applies its target states as soon as it completes, without waiting for the rest of the pipeline.
 
-Processing Components are identified by **stable paths** (e.g., you can construct it using file names, row keys, entity IDs, etc.), which CocoIndex uses to track and reconcile target states across runs.
+## The Scope Tree
 
-See [Scope](./sdk_overview.md#scope) in the SDK Overview for details on how scopes and stable paths work.
+Scopes form a tree structure. You create child scopes using the `/` operator with stable identifiers like literals, file names, row keys, or entity IDs:
 
-## Hierarchical Structure
+```python
+scope / filename           # e.g., scope / "hello.md"
+scope / "user" / user_id   # e.g., scope / "user" / 12345
+```
 
-Processing Components form a tree. An [App](./app.md) establishes a root Processing Component, which can **mount** child Processing Components. Each child can mount its own children, and so on.
+Each processing component must be mounted in a **unique scope**. The scope uniquely identifies the component across runs — CocoIndex uses this to match target states from previous runs, determine what changed, and apply updates atomically.
 
-This hierarchy is how CocoIndex tracks ownership: when a parent no longer mounts a child (e.g., a source file is deleted), CocoIndex automatically cleans up the child's target states.
+Here's an example scope tree (from the [Quickstart](../getting_started/quickstart.md)):
 
-## Target State Sync Boundaries
+```text
+(root)                         ← app_main component
+├── "setup"                    ← declare_dir_target component
+└── "process"
+    ├── "hello.md"             ← process_file component
+    └── "world.md"             ← process_file component
+```
 
-After a processing component finishes execution, CocoIndex syncs its target states to external systems:
+See [Scope](./sdk_overview.md#scope) in the SDK Overview for details on scopes and `StableKey`.
 
-1. **Compares** the target states declared in this run against those from the previous run at the same path
-2. **Applies changes** as a unit — creating new target states, updating changed ones, and deleting target states that are no longer declared
-3. **Recursively handles** child processing components that are no longer mounted, cleaning up their target states as well
-
-This boundary provides clear ownership and atomic updates. For example:
-
-- If a source file changes, its processing component's target states are applied as a unit — atomically and not blocked by other processing components
-- If a source file is removed, after the parent's function executes, CocoIndex notices the child processing component is no longer mounted and removes its target states
-
-## Mounting Processing Components
+## Mounting APIs
 
 CocoIndex provides two APIs to mount processing components: `mount()` and `mount_run()`.
 
-- `mount()` sets up the processing component without dependency on data out of it. So it allows the child component to refresh itself in live mode.
-- `mount_run()` will hand over return value from the child component execution to the parent. So the child component cannot refresh independently without reexecuting the parent.
+- `mount()` sets up a processing component in a child scope without depending on data from it. This allows the component to refresh independently in live mode.
+- `mount_run()` returns a value from the component's execution to the caller. The component at that scope cannot refresh independently without re-executing the caller.
 
-Usually, only use `mount_run()` when you need the return value from the child component.
+Usually, only use `mount_run()` when you need the return value.
 
 ### `mount()`
 
 Use `mount()` when you don't need a return value from the processing component. It schedules the processing component to run and returns a handle:
 
 ```python
-handle = coco_aio.mount(process_file, scope / "file" / filename, file, target)
+handle = coco_aio.mount(process_file, scope / "process" / filename, file, target)
 ```
 
-The handle provides a method you can call if you need to wait until the processing component is fully ***ready*** — meaning all its target states have been applied to external systems and all its children are ready:
+The handle provides a method you can call if you need to wait until the processing component is fully ***ready*** — meaning all its target states have been applied to external systems and all components in its sub-scopes are ready:
 
 ```python
 await handle.ready()  # Async API
@@ -58,7 +56,7 @@ await handle.ready()  # Async API
 The corresponding sync API:
 
 ```python
-handle = coco.mount(process_file, scope / "file" / filename, file, target)
+handle = coco.mount(process_file, scope / "process" / filename, file, target)
 handle.wait_until_ready()  # Blocks until ready
 ```
 
@@ -82,7 +80,23 @@ handle = coco.mount_run(setup_table, scope / "setup", table_name="docs")
 table = handle.result()  # Blocks until ready, then returns the value
 ```
 
-A common use of `mount_run()` is to obtain a [target states provider](./target_state#obtaining-target-states-providers) after its parent target state is applied.
+A common use of `mount_run()` is to obtain a [target states provider](./target_state#obtaining-target-states-providers) after its target state is applied.
+
+## How Target States Sync
+
+The scope tree determines ownership. When a component is no longer mounted at a scope (e.g., a source file is deleted), CocoIndex automatically cleans up its target states — and recursively for all its sub-scopes.
+
+:::info[Sync Mechanism]
+
+After a processing component finishes, CocoIndex syncs its target states:
+
+1. **Compares** the target states declared in this run against those from the previous run in the same scope
+2. **Applies changes** as a unit — creating, updating, or deleting target states as needed
+3. **Recursively cleans up** sub-scopes where components are no longer mounted
+
+This provides atomic updates per component. For example, if a source file changes, its component's target states are applied atomically.
+
+:::
 
 ## Granularity Trade-offs
 

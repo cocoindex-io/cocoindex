@@ -3,8 +3,6 @@ title: SDK Overview
 description: Overview of the CocoIndex Python SDK package organization, common types like Scope and StableKey, sync vs async APIs, and how to mix sync/async across processing components.
 ---
 
-# SDK Overview
-
 This document provides an overview of the CocoIndex Python SDK organization and how to choose between the synchronous and asynchronous APIs.
 
 ## Package Organization
@@ -22,9 +20,9 @@ The CocoIndex SDK is organized into several modules:
 
 | Package | Description |
 |---------|-------------|
-| `cocoindex.connectors` | Connectors for data sources and targets (e.g., `localfs`, `postgres`, `lancedb`, `qdrant`, `google_drive`) |
-| `cocoindex.extras` | Utility modules for common tasks (e.g., text splitting, embedding with SentenceTransformers) |
-| `cocoindex.resources` | Resource types like `FileLike`, `Chunk`, and schema utilities |
+| `cocoindex.connectors` | Connectors for data sources and targets |
+| `cocoindex.resources` | Provide common data models and abstractions shared across connectors and extra utilities |
+| `cocoindex.extras` | Extra utilities for performing common data processing tasks (e.g., text splitting, embedding with SentenceTransformers) |
 
 Import connectors and extras by their specific sub-module:
 
@@ -40,25 +38,24 @@ from cocoindex.resources.chunk import Chunk
 
 ### Scope
 
-`Scope` is a handle that many CocoIndex APIs require. It carries:
-
-- A **stable path** that uniquely identifies the current position in the processing tree
-- Context for accessing provided resources and declaring target states
+`Scope` is a handle that many CocoIndex APIs require. It carries context for accessing provided resources and declaring target states.
 
 You'll use `Scope` as the first argument for declaring target states, mounting processing components, accessing context values, etc. When your function requires `Scope`, pass it explicitly as the first argument.
 
-You create child scopes using the `/` operator:
+Scopes form a tree structure. You create child scopes using the `/` operator:
 
 ```python
-scope / "setup" / "table"    # Creates path like /setup/table
-scope / "file" / filename    # Creates path like /file/readme.md
+scope / "setup"           # child scope of scope
+scope / "setup" / "table" # child scope of scope / "setup", sub-scope of scope
 ```
 
-The stable path should be consistent across runs — CocoIndex uses it to match target states from previous runs and determine what changed.
+Each processing component must be mounted in a unique child scope. See [Processing Component](./processing_component.md) for how the scope tree affects target states and ownership.
+
+When creating child scopes, each part is a `StableKey`.
 
 ### StableKey
 
-`StableKey` is a type alias defining what values can be used as path parts in stable paths:
+`StableKey` is a type alias defining what values can be used when creating child scopes:
 
 ```python
 StableKey = None | bool | int | str | bytes | uuid.UUID | tuple[StableKey, ...]
@@ -136,6 +133,30 @@ def main():
 if __name__ == "__main__":
     main()
 ```
+
+### Mixing Sync and Async
+
+A sync function can mount an async processing component:
+
+```python
+import cocoindex as coco
+
+@coco.function
+async def fetch_and_process(scope: coco.Scope, url: str):
+    # Async processing component — uses await internally
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as response:
+            data = await response.text()
+    # ... declare target states with data ...
+
+@coco.function
+def app_main(scope: coco.Scope, urls: list[str]):
+    # Sync function mounting async processing components
+    for url in urls:
+        coco.mount(fetch_and_process, scope / url, url)
+```
+
+The reverse also works — an async function can mount sync processing components.
 
 :::tip
 Whether `app_main` (the root processing component's function) is sync or async is orthogonal to whether you use `coco_aio.App` or `coco.App`.

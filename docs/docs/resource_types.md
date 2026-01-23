@@ -3,9 +3,7 @@ title: Resource Types
 description: Common data types for files shared across CocoIndex connectors and utilities.
 ---
 
-# Resource Types
-
-The `cocoindex.resources` package provides common data types shared across connectors and utility modules, providing a consistent interface for working with data.
+The `cocoindex.resources` package provides common data models and abstractions shared across connectors and utility modules, ensuring a consistent interface for working with data.
 
 ## File
 
