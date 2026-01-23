@@ -314,17 +314,47 @@ def coco_lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
 
 @coco.function
 def app_main(scope: coco.Scope) -> None:
-    """Define your data processing pipeline here."""
+    """Define your main pipeline here.
+
+    Common pattern:
+      1) Declare targets/target states under stable 'setup/...' paths.
+      2) Enumerate inputs (files, DB rows, etc.).
+      3) Mount per input processing unit using a stable path.
+
+    Note: app_main can accept parameters (e.g., sourcedir/outdir) passed via coco.App(...)
+    """
+
+    # 1) Declare targets/target states
+    # Example (local filesystem):
+    #   target = coco.mount_run(
+    #       localfs.declare_dir_target,
+    #       scope / "setup",
+    #       outdir,
+    #   ).result()
+
+    # 2) Enumerate inputs
+    # Example (walk a directory):
+    #   files = localfs.walk_dir(
+    #       sourcedir,
+    #       path_matcher=PatternFilePathMatcher(included_patterns=["*.pdf"]),
+    #   )
+
+    # 3) Mount a processing unit for each input under a stable path
     # Example:
-    # source = coco.mount(source_function, scope / "source")
-    # processed = coco.mount(process_function, scope / "process", source)
-    # target = coco.mount_run(target_function, scope / "target", processed).result()
+    #   for f in files:
+    #       coco.mount(
+    #           process_file_function,
+    #           scope / "process" / str(f.relative_path),
+    #           f,
+    #           target,
+    #       )
+
     pass
 
 
 app = coco.App(
     app_main,
-    coco.AppConfig(name="{project_name}"),
+    coco.AppConfig(name="MyProject"),
 )
 '''
     (project_path / "main.py").write_text(main_py_content)
@@ -335,7 +365,9 @@ name = "{project_name}"
 version = "0.1.0"
 description = "A CocoIndex application"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "cocoindex>=1.0.0a1",
+]
 
 [tool.uv]
 prerelease = "allow"
@@ -359,12 +391,7 @@ A CocoIndex application.
 
 2. Run the app:
    ```bash
-   python main.py
-   ```
-
-   Or use the CLI:
-   ```bash
-   cocoindex update ./main.py
+   cocoindex update main.py
    ```
 
 ## Project Structure
@@ -373,35 +400,6 @@ A CocoIndex application.
 - `pyproject.toml` - Project metadata and dependencies
 """
     (project_path / "README.md").write_text(readme_content)
-
-    # Create .gitignore
-    gitignore_content = """# CocoIndex
-cocoindex.db
-cocoindex.db-lock
-*.db
-*.db-lock
-
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-env/
-venv/
-.venv/
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# Environment
-.env
-.env.local
-"""
-    (project_path / ".gitignore").write_text(gitignore_content)
 
 
 # ---------------------------------------------------------------------------
@@ -619,7 +617,6 @@ def init(project_name: str | None, dir: str | None) -> None:
     1. main.py (Main application file)
     2. pyproject.toml (Project metadata and dependencies)
     3. README.md (Quick start guide)
-    4. .gitignore (Git ignore file)
 
     PROJECT_NAME: Name of the project (defaults to current directory name if not specified).
     """
