@@ -24,6 +24,7 @@ CLEANUP_PATTERNS = [
     "db_alpha",
     "out_*",
     "cocoindex_unbound.db",
+    "cli_init_*",
 ]
 
 
@@ -401,3 +402,46 @@ class TestDropNoPersisted:
         """Drop on app that was never run should indicate nothing to drop."""
         result = run_cli("drop", "./single_app.py", "-f")
         assert "no persisted state" in result.stdout.lower()
+
+
+# =============================================================================
+# Test: Init command
+# =============================================================================
+
+
+class TestInitCommand:
+    """Tests for the cocoindex init command."""
+
+    def test_init_creates_project_structure(self) -> None:
+        """cocoindex init MyProject should create basic project files."""
+        project_dir = TEST_DIR / "cli_init_project"
+
+        # Sanity: ensure directory does not exist before running
+        if project_dir.exists():
+            shutil.rmtree(project_dir)
+
+        run_cli("init", "cli_init_project")
+
+        assert project_dir.exists()
+        assert (project_dir / "main.py").exists()
+        assert (project_dir / "pyproject.toml").exists()
+        assert (project_dir / "README.md").exists()
+
+        # pyproject.toml should use the project name
+        pyproject_text = (project_dir / "pyproject.toml").read_text(encoding="utf-8")
+        assert 'name = "cli_init_project"' in pyproject_text
+
+    def test_init_defaults_project_name_from_dir(self) -> None:
+        """When PROJECT_NAME is omitted, name defaults to the target directory name."""
+        project_dir = TEST_DIR / "cli_init_dir_only"
+
+        if project_dir.exists():
+            shutil.rmtree(project_dir)
+
+        # PROJECT_NAME omitted, only --dir provided
+        run_cli("init", "--dir", "cli_init_dir_only")
+
+        assert project_dir.exists()
+        pyproject_text = (project_dir / "pyproject.toml").read_text(encoding="utf-8")
+        # Project name should match directory name
+        assert 'name = "cli_init_dir_only"' in pyproject_text

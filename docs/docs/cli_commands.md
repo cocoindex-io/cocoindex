@@ -38,8 +38,8 @@ Creates a new project directory with starter files: 1. main.py (Main
 application file) 2. pyproject.toml (Project metadata and dependencies) 3.
 README.md (Quick start guide)
 
-PROJECT_NAME: Name of the project (defaults to current directory name if not
-specified).
+`PROJECT_NAME`: Name of the project (defaults to current directory name if
+not specified).
 
 
 **Usage:**
@@ -52,7 +52,7 @@ cocoindex init [OPTIONS] [PROJECT_NAME]
 
 | Option | Description |
 |--------|-------------|
-| `--dir DIRECTORY` | Directory to create the project in. Defaults to PROJECT_NAME in current directory. |
+| `--dir DIRECTORY` | Directory to create the project in. |
 | `--help` | Show this message and exit. |
 
 ---

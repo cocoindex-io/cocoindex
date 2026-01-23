@@ -607,7 +607,7 @@ def drop(app_target: str, force: bool = False) -> None:
     "--dir",
     type=click.Path(file_okay=False, dir_okay=True, writable=True),
     default=None,
-    help="Directory to create the project in. Defaults to PROJECT_NAME in current directory.",
+    help="Directory to create the project in.",
 )
 def init(project_name: str | None, dir: str | None) -> None:
     """
@@ -618,7 +618,7 @@ def init(project_name: str | None, dir: str | None) -> None:
     2. pyproject.toml (Project metadata and dependencies)
     3. README.md (Quick start guide)
 
-    PROJECT_NAME: Name of the project (defaults to current directory name if not specified).
+    `PROJECT_NAME`: Name of the project (defaults to current directory name if not specified).
     """
     # Determine project directory
     if dir:
