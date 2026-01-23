@@ -36,7 +36,12 @@ This boundary provides clear ownership and atomic updates. For example:
 
 CocoIndex provides two APIs to mount processing components: `mount()` and `mount_run()`.
 
-### `mount()` — When You Don't Need the Return Value
+- `mount()` sets up the processing component without dependency on data out of it. So it allows the child component to refresh itself in live mode.
+- `mount_run()` will hand over return value from the child component execution to the parent. So the child component cannot refresh independently without reexecuting the parent.
+
+Usually, only use `mount_run()` when you need the return value from the child component.
+
+### `mount()`
 
 Use `mount()` when you don't need a return value from the processing component. It schedules the processing component to run and returns a handle:
 
@@ -59,7 +64,7 @@ handle.wait_until_ready()  # Blocks until ready
 
 You usually only need to call `ready()` (or `wait_until_ready()` in sync) when you have logic that depends on the processing component's target states being applied — for example, querying the latest data from a target table after syncing it.
 
-### `mount_run()` — When You Need the Return Value
+### `mount_run()`
 
 Use `mount_run()` when you need the processing component's return value. It returns a handle with a `result()` method:
 

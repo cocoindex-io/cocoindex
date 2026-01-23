@@ -5,11 +5,45 @@ description: Understanding target states as units of desired external state, tar
 
 # Target State
 
-A **Target State** is a unit of desired external state produced by your transformations. On each run, CocoIndex compares the newly declared target states with those from the previous run and applies the necessary changes — creating, updating, or deleting — so that external systems match your intent.
+A **Target State** is a unit of desired external state produced by your transformations. On each run, CocoIndex compares the newly declared target states with those from the previous run and applies the necessary changes so that external systems match your intent (including removals when something is no longer declared).
+
+Here are examples of how target states map to external system operations:
+
+<table>
+  <thead>
+    <tr>
+      <th rowspan="2">Target State you declare</th>
+      <th colspan="3">CocoIndex's action on the target</th>
+    </tr>
+    <tr>
+      <th>on first declaration</th>
+      <th>when declared differently</th>
+      <th>when no longer declared</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>a SQL table</td>
+      <td>create the table</td>
+      <td>alter the table</td>
+      <td>drop the table</td>
+    </tr>
+    <tr>
+      <td>a row in a SQL table</td>
+      <td>insert the row</td>
+      <td>update the row</td>
+      <td>delete the row</td>
+    </tr>
+    <tr>
+      <td>a change-feed record (e.g., message in a Kafka topic)</td>
+      <td>publish an "insert" event</td>
+      <td>publish an "update" event</td>
+      <td>publish a "delete/tombstone" event</td>
+    </tr>
+  </tbody>
+</table>
 
 Target states can form hierarchies (e.g., a table contains rows). CocoIndex connectors provide specific APIs to declare target states at each level.
-
-See [Core Concepts](./core_concepts.md#target-states-desired-targets-in-external-systems) for examples of how target states map to external system operations.
 
 ## Declaring Target States with Target Connectors
 
