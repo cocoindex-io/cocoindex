@@ -41,19 +41,14 @@ The difference is that CocoIndex brings this state-driven paradigm to long-runni
 
 :::
 
-For data transformation, you read the current state from your source and perform a series of transformations. For example:
-
-- Converting PDFs to markdown files
-
-- Extracting features or structures
-
-- Mapping data to fit a particular schema
+For data transformation, you read the current state from your source and perform a series of transformations. For example: converting PDFs to markdown files, 
+extracting features or structures, or mapping data to fit a particular schema.
 
 Then you output the results to a target such as a relational database, vector database, or file system.
 
 The target state is a pure function of the source state:
 
-TargetState = Transform(SourceState)
+**TargetState = Transform(SourceState)**
 
 Under the hood, when the source state changes, CocoIndex performs incremental processing to update the target, so you don't have to manage it yourself.
 
