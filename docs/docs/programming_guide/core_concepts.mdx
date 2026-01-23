@@ -29,13 +29,15 @@ Instead of programming *how* to incrementally process your data and apply change
 
 :::info
 
-This state-driven programming paradigm is already widely used in other areas:
+If you've used React, spreadsheets, or materialized views, this mental model will feel familiar:
 
-- **Spreadsheets**: Each cell derives its value from input cells via a formula. When any upstream cell changes, downstream cells automatically recompute to reflect the new state.
+- **Spreadsheets**: You declare formulas in cells. When any upstream cell changes, downstream cells automatically recompute to reflect the new state.
 
-- **React**: Your UI is a function of state. When state changes, React automatically re-renders the UI to match.
+- **React**: You declare your UI as a function of state. When state changes, React automatically re-renders the UI to match.
 
-- **Materialized Views**: A materialized view's data is a function of its input tables. When input data changes, the view automatically refreshes to match.
+- **Materialized Views**: You declare a SQL query on source tables. When input data changes, the view automatically refreshes to match.
+
+The difference is that CocoIndex brings this state-driven paradigm to long-running, side-effectful data processing pipelines.
 
 :::
 
