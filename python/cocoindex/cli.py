@@ -354,7 +354,7 @@ def app_main(scope: coco.Scope) -> None:
 
 app = coco.App(
     app_main,
-    coco.AppConfig(name="MyProject"),
+    coco.AppConfig(name="{project_name}"),
 )
 '''
     (project_path / "main.py").write_text(main_py_content)
@@ -366,14 +366,11 @@ version = "0.1.0"
 description = "A CocoIndex application"
 requires-python = ">=3.11"
 dependencies = [
-    "cocoindex>=1.0.0a1",
+    "cocoindex>={coco.__version__}",
 ]
 
 [tool.uv]
 prerelease = "allow"
-
-[tool.setuptools]
-packages = []
 """
     (project_path / "pyproject.toml").write_text(pyproject_toml_content)
 
@@ -384,15 +381,10 @@ A CocoIndex application.
 
 ## Getting Started
 
-1. Install dependencies:
-   ```bash
-   pip install -e .
-   ```
-
-2. Run the app:
-   ```bash
-   cocoindex update main.py
-   ```
+Run the app:
+```bash
+uv run cocoindex update main.py
+```
 
 ## Project Structure
 
@@ -657,11 +649,9 @@ def init(project_name: str | None, dir: str | None) -> None:
         click.echo("\nNext steps:")
         if project_dir != ".":
             click.echo(f"  1. cd {project_dir}")
-            click.echo("  2. pip install -e .")
-            click.echo("  3. cocoindex update ./main.py")
+            click.echo("  2. uv run cocoindex update main.py")
         else:
-            click.echo("  1. pip install -e .")
-            click.echo("  2. cocoindex update ./main.py")
+            click.echo("  1. uv run cocoindex update main.py")
     except Exception as e:
         raise click.ClickException(f"Failed to create project: {e}") from e
 

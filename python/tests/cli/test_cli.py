@@ -431,6 +431,14 @@ class TestInitCommand:
         pyproject_text = (project_dir / "pyproject.toml").read_text(encoding="utf-8")
         assert 'name = "cli_init_project"' in pyproject_text
 
+        # Smoke test: verify generated files work
+        # Run ls to verify the app is discoverable (use relative path from TEST_DIR)
+        result = run_cli("ls", "cli_init_project/main.py")
+        assert "cli_init_project" in result.stdout
+
+        # Run update to verify the app can execute
+        run_cli("update", "cli_init_project/main.py")
+
     def test_init_defaults_project_name_from_dir(self) -> None:
         """When PROJECT_NAME is omitted, name defaults to the target directory name."""
         project_dir = TEST_DIR / "cli_init_dir_only"
