@@ -3,8 +3,6 @@ title: Function
 description: Understanding the @coco.function decorator, its capabilities like memoization and change tracking, and how functions access Scope.
 ---
 
-# Function
-
 It's common to factor work into helper functions (for parsing, chunking, embedding, formatting, etc.). In CocoIndex, you can decorate any Python function with `@coco.function` when you want to add incremental capabilities to it. The decorated function is still a normal Python function: its signature stays the same, and you can call it normally.
 
 ```python
@@ -30,7 +28,6 @@ Decorating a function tells CocoIndex that calls to it are part of the increment
 
 - Skip work when it can safely reuse a previous result (memoization)
 - Re-run work when the implementation changes (change tracking)
-- Provide a `Scope` so the function can declare target states or mount processing components
 
 This is what lets CocoIndex avoid rerunning expensive steps on every `app.update()`. See [Processing Component](./processing_component.md) for how decorated functions are mounted at scopes.
 
@@ -52,6 +49,24 @@ def process_chunk(scope: coco.Scope, chunk: Chunk) -> Embedding:
 ```
 
 See [Memoization Keys](../advanced_topics/memoization_keys.md) for details on how CocoIndex constructs keys for memoization.
+
+:::tip When to memoize
+
+**Cost:** Function return values must be stored for memoization. Larger return values mean higher storage costs.
+
+**Benefit:** Memoization saves more when:
+
+- The computation is expensive
+- The function's caller is reprocessed frequently (due to data or code changes)
+
+**Examples:**
+
+- ✅ **Embedding functions** — good to memoize. Computation is heavy; return value is fixed-size and not too large.
+- ❌ **Splitting text into fixed-size chunks** — usually not worth memoizing. Computation is light; return value can be large.
+- ✅ **Processing component for files that mostly stable between runs** — very beneficial to memoize, since unchanged files are skipped entirely. We can save the cost of reading file content and processing them when they haven't changed.
+- 🤔 **Chunk embedding when file-level memoization is already enabled** — still beneficial, but less so for stable files. The benefit increases for files that change frequently, or when your code evolves (e.g., adding more features per file triggers file-level reprocessing, but unchanged chunks can still skip embedding).
+
+:::
 
 ### Change tracking
 

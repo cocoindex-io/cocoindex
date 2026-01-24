@@ -118,15 +118,17 @@ When file `b.md` is deleted from the source folder, CocoIndex deletes its associ
 </TabItem>
 </Tabs>
 
-## Memoization: Skip Unchanged Computations
+## Function memoization: skip unchanged computations
 
-When you run your app again, CocoIndex uses ***memoization*** to skip unchanged computations. You control what gets memoized — either entire processing components or individual transforms within them. Using the chunk-embed example:
+***Function memoization*** is a technique that allows skipping a function when its input and code are unchanged from a previous run. It is essential for incremental processing — without it, every run would require full recomputation.
 
-- Memoizing at the *processing component level*: If a file hasn't changed and the processing logic hasn't changed, the entire processing component is skipped.
+In CocoIndex, both processing components and transforms are expressed as functions, so function memoization can be enabled at either level. Using the chunk-embed example:
 
-- Memoizing at the *transform level*: If the input to the "embed" transform (the chunk text) hasn't changed and the transform logic (e.g., the model) hasn't changed, that specific embedding computation is skipped.
+- *Processing component level*: If a file hasn't changed and the processing logic hasn't changed, the entire processing component is skipped.
 
-TODO: Consider reorging this section into a) what is memoization, b) why it's needed, c) and when a user might choose either approach described above (is there a best practice? when does it make sense to do one vs the other?)
+- *Transform level*: If the input to the "embed" transform (the chunk text) hasn't changed and the transform logic (e.g., the model) hasn't changed, that specific embedding computation is skipped.
+
+See [Function Memoization](./function.md#memoization) for more details.
 
 <div style={{textAlign: 'center'}}>
   <img src={useBaseUrl('/img/concept/memo.svg')} alt="Memoization" style={{maxWidth: '800px'}} />
