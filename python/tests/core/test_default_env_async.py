@@ -4,7 +4,7 @@ from typing import Iterator, AsyncIterator
 
 import cocoindex.asyncio as coco_aio
 from cocoindex._internal.environment import reset_default_env_for_tests
-from ..common import get_env_db_path
+from tests.common import get_env_db_path
 
 _env_db_path = get_env_db_path("_async_default")
 

@@ -2,8 +2,8 @@ import cocoindex as coco
 import pytest
 from dataclasses import dataclass
 
-from .. import common
-from ..common.target_states import (
+from tests import common
+from tests.common.target_states import (
     DictDataWithPrev,
     GlobalDictTarget,
     Metrics,

@@ -8,9 +8,9 @@ import pathlib
 
 import pytest
 
-from .. import common
-from ..common.target_states import GlobalDictTarget, DictDataWithPrev, Metrics
-from ..common.module_utils import load_module_as
+from tests import common
+from tests.common.target_states import GlobalDictTarget, DictDataWithPrev, Metrics
+from tests.common.module_utils import load_module_as
 
 
 coco_env = common.create_test_env(__file__)
@@ -339,7 +339,7 @@ def test_memo_invalidation_on_decorator_change() -> None:
     metrics = Metrics()
 
     # The fake module name to simulate in-place code changes.
-    fake_module_name = "cocoindex.tests.core._dynamic_memo_test_module"
+    fake_module_name = "tests.core._dynamic_memo_test_module"
 
     # Get paths to the two module versions (in the same directory as this test).
     test_dir = pathlib.Path(__file__).parent

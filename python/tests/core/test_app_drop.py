@@ -8,8 +8,8 @@ import cocoindex.inspect as coco_inspect
 
 from typing import Any
 
-from .. import common
-from ..common.target_states import DictsTarget, DictDataWithPrev
+from tests import common
+from tests.common.target_states import DictsTarget, DictDataWithPrev
 
 coco_env = common.create_test_env(__file__)
 

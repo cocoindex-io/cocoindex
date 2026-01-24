@@ -2,7 +2,7 @@ import pytest
 
 import cocoindex as coco
 import cocoindex.asyncio as coco_aio
-from ..common import create_test_env
+from tests.common import create_test_env
 
 coco_env = create_test_env(__file__)
 
