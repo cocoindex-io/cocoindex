@@ -5,7 +5,7 @@ description: Understanding Apps as the top-level runnable unit, including creati
 
 # App
 
-An **App** is the top-level runnable unit in CocoIndex. 
+An **App** is the top-level runnable unit in CocoIndex.
 It names your pipeline and binds a main function with its parameters. When you call `app.update()`, CocoIndex runs that main function as the root [processing component](./processing_component.md) which can mount child processing components to do work and declare target states.
 
 ## Creating an app
