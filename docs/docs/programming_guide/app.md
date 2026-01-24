@@ -5,9 +5,10 @@ description: Understanding Apps as the top-level runnable unit, including creati
 
 # App
 
-An **App** is the top-level runnable unit in CocoIndex. It names your pipeline, binds a main function with its parameters, and establishes the root [Processing Component](./processing_component.md) where all work happens.
+An **App** is the top-level runnable unit in CocoIndex. 
+It names your pipeline and binds a main function with its parameters. When you call `app.update()`, CocoIndex runs that main function as the root [processing component](./processing_component.md) which can mount child processing components to do work and declare target states.
 
-## Creating an App
+## Creating an app
 
 To create an App, provide:
 
@@ -49,7 +50,7 @@ app = coco.App(
 The main function can be sync or async regardless of whether you use `coco.App` or `coco_aio.App`. See [Mixing Sync and Async](./sdk_overview.md#mixing-sync-and-async) for details.
 :::
 
-## Updating an App
+## Updating an app
 
 Call `update()` to execute the pipeline:
 
@@ -68,17 +69,39 @@ The `report_to_stdout` option prints periodic progress updates during execution.
 When you update an App, CocoIndex:
 
 1. Runs the lifespan setup (if not already done)
-2. Executes the main function, which mounts child processing components
+2. Executes the main function (the root processing component), which mounts child processing components
 3. Syncs all declared target states to external systems
 4. Compares with the previous run and applies only necessary changes
 
 Given the same code and inputs, updates are repeatable. When data or code changes, only the affected parts re-execute.
 
+## How an app runs
+
+An App is the top-level runner and entry point. A **processing component** is the unit of incremental execution *within* an app.
+
+- Your app's main function runs as the **root processing component** at the root scope.
+- Each call to `mount()` or `mount_run()` declares a **child processing component** at a child scope.
+- Each processing component declares a set of target states, and CocoIndex syncs them atomically when that component finishes.
+
+This is why `app.update()` does not "run everything from scratch": CocoIndex uses the scope tree to decide what can be reused and what must re-run.
+
+For example, an app that processes files might mount one component per file:
+
+```text
+(root)                         ← app_main component
+├── "setup"                    ← declare_dir_target component
+└── "process"
+    ├── "hello.md"             ← process_file component
+    └── "world.md"             ← process_file component
+```
+
+See [Processing Component](./processing_component.md) for how mounting and scopes define these boundaries.
+
 ## Lifespan
 
-You can define a **lifespan function** to configure settings and initialize resources before your pipeline updates. The lifespan is shared across all apps in your process by default.
+Apps are typically updated many times. A **lifespan function** defines the CocoIndex runtime lifecycle: its setup runs when the runtime starts (automatically before the first `app.update()`), and its cleanup runs when the runtime stops. Use it to configure CocoIndex and initialize shared resources that processing components can reuse.
 
-### Defining a Lifespan
+### Defining a lifespan
 
 Use the `@lifespan` decorator to define the function. It receives an `EnvironmentBuilder` for configuration and uses `yield` to separate setup from cleanup:
 
@@ -109,7 +132,7 @@ def coco_lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
 
 You can also use the lifespan to provide resources (like database connections) that processing components can access. See [Context](./context.md) for details on sharing resources across your pipeline.
 
-### Explicit Lifecycle Control (Optional)
+### Explicit lifecycle control (optional)
 
 The lifespan runs automatically the first time any App updates — most users don't need to do anything beyond defining the lifespan and calling `app.update()`.
 
@@ -143,11 +166,11 @@ with coco.runtime():
     app.update()
 ```
 
-## Managing Apps with CLI
+## Managing apps with CLI
 
 CocoIndex provides a CLI for managing your apps without writing additional code.
 
-### Update an App
+### Update an app
 
 Run your app once to sync all target states:
 
@@ -157,7 +180,7 @@ cocoindex update main.py
 
 This executes your pipeline and applies all declared target states to external systems.
 
-### Drop an App
+### Drop an app
 
 Remove an app and revert all its target states:
 
