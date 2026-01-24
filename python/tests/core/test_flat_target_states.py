@@ -4,8 +4,8 @@ import pytest
 
 import cocoindex as coco
 
-from .. import common
-from ..common.target_states import (
+from tests import common
+from tests.common.target_states import (
     GlobalDictTarget,
     AsyncGlobalDictTarget,
     DictDataWithPrev,

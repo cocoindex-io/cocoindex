@@ -156,7 +156,8 @@ disallow_subclassing_any = false
 disallow_untyped_calls = false
 disallow_any_decorated = false
 
-[tool.pytest]
+[tool.pytest.ini_options]
+pythonpath = ["python"]
 log_cli = true
 log_cli_level = "INFO"
 log_format = "%(asctime)s %(levelname)s %(message)s"

@@ -5,8 +5,8 @@ import pytest
 
 from typing import Any, Collection
 
-from .. import common
-from ..common.target_states import DictsTarget, DictDataWithPrev, AsyncDictsTarget
+from tests import common
+from tests.common.target_states import DictsTarget, DictDataWithPrev, AsyncDictsTarget
 
 coco_env = common.create_test_env(__file__)
 
