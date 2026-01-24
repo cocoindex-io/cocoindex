@@ -14,7 +14,6 @@ import hashlib
 import ipaddress
 import inspect
 import json
-import threading
 import uuid
 from dataclasses import dataclass
 from typing import (
@@ -41,6 +40,7 @@ except ImportError as e:
 import numpy as np
 
 import cocoindex as coco
+from cocoindex.connectorkits import connection as _connection
 from cocoindex.connectorkits import statediff
 from cocoindex._internal.datatype import (
     AnyType,
@@ -596,36 +596,9 @@ class _TableAction(NamedTuple):
 
 
 # Database registry: maps stable keys to connection pools
-_db_registry: dict[str, asyncpg.Pool] = {}
-_db_registry_lock = threading.Lock()
-
-
-def _get_pool(db_key: str) -> asyncpg.Pool:
-    """Get the connection pool for the given database key."""
-    with _db_registry_lock:
-        pool = _db_registry.get(db_key)
-    if pool is None:
-        raise RuntimeError(
-            f"No database registered with key '{db_key}'. Call register_db() first."
-        )
-    return pool
-
-
-def _register_db(key: str, pool: asyncpg.Pool) -> None:
-    """Register a database pool (internal, with lock)."""
-    with _db_registry_lock:
-        if key in _db_registry:
-            raise ValueError(
-                f"Database with key '{key}' is already registered. "
-                f"Use a different key or unregister the existing one first."
-            )
-        _db_registry[key] = pool
-
-
-def _unregister_db(key: str) -> None:
-    """Unregister a database pool (internal, with lock)."""
-    with _db_registry_lock:
-        _db_registry.pop(key, None)
+_db_registry: _connection.ConnectionRegistry[asyncpg.Pool] = (
+    _connection.ConnectionRegistry()
+)
 
 
 class _TableHandler(
@@ -654,7 +627,7 @@ class _TableHandler(
             by_key.setdefault(action.key, []).append(i)
 
         for key, idxs in by_key.items():
-            pool = _get_pool(key.db_key)
+            pool = _db_registry.get(key.db_key)
             async with pool.acquire() as conn:
                 async with conn.transaction():
                     for i in idxs:
@@ -952,7 +925,7 @@ class TableTarget(
         return self._provider.memo_key
 
 
-class PgDatabase:
+class PgDatabase(_connection.KeyedConnection[asyncpg.Pool]):
     """
     Handle for a registered PostgreSQL database.
 
@@ -971,27 +944,6 @@ class PgDatabase:
         # db is automatically unregistered here
         ```
     """
-
-    _key: str
-
-    def __init__(self, key: str) -> None:
-        self._key = key
-
-    @property
-    def key(self) -> str:
-        """The stable key for this database."""
-        return self._key
-
-    def __enter__(self) -> "PgDatabase":
-        return self
-
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_val: BaseException | None,
-        exc_tb: Any,
-    ) -> None:
-        _unregister_db(self._key)
 
     def declare_table_target(
         self,
@@ -1017,7 +969,9 @@ class PgDatabase:
             A TableTarget that can be used to declare rows.
         """
         key = _TableKey(
-            db_key=self._key, pg_schema_name=pg_schema_name, table_name=table_name
+            db_key=self._connection_key,
+            pg_schema_name=pg_schema_name,
+            table_name=table_name,
         )
         spec = _TableSpec(
             table_schema=table_schema,
@@ -1027,9 +981,6 @@ class PgDatabase:
             scope, _table_provider.target_state(key, spec)
         )
         return TableTarget(provider, table_schema)
-
-    def __coco_memo_key__(self) -> str:
-        return self._key
 
 
 def register_db(key: str, pool: asyncpg.Pool) -> PgDatabase:
@@ -1068,8 +1019,8 @@ def register_db(key: str, pool: asyncpg.Pool) -> PgDatabase:
             # db is automatically unregistered here
         ```
     """
-    _register_db(key, pool)
-    return PgDatabase(key)
+    _db_registry.register(key, pool)
+    return PgDatabase(key, _db_registry)
 
 
 async def create_pool(
