@@ -312,6 +312,94 @@ pub async fn delete_source_tracking_info(
     Ok(())
 }
 
+/// Tracking data for cleanup - includes target keys for each source row
+#[derive(Debug)]
+pub struct SourceTrackingEntryForCleanup {
+    pub source_id: i32,
+    pub source_key: serde_json::Value,
+    pub target_keys: Option<TrackedTargetKeyForSource>,
+}
+
+/// Read all tracking entries for specific source IDs (for cleanup during setup)
+pub async fn read_tracking_entries_for_sources(
+    source_ids: &[i32],
+    db_setup: &TrackingTableSetupState,
+    pool: &PgPool,
+) -> Result<Vec<SourceTrackingEntryForCleanup>> {
+    let query_str = format!(
+        "SELECT source_id, source_key, target_keys FROM {} WHERE source_id = ANY($1)",
+        db_setup.table_name
+    );
+
+    let rows: Vec<(
+        i32,
+        serde_json::Value,
+        Option<sqlx::types::Json<TrackedTargetKeyForSource>>,
+    )> = sqlx::query_as(&query_str)
+        .bind(source_ids)
+        .fetch_all(pool)
+        .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(
+            |(source_id, source_key, target_keys_json)| SourceTrackingEntryForCleanup {
+                source_id,
+                source_key,
+                target_keys: target_keys_json.map(|j| j.0),
+            },
+        )
+        .collect())
+}
+
+/// Stream tracking entries for sources one at a time
+pub fn read_tracking_entries_for_sources_stream(
+    source_ids: Vec<i32>,
+    db_setup: TrackingTableSetupState,
+    pool: PgPool,
+) -> impl Stream<Item = Result<SourceTrackingEntryForCleanup>> {
+    try_stream! {
+        let query_str = format!(
+            "SELECT source_id, source_key, target_keys FROM {} WHERE source_id = ANY($1)",
+            db_setup.table_name
+        );
+
+        let mut rows = sqlx::query_as::<_, (
+            i32,
+            serde_json::Value,
+            Option<sqlx::types::Json<TrackedTargetKeyForSource>>,
+        )>(&query_str)
+            .bind(&source_ids)
+            .fetch(&pool);
+
+        while let Some(row) = rows.try_next().await? {
+            let (source_id, source_key, target_keys_json) = row;
+            yield SourceTrackingEntryForCleanup {
+                source_id,
+                source_key,
+                target_keys: target_keys_json.map(|j| j.0),
+            };
+        }
+    }
+}
+
+/// Delete all tracking entries for specific source IDs
+pub async fn delete_tracking_entries_for_sources(
+    source_ids: &[i32],
+    db_setup: &TrackingTableSetupState,
+    pool: &PgPool,
+) -> Result<u64> {
+    let query_str = format!(
+        "DELETE FROM {} WHERE source_id = ANY($1)",
+        db_setup.table_name
+    );
+    let result = sqlx::query(&query_str)
+        .bind(source_ids)
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected())
+}
+
 #[derive(sqlx::FromRow, Debug)]
 pub struct TrackedSourceKeyMetadata {
     pub source_key: serde_json::Value,
