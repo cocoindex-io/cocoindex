@@ -99,13 +99,13 @@ Under the hood, CocoIndex compares your declared target states with the previous
   </thead>
   <tbody>
     <tr>
-      <td>A SQL table</td>
+      <td>A database table</td>
       <td>Create the table</td>
       <td>Alter the table</td>
       <td>Drop the table</td>
     </tr>
     <tr>
-      <td>A row in a SQL table</td>
+      <td>A row in a database table</td>
       <td>Insert the row</td>
       <td>Update the row</td>
       <td>Delete the row</td>
