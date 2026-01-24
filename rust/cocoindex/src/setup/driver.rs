@@ -339,10 +339,10 @@ async fn collect_attachments_setup_change(
 }
 
 /// Extract target information from desired state for cleanup
-/// Returns mapping of target_id -> (target_kind, key_schema) for targets that still exist
+/// Returns mapping of target_id -> TargetInfoForCleanup for targets that still exist
 fn extract_desired_targets_for_cleanup(
     desired_state: Option<&FlowSetupState<DesiredMode>>,
-) -> Option<BTreeMap<i32, (String, Box<[schema::ValueType]>)>> {
+) -> Option<BTreeMap<i32, db_tracking_setup::TargetInfoForCleanup>> {
     desired_state.map(|state| {
         state
             .targets
@@ -355,7 +355,29 @@ fn extract_desired_targets_for_cleanup(
                     .key_type
                     .clone()
                     .unwrap_or_else(|| Box::new([]));
-                (target_id, (target_kind, key_schema))
+
+                // Pre-compute field_schemas here (done once for all keys of this target)
+                let key_field_schemas: Vec<schema::FieldSchema> = key_schema
+                    .iter()
+                    .enumerate()
+                    .map(|(i, value_type)| schema::FieldSchema {
+                        name: format!("_key_{}", i),
+                        value_type: schema::EnrichedValueType {
+                            typ: value_type.clone(),
+                            nullable: false,
+                            attrs: Arc::new(BTreeMap::new()),
+                        },
+                        description: None,
+                    })
+                    .collect();
+
+                let target_info = db_tracking_setup::TargetInfoForCleanup {
+                    target_kind,
+                    key_schema,
+                    key_field_schemas,
+                };
+
+                (target_id, target_info)
             })
             .collect()
     })

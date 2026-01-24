@@ -93,6 +93,14 @@ pub struct TrackingTableSetupState {
     pub has_fast_fingerprint_column: bool,
 }
 
+/// Information about a target needed for cleanup operations
+#[derive(Debug, Clone)]
+pub struct TargetInfoForCleanup {
+    pub target_kind: String,
+    pub key_schema: Box<[schema::ValueType]>,
+    pub key_field_schemas: Vec<schema::FieldSchema>,
+}
+
 #[derive(Debug)]
 pub struct TrackingTableSetupChange {
     pub desired_state: Option<TrackingTableSetupState>,
@@ -105,8 +113,8 @@ pub struct TrackingTableSetupChange {
 
     pub source_names_need_state_cleanup: BTreeMap<i32, BTreeSet<String>>,
 
-    /// Target information for cleanup (target_id -> target_kind, key_schema)
-    pub desired_targets: Option<BTreeMap<i32, (String, Box<[schema::ValueType]>)>>,
+    /// Target information for cleanup (target_id -> TargetInfoForCleanup)
+    pub desired_targets: Option<BTreeMap<i32, TargetInfoForCleanup>>,
 
     /// Export contexts for targets (target_id -> export_context)
     pub export_contexts: Option<Arc<BTreeMap<i32, Arc<dyn Any + Send + Sync>>>>,
@@ -119,7 +127,7 @@ impl TrackingTableSetupChange {
         desired: Option<&TrackingTableSetupState>,
         existing: &CombinedState<TrackingTableSetupState>,
         source_names_need_state_cleanup: BTreeMap<i32, BTreeSet<String>>,
-        desired_targets: Option<BTreeMap<i32, (String, Box<[schema::ValueType]>)>>,
+        desired_targets: Option<BTreeMap<i32, TargetInfoForCleanup>>,
     ) -> Option<Self> {
         let legacy_tracking_table_names = existing
             .legacy_values(desired, |v| &v.table_name)
@@ -363,13 +371,11 @@ impl TrackingTableSetupChange {
         );
 
         // Process with limited parallelism
-        const MAX_CONCURRENT_ROW_CLEANUPS: usize = 10;
-        self.cleanup_tracking_entries_streaming(
-            Box::pin(entries_stream),
-            pool,
-            MAX_CONCURRENT_ROW_CLEANUPS,
-        )
-        .await?;
+        // Use source_max_inflight_rows from global settings (default: 10 as fallback)
+        let lib_context = get_lib_context().await?;
+        let max_concurrent = lib_context.source_max_inflight_rows.unwrap_or(10);
+        self.cleanup_tracking_entries_streaming(Box::pin(entries_stream), pool, max_concurrent)
+            .await?;
 
         // Delete tracking metadata
         let rows_deleted =
@@ -444,7 +450,7 @@ impl TrackingTableSetupChange {
     /// Process a single tracking entry and delete its target data
     async fn cleanup_single_tracking_entry(
         entry: db_tracking::SourceTrackingEntryForCleanup,
-        desired_targets: Option<&BTreeMap<i32, (String, Box<[schema::ValueType]>)>>,
+        desired_targets: Option<&BTreeMap<i32, TargetInfoForCleanup>>,
         export_contexts: Option<&Arc<BTreeMap<i32, Arc<dyn Any + Send + Sync>>>>,
     ) -> Result<u64> {
         let Some(desired_targets) = desired_targets else {
@@ -459,9 +465,9 @@ impl TrackingTableSetupChange {
 
         // One tracking entry can have keys for multiple targets (fanout)
         for (target_id, tracked_keys) in target_keys {
-            // Case 1 vs Case 2: Is this target still in the flow?
-            let (target_kind, key_schema) = match desired_targets.get(&target_id) {
-                Some((kind, schema)) => (kind, schema),
+            // Get pre-computed target info (contains pre-computed field_schemas)
+            let target_info = match desired_targets.get(&target_id) {
+                Some(info) => info,
                 None => {
                     // Target dropped, skip cleanup
                     tracing::debug!("Skipping target_id {}: target no longer exists", target_id);
@@ -469,10 +475,13 @@ impl TrackingTableSetupChange {
                 }
             };
 
-            // Parse tracked keys
+            // Parse tracked keys using pre-computed field_schemas
             let mut parsed_keys = Vec::new();
             for tracked_key_info in tracked_keys {
-                match Self::parse_key_from_json_static(&tracked_key_info.key, key_schema) {
+                match Self::parse_key_from_json(
+                    &tracked_key_info.key,
+                    &target_info.key_field_schemas,
+                ) {
                     Ok(key) => parsed_keys.push(key),
                     Err(e) => {
                         tracing::warn!(
@@ -494,7 +503,7 @@ impl TrackingTableSetupChange {
                 .ok_or_else(|| internal_error!("No export context for target {}", target_id))?;
 
             // Delete via target factory
-            let factory = crate::ops::get_target_factory(target_kind)?;
+            let factory = crate::ops::get_target_factory(&target_info.target_kind)?;
 
             let deletes: Vec<interface::ExportTargetDeleteEntry> = parsed_keys
                 .into_iter()
@@ -522,26 +531,12 @@ impl TrackingTableSetupChange {
         Ok(total_deleted)
     }
 
-    /// Parse a key from JSON using the key schema
-    fn parse_key_from_json_static(
+    /// Parse a key from JSON using pre-computed field schemas
+    fn parse_key_from_json(
         key_json: &serde_json::Value,
-        key_schema: &[schema::ValueType],
+        key_field_schemas: &[schema::FieldSchema],
     ) -> Result<value::KeyValue> {
-        let field_schemas: Vec<schema::FieldSchema> = key_schema
-            .iter()
-            .enumerate()
-            .map(|(i, value_type)| schema::FieldSchema {
-                name: format!("_key_{}", i),
-                value_type: schema::EnrichedValueType {
-                    typ: value_type.clone(),
-                    nullable: false,
-                    attrs: Arc::new(BTreeMap::new()),
-                },
-                description: None,
-            })
-            .collect();
-
-        value::KeyValue::from_json(key_json.clone(), &field_schemas)
+        value::KeyValue::from_json(key_json.clone(), key_field_schemas)
             .with_context(|| format!("Failed to parse key: {}", key_json))
     }
 }
