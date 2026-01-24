@@ -7,12 +7,28 @@ use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use std::collections::{BTreeMap, BTreeSet};
 
-fn qualify_table_name_with_schema(table: &str) -> String {
-    let schema = get_settings().unwrap().db_schema_name;
-    if let Some(schema) = schema {
-        return format!("{}.{}", utils::db::sanitize_identifier(&schema), table);
+fn split_qualified_name(name: &str) -> (Option<&str>, &str) {
+    if let Some((schema, table)) = name.split_once('.') {
+        (Some(schema), table)
     } else {
-        return table.to_string();
+        (None, name)
+    }
+}
+
+pub fn qualify_table_name_with_schema(table: &str) -> String {
+    let (schema_in_name, table_part) = split_qualified_name(table);
+    let schema_from_settings = get_settings().unwrap().db_schema_name;
+
+    let schema = schema_in_name.or(schema_from_settings.as_deref());
+
+    if let Some(schema) = schema {
+        format!(
+            "{}.{}",
+            utils::db::sanitize_identifier(schema),
+            utils::db::sanitize_identifier(table_part)
+        )
+    } else {
+        utils::db::sanitize_identifier(table_part).to_string()
     }
 }
 
@@ -288,14 +304,6 @@ impl ResourceSetupChange for TrackingTableSetupChange {
             (Some(_), None) => SetupChangeType::Delete,
             (None, None) => SetupChangeType::NoChange,
         }
-    }
-}
-
-fn split_qualified_name(name: &str) -> (Option<&str>, &str) {
-    if let Some((schema, table)) = name.split_once('.') {
-        (Some(schema), table)
-    } else {
-        (None, name)
     }
 }
 
