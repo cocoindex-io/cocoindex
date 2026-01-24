@@ -5,7 +5,7 @@ Code Embedding with LanceDB (v1) - CocoIndex pipeline example.
 - Detect programming language
 - Chunk code (RecursiveSplitter with syntax awareness)
 - Embed chunks (SentenceTransformers)
-- Store into LanceDB with vector column and FTS
+- Store into LanceDB with vector column
 - Query demo using LanceDB native vector search
 """
 
@@ -26,7 +26,6 @@ from cocoindex.extras.text import RecursiveSplitter, detect_code_language
 from cocoindex.extras.sentence_transformers import SentenceTransformerEmbedder
 from cocoindex.resources.file import FileLike, PatternFilePathMatcher
 from cocoindex.resources.chunk import Chunk
-from cocoindex.resources.schema import FtsSpec
 
 
 LANCEDB_URI = "./lancedb_data"
@@ -57,8 +56,8 @@ async def coco_lifespan(
     # For CocoIndex internal states
     builder.settings.db_path = pathlib.Path("./cocoindex.db")
     # Provide resources needed across the CocoIndex environment
-    await lancedb._register_db_async("code_embedding_db", LANCEDB_URI)
-    builder.provide(LANCE_DB, lancedb.LanceDatabase("code_embedding_db"))
+    conn = await lancedb.connect_async(LANCEDB_URI)
+    builder.provide(LANCE_DB, lancedb.register_db("code_embedding_db", conn))
     yield
 
 
@@ -115,11 +114,7 @@ def app_main(scope: coco.Scope, sourcedir: pathlib.Path) -> None:
         scope / "setup" / "table",
         table_name=TABLE_NAME,
         table_schema=lancedb.TableSchema(
-            CodeEmbedding,
-            primary_key=["filename", "location"],
-            column_specs={
-                "code": FtsSpec(tokenizer="simple"),
-            },
+            CodeEmbedding, primary_key=["filename", "location"]
         ),
     ).result()
 
@@ -151,12 +146,10 @@ app = coco_aio.App(
 
 
 async def query_once(
-    db: lancedb.LanceDatabase, query: str, *, top_k: int = TOP_K
+    conn: lancedb.LanceAsyncConnection, query_text: str, *, top_k: int = TOP_K
 ) -> None:
-    query_vec = await _embedder.embed_async(query)
+    query_vec = await _embedder.embed_async(query_text)
 
-    # Get connection from registry
-    conn = lancedb._get_connection(db.key)
     table = await conn.open_table(TABLE_NAME)
 
     # LanceDB vector search
@@ -173,19 +166,18 @@ async def query_once(
 
 
 async def query() -> None:
-    await lancedb._register_db_async("code_embedding_db", LANCEDB_URI)
-    db = lancedb.LanceDatabase("code_embedding_db")
+    conn = await lancedb.connect_async(LANCEDB_URI)
 
     if len(sys.argv) > 2:
         q = " ".join(sys.argv[2:])
-        await query_once(db, q)
+        await query_once(conn, q)
         return
 
     while True:
         q = input("Enter search query (or Enter to quit): ").strip()
         if not q:
             break
-        await query_once(db, q)
+        await query_once(conn, q)
 
 
 if __name__ == "__main__":

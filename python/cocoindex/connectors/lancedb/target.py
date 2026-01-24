@@ -8,10 +8,8 @@ This module provides a two-level target state system for LanceDB:
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
-import threading
 from dataclasses import dataclass
 from typing import (
     Any,
@@ -34,9 +32,14 @@ except ImportError as e:
         "lancedb and pyarrow are required to use the LanceDB connector. Please install cocoindex[lancedb]."
     ) from e
 
+# Type alias for lancedb async connection
+# The actual type is internal to lancedb; we use Any for compatibility
+LanceAsyncConnection = Any
+
 import numpy as np
 
 import cocoindex as coco
+from cocoindex.connectorkits import connection as _connection
 from cocoindex.connectorkits import statediff
 from cocoindex._internal.datatype import (
     AnyType,
@@ -47,16 +50,13 @@ from cocoindex._internal.datatype import (
     analyze_type_info,
     is_record_type,
 )
-from cocoindex.resources.schema import VectorSchema, VectorSchemaProvider, FtsSpec
+from cocoindex.resources.schema import VectorSchemaProvider
 
 # Type aliases
 _RowKey = tuple[Any, ...]  # Primary key values as tuple
 _RowValue = dict[str, Any]  # Column name -> value
 _RowFingerprint = bytes
 ValueEncoder = Callable[[Any], Any]
-
-# Minimum rows required before creating indexes in LanceDB
-_MIN_ROWS_FOR_INDEX = 256
 
 
 class LanceType(NamedTuple):
@@ -206,10 +206,6 @@ class TableSchema(Generic[RowT]):
     columns: dict[str, ColumnDef]  # column name -> definition
     primary_key: list[str]  # Column names that form the primary key
     row_type: type[RowT] | None  # The row type, if provided
-    vector_schemas: dict[
-        str, VectorSchema
-    ]  # Column name -> VectorSpec for vector columns
-    fts_specs: dict[str, FtsSpec]  # Column name -> FtsSpec for FTS columns
 
     @overload
     def __init__(
@@ -224,8 +220,7 @@ class TableSchema(Generic[RowT]):
         columns: type[RowT],
         primary_key: list[str],
         *,
-        column_specs: dict[str, ColumnDef | VectorSchemaProvider | FtsSpec]
-        | None = None,
+        column_specs: dict[str, LanceType | VectorSchemaProvider] | None = None,
     ) -> None: ...
 
     def __init__(
@@ -233,8 +228,7 @@ class TableSchema(Generic[RowT]):
         columns: type[RowT] | dict[str, ColumnDef],
         primary_key: list[str],
         *,
-        column_specs: dict[str, ColumnDef | VectorSchemaProvider | FtsSpec]
-        | None = None,
+        column_specs: dict[str, LanceType | VectorSchemaProvider] | None = None,
     ) -> None:
         """
         Create a TableSchema.
@@ -245,13 +239,9 @@ class TableSchema(Generic[RowT]):
                      When a record type is provided, Python types are automatically
                      mapped to PyArrow types.
             primary_key: List of column names that form the primary key.
-            column_specs: Optional dict mapping column names to ColumnDef, VectorSpec, or FtsSpec.
-                         VectorSpec is used for vector columns to specify dimension and metric.
-                         FtsSpec is used for full-text search columns to specify tokenizer.
+            column_specs: Optional dict mapping column names to LanceType or VectorSchemaProvider
+                         to override the default type mapping.
         """
-        self.vector_schemas = {}
-        self.fts_specs = {}
-
         if isinstance(columns, dict):
             self.columns = columns
             self.row_type = None
@@ -273,10 +263,10 @@ class TableSchema(Generic[RowT]):
                     f"Primary key column '{pk}' not found in columns: {list(self.columns.keys())}"
                 )
 
+    @staticmethod
     def _columns_from_record_type(
-        self,
         record_type: type,
-        column_specs: dict[str, ColumnDef | VectorSchemaProvider | FtsSpec] | None,
+        column_specs: dict[str, LanceType | VectorSchemaProvider] | None,
     ) -> dict[str, ColumnDef]:
         """Convert a record type to a dict of column name -> ColumnDef."""
         record_info = RecordType(record_type)
@@ -284,37 +274,32 @@ class TableSchema(Generic[RowT]):
 
         for field in record_info.fields:
             spec = column_specs.get(field.name) if column_specs else None
-
-            # Handle ColumnDef override
-            if isinstance(spec, ColumnDef):
-                columns[field.name] = spec
-                continue
-
             type_info = analyze_type_info(field.type_hint)
 
-            # Handle VectorSchemaProvider
-            vector_schema_provider = None
+            # Extract LanceType and VectorSchemaProvider from annotations
+            lance_type_annotation: LanceType | None = None
+            vector_schema_provider: VectorSchemaProvider | None = None
             for annotation in type_info.annotations:
-                if isinstance(annotation, VectorSchemaProvider):
+                if isinstance(annotation, LanceType):
+                    lance_type_annotation = annotation
+                elif isinstance(annotation, VectorSchemaProvider):
                     vector_schema_provider = annotation
-                    break
-            if isinstance(spec, VectorSchemaProvider):
+
+            # Override takes precedence over annotation
+            if isinstance(spec, LanceType):
+                lance_type_annotation = spec
+            elif isinstance(spec, VectorSchemaProvider):
                 vector_schema_provider = spec
 
-            if vector_schema_provider is not None:
-                vector_schema = vector_schema_provider.__coco_vector_schema__()
-                self.vector_schemas[field.name] = vector_schema
-                if vector_schema.size <= 0:
-                    raise ValueError(f"Invalid vector dimension: {vector_schema.size}")
-
-            # Handle FtsSpec
-            if isinstance(spec, FtsSpec):
-                self.fts_specs[field.name] = spec
-
-            # Get type mapping with vector_schema_provider if applicable
-            type_mapping = _get_type_mapping(
-                field.type_hint, vector_schema_provider=vector_schema_provider
-            )
+            # Determine type mapping
+            if lance_type_annotation is not None:
+                type_mapping = _TypeMapping(
+                    lance_type_annotation.pa_type, lance_type_annotation.encoder
+                )
+            else:
+                type_mapping = _get_type_mapping(
+                    field.type_hint, vector_schema_provider=vector_schema_provider
+                )
 
             columns[field.name] = ColumnDef(
                 type=type_mapping.pa_type,
@@ -366,7 +351,7 @@ class _RowHandler(coco.TargetHandler[_RowKey, _RowValue, _RowFingerprint]):
             else:
                 upserts.append(action)
 
-        conn = _get_connection(self._db_key)
+        conn = _db_registry.get(self._db_key)
         table = await conn.open_table(self._table_name)
 
         # Process upserts
@@ -511,26 +496,14 @@ class _ColumnState(NamedTuple):
     nullable: bool
 
 
-class _IndexState(NamedTuple):
-    """State for a vector or FTS index."""
-
-    column_name: str
-    index_type: Literal["vector", "fts"]
+_COL_SUBKEY_PREFIX: str = "col:"
 
 
-_VECTOR_INDEX_SUBKEY_PREFIX: str = "vec_idx:"
-_FTS_INDEX_SUBKEY_PREFIX: str = "fts_idx:"
+def _col_subkey(col_name: str) -> str:
+    return f"{_COL_SUBKEY_PREFIX}{col_name}"
 
 
-def _vector_index_subkey(col_name: str) -> str:
-    return f"{_VECTOR_INDEX_SUBKEY_PREFIX}{col_name}"
-
-
-def _fts_index_subkey(col_name: str) -> str:
-    return f"{_FTS_INDEX_SUBKEY_PREFIX}{col_name}"
-
-
-_TableSubTrackingRecord = _ColumnState | _IndexState | None
+_TableSubTrackingRecord = _ColumnState | None
 
 
 def _table_composite_tracking_record_from_spec(
@@ -542,27 +515,17 @@ def _table_composite_tracking_record_from_spec(
     # Main state: primary key column names (simplified - just names)
     pk_sig = tuple(schema.primary_key)
 
-    # Sub-tracking-records: each column and each index
+    # Sub-tracking-records: each column
     sub: dict[str, _TableSubTrackingRecord] = {}
 
     # Add column states
     for col_name, col_def in schema.columns.items():
-        sub_key = f"col:{col_name}"
+        sub_key = _col_subkey(col_name)
         sub[sub_key] = _ColumnState(
             name=col_name,
             type=str(col_def.type),
             nullable=col_def.nullable,
         )
-
-    # Add vector index states
-    for col_name in schema.vector_schemas.keys():
-        sub_key = _vector_index_subkey(col_name)
-        sub[sub_key] = _IndexState(column_name=col_name, index_type="vector")
-
-    # Add FTS index states
-    for col_name in schema.fts_specs.keys():
-        sub_key = _fts_index_subkey(col_name)
-        sub[sub_key] = _IndexState(column_name=col_name, index_type="fts")
 
     return statediff.CompositeTrackingRecord(main=pk_sig, sub=sub)
 
@@ -582,37 +545,9 @@ class _TableAction(NamedTuple):
 
 
 # Database registry: maps stable keys to async connections
-_db_registry: dict[str, lancedb.AsyncConnection] = {}
-_db_registry_lock = threading.Lock()
-
-
-def _get_connection(db_key: str) -> lancedb.AsyncConnection:
-    """Get the async connection for the given database key."""
-    with _db_registry_lock:
-        conn = _db_registry.get(db_key)
-    if conn is None:
-        raise RuntimeError(
-            f"No database registered with key '{db_key}'. Call register_db() first."
-        )
-    return conn
-
-
-async def _register_db_async(key: str, uri: str, **options: Any) -> None:
-    """Internal async function to register a LanceDB connection."""
-    conn = await lancedb.connect_async(uri, **options)
-    with _db_registry_lock:
-        if key in _db_registry:
-            raise ValueError(
-                f"Database with key '{key}' is already registered. "
-                f"Use a different key or unregister the existing one first."
-            )
-        _db_registry[key] = conn
-
-
-def _unregister_db(key: str) -> None:
-    """Unregister a database connection (internal, with lock)."""
-    with _db_registry_lock:
-        _db_registry.pop(key, None)
+_db_registry: _connection.ConnectionRegistry[LanceAsyncConnection] = (
+    _connection.ConnectionRegistry()
+)
 
 
 class _TableHandler(
@@ -640,7 +575,7 @@ class _TableHandler(
             by_key.setdefault(action.key, []).append(i)
 
         for key, idxs in by_key.items():
-            conn = _get_connection(key.db_key)
+            conn = _db_registry.get(key.db_key)
 
             for i in idxs:
                 action = actions_list[i]
@@ -671,29 +606,23 @@ class _TableHandler(
                     )
                     continue
 
-                # No main change: reconcile sub-states (indexes)
-                if action.sub_actions:
-                    await self._apply_sub_actions(
-                        conn, key.table_name, spec.table_schema, action.sub_actions
-                    )
-
         return outputs
 
     async def _drop_table(
         self,
-        conn: lancedb.AsyncConnection,
+        conn: LanceAsyncConnection,
         table_name: str,
     ) -> None:
         """Drop a table if it exists."""
         try:
             await conn.drop_table(table_name)
-        except Exception:
+        except (OSError, ValueError):
             # Table might not exist, ignore
             pass
 
     async def _create_table(
         self,
-        conn: lancedb.AsyncConnection,
+        conn: LanceAsyncConnection,
         table_name: str,
         schema: TableSchema[Any],
         *,
@@ -728,58 +657,6 @@ class _TableHandler(
 
         # Create table with empty data
         await conn.create_table(table_name, empty_batch, mode="overwrite")
-
-    async def _apply_sub_actions(
-        self,
-        conn: lancedb.AsyncConnection,
-        table_name: str,
-        schema: TableSchema[Any],
-        sub_actions: dict[str, statediff.DiffAction],
-    ) -> None:
-        """Apply sub-actions (index creation/deletion)."""
-        table = await conn.open_table(table_name)
-
-        # Check row count before creating indexes
-        # LanceDB requires at least 256 rows to create indexes
-        count = await table.count_rows()
-        can_create_indexes = count >= _MIN_ROWS_FOR_INDEX
-
-        for sub_key, action in sub_actions.items():
-            # Handle vector indexes
-            if sub_key.startswith(_VECTOR_INDEX_SUBKEY_PREFIX):
-                col_name = sub_key[len(_VECTOR_INDEX_SUBKEY_PREFIX) :]
-                if action == "delete":
-                    # LanceDB doesn't have explicit index drop - recreate table if needed
-                    continue
-                elif action in ("insert", "upsert") and can_create_indexes:
-                    vector_schema = schema.vector_schemas.get(col_name)
-                    if vector_schema:
-                        # Map VectorSpec metric to LanceDB metric
-                        # VectorSpec currently just has dim, but we'll use L2 as default
-                        # In the future, VectorSpec could include metric
-                        await table.create_index(
-                            vector_column_name=col_name,
-                            metric="l2",  # Default to L2
-                        )
-                continue
-
-            # Handle FTS indexes
-            if sub_key.startswith(_FTS_INDEX_SUBKEY_PREFIX):
-                col_name = sub_key[len(_FTS_INDEX_SUBKEY_PREFIX) :]
-                if action == "delete":
-                    # LanceDB doesn't have explicit index drop
-                    continue
-                elif action in ("insert", "upsert") and can_create_indexes:
-                    fts_spec = schema.fts_specs.get(col_name)
-                    if fts_spec:
-                        # Map tokenizer names
-                        # CocoIndex uses: "simple", "en_stem", "raw"
-                        # LanceDB uses: "simple", "en_stem", "raw" (same)
-                        await table.create_fts_index(
-                            field_names=[col_name],
-                            tokenizer_name=fts_spec.tokenizer,
-                        )
-                continue
 
     def _build_pyarrow_schema(self, schema: TableSchema[Any]) -> pa.Schema:
         """Build PyArrow schema from table schema."""
@@ -908,7 +785,7 @@ class TableTarget(
         return self._provider.memo_key
 
 
-class LanceDatabase:
+class LanceDatabase(_connection.KeyedConnection[LanceAsyncConnection]):
     """
     Handle for a registered LanceDB database.
 
@@ -918,36 +795,15 @@ class LanceDatabase:
     Example:
         ```python
         # Without context manager (manual lifecycle)
-        db = register_db("my_db", "./lancedb_data")
+        db = register_db("my_db", conn)
         # ... use db ...
 
         # With context manager (auto-unregister on exit)
-        with register_db("my_db", "./lancedb_data") as db:
+        with register_db("my_db", conn) as db:
             # ... use db ...
         # db is automatically unregistered here
         ```
     """
-
-    _key: str
-
-    def __init__(self, key: str) -> None:
-        self._key = key
-
-    @property
-    def key(self) -> str:
-        """The stable key for this database."""
-        return self._key
-
-    def __enter__(self) -> "LanceDatabase":
-        return self
-
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_val: BaseException | None,
-        exc_tb: Any,
-    ) -> None:
-        _unregister_db(self._key)
 
     def declare_table_target(
         self,
@@ -970,7 +826,7 @@ class LanceDatabase:
         Returns:
             A TableTarget that can be used to declare rows.
         """
-        key = _TableKey(db_key=self._key, table_name=table_name)
+        key = _TableKey(db_key=self._connection_key, table_name=table_name)
         spec = _TableSpec(
             table_schema=table_schema,
             managed_by=managed_by,
@@ -980,29 +836,62 @@ class LanceDatabase:
         )
         return TableTarget(provider, table_schema)
 
-    def __coco_memo_key__(self) -> str:
-        return self._key
 
-
-def register_db(key: str, uri: str, **options: Any) -> LanceDatabase:
+async def connect_async(uri: str, **options: Any) -> LanceAsyncConnection:
     """
-    Register a LanceDB database connection with a stable key.
+    Open an async LanceDB connection.
+
+    This is a thin wrapper around `lancedb.connect_async()`.
+
+    Args:
+        uri: LanceDB URI (local path like "./lancedb_data" or cloud URI like "s3://bucket/path").
+        **options: Additional options to pass to `lancedb.connect_async()`.
+
+    Returns:
+        An async LanceDB connection.
+
+    Example:
+        ```python
+        conn = await lancedb.connect_async("./lancedb_data")
+        ```
+    """
+    return await lancedb.connect_async(uri, **options)
+
+
+def connect(uri: str, **options: Any) -> lancedb.DBConnection:
+    """
+    Open a sync LanceDB connection.
+
+    This is a thin wrapper around `lancedb.connect()`.
+
+    Args:
+        uri: LanceDB URI (local path like "./lancedb_data" or cloud URI like "s3://bucket/path").
+        **options: Additional options to pass to `lancedb.connect()`.
+
+    Returns:
+        A sync LanceDB connection.
+
+    Example:
+        ```python
+        conn = lancedb.connect("./lancedb_data")
+        ```
+    """
+    return lancedb.connect(uri, **options)
+
+
+def register_db(key: str, conn: LanceAsyncConnection) -> LanceDatabase:
+    """
+    Register a LanceDB async connection with a stable key.
 
     The key should be stable across runs - it identifies the logical database.
-    The URI can point to a local directory or cloud storage (s3://, gs://).
 
     Can be used as a context manager to automatically unregister on exit.
-
-    Note: This function must be called from an async context. Typically you would
-    call it from within a @coco_aio.lifespan decorated function after awaiting
-    _register_db_async().
 
     Args:
         key: A stable identifier for this database (e.g., "main_db", "embeddings").
              Must be unique - raises ValueError if a database with this key
              is already registered.
-        uri: LanceDB URI (local path like "./lancedb_data" or cloud URI like "s3://bucket/path").
-        **options: Additional options to pass to lancedb.connect_async().
+        conn: An async LanceDB connection (from `connect_async()`).
 
     Returns:
         A LanceDatabase handle that can be used to create table targets.
@@ -1012,27 +901,31 @@ def register_db(key: str, uri: str, **options: Any) -> LanceDatabase:
 
     Example:
         ```python
-        @coco_aio.lifespan
-        async def coco_lifespan(builder: coco_aio.EnvironmentBuilder) -> AsyncIterator[None]:
-            # Register LanceDB connection
-            await lancedb._register_db_async("my_db", "./lancedb_data")
-            state.db = lancedb.LanceDatabase("my_db")
-            yield
+        async def setup():
+            conn = await lancedb.connect_async("./lancedb_data")
+
+            # Option 1: Manual lifecycle
+            db = register_db("my_db", conn)
+
+            # Option 2: Context manager (auto-unregister on exit)
+            with register_db("my_db", conn) as db:
+                table = db.declare_table_target(scope, "my_table", schema)
+            # db is automatically unregistered here
         ```
     """
-    # Note: The actual async registration must be done via _register_db_async()
-    # This function just creates the handle after registration is complete
-    return LanceDatabase(key)
+    _db_registry.register(key, conn)
+    return LanceDatabase(key, _db_registry)
 
 
 __all__ = [
     "ColumnDef",
+    "LanceAsyncConnection",
     "LanceDatabase",
     "LanceType",
     "TableSchema",
     "TableTarget",
     "ValueEncoder",
+    "connect",
+    "connect_async",
     "register_db",
-    "_register_db_async",  # Exposed for use in lifespan contexts
-    "_get_connection",  # Exposed for query operations
 ]
