@@ -480,10 +480,12 @@ impl TrackingTableSetupChange {
             // Parse tracked keys using pre-computed field_schemas
             let mut parsed_keys = Vec::new();
             for tracked_key_info in tracked_keys {
-                match Self::parse_key_from_json(
-                    &tracked_key_info.key,
+                match value::KeyValue::from_json(
+                    tracked_key_info.key.clone(),
                     &target_info.key_field_schemas,
-                ) {
+                )
+                .with_context(|| format!("Failed to parse key: {}", tracked_key_info.key))
+                {
                     Ok(key) => parsed_keys.push(key),
                     Err(e) => {
                         tracing::warn!(
@@ -531,14 +533,5 @@ impl TrackingTableSetupChange {
         }
 
         Ok(total_deleted)
-    }
-
-    /// Parse a key from JSON using pre-computed field schemas
-    fn parse_key_from_json(
-        key_json: &serde_json::Value,
-        key_field_schemas: &[schema::FieldSchema],
-    ) -> Result<value::KeyValue> {
-        value::KeyValue::from_json(key_json.clone(), key_field_schemas)
-            .with_context(|| format!("Failed to parse key: {}", key_json))
     }
 }
