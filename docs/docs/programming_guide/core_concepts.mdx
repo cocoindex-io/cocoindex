@@ -1,31 +1,31 @@
 ---
 title: Core Concepts
-description: Briefly introduce the core concepts of CocoIndex, covering state-driven sync, Target States, Apps, Processing Components, and incremental execution across data and code changes.
+description: Briefly introduces the core concepts of CocoIndex, covering state-driven sync, Target States, Apps, Processing Components, and incremental execution across data and code changes.
 ---
 
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 import useBaseUrl from '@docusaurus/useBaseUrl';
 
-## Incremental Processing
+## Incremental processing
 
-When processing data and storing results in targets (e.g., a database) for knowledge retrieval by AI agents or search systems, both your data and code evolve over time. Reprocessing everything after every change is expensive, slow, and disruptive. Incremental processing solves this by only processing what's changed and applying those changes to the target.
+When processing data and storing results in targets (e.g., a database) for knowledge retrieval by AI agents or search systems, both your data and code evolve over time. Reprocessing everything after every change is expensive, slow, and disruptive. Incremental processing solves this by only processing what's changed, and applying those changes to the target.
 
-Implementing incremental processing by hand is complicated:
+Implementing incremental processing by hand is complicated because:
 
 - You need to figure out what has changed and what has not.
 
-- You need to think in the timing dimension and carefully compute the “delta”, e.g. what needs to be inserted/updated/deleted for your target database.
+- You need to think in the time dimension and carefully compute the “delta”, e.g., what needs to be inserted, updated, or deleted in your target.
 
-- You need to preserve intermediate states to avoid full recompute when possible.
+- You need to track and preserve intermediate states to avoid full recomputation when possible.
 
-- You need to evolve target schema and backfill data on code change.
+- You need to evolve the target schema and backfill data when the code logic changes.
 
-With so many moving parts, when something goes wrong it becomes nearly impossible to debug.
+With so many moving parts, when something goes wrong, it is difficult to debug.
 
-## State-Driven Programming
+## State-driven programming
 
-Instead of programming *how* to incrementally process your data and apply changes to your target in your code, with CocoIndex, you declare *what* your target should look like based on the current state of your data source.
+CocoIndex uses a *declarative* programming model — instead of programming *how* to incrementally process your data and apply changes to your target, you declaratively specify *what* your target should look like, based on the current state of your data source.
 
 :::info
 
@@ -35,22 +35,18 @@ If you've used React, spreadsheets, or materialized views, this mental model wil
 
 - **React**: You declare your UI as a function of state. When state changes, React automatically re-renders the UI to match.
 
-- **Materialized Views**: You declare a SQL query on source tables. When input data changes, the view automatically refreshes to match.
-
-The difference is that CocoIndex brings this state-driven paradigm to long-running, side-effectful data processing pipelines.
+- **Materialized Views**: You declare a query (e.g., SQL) that runs on source tables. When input data changes, the view automatically refreshes to match.
 
 :::
 
-For data transformation, you read the current state from your source and perform a series of transformations. For example: converting PDFs to markdown files,
+CocoIndex uses the above ideas to formulate a state-driven paradigm for long-running, side-effectful data processing pipelines with the following key concepts:
+
+- **Data transformations**: You read the current state from your source and perform a series of transformations. For example, converting PDFs to markdown files,
 extracting features or structures, or mapping data to fit a particular schema.
 
-Then you output the results to a target such as a relational database, vector database, or file system.
+- **Target states**: You output the results to a target such as a relational database, vector database, or file system. Note that the target state is a pure function of the source state (i.e., it has no other side effects). **TargetState = Transform(SourceState)**
 
-The target state is a pure function of the source state:
-
-**TargetState = Transform(SourceState)**
-
-Under the hood, when the source state changes, CocoIndex performs incremental processing to update the target, so you don't have to manage it yourself.
+- **Incremental processing**: Under the hood, when the source state changes, CocoIndex incrementally processes only the changes needed to update the target, so you don't have to manage it yourself.
 
 ## App
 
@@ -60,9 +56,9 @@ An ***app*** is the top-level executable entity in CocoIndex. In an app, you wri
 
 - Transform the data
 
-- Declare ***target states*** — what the output should look like
+- Declare ***target states***: i.e., what the output should look like
 
-CocoIndex then syncs these target states to external systems (e.g., Postgres, vector databases).
+CocoIndex then syncs these target states to external systems (Postgres, vector databases, etc.).
 
 <div style={{textAlign: 'center'}}>
   <img src={useBaseUrl('/img/concept/app.svg')} alt="App diagram" style={{maxWidth: '600px'}} />
@@ -84,7 +80,7 @@ For example, if you have many files in a drive and want to process them file by 
   <img src={useBaseUrl('/img/concept/component1.svg')} alt="Processing component" style={{maxWidth: '600px'}} />
 </div>
 
-Taking this further, suppose you want to split each file into chunks and create embedding vectors for indexing. The processing component can still operate at the file level, but each component now produces multiple target states (one per chunk). CocoIndex applies all target state changes (inserts, updates, and deletes rows from the target database) atomically for each file:
+Taking this further, suppose you want to split each file into chunks and create embedding vectors for indexing. The processing component can still operate at the file level, but each component now produces multiple target states (one per chunk). CocoIndex applies all target state changes (inserts, updates, and deletes rows in the target database) atomically for each file:
 
 <div style={{textAlign: 'center'}}>
   <img src={useBaseUrl('/img/concept/component2.svg')} alt="Processing component with chunks" style={{maxWidth: '800px'}} />
@@ -129,6 +125,8 @@ When you run your app again, CocoIndex uses ***memoization*** to skip unchanged 
 - Memoizing at the *processing component level*: If a file hasn't changed and the processing logic hasn't changed, the entire processing component is skipped.
 
 - Memoizing at the *transform level*: If the input to the "embed" transform (the chunk text) hasn't changed and the transform logic (e.g., the model) hasn't changed, that specific embedding computation is skipped.
+
+TODO: Consider reorging this section into a) what is memoization, b) why it's needed, c) and when a user might choose either approach described above (is there a best practice? when does it make sense to do one vs the other?)
 
 <div style={{textAlign: 'center'}}>
   <img src={useBaseUrl('/img/concept/memo.svg')} alt="Memoization" style={{maxWidth: '800px'}} />

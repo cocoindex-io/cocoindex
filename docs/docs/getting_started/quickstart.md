@@ -7,6 +7,8 @@ import { GitHubButton, DocumentationButton } from '@site/src/components/ActionBu
 
 # Quickstart
 
+TODO: Replace this quickstart example with the same one that's described in the core concepts (PDF -> markdown), as that's useful to a wider pool of developers. Also, the word "flow" is used from v0 - this would need to be renamed per the v1 state-driven nomenclature, no?
+
 In this tutorial, we'll build a simple flow that converts Markdown files to HTML and saves them to a local directory.
 
 <GitHubButton url="https://github.com/cocoindex-io/cocoindex/tree/v1/examples/files_transform" />

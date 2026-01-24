@@ -1,11 +1,11 @@
 ---
 title: Function
-description: Understanding the @function decorator, its capabilities like memoization and change tracking, and how functions access Scope.
+description: Understanding the @coco.function decorator, its capabilities like memoization and change tracking, and how functions access Scope.
 ---
 
 # Function
 
-A Python function can be decorated with `@function` to gain additional capabilities from CocoIndex. The decorator doesn't change the function's signature — it remains a regular Python function that you can call normally.
+It's common to factor work into helper functions (for parsing, chunking, embedding, formatting, etc.). In CocoIndex, you can decorate any Python function with `@coco.function` when you want to add incremental capabilities to it. The decorated function is still a normal Python function: its signature stays the same, and you can call it normally.
 
 ```python
 @coco.function
@@ -24,13 +24,25 @@ async def process_file_async(scope: coco.Scope, file: FileLike) -> str:
     return await file.read_text_async()
 ```
 
+## How to think about `@coco.function`
+
+Decorating a function tells CocoIndex that calls to it are part of the incremental update engine. You still write normal Python, but CocoIndex can now:
+
+- Skip work when it can safely reuse a previous result (memoization)
+- Re-run work when the implementation changes (change tracking)
+- Provide a `Scope` so the function can declare target states or mount processing components
+
+This is what lets CocoIndex avoid rerunning expensive steps on every `app.update()`. See [Processing Component](./processing_component.md) for how decorated functions are mounted at scopes.
+
+If you don't need any of the above for a helper, keep it as a plain Python function.
+
 ## Capabilities
 
-The `@function` decorator provides additional capabilities:
+The `@coco.function` decorator provides the following additional capabilities.
 
 ### Memoization
 
-With `memo=True`, the function is memoized — when input data and code haven't changed, CocoIndex skips recomputation, carries over target states declared during the function's previous invocation, and returns its previous return value.
+With `memo=True`, the function is memoized. When input data and code haven't changed, CocoIndex skips recomputation of that function body entirely — it carries over target states declared during the function's previous invocation, and returns its previous return value.
 
 ```python
 @coco.function(memo=True)
@@ -41,9 +53,9 @@ def process_chunk(scope: coco.Scope, chunk: Chunk) -> Embedding:
 
 See [Memoization Keys](../advanced_topics/memoization_keys.md) for details on how CocoIndex constructs keys for memoization.
 
-### Change Tracking
+### Change tracking
 
-The logic of a function decorated with `@function` is tracked based on the content of the function. When a function's implementation changes, CocoIndex detects this and re-executes affected call sites.
+The logic of a function decorated with `@coco.function` is tracked based on the content of the function. When a function's implementation changes, CocoIndex detects this and re-executes the places where it's called.
 
 You can also explicitly control the behavior version with a `version` option:
 
@@ -58,11 +70,11 @@ def process_chunk(scope: coco.Scope, chunk: Chunk) -> Embedding:
 The change tracking capability is still under construction.
 :::
 
-## Propagation of Scope
+## Propagation of scope
 
-A function decorated with `@function` needs access to a `Scope` to achieve its capabilities. There are two ways to provide it:
+`Scope` is CocoIndex's execution context: it identifies *where* a call happens in the scope tree and is required for declaring target states and mounting processing components (see [Scope](./processing_component.md#scope)). A function decorated with `@coco.function` needs access to a `Scope` to achieve its capabilities. There are two ways to provide it:
 
-### Explicit: Pass Scope as First Argument
+### Explicit: pass scope as first argument
 
 ```python
 @coco.function(memo=True)
@@ -76,9 +88,9 @@ process_file(scope, file)
 
 ```
 
-### Implicit: Context Variable Propagation
+### Implicit: context variable propagation
 
-If `Scope` is not passed as the first argument, CocoIndex propagates it through Python's context variables automatically. This works for ordinary function calls — both sync and async:
+If `Scope` is not passed as the first argument, CocoIndex propagates it through Python's `contextvars` automatically. (`contextvars` is a Python standard-library feature for "context-local" variables that flow through normal function calls and `await`s, so code can access a value without passing it through every signature.) This works for ordinary function calls — both sync and async:
 
 ```python
 @coco.function(memo=True)
@@ -93,10 +105,18 @@ def process_file(scope: coco.Scope, file: FileLike) -> None:
     result = helper_function(text)
 ```
 
-However, implicit propagation **does not work** in situations where Python's context variables are not preserved for some situations, e.g. Thread pool dispatch (`concurrent.futures.ThreadPoolExecutor`).
+However, implicit propagation **does not work** in situations where Python's context variables are not preserved (for example, thread pool dispatch via `concurrent.futures.ThreadPoolExecutor`).
 In these cases, pass `Scope` explicitly as the first argument.
 
-:::tip When to Pass Scope Explicitly
+```python
+from concurrent.futures import ThreadPoolExecutor
+
+with ThreadPoolExecutor() as executor:
+    # Pass scope explicitly across the thread boundary
+    future = executor.submit(process_file, scope, file)
+```
+
+:::tip When to pass scope explicitly
 
 - If your function declares target states or mounts child processing components, you need `Scope` anyway — pass it explicitly as the first argument.
 - Otherwise, your function is likely a pure transformation. Prefer keeping the signature simple (which signals it's a pure transformation), and only pass `Scope` explicitly at the hop where context variables aren't preserved (e.g., `ThreadPoolExecutor`).
