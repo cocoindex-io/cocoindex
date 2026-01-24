@@ -12,7 +12,7 @@ A **scope** is the stable identifier for a processing component across runs (thi
 Scopes are hierarchical and form a tree structure. You can create child scopes using the `/` operator with stable identifiers like string literals, file names, row keys, or entity IDs:
 
 ```python
-scope / filename           # e.g., scope / "hello.md"
+scope / filename           # e.g., scope / "hello.pdf"
 scope / "user" / user_id   # e.g., scope / "user" / 12345
 ```
 
@@ -20,14 +20,12 @@ Choose scopes that are stable for the "same" item (e.g., file path, primary key)
 
 Here's an example scope tree (from the [Quickstart](../getting_started/quickstart.md)):
 
-TODO: The Quickstart example is still showing Markdown to HTML. Consider changing it to PDF -> Markdown (like Core Concepts) and updating the snippet below.
-
 ```text
 (root)                         ← app_main component
 ├── "setup"                    ← declare_dir_target component
 └── "process"
-    ├── "hello.md"             ← process_file component
-    └── "world.md"             ← process_file component
+    ├── "hello.pdf"            ← process_file component
+    └── "world.pdf"            ← process_file component
 ```
 
 See [Scope](./sdk_overview.md#scope) in the SDK Overview for details on scopes and `StableKey`.
