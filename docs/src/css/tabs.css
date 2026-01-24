@@ -1,12 +1,16 @@
 /* Tabs styling - Radix UI Tabs component style */
 
 /* Tab list container */
-.tabs {
+.tabs,
+ul[role="tablist"] {
   border-bottom: 1px solid var(--radix-gray-6);
   gap: 0;
   display: flex;
   flex-shrink: 0;
   overflow: visible;
+  padding-left: 0 !important;
+  margin-top: 0;
+  margin-bottom: 0;
 }
 
 /* Individual tab item */
@@ -42,8 +46,7 @@
   position: absolute;
   left: 0;
   right: 0;
-  bottom: 0;
-  transform: translateY(100%);
+  bottom: -8px;
   height: 2px;
   background-color: var(--ifm-color-primary);
 }
@@ -63,7 +66,6 @@
   max-width: 100%;
   height: auto;
 }
-
 
 /* Dark mode adjustments */
 [data-theme='dark'] .tabs {

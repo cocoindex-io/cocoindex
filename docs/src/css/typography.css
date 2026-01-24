@@ -165,10 +165,6 @@ body {
   margin-bottom: 8px;
 }
 
-.markdown li:last-child {
-  margin-bottom: 0;
-}
-
 /* Nested lists */
 .markdown li > ul,
 .markdown li > ol {
