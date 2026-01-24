@@ -32,10 +32,4 @@ class VectorSchema:
         return self
 
 
-class FtsSpec(_typing.NamedTuple):
-    """Additional information for a full-text search column."""
-
-    tokenizer: str = "simple"  # "simple", "en_stem", "raw"
-
-
-__all__ = ["VectorSchema", "FtsSpec"]
+__all__ = ["VectorSchema", "VectorSchemaProvider"]

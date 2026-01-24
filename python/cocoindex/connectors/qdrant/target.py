@@ -11,7 +11,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import threading
 import uuid
 from dataclasses import dataclass
 from typing import (
@@ -39,6 +38,7 @@ except ImportError as e:
 import numpy as np
 
 import cocoindex as coco
+from cocoindex.connectorkits import connection as _connection
 from cocoindex.connectorkits import statediff
 from cocoindex._internal.datatype import (
     AnyType,
@@ -355,38 +355,22 @@ class _CollectionAction(NamedTuple):
     main_action: statediff.DiffAction | None
 
 
-_db_registry: dict[str, QdrantClient] = {}
-_db_registry_lock = threading.Lock()
+_db_registry: _connection.ConnectionRegistry[QdrantClient] = (
+    _connection.ConnectionRegistry()
+)
 
 
 def _get_client(db_key: str) -> QdrantClient:
-    with _db_registry_lock:
-        client = _db_registry.get(db_key)
-    if client is None:
-        raise RuntimeError(
-            f"No Qdrant client registered with key '{db_key}'. Call register_db() first."
-        )
-    return client
+    return _db_registry.get(db_key)
 
 
 def register_db(key: str, client: QdrantClient) -> "QdrantDatabase":
-    with _db_registry_lock:
-        if key in _db_registry:
-            raise ValueError(
-                f"Database with key '{key}' is already registered. "
-                "Use a different key or unregister the existing one first."
-            )
-        _db_registry[key] = client
-    return QdrantDatabase(key)
+    _db_registry.register(key, client)
+    return QdrantDatabase(key, _db_registry)
 
 
 def create_client(url: str, *, prefer_grpc: bool = True, **kwargs: Any) -> QdrantClient:
     return QdrantClient(url=url, prefer_grpc=prefer_grpc, **kwargs)
-
-
-def _unregister_db(key: str) -> None:
-    with _db_registry_lock:
-        _db_registry.pop(key, None)
 
 
 def _collection_tracking_record_from_spec(
@@ -586,28 +570,8 @@ class TableTarget(
         return self._provider.memo_key
 
 
-class QdrantDatabase:
+class QdrantDatabase(_connection.KeyedConnection[QdrantClient]):
     """Handle for a registered Qdrant client."""
-
-    _key: str
-
-    def __init__(self, key: str) -> None:
-        self._key = key
-
-    @property
-    def key(self) -> str:
-        return self._key
-
-    def __enter__(self) -> "QdrantDatabase":
-        return self
-
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_val: BaseException | None,
-        exc_tb: Any,
-    ) -> None:
-        _unregister_db(self._key)
 
     def declare_collection_target(
         self,
@@ -617,15 +581,14 @@ class QdrantDatabase:
         *,
         managed_by: Literal["system", "user"] = "system",
     ) -> TableTarget[RowT, coco.PendingS]:
-        key = _CollectionKey(db_key=self._key, collection_name=collection_name)
+        key = _CollectionKey(
+            db_key=self._connection_key, collection_name=collection_name
+        )
         spec = _CollectionSpec(table_schema=table_schema, managed_by=managed_by)
         provider = coco.declare_target_state_with_child(
             scope, _collection_provider.target_state(key, spec)
         )
         return TableTarget(provider, table_schema)
-
-    def __coco_memo_key__(self) -> str:
-        return self._key
 
 
 def _collection_exists(client: QdrantClient, collection_name: str) -> bool:

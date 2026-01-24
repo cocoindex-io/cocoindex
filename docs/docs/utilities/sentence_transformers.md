@@ -111,7 +111,6 @@ The connector will automatically:
 
 ```python
 from cocoindex.connectors import lancedb
-from cocoindex.resources.schema import FtsSpec
 
 @dataclass
 class CodeEmbedding:
@@ -127,9 +126,6 @@ def setup_table(scope: coco.Scope, db: lancedb.LanceDatabase):
         table_schema=lancedb.TableSchema(
             CodeEmbedding,
             primary_key=["filename"],
-            column_specs={
-                "code": FtsSpec(tokenizer="simple"),
-            },
         ),
     )
 ```

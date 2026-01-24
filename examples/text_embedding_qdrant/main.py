@@ -36,7 +36,6 @@ TOP_K = 5
 
 
 QDRANT_DB = coco.ContextKey[qdrant.QdrantDatabase]("qdrant_db")
-QDRANT_CLIENT = coco.ContextKey[QdrantClient]("qdrant_client")
 
 _embedder = SentenceTransformerEmbedder("sentence-transformers/all-MiniLM-L6-v2")
 _splitter = RecursiveSplitter()
@@ -61,7 +60,6 @@ async def coco_lifespan(
     # Provide resources needed across the CocoIndex environment
     client = qdrant.create_client(QDRANT_URL, prefer_grpc=True)
     builder.provide(QDRANT_DB, qdrant.register_db("text_embedding_qdrant", client))
-    builder.provide(QDRANT_CLIENT, client)
     yield
 
 
