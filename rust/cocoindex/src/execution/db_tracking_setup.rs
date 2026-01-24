@@ -302,6 +302,12 @@ impl TrackingTableSetupChange {
             }
         }
 
+        // Clean up tracking metadata and target data for stale sources
+        // This must happen BEFORE source state table operations
+        if !self.source_names_need_state_cleanup.is_empty() {
+            self.cleanup_stale_sources(pool).await?;
+        }
+
         let source_state_table_name = self
             .desired_state
             .as_ref()
@@ -317,11 +323,7 @@ impl TrackingTableSetupChange {
                 create_source_state_table(pool, source_state_table_name).await?;
             }
 
-            // Clean up tracking metadata and target data for stale sources
-            if !self.source_names_need_state_cleanup.is_empty() {
-                self.cleanup_stale_sources(pool).await?;
-            }
-
+            // Delete source state entries for cleaned up sources
             if !self.source_names_need_state_cleanup.is_empty() {
                 delete_source_states_for_sources(
                     pool,
