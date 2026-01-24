@@ -193,36 +193,26 @@ impl OperationInProcessStats {
 
 struct UpdateStatsSegment {
     count: i64,
-    symbol: char,
     label: &'static str,
-    bar_width: usize,
 }
 
 impl UpdateStatsSegment {
-    pub fn new(count: i64, symbol: char, label: &'static str) -> Self {
-        Self {
-            count,
-            symbol,
-            label,
-            bar_width: 0,
-        }
+    pub fn new(count: i64, label: &'static str) -> Self {
+        Self { count, label }
     }
 }
 
-const BAR_WIDTH: usize = 40;
+const BAR_WIDTH: u64 = 40;
 
-fn indices_of<T, const N: usize>(_: &[T; N]) -> [usize; N] {
-    std::array::from_fn(|i| i)
-}
 impl std::fmt::Display for UpdateStats {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut segments: [UpdateStatsSegment; _] = [
-            UpdateStatsSegment::new(self.num_insertions.get(), '+', "added"),
-            UpdateStatsSegment::new(self.num_updates.get(), '~', "updated"),
-            UpdateStatsSegment::new(self.num_reprocesses.get(), '*', "reprocessed"),
-            UpdateStatsSegment::new(self.num_deletions.get(), '-', "deleted"),
-            UpdateStatsSegment::new(self.num_no_change.get(), '.', "no change"),
-            UpdateStatsSegment::new(self.num_errors.get(), '!', "errors"),
+        let segments: [UpdateStatsSegment; _] = [
+            UpdateStatsSegment::new(self.num_insertions.get(), "added"),
+            UpdateStatsSegment::new(self.num_updates.get(), "updated"),
+            UpdateStatsSegment::new(self.num_reprocesses.get(), "reprocessed"),
+            UpdateStatsSegment::new(self.num_deletions.get(), "deleted"),
+            UpdateStatsSegment::new(self.num_no_change.get(), "no change"),
+            UpdateStatsSegment::new(self.num_errors.get(), "errors"),
         ];
         let num_in_process = self.processing.get_in_process();
         let processed_count = segments.iter().map(|seg| seg.count).sum::<i64>();
@@ -233,39 +223,15 @@ impl std::fmt::Display for UpdateStats {
             return Ok(());
         }
 
-        let mut segments_indices = indices_of(&segments);
-        segments_indices.sort_by_key(|&i| segments[i].count);
-
-        let mut remaining_width = BAR_WIDTH as u64;
-        let mut remaining_count = total as u64;
-        for idx in segments_indices.iter() {
-            let seg = &mut segments[*idx];
-            if seg.count > 0 {
-                if remaining_count == 0 {
-                    error!("remaining_count is 0, but still have segments to process");
-                    break;
-                }
-                let width = std::cmp::max(
-                    // rounded division of remaining_width * seg.count / remaining_count
-                    (remaining_width * (seg.count as u64) + remaining_count / 2) / remaining_count,
-                    1,
-                );
-                seg.bar_width = width as usize;
-                remaining_width -= width;
-                remaining_count -= seg.count as u64;
-            }
+        let processed_bar_width = (processed_count as u64 * BAR_WIDTH) / total as u64;
+        write!(f, "▕")?;
+        for _ in 0..processed_bar_width {
+            write!(f, "█")?; // finished portion: full block
         }
-
-        write!(f, "[")?;
-        for segment in segments.iter() {
-            for _ in 0..segment.bar_width {
-                write!(f, "{}", segment.symbol)?;
-            }
+        for _ in processed_bar_width..BAR_WIDTH {
+            write!(f, " ")?; // unfinished portion: light shade
         }
-        for _ in 0..remaining_width {
-            write!(f, " ")?;
-        }
-        write!(f, "] {processed_count}/{total} source rows")?;
+        write!(f, "▏{processed_count}/{total} source rows")?;
 
         if processed_count > 0 {
             let mut delimiter = ':';
@@ -273,9 +239,8 @@ impl std::fmt::Display for UpdateStats {
                 if seg.count > 0 {
                     write!(
                         f,
-                        "{delimiter} ({symbol}) {count} {label}",
+                        "{delimiter} {count} {label}",
                         count = seg.count,
-                        symbol = seg.symbol,
                         label = seg.label,
                     )?;
                     delimiter = ',';
@@ -557,7 +522,7 @@ mod tests {
         let display = format!("{}", stats);
         assert_eq!(
             display,
-            "[                                        ] 0/5 source rows"
+            "▕                                        ▏0/5 source rows"
         );
 
         // Test with mixed activity
@@ -566,7 +531,7 @@ mod tests {
         let display = format!("{}", stats);
         assert_eq!(
             display,
-            "[++++++++++++++!!!!                      ] 4/9 source rows: (+) 3 added, (!) 1 errors"
+            "▕█████████████████                       ▏4/9 source rows: 3 added, 1 errors"
         );
     }
 

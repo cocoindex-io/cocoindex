@@ -359,9 +359,8 @@ impl SourceUpdateTask {
         update_title: &str,
         start_time: Option<std::time::Instant>,
     ) -> String {
-        self.source_update_stats.merge(stats);
         let mut message = format!(
-            "{}.{} ({update_title}): {stats}",
+            "{}.{} ({update_title}):{stats}",
             self.flow.flow_instance.name,
             self.import_op().name
         );
@@ -483,6 +482,7 @@ impl SourceUpdateTask {
         }
         self.multi_progress_bar
             .suspend(|| self.report_stats(&update_stats, update_title, Some(start_time), "✅ "));
+        self.source_update_stats.merge(&update_stats);
         Ok(())
     }
 

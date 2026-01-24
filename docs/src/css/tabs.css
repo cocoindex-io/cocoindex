@@ -1,0 +1,85 @@
+/* Tabs styling - Radix UI Tabs component style */
+
+/* Tab list container */
+.tabs,
+ul[role="tablist"] {
+  border-bottom: 1px solid var(--radix-gray-6);
+  gap: 0;
+  display: flex;
+  flex-shrink: 0;
+  overflow: visible;
+  padding-left: 0 !important;
+  margin-top: 0;
+  margin-bottom: 0;
+}
+
+/* Individual tab item */
+.tabs__item {
+  position: relative;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: var(--radix-gray-11);
+  font-size: 0.875rem;
+  font-weight: 500;
+  padding: 4px 8px;
+  transition: color 0.15s ease;
+  cursor: pointer;
+}
+
+/* Tab hover state */
+.tabs__item:hover {
+  background: transparent;
+  color: var(--radix-gray-12);
+}
+
+/* Active tab */
+.tabs__item--active {
+  color: var(--radix-gray-12);
+  border: none;
+  background: transparent;
+}
+
+/* Active tab underline indicator - positioned exactly on the border */
+.tabs__item--active::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -8px;
+  height: 2px;
+  background-color: var(--ifm-color-primary);
+}
+
+/* Remove default Infima hover overlay */
+.tabs__item:hover {
+  background-color: transparent;
+}
+
+/* Tab content area */
+.tabs-container .margin-top--md {
+  margin-top: 1rem !important;
+}
+
+/* Responsive images within tabs */
+.tabs-container img {
+  max-width: 100%;
+  height: auto;
+}
+
+/* Dark mode adjustments */
+[data-theme='dark'] .tabs {
+  border-bottom-color: var(--radix-gray-6);
+}
+
+[data-theme='dark'] .tabs__item {
+  color: var(--radix-gray-11);
+}
+
+[data-theme='dark'] .tabs__item:hover {
+  color: var(--radix-gray-12);
+}
+
+[data-theme='dark'] .tabs__item--active {
+  color: var(--radix-gray-12);
+}

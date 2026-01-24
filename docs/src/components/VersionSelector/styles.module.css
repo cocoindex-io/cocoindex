@@ -1,0 +1,222 @@
+/* Import Radix UI color system */
+@import '../Color/colors.css';
+
+/* Root container */
+.selectRoot {
+  position: relative;
+  display: inline-block;
+}
+
+/* Trigger Styles - Matching Radix UI exactly */
+.selectTrigger {
+  all: unset;
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  border-radius: 4px;
+  padding: 0 12px;
+  font-size: 13px;
+  line-height: 1;
+  height: 32px;
+  gap: 8px;
+  background-color: white;
+  color: var(--radix-gray-11);
+  box-shadow: 0 0 0 1px var(--radix-gray-6);
+  border: none;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  text-align: left;
+  text-transform: none;
+  outline: none;
+  position: relative;
+  min-width: 80px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  transition: box-shadow 0.15s ease;
+}
+
+.selectTrigger:hover:not(:disabled) {
+  box-shadow: 0 0 0 1px var(--radix-gray-8);
+}
+
+.selectTrigger:focus-visible {
+  box-shadow: 0 0 0 2px var(--radix-indigo-9);
+}
+
+.selectTrigger[data-state="open"] {
+  box-shadow: 0 0 0 1px var(--radix-gray-8);
+}
+
+/* Value Styles */
+.selectValue {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--radix-gray-11);
+  text-align: left;
+  text-transform: none;
+  max-width: 100%;
+}
+
+/* Icon Styles */
+.selectIcon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: transform 0.2s ease;
+  color: var(--radix-gray-9);
+  width: 12px;
+  height: 12px;
+}
+
+.selectIconOpen {
+  transform: rotate(180deg);
+}
+
+/* Content Styles - Matching Radix UI exactly */
+.selectContent {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 9999;
+  min-width: 100%;
+  overflow: hidden;
+  background-color: white;
+  border-radius: 6px;
+  box-shadow: 0 10px 38px -10px rgba(22, 23, 24, 0.35), 0 10px 20px -15px rgba(22, 23, 24, 0.2);
+  border: 1px solid var(--radix-gray-6);
+  padding: 4px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  animation: fadeIn 200ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Viewport Styles */
+.selectViewport {
+  padding: 2px;
+  max-height: 300px;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+/* Item Styles - Matching Radix UI exactly */
+.selectItem {
+  display: flex;
+  align-items: center;
+  padding: 0 25px 0 25px;
+  position: relative;
+  user-select: none;
+  outline: none;
+  font-size: 13px;
+  line-height: 1;
+  color: var(--radix-gray-11);
+  border-radius: 3px;
+  height: 25px;
+  cursor: pointer;
+  transition: background-color 0.1s ease, color 0.1s ease;
+}
+
+.selectItem:hover:not(.selectItemDisabled) {
+  outline: none;
+  background-color: var(--radix-gray-3);
+  color: var(--radix-gray-12);
+}
+
+.selectItemSelected {
+  background-color: var(--radix-gray-3);
+  color: var(--radix-gray-12);
+}
+
+.selectItemDisabled {
+  color: var(--radix-gray-8);
+  cursor: not-allowed;
+  pointer-events: none;
+  opacity: 0.5;
+}
+
+.selectItemIndicator {
+  position: absolute;
+  left: 0;
+  width: 25px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--radix-gray-12);
+  font-size: 13px;
+}
+
+.selectItemText {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Dark mode support */
+[data-theme='dark'] .selectTrigger {
+  background-color: var(--radix-gray-2);
+  color: var(--radix-gray-12);
+  box-shadow: 0 0 0 1px var(--radix-gray-6);
+}
+
+[data-theme='dark'] .selectTrigger:hover:not(:disabled) {
+  box-shadow: 0 0 0 1px var(--radix-gray-7);
+}
+
+[data-theme='dark'] .selectTrigger[data-state="open"] {
+  box-shadow: 0 0 0 1px var(--radix-gray-7);
+}
+
+[data-theme='dark'] .selectTrigger:focus-visible {
+  box-shadow: 0 0 0 2px var(--radix-indigo-9);
+}
+
+[data-theme='dark'] .selectValue {
+  color: var(--radix-gray-12);
+}
+
+[data-theme='dark'] .selectIcon {
+  color: var(--radix-gray-9);
+}
+
+[data-theme='dark'] .selectContent {
+  background-color: var(--radix-gray-2);
+  border-color: var(--radix-gray-6);
+  box-shadow: 0 10px 38px -10px rgba(0, 0, 0, 0.5), 0 10px 20px -15px rgba(0, 0, 0, 0.4);
+}
+
+[data-theme='dark'] .selectItem {
+  color: var(--radix-gray-12);
+}
+
+[data-theme='dark'] .selectItem:hover:not(.selectItemDisabled) {
+  background-color: var(--radix-gray-4);
+  color: var(--radix-gray-12);
+}
+
+[data-theme='dark'] .selectItemSelected {
+  background-color: var(--radix-gray-4);
+  color: var(--radix-gray-12);
+}
+
+[data-theme='dark'] .selectItemDisabled {
+  color: var(--radix-gray-8);
+  opacity: 0.5;
+}
+
+[data-theme='dark'] .selectItemIndicator {
+  color: var(--radix-gray-12);
+}
