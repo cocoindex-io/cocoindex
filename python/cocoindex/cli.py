@@ -370,7 +370,7 @@ dependencies = [
 ]
 
 [tool.uv]
-prerelease = "allow"
+prerelease = "explicit"
 """
     (project_path / "pyproject.toml").write_text(pyproject_toml_content)
 
