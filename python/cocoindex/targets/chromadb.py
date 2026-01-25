@@ -23,6 +23,7 @@ _CHROMADB_DISTANCE_METRIC: dict[VectorSimilarityMetric, str] = {
 class ClientType(Enum):
     PERSISTENT = "persistent"
     HTTP = "http"
+    CLOUD = "cloud"
 
 
 class HnswConfig:
@@ -34,10 +35,11 @@ class HnswConfig:
 class ChromaDB(op.TargetSpec):
     collection_name: str
     client_type: ClientType = ClientType.PERSISTENT
-    path: str | None = None  # For PersistentClient
-    host: str | None = None  # For HttpClient
-    port: int | None = None  # For HttpClient
-    ssl: bool = False  # For HttpClient
+    path: str | None = None
+    host: str | None = None
+    port: int | None = None
+    ssl: bool = False
+    api_key: str | None = None
     tenant: str = chromadb.config.DEFAULT_TENANT
     database: str = chromadb.config.DEFAULT_DATABASE
     hnsw_config: HnswConfig | None = None
@@ -71,18 +73,21 @@ class _MutateContext:
 
 def _get_client(spec: ChromaDB) -> chromadb.ClientAPI:
     if spec.client_type == ClientType.PERSISTENT:
-        path = spec.path or "./chromadb_data"
         return chromadb.PersistentClient(
-            path=path,
+            path=spec.path or "./chromadb_data",
             tenant=spec.tenant,
             database=spec.database,
         )
-    else:  # HTTP client
-        host = spec.host or "localhost"
-        port = spec.port or 8000
+    elif spec.client_type == ClientType.CLOUD:
+        return chromadb.CloudClient(
+            tenant=spec.tenant,
+            database=spec.database,
+            api_key=spec.api_key,
+        )
+    else:
         return chromadb.HttpClient(
-            host=host,
-            port=port,
+            host=spec.host or "localhost",
+            port=spec.port or 8000,
             ssl=spec.ssl,
             tenant=spec.tenant,
             database=spec.database,
@@ -92,10 +97,10 @@ def _get_client(spec: ChromaDB) -> chromadb.ClientAPI:
 def _get_location(spec: ChromaDB) -> str:
     if spec.client_type == ClientType.PERSISTENT:
         return spec.path or "./chromadb_data"
+    elif spec.client_type == ClientType.CLOUD:
+        return "cloud"
     else:
-        host = spec.host or "localhost"
-        port = spec.port or 8000
-        return f"{host}:{port}"
+        return f"{spec.host or 'localhost'}:{spec.port or 8000}"
 
 
 def _convert_key_to_id(key: Any) -> str:
@@ -215,11 +220,14 @@ class _Connector:
         if previous is None and current is None:
             return
 
-        # Create a temporary spec to get the client
-        # Use the key to reconstruct the client configuration
         if key.client_type == ClientType.PERSISTENT:
             client = chromadb.PersistentClient(
                 path=key.location,
+                tenant=key.tenant,
+                database=key.database,
+            )
+        elif key.client_type == ClientType.CLOUD:
+            client = chromadb.CloudClient(
                 tenant=key.tenant,
                 database=key.database,
             )
