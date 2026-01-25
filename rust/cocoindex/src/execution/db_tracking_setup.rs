@@ -7,28 +7,17 @@ use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use std::collections::{BTreeMap, BTreeSet};
 
-fn split_qualified_name(name: &str) -> (Option<&str>, &str) {
-    if let Some((schema, table)) = name.split_once('.') {
-        (Some(schema), table)
-    } else {
-        (None, name)
-    }
-}
-
 pub fn qualify_table_name_with_schema(table: &str) -> String {
-    let (schema_in_name, table_part) = split_qualified_name(table);
-    let schema_from_settings = get_settings().unwrap().db_schema_name;
-
-    let schema = schema_in_name.or(schema_from_settings.as_deref());
+    let schema: Option<String> = get_settings().unwrap().db_schema_name;
 
     if let Some(schema) = schema {
         format!(
             "{}.{}",
-            utils::db::sanitize_identifier(schema),
-            utils::db::sanitize_identifier(table_part)
+            utils::db::sanitize_identifier(&schema),
+            utils::db::sanitize_identifier(table)
         )
     } else {
-        utils::db::sanitize_identifier(table_part).to_string()
+        utils::db::sanitize_identifier(table).to_string()
     }
 }
 
@@ -307,42 +296,20 @@ impl ResourceSetupChange for TrackingTableSetupChange {
     }
 }
 
-async fn table_exists(pool: &PgPool, name: &str) -> Result<bool> {
-    let (schema, table) = split_qualified_name(name);
-    let schema = schema.unwrap_or("public");
-    let query = "SELECT EXISTS (
-        SELECT FROM information_schema.tables
-        WHERE  table_schema = $1
-        AND    table_name   = $2
-    )";
-    let exists: bool = sqlx::query_scalar(query)
-        .bind(schema)
-        .bind(table)
-        .fetch_one(pool)
-        .await?;
-    Ok(exists)
-}
-
 impl TrackingTableSetupChange {
     pub async fn apply_change(&self) -> Result<()> {
         let lib_context = get_lib_context().await?;
         let pool = lib_context.require_builtin_db_pool()?;
-        let desired_schema_name = get_settings().unwrap().db_schema_name;
-        let desired_schema = desired_schema_name.as_deref();
-
         if let Some(desired) = &self.desired_state {
             // Attempt to rename legacy tables within the same schema
             for legacy_name in self.legacy_tracking_table_names.iter() {
-                let (legacy_schema, _) = split_qualified_name(legacy_name);
-                let (_, desired_table) = split_qualified_name(&desired.table_name);
-                if legacy_schema == desired_schema && table_exists(pool, legacy_name).await? {
-                    let query = format!(
-                        "ALTER TABLE {legacy_name} RENAME TO {}",
-                        utils::db::sanitize_identifier(desired_table)
-                    );
-                    sqlx::query(&query).execute(pool).await?;
-                    break; // Use the first matching legacy table
-                }
+                let qualified_legacy_table = qualify_table_name_with_schema(&legacy_name);
+                let qualified_desired_table = qualify_table_name_with_schema(&desired.table_name);
+                let query = format!(
+                    "ALTER TABLE {qualified_legacy_table} RENAME TO {}",
+                    qualified_desired_table
+                );
+                sqlx::query(&query).execute(pool).await?;
             }
 
             if self.min_existing_version_id != Some(desired.version_id) {
@@ -353,7 +320,8 @@ impl TrackingTableSetupChange {
 
         // Remove legacy tracking tables
         for legacy_name in self.legacy_tracking_table_names.iter() {
-            let query = format!("DROP TABLE IF EXISTS {legacy_name}");
+            let qualified_legacy_table_name = qualify_table_name_with_schema(&legacy_name);
+            let query = format!("DROP TABLE IF EXISTS {}", qualified_legacy_table_name);
             sqlx::query(&query).execute(pool).await?;
         }
 
@@ -370,19 +338,6 @@ impl TrackingTableSetupChange {
 
         if let Some(source_state_table_name) = source_state_table_name {
             if !self.source_state_table_always_exists {
-                // Attempt rename for source state table
-                for legacy_name in self.legacy_source_state_table_names.iter() {
-                    let (legacy_schema, _) = split_qualified_name(legacy_name);
-                    let (_, desired_table) = split_qualified_name(source_state_table_name);
-                    if legacy_schema == desired_schema && table_exists(pool, legacy_name).await? {
-                        let query = format!(
-                            "ALTER TABLE {legacy_name} RENAME TO {}",
-                            utils::db::sanitize_identifier(desired_table)
-                        );
-                        sqlx::query(&query).execute(pool).await?;
-                        break;
-                    }
-                }
                 create_source_state_table(pool, source_state_table_name).await?;
             }
 
@@ -403,7 +358,8 @@ impl TrackingTableSetupChange {
 
         // Remove legacy source state tables
         for legacy_name in self.legacy_source_state_table_names.iter() {
-            let query = format!("DROP TABLE IF EXISTS {legacy_name}");
+            let qualified_legacy_table_name = qualify_table_name_with_schema(legacy_name.as_str());
+            let query = format!("DROP TABLE IF EXISTS {qualified_legacy_table_name}");
             sqlx::query(&query).execute(pool).await?;
         }
         Ok(())
