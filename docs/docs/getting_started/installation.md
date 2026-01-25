@@ -33,14 +33,14 @@ pip install -U --pre cocoindex
 ### Using uv
 
 ```sh
-uv add --prerelease allow cocoindex
+uv add --prerelease explicit cocoindex
 ```
 
 Or add to your `pyproject.toml`:
 
 ```toml
 [tool.uv]
-prerelease = "allow"
+prerelease = "explicit"
 ```
 
 ### Using Poetry
