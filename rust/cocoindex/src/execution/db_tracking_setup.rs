@@ -306,8 +306,8 @@ impl TrackingTableSetupChange {
                 let qualified_legacy_table = qualify_table_name_with_schema(&legacy_name);
                 let qualified_desired_table = qualify_table_name_with_schema(&desired.table_name);
                 let query = format!(
-                    "ALTER TABLE {qualified_legacy_table} RENAME TO {}",
-                    qualified_desired_table
+                    "ALTER TABLE IF EXISTS {} RENAME TO {}",
+                    qualified_legacy_table, qualified_desired_table
                 );
                 sqlx::query(&query).execute(pool).await?;
             }
@@ -316,13 +316,12 @@ impl TrackingTableSetupChange {
                 upgrade_tracking_table(pool, desired, self.min_existing_version_id.unwrap_or(0))
                     .await?;
             }
-        }
-
-        // Remove legacy tracking tables
-        for legacy_name in self.legacy_tracking_table_names.iter() {
-            let qualified_legacy_table_name = qualify_table_name_with_schema(&legacy_name);
-            let query = format!("DROP TABLE IF EXISTS {}", qualified_legacy_table_name);
-            sqlx::query(&query).execute(pool).await?;
+        } else {
+            for legacy_name in self.legacy_tracking_table_names.iter() {
+                let qualified_legacy_table_name = qualify_table_name_with_schema(&legacy_name);
+                let query = format!("DROP TABLE IF EXISTS {}", qualified_legacy_table_name);
+                sqlx::query(&query).execute(pool).await?;
+            }
         }
 
         // Clean up tracking metadata and target data for stale sources
@@ -354,13 +353,13 @@ impl TrackingTableSetupChange {
                 )
                 .await?;
             }
-        }
-
-        // Remove legacy source state tables
-        for legacy_name in self.legacy_source_state_table_names.iter() {
-            let qualified_legacy_table_name = qualify_table_name_with_schema(legacy_name.as_str());
-            let query = format!("DROP TABLE IF EXISTS {qualified_legacy_table_name}");
-            sqlx::query(&query).execute(pool).await?;
+        } else {
+            for legacy_name in self.legacy_source_state_table_names.iter() {
+                let qualified_legacy_table_name =
+                    qualify_table_name_with_schema(legacy_name.as_str());
+                let query = format!("DROP TABLE IF EXISTS {qualified_legacy_table_name}");
+                sqlx::query(&query).execute(pool).await?;
+            }
         }
         Ok(())
     }
