@@ -244,7 +244,7 @@ if (!!process.env.COCOINDEX_DOCS_ALGOLIA_API_KEY && !!process.env.COCOINDEX_DOCS
   config.themeConfig.algolia = {
     appId: process.env.COCOINDEX_DOCS_ALGOLIA_APP_ID,
     apiKey: process.env.COCOINDEX_DOCS_ALGOLIA_API_KEY,
-    indexName: 'cocoindex',
+    indexName: 'cocoindex_v1',
     contextualSearch: true,
     searchPagePath: 'search',
     externalUrlRegex: `^(?!${(config.url + config.baseUrl).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`,
