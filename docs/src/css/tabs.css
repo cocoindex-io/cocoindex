@@ -46,7 +46,7 @@ ul[role="tablist"] {
   position: absolute;
   left: 0;
   right: 0;
-  bottom: -8px;
+  bottom: -9px;
   height: 2px;
   background-color: var(--ifm-color-primary);
 }

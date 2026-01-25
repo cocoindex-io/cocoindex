@@ -1,0 +1,14 @@
+@import '../Color/colors.css';
+
+.borderBox {
+  position: relative;
+  margin-top: 1.25rem;
+  margin-bottom: 1.25rem;
+  border-radius: 0.5rem;
+  border: 1px solid var(--radix-gray-6);
+  padding: 1rem;
+}
+
+html[data-theme='dark'] .borderBox {
+  border-color: var(--radix-gray-5);
+}
