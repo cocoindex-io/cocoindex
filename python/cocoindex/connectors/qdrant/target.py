@@ -3,309 +3,222 @@ Qdrant target for CocoIndex.
 
 This module provides a two-level target state system for Qdrant:
 1. Collection level: Creates/drops collections in Qdrant
-2. Row level: Upserts/deletes points within collections
+2. Point level: Upserts/deletes points within collections
 """
 
 from __future__ import annotations
 
-import asyncio
-import hashlib
-import json
-import uuid
-from dataclasses import dataclass
+import asyncio as _asyncio
+import hashlib as _hashlib
+import json as _json
+from dataclasses import dataclass as _dataclass
 from typing import (
-    Any,
-    Callable,
-    Collection,
-    Generic,
-    Literal,
-    NamedTuple,
-    Sequence,
-    overload,
-    cast,  # TODO(GeorgeH0): double check cast is necessary.
+    Any as _Any,
+    Collection as _Collection,
+    Generic as _Generic,
+    Literal as _Literal,
+    Mapping,
+    NamedTuple as _NamedTuple,
+    Sequence as _Sequence,
+    cast as _cast,
 )
 
-from typing_extensions import TypeVar
 
 try:
-    from qdrant_client import QdrantClient
+    from qdrant_client import QdrantClient as _QdrantClient
     from qdrant_client.http import models as qdrant_models
 except ImportError as e:
     raise ImportError(
         "qdrant-client is required to use the Qdrant connector. Please install cocoindex[qdrant]."
     ) from e
 
-import numpy as np
-
 import cocoindex as coco
 from cocoindex.connectorkits import connection as _connection
-from cocoindex.connectorkits import statediff
-from cocoindex._internal.datatype import (
-    AnyType,
-    MappingType,
-    SequenceType,
-    RecordType,
-    UnionType,
-    analyze_type_info,
-    is_record_type,
-)
-from cocoindex.resources.schema import VectorSchemaProvider
+from cocoindex.connectorkits import statediff as _statediff
+from cocoindex.resources import schema as _schema
+
+# Public alias for Qdrant point model
+PointStruct = qdrant_models.PointStruct
 
 # Type aliases
-_RowKey = tuple[Any, ...]
-_RowValue = dict[str, Any]
-_RowFingerprint = bytes
-ValueEncoder = Callable[[Any], Any]
+_PointId = str | int
+_PointFingerprint = bytes
 
 
-class QdrantVectorSpec(NamedTuple):
-    """Qdrant vector specification with optional distance and multivector config."""
+class QdrantVectorDef(_NamedTuple):
+    """Qdrant vector specification with optional distance and multivector config.
 
-    dim: int
-    distance: Literal["cosine", "dot", "euclid"] = "cosine"
-    multivector: bool = False
-    multivector_comparator: Literal["max_sim"] = "max_sim"
+    Args:
+        schema: VectorSchemaProvider or MultiVectorSchemaProvider
+        distance: Distance metric to use (cosine, dot, or euclid)
+        multivector_comparator: Comparator to use for multivector (only applies when schema
+                                is MultiVectorSchemaProvider)
+    """
 
-
-def _json_encoder(value: Any) -> str:
-    """Encode a value to JSON string for Qdrant payloads."""
-    return json.dumps(value, default=str)
-
-
-class ColumnDef(NamedTuple):
-    """Definition of a payload column with optional encoder."""
-
-    encoder: ValueEncoder | None = None
+    schema: _schema.VectorSchemaProvider | _schema.MultiVectorSchemaProvider
+    distance: _Literal["cosine", "dot", "euclid"] = "cosine"
+    multivector_comparator: _Literal["max_sim"] = "max_sim"
 
 
-RowT = TypeVar("RowT", default=dict[str, Any])
+class _ResolvedQdrantVectorDef(_NamedTuple):
+    """Resolved Qdrant vector specification with concrete schema.
+
+    This is the internal resolved form after calling __coco_vector_schema__()
+    or __coco_multi_vector_schema__() on the providers.
+
+    Args:
+        schema: Resolved VectorSchema or MultiVectorSchema
+        distance: Distance metric to use (cosine, dot, or euclid)
+        multivector_comparator: Comparator to use for multivector
+    """
+
+    schema: _schema.VectorSchema | _schema.MultiVectorSchema
+    distance: _Literal["cosine", "dot", "euclid"]
+    multivector_comparator: _Literal["max_sim"]
 
 
-@dataclass(slots=True)
-class TableSchema(Generic[RowT]):
-    """Schema definition for a Qdrant collection."""
+def _resolve_vector_def(vector_def: QdrantVectorDef) -> _ResolvedQdrantVectorDef:
+    resolved_schema: _schema.VectorSchema | _schema.MultiVectorSchema
+    if isinstance(vector_def.schema, _schema.VectorSchemaProvider):
+        resolved_schema = vector_def.schema.__coco_vector_schema__()
+    elif isinstance(vector_def.schema, _schema.MultiVectorSchemaProvider):
+        resolved_schema = vector_def.schema.__coco_multi_vector_schema__()
+    else:
+        raise ValueError(f"Invalid vector definition: {vector_def}")
+    return _ResolvedQdrantVectorDef(
+        schema=resolved_schema,
+        distance=vector_def.distance,
+        multivector_comparator=vector_def.multivector_comparator,
+    )
 
-    columns: dict[str, ColumnDef]
-    primary_key: list[str]
-    row_type: type[RowT] | None
-    vector_schemas: dict[str, QdrantVectorSpec]
 
-    @overload
-    def __init__(
-        self: "TableSchema[dict[str, Any]]",
-        columns: dict[str, ColumnDef],
-        primary_key: list[str],
-    ) -> None: ...
+@_dataclass(slots=True)
+class CollectionSchema:
+    """Schema definition for a Qdrant collection.
 
-    @overload
-    def __init__(
-        self: "TableSchema[RowT]",
-        columns: type[RowT],
-        primary_key: list[str],
-        *,
-        column_specs: dict[str, ColumnDef | VectorSchemaProvider | QdrantVectorSpec]
-        | None = None,
-    ) -> None: ...
+    Defines the vector fields for the collection. Each vector field is specified by name
+    and a QdrantVectorDef (which wraps a VectorSchemaProvider or MultiVectorSchemaProvider).
 
-    def __init__(
-        self,
-        columns: type[RowT] | dict[str, ColumnDef],
-        primary_key: list[str],
-        *,
-        column_specs: dict[str, ColumnDef | VectorSchemaProvider | QdrantVectorSpec]
-        | None = None,
-    ) -> None:
-        self.vector_schemas = {}
+    Args:
+        vectors: Either a single QdrantVectorDef (for unnamed vector) or a dictionary
+                 mapping vector field names to QdrantVectorDef
 
-        if isinstance(columns, dict):
-            self.columns = columns
-            self.row_type = None
-        elif is_record_type(columns):
-            self.columns = self._columns_from_record_type(columns, column_specs)
-            self.row_type = columns
+    Example:
+        ```python
+        from cocoindex.connectors.qdrant import CollectionSchema, QdrantVectorDef
+        from cocoindex.resources.schema import VectorSchema
+        import numpy as np
+
+        schema = CollectionSchema(
+            vectors={
+                "embedding": QdrantVectorDef(
+                    schema=VectorSchema(dtype=np.float32, size=384),
+                    distance="cosine"
+                ),
+            }
+        )
+        ```
+    """
+
+    _vectors: _ResolvedQdrantVectorDef | dict[str, _ResolvedQdrantVectorDef]
+
+    def __init__(self, vectors: QdrantVectorDef | dict[str, QdrantVectorDef]) -> None:
+        if isinstance(vectors, QdrantVectorDef):
+            self._vectors = _resolve_vector_def(vectors)
+        elif isinstance(vectors, dict):
+            self._vectors = {
+                name: _resolve_vector_def(vector_def)
+                for name, vector_def in vectors.items()
+            }
         else:
-            raise TypeError(
-                "columns must be a record type (dataclass, NamedTuple, Pydantic model) "
-                f"or a dict[str, ColumnDef], got {type(columns)}"
-            )
+            raise ValueError(f"Invalid vector definition: {vectors}")
 
-        self.primary_key = primary_key
-
-        for pk in self.primary_key:
-            if pk not in self.columns:
-                raise ValueError(
-                    f"Primary key column '{pk}' not found in columns: {list(self.columns.keys())}"
-                )
-
-        if len(self.primary_key) != 1:
-            raise ValueError("Qdrant requires a single-column primary key.")
-
-    def _columns_from_record_type(
+    @property
+    def vectors(
         self,
-        record_type: type,
-        column_specs: dict[str, ColumnDef | VectorSchemaProvider | QdrantVectorSpec]
-        | None,
-    ) -> dict[str, ColumnDef]:
-        record_info = RecordType(record_type)
-        columns: dict[str, ColumnDef] = {}
-
-        for field in record_info.fields:
-            spec = column_specs.get(field.name) if column_specs else None
-
-            if isinstance(spec, ColumnDef):
-                columns[field.name] = spec
-                continue
-
-            type_info = analyze_type_info(field.type_hint)
-
-            # Handle VectorSchemaProvider
-            vector_schema_provider = None
-            for annotation in type_info.annotations:
-                if isinstance(annotation, VectorSchemaProvider):
-                    vector_schema_provider = annotation
-                    break
-            if isinstance(spec, VectorSchemaProvider):
-                vector_schema_provider = spec
-
-            if vector_schema_provider is not None:
-                vector_schema = vector_schema_provider.__coco_vector_schema__()
-                if vector_schema.size <= 0:
-                    raise ValueError(f"Invalid vector dimension: {vector_schema.size}")
-                self.vector_schemas[field.name] = QdrantVectorSpec(
-                    dim=vector_schema.size
-                )
-                columns[field.name] = ColumnDef()
-                continue
-
-            if isinstance(spec, QdrantVectorSpec):
-                if spec.dim <= 0:
-                    raise ValueError(f"Invalid vector dimension: {spec.dim}")
-                self.vector_schemas[field.name] = spec
-                columns[field.name] = ColumnDef()
-                continue
-
-            if type_info.base_type is np.ndarray:
-                raise ValueError(
-                    f"Vector field '{field.name}' requires a VectorSchemaProvider or QdrantVectorSpec."
-                )
-
-            encoder = _get_encoder(type_info)
-            columns[field.name] = ColumnDef(encoder=encoder)
-
-        return columns
+    ) -> _ResolvedQdrantVectorDef | Mapping[str, _ResolvedQdrantVectorDef]:
+        """Get vector definitions (all VectorSchemaProviders resolved)."""
+        return self._vectors
 
 
-class _RowAction(NamedTuple):
-    key: _RowKey
-    value: _RowValue | None
+class _PointAction(_NamedTuple):
+    point_id: _PointId
+    point: qdrant_models.PointStruct | None
 
 
-class _RowHandler(coco.TargetHandler[_RowKey, _RowValue, _RowFingerprint]):
+class _PointHandler(
+    coco.TargetHandler[_PointId, qdrant_models.PointStruct, _PointFingerprint]
+):
     _db_key: str
     _collection_name: str
-    _table_schema: TableSchema
-    _sink: coco.TargetActionSink[_RowAction]
+    _sink: coco.TargetActionSink[_PointAction]
 
     def __init__(
         self,
         db_key: str,
         collection_name: str,
-        table_schema: TableSchema,
     ) -> None:
         self._db_key = db_key
         self._collection_name = collection_name
-        self._table_schema = table_schema
         self._sink = coco.TargetActionSink.from_async_fn(self._apply_actions)
 
-    async def _apply_actions(self, actions: Sequence[_RowAction]) -> None:
+    async def _apply_actions(self, actions: _Sequence[_PointAction]) -> None:
         if not actions:
             return
 
-        upserts: list[_RowAction] = []
-        deletes: list[_RowAction] = []
+        upserts: list[qdrant_models.PointStruct] = []
+        deletes: list[_PointId] = []
 
         for action in actions:
-            if action.value is None:
-                deletes.append(action)
+            if action.point is None:
+                deletes.append(action.point_id)
             else:
-                upserts.append(action)
+                upserts.append(action.point)
 
         client = _get_client(self._db_key)
 
         if upserts:
-            await self._execute_upserts(client, upserts)
-
-        if deletes:
-            await self._execute_deletes(client, deletes)
-
-    async def _execute_upserts(
-        self,
-        client: QdrantClient,
-        upserts: list[_RowAction],
-    ) -> None:
-        points: list[qdrant_models.PointStruct] = []
-        vector_fields = set(self._table_schema.vector_schemas.keys())
-
-        for action in upserts:
-            assert action.value is not None
-            row = action.value
-            point_id = _qdrant_id_from_key(action.key)
-
-            vectors: dict[str, list[float] | list[list[float]]] = {}
-            payload: dict[str, Any] = {}
-
-            for col_name, value in row.items():
-                if col_name in vector_fields:
-                    vectors[col_name] = _vector_to_list(value)
-                elif col_name != self._table_schema.primary_key[0]:
-                    payload[col_name] = value
-
-            points.append(
-                qdrant_models.PointStruct(
-                    id=point_id,
-                    vector=cast(qdrant_models.VectorStruct, vectors),
-                    payload=payload,
-                )
+            await _asyncio.to_thread(
+                client.upsert,
+                collection_name=self._collection_name,
+                points=upserts,
             )
 
-        await asyncio.to_thread(
-            client.upsert,
-            collection_name=self._collection_name,
-            points=points,
-        )
+        if deletes:
+            selector = qdrant_models.PointIdsList(
+                points=_cast(list[qdrant_models.ExtendedPointId], deletes)
+            )
+            await _asyncio.to_thread(
+                client.delete,
+                collection_name=self._collection_name,
+                points_selector=selector,
+            )
 
-    async def _execute_deletes(
-        self,
-        client: QdrantClient,
-        deletes: list[_RowAction],
-    ) -> None:
-        point_ids = [_qdrant_id_from_key(action.key) for action in deletes]
-        selector = qdrant_models.PointIdsList(
-            points=cast(list[qdrant_models.ExtendedPointId], point_ids)
-        )
-        await asyncio.to_thread(
-            client.delete,
-            collection_name=self._collection_name,
-            points_selector=selector,
-        )
-
-    def _compute_fingerprint(self, value: _RowValue) -> _RowFingerprint:
-        serialized = json.dumps(value, sort_keys=True, default=str)
-        return hashlib.blake2b(serialized.encode()).digest()
+    def _compute_fingerprint(
+        self, point: qdrant_models.PointStruct
+    ) -> _PointFingerprint:
+        # Serialize point to compute fingerprint
+        data = {
+            "id": str(point.id),
+            "vector": point.vector,
+            "payload": point.payload or {},
+        }
+        serialized = _json.dumps(data, sort_keys=True, default=str)
+        return _hashlib.blake2b(serialized.encode()).digest()
 
     def reconcile(
         self,
-        key: _RowKey,
-        desired_state: _RowValue | coco.NonExistenceType,
-        prev_possible_states: Collection[_RowFingerprint],
+        key: _PointId,
+        desired_state: qdrant_models.PointStruct | coco.NonExistenceType,
+        prev_possible_states: _Collection[_PointFingerprint],
         prev_may_be_missing: bool,
         /,
-    ) -> coco.TargetReconcileOutput[_RowAction, _RowFingerprint] | None:
+    ) -> coco.TargetReconcileOutput[_PointAction, _PointFingerprint] | None:
         if coco.is_non_existence(desired_state):
             if not prev_possible_states and not prev_may_be_missing:
                 return None
             return coco.TargetReconcileOutput(
-                action=_RowAction(key=key, value=None),
+                action=_PointAction(point_id=key, point=None),
                 sink=self._sink,
                 tracking_record=coco.NON_EXISTENCE,
             )
@@ -317,87 +230,92 @@ class _RowHandler(coco.TargetHandler[_RowKey, _RowValue, _RowFingerprint]):
             return None
 
         return coco.TargetReconcileOutput(
-            action=_RowAction(key=key, value=desired_state),
+            action=_PointAction(point_id=key, point=desired_state),
             sink=self._sink,
             tracking_record=target_fp,
         )
 
 
-class _CollectionKey(NamedTuple):
+class _CollectionKey(_NamedTuple):
     db_key: str
     collection_name: str
 
 
-@dataclass
+@_dataclass
 class _CollectionSpec:
-    table_schema: TableSchema[Any]
-    managed_by: Literal["system", "user"] = "system"
+    schema: CollectionSchema
+    managed_by: _Literal["system", "user"] = "system"
 
 
-class _VectorState(NamedTuple):
-    name: str
-    dim: int
-    distance: str
+class _CollectionTrackingRecordCore(_NamedTuple):
+    vectors: _ResolvedQdrantVectorDef | Mapping[str, _ResolvedQdrantVectorDef]
 
 
-class _CollectionTrackingRecordCore(NamedTuple):
-    vectors: dict[str, _VectorState]
-
-
-_CollectionTrackingRecord = statediff.MutualTrackingRecord[
+_CollectionTrackingRecord = _statediff.MutualTrackingRecord[
     _CollectionTrackingRecordCore
 ]
 
 
-class _CollectionAction(NamedTuple):
+class _CollectionAction(_NamedTuple):
     key: _CollectionKey
     spec: _CollectionSpec | coco.NonExistenceType
-    main_action: statediff.DiffAction | None
+    main_action: _statediff.DiffAction | None
 
 
-_db_registry: _connection.ConnectionRegistry[QdrantClient] = (
+_db_registry: _connection.ConnectionRegistry[_QdrantClient] = (
     _connection.ConnectionRegistry()
 )
 
 
-def _get_client(db_key: str) -> QdrantClient:
+def _get_client(db_key: str) -> _QdrantClient:
     return _db_registry.get(db_key)
 
 
-def register_db(key: str, client: QdrantClient) -> "QdrantDatabase":
+def register_db(key: str, client: _QdrantClient) -> "QdrantDatabase":
+    """Register a Qdrant client with a key.
+
+    Args:
+        key: Unique identifier for this client
+        client: QdrantClient instance
+
+    Returns:
+        QdrantDatabase handle for declaring collections
+    """
     _db_registry.register(key, client)
     return QdrantDatabase(key, _db_registry)
 
 
-def create_client(url: str, *, prefer_grpc: bool = True, **kwargs: Any) -> QdrantClient:
-    return QdrantClient(url=url, prefer_grpc=prefer_grpc, **kwargs)
+def create_client(
+    url: str, *, prefer_grpc: bool = True, **kwargs: _Any
+) -> _QdrantClient:
+    """Create a Qdrant client.
 
+    Args:
+        url: Qdrant server URL
+        prefer_grpc: Whether to prefer gRPC over HTTP
+        **kwargs: Additional arguments to pass to QdrantClient
 
-def _collection_tracking_record_from_spec(
-    spec: _CollectionSpec,
-) -> _CollectionTrackingRecordCore:
-    vectors = {
-        name: _VectorState(name=name, dim=vs.dim, distance=vs.distance)
-        for name, vs in spec.table_schema.vector_schemas.items()
-    }
-    return _CollectionTrackingRecordCore(vectors=vectors)
+    Returns:
+        QdrantClient instance
+    """
+    return _QdrantClient(url=url, prefer_grpc=prefer_grpc, **kwargs)
 
 
 class _CollectionHandler(
     coco.TargetHandler[
-        _CollectionKey, _CollectionSpec, _CollectionTrackingRecord, _RowHandler
+        _CollectionKey, _CollectionSpec, _CollectionTrackingRecord, _PointHandler
     ]
 ):
-    _sink: coco.TargetActionSink[_CollectionAction, _RowHandler]
+    _sink: coco.TargetActionSink[_CollectionAction, _PointHandler]
 
     def __init__(self) -> None:
         self._sink = coco.TargetActionSink.from_async_fn(self._apply_actions)
 
     async def _apply_actions(
-        self, actions: Collection[_CollectionAction]
-    ) -> list[coco.ChildTargetDef[_RowHandler] | None]:
+        self, actions: _Collection[_CollectionAction]
+    ) -> list[coco.ChildTargetDef[_PointHandler] | None]:
         actions_list = list(actions)
-        outputs: list[coco.ChildTargetDef[_RowHandler] | None] = [None] * len(
+        outputs: list[coco.ChildTargetDef[_PointHandler] | None] = [None] * len(
             actions_list
         )
 
@@ -412,7 +330,7 @@ class _CollectionHandler(
 
                 if action.main_action in ("replace", "delete"):
                     try:
-                        await asyncio.to_thread(
+                        await _asyncio.to_thread(
                             client.delete_collection,
                             collection_name=key.collection_name,
                         )
@@ -425,10 +343,9 @@ class _CollectionHandler(
 
                 spec = action.spec
                 outputs[i] = coco.ChildTargetDef(
-                    handler=_RowHandler(
+                    handler=_PointHandler(
                         db_key=key.db_key,
                         collection_name=key.collection_name,
-                        table_schema=spec.table_schema,
                     )
                 )
 
@@ -436,7 +353,7 @@ class _CollectionHandler(
                     await self._create_collection(
                         client,
                         key.collection_name,
-                        spec.table_schema,
+                        spec.schema,
                         if_not_exists=(action.main_action == "upsert"),
                     )
 
@@ -444,34 +361,32 @@ class _CollectionHandler(
 
     async def _create_collection(
         self,
-        client: QdrantClient,
+        client: _QdrantClient,
         collection_name: str,
-        schema: TableSchema[Any],
+        schema: CollectionSchema,
         *,
         if_not_exists: bool,
     ) -> None:
-        if not schema.vector_schemas:
-            raise ValueError("Qdrant collection requires at least one vector field.")
-
-        if if_not_exists and await asyncio.to_thread(
+        if if_not_exists and await _asyncio.to_thread(
             _collection_exists, client, collection_name
         ):
             return
 
-        vectors_config = {}
-        for name, spec in schema.vector_schemas.items():
-            multivector_config = None
-            if spec.multivector:
-                multivector_config = qdrant_models.MultiVectorConfig(
-                    comparator=_multivector_comparator(spec.multivector_comparator)
-                )
-            vectors_config[name] = qdrant_models.VectorParams(
-                size=spec.dim,
-                distance=_distance_from_spec(spec.distance),
-                multivector_config=multivector_config,
-            )
+        # Configure vectors based on whether it's named or unnamed
+        vectors_config: (
+            dict[str, qdrant_models.VectorParams] | qdrant_models.VectorParams
+        )
+        if isinstance(schema.vectors, Mapping):
+            # Named vectors: use dict
+            vectors_config = {
+                name: _vector_params_from_def(vector_def)
+                for name, vector_def in schema.vectors.items()
+            }
+        else:
+            # Unnamed vector: pass VectorParams directly (not in a dict)
+            vectors_config = _vector_params_from_def(schema.vectors)
 
-        await asyncio.to_thread(
+        await _asyncio.to_thread(
             client.create_collection,
             collection_name=collection_name,
             vectors_config=vectors_config,
@@ -481,12 +396,12 @@ class _CollectionHandler(
         self,
         key: _CollectionKey,
         desired_state: _CollectionSpec | coco.NonExistenceType,
-        prev_possible_states: Collection[_CollectionTrackingRecord],
+        prev_possible_states: _Collection[_CollectionTrackingRecord],
         prev_may_be_missing: bool,
         /,
     ) -> (
         coco.TargetReconcileOutput[
-            _CollectionAction, _CollectionTrackingRecord, _RowHandler
+            _CollectionAction, _CollectionTrackingRecord, _PointHandler
         ]
         | None
     ):
@@ -495,18 +410,20 @@ class _CollectionHandler(
         if coco.is_non_existence(desired_state):
             tracking_record = coco.NON_EXISTENCE
         else:
-            tracking_record = statediff.MutualTrackingRecord(
-                tracking_record=_collection_tracking_record_from_spec(desired_state),
+            tracking_record = _statediff.MutualTrackingRecord(
+                tracking_record=_CollectionTrackingRecordCore(
+                    vectors=desired_state.schema.vectors
+                ),
                 managed_by=desired_state.managed_by,
             )
 
-        transition = statediff.TrackingRecordTransition(
+        transition = _statediff.TrackingRecordTransition(
             tracking_record,
             prev_possible_states,
             prev_may_be_missing,
         )
-        resolved = statediff.resolve_system_transition(transition)
-        main_action = statediff.diff(resolved)
+        resolved = _statediff.resolve_system_transition(transition)
+        main_action = _statediff.diff(resolved)
 
         return coco.TargetReconcileOutput(
             action=_CollectionAction(
@@ -524,74 +441,117 @@ _collection_provider = coco.register_root_target_states_provider(
 )
 
 
-class TableTarget(
-    Generic[RowT, coco.MaybePendingS], coco.ResolvesTo["TableTarget[RowT]"]
+class CollectionTarget(
+    _Generic[coco.MaybePendingS], coco.ResolvesTo["CollectionTarget"]
 ):
-    _provider: coco.TargetStateProvider[_RowKey, _RowValue, None, coco.MaybePendingS]
-    _table_schema: TableSchema[RowT]
+    """Target for declaring points in a Qdrant collection.
+
+    Use this to declare individual points (documents) to be stored in the collection.
+    Points are specified using Qdrant's PointStruct model.
+
+    Example:
+        ```python
+        from qdrant_client.http import models as qdrant_models
+
+        @coco.function
+        def process_doc(scope: coco.Scope, doc: Doc, target: CollectionTarget) -> None:
+            point = qdrant_models.PointStruct(
+                id=doc.id,
+                vector={"embedding": doc.embedding.tolist()},
+                payload={"text": doc.text, "metadata": doc.metadata},
+            )
+            target.declare_point(scope, point)
+        ```
+    """
+
+    _provider: coco.TargetStateProvider[
+        _PointId, qdrant_models.PointStruct, None, coco.MaybePendingS
+    ]
 
     def __init__(
         self,
         provider: coco.TargetStateProvider[
-            _RowKey, _RowValue, None, coco.MaybePendingS
+            _PointId, qdrant_models.PointStruct, None, coco.MaybePendingS
         ],
-        table_schema: TableSchema[RowT],
     ) -> None:
         self._provider = provider
-        self._table_schema = table_schema
 
-    def declare_row(self: "TableTarget[RowT]", scope: coco.Scope, *, row: RowT) -> None:
-        row_dict = self._row_to_dict(row)
-        pk_values = tuple(row_dict[pk] for pk in self._table_schema.primary_key)
-        coco.declare_target_state(
-            scope, self._provider.target_state(pk_values, row_dict)
-        )
+    def declare_point(
+        self: "CollectionTarget[coco.ResolvedS]",
+        scope: coco.Scope,
+        point: qdrant_models.PointStruct,
+    ) -> None:
+        """Declare a point to be stored in the collection.
 
-    def _row_to_dict(self, row: RowT) -> dict[str, Any]:
-        out: dict[str, Any] = {}
-        vector_fields = set(self._table_schema.vector_schemas.keys())
+        Args:
+            scope: Scope for this target state
+            point: PointStruct defining the point ID, vectors, and payload
+        """
+        # Extract point ID
+        point_id: _PointId
+        if isinstance(point.id, (str, int)):
+            point_id = point.id
+        else:
+            point_id = str(point.id)
 
-        for col_name, col_def in self._table_schema.columns.items():
-            if isinstance(row, dict):
-                value = row.get(col_name)
-            else:
-                value = getattr(row, col_name)
-
-            if col_name in vector_fields and value is not None:
-                value = _vector_to_list(value)
-            elif value is not None and col_def.encoder is not None:
-                value = col_def.encoder(value)
-
-            out[col_name] = value
-
-        return out
+        coco.declare_target_state(scope, self._provider.target_state(point_id, point))
 
     def __coco_memo_key__(self) -> str:
         return self._provider.memo_key
 
 
-class QdrantDatabase(_connection.KeyedConnection[QdrantClient]):
-    """Handle for a registered Qdrant client."""
+class QdrantDatabase(_connection.KeyedConnection[_QdrantClient]):
+    """Handle for a registered Qdrant client.
+
+    Use this to declare collections and their schemas.
+    """
 
     def declare_collection_target(
         self,
         scope: coco.Scope,
         collection_name: str,
-        table_schema: TableSchema[RowT],
+        schema: CollectionSchema,
         *,
-        managed_by: Literal["system", "user"] = "system",
-    ) -> TableTarget[RowT, coco.PendingS]:
+        managed_by: _Literal["system", "user"] = "system",
+    ) -> "CollectionTarget[coco.PendingS]":
+        """Declare a Qdrant collection target.
+
+        Args:
+            scope: Scope for this collection
+            collection_name: Name of the collection in Qdrant
+            schema: CollectionSchema defining vector fields
+            managed_by: Whether the collection is managed by the system or user
+
+        Returns:
+            CollectionTarget for declaring points
+
+        Example:
+            ```python
+            @coco.function
+            def app_main(scope: coco.Scope) -> None:
+                db = scope.use(QDRANT_DB)
+                target = coco.mount_run(
+                    db.declare_collection_target,
+                    scope / "setup",
+                    collection_name="my_collection",
+                    schema=CollectionSchema(
+                        vectors={"embedding": QdrantVectorSpec(dim=384)}
+                    ),
+                ).result()
+                # Use target to declare points...
+            ```
+        """
         key = _CollectionKey(
             db_key=self._connection_key, collection_name=collection_name
         )
-        spec = _CollectionSpec(table_schema=table_schema, managed_by=managed_by)
+        spec = _CollectionSpec(schema=schema, managed_by=managed_by)
         provider = coco.declare_target_state_with_child(
             scope, _collection_provider.target_state(key, spec)
         )
-        return TableTarget(provider, table_schema)
+        return CollectionTarget(provider)
 
 
-def _collection_exists(client: QdrantClient, collection_name: str) -> bool:
+def _collection_exists(client: _QdrantClient, collection_name: str) -> bool:
     if hasattr(client, "collection_exists"):
         return bool(client.collection_exists(collection_name))
     try:
@@ -615,67 +575,43 @@ def _distance_from_spec(distance: str) -> qdrant_models.Distance:
 def _multivector_comparator(
     comparator: str,
 ) -> qdrant_models.MultiVectorComparator:
+    """Convert multivector comparator string to Qdrant enum."""
     if comparator.lower() == "max_sim":
         return qdrant_models.MultiVectorComparator.MAX_SIM
     raise ValueError(f"Unsupported multivector comparator: {comparator}")
 
 
-def _vector_to_list(value: Any) -> list[float] | list[list[float]]:
-    if isinstance(value, np.ndarray):
-        if value.ndim == 1:
-            return [float(v) for v in value.astype(float).tolist()]
-        if value.ndim == 2:
-            return [[float(v) for v in row.astype(float).tolist()] for row in value]
-        raise TypeError("Vector ndarray must be 1D or 2D.")
-    if isinstance(value, (list, tuple)):
-        if not value:
-            return []
-        if isinstance(value[0], (list, tuple, np.ndarray)):
-            return [[float(v) for v in row] for row in value]  # type: ignore[arg-type]
-        return [float(v) for v in value]
-    raise TypeError(f"Vector value must be a numpy array or list, got {type(value)}")
+def _vector_params_from_def(
+    vector_def: _ResolvedQdrantVectorDef,
+) -> qdrant_models.VectorParams:
+    """Convert a resolved vector definition to Qdrant VectorParams."""
+    resolved_schema = vector_def.schema
+    multivector_config = None
 
+    if isinstance(resolved_schema, _schema.VectorSchema):
+        dim = resolved_schema.size
+    elif isinstance(resolved_schema, _schema.MultiVectorSchema):
+        dim = resolved_schema.vector_schema.size
+        # For multivector, use the specified comparator
+        multivector_config = qdrant_models.MultiVectorConfig(
+            comparator=_multivector_comparator(vector_def.multivector_comparator)
+        )
+    else:
+        raise ValueError(f"Unexpected schema type: {type(resolved_schema)}")
 
-def _qdrant_id_from_key(key: _RowKey) -> str | int:
-    if len(key) != 1:
-        raise ValueError("Qdrant requires a single-column primary key.")
-    value = key[0]
-    if isinstance(value, uuid.UUID):
-        return str(value)
-    if isinstance(value, (str, int)):
-        return value
-    return str(value)
-
-
-def _get_encoder(type_info: Any) -> ValueEncoder | None:
-    variant = type_info.variant
-
-    if isinstance(variant, RecordType):
-        return _json_encoder
-
-    if isinstance(variant, UnionType):
-        return _json_encoder
-
-    if isinstance(variant, AnyType):
-        return _json_encoder
-
-    if isinstance(variant, SequenceType):
-        elem_info = analyze_type_info(variant.elem_type)
-        return _get_encoder(elem_info)
-
-    if isinstance(variant, MappingType):
-        value_info = analyze_type_info(variant.value_type)
-        return _get_encoder(value_info)
-
-    return None
+    return qdrant_models.VectorParams(
+        size=dim,
+        distance=_distance_from_spec(vector_def.distance),
+        multivector_config=multivector_config,
+    )
 
 
 __all__ = [
-    "ColumnDef",
+    "CollectionSchema",
+    "CollectionTarget",
+    "PointStruct",
     "QdrantDatabase",
-    "QdrantVectorSpec",
-    "TableSchema",
-    "TableTarget",
+    "QdrantVectorDef",
     "create_client",
     "register_db",
 ]

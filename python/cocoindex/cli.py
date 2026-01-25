@@ -145,7 +145,7 @@ def _ls_from_module(module_ref: str) -> None:
     try:
         load_user_app(module_ref)
     except UserAppLoaderError as e:
-        raise click.ClickException(f"Failed to load module '{module_ref}'") from e
+        raise RuntimeError(f"Failed to load module '{module_ref}'") from e
 
     env_infos = get_registered_environment_infos()
     if not env_infos:
@@ -235,7 +235,7 @@ def _load_app(app_target: str) -> AppBase[Any, Any]:
     try:
         load_user_app(spec.module_ref)
     except UserAppLoaderError as e:
-        raise click.ClickException(f"Failed to load module '{spec.module_ref}'") from e
+        raise RuntimeError(f"Failed to load module '{spec.module_ref}'") from e
 
     # Get target environments (filter by env_name if specified)
     env_infos = get_registered_environment_infos()

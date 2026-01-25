@@ -146,8 +146,8 @@ async def query_once(
 async def query() -> None:
     conn = await lancedb.connect_async(LANCEDB_URI)
 
-    if len(sys.argv) > 2:
-        q = " ".join(sys.argv[2:])
+    if len(sys.argv) > 1:
+        q = " ".join(sys.argv[1:])
         await query_once(conn, q)
         return
 
@@ -159,5 +159,4 @@ async def query() -> None:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "query":
-        asyncio.run(query())
+    asyncio.run(query())

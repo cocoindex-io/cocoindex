@@ -32,4 +32,26 @@ class VectorSchema:
         return self
 
 
-__all__ = ["VectorSchema", "VectorSchemaProvider"]
+@_typing.runtime_checkable
+class MultiVectorSchemaProvider(_typing.Protocol):
+    """Additional information for a vector column."""
+
+    def __coco_multi_vector_schema__(self) -> MultiVectorSchema: ...
+
+
+@_dataclasses.dataclass(slots=True, frozen=True)
+class MultiVectorSchema:
+    """Additional information for a vector column."""
+
+    vector_schema: VectorSchema
+
+    def __coco_multi_vector_schema__(self) -> MultiVectorSchema:
+        return self
+
+
+__all__ = [
+    "MultiVectorSchema",
+    "MultiVectorSchemaProvider",
+    "VectorSchema",
+    "VectorSchemaProvider",
+]
