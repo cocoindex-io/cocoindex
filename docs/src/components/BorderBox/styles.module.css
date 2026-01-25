@@ -6,11 +6,9 @@
   margin-bottom: 1.25rem;
   border-radius: 0.5rem;
   border: 1px solid var(--radix-gray-6);
-  background-color: var(--radix-gray-2);
   padding: 1rem;
 }
 
 html[data-theme='dark'] .borderBox {
-  background-color: var(--radix-gray-3);
   border-color: var(--radix-gray-5);
 }

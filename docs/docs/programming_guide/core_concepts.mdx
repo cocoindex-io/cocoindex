@@ -6,6 +6,7 @@ description: Briefly introduces the core concepts of CocoIndex, covering state-d
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 import useBaseUrl from '@docusaurus/useBaseUrl';
+import { BorderBox } from '@site/src/components/BorderBox';
 
 ## Incremental processing
 
@@ -80,6 +81,7 @@ Taking this further, suppose you want to split each file into chunks and create 
 
 Let's see what happens when the source state changes in different ways:
 
+<BorderBox>
 <Tabs>
 <TabItem value="new-file" label="On New File Added">
 
@@ -103,6 +105,7 @@ When file `b.md` is deleted from the source folder, CocoIndex deletes its associ
 
 </TabItem>
 </Tabs>
+</BorderBox>
 
 ## Function memoization: skip unchanged computations
 
@@ -120,6 +123,7 @@ See [Function Memoization](./function.md#memoization) for more details.
 
 Here's how memoization behaves in different scenarios:
 
+<BorderBox>
 <Tabs>
 <TabItem value="data-update" label="On Input Data Change">
 
@@ -152,3 +156,4 @@ As these examples show, memoization can save expensive computations even when co
 
 </TabItem>
 </Tabs>
+</BorderBox>
