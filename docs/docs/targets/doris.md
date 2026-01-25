@@ -4,6 +4,8 @@ description: CocoIndex Apache Doris Target
 toc_max_heading_level: 4
 ---
 
+import { ExampleButton } from '../../src/components/GitHubButton';
+
 # Apache Doris
 
 Exports data to Apache Doris (or VeloDB Cloud) with support for vector indexes and full-text search.
@@ -276,30 +278,9 @@ pip install aiohttp aiomysql
 
 ## Example
 
-```python
-import cocoindex
-from cocoindex.targets.doris import DorisTarget
+<ExampleButton
+  href="https://github.com/cocoindex-io/cocoindex/tree/main/examples/text_embedding_doris"
+  text="Text Embedding Example with Doris"
+  margin="16px 0 24px 0"
+/>
 
-@cocoindex.flow_def(name="doris_example")
-def doris_flow(flow_builder: cocoindex.FlowBuilder):
-    # ... your data source and transformations ...
-
-    flow_builder.export(
-        "document_embeddings",
-        DorisTarget(
-            fe_host="your-doris-host.example.com",
-            fe_http_port=8080,
-            query_port=9030,
-            username="admin",
-            password="your-password",
-            database="cocoindex_demo",
-            table="document_embeddings",
-            schema_evolution="extend",
-        ),
-        primary_key=["doc_id"],
-        index=cocoindex.VectorIndex(
-            field="embedding",
-            metric=cocoindex.VectorSimilarityMetric.L2_DISTANCE,
-        ),
-    )
-```
