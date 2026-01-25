@@ -336,6 +336,14 @@ impl TrackingTableSetupChange {
             .and_then(|v| v.source_state_table_name.as_ref());
 
         if let Some(source_state_table_name) = source_state_table_name {
+            for legacy_name in self.legacy_source_state_table_names.iter() {
+                let qualified_legacy_table_name =
+                    qualify_table_name_with_schema(legacy_name.as_str());
+                let query = format!(
+                    "ALTER TABLE IF EXISTS {qualified_legacy_table_name} RENAME TO {source_state_table_name}"
+                );
+                sqlx::query(&query).execute(pool).await?;
+            }
             if !self.source_state_table_always_exists {
                 create_source_state_table(pool, source_state_table_name).await?;
             }
