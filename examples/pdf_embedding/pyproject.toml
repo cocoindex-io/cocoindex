@@ -13,7 +13,7 @@ dependencies = [
 ]
 
 [tool.uv]
-prerelease = "allow"
+prerelease = "explicit"
 
 [tool.setuptools]
 packages = []
