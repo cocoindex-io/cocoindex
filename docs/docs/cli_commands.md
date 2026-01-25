@@ -30,6 +30,33 @@ cocoindex drop [OPTIONS] APP_TARGET
 
 ---
 
+### `init`
+
+Initialize a new CocoIndex project.
+
+Creates a new project directory with starter files: 1. main.py (Main
+application file) 2. pyproject.toml (Project metadata and dependencies) 3.
+README.md (Quick start guide)
+
+`PROJECT_NAME`: Name of the project (defaults to current directory name if
+not specified).
+
+
+**Usage:**
+
+```bash
+cocoindex init [OPTIONS] [PROJECT_NAME]
+```
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `--dir DIRECTORY` | Directory to create the project in. |
+| `--help` | Show this message and exit. |
+
+---
+
 ### `ls`
 
 List all apps.
