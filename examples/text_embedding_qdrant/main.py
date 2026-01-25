@@ -14,10 +14,8 @@ import asyncio
 import pathlib
 import sys
 import uuid
-from dataclasses import dataclass
-from typing import AsyncIterator, Annotated
+from typing import AsyncIterator
 
-from numpy.typing import NDArray
 from qdrant_client import QdrantClient
 from qdrant_client.http import models as qdrant_models
 
@@ -41,16 +39,6 @@ _embedder = SentenceTransformerEmbedder("sentence-transformers/all-MiniLM-L6-v2"
 _splitter = RecursiveSplitter()
 
 
-@dataclass
-class DocEmbedding:
-    id: str
-    filename: str
-    chunk_start: int
-    chunk_end: int
-    text: str
-    embedding: Annotated[NDArray, _embedder]
-
-
 @coco_aio.lifespan
 async def coco_lifespan(
     builder: coco_aio.EnvironmentBuilder,
@@ -68,57 +56,60 @@ async def process_chunk(
     scope: coco.Scope,
     filename: pathlib.PurePath,
     chunk: Chunk,
-    table: qdrant.TableTarget[DocEmbedding],
+    target: qdrant.CollectionTarget,
 ) -> None:
     chunk_id = _chunk_id(filename, chunk)
-    table.declare_row(
-        scope,
-        row=DocEmbedding(
-            id=chunk_id,
-            filename=str(filename),
-            chunk_start=chunk.start.char_offset,
-            chunk_end=chunk.end.char_offset,
-            text=chunk.text,
-            embedding=await _embedder.embed_async(chunk.text),
-        ),
+    embedding_vec = await _embedder.embed_async(chunk.text)
+
+    point = qdrant.PointStruct(
+        id=chunk_id,
+        vector=embedding_vec.tolist(),
+        payload={
+            "filename": str(filename),
+            "chunk_start": chunk.start.char_offset,
+            "chunk_end": chunk.end.char_offset,
+            "text": chunk.text,
+        },
     )
+    target.declare_point(scope, point)
 
 
 @coco.function(memo=True)
 async def process_file(
     scope: coco.Scope,
     file: FileLike,
-    table: qdrant.TableTarget[DocEmbedding],
+    target: qdrant.CollectionTarget,
 ) -> None:
     text = file.read_text()
     chunks = _splitter.split(
         text, chunk_size=2000, chunk_overlap=500, language="markdown"
     )
     await asyncio.gather(
-        *(process_chunk(scope, file.relative_path, chunk, table) for chunk in chunks)
+        *(process_chunk(scope, file.relative_path, chunk, target) for chunk in chunks)
     )
 
 
 @coco.function
 def app_main(scope: coco.Scope, sourcedir: pathlib.Path) -> None:
     target_db = scope.use(QDRANT_DB)
-    target_table = coco.mount_run(
+    target_collection_handle = coco.mount_run(
         target_db.declare_collection_target,
-        scope / "setup" / "table",
+        scope / "setup" / "collection",
         collection_name=QDRANT_COLLECTION,
-        table_schema=qdrant.TableSchema(
-            DocEmbedding,
-            primary_key=["id"],
+        schema=qdrant.CollectionSchema(
+            vectors=qdrant.QdrantVectorDef(schema=_embedder)
         ),
-    ).result()
-
+    )
+    target_collection = target_collection_handle.result()
     files = localfs.walk_dir(
         sourcedir,
         recursive=True,
         path_matcher=PatternFilePathMatcher(included_patterns=["*.md"]),
     )
     for f in files:
-        coco.mount(process_file, scope / "file" / str(f.relative_path), f, target_table)
+        coco.mount(
+            process_file, scope / "file" / str(f.relative_path), f, target_collection
+        )
 
 
 app = coco_aio.App(
@@ -133,15 +124,9 @@ app = coco_aio.App(
 # ============================================================================
 
 
-async def query_once(client: QdrantClient, query: str, *, top_k: int = TOP_K) -> None:
-    query_vec = await _embedder.embed_async(query)
-    results = await asyncio.to_thread(
-        _qdrant_search,
-        client,
-        QDRANT_COLLECTION,
-        query_vec.tolist(),
-        top_k,
-    )
+def query_once(client: QdrantClient, query: str, *, top_k: int = TOP_K) -> None:
+    query_vec = _embedder.embed(query)
+    results = _qdrant_search(client, QDRANT_COLLECTION, query_vec.tolist(), top_k)
 
     for r in results:
         payload = r.payload or {}
@@ -150,18 +135,18 @@ async def query_once(client: QdrantClient, query: str, *, top_k: int = TOP_K) ->
         print("---")
 
 
-async def query() -> None:
+def query() -> None:
     client = qdrant.create_client(QDRANT_URL, prefer_grpc=True)
-    if len(sys.argv) > 2:
-        q = " ".join(sys.argv[2:])
-        await query_once(client, q)
+    if len(sys.argv) > 1:
+        q = " ".join(sys.argv[1:])
+        query_once(client, q)
         return
 
     while True:
         q = input("Enter search query (or Enter to quit): ").strip()
         if not q:
             break
-        await query_once(client, q)
+        query_once(client, q)
 
 
 def _chunk_id(filename: pathlib.PurePath, chunk: Chunk) -> str:
@@ -179,14 +164,13 @@ def _qdrant_search(
     if hasattr(client, "search"):
         return client.search(
             collection_name=collection_name,
-            query_vector=("embedding", query_vector),
+            query_vector=query_vector,
             limit=limit,
         )
     if hasattr(client, "query_points"):
         response = client.query_points(
             collection_name=collection_name,
             query=query_vector,
-            using="embedding",
             limit=limit,
         )
         return response.points
@@ -202,5 +186,4 @@ def _qdrant_search(
 
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "query":
-        asyncio.run(query())
+    query()

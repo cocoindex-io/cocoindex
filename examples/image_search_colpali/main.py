@@ -9,20 +9,19 @@ Image Search with ColPali (v1) - CocoIndex pipeline example.
 
 from __future__ import annotations
 
-import asyncio
 import functools
 import io
 import os
 import pathlib
 import sys
 import uuid
-from dataclasses import dataclass
 from typing import AsyncIterator
 
 import torch
 from PIL import Image
 from qdrant_client import QdrantClient
 from qdrant_client.http import models as qdrant_models
+import numpy as np
 
 from colpali_engine import ColPali, ColPaliProcessor
 from colpali_engine.utils.torch_utils import (
@@ -34,6 +33,7 @@ import cocoindex as coco
 import cocoindex.asyncio as coco_aio
 from cocoindex.connectors import localfs, qdrant
 from cocoindex.resources.file import FileLike, PatternFilePathMatcher
+from cocoindex.resources.schema import MultiVectorSchema, VectorSchema
 
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6334/")
 QDRANT_COLLECTION = "ImageSearchColpali"
@@ -84,13 +84,6 @@ def embed_image_bytes(img_bytes: bytes) -> list[list[float]]:
     return _postprocess_embeddings(embeddings, processor)
 
 
-@dataclass
-class ImageEmbedding:
-    id: str
-    filename: str
-    embedding: list[list[float]]
-
-
 @coco_aio.lifespan
 async def coco_lifespan(
     builder: coco_aio.EnvironmentBuilder,
@@ -108,42 +101,37 @@ async def coco_lifespan(
 def process_file(
     scope: coco.Scope,
     file: FileLike,
-    table: qdrant.TableTarget[ImageEmbedding],
+    target: qdrant.CollectionTarget,
 ) -> None:
     content = file.read()
     embedding = embed_image_bytes(content)
     row_id = _image_id(file.relative_path)
-    table.declare_row(
-        scope,
-        row=ImageEmbedding(
-            id=row_id,
-            filename=str(file.relative_path),
-            embedding=embedding,
-        ),
+    point = qdrant.PointStruct(
+        id=row_id,
+        vector=embedding,
+        payload={"filename": str(file.relative_path)},
     )
+    target.declare_point(scope, point)
 
 
 @coco.function
-async def app_main(scope: coco.Scope, sourcedir: pathlib.Path) -> None:
+def app_main(scope: coco.Scope, sourcedir: pathlib.Path) -> None:
     model, _, _ = get_colpali()
     dim = int(getattr(model, "dim", 128))
 
     target_db = scope.use(QDRANT_DB)
-    target_table = await coco_aio.mount_run(
+    target_collection = coco.mount_run(
         target_db.declare_collection_target,
         scope / "setup" / "table",
         collection_name=QDRANT_COLLECTION,
-        table_schema=qdrant.TableSchema(
-            ImageEmbedding,
-            primary_key=["id"],
-            column_specs={
-                "embedding": qdrant.QdrantVectorSpec(
-                    dim,
-                    distance="cosine",
-                    multivector=True,
-                    multivector_comparator="max_sim",
-                )
-            },
+        schema=qdrant.CollectionSchema(
+            vectors=qdrant.QdrantVectorDef(
+                schema=MultiVectorSchema(
+                    vector_schema=VectorSchema(dtype=np.dtype(np.float32), size=dim)
+                ),
+                distance="cosine",
+                multivector_comparator="max_sim",
+            )
         ),
     ).result()
 
@@ -155,8 +143,8 @@ async def app_main(scope: coco.Scope, sourcedir: pathlib.Path) -> None:
         ),
     )
     for f in files:
-        coco_aio.mount(
-            process_file, scope / "file" / str(f.relative_path), f, target_table
+        coco.mount(
+            process_file, scope / "file" / str(f.relative_path), f, target_collection
         )
 
 
@@ -172,15 +160,9 @@ app = coco_aio.App(
 # ============================================================================
 
 
-async def query_once(client: QdrantClient, query: str, *, top_k: int = TOP_K) -> None:
-    query_vec = await asyncio.to_thread(embed_query, query)
-    results = await asyncio.to_thread(
-        _qdrant_search,
-        client,
-        QDRANT_COLLECTION,
-        query_vec,
-        top_k,
-    )
+def query_once(client: QdrantClient, query_text: str, *, top_k: int = TOP_K) -> None:
+    query_vec = embed_query(query_text)
+    results = _qdrant_search(client, QDRANT_COLLECTION, query_vec, top_k)
 
     for r in results:
         payload = r.payload or {}
@@ -188,18 +170,18 @@ async def query_once(client: QdrantClient, query: str, *, top_k: int = TOP_K) ->
         print("---")
 
 
-async def query() -> None:
+def query() -> None:
     client = qdrant.create_client(QDRANT_URL, prefer_grpc=True)
-    if len(sys.argv) > 2:
-        q = " ".join(sys.argv[2:])
-        await query_once(client, q)
+    if len(sys.argv) > 1:
+        q = " ".join(sys.argv[1:])
+        query_once(client, q)
         return
 
     while True:
         q = input("Enter search query (or Enter to quit): ").strip()
         if not q:
             break
-        await query_once(client, q)
+        query_once(client, q)
 
 
 def _image_id(path: pathlib.PurePath) -> str:
@@ -217,7 +199,6 @@ def _qdrant_search(
     response = client.query_points(
         collection_name=collection_name,
         query=query_vector,
-        using="embedding",
         limit=limit,
         with_payload=True,
     )
@@ -225,5 +206,4 @@ def _qdrant_search(
 
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "query":
-        asyncio.run(query())
+    query()
