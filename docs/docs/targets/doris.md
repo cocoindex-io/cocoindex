@@ -283,4 +283,3 @@ pip install aiohttp aiomysql
   text="Text Embedding Example with Doris"
   margin="16px 0 24px 0"
 />
-
