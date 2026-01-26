@@ -58,14 +58,10 @@ jobs:
         - name: Sync Python dependencies
           run: uv sync --no-dev --group ci
 
-        - name: Cache pre-commit
-          uses: actions/cache@v4
+        - name: Install prek
+          uses: j178/prek-action@v1
           with:
-            path: ~/.cache/pre-commit
-            key: precommit-${{ matrix.platform.runner }}-${{ matrix.python-version }}
-
-        - name: Install pre-commit
-          run: pip install pre-commit
+            install-only: true
 
         - name: Run build-test hooks
           env:
@@ -74,29 +70,29 @@ jobs:
             RUSTC_WRAPPER: "sccache"
             UV_NO_SYNC: "1"
             # Skip mypy-check - it runs in e2e_type_check workflow
-            SKIP: mypy-check
+            PREK_SKIP: mypy-check
           shell: bash
           run: |
             set +e
 
             if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-              echo "Running pre-commit on PR diff against target branch: ${{ github.base_ref }}"
+              echo "Running prek on PR diff against target branch: ${{ github.base_ref }}"
               git fetch --no-tags --prune --depth=1 origin \
                 "${{ github.base_ref }}:refs/remotes/origin/${{ github.base_ref }}"
 
-              pre-commit run \
+              prek run \
                 --from-ref "origin/${{ github.base_ref }}" \
                 --to-ref "${{ github.sha }}" \
                 --show-diff-on-failure
               status=$?
             else
-              echo "Running pre-commit on all files (event: ${{ github.event_name }})"
-              pre-commit run --all-files --show-diff-on-failure
+              echo "Running prek on all files (event: ${{ github.event_name }})"
+              prek run --all-files --show-diff-on-failure
               status=$?
             fi
 
             if [ $status -ne 0 ]; then
-              echo "::error::Build-test checks failed. Please run 'uv run pre-commit run --all-files' locally."
+              echo "::error::Build-test checks failed. Please run 'prek run --all-files' locally."
               exit $status
             fi
 
