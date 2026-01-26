@@ -46,6 +46,16 @@ _logger = logging.getLogger(__name__)
 T = TypeVar("T")
 
 
+class _NumpyEncoder(json.JSONEncoder):
+    """Custom JSON encoder that handles numpy arrays."""
+
+    def default(self, obj: Any) -> Any:
+        # Handle numpy arrays
+        if hasattr(obj, "tolist"):
+            return obj.tolist()
+        return super().default(obj)
+
+
 def _get_aiohttp() -> Any:
     """Lazily import aiohttp to avoid import errors when not installed."""
     try:
@@ -735,7 +745,7 @@ async def _stream_load(
     columns = sorted(all_columns)  # Sort for consistent ordering
     headers = _build_stream_load_headers(label, columns)
 
-    data = json.dumps(rows, ensure_ascii=False)
+    data = json.dumps(rows, ensure_ascii=False, cls=_NumpyEncoder)
 
     async def do_stream_load() -> dict[str, Any]:
         async with session.put(
