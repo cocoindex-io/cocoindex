@@ -63,6 +63,14 @@ class File(FileLike):
         """Return the relative path of the file."""
         return self._relative_path
 
+    @property
+    def path(self) -> Path:
+        """Return the path of the file."""
+        return self._base_path / self._relative_path
+
+    def __coco_memo_key__(self) -> object:
+        return (self._base_path, self._relative_path, self.modified_time)
+
 
 class AsyncFile:
     """Async wrapper around a File that provides async read methods.
