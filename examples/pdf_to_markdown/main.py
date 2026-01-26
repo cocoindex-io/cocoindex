@@ -71,7 +71,9 @@ def app_main(scope: coco.Scope, sourcedir: pathlib.Path, outdir: pathlib.Path) -
         path_matcher=PatternFilePathMatcher(included_patterns=["*.pdf"]),
     )
     for f in files:
-        coco.mount(process_file, scope / "process" / str(f.relative_path), f, sourcedir, target)
+        coco.mount(
+            process_file, scope / "process" / str(f.relative_path), f, sourcedir, target
+        )
 
 
 app = coco_aio.App(
