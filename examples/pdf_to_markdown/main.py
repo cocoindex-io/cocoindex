@@ -15,23 +15,10 @@ from docling.document_converter import DocumentConverter
 
 import cocoindex as coco
 from cocoindex.connectors import localfs
-from cocoindex.resources.file import FileLike, PatternFilePathMatcher
+from cocoindex.resources.file import PatternFilePathMatcher
 
 
-_converter: DocumentConverter | None = None
-
-
-def get_converter() -> DocumentConverter:
-    global _converter
-    if _converter is None:
-        _converter = DocumentConverter()
-    return _converter
-
-
-def pdf_to_markdown(pdf_path: str) -> str:
-    converter = get_converter()
-    result = converter.convert(pdf_path)
-    return result.document.export_to_markdown()
+_converter = DocumentConverter()
 
 
 @coco.lifespan
@@ -43,13 +30,11 @@ def coco_lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
 @coco.function(memo=True)
 def process_file(
     scope: coco.Scope,
-    file: FileLike,
-    sourcedir: pathlib.Path,
+    file: localfs.File,
     target: localfs.DirTarget,
 ) -> None:
     # Get absolute path of the PDF file
-    pdf_path = str(sourcedir / file.relative_path)
-    markdown = pdf_to_markdown(pdf_path)
+    markdown = _converter.convert(file.path).document.export_to_markdown()
     # Replace .pdf extension with .md
     outname = file.relative_path.stem + ".md"
     target.declare_file(scope, filename=outname, content=markdown)
@@ -67,9 +52,7 @@ def app_main(scope: coco.Scope, sourcedir: pathlib.Path, outdir: pathlib.Path) -
         path_matcher=PatternFilePathMatcher(included_patterns=["*.pdf"]),
     )
     for f in files:
-        coco.mount(
-            process_file, scope / "process" / str(f.relative_path), f, sourcedir, target
-        )
+        coco.mount(process_file, scope / "process" / str(f.relative_path), f, target)
 
 
 app = coco.App(

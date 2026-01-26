@@ -11,7 +11,7 @@ class FileLike(Protocol):
 
     @property
     def relative_path(self) -> PurePath:
-        """Return the relative path of the file."""
+        """Return the path of the file, relative to the source repository's root directory."""
 
     @property
     def size(self) -> int:
@@ -43,9 +43,6 @@ class FileLike(Protocol):
             The file content as text.
         """
         return _decode_bytes(self.read(), encoding, errors)
-
-    def __coco_memo_key__(self) -> object:
-        return (self.relative_path, self.modified_time)
 
 
 class AsyncFileLike(Protocol):
