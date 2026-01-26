@@ -27,26 +27,10 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v7
 
-      - name: Cache pre-commit
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pre-commit
-          key: precommit-fast-check-ubuntu-latest
-
-      - name: Install pre-commit
-        run: pip install pre-commit
-
       - name: Run fast-check hooks
+        uses: j178/prek-action@v1
+        with:
+          extra-args: '--all-files --show-diff-on-failure'
         env:
           # Skip heavy build/test hooks - only run fast formatting/linting checks
-          SKIP: uv-lock,mypy-check,maturin-develop,cargo-test,pytest,generate-cli-docs
-        shell: bash
-        run: |
-          set +e
-
-          pre-commit run --all-files --show-diff-on-failure
-          status=$?
-          if [ $status -ne 0 ]; then
-            echo "::error::Fast check failed. Please run 'uv run pre-commit run --all-files' locally."
-            exit $status
-          fi
+          PREK_SKIP: uv-lock,mypy-check,maturin-develop,cargo-test,pytest,generate-cli-docs
