@@ -8,14 +8,12 @@ PDF to Markdown (v1) - CocoIndex pipeline example.
 
 from __future__ import annotations
 
-import asyncio
 import pathlib
-from typing import AsyncIterator
+from typing import Iterator
 
 from docling.document_converter import DocumentConverter
 
 import cocoindex as coco
-import cocoindex.asyncio as coco_aio
 from cocoindex.connectors import localfs
 from cocoindex.resources.file import FileLike, PatternFilePathMatcher
 
@@ -36,10 +34,8 @@ def pdf_to_markdown(pdf_path: str) -> str:
     return result.document.export_to_markdown()
 
 
-@coco_aio.lifespan
-async def coco_lifespan(
-    builder: coco_aio.EnvironmentBuilder,
-) -> AsyncIterator[None]:
+@coco.lifespan
+def coco_lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
     builder.settings.db_path = pathlib.Path("./cocoindex.db")
     yield
 
@@ -76,17 +72,9 @@ def app_main(scope: coco.Scope, sourcedir: pathlib.Path, outdir: pathlib.Path) -
         )
 
 
-app = coco_aio.App(
+app = coco.App(
     app_main,
-    coco_aio.AppConfig(name="PdfToMarkdown"),
+    coco.AppConfig(name="PdfToMarkdown"),
     sourcedir=pathlib.Path("./pdf_files"),
     outdir=pathlib.Path("./out"),
 )
-
-
-async def main() -> None:
-    await app.run()
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
