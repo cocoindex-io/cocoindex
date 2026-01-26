@@ -30,7 +30,7 @@ jobs:
       - name: Run fast-check hooks
         uses: j178/prek-action@v1
         with:
-          extra-args: '--all-files --show-diff-on-failure'
+          extra-args: '--all-files'
         env:
           # Skip heavy build/test hooks - only run fast formatting/linting checks
           PREK_SKIP: uv-lock,mypy-check,maturin-develop,cargo-test,pytest,generate-cli-docs

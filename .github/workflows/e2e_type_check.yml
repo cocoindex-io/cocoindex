@@ -44,6 +44,6 @@ jobs:
       - name: Run mypy-check hook
         uses: j178/prek-action@v1
         with:
-          extra-args: 'mypy-check --all-files --show-diff-on-failure'
+          extra-args: 'mypy-check --all-files'
         env:
           UV_NO_SYNC: "1"
