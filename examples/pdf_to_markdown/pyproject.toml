@@ -1,0 +1,15 @@
+[project]
+name = "pdf-to-markdown-v1"
+version = "0.1.0"
+description = "CocoIndex v1 example: convert PDF files to markdown using docling."
+requires-python = ">=3.11"
+dependencies = [
+    "cocoindex>=1.0.0a1",
+    "docling>=2.0.0",
+]
+
+[tool.uv]
+prerelease = "explicit"
+
+[tool.setuptools]
+packages = []
