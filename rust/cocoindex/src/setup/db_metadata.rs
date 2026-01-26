@@ -337,17 +337,11 @@ pub struct MetadataTableSetup {
 
 impl MetadataTableSetup {
     pub fn into_setup_info(self) -> ResourceSetupInfo<(), (), MetadataTableSetup> {
-        let db_schema = get_settings().unwrap().db_schema_name;
-        let description = if let Some(schema) = &db_schema {
-            format!("CocoIndex Metadata Table ({schema})")
-        } else {
-            "CocoIndex Metadata Table (public)".to_string()
-        };
         ResourceSetupInfo {
             key: (),
             state: None,
             has_tracked_state_change: self.metadata_table_missing,
-            description,
+            description: "CocoIndex Metadata Table".to_string(),
             setup_change: Some(self),
             legacy_key: None,
         }

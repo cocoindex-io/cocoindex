@@ -7,17 +7,18 @@ use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use std::collections::{BTreeMap, BTreeSet};
 
-pub fn qualify_table_name_with_schema(table: &str) -> String {
-    let schema: Option<String> = get_settings().unwrap().db_schema_name;
+pub fn qualify_table_name_with_schema(table: &str) -> Result<String> {
+    let schema_name = get_settings()?.db_schema_name;
 
-    if let Some(schema) = schema {
-        format!(
+    if let Some(schema) = schema_name {
+        let qualified_table_name = format!(
             "{}.{}",
             utils::db::sanitize_identifier(&schema),
             utils::db::sanitize_identifier(table)
-        )
+        );
+        Ok(qualified_table_name)
     } else {
-        utils::db::sanitize_identifier(table).to_string()
+        Ok(utils::db::sanitize_identifier(table).to_string())
     }
 }
 
@@ -43,7 +44,7 @@ async fn upgrade_tracking_table(
     existing_version_id: i32,
 ) -> Result<()> {
     if existing_version_id < 1 && desired_state.version_id >= 1 {
-        let table_name = qualify_table_name_with_schema(&desired_state.table_name);
+        let table_name = qualify_table_name_with_schema(&desired_state.table_name)?;
         let opt_fast_fingerprint_column = desired_state
             .has_fast_fingerprint_column
             .then(|| "processed_source_fp BYTEA,")
@@ -76,7 +77,7 @@ async fn upgrade_tracking_table(
 }
 
 async fn create_source_state_table(pool: &PgPool, table_name: &str) -> Result<()> {
-    let table_name = qualify_table_name_with_schema(table_name);
+    let table_name = qualify_table_name_with_schema(table_name)?;
     let query = format!(
         "CREATE TABLE IF NOT EXISTS {table_name} (
             source_id INTEGER NOT NULL,
@@ -95,7 +96,7 @@ async fn delete_source_states_for_sources(
     table_name: &str,
     source_ids: &Vec<i32>,
 ) -> Result<()> {
-    let table_name = qualify_table_name_with_schema(table_name);
+    let table_name = qualify_table_name_with_schema(table_name)?;
     let query = format!("DELETE FROM {} WHERE source_id = ANY($1)", table_name,);
     sqlx::query(&query).bind(source_ids).execute(pool).await?;
     Ok(())
@@ -303,8 +304,8 @@ impl TrackingTableSetupChange {
         if let Some(desired) = &self.desired_state {
             // Attempt to rename legacy tables within the same schema
             for legacy_name in self.legacy_tracking_table_names.iter() {
-                let qualified_legacy_table = qualify_table_name_with_schema(&legacy_name);
-                let qualified_desired_table = qualify_table_name_with_schema(&desired.table_name);
+                let qualified_legacy_table = qualify_table_name_with_schema(&legacy_name)?;
+                let qualified_desired_table = qualify_table_name_with_schema(&desired.table_name)?;
                 let query = format!(
                     "ALTER TABLE IF EXISTS {} RENAME TO {}",
                     qualified_legacy_table, qualified_desired_table
@@ -318,7 +319,7 @@ impl TrackingTableSetupChange {
             }
         } else {
             for legacy_name in self.legacy_tracking_table_names.iter() {
-                let qualified_legacy_table_name = qualify_table_name_with_schema(&legacy_name);
+                let qualified_legacy_table_name = qualify_table_name_with_schema(&legacy_name)?;
                 let query = format!("DROP TABLE IF EXISTS {}", qualified_legacy_table_name);
                 sqlx::query(&query).execute(pool).await?;
             }
@@ -338,7 +339,7 @@ impl TrackingTableSetupChange {
         if let Some(source_state_table_name) = source_state_table_name {
             for legacy_name in self.legacy_source_state_table_names.iter() {
                 let qualified_legacy_table_name =
-                    qualify_table_name_with_schema(legacy_name.as_str());
+                    qualify_table_name_with_schema(legacy_name.as_str())?;
                 let query = format!(
                     "ALTER TABLE IF EXISTS {qualified_legacy_table_name} RENAME TO {source_state_table_name}"
                 );
@@ -364,7 +365,7 @@ impl TrackingTableSetupChange {
         } else {
             for legacy_name in self.legacy_source_state_table_names.iter() {
                 let qualified_legacy_table_name =
-                    qualify_table_name_with_schema(legacy_name.as_str());
+                    qualify_table_name_with_schema(legacy_name.as_str())?;
                 let query = format!("DROP TABLE IF EXISTS {qualified_legacy_table_name}");
                 sqlx::query(&query).execute(pool).await?;
             }
