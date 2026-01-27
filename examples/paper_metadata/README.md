@@ -10,7 +10,7 @@ We appreciate a star ⭐ at [CocoIndex Github](https://github.com/cocoindex-io/c
 
 - [Install Postgres](https://cocoindex.io/docs/getting_started/installation#-install-postgres)
 - Set `OPENAI_API_KEY` for metadata extraction
-- Set `COCOINDEX_DATABASE_URL` for Postgres access
+- Set `POSTGRES_URL` for Postgres access
 
 ## Run
 
@@ -24,7 +24,7 @@ Set environment variables:
 
 ```sh
 export OPENAI_API_KEY="your_key"
-export COCOINDEX_DATABASE_URL="postgres://cocoindex:cocoindex@localhost/cocoindex"
+export POSTGRES_URL="postgres://cocoindex:cocoindex@localhost/cocoindex"
 ```
 
 This example uses the `coco_examples_v1` schema by default to avoid clashing with the legacy example tables.

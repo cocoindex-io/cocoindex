@@ -26,7 +26,7 @@ from cocoindex.extras.sentence_transformers import SentenceTransformerEmbedder
 
 
 DATABASE_URL = os.getenv(
-    "COCOINDEX_DATABASE_URL", "postgres://cocoindex:cocoindex@localhost/cocoindex"
+    "POSTGRES_URL", "postgres://cocoindex:cocoindex@localhost/cocoindex"
 )
 SOURCE_DATABASE_URL = os.getenv("SOURCE_DATABASE_URL", DATABASE_URL)
 TABLE_NAME = "output"

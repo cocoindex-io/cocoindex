@@ -172,9 +172,9 @@ async def coco_lifespan(
     builder: coco_aio.EnvironmentBuilder,
 ) -> AsyncIterator[None]:
     # Provide resources needed across the CocoIndex environment
-    database_url = os.getenv("COCOINDEX_DATABASE_URL") or os.getenv("DATABASE_URL")
+    database_url = os.getenv("POSTGRES_URL")
     if not database_url:
-        raise ValueError("COCOINDEX_DATABASE_URL or DATABASE_URL is not set")
+        raise ValueError("POSTGRES_URL is not set")
 
     async with await postgres.create_pool(database_url) as pool:
         builder.provide(PG_DB, postgres.register_db("paper_metadata_db", pool))
@@ -338,9 +338,9 @@ async def query_once(pool: asyncpg.Pool, query: str, *, top_k: int = TOP_K) -> N
 
 
 async def query() -> None:
-    database_url = os.getenv("COCOINDEX_DATABASE_URL") or os.getenv("DATABASE_URL")
+    database_url = os.getenv("POSTGRES_URL")
     if not database_url:
-        raise ValueError("COCOINDEX_DATABASE_URL or DATABASE_URL is not set")
+        raise ValueError("POSTGRES_URL is not set")
 
     async with await postgres.create_pool(database_url) as pool:
         if len(sys.argv) > 2:

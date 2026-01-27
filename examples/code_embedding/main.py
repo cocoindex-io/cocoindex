@@ -12,6 +12,7 @@ Code Embedding (v1) - CocoIndex pipeline example.
 from __future__ import annotations
 
 import asyncio
+import os
 import pathlib
 import sys
 from dataclasses import dataclass
@@ -29,7 +30,9 @@ from cocoindex.resources.file import FileLike, PatternFilePathMatcher
 from cocoindex.resources.chunk import Chunk
 
 
-DATABASE_URL = "postgres://cocoindex:cocoindex@localhost/cocoindex"
+DATABASE_URL = os.getenv(
+    "POSTGRES_URL", "postgres://cocoindex:cocoindex@localhost/cocoindex"
+)
 TABLE_NAME = "code_embeddings"
 PG_SCHEMA_NAME = "coco_examples"
 TOP_K = 5

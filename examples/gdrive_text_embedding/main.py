@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import pathlib
 import sys
 from dataclasses import dataclass
 from typing import AsyncIterator, Annotated
@@ -29,7 +28,7 @@ from cocoindex.resources.chunk import Chunk
 
 
 DATABASE_URL = os.getenv(
-    "COCOINDEX_DATABASE_URL", "postgres://cocoindex:cocoindex@localhost/cocoindex"
+    "POSTGRES_URL", "postgres://cocoindex:cocoindex@localhost/cocoindex"
 )
 TABLE_NAME = "doc_embeddings"
 PG_SCHEMA_NAME = "coco_examples_v1"

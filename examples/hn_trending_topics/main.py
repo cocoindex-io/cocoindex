@@ -26,7 +26,7 @@ from cocoindex.connectors import postgres
 
 # Configuration
 DATABASE_URL = os.environ.get(
-    "DATABASE_URL", "postgres://cocoindex:cocoindex@localhost/cocoindex"
+    "POSTGRES_URL", "postgres://cocoindex:cocoindex@localhost/cocoindex"
 )
 MAX_THREADS = 10
 LLM_MODEL = "gemini/gemini-2.5-flash"
