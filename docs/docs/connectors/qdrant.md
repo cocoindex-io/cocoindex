@@ -156,7 +156,7 @@ class QdrantVectorDef(NamedTuple):
 For collections with a single unnamed vector:
 
 ```python
-from cocoindex.extras.sentence_transformers import SentenceTransformerEmbedder
+from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
 
 embedder = SentenceTransformerEmbedder("sentence-transformers/all-MiniLM-L6-v2")
 
@@ -220,7 +220,7 @@ A `VectorSchemaProvider` can be:
 - **A `VectorSchema`** — for explicit size and dtype when not using an embedder
 
 ```python
-from cocoindex.extras.sentence_transformers import SentenceTransformerEmbedder
+from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
 
 embedder = SentenceTransformerEmbedder("sentence-transformers/all-MiniLM-L6-v2")
 
@@ -274,7 +274,7 @@ The `distance` parameter in `QdrantVectorDef` specifies the similarity metric:
 import cocoindex as coco
 import cocoindex.asyncio as coco_aio
 from cocoindex.connectors import qdrant
-from cocoindex.extras.sentence_transformers import SentenceTransformerEmbedder
+from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
 from typing import AsyncIterator
 
 QDRANT_URL = "http://localhost:6333"

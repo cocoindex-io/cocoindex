@@ -1,4 +1,4 @@
-//! Extra text processing utilities for CocoIndex.
+//! Text processing operations for CocoIndex.
 //!
 //! This crate provides text processing functionality including:
 //! - Programming language detection and tree-sitter support

@@ -1,6 +1,6 @@
-"""Tests for cocoindex.extras.text module."""
+"""Tests for cocoindex.ops.text module."""
 
-from cocoindex.extras.text import (
+from cocoindex.ops.text import (
     detect_code_language,
     SeparatorSplitter,
     CustomLanguageConfig,

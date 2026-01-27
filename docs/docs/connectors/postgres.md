@@ -327,7 +327,7 @@ A `VectorSchemaProvider` can be:
 - **A `VectorSchema`** — for explicit size and dtype when not using an embedder
 
 ```python
-from cocoindex.extras.sentence_transformers import SentenceTransformerEmbedder
+from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
 
 embedder = SentenceTransformerEmbedder("sentence-transformers/all-MiniLM-L6-v2")
 

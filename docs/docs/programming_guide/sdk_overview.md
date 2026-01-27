@@ -22,14 +22,14 @@ The CocoIndex SDK is organized into several modules:
 |---------|-------------|
 | `cocoindex.connectors` | Connectors for data sources and targets |
 | `cocoindex.resources` | Provide common data models and abstractions shared across connectors and extra utilities |
-| `cocoindex.extras` | Extra utilities for performing common data processing tasks (e.g., text splitting, embedding with SentenceTransformers) |
+| `cocoindex.ops` | Extra utilities for performing common data processing tasks (e.g., text splitting, embedding with SentenceTransformers) |
 
 Import connectors and extras by their specific sub-module:
 
 ```python
 from cocoindex.connectors import localfs, postgres
-from cocoindex.extras.text import RecursiveSplitter
-from cocoindex.extras.sentence_transformers import SentenceTransformerEmbedder
+from cocoindex.ops.text import RecursiveSplitter
+from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
 from cocoindex.resources.file import FileLike, PatternFilePathMatcher
 from cocoindex.resources.chunk import Chunk
 ```
@@ -170,7 +170,7 @@ A typical CocoIndex application imports from multiple modules:
 import cocoindex.asyncio as coco_aio  # or: import cocoindex as coco
 
 from cocoindex.connectors import localfs, postgres
-from cocoindex.extras.text import RecursiveSplitter
+from cocoindex.ops.text import RecursiveSplitter
 from cocoindex.resources.file import FileLike
 ```
 

@@ -31,8 +31,8 @@ from pypdf import PdfReader, PdfWriter
 import cocoindex as coco
 import cocoindex.asyncio as coco_aio
 from cocoindex.connectors import localfs, postgres
-from cocoindex.extras.text import CustomLanguageConfig, RecursiveSplitter
-from cocoindex.extras.sentence_transformers import SentenceTransformerEmbedder
+from cocoindex.ops.text import CustomLanguageConfig, RecursiveSplitter
+from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
 from cocoindex.resources.file import FileLike, PatternFilePathMatcher
 
 

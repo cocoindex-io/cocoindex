@@ -2,11 +2,11 @@ mod app;
 mod component;
 mod context;
 mod environment;
-mod extras;
 mod fingerprint;
 mod function;
 mod inspect;
 mod memo_key;
+mod ops;
 mod prelude;
 mod profile;
 mod runtime;
@@ -68,11 +68,11 @@ fn core_module(m: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()>
     // Memoization fingerprinting (deterministic)
     m.add_function(wrap_pyfunction!(memo_key::fingerprint_memo_key, m)?)?;
 
-    // Extras text processing
-    m.add_class::<extras::PyChunk>()?;
-    m.add_class::<extras::PySeparatorSplitter>()?;
-    m.add_class::<extras::PyCustomLanguageConfig>()?;
-    m.add_class::<extras::PyRecursiveSplitter>()?;
-    m.add_function(wrap_pyfunction!(extras::detect_code_language, m)?)?;
+    // Text processing operations
+    m.add_class::<ops::PyChunk>()?;
+    m.add_class::<ops::PySeparatorSplitter>()?;
+    m.add_class::<ops::PyCustomLanguageConfig>()?;
+    m.add_class::<ops::PyRecursiveSplitter>()?;
+    m.add_function(wrap_pyfunction!(ops::detect_code_language, m)?)?;
     Ok(())
 }

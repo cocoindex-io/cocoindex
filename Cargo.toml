@@ -4,7 +4,7 @@ members = [
     "rust/utils",
     "rust/py",
     "rust/py_utils",
-    "rust/extra_text",
+    "rust/ops_text",
 ]
 resolver = "2"
 
