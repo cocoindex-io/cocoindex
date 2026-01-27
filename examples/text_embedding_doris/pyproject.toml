@@ -1,9 +1,14 @@
 [project]
 name = "text-embedding-doris"
 version = "0.1.0"
+description = "Simple example for cocoindex: build embedding index with Apache Doris as vector database."
+requires-python = ">=3.11"
 dependencies = [
-    "cocoindex",
-    "sentence-transformers",
-    "aiohttp",
-    "aiomysql",
+    "cocoindex[embeddings]>=0.3.26,<1",
+    "python-dotenv>=1.0.1",
+    "aiomysql>=0.2.0",
+    "aiohttp>=3.9.0",
 ]
+
+[tool.setuptools]
+packages = []

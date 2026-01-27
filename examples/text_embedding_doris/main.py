@@ -2,24 +2,23 @@ import os
 import datetime
 import math
 from typing import Any
+from dotenv import load_dotenv
 import cocoindex
 import cocoindex.targets.doris as coco_doris
 
-# Define Doris connection from environment
-DORIS_FE_HOST = os.environ.get("DORIS_FE_HOST", "localhost")
-DORIS_DATABASE = os.environ.get("DORIS_DATABASE", "cocoindex_demo")
+# Define Doris table name
 DORIS_TABLE = "TextEmbedding"
 
 
 def get_doris_config() -> dict[str, Any]:
     """Get Doris configuration from environment variables."""
     return {
-        "fe_host": DORIS_FE_HOST,
-        "fe_http_port": int(os.environ.get("DORIS_HTTP_PORT", "8080")),
+        "fe_host": os.environ.get("DORIS_FE_HOST", "localhost"),
+        "fe_http_port": int(os.environ.get("DORIS_HTTP_PORT", "8030")),
         "query_port": int(os.environ.get("DORIS_QUERY_PORT", "9030")),
         "username": os.environ.get("DORIS_USERNAME", "root"),
         "password": os.environ.get("DORIS_PASSWORD", ""),
-        "database": DORIS_DATABASE,
+        "database": os.environ.get("DORIS_DATABASE", "cocoindex_demo"),
     }
 
 
@@ -150,3 +149,28 @@ async def search(query: str) -> cocoindex.QueryOutput:
             similarity_metric=cocoindex.VectorSimilarityMetric.L2_DISTANCE,
         ),
     )
+
+
+async def _main() -> None:
+    # Run queries in a loop to demonstrate the query capabilities.
+    while True:
+        query = input("Enter search query (or Enter to quit): ")
+        if query == "":
+            break
+
+        # Run the async query function
+        query_output = await search(query)
+        print("\nSearch results:")
+        for result in query_output.results:
+            print(f"[{result['score']:.3f}] {result['filename']}")
+            print(f"    {result['text'][:200]}...")
+            print("---")
+        print()
+
+
+if __name__ == "__main__":
+    import asyncio
+
+    load_dotenv()
+    cocoindex.init()
+    asyncio.run(_main())

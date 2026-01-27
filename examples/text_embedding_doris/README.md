@@ -31,33 +31,51 @@ We appreciate a star at [CocoIndex Github](https://github.com/cocoindex-io/cocoi
     ```
 
 3. Set up Apache Doris or VeloDB Cloud:
-   - **Option A: Local Doris** - [Install Apache Doris 4.x](https://doris.apache.org/docs/4.x/gettingStarted/quick-start/)
-   - **Option B: VeloDB Cloud** - Sign up at [VeloDB Cloud](https://cloud.velodb.io/) for a managed service, please use [VeloDB Cloud 5.0 beta](https://docs.velodb.io/cloud/5.x-preview/getting-started/quick-start)
+   - **Option A: Local Doris** - Run with a single command (defaults to Doris 4.x):
+     ```sh
+     curl -sSL https://doris.apache.org/files/start-doris.sh | bash
+     ```
+     Verify it's running: `mysql -uroot -P9030 -h127.0.0.1`
+
+   - **Option B: VeloDB Cloud** - Sign up at [VeloDB Cloud](https://www.velodb.cloud/passport/login) for a managed service, please use [VeloDB Cloud 5.0 beta](https://docs.velodb.io/cloud/5.x-preview/getting-started/quick-start)
 
 4. Configure environment variables in `.env`:
+
+    For **local Doris**:
     ```sh
-    DORIS_FE_HOST=your-doris-host.example.com
+    DORIS_FE_HOST=127.0.0.1
+    DORIS_PASSWORD=
+    ```
+
+    For **VeloDB Cloud**:
+    ```sh
+    DORIS_FE_HOST=your-cluster.velodb.cloud
     DORIS_PASSWORD=your-password
-    # Optional:
-    DORIS_USERNAME=root
-    DORIS_HTTP_PORT=8080
+    DORIS_USERNAME=admin
+    DORIS_HTTP_PORT=443
     DORIS_QUERY_PORT=9030
     DORIS_DATABASE=cocoindex_demo
     ```
 
 ## Run
 
-Update index, which will also setup Doris tables at the first time:
+1. Update index (this will also setup Doris tables the first time):
 
-```sh
-cocoindex update main
-```
+    ```sh
+    cocoindex update main
+    ```
 
-You can also run the command with `-L`, which will watch for file changes and update the index automatically.
+    You can also run with `-L` to watch for file changes and update automatically:
 
-```sh
-cocoindex update -L main
-```
+    ```sh
+    cocoindex update -L main
+    ```
+
+2. Run queries:
+
+    ```sh
+    python main.py
+    ```
 
 ## CocoInsight
 
