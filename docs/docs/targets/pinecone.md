@@ -20,33 +20,33 @@ Here's how CocoIndex data elements map to Pinecone elements during export:
 | a collected row   | a vector         |
 | a field           | metadata field   |
 
-::::info Installation and import
+:::info Installation and import
 
 This target is provided via an optional dependency `[pinecone]`:
 ```sh
 pip install "cocoindex[pinecone]"
 ```
 
-To use it, you need to import the submodule `cocoindex.targets.pinecone`:
+To use it, import the spec from the engine specs module:
 ```python
-import cocoindex.targets.pinecone as coco_pinecone
+from cocoindex.targets._engine_builtin_specs import Pinecone, PineconeConnection
+from cocoindex.targets.pinecone import get_index
 ```
 
-::::
+:::
 
 ## Spec
 
-The spec `coco_pinecone.Pinecone` takes the following fields:
+The spec `Pinecone` takes the following fields:
 
-* `api_key` (`str`, required): Your Pinecone API key.
 * `index_name` (`str`, required): The name of the index to export the data to.
-* `environment` (`str`, optional): The Pinecone environment (e.g., `us-east-1-aws`). If not specified, uses the default environment from your API key.
+* `connection` (`AuthEntryReference[PineconeConnection]`, required): Reference to a Pinecone connection spec.
+  * `api_key` (`str`): Your Pinecone API key.
+  * `environment` (`str | None`, optional): The Pinecone environment. If not specified, uses the default from your API key.
 * `namespace` (`str`, optional, default: `""`): The namespace within the index to use.
-* `batch_size` (`int`, optional, default: 100): Number of vectors to upsert in a single batch operation.
-* `index_options` (`coco_pinecone.IndexOptions`, optional): Advanced index configuration options.
-  * `metric` (`str`, optional, default: `"cosine"`): Distance metric for the index (`"cosine"`, `"euclidean"`, or `"dotproduct"`).
-  * `pod_type` (`str`, optional): Pod type for the index (e.g., `"p1.x1"`, `"s1.x1"`).
-  * `replicas` (`int`, optional): Number of replicas for the index.
+* `cloud` (`str`, optional, default: `"aws"`): The cloud provider for the index (`"aws"`, `"gcp"`, or `"azure"`).
+* `region` (`str`, optional, default: `"us-east-1"`): The region for the index.
+* `batch_size` (`int`, optional, default: `100`): Number of vectors to upsert/delete in a single batch operation.
 
 Additional notes:
 
@@ -57,32 +57,40 @@ Additional notes:
 
 :::info
 
-Pinecone indexes must be created before use. If the index doesn't exist, CocoIndex will attempt to create it automatically using the dimension from your vector embeddings and the specified `index_options`.
+Pinecone indexes must be created before use. If the index doesn't exist, CocoIndex will attempt to create it automatically using the dimension from your vector embeddings.
 
 :::
 
 You can find an end-to-end example here: [examples/text_embedding_pinecone](https://github.com/cocoindex-io/cocoindex/tree/main/examples/text_embedding_pinecone).
 
-### Metadata Filtering Example
+### Example Usage
 ```python
 import cocoindex
-import cocoindex.targets.pinecone as coco_pinecone
+from cocoindex.targets._engine_builtin_specs import Pinecone, PineconeConnection
+from cocoindex.auth_registry import AuthEntryReference
 
 @cocoindex.flow_def(name="DocumentSearchFlow")
 def document_search_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope):
 
     doc_collector = data_scope.add_collector()
 
+    # Create a Pinecone connection reference
+    pinecone_conn = AuthEntryReference(
+        name="pinecone_connection",
+        value=PineconeConnection(
+            api_key="your-api-key",
+            environment=None  # Optional, inferred from API key if not provided
+        )
+    )
+
     doc_collector.export(
         "documents",
-        coco_pinecone.Pinecone(
-            api_key="your-api-key",
+        Pinecone(
             index_name="documents",
+            connection=pinecone_conn,
             namespace="production",
-            index_options=coco_pinecone.IndexOptions(
-                metric="cosine",
-                pod_type="p1.x1"
-            )
+            cloud="aws",
+            region="us-east-1"
         ),
         primary_key_fields=["id"],
         vector_fields=["embedding"]
@@ -91,13 +99,19 @@ def document_search_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoin
 
 ## `get_index()` helper
 
-We provide a helper to obtain a Pinecone index instance that is configured consistently with CocoIndex's writer:
+We provide a helper to obtain a Pinecone index instance for querying:
 ```python
-from cocoindex.targets import pinecone as coco_pinecone
+from cocoindex.targets.pinecone import get_index
 
-index = coco_pinecone.get_index(
+index = get_index(
     api_key="your-api-key",
-    index_name="documents",
+    index_name="documents"
+)
+
+# Query the index
+results = index.query(
+    vector=[0.1, 0.2, ...],
+    top_k=10,
     namespace="production"
 )
 ```
@@ -105,15 +119,12 @@ index = coco_pinecone.get_index(
 Signature:
 ```python
 def get_index(
-  api_key: str,
-  index_name: str,
-  *,
-  environment: str | None = None,
-  namespace: str = ""
+    api_key: str,
+    index_name: str,
 ) -> pinecone.Index
 ```
 
-This helper ensures you're using the same index configuration as your indexing pipeline, making it easier to query the data you've indexed.
+This helper creates a Pinecone index reference configured with your API key and index name, making it easy to query the data you've indexed with CocoIndex.
 
 ## Example
 
