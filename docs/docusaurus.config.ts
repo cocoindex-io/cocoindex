@@ -150,7 +150,7 @@ const config: Config = {
       items: [
         {
           label: 'Examples',
-          to: 'https://cocoindex.io/examples',
+          to: 'https://cocoindex.io/examples-v1',
           target: '_self',
           position: 'left',
         },
