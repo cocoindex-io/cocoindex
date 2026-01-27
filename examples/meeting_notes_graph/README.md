@@ -50,10 +50,10 @@ export GOOGLE_SERVICE_ACCOUNT_CREDENTIAL=/absolute/path/to/service_account.json
 export GOOGLE_DRIVE_ROOT_FOLDER_IDS=folderId1,folderId2
 ```
 
-Alternatively, fill in your values in `.env.example` and source it:
+Alternatively, copy `.env.example` to `.env`, fill in your values, and source it:
 
 ```sh
-set -a && source .env.example && set +a
+set -a && source .env && set +a
 ```
 
 Notes:
