@@ -25,6 +25,7 @@ CLEANUP_PATTERNS = [
     "out_*",
     "cocoindex_unbound.db",
     "cli_init_*",
+    "default_db_test.db",
 ]
 
 
@@ -407,6 +408,87 @@ class TestDropNoPersisted:
 # =============================================================================
 # Test: Init command
 # =============================================================================
+
+
+# =============================================================================
+# Test: Default DB path from COCOINDEX_DB environment variable
+# =============================================================================
+
+
+class TestDefaultDbPath:
+    """Tests for the default db path from COCOINDEX_DB environment variable."""
+
+    def test_ls_uses_default_db_from_env(self) -> None:
+        """cocoindex ls without args should use COCOINDEX_DB if set."""
+        db_path = TEST_DIR / "default_db_test.db"
+
+        # First, run an app to create the database with persisted state
+        run_cli("update", "./app1.py")
+
+        # Copy the db directory to our test db path (LMDB uses directory)
+        shutil.copytree(TEST_DIR / "cocoindex.db", db_path)
+
+        # Now run ls without args but with COCOINDEX_DB set
+        env = os.environ.copy()
+        env["COCOINDEX_DB"] = str(db_path)
+        cmd = ["cocoindex", "ls"]
+        result = subprocess.run(
+            cmd,
+            cwd=TEST_DIR,
+            capture_output=True,
+            text=True,
+            check=False,
+            encoding="utf-8",
+            env=env,
+        )
+        assert result.returncode == 0, f"Failed: {result.stderr}"
+        assert "TestApp1" in result.stdout
+
+    def test_ls_without_args_errors_when_no_env_var(self) -> None:
+        """cocoindex ls without args should error when COCOINDEX_DB is not set."""
+        # Ensure COCOINDEX_DB is not set
+        env = os.environ.copy()
+        env.pop("COCOINDEX_DB", None)
+        cmd = ["cocoindex", "ls"]
+        result = subprocess.run(
+            cmd,
+            cwd=TEST_DIR,
+            capture_output=True,
+            text=True,
+            check=False,
+            encoding="utf-8",
+            env=env,
+        )
+        assert result.returncode != 0
+        assert "COCOINDEX_DB" in result.stderr
+
+    def test_update_app_with_default_db_from_env(self) -> None:
+        """cocoindex update should work when app uses COCOINDEX_DB for db_path."""
+        db_path = TEST_DIR / "default_db_test.db"
+
+        # Set COCOINDEX_DB and run update
+        env = os.environ.copy()
+        env["COCOINDEX_DB"] = str(db_path)
+        cmd = ["cocoindex", "update", "./app_default_db.py"]
+        result = subprocess.run(
+            cmd,
+            cwd=TEST_DIR,
+            capture_output=True,
+            text=True,
+            check=False,
+            encoding="utf-8",
+            env=env,
+        )
+        assert result.returncode == 0, f"Failed: {result.stderr}"
+
+        # Verify output file was created
+        out_file = TEST_DIR / "out_default_db" / "default_db.txt"
+        assert out_file.exists()
+        assert "Hello from DefaultDbApp" in out_file.read_text()
+
+        # Verify app is in the database using ls with --db
+        result = run_cli("ls", "--db", str(db_path))
+        assert "DefaultDbApp" in result.stdout
 
 
 class TestInitCommand:

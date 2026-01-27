@@ -97,9 +97,36 @@ For example, an app that processes files might mount one component per file:
 
 See [Processing Component](./processing_component.md) for how mounting and scopes define these boundaries.
 
-## Lifespan
+## Database path
 
-Apps are typically updated many times. A **lifespan function** defines the CocoIndex runtime lifecycle: its setup runs when the runtime starts (automatically before the first `app.update()`), and its cleanup runs when the runtime stops. Use it to configure CocoIndex and initialize shared resources that processing components can reuse.
+CocoIndex needs a database path (`db_path`) to store its internal state. This database tracks target states and memoized results from previous runs, enabling CocoIndex to compute what changed and apply only the necessary updates.
+
+The simplest way to configure the database path is via the `COCOINDEX_DB` environment variable:
+
+```bash
+export COCOINDEX_DB=./cocoindex.db
+```
+
+With `COCOINDEX_DB` set, you can create and run apps without any additional configuration:
+
+```python
+import cocoindex as coco
+
+@coco.function
+def app_main(scope: coco.Scope) -> None:
+    # ... your pipeline logic ...
+
+app = coco.App(app_main, coco.AppConfig(name="MyPipeline"))
+app.update()  # Uses COCOINDEX_DB for storage
+```
+
+## Lifespan (optional)
+
+A **lifespan function** defines the CocoIndex runtime lifecycle: its setup runs when the runtime starts (automatically before the first `app.update()`), and its cleanup runs when the runtime stops. Use it to configure CocoIndex settings programmatically or to initialize shared resources that processing components can reuse.
+
+:::tip
+If you only need to set the database path, using the `COCOINDEX_DB` environment variable is simpler than defining a lifespan function.
+:::
 
 ### Defining a lifespan
 
@@ -110,14 +137,14 @@ import cocoindex.asyncio as coco_aio
 
 @coco_aio.lifespan
 async def coco_lifespan(builder: coco_aio.EnvironmentBuilder) -> AsyncIterator[None]:
-    # Configure CocoIndex's internal database location
+    # Configure CocoIndex's internal database location (overrides COCOINDEX_DB if set)
     builder.settings.db_path = pathlib.Path("./cocoindex.db")
     # Setup: initialize resources here
     yield
     # Cleanup happens automatically when the context exits
 ```
 
-The `db_path` setting specifies where CocoIndex stores its internal database. CocoIndex uses this database to track target states and memoized results from previous runs, enabling it to compute what changed and apply only the necessary updates. You should provide a path on your local filesystem.
+Setting `db_path` in the lifespan takes precedence over the `COCOINDEX_DB` environment variable. If neither is provided, CocoIndex will raise an error.
 
 The lifespan function can be sync or async:
 

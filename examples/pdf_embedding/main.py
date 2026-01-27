@@ -78,8 +78,6 @@ class PdfEmbedding:
 async def coco_lifespan(
     builder: coco_aio.EnvironmentBuilder,
 ) -> AsyncIterator[None]:
-    # For CocoIndex internal states
-    builder.settings.db_path = pathlib.Path("./cocoindex.db")
     # Provide resources needed across the CocoIndex environment
     database_url = os.getenv("COCOINDEX_DATABASE_URL") or os.getenv("DATABASE_URL")
     if not database_url:

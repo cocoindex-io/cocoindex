@@ -349,9 +349,14 @@ class LazyEnvironment:
 
                 built_settings = env_builder.settings
                 if not built_settings.db_path:
-                    raise ValueError(
-                        "Environment settings must provide Settings.db_path"
-                    )
+                    default_db_path = setting.get_default_db_path()
+                    if default_db_path:
+                        built_settings.db_path = default_db_path
+                    else:
+                        raise ValueError(
+                            "Environment settings must provide Settings.db_path "
+                            "(or set COCOINDEX_DB environment variable)"
+                        )
 
                 context_provider = env_builder._context_provider
                 self._exit_stack.push_async_callback(context_provider.aclose)

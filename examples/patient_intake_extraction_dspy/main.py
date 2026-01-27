@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import datetime
 import pathlib
-from typing import Iterator
-
 from dotenv import load_dotenv
 import dspy
 from pydantic import BaseModel, Field
@@ -106,12 +104,6 @@ class PatientExtractor(dspy.Module):
         """Extract patient information from form images and return as a Pydantic model."""
         result = self.extract(form_images=form_images)
         return result.patient
-
-
-@coco.lifespan
-def coco_lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
-    builder.settings.db_path = pathlib.Path("./cocoindex.db")
-    yield
 
 
 @coco.function

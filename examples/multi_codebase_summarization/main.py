@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import os
 import pathlib
-from typing import Collection, Iterator
+from typing import Collection
 
 import instructor
 from litellm import completion
@@ -99,12 +99,6 @@ class CodebaseInfo(BaseModel):
 LLM_MODEL = os.environ.get("LLM_MODEL", "gemini/gemini-2.5-flash")
 
 _instructor_client = instructor.from_litellm(completion, mode=instructor.Mode.JSON)
-
-
-@coco.lifespan
-def coco_lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
-    builder.settings.db_path = pathlib.Path("./cocoindex.db")
-    yield
 
 
 @coco.function(memo=True)

@@ -9,7 +9,6 @@ PDF to Markdown (v1) - CocoIndex pipeline example.
 from __future__ import annotations
 
 import pathlib
-from typing import Iterator
 
 from docling.document_converter import DocumentConverter
 
@@ -19,12 +18,6 @@ from cocoindex.resources.file import PatternFilePathMatcher
 
 
 _converter = DocumentConverter()
-
-
-@coco.lifespan
-def coco_lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
-    builder.settings.db_path = pathlib.Path("./cocoindex.db")
-    yield
 
 
 @coco.function(memo=True)
