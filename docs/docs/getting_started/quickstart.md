@@ -75,7 +75,7 @@ This defines a CocoIndex App.
 - An App is the top-level runnable unit in CocoIndex.
 - Use `@coco.lifespan` to configure CocoIndex settings: sets up a local database (`cocoindex.db`) for incremental processing.
 
-<DocumentationButton url="/docs-v1/programming_guide/app" text="CocoIndex App" />  
+<DocumentationButton url="/docs-v1/programming_guide/app" text="CocoIndex App" />
 
 ### Define the Main Function
 
