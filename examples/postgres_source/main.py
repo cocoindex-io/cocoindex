@@ -22,7 +22,7 @@ from numpy.typing import NDArray
 import cocoindex as coco
 import cocoindex.asyncio as coco_aio
 from cocoindex.connectors import postgres
-from cocoindex.extras.sentence_transformers import SentenceTransformerEmbedder
+from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
 
 
 DATABASE_URL = os.getenv(

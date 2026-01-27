@@ -35,7 +35,7 @@ class SentenceTransformerEmbedder(_schema.VectorSchemaProvider):
             Defaults to True for compatibility with cosine similarity.
 
     Example:
-        >>> from cocoindex.extras.sentence_transformers import SentenceTransformerEmbedder
+        >>> from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
         >>> embedder = SentenceTransformerEmbedder("sentence-transformers/all-MiniLM-L6-v2")
         >>>
         >>> # Get vector schema for database column definitions

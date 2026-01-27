@@ -1,7 +1,7 @@
-//! Extra text processing functions exposed to Python.
+//! Text processing operations exposed to Python.
 
-use cocoindex_extra_text::prog_langs;
-use cocoindex_extra_text::split::{
+use cocoindex_ops_text::prog_langs;
+use cocoindex_ops_text::split::{
     Chunk, CustomLanguageConfig, KeepSeparator, RecursiveChunkConfig, RecursiveChunker,
     RecursiveSplitConfig, SeparatorSplitConfig, SeparatorSplitter,
 };

@@ -24,8 +24,8 @@ from numpy.typing import NDArray
 import cocoindex as coco
 import cocoindex.asyncio as coco_aio
 from cocoindex.connectors import localfs, postgres
-from cocoindex.extras.text import RecursiveSplitter, detect_code_language
-from cocoindex.extras.sentence_transformers import SentenceTransformerEmbedder
+from cocoindex.ops.text import RecursiveSplitter, detect_code_language
+from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
 from cocoindex.resources.file import FileLike, PatternFilePathMatcher
 from cocoindex.resources.chunk import Chunk
 

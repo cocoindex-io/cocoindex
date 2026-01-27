@@ -41,7 +41,7 @@ cocoindex/
 │   ├── py/                     # Python bindings (PyO3)
 │   ├── py_utils/               # Python-Rust utility helpers (error, convert, future)
 │   ├── utils/                  # General utilities: error, batching, fingerprint, etc.
-│   └── extra_text/             # Text processing utilities (splitter, language detection)
+│   └── ops_text/               # Text processing operations (splitter, language detection)
 │
 ├── python/
 │   ├── cocoindex/              # Python package
@@ -61,7 +61,7 @@ cocoindex/
 │   │   ├── connectors/         # External system connectors (localfs, postgres, qdrant, lancedb, google_drive)
 │   │   ├── connectorkits/      # Connector building utilities
 │   │   ├── resources/          # Abstractions: file.py (FileLike), chunk.py (Chunk), schema.py
-│   │   └── extras/             # Utilities: text.py (RecursiveSplitter), sentence_transformers.py
+│   │   └── ops/                # Operations: text.py (RecursiveSplitter), sentence_transformers.py
 │   └── tests/                  # Python tests
 │
 ├── examples/                   # Example applications

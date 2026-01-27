@@ -1,5 +1,5 @@
 [package]
-name = "cocoindex_extra_text"
+name = "cocoindex_ops_text"
 version = { workspace = true }
 edition = { workspace = true }
 rust-version = { workspace = true }

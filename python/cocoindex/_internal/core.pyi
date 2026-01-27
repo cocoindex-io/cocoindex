@@ -182,10 +182,10 @@ async def reserve_memoization_async(
 def list_stable_paths(app: App) -> list[StablePath]: ...
 
 ########################################################
-# Extras
+# Ops (Text Processing Operations)
 ########################################################
 
-# --- Chunk (from extras) ---
+# --- Chunk (from ops) ---
 class Chunk:
     @property
     def text(self) -> str: ...
@@ -206,7 +206,7 @@ class Chunk:
     @property
     def end_column(self) -> int: ...
 
-# --- SeparatorSplitter (from extras) ---
+# --- SeparatorSplitter (from ops) ---
 class SeparatorSplitter:
     def __new__(
         cls,
@@ -217,7 +217,7 @@ class SeparatorSplitter:
     ) -> "SeparatorSplitter": ...
     def split(self, text: str) -> list[Chunk]: ...
 
-# --- CustomLanguageConfig (from extras) ---
+# --- CustomLanguageConfig (from ops) ---
 class CustomLanguageConfig:
     language_name: str
     aliases: list[str]
@@ -230,7 +230,7 @@ class CustomLanguageConfig:
         aliases: list[str] | None = None,
     ) -> "CustomLanguageConfig": ...
 
-# --- RecursiveSplitter (from extras) ---
+# --- RecursiveSplitter (from ops) ---
 class RecursiveSplitter:
     def __new__(
         cls,

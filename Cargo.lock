@@ -461,7 +461,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "cocoindex_extra_text"
+name = "cocoindex_ops_text"
 version = "999.0.0"
 dependencies = [
  "regex",
@@ -504,7 +504,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "cocoindex_core",
- "cocoindex_extra_text",
+ "cocoindex_ops_text",
  "cocoindex_py_utils",
  "cocoindex_utils",
  "futures",

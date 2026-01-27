@@ -1,6 +1,6 @@
 # Text Processing Utilities
 
-The `cocoindex.extras.text` module provides utilities for text processing, including:
+The `cocoindex.ops.text` module provides utilities for text processing, including:
 
 - Code language detection
 - Text chunking and splitting
@@ -15,7 +15,7 @@ Detect the programming language from a filename.
 **Usage:**
 
 ```python
-from cocoindex.extras.text import detect_code_language
+from cocoindex.ops.text import detect_code_language
 
 language = detect_code_language(filename="main.py")
 print(language)  # "python"
@@ -34,7 +34,7 @@ Split text by regex separators.
 **Usage:**
 
 ```python
-from cocoindex.extras.text import SeparatorSplitter
+from cocoindex.ops.text import SeparatorSplitter
 
 splitter = SeparatorSplitter()
 
@@ -63,7 +63,7 @@ Advanced text chunking with language awareness and syntax-aware splitting for co
 **Usage:**
 
 ```python
-from cocoindex.extras.text import RecursiveSplitter
+from cocoindex.ops.text import RecursiveSplitter
 
 splitter = RecursiveSplitter()
 
@@ -117,7 +117,7 @@ Define custom language splitting rules.
 **Usage:**
 
 ```python
-from cocoindex.extras.text import CustomLanguageConfig, RecursiveSplitter
+from cocoindex.ops.text import CustomLanguageConfig, RecursiveSplitter
 
 # Create custom language config for abstracts
 abstract_config = CustomLanguageConfig(
@@ -145,7 +145,7 @@ chunks = splitter.split(
 For detailed API documentation, refer to the module docstrings:
 
 ```python
-from cocoindex.extras import text
+from cocoindex.ops import text
 
 help(text.RecursiveSplitter)
 help(text.SeparatorSplitter)

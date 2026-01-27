@@ -1,6 +1,6 @@
 # Extra Utilities
 
-CocoIndex provides extra utilities in the `cocoindex.extras` package for common data processing tasks.
+CocoIndex provides extra utilities in the `cocoindex.ops` package for common data processing tasks.
 
 ## Available Modules
 

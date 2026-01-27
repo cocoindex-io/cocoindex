@@ -1,6 +1,6 @@
 # Sentence Transformers Integration
 
-The `cocoindex.extras.sentence_transformers` module provides integration with the [sentence-transformers](https://www.sbert.net/) library for text embeddings.
+The `cocoindex.ops.sentence_transformers` module provides integration with the [sentence-transformers](https://www.sbert.net/) library for text embeddings.
 
 ## Overview
 
@@ -30,7 +30,7 @@ uv pip install cocoindex[sentence_transformers]
 ### Creating an Embedder
 
 ```python
-from cocoindex.extras.sentence_transformers import SentenceTransformerEmbedder
+from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
 
 # Initialize embedder with a pre-trained model
 embedder = SentenceTransformerEmbedder("sentence-transformers/all-MiniLM-L6-v2")
@@ -77,7 +77,7 @@ from numpy.typing import NDArray
 
 import cocoindex as coco
 from cocoindex.connectors import postgres
-from cocoindex.extras.sentence_transformers import SentenceTransformerEmbedder
+from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
 
 # Create a global embedder instance
 embedder = SentenceTransformerEmbedder("sentence-transformers/all-MiniLM-L6-v2")
@@ -169,8 +169,8 @@ from numpy.typing import NDArray
 import cocoindex as coco
 import cocoindex.asyncio as coco_aio
 from cocoindex.connectors import localfs, postgres
-from cocoindex.extras.text import RecursiveSplitter
-from cocoindex.extras.sentence_transformers import SentenceTransformerEmbedder
+from cocoindex.ops.text import RecursiveSplitter
+from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
 from cocoindex.resources.file import FileLike, PatternFilePathMatcher
 from cocoindex.resources.chunk import Chunk
 
@@ -248,7 +248,7 @@ def app_main(scope: coco.Scope, sourcedir: pathlib.Path, db: postgres.PgDatabase
 
 ### `SentenceTransformerEmbedder`
 
-::: cocoindex.extras.sentence_transformers.SentenceTransformerEmbedder
+::: cocoindex.ops.sentence_transformers.SentenceTransformerEmbedder
     options:
       show_root_heading: true
       show_source: false
