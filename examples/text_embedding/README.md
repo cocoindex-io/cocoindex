@@ -5,10 +5,10 @@ This example embeds local markdown files, stores the chunks + embeddings in Post
 ## Prerequisites
 
 - A running Postgres with the pgvector extension available
-- `DATABASE_URL` (or `COCOINDEX_DATABASE_URL`) set, e.g.
+- `POSTGRES_URL` set, e.g.
 
 ```sh
-export DATABASE_URL="postgres://cocoindex:cocoindex@localhost/cocoindex"
+export POSTGRES_URL="postgres://cocoindex:cocoindex@localhost/cocoindex"
 ```
 
 ## Run

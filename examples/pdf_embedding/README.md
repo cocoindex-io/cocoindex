@@ -21,7 +21,7 @@ pip install -e .
 Set a database URL (or use `.env`):
 
 ```sh
-export COCOINDEX_DATABASE_URL="postgres://cocoindex:cocoindex@localhost/cocoindex"
+export POSTGRES_URL="postgres://cocoindex:cocoindex@localhost/cocoindex"
 ```
 
 Build/update the index:
