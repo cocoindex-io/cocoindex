@@ -436,8 +436,9 @@ impl ListTrackedSourceKeyMetadataState {
         source_id: i32,
         db_setup: &'a TrackingTableSetupState,
         pool: &'a PgPool,
-    ) -> impl Stream<Item = std::result::Result<TrackedSourceKeyMetadata, sqlx::Error>> + 'a {
-        let table_name = qualify_table_name_with_schema(&db_setup.table_name).unwrap();
+    ) -> Result<impl Stream<Item = std::result::Result<TrackedSourceKeyMetadata, sqlx::Error>> + 'a>
+    {
+        let table_name = qualify_table_name_with_schema(&db_setup.table_name)?;
         self.query_str = format!(
             "SELECT \
             source_key, processed_source_ordinal, {}, process_logic_fingerprint, max_process_ordinal, process_ordinal \
@@ -449,7 +450,7 @@ impl ListTrackedSourceKeyMetadataState {
             },
             table_name
         );
-        sqlx::query_as(&self.query_str).bind(source_id).fetch(pool)
+        Ok(sqlx::query_as(&self.query_str).bind(source_id).fetch(pool))
     }
 }
 

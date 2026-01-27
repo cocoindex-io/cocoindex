@@ -19,15 +19,15 @@ pub struct SetupMetadataRecord {
     pub staging_changes: sqlx::types::Json<Vec<StateChange<serde_json::Value>>>,
 }
 
-pub fn get_setup_metadata_table_name() -> String {
-    let schema = get_settings().unwrap().db_schema_name;
+pub fn get_setup_metadata_table_name() -> Result<String> {
+    let schema = get_settings()?.db_schema_name;
     if let Some(schema) = schema {
-        return format!(
+        Ok(format!(
             "{}.{SETUP_METADATA_TABLE_NAME_UNQUALIFIED}",
             utils::db::sanitize_identifier(&schema)
-        );
+        ))
     } else {
-        return SETUP_METADATA_TABLE_NAME_UNQUALIFIED.to_string();
+        Ok(SETUP_METADATA_TABLE_NAME_UNQUALIFIED.to_string())
     }
 }
 
@@ -41,7 +41,7 @@ pub fn parse_flow_version(state: &Option<serde_json::Value>) -> Option<u64> {
 /// Returns None if metadata table doesn't exist.
 pub async fn read_setup_metadata(pool: &PgPool) -> Result<Option<Vec<SetupMetadataRecord>>> {
     let mut db_conn = pool.acquire().await?;
-    let table_name = get_setup_metadata_table_name();
+    let table_name = get_setup_metadata_table_name()?;
     let query_str =
         format!("SELECT flow_name, resource_type, key, state, staging_changes FROM {table_name}",);
     let metadata = sqlx::query_as(&query_str).fetch_all(&mut *db_conn).await;
@@ -84,7 +84,7 @@ async fn read_metadata_records_for_flow(
     flow_name: &str,
     db_executor: impl sqlx::Executor<'_, Database = sqlx::Postgres>,
 ) -> Result<HashMap<ResourceTypeKey, SetupMetadataRecord>> {
-    let table_name = get_setup_metadata_table_name();
+    let table_name = get_setup_metadata_table_name()?;
     let query_str = format!(
         "SELECT flow_name, resource_type, key, state, staging_changes FROM {table_name} WHERE flow_name = $1",
     );
@@ -112,7 +112,7 @@ async fn read_state(
     type_id: &ResourceTypeKey,
     db_executor: impl sqlx::Executor<'_, Database = sqlx::Postgres>,
 ) -> Result<Option<serde_json::Value>> {
-    let table_name = get_setup_metadata_table_name();
+    let table_name = get_setup_metadata_table_name()?;
     let query_str = format!(
         "SELECT state FROM {table_name} WHERE flow_name = $1 AND resource_type = $2 AND key = $3",
     );
@@ -132,7 +132,7 @@ async fn upsert_staging_changes(
     db_executor: impl sqlx::Executor<'_, Database = sqlx::Postgres>,
     action: WriteAction,
 ) -> Result<()> {
-    let table_name = get_setup_metadata_table_name();
+    let table_name = get_setup_metadata_table_name()?;
     let query_str = match action {
         WriteAction::Insert => format!(
             "INSERT INTO {table_name} (flow_name, resource_type, key, staging_changes) VALUES ($1, $2, $3, $4)",
@@ -158,7 +158,7 @@ async fn upsert_state(
     action: WriteAction,
     db_executor: impl sqlx::Executor<'_, Database = sqlx::Postgres>,
 ) -> Result<()> {
-    let table_name = get_setup_metadata_table_name();
+    let table_name = get_setup_metadata_table_name()?;
     let query_str = match action {
         WriteAction::Insert => format!(
             "INSERT INTO {table_name} (flow_name, resource_type, key, state, staging_changes) VALUES ($1, $2, $3, $4, $5)",
@@ -183,7 +183,7 @@ async fn delete_state(
     type_id: &ResourceTypeKey,
     db_executor: impl sqlx::Executor<'_, Database = sqlx::Postgres>,
 ) -> Result<()> {
-    let table_name = get_setup_metadata_table_name();
+    let table_name = get_setup_metadata_table_name()?;
     let query_str = format!(
         "DELETE FROM {table_name} WHERE flow_name = $1 AND resource_type = $2 AND key = $3",
     );
@@ -351,9 +351,8 @@ impl MetadataTableSetup {
 impl ResourceSetupChange for MetadataTableSetup {
     fn describe_changes(&self) -> Vec<setup::ChangeDescription> {
         if self.metadata_table_missing {
-            let table_name = get_setup_metadata_table_name();
             vec![setup::ChangeDescription::Action(format!(
-                "Create the cocoindex metadata table {table_name}"
+                "Create the cocoindex metadata table {SETUP_METADATA_TABLE_NAME_UNQUALIFIED}"
             ))]
         } else {
             vec![]
@@ -376,7 +375,7 @@ impl MetadataTableSetup {
         }
         let lib_context = get_lib_context().await?;
         let pool = lib_context.require_builtin_db_pool()?;
-        let db_schema = get_settings().unwrap().db_schema_name;
+        let db_schema = get_settings()?.db_schema_name;
 
         if let Some(schema) = &db_schema {
             let query_str = format!(
@@ -386,7 +385,7 @@ impl MetadataTableSetup {
             sqlx::query(&query_str).execute(pool).await?;
         }
 
-        let table_name = get_setup_metadata_table_name();
+        let table_name = get_setup_metadata_table_name()?;
         let query_str = format!(
             "CREATE TABLE IF NOT EXISTS {table_name} (
                 flow_name TEXT NOT NULL,
