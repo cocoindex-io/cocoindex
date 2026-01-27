@@ -21,6 +21,7 @@ from cocoindex._internal.environment import (
     default_env_loop,
     get_registered_environment_infos,
 )
+from cocoindex._internal.setting import get_default_db_path
 from cocoindex.inspect import list_stable_paths_sync
 
 
@@ -468,11 +469,17 @@ def ls(app_target: str | None, db: str | None) -> None:
     elif db:
         _ls_from_database(db)
     else:
-        raise click.ClickException(
-            "Please specify either APP_TARGET or --db option.\n"
-            "  cocoindex ls ./app.py        # List apps from module\n"
-            "  cocoindex ls --db ./my.db    # List apps from database"
-        )
+        # Try to use default db path from environment variable
+        default_db = get_default_db_path()
+        if default_db:
+            _ls_from_database(str(default_db))
+        else:
+            raise click.ClickException(
+                "Please specify either APP_TARGET or --db option "
+                "(or set COCOINDEX_DB environment variable).\n"
+                "  cocoindex ls ./app.py        # List apps from module\n"
+                "  cocoindex ls --db ./my.db    # List apps from database"
+            )
 
 
 @cli.command()

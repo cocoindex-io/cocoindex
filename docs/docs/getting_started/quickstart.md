@@ -45,6 +45,12 @@ CocoIndex automatically tracks changes — when you add, modify, or delete sourc
     ```
 you can download the pdf files from the [git repo](https://github.com/cocoindex-io/cocoindex/tree/v1/examples/pdf_to_markdown).
 
+4. Create a `.env` file to configure the database path:
+
+    ```bash
+    echo "COCOINDEX_DB=./cocoindex.db" > .env
+    ```
+
 ## Define the App
 ![App Definition](/img/quickstart/app-def.svg)
 
@@ -52,17 +58,11 @@ Create a new file `main.py`:
 
 ```python
 import pathlib
-from typing import Iterator
 
 import cocoindex as coco
 from cocoindex.connectors import localfs
 from cocoindex.resources.file import PatternFilePathMatcher
 from docling.document_converter import DocumentConverter
-
-@coco.lifespan
-def coco_lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
-    builder.settings.db_path = pathlib.Path("./cocoindex.db")
-    yield
 
 app = coco.App(
     app_main,
@@ -71,9 +71,7 @@ app = coco.App(
     outdir=pathlib.Path("./out"),
 )
 ```
-This defines a CocoIndex App.
-- An App is the top-level runnable unit in CocoIndex.
-- Use `@coco.lifespan` to configure CocoIndex settings: sets up a local database (`cocoindex.db`) for incremental processing.
+This defines a CocoIndex App — the top-level runnable unit in CocoIndex. The database path is configured via the `COCOINDEX_DB` environment variable in the `.env` file.
 
 <DocumentationButton url="/docs-v1/programming_guide/app" text="CocoIndex App" />
 

@@ -88,8 +88,6 @@ def embed_image_bytes(img_bytes: bytes) -> list[list[float]]:
 async def coco_lifespan(
     builder: coco_aio.EnvironmentBuilder,
 ) -> AsyncIterator[None]:
-    # For CocoIndex internal states
-    builder.settings.db_path = pathlib.Path("./cocoindex.db")
     # Provide resources needed across the CocoIndex environment
     client = qdrant.create_client(QDRANT_URL, prefer_grpc=True)
     builder.provide(QDRANT_DB, qdrant.register_db("image_search_colpali", client))

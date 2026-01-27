@@ -1,6 +1,5 @@
 import base64
 import pathlib
-from typing import Iterator
 
 from dotenv import load_dotenv
 
@@ -10,12 +9,6 @@ from cocoindex.connectors import localfs
 from baml_client import b
 from baml_client.types import Patient
 import baml_py
-
-
-@coco.lifespan
-def coco_lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
-    builder.settings.db_path = pathlib.Path("./cocoindex.db")
-    yield
 
 
 @coco.function

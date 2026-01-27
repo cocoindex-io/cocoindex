@@ -51,8 +51,6 @@ class DocEmbedding:
 async def coco_lifespan(
     builder: coco_aio.EnvironmentBuilder,
 ) -> AsyncIterator[None]:
-    # For CocoIndex internal states
-    builder.settings.db_path = pathlib.Path("./cocoindex.db")
     # Provide resources needed across the CocoIndex environment
     conn = await lancedb.connect_async(LANCEDB_URI)
     builder.provide(LANCE_DB, lancedb.register_db("text_embedding_db", conn))

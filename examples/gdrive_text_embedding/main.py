@@ -51,8 +51,6 @@ _splitter = RecursiveSplitter()
 async def coco_lifespan(
     builder: coco_aio.EnvironmentBuilder,
 ) -> AsyncIterator[None]:
-    builder.settings.db_path = pathlib.Path("./cocoindex.db")
-
     async with await postgres.create_pool(DATABASE_URL) as pool:
         _state.pool = pool
         _state.db = postgres.register_db("gdrive_text_embedding_db", pool)

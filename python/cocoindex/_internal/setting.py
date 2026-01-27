@@ -3,9 +3,21 @@ Data types for settings of the cocoindex library.
 """
 
 import os
+import pathlib
 
 from typing import Callable, Self, Any, overload
 from dataclasses import dataclass
+
+
+def get_default_db_path() -> pathlib.Path | None:
+    """
+    Get the default database path from the COCOINDEX_DB environment variable.
+
+    Returns:
+        The path from COCOINDEX_DB if set, otherwise None.
+    """
+    db_path = os.getenv("COCOINDEX_DB")
+    return pathlib.Path(db_path) if db_path else None
 
 
 @dataclass

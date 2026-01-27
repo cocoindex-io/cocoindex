@@ -1,5 +1,4 @@
 import pathlib
-from typing import Iterator
 
 import cocoindex as coco
 from cocoindex.resources.file import FileLike, PatternFilePathMatcher
@@ -7,12 +6,6 @@ from cocoindex.connectors import localfs
 from markdown_it import MarkdownIt
 
 _markdown_it = MarkdownIt("gfm-like")
-
-
-@coco.lifespan
-def coco_lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
-    builder.settings.db_path = pathlib.Path("./cocoindex.db")
-    yield
 
 
 @coco.function(memo=True)
