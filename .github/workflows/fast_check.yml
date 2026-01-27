@@ -1,0 +1,36 @@
+name: Fast Check
+
+on:
+  pull_request:
+    branches: [main, v1]
+  push:
+    branches: [main, v1]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fast-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - run: rustup toolchain install stable --profile minimal
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Run fast-check hooks
+        uses: j178/prek-action@v1
+        with:
+          extra-args: '--all-files'
+        env:
+          # Skip heavy build/test hooks - only run fast formatting/linting checks
+          PREK_SKIP: uv-lock,mypy-check,maturin-develop,cargo-test,pytest,generate-cli-docs
