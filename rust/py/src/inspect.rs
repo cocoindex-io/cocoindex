@@ -16,3 +16,8 @@ pub fn list_stable_paths(app: &PyApp) -> PyResult<Vec<PyStablePath>> {
 pub fn list_app_names(env: &PyEnvironment) -> PyResult<Vec<String>> {
     db_inspect::list_app_names(&env.0).into_py_result()
 }
+
+#[pyfunction]
+pub fn clear_component_memoization(app: &PyApp) -> PyResult<()> {
+    db_inspect::clear_component_memoization(&app.0).into_py_result()
+}

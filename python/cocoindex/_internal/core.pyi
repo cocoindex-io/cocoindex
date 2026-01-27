@@ -98,6 +98,7 @@ class Environment:
 
 # --- Inspect helpers ---
 def list_app_names(env: Environment) -> list[str]: ...
+def clear_component_memoization(app: "App") -> None: ...
 
 # --- App ---
 class App:

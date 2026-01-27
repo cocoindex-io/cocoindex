@@ -524,7 +524,29 @@ async def _drop_app(app: AppBase[Any, Any], *args: Any, **kwargs: Any) -> None:
 
 @cli.command()
 @click.argument("app_target", type=str)
-def update(app_target: str) -> None:
+@click.option(
+    "-q",
+    "--quiet",
+    is_flag=True,
+    show_default=True,
+    default=False,
+    help="Avoid printing anything to the standard output, e.g. statistics.",
+)
+@click.option(
+    "--reset",
+    is_flag=True,
+    show_default=True,
+    default=False,
+    help="Drop existing setup before updating (equivalent to running 'cocoindex drop' first).",
+)
+@click.option(
+    "--full-reprocess",
+    is_flag=True,
+    show_default=True,
+    default=False,
+    help="Reprocess everything and invalidate existing caches.",
+)
+def update(app_target: str, quiet: bool, reset: bool, full_reprocess: bool) -> None:
     """
     Run a v1 app once (one-time update).
 
@@ -535,10 +557,23 @@ def update(app_target: str) -> None:
     async def _do() -> None:
         try:
             env = await app._environment._get_env()
-            print(
-                f"Running app '{app._name}' from environment '{env.name}' (db path: {env.settings.db_path})"
-            )
-            await _update_app(app, report_to_stdout=True)
+            if not quiet:
+                print(
+                    f"Running app '{app._name}' from environment '{env.name}' (db path: {env.settings.db_path})"
+                )
+
+            # --reset: drop existing state first (equivalent to `cocoindex drop ...`)
+            if reset:
+                persisted_names = _get_persisted_app_names(env)
+                if app._name in persisted_names:
+                    await _drop_app(app, report_to_stdout=not quiet)
+
+            # --full-reprocess: invalidate memoization caches before running
+            if full_reprocess:
+                core_app = await app._get_core()
+                _core.clear_component_memoization(core_app)
+
+            await _update_app(app, report_to_stdout=not quiet)
         finally:
             await _stop_all_environments()
 
@@ -554,7 +589,15 @@ def update(app_target: str) -> None:
     is_flag=True,
     help="Skip confirmation prompt.",
 )
-def drop(app_target: str, force: bool = False) -> None:
+@click.option(
+    "-q",
+    "--quiet",
+    is_flag=True,
+    show_default=True,
+    default=False,
+    help="Avoid printing anything to the standard output, e.g. statistics.",
+)
+def drop(app_target: str, force: bool = False, quiet: bool = False) -> None:
     """
     Drop an app and all its target states.
 
@@ -589,7 +632,7 @@ def drop(app_target: str, force: bool = False) -> None:
 
     async def _do() -> None:
         try:
-            await _drop_app(app, report_to_stdout=True)
+            await _drop_app(app, report_to_stdout=not quiet)
         finally:
             await _stop_all_environments()
         click.echo(
