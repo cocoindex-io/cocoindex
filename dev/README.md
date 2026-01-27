@@ -25,7 +25,7 @@ python dev/generate_cli_docs.py
 
 **Integration:**
 
-- Runs automatically as a pre-commit hook when `python/cocoindex/cli.py` is modified
+- Runs automatically as a prek hook when `python/cocoindex/cli.py` is modified
 - The generated documentation is directly imported into `docs/docs/core/cli.mdx` via MDX import
 - Provides seamless single-page CLI documentation experience without separate reference pages
 
