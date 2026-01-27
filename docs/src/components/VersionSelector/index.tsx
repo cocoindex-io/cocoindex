@@ -7,7 +7,7 @@ import styles from './styles.module.css';
 
 const options = [
   { value: 'v0', label: 'v0', disabled: false },
-  { value: 'v1', label: 'v1-preview', disabled: true },
+  { value: 'v1', label: 'v1-preview', disabled: false },
 ];
 
 export default function VersionSelector(): React.ReactElement {
@@ -74,6 +74,12 @@ export default function VersionSelector(): React.ReactElement {
           } else if (location.pathname.includes('/docs')) {
             newPath = '/docs';
           }
+        } else if (newValue === 'v1') {
+          if (location.pathname.includes('/examples')) {
+            newPath = '/examples-v1';
+          } else if (location.pathname.includes('/docs')) {
+            newPath = '/docs-v1';
+          }
         }
 
         setIsOpen(false);
@@ -103,18 +109,22 @@ export default function VersionSelector(): React.ReactElement {
 
     // Handle v0 selection
     if (value === 'v0') {
-      // If URL contains /examples (with or without version), go to /examples base path
       if (location.pathname.includes('/examples')) {
         newPath = '/examples';
-      }
-      // If URL contains /docs (with or without version), go to /docs base path
-      else if (location.pathname.includes('/docs')) {
+      } else if (location.pathname.includes('/docs')) {
         newPath = '/docs';
+      }
+    }
+    // Handle v1 selection
+    else if (value === 'v1') {
+      if (location.pathname.includes('/examples')) {
+        newPath = '/examples-v1';
+      } else if (location.pathname.includes('/docs')) {
+        newPath = '/docs-v1';
       }
     }
 
     setIsOpen(false);
-    // Navigate to new path (base path only, no sub-paths preserved)
     window.location.href = newPath;
   };
 
