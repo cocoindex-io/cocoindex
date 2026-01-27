@@ -92,17 +92,13 @@ class CodebaseInfo(BaseModel):
 
 
 # ============================================================================
-# LLM client setup
+# Processing logic
 # ============================================================================
+
 
 LLM_MODEL = os.environ.get("LLM_MODEL", "gemini/gemini-2.5-flash")
 
 _instructor_client = instructor.from_litellm(completion, mode=instructor.Mode.JSON)
-
-
-# ============================================================================
-# CocoIndex lifespan
-# ============================================================================
 
 
 @coco.lifespan
@@ -206,11 +202,6 @@ Create a unified CodebaseInfo that:
     return result
 
 
-# ============================================================================
-# Markdown generation
-# ============================================================================
-
-
 def generate_markdown(
     project_name: str, info: CodebaseInfo, file_infos: list[CodebaseInfo]
 ) -> str:
@@ -269,11 +260,6 @@ def generate_markdown(
     return "\n".join(lines)
 
 
-# ============================================================================
-# Project processing component
-# ============================================================================
-
-
 @coco.function(memo=True)
 def process_project(
     scope: coco.Scope,
@@ -298,11 +284,6 @@ def process_project(
     target.declare_file(scope, filename=f"{project_name}.md", content=markdown)
 
 
-# ============================================================================
-# Main application
-# ============================================================================
-
-
 @coco.function
 def app_main(
     scope: coco.Scope,
@@ -325,7 +306,7 @@ def app_main(
     if not root_path.is_dir():
         raise ValueError(f"Root path is not a directory: {root_path}")
 
-    for entry in sorted(root_path.iterdir()):
+    for entry in root_path.iterdir():
         # Skip non-directories and hidden directories
         if not entry.is_dir() or entry.name.startswith("."):
             continue
@@ -353,10 +334,6 @@ def app_main(
                 target,
             )
 
-
-# ============================================================================
-# App definition
-# ============================================================================
 
 app = coco.App(
     app_main,
