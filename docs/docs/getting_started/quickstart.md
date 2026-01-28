@@ -71,7 +71,7 @@ app = coco.App(
     outdir=pathlib.Path("./out"),
 )
 ```
-This defines a CocoIndex App — the top-level runnable unit in CocoIndex. 
+This defines a CocoIndex App — the top-level runnable unit in CocoIndex.
 
 <DocumentationButton url="/docs-v1/programming_guide/app" text="CocoIndex App" />
 
