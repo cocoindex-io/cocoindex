@@ -15,18 +15,16 @@ env = coco.Environment(coco.Settings.from_env(db_path=DB_PATH))
 
 
 @coco.function
-def build(scope: coco.Scope) -> None:
+def build() -> None:
     dir_target = coco.mount_run(
+        coco.component_subpath("out"),
         declare_dir_target,
-        scope / "out",
         OUT_DIR,
         stable_key="out_dir",
         managed_by="system",
     ).result()
-    dir_target.declare_file(
-        scope, filename="single.txt", content="Hello from SingleApp\n"
-    )
+    dir_target.declare_file(filename="single.txt", content="Hello from SingleApp\n")
 
 
 # Single app - should be auto-selected even without :app_name specifier
-only_app = coco.App(build, coco.AppConfig(name="SingleApp", environment=env))
+only_app = coco.App(coco.AppConfig(name="SingleApp", environment=env), build)

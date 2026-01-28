@@ -314,7 +314,7 @@ def coco_lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
 
 
 @coco.function
-def app_main(scope: coco.Scope) -> None:
+def app_main() -> None:
     """Define your main pipeline here.
 
     Common pattern:
@@ -328,8 +328,8 @@ def app_main(scope: coco.Scope) -> None:
     # 1) Declare targets/target states
     # Example (local filesystem):
     #   target = coco.mount_run(
+    #       coco.component_subpath("setup"),
     #       localfs.declare_dir_target,
-    #       scope / "setup",
     #       outdir,
     #   ).result()
 
@@ -344,8 +344,8 @@ def app_main(scope: coco.Scope) -> None:
     # Example:
     #   for f in files:
     #       coco.mount(
+    #           coco.component_subpath("process", str(f.relative_path)),
     #           process_file_function,
-    #           scope / "process" / str(f.relative_path),
     #           f,
     #           target,
     #       )
@@ -354,8 +354,8 @@ def app_main(scope: coco.Scope) -> None:
 
 
 app = coco.App(
-    app_main,
     coco.AppConfig(name="{project_name}"),
+    app_main,
 )
 '''
     (project_path / "main.py").write_text(main_py_content)

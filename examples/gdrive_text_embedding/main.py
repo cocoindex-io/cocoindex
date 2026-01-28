@@ -66,7 +66,6 @@ class DocEmbedding:
 
 @coco.function(memo=True)
 async def process_file(
-    scope: coco.Scope,
     file: google_drive.DriveFile,
     table: postgres.TableTarget[DocEmbedding],
 ) -> None:
@@ -75,23 +74,18 @@ async def process_file(
         text, chunk_size=2000, chunk_overlap=500, language="markdown"
     )
     await asyncio.gather(
-        *(
-            _emit_chunk(scope, file.relative_path.as_posix(), chunk, table)
-            for chunk in chunks
-        )
+        *(_emit_chunk(file.relative_path.as_posix(), chunk, table) for chunk in chunks)
     )
 
 
 @coco.function(memo=True)
 async def _emit_chunk(
-    scope: coco.Scope,
     filename: str,
     chunk: Chunk,
     table: postgres.TableTarget[DocEmbedding],
 ) -> None:
     location = f"{chunk.start.char_offset}:{chunk.end.char_offset}"
     table.declare_row(
-        scope,
         row=DocEmbedding(
             filename=filename,
             location=location,
@@ -102,11 +96,11 @@ async def _emit_chunk(
 
 
 @coco.function
-def app_main(scope: coco.Scope) -> None:
+def app_main() -> None:
     assert _state.db is not None
     table = coco.mount_run(
-        lambda inner_scope: _state.db.declare_table_target(
-            inner_scope,
+        coco.component_subpath("setup"),
+        lambda: _state.db.declare_table_target(
             table_name=TABLE_NAME,
             table_schema=postgres.TableSchema(
                 DocEmbedding,
@@ -114,7 +108,6 @@ def app_main(scope: coco.Scope) -> None:
             ),
             pg_schema_name=PG_SCHEMA_NAME,
         ),
-        scope / "setup",
     ).result()
 
     credential_path = os.environ["GOOGLE_SERVICE_ACCOUNT_CREDENTIAL"]
@@ -131,16 +124,16 @@ def app_main(scope: coco.Scope) -> None:
 
     for file in source.files():
         coco.mount(
+            coco.component_subpath("file", file.relative_path.as_posix()),
             process_file,
-            scope / "file" / file.relative_path.as_posix(),
             file,
             table,
         )
 
 
 app = coco_aio.App(
-    app_main,
     coco_aio.AppConfig(name="GoogleDriveTextEmbeddingV1"),
+    app_main,
 )
 
 

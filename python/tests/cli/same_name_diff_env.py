@@ -45,30 +45,30 @@ def _lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
 
 
 @coco.function
-def build_alpha(scope: coco.Scope) -> None:
+def build_alpha() -> None:
     dir_target = coco.mount_run(
+        coco.component_subpath("out"),
         declare_dir_target,
-        scope / "out",
         OUT_DIR_ALPHA,
         stable_key="out_dir",
         managed_by="system",
     ).result()
-    dir_target.declare_file(scope, filename="output.txt", content="From Alpha env\n")
+    dir_target.declare_file(filename="output.txt", content="From Alpha env\n")
 
 
 @coco.function
-def build_default(scope: coco.Scope) -> None:
+def build_default() -> None:
     dir_target = coco.mount_run(
+        coco.component_subpath("out"),
         declare_dir_target,
-        scope / "out",
         OUT_DIR_DEFAULT,
         stable_key="out_dir",
         managed_by="system",
     ).result()
-    dir_target.declare_file(scope, filename="output.txt", content="From Default env\n")
+    dir_target.declare_file(filename="output.txt", content="From Default env\n")
 
 
 # Two apps with THE SAME NAME but in different environments
 # One uses explicit named environment, one uses default environment
-app_alpha = coco.App(build_alpha, coco.AppConfig(name="MyApp", environment=env_alpha))
-app_default = coco.App(build_default, "MyApp")  # Uses default environment
+app_alpha = coco.App(coco.AppConfig(name="MyApp", environment=env_alpha), build_alpha)
+app_default = coco.App("MyApp", build_default)  # Uses default environment

@@ -267,11 +267,9 @@ class DictsTarget:
 
     @staticmethod
     @coco.function
-    def declare_dict_target(
-        scope: coco.Scope, name: str
-    ) -> coco.PendingTargetStateProvider[str, None]:
+    def declare_dict_target(name: str) -> coco.PendingTargetStateProvider[str, None]:
         return coco.declare_target_state_with_child(
-            scope, DictsTarget._provider.target_state(name, None)
+            DictsTarget._provider.target_state(name, None)
         )
 
 
@@ -283,9 +281,7 @@ class AsyncDictsTarget:
 
     @staticmethod
     @coco.function
-    def declare_dict_target(
-        scope: coco.Scope, name: str
-    ) -> coco.PendingTargetStateProvider[str, None]:
+    def declare_dict_target(name: str) -> coco.PendingTargetStateProvider[str, None]:
         return coco.declare_target_state_with_child(
-            scope, AsyncDictsTarget._provider.target_state(name, None)
+            AsyncDictsTarget._provider.target_state(name, None)
         )

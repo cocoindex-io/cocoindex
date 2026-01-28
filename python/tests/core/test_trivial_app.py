@@ -10,14 +10,14 @@ coco_env = create_test_env(__file__)
 
 
 @coco.function()
-def trivial_fn_sync(scope: coco.Scope, s: str, i: int) -> str:
+def trivial_fn_sync(s: str, i: int) -> str:
     return f"{s} {i}"
 
 
 def test_sync_app_sync_client() -> None:
     app = coco.App(
-        trivial_fn_sync,
         coco.AppConfig(name="sync_app_sync_client", environment=coco_env),
+        trivial_fn_sync,
         "Hello sync_app",
         1,
     )
@@ -27,8 +27,8 @@ def test_sync_app_sync_client() -> None:
 @pytest.mark.asyncio
 async def test_sync_app_async_client() -> None:
     app = coco_aio.App(
-        trivial_fn_sync,
         coco.AppConfig(name="sync_app_async_client", environment=coco_env),
+        trivial_fn_sync,
         "Hello sync_app",
         1,
     )
@@ -38,14 +38,14 @@ async def test_sync_app_async_client() -> None:
 # === Sync Bare App ===
 
 
-def trivial_fn_sync_bare(scope: coco.Scope, s: str, i: int) -> str:
+def trivial_fn_sync_bare(s: str, i: int) -> str:
     return f"{s} {i}"
 
 
 def test_sync_bare_app_sync_client() -> None:
     app = coco.App(
-        trivial_fn_sync_bare,
         coco.AppConfig(name="sync_bare_app_sync_client", environment=coco_env),
+        trivial_fn_sync_bare,
         "Hello sync_bare_app",
         2,
     )
@@ -55,8 +55,8 @@ def test_sync_bare_app_sync_client() -> None:
 @pytest.mark.asyncio
 async def test_sync_bare_app_async_client() -> None:
     app = coco_aio.App(
-        trivial_fn_sync_bare,
         coco.AppConfig(name="sync_bare_app_async_client", environment=coco_env),
+        trivial_fn_sync_bare,
         "Hello sync_bare_app",
         2,
     )
@@ -67,14 +67,14 @@ async def test_sync_bare_app_async_client() -> None:
 
 
 @coco.function()
-async def trivial_fn_async(scope: coco.Scope, s: str, i: int) -> str:
+async def trivial_fn_async(s: str, i: int) -> str:
     return f"{s} {i}"
 
 
 def test_async_app_sync_client() -> None:
     app = coco.App(
-        trivial_fn_async,
         coco.AppConfig(name="async_app_sync_client", environment=coco_env),
+        trivial_fn_async,
         "Hello async_app",
         3,
     )
@@ -84,8 +84,8 @@ def test_async_app_sync_client() -> None:
 @pytest.mark.asyncio
 async def test_async_app_async_client() -> None:
     app = coco_aio.App(
-        trivial_fn_async,
         coco.AppConfig(name="async_app_async_client", environment=coco_env),
+        trivial_fn_async,
         "Hello async_app",
         3,
     )
@@ -95,14 +95,14 @@ async def test_async_app_async_client() -> None:
 # === Async Bare App ===
 
 
-def trivial_fn_async_bare(scope: coco.Scope, s: str, i: int) -> str:
+def trivial_fn_async_bare(s: str, i: int) -> str:
     return f"{s} {i}"
 
 
 def test_async_bare_app_sync_client() -> None:
     app = coco.App(
-        trivial_fn_async_bare,
         coco.AppConfig(name="async_app_sync_client", environment=coco_env),
+        trivial_fn_async_bare,
         "Hello async_app",
         3,
     )
@@ -112,8 +112,8 @@ def test_async_bare_app_sync_client() -> None:
 @pytest.mark.asyncio
 async def test_async_bare_app_async_client() -> None:
     app = coco_aio.App(
-        trivial_fn_async_bare,
         coco.AppConfig(name="async_app_async_client", environment=coco_env),
+        trivial_fn_async_bare,
         "Hello async_app",
         3,
     )
@@ -124,18 +124,18 @@ async def test_async_bare_app_async_client() -> None:
 
 
 class MyApp:
-    def sync_main(self, scope: coco.Scope, s: str, i: int) -> str:
+    def sync_main(self, s: str, i: int) -> str:
         return f"Hello MyApp.sync_main: {s} {i}"
 
-    async def async_main(self, scope: coco.Scope, s: str, i: int) -> str:
+    async def async_main(self, s: str, i: int) -> str:
         return f"Hello MyApp.async_main: {s} {i}"
 
 
 def test_sync_from_member_fn_app() -> None:
     my_app = MyApp()
     app = coco.App(
-        my_app.sync_main,
         coco.AppConfig(name="sync_from_member_fn_app", environment=coco_env),
+        my_app.sync_main,
         "Hello sync_from_member_fn_app",
         4,
     )
@@ -146,8 +146,8 @@ def test_sync_from_member_fn_app() -> None:
 async def test_async_from_member_fn_app() -> None:
     my_app = MyApp()
     app = coco_aio.App(
-        my_app.async_main,
         coco.AppConfig(name="async_from_member_fn_app", environment=coco_env),
+        my_app.async_main,
         "Hello async_from_member_fn_app",
         4,
     )

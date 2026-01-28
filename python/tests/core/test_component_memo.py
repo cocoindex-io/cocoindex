@@ -37,43 +37,37 @@ class SourceDataResult:
 
 
 @coco.function(memo=True)
-def _declare_dict_entry(scope: coco.Scope, entry: SourceDataEntry) -> None:
+def _declare_dict_entry(entry: SourceDataEntry) -> None:
     # Track the actual number of component executions for this function.
     if entry.err:
         raise Exception("injected test exception (which is expected)")
     _metrics.increment("calls")
-    coco.declare_target_state(
-        scope, GlobalDictTarget.target_state(entry.name, entry.content)
-    )
+    coco.declare_target_state(GlobalDictTarget.target_state(entry.name, entry.content))
 
 
 @coco.function
-def _declare_dict_data(scope: coco.Scope) -> None:
+def _declare_dict_data() -> None:
     for entry in _source_data.values():
-        coco.mount(_declare_dict_entry, scope / entry.name, entry)
+        coco.mount(coco.component_subpath(entry.name), _declare_dict_entry, entry)
 
 
 @coco.function(memo=True)
-def _declare_transform_dict_entry(
-    scope: coco.Scope, entry: SourceDataEntry
-) -> SourceDataResult:
+def _declare_transform_dict_entry(entry: SourceDataEntry) -> SourceDataResult:
     if entry.err:
         raise Exception("injected test exception (which is expected)")
     _metrics.increment("calls")
-    coco.declare_target_state(
-        scope, GlobalDictTarget.target_state(entry.name, entry.content)
-    )
+    coco.declare_target_state(GlobalDictTarget.target_state(entry.name, entry.content))
     return SourceDataResult(name=entry.name, content=entry.content)
 
 
 @coco.function
-def _declare_transform_dict_data(scope: coco.Scope) -> list[SourceDataResult]:
+def _declare_transform_dict_data() -> list[SourceDataResult]:
     # Deterministic ordering for stable assertions.
     results: list[SourceDataResult] = []
     for name in sorted(_source_data):
         entry = _source_data[name]
         handle = coco.mount_run(
-            _declare_transform_dict_entry, scope / entry.name, entry
+            coco.component_subpath(entry.name), _declare_transform_dict_entry, entry
         )
         results.append(handle.result())
     return results
@@ -85,8 +79,8 @@ def test_source_data_memo() -> None:
     _metrics.clear()
 
     app = coco.App(
-        _declare_dict_data,
         coco.AppConfig(name="test_source_data_memo", environment=coco_env),
+        _declare_dict_data,
     )
 
     _source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA1")
@@ -159,8 +153,8 @@ def test_source_data_memo_cleanup() -> None:
     _metrics.clear()
 
     app = coco.App(
-        _declare_dict_data,
         coco.AppConfig(name="test_source_data_memo_cleanup", environment=coco_env),
+        _declare_dict_data,
     )
 
     _source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA1")
@@ -187,8 +181,8 @@ def test_source_data_memo_mount_run() -> None:
     _metrics.clear()
 
     app = coco.App(
-        _declare_transform_dict_data,
         coco.AppConfig(name="test_source_data_memo_mount_run", environment=coco_env),
+        _declare_transform_dict_data,
     )
 
     _source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA1")
@@ -294,10 +288,10 @@ def test_source_data_memo_mount_run_cleanup() -> None:
     _metrics.clear()
 
     app = coco.App(
-        _declare_transform_dict_data,
         coco.AppConfig(
             name="test_source_data_memo_mount_run_cleanup", environment=coco_env
         ),
+        _declare_transform_dict_data,
     )
 
     _source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA1")
@@ -350,15 +344,15 @@ def test_memo_invalidation_on_decorator_change() -> None:
     current_module: list[object] = []
 
     @coco.function
-    def app_main(scope: coco.Scope) -> None:
+    def app_main() -> None:
         mod = current_module[0]
-        coco.mount(mod.process_entry, scope / "A", "A", "value1")  # type: ignore[attr-defined]
+        coco.mount(coco.component_subpath("A"), mod.process_entry, "A", "value1")  # type: ignore[attr-defined]
 
     app = coco.App(
-        app_main,
         coco.AppConfig(
             name="test_memo_invalidation_on_decorator_change", environment=coco_env
         ),
+        app_main,
     )
 
     # Step 1: Load with memo=True and run.

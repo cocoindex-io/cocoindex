@@ -50,15 +50,15 @@ def test_default_env(_default_env: None) -> None:
     assert _env_db_path.exists()
 
 
-def _trivial_fn(_scope: coco.Scope, s: str, i: int) -> str:
-    assert isinstance(_scope.use(_RESOURCE_KEY), _Resource)
+def _trivial_fn(s: str, i: int) -> str:
+    assert isinstance(coco.use_context(_RESOURCE_KEY), _Resource)
     return f"{s} {i}"
 
 
 def test_app(_default_env: None) -> None:
     app = coco.App(
-        _trivial_fn,
         coco.AppConfig(name="trivial_app"),
+        _trivial_fn,
         "Hello",
         1,
     )
@@ -72,8 +72,8 @@ def test_app(_default_env: None) -> None:
 
 def test_app_implicit_startup(_default_env: None) -> None:
     app = coco.App(
-        _trivial_fn,
         coco.AppConfig(name="trivial_app_implicit_startup"),
+        _trivial_fn,
         "Hello",
         1,
     )
@@ -117,7 +117,7 @@ def _default_env_from_env_var() -> Iterator[None]:
             os.environ.pop("COCOINDEX_DB", None)
 
 
-def _simple_fn(_scope: coco.Scope, s: str) -> str:
+def _simple_fn(s: str) -> str:
     return f"result: {s}"
 
 
@@ -133,8 +133,8 @@ def test_default_env_uses_cocoindex_db_env_var(_default_env_from_env_var: None) 
 def test_app_uses_cocoindex_db_env_var(_default_env_from_env_var: None) -> None:
     """Test that app works when using COCOINDEX_DB env var for db_path."""
     app = coco.App(
-        _simple_fn,
         coco.AppConfig(name="app_with_env_var_db"),
+        _simple_fn,
         "test",
     )
 

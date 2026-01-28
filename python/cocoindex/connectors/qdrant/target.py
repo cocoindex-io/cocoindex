@@ -454,13 +454,13 @@ class CollectionTarget(
         from qdrant_client.http import models as qdrant_models
 
         @coco.function
-        def process_doc(scope: coco.Scope, doc: Doc, target: CollectionTarget) -> None:
+        def process_doc(doc: Doc, target: CollectionTarget) -> None:
             point = qdrant_models.PointStruct(
                 id=doc.id,
                 vector={"embedding": doc.embedding.tolist()},
                 payload={"text": doc.text, "metadata": doc.metadata},
             )
-            target.declare_point(scope, point)
+            target.declare_point(point)
         ```
     """
 
@@ -478,13 +478,11 @@ class CollectionTarget(
 
     def declare_point(
         self: "CollectionTarget[coco.ResolvedS]",
-        scope: coco.Scope,
         point: qdrant_models.PointStruct,
     ) -> None:
         """Declare a point to be stored in the collection.
 
         Args:
-            scope: Scope for this target state
             point: PointStruct defining the point ID, vectors, and payload
         """
         # Extract point ID
@@ -494,7 +492,7 @@ class CollectionTarget(
         else:
             point_id = str(point.id)
 
-        coco.declare_target_state(scope, self._provider.target_state(point_id, point))
+        coco.declare_target_state(self._provider.target_state(point_id, point))
 
     def __coco_memo_key__(self) -> str:
         return self._provider.memo_key
@@ -508,7 +506,6 @@ class QdrantDatabase(_connection.KeyedConnection[_QdrantClient]):
 
     def declare_collection_target(
         self,
-        scope: coco.Scope,
         collection_name: str,
         schema: CollectionSchema,
         *,
@@ -517,7 +514,6 @@ class QdrantDatabase(_connection.KeyedConnection[_QdrantClient]):
         """Declare a Qdrant collection target.
 
         Args:
-            scope: Scope for this collection
             collection_name: Name of the collection in Qdrant
             schema: CollectionSchema defining vector fields
             managed_by: Whether the collection is managed by the system or user
@@ -528,11 +524,11 @@ class QdrantDatabase(_connection.KeyedConnection[_QdrantClient]):
         Example:
             ```python
             @coco.function
-            def app_main(scope: coco.Scope) -> None:
-                db = scope.use(QDRANT_DB)
+            def app_main() -> None:
+                db = coco.use_context(QDRANT_DB)
                 target = coco.mount_run(
+                    coco.component_subpath("setup"),
                     db.declare_collection_target,
-                    scope / "setup",
                     collection_name="my_collection",
                     schema=CollectionSchema(
                         vectors={"embedding": QdrantVectorSpec(dim=384)}
@@ -546,7 +542,7 @@ class QdrantDatabase(_connection.KeyedConnection[_QdrantClient]):
         )
         spec = _CollectionSpec(schema=schema, managed_by=managed_by)
         provider = coco.declare_target_state_with_child(
-            scope, _collection_provider.target_state(key, spec)
+            _collection_provider.target_state(key, spec)
         )
         return CollectionTarget(provider)
 

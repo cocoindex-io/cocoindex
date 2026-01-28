@@ -176,20 +176,17 @@ class DirTarget(Generic[coco.MaybePendingS], coco.ResolvesTo["DirTarget"]):
     ) -> None:
         self._provider = _provider
 
-    def declare_file(
-        self: DirTarget, scope: coco.Scope, *, filename: str, content: bytes | str
-    ) -> None:
+    def declare_file(self: DirTarget, *, filename: str, content: bytes | str) -> None:
         """
         Declare a file to be written to this directory.
 
         Args:
-            scope: The scope for target state declaration.
             filename: The name of the file.
             content: The content of the file (bytes or str).
         """
         if isinstance(content, str):
             content = content.encode()
-        coco.declare_target_state(scope, self._provider.target_state(filename, content))
+        coco.declare_target_state(self._provider.target_state(filename, content))
 
     def __coco_memo_key__(self) -> object:
         return self._provider.memo_key
@@ -197,7 +194,6 @@ class DirTarget(Generic[coco.MaybePendingS], coco.ResolvesTo["DirTarget"]):
 
 @coco.function
 def declare_dir_target(
-    scope: coco.Scope,
     path: pathlib.Path,
     *,
     stable_key: coco.StableKey | None = None,
@@ -207,9 +203,8 @@ def declare_dir_target(
     Create a DirTarget.
 
     Args:
-        scope: The scope for target state declaration.
-        stable_key: Optional stable key for identifying the directory.
         path: The filesystem path for the directory.
+        stable_key: Optional stable key for identifying the directory.
         managed_by: Whether the directory is managed by "system" or "user".
     """
     key = (
@@ -217,7 +212,7 @@ def declare_dir_target(
     )
     spec = _DirSpec(path=path, managed_by=managed_by)
     provider = coco.declare_target_state_with_child(
-        scope, _dir_provider.target_state(key, spec)
+        _dir_provider.target_state(key, spec)
     )
     return DirTarget(provider)
 

@@ -107,7 +107,7 @@ class PatientExtractor(dspy.Module):
 
 
 @coco.function
-def extract_patient(scope: coco.Scope, pdf_content: bytes) -> Patient:
+def extract_patient(pdf_content: bytes) -> Patient:
     """Extract patient information from PDF content."""
     pdf_doc = pymupdf.open(stream=pdf_content, filetype="pdf")
 
@@ -125,22 +125,20 @@ def extract_patient(scope: coco.Scope, pdf_content: bytes) -> Patient:
 
 
 @coco.function(memo=True)
-def process_patient_form(
-    scope: coco.Scope, file: FileLike, target: localfs.DirTarget
-) -> None:
+def process_patient_form(file: FileLike, target: localfs.DirTarget) -> None:
     """Process a patient intake form PDF and extract structured information."""
     content = file.read()
-    patient_info = extract_patient(scope, content)
+    patient_info = extract_patient(content)
     patient_json = patient_info.model_dump_json(indent=2)
     output_filename = file.relative_path.stem + ".json"
-    target.declare_file(scope, filename=output_filename, content=patient_json)
+    target.declare_file(filename=output_filename, content=patient_json)
 
 
 @coco.function
-def app_main(scope: coco.Scope, sourcedir: pathlib.Path, outdir: pathlib.Path) -> None:
+def app_main(sourcedir: pathlib.Path, outdir: pathlib.Path) -> None:
     """Main application function that processes patient intake forms."""
     target = coco.mount_run(
-        localfs.declare_dir_target, scope / "setup", outdir
+        coco.component_subpath("setup"), localfs.declare_dir_target, outdir
     ).result()
 
     files = localfs.walk_dir(
@@ -150,8 +148,8 @@ def app_main(scope: coco.Scope, sourcedir: pathlib.Path, outdir: pathlib.Path) -
 
     for f in files:
         coco.mount(
+            coco.component_subpath("process", str(f.relative_path)),
             process_patient_form,
-            scope / "process" / str(f.relative_path),
             f,
             target,
         )
@@ -162,8 +160,8 @@ lm = dspy.LM("gemini/gemini-2.5-flash")
 dspy.configure(lm=lm)
 
 app = coco.App(
-    app_main,
     coco.AppConfig(name="PatientIntakeExtractionDSPy"),
+    app_main,
     sourcedir=pathlib.Path("./data/patient_forms"),
     outdir=pathlib.Path("./output_patients"),
 )

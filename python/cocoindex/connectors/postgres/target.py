@@ -888,21 +888,18 @@ class TableTarget(
         self._provider = provider
         self._table_schema = table_schema
 
-    def declare_row(self: "TableTarget[RowT]", scope: coco.Scope, *, row: RowT) -> None:
+    def declare_row(self: "TableTarget[RowT]", *, row: RowT) -> None:
         """
         Declare a row to be upserted to this table.
 
         Args:
-            scope: The scope for target state declaration.
             row: A row object (dict, dataclass, NamedTuple, or Pydantic model).
                  Must include all primary key columns.
         """
         row_dict = self._row_to_dict(row)
         # Extract primary key values
         pk_values = tuple(row_dict[pk] for pk in self._table_schema.primary_key)
-        coco.declare_target_state(
-            scope, self._provider.target_state(pk_values, row_dict)
-        )
+        coco.declare_target_state(self._provider.target_state(pk_values, row_dict))
 
     def _row_to_dict(self, row: RowT) -> dict[str, Any]:
         """
@@ -947,7 +944,6 @@ class PgDatabase(_connection.KeyedConnection[asyncpg.Pool]):
 
     def declare_table_target(
         self,
-        scope: coco.Scope,
         table_name: str,
         table_schema: TableSchema[RowT],
         *,
@@ -958,7 +954,6 @@ class PgDatabase(_connection.KeyedConnection[asyncpg.Pool]):
         Create a TableTarget for writing rows to a PostgreSQL table.
 
         Args:
-            scope: The scope for target state declaration.
             table_name: Name of the table.
             table_schema: Schema definition including columns and primary key.
             pg_schema_name: Optional PostgreSQL schema name (default is "public").
@@ -978,7 +973,7 @@ class PgDatabase(_connection.KeyedConnection[asyncpg.Pool]):
             managed_by=managed_by,
         )
         provider = coco.declare_target_state_with_child(
-            scope, _table_provider.target_state(key, spec)
+            _table_provider.target_state(key, spec)
         )
         return TableTarget(provider, table_schema)
 

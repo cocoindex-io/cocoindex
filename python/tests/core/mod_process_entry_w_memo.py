@@ -13,7 +13,7 @@ def set_metrics(metrics: Metrics) -> None:
 
 
 @coco.function(memo=True)
-def process_entry(scope: coco.Scope, key: str, value: str) -> None:
+def process_entry(key: str, value: str) -> None:
     assert _metrics is not None
     _metrics.increment("calls")
-    coco.declare_target_state(scope, GlobalDictTarget.target_state(key, value))
+    coco.declare_target_state(GlobalDictTarget.target_state(key, value))

@@ -12,17 +12,17 @@ OUT_DIR = _HERE / "out_default_db"
 
 
 @coco.function
-def build(scope: coco.Scope) -> None:
+def build() -> None:
     dir_target = coco.mount_run(
+        coco.component_subpath("out"),
         declare_dir_target,
-        scope / "out",
         OUT_DIR,
         stable_key="out_dir",
         managed_by="system",
     ).result()
     dir_target.declare_file(
-        scope, filename="default_db.txt", content="Hello from DefaultDbApp\n"
+        filename="default_db.txt", content="Hello from DefaultDbApp\n"
     )
 
 
-app = coco.App(build, coco.AppConfig(name="DefaultDbApp"))
+app = coco.App(coco.AppConfig(name="DefaultDbApp"), build)

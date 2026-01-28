@@ -102,7 +102,7 @@ _instructor_client = instructor.from_litellm(completion, mode=instructor.Mode.JS
 
 
 @coco.function(memo=True)
-def extract_file_info(scope: coco.Scope, file: FileLike) -> CodebaseInfo:
+def extract_file_info(file: FileLike) -> CodebaseInfo:
     """Extract structured information from a single Python file using LLM."""
     content = file.read_text()
     file_path = str(file.relative_path)
@@ -256,7 +256,6 @@ def generate_markdown(
 
 @coco.function(memo=True)
 def process_project(
-    scope: coco.Scope,
     project_name: str,
     files: Collection[localfs.File],
     target: localfs.DirTarget,
@@ -265,7 +264,11 @@ def process_project(
     # Extract info from each file.
     # Get the handles first, then wait for the results, so they are processed in parallel.
     file_info_handles = [
-        coco.mount_run(extract_file_info, scope / "extract" / str(f.relative_path), f)
+        coco.mount_run(
+            coco.component_subpath("extract", str(f.relative_path)),
+            extract_file_info,
+            f,
+        )
         for f in files
     ]
     file_infos = [r.result() for r in file_info_handles]
@@ -275,12 +278,11 @@ def process_project(
 
     # Generate and output markdown
     markdown = generate_markdown(project_name, project_info, file_infos)
-    target.declare_file(scope, filename=f"{project_name}.md", content=markdown)
+    target.declare_file(filename=f"{project_name}.md", content=markdown)
 
 
 @coco.function
 def app_main(
-    scope: coco.Scope,
     root_dir: pathlib.Path,
     output_dir: pathlib.Path,
 ) -> None:
@@ -292,7 +294,7 @@ def app_main(
     """
     # Set up output target
     target = coco.mount_run(
-        localfs.declare_dir_target, scope / "setup", output_dir
+        coco.component_subpath("setup"), localfs.declare_dir_target, output_dir
     ).result()
 
     # List subdirectories (each is a project)
@@ -321,8 +323,8 @@ def app_main(
         if files:
             # Mount a component to process this project
             coco.mount(
+                coco.component_subpath("project", project_name),
                 process_project,
-                scope / "project" / project_name,
                 project_name,
                 files,
                 target,
@@ -330,8 +332,8 @@ def app_main(
 
 
 app = coco.App(
-    app_main,
     "MultiCodebaseSummarization",
+    app_main,
     root_dir=pathlib.Path("../"),
     output_dir=pathlib.Path("./output"),
 )

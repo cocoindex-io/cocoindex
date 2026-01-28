@@ -77,7 +77,6 @@ async def coco_lifespan(
 
 @coco.function(memo=True)
 def process_file(
-    scope: coco.Scope,
     file: FileLike,
     target: qdrant.CollectionTarget,
 ) -> None:
@@ -89,26 +88,27 @@ def process_file(
         vector=embedding,
         payload={"filename": str(file.relative_path)},
     )
-    target.declare_point(scope, point)
+    target.declare_point(point)
 
 
 @coco.function
-def app_main(scope: coco.Scope, sourcedir: pathlib.Path) -> None:
+def app_main(sourcedir: pathlib.Path) -> None:
     model, _ = get_clip_model()
     dim = int(model.config.projection_dim)
 
-    target_db = scope.use(QDRANT_DB)
-    target_collection = coco.mount_run(
-        target_db.declare_collection_target,
-        scope / "setup" / "table",
-        collection_name=QDRANT_COLLECTION,
-        schema=qdrant.CollectionSchema(
-            vectors=qdrant.QdrantVectorDef(
-                schema=VectorSchema(dtype=np.dtype(np.float32), size=dim),
-                distance="cosine",
-            )
-        ),
-    ).result()
+    target_db = coco.use_context(QDRANT_DB)
+    with coco.component_subpath("setup"):
+        target_collection = coco.mount_run(
+            coco.component_subpath("table"),
+            target_db.declare_collection_target,
+            collection_name=QDRANT_COLLECTION,
+            schema=qdrant.CollectionSchema(
+                vectors=qdrant.QdrantVectorDef(
+                    schema=VectorSchema(dtype=np.dtype(np.float32), size=dim),
+                    distance="cosine",
+                )
+            ),
+        ).result()
 
     files = localfs.walk_dir(
         sourcedir,
@@ -119,13 +119,16 @@ def app_main(scope: coco.Scope, sourcedir: pathlib.Path) -> None:
     )
     for f in files:
         coco.mount(
-            process_file, scope / "file" / str(f.relative_path), f, target_collection
+            coco.component_subpath("file", str(f.relative_path)),
+            process_file,
+            f,
+            target_collection,
         )
 
 
 app = coco_aio.App(
-    app_main,
     coco_aio.AppConfig(name="ImageSearchQdrantV1"),
+    app_main,
     sourcedir=pathlib.Path("./img"),
 )
 

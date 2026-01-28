@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from typing import (
     Any,
     Callable,
-    Concatenate,
     Generic,
     ParamSpec,
     TypeVar,
@@ -15,7 +14,6 @@ from typing import (
 from . import core
 from .environment import Environment, LazyEnvironment, _default_env
 from .function import AnyCallable, AsyncCallable
-from .scope import Scope
 
 
 P = ParamSpec("P")
@@ -30,7 +28,7 @@ class AppConfig:
 
 class AppBase(Generic[P, R]):
     _name: str
-    _main_fn: AnyCallable[Concatenate[Scope, P], R]
+    _main_fn: AnyCallable[P, R]
     _app_args: tuple[Any, ...]
     _app_kwargs: dict[str, Any]
     _environment: Environment | LazyEnvironment
@@ -41,8 +39,8 @@ class AppBase(Generic[P, R]):
     @overload
     def __init__(
         self,
-        main_fn: AsyncCallable[Concatenate[Scope, P], R],
         name_or_config: str | AppConfig,
+        main_fn: AsyncCallable[P, R],
         /,
         *args: P.args,
         **kwargs: P.kwargs,
@@ -50,16 +48,16 @@ class AppBase(Generic[P, R]):
     @overload
     def __init__(
         self,
-        main_fn: Callable[Concatenate[Scope, P], R],
         name_or_config: str | AppConfig,
+        main_fn: Callable[P, R],
         /,
         *args: P.args,
         **kwargs: P.kwargs,
     ) -> None: ...
     def __init__(
         self,
-        main_fn: Any,
         name_or_config: str | AppConfig,
+        main_fn: Any,
         /,
         *args: P.args,
         **kwargs: P.kwargs,
