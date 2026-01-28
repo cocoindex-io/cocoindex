@@ -20,8 +20,8 @@ jobs:
         with:
           install-only: true
 
-      - name: Run prek autoupdate
-        run: prek autoupdate
+      - name: Run prek auto-update
+        run: prek auto-update
 
       - name: Create Pull Request
         uses: peter-evans/create-pull-request@v7
