@@ -128,17 +128,22 @@ disable_error_code = ["unused-ignore"]
 
 [[tool.mypy.overrides]]
 # Ignore missing imports for optional dependencies from cocoindex library
+# Use wildcards to cover all submodules (e.g., google.oauth2.service_account)
 module = [
     "sentence_transformers",
-    "torch",
+    "sentence_transformers.*",
     "colpali_engine",
+    "colpali_engine.*",
     "PIL",
+    "PIL.*",
+    "torch",
+    "torch.*",
     "qdrant_client",
-    "qdrant_client.http",
+    "qdrant_client.*",
     "googleapiclient",
-    "googleapiclient.discovery",
-    "googleapiclient.http",
+    "googleapiclient.*",
     "google.oauth2",
+    "google.oauth2.*",
 ]
 ignore_missing_imports = true
 
