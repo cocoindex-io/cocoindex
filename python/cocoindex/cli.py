@@ -525,6 +525,14 @@ async def _drop_app(app: AppBase[Any, Any], *args: Any, **kwargs: Any) -> None:
 @cli.command()
 @click.argument("app_target", type=str)
 @click.option(
+    "-f",
+    "--force",
+    is_flag=True,
+    show_default=True,
+    default=False,
+    help="Skip confirmation prompt.",
+)
+@click.option(
     "-q",
     "--quiet",
     is_flag=True,
@@ -546,7 +554,9 @@ async def _drop_app(app: AppBase[Any, Any], *args: Any, **kwargs: Any) -> None:
     default=False,
     help="Reprocess everything and invalidate existing caches.",
 )
-def update(app_target: str, quiet: bool, reset: bool, full_reprocess: bool) -> None:
+def update(
+    app_target: str, force: bool, quiet: bool, reset: bool, full_reprocess: bool
+) -> None:
     """
     Run a v1 app once (one-time update).
 
@@ -564,6 +574,14 @@ def update(app_target: str, quiet: bool, reset: bool, full_reprocess: bool) -> N
 
             # --reset: drop existing state first (equivalent to `cocoindex drop ...`)
             if reset:
+                if not force:
+                    if not _confirm_yes(
+                        f"Type 'yes' to reset app '{app._name}' (drop existing state)"
+                    ):
+                        if not quiet:
+                            click.echo("Update operation aborted.")
+                        return
+
                 persisted_names = _get_persisted_app_names(env)
                 if app._name in persisted_names:
                     await _drop_app(app, report_to_stdout=not quiet)
@@ -571,7 +589,7 @@ def update(app_target: str, quiet: bool, reset: bool, full_reprocess: bool) -> N
             # --full-reprocess: invalidate memoization caches before running
             if full_reprocess:
                 core_app = await app._get_core()
-                _core.clear_component_memoization(core_app)
+                _core.clear_all_memoization(core_app)
 
             await _update_app(app, report_to_stdout=not quiet)
         finally:
@@ -615,19 +633,22 @@ def drop(app_target: str, force: bool = False, quiet: bool = False) -> None:
     env = app._environment._get_env_sync()
     persisted_names = _get_persisted_app_names(env)
 
-    click.echo(
-        f"Preparing to drop app '{app._name}' from environment '{env.name}' (db path: {env.settings.db_path})"
-    )
+    if not quiet:
+        click.echo(
+            f"Preparing to drop app '{app._name}' from environment '{env.name}' (db path: {env.settings.db_path})"
+        )
 
     if app._name not in persisted_names:
-        click.echo(f"App '{app._name}' has no persisted state. Nothing to drop.")
+        if not quiet:
+            click.echo(f"App '{app._name}' has no persisted state. Nothing to drop.")
         return
 
     if not force:
         if not _confirm_yes(
             f"Type 'yes' to drop app '{app._name}' and all its target states"
         ):
-            click.echo("Drop operation aborted.")
+            if not quiet:
+                click.echo("Drop operation aborted.")
             return
 
     async def _do() -> None:
@@ -635,9 +656,10 @@ def drop(app_target: str, force: bool = False, quiet: bool = False) -> None:
             await _drop_app(app, report_to_stdout=not quiet)
         finally:
             await _stop_all_environments()
-        click.echo(
-            f"Dropped app '{app._name}' from environment '{env.name}' and reverted its target states."
-        )
+        if not quiet:
+            click.echo(
+                f"Dropped app '{app._name}' from environment '{env.name}' and reverted its target states."
+            )
 
     env_loop = default_env_loop()
     asyncio.run_coroutine_threadsafe(_do(), env_loop).result()

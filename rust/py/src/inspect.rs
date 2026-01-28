@@ -18,6 +18,6 @@ pub fn list_app_names(env: &PyEnvironment) -> PyResult<Vec<String>> {
 }
 
 #[pyfunction]
-pub fn clear_component_memoization(app: &PyApp) -> PyResult<()> {
-    db_inspect::clear_component_memoization(&app.0).into_py_result()
+pub fn clear_all_memoization(app: &PyApp) -> PyResult<()> {
+    db_inspect::clear_all_memoization(&app.0).into_py_result()
 }

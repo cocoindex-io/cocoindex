@@ -52,7 +52,7 @@ fn core_module(m: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()>
 
     m.add_function(wrap_pyfunction!(inspect::list_stable_paths, m)?)?;
     m.add_function(wrap_pyfunction!(inspect::list_app_names, m)?)?;
-    m.add_function(wrap_pyfunction!(inspect::clear_component_memoization, m)?)?;
+    m.add_function(wrap_pyfunction!(inspect::clear_all_memoization, m)?)?;
 
     m.add_class::<runtime::PyAsyncContext>()?;
 
