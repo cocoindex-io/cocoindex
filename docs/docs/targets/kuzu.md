@@ -7,7 +7,8 @@ import { ExampleButton } from '../../src/components/GitHubButton';
 
 # Kuzu (Archived)
 
-Note:[Kuzu](https://github.com/kuzudb/kuzu) - embedded graph database is no longer maintained.
+Note: [Kuzu](https://github.com/kuzudb/kuzu) - embedded graph database is no longer maintained.
+For a maintained fork with an identical API, see [Ladybug](/docs/targets/ladybug).
 
 Exports data to a [Kuzu](https://github.com/kuzudb/kuzu) graph database.
 

@@ -19,6 +19,7 @@ The way to map data from a data collector to a target depends on data model of t
 | [LanceDB](/docs/targets/lancedb)   | Vector Database, Keyword Search         |
 | [Apache Doris](/docs/targets/doris) | Analytical Database, Vector Search, Full-Text Search |
 | [Neo4j](/docs/targets/neo4j)       | [Property graph](#property-graph-targets)        |
+| [Ladybug](/docs/targets/ladybug)   | [Property graph](#property-graph-targets)  |
 
 If you are looking for targets beyond here, you can always use [custom targets](/docs/custom_ops/custom_targets) as building blocks.
 
