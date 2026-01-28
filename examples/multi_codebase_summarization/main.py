@@ -105,7 +105,7 @@ _instructor_client = instructor.from_litellm(completion, mode=instructor.Mode.JS
 def extract_file_info(file: FileLike) -> CodebaseInfo:
     """Extract structured information from a single Python file using LLM."""
     content = file.read_text()
-    file_path = str(file.relative_path)
+    file_path = str(file.file_path.path)
 
     prompt = f"""Analyze the following Python file and extract structured information.
 
@@ -258,14 +258,14 @@ def generate_markdown(
 def process_project(
     project_name: str,
     files: Collection[localfs.File],
-    target: localfs.DirTarget,
+    output_dir: pathlib.Path,
 ) -> None:
     """Process a single project: extract info from all files, aggregate, and output markdown."""
     # Extract info from each file.
     # Get the handles first, then wait for the results, so they are processed in parallel.
     file_info_handles = [
         coco.mount_run(
-            coco.component_subpath("extract", str(f.relative_path)),
+            coco.component_subpath("extract", str(f.file_path.path)),
             extract_file_info,
             f,
         )
@@ -278,7 +278,9 @@ def process_project(
 
     # Generate and output markdown
     markdown = generate_markdown(project_name, project_info, file_infos)
-    target.declare_file(filename=f"{project_name}.md", content=markdown)
+    localfs.declare_file(
+        output_dir / f"{project_name}.md", markdown, create_parent_dirs=True
+    )
 
 
 @coco.function
@@ -292,17 +294,8 @@ def app_main(
     Scans subdirectories of root_dir, treating each as a Python project,
     and generates markdown documentation for each.
     """
-    # Set up output target
-    target = coco.mount_run(
-        coco.component_subpath("setup"), localfs.declare_dir_target, output_dir
-    ).result()
-
     # List subdirectories (each is a project)
-    root_path = root_dir.resolve()
-    if not root_path.is_dir():
-        raise ValueError(f"Root path is not a directory: {root_path}")
-
-    for entry in root_path.iterdir():
+    for entry in root_dir.resolve().iterdir():
         # Skip non-directories and hidden directories
         if not entry.is_dir() or entry.name.startswith("."):
             continue
@@ -327,7 +320,7 @@ def app_main(
                 process_project,
                 project_name,
                 files,
-                target,
+                output_dir,
             )
 
 

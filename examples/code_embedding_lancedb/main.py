@@ -86,7 +86,7 @@ async def process_file(
 ) -> None:
     text = file.read_text()
     # Detect programming language from filename
-    language = detect_code_language(filename=str(file.relative_path.name))
+    language = detect_code_language(filename=str(file.file_path.path.name))
 
     # Split with syntax awareness if language is detected
     chunks = _splitter.split(
@@ -97,7 +97,7 @@ async def process_file(
         language=language,
     )
     await asyncio.gather(
-        *(process_chunk(file.relative_path, chunk, table) for chunk in chunks)
+        *(process_chunk(file.file_path.path, chunk, table) for chunk in chunks)
     )
 
 
@@ -124,7 +124,7 @@ def app_main(sourcedir: pathlib.Path) -> None:
     )
     for file in files:
         coco.mount(
-            coco.component_subpath("file", str(file.relative_path)),
+            coco.component_subpath("file", str(file.file_path.path)),
             process_file,
             file,
             target_table,

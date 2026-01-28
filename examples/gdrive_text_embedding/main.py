@@ -74,7 +74,7 @@ async def process_file(
         text, chunk_size=2000, chunk_overlap=500, language="markdown"
     )
     await asyncio.gather(
-        *(_emit_chunk(file.relative_path.as_posix(), chunk, table) for chunk in chunks)
+        *(_emit_chunk(file.file_path.path.as_posix(), chunk, table) for chunk in chunks)
     )
 
 
@@ -124,7 +124,7 @@ def app_main() -> None:
 
     for file in source.files():
         coco.mount(
-            coco.component_subpath("file", file.relative_path.as_posix()),
+            coco.component_subpath("file", file.file_path.path.as_posix()),
             process_file,
             file,
             table,

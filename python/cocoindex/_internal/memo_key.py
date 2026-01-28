@@ -27,6 +27,7 @@ _CanonicalValue: typing.TypeAlias = typing.Union[
     float,
     str,
     bytes,
+    core.Fingerprint,
     tuple["_CanonicalValue", ...],
 ]
 
@@ -84,7 +85,7 @@ def _canonicalize(obj: object, _seen: dict[int, int] | None) -> _CanonicalValue:
     # 1) Primitives
     if obj is None:
         return None
-    if isinstance(obj, (bool, int, float, str, bytes)):
+    if isinstance(obj, (bool, int, float, str, bytes, core.Fingerprint)):
         # bool is a subclass of int; returning as-is preserves bools correctly.
         return obj
     if isinstance(obj, (bytearray, memoryview)):

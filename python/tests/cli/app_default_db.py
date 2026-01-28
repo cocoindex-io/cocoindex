@@ -17,12 +17,8 @@ def build() -> None:
         coco.component_subpath("out"),
         declare_dir_target,
         OUT_DIR,
-        stable_key="out_dir",
-        managed_by="system",
     ).result()
-    dir_target.declare_file(
-        filename="default_db.txt", content="Hello from DefaultDbApp\n"
-    )
+    dir_target.declare_file("default_db.txt", "Hello from DefaultDbApp\n")
 
 
 app = coco.App(coco.AppConfig(name="DefaultDbApp"), build)

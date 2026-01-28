@@ -38,10 +38,8 @@ def build1() -> None:
         coco.component_subpath("out"),
         declare_dir_target,
         OUT_DIR_1,
-        stable_key="out_dir",
-        managed_by="system",
     ).result()
-    dir_target.declare_file(filename="db1.txt", content="Hello from DB1App\n")
+    dir_target.declare_file("db1.txt", "Hello from DB1App\n")
 
 
 @coco.function
@@ -50,10 +48,8 @@ def build2() -> None:
         coco.component_subpath("out"),
         declare_dir_target,
         OUT_DIR_2,
-        stable_key="out_dir",
-        managed_by="system",
     ).result()
-    dir_target.declare_file(filename="db2.txt", content="Hello from DB2App\n")
+    dir_target.declare_file("db2.txt", "Hello from DB2App\n")
 
 
 # Two apps in different environments (different directories, same db filename)

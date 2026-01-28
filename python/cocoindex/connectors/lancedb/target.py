@@ -546,7 +546,7 @@ class _TableAction(NamedTuple):
 
 # Database registry: maps stable keys to async connections
 _db_registry: _connection.ConnectionRegistry[LanceAsyncConnection] = (
-    _connection.ConnectionRegistry()
+    _connection.ConnectionRegistry("cocoindex/lancedb")
 )
 
 
@@ -821,7 +821,7 @@ class LanceDatabase(_connection.KeyedConnection[LanceAsyncConnection]):
         Returns:
             A TableTarget that can be used to declare rows.
         """
-        key = _TableKey(db_key=self._connection_key, table_name=table_name)
+        key = _TableKey(db_key=self.key, table_name=table_name)
         spec = _TableSpec(
             table_schema=table_schema,
             managed_by=managed_by,
@@ -909,7 +909,7 @@ def register_db(key: str, conn: LanceAsyncConnection) -> LanceDatabase:
         ```
     """
     _db_registry.register(key, conn)
-    return LanceDatabase(key, _db_registry)
+    return LanceDatabase(_db_registry.name, key, conn, _db_registry)
 
 
 __all__ = [
