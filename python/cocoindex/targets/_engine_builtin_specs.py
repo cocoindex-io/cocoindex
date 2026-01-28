@@ -51,6 +51,26 @@ class Qdrant(op.TargetSpec):
 
 
 @dataclass
+class PineconeConnection:
+    """Connection spec for Pinecone."""
+
+    api_key: str
+    environment: str | None = None  # Optional, can be inferred from API key
+
+
+@dataclass
+class Pinecone(op.TargetSpec):
+    """Target powered by Pinecone - https://www.pinecone.io/."""
+
+    index_name: str
+    connection: AuthEntryReference[PineconeConnection]
+    namespace: str = ""
+    cloud: str = "aws"  # aws, gcp, or azure
+    region: str = "us-east-1"
+    batch_size: int = 100
+
+
+@dataclass
 class TargetFieldMapping:
     """Mapping for a graph element (node or relationship) field."""
 
