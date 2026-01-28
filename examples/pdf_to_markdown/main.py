@@ -23,21 +23,19 @@ _converter = DocumentConverter()
 @coco.function(memo=True)
 def process_file(
     file: localfs.File,
-    target: localfs.DirTarget,
+    outdir: pathlib.Path,
 ) -> None:
     # Get absolute path of the PDF file
-    markdown = _converter.convert(file.path).document.export_to_markdown()
+    markdown = _converter.convert(
+        file.file_path.resolve()
+    ).document.export_to_markdown()
     # Replace .pdf extension with .md
-    outname = file.relative_path.stem + ".md"
-    target.declare_file(filename=outname, content=markdown)
+    outname = file.file_path.path.stem + ".md"
+    localfs.declare_file(outdir / outname, markdown, create_parent_dirs=True)
 
 
 @coco.function
 def app_main(sourcedir: pathlib.Path, outdir: pathlib.Path) -> None:
-    target = coco.mount_run(
-        coco.component_subpath("setup"), localfs.declare_dir_target, outdir
-    ).result()
-
     files = localfs.walk_dir(
         sourcedir,
         recursive=True,
@@ -45,10 +43,10 @@ def app_main(sourcedir: pathlib.Path, outdir: pathlib.Path) -> None:
     )
     for f in files:
         coco.mount(
-            coco.component_subpath("process", str(f.relative_path)),
+            coco.component_subpath("process", str(f.file_path.path)),
             process_file,
             f,
-            target,
+            outdir,
         )
 
 

@@ -33,7 +33,7 @@ async def process_file_async(file: AsyncFileLike) -> str:
 
 **Properties:**
 
-- `relative_path` — The relative path of the file (`PurePath`)
+- `file_path` — A `FilePath` object representing the file's path. Access the relative path via `file_path.path` (`PurePath`).
 - `size` — File size in bytes
 - `modified_time` — File modification time (`datetime`)
 
@@ -44,7 +44,62 @@ async def process_file_async(file: AsyncFileLike) -> str:
 
 **Memoization:**
 
-`FileLike` objects provide a memoization key based on `relative_path` and `modified_time`. When used as arguments to a [memoized function](./programming_guide/function.md#memoization), CocoIndex can detect when a file has changed and skip recomputation for unchanged files.
+`FileLike` objects provide a memoization key based on `file_path` and `modified_time`. When used as arguments to a [memoized function](./programming_guide/function.md#memoization), CocoIndex can detect when a file has changed and skip recomputation for unchanged files.
+
+### FilePath
+
+`FilePath` is a base class that combines a **base directory** (with a stable key) and a **relative path**. This enables stable memoization even when the entire directory tree is moved to a different location.
+
+```python
+from cocoindex.resources.file import FilePath
+```
+
+Each connector provides its own `FilePath` subclass (e.g., `localfs.FilePath`). The base class defines the common interface.
+
+**Properties:**
+
+- `base_dir` — A `KeyedConnection` object that holds the base directory. The `base_dir.key` is used for stable memoization.
+- `path` — The path relative to the base directory (`PurePath`).
+
+**Methods:**
+
+- `resolve()` — Resolve to the full path (type depends on the connector, e.g., `pathlib.Path` for local filesystem).
+
+**Path Operations:**
+
+`FilePath` supports most `pathlib.PurePath` operations:
+
+```python
+# Join paths with /
+config_path = source_dir / "config" / "settings.json"
+
+# Access path properties
+config_path.name      # "settings.json"
+config_path.stem      # "settings"
+config_path.suffix    # ".json"
+config_path.parts     # ("config", "settings.json")
+config_path.parent    # FilePath pointing to "config/"
+
+# Modify path components
+config_path.with_name("other.json")
+config_path.with_suffix(".yaml")
+config_path.with_stem("config")
+
+# Pattern matching
+config_path.match("*.json")  # True
+
+# Convert to POSIX string
+config_path.as_posix()  # "config/settings.json"
+```
+
+**Memoization:**
+
+`FilePath` provides a memoization key based on `(base_dir.key, path)`. This means:
+
+- Two `FilePath` objects with the same base directory key and relative path have the same memo key
+- Moving the entire project directory doesn't invalidate memoization, as long as you re-register with the same key
+
+For connector-specific usage (e.g., `register_base_dir`), see the individual connector documentation like [Local File System](./connectors/localfs.md).
 
 ### FilePathMatcher
 

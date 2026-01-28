@@ -21,10 +21,8 @@ def build() -> None:
         coco.component_subpath("out"),
         declare_dir_target,
         OUT_DIR,
-        stable_key="out_dir",
-        managed_by="system",
     ).result()
-    dir_target.declare_file(filename="hello.txt", content="Hello from App1\n")
+    dir_target.declare_file("hello.txt", "Hello from App1\n")
 
 
 app = coco.App(coco.AppConfig(name="TestApp1", environment=env), build)

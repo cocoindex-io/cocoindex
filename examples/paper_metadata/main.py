@@ -198,7 +198,7 @@ async def process_file(
 
     metadata_table.declare_row(
         row=PaperMetadataRow(
-            filename=str(file.relative_path),
+            filename=str(file.file_path.path),
             title=metadata.title,
             authors=authors_payload,
             abstract=metadata.abstract,
@@ -211,7 +211,7 @@ async def process_file(
             author_table.declare_row(
                 row=AuthorPaperRow(
                     author_name=author.name,
-                    filename=str(file.relative_path),
+                    filename=str(file.file_path.path),
                 ),
             )
 
@@ -219,7 +219,7 @@ async def process_file(
     embedding_table.declare_row(
         row=MetadataEmbeddingRow(
             id=uuid.uuid4(),
-            filename=str(file.relative_path),
+            filename=str(file.file_path.path),
             location="title",
             text=metadata.title,
             embedding=title_embedding,
@@ -237,7 +237,7 @@ async def process_file(
         embedding_table.declare_row(
             row=MetadataEmbeddingRow(
                 id=uuid.uuid4(),
-                filename=str(file.relative_path),
+                filename=str(file.file_path.path),
                 location="abstract",
                 text=chunk.text,
                 embedding=await _embedder.embed_async(chunk.text),
@@ -287,7 +287,7 @@ def app_main(sourcedir: pathlib.Path) -> None:
     )
     for f in files:
         coco.mount(
-            coco.component_subpath("file", str(f.relative_path)),
+            coco.component_subpath("file", str(f.file_path.path)),
             process_file,
             f,
             metadata_table,

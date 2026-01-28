@@ -102,11 +102,11 @@ def process_file(
 ) -> None:
     content = file.read()
     embedding = embed_image_bytes(content)
-    row_id = _image_id(file.relative_path)
+    row_id = _image_id(file.file_path.path)
     point = qdrant.PointStruct(
         id=row_id,
         vector=embedding,
-        payload={"filename": str(file.relative_path)},
+        payload={"filename": str(file.file_path.path)},
     )
     target.declare_point(point)
 
@@ -142,7 +142,7 @@ def app_main(sourcedir: pathlib.Path) -> None:
     )
     for f in files:
         coco.mount(
-            coco.component_subpath("file", str(f.relative_path)),
+            coco.component_subpath("file", str(f.file_path.path)),
             process_file,
             f,
             target_collection,

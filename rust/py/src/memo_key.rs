@@ -1,3 +1,4 @@
+use crate::fingerprint::PyFingerprint;
 use crate::prelude::*;
 
 use pyo3::exceptions::PyTypeError;
@@ -77,6 +78,13 @@ fn write_py_memo_key(
             write_py_memo_key(fp, item?.as_borrowed())?;
         }
         fp.write_end_tag();
+        return Ok(());
+    }
+
+    if obj.is_instance_of::<PyFingerprint>() {
+        let f = obj.extract::<PyFingerprint>()?;
+        fp.write_type_tag("fp");
+        fp.write_raw_bytes(f.0.as_slice());
         return Ok(());
     }
 

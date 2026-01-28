@@ -28,10 +28,8 @@ def build1() -> None:
         coco.component_subpath("out"),
         declare_dir_target,
         coco.use_context(_ROOT_PATH) / "out_multi_1",
-        stable_key="out_dir",
-        managed_by="system",
     ).result()
-    dir_target.declare_file(filename="hello.txt", content="Hello from MultiApp1\n")
+    dir_target.declare_file("hello.txt", "Hello from MultiApp1\n")
 
 
 @coco.function
@@ -40,10 +38,8 @@ def build2() -> None:
         coco.component_subpath("out"),
         declare_dir_target,
         coco.use_context(_ROOT_PATH) / "out_multi_2",
-        stable_key="out_dir",
-        managed_by="system",
     ).result()
-    dir_target.declare_file(filename="world.txt", content="Hello from MultiApp2\n")
+    dir_target.declare_file("world.txt", "Hello from MultiApp2\n")
 
 
 # Two apps in the same module

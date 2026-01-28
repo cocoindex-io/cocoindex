@@ -263,7 +263,7 @@ class _CollectionAction(_NamedTuple):
 
 
 _db_registry: _connection.ConnectionRegistry[_QdrantClient] = (
-    _connection.ConnectionRegistry()
+    _connection.ConnectionRegistry("cocoindex/qdrant")
 )
 
 
@@ -282,7 +282,7 @@ def register_db(key: str, client: _QdrantClient) -> "QdrantDatabase":
         QdrantDatabase handle for declaring collections
     """
     _db_registry.register(key, client)
-    return QdrantDatabase(key, _db_registry)
+    return QdrantDatabase(_db_registry.name, key, client, _db_registry)
 
 
 def create_client(
@@ -537,9 +537,7 @@ class QdrantDatabase(_connection.KeyedConnection[_QdrantClient]):
                 # Use target to declare points...
             ```
         """
-        key = _CollectionKey(
-            db_key=self._connection_key, collection_name=collection_name
-        )
+        key = _CollectionKey(db_key=self.key, collection_name=collection_name)
         spec = _CollectionSpec(schema=schema, managed_by=managed_by)
         provider = coco.declare_target_state_with_child(
             _collection_provider.target_state(key, spec)

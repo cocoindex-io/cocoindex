@@ -125,22 +125,20 @@ def extract_patient(pdf_content: bytes) -> Patient:
 
 
 @coco.function(memo=True)
-def process_patient_form(file: FileLike, target: localfs.DirTarget) -> None:
+def process_patient_form(file: FileLike, outdir: pathlib.Path) -> None:
     """Process a patient intake form PDF and extract structured information."""
     content = file.read()
     patient_info = extract_patient(content)
     patient_json = patient_info.model_dump_json(indent=2)
-    output_filename = file.relative_path.stem + ".json"
-    target.declare_file(filename=output_filename, content=patient_json)
+    output_filename = file.file_path.path.stem + ".json"
+    localfs.declare_file(
+        outdir / output_filename, patient_json, create_parent_dirs=True
+    )
 
 
 @coco.function
 def app_main(sourcedir: pathlib.Path, outdir: pathlib.Path) -> None:
     """Main application function that processes patient intake forms."""
-    target = coco.mount_run(
-        coco.component_subpath("setup"), localfs.declare_dir_target, outdir
-    ).result()
-
     files = localfs.walk_dir(
         sourcedir,
         path_matcher=PatternFilePathMatcher(included_patterns=["*.pdf"]),
@@ -148,10 +146,10 @@ def app_main(sourcedir: pathlib.Path, outdir: pathlib.Path) -> None:
 
     for f in files:
         coco.mount(
-            coco.component_subpath("process", str(f.relative_path)),
+            coco.component_subpath("process", str(f.file_path.path)),
             process_patient_form,
             f,
-            target,
+            outdir,
         )
 
 

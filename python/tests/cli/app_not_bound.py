@@ -24,10 +24,8 @@ def build() -> None:
         coco.component_subpath("out"),
         declare_dir_target,
         OUT_DIR,
-        stable_key="out_dir",
-        managed_by="system",
     ).result()
-    dir_target.declare_file(filename="unbound.txt", content="Hello from UnboundApp\n")
+    dir_target.declare_file("unbound.txt", "Hello from UnboundApp\n")
 
 
 def create_app() -> coco.App[[], None]:

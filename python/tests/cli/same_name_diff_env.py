@@ -50,10 +50,8 @@ def build_alpha() -> None:
         coco.component_subpath("out"),
         declare_dir_target,
         OUT_DIR_ALPHA,
-        stable_key="out_dir",
-        managed_by="system",
     ).result()
-    dir_target.declare_file(filename="output.txt", content="From Alpha env\n")
+    dir_target.declare_file("output.txt", "From Alpha env\n")
 
 
 @coco.function
@@ -62,10 +60,8 @@ def build_default() -> None:
         coco.component_subpath("out"),
         declare_dir_target,
         OUT_DIR_DEFAULT,
-        stable_key="out_dir",
-        managed_by="system",
     ).result()
-    dir_target.declare_file(filename="output.txt", content="From Default env\n")
+    dir_target.declare_file("output.txt", "From Default env\n")
 
 
 # Two apps with THE SAME NAME but in different environments

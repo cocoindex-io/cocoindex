@@ -20,10 +20,8 @@ def build() -> None:
         coco.component_subpath("out"),
         declare_dir_target,
         OUT_DIR,
-        stable_key="out_dir",
-        managed_by="system",
     ).result()
-    dir_target.declare_file(filename="single.txt", content="Hello from SingleApp\n")
+    dir_target.declare_file("single.txt", "Hello from SingleApp\n")
 
 
 # Single app - should be auto-selected even without :app_name specifier

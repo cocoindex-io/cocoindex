@@ -597,7 +597,7 @@ class _TableAction(NamedTuple):
 
 # Database registry: maps stable keys to connection pools
 _db_registry: _connection.ConnectionRegistry[asyncpg.Pool] = (
-    _connection.ConnectionRegistry()
+    _connection.ConnectionRegistry("cocoindex/postgres")
 )
 
 
@@ -964,7 +964,7 @@ class PgDatabase(_connection.KeyedConnection[asyncpg.Pool]):
             A TableTarget that can be used to declare rows.
         """
         key = _TableKey(
-            db_key=self._connection_key,
+            db_key=self.key,
             pg_schema_name=pg_schema_name,
             table_name=table_name,
         )
@@ -1015,7 +1015,7 @@ def register_db(key: str, pool: asyncpg.Pool) -> PgDatabase:
         ```
     """
     _db_registry.register(key, pool)
-    return PgDatabase(key, _db_registry)
+    return PgDatabase(_db_registry.name, key, pool, _db_registry)
 
 
 async def create_pool(

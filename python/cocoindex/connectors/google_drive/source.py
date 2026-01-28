@@ -9,7 +9,8 @@ from __future__ import annotations
 import io
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Iterable, Iterator, Sequence
+from pathlib import PurePath
+from typing import Any, Iterable, Iterator, Sequence, Self
 
 try:
     from google.oauth2.service_account import Credentials  # type: ignore
@@ -21,9 +22,47 @@ except ImportError as e:
         "Please install cocoindex[google_drive]."
     ) from e
 
-from pathlib import Path
+from cocoindex.connectorkits import connection as _connection
+from cocoindex.resources import file as _file
 
-from cocoindex.resources.file import FileLike
+
+# Default base dir for unregistered Google Drive access (not registered)
+# The value is an empty string since Google Drive doesn't need a resolved base path
+_DEFAULT_DRIVE_BASE_DIR = _connection.KeyedConnection[str](
+    "cocoindex/google_drive", "", ""
+)
+
+
+class DriveFilePath(_file.FilePath[str]):
+    """
+    File path for Google Drive files.
+
+    The resolved path is the Google Drive file ID (string).
+    """
+
+    __slots__ = ("_file_id",)
+
+    _file_id: str
+
+    def __init__(
+        self,
+        path: str | PurePath,
+        *,
+        file_id: str,
+        _base_dir: _connection.KeyedConnection[str] | None = None,
+    ) -> None:
+        self._base_dir = _base_dir if _base_dir is not None else _DEFAULT_DRIVE_BASE_DIR
+        self._path = PurePath(path)
+        self._file_id = file_id
+
+    def resolve(self) -> str:
+        """Return the Google Drive file ID."""
+        return self._file_id
+
+    def _with_path(self, path: PurePath) -> Self:
+        """Create a new DriveFilePath with the given path."""
+        return type(self)(path, file_id=self._file_id, _base_dir=self._base_dir)  # type: ignore[return-value]
+
 
 _DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.readonly"
 _FOLDER_MIME = "application/vnd.google-apps.folder"
@@ -47,15 +86,26 @@ class DriveFileInfo:
     modified_time: datetime
 
 
-class DriveFile(FileLike):
+class DriveFile(_file.FileLike[str]):
     """Represents a file entry from Google Drive."""
 
     _service: Any
     _info: DriveFileInfo
+    _file_path: DriveFilePath
 
     def __init__(self, service: Any, info: DriveFileInfo) -> None:
         self._service = service
         self._info = info
+        # Create a DriveFilePath with the file name as the path and file_id as resolution
+        self._file_path = DriveFilePath(
+            info.name,
+            file_id=info.file_id,
+        )
+
+    @property
+    def file_path(self) -> DriveFilePath:
+        """Return the DriveFilePath of this file."""
+        return self._file_path
 
     def read(self, size: int = -1) -> bytes:
         """Read and return file content as bytes."""
@@ -76,11 +126,6 @@ class DriveFile(FileLike):
         while not done:
             _, done = downloader.next_chunk()
         return fh.getvalue()
-
-    @property
-    def relative_path(self) -> Path:
-        """Return a pseudo-path based on the file name."""
-        return Path(self._info.name)
 
     @property
     def size(self) -> int:
