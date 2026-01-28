@@ -1,6 +1,6 @@
 ---
 title: SDK Overview
-description: Overview of the CocoIndex Python SDK package organization, common types like Scope and StableKey, sync vs async APIs, and how to mix sync/async across processing components.
+description: Overview of the CocoIndex Python SDK package organization, common types like StableKey, sync vs async APIs, and how to mix sync/async across processing components.
 ---
 
 This document provides an overview of the CocoIndex Python SDK organization and how to choose between the synchronous and asynchronous APIs.
@@ -36,32 +36,17 @@ from cocoindex.resources.chunk import Chunk
 
 ## Common Types
 
-### Scope
-
-`Scope` is a handle that many CocoIndex APIs require. It carries context for accessing provided resources and declaring target states.
-
-You'll use `Scope` as the first argument for declaring target states, mounting processing components, accessing context values, etc. When your function requires `Scope`, pass it explicitly as the first argument.
-
-Scopes form a tree structure. You create child scopes using the `/` operator:
-
-```python
-scope / "setup"           # child scope of scope
-scope / "setup" / "table" # child scope of scope / "setup", sub-scope of scope
-```
-
-Each processing component must be mounted in a unique child scope. See [Processing Component](./processing_component.md) for how the scope tree affects target states and ownership.
-
-When creating child scopes, each part is a `StableKey`.
-
 ### StableKey
 
-`StableKey` is a type alias defining what values can be used when creating child scopes:
+`StableKey` is a type alias defining what values can be used when creating component paths via `coco.component_subpath()`:
 
 ```python
 StableKey = None | bool | int | str | bytes | uuid.UUID | tuple[StableKey, ...]
 ```
 
 Common examples include strings (like `"setup"` or `"table"`), integers, and UUIDs. Tuples allow composite keys when needed.
+
+Each processing component must be mounted at a unique path. See [Processing Component](./processing_component.md) for how the component path tree affects target states and ownership.
 
 ## Async vs Sync APIs
 
@@ -74,7 +59,7 @@ The two packages relate as follows:
 
 - **APIs with async/sync variants** — Some core APIs have separate async and sync implementations. For example, the `App` class exists in both packages — `cocoindex.asyncio.App` provides an async `run()` method you call with `await`, while `cocoindex.App` provides a blocking `run()` method.
 
-- **Shared APIs** — Many APIs are non-blocking and work identically in both contexts. For instance, `Scope` and target state declaration APIs are shared between both packages. Decorators like `@function` and `@lifespan` are also shared — they accept both sync and async functions. You can import these from either `cocoindex.asyncio` or `cocoindex`.
+- **Shared APIs** — Many APIs are non-blocking and work identically in both contexts. For instance, `component_subpath()` and target state declaration APIs are shared between both packages. Decorators like `@function` and `@lifespan` are also shared — they accept both sync and async functions. You can import these from either `cocoindex.asyncio` or `cocoindex`.
 
 ### Mixing Sync and Async
 
@@ -97,11 +82,11 @@ async def coco_lifespan(builder: coco_aio.EnvironmentBuilder):
     yield
 
 @coco_aio.function
-def app_main(scope: coco_aio.Scope, sourcedir: pathlib.Path):
+def app_main(sourcedir: pathlib.Path):
     # ... processing logic (can call async functions internally) ...
     pass
 
-app = coco_aio.App(app_main, coco_aio.AppConfig(name="MyApp"), sourcedir=pathlib.Path("./data"))
+app = coco_aio.App(coco_aio.AppConfig(name="MyApp"), app_main, sourcedir=pathlib.Path("./data"))
 
 async def main():
     await app.update(report_to_stdout=True)
@@ -121,11 +106,11 @@ def coco_lifespan(builder: coco.EnvironmentBuilder):
     yield
 
 @coco.function
-def app_main(scope: coco.Scope, sourcedir: pathlib.Path):
+def app_main(sourcedir: pathlib.Path):
     # ... processing logic ...
     pass
 
-app = coco.App(app_main, coco.AppConfig(name="MyApp"), sourcedir=pathlib.Path("./data"))
+app = coco.App(coco.AppConfig(name="MyApp"), app_main, sourcedir=pathlib.Path("./data"))
 
 def main():
     app.update(report_to_stdout=True)
@@ -142,7 +127,7 @@ A sync function can mount an async processing component:
 import cocoindex as coco
 
 @coco.function
-async def fetch_and_process(scope: coco.Scope, url: str):
+async def fetch_and_process(url: str):
     # Async processing component — uses await internally
     async with aiohttp.ClientSession() as session:
         async with session.get(url) as response:
@@ -150,10 +135,10 @@ async def fetch_and_process(scope: coco.Scope, url: str):
     # ... declare target states with data ...
 
 @coco.function
-def app_main(scope: coco.Scope, urls: list[str]):
+def app_main(urls: list[str]):
     # Sync function mounting async processing components
     for url in urls:
-        coco.mount(fetch_and_process, scope / url, url)
+        coco.mount(coco.component_subpath(url), fetch_and_process, url)
 ```
 
 The reverse also works — an async function can mount sync processing components.

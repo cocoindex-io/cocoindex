@@ -12,20 +12,20 @@ It names your pipeline and binds a main function with its parameters. When you c
 
 To create an App, provide:
 
-1. **A main function** — the entry point that receives a `Scope` as its first argument
-2. **An `AppConfig`** — at minimum, a name for the pipeline
+1. **An `AppConfig`** (or just a name string) — identifies the pipeline
+2. **A main function** — the entry point for your pipeline
 3. **Arguments** — any additional arguments to pass to the main function
 
 ```python
 import cocoindex.asyncio as coco_aio
 
 @coco_aio.function
-def app_main(scope: coco_aio.Scope, sourcedir: pathlib.Path) -> None:
+def app_main(sourcedir: pathlib.Path) -> None:
     # ... your pipeline logic ...
 
 app = coco_aio.App(
-    app_main,
     coco_aio.AppConfig(name="MyPipeline"),
+    app_main,
     sourcedir=pathlib.Path("./data"),
 )
 ```
@@ -36,14 +36,20 @@ The corresponding sync API:
 import cocoindex as coco
 
 @coco.function
-def app_main(scope: coco.Scope, sourcedir: pathlib.Path) -> None:
+def app_main(sourcedir: pathlib.Path) -> None:
     # ... your pipeline logic ...
 
 app = coco.App(
-    app_main,
     coco.AppConfig(name="MyPipeline"),
+    app_main,
     sourcedir=pathlib.Path("./data"),
 )
+```
+
+You can also pass just a name string instead of `AppConfig`:
+
+```python
+app = coco.App("MyPipeline", app_main, sourcedir=pathlib.Path("./data"))
 ```
 
 :::tip
@@ -79,11 +85,11 @@ Given the same code and inputs, updates are repeatable. When data or code change
 
 An App is the top-level runner and entry point. A **processing component** is the unit of incremental execution *within* an app.
 
-- Your app's main function runs as the **root processing component** at the root scope.
-- Each call to `mount()` or `mount_run()` declares a **child processing component** at a child scope.
+- Your app's main function runs as the **root processing component** at the root path.
+- Each call to `mount()` or `mount_run()` declares a **child processing component** at a child path.
 - Each processing component declares a set of target states, and CocoIndex syncs them atomically when that component finishes.
 
-This is why `app.update()` does not "run everything from scratch": CocoIndex uses the scope tree to decide what can be reused and what must re-run.
+This is why `app.update()` does not "run everything from scratch": CocoIndex uses the component path tree to decide what can be reused and what must re-run.
 
 For example, an app that processes files might mount one component per file:
 
@@ -95,7 +101,7 @@ For example, an app that processes files might mount one component per file:
     └── "world.md"             ← process_file component
 ```
 
-See [Processing Component](./processing_component.md) for how mounting and scopes define these boundaries.
+See [Processing Component](./processing_component.md) for how mounting and component paths define these boundaries.
 
 ## Database path
 
@@ -113,10 +119,10 @@ With `COCOINDEX_DB` set, you can create and run apps without any additional conf
 import cocoindex as coco
 
 @coco.function
-def app_main(scope: coco.Scope) -> None:
+def app_main() -> None:
     # ... your pipeline logic ...
 
-app = coco.App(app_main, coco.AppConfig(name="MyPipeline"))
+app = coco.App("MyPipeline", app_main)
 app.update()  # Uses COCOINDEX_DB for storage
 ```
 

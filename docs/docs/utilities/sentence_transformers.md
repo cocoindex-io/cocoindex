@@ -90,9 +90,8 @@ class DocEmbedding:
     embedding: Annotated[NDArray, embedder]
 
 @coco.function
-def setup_table(scope: coco.Scope, db: postgres.PgDatabase):
+def setup_table(db: postgres.PgDatabase):
     return db.declare_table_target(
-        scope,
         table_name="doc_embeddings",
         table_schema=postgres.TableSchema(
             DocEmbedding,
@@ -119,9 +118,8 @@ class CodeEmbedding:
     embedding: Annotated[NDArray, embedder]
 
 @coco.function
-def setup_table(scope: coco.Scope, db: lancedb.LanceDatabase):
+def setup_table(db: lancedb.LanceDatabase):
     return db.declare_table_target(
-        scope,
         table_name="code_embeddings",
         table_schema=lancedb.TableSchema(
             CodeEmbedding,
@@ -142,9 +140,8 @@ class DocEmbedding:
     embedding: Annotated[NDArray, embedder]
 
 @coco.function
-def setup_collection(scope: coco.Scope, db: qdrant.QdrantDatabase):
+def setup_collection(db: qdrant.QdrantDatabase):
     return db.declare_collection_target(
-        scope,
         collection_name="doc_embeddings",
         table_schema=qdrant.TableSchema(
             DocEmbedding,
@@ -187,9 +184,8 @@ class DocEmbedding:
     embedding: Annotated[NDArray, embedder]
 
 @coco.function
-def setup_table(scope: coco.Scope, db: postgres.PgDatabase):
+def setup_table(db: postgres.PgDatabase):
     return db.declare_table_target(
-        scope,
         table_name="doc_embeddings",
         table_schema=postgres.TableSchema(
             DocEmbedding,
@@ -200,13 +196,11 @@ def setup_table(scope: coco.Scope, db: postgres.PgDatabase):
 
 @coco.function(memo=True)
 async def process_chunk(
-    scope: coco.Scope,
     filename: pathlib.PurePath,
     chunk: Chunk,
     table: postgres.TableTarget[DocEmbedding],
 ):
     table.declare_row(
-        scope,
         row=DocEmbedding(
             filename=str(filename),
             chunk_start=chunk.start.char_offset,
@@ -218,21 +212,28 @@ async def process_chunk(
 
 @coco.function(memo=True)
 async def process_file(
-    scope: coco.Scope,
     file: FileLike,
     table: postgres.TableTarget[DocEmbedding],
 ):
     text = file.read_text()
     chunks = splitter.split(text, chunk_size=2000, chunk_overlap=500)
 
-    # Process chunks in parallel
-    await asyncio.gather(
-        *(process_chunk(scope, file.relative_path, chunk, table) for chunk in chunks)
-    )
+    # Process chunks in parallel using explicit context management
+    ctx = coco.get_component_context()
+    async def process_with_context(chunk: Chunk):
+        with ctx.attach():
+            await coco_aio.mount_run(
+                coco.component_subpath(str(chunk.start.char_offset)),
+                process_chunk,
+                file.relative_path,
+                chunk,
+                table,
+            )
+    await asyncio.gather(*(process_with_context(chunk) for chunk in chunks))
 
 @coco.function
-def app_main(scope: coco.Scope, sourcedir: pathlib.Path, db: postgres.PgDatabase):
-    table = coco.mount_run(setup_table, scope / "setup", db).result()
+def app_main(sourcedir: pathlib.Path, db: postgres.PgDatabase):
+    table = coco.mount_run(coco.component_subpath("setup"), setup_table, db).result()
 
     files = localfs.walk_dir(
         sourcedir,
@@ -241,7 +242,12 @@ def app_main(scope: coco.Scope, sourcedir: pathlib.Path, db: postgres.PgDatabase
     )
 
     for f in files:
-        coco.mount(process_file, scope / "file" / str(f.relative_path), f, table)
+        coco.mount(
+            coco.component_subpath("file", str(f.relative_path)),
+            process_file,
+            f,
+            table,
+        )
 ```
 
 ## API Reference

@@ -81,7 +81,6 @@ Declares a table as a target state. Returns a `TableTarget` for declaring rows.
 ```python
 def LanceDatabase.declare_table_target(
     self,
-    scope: coco.Scope,
     table_name: str,
     table_schema: TableSchema[RowT],
     *,
@@ -104,7 +103,6 @@ Once a `TableTarget` is resolved, declare rows to be upserted:
 ```python
 def TableTarget.declare_row(
     self,
-    scope: coco.Scope,
     *,
     row: RowT,
 ) -> None
@@ -264,13 +262,13 @@ async def coco_lifespan(builder: coco_aio.EnvironmentBuilder) -> AsyncIterator[N
     yield
 
 @coco.function
-async def app_main(scope: coco.Scope) -> None:
-    db = scope.use(LANCE_DB)
+async def app_main() -> None:
+    db = coco.use_context(LANCE_DB)
 
     # Declare table target state
     table = await coco_aio.mount_run(
+        coco.component_subpath("setup", "table"),
         db.declare_table_target,
-        scope / "setup" / "table",
         table_name="documents",
         table_schema=lancedb.TableSchema(
             OutputDocument,
@@ -280,8 +278,5 @@ async def app_main(scope: coco.Scope) -> None:
 
     # Declare rows
     for doc in documents:
-        table.declare_row(
-            scope / "row" / doc.doc_id,
-            row=doc,
-        )
+        table.declare_row(row=doc)
 ```

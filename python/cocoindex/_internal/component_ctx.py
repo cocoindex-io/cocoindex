@@ -39,18 +39,6 @@ class ComponentContext:
     _core_processor_ctx: core.ComponentProcessorContext
     _core_fn_call_ctx: core.FnCallContext
 
-    def concat_part(self, part: StableKey) -> ComponentContext:
-        """Return a new ComponentContext with the given part appended to the path."""
-        return ComponentContext(
-            self._env,
-            self._core_path.concat(part),
-            self._core_processor_ctx,
-            self._core_fn_call_ctx,
-        )
-
-    def event_loop(self) -> asyncio.AbstractEventLoop:
-        return self._env.event_loop
-
     def _with_fn_call_ctx(self, fn_call_ctx: core.FnCallContext) -> ComponentContext:
         return ComponentContext(
             self._env,

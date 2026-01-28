@@ -145,7 +145,7 @@ class SourceProduct:
     description: str
 
 @coco.function
-async def app_main(scope: coco.Scope, pool: asyncpg.Pool) -> None:
+async def app_main(pool: asyncpg.Pool) -> None:
     source = postgres.PgTableSource(
         pool,
         table_name="products",
@@ -153,7 +153,11 @@ async def app_main(scope: coco.Scope, pool: asyncpg.Pool) -> None:
     )
 
     async for product in source.fetch_rows():
-        coco.mount(process_product, scope / "product" / product.product_id, product)
+        coco.mount(
+            coco.component_subpath("product", product.product_id),
+            process_product,
+            product,
+        )
 ```
 
 ## As Target
@@ -194,7 +198,6 @@ Declares a table as a target state. Returns a `TableTarget` for declaring rows.
 ```python
 def PgDatabase.declare_table_target(
     self,
-    scope: coco.Scope,
     table_name: str,
     table_schema: TableSchema[RowT],
     *,
@@ -219,7 +222,6 @@ Once a `TableTarget` is resolved, declare rows to be upserted:
 ```python
 def TableTarget.declare_row(
     self,
-    scope: coco.Scope,
     *,
     row: RowT,
 ) -> None
@@ -399,13 +401,13 @@ async def coco_lifespan(builder: coco_aio.EnvironmentBuilder) -> AsyncIterator[N
         yield
 
 @coco.function
-async def app_main(scope: coco.Scope) -> None:
-    db = scope.use(PG_DB)
+async def app_main() -> None:
+    db = coco.use_context(PG_DB)
 
     # Declare table target state
     table = await coco_aio.mount_run(
+        coco.component_subpath("setup", "table"),
         db.declare_table_target,
-        scope / "setup" / "table",
         table_name="products",
         table_schema=postgres.TableSchema(
             OutputProduct,
@@ -415,8 +417,5 @@ async def app_main(scope: coco.Scope) -> None:
 
     # Declare rows
     for product in products:
-        table.declare_row(
-            scope / "row" / product.category / product.name,
-            row=product,
-        )
+        table.declare_row(row=product)
 ```

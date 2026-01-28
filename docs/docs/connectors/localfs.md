@@ -77,14 +77,18 @@ from cocoindex.connectors import localfs
 from cocoindex.resources.file import PatternFilePathMatcher
 
 @coco.function
-def app_main(scope: coco.Scope, sourcedir: pathlib.Path) -> None:
+def app_main(sourcedir: pathlib.Path) -> None:
     matcher = PatternFilePathMatcher(included_patterns=["*.md"])
 
     for file in localfs.walk_dir(sourcedir, recursive=True, path_matcher=matcher):
-        coco.mount(process_file, scope / "file" / str(file.relative_path), file)
+        coco.mount(
+            coco.component_subpath("file", str(file.relative_path)),
+            process_file,
+            file,
+        )
 
 @coco.function(memo=True)
-def process_file(scope: coco.Scope, file: localfs.File) -> None:
+def process_file(file: localfs.File) -> None:
     text = file.read_text()
     # ... process the file content ...
 ```
@@ -107,7 +111,6 @@ Declares a directory as a target state. Returns a `DirTarget` for declaring file
 ```python
 @coco.function
 def declare_dir_target(
-    scope: coco.Scope,
     path: pathlib.Path,
     *,
     stable_key: coco.StableKey | None = None,
@@ -130,7 +133,6 @@ Declares a file to be written within the directory.
 ```python
 def declare_file(
     self,
-    scope: coco.Scope,
     *,
     filename: str,
     content: bytes | str,
