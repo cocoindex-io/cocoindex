@@ -24,7 +24,13 @@ from .memo_key import register_memo_key_function
 
 from .pending_marker import PendingS, ResolvedS, MaybePendingS, ResolvesTo
 
-from .scope import Scope
+from .component_ctx import (
+    ComponentContext,
+    ComponentSubpath,
+    component_subpath,
+    use_context,
+    get_component_context,
+)
 
 from .setting import Settings
 
@@ -64,8 +70,12 @@ __all__ = [
     "PendingS",
     "ResolvedS",
     "ResolvesTo",
-    # .scope
-    "Scope",
+    # .component_ctx
+    "ComponentContext",
+    "ComponentSubpath",
+    "component_subpath",
+    "use_context",
+    "get_component_context",
     # .setting
     "Settings",
     # .stable_path

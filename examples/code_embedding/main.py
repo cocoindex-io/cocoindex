@@ -66,7 +66,6 @@ async def coco_lifespan(
 
 @coco.function(memo=True)
 async def process_chunk(
-    scope: coco.Scope,
     filename: pathlib.PurePath,
     chunk: Chunk,
     table: postgres.TableTarget[CodeEmbedding],
@@ -74,7 +73,6 @@ async def process_chunk(
     # Create location string from chunk position (used as part of primary key)
     location = f"{chunk.start.char_offset}-{chunk.end.char_offset}"
     table.declare_row(
-        scope,
         row=CodeEmbedding(
             filename=str(filename),
             location=location,
@@ -88,7 +86,6 @@ async def process_chunk(
 
 @coco.function(memo=True)
 async def process_file(
-    scope: coco.Scope,
     file: FileLike,
     table: postgres.TableTarget[CodeEmbedding],
 ) -> None:
@@ -105,16 +102,16 @@ async def process_file(
         language=language,
     )
     await asyncio.gather(
-        *(process_chunk(scope, file.relative_path, chunk, table) for chunk in chunks)
+        *(process_chunk(file.relative_path, chunk, table) for chunk in chunks)
     )
 
 
 @coco.function
-def app_main(scope: coco.Scope, sourcedir: pathlib.Path) -> None:
-    target_db = scope.use(PG_DB)
+def app_main(sourcedir: pathlib.Path) -> None:
+    target_db = coco.use_context(PG_DB)
     target_table = coco.mount_run(
+        coco.component_subpath("setup", "table"),
         target_db.declare_table_target,
-        scope / "setup" / "table",
         table_name=TABLE_NAME,
         table_schema=postgres.TableSchema(
             CodeEmbedding,
@@ -134,13 +131,16 @@ def app_main(scope: coco.Scope, sourcedir: pathlib.Path) -> None:
     )
     for file in files:
         coco.mount(
-            process_file, scope / "file" / str(file.relative_path), file, target_table
+            coco.component_subpath("file", str(file.relative_path)),
+            process_file,
+            file,
+            target_table,
         )
 
 
 app = coco_aio.App(
-    app_main,
     coco_aio.AppConfig(name="CodeEmbeddingV1"),
+    app_main,
     sourcedir=pathlib.Path(__file__).parent / ".." / "..",  # Index from repository root
 )
 

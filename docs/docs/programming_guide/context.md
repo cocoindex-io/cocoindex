@@ -1,6 +1,6 @@
 ---
 title: Context
-description: Sharing resources across your pipeline using ContextKey, builder.provide(), and scope.use().
+description: Sharing resources across your pipeline using ContextKey, builder.provide(), and use_context().
 ---
 
 # Context
@@ -46,16 +46,16 @@ The resource is available for the lifetime of the environment. When the lifespan
 
 ## Retrieving Values
 
-In processing components, use `scope.use()` to retrieve provided resources:
+In processing components, use `coco.use_context()` to retrieve provided resources:
 
 ```python
 @coco_aio.function
-def app_main(scope: coco_aio.Scope, sourcedir: pathlib.Path) -> None:
-    db = scope.use(PG_DB)  # Returns postgres.PgDatabase
+def app_main(sourcedir: pathlib.Path) -> None:
+    db = coco.use_context(PG_DB)  # Returns postgres.PgDatabase
 
     table = coco_aio.mount_run(
+        coco.component_subpath("setup", "table"),
         db.declare_table_target,
-        scope / "setup" / "table",
         table_name="docs",
         table_schema=postgres.TableSchema(Doc, primary_key=["id"]),
     ).result()

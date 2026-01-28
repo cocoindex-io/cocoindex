@@ -126,7 +126,7 @@ When there're multiple common ways to refer to the same thing, use multiple topi
 
 
 @coco.function
-async def extract_topics(scope: coco.Scope, text: str | None) -> list[str]:
+async def extract_topics(text: str | None) -> list[str]:
     """Extract topics from text using LLM."""
     if not text or not text.strip():
         return []
@@ -235,18 +235,16 @@ class TableTargets:
 
 @coco.function
 async def process_thread(
-    scope: coco.Scope,
     thread_id: str,
     targets: TableTargets,
 ) -> None:
     """Fetch and process a single thread and its comments."""
     async with aiohttp.ClientSession() as session:
         thread = await fetch_thread(session, thread_id)
-    thread_topics = await extract_topics(scope, thread.text)
+    thread_topics = await extract_topics(thread.text)
 
     # Declare thread message row
     targets.messages.declare_row(
-        scope,
         row=HnMessage(
             id=thread.id,
             thread_id=thread.id,
@@ -260,7 +258,6 @@ async def process_thread(
     # Declare thread topic rows
     for topic in thread_topics:
         targets.topics.declare_row(
-            scope,
             row=HnTopic(
                 topic=topic,
                 message_id=thread.id,
@@ -271,11 +268,10 @@ async def process_thread(
         )
     # Process comments
     for comment in thread.comments:
-        comment_topics = await extract_topics(scope, comment.text)
+        comment_topics = await extract_topics(comment.text)
 
         # Declare comment message row
         targets.messages.declare_row(
-            scope,
             row=HnMessage(
                 id=comment.id,
                 thread_id=thread.id,
@@ -289,7 +285,6 @@ async def process_thread(
         # Declare comment topic rows
         for topic in comment_topics:
             targets.topics.declare_row(
-                scope,
                 row=HnTopic(
                     topic=topic,
                     message_id=comment.id,
@@ -301,7 +296,7 @@ async def process_thread(
 
 
 @coco.function
-async def app_main(scope: coco.Scope) -> None:
+async def app_main() -> None:
     """Main pipeline function."""
     print("Starting HackerNews Trending Topics Pipeline")
     print(f"Using LLM: {LLM_MODEL}")
@@ -309,21 +304,24 @@ async def app_main(scope: coco.Scope) -> None:
     print()
 
     # Set up table targets
-    target_db = scope.use(PG_DB)
-    messages_table = await coco_aio.mount_run(
-        target_db.declare_table_target,
-        scope / "setup" / "messages",
-        table_name="hn_messages",
-        table_schema=postgres.TableSchema(HnMessage, primary_key=["id"]),
-        pg_schema_name="coco_examples",
-    ).result()
-    topics_table = await coco_aio.mount_run(
-        target_db.declare_table_target,
-        scope / "setup" / "topics",
-        table_name="hn_topics",
-        table_schema=postgres.TableSchema(HnTopic, primary_key=["topic", "message_id"]),
-        pg_schema_name="coco_examples",
-    ).result()
+    target_db = coco.use_context(PG_DB)
+    with coco.component_subpath("setup"):
+        messages_table = await coco_aio.mount_run(
+            coco.component_subpath("messages"),
+            target_db.declare_table_target,
+            table_name="hn_messages",
+            table_schema=postgres.TableSchema(HnMessage, primary_key=["id"]),
+            pg_schema_name="coco_examples",
+        ).result()
+        topics_table = await coco_aio.mount_run(
+            coco.component_subpath("topics"),
+            target_db.declare_table_target,
+            table_name="hn_topics",
+            table_schema=postgres.TableSchema(
+                HnTopic, primary_key=["topic", "message_id"]
+            ),
+            pg_schema_name="coco_examples",
+        ).result()
     targets = TableTargets(messages=messages_table, topics=topics_table)
 
     # Fetch thread IDs from HackerNews
@@ -332,7 +330,12 @@ async def app_main(scope: coco.Scope) -> None:
 
     # Process threads (each component fetches its own thread data)
     for thread_id in thread_ids:
-        coco_aio.mount(process_thread, scope / "thread" / thread_id, thread_id, targets)
+        coco_aio.mount(
+            coco.component_subpath("thread", thread_id),
+            process_thread,
+            thread_id,
+            targets,
+        )
 
 
 # ============================================================================
@@ -340,8 +343,8 @@ async def app_main(scope: coco.Scope) -> None:
 # ============================================================================
 
 app = coco_aio.App(
-    app_main,
     coco_aio.AppConfig(name="HNTrendingTopics"),
+    app_main,
 )
 
 

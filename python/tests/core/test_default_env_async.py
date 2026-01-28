@@ -52,16 +52,16 @@ async def test_async_default_env(_default_async_env: None) -> None:
 
 
 @coco_aio.function()
-async def trivial_fn(_scope: coco_aio.Scope, s: str, i: int) -> str:
-    assert isinstance(_scope.use(_RESOURCE_KEY), _Resource)
+async def trivial_fn(s: str, i: int) -> str:
+    assert isinstance(coco_aio.use_context(_RESOURCE_KEY), _Resource)
     return f"{s} {i}"
 
 
 @pytest.mark.asyncio
 async def test_async_app(_default_async_env: None) -> None:
     app = coco_aio.App(
-        trivial_fn,
         coco_aio.AppConfig(name="trivial_app"),
+        trivial_fn,
         "Hello",
         1,
     )
@@ -76,8 +76,8 @@ async def test_async_app(_default_async_env: None) -> None:
 @pytest.mark.asyncio
 async def test_async_app_implicit_startup(_default_async_env: None) -> None:
     app = coco_aio.App(
-        trivial_fn,
         coco_aio.AppConfig(name="trivial_app_implicit_startup"),
+        trivial_fn,
         "Hello",
         1,
     )

@@ -65,8 +65,8 @@ from cocoindex.resources.file import PatternFilePathMatcher
 from docling.document_converter import DocumentConverter
 
 app = coco.App(
-    app_main,
     coco.AppConfig(name="PdfToMarkdown"),
+    app_main,
     sourcedir=pathlib.Path("./pdf_files"),
     outdir=pathlib.Path("./out"),
 )
@@ -81,10 +81,10 @@ This defines a CocoIndex App — the top-level runnable unit in CocoIndex. The d
 
 ```python
 @coco.function
-def app_main(scope: coco.Scope, sourcedir: pathlib.Path, outdir: pathlib.Path) -> None:
+def app_main(sourcedir: pathlib.Path, outdir: pathlib.Path) -> None:
     # Declare the output directory target state and get a target provider
     target = coco.mount_run(
-        localfs.declare_dir_target, scope / "setup", outdir
+        coco.component_subpath("setup"), localfs.declare_dir_target, outdir
     ).result()
 
     # Walk source files and mount a processing component for each
@@ -94,7 +94,12 @@ def app_main(scope: coco.Scope, sourcedir: pathlib.Path, outdir: pathlib.Path) -
         path_matcher=PatternFilePathMatcher(included_patterns=["*.pdf"]),
     )
     for f in files:
-        coco.mount(process_file, scope / "process" / str(f.relative_path), f, target)
+        coco.mount(
+            coco.component_subpath("process", str(f.relative_path)),
+            process_file,
+            f,
+            target,
+        )
 ```
 **`coco.mount()`**: Mounts a processing component for each file to process
 
@@ -112,13 +117,12 @@ _converter = DocumentConverter()
 
 @coco.function(memo=True)
 def process_file(
-    scope: coco.Scope,
     file: localfs.File,
     target: localfs.DirTarget,
 ) -> None:
     markdown = _converter.convert(file.path).document.export_to_markdown()
     outname = file.relative_path.stem + ".md"
-    target.declare_file(scope, filename=outname, content=markdown)
+    target.declare_file(filename=outname, content=markdown)
 ```
 
 

@@ -116,7 +116,7 @@ class MetadataEmbeddingRow:
 
 
 @coco.function
-def extract_basic_info(scope: coco.Scope, content: bytes) -> PaperBasicInfo:
+def extract_basic_info(content: bytes) -> PaperBasicInfo:
     """Extract first page bytes and page count from a PDF."""
     reader = PdfReader(io.BytesIO(content))
 
@@ -129,7 +129,7 @@ def extract_basic_info(scope: coco.Scope, content: bytes) -> PaperBasicInfo:
 
 
 @coco.function
-def pdf_to_markdown(scope: coco.Scope, content: bytes) -> str:
+def pdf_to_markdown(content: bytes) -> str:
     """Convert PDF bytes to text using pypdf."""
     reader = PdfReader(io.BytesIO(content))
     page_text = reader.pages[0].extract_text() if reader.pages else ""
@@ -137,7 +137,7 @@ def pdf_to_markdown(scope: coco.Scope, content: bytes) -> str:
 
 
 @coco.function
-def extract_metadata(scope: coco.Scope, markdown: str) -> PaperMetadataModel:
+def extract_metadata(markdown: str) -> PaperMetadataModel:
     """Extract paper metadata from first-page text using an LLM."""
     client = openai_client()
     response = client.chat.completions.create(
@@ -183,7 +183,6 @@ async def coco_lifespan(
 
 @coco.function(memo=True)
 async def process_file(
-    scope: coco.Scope,
     file: FileLike,
     metadata_table: postgres.TableTarget[PaperMetadataRow],
     author_table: postgres.TableTarget[AuthorPaperRow],
@@ -191,14 +190,13 @@ async def process_file(
 ) -> None:
     content = file.read()
 
-    basic_info = extract_basic_info(scope, content)
-    first_page_md = pdf_to_markdown(scope, basic_info.first_page)
-    metadata = extract_metadata(scope, first_page_md)
+    basic_info = extract_basic_info(content)
+    first_page_md = pdf_to_markdown(basic_info.first_page)
+    metadata = extract_metadata(first_page_md)
 
     authors_payload = [a.model_dump() for a in metadata.authors]
 
     metadata_table.declare_row(
-        scope,
         row=PaperMetadataRow(
             filename=str(file.relative_path),
             title=metadata.title,
@@ -211,7 +209,6 @@ async def process_file(
     for author in metadata.authors:
         if author.name:
             author_table.declare_row(
-                scope,
                 row=AuthorPaperRow(
                     author_name=author.name,
                     filename=str(file.relative_path),
@@ -220,7 +217,6 @@ async def process_file(
 
     title_embedding = await _embedder.embed_async(metadata.title)
     embedding_table.declare_row(
-        scope,
         row=MetadataEmbeddingRow(
             id=uuid.uuid4(),
             filename=str(file.relative_path),
@@ -239,7 +235,6 @@ async def process_file(
     )
     for chunk in abstract_chunks:
         embedding_table.declare_row(
-            scope,
             row=MetadataEmbeddingRow(
                 id=uuid.uuid4(),
                 filename=str(file.relative_path),
@@ -251,38 +246,39 @@ async def process_file(
 
 
 @coco.function
-def app_main(scope: coco.Scope, sourcedir: pathlib.Path) -> None:
-    target_db = scope.use(PG_DB)
-    metadata_table = coco.mount_run(
-        target_db.declare_table_target,
-        scope / "setup" / "paper_metadata",
-        table_name=TABLE_METADATA,
-        table_schema=postgres.TableSchema(
-            PaperMetadataRow,
-            primary_key=["filename"],
-        ),
-        pg_schema_name=PG_SCHEMA_NAME,
-    ).result()
-    author_table = coco.mount_run(
-        target_db.declare_table_target,
-        scope / "setup" / "author_papers",
-        table_name=TABLE_AUTHOR_PAPERS,
-        table_schema=postgres.TableSchema(
-            AuthorPaperRow,
-            primary_key=["author_name", "filename"],
-        ),
-        pg_schema_name=PG_SCHEMA_NAME,
-    ).result()
-    embedding_table = coco.mount_run(
-        target_db.declare_table_target,
-        scope / "setup" / "metadata_embeddings",
-        table_name=TABLE_EMBEDDINGS,
-        table_schema=postgres.TableSchema(
-            MetadataEmbeddingRow,
-            primary_key=["id"],
-        ),
-        pg_schema_name=PG_SCHEMA_NAME,
-    ).result()
+def app_main(sourcedir: pathlib.Path) -> None:
+    target_db = coco.use_context(PG_DB)
+    with coco.component_subpath("setup"):
+        metadata_table = coco.mount_run(
+            coco.component_subpath("paper_metadata"),
+            target_db.declare_table_target,
+            table_name=TABLE_METADATA,
+            table_schema=postgres.TableSchema(
+                PaperMetadataRow,
+                primary_key=["filename"],
+            ),
+            pg_schema_name=PG_SCHEMA_NAME,
+        ).result()
+        author_table = coco.mount_run(
+            coco.component_subpath("author_papers"),
+            target_db.declare_table_target,
+            table_name=TABLE_AUTHOR_PAPERS,
+            table_schema=postgres.TableSchema(
+                AuthorPaperRow,
+                primary_key=["author_name", "filename"],
+            ),
+            pg_schema_name=PG_SCHEMA_NAME,
+        ).result()
+        embedding_table = coco.mount_run(
+            coco.component_subpath("metadata_embeddings"),
+            target_db.declare_table_target,
+            table_name=TABLE_EMBEDDINGS,
+            table_schema=postgres.TableSchema(
+                MetadataEmbeddingRow,
+                primary_key=["id"],
+            ),
+            pg_schema_name=PG_SCHEMA_NAME,
+        ).result()
 
     files = localfs.walk_dir(
         sourcedir,
@@ -291,8 +287,8 @@ def app_main(scope: coco.Scope, sourcedir: pathlib.Path) -> None:
     )
     for f in files:
         coco.mount(
+            coco.component_subpath("file", str(f.relative_path)),
             process_file,
-            scope / "file" / str(f.relative_path),
             f,
             metadata_table,
             author_table,
@@ -301,8 +297,8 @@ def app_main(scope: coco.Scope, sourcedir: pathlib.Path) -> None:
 
 
 app = coco_aio.App(
-    app_main,
     coco_aio.AppConfig(name="PaperMetadataV1"),
+    app_main,
     sourcedir=pathlib.Path("./papers"),
 )
 

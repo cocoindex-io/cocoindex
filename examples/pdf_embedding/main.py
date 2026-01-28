@@ -90,13 +90,11 @@ async def coco_lifespan(
 
 @coco.function(memo=True)
 async def process_chunk(
-    scope: coco.Scope,
     filename: pathlib.PurePath,
     chunk: Chunk,
     table: postgres.TableTarget[PdfEmbedding],
 ) -> None:
     table.declare_row(
-        scope,
         row=PdfEmbedding(
             filename=str(filename),
             chunk_start=chunk.start.char_offset,
@@ -109,7 +107,6 @@ async def process_chunk(
 
 @coco.function(memo=True)
 async def process_file(
-    scope: coco.Scope,
     file: FileLike,
     table: postgres.TableTarget[PdfEmbedding],
 ) -> None:
@@ -119,16 +116,16 @@ async def process_file(
         markdown, chunk_size=2000, chunk_overlap=500, language="markdown"
     )
     await asyncio.gather(
-        *(process_chunk(scope, file.relative_path, chunk, table) for chunk in chunks)
+        *(process_chunk(file.relative_path, chunk, table) for chunk in chunks)
     )
 
 
 @coco.function
-def app_main(scope: coco.Scope, sourcedir: pathlib.Path) -> None:
-    target_db = scope.use(PG_DB)
+def app_main(sourcedir: pathlib.Path) -> None:
+    target_db = coco.use_context(PG_DB)
     target_table = coco.mount_run(
+        coco.component_subpath("setup", "table"),
         target_db.declare_table_target,
-        scope / "setup" / "table",
         table_name=TABLE_NAME,
         table_schema=postgres.TableSchema(
             PdfEmbedding,
@@ -143,12 +140,17 @@ def app_main(scope: coco.Scope, sourcedir: pathlib.Path) -> None:
         path_matcher=PatternFilePathMatcher(included_patterns=["*.pdf"]),
     )
     for f in files:
-        coco.mount(process_file, scope / "file" / str(f.relative_path), f, target_table)
+        coco.mount(
+            coco.component_subpath("file", str(f.relative_path)),
+            process_file,
+            f,
+            target_table,
+        )
 
 
 app = coco_aio.App(
-    app_main,
     coco_aio.AppConfig(name="PdfEmbeddingV1"),
+    app_main,
     sourcedir=pathlib.Path("./pdf_files"),
 )
 

@@ -19,22 +19,20 @@ env = coco.Environment(coco.Settings.from_env(db_path=DB_PATH))
 
 
 @coco.function
-def build(scope: coco.Scope) -> None:
+def build() -> None:
     dir_target = coco.mount_run(
+        coco.component_subpath("out"),
         declare_dir_target,
-        scope / "out",
         OUT_DIR,
         stable_key="out_dir",
         managed_by="system",
     ).result()
-    dir_target.declare_file(
-        scope, filename="unbound.txt", content="Hello from UnboundApp\n"
-    )
+    dir_target.declare_file(filename="unbound.txt", content="Hello from UnboundApp\n")
 
 
 def create_app() -> coco.App[[], None]:
     """Factory function that creates an app without binding to module-level variable."""
-    return coco.App(build, coco.AppConfig(name="UnboundApp", environment=env))
+    return coco.App(coco.AppConfig(name="UnboundApp", environment=env), build)
 
 
 # Create the app but DON'T bind it to a simple module-level name.

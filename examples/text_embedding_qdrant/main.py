@@ -51,7 +51,6 @@ async def coco_lifespan(
 
 @coco.function(memo=True)
 async def process_chunk(
-    scope: coco.Scope,
     filename: pathlib.PurePath,
     chunk: Chunk,
     target: qdrant.CollectionTarget,
@@ -69,12 +68,11 @@ async def process_chunk(
             "text": chunk.text,
         },
     )
-    target.declare_point(scope, point)
+    target.declare_point(point)
 
 
 @coco.function(memo=True)
 async def process_file(
-    scope: coco.Scope,
     file: FileLike,
     target: qdrant.CollectionTarget,
 ) -> None:
@@ -83,16 +81,16 @@ async def process_file(
         text, chunk_size=2000, chunk_overlap=500, language="markdown"
     )
     await asyncio.gather(
-        *(process_chunk(scope, file.relative_path, chunk, target) for chunk in chunks)
+        *(process_chunk(file.relative_path, chunk, target) for chunk in chunks)
     )
 
 
 @coco.function
-def app_main(scope: coco.Scope, sourcedir: pathlib.Path) -> None:
-    target_db = scope.use(QDRANT_DB)
+def app_main(sourcedir: pathlib.Path) -> None:
+    target_db = coco.use_context(QDRANT_DB)
     target_collection_handle = coco.mount_run(
+        coco.component_subpath("setup", "collection"),
         target_db.declare_collection_target,
-        scope / "setup" / "collection",
         collection_name=QDRANT_COLLECTION,
         schema=qdrant.CollectionSchema(
             vectors=qdrant.QdrantVectorDef(schema=_embedder)
@@ -104,15 +102,19 @@ def app_main(scope: coco.Scope, sourcedir: pathlib.Path) -> None:
         recursive=True,
         path_matcher=PatternFilePathMatcher(included_patterns=["*.md"]),
     )
-    for f in files:
-        coco.mount(
-            process_file, scope / "file" / str(f.relative_path), f, target_collection
-        )
+    with coco.component_subpath("file"):
+        for f in files:
+            coco.mount(
+                coco.component_subpath(str(f.relative_path)),
+                process_file,
+                f,
+                target_collection,
+            )
 
 
 app = coco_aio.App(
-    app_main,
     coco_aio.AppConfig(name="TextEmbeddingQdrantV1"),
+    app_main,
     sourcedir=pathlib.Path("./markdown_files"),
 )
 

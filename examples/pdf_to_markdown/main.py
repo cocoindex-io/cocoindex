@@ -22,7 +22,6 @@ _converter = DocumentConverter()
 
 @coco.function(memo=True)
 def process_file(
-    scope: coco.Scope,
     file: localfs.File,
     target: localfs.DirTarget,
 ) -> None:
@@ -30,13 +29,13 @@ def process_file(
     markdown = _converter.convert(file.path).document.export_to_markdown()
     # Replace .pdf extension with .md
     outname = file.relative_path.stem + ".md"
-    target.declare_file(scope, filename=outname, content=markdown)
+    target.declare_file(filename=outname, content=markdown)
 
 
 @coco.function
-def app_main(scope: coco.Scope, sourcedir: pathlib.Path, outdir: pathlib.Path) -> None:
+def app_main(sourcedir: pathlib.Path, outdir: pathlib.Path) -> None:
     target = coco.mount_run(
-        localfs.declare_dir_target, scope / "setup", outdir
+        coco.component_subpath("setup"), localfs.declare_dir_target, outdir
     ).result()
 
     files = localfs.walk_dir(
@@ -45,12 +44,17 @@ def app_main(scope: coco.Scope, sourcedir: pathlib.Path, outdir: pathlib.Path) -
         path_matcher=PatternFilePathMatcher(included_patterns=["*.pdf"]),
     )
     for f in files:
-        coco.mount(process_file, scope / "process" / str(f.relative_path), f, target)
+        coco.mount(
+            coco.component_subpath("process", str(f.relative_path)),
+            process_file,
+            f,
+            target,
+        )
 
 
 app = coco.App(
-    app_main,
     coco.AppConfig(name="PdfToMarkdown"),
+    app_main,
     sourcedir=pathlib.Path("./pdf_files"),
     outdir=pathlib.Path("./out"),
 )

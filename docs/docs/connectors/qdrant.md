@@ -81,7 +81,6 @@ Declares a collection as a target state. Returns a `CollectionTarget` for declar
 ```python
 def QdrantDatabase.declare_collection_target(
     self,
-    scope: coco.Scope,
     collection_name: str,
     schema: CollectionSchema,
     *,
@@ -104,7 +103,6 @@ Once a `CollectionTarget` is resolved, declare points to be upserted using `qdra
 ```python
 def CollectionTarget.declare_point(
     self,
-    scope: coco.Scope,
     point: qdrant.PointStruct,
 ) -> None
 ```
@@ -290,7 +288,6 @@ async def coco_lifespan(builder: coco_aio.EnvironmentBuilder) -> AsyncIterator[N
 
 @coco.function
 async def process_document(
-    scope: coco.Scope,
     doc_id: str,
     text: str,
     target: qdrant.CollectionTarget,
@@ -302,16 +299,16 @@ async def process_document(
         vector=embedding.tolist(),
         payload={"text": text},
     )
-    target.declare_point(scope, point)
+    target.declare_point(point)
 
 @coco.function
-async def app_main(scope: coco.Scope) -> None:
-    db = scope.use(QDRANT_DB)
+async def app_main() -> None:
+    db = coco.use_context(QDRANT_DB)
 
     # Declare collection target state
     collection = await coco_aio.mount_run(
+        coco.component_subpath("setup", "collection"),
         db.declare_collection_target,
-        scope / "setup" / "collection",
         collection_name="documents",
         schema=qdrant.CollectionSchema(
             vectors=qdrant.QdrantVectorDef(schema=embedder)
@@ -320,8 +317,9 @@ async def app_main(scope: coco.Scope) -> None:
 
     # Declare points
     for doc_id, text in documents:
-        await process_document(
-            scope / "doc" / doc_id,
+        await coco_aio.mount_run(
+            coco.component_subpath("doc", doc_id),
+            process_document,
             doc_id,
             text,
             collection,
@@ -335,12 +333,12 @@ from cocoindex.resources.schema import VectorSchema
 import numpy as np
 
 @coco.function
-async def app_main(scope: coco.Scope) -> None:
-    db = scope.use(QDRANT_DB)
+async def app_main() -> None:
+    db = coco.use_context(QDRANT_DB)
 
     collection = await coco_aio.mount_run(
+        coco.component_subpath("setup", "collection"),
         db.declare_collection_target,
-        scope / "setup" / "collection",
         collection_name="multimodal_docs",
         schema=qdrant.CollectionSchema(
             vectors={
@@ -366,7 +364,7 @@ async def app_main(scope: coco.Scope) -> None:
             },
             payload={"title": doc.title, "url": doc.url},
         )
-        collection.declare_point(scope / "doc" / doc.id, point)
+        collection.declare_point(point)
 ```
 
 ## Point IDs

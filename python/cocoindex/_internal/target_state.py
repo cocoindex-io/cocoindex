@@ -16,7 +16,7 @@ import weakref
 from typing_extensions import TypeVar
 
 from . import core
-from .scope import Scope
+from .component_ctx import get_context_from_ctx
 from .pending_marker import PendingS, MaybePendingS, ResolvesTo
 from .typing import NonExistenceType
 
@@ -202,18 +202,17 @@ class TargetState(Generic[OptChildHandlerT]):
         self._value = value
 
 
-def declare_target_state(scope: Scope, target_state: TargetState[None]) -> None:
+def declare_target_state(target_state: TargetState[None]) -> None:
     """
-    Declare a target state within the given scope.
+    Declare a target state within the current component context.
 
     Args:
-        scope: The scope for the target state declaration.
         target_state: The target state to declare.
     """
-    comp_ctx = scope._core_processor_ctx
+    ctx = get_context_from_ctx()
     core.declare_target_state(
-        comp_ctx,
-        scope._core_fn_call_ctx,
+        ctx._core_processor_ctx,
+        ctx._core_fn_call_ctx,
         target_state._provider._core,
         target_state._key,
         target_state._value,
@@ -221,23 +220,21 @@ def declare_target_state(scope: Scope, target_state: TargetState[None]) -> None:
 
 
 def declare_target_state_with_child(
-    scope: Scope,
     target_state: TargetState[TargetHandler[KeyT, ValueT, Any, OptChildHandlerT]],
 ) -> PendingTargetStateProvider[KeyT, ValueT, OptChildHandlerT]:
     """
-    Declare a target state with a child handler within the given scope.
+    Declare a target state with a child handler within the current component context.
 
     Args:
-        scope: The scope for the target state declaration.
         target_state: The target state to declare.
 
     Returns:
         A TargetStateProvider for the child target states.
     """
-    comp_ctx = scope._core_processor_ctx
+    ctx = get_context_from_ctx()
     provider = core.declare_target_state_with_child(
-        comp_ctx,
-        scope._core_fn_call_ctx,
+        ctx._core_processor_ctx,
+        ctx._core_fn_call_ctx,
         target_state._provider._core,
         target_state._key,
         target_state._value,

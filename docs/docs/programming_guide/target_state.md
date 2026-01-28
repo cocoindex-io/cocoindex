@@ -26,10 +26,10 @@ CocoIndex connectors provide **targets** with `declare_*` methods:
 
 ```python
 # Declare a file target state
-dir_target.declare_file(scope, filename="output.html", content=html)
+dir_target.declare_file(filename="output.html", content=html)
 
 # Declare a row target state
-table_target.declare_row(scope, row=DocEmbedding(...))
+table_target.declare_row(row=DocEmbedding(...))
 ```
 
 ### Where do targets come from?
@@ -51,11 +51,11 @@ from cocoindex.connectors import localfs
 
 # Declare the directory target state, get a DirTarget
 dir_target = coco.mount_run(
-    localfs.declare_dir_target, scope / "setup", outdir
+    coco.component_subpath("setup"), localfs.declare_dir_target, outdir
 ).result()
 
 # Declare a child target state (a file)
-dir_target.declare_file(scope, filename="output.html", content=html)
+dir_target.declare_file(filename="output.html", content=html)
 ```
 
 ### Example: writing a row to PostgreSQL
@@ -65,14 +65,14 @@ from cocoindex.connectors import postgres
 
 # Declare the table target state, get a TableTarget
 table = coco.mount_run(
+    coco.component_subpath("setup", "table"),
     db.declare_table_target,
-    scope / "setup" / "table",
     table_name="doc_embeddings",
     table_schema=postgres.TableSchema(DocEmbedding, primary_key=["filename", "chunk_start"]),
 ).result()
 
 # Declare a child target state (a row)
-table.declare_row(scope, row=DocEmbedding(...))
+table.declare_row(row=DocEmbedding(...))
 ```
 
 See [Processing Component](./processing_component.md) for more on `mount_run()`.

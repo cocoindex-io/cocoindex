@@ -3,7 +3,6 @@ from __future__ import annotations
 import threading
 from typing import (
     Any,
-    Concatenate,
     Generic,
     Mapping,
     ParamSpec,
@@ -14,7 +13,11 @@ from typing import (
 
 from . import core
 from .app import AppBase
-from .scope import Scope
+from .component_ctx import (
+    ComponentSubpath,
+    build_child_path,
+    get_context_from_ctx,
+)
 from .function import AnyCallable, create_core_component_processor
 from .pending_marker import ResolvesTo
 from . import environment as _environment
@@ -80,35 +83,35 @@ class ProcessingUnitMountHandle:
 
 @overload
 def mount_run(
-    processor_fn: AnyCallable[Concatenate[Scope, P], ResolvesTo[ReturnT]],
-    scope: Scope,
+    subpath: ComponentSubpath,
+    processor_fn: AnyCallable[P, ResolvesTo[ReturnT]],
     *args: P.args,
     **kwargs: P.kwargs,
 ) -> ProcessingUnitMountRunHandle[ReturnT]: ...
 @overload
 def mount_run(
-    processor_fn: AnyCallable[Concatenate[Scope, P], Sequence[ResolvesTo[ReturnT]]],
-    scope: Scope,
+    subpath: ComponentSubpath,
+    processor_fn: AnyCallable[P, Sequence[ResolvesTo[ReturnT]]],
     *args: P.args,
     **kwargs: P.kwargs,
 ) -> ProcessingUnitMountRunHandle[Sequence[ReturnT]]: ...
 @overload
 def mount_run(
-    processor_fn: AnyCallable[Concatenate[Scope, P], Mapping[K, ResolvesTo[ReturnT]]],
-    scope: Scope,
+    subpath: ComponentSubpath,
+    processor_fn: AnyCallable[P, Mapping[K, ResolvesTo[ReturnT]]],
     *args: P.args,
     **kwargs: P.kwargs,
 ) -> ProcessingUnitMountRunHandle[Mapping[K, ReturnT]]: ...
 @overload
 def mount_run(
-    processor_fn: AnyCallable[Concatenate[Scope, P], ReturnT],
-    scope: Scope,
+    subpath: ComponentSubpath,
+    processor_fn: AnyCallable[P, ReturnT],
     *args: P.args,
     **kwargs: P.kwargs,
 ) -> ProcessingUnitMountRunHandle[ReturnT]: ...
 def mount_run(
-    processor_fn: AnyCallable[Concatenate[Scope, P], Any],
-    scope: Scope,
+    subpath: ComponentSubpath,
+    processor_fn: AnyCallable[P, Any],
     *args: P.args,
     **kwargs: P.kwargs,
 ) -> ProcessingUnitMountRunHandle[Any]:
@@ -116,26 +119,37 @@ def mount_run(
     Mount and run a processing unit, returning a handle to await its result.
 
     Args:
+        subpath: The component subpath (from component_subpath()).
         processor_fn: The function to run as the processing unit processor.
-        scope: The scope for the processing unit (includes stable path and processor context).
         *args: Arguments to pass to the function.
         **kwargs: Keyword arguments to pass to the function.
 
     Returns:
         A handle that can be used to get the result.
+
+    Example:
+        target = coco.mount_run(
+            coco.component_subpath("setup"), declare_dir_target, outdir
+        ).result()
     """
-    comp_ctx = scope._core_processor_ctx
-    fn_ctx = scope._core_fn_call_ctx
+    parent_ctx = get_context_from_ctx()
+    child_path = build_child_path(parent_ctx, subpath)
+
     processor = create_core_component_processor(
-        processor_fn, scope._env, scope._core_path, args, kwargs
+        processor_fn, parent_ctx._env, child_path, args, kwargs
     )
-    core_handle = core.mount_run(processor, scope._core_path, comp_ctx, fn_ctx)
-    return ProcessingUnitMountRunHandle(core_handle, comp_ctx)
+    core_handle = core.mount_run(
+        processor,
+        child_path,
+        parent_ctx._core_processor_ctx,
+        parent_ctx._core_fn_call_ctx,
+    )
+    return ProcessingUnitMountRunHandle(core_handle, parent_ctx._core_processor_ctx)
 
 
 def mount(
-    processor_fn: AnyCallable[Concatenate[Scope, P], Any],
-    scope: Scope,
+    subpath: ComponentSubpath,
+    processor_fn: AnyCallable[P, Any],
     *args: P.args,
     **kwargs: P.kwargs,
 ) -> ProcessingUnitMountHandle:
@@ -143,20 +157,31 @@ def mount(
     Mount a processing unit in the background and return a handle to wait until ready.
 
     Args:
+        subpath: The component subpath (from component_subpath()).
         processor_fn: The function to run as the processing unit processor.
-        scope: The scope for the processing unit (includes stable path and processor context).
         *args: Arguments to pass to the function.
         **kwargs: Keyword arguments to pass to the function.
 
     Returns:
         A handle that can be used to wait until the processing unit is ready.
+
+    Example:
+        with coco.component_subpath("process"):
+            for f in files:
+                coco.mount(coco.component_subpath(str(f.relative_path)), process_file, f, target)
     """
-    comp_ctx = scope._core_processor_ctx
-    fn_ctx = scope._core_fn_call_ctx
+    parent_ctx = get_context_from_ctx()
+    child_path = build_child_path(parent_ctx, subpath)
+
     processor = create_core_component_processor(
-        processor_fn, scope._env, scope._core_path, args, kwargs
+        processor_fn, parent_ctx._env, child_path, args, kwargs
     )
-    core_handle = core.mount(processor, scope._core_path, comp_ctx, fn_ctx)
+    core_handle = core.mount(
+        processor,
+        child_path,
+        parent_ctx._core_processor_ctx,
+        parent_ctx._core_fn_call_ctx,
+    )
     return ProcessingUnitMountHandle(core_handle)
 
 

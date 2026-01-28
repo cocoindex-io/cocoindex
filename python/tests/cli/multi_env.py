@@ -33,29 +33,29 @@ env2 = coco.Environment(coco.Settings.from_env(db_path=DB_PATH_2))
 
 
 @coco.function
-def build1(scope: coco.Scope) -> None:
+def build1() -> None:
     dir_target = coco.mount_run(
+        coco.component_subpath("out"),
         declare_dir_target,
-        scope / "out",
         OUT_DIR_1,
         stable_key="out_dir",
         managed_by="system",
     ).result()
-    dir_target.declare_file(scope, filename="db1.txt", content="Hello from DB1App\n")
+    dir_target.declare_file(filename="db1.txt", content="Hello from DB1App\n")
 
 
 @coco.function
-def build2(scope: coco.Scope) -> None:
+def build2() -> None:
     dir_target = coco.mount_run(
+        coco.component_subpath("out"),
         declare_dir_target,
-        scope / "out",
         OUT_DIR_2,
         stable_key="out_dir",
         managed_by="system",
     ).result()
-    dir_target.declare_file(scope, filename="db2.txt", content="Hello from DB2App\n")
+    dir_target.declare_file(filename="db2.txt", content="Hello from DB2App\n")
 
 
 # Two apps in different environments (different directories, same db filename)
-app1 = coco.App(build1, coco.AppConfig(name="DB1App", environment=env1))
-app2 = coco.App(build2, coco.AppConfig(name="DB2App", environment=env2))
+app1 = coco.App(coco.AppConfig(name="DB1App", environment=env1), build1)
+app2 = coco.App(coco.AppConfig(name="DB2App", environment=env2), build2)

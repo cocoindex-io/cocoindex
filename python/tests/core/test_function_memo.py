@@ -44,12 +44,10 @@ def _transform_entry(entry: SourceDataEntry) -> str:
 
 
 @coco.function
-def _process_plain_source_data(scope: coco.Scope) -> None:
+def _process_plain_source_data() -> None:
     for key, value in _plain_source_data.items():
         transformed_value = _transform_entry(value)
-        coco.declare_target_state(
-            scope, GlobalDictTarget.target_state(key, transformed_value)
-        )
+        coco.declare_target_state(GlobalDictTarget.target_state(key, transformed_value))
 
 
 def test_memo_pure_function() -> None:
@@ -58,8 +56,8 @@ def test_memo_pure_function() -> None:
     _metrics.clear()
 
     app = coco.App(
-        _process_plain_source_data,
         coco.AppConfig(name="test_memo_pure_function", environment=coco_env),
+        _process_plain_source_data,
     )
 
     _plain_source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA1")
@@ -126,12 +124,10 @@ async def _transform_entry_async(entry: SourceDataEntry) -> str:
 
 
 @coco.function
-async def _process_plain_source_data_async(scope: coco.Scope) -> None:
+async def _process_plain_source_data_async() -> None:
     for key, value in _plain_source_data.items():
         transformed_value = await _transform_entry_async(value)
-        coco.declare_target_state(
-            scope, GlobalDictTarget.target_state(key, transformed_value)
-        )
+        coco.declare_target_state(GlobalDictTarget.target_state(key, transformed_value))
 
 
 def test_memo_pure_function_async() -> None:
@@ -140,8 +136,8 @@ def test_memo_pure_function_async() -> None:
     _metrics.clear()
 
     app = coco.App(
-        _process_plain_source_data_async,
         coco.AppConfig(name="test_memo_pure_function_async", environment=coco_env),
+        _process_plain_source_data_async,
     )
 
     _plain_source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA1")
@@ -202,15 +198,15 @@ def test_memo_pure_function_async() -> None:
 
 
 @coco.function(memo=True)
-def _declare_data_entry(scope: coco.Scope, key: str, entry: SourceDataEntry) -> None:
+def _declare_data_entry(key: str, entry: SourceDataEntry) -> None:
     _metrics.increment("call.declare_data_entry")
-    coco.declare_target_state(scope, GlobalDictTarget.target_state(key, entry.content))
+    coco.declare_target_state(GlobalDictTarget.target_state(key, entry.content))
 
 
 @coco.function
-def _declare_plain_data(scope: coco.Scope) -> None:
+def _declare_plain_data() -> None:
     for key, value in _plain_source_data.items():
-        _declare_data_entry(scope, key, value)
+        _declare_data_entry(key, value)
 
 
 def test_memo_function_with_target_states() -> None:
@@ -219,10 +215,10 @@ def test_memo_function_with_target_states() -> None:
     _metrics.clear()
 
     app = coco.App(
-        _declare_plain_data,
         coco.AppConfig(
             name="test_memo_function_with_target_states", environment=coco_env
         ),
+        _declare_plain_data,
     )
 
     _plain_source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA1")
@@ -269,17 +265,15 @@ def test_memo_function_with_target_states() -> None:
 
 
 @coco.function(memo=True)
-async def _declare_data_entry_async(
-    scope: coco.Scope, key: str, entry: SourceDataEntry
-) -> None:
+async def _declare_data_entry_async(key: str, entry: SourceDataEntry) -> None:
     _metrics.increment("call.declare_data_entry_async")
-    coco.declare_target_state(scope, GlobalDictTarget.target_state(key, entry.content))
+    coco.declare_target_state(GlobalDictTarget.target_state(key, entry.content))
 
 
 @coco.function
-async def _declare_plain_data_async(scope: coco.Scope) -> None:
+async def _declare_plain_data_async() -> None:
     for key, value in _plain_source_data.items():
-        await _declare_data_entry_async(scope, key, value)
+        await _declare_data_entry_async(key, value)
 
 
 def test_memo_function_with_target_states_async() -> None:
@@ -288,10 +282,10 @@ def test_memo_function_with_target_states_async() -> None:
     _metrics.clear()
 
     app = coco.App(
-        _declare_plain_data_async,
         coco.AppConfig(
             name="test_memo_function_with_target_states_async", environment=coco_env
         ),
+        _declare_plain_data_async,
     )
 
     _plain_source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA1")
@@ -343,11 +337,11 @@ def test_memo_function_with_target_states_with_exception() -> None:
     _metrics.clear()
 
     app = coco.App(
-        _declare_plain_data,
         coco.AppConfig(
             name="test_memo_function_with_target_states_with_exception",
             environment=coco_env,
         ),
+        _declare_plain_data,
     )
 
     _plain_source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA1")
@@ -371,16 +365,16 @@ def test_memo_function_with_target_states_with_exception() -> None:
 
 
 @coco.function(memo=True)
-def _declare_dict_data_entry(scope: coco.Scope, entry: DictSourceDataEntry) -> None:
+def _declare_dict_data_entry(entry: DictSourceDataEntry) -> None:
     _metrics.increment("call.declare_dict_data_entry")
     for key, value in entry.content.items():
-        _declare_data_entry(scope, key, value)
+        _declare_data_entry(key, value)
 
 
 @coco.function
-def _declare_dict_data(scope: coco.Scope) -> None:
+def _declare_dict_data() -> None:
     for entry in _dict_source_data.values():
-        _declare_dict_data_entry(scope, entry)
+        _declare_dict_data_entry(entry)
 
 
 def test_memo_nested_functions_with_target_states() -> None:
@@ -389,10 +383,10 @@ def test_memo_nested_functions_with_target_states() -> None:
     _metrics.clear()
 
     app = coco.App(
-        _declare_dict_data,
         coco.AppConfig(
             name="test_memo_nested_functions_with_target_states", environment=coco_env
         ),
+        _declare_dict_data,
     )
 
     _dict_source_data["D1"] = DictSourceDataEntry(
@@ -471,18 +465,16 @@ def test_memo_nested_functions_with_target_states() -> None:
 
 
 @coco.function(memo=True)
-def _declare_dict_data_entry_w_components(
-    scope: coco.Scope, entry: DictSourceDataEntry
-) -> None:
+def _declare_dict_data_entry_w_components(entry: DictSourceDataEntry) -> None:
     _metrics.increment("call.declare_dict_data_entry_w_components")
     for key, value in entry.content.items():
-        coco.mount(_declare_data_entry, scope / key, key, value)
+        coco.mount(coco.component_subpath(key), _declare_data_entry, key, value)
 
 
 @coco.function
-def _declare_dict_data_w_components(scope: coco.Scope) -> None:
+def _declare_dict_data_w_components() -> None:
     for entry in _dict_source_data.values():
-        _declare_dict_data_entry_w_components(scope, entry)
+        _declare_dict_data_entry_w_components(entry)
 
 
 def test_memo_nested_functions_with_components() -> None:
@@ -491,10 +483,10 @@ def test_memo_nested_functions_with_components() -> None:
     _metrics.clear()
 
     app = coco.App(
-        _declare_dict_data_w_components,
         coco.AppConfig(
             name="test_memo_nested_functions_with_components", environment=coco_env
         ),
+        _declare_dict_data_w_components,
     )
 
     _dict_source_data["D1"] = DictSourceDataEntry(
@@ -578,11 +570,11 @@ def test_memo_nested_functions_with_components_with_exception() -> None:
     _metrics.clear()
 
     app = coco.App(
-        _declare_dict_data_w_components,
         coco.AppConfig(
             name="test_memo_nested_functions_with_components_with_exception",
             environment=coco_env,
         ),
+        _declare_dict_data_w_components,
     )
 
     _dict_source_data["D1"] = DictSourceDataEntry(
@@ -617,17 +609,17 @@ def test_memo_nested_functions_with_components_with_exception() -> None:
 
 @coco.function(memo=True)
 async def _declare_dict_data_entry_w_components_async(
-    scope: coco.Scope, entry: DictSourceDataEntry
+    entry: DictSourceDataEntry,
 ) -> None:
     _metrics.increment("call.declare_dict_data_entry_w_components_async")
     for key, value in entry.content.items():
-        coco.mount(_declare_data_entry, scope / key, key, value)
+        coco.mount(coco.component_subpath(key), _declare_data_entry, key, value)
 
 
 @coco.function
-async def _declare_dict_data_w_components_async(scope: coco.Scope) -> None:
+async def _declare_dict_data_w_components_async() -> None:
     for entry in _dict_source_data.values():
-        await _declare_dict_data_entry_w_components_async(scope, entry)
+        await _declare_dict_data_entry_w_components_async(entry)
 
 
 def test_memo_nested_functions_with_components_async() -> None:
@@ -636,11 +628,11 @@ def test_memo_nested_functions_with_components_async() -> None:
     _metrics.clear()
 
     app = coco.App(
-        _declare_dict_data_w_components_async,
         coco.AppConfig(
             name="test_memo_nested_functions_with_components_async",
             environment=coco_env,
         ),
+        _declare_dict_data_w_components_async,
     )
 
     _dict_source_data["D1"] = DictSourceDataEntry(
@@ -724,11 +716,11 @@ def test_memo_nested_functions_with_components_with_exception_async() -> None:
     _metrics.clear()
 
     app = coco.App(
-        _declare_dict_data_w_components_async,
         coco.AppConfig(
             name="test_memo_nested_functions_with_components_with_exception_async",
             environment=coco_env,
         ),
+        _declare_dict_data_w_components_async,
     )
 
     _dict_source_data["D1"] = DictSourceDataEntry(

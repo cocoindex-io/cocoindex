@@ -76,7 +76,6 @@ async def coco_lifespan(
 
 @coco.function(memo=True)
 async def process_product(
-    scope: coco.Scope,
     product: SourceProduct,
     table: postgres.TableTarget[OutputProduct],
 ) -> None:
@@ -84,7 +83,6 @@ async def process_product(
     total_value = product.price * product.amount
     embedding = await _embedder.embed_async(full_description)
     table.declare_row(
-        scope,
         row=OutputProduct(
             product_category=product.product_category,
             product_name=product.product_name,
@@ -98,37 +96,39 @@ async def process_product(
 
 
 @coco.function
-async def app_main(scope: coco.Scope) -> None:
-    target_db = scope.use(PG_DB)
-    target_table = await coco_aio.mount_run(
-        target_db.declare_table_target,
-        scope / "setup" / "table",
-        table_name=TABLE_NAME,
-        table_schema=postgres.TableSchema(
-            OutputProduct,
-            primary_key=["product_category", "product_name"],
-        ),
-        pg_schema_name=PG_SCHEMA_NAME,
-    ).result()
+async def app_main() -> None:
+    target_db = coco.use_context(PG_DB)
+    with coco.component_subpath("setup"):
+        target_table = await coco_aio.mount_run(
+            coco.component_subpath("table"),
+            target_db.declare_table_target,
+            table_name=TABLE_NAME,
+            table_schema=postgres.TableSchema(
+                OutputProduct,
+                primary_key=["product_category", "product_name"],
+            ),
+            pg_schema_name=PG_SCHEMA_NAME,
+        ).result()
 
     source = postgres.PgTableSource(
-        scope.use(SOURCE_POOL),
+        coco.use_context(SOURCE_POOL),
         table_name="source_products",
         row_type=SourceProduct,
     )
 
-    async for product in source.fetch_rows():
-        coco_aio.mount(
-            process_product,
-            scope / "row" / product.product_category / product.product_name,
-            product,
-            target_table,
-        )
+    with coco.component_subpath("row"):
+        async for product in source.fetch_rows():
+            coco_aio.mount(
+                coco.component_subpath(product.product_category, product.product_name),
+                process_product,
+                product,
+                target_table,
+            )
 
 
 app = coco_aio.App(
-    app_main,
     coco_aio.AppConfig(name="PostgresSourceV1"),
+    app_main,
 )
 
 

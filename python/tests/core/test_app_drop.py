@@ -16,18 +16,17 @@ coco_env = common.create_test_env(__file__)
 _source_data: dict[str, dict[str, Any]] = {}
 
 
-def _declare_dicts(scope: coco.Scope) -> None:
+def _declare_dicts() -> None:
     """Create dict target states for testing."""
-    for name, data in _source_data.items():
-        single_dict_provider = coco.mount_run(
-            DictsTarget.declare_dict_target,
-            scope / "dict" / name,
-            name,
-        ).result()
-        for key, value in data.items():
-            coco.declare_target_state(
-                scope, single_dict_provider.target_state(key, value)
-            )
+    with coco.component_subpath("dict"):
+        for name, data in _source_data.items():
+            single_dict_provider = coco.mount_run(
+                coco.component_subpath(name),
+                DictsTarget.declare_dict_target,
+                name,
+            ).result()
+            for key, value in data.items():
+                coco.declare_target_state(single_dict_provider.target_state(key, value))
 
 
 # === Sync Drop Tests ===
@@ -39,8 +38,8 @@ def test_drop_reverts_target_states() -> None:
     _source_data.clear()
 
     app = coco.App(
-        _declare_dicts,
         coco.AppConfig(name="test_drop_reverts_target_states", environment=coco_env),
+        _declare_dicts,
     )
 
     # Run app to create target states
@@ -81,8 +80,8 @@ def test_drop_clears_database() -> None:
     _source_data.clear()
 
     app = coco.App(
-        _declare_dicts,
         coco.AppConfig(name="test_drop_clears_database", environment=coco_env),
+        _declare_dicts,
     )
 
     # Run app
@@ -107,8 +106,8 @@ def test_drop_allows_rerun() -> None:
     _source_data.clear()
 
     app = coco.App(
-        _declare_dicts,
         coco.AppConfig(name="test_drop_allows_rerun", environment=coco_env),
+        _declare_dicts,
     )
 
     # First run
@@ -137,8 +136,8 @@ def test_drop_empty_app() -> None:
     _source_data.clear()
 
     app = coco.App(
-        _declare_dicts,
         coco.AppConfig(name="test_drop_empty_app", environment=coco_env),
+        _declare_dicts,
     )
 
     # Drop without running - should not error
@@ -158,10 +157,10 @@ async def test_drop_async_reverts_target_states() -> None:
     _source_data.clear()
 
     app = coco_aio.App(
-        _declare_dicts,
         coco.AppConfig(
             name="test_drop_async_reverts_target_states", environment=coco_env
         ),
+        _declare_dicts,
     )
 
     # Run app to create target states
@@ -197,8 +196,8 @@ async def test_drop_async_allows_rerun() -> None:
     _source_data.clear()
 
     app = coco_aio.App(
-        _declare_dicts,
         coco.AppConfig(name="test_drop_async_allows_rerun", environment=coco_env),
+        _declare_dicts,
     )
 
     # First run
@@ -228,8 +227,8 @@ async def test_drop_async_empty_app() -> None:
     _source_data.clear()
 
     app = coco_aio.App(
-        _declare_dicts,
         coco.AppConfig(name="test_drop_async_empty_app", environment=coco_env),
+        _declare_dicts,
     )
 
     # Drop without running - should not error

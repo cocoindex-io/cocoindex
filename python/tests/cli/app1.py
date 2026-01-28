@@ -16,15 +16,15 @@ env = coco.Environment(coco.Settings.from_env(db_path=DB_PATH))
 
 
 @coco.function
-def build(scope: coco.Scope) -> None:
+def build() -> None:
     dir_target = coco.mount_run(
+        coco.component_subpath("out"),
         declare_dir_target,
-        scope / "out",
         OUT_DIR,
         stable_key="out_dir",
         managed_by="system",
     ).result()
-    dir_target.declare_file(scope, filename="hello.txt", content="Hello from App1\n")
+    dir_target.declare_file(filename="hello.txt", content="Hello from App1\n")
 
 
-app = coco.App(build, coco.AppConfig(name="TestApp1", environment=env))
+app = coco.App(coco.AppConfig(name="TestApp1", environment=env), build)

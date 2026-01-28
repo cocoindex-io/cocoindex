@@ -23,36 +23,32 @@ async def lifespan(builder: coco_aio.EnvironmentBuilder) -> AsyncGenerator[None]
 
 
 @coco.function
-def build1(scope: coco.Scope) -> None:
+def build1() -> None:
     dir_target = coco.mount_run(
+        coco.component_subpath("out"),
         declare_dir_target,
-        scope / "out",
-        scope.use(_ROOT_PATH) / "out_multi_1",
+        coco.use_context(_ROOT_PATH) / "out_multi_1",
         stable_key="out_dir",
         managed_by="system",
     ).result()
-    dir_target.declare_file(
-        scope, filename="hello.txt", content="Hello from MultiApp1\n"
-    )
+    dir_target.declare_file(filename="hello.txt", content="Hello from MultiApp1\n")
 
 
 @coco.function
-def build2(scope: coco.Scope) -> None:
+def build2() -> None:
     dir_target = coco.mount_run(
+        coco.component_subpath("out"),
         declare_dir_target,
-        scope / "out",
-        scope.use(_ROOT_PATH) / "out_multi_2",
+        coco.use_context(_ROOT_PATH) / "out_multi_2",
         stable_key="out_dir",
         managed_by="system",
     ).result()
-    dir_target.declare_file(
-        scope, filename="world.txt", content="Hello from MultiApp2\n"
-    )
+    dir_target.declare_file(filename="world.txt", content="Hello from MultiApp2\n")
 
 
 # Two apps in the same module
-app1 = coco.App(build1, "MultiApp1")
-app2 = coco_aio.App(build2, "MultiApp2")
+app1 = coco.App("MultiApp1", build1)
+app2 = coco_aio.App("MultiApp2", build2)
 
 # Default app (what gets run if you don't specify :app_name)
 app = app1

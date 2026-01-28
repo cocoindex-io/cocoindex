@@ -16,17 +16,16 @@ _source_data: dict[str, dict[str, Any]] = {}
 ##################################################################################
 
 
-def _declare_dicts_data_together(scope: coco.Scope) -> None:
-    for name, data in _source_data.items():
-        single_dict_provider = coco.mount_run(
-            DictsTarget.declare_dict_target,
-            scope / "dict" / name,
-            name,
-        ).result()
-        for key, value in data.items():
-            coco.declare_target_state(
-                scope, single_dict_provider.target_state(key, value)
-            )
+def _declare_dicts_data_together() -> None:
+    with coco.component_subpath("dict"):
+        for name, data in _source_data.items():
+            single_dict_provider = coco.mount_run(
+                coco.component_subpath(name),
+                DictsTarget.declare_dict_target,
+                name,
+            ).result()
+            for key, value in data.items():
+                coco.declare_target_state(single_dict_provider.target_state(key, value))
 
 
 def test_dicts_data_together_insert() -> None:
@@ -34,8 +33,8 @@ def test_dicts_data_together_insert() -> None:
     _source_data.clear()
 
     app = coco.App(
-        _declare_dicts_data_together,
         coco.AppConfig(name="test_dicts_data_together_insert", environment=coco_env),
+        _declare_dicts_data_together,
     )
 
     _source_data["D1"] = {"a": 1, "b": 2}
@@ -82,10 +81,10 @@ def test_dicts_data_together_delete_dict() -> None:
     _source_data.clear()
 
     app = coco.App(
-        _declare_dicts_data_together,
         coco.AppConfig(
             name="test_dicts_data_together_delete_dict", environment=coco_env
         ),
+        _declare_dicts_data_together,
     )
 
     _source_data["D1"] = {"a": 1, "b": 2}
@@ -159,10 +158,10 @@ def test_dicts_data_together_delete_entry() -> None:
     _source_data.clear()
 
     app = coco.App(
-        _declare_dicts_data_together,
         coco.AppConfig(
             name="test_dicts_data_together_delete_entry", environment=coco_env
         ),
+        _declare_dicts_data_together,
     )
 
     _source_data["D1"] = {"a": 1, "b": 2}
@@ -209,17 +208,17 @@ def test_dicts_data_together_delete_entry() -> None:
 ##################################################################################
 
 
-def _declare_one_dict(scope: coco.Scope, name: str) -> None:
+def _declare_one_dict(name: str) -> None:
     dict_provider = coco.mount_run(
-        DictsTarget.declare_dict_target, scope / "setup", name
+        coco.component_subpath("setup"), DictsTarget.declare_dict_target, name
     ).result()
     for key, value in _source_data[name].items():
-        coco.declare_target_state(scope, dict_provider.target_state(key, value))
+        coco.declare_target_state(dict_provider.target_state(key, value))
 
 
-def _declare_dicts_in_sub_components(scope: coco.Scope) -> None:
+def _declare_dicts_in_sub_components() -> None:
     for name in _source_data.keys():
-        coco.mount(_declare_one_dict, scope / name, name)
+        coco.mount(coco.component_subpath(name), _declare_one_dict, name)
 
 
 def test_dicts_in_sub_components_insert() -> None:
@@ -227,10 +226,10 @@ def test_dicts_in_sub_components_insert() -> None:
     _source_data.clear()
 
     app = coco.App(
-        _declare_dicts_in_sub_components,
         coco.AppConfig(
             name="test_dicts_in_sub_components_insert", environment=coco_env
         ),
+        _declare_dicts_in_sub_components,
     )
 
     _source_data["D1"] = {"a": 1, "b": 2}
@@ -279,10 +278,10 @@ def test_dicts_in_sub_components_delete_dict() -> None:
     _source_data.clear()
 
     app = coco.App(
-        _declare_dicts_in_sub_components,
         coco.AppConfig(
             name="test_dicts_in_sub_components_delete_dict", environment=coco_env
         ),
+        _declare_dicts_in_sub_components,
     )
 
     _source_data["D1"] = {"a": 1, "b": 2}
@@ -360,10 +359,10 @@ def test_dicts_in_sub_components_delete_entry() -> None:
     _source_data.clear()
 
     app = coco.App(
-        _declare_dicts_in_sub_components,
         coco.AppConfig(
             name="test_dicts_in_sub_components_delete_entry", environment=coco_env
         ),
+        _declare_dicts_in_sub_components,
     )
 
     _source_data["D1"] = {"a": 1, "b": 2}
@@ -411,25 +410,23 @@ def test_dicts_in_sub_components_delete_entry() -> None:
 
 
 def _declare_dict_containers(
-    scope: coco.Scope, names: Collection[str]
+    names: Collection[str],
 ) -> dict[str, coco.PendingTargetStateProvider[str]]:
-    providers = {name: DictsTarget.declare_dict_target(scope, name) for name in names}
+    providers = {name: DictsTarget.declare_dict_target(name) for name in names}
     return providers
 
 
-def _declare_one_dict_data(
-    scope: coco.Scope, name: str, provider: coco.TargetStateProvider[str]
-) -> None:
+def _declare_one_dict_data(name: str, provider: coco.TargetStateProvider[str]) -> None:
     for key, value in _source_data[name].items():
-        coco.declare_target_state(scope, provider.target_state(key, value))
+        coco.declare_target_state(provider.target_state(key, value))
 
 
-def _declare_dict_containers_together(scope: coco.Scope) -> None:
+def _declare_dict_containers_together() -> None:
     providers = coco.mount_run(
-        _declare_dict_containers, scope / "setup", _source_data.keys()
+        coco.component_subpath("setup"), _declare_dict_containers, _source_data.keys()
     ).result()
     for name, provider in providers.items():
-        coco.mount(_declare_one_dict_data, scope / name, name, provider)
+        coco.mount(coco.component_subpath(name), _declare_one_dict_data, name, provider)
 
 
 def test_dicts_containers_together_insert() -> None:
@@ -437,10 +434,10 @@ def test_dicts_containers_together_insert() -> None:
     _source_data.clear()
 
     app = coco.App(
-        _declare_dict_containers_together,
         coco.AppConfig(
             name="test_dicts_containers_together_insert", environment=coco_env
         ),
+        _declare_dict_containers_together,
     )
 
     _source_data["D1"] = {"a": 1, "b": 2}
@@ -487,10 +484,10 @@ def test_dicts_containers_together_delete_dict() -> None:
     _source_data.clear()
 
     app = coco.App(
-        _declare_dict_containers_together,
         coco.AppConfig(
             name="test_dicts_containers_together_delete_dict", environment=coco_env
         ),
+        _declare_dict_containers_together,
     )
 
     _source_data["D1"] = {"a": 1, "b": 2}
@@ -564,10 +561,10 @@ def test_dicts_containers_together_delete_entry() -> None:
     _source_data.clear()
 
     app = coco.App(
-        _declare_dict_containers_together,
         coco.AppConfig(
             name="test_dicts_containers_together_delete_entry", environment=coco_env
         ),
+        _declare_dict_containers_together,
     )
 
     _source_data["D1"] = {"a": 1, "b": 2}
@@ -611,12 +608,14 @@ def test_dicts_containers_together_delete_entry() -> None:
     ]
 
 
-async def _declare_dict_containers_together_async(scope: coco.Scope) -> None:
+async def _declare_dict_containers_together_async() -> None:
     providers = await coco_aio.mount_run(
-        _declare_dict_containers, scope / "setup", _source_data.keys()
+        coco.component_subpath("setup"), _declare_dict_containers, _source_data.keys()
     ).result()
     for name, provider in providers.items():
-        coco_aio.mount(_declare_one_dict_data, scope / name, name, provider)
+        coco_aio.mount(
+            coco.component_subpath(name), _declare_one_dict_data, name, provider
+        )
 
 
 @pytest.mark.asyncio
@@ -625,10 +624,10 @@ async def test_dicts_containers_together_insert_async() -> None:
     _source_data.clear()
 
     app = coco_aio.App(
-        _declare_dict_containers_together_async,
         coco.AppConfig(
             name="test_dicts_containers_together_insert_async", environment=coco_env
         ),
+        _declare_dict_containers_together_async,
     )
 
     _source_data["D1"] = {"a": 1, "b": 2}
@@ -676,11 +675,11 @@ async def test_dicts_containers_together_delete_dict_async() -> None:
     _source_data.clear()
 
     app = coco_aio.App(
-        _declare_dict_containers_together_async,
         coco.AppConfig(
             name="test_dicts_containers_together_delete_dict_async",
             environment=coco_env,
         ),
+        _declare_dict_containers_together_async,
     )
 
     _source_data["D1"] = {"a": 1, "b": 2}
@@ -748,11 +747,11 @@ async def test_dicts_containers_together_delete_entry_async() -> None:
     _source_data.clear()
 
     app = coco_aio.App(
-        _declare_dict_containers_together_async,
         coco.AppConfig(
             name="test_dicts_containers_together_delete_entry_async",
             environment=coco_env,
         ),
+        _declare_dict_containers_together_async,
     )
 
     _source_data["D1"] = {"a": 1, "b": 2}
@@ -805,8 +804,8 @@ def test_proceed_with_failed_creation() -> None:
     _source_data.clear()
 
     app = coco.App(
-        _declare_dicts_data_together,
         coco.AppConfig(name="test_proceed_with_failed_creation", environment=coco_env),
+        _declare_dicts_data_together,
     )
 
     _source_data["D1"] = {"a": 1}
@@ -835,18 +834,18 @@ def test_proceed_with_failed_creation() -> None:
 # Test for cleanup of partially-built components
 
 
-def _declare_one_dict_w_exception(scope: coco.Scope, name: str) -> None:
+def _declare_one_dict_w_exception(name: str) -> None:
     dict_provider = coco.mount_run(
-        DictsTarget.declare_dict_target, scope / "setup", name
+        coco.component_subpath("setup"), DictsTarget.declare_dict_target, name
     ).result()
     for key, value in _source_data[name].items():
-        coco.declare_target_state(scope, dict_provider.target_state(key, value))
+        coco.declare_target_state(dict_provider.target_state(key, value))
     raise ValueError("injected test exception (which is expected)")
 
 
-def _declare_dicts_in_sub_components_w_exception(scope: coco.Scope) -> None:
+def _declare_dicts_in_sub_components_w_exception() -> None:
     for name in _source_data.keys():
-        coco.mount(_declare_one_dict_w_exception, scope / name, name)
+        coco.mount(coco.component_subpath(name), _declare_one_dict_w_exception, name)
 
 
 def test_cleanup_partially_built_components() -> None:
@@ -854,10 +853,10 @@ def test_cleanup_partially_built_components() -> None:
     _source_data.clear()
 
     app = coco.App(
-        _declare_dicts_in_sub_components_w_exception,
         coco.AppConfig(
             name="test_cleanup_partially_built_components", environment=coco_env
         ),
+        _declare_dicts_in_sub_components_w_exception,
     )
 
     _source_data["D1"] = {"a": 1}
@@ -884,10 +883,10 @@ def test_retry_from_gc_failed_components() -> None:
     _source_data.clear()
 
     app = coco.App(
-        _declare_dicts_data_together,
         coco.AppConfig(
             name="test_retry_from_gc_failed_components", environment=coco_env
         ),
+        _declare_dicts_data_together,
     )
 
     _source_data["D1"] = {}
@@ -925,10 +924,10 @@ def test_restore_from_gc_failed_components() -> None:
     _source_data.clear()
 
     app = coco.App(
-        _declare_dicts_data_together,
         coco.AppConfig(
             name="test_restore_from_gc_failed_components", environment=coco_env
         ),
+        _declare_dicts_data_together,
     )
 
     _source_data["D1"] = {}
@@ -970,17 +969,15 @@ def test_restore_from_gc_failed_components() -> None:
 # Test for async target states
 
 
-async def _declare_async_dicts_data_together(scope: coco.Scope) -> None:
+async def _declare_async_dicts_data_together() -> None:
     for name, data in _source_data.items():
         single_dict_provider = await coco_aio.mount_run(
+            coco.component_subpath("dict", name),
             AsyncDictsTarget.declare_dict_target,
-            scope / "dict" / name,
             name,
         ).result()
         for key, value in data.items():
-            coco.declare_target_state(
-                scope, single_dict_provider.target_state(key, value)
-            )
+            coco.declare_target_state(single_dict_provider.target_state(key, value))
 
 
 @pytest.mark.asyncio
@@ -989,8 +986,8 @@ async def test_async_dicts() -> None:
     _source_data.clear()
 
     app = coco_aio.App(
-        _declare_async_dicts_data_together,
         coco.AppConfig(name="test_async_dicts", environment=coco_env),
+        _declare_async_dicts_data_together,
     )
 
     _source_data["D1"] = {"a": 1, "b": 2}
@@ -1037,8 +1034,8 @@ def test_async_dicts_sync_app() -> None:
     _source_data.clear()
 
     app = coco.App(
-        _declare_async_dicts_data_together,
         coco.AppConfig(name="test_async_dicts_sync_app", environment=coco_env),
+        _declare_async_dicts_data_together,
     )
 
     _source_data["D1"] = {"a": 1, "b": 2}
