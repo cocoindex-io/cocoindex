@@ -53,7 +53,7 @@ def app_main(sourcedir: pathlib.Path, outdir: pathlib.Path) -> None:
 
 
 app = coco.App(
-    coco.AppConfig(name="PdfToMarkdown"),
+    "PdfToMarkdown",
     app_main,
     sourcedir=pathlib.Path("./pdf_files"),
     outdir=pathlib.Path("./out"),
