@@ -43,9 +43,9 @@ CocoIndex automatically tracks changes — when you add, modify, or delete sourc
     ```bash
     mkdir pdf_files
     ```
-you can download the pdf files from the [git repo](https://github.com/cocoindex-io/cocoindex/tree/v1/examples/pdf_to_markdown).
+    You can download sample PDF files from the [git repo](https://github.com/cocoindex-io/cocoindex/tree/v1/examples/pdf_to_markdown).
 
-4. Create a `.env` file to configure the database path:
+4. Create a `.env` file to configure the database path that is needed for CocoIndex incremental processing:
 
     ```bash
     echo "COCOINDEX_DB=./cocoindex.db" > .env
@@ -65,13 +65,13 @@ from cocoindex.resources.file import PatternFilePathMatcher
 from docling.document_converter import DocumentConverter
 
 app = coco.App(
-    coco.AppConfig(name="PdfToMarkdown"),
+    "PdfToMarkdown",
     app_main,
     sourcedir=pathlib.Path("./pdf_files"),
     outdir=pathlib.Path("./out"),
 )
 ```
-This defines a CocoIndex App — the top-level runnable unit in CocoIndex. The database path is configured via the `COCOINDEX_DB` environment variable in the `.env` file.
+This defines a CocoIndex App — the top-level runnable unit in CocoIndex.
 
 <DocumentationButton url="/docs-v1/programming_guide/app" text="CocoIndex App" />
 
@@ -110,7 +110,7 @@ def app_main(sourcedir: pathlib.Path, outdir: pathlib.Path) -> None:
 
 ![File Process](/img/quickstart/file-process.svg)
 
-Use `@coco.function` with `memo=True` to create a memoized function that processes each file:
+This function converts a single PDF to Markdown:
 
 ```python
 _converter = DocumentConverter()
@@ -125,6 +125,8 @@ def process_file(
     target.declare_file(filename=outname, content=markdown)
 ```
 
+- **`memo=True`** — Caches results; unchanged files are skipped on re-runs
+- **`target.declare_file()`** — Writes output; auto-deleted if source is removed
 
 <DocumentationButton url="/docs-v1/programming_guide/function" text="Function" />
 <DocumentationButton url="/docs-v1/programming_guide/target_state" text="Target State" />
