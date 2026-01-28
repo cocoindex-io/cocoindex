@@ -16,7 +16,7 @@ import weakref
 from typing_extensions import TypeVar
 
 from . import core
-from .component_ctx import _get_context_from_ctx
+from .component_ctx import get_context_from_ctx
 from .pending_marker import PendingS, MaybePendingS, ResolvesTo
 from .typing import NonExistenceType
 
@@ -209,7 +209,7 @@ def declare_target_state(target_state: TargetState[None]) -> None:
     Args:
         target_state: The target state to declare.
     """
-    ctx = _get_context_from_ctx()
+    ctx = get_context_from_ctx()
     core.declare_target_state(
         ctx._core_processor_ctx,
         ctx._core_fn_call_ctx,
@@ -231,7 +231,7 @@ def declare_target_state_with_child(
     Returns:
         A TargetStateProvider for the child target states.
     """
-    ctx = _get_context_from_ctx()
+    ctx = get_context_from_ctx()
     provider = core.declare_target_state_with_child(
         ctx._core_processor_ctx,
         ctx._core_fn_call_ctx,

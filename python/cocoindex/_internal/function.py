@@ -21,7 +21,7 @@ from . import core
 from .component_ctx import (
     ComponentContext,
     _context_var,
-    _get_context_from_ctx,
+    get_context_from_ctx,
 )
 from .memo_key import fingerprint_call
 
@@ -79,7 +79,7 @@ class SyncFunction(Function[P, R_co]):
         self._processor_info = core.ComponentProcessorInfo(fn.__qualname__)
 
     def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R_co:
-        parent_ctx = _get_context_from_ctx()
+        parent_ctx = get_context_from_ctx()
 
         def _call_in_context(ctx: core.FnCallContext) -> R_co:
             context = parent_ctx._with_fn_call_ctx(ctx)
@@ -164,7 +164,7 @@ class AsyncFunction(Function[P, R_co]):
         self._processor_info = core.ComponentProcessorInfo(fn.__qualname__)
 
     async def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R_co:
-        parent_ctx = _get_context_from_ctx()
+        parent_ctx = get_context_from_ctx()
 
         async def _call_in_context(ctx: core.FnCallContext) -> R_co:
             context = parent_ctx._with_fn_call_ctx(ctx)

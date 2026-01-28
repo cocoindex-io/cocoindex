@@ -17,10 +17,9 @@ from . import core
 from .app import AppBase
 from .pending_marker import ResolvesTo
 from .component_ctx import (
-    ComponentContext,
     ComponentSubpath,
-    _get_context_from_ctx,
-    _resolve_subpath,
+    build_child_path,
+    get_context_from_ctx,
 )
 from .function import AnyCallable, create_core_component_processor
 from .typing import NOT_SET, NotSetType
@@ -83,17 +82,6 @@ class ProcessingUnitMountHandle:
                 self._ready_called = True
 
 
-def _build_child_path(
-    parent_ctx: ComponentContext, subpath: ComponentSubpath
-) -> core.StablePath:
-    """Build the child path from parent context and resolved subpath."""
-    resolved_parts = _resolve_subpath(subpath)
-    child_path = parent_ctx._core_path
-    for part in resolved_parts:
-        child_path = child_path.concat(part)
-    return child_path
-
-
 @overload
 def mount_run(
     subpath: ComponentSubpath,
@@ -145,8 +133,8 @@ def mount_run(
             coco.component_subpath("setup"), declare_table_target, table_name
         ).result()
     """
-    parent_ctx = _get_context_from_ctx()
-    child_path = _build_child_path(parent_ctx, subpath)
+    parent_ctx = get_context_from_ctx()
+    child_path = build_child_path(parent_ctx, subpath)
 
     processor = create_core_component_processor(
         processor_fn, parent_ctx._env, child_path, args, kwargs
@@ -183,8 +171,8 @@ def mount(
             for f in files:
                 coco.mount(coco.component_subpath(str(f.relative_path)), process_file, f, target)
     """
-    parent_ctx = _get_context_from_ctx()
-    child_path = _build_child_path(parent_ctx, subpath)
+    parent_ctx = get_context_from_ctx()
+    child_path = build_child_path(parent_ctx, subpath)
 
     processor = create_core_component_processor(
         processor_fn, parent_ctx._env, child_path, args, kwargs

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
@@ -17,9 +16,6 @@ T = TypeVar("T")
 
 # ContextVar for the current ComponentContext
 _context_var: ContextVar[ComponentContext] = ContextVar("coco_component_context")
-
-# ContextVar for the current subpath parts (used by component_subpath context manager)
-_subpath_var: ContextVar[tuple[StableKey, ...]] = ContextVar("coco_subpath", default=())
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,6 +41,18 @@ class ComponentContext:
             self._core_path,
             self._core_processor_ctx,
             fn_call_ctx,
+        )
+
+    def _with_extended_path(self, *parts: StableKey) -> ComponentContext:
+        """Create a new context with the path extended by the given parts."""
+        new_path = self._core_path
+        for part in parts:
+            new_path = new_path.concat(part)
+        return ComponentContext(
+            self._env,
+            new_path,
+            self._core_processor_ctx,
+            self._core_fn_call_ctx,
         )
 
     @contextmanager
@@ -86,10 +94,6 @@ class ComponentContext:
         )
 
 
-# Alias for backward compatibility during transition
-Scope = ComponentContext
-
-
 class ComponentSubpath:
     """
     Represents a relative path to create a sub-scope.
@@ -111,7 +115,7 @@ class ComponentSubpath:
     __slots__ = ("_parts", "_token")
 
     _parts: tuple[StableKey, ...]
-    _token: Token[tuple[StableKey, ...]] | None
+    _token: Token[ComponentContext] | None
 
     def __init__(self, *key_parts: StableKey) -> None:
         self._parts = key_parts
@@ -122,9 +126,10 @@ class ComponentSubpath:
         return self._parts
 
     def __enter__(self) -> ComponentSubpath:
-        # Push our parts onto the subpath stack
-        current = _subpath_var.get()
-        self._token = _subpath_var.set(current + self._parts)
+        # Create a new ComponentContext with extended path
+        current_ctx = get_context_from_ctx()
+        new_ctx = current_ctx._with_extended_path(*self._parts)
+        self._token = _context_var.set(new_ctx)
         return self
 
     def __exit__(
@@ -134,7 +139,7 @@ class ComponentSubpath:
         exc_tb: object,
     ) -> None:
         if self._token is not None:
-            _subpath_var.reset(self._token)
+            _context_var.reset(self._token)
             self._token = None
 
     def __truediv__(self, part: StableKey) -> ComponentSubpath:
@@ -167,7 +172,7 @@ def component_subpath(*key_parts: StableKey) -> ComponentSubpath:
     return ComponentSubpath(*key_parts)
 
 
-def _get_context_from_ctx() -> ComponentContext:
+def get_context_from_ctx() -> ComponentContext:
     """Get the current ComponentContext from ContextVar."""
     ctx_var = _context_var.get(None)
     if ctx_var is not None:
@@ -178,21 +183,14 @@ def _get_context_from_ctx() -> ComponentContext:
     )
 
 
-def _get_current_subpath() -> tuple[StableKey, ...]:
-    """Get the current subpath parts from context var."""
-    return _subpath_var.get()
-
-
-def _resolve_subpath(subpath: ComponentSubpath | None) -> tuple[StableKey, ...]:
-    """
-    Resolve a ComponentSubpath to absolute path parts.
-
-    Combines the context manager subpath with any explicit subpath argument.
-    """
-    context_parts = _get_current_subpath()
-    if subpath is not None:
-        return context_parts + subpath.parts
-    return context_parts
+def build_child_path(
+    parent_ctx: ComponentContext, subpath: ComponentSubpath
+) -> core.StablePath:
+    """Build the child path from parent context and subpath."""
+    child_path = parent_ctx._core_path
+    for part in subpath.parts:
+        child_path = child_path.concat(part)
+    return child_path
 
 
 def use_context(key: ContextKey[T]) -> T:
@@ -219,7 +217,7 @@ def use_context(key: ContextKey[T]) -> T:
             db = coco.use_context(PG_DB)
             ...
     """
-    ctx = _get_context_from_ctx()
+    ctx = get_context_from_ctx()
     return ctx._env.context_provider.use(key)
 
 
@@ -245,4 +243,4 @@ def get_component_context() -> ComponentContext:
                     coco.mount(...)
             executor.submit(task)
     """
-    return _get_context_from_ctx()
+    return get_context_from_ctx()
