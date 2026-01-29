@@ -96,6 +96,63 @@ jobs:
               exit $status
             fi
 
+    build-test-free-threaded:
+        runs-on: ubuntu-latest
+        env:
+          RUSTFLAGS: "-C debuginfo=0"
+          CARGO_INCREMENTAL: "0"
+          SCCACHE_GHA_ENABLED: "true"
+          RUSTC_WRAPPER: "sccache"
+
+        steps:
+        - uses: actions/checkout@v4
+          with:
+            fetch-depth: 1
+
+        - name: Run sccache-cache
+          uses: mozilla-actions/sccache-action@v0.0.9
+
+        - name: Setup Python (3.14 free-threaded)
+          uses: actions/setup-python@v5
+          with:
+            python-version: '3.14'
+            allow-prereleases: true
+            freethreaded: true
+
+        - name: Verify interpreter configuration
+          run: |
+              python -c "import sys; print(f'GIL enabled: {sys._is_gil_enabled()}'); sys.exit(1) if sys._is_gil_enabled() else None"
+
+        - name: Setup Rust (stable)
+          run: rustup toolchain install stable --profile minimal
+
+        - name: Rust tests (no default features)
+          run: cargo test --no-default-features --verbose
+
+        - name: Rust tests
+          run: cargo test --verbose
+
+        - name: Setup venv
+          run: |
+            python -m venv .venv
+
+        - name: Install Python toolchains
+          run: |
+            .venv/bin/python -m pip install --upgrade pip
+            .venv/bin/python -m pip install maturin
+
+        - name: Python build (free-threaded)
+          run: |
+            .venv/bin/python -m maturin develop --no-default-features -F free-threaded --strip -E all-ci,free-threaded
+
+        - name: Python type check (mypy)
+          run: |
+            .venv/bin/python -m mypy python
+
+        - name: Python tests (free-threaded)
+          run: |
+            .venv/bin/python -m pytest --capture=no python/cocoindex/tests
+
     validate-3p-notices:
         runs-on: ubuntu-latest
         steps:

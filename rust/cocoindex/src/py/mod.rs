@@ -607,7 +607,7 @@ fn serde_roundtrip<'py>(
 }
 
 /// A Python module implemented in Rust.
-#[pymodule]
+#[pymodule(gil_used = false)]
 #[pyo3(name = "_engine")]
 fn cocoindex_engine(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
