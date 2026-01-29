@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Extract structured information from patient intake forms using BAML (v1)."
 requires-python = ">=3.11"
 dependencies = [
-    "cocoindex>=1.0.0a5",
+    "cocoindex>=1.0.0a6",
     "python-dotenv>=1.0.1",
     "baml-py==0.213.0",
     "pydantic>=2.12.5",
