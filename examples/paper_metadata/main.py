@@ -24,7 +24,6 @@ from typing import AsyncIterator, Annotated
 import asyncpg
 from numpy.typing import NDArray
 from openai import OpenAI
-from pydantic import BaseModel, Field
 from dotenv import load_dotenv
 from pypdf import PdfReader, PdfWriter
 
@@ -34,6 +33,8 @@ from cocoindex.connectors import localfs, postgres
 from cocoindex.ops.text import CustomLanguageConfig, RecursiveSplitter
 from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
 from cocoindex.resources.file import FileLike, PatternFilePathMatcher
+
+from models import AuthorModel, PaperMetadataModel
 
 
 TABLE_METADATA = "paper_metadata"
@@ -72,18 +73,6 @@ def openai_client() -> OpenAI:
 class PaperBasicInfo:
     num_pages: int
     first_page: bytes
-
-
-class AuthorModel(BaseModel):
-    name: str
-    email: str | None = None
-    affiliation: str | None = None
-
-
-class PaperMetadataModel(BaseModel):
-    title: str
-    authors: list[AuthorModel] = Field(default_factory=list)
-    abstract: str
 
 
 @dataclass
