@@ -13,7 +13,7 @@ from typing import (
     overload,
 )
 
-from . import core
+from . import core, environment
 from .app import AppBase
 from .pending_marker import ResolvesTo
 from .component_ctx import (
@@ -23,7 +23,6 @@ from .component_ctx import (
 )
 from .function import AnyCallable, create_core_component_processor
 from .typing import NOT_SET, NotSetType
-from . import environment as _environment
 
 
 P = ParamSpec("P")
@@ -221,17 +220,17 @@ class App(AppBase[P, ReturnT]):
 
 async def start() -> None:
     """Start the default environment (and enter its lifespan, if any)."""
-    await _environment.start()
+    await environment.start()
 
 
 async def stop() -> None:
     """Stop the default environment (and exit its lifespan, if any)."""
-    await _environment.stop()
+    await environment.stop()
 
 
-async def default_env() -> _environment.Environment:
+async def default_env() -> environment.Environment:
     """Get the default environment (starting it if needed)."""
-    return await _environment.start()
+    return await environment.start()
 
 
 @asynccontextmanager

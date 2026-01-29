@@ -19,29 +19,39 @@ The distinction between "replace" and "upsert" is:
 
 from __future__ import annotations
 
+__all__ = [
+    "CompositeTrackingRecord",
+    "DiffAction",
+    "ManagedBy",
+    "MutualTrackingRecord",
+    "TrackingRecordTransition",
+    "diff",
+    "diff_composite",
+    "resolve_system_transition",
+]
+
+import dataclasses as _dataclasses
 from typing import (
-    Collection,
-    Hashable,
-    Generic,
-    Literal,
-    NamedTuple,
+    Collection as _Collection,
+    Generic as _Generic,
+    Hashable as _Hashable,
+    Literal as _Literal,
+    NamedTuple as _NamedTuple,
 )
-from typing_extensions import TypeVar
-import dataclasses
+from typing_extensions import TypeVar as _TypeVar
 
-import cocoindex as coco
+import cocoindex as _coco
 
-TrackingRecordT = TypeVar("TrackingRecordT")
-MainTrackingRecordT = TypeVar("MainTrackingRecordT")
-SubKeyT = TypeVar("SubKeyT", bound=Hashable)
-SubTrackingRecordT = TypeVar("SubTrackingRecordT")
-SubDiffActionT = TypeVar("SubDiffActionT")
+_TrackingRecordT = _TypeVar("_TrackingRecordT")
+_MainTrackingRecordT = _TypeVar("_MainTrackingRecordT")
+_SubKeyT = _TypeVar("_SubKeyT", bound=_Hashable)
+_SubTrackingRecordT = _TypeVar("_SubTrackingRecordT")
 
-DiffAction = Literal["insert", "upsert", "replace", "delete"]
+DiffAction = _Literal["insert", "upsert", "replace", "delete"]
 
 
 class CompositeTrackingRecord(
-    Generic[MainTrackingRecordT, SubKeyT, SubTrackingRecordT], NamedTuple
+    _Generic[_MainTrackingRecordT, _SubKeyT, _SubTrackingRecordT], _NamedTuple
 ):
     """A state with a main component and a set of keyed sub-states.
 
@@ -53,21 +63,21 @@ class CompositeTrackingRecord(
     `diff_composite()` computes the main action plus grouped sub-state diffs.
     """
 
-    main: MainTrackingRecordT
-    sub: dict[SubKeyT, SubTrackingRecordT]
+    main: _MainTrackingRecordT
+    sub: dict[_SubKeyT, _SubTrackingRecordT]
 
 
-@dataclasses.dataclass(slots=True)
-class _GroupedStates(Generic[SubKeyT, SubTrackingRecordT]):
+@_dataclasses.dataclass(slots=True)
+class _GroupedStates(_Generic[_SubKeyT, _SubTrackingRecordT]):
     """Internal mutable accumulator used by `diff_composite()`."""
 
-    desired: SubTrackingRecordT | coco.NonExistenceType = dataclasses.field(
-        default=coco.NON_EXISTENCE
+    desired: _SubTrackingRecordT | _coco.NonExistenceType = _dataclasses.field(
+        default=_coco.NON_EXISTENCE
     )
-    prev: list[SubTrackingRecordT] = dataclasses.field(default_factory=list)
+    prev: list[_SubTrackingRecordT] = _dataclasses.field(default_factory=list)
 
 
-class TrackingRecordTransition(Generic[TrackingRecordT], NamedTuple):
+class TrackingRecordTransition(_Generic[_TrackingRecordT], _NamedTuple):
     """A bundle of desired vs previously observed state, with completeness info.
 
     `diff()` takes a `TrackingRecordTransition[T]` and returns the action needed to make
@@ -75,28 +85,28 @@ class TrackingRecordTransition(Generic[TrackingRecordT], NamedTuple):
     be incomplete).
     """
 
-    desired: TrackingRecordT | coco.NonExistenceType
-    prev: Collection[TrackingRecordT]
+    desired: _TrackingRecordT | _coco.NonExistenceType
+    prev: _Collection[_TrackingRecordT]
     prev_may_be_missing: bool
 
 
-ManagedBy = Literal["system", "user"]
+ManagedBy = _Literal["system", "user"]
 
 
-class MutualTrackingRecord(Generic[TrackingRecordT], NamedTuple):
+class MutualTrackingRecord(_Generic[_TrackingRecordT], _NamedTuple):
     """A tracking record tagged with ownership/management information.
 
     This is useful when a resource can be managed by either the system
     (CocoIndex-controlled) or the user (externally controlled).
     """
 
-    tracking_record: TrackingRecordT
+    tracking_record: _TrackingRecordT
     managed_by: ManagedBy
 
 
 def resolve_system_transition(
-    t: TrackingRecordTransition[MutualTrackingRecord[TrackingRecordT]], /
-) -> TrackingRecordTransition[TrackingRecordT] | None:
+    t: TrackingRecordTransition[MutualTrackingRecord[_TrackingRecordT]], /
+) -> TrackingRecordTransition[_TrackingRecordT] | None:
     """Resolve a transition to the system-managed subset, or return None.
 
     Rules:
@@ -108,16 +118,16 @@ def resolve_system_transition(
           - prev_may_be_missing is preserved from input
     """
 
-    if not coco.is_non_existence(t.desired) and t.desired.managed_by == "user":
+    if not _coco.is_non_existence(t.desired) and t.desired.managed_by == "user":
         return None
 
-    if coco.is_non_existence(t.desired):
+    if _coco.is_non_existence(t.desired):
         if len(t.prev) == 0:
             return None
         if any(p.managed_by == "user" for p in t.prev):
             return None
         return TrackingRecordTransition(
-            desired=coco.NON_EXISTENCE,
+            desired=_coco.NON_EXISTENCE,
             prev=[p.tracking_record for p in t.prev if p.managed_by == "system"],
             prev_may_be_missing=t.prev_may_be_missing,
         )
@@ -129,7 +139,7 @@ def resolve_system_transition(
     )
 
 
-def diff(t: TrackingRecordTransition[TrackingRecordT] | None, /) -> DiffAction | None:
+def diff(t: TrackingRecordTransition[_TrackingRecordT] | None, /) -> DiffAction | None:
     """Determine the write action needed to make state converge.
 
     Args:
@@ -152,7 +162,7 @@ def diff(t: TrackingRecordTransition[TrackingRecordT] | None, /) -> DiffAction |
     if t is None:
         return None
 
-    if coco.is_non_existence(t.desired):
+    if _coco.is_non_existence(t.desired):
         if len(t.prev) == 0:
             return None
         return "delete"
@@ -171,12 +181,13 @@ def diff(t: TrackingRecordTransition[TrackingRecordT] | None, /) -> DiffAction |
 
 def diff_composite(
     t: TrackingRecordTransition[
-        CompositeTrackingRecord[TrackingRecordT, SubKeyT, SubTrackingRecordT]
+        CompositeTrackingRecord[_TrackingRecordT, _SubKeyT, _SubTrackingRecordT]
     ]
     | None,
     /,
 ) -> tuple[
-    DiffAction | None, dict[SubKeyT, TrackingRecordTransition[SubTrackingRecordT]]
+    DiffAction | None,
+    dict[_SubKeyT, TrackingRecordTransition[_SubTrackingRecordT]],
 ]:
     """Compute a diff for a composite state and group sub-state transitions.
 
@@ -198,7 +209,7 @@ def diff_composite(
     if t is None:
         return (None, {})
 
-    if coco.is_non_existence(t.desired):
+    if _coco.is_non_existence(t.desired):
         if len(t.prev) == 0:
             return (None, {})
         return ("delete", {})
@@ -213,7 +224,7 @@ def diff_composite(
         main_action is not None and main_action in ("replace", "delete")
     )
 
-    grouped_states: dict[SubKeyT, _GroupedStates[SubKeyT, SubTrackingRecordT]] = {}
+    grouped_states: dict[_SubKeyT, _GroupedStates[_SubKeyT, _SubTrackingRecordT]] = {}
     for p in t.prev:
         for sub_key, sub_state in p.sub.items():
             grouped_states.setdefault(sub_key, _GroupedStates()).prev.append(sub_state)

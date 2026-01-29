@@ -1,10 +1,10 @@
-from . import common as _common
-from .common import *
+from . import _common
+from ._common import *
 
-from . import source as _source
-from .source import *
+from . import _source
+from ._source import *
 
-from . import target as _target
-from .target import *
+from . import _target
+from ._target import *
 
 __all__ = _common.__all__ + _source.__all__ + _target.__all__

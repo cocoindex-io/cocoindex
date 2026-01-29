@@ -40,7 +40,7 @@ except ImportError as e:
 import numpy as np
 
 import cocoindex as coco
-from cocoindex.connectorkits import connection as _connection
+from cocoindex.connectorkits import connection
 from cocoindex.connectorkits import statediff
 from cocoindex._internal.datatype import (
     AnyType,
@@ -596,8 +596,8 @@ class _TableAction(NamedTuple):
 
 
 # Database registry: maps stable keys to connection pools
-_db_registry: _connection.ConnectionRegistry[asyncpg.Pool] = (
-    _connection.ConnectionRegistry("cocoindex/postgres")
+_db_registry: connection.ConnectionRegistry[asyncpg.Pool] = (
+    connection.ConnectionRegistry("cocoindex/postgres")
 )
 
 
@@ -922,7 +922,7 @@ class TableTarget(
         return self._provider.memo_key
 
 
-class PgDatabase(_connection.KeyedConnection[asyncpg.Pool]):
+class PgDatabase(connection.KeyedConnection[asyncpg.Pool]):
     """
     Handle for a registered PostgreSQL database.
 

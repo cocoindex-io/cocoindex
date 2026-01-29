@@ -2,33 +2,33 @@
 
 from __future__ import annotations
 
-import asyncio as _asyncio
-import os as _os
-from datetime import datetime as _datetime
-from pathlib import Path as _Path
+import asyncio
+import os
+from datetime import datetime
+from pathlib import Path
 from typing import AsyncIterator, Iterator
 
-import pathlib as _pathlib
+import pathlib
 
 from cocoindex.resources.file import (
-    FileLike as _FileLike,
-    FilePathMatcher as _FilePathMatcher,
-    MatchAllFilePathMatcher as _MatchAllFilePathMatcher,
+    FileLike,
+    FilePathMatcher,
+    MatchAllFilePathMatcher,
 )
 
-from .common import FilePath, _to_file_path
+from ._common import FilePath, to_file_path
 
 
-class File(_FileLike[_pathlib.Path]):
+class File(FileLike[pathlib.Path]):
     """Represents a file entry from the directory walk."""
 
     _file_path: FilePath
-    _stat: _os.stat_result
+    _stat: os.stat_result
 
     def __init__(
         self,
         file_path: FilePath,
-        stat: _os.stat_result,
+        stat: os.stat_result,
     ) -> None:
         self._file_path = file_path
         self._stat = stat
@@ -44,10 +44,10 @@ class File(_FileLike[_pathlib.Path]):
         return self._stat.st_size
 
     @property
-    def modified_time(self) -> _datetime:
+    def modified_time(self) -> datetime:
         """Return the file modification time as a datetime."""
         seconds, us = divmod(self._stat.st_mtime_ns // 1_000, 1_000_000)
-        return _datetime.fromtimestamp(seconds).replace(microsecond=us)
+        return datetime.fromtimestamp(seconds).replace(microsecond=us)
 
     def read(self, size: int = -1) -> bytes:
         """Read and return the file content as bytes.
@@ -87,7 +87,7 @@ class AsyncFile:
         return self._file.size
 
     @property
-    def modified_time(self) -> _datetime:
+    def modified_time(self) -> datetime:
         """Return the file modification time as a datetime."""
         return self._file.modified_time
 
@@ -100,7 +100,7 @@ class AsyncFile:
         Returns:
             The file content as bytes.
         """
-        return await _asyncio.to_thread(self._file.read, size)
+        return await asyncio.to_thread(self._file.read, size)
 
     async def read_text(
         self, encoding: str | None = None, errors: str = "replace"
@@ -115,7 +115,7 @@ class AsyncFile:
         Returns:
             The file content as text.
         """
-        return await _asyncio.to_thread(self._file.read_text, encoding, errors)
+        return await asyncio.to_thread(self._file.read_text, encoding, errors)
 
 
 class DirWalker:
@@ -132,18 +132,18 @@ class DirWalker:
 
     _root_path: FilePath
     _recursive: bool
-    _path_matcher: _FilePathMatcher
+    _path_matcher: FilePathMatcher
 
     def __init__(
         self,
-        path: FilePath | _Path,
+        path: FilePath | Path,
         *,
         recursive: bool = False,
-        path_matcher: _FilePathMatcher | None = None,
+        path_matcher: FilePathMatcher | None = None,
     ) -> None:
-        self._root_path = _to_file_path(path)
+        self._root_path = to_file_path(path)
         self._recursive = recursive
-        self._path_matcher = path_matcher or _MatchAllFilePathMatcher()
+        self._path_matcher = path_matcher or MatchAllFilePathMatcher()
 
     def __iter__(self) -> Iterator[File]:
         """Synchronously iterate over files, yielding File objects."""
@@ -152,7 +152,7 @@ class DirWalker:
         if not root_resolved.is_dir():
             raise ValueError(f"Path is not a directory: {root_resolved}")
 
-        dirs_to_process: list[_Path] = [root_resolved]
+        dirs_to_process: list[Path] = [root_resolved]
 
         while dirs_to_process:
             current_dir = dirs_to_process.pop()
@@ -162,7 +162,7 @@ class DirWalker:
             except PermissionError:
                 continue
 
-            subdirs: list[_Path] = []
+            subdirs: list[Path] = []
 
             for entry in entries:
                 try:
@@ -206,10 +206,10 @@ class DirWalker:
 
 
 def walk_dir(
-    path: FilePath | _Path,
+    path: FilePath | Path,
     *,
     recursive: bool = False,
-    path_matcher: _FilePathMatcher | None = None,
+    path_matcher: FilePathMatcher | None = None,
 ) -> DirWalker:
     """
     Walk through a directory and yield file entries.

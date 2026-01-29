@@ -2,26 +2,28 @@
 
 from __future__ import annotations
 
-import asyncio
-import queue
-import threading
+__all__ = ["async_to_sync_iter", "sync_to_async_iter"]
+
+import asyncio as _asyncio
+import queue as _queue
+import threading as _threading
 from typing import (
     AsyncIterator,
     Callable,
     Iterator,
 )
-from typing_extensions import TypeVar
+from typing_extensions import TypeVar as _TypeVar
 
-T = TypeVar("T")
+_T = _TypeVar("_T")
 
 DEFAULT_QUEUE_SIZE = 1024
 
 
 async def sync_to_async_iter(
-    sync_iter_fn: Callable[[], Iterator[T]],
+    sync_iter_fn: Callable[[], Iterator[_T]],
     *,
     max_queue_size: int = DEFAULT_QUEUE_SIZE,
-) -> AsyncIterator[T]:
+) -> AsyncIterator[_T]:
     """
     Adapt a synchronous iterator function to an asynchronous iterator.
 
@@ -53,8 +55,8 @@ async def sync_to_async_iter(
     """
     # Queue to communicate values/exceptions from sync thread to async consumer.
     # Each item is (is_done_or_error, value_or_exception).
-    q: queue.Queue[tuple[bool, T | Exception]] = queue.Queue(maxsize=max_queue_size)
-    stop_event = threading.Event()
+    q: _queue.Queue[tuple[bool, _T | Exception]] = _queue.Queue(maxsize=max_queue_size)
+    stop_event = _threading.Event()
 
     def producer() -> None:
         try:
@@ -67,8 +69,8 @@ async def sync_to_async_iter(
         finally:
             q.put((True, StopIteration()))
 
-    loop = asyncio.get_running_loop()
-    thread = threading.Thread(target=producer, daemon=True)
+    loop = _asyncio.get_running_loop()
+    thread = _threading.Thread(target=producer, daemon=True)
     thread.start()
 
     try:
@@ -87,16 +89,16 @@ async def sync_to_async_iter(
         try:
             while True:
                 q.get_nowait()
-        except queue.Empty:
+        except _queue.Empty:
             pass
         thread.join(timeout=1.0)
 
 
 def async_to_sync_iter(
-    async_iter_fn: Callable[[], AsyncIterator[T]],
+    async_iter_fn: Callable[[], AsyncIterator[_T]],
     *,
     max_queue_size: int = DEFAULT_QUEUE_SIZE,
-) -> Iterator[T]:
+) -> Iterator[_T]:
     """
     Adapt an asynchronous iterator function to a synchronous iterator.
 
@@ -126,7 +128,7 @@ def async_to_sync_iter(
         ...     print(value)
     """
     try:
-        asyncio.get_running_loop()
+        _asyncio.get_running_loop()
     except RuntimeError:
         pass  # No running loop, which is what we want
     else:
@@ -134,8 +136,8 @@ def async_to_sync_iter(
             "async_to_sync_iter must not be called from a running event loop"
         )
 
-    q: queue.Queue[tuple[bool, T | Exception]] = queue.Queue(maxsize=max_queue_size)
-    stop_event = threading.Event()
+    q: _queue.Queue[tuple[bool, _T | Exception]] = _queue.Queue(maxsize=max_queue_size)
+    stop_event = _threading.Event()
 
     def producer() -> None:
         async def run_async() -> None:
@@ -149,9 +151,9 @@ def async_to_sync_iter(
             finally:
                 q.put((True, StopIteration()))
 
-        asyncio.run(run_async())
+        _asyncio.run(run_async())
 
-    thread = threading.Thread(target=producer, daemon=True)
+    thread = _threading.Thread(target=producer, daemon=True)
     thread.start()
 
     try:
@@ -169,9 +171,6 @@ def async_to_sync_iter(
         try:
             while True:
                 q.get_nowait()
-        except queue.Empty:
+        except _queue.Empty:
             pass
         thread.join(timeout=1.0)
-
-
-__all__ = ["async_to_sync_iter", "sync_to_async_iter"]
