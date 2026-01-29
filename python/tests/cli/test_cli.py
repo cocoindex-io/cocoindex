@@ -29,7 +29,9 @@ CLEANUP_PATTERNS = [
 ]
 
 
-def run_cli(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+def run_cli(
+    *args: str, check: bool = True, input: str | None = None
+) -> subprocess.CompletedProcess[str]:
     """Run a cocoindex CLI command and return the result."""
     cmd = ["cocoindex", *args]
     result = subprocess.run(
@@ -39,6 +41,7 @@ def run_cli(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
         text=True,
         check=False,
         encoding="utf-8",
+        input=input,
     )
     if check and result.returncode != 0:
         raise AssertionError(
@@ -535,3 +538,57 @@ class TestInitCommand:
         pyproject_text = (project_dir / "pyproject.toml").read_text(encoding="utf-8")
         # Project name should match directory name
         assert 'name = "cli_init_dir_only"' in pyproject_text
+
+
+class TestUpdateFlags:
+    """Tests for update-related flags (reset, full-reprocess)."""
+
+    def test_update_requires_confirmation_without_force(self) -> None:
+        """Update --reset should prompt unless --force is provided."""
+        # Say "no" to the reset confirmation prompt.
+        result = run_cli(
+            "update", "./single_app.py", "--reset", check=False, input="no\n"
+        )
+        assert result.returncode == 0
+        assert "aborted" in (result.stdout + result.stderr).lower()
+
+        out_file = TEST_DIR / "out_single" / "single.txt"
+        assert not out_file.exists()
+
+    def test_update_confirmation_yes_runs(self) -> None:
+        """Update --reset prompt should accept 'yes' and proceed."""
+        result = run_cli(
+            "update", "./single_app.py", "--reset", check=False, input="yes\n"
+        )
+        assert result.returncode == 0
+
+        out_file = TEST_DIR / "out_single" / "single.txt"
+        assert out_file.exists()
+
+    def test_full_reprocess_invalidates_memoization(self) -> None:
+        """--full-reprocess should invalidate caches so memoized work re-runs."""
+        run_cli("update", "./memo_app.py")
+        stamp_path = TEST_DIR / "out_memo" / "stamp.txt"
+        assert stamp_path.exists()
+        first = stamp_path.read_text()
+
+        # Without full-reprocess, memoization should prevent re-run -> file unchanged.
+        run_cli("update", "./memo_app.py")
+        second = stamp_path.read_text()
+        assert second == first
+
+        # With full-reprocess, memoization is cleared -> file should change.
+        run_cli("update", "./memo_app.py", "--full-reprocess")
+        third = stamp_path.read_text()
+        assert third != second
+
+
+class TestDropQuiet:
+    """Tests for drop --quiet behavior."""
+
+    def test_drop_quiet_suppresses_informational_output(self) -> None:
+        """drop --quiet should not print informational messages (only errors/prompts)."""
+        run_cli("update", "./single_app.py")
+        result = run_cli("drop", "./single_app.py", "-f", "--quiet")
+        assert "Preparing to drop" not in result.stdout
+        assert "Dropped app" not in result.stdout
