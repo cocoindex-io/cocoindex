@@ -14,11 +14,12 @@ This example demonstrates a CocoIndex pipeline that:
 from __future__ import annotations
 
 import os
+import asyncio
 import pathlib
 from typing import Collection
 
 import instructor
-from litellm import completion
+from litellm import acompletion
 from pydantic import BaseModel, Field
 
 import cocoindex as coco
@@ -98,11 +99,11 @@ class CodebaseInfo(BaseModel):
 
 LLM_MODEL = os.environ.get("LLM_MODEL", "gemini/gemini-2.5-flash")
 
-_instructor_client = instructor.from_litellm(completion, mode=instructor.Mode.JSON)
+_instructor_client = instructor.from_litellm(acompletion, mode=instructor.Mode.JSON)
 
 
 @coco.function(memo=True)
-def extract_file_info(file: FileLike) -> CodebaseInfo:
+async def extract_file_info(file: FileLike) -> CodebaseInfo:
     """Extract structured information from a single Python file using LLM."""
     content = file.read_text()
     file_path = str(file.file_path.path)
@@ -123,7 +124,7 @@ Instructions:
 4. Provide a brief summary of the file's purpose
 """
 
-    result = _instructor_client.chat.completions.create(
+    result = await _instructor_client.chat.completions.create(
         model=LLM_MODEL,
         response_model=CodebaseInfo,
         messages=[{"role": "user", "content": prompt}],
@@ -132,7 +133,7 @@ Instructions:
 
 
 @coco.function
-def aggregate_project_info(
+async def aggregate_project_info(
     project_name: str,
     file_infos: list[CodebaseInfo],
 ) -> CodebaseInfo:
@@ -182,7 +183,7 @@ Create a unified CodebaseInfo that:
    components connect across the project (if applicable)
 """
 
-    result = _instructor_client.chat.completions.create(
+    result = await _instructor_client.chat.completions.create(
         model=LLM_MODEL,
         response_model=CodebaseInfo,
         messages=[{"role": "user", "content": prompt}],
@@ -196,6 +197,7 @@ Create a unified CodebaseInfo that:
     return result
 
 
+@coco.function
 def generate_markdown(
     project_name: str, info: CodebaseInfo, file_infos: list[CodebaseInfo]
 ) -> str:
@@ -255,26 +257,17 @@ def generate_markdown(
 
 
 @coco.function(memo=True)
-def process_project(
+async def process_project(
     project_name: str,
     files: Collection[localfs.File],
     output_dir: pathlib.Path,
 ) -> None:
     """Process a single project: extract info from all files, aggregate, and output markdown."""
     # Extract info from each file.
-    # Get the handles first, then wait for the results, so they are processed in parallel.
-    file_info_handles = [
-        coco.mount_run(
-            coco.component_subpath("extract", str(f.file_path.path)),
-            extract_file_info,
-            f,
-        )
-        for f in files
-    ]
-    file_infos = [r.result() for r in file_info_handles]
+    file_infos = await asyncio.gather(*[extract_file_info(f) for f in files])
 
     # Aggregate into project-level summary
-    project_info = aggregate_project_info(project_name, file_infos)
+    project_info = await aggregate_project_info(project_name, file_infos)
 
     # Generate and output markdown
     markdown = generate_markdown(project_name, project_info, file_infos)
