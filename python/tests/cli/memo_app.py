@@ -1,9 +1,13 @@
+"""Test module with a memoized app for testing --full-reprocess flag."""
+
+from __future__ import annotations
+
 import pathlib
 from datetime import datetime, timezone
 from typing import Iterator
 
 import cocoindex as coco
-from cocoindex.connectors import localfs
+from cocoindex.connectors.localfs import declare_dir_target, DirTarget
 
 
 @coco.lifespan
@@ -13,21 +17,23 @@ def coco_lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
 
 
 @coco.function(memo=True)
-def write_timestamp(scope: coco.Scope, target: localfs.DirTarget) -> None:
+def write_timestamp(target: DirTarget) -> None:
     # If memoization hits, this function won't re-run and the file won't change.
     now = datetime.now(timezone.utc).isoformat()
-    target.declare_file(scope, filename="stamp.txt", content=now)
+    target.declare_file("stamp.txt", now)
 
 
 @coco.function
-def app_main(scope: coco.Scope) -> None:
+def app_main() -> None:
     target = coco.mount_run(
-        localfs.declare_dir_target, scope / "setup", pathlib.Path("./out_memo")
+        coco.component_subpath("setup"),
+        declare_dir_target,
+        pathlib.Path("./out_memo"),
     ).result()
-    coco.mount(write_timestamp, scope / "write", target)
+    coco.mount(coco.component_subpath("write"), write_timestamp, target)
 
 
 app = coco.App(
-    app_main,
     coco.AppConfig(name="MemoApp"),
+    app_main,
 )
