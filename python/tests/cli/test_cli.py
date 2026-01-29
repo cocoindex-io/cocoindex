@@ -524,6 +524,25 @@ class TestInitCommand:
         # Run update to verify the app can execute
         run_cli("update", "cli_init_project/main.py")
 
+    def test_init_defaults_project_name_from_dir(self) -> None:
+        """When PROJECT_NAME is omitted, name defaults to the target directory name."""
+        project_dir = TEST_DIR / "cli_init_dir_only"
+
+        if project_dir.exists():
+            shutil.rmtree(project_dir)
+
+        # PROJECT_NAME omitted, only --dir provided
+        run_cli("init", "--dir", "cli_init_dir_only")
+
+        assert project_dir.exists()
+        pyproject_text = (project_dir / "pyproject.toml").read_text(encoding="utf-8")
+        # Project name should match directory name
+        assert 'name = "cli_init_dir_only"' in pyproject_text
+
+
+class TestUpdateFlags:
+    """Tests for update-related flags (reset, full-reprocess)."""
+
     def test_update_requires_confirmation_without_force(self) -> None:
         """Update --reset should prompt unless --force is provided."""
         # Say "no" to the reset confirmation prompt.
@@ -546,14 +565,6 @@ class TestInitCommand:
         out_file = TEST_DIR / "out_single" / "single.txt"
         assert out_file.exists()
 
-    def test_drop_quiet_suppresses_informational_output(self) -> None:
-        """drop --quiet should not print informational messages (only errors/prompts)."""
-        run_cli("update", "./single_app.py")
-        result = run_cli("drop", "./single_app.py", "-f", "--quiet")
-        # Allow engine trace logging, but no user-facing messages.
-        assert "Preparing to drop" not in result.stdout
-        assert "Dropped app" not in result.stdout
-
     def test_full_reprocess_invalidates_memoization(self) -> None:
         """--full-reprocess should invalidate caches so memoized work re-runs."""
         run_cli("update", "./memo_app.py")
@@ -571,17 +582,13 @@ class TestInitCommand:
         third = stamp_path.read_text()
         assert third != second
 
-    def test_init_defaults_project_name_from_dir(self) -> None:
-        """When PROJECT_NAME is omitted, name defaults to the target directory name."""
-        project_dir = TEST_DIR / "cli_init_dir_only"
 
-        if project_dir.exists():
-            shutil.rmtree(project_dir)
+class TestDropQuiet:
+    """Tests for drop --quiet behavior."""
 
-        # PROJECT_NAME omitted, only --dir provided
-        run_cli("init", "--dir", "cli_init_dir_only")
-
-        assert project_dir.exists()
-        pyproject_text = (project_dir / "pyproject.toml").read_text(encoding="utf-8")
-        # Project name should match directory name
-        assert 'name = "cli_init_dir_only"' in pyproject_text
+    def test_drop_quiet_suppresses_informational_output(self) -> None:
+        """drop --quiet should not print informational messages (only errors/prompts)."""
+        run_cli("update", "./single_app.py")
+        result = run_cli("drop", "./single_app.py", "-f", "--quiet")
+        assert "Preparing to drop" not in result.stdout
+        assert "Dropped app" not in result.stdout
