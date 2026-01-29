@@ -81,13 +81,19 @@ class _FileTrackingRecord:
 ```
 
 :::tip Fingerprinting
-For content-based change detection, use a hash function like `blake2b`. This lets you detect changes without storing the full content:
+For content-based change detection, use the `connectorkits.fingerprint` utilities. This lets you detect changes without storing the full content:
 
 ```python
-from hashlib import blake2b
+from cocoindex.connectorkits.fingerprint import fingerprint_bytes, fingerprint_str, fingerprint_object
 
-def _compute_fingerprint(content: bytes) -> bytes:
-    return blake2b(content).digest()
+# For raw bytes
+fp = fingerprint_bytes(content)
+
+# For strings
+fp = fingerprint_str(text)
+
+# For arbitrary objects (uses memo key mechanism)
+fp = fingerprint_object(obj)
 ```
 
 :::
@@ -238,10 +244,8 @@ class _RowHandler(coco.TargetHandler[_RowKey, _RowSpec, _RowTrackingRecord]):
                 await self._conn.upsert(self._table, action.key, action.data)
 
     def _compute_fingerprint(self, data: dict[str, Any]) -> bytes:
-        import json
-        from hashlib import blake2b
-        serialized = json.dumps(data, sort_keys=True, default=str)
-        return blake2b(serialized.encode()).digest()
+        from cocoindex.connectorkits.fingerprint import fingerprint_object
+        return fingerprint_object(data)
 
     def reconcile(
         self,
@@ -460,9 +464,9 @@ Here's a simplified version of the `localfs` connector showing the complete patt
 from __future__ import annotations
 import pathlib
 from dataclasses import dataclass
-from hashlib import blake2b
-from typing import Collection, Literal, NamedTuple, Sequence
+from typing import Collection, NamedTuple, Sequence
 import cocoindex as coco
+from cocoindex.connectorkits.fingerprint import fingerprint_bytes
 
 
 # Types
@@ -494,10 +498,6 @@ def _apply_actions(actions: Sequence[_FileAction]) -> None:
 _file_sink = coco.TargetActionSink[_FileAction, None].from_fn(_apply_actions)
 
 
-def _compute_fingerprint(content: bytes) -> _FileFingerprint:
-    return blake2b(content).digest()
-
-
 # Handler
 class _FileHandler(coco.TargetHandler[_FileName, _FileContent, _FileTrackingRecord]):
     __slots__ = ("_base_path",)
@@ -525,7 +525,7 @@ class _FileHandler(coco.TargetHandler[_FileName, _FileContent, _FileTrackingReco
                 tracking_record=coco.NON_EXISTENCE,
             )
 
-        target_fp = _compute_fingerprint(desired_state)
+        target_fp = fingerprint_bytes(desired_state)
 
         if not prev_may_be_missing and all(
             prev.fingerprint == target_fp for prev in prev_possible_states
