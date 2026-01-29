@@ -6,10 +6,10 @@ import os
 import pathlib
 import shutil
 from dataclasses import dataclass
-from hashlib import blake2b
 from typing import Collection, Generic, Literal, NamedTuple, Sequence, cast
 
 import cocoindex as coco
+from cocoindex.connectorkits.fingerprint import fingerprint_bytes
 
 from ._common import FilePath, CWD_BASE_DIR, path_registry, to_file_path
 
@@ -44,11 +44,6 @@ class _EntrySpec:
 
     entry_spec: _FileContent | _DirSpec
     create_parent_dirs: bool
-
-
-def _compute_fingerprint(content: bytes) -> _FileFingerprint:
-    """Compute a fingerprint for file content."""
-    return blake2b(content).digest()
 
 
 def _execute_entry_action(action: _EntryAction) -> pathlib.Path | None:
@@ -149,7 +144,7 @@ def _reconcile_entry(
         )
 
     # File entry
-    target_fp = _compute_fingerprint(entry_spec)
+    target_fp = fingerprint_bytes(entry_spec)
 
     # Check if update needed
     if not prev_may_be_missing and all(

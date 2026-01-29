@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import datetime
 import decimal
-import hashlib
 import ipaddress
 import inspect
 import json
@@ -40,8 +39,8 @@ except ImportError as e:
 import numpy as np
 
 import cocoindex as coco
-from cocoindex.connectorkits import connection
-from cocoindex.connectorkits import statediff
+from cocoindex.connectorkits import connection, statediff
+from cocoindex.connectorkits.fingerprint import fingerprint_object
 from cocoindex._internal.datatype import (
     AnyType,
     MappingType,
@@ -472,12 +471,6 @@ class _RowHandler(coco.TargetHandler[_RowKey, _RowValue, _RowFingerprint]):
         for action in deletes:
             await conn.execute(sql, *action.key)
 
-    def _compute_fingerprint(self, value: _RowValue) -> _RowFingerprint:
-        """Compute a fingerprint for row data."""
-        # Serialize deterministically
-        serialized = json.dumps(value, sort_keys=True, default=str)
-        return hashlib.blake2b(serialized.encode()).digest()
-
     def reconcile(
         self,
         key: _RowKey,
@@ -497,7 +490,7 @@ class _RowHandler(coco.TargetHandler[_RowKey, _RowValue, _RowFingerprint]):
             )
 
         # Upsert case
-        target_fp = self._compute_fingerprint(desired_state)
+        target_fp = fingerprint_object(desired_state)
         if not prev_may_be_missing and all(
             prev == target_fp for prev in prev_possible_states
         ):

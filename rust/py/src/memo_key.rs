@@ -2,7 +2,9 @@ use crate::fingerprint::PyFingerprint;
 use crate::prelude::*;
 
 use pyo3::exceptions::PyTypeError;
-use pyo3::types::{PyBool, PyBytes, PyFloat, PyInt, PyList, PyString, PyTuple};
+use pyo3::types::{
+    PyBool, PyBytes, PyDict, PyFloat, PyInt, PyMapping, PySequence, PySet, PyString,
+};
 
 fn write_py_memo_key(
     fp: &mut utils::fingerprint::Fingerprinter,
@@ -70,12 +72,44 @@ fn write_py_memo_key(
         return Ok(());
     }
 
-    if obj.is_instance_of::<PyTuple>() || obj.is_instance_of::<PyList>() {
+    if obj.is_instance_of::<PySequence>() {
         // The Python canonicalizer should only produce tuples for nested structure,
         // but accept list as well for robustness.
         fp.write_type_tag("T");
         for item in obj.try_iter()? {
             write_py_memo_key(fp, item?.as_borrowed())?;
+        }
+        fp.write_end_tag();
+        return Ok(());
+    }
+
+    if obj.is_instance_of::<PyMapping>() {
+        fp.write_type_tag("M");
+        if obj.is_instance_of::<PyDict>() {
+            // Special optimization for dicts.
+            let mapping: Bound<'_, PyDict> = obj.extract()?;
+            for (key, value) in mapping.iter() {
+                write_py_memo_key(fp, key.as_borrowed())?;
+                write_py_memo_key(fp, value.as_borrowed())?;
+            }
+        } else {
+            let mapping: Bound<'_, PyMapping> = obj.extract()?;
+            let items = mapping.items()?;
+            for kv in items {
+                let (key, value) = kv.extract::<(Bound<'_, PyAny>, Bound<'_, PyAny>)>()?;
+                write_py_memo_key(fp, key.as_borrowed())?;
+                write_py_memo_key(fp, value.as_borrowed())?;
+            }
+        }
+        fp.write_end_tag();
+        return Ok(());
+    }
+
+    if obj.is_instance_of::<PySet>() {
+        fp.write_type_tag("S");
+        let set: Bound<'_, PySet> = obj.extract()?;
+        for item in set.iter() {
+            write_py_memo_key(fp, item.as_borrowed())?;
         }
         fp.write_end_tag();
         return Ok(());
@@ -88,18 +122,42 @@ fn write_py_memo_key(
         return Ok(());
     }
 
+    if let Ok(uuid_value) = obj.extract::<uuid::Uuid>() {
+        fp.write_type_tag("uuid");
+        fp.write_raw_bytes(uuid_value.as_bytes());
+        return Ok(());
+    }
+
     Err(PyTypeError::new_err(
-        "Unsupported type for memoization fingerprint. Expected a tree of None/bool/int/float/str/bytes/tuple.",
+        "Unsupported type for memoization fingerprint.",
     ))
 }
 
 #[pyfunction]
-pub fn fingerprint_memo_key<'py>(
+pub fn fingerprint_simple_object<'py>(
     _py: Python<'py>,
     obj: Bound<'py, PyAny>,
 ) -> PyResult<crate::fingerprint::PyFingerprint> {
     let mut fp = utils::fingerprint::Fingerprinter::default();
     write_py_memo_key(&mut fp, obj.as_borrowed())?;
     let digest = fp.into_fingerprint();
+    Ok(crate::fingerprint::PyFingerprint(digest))
+}
+
+#[pyfunction]
+pub fn fingerprint_bytes<'py>(
+    _py: Python<'py>,
+    data: &Bound<'py, PyBytes>,
+) -> crate::fingerprint::PyFingerprint {
+    let digest = utils::fingerprint::Fingerprint::from_bytes(data.as_bytes());
+    crate::fingerprint::PyFingerprint(digest)
+}
+
+#[pyfunction]
+pub fn fingerprint_str<'py>(
+    _py: Python<'py>,
+    s: &Bound<'py, PyString>,
+) -> PyResult<crate::fingerprint::PyFingerprint> {
+    let digest = utils::fingerprint::Fingerprint::from_bytes(s.to_str()?.as_bytes());
     Ok(crate::fingerprint::PyFingerprint(digest))
 }
