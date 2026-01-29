@@ -2,22 +2,22 @@
 
 from __future__ import annotations
 
-import pathlib as _pathlib
-from typing import Self as _Self
+import pathlib
+from typing import Self
 
-from cocoindex.connectorkits import connection as _connection
-from cocoindex.resources import file as _file
+from cocoindex.connectorkits import connection
+from cocoindex.resources import file
 
 # Registry for base directory paths
-_path_registry: _connection.ConnectionRegistry[_pathlib.Path] = (
-    _connection.ConnectionRegistry("cocoindex/localfs")
+path_registry: connection.ConnectionRegistry[pathlib.Path] = (
+    connection.ConnectionRegistry("cocoindex/localfs")
 )
 
 # The default base directory pointing to the current working directory (not registered)
-_CWD_BASE_DIR = _path_registry.register("", _pathlib.Path("."))
+CWD_BASE_DIR = path_registry.register("", pathlib.Path("."))
 
 
-class FilePath(_file.FilePath[_pathlib.Path]):
+class FilePath(file.FilePath[pathlib.Path]):
     """
     A local file path with a stable base directory for memoization.
 
@@ -42,9 +42,9 @@ class FilePath(_file.FilePath[_pathlib.Path]):
 
     def __init__(
         self,
-        path: str | _pathlib.PurePath = ".",
+        path: str | pathlib.PurePath = ".",
         *,
-        _base_dir: _connection.KeyedConnection[_pathlib.Path] | None = None,
+        _base_dir: connection.KeyedConnection[pathlib.Path] | None = None,
     ) -> None:
         """
         Create a FilePath.
@@ -53,19 +53,19 @@ class FilePath(_file.FilePath[_pathlib.Path]):
             path: The path (relative to the base directory, or absolute).
             _base_dir: Internal parameter. The base directory. If None, uses CWD_BASE_DIR.
         """
-        self._base_dir = _base_dir if _base_dir is not None else _CWD_BASE_DIR
-        self._path = _pathlib.PurePath(path)
+        self._base_dir = _base_dir if _base_dir is not None else CWD_BASE_DIR
+        self._path = pathlib.PurePath(path)
 
-    def resolve(self) -> _pathlib.Path:
+    def resolve(self) -> pathlib.Path:
         """Resolve this FilePath to an absolute filesystem path."""
         return (self._base_dir.value / self._path).resolve()
 
-    def _with_path(self, path: _pathlib.PurePath) -> _Self:
+    def _with_path(self, path: pathlib.PurePath) -> Self:
         """Create a new FilePath with the given relative path, keeping the same base directory."""
         return type(self)(path, _base_dir=self._base_dir)  # type: ignore[return-value]
 
 
-def register_base_dir(key: str, path: _pathlib.Path) -> FilePath:
+def register_base_dir(key: str, path: pathlib.Path) -> FilePath:
     """
     Register a base directory with a stable key.
 
@@ -93,7 +93,7 @@ def register_base_dir(key: str, path: _pathlib.Path) -> FilePath:
         file_path = source_dir / "subdir" / "file.txt"
         ```
     """
-    base_dir = _path_registry.register(key, path)
+    base_dir = path_registry.register(key, path)
     return FilePath(".", _base_dir=base_dir)
 
 
@@ -104,10 +104,10 @@ def unregister_base_dir(key: str) -> None:
     Args:
         key: The base directory key to unregister.
     """
-    _path_registry.unregister(key)
+    path_registry.unregister(key)
 
 
-def _to_file_path(path: FilePath | _pathlib.Path) -> FilePath:
+def to_file_path(path: FilePath | pathlib.Path) -> FilePath:
     """Convert a Path or FilePath to a FilePath."""
     if isinstance(path, FilePath):
         return path

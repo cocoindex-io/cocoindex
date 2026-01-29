@@ -39,7 +39,7 @@ LanceAsyncConnection = Any
 import numpy as np
 
 import cocoindex as coco
-from cocoindex.connectorkits import connection as _connection
+from cocoindex.connectorkits import connection
 from cocoindex.connectorkits import statediff
 from cocoindex._internal.datatype import (
     AnyType,
@@ -545,8 +545,8 @@ class _TableAction(NamedTuple):
 
 
 # Database registry: maps stable keys to async connections
-_db_registry: _connection.ConnectionRegistry[LanceAsyncConnection] = (
-    _connection.ConnectionRegistry("cocoindex/lancedb")
+_db_registry: connection.ConnectionRegistry[LanceAsyncConnection] = (
+    connection.ConnectionRegistry("cocoindex/lancedb")
 )
 
 
@@ -782,7 +782,7 @@ class TableTarget(
         return self._provider.memo_key
 
 
-class LanceDatabase(_connection.KeyedConnection[LanceAsyncConnection]):
+class LanceDatabase(connection.KeyedConnection[LanceAsyncConnection]):
     """
     Handle for a registered LanceDB database.
 

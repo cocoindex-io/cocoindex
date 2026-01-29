@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
-import os as _os
-import pathlib as _pathlib
-import shutil as _shutil
-from dataclasses import dataclass as _dataclass
-from hashlib import blake2b as _blake2b
+import os
+import pathlib
+import shutil
+from dataclasses import dataclass
+from hashlib import blake2b
 from typing import Collection, Generic, Literal, NamedTuple, Sequence, cast
 
 import cocoindex as coco
 
-from .common import FilePath, _CWD_BASE_DIR, _path_registry, _to_file_path
+from ._common import FilePath, CWD_BASE_DIR, path_registry, to_file_path
 
 # =============================================================================
 # Shared types and helpers
@@ -25,20 +25,20 @@ _FileFingerprint = bytes
 class _EntryAction(NamedTuple):
     """Action to perform on a file or directory entry."""
 
-    path: _pathlib.Path  # Absolute path to the entry
+    path: pathlib.Path  # Absolute path to the entry
     entry_type: Literal["file", "dir"]
     content: _FileContent | None  # For files; None means delete
     create_parents: bool  # Whether to create parent directories
 
 
-@_dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True)
 class _DirSpec:
     """Marker for a directory entry (no content)."""
 
     pass
 
 
-@_dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True)
 class _EntrySpec:
     """Specification for an entry: content/type plus options."""
 
@@ -48,10 +48,10 @@ class _EntrySpec:
 
 def _compute_fingerprint(content: bytes) -> _FileFingerprint:
     """Compute a fingerprint for file content."""
-    return _blake2b(content).digest()
+    return blake2b(content).digest()
 
 
-def _execute_entry_action(action: _EntryAction) -> _pathlib.Path | None:
+def _execute_entry_action(action: _EntryAction) -> pathlib.Path | None:
     """
     Execute a single entry action.
 
@@ -64,8 +64,8 @@ def _execute_entry_action(action: _EntryAction) -> _pathlib.Path | None:
         if action.entry_type == "file":
             path.unlink(missing_ok=True)
         else:
-            if _os.path.isdir(path):
-                _shutil.rmtree(path)
+            if os.path.isdir(path):
+                shutil.rmtree(path)
         return None
 
     if action.entry_type == "file":
@@ -104,7 +104,7 @@ _action_sink_with_child = coco.TargetActionSink[
 
 
 def _reconcile_entry(
-    path: _pathlib.Path,
+    path: pathlib.Path,
     desired_state: _EntrySpec | coco.NonExistenceType,
     prev_possible_states: Collection[_EntryTrackingRecord],
     prev_may_be_missing: bool,
@@ -174,7 +174,7 @@ def _reconcile_entry(
 # =============================================================================
 
 
-@_dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True)
 class _EntryTrackingRecord:
     """Tracking record for an entry. If fingerprint is None, it's a directory."""
 
@@ -188,9 +188,9 @@ class _EntryHandler(
 
     __slots__ = ("_base_path",)
 
-    _base_path: _pathlib.Path
+    _base_path: pathlib.Path
 
-    def __init__(self, base_path: _pathlib.Path) -> None:
+    def __init__(self, base_path: pathlib.Path) -> None:
         self._base_path = base_path
 
     def reconcile(
@@ -233,13 +233,13 @@ def _get_base_dir_key(file_path: FilePath) -> str | None:
 # =============================================================================
 
 
-def _resolve_root_path(key: _RootKey) -> _pathlib.Path:
+def _resolve_root_path(key: _RootKey) -> pathlib.Path:
     """Resolve a root key to an absolute path using the current base directory."""
     if key.base_dir_key is None:
         # CWD
-        base_path = _CWD_BASE_DIR.value
+        base_path = CWD_BASE_DIR.value
     else:
-        base_path = _path_registry.get(key.base_dir_key)
+        base_path = path_registry.get(key.base_dir_key)
     return (base_path / key.path).resolve()
 
 
@@ -301,7 +301,7 @@ class DirTarget(Generic[coco.MaybePendingS], coco.ResolvesTo["DirTarget"]):
 
     def declare_file(
         self: "DirTarget",
-        filename: str | _pathlib.PurePath,
+        filename: str | pathlib.PurePath,
         content: bytes | str,
         *,
         create_parent_dirs: bool = False,
@@ -317,7 +317,7 @@ class DirTarget(Generic[coco.MaybePendingS], coco.ResolvesTo["DirTarget"]):
         """
         if isinstance(content, str):
             content = content.encode()
-        name = str(filename) if isinstance(filename, _pathlib.PurePath) else filename
+        name = str(filename) if isinstance(filename, pathlib.PurePath) else filename
         spec = _EntrySpec(entry_spec=content, create_parent_dirs=create_parent_dirs)
         # Files don't have children, but the provider type allows for them (for directories).
         # Cast is safe since file entries never produce child handlers at runtime.
@@ -328,7 +328,7 @@ class DirTarget(Generic[coco.MaybePendingS], coco.ResolvesTo["DirTarget"]):
 
     def declare_dir_target(
         self: "DirTarget",
-        path: str | _pathlib.PurePath,
+        path: str | pathlib.PurePath,
         *,
         create_parent_dirs: bool = False,
     ) -> "DirTarget[coco.PendingS]":
@@ -343,7 +343,7 @@ class DirTarget(Generic[coco.MaybePendingS], coco.ResolvesTo["DirTarget"]):
         Returns:
             A DirTarget for the subdirectory.
         """
-        name = str(path) if isinstance(path, _pathlib.PurePath) else path
+        name = str(path) if isinstance(path, pathlib.PurePath) else path
         spec = _EntrySpec(entry_spec=_DirSpec(), create_parent_dirs=create_parent_dirs)
         provider = coco.declare_target_state_with_child(
             self._provider.target_state(name, spec)
@@ -356,7 +356,7 @@ class DirTarget(Generic[coco.MaybePendingS], coco.ResolvesTo["DirTarget"]):
 
 @coco.function
 def declare_dir_target(
-    path: FilePath | _pathlib.Path,
+    path: FilePath | pathlib.Path,
     *,
     create_parent_dirs: bool = True,
 ) -> DirTarget[coco.PendingS]:
@@ -383,7 +383,7 @@ def declare_dir_target(
         target.declare_file("hello.txt", content="Hello, world!")
         ```
     """
-    file_path = _to_file_path(path)
+    file_path = to_file_path(path)
     key = _RootKey(
         base_dir_key=_get_base_dir_key(file_path),
         path=str(file_path.path),
@@ -400,7 +400,7 @@ def declare_dir_target(
 
 @coco.function
 def declare_file(
-    path: FilePath | _pathlib.Path,
+    path: FilePath | pathlib.Path,
     content: bytes | str,
     *,
     create_parent_dirs: bool = False,
@@ -432,7 +432,7 @@ def declare_file(
     if isinstance(content, str):
         content = content.encode()
 
-    file_path = _to_file_path(path)
+    file_path = to_file_path(path)
     key = _RootKey(
         base_dir_key=_get_base_dir_key(file_path),
         path=str(file_path.path),
