@@ -135,7 +135,6 @@ fn write_py_memo_key(
 
 #[pyfunction]
 pub fn fingerprint_simple_object<'py>(
-    _py: Python<'py>,
     obj: Bound<'py, PyAny>,
 ) -> PyResult<crate::fingerprint::PyFingerprint> {
     let mut fp = utils::fingerprint::Fingerprinter::default();
@@ -145,17 +144,13 @@ pub fn fingerprint_simple_object<'py>(
 }
 
 #[pyfunction]
-pub fn fingerprint_bytes<'py>(
-    _py: Python<'py>,
-    data: &Bound<'py, PyBytes>,
-) -> crate::fingerprint::PyFingerprint {
+pub fn fingerprint_bytes<'py>(data: &Bound<'py, PyBytes>) -> crate::fingerprint::PyFingerprint {
     let digest = utils::fingerprint::Fingerprint::from_bytes(data.as_bytes());
     crate::fingerprint::PyFingerprint(digest)
 }
 
 #[pyfunction]
 pub fn fingerprint_str<'py>(
-    _py: Python<'py>,
     s: &Bound<'py, PyString>,
 ) -> PyResult<crate::fingerprint::PyFingerprint> {
     let digest = utils::fingerprint::Fingerprint::from_bytes(s.to_str()?.as_bytes());
