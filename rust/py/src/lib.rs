@@ -66,7 +66,9 @@ fn core_module(m: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()>
     m.add_function(wrap_pyfunction!(function::reserve_memoization_async, m)?)?;
 
     // Memoization fingerprinting (deterministic)
-    m.add_function(wrap_pyfunction!(memo_key::fingerprint_memo_key, m)?)?;
+    m.add_function(wrap_pyfunction!(memo_key::fingerprint_simple_object, m)?)?;
+    m.add_function(wrap_pyfunction!(memo_key::fingerprint_bytes, m)?)?;
+    m.add_function(wrap_pyfunction!(memo_key::fingerprint_str, m)?)?;
 
     // Text processing operations
     m.add_class::<ops::PyChunk>()?;

@@ -59,7 +59,9 @@ class KeyedConnection(_Generic[ConnectionT]):
         self._key = key
         self._value = value
         self._registry = registry
-        self._memo_key = _core.fingerprint_memo_key((self._registry_name, self._key))
+        self._memo_key = _core.fingerprint_simple_object(
+            (self._registry_name, self._key)
+        )
 
     @property
     def registry_name(self) -> str:

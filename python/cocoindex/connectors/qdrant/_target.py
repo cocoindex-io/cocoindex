@@ -9,8 +9,6 @@ This module provides a two-level target state system for Qdrant:
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import json
 from dataclasses import dataclass
 from typing import (
     Any,
@@ -33,8 +31,8 @@ except ImportError as e:
     ) from e
 
 import cocoindex as coco
-from cocoindex.connectorkits import connection
-from cocoindex.connectorkits import statediff
+from cocoindex.connectorkits import connection, statediff
+from cocoindex.connectorkits.fingerprint import fingerprint_object
 from cocoindex.resources import schema
 
 # Public alias for Qdrant point model
@@ -194,18 +192,6 @@ class _PointHandler(
                 points_selector=selector,
             )
 
-    def _compute_fingerprint(
-        self, point: qdrant_models.PointStruct
-    ) -> _PointFingerprint:
-        # Serialize point to compute fingerprint
-        data = {
-            "id": str(point.id),
-            "vector": point.vector,
-            "payload": point.payload or {},
-        }
-        serialized = json.dumps(data, sort_keys=True, default=str)
-        return hashlib.blake2b(serialized.encode()).digest()
-
     def reconcile(
         self,
         key: _PointId,
@@ -223,7 +209,7 @@ class _PointHandler(
                 tracking_record=coco.NON_EXISTENCE,
             )
 
-        target_fp = self._compute_fingerprint(desired_state)
+        target_fp = fingerprint_object((desired_state.vector, desired_state.payload))
         if not prev_may_be_missing and all(
             prev == target_fp for prev in prev_possible_states
         ):
