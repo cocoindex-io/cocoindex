@@ -128,4 +128,4 @@ For cases where connector-specific APIs don't cover your needs, CocoIndex provid
 - `declare_target_state()` — declare a leaf target state
 - `declare_target_state_with_child()` — declare a target state that provides child target states
 
-These are exported from `cocoindex` and used internally by connectors. For defining custom targets, see [Target States Provider](../advanced_topics/target_states_provider.md).
+These are exported from `cocoindex` and used internally by connectors. For defining custom targets, see [Custom Target States Connector](../advanced_topics/custom_target_connector.md).

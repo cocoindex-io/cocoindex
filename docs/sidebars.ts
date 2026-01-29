@@ -58,7 +58,7 @@ const sidebars: SidebarsConfig = {
       collapsed: false,
       items: [
         'advanced_topics/memoization_keys',
-        'advanced_topics/target_states_provider',
+        'advanced_topics/custom_target_connector',
       ],
     },
     {
@@ -73,7 +73,6 @@ const sidebars: SidebarsConfig = {
       items: [
         'contributing/setup_dev_environment',
         'contributing/guide',
-        'contributing/new_built_in_target',
       ],
     },
     {
