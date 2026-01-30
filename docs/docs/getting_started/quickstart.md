@@ -4,7 +4,6 @@ description: Get started with CocoIndex in 5 minutes
 ---
 
 import { GitHubButton, DocumentationButton } from '@site/src/components/ActionButtons';
-import useBaseUrl from '@docusaurus/useBaseUrl';
 
 # Quickstart
 
@@ -16,12 +15,15 @@ In this tutorial, we'll build a simple app that converts PDF files to Markdown a
 
 ![App example showing PDF to Markdown conversion](/img/concept/app-example.svg)
 
-
 1. Read PDF files from a local directory
 2. Convert each file to Markdown using Docling
 3. Save the Markdown files to an output directory (as **target states**)
 
-CocoIndex automatically tracks changes — when you add, modify, or delete source files, only the affected outputs are updated.
+You declare the transformation logic with native Python without worrying about changes.
+
+Think: **target_state = transformation(source_state)**
+
+When your source data is updated, or your processing logic is changed (for example, switching parsers or tweaking conversion settings), CocoIndex performs smart incremental processing that only reprocesses the minimum. And it keeps your Markdown files always up to date.
 
 ## Setup
 
@@ -45,18 +47,19 @@ CocoIndex automatically tracks changes — when you add, modify, or delete sourc
     ```
     You can download sample PDF files from the [git repo](https://github.com/cocoindex-io/cocoindex/tree/v1/examples/pdf_to_markdown).
 
-4. Create a `.env` file to configure the database path that is needed for CocoIndex incremental processing:
+4. Create a `.env` file to configure the database path:
 
     ```bash
     echo "COCOINDEX_DB=./cocoindex.db" > .env
     ```
 
-## Define the App
-![App Definition](/img/quickstart/app-def.svg)
+## Define the app
+
+![App definition](/img/quickstart/app-def.svg)
 
 Create a new file `main.py`:
 
-```python
+```python title="main.py"
 import pathlib
 
 import cocoindex as coco
@@ -65,7 +68,7 @@ from cocoindex.resources.file import PatternFilePathMatcher
 from docling.document_converter import DocumentConverter
 
 app = coco.App(
-    "PdfToMarkdown",
+    coco.AppConfig(name="PdfToMarkdown"),
     app_main,
     sourcedir=pathlib.Path("./pdf_files"),
     outdir=pathlib.Path("./out"),
@@ -75,19 +78,13 @@ This defines a CocoIndex App — the top-level runnable unit in CocoIndex.
 
 <DocumentationButton url="/docs-v1/programming_guide/app" text="CocoIndex App" />
 
-### Define the Main Function
+### Define the main function
 
-![App Definition](/img/quickstart/components.svg)
+![Processing components](/img/quickstart/components.svg)
 
-```python
+```python title="main.py"
 @coco.function
 def app_main(sourcedir: pathlib.Path, outdir: pathlib.Path) -> None:
-    # Declare the output directory target state and get a target provider
-    target = coco.mount_run(
-        coco.component_subpath("setup"), localfs.declare_dir_target, outdir
-    ).result()
-
-    # Walk source files and mount a processing component for each
     files = localfs.walk_dir(
         sourcedir,
         recursive=True,
@@ -95,46 +92,47 @@ def app_main(sourcedir: pathlib.Path, outdir: pathlib.Path) -> None:
     )
     for f in files:
         coco.mount(
-            coco.component_subpath("process", str(f.relative_path)),
+            coco.component_subpath("process", str(f.file_path.path)),
             process_file,
             f,
-            target,
+            outdir,
         )
 ```
-**`coco.mount()`**: Mounts a processing component for each file to process
+
+For each file, `coco.mount()` mounts a processing component. It's up to you to pick the process granularity, for example it can be at directory level, at file level, or at page level.
+
+In this example, because we want to independently convert each file to Markdown, it is the most natural to pick it at the file level.
 
 <DocumentationButton url="/docs-v1/programming_guide/processing_component" text="Processing Component" />
 
+### Define file processing
 
-### Define File Processing
-
-![File Process](/img/quickstart/file-process.svg)
+![File processing](/img/quickstart/file-process.svg)
 
 This function converts a single PDF to Markdown:
 
-```python
+```python title="main.py"
 _converter = DocumentConverter()
 
 @coco.function(memo=True)
 def process_file(
     file: localfs.File,
-    target: localfs.DirTarget,
+    outdir: pathlib.Path,
 ) -> None:
-    markdown = _converter.convert(file.path).document.export_to_markdown()
-    outname = file.relative_path.stem + ".md"
-    target.declare_file(filename=outname, content=markdown)
+    markdown = _converter.convert(
+        file.file_path.resolve()
+    ).document.export_to_markdown()
+    outname = file.file_path.path.stem + ".md"
+    localfs.declare_file(outdir / outname, markdown, create_parent_dirs=True)
 ```
 
 - **`memo=True`** — Caches results; unchanged files are skipped on re-runs
-- **`target.declare_file()`** — Writes output; auto-deleted if source is removed
+- **`localfs.declare_file()`** — Declares a file target state; auto-deleted if source is removed
 
 <DocumentationButton url="/docs-v1/programming_guide/function" text="Function" />
 <DocumentationButton url="/docs-v1/programming_guide/target_state" text="Target State" />
 
-
-
-
-## Run the Pipeline
+## Run the pipeline
 
 Run the pipeline:
 
@@ -154,7 +152,7 @@ ls out/
 # example.md (one .md file for each input PDF)
 ```
 
-## Incremental Updates
+## Incremental updates
 
 The power of CocoIndex is **incremental processing**. Try these:
 
@@ -187,7 +185,7 @@ cocoindex update main.py
 
 The corresponding Markdown file is automatically removed.
 
-## Next Steps
+## Next steps
 
 - Learn more about [Core Concepts](/programming_guide/core_concepts)
 - Explore [Functions](/programming_guide/function) and memoization

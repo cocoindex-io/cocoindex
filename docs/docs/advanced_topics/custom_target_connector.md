@@ -9,7 +9,7 @@ import TabItem from '@theme/TabItem';
 
 A **custom target connector** is the mechanism that connects CocoIndex's declarative target state system to external systems. When you call methods like `dir_target.declare_file()` or `table_target.declare_row()`, a target connector handles the actual synchronization — determining what changed and applying those changes to the external system.
 
-## When to Create a Custom Target Connector
+## When to create a custom target connector
 
 Most users will use built-in connectors (like `localfs` or `postgres`) and never need to create their own. Consider creating a custom target connector when:
 
@@ -21,7 +21,7 @@ Most users will use built-in connectors (like `localfs` or `postgres`) and never
 For simple use cases where you just need to write data to an external system without sophisticated change tracking, consider using a regular function with memoization instead. Target states providers are most valuable when you need CocoIndex to track and clean up target states automatically.
 :::
 
-## Key Data Types
+## Key data types
 
 This section introduces the key data types. Each is marked as either **you implement** or **CocoIndex provides** to clarify responsibilities.
 
@@ -65,7 +65,7 @@ class TargetHandler(Protocol[KeyT, ValueT, TrackingRecordT, OptChildHandlerT]):
 The `reconcile()` method must be **non-blocking**. It should only compare states and return an action — actual I/O operations happen later in the `TargetActionSink`.
 :::
 
-### Tracking Record *(you define)*
+### Tracking record *(you define)*
 
 A **tracking record** captures the essential information needed to detect changes. Good tracking records:
 
@@ -175,11 +175,11 @@ target_state = provider.target_state(key, spec)
 coco.declare_target_state(target_state)
 ```
 
-## Implementing Root Target States
+## Implementing root target states
 
 This section covers root target states — those not nested inside another target.
 
-### Life of a Root Target State
+### Life of a root target state
 
 Understanding what happens at runtime:
 
@@ -197,7 +197,7 @@ Understanding what happens at runtime:
 Due to interrupted updates, `prev_possible_states` may contain multiple records. CocoIndex tracks all possible states until a successful update confirms the current state. Your reconciliation logic should handle this by generating actions that work correctly regardless of which previous state is actual.
 :::
 
-### Step 1: Define Your Types
+### Step 1: Define your types
 
 Start by defining the types for your provider:
 
@@ -225,7 +225,7 @@ class _RowAction(NamedTuple):
     data: dict[str, Any] | None  # None = delete
 ```
 
-### Step 2: Implement the Handler
+### Step 2: Implement the handler
 
 ```python
 class _RowHandler(coco.TargetHandler[_RowKey, _RowSpec, _RowTrackingRecord]):
@@ -281,7 +281,7 @@ class _RowHandler(coco.TargetHandler[_RowKey, _RowSpec, _RowTrackingRecord]):
         )
 ```
 
-### Step 3: Register the Provider
+### Step 3: Register the provider
 
 For root-level target states (not nested within another target), register a provider:
 
@@ -292,7 +292,7 @@ _row_provider = coco.register_root_target_states_provider(
 )
 ```
 
-### Step 4: Create User-Facing APIs
+### Step 4: Create user-facing APIs
 
 Wrap the provider in a user-friendly API:
 
@@ -309,11 +309,11 @@ class TableTarget:
         coco.declare_target_state(target_state)
 ```
 
-## Implementing Container Targets
+## Implementing container targets
 
 Container targets (directories, tables) have children (files, rows). This section covers how non-root target states work and how to implement them.
 
-### Non-Root Target States
+### Non-root target states
 
 For targets **nested inside another target** (e.g., files inside a directory), the lifecycle is similar to root targets but **how you get the provider is different**.
 
@@ -325,7 +325,7 @@ For root targets, you call `register_root_target_states_provider()` and immediat
 
 The child handler often needs context from the parent's action execution. For example, a file handler needs to know the directory path that was created. By returning the handler from the parent's sink, the handler has access to this runtime context.
 
-### Step 1: Define Parent and Child Handlers
+### Step 1: Define parent and child handlers
 
 The parent handler reconciles the container itself. The child handler reconciles entries within it:
 
@@ -347,7 +347,7 @@ class _EntryHandler(coco.TargetHandler[str, _EntrySpec, _EntryTrackingRecord]):
         ...
 ```
 
-### Step 2: Return Child Handlers from the Sink
+### Step 2: Return child handlers from the sink
 
 The parent's sink creates the container and returns child handlers:
 
@@ -367,7 +367,7 @@ def _apply_dir_actions(
     return outputs
 ```
 
-### Step 3: Create User-Facing API
+### Step 3: Create user-facing API
 
 The user-facing API uses `declare_target_state_with_child()` and exposes methods for declaring children:
 
@@ -399,9 +399,9 @@ def declare_dir_target(path: pathlib.Path) -> DirTarget:
     return DirTarget(child_provider)
 ```
 
-## Best Practices
+## Best practices
 
-### Idempotent Actions
+### Idempotent actions
 
 Actions should be idempotent — applying the same action multiple times should have the same effect as applying it once:
 
@@ -416,7 +416,7 @@ path.mkdir()  # Fails if exists
 await conn.execute("INSERT ...")  # Fails on duplicate key
 ```
 
-### Handle Multiple Previous States
+### Handle multiple previous states
 
 Due to interrupted updates, `prev_possible_states` may contain multiple records. Design your reconciliation logic to handle this:
 
@@ -428,7 +428,7 @@ if not prev_may_be_missing and all(
     return None  # Safe to skip
 ```
 
-### Efficient Change Detection
+### Efficient change detection
 
 Choose tracking records that enable efficient change detection without storing full content:
 
@@ -439,7 +439,7 @@ Choose tracking records that enable efficient change detection without storing f
 | Schema/structure | Schema definition |
 | Directory existence | `None` (presence is enough) |
 
-### Shared Action Sinks
+### Shared action sinks
 
 If all instances of a handler use the same action logic, create a shared sink:
 
@@ -456,7 +456,7 @@ class _MyHandler(coco.TargetHandler[...]):
         )
 ```
 
-## Complete Example: Local File System
+## Complete example: local file system
 
 Here's a simplified version of the `localfs` connector showing the complete pattern:
 

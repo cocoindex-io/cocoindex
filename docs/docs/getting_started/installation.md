@@ -2,7 +2,7 @@
 title: Installation
 description: Setup the CocoIndex environment in 0-3 min
 ---
-## Install Python and Pip
+## Install Python and pip
 
 To follow the steps in this guide, you'll need:
 
@@ -47,7 +47,7 @@ Or specify in `pyproject.toml`:
 cocoindex = { version = "^1.0", allow-prereleases = true }
 ```
 
-## System Requirements
+## System requirements
 
 CocoIndex is supported on the following operating systems:
 

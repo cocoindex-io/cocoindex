@@ -22,7 +22,7 @@ CONFIG = coco.ContextKey[AppConfig]("config")
 
 The type parameter (`postgres.PgDatabase`, `AppConfig`) enables type checking — when you retrieve the value, your editor knows its type.
 
-## Providing Values
+## Providing values
 
 In your [lifespan function](./app.md#defining-a-lifespan), use `builder.provide()` to make resources available:
 
@@ -44,7 +44,7 @@ async def coco_lifespan(builder: coco_aio.EnvironmentBuilder) -> AsyncIterator[N
 
 The resource is available for the lifetime of the environment. When the lifespan exits (after `yield`), cleanup happens automatically if you use a context manager pattern.
 
-## Retrieving Values
+## Retrieving values
 
 In processing components, use `coco.use_context()` to retrieve provided resources:
 

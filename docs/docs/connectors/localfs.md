@@ -12,7 +12,7 @@ The `localfs` connector provides utilities for reading files from and writing fi
 from cocoindex.connectors import localfs
 ```
 
-## Stable Memoization with FilePath
+## Stable memoization with FilePath
 
 A key feature of the `localfs` connector is **stable memoization** through `FilePath`. When you move your entire project directory, memoization keys remain stable as long as you use the same registered base directory key.
 
@@ -68,7 +68,7 @@ abs_path = config_path.resolve()  # pathlib.Path
 
 See [FilePath](../resource_types.md#filepath) in Resource Types for full details.
 
-## As Source
+## As source
 
 Use `walk_dir()` to iterate over files in a directory. It returns a `DirWalker` that supports both synchronous and asynchronous iteration.
 
@@ -89,7 +89,7 @@ def walk_dir(
 
 **Returns:** A `DirWalker` that can be used with both `for` and `async for` loops.
 
-### Iterating Files
+### Iterating files
 
 `walk_dir()` returns a `DirWalker` that supports both sync and async iteration:
 
@@ -107,7 +107,7 @@ async for file in localfs.walk_dir("/path/to/documents", recursive=True):
 
 The async variant runs file I/O in a thread pool, keeping the event loop responsive. See [`FileLike` / `AsyncFileLike`](../resource_types.md#filelike--asyncfilelike) for details on the file objects.
 
-### Filtering Files
+### Filtering files
 
 Use `PatternFilePathMatcher` to filter which files and directories are included:
 
@@ -152,7 +152,7 @@ def process_file(file: FileLike) -> None:
     # ... process the file content ...
 ```
 
-## As Target
+## As target
 
 The `localfs` connector provides target state APIs for writing files. CocoIndex tracks what files should exist and automatically handles creation, updates, and deletion.
 
@@ -252,7 +252,7 @@ def declare_dir_target(
 
 **Returns:** A `DirTarget` for the subdirectory.
 
-### Target Example
+### Target example
 
 ```python
 import pathlib

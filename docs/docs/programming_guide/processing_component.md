@@ -5,7 +5,7 @@ description: Understanding processing components as the sync boundaries for targ
 
 Most apps process many independent source items — files, rows, or entities. A **Processing Component** is the unit of execution for one: it runs that item's transformation logic and declares the set of **target states** produced for it.
 
-## Component Path
+## Component path
 
 A **component path** is the stable identifier for a processing component across runs (think of it like a path in a tree). CocoIndex uses it to match a component to its previous run, detect what changed for that item, and sync that component's target states atomically when it finishes. This sync happens per component; CocoIndex does not wait for other components in the same app to complete.
 
@@ -100,7 +100,7 @@ table = handle.result()  # Blocks until ready, then returns the value
 
 A common use of `mount_run()` is to obtain a [target](./target_state#where-do-targets-come-from) after its container target state is applied.
 
-### Using `component_subpath` as a Context Manager
+### Using `component_subpath` as a context manager
 
 You can also use `component_subpath()` as a context manager to create nested paths without repeating common prefixes:
 
@@ -160,7 +160,7 @@ In general:
 
 For small datasets, a single processing component that owns all target states is simple and ensures all target states sync atomically. As data grows, consider breaking it down into one component per source item (e.g., one per file) to reduce latency: you see each item's target states synced as soon as it's processed, without waiting for the full dataset to complete. This also helps isolate failures to that item.
 
-## Explicit Context Management
+## Explicit context management
 
 CocoIndex automatically propagates component context through Python's `contextvars`, which works for ordinary function calls (both sync and async). However, in situations where context variables are not preserved (for example, when using `concurrent.futures.ThreadPoolExecutor`), you need to explicitly capture and attach the context.
 

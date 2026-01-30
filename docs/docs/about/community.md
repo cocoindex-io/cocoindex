@@ -15,7 +15,7 @@ We would love to foster an inclusive, welcoming, and supportive environment. Con
 Check out our [Contributing guide](../contributing/guide) to get started!
 :::
 
-## Connect With Us
+## Connect with us
 
 Join our community channels to get help, share ideas, and connect with other developers:
 
@@ -24,7 +24,7 @@ Join our community channels to get help, share ideas, and connect with other dev
 - [LinkedIn](https://www.linkedin.com/company/cocoindex/about/) - Connect professionally
 - [YouTube](https://www.youtube.com/@cocoindex-io) - Watch tutorials and demos
 
-## Get Support
+## Get support
 
 Need help? Here are the best ways to get support:
 
