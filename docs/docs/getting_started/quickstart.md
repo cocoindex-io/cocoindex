@@ -82,12 +82,6 @@ This defines a CocoIndex App — the top-level runnable unit in CocoIndex.
 ```python
 @coco.function
 def app_main(sourcedir: pathlib.Path, outdir: pathlib.Path) -> None:
-    # Declare the output directory target state and get a target provider
-    target = coco.mount_run(
-        coco.component_subpath("setup"), localfs.declare_dir_target, outdir
-    ).result()
-
-    # Walk source files and mount a processing component for each
     files = localfs.walk_dir(
         sourcedir,
         recursive=True,
@@ -95,10 +89,10 @@ def app_main(sourcedir: pathlib.Path, outdir: pathlib.Path) -> None:
     )
     for f in files:
         coco.mount(
-            coco.component_subpath("process", str(f.relative_path)),
+            coco.component_subpath("process", str(f.file_path.path)),
             process_file,
             f,
-            target,
+            outdir,
         )
 ```
 **`coco.mount()`**: Mounts a processing component for each file to process
@@ -118,15 +112,17 @@ _converter = DocumentConverter()
 @coco.function(memo=True)
 def process_file(
     file: localfs.File,
-    target: localfs.DirTarget,
+    outdir: pathlib.Path,
 ) -> None:
-    markdown = _converter.convert(file.path).document.export_to_markdown()
-    outname = file.relative_path.stem + ".md"
-    target.declare_file(filename=outname, content=markdown)
+    markdown = _converter.convert(
+        file.file_path.resolve()
+    ).document.export_to_markdown()
+    outname = file.file_path.path.stem + ".md"
+    localfs.declare_file(outdir / outname, markdown, create_parent_dirs=True)
 ```
 
 - **`memo=True`** — Caches results; unchanged files are skipped on re-runs
-- **`target.declare_file()`** — Writes output; auto-deleted if source is removed
+- **`localfs.declare_file()`** — Declares a file target state; auto-deleted if source is removed
 
 <DocumentationButton url="/docs-v1/programming_guide/function" text="Function" />
 <DocumentationButton url="/docs-v1/programming_guide/target_state" text="Target State" />
