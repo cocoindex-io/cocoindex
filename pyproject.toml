@@ -92,7 +92,7 @@ all = [
 build-test = ["maturin>=1.10.0,<2.0", "pytest", "pytest-asyncio", "mypy"]
 format = ["ruff"]
 type-stubs = ["types-psutil", "asyncpg-stubs"]
-ci-enabled-optional-deps = ["pydantic>=2.11.9", "sqlite-vec>=0.1.6"]
+ci-enabled-optional-deps = ["pydantic>=2.11.9"]
 examples = ["sentence-transformers>=3.0.0", "numpy"]
 
 ci = [

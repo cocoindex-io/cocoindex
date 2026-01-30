@@ -26,43 +26,55 @@ Note: The default SQLite library bundled with macOS does not support extensions.
 
 ### connect
 
-`connect()` is a thin wrapper around [`sqlite3.connect()`](https://docs.python.org/3/library/sqlite3.html#sqlite3.connect) with sensible defaults, including automatic sqlite-vec loading.
+`connect()` creates a managed SQLite connection with sensible defaults, including automatic sqlite-vec loading and thread-safe access.
 
 ```python
 def connect(
     database: str | Path,
     *,
     timeout: float = 5.0,
-    isolation_level: Literal["DEFERRED", "EXCLUSIVE", "IMMEDIATE"] | None = "DEFERRED",
     load_vec: bool | Literal["auto"] = "auto",
     **kwargs: Any,
-) -> sqlite3.Connection
+) -> ManagedConnection
 ```
 
 **Parameters:**
 
 - `database` — Path to the SQLite database file, or `":memory:"` for an in-memory database.
 - `timeout` — How long to wait for locks before raising an error.
-- `isolation_level` — Transaction isolation level. Use `None` for autocommit mode.
 - `load_vec` — Whether to load the sqlite-vec extension for vector support:
   - `"auto"` (default): Try to load, silently ignore if unavailable.
   - `True`: Load and raise an error if unavailable.
   - `False`: Don't attempt to load.
 - `**kwargs` — Additional arguments passed directly to `sqlite3.connect()`.
 
-**Returns:** A sqlite3 connection.
+**Returns:** A `ManagedConnection` with thread-safe access and extension tracking.
 
 **Example:**
 
 ```python
-conn = sqlite.connect("mydb.sqlite")  # Auto-loads sqlite-vec if available
+managed_conn = sqlite.connect("mydb.sqlite")  # Auto-loads sqlite-vec if available
 # Or for in-memory:
-conn = sqlite.connect(":memory:")
+managed_conn = sqlite.connect(":memory:")
 # Or explicitly require vector support:
-conn = sqlite.connect("mydb.sqlite", load_vec=True)
+managed_conn = sqlite.connect("mydb.sqlite", load_vec=True)
 # Or disable auto-loading:
-conn = sqlite.connect("mydb.sqlite", load_vec=False)
+managed_conn = sqlite.connect("mydb.sqlite", load_vec=False)
 ```
+
+### ManagedConnection
+
+A wrapper around `sqlite3.Connection` that provides thread-safe access and tracks loaded extensions. The connection uses autocommit mode internally.
+
+**Methods:**
+
+- `transaction()` — Context manager that acquires a lock and executes within a transaction (`BEGIN`...`COMMIT`/`ROLLBACK`). Use for write operations that should be atomic.
+- `readonly()` — Context manager that acquires a lock for read-only operations. No transaction is started since the connection uses autocommit mode.
+- `close()` — Closes the underlying connection.
+
+**Properties:**
+
+- `loaded_extensions` — A read-only `Set[str]` of loaded extension names (e.g., `"sqlite-vec"`).
 
 ## As Target
 
@@ -75,21 +87,21 @@ The `sqlite` connector provides target state APIs for writing rows to tables. Wi
 Before declaring target states, register the connection with a stable key that identifies the logical database. This key allows CocoIndex to recognize the same database even when the file path changes.
 
 ```python
-def register_db(key: str, conn: sqlite3.Connection) -> SqliteDatabase
+def register_db(key: str, managed_conn: ManagedConnection) -> SqliteDatabase
 ```
 
 **Parameters:**
 
 - `key` — A stable identifier for this database (e.g., `"main_db"`). Must be unique.
-- `conn` — A sqlite3 connection.
+- `managed_conn` — A `ManagedConnection` from `connect()`.
 
 **Returns:** A `SqliteDatabase` handle for declaring target states.
 
 The `SqliteDatabase` can be used as a context manager to automatically unregister on exit:
 
 ```python
-conn = sqlite.connect("mydb.sqlite")
-with sqlite.register_db("my_db", conn) as db:
+managed_conn = sqlite.connect("mydb.sqlite")
+with sqlite.register_db("my_db", managed_conn) as db:
     # Use db to declare target states
     ...
 # db is automatically unregistered here
@@ -295,11 +307,11 @@ class OutputProduct:
 
 @coco.lifespan
 def coco_lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
-    conn = sqlite.connect(DATABASE_PATH, load_vec=True)  # Enable vector support
-    with sqlite.register_db("main_db", conn) as db:
+    managed_conn = sqlite.connect(DATABASE_PATH, load_vec=True)  # Enable vector support
+    with sqlite.register_db("main_db", managed_conn) as db:
         builder.provide(SQLITE_DB, db)
         yield
-    conn.close()
+    managed_conn.close()
 
 @coco.function
 def app_main() -> None:

@@ -43,26 +43,33 @@ requires_sqlite_vec = pytest.mark.skipif(
 # =============================================================================
 
 
-def read_table_data(conn: sqlite3.Connection, table_name: str) -> list[dict[str, Any]]:
+def read_table_data(
+    managed_conn: sqlite.ManagedConnection, table_name: str
+) -> list[dict[str, Any]]:
     """Read all rows from a table as a list of dicts."""
-    conn.row_factory = sqlite3.Row
-    cursor = conn.execute(f'SELECT * FROM "{table_name}"')
-    return [dict(row) for row in cursor.fetchall()]
+    with managed_conn.readonly() as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.execute(f'SELECT * FROM "{table_name}"')
+        return [dict(row) for row in cursor.fetchall()]
 
 
-def table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
+def table_exists(managed_conn: sqlite.ManagedConnection, table_name: str) -> bool:
     """Check if a table exists."""
-    cursor = conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
-        (table_name,),
-    )
-    return cursor.fetchone() is not None
+    with managed_conn.readonly() as conn:
+        cursor = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+            (table_name,),
+        )
+        return cursor.fetchone() is not None
 
 
-def get_table_columns(conn: sqlite3.Connection, table_name: str) -> dict[str, str]:
+def get_table_columns(
+    managed_conn: sqlite.ManagedConnection, table_name: str
+) -> dict[str, str]:
     """Get column names and types for a table."""
-    cursor = conn.execute(f'PRAGMA table_info("{table_name}")')
-    return {row[1]: row[2] for row in cursor.fetchall()}
+    with managed_conn.readonly() as conn:
+        cursor = conn.execute(f'PRAGMA table_info("{table_name}")')
+        return {row[1]: row[2] for row in cursor.fetchall()}
 
 
 def decode_vector(blob: bytes, dim: int) -> list[float]:
@@ -76,26 +83,26 @@ def decode_vector(blob: bytes, dim: int) -> list[float]:
 
 
 @pytest.fixture
-def sqlite_db() -> Iterator[tuple[sqlite3.Connection, Path]]:
+def sqlite_db() -> Iterator[tuple[sqlite.ManagedConnection, Path]]:
     """Create a temporary SQLite database."""
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
         db_path = Path(f.name)
 
-    conn = sqlite.connect(db_path)
-    yield conn, db_path
-    conn.close()
+    managed_conn = sqlite.connect(db_path)
+    yield managed_conn, db_path
+    managed_conn.close()
     db_path.unlink(missing_ok=True)
 
 
 @pytest.fixture
-def sqlite_db_with_vec() -> Iterator[tuple[sqlite3.Connection, Path]]:
+def sqlite_db_with_vec() -> Iterator[tuple[sqlite.ManagedConnection, Path]]:
     """Create a temporary SQLite database with sqlite-vec extension loaded."""
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
         db_path = Path(f.name)
 
-    conn = sqlite.connect(db_path, load_vec=True)
-    yield conn, db_path
-    conn.close()
+    managed_conn = sqlite.connect(db_path, load_vec=True)
+    yield managed_conn, db_path
+    managed_conn.close()
     db_path.unlink(missing_ok=True)
 
 
@@ -167,17 +174,17 @@ def declare_table_and_rows() -> None:
 
 
 def test_create_table_and_insert_rows(
-    sqlite_db: tuple[sqlite3.Connection, Path],
+    sqlite_db: tuple[sqlite.ManagedConnection, Path],
 ) -> None:
     """Test creating a table and inserting rows."""
-    conn, _ = sqlite_db
+    managed_conn, _ = sqlite_db
     global _source_rows, _row_type, _table_name, _sqlite_db
 
     _source_rows = []
     _row_type = SimpleRow
     _table_name = "test_create"
 
-    with sqlite.register_db("test_create_db", conn) as db:
+    with sqlite.register_db("test_create_db", managed_conn) as db:
         _sqlite_db = db
 
         app = coco.App(
@@ -192,8 +199,8 @@ def test_create_table_and_insert_rows(
         ]
         app.update()
 
-        assert table_exists(conn, _table_name)
-        data = read_table_data(conn, _table_name)
+        assert table_exists(managed_conn, _table_name)
+        data = read_table_data(managed_conn, _table_name)
         assert len(data) == 2
         assert {"id": "1", "name": "Alice", "value": 100} in data
         assert {"id": "2", "name": "Bob", "value": 200} in data
@@ -202,21 +209,21 @@ def test_create_table_and_insert_rows(
         _source_rows.append(SimpleRow(id="3", name="Charlie", value=300))
         app.update()
 
-        data = read_table_data(conn, _table_name)
+        data = read_table_data(managed_conn, _table_name)
         assert len(data) == 3
         assert {"id": "3", "name": "Charlie", "value": 300} in data
 
 
-def test_update_row(sqlite_db: tuple[sqlite3.Connection, Path]) -> None:
+def test_update_row(sqlite_db: tuple[sqlite.ManagedConnection, Path]) -> None:
     """Test updating an existing row."""
-    conn, _ = sqlite_db
+    managed_conn, _ = sqlite_db
     global _source_rows, _row_type, _table_name, _sqlite_db
 
     _source_rows = []
     _row_type = SimpleRow
     _table_name = "test_update"
 
-    with sqlite.register_db("test_update_db", conn) as db:
+    with sqlite.register_db("test_update_db", managed_conn) as db:
         _sqlite_db = db
 
         app = coco.App(
@@ -231,7 +238,7 @@ def test_update_row(sqlite_db: tuple[sqlite3.Connection, Path]) -> None:
         ]
         app.update()
 
-        data = read_table_data(conn, _table_name)
+        data = read_table_data(managed_conn, _table_name)
         assert len(data) == 2
 
         # Update a row
@@ -241,22 +248,22 @@ def test_update_row(sqlite_db: tuple[sqlite3.Connection, Path]) -> None:
         ]
         app.update()
 
-        data = read_table_data(conn, _table_name)
+        data = read_table_data(managed_conn, _table_name)
         assert len(data) == 2
         assert {"id": "1", "name": "Alice Updated", "value": 150} in data
         assert {"id": "2", "name": "Bob", "value": 200} in data
 
 
-def test_delete_row(sqlite_db: tuple[sqlite3.Connection, Path]) -> None:
+def test_delete_row(sqlite_db: tuple[sqlite.ManagedConnection, Path]) -> None:
     """Test deleting a row."""
-    conn, _ = sqlite_db
+    managed_conn, _ = sqlite_db
     global _source_rows, _row_type, _table_name, _sqlite_db
 
     _source_rows = []
     _row_type = SimpleRow
     _table_name = "test_delete"
 
-    with sqlite.register_db("test_delete_db", conn) as db:
+    with sqlite.register_db("test_delete_db", managed_conn) as db:
         _sqlite_db = db
 
         app = coco.App(
@@ -272,7 +279,7 @@ def test_delete_row(sqlite_db: tuple[sqlite3.Connection, Path]) -> None:
         ]
         app.update()
 
-        data = read_table_data(conn, _table_name)
+        data = read_table_data(managed_conn, _table_name)
         assert len(data) == 3
 
         # Delete a row
@@ -282,7 +289,7 @@ def test_delete_row(sqlite_db: tuple[sqlite3.Connection, Path]) -> None:
         ]
         app.update()
 
-        data = read_table_data(conn, _table_name)
+        data = read_table_data(managed_conn, _table_name)
         assert len(data) == 2
         assert {"id": "1", "name": "Alice", "value": 100} in data
         assert {"id": "3", "name": "Charlie", "value": 300} in data
@@ -290,13 +297,15 @@ def test_delete_row(sqlite_db: tuple[sqlite3.Connection, Path]) -> None:
         assert not any(row["id"] == "2" for row in data)
 
 
-def test_different_schema_types(sqlite_db: tuple[sqlite3.Connection, Path]) -> None:
+def test_different_schema_types(
+    sqlite_db: tuple[sqlite.ManagedConnection, Path],
+) -> None:
     """Test creating tables with different schema types (dataclass with different columns)."""
-    conn, _ = sqlite_db
+    managed_conn, _ = sqlite_db
 
     extended_rows: list[ExtendedRow] = []
 
-    with sqlite.register_db("test_schema_types_db", conn) as db:
+    with sqlite.register_db("test_schema_types_db", managed_conn) as db:
 
         def declare_extended_table() -> None:
             table = coco.mount_run(
@@ -321,25 +330,25 @@ def test_different_schema_types(sqlite_db: tuple[sqlite3.Connection, Path]) -> N
         )
         app.update()
 
-        columns = get_table_columns(conn, "extended_table")
+        columns = get_table_columns(managed_conn, "extended_table")
         assert "extra" in columns
 
-        data = read_table_data(conn, "extended_table")
+        data = read_table_data(managed_conn, "extended_table")
         assert len(data) == 2
         assert {"id": "1", "name": "Alice", "value": 100, "extra": "extra_data"} in data
         assert {"id": "2", "name": "Bob", "value": 200, "extra": "more_data"} in data
 
 
-def test_drop_table(sqlite_db: tuple[sqlite3.Connection, Path]) -> None:
+def test_drop_table(sqlite_db: tuple[sqlite.ManagedConnection, Path]) -> None:
     """Test dropping a table when no longer declared."""
-    conn, _ = sqlite_db
+    managed_conn, _ = sqlite_db
     global _source_rows, _row_type, _table_name, _sqlite_db
 
     _source_rows = []
     _row_type = SimpleRow
     _table_name = "test_drop"
 
-    with sqlite.register_db("test_drop_db", conn) as db:
+    with sqlite.register_db("test_drop_db", managed_conn) as db:
         _sqlite_db = db
 
         def declare_table_conditionally() -> None:
@@ -362,25 +371,27 @@ def test_drop_table(sqlite_db: tuple[sqlite3.Connection, Path]) -> None:
         _source_rows = [SimpleRow(id="1", name="Alice", value=100)]
         app.update()
 
-        assert table_exists(conn, _table_name)
+        assert table_exists(managed_conn, _table_name)
 
         # Remove all rows (table should be dropped)
         _source_rows = []
         app.update()
 
-        assert not table_exists(conn, _table_name)
+        assert not table_exists(managed_conn, _table_name)
 
 
-def test_no_change_optimization(sqlite_db: tuple[sqlite3.Connection, Path]) -> None:
+def test_no_change_optimization(
+    sqlite_db: tuple[sqlite.ManagedConnection, Path],
+) -> None:
     """Test that unchanged data doesn't cause unnecessary updates."""
-    conn, _ = sqlite_db
+    managed_conn, _ = sqlite_db
     global _source_rows, _row_type, _table_name, _sqlite_db
 
     _source_rows = []
     _row_type = SimpleRow
     _table_name = "test_no_change"
 
-    with sqlite.register_db("test_no_change_db", conn) as db:
+    with sqlite.register_db("test_no_change_db", managed_conn) as db:
         _sqlite_db = db
 
         app = coco.App(
@@ -395,24 +406,24 @@ def test_no_change_optimization(sqlite_db: tuple[sqlite3.Connection, Path]) -> N
         ]
         app.update()
 
-        data1 = read_table_data(conn, _table_name)
+        data1 = read_table_data(managed_conn, _table_name)
         assert len(data1) == 2
 
         # Run update again with same data - should be a no-op
         app.update()
 
-        data2 = read_table_data(conn, _table_name)
+        data2 = read_table_data(managed_conn, _table_name)
         assert data1 == data2
 
 
-def test_multiple_tables(sqlite_db: tuple[sqlite3.Connection, Path]) -> None:
+def test_multiple_tables(sqlite_db: tuple[sqlite.ManagedConnection, Path]) -> None:
     """Test managing multiple tables in the same database."""
-    conn, _ = sqlite_db
+    managed_conn, _ = sqlite_db
 
     table1_rows: list[SimpleRow] = []
     table2_rows: list[SimpleRow] = []
 
-    with sqlite.register_db("multi_table_db", conn) as db:
+    with sqlite.register_db("multi_table_db", managed_conn) as db:
 
         def declare_multiple_tables() -> None:
             table1 = coco.mount_run(
@@ -455,23 +466,23 @@ def test_multiple_tables(sqlite_db: tuple[sqlite3.Connection, Path]) -> None:
         )
         app.update()
 
-        assert table_exists(conn, "users")
-        assert table_exists(conn, "products")
+        assert table_exists(managed_conn, "users")
+        assert table_exists(managed_conn, "products")
 
-        users_data = read_table_data(conn, "users")
-        products_data = read_table_data(conn, "products")
+        users_data = read_table_data(managed_conn, "users")
+        products_data = read_table_data(managed_conn, "products")
 
         assert len(users_data) == 2
         assert len(products_data) == 2
 
 
-def test_dict_rows(sqlite_db: tuple[sqlite3.Connection, Path]) -> None:
+def test_dict_rows(sqlite_db: tuple[sqlite.ManagedConnection, Path]) -> None:
     """Test using dict rows instead of dataclass rows."""
-    conn, _ = sqlite_db
+    managed_conn, _ = sqlite_db
 
     dict_rows: list[dict[str, Any]] = []
 
-    with sqlite.register_db("dict_table_db", conn) as db:
+    with sqlite.register_db("dict_table_db", managed_conn) as db:
 
         def declare_dict_table() -> None:
             table = coco.mount_run(
@@ -504,28 +515,28 @@ def test_dict_rows(sqlite_db: tuple[sqlite3.Connection, Path]) -> None:
         )
         app.update()
 
-        data = read_table_data(conn, "dict_table")
+        data = read_table_data(managed_conn, "dict_table")
         assert len(data) == 2
         assert {"id": "1", "name": "Item1", "count": 10} in data
 
 
-def test_user_managed_table(sqlite_db: tuple[sqlite3.Connection, Path]) -> None:
+def test_user_managed_table(sqlite_db: tuple[sqlite.ManagedConnection, Path]) -> None:
     """Test user-managed table (CocoIndex only manages rows, not DDL)."""
-    conn, _ = sqlite_db
+    managed_conn, _ = sqlite_db
 
     # Pre-create the table manually
-    conn.execute("""
-        CREATE TABLE user_managed (
-            id TEXT PRIMARY KEY,
-            name TEXT,
-            value INTEGER
-        )
-    """)
-    conn.commit()
+    with managed_conn.transaction() as conn:
+        conn.execute("""
+            CREATE TABLE user_managed (
+                id TEXT PRIMARY KEY,
+                name TEXT,
+                value INTEGER
+            )
+        """)
 
     user_rows: list[SimpleRow] = []
 
-    with sqlite.register_db("user_managed_db", conn) as db:
+    with sqlite.register_db("user_managed_db", managed_conn) as db:
 
         def declare_user_managed_rows() -> None:
             table = coco.mount_run(
@@ -552,7 +563,7 @@ def test_user_managed_table(sqlite_db: tuple[sqlite3.Connection, Path]) -> None:
         )
         app.update()
 
-        data = read_table_data(conn, "user_managed")
+        data = read_table_data(managed_conn, "user_managed")
         assert len(data) == 1
 
         # Clear rows - table should remain (user-managed)
@@ -560,9 +571,9 @@ def test_user_managed_table(sqlite_db: tuple[sqlite3.Connection, Path]) -> None:
         app.update()
 
         # Table should still exist
-        assert table_exists(conn, "user_managed")
+        assert table_exists(managed_conn, "user_managed")
         # But rows should be deleted
-        data = read_table_data(conn, "user_managed")
+        data = read_table_data(managed_conn, "user_managed")
         assert len(data) == 0
 
 
@@ -573,14 +584,14 @@ def test_user_managed_table(sqlite_db: tuple[sqlite3.Connection, Path]) -> None:
 
 @requires_sqlite_vec
 def test_vector_insert_and_read(
-    sqlite_db_with_vec: tuple[sqlite3.Connection, Path],
+    sqlite_db_with_vec: tuple[sqlite.ManagedConnection, Path],
 ) -> None:
     """Test inserting and reading rows with vector columns."""
-    conn, _ = sqlite_db_with_vec
+    managed_conn, _ = sqlite_db_with_vec
 
     vector_rows: list[VectorRow] = []
 
-    with sqlite.register_db("vector_test_db", conn) as db:
+    with sqlite.register_db("vector_test_db", managed_conn) as db:
 
         def declare_vector_table() -> None:
             table = coco.mount_run(
@@ -614,13 +625,13 @@ def test_vector_insert_and_read(
         )
         app.update()
 
-        assert table_exists(conn, "documents")
-        columns = get_table_columns(conn, "documents")
+        assert table_exists(managed_conn, "documents")
+        columns = get_table_columns(managed_conn, "documents")
         assert "embedding" in columns
         assert columns["embedding"] == "BLOB"
 
         # Read and verify
-        data = read_table_data(conn, "documents")
+        data = read_table_data(managed_conn, "documents")
         assert len(data) == 2
 
         # Find doc1 and verify its vector
@@ -632,14 +643,14 @@ def test_vector_insert_and_read(
 
 @requires_sqlite_vec
 def test_vector_update(
-    sqlite_db_with_vec: tuple[sqlite3.Connection, Path],
+    sqlite_db_with_vec: tuple[sqlite.ManagedConnection, Path],
 ) -> None:
     """Test updating rows with vector columns."""
-    conn, _ = sqlite_db_with_vec
+    managed_conn, _ = sqlite_db_with_vec
 
     vector_rows: list[VectorRow] = []
 
-    with sqlite.register_db("vector_update_db", conn) as db:
+    with sqlite.register_db("vector_update_db", managed_conn) as db:
 
         def declare_vector_table() -> None:
             table = coco.mount_run(
@@ -666,7 +677,7 @@ def test_vector_update(
         )
         app.update()
 
-        data = read_table_data(conn, "docs_update")
+        data = read_table_data(managed_conn, "docs_update")
         assert len(data) == 1
         doc1 = data[0]
         assert decode_vector(doc1["embedding"], VECTOR_DIM) == pytest.approx(
@@ -684,7 +695,7 @@ def test_vector_update(
         )
         app.update()
 
-        data = read_table_data(conn, "docs_update")
+        data = read_table_data(managed_conn, "docs_update")
         assert len(data) == 1
         doc1 = data[0]
         assert doc1["content"] == "Updated content"
@@ -695,10 +706,10 @@ def test_vector_update(
 
 @requires_sqlite_vec
 def test_vector_with_explicit_schema(
-    sqlite_db_with_vec: tuple[sqlite3.Connection, Path],
+    sqlite_db_with_vec: tuple[sqlite.ManagedConnection, Path],
 ) -> None:
     """Test vector columns using explicit VectorSchema in column_overrides."""
-    conn, _ = sqlite_db_with_vec
+    managed_conn, _ = sqlite_db_with_vec
 
     # Define a schema with explicit VectorSchema override
     explicit_vector_schema = VectorSchema(dtype=np.dtype(np.float32), size=3)
@@ -711,7 +722,7 @@ def test_vector_with_explicit_schema(
 
     explicit_rows: list[ExplicitVectorRow] = []
 
-    with sqlite.register_db("vector_explicit_db", conn) as db:
+    with sqlite.register_db("vector_explicit_db", managed_conn) as db:
 
         def declare_explicit_vector_table() -> None:
             table = coco.mount_run(
@@ -743,7 +754,7 @@ def test_vector_with_explicit_schema(
         )
         app.update()
 
-        data = read_table_data(conn, "explicit_vectors")
+        data = read_table_data(managed_conn, "explicit_vectors")
         assert len(data) == 1
         row = data[0]
         assert row["data"] == "test data"
@@ -753,14 +764,14 @@ def test_vector_with_explicit_schema(
 
 @requires_sqlite_vec
 def test_vector_delete(
-    sqlite_db_with_vec: tuple[sqlite3.Connection, Path],
+    sqlite_db_with_vec: tuple[sqlite.ManagedConnection, Path],
 ) -> None:
     """Test deleting rows with vector columns."""
-    conn, _ = sqlite_db_with_vec
+    managed_conn, _ = sqlite_db_with_vec
 
     vector_rows: list[VectorRow] = []
 
-    with sqlite.register_db("vector_delete_db", conn) as db:
+    with sqlite.register_db("vector_delete_db", managed_conn) as db:
 
         def declare_vector_table() -> None:
             table = coco.mount_run(
@@ -799,16 +810,61 @@ def test_vector_delete(
         )
         app.update()
 
-        data = read_table_data(conn, "docs_delete")
+        data = read_table_data(managed_conn, "docs_delete")
         assert len(data) == 3
 
         # Delete one row
         vector_rows.pop(1)  # Remove doc2
         app.update()
 
-        data = read_table_data(conn, "docs_delete")
+        data = read_table_data(managed_conn, "docs_delete")
         assert len(data) == 2
         ids = [row["id"] for row in data]
         assert "doc1" in ids
         assert "doc2" not in ids
         assert "doc3" in ids
+
+
+@requires_sqlite_vec
+def test_vector_without_extension_raises_error(
+    sqlite_db: tuple[sqlite.ManagedConnection, Path],
+) -> None:
+    """Test that using vector columns without sqlite-vec loaded raises an error."""
+    # Use the regular sqlite_db fixture, then close it and create a new one without vec
+    original_managed_conn, db_path = sqlite_db
+    original_managed_conn.close()
+
+    # Create a new connection explicitly without loading sqlite-vec
+    managed_conn = sqlite.connect(db_path, load_vec=False)
+
+    vector_rows: list[VectorRow] = []
+
+    with sqlite.register_db("vector_no_ext_db", managed_conn) as db:
+
+        def declare_vector_table() -> None:
+            table = coco.mount_run(
+                coco.component_subpath("setup", "table"),
+                db.declare_table_target,
+                "vectors_no_ext",
+                sqlite.TableSchema(VectorRow, primary_key=["id"]),
+            ).result()
+            for row in vector_rows:
+                table.declare_row(row=row)
+
+        app = coco.App(
+            coco.AppConfig(name="test_vector_no_ext", environment=coco_env),
+            declare_vector_table,
+        )
+
+        vector_rows.append(
+            VectorRow(
+                id="doc1",
+                content="Test",
+                embedding=np.array([1.0, 2.0, 3.0, 4.0], dtype=np.float32),
+            )
+        )
+
+        with pytest.raises(RuntimeError, match="sqlite-vec extension is not loaded"):
+            app.update()
+
+    managed_conn.close()

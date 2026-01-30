@@ -19,11 +19,14 @@ import threading
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
+from contextlib import contextmanager
+from collections.abc import Set
 from typing import (
     Any,
     Callable,
     Collection,
     Generic,
+    Iterator,
     Literal,
     NamedTuple,
     Sequence,
@@ -54,12 +57,57 @@ _RowFingerprint = bytes
 ValueEncoder = Callable[[Any], Any]
 
 
-@dataclass
-class _ManagedConnection:
-    """A SQLite connection with a lock for thread-safe access."""
+_VEC_EXTENSION = "sqlite-vec"
 
-    conn: sqlite3.Connection
-    lock: threading.Lock = field(default_factory=threading.Lock)
+
+@dataclass
+class ManagedConnection:
+    """
+    A SQLite connection with thread-safe access and extension tracking.
+
+    The connection uses autocommit mode (isolation_level=None). Use `transaction()`
+    for write operations that need atomic commits, or `readonly()` for read-only
+    operations that don't need transaction management.
+    """
+
+    _conn: sqlite3.Connection
+    _lock: threading.Lock = field(default_factory=threading.Lock)
+    _loaded_extensions: set[str] = field(default_factory=set)
+
+    @property
+    def loaded_extensions(self) -> Set[str]:
+        """Return the set of loaded extensions (read-only view)."""
+        return self._loaded_extensions
+
+    @contextmanager
+    def transaction(self) -> Iterator[sqlite3.Connection]:
+        """
+        Acquire lock and execute within a transaction (BEGIN...COMMIT/ROLLBACK).
+
+        Use for write operations that should be atomic.
+        """
+        with self._lock:
+            self._conn.execute("BEGIN")
+            try:
+                yield self._conn
+                self._conn.execute("COMMIT")
+            except Exception:
+                self._conn.execute("ROLLBACK")
+                raise
+
+    @contextmanager
+    def readonly(self) -> Iterator[sqlite3.Connection]:
+        """
+        Acquire lock for read-only operations.
+
+        No transaction is started since the connection uses autocommit mode.
+        """
+        with self._lock:
+            yield self._conn
+
+    def close(self) -> None:
+        """Close the underlying connection."""
+        self._conn.close()
 
 
 # SQLite has a limit of 999 variables per query (SQLITE_MAX_VARIABLE_NUMBER)
@@ -198,6 +246,7 @@ class ColumnDef(NamedTuple):
     encoder: ValueEncoder | None = (
         None  # Optional encoder to convert value before sending to SQLite
     )
+    is_vector: bool = False  # Whether this column stores vector data
 
 
 # Type variable for row type
@@ -310,6 +359,7 @@ class TableSchema(Generic[RowT]):
                 type=type_mapping.sqlite_type.strip(),
                 nullable=type_info.nullable,
                 encoder=type_mapping.encoder,
+                is_vector=(vector_schema_provider is not None),
             )
 
         return columns
@@ -325,14 +375,14 @@ class _RowAction(NamedTuple):
 class _RowHandler(coco.TargetHandler[_RowKey, _RowValue, _RowFingerprint]):
     """Handler for row-level target states within a table."""
 
-    _managed_conn: _ManagedConnection
+    _managed_conn: ManagedConnection
     _table_name: str
     _table_schema: TableSchema[Any]
     _sink: coco.TargetActionSink[_RowAction, None]
 
     def __init__(
         self,
-        managed_conn: _ManagedConnection,
+        managed_conn: ManagedConnection,
         table_name: str,
         table_schema: TableSchema[Any],
     ) -> None:
@@ -358,21 +408,14 @@ class _RowHandler(coco.TargetHandler[_RowKey, _RowValue, _RowFingerprint]):
             else:
                 upserts.append(action)
 
-        with self._managed_conn.lock:
-            conn = self._managed_conn.conn
-            try:
-                # Process upserts
-                if upserts:
-                    self._execute_upserts(conn, upserts)
+        with self._managed_conn.transaction() as conn:
+            # Process upserts
+            if upserts:
+                self._execute_upserts(conn, upserts)
 
-                # Process deletes
-                if deletes:
-                    self._execute_deletes(conn, deletes)
-
-                conn.commit()
-            except Exception:
-                conn.rollback()
-                raise
+            # Process deletes
+            if deletes:
+                self._execute_deletes(conn, deletes)
 
     def _execute_upserts(
         self, conn: sqlite3.Connection, upserts: list[_RowAction]
@@ -542,7 +585,7 @@ class _TableAction(NamedTuple):
 
 
 # Database registry: maps stable keys to managed connections
-_db_registry: connection.ConnectionRegistry[_ManagedConnection] = (
+_db_registry: connection.ConnectionRegistry[ManagedConnection] = (
     connection.ConnectionRegistry("cocoindex/sqlite")
 )
 
@@ -564,8 +607,17 @@ def _create_table(
     schema: TableSchema[Any],
     *,
     if_not_exists: bool,
+    has_vec_extension: bool,
 ) -> None:
     """Create a table."""
+    # Check if vector columns are used but sqlite-vec is not loaded
+    vector_cols = [name for name, col in schema.columns.items() if col.is_vector]
+    if vector_cols and not has_vec_extension:
+        raise RuntimeError(
+            f"Table '{table_name}' has vector column(s) {vector_cols}, but sqlite-vec "
+            "extension is not loaded. Use connect(..., load_vec=True) to enable it."
+        )
+
     qualified_name = _qualified_table_name(table_name)
 
     # Build column definitions
@@ -671,52 +723,47 @@ def _apply_table_actions(
 
     for key, idxs in by_key.items():
         managed_conn = _db_registry.get(key.db_key)
+        has_vec = _VEC_EXTENSION in managed_conn.loaded_extensions
 
-        with managed_conn.lock:
-            conn = managed_conn.conn
-            try:
-                for i in idxs:
-                    action = actions_list[i]
-                    assert action.key == key
+        with managed_conn.transaction() as conn:
+            for i in idxs:
+                action = actions_list[i]
+                assert action.key == key
 
-                    if action.main_action in ("replace", "delete"):
-                        _drop_table(conn, key.table_name)
+                if action.main_action in ("replace", "delete"):
+                    _drop_table(conn, key.table_name)
 
-                    if coco.is_non_existence(action.spec):
-                        outputs[i] = None
-                        continue
+                if coco.is_non_existence(action.spec):
+                    outputs[i] = None
+                    continue
 
-                    spec = action.spec
-                    outputs[i] = coco.ChildTargetDef(
-                        handler=_RowHandler(
-                            managed_conn=managed_conn,
-                            table_name=key.table_name,
-                            table_schema=spec.table_schema,
-                        )
+                spec = action.spec
+                outputs[i] = coco.ChildTargetDef(
+                    handler=_RowHandler(
+                        managed_conn=managed_conn,
+                        table_name=key.table_name,
+                        table_schema=spec.table_schema,
                     )
+                )
 
-                    if action.main_action in ("insert", "upsert", "replace"):
-                        _create_table(
-                            conn,
-                            key.table_name,
-                            spec.table_schema,
-                            if_not_exists=(action.main_action == "upsert"),
-                        )
-                        continue
+                if action.main_action in ("insert", "upsert", "replace"):
+                    _create_table(
+                        conn,
+                        key.table_name,
+                        spec.table_schema,
+                        if_not_exists=(action.main_action == "upsert"),
+                        has_vec_extension=has_vec,
+                    )
+                    continue
 
-                    # No main change: reconcile non-PK columns incrementally.
-                    if action.column_actions:
-                        _apply_column_actions(
-                            conn,
-                            key.table_name,
-                            spec.table_schema,
-                            action.column_actions,
-                        )
-
-                conn.commit()
-            except Exception:
-                conn.rollback()
-                raise
+                # No main change: reconcile non-PK columns incrementally.
+                if action.column_actions:
+                    _apply_column_actions(
+                        conn,
+                        key.table_name,
+                        spec.table_schema,
+                        action.column_actions,
+                    )
 
     return outputs
 
@@ -848,7 +895,7 @@ class TableTarget(
         return self._provider.memo_key
 
 
-class SqliteDatabase(connection.KeyedConnection[_ManagedConnection]):
+class SqliteDatabase(connection.KeyedConnection[ManagedConnection]):
     """
     Handle for a registered SQLite database.
 
@@ -901,7 +948,7 @@ class SqliteDatabase(connection.KeyedConnection[_ManagedConnection]):
         return TableTarget(provider, table_schema)
 
 
-def register_db(key: str, conn: sqlite3.Connection) -> SqliteDatabase:
+def register_db(key: str, managed_conn: ManagedConnection) -> SqliteDatabase:
     """
     Register a SQLite database connection with a stable key.
 
@@ -915,7 +962,7 @@ def register_db(key: str, conn: sqlite3.Connection) -> SqliteDatabase:
         key: A stable identifier for this database (e.g., "main_db", "analytics").
              Must be unique - raises ValueError if a database with this key
              is already registered.
-        conn: A sqlite3.Connection object.
+        managed_conn: A ManagedConnection object from connect().
 
     Returns:
         A SqliteDatabase handle that can be used to create table targets.
@@ -926,18 +973,17 @@ def register_db(key: str, conn: sqlite3.Connection) -> SqliteDatabase:
     Example:
         ```python
         def setup():
-            conn = sqlite3.connect("mydb.sqlite")
+            managed_conn = connect("mydb.sqlite")
 
             # Option 1: Manual lifecycle
-            db = register_db("my_db", conn)
+            db = register_db("my_db", managed_conn)
 
             # Option 2: Context manager (auto-unregister on exit)
-            with register_db("my_db", conn) as db:
+            with register_db("my_db", managed_conn) as db:
                 table = db.declare_table_target("my_table", schema)
             # db is automatically unregistered here
         ```
     """
-    managed_conn = _ManagedConnection(conn)
     _db_registry.register(key, managed_conn)
     return SqliteDatabase(_db_registry.name, key, managed_conn, _db_registry)
 
@@ -946,17 +992,19 @@ def connect(
     database: str | Path,
     *,
     timeout: float = 5.0,
-    isolation_level: Literal["DEFERRED", "EXCLUSIVE", "IMMEDIATE"] | None = "DEFERRED",
     load_vec: bool | Literal["auto"] = "auto",
     **kwargs: Any,
-) -> sqlite3.Connection:
+) -> ManagedConnection:
     """
     Create a SQLite connection with common defaults for CocoIndex.
+
+    The connection uses autocommit mode internally. Use `ManagedConnection.transaction()`
+    for write operations that need atomic commits, or `ManagedConnection.readonly()`
+    for read-only operations.
 
     Args:
         database: Path to the database file, or ":memory:" for in-memory database.
         timeout: How long to wait for locks (default 5.0 seconds).
-        isolation_level: Transaction isolation level (default "DEFERRED").
         load_vec: Whether to load the sqlite-vec extension for vector support.
             - "auto" (default): Try to load, silently ignore if unavailable.
             - True: Load and raise an error if unavailable.
@@ -964,36 +1012,40 @@ def connect(
         **kwargs: Additional arguments passed to sqlite3.connect().
 
     Returns:
-        A sqlite3.Connection object.
+        A ManagedConnection object with thread-safe access.
 
     Example:
         ```python
-        conn = connect("mydb.sqlite")
+        managed_conn = connect("mydb.sqlite")
         # Or for in-memory:
-        conn = connect(":memory:")
+        managed_conn = connect(":memory:")
         # Or explicitly require vector support:
-        conn = connect("mydb.sqlite", load_vec=True)
+        managed_conn = connect("mydb.sqlite", load_vec=True)
         ```
     """
     database_str = str(database) if isinstance(database, Path) else database
     conn: sqlite3.Connection = sqlite3.connect(
         database_str,
         timeout=timeout,
-        isolation_level=isolation_level,
+        isolation_level=None,  # Autocommit mode - transactions managed explicitly
         check_same_thread=False,
         **kwargs,
     )
 
+    managed_conn = ManagedConnection(conn)
+
     if load_vec is True:
-        _load_sqlite_vec(conn)
+        _load_sqlite_vec(managed_conn)
     elif load_vec == "auto":
-        _load_sqlite_vec(conn, ignore_error=True)
+        _load_sqlite_vec(managed_conn, ignore_error=True)
 
-    return conn
+    return managed_conn
 
 
-def _load_sqlite_vec(conn: sqlite3.Connection, *, ignore_error: bool = False) -> None:
-    """Load the sqlite-vec extension into a SQLite connection."""
+def _load_sqlite_vec(
+    managed_conn: ManagedConnection, *, ignore_error: bool = False
+) -> None:
+    """Load the sqlite-vec extension into a managed connection."""
     try:
         import sqlite_vec  # type: ignore
     except ImportError as e:
@@ -1005,9 +1057,10 @@ def _load_sqlite_vec(conn: sqlite3.Connection, *, ignore_error: bool = False) ->
         ) from e
 
     try:
-        conn.enable_load_extension(True)
-        sqlite_vec.load(conn)
-        conn.enable_load_extension(False)
+        managed_conn._conn.enable_load_extension(True)
+        sqlite_vec.load(managed_conn._conn)
+        managed_conn._conn.enable_load_extension(False)
+        managed_conn._loaded_extensions.add(_VEC_EXTENSION)
     except sqlite3.OperationalError:
         if ignore_error:
             return
@@ -1016,6 +1069,7 @@ def _load_sqlite_vec(conn: sqlite3.Connection, *, ignore_error: bool = False) ->
 
 __all__ = [
     "ColumnDef",
+    "ManagedConnection",
     "ValueEncoder",
     "SqliteDatabase",
     "SqliteType",
