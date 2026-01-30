@@ -24,7 +24,7 @@ jobs:
         run: prek auto-update
 
       - name: Create Pull Request
-        uses: peter-evans/create-pull-request@v7
+        uses: peter-evans/create-pull-request@v8
         with:
           commit-message: "ci: update prek hooks"
           title: "ci: update prek hooks"
