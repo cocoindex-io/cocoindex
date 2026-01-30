@@ -8,6 +8,7 @@ on:
       - python/**
       - "*.toml"
       - ".github/workflows/*.yml"
+      - "docs/docs/cli_commands.md"
   push:
     branches: [main, v1]
     paths:
@@ -15,6 +16,7 @@ on:
       - python/**
       - "*.toml"
       - ".github/workflows/*.yml"
+      - "docs/docs/cli_commands.md"
   workflow_dispatch:
 
 permissions:
