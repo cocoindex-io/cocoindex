@@ -489,17 +489,53 @@ class _SimpleFunctionExecutor:
 def function(**args: Any) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """
     Decorate a function to provide a function for an op.
+
+    Supports decorating instance methods (first parameter `self`), class methods
+    (first parameter `cls` — supports being applied before or after `@classmethod`),
+    and static methods (`@staticmethod`).
+
+    For methods, if a `scope` parameter is present it must be the first parameter
+    after `self`/`cls`. For standalone functions/static methods, if `scope` is
+    present it must be the first parameter.
     """
     op_args = OpArgs(**args)
 
-    def _inner(fn: Callable[..., Any]) -> Callable[..., Any]:
-        # Convert snake case to camel case.
+    def _inner(obj: Callable[..., Any]) -> Callable[..., Any]:
+        fn = obj
+        if isinstance(obj, classmethod):
+            fn = obj.__func__
+        elif isinstance(obj, staticmethod):
+            fn = obj.__func__
+
+        # Convert snake case to camel case using the underlying function name.
         op_kind = "".join(word.capitalize() for word in fn.__name__.split("_"))
+
         sig = inspect.signature(fn)
+        params = list(sig.parameters.values())
+
+        # Enforce scope position rules.
+        scope_idx = next((i for i, p in enumerate(params) if p.name == "scope"), None)
+        if params and params[0].name in ("self", "cls"):
+            # Method: scope (if present) must be the first parameter after self/cls
+            if scope_idx is not None and scope_idx != 1:
+                raise ValueError(
+                    "For methods, 'scope' must be the first parameter after 'self'/'cls'"
+                )
+            expected_args = list(sig.parameters.items())[1:]
+        else:
+            # Standalone function / staticmethod: scope (if present) must be first
+            if scope_idx is not None and scope_idx != 0:
+                raise ValueError(
+                    "For functions/static methods, 'scope' must be the first parameter"
+                )
+            expected_args = list(sig.parameters.items())
+
+        # Attach op kind to the underlying function for downstream use.
         fn.__cocoindex_op_kind__ = op_kind  # type: ignore
+
         _register_op_factory(
             category=OpCategory.FUNCTION,
-            expected_args=list(sig.parameters.items()),
+            expected_args=expected_args,
             expected_return=sig.return_annotation,
             executor_factory=_SimpleFunctionExecutor,
             spec_loader=lambda _: fn,
@@ -507,6 +543,10 @@ def function(**args: Any) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
             op_args=op_args,
         )
 
+        if isinstance(obj, classmethod):
+            return classmethod(fn)
+        if isinstance(obj, staticmethod):
+            return staticmethod(fn)
         return fn
 
     return _inner

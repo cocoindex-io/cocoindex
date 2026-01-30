@@ -52,6 +52,7 @@ from .typing import (
     Vector,
     Json,
 )
+from .op import function
 
 _engine.init_pyo3_runtime()
 
@@ -66,6 +67,7 @@ __all__ = [
     "storages",
     "cli",
     "op",
+    "function",
     "utils",
     # Auth registry
     "AuthEntryReference",
