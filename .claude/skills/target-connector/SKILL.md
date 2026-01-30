@@ -134,9 +134,146 @@ Create module-level shared sinks when all handler instances use the same action 
 _shared_sink = coco.TargetActionSink.from_fn(_apply_actions)
 ```
 
+## Completion Checklist
+
+After implementing the connector code, complete these additional steps:
+
+### 1. Optional Dependencies
+
+If the connector requires third-party packages, update `pyproject.toml`:
+
+```toml
+[project.optional-dependencies]
+# Add new optional dependency group
+myconnector = ["some-package>=1.0.0"]
+
+# Add to the 'all' group
+all = [
+    # ... existing deps ...
+    "some-package>=1.0.0",
+]
+
+[[tool.mypy.overrides]]
+# Add to mypy ignore list if package lacks type stubs
+module = [
+    # ... existing modules ...
+    "some_package",
+    "some_package.*",
+]
+ignore_missing_imports = true
+```
+
+### 2. Documentation
+
+Create connector documentation at `docs/docs/connectors/<connector_name>.md`:
+
+- Follow the structure of existing connector docs (e.g., `postgres.md`, `sqlite.md`)
+- Include: connection setup, target state APIs, schema definition, type mappings, examples
+- Add a note about optional dependencies if applicable
+
+Update `docs/sidebars.ts` to include the new connector:
+
+```typescript
+{
+  type: 'category',
+  label: 'Connectors',
+  items: [
+    // ... existing connectors ...
+    'connectors/<connector_name>',  // Add in alphabetical order
+  ],
+},
+```
+
+### 3. Tests
+
+Create tests at `python/tests/connectors/test_<connector_name>_target.py`:
+
+**Test structure:**
+
+```python
+import pytest
+import cocoindex as coco
+from tests import common
+
+# Check for optional dependency availability
+try:
+    import optional_package
+    HAS_OPTIONAL = True
+except ImportError:
+    HAS_OPTIONAL = False
+
+requires_optional = pytest.mark.skipif(
+    not HAS_OPTIONAL, reason="optional-package is not installed"
+)
+
+coco_env = common.create_test_env(__file__)
+```
+
+**Required test cases:**
+
+| Category | Test Cases |
+| -------- | ---------- |
+| Basic CRUD | Create target, insert data, update data, delete data |
+| Schema | Different column types, schema with extra columns |
+| Lifecycle | Drop/cleanup when target no longer declared |
+| Optimization | No-op when data unchanged |
+| Multiple targets | Multiple tables/directories in same connection |
+| User-managed | `managed_by="user"` mode if supported |
+| Optional features | Vector support, special types (skip if dependency missing) |
+
+**Test pattern:**
+
+```python
+def test_insert_and_update(connector_fixture: tuple[Connection, Path]) -> None:
+    conn, _ = connector_fixture
+    source_rows: list[RowType] = []
+
+    with connector.register_db("test_db", conn) as db:
+
+        def declare_target() -> None:
+            table = coco.mount_run(
+                coco.component_subpath("setup", "table"),
+                db.declare_table_target,
+                "test_table",
+                connector.TableSchema(RowType, primary_key=["id"]),
+            ).result()
+            for row in source_rows:
+                table.declare_row(row=row)
+
+        app = coco.App(
+            coco.AppConfig(name="test_insert", environment=coco_env),
+            declare_target,
+        )
+
+        # Insert
+        source_rows.append(RowType(id="1", name="Alice"))
+        app.update()
+        assert read_data(conn, "test_table") == [{"id": "1", "name": "Alice"}]
+
+        # Update
+        source_rows[0] = RowType(id="1", name="Alice Updated")
+        app.update()
+        assert read_data(conn, "test_table") == [{"id": "1", "name": "Alice Updated"}]
+```
+
+**Optional feature tests:**
+
+```python
+@requires_optional
+def test_vector_support(connector_with_vec: tuple[Connection, Path]) -> None:
+    """Tests that require optional dependencies should be skipped when unavailable."""
+    # ... test vector functionality ...
+```
+
+**Reference implementations:**
+
+- `python/tests/connectors/test_sqlite_target.py` - SQLite tests with vector support
+
 ## Resources
 
 For complete implementation details and examples, see:
 
 - `docs/docs/advanced_topics/custom_target_connector.md` - Full documentation
-- `python/cocoindex/connectors/localfs/_target.py` - Real-world implementation example (localfs connector)
+- `python/cocoindex/connectors/localfs/_target.py` - File system target connector (sync API, nested directory targets)
+- `python/cocoindex/connectors/sqlite/_target.py` - SQLite target connector (sync API, two-level table/row targets, vector support)
+- `python/cocoindex/connectors/postgres/_target.py` - PostgreSQL target connector (async API, two-level table/row targets, vector support)

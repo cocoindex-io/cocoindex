@@ -40,6 +40,7 @@ const sidebars: SidebarsConfig = {
         'connectors/localfs',
         'connectors/postgres',
         'connectors/qdrant',
+        'connectors/sqlite',
       ],
     },
     {
