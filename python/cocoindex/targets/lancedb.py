@@ -364,7 +364,11 @@ class _Connector:
                 return "_ivf_flat"
             return ""
 
-        def _make_index_name(field_name: str, metric: VectorSimilarityMetric, method: VectorIndexMethod | None) -> str:
+        def _make_index_name(
+            field_name: str,
+            metric: VectorSimilarityMetric,
+            method: VectorIndexMethod | None,
+        ) -> str:
             """Generate index name with optional method suffix."""
             base_name = f"__{field_name}__{_LANCEDB_VECTOR_METRIC[metric]}__idx"
             suffix = _get_method_suffix(method)
@@ -380,7 +384,9 @@ class _Connector:
             vector_indexes=(
                 [
                     _VectorIndex(
-                        name=_make_index_name(index.field_name, index.metric, index.method),
+                        name=_make_index_name(
+                            index.field_name, index.metric, index.method
+                        ),
                         field_name=index.field_name,
                         metric=index.metric,
                         method=index.method,
