@@ -4,7 +4,6 @@ description: Get started with CocoIndex in 5 minutes
 ---
 
 import { GitHubButton, DocumentationButton } from '@site/src/components/ActionButtons';
-import useBaseUrl from '@docusaurus/useBaseUrl';
 
 # Quickstart
 
@@ -105,7 +104,6 @@ For each file, `coco.mount()` mounts a processing component. It's up to you to p
 In this example, because we want to independently convert each file to Markdown, it is the most natural to pick it at the file level.
 
 <DocumentationButton url="/docs-v1/programming_guide/processing_component" text="Processing Component" />
-
 
 ### Define file processing
 
