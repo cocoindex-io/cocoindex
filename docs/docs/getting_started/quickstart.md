@@ -52,7 +52,8 @@ CocoIndex automatically tracks changes — when you add, modify, or delete sourc
     ```
 
 ## Define the app
-![App Definition](/img/quickstart/app-def.svg)
+
+![App definition](/img/quickstart/app-def.svg)
 
 Create a new file `main.py`:
 
@@ -77,7 +78,7 @@ This defines a CocoIndex App — the top-level runnable unit in CocoIndex.
 
 ### Define the main function
 
-![App Definition](/img/quickstart/components.svg)
+![Processing components](/img/quickstart/components.svg)
 
 ```python
 @coco.function
@@ -102,7 +103,7 @@ def app_main(sourcedir: pathlib.Path, outdir: pathlib.Path) -> None:
 
 ### Define file processing
 
-![File Process](/img/quickstart/file-process.svg)
+![File processing](/img/quickstart/file-process.svg)
 
 This function converts a single PDF to Markdown:
 
