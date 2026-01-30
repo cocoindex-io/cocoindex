@@ -1,6 +1,6 @@
 <!-- markdownlint-disable MD041 -->
 
-## Subcommands reference
+## Subcommands Reference
 
 ### `drop`
 
