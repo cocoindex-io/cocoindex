@@ -21,7 +21,7 @@ pip install cocoindex[postgres]
 
 :::
 
-## Connection Setup
+## Connection setup
 
 `create_pool()` is a thin wrapper around [`asyncpg.create_pool()`](https://magicstack.github.io/asyncpg/current/api/index.html#asyncpg.pool.create_pool) that registers necessary extensions (e.g., pgvector) on each connection.
 
@@ -50,7 +50,7 @@ async with await postgres.create_pool("postgresql://localhost/mydb") as pool:
     ...
 ```
 
-## As Source
+## As source
 
 Use `PgTableSource` to read rows from a PostgreSQL table. It returns a `RowFetcher` that supports both synchronous and asynchronous iteration.
 
@@ -81,7 +81,7 @@ class PgTableSource(Generic[RowT]):
 - `row_type` — Optional record type (dataclass, NamedTuple, or Pydantic model) for automatic row conversion. When provided, `columns` (if specified) must be a subset of the record's fields.
 - `row_factory` — Optional callable to transform each row dict. Mutually exclusive with `row_type`.
 
-### Row Mapping
+### Row mapping
 
 By default, rows are returned as `dict[str, Any]`, with PostgreSQL types converted to Python types using [asyncpg's type conversion](https://magicstack.github.io/asyncpg/current/usage.html#type-conversion). You can configure automatic conversion to custom types using `row_type` or `row_factory`.
 
@@ -118,7 +118,7 @@ source = postgres.PgTableSource(
 )
 ```
 
-### Iterating Rows
+### Iterating rows
 
 `fetch_rows()` returns a `RowFetcher` that supports both sync and async iteration:
 
@@ -160,13 +160,13 @@ async def app_main(pool: asyncpg.Pool) -> None:
         )
 ```
 
-## As Target
+## As target
 
 The `postgres` connector provides target state APIs for writing rows to tables. With it, CocoIndex tracks what rows should exist and automatically handles upserts and deletions.
 
-### Declaring Target States
+### Declaring target states
 
-#### Database Registration
+#### Database registration
 
 Before declaring target states, register the connection pool with a stable key that identifies the logical database. This key allows CocoIndex to recognize the same database even when connection details change (e.g., username, password, or host address).
 
@@ -191,7 +191,7 @@ async with await postgres.create_pool(DATABASE_URL) as pool:
     # db is automatically unregistered here
 ```
 
-#### Tables (Parent State)
+#### Tables (parent state)
 
 Declares a table as a target state. Returns a `TableTarget` for declaring rows.
 
@@ -215,7 +215,7 @@ def PgDatabase.declare_table_target(
 
 **Returns:** A pending `TableTarget`. Use `mount_run(...).result()` to wait for resolution.
 
-#### Rows (Child States)
+#### Rows (child states)
 
 Once a `TableTarget` is resolved, declare rows to be upserted:
 
@@ -231,7 +231,7 @@ def TableTarget.declare_row(
 
 - `row` — A row object (dict, dataclass, NamedTuple, or Pydantic model). Must include all primary key columns.
 
-### Table Schema: From Python Class
+### Table schema: from Python class
 
 Define the table structure using a Python class (dataclass, NamedTuple, or Pydantic model):
 
@@ -350,7 +350,7 @@ class Document:
     embedding: Annotated[NDArray, VectorSchema(dtype=np.float32, size=384)]
 ```
 
-### Table Schema: Explicit Column Definitions
+### Table schema: explicit column definitions
 
 Define columns directly using `ColumnDef`:
 

@@ -19,7 +19,7 @@ pip install cocoindex[qdrant]
 
 :::
 
-## Connection Setup
+## Connection setup
 
 `create_client()` creates a Qdrant client connection with optional gRPC support.
 
@@ -46,13 +46,13 @@ def create_client(
 client = qdrant.create_client("http://localhost:6333")
 ```
 
-## As Target
+## As target
 
 The `qdrant` connector provides target state APIs for writing points to collections. CocoIndex tracks what points should exist and automatically handles upserts and deletions.
 
-### Declaring Target States
+### Declaring target states
 
-#### Database Registration
+#### Database registration
 
 Before declaring target states, register the Qdrant client with a stable key that identifies the logical database. This key allows CocoIndex to recognize the same database even when connection details change.
 
@@ -74,7 +74,7 @@ client = qdrant.create_client("http://localhost:6333")
 db = qdrant.register_db("my_vectors", client)
 ```
 
-#### Collections (Parent State)
+#### Collections (parent state)
 
 Declares a collection as a target state. Returns a `CollectionTarget` for declaring points.
 
@@ -96,7 +96,7 @@ def QdrantDatabase.declare_collection_target(
 
 **Returns:** A pending `CollectionTarget`. Use `mount_run(...).result()` to wait for resolution.
 
-#### Points (Child States)
+#### Points (child states)
 
 Once a `CollectionTarget` is resolved, declare points to be upserted using `qdrant.PointStruct`, which is an alias of `qdrant_client.http.models.PointStruct`:
 
@@ -114,7 +114,7 @@ def CollectionTarget.declare_point(
   - `vector` — Vector data (single vector or dict of named vectors)
   - `payload` — Optional metadata as a JSON-serializable dict
 
-### Collection Schema
+### Collection schema
 
 Define vector configurations for a collection using `CollectionSchema`. Unlike row-oriented databases, Qdrant uses a point-oriented model where each point has schemaless payload and one or more vectors with predefined dimensions.
 
@@ -149,7 +149,7 @@ class QdrantVectorDef(NamedTuple):
 - `distance` — Distance metric for similarity search (default: `"cosine"`)
 - `multivector_comparator` — Comparator for multi-vector fields (only applies to `MultiVectorSchemaProvider`)
 
-#### Single (Unnamed) Vector
+#### Single (unnamed) vector
 
 For collections with a single unnamed vector:
 
@@ -173,7 +173,7 @@ point = qdrant.PointStruct(
 )
 ```
 
-#### Named Vectors
+#### Named vectors
 
 For collections with multiple named vectors:
 
@@ -240,7 +240,7 @@ schema = qdrant.CollectionSchema(
 )
 ```
 
-#### Multi-Vector Support
+#### Multi-vector support
 
 For multi-vector configurations (multiple vectors per point stored together):
 
@@ -258,7 +258,7 @@ schema = qdrant.CollectionSchema(
 )
 ```
 
-### Distance Metrics
+### Distance metrics
 
 The `distance` parameter in `QdrantVectorDef` specifies the similarity metric:
 
@@ -266,7 +266,7 @@ The `distance` parameter in `QdrantVectorDef` specifies the similarity metric:
 - `"dot"` — Dot product similarity
 - `"euclid"` — Euclidean distance (L2)
 
-### Example: Single Vector
+### Example: single vector
 
 ```python
 import cocoindex as coco
@@ -326,7 +326,7 @@ async def app_main() -> None:
         )
 ```
 
-### Example: Named Vectors
+### Example: named vectors
 
 ```python
 from cocoindex.resources.schema import VectorSchema
@@ -396,7 +396,7 @@ payload = {
 }
 ```
 
-## Vector Search
+## Vector search
 
 The connector focuses on writing points to Qdrant. For vector search, use the Qdrant client directly:
 

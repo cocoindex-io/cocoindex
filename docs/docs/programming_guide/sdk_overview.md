@@ -5,11 +5,11 @@ description: Overview of the CocoIndex Python SDK package organization, common t
 
 This document provides an overview of the CocoIndex Python SDK organization and how to choose between the synchronous and asynchronous APIs.
 
-## Package Organization
+## Package organization
 
 The CocoIndex SDK is organized into several modules:
 
-### Core Packages
+### Core packages
 
 | Package | Description |
 |---------|-------------|
@@ -34,7 +34,7 @@ from cocoindex.resources.file import FileLike, PatternFilePathMatcher
 from cocoindex.resources.chunk import Chunk
 ```
 
-## Common Types
+## Common types
 
 ### StableKey
 
@@ -48,7 +48,7 @@ Common examples include strings (like `"setup"` or `"table"`), integers, and UUI
 
 Each processing component must be mounted at a unique path. See [Processing Component](./processing_component.md) for how the component path tree affects target states and ownership.
 
-## Async vs Sync APIs
+## Async vs sync APIs
 
 CocoIndex provides both asynchronous and synchronous APIs to fit different application patterns.
 
@@ -61,13 +61,13 @@ The two packages relate as follows:
 
 - **Shared APIs** — Many APIs are non-blocking and work identically in both contexts. For instance, `component_subpath()` and target state declaration APIs are shared between both packages. Decorators like `@function` and `@lifespan` are also shared — they accept both sync and async functions. You can import these from either `cocoindex.asyncio` or `cocoindex`.
 
-### Mixing Sync and Async
+### Mixing sync and async
 
 You cannot directly call an async function from a sync function, and you should avoid calling a blocking sync function from an async function — just like any Python program. However, when you **mount a processing component**, the processing component's function is scheduled to run on CocoIndex's runtime (Rust core) — it is not a direct function call. This means you can mount either sync or async processing component functions from either a sync or async context.
 
 As a result, you need to make sure each processing component uses sync or async consistently internally, but there are no such constraints across processing components. This introduces extra flexibility and composability across your pipeline.
 
-## Example: Async vs Sync Usage
+## Example: async vs sync usage
 
 ### Asynchronous APIs
 
@@ -119,7 +119,7 @@ if __name__ == "__main__":
     main()
 ```
 
-### Mixing Sync and Async
+### Mixing sync and async
 
 A sync function can mount an async processing component:
 
@@ -147,7 +147,7 @@ The reverse also works — an async function can mount sync processing component
 Whether `app_main` (the root processing component's function) is sync or async is orthogonal to whether you use `coco_aio.App` or `coco.App`.
 :::
 
-## Common Import Pattern
+## Common import pattern
 
 A typical CocoIndex application imports from multiple modules:
 

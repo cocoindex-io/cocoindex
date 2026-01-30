@@ -51,7 +51,7 @@ CocoIndex automatically tracks changes — when you add, modify, or delete sourc
     echo "COCOINDEX_DB=./cocoindex.db" > .env
     ```
 
-## Define the App
+## Define the app
 ![App Definition](/img/quickstart/app-def.svg)
 
 Create a new file `main.py`:
@@ -75,7 +75,7 @@ This defines a CocoIndex App — the top-level runnable unit in CocoIndex.
 
 <DocumentationButton url="/docs-v1/programming_guide/app" text="CocoIndex App" />
 
-### Define the Main Function
+### Define the main function
 
 ![App Definition](/img/quickstart/components.svg)
 
@@ -106,7 +106,7 @@ def app_main(sourcedir: pathlib.Path, outdir: pathlib.Path) -> None:
 <DocumentationButton url="/docs-v1/programming_guide/processing_component" text="Processing Component" />
 
 
-### Define File Processing
+### Define file processing
 
 ![File Process](/img/quickstart/file-process.svg)
 
@@ -134,7 +134,7 @@ def process_file(
 
 
 
-## Run the Pipeline
+## Run the pipeline
 
 Run the pipeline:
 
@@ -154,7 +154,7 @@ ls out/
 # example.md (one .md file for each input PDF)
 ```
 
-## Incremental Updates
+## Incremental updates
 
 The power of CocoIndex is **incremental processing**. Try these:
 
@@ -187,7 +187,7 @@ cocoindex update main.py
 
 The corresponding Markdown file is automatically removed.
 
-## Next Steps
+## Next steps
 
 - Learn more about [Core Concepts](/programming_guide/core_concepts)
 - Explore [Functions](/programming_guide/function) and memoization

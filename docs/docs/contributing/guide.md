@@ -8,15 +8,15 @@ description: How to contribute to CocoIndex
 Our [Discord server](https://discord.com/invite/zpA9S2DR7s) is constantly open.
 If you are unsure about anything, it is a good place to discuss! We'd love to collaborate and will always be friendly.
 
-## Good First Issues
+## Good first issues
 
 We tag issues with the ["good first issue"](https://github.com/cocoindex-io/cocoindex/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) label for beginner contributors.
 
-## How to Contribute
+## How to contribute
 - If you decide to take an issue, we recommend you to leave a comment on the issue like  **`Can I work on this issue?`** so we could assign it to you. This helps you and others avoid duplicating work.
 - For larger features, we recommend you to discuss with us first in our [Discord server](https://discord.com/invite/zpA9S2DR7s) to coordinate the design and work.
 
-## Submit Your Code
+## Submit your code
 CocoIndex is committed to the highest standards of code quality. Please ensure your code is thoroughly tested before submitting a PR.
 
 To submit your code:

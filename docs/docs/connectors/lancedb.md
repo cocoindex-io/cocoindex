@@ -21,7 +21,7 @@ pip install cocoindex[lancedb]
 
 ::::
 
-## Connection Setup
+## Connection setup
 
 LanceDB connections are created directly via the LanceDB library. CocoIndex exposes thin wrappers:
 
@@ -43,13 +43,13 @@ def connect(uri: str, **options: Any) -> lancedb.DBConnection
 conn = await lancedb.connect_async("./lancedb_data")
 ```
 
-## As Target
+## As target
 
 The `lancedb` connector provides target state APIs for writing rows to tables. With it, CocoIndex tracks what rows should exist and automatically handles upserts and deletions.
 
-### Declaring Target States
+### Declaring target states
 
-#### Database Registration
+#### Database registration
 
 Before declaring target states, register the connection with a stable key that identifies the logical database. This key allows CocoIndex to recognize the same database even when connection details change.
 
@@ -74,7 +74,7 @@ with lancedb.register_db("my_db", conn) as db:
 # db is automatically unregistered here
 ```
 
-#### Tables (Parent State)
+#### Tables (parent state)
 
 Declares a table as a target state. Returns a `TableTarget` for declaring rows.
 
@@ -96,7 +96,7 @@ def LanceDatabase.declare_table_target(
 
 **Returns:** A pending `TableTarget`. Use `mount_run(...).result()` to wait for resolution.
 
-#### Rows (Child States)
+#### Rows (child states)
 
 Once a `TableTarget` is resolved, declare rows to be upserted:
 
@@ -112,7 +112,7 @@ def TableTarget.declare_row(
 
 - `row` — A row object (dict, dataclass, NamedTuple, or Pydantic model). Must include all primary key columns.
 
-### Table Schema: From Python Class
+### Table schema: from Python class
 
 Define the table structure using a Python class (dataclass, NamedTuple, or Pydantic model):
 
@@ -211,7 +211,7 @@ class Document:
     embedding: Annotated[NDArray, VectorSchema(dtype=np.float32, size=384)]
 ```
 
-### Table Schema: Explicit Column Definitions
+### Table schema: explicit column definitions
 
 Define columns directly using `ColumnDef`:
 

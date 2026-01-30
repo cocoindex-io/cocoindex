@@ -51,7 +51,7 @@ Follow the steps below to get CocoIndex built on the latest codebase locally - i
 
     This step needs to be repeated whenever you make changes to the Rust code.
 
-## Running Examples
+## Running examples
 
 Before running a specific example, set extra environment variables, for exposing extra traces, allowing dev UI, etc.
 
