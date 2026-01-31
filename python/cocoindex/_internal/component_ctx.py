@@ -244,3 +244,23 @@ def get_component_context() -> ComponentContext:
             executor.submit(task)
     """
     return get_context_from_ctx()
+
+
+def next_id(key: StableKey = None) -> int:
+    """
+    Get the next unique ID for the given key.
+
+    This is an internal function that generates unique IDs within the current app.
+    IDs are allocated in batches for efficiency.
+
+    Args:
+        key: Optional stable key for the ID sequencer. If None, uses a default sequencer.
+
+    Returns:
+        The next unique ID as an integer.
+
+    Raises:
+        RuntimeError: If called outside an active component context.
+    """
+    ctx = get_context_from_ctx()
+    return ctx._core_processor_ctx.next_id(key)
