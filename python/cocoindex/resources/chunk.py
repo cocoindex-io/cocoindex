@@ -1,9 +1,11 @@
 """Chunk-related data structures for text processing."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass as _dataclass
+
+__all__ = ["Chunk", "TextPosition"]
 
 
-@dataclass(frozen=True, slots=True)
+@_dataclass(frozen=True, slots=True)
 class TextPosition:
     """Position information in text with byte offset, character offset, and line/column."""
 
@@ -20,7 +22,7 @@ class TextPosition:
     """1-based column number."""
 
 
-@dataclass(frozen=True, slots=True)
+@_dataclass(frozen=True, slots=True)
 class Chunk:
     """A chunk of text with its range and position information."""
 

@@ -1,5 +1,6 @@
 use crate::fingerprint::PyFingerprint;
 use crate::prelude::*;
+use crate::stable_path::PyStableKey;
 
 use crate::{environment::PyEnvironment, stable_path::PyStablePath};
 use cocoindex_core::engine::context::{ComponentProcessorContext, FnCallContext};
@@ -27,6 +28,21 @@ impl PyComponentProcessorContext {
 
     fn full_reprocess(&self) -> bool {
         self.0.full_reprocess()
+    }
+  
+    /// Get the next ID for the given key.
+    ///
+    /// Args:
+    ///     key: Optional stable key for the ID sequencer. If None, uses a default sequencer.
+    ///
+    /// Returns:
+    ///     The next unique ID as an integer.
+    #[pyo3(signature = (key=None))]
+    fn next_id(&self, key: Option<PyStableKey>) -> PyResult<u64> {
+        self.0
+            .app_ctx()
+            .next_id(key.as_ref().map(|k| &k.0))
+            .into_py_result()
     }
 }
 

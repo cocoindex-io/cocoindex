@@ -25,9 +25,9 @@ Or with uv:
 uv pip install cocoindex[sentence_transformers]
 ```
 
-## Basic Usage
+## Basic usage
 
-### Creating an Embedder
+### Creating an embedder
 
 ```python
 from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
@@ -36,7 +36,7 @@ from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
 embedder = SentenceTransformerEmbedder("sentence-transformers/all-MiniLM-L6-v2")
 ```
 
-### Embedding Text
+### Embedding text
 
 ```python
 # Embed a single text (returns 1D array)
@@ -54,7 +54,7 @@ async def embed_async_example():
 embedding = asyncio.run(embed_async_example())
 ```
 
-### Getting Vector Schema
+### Getting vector schema
 
 The embedder automatically provides vector schema information:
 
@@ -64,7 +64,7 @@ print(f"Dimension: {schema.size}")  # 384
 print(f"Dtype: {schema.dtype}")     # float32
 ```
 
-## Using with CocoIndex Connectors
+## Using with CocoIndex connectors
 
 The `SentenceTransformerEmbedder` implements `VectorSchemaProvider`, which allows it to be used directly in type annotations with CocoIndex connectors.
 
@@ -150,7 +150,7 @@ def setup_collection(db: qdrant.QdrantDatabase):
     )
 ```
 
-## Example: Text Embedding Pipeline
+## Example: text embedding pipeline
 
 Here's a complete example of a text embedding pipeline:
 
@@ -250,7 +250,7 @@ def app_main(sourcedir: pathlib.Path, db: postgres.PgDatabase):
         )
 ```
 
-## API Reference
+## API reference
 
 ### `SentenceTransformerEmbedder`
 
@@ -259,9 +259,9 @@ def app_main(sourcedir: pathlib.Path, db: postgres.PgDatabase):
       show_root_heading: true
       show_source: false
 
-## Configuration Options
+## Configuration options
 
-### Model Selection
+### Model selection
 
 You can use any model from the [sentence-transformers library](https://www.sbert.net/docs/sentence_transformer/pretrained_models.html):
 
@@ -297,7 +297,7 @@ embedder = SentenceTransformerEmbedder(
 )
 ```
 
-## Thread Safety
+## Thread safety
 
 The `SentenceTransformerEmbedder` is thread-safe:
 
@@ -305,9 +305,9 @@ The `SentenceTransformerEmbedder` is thread-safe:
 - GPU access is protected by a lock to prevent concurrent operations
 - Safe to use in async contexts with `asyncio.to_thread()` (which `embed_async()` uses internally)
 
-## Performance Considerations
+## Performance considerations
 
-### Model Caching
+### Model caching
 
 The model is loaded only once per embedder instance and cached in memory:
 
@@ -324,7 +324,7 @@ for text in texts:
     embedding = embedder.embed(text)  # Model loaded every time!
 ```
 
-### Batch Processing
+### Batch processing
 
 For better performance when embedding many texts, use async processing with `asyncio.gather()`:
 
@@ -338,7 +338,7 @@ async def embed_all(texts: list[str]):
 embeddings = asyncio.run(embed_all(texts))
 ```
 
-### GPU Usage
+### GPU usage
 
 The embedder automatically uses GPU if available. To specify a device:
 

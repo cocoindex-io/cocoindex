@@ -4,18 +4,23 @@ Type stubs for the cocoindex._internal.core Rust extension module (PyO3).
 
 from __future__ import annotations
 
-from typing import Any, Callable, Coroutine, Generic, TypeVar
+from typing import (
+    Any,
+    Callable,
+    Coroutine,
+    Generic,
+    TypeVar,
+)
 import asyncio
-import uuid
+
+from cocoindex._internal.typing import Fingerprintable as Fingerprintable
+from cocoindex._internal.typing import StableKey as StableKey
 
 ########################################################
 # Core
 ########################################################
 
 __version__: str
-
-# --- StableKey type alias (accepted by StablePath.concat) ---
-StableKey = None | bool | int | str | bytes | uuid.UUID | tuple["StableKey", ...]
 
 T_co = TypeVar("T_co", covariant=True)
 
@@ -66,6 +71,7 @@ class ComponentProcessorContext:
     @property
     def stable_path(self) -> StablePath: ...
     def join_fn_call(self, child_fn_ctx: FnCallContext) -> None: ...
+    def next_id(self, key: StableKey | None = None) -> int: ...
 
 # --- FnCallContext ---
 class FnCallContext:
@@ -165,7 +171,9 @@ def declare_target_state_with_child(
 def register_root_target_states_provider(
     name: str, handler: Any
 ) -> TargetStateProvider: ...
-def fingerprint_memo_key(obj: Any) -> Fingerprint: ...
+def fingerprint_simple_object(obj: Fingerprintable) -> Fingerprint: ...
+def fingerprint_bytes(data: bytes) -> Fingerprint: ...
+def fingerprint_str(s: str) -> Fingerprint: ...
 def reserve_memoization(
     comp_ctx: ComponentProcessorContext,
     memo_fp: Fingerprint,

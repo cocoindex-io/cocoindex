@@ -3,11 +3,13 @@ use std::collections::{BTreeMap, HashSet};
 use cocoindex_utils::fingerprint::Fingerprint;
 
 use crate::engine::component::{Component, ComponentBgChildReadiness};
+use crate::engine::id_sequencer::IdSequencerManager;
 use crate::engine::profile::EngineProfile;
 use crate::engine::stats::ProcessingStats;
 use crate::engine::target_state::{TargetStateProvider, TargetStateProviderRegistry};
 use crate::prelude::*;
 
+use crate::state::stable_path::StableKey;
 use crate::state::stable_path_set::ChildStablePathSet;
 use crate::state::target_state_path::TargetStatePath;
 use crate::{
@@ -19,6 +21,7 @@ struct AppContextInner<Prof: EngineProfile> {
     env: Environment<Prof>,
     db: db_schema::Database,
     app_reg: AppRegistration<Prof>,
+    id_sequencer_manager: IdSequencerManager,
 }
 
 #[derive(Clone)]
@@ -33,7 +36,12 @@ impl<Prof: EngineProfile> AppContext<Prof> {
         app_reg: AppRegistration<Prof>,
     ) -> Self {
         Self {
-            inner: Arc::new(AppContextInner { env, db, app_reg }),
+            inner: Arc::new(AppContextInner {
+                env,
+                db,
+                app_reg,
+                id_sequencer_manager: IdSequencerManager::new(),
+            }),
         }
     }
 
@@ -47,6 +55,17 @@ impl<Prof: EngineProfile> AppContext<Prof> {
 
     pub fn app_reg(&self) -> &AppRegistration<Prof> {
         &self.inner.app_reg
+    }
+
+    /// Get the next ID for the given key.
+    ///
+    /// IDs are allocated in batches for efficiency. The key can be `None` for a default sequencer.
+    pub fn next_id(&self, key: Option<&StableKey>) -> Result<u64> {
+        let default_key = StableKey::Null;
+        let key = key.unwrap_or(&default_key);
+        self.inner
+            .id_sequencer_manager
+            .next_id(self.inner.env.db_env(), &self.inner.db, key)
     }
 }
 

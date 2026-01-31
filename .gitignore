@@ -20,7 +20,7 @@ uv.lock
 /.vscode
 /*.session.sql
 
-# mypy daemon environment
+.mypy_cache
 .dmypy.json
 
 # LMDB files

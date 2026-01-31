@@ -1,22 +1,39 @@
 """File-related protocols and utilities."""
 
-import codecs
-from abc import abstractmethod
-from datetime import datetime
-from pathlib import PurePath
-from typing import Generic, Protocol, Self, TypeVar
+from __future__ import annotations
 
-from cocoindex import StableKey
+__all__ = [
+    "AsyncFileLike",
+    "BaseDir",
+    "FileLike",
+    "FilePath",
+    "FilePathMatcher",
+    "MatchAllFilePathMatcher",
+    "PatternFilePathMatcher",
+]
+
+import codecs as _codecs
+from abc import abstractmethod as _abstractmethod
+from datetime import datetime as _datetime
+from pathlib import PurePath as _PurePath
+from typing import (
+    Generic as _Generic,
+    Protocol as _Protocol,
+    Self as _Self,
+    TypeVar as _TypeVar,
+)
+
+from cocoindex import StableKey as _StableKey
 from cocoindex.connectorkits import connection as _connection
 
 # Type variable for the resolved path type (e.g., pathlib.Path for local filesystem)
-ResolvedPathT = TypeVar("ResolvedPathT")
+ResolvedPathT = _TypeVar("ResolvedPathT")
 
 # Type alias for base directory - a KeyedConnection holding the resolved base path
 BaseDir = _connection.KeyedConnection[ResolvedPathT]
 
 
-class FileLike(Protocol[ResolvedPathT]):
+class FileLike(_Protocol[ResolvedPathT]):
     """Protocol for file-like objects with path, size, modified time, and read capability.
 
     Type Parameters:
@@ -24,7 +41,7 @@ class FileLike(Protocol[ResolvedPathT]):
     """
 
     @property
-    def stable_key(self) -> StableKey:
+    def stable_key(self) -> _StableKey:
         """Return the stable key for this file."""
         return str(self.file_path.path)
 
@@ -39,7 +56,7 @@ class FileLike(Protocol[ResolvedPathT]):
         ...
 
     @property
-    def modified_time(self) -> datetime:
+    def modified_time(self) -> _datetime:
         """Return the file modification time."""
         ...
 
@@ -71,7 +88,7 @@ class FileLike(Protocol[ResolvedPathT]):
         return (self.file_path.__coco_memo_key__(), self.modified_time)
 
 
-class AsyncFileLike(Protocol[ResolvedPathT]):
+class AsyncFileLike(_Protocol[ResolvedPathT]):
     """Protocol for async file-like objects with path, size, modified time, and async read.
 
     Type Parameters:
@@ -89,7 +106,7 @@ class AsyncFileLike(Protocol[ResolvedPathT]):
         ...
 
     @property
-    def modified_time(self) -> datetime:
+    def modified_time(self) -> _datetime:
         """Return the file modification time."""
         ...
 
@@ -120,25 +137,27 @@ class AsyncFileLike(Protocol[ResolvedPathT]):
         return _decode_bytes(await self.read(), encoding, errors)
 
 
-class FilePathMatcher(Protocol):
+class FilePathMatcher(_Protocol):
     """Protocol for file path matchers that filter directories and files."""
 
-    def is_dir_included(self, path: PurePath) -> bool:
+    def is_dir_included(self, path: _PurePath) -> bool:
         """Check if a directory should be included (traversed)."""
 
-    def is_file_included(self, path: PurePath) -> bool:
+    def is_file_included(self, path: _PurePath) -> bool:
         """Check if a file should be included."""
 
 
 class MatchAllFilePathMatcher(FilePathMatcher):
     """A file path matcher that includes all files and directories."""
 
-    def is_dir_included(self, _path: PurePath) -> bool:
+    def is_dir_included(self, path: _PurePath) -> bool:  # noqa: ARG002
         """Always returns True - all directories are included."""
+        del path  # unused
         return True
 
-    def is_file_included(self, _path: PurePath) -> bool:
+    def is_file_included(self, path: _PurePath) -> bool:  # noqa: ARG002
         """Always returns True - all files are included."""
+        del path  # unused
         return True
 
 
@@ -162,21 +181,21 @@ class PatternFilePathMatcher(FilePathMatcher):
         self._included_patterns = included_patterns
         self._excluded_patterns = excluded_patterns
 
-    def _matches_any(self, path: PurePath, patterns: list[str]) -> bool:
+    def _matches_any(self, path: _PurePath, patterns: list[str]) -> bool:
         """Check if the path matches any of the given glob patterns."""
         return any(path.match(pattern) for pattern in patterns)
 
-    def _is_excluded(self, path: PurePath) -> bool:
+    def _is_excluded(self, path: _PurePath) -> bool:
         """Check if a file or directory is excluded by the exclude patterns."""
         if self._excluded_patterns is None:
             return False
         return self._matches_any(path, self._excluded_patterns)
 
-    def is_dir_included(self, path: PurePath) -> bool:
+    def is_dir_included(self, path: _PurePath) -> bool:
         """Check if a directory should be included based on the exclude patterns."""
         return not self._is_excluded(path)
 
-    def is_file_included(self, path: PurePath) -> bool:
+    def is_file_included(self, path: _PurePath) -> bool:
         """
         Check if a file should be included based on both include and exclude patterns.
 
@@ -190,11 +209,11 @@ class PatternFilePathMatcher(FilePathMatcher):
 
 
 _BOM_ENCODINGS = [
-    (codecs.BOM_UTF32_LE, "utf-32-le"),
-    (codecs.BOM_UTF32_BE, "utf-32-be"),
-    (codecs.BOM_UTF16_LE, "utf-16-le"),
-    (codecs.BOM_UTF16_BE, "utf-16-be"),
-    (codecs.BOM_UTF8, "utf-8-sig"),
+    (_codecs.BOM_UTF32_LE, "utf-32-le"),
+    (_codecs.BOM_UTF32_BE, "utf-32-be"),
+    (_codecs.BOM_UTF16_LE, "utf-16-le"),
+    (_codecs.BOM_UTF16_BE, "utf-16-be"),
+    (_codecs.BOM_UTF8, "utf-8-sig"),
 ]
 
 
@@ -224,7 +243,7 @@ def _decode_bytes(data: bytes, encoding: str | None, errors: str) -> str:
     return data.decode("utf-8", errors)
 
 
-class FilePath(Generic[ResolvedPathT]):
+class FilePath(_Generic[ResolvedPathT]):
     """
     Base class for file paths with stable base directory support for memoization.
 
@@ -248,43 +267,43 @@ class FilePath(Generic[ResolvedPathT]):
     __slots__ = ("_base_dir", "_path")
 
     _base_dir: _connection.KeyedConnection[ResolvedPathT]
-    _path: PurePath
+    _path: _PurePath
 
     @property
     def base_dir(self) -> _connection.KeyedConnection[ResolvedPathT]:
         """The base directory for this path."""
         return self._base_dir
 
-    @abstractmethod
+    @_abstractmethod
     def resolve(self) -> ResolvedPathT:
         """Resolve this FilePath to the full path."""
 
-    @abstractmethod
-    def _with_path(self, path: PurePath) -> Self:
+    @_abstractmethod
+    def _with_path(self, path: _PurePath) -> _Self:
         """Create a new FilePath with the given relative path, keeping the same base directory."""
 
     @property
-    def path(self) -> PurePath:
+    def path(self) -> _PurePath:
         """The path relative to the base directory."""
         return self._path
 
     # PurePath-like operations
 
-    def __truediv__(self, other: str | PurePath) -> Self:
+    def __truediv__(self, other: str | _PurePath) -> _Self:
         """Join this path with another path segment."""
         return self._with_path(self._path / other)
 
-    def __rtruediv__(self, other: str | PurePath) -> Self:
+    def __rtruediv__(self, other: str | _PurePath) -> _Self:
         """Join another path segment with this path (rarely used)."""
         return self._with_path(other / self._path)
 
     @property
-    def parent(self) -> Self:
+    def parent(self) -> _Self:
         """The logical parent of this path."""
         return self._with_path(self._path.parent)
 
     @property
-    def parents(self) -> tuple[Self, ...]:
+    def parents(self) -> tuple[_Self, ...]:
         """An immutable sequence of the path's logical parents."""
         return tuple(self._with_path(p) for p in self._path.parents)
 
@@ -313,31 +332,31 @@ class FilePath(Generic[ResolvedPathT]):
         """An object providing sequence-like access to the path's components."""
         return self._path.parts
 
-    def with_name(self, name: str) -> Self:
+    def with_name(self, name: str) -> _Self:
         """Return a new path with the file name changed."""
         return self._with_path(self._path.with_name(name))
 
-    def with_stem(self, stem: str) -> Self:
+    def with_stem(self, stem: str) -> _Self:
         """Return a new path with the stem changed."""
         return self._with_path(self._path.with_stem(stem))
 
-    def with_suffix(self, suffix: str) -> Self:
+    def with_suffix(self, suffix: str) -> _Self:
         """Return a new path with the suffix changed."""
         return self._with_path(self._path.with_suffix(suffix))
 
-    def with_segments(self, *pathsegments: str) -> Self:
+    def with_segments(self, *pathsegments: str) -> _Self:
         """Return a new path with the segments replaced."""
-        return self._with_path(PurePath(*pathsegments))
+        return self._with_path(_PurePath(*pathsegments))
 
     def is_absolute(self) -> bool:
         """Return True if the path is absolute."""
         return self._path.is_absolute()
 
-    def is_relative_to(self, other: str | PurePath) -> bool:
+    def is_relative_to(self, other: str | _PurePath) -> bool:
         """Return True if the path is relative to another path."""
         return self._path.is_relative_to(other)
 
-    def relative_to(self, other: str | PurePath) -> PurePath:
+    def relative_to(self, other: str | _PurePath) -> _PurePath:
         """Return the relative path to another path."""
         return self._path.relative_to(other)
 
@@ -349,7 +368,7 @@ class FilePath(Generic[ResolvedPathT]):
         """Return the string representation with forward slashes."""
         return self._path.as_posix()
 
-    def joinpath(self, *pathsegments: str | PurePath) -> Self:
+    def joinpath(self, *pathsegments: str | _PurePath) -> _Self:
         """Combine this path with one or more path segments."""
         return self._with_path(self._path.joinpath(*pathsegments))
 
@@ -377,22 +396,22 @@ class FilePath(Generic[ResolvedPathT]):
     def __hash__(self) -> int:
         return hash((self.base_dir.key, self._path))
 
-    def __lt__(self, other: Self) -> bool:
+    def __lt__(self, other: _Self) -> bool:
         if not isinstance(other, FilePath):
             return NotImplemented
         if self.base_dir.key != other.base_dir.key:
             return self.base_dir.key < other.base_dir.key
         return self._path < other._path
 
-    def __le__(self, other: Self) -> bool:
+    def __le__(self, other: _Self) -> bool:
         return self == other or self < other
 
-    def __gt__(self, other: Self) -> bool:
+    def __gt__(self, other: _Self) -> bool:
         if not isinstance(other, FilePath):
             return NotImplemented
         return other < self
 
-    def __ge__(self, other: Self) -> bool:
+    def __ge__(self, other: _Self) -> bool:
         return self == other or self > other
 
     # Memoization support

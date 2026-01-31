@@ -136,3 +136,72 @@ matcher = PatternFilePathMatcher(
 
 - `included_patterns` — Glob patterns for files to include. If `None`, all files are included.
 - `excluded_patterns` — Glob patterns for files/directories to exclude. Excluded directories are not traversed.
+
+## ID Generation
+
+The ID module (`cocoindex.resources.id`) provides utilities for generating stable unique IDs and UUIDs that persist across incremental updates.
+
+### generate_id / generate_uuid
+
+Simple functions for generating a single stable ID or UUID per dependency value:
+
+```python
+from cocoindex.resources.id import generate_id, generate_uuid
+
+def process_chunk(chunk: Chunk) -> Row:
+    # Generate a stable ID for this chunk
+    chunk_id = generate_id(chunk.content)
+    return Row(id=chunk_id, content=chunk.content)
+
+def process_document(doc: Document) -> Row:
+    # Generate a stable UUID for this document
+    doc_uuid = generate_uuid(doc.path)
+    return Row(id=doc_uuid, content=doc.content)
+```
+
+**Parameters:**
+
+- `dep` — Optional dependency value. The generated ID/UUID is stable as long as this value (and the component path) remains the same across runs. Defaults to `None`.
+
+**Returns:**
+
+- `generate_id` returns an `int` (IDs start from 1; 0 is reserved)
+- `generate_uuid` returns a `uuid.UUID`
+
+### IdGenerator / UuidGenerator
+
+Classes for generating multiple unique IDs or UUIDs within a single function call:
+
+```python
+from cocoindex.resources.id import IdGenerator, UuidGenerator
+
+def process_document(doc: Document) -> list[Row]:
+    id_gen = IdGenerator()
+    rows = []
+    for chunk in split_into_chunks(doc.content):
+        # Each chunk gets a unique, stable ID
+        chunk_id = id_gen.next_id(chunk.content)
+        rows.append(Row(id=chunk_id, content=chunk.content))
+    return rows
+
+def process_with_uuids(doc: Document) -> list[Row]:
+    uuid_gen = UuidGenerator()
+    rows = []
+    for chunk in split_into_chunks(doc.content):
+        # Each chunk gets a unique, stable UUID
+        chunk_uuid = uuid_gen.next_uuid(chunk.content)
+        rows.append(Row(id=chunk_uuid, content=chunk.content))
+    return rows
+```
+
+These classes maintain ordinals internally, so multiple calls with the same `dep` value return different IDs/UUIDs, but the sequence is stable across runs.
+
+**Methods:**
+
+- `IdGenerator.next_id(dep=None)` — Generate the next unique integer ID for the given dependency
+- `UuidGenerator.next_uuid(dep=None)` — Generate the next unique UUID for the given dependency
+
+**Use Cases:**
+
+- Use `generate_id`/`generate_uuid` when you need one ID per unique input value
+- Use `IdGenerator`/`UuidGenerator` when you need multiple IDs for the same input value (e.g., splitting a document into chunks where each chunk needs a unique ID)

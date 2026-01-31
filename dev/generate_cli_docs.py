@@ -205,7 +205,7 @@ def generate_command_docs(cmd: click.Group) -> str:
     markdown_content.append("")
 
     # Add top-level heading to satisfy MD041 linting rule
-    markdown_content.append("## Subcommands Reference")
+    markdown_content.append("## Subcommands reference")
     markdown_content.append("")
 
     ctx = click.core.Context(cmd, info_name=cmd.name)

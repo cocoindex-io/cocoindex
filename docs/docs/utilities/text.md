@@ -6,7 +6,7 @@ The `cocoindex.ops.text` module provides utilities for text processing, includin
 - Text chunking and splitting
 - Syntax-aware code splitting
 
-## Available Functions and Classes
+## Available functions and classes
 
 ### `detect_code_language()`
 
@@ -140,7 +140,7 @@ chunks = splitter.split(
 )
 ```
 
-## API Reference
+## API reference
 
 For detailed API documentation, refer to the module docstrings:
 

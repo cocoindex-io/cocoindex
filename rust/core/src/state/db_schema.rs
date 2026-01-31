@@ -94,6 +94,9 @@ pub enum DbEntryKey<'a> {
     StablePathPrefix(StablePathRef<'a>),
     StablePath(StablePath, StablePathEntryKey),
     TargetState(TargetStatePath),
+
+    /// Value type: IdSequencerInfo
+    IdSequencer(StableKey),
 }
 
 impl<'a> storekey::Encode for DbEntryKey<'a> {
@@ -117,6 +120,11 @@ impl<'a> storekey::Encode for DbEntryKey<'a> {
             DbEntryKey::TargetState(path) => {
                 e.write_u8(0x20)?;
                 path.encode(e)?;
+            }
+
+            DbEntryKey::IdSequencer(key) => {
+                e.write_u8(0x30)?;
+                key.encode(e)?;
             }
         }
         Ok(())
@@ -265,4 +273,10 @@ pub struct ChildExistenceInfo {
     // e.g. when the parent is cleaning up the child asynchronously, there's
     // incremental reinsertion (based on change stream) for the child, which
     // makes another generation of the child appear again.
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct IdSequencerInfo {
+    #[serde(rename = "N")]
+    pub next_id: u64,
 }

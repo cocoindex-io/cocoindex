@@ -14,22 +14,11 @@ import struct
 import typing
 
 from . import core
+from .typing import Fingerprintable
 
 
 _KeyFn = typing.Callable[[typing.Any], typing.Any]
 
-
-# Canonical values are composed of primitives and tuples of canonical values.
-_CanonicalValue: typing.TypeAlias = typing.Union[
-    None,
-    bool,
-    int,
-    float,
-    str,
-    bytes,
-    core.Fingerprint,
-    tuple["_CanonicalValue", ...],
-]
 
 _memo_key_fns: dict[type, _KeyFn] = {}
 
@@ -49,7 +38,7 @@ def unregister_memo_key_function(typ: type) -> None:
     _memo_key_fns.pop(typ, None)
 
 
-def _stable_sort_key(v: _CanonicalValue) -> tuple[typing.Any, ...]:
+def _stable_sort_key(v: Fingerprintable) -> tuple[typing.Any, ...]:
     """Return a totally-ordered key for canonical values.
 
     This is used to deterministically sort dict/set canonical encodings without
@@ -72,12 +61,14 @@ def _stable_sort_key(v: _CanonicalValue) -> tuple[typing.Any, ...]:
         return (4, v)
     if isinstance(v, (bytes, bytearray, memoryview)):
         return (5, bytes(v))
-    if isinstance(v, tuple):
+    if isinstance(v, typing.Sequence):
         return (6, tuple(_stable_sort_key(e) for e in v))
-    raise TypeError(f"Unexpected non-canonical value encountered: {type(v)!r}")
+
+    # For others, don't try to sort and just return a placeholder.
+    return (99,)
 
 
-def _canonicalize(obj: object, _seen: dict[int, int] | None) -> _CanonicalValue:
+def _canonicalize(obj: object, _seen: dict[int, int] | None) -> Fingerprintable:
     # 0) Cycle / shared-reference tracking for containers
     if _seen is None:
         _seen = {}
@@ -115,18 +106,15 @@ def _canonicalize(obj: object, _seen: dict[int, int] | None) -> _CanonicalValue:
     _seen[oid] = len(_seen)
 
     # 4) Containers
-    if isinstance(obj, tuple):
-        return ("tuple", tuple(_canonicalize(e, _seen) for e in obj))
+    if isinstance(obj, typing.Sequence):
+        return ("seq", tuple(_canonicalize(e, _seen) for e in obj))
 
-    if isinstance(obj, list):
-        return ("list", tuple(_canonicalize(e, _seen) for e in obj))
-
-    if isinstance(obj, dict):
-        items: list[tuple[_CanonicalValue, _CanonicalValue]] = []
+    if isinstance(obj, typing.Mapping):
+        items: list[tuple[Fingerprintable, Fingerprintable]] = []
         for k, v in obj.items():
             items.append((_canonicalize(k, _seen), _canonicalize(v, _seen)))
         items.sort(key=lambda kv: (_stable_sort_key(kv[0]), _stable_sort_key(kv[1])))
-        return ("dict", tuple(items))
+        return ("map", tuple(items))
 
     if isinstance(obj, (set, frozenset)):
         elts = [_canonicalize(e, _seen) for e in obj]
@@ -151,7 +139,7 @@ def _make_call_key_obj(
     kwargs: dict[str, object],
     *,
     version: str | int | None = None,
-) -> _CanonicalValue:
+) -> Fingerprintable:
     function_identity = (
         getattr(func, "__module__", None),
         getattr(func, "__qualname__", None),
@@ -167,6 +155,10 @@ def _make_call_key_obj(
         canonical_args,
         canonical_kwargs,
     )
+
+
+def memo_key(obj: object) -> core.Fingerprint:
+    return core.fingerprint_simple_object(_canonicalize(obj, _seen=None))
 
 
 def fingerprint_call(
@@ -189,7 +181,7 @@ def fingerprint_call(
         version=version,
     )
     # One Python -> Rust call.
-    return core.fingerprint_memo_key(call_key_obj)
+    return core.fingerprint_simple_object(call_key_obj)
 
 
 __all__ = [

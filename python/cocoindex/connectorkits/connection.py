@@ -7,21 +7,26 @@ to maintain stable connection pools or clients across runs.
 
 from __future__ import annotations
 
-import threading
-from typing import Any, Generic, TypeVar
+__all__ = [
+    "ConnectionRegistry",
+    "KeyedConnection",
+]
 
-from cocoindex._internal import core, memo_key
-from typing_extensions import Self
+import threading as _threading
+from typing import Any as _Any, Generic as _Generic, TypeVar as _TypeVar
+
+from cocoindex._internal import core as _core
+from typing_extensions import Self as _Self
 
 # Type variable for the connection/pool type
-ConnectionT = TypeVar("ConnectionT")
+ConnectionT = _TypeVar("ConnectionT")
 
 # Global set of registered registry names (thread-safe)
 _registry_names: set[str] = set()
-_registry_names_lock = threading.Lock()
+_registry_names_lock = _threading.Lock()
 
 
-class KeyedConnection(Generic[ConnectionT]):
+class KeyedConnection(_Generic[ConnectionT]):
     """
     A connection/value with a stable key for memoization.
 
@@ -41,7 +46,7 @@ class KeyedConnection(Generic[ConnectionT]):
     _key: str
     _value: ConnectionT
     _registry: ConnectionRegistry[ConnectionT] | None
-    _memo_key: core.Fingerprint
+    _memo_key: _core.Fingerprint
 
     def __init__(
         self,
@@ -54,7 +59,9 @@ class KeyedConnection(Generic[ConnectionT]):
         self._key = key
         self._value = value
         self._registry = registry
-        self._memo_key = core.fingerprint_memo_key((self._registry_name, self._key))
+        self._memo_key = _core.fingerprint_simple_object(
+            (self._registry_name, self._key)
+        )
 
     @property
     def registry_name(self) -> str:
@@ -71,23 +78,23 @@ class KeyedConnection(Generic[ConnectionT]):
         """The connection/value."""
         return self._value
 
-    def __enter__(self) -> Self:
+    def __enter__(self) -> _Self:
         return self
 
     def __exit__(
         self,
         exc_type: type[BaseException] | None,
         exc_val: BaseException | None,
-        exc_tb: Any,
+        exc_tb: _Any,
     ) -> None:
         if self._registry is not None:
             self._registry.unregister(self._key)
 
-    def __coco_memo_key__(self) -> core.Fingerprint:
+    def __coco_memo_key__(self) -> _core.Fingerprint:
         return self._memo_key
 
 
-class ConnectionRegistry(Generic[ConnectionT]):
+class ConnectionRegistry(_Generic[ConnectionT]):
     """
     Thread-safe registry for managing keyed connections.
 
@@ -106,7 +113,7 @@ class ConnectionRegistry(Generic[ConnectionT]):
 
     _name: str
     _registry: dict[str, ConnectionT]
-    _lock: threading.Lock
+    _lock: _threading.Lock
 
     def __init__(self, name: str) -> None:
         """
@@ -127,7 +134,7 @@ class ConnectionRegistry(Generic[ConnectionT]):
             _registry_names.add(name)
         self._name = name
         self._registry = {}
-        self._lock = threading.Lock()
+        self._lock = _threading.Lock()
 
     @property
     def name(self) -> str:
@@ -203,9 +210,3 @@ class ConnectionRegistry(Generic[ConnectionT]):
         """
         with self._lock:
             return key in self._registry
-
-
-__all__ = [
-    "ConnectionRegistry",
-    "KeyedConnection",
-]
