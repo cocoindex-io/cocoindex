@@ -1,4 +1,19 @@
-"""Stable ID generation utilities."""
+"""
+Stable ID generation utilities.
+
+This module provides two approaches for generating stable IDs/UUIDs:
+
+1. **Simple functions** (`generate_id`, `generate_uuid`):
+   - Return the **same** ID/UUID for the **same** `dep` value (within a component)
+   - Idempotent: calling multiple times with identical `dep` yields identical results
+   - Use when each unique input should map to exactly one ID
+
+2. **Generator classes** (`IdGenerator`, `UuidGenerator`):
+   - Return a **distinct** ID/UUID on each call, even for the **same** `dep` value
+   - Maintains internal state to track call count per `dep`
+   - Use when you need multiple IDs for potentially non-distinct inputs
+     (e.g., splitting text into chunks where chunks may have identical content)
+"""
 
 from __future__ import annotations
 
@@ -15,74 +30,73 @@ from cocoindex._internal import memo_key as _memo_key
 @_coco.function(memo=True)
 def generate_id(_dep: _typing.Any = None) -> int:
     """
-    Generate a stable unique ID.
+    Generate a stable unique ID for a given dependency value.
 
-    This function generates unique IDs through the memoization mechanism:
-    - If `dep` doesn't change across runs, the same ID is returned consistently
-      for the same processing component.
-    - If `dep` changes, a new unique ID is generated.
+    Returns the **same** ID for the **same** `dep` value within a processing
+    component. This is idempotent: multiple calls with identical `dep` yield
+    identical IDs.
 
-    This is useful for generating stable identifiers for records that need to
-    persist across incremental updates.
+    Use this when each unique input should map to exactly one ID. If you need
+    distinct IDs for potentially identical inputs (e.g., chunks with duplicate
+    content), use `IdGenerator` instead.
 
     Args:
-        dep: Optional dependency value. The generated ID is stable as long as
-            this value (and the component path) remains the same across runs.
-            Defaults to None.
+        dep: Dependency value that determines the ID. The same `dep` always
+            produces the same ID within a component. Defaults to None.
 
     Returns:
         A unique integer ID (IDs start from 1; 0 is reserved).
 
     Example:
         @coco.function(memo=True)
-        def process_chunk(chunk: Chunk) -> Row:
-            # Generate a stable ID for this chunk
-            chunk_id = generate_id(chunk.content)
-            return Row(id=chunk_id, content=chunk.content)
+        def process_item(item: Item) -> Row:
+            # Same item.key always gets the same ID
+            item_id = generate_id(item.key)
+            return Row(id=item_id, data=item.data)
     """
-    del _dep  # Used only for memoization key
     return _component_ctx.next_id(None)
 
 
 @_coco.function(memo=True)
 def generate_uuid(_dep: _typing.Any = None) -> _uuid.UUID:
     """
-    Generate a stable unique UUID.
+    Generate a stable unique UUID for a given dependency value.
 
-    This function generates unique UUIDs through the memoization mechanism:
-    - If `dep` doesn't change across runs, the same UUID is returned consistently
-      for the same processing component.
-    - If `dep` changes, a new unique UUID is generated.
+    Returns the **same** UUID for the **same** `dep` value within a processing
+    component. This is idempotent: multiple calls with identical `dep` yield
+    identical UUIDs.
 
-    This is useful for generating stable identifiers for records that need to
-    persist across incremental updates.
+    Use this when each unique input should map to exactly one UUID. If you need
+    distinct UUIDs for potentially identical inputs, use `UuidGenerator` instead.
 
     Args:
-        dep: Optional dependency value. The generated UUID is stable as long as
-            this value (and the component path) remains the same across runs.
-            Defaults to None.
+        dep: Dependency value that determines the UUID. The same `dep` always
+            produces the same UUID within a component. Defaults to None.
 
     Returns:
         A unique UUID.
 
     Example:
         @coco.function(memo=True)
-        def process_chunk(chunk: Chunk) -> Row:
-            # Generate a stable UUID for this chunk
-            chunk_uuid = generate_uuid(chunk.content)
-            return Row(id=chunk_uuid, content=chunk.content)
+        def process_item(item: Item) -> Row:
+            # Same item.key always gets the same UUID
+            item_uuid = generate_uuid(item.key)
+            return Row(id=item_uuid, data=item.data)
     """
     return _uuid.uuid4()
 
 
 class IdGenerator:
     """
-    Generator for stable unique IDs with support for multiple calls per dependency.
+    Generator for stable unique IDs that produces distinct IDs on each call.
 
-    This class maintains a mapping from dependency fingerprints to ordinals,
-    allowing multiple unique IDs to be generated for the same dependency value.
-    Each call to `next_id()` with the same `dep` value returns a different ID,
-    but the sequence of IDs is stable across runs.
+    Unlike `generate_id()` which returns the same ID for the same `dep`,
+    `IdGenerator.next_id()` returns a **distinct** ID on each call, even when
+    called with the same `dep` value. The sequence of IDs is stable across runs.
+
+    Use this when you need multiple IDs for potentially non-distinct inputs,
+    such as when splitting text into chunks where chunks may have identical
+    content but still need unique IDs.
 
     Example:
         @coco.function(memo=True)
@@ -90,7 +104,7 @@ class IdGenerator:
             id_gen = IdGenerator()
             rows = []
             for chunk in split_into_chunks(doc.content):
-                # Each chunk gets a unique, stable ID
+                # Each call returns a distinct ID, even if chunks are identical
                 chunk_id = id_gen.next_id(chunk.content)
                 rows.append(Row(id=chunk_id, content=chunk.content))
             return rows
@@ -104,14 +118,15 @@ class IdGenerator:
 
     def next_id(self, dep: _typing.Any = None) -> int:
         """
-        Generate the next unique ID for the given dependency.
+        Generate the next unique ID.
 
-        Each call with the same `dep` value returns a different ID, but the
-        sequence is stable across runs (for the same processing component).
+        Returns a **distinct** ID on each call, even when called with the same
+        `dep` value. The sequence is stable across runs.
 
         Args:
-            dep: Optional dependency value. IDs are generated in sequence for
-                each unique dependency value. Defaults to None.
+            dep: Dependency value for stable sequencing. Multiple calls with
+                the same `dep` return distinct IDs in a deterministic order.
+                Defaults to None.
 
         Returns:
             A unique integer ID (IDs start from 1; 0 is reserved).
@@ -130,12 +145,16 @@ class IdGenerator:
 
 class UuidGenerator:
     """
-    Generator for stable unique UUIDs with support for multiple calls per dependency.
+    Generator for stable unique UUIDs that produces distinct UUIDs on each call.
 
-    This class maintains a mapping from dependency fingerprints to ordinals,
-    allowing multiple unique UUIDs to be generated for the same dependency value.
-    Each call to `next_uuid()` with the same `dep` value returns a different UUID,
-    but the sequence of UUIDs is stable across runs.
+    Unlike `generate_uuid()` which returns the same UUID for the same `dep`,
+    `UuidGenerator.next_uuid()` returns a **distinct** UUID on each call, even
+    when called with the same `dep` value. The sequence of UUIDs is stable
+    across runs.
+
+    Use this when you need multiple UUIDs for potentially non-distinct inputs,
+    such as when splitting text into chunks where chunks may have identical
+    content but still need unique UUIDs.
 
     Example:
         @coco.function(memo=True)
@@ -143,7 +162,7 @@ class UuidGenerator:
             uuid_gen = UuidGenerator()
             rows = []
             for chunk in split_into_chunks(doc.content):
-                # Each chunk gets a unique, stable UUID
+                # Each call returns a distinct UUID, even if chunks are identical
                 chunk_uuid = uuid_gen.next_uuid(chunk.content)
                 rows.append(Row(id=chunk_uuid, content=chunk.content))
             return rows
@@ -157,14 +176,15 @@ class UuidGenerator:
 
     def next_uuid(self, dep: _typing.Any = None) -> _uuid.UUID:
         """
-        Generate the next unique UUID for the given dependency.
+        Generate the next unique UUID.
 
-        Each call with the same `dep` value returns a different UUID, but the
-        sequence is stable across runs (for the same processing component).
+        Returns a **distinct** UUID on each call, even when called with the same
+        `dep` value. The sequence is stable across runs.
 
         Args:
-            dep: Optional dependency value. UUIDs are generated in sequence for
-                each unique dependency value. Defaults to None.
+            dep: Dependency value for stable sequencing. Multiple calls with
+                the same `dep` return distinct UUIDs in a deterministic order.
+                Defaults to None.
 
         Returns:
             A unique UUID.
