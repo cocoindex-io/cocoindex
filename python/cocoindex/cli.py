@@ -524,7 +524,39 @@ async def _drop_app(app: AppBase[Any, Any], *args: Any, **kwargs: Any) -> None:
 
 @cli.command()
 @click.argument("app_target", type=str)
-def update(app_target: str) -> None:
+@click.option(
+    "-f",
+    "--force",
+    is_flag=True,
+    show_default=True,
+    default=False,
+    help="Skip confirmation prompt.",
+)
+@click.option(
+    "-q",
+    "--quiet",
+    is_flag=True,
+    show_default=True,
+    default=False,
+    help="Avoid printing anything to the standard output, e.g. statistics.",
+)
+@click.option(
+    "--reset",
+    is_flag=True,
+    show_default=True,
+    default=False,
+    help="Drop existing setup before updating (equivalent to running 'cocoindex drop' first).",
+)
+@click.option(
+    "--full-reprocess",
+    is_flag=True,
+    show_default=True,
+    default=False,
+    help="Reprocess everything and invalidate existing caches.",
+)
+def update(
+    app_target: str, force: bool, quiet: bool, reset: bool, full_reprocess: bool
+) -> None:
     """
     Run a v1 app once (one-time update).
 
@@ -535,10 +567,28 @@ def update(app_target: str) -> None:
     async def _do() -> None:
         try:
             env = await app._environment._get_env()
-            print(
-                f"Running app '{app._name}' from environment '{env.name}' (db path: {env.settings.db_path})"
+            if not quiet:
+                print(
+                    f"Running app '{app._name}' from environment '{env.name}' (db path: {env.settings.db_path})"
+                )
+
+            # --reset: drop existing state first (equivalent to `cocoindex drop ...`)
+            if reset:
+                if not force:
+                    if not _confirm_yes(
+                        f"Type 'yes' to reset app '{app._name}' (drop existing state)"
+                    ):
+                        if not quiet:
+                            click.echo("Update operation aborted.")
+                        return
+
+                persisted_names = _get_persisted_app_names(env)
+                if app._name in persisted_names:
+                    await _drop_app(app, report_to_stdout=not quiet)
+
+            await _update_app(
+                app, report_to_stdout=not quiet, full_reprocess=full_reprocess
             )
-            await _update_app(app, report_to_stdout=True)
         finally:
             await _stop_all_environments()
 
@@ -554,7 +604,15 @@ def update(app_target: str) -> None:
     is_flag=True,
     help="Skip confirmation prompt.",
 )
-def drop(app_target: str, force: bool = False) -> None:
+@click.option(
+    "-q",
+    "--quiet",
+    is_flag=True,
+    show_default=True,
+    default=False,
+    help="Avoid printing anything to the standard output, e.g. statistics.",
+)
+def drop(app_target: str, force: bool = False, quiet: bool = False) -> None:
     """
     Drop an app and all its target states.
 
@@ -572,29 +630,33 @@ def drop(app_target: str, force: bool = False) -> None:
     env = app._environment._get_env_sync()
     persisted_names = _get_persisted_app_names(env)
 
-    click.echo(
-        f"Preparing to drop app '{app._name}' from environment '{env.name}' (db path: {env.settings.db_path})"
-    )
+    if not quiet:
+        click.echo(
+            f"Preparing to drop app '{app._name}' from environment '{env.name}' (db path: {env.settings.db_path})"
+        )
 
     if app._name not in persisted_names:
-        click.echo(f"App '{app._name}' has no persisted state. Nothing to drop.")
+        if not quiet:
+            click.echo(f"App '{app._name}' has no persisted state. Nothing to drop.")
         return
 
     if not force:
         if not _confirm_yes(
             f"Type 'yes' to drop app '{app._name}' and all its target states"
         ):
-            click.echo("Drop operation aborted.")
+            if not quiet:
+                click.echo("Drop operation aborted.")
             return
 
     async def _do() -> None:
         try:
-            await _drop_app(app, report_to_stdout=True)
+            await _drop_app(app, report_to_stdout=not quiet)
         finally:
             await _stop_all_environments()
-        click.echo(
-            f"Dropped app '{app._name}' from environment '{env.name}' and reverted its target states."
-        )
+        if not quiet:
+            click.echo(
+                f"Dropped app '{app._name}' from environment '{env.name}' and reverted its target states."
+            )
 
     env_loop = default_env_loop()
     asyncio.run_coroutine_threadsafe(_do(), env_loop).result()

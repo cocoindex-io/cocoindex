@@ -24,9 +24,13 @@ impl PyApp {
         py: Python<'py>,
         root_processor: PyComponentProcessor,
         report_to_stdout: bool,
+        full_reprocess: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
         let app = self.0.clone();
-        let options = AppUpdateOptions { report_to_stdout };
+        let options = AppUpdateOptions {
+            report_to_stdout,
+            full_reprocess,
+        };
         let fut = future_into_py(py, async move {
             let ret = app.update(root_processor, options).await.into_py_result()?;
             Ok(ret.into_inner())
@@ -39,9 +43,13 @@ impl PyApp {
         py: Python<'py>,
         root_processor: PyComponentProcessor,
         report_to_stdout: bool,
+        full_reprocess: bool,
     ) -> PyResult<Py<PyAny>> {
         let app = self.0.clone();
-        let options = AppUpdateOptions { report_to_stdout };
+        let options = AppUpdateOptions {
+            report_to_stdout,
+            full_reprocess,
+        };
         py.detach(|| {
             get_runtime().block_on(async move {
                 let ret = app.update(root_processor, options).await.into_py_result()?;

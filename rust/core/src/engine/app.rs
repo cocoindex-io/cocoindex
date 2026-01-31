@@ -13,6 +13,8 @@ use crate::state::stable_path::StablePath;
 pub struct AppUpdateOptions {
     /// If true, periodically report processing stats to stdout.
     pub report_to_stdout: bool,
+    /// If true, reprocess everything and invalidate existing caches.
+    pub full_reprocess: bool,
 }
 
 /// Options for dropping an app.
@@ -50,9 +52,11 @@ impl<Prof: EngineProfile> App<Prof> {
         options: AppUpdateOptions,
     ) -> Result<Prof::FunctionData> {
         let processing_stats = ProcessingStats::default();
-        let context = self
-            .root_component
-            .new_processor_context_for_build(None, processing_stats.clone())?;
+        let context = self.root_component.new_processor_context_for_build(
+            None,
+            processing_stats.clone(),
+            options.full_reprocess,
+        )?;
 
         let run_fut = async {
             self.root_component

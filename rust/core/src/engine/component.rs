@@ -558,6 +558,7 @@ impl<Prof: EngineProfile> Component<Prof> {
         &self,
         parent_ctx: Option<&ComponentProcessorContext<Prof>>,
         processing_stats: ProcessingStats,
+        full_reprocess: bool,
     ) -> Result<ComponentProcessorContext<Prof>> {
         let providers = if let Some(parent_ctx) = parent_ctx {
             let sub_path = self
@@ -589,6 +590,7 @@ impl<Prof: EngineProfile> Component<Prof> {
             parent_ctx.cloned(),
             processing_stats,
             ComponentProcessingMode::Build,
+            full_reprocess,
         ))
     }
 
@@ -598,12 +600,14 @@ impl<Prof: EngineProfile> Component<Prof> {
         parent_ctx: Option<&ComponentProcessorContext<Prof>>,
         processing_stats: ProcessingStats,
     ) -> ComponentProcessorContext<Prof> {
+        let full_reprocess = parent_ctx.map(|ctx| ctx.full_reprocess()).unwrap_or(false);
         ComponentProcessorContext::new(
             self.clone(),
             providers,
             parent_ctx.cloned(),
             processing_stats,
             ComponentProcessingMode::Delete,
+            full_reprocess,
         )
     }
 }

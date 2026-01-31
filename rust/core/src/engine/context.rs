@@ -130,6 +130,7 @@ struct ComponentProcessorContextInner<Prof: EngineProfile> {
     components_readiness: ComponentBgChildReadiness,
 
     processing_stats: ProcessingStats,
+    full_reprocess: bool,
     // TODO: Add fields to record states, children components, etc.
 }
 
@@ -145,6 +146,7 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         parent_context: Option<ComponentProcessorContext<Prof>>,
         processing_stats: ProcessingStats,
         mode: ComponentProcessingMode,
+        full_reprocess: bool,
     ) -> Self {
         let processing_state = if mode == ComponentProcessingMode::Build {
             ComponentProcessingAction::Build(Mutex::new(Some(ComponentBuildingState {
@@ -165,6 +167,7 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
                 processing_action: processing_state,
                 components_readiness: Default::default(),
                 processing_stats,
+                full_reprocess,
             }),
         }
     }
@@ -230,6 +233,10 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
 
     pub fn processing_stats(&self) -> &ProcessingStats {
         &self.inner.processing_stats
+    }
+
+    pub fn full_reprocess(&self) -> bool {
+        self.inner.full_reprocess
     }
 }
 
