@@ -15,10 +15,11 @@ from typing import (
     Any,
     AsyncContextManager,
     AsyncGenerator,
+    AsyncIterator,
     Callable,
     ContextManager,
     Iterator,
-    AsyncIterator,
+    TypeVar,
     overload,
 )
 
@@ -29,6 +30,8 @@ from .context_keys import ContextKey, ContextProvider
 
 if TYPE_CHECKING:
     from cocoindex._internal.app import AppBase
+
+T = TypeVar("T")
 
 
 class _LoopRunner:
@@ -243,6 +246,14 @@ class Environment:
     @property
     def event_loop(self) -> asyncio.AbstractEventLoop:
         return self._loop_runner.loop
+
+    def get_context(self, key: ContextKey[T]) -> T:
+        """Get a context value provided during this environment's lifespan.
+
+        Use this to access context values outside of CocoIndex processing components,
+        e.g., to share a database connection pool between indexing and query/serving logic.
+        """
+        return self._context_provider.use(key)
 
     async def _get_env(self) -> "Environment":
         return self
@@ -475,7 +486,7 @@ def stop_sync() -> None:
     fut.result()
 
 
-def default_env() -> LazyEnvironment:
+def default_env_lazy() -> LazyEnvironment:
     """Get the default lazy environment."""
     return _default_env
 
