@@ -24,6 +24,10 @@ impl PyComponentProcessorContext {
         self.0.join_fn_call(&fn_ctx.0);
         Ok(())
     }
+
+    fn full_reprocess(&self) -> bool {
+        self.0.full_reprocess()
+    }
 }
 
 #[pyclass(name = "FnCallContext")]

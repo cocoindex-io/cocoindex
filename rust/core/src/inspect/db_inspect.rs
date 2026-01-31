@@ -3,7 +3,6 @@ use crate::prelude::*;
 use crate::engine::environment::Environment;
 use crate::engine::{app::App, profile::EngineProfile};
 use crate::state::db_schema::DbEntryKey;
-use crate::state::db_schema::StablePathEntryKey;
 use crate::state::stable_path::{StablePath, StablePathPrefix};
 use heed::types::{DecodeIgnore, Str};
 
@@ -56,55 +55,4 @@ pub fn list_app_names<Prof: EngineProfile>(env: &Environment<Prof>) -> Result<Ve
     }
 
     Ok(names)
-}
-
-pub fn clear_component_memoization<Prof: EngineProfile>(app: &App<Prof>) -> Result<()> {
-    let db = app.app_ctx().db();
-    let db_env = app.app_ctx().env().db_env();
-    let mut wtxn = db_env.write_txn()?;
-
-    let stable_paths = list_stable_paths(app)?;
-    for path in stable_paths {
-        let key =
-            DbEntryKey::StablePath(path, StablePathEntryKey::ComponentMemoization).encode()?;
-        db.delete(&mut wtxn, key.as_slice())?;
-    }
-
-    wtxn.commit()?;
-    Ok(())
-}
-
-pub fn clear_function_memoization<Prof: EngineProfile>(app: &App<Prof>) -> Result<()> {
-    let db = app.app_ctx().db();
-    let db_env = app.app_ctx().env().db_env();
-    let mut wtxn = db_env.write_txn()?;
-
-    let stable_paths = list_stable_paths(app)?;
-    for path in stable_paths {
-        let prefix =
-            DbEntryKey::StablePath(path.clone(), StablePathEntryKey::FunctionMemoizationPrefix)
-                .encode()?;
-
-        let mut keys_to_delete: Vec<Vec<u8>> = Vec::new();
-        {
-            let rtxn = db_env.read_txn()?;
-            for entry in db.prefix_iter(&rtxn, prefix.as_slice())? {
-                let (raw_key, _) = entry?;
-                keys_to_delete.push(raw_key.to_vec());
-            }
-        }
-
-        for raw_key in keys_to_delete {
-            db.delete(&mut wtxn, raw_key.as_slice())?;
-        }
-    }
-
-    wtxn.commit()?;
-    Ok(())
-}
-
-pub fn clear_all_memoization<Prof: EngineProfile>(app: &App<Prof>) -> Result<()> {
-    clear_component_memoization(app)?;
-    clear_function_memoization(app)?;
-    Ok(())
 }

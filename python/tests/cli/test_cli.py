@@ -565,22 +565,108 @@ class TestUpdateFlags:
         out_file = TEST_DIR / "out_single" / "single.txt"
         assert out_file.exists()
 
-    def test_full_reprocess_invalidates_memoization(self) -> None:
-        """--full-reprocess should invalidate caches so memoized work re-runs."""
-        run_cli("update", "./memo_app.py")
+    def test_full_reprocess_force_rewrite_unchanged(self) -> None:
+        """Test that --full-reprocess forces rewrite even if targets are unchanged."""
+        app_path = "./memo_app.py"
         stamp_path = TEST_DIR / "out_memo" / "stamp.txt"
+
+        # First run: create the target
+        run_cli("update", app_path)
         assert stamp_path.exists()
         first = stamp_path.read_text()
 
-        # Without full-reprocess, memoization should prevent re-run -> file unchanged.
-        run_cli("update", "./memo_app.py")
+        # Second run: should skip write (unchanged)
+        run_cli("update", app_path)
         second = stamp_path.read_text()
-        assert second == first
+        assert second == first, "Second run should skip write when unchanged"
 
-        # With full-reprocess, memoization is cleared -> file should change.
-        run_cli("update", "./memo_app.py", "--full-reprocess")
+        # Third run with --full-reprocess: should force rewrite
+        run_cli("update", app_path, "--full-reprocess")
         third = stamp_path.read_text()
-        assert third != second
+        assert third != first, "--full-reprocess should force rewrite even if unchanged"
+
+    def test_full_reprocess_deleted_target_not_resurrected(self) -> None:
+        """Test that --full-reprocess doesn't keep deleted targets alive via memo reuse."""
+        app_path = "./full_reprocess_app.py"
+        target_a_path = TEST_DIR / "out_full_reprocess" / "target_a.txt"
+        target_b_path = TEST_DIR / "out_full_reprocess" / "target_b.txt"
+
+        # First run: create both targets A and B
+        run_cli("update", app_path)
+        assert target_a_path.exists(), "target_a.txt should exist after first run"
+        assert target_b_path.exists(), "target_b.txt should exist after first run"
+
+        # Modify the app to only create A (remove B)
+        # We'll do this by creating a modified version of the app
+        original_content = (TEST_DIR / app_path).read_text()
+        modified_content = original_content.replace(
+            "create_b: bool = True", "create_b: bool = False"
+        )
+        (TEST_DIR / app_path).write_text(modified_content)
+
+        try:
+            # Run with --full-reprocess: B should be deleted, not kept alive by old memos
+            run_cli("update", app_path, "--full-reprocess")
+            assert target_a_path.exists(), "target_a.txt should still exist"
+            assert not target_b_path.exists(), (
+                "target_b.txt should be deleted, not kept alive by old memos"
+            )
+        finally:
+            # Restore original content
+            (TEST_DIR / app_path).write_text(original_content)
+
+
+class TestFullReprocess:
+    """Tests for --full-reprocess flag behavior."""
+
+    def test_full_reprocess_force_rewrite_unchanged(self) -> None:
+        """Test that --full-reprocess forces rewrite even if targets are unchanged."""
+        app_path = "./memo_app.py"
+        stamp_path = TEST_DIR / "out_memo" / "stamp.txt"
+
+        # First run: create the target
+        run_cli("update", app_path)
+        first = stamp_path.read_text()
+
+        # Second run: should skip write (unchanged)
+        run_cli("update", app_path)
+        second = stamp_path.read_text()
+        assert second == first, "Second run should skip write when unchanged"
+
+        # Third run with --full-reprocess: should force rewrite
+        run_cli("update", app_path, "--full-reprocess")
+        third = stamp_path.read_text()
+        assert third != first, "--full-reprocess should force rewrite even if unchanged"
+
+    def test_full_reprocess_deleted_target_not_resurrected(self) -> None:
+        """Test that --full-reprocess doesn't keep deleted targets alive via memo reuse."""
+        app_path = "./full_reprocess_app.py"
+        target_a_path = TEST_DIR / "out_full_reprocess" / "target_a.txt"
+        target_b_path = TEST_DIR / "out_full_reprocess" / "target_b.txt"
+
+        # First run: create both targets A and B
+        run_cli("update", app_path)
+        assert target_a_path.exists(), "target_a.txt should exist after first run"
+        assert target_b_path.exists(), "target_b.txt should exist after first run"
+
+        # Modify the app to only create A (remove B)
+        # We'll do this by creating a modified version of the app
+        original_content = (TEST_DIR / app_path).read_text()
+        modified_content = original_content.replace(
+            "create_b: bool = True", "create_b: bool = False"
+        )
+        (TEST_DIR / app_path).write_text(modified_content)
+
+        try:
+            # Run with --full-reprocess: B should be deleted, not kept alive by old memos
+            run_cli("update", app_path, "--full-reprocess")
+            assert target_a_path.exists(), "target_a.txt should still exist"
+            assert not target_b_path.exists(), (
+                "target_b.txt should be deleted, not kept alive by old memos"
+            )
+        finally:
+            # Restore original content
+            (TEST_DIR / app_path).write_text(original_content)
 
 
 class TestDropQuiet:

@@ -586,12 +586,9 @@ def update(
                 if app._name in persisted_names:
                     await _drop_app(app, report_to_stdout=not quiet)
 
-            # --full-reprocess: invalidate memoization caches before running
-            if full_reprocess:
-                core_app = await app._get_core()
-                _core.clear_all_memoization(core_app)
-
-            await _update_app(app, report_to_stdout=not quiet)
+            await _update_app(
+                app, report_to_stdout=not quiet, full_reprocess=full_reprocess
+            )
         finally:
             await _stop_all_environments()
 
