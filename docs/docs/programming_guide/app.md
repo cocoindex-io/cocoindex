@@ -136,7 +136,7 @@ If you only need to set the database path, using the `COCOINDEX_DB` environment 
 
 ### Defining a lifespan
 
-Use the `@lifespan` decorator to register a lifespan function. By default, all apps share the same lifespan, though you can explicitly specify a different one for an app (see [Multiple Environments](../advanced_topics/multiple_environments.md)). The function receives an `EnvironmentBuilder` for configuration and uses `yield` to separate setup from cleanup:
+Use the `@lifespan` decorator to register a lifespan function. By default, all apps share the same lifespan (unless you explicitly specify an app in a different [*Environment*](../advanced_topics/multiple_environments.md)). The function receives an `EnvironmentBuilder` for configuration and uses `yield` to separate setup from cleanup:
 
 ```python
 import cocoindex.asyncio as coco_aio
