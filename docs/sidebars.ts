@@ -59,6 +59,7 @@ const sidebars: SidebarsConfig = {
       collapsed: false,
       items: [
         'advanced_topics/memoization_keys',
+        'advanced_topics/multiple_environments',
         'advanced_topics/custom_target_connector',
       ],
     },
