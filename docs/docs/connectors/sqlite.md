@@ -197,7 +197,7 @@ Python types are automatically mapped to SQLite type affinities:
 | `datetime.datetime` | `TEXT` (ISO format) |
 | `datetime.timedelta` | `REAL` (total seconds) |
 | `list`, `dict`, nested structs | `TEXT` (JSON) |
-| `NDArray` (with vector schema) | `BLOB` (sqlite-vec format) |
+| `NDArray` (with vector schema) | `float[N]` (sqlite-vec type, e.g., `float[384]`) |
 
 To override the default mapping, provide a `SqliteType` or `VectorSchemaProvider` via:
 
@@ -282,11 +282,85 @@ schema = sqlite.TableSchema(
         "category": sqlite.ColumnDef(type="TEXT", nullable=False),
         "name": sqlite.ColumnDef(type="TEXT", nullable=False),
         "price": sqlite.ColumnDef(type="REAL"),
-        "embedding": sqlite.ColumnDef(type="BLOB"),
+        "embedding": sqlite.ColumnDef(type="float[384]"),  # sqlite-vec vector type
     },
     primary_key=["category", "name"],
 )
 ```
+
+### Virtual Tables
+
+SQLite virtual tables allow custom storage backends and specialized functionality. The `sqlite` connector supports creating virtual tables through the same `declare_table_target()` API used for regular tables.
+
+#### Vec0 Virtual Tables
+
+The `vec0` module from sqlite-vec provides optimized vector storage for similarity search. Use vec0 virtual tables when:
+
+- You need efficient vector similarity search with built-in indexing
+- You want to partition vectors by categories for faster queries
+- You're working with large vector datasets
+
+**Requirements:**
+
+- Exactly one `INTEGER` primary key column
+- At least one `float[N]` vector column
+- The sqlite-vec extension must be loaded (`load_vec=True`)
+
+#### Vec0TableDef
+
+Configure vec0-specific features using `Vec0TableDef`:
+
+```python
+from cocoindex.connectors.sqlite import Vec0TableDef
+
+virtual_table_def = Vec0TableDef(
+    partition_key_columns=["category"],  # Optional: partition index by these columns
+    auxiliary_columns=["metadata"],      # Optional: columns excluded from KNN filters
+)
+```
+
+**Parameters:**
+
+- `partition_key_columns` — List of column names used to partition the vector index. Queries can filter by partition keys efficiently. Multiple partition keys create a composite partition.
+- `auxiliary_columns` — List of column names to mark as auxiliary (stored but not usable in KNN filters). Useful for metadata that doesn't need to participate in similarity search.
+
+#### Creating Vec0 Virtual Tables
+
+Pass `virtual_table_def` to `declare_table_target()`:
+
+```python
+@dataclass
+class VectorDocument:
+    id: int
+    category: str
+    content: str
+    embedding: Annotated[NDArray, embedder]  # e.g., float[384]
+    metadata: str
+
+# Create vec0 virtual table with partition key and auxiliary column
+table = coco.mount_run(
+    coco.component_subpath("setup", "table"),
+    db.declare_table_target,
+    table_name="documents",
+    table_schema=sqlite.TableSchema(
+        VectorDocument,
+        primary_key=["id"],
+    ),
+    virtual_table_def=sqlite.Vec0TableDef(
+        partition_key_columns=["category"],
+        auxiliary_columns=["metadata"],
+    ),
+).result()
+```
+
+:::warning Current Limitations
+Vec0 virtual tables have the following limitations:
+
+- **Schema changes are not supported incrementally**. When you modify the table schema (add/remove columns, change `virtual_table_def` settings), the table will be recreated and **existing data will be lost**.
+- **Switching between regular and virtual tables** will also recreate the table and clear existing data.
+
+A future schema versioning mechanism will allow preserving row data across table recreations.
+:::
 
 ### Example
 
@@ -331,4 +405,72 @@ def app_main() -> None:
     # Declare rows
     for product in products:
         table.declare_row(row=product)
+```
+
+### Example: Vec0 Virtual Table
+
+```python
+import cocoindex as coco
+from cocoindex.connectors import sqlite
+from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
+from dataclasses import dataclass
+from typing import Annotated
+from numpy.typing import NDArray
+
+DATABASE_PATH = "vectors.sqlite"
+SQLITE_DB = coco.ContextKey[sqlite.SqliteDatabase]("sqlite_db")
+
+embedder = SentenceTransformerEmbedder("sentence-transformers/all-MiniLM-L6-v2")
+
+@dataclass
+class VectorDocument:
+    id: int
+    category: str
+    title: str
+    content: str
+    embedding: Annotated[NDArray, embedder]  # float[384]
+    metadata: str  # Will be marked as auxiliary
+
+@coco.lifespan
+def coco_lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
+    managed_conn = sqlite.connect(DATABASE_PATH, load_vec=True)
+    with sqlite.register_db("vec_db", managed_conn) as db:
+        builder.provide(SQLITE_DB, db)
+        yield
+    managed_conn.close()
+
+@coco.function
+def app_main() -> None:
+    db = coco.use_context(SQLITE_DB)
+
+    # Create vec0 virtual table with partition key and auxiliary column
+    table = coco.mount_run(
+        coco.component_subpath("setup", "table"),
+        db.declare_table_target,
+        table_name="documents",
+        table_schema=sqlite.TableSchema(
+            VectorDocument,
+            primary_key=["id"],
+        ),
+        virtual_table_def=sqlite.Vec0TableDef(
+            partition_key_columns=["category"],  # Partition index by category
+            auxiliary_columns=["metadata"],       # Store but don't index for KNN
+        ),
+    ).result()
+
+    # Declare document rows
+    docs = [
+        VectorDocument(
+            id=1,
+            category="tech",
+            title="Introduction to AI",
+            content="Artificial intelligence is...",
+            embedding=embedder.embed("Artificial intelligence is..."),
+            metadata='{"source": "blog", "date": "2025-01-15"}',
+        ),
+        # ... more documents
+    ]
+
+    for doc in docs:
+        table.declare_row(row=doc)
 ```
