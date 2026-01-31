@@ -127,6 +127,14 @@ def _app_main_id_generator(deps: list[str], count: int) -> None:
         _id_generator_results[dep] = [gen.next_id(dep) for _ in range(count)]
 
 
+@coco.function
+def _app_main_id_generator_with_deps(generator_deps: list[str], count: int) -> None:
+    """App main that generates IDs with different constructor deps."""
+    for gen_dep in generator_deps:
+        gen = IdGenerator(deps=gen_dep)  # Use gen_dep as constructor argument
+        _id_generator_results[gen_dep] = [gen.next_id() for _ in range(count)]
+
+
 def test_id_generator_multiple_ids() -> None:
     """Test that IdGenerator.next_id returns different IDs for the same dependency."""
     _id_generator_results.clear()
@@ -184,12 +192,45 @@ def test_id_generator_different_deps() -> None:
     assert _id_generator_results == {"X": [1, 2], "Y": [3, 4]}
 
 
+def test_id_generator_constructor_deps() -> None:
+    """Test that IdGenerator with different constructor deps produce different IDs."""
+    _id_generator_results.clear()
+
+    app = coco.App(
+        coco.AppConfig(name="test_id_generator_constructor_deps", environment=coco_env),
+        _app_main_id_generator_with_deps,
+        generator_deps=["A", "B"],
+        count=3,
+    )
+
+    # First run
+    app.update()
+    first_run_results = {k: list(v) for k, v in _id_generator_results.items()}
+    # Both generators use the same next_id() call (no arg), but different constructor deps
+    # So they should produce distinct ID sequences
+    assert first_run_results == {"A": [1, 2, 3], "B": [4, 5, 6]}
+
+    # Second run - verify stability
+    _id_generator_results.clear()
+    app.update()
+    second_run_results = {k: list(v) for k, v in _id_generator_results.items()}
+    assert first_run_results == second_run_results
+
+
 @coco.function
 def _app_main_uuid_generator(deps: list[str], count: int) -> None:
     """App main that generates multiple UUIDs for each dependency."""
     for dep in deps:
         gen = UuidGenerator()
         _uuid_generator_results[dep] = [gen.next_uuid(dep) for _ in range(count)]
+
+
+@coco.function
+def _app_main_uuid_generator_with_deps(generator_deps: list[str], count: int) -> None:
+    """App main that generates UUIDs with different constructor deps."""
+    for gen_dep in generator_deps:
+        gen = UuidGenerator(deps=gen_dep)  # Use gen_dep as constructor argument
+        _uuid_generator_results[gen_dep] = [gen.next_uuid() for _ in range(count)]
 
 
 def test_uuid_generator_multiple_uuids() -> None:
@@ -252,3 +293,34 @@ def test_uuid_generator_different_deps() -> None:
     uuids_y = set(_uuid_generator_results["Y"])
     # UUIDs for different deps should be different
     assert uuids_x.isdisjoint(uuids_y)
+
+
+def test_uuid_generator_constructor_deps() -> None:
+    """Test that UuidGenerator with different constructor deps produce different UUIDs."""
+    _uuid_generator_results.clear()
+
+    app = coco.App(
+        coco.AppConfig(
+            name="test_uuid_generator_constructor_deps", environment=coco_env
+        ),
+        _app_main_uuid_generator_with_deps,
+        generator_deps=["A", "B"],
+        count=3,
+    )
+
+    # First run
+    app.update()
+    first_run_results = {k: list(v) for k, v in _uuid_generator_results.items()}
+    # Both generators use the same next_uuid() call (no arg), but different constructor deps
+    # So they should produce distinct UUID sequences
+    uuids_a = set(first_run_results["A"])
+    uuids_b = set(first_run_results["B"])
+    assert len(uuids_a) == 3
+    assert len(uuids_b) == 3
+    assert uuids_a.isdisjoint(uuids_b)
+
+    # Second run - verify stability
+    _uuid_generator_results.clear()
+    app.update()
+    second_run_results = {k: list(v) for k, v in _uuid_generator_results.items()}
+    assert first_run_results == second_run_results
