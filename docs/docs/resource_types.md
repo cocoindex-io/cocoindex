@@ -141,27 +141,36 @@ matcher = PatternFilePathMatcher(
 
 The ID module (`cocoindex.resources.id`) provides utilities for generating stable unique IDs and UUIDs that persist across incremental updates.
 
+### Choosing the Right API
+
+| API | Same `dep` produces... | Use when... |
+|-----|------------------------|-------------|
+| `generate_id(dep)` | **Same** ID every time | Each unique input maps to exactly one ID |
+| `IdGenerator.next_id(dep)` | **Distinct** ID each call | You need multiple IDs for potentially non-distinct inputs |
+
+The same distinction applies to `generate_uuid` vs `UuidGenerator`.
+
 ### generate_id / generate_uuid
 
-Simple functions for generating a single stable ID or UUID per dependency value:
+Functions that return the **same** ID/UUID for the **same** `dep` value. These are idempotent: calling multiple times with identical `dep` yields identical results.
 
 ```python
 from cocoindex.resources.id import generate_id, generate_uuid
 
-def process_chunk(chunk: Chunk) -> Row:
-    # Generate a stable ID for this chunk
-    chunk_id = generate_id(chunk.content)
-    return Row(id=chunk_id, content=chunk.content)
+def process_item(item: Item) -> Row:
+    # Same item.key always gets the same ID
+    item_id = generate_id(item.key)
+    return Row(id=item_id, data=item.data)
 
 def process_document(doc: Document) -> Row:
-    # Generate a stable UUID for this document
+    # Same doc.path always gets the same UUID
     doc_uuid = generate_uuid(doc.path)
     return Row(id=doc_uuid, content=doc.content)
 ```
 
 **Parameters:**
 
-- `dep` — Optional dependency value. The generated ID/UUID is stable as long as this value (and the component path) remains the same across runs. Defaults to `None`.
+- `dep` — Dependency value that determines the ID/UUID. The same `dep` always produces the same result within a component. Defaults to `None`.
 
 **Returns:**
 
@@ -170,7 +179,9 @@ def process_document(doc: Document) -> Row:
 
 ### IdGenerator / UuidGenerator
 
-Classes for generating multiple unique IDs or UUIDs within a single function call:
+Classes that return a **distinct** ID/UUID on each call, even when called with the same `dep` value. The sequence is stable across runs.
+
+Use these when you need multiple IDs for potentially non-distinct inputs, such as splitting text into chunks where chunks may have identical content but still need unique IDs.
 
 ```python
 from cocoindex.resources.id import IdGenerator, UuidGenerator
@@ -179,7 +190,7 @@ def process_document(doc: Document) -> list[Row]:
     id_gen = IdGenerator()
     rows = []
     for chunk in split_into_chunks(doc.content):
-        # Each chunk gets a unique, stable ID
+        # Each call returns a distinct ID, even if chunks are identical
         chunk_id = id_gen.next_id(chunk.content)
         rows.append(Row(id=chunk_id, content=chunk.content))
     return rows
@@ -188,20 +199,13 @@ def process_with_uuids(doc: Document) -> list[Row]:
     uuid_gen = UuidGenerator()
     rows = []
     for chunk in split_into_chunks(doc.content):
-        # Each chunk gets a unique, stable UUID
+        # Each call returns a distinct UUID, even if chunks are identical
         chunk_uuid = uuid_gen.next_uuid(chunk.content)
         rows.append(Row(id=chunk_uuid, content=chunk.content))
     return rows
 ```
 
-These classes maintain ordinals internally, so multiple calls with the same `dep` value return different IDs/UUIDs, but the sequence is stable across runs.
-
 **Methods:**
 
-- `IdGenerator.next_id(dep=None)` — Generate the next unique integer ID for the given dependency
-- `UuidGenerator.next_uuid(dep=None)` — Generate the next unique UUID for the given dependency
-
-**Use Cases:**
-
-- Use `generate_id`/`generate_uuid` when you need one ID per unique input value
-- Use `IdGenerator`/`UuidGenerator` when you need multiple IDs for the same input value (e.g., splitting a document into chunks where each chunk needs a unique ID)
+- `IdGenerator.next_id(dep=None)` — Generate the next unique integer ID (distinct on each call)
+- `UuidGenerator.next_uuid(dep=None)` — Generate the next unique UUID (distinct on each call)
