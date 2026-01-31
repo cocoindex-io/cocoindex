@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "CocoIndex v1 example: embed local PDF files and store in Postgres/pgvector."
 requires-python = ">=3.11"
 dependencies = [
-    "cocoindex[postgres,sentence_transformers]>=1.0.0a6",
+    "cocoindex[postgres,sentence_transformers]>=1.0.0a8",
     "asyncpg>=0.29.0",
     "pgvector>=0.4.1",
     "numpy",

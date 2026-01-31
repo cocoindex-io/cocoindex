@@ -26,6 +26,7 @@ from cocoindex.ops.text import RecursiveSplitter, detect_code_language
 from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
 from cocoindex.resources.file import FileLike, PatternFilePathMatcher
 from cocoindex.resources.chunk import Chunk
+from cocoindex.resources.id import IdGenerator
 
 
 LANCEDB_URI = "./lancedb_data"
@@ -41,8 +42,8 @@ _splitter = RecursiveSplitter()
 
 @dataclass
 class CodeEmbedding:
+    id: int
     filename: str
-    location: str
     code: str
     embedding: Annotated[NDArray, _embedder]
     start_line: int
@@ -61,16 +62,15 @@ async def coco_lifespan(
 
 @coco.function(memo=True)
 async def process_chunk(
+    id: int,
     filename: pathlib.PurePath,
     chunk: Chunk,
     table: lancedb.TableTarget[CodeEmbedding],
 ) -> None:
-    # Create location string from chunk position (used as part of primary key)
-    location = f"{chunk.start.char_offset}-{chunk.end.char_offset}"
     table.declare_row(
         row=CodeEmbedding(
+            id=id,
             filename=str(filename),
-            location=location,
             code=chunk.text,
             embedding=await _embedder.embed_async(chunk.text),
             start_line=chunk.start.line,
@@ -96,8 +96,12 @@ async def process_file(
         chunk_overlap=300,
         language=language,
     )
+    id_gen = IdGenerator()
     await asyncio.gather(
-        *(process_chunk(file.file_path.path, chunk, table) for chunk in chunks)
+        *(
+            process_chunk(id_gen.next_id(chunk.text), file.file_path.path, chunk, table)
+            for chunk in chunks
+        )
     )
 
 
@@ -108,9 +112,7 @@ def app_main(sourcedir: pathlib.Path) -> None:
         coco.component_subpath("setup", "table"),
         target_db.declare_table_target,
         table_name=TABLE_NAME,
-        table_schema=lancedb.TableSchema(
-            CodeEmbedding, primary_key=["filename", "location"]
-        ),
+        table_schema=lancedb.TableSchema(CodeEmbedding, primary_key=["id"]),
     ).result()
 
     # Process multiple file types across the repository
