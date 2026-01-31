@@ -13,9 +13,9 @@ from __future__ import annotations
 import asyncio
 import pathlib
 import sys
-import uuid
 from typing import AsyncIterator
 
+from cocoindex.resources.id import IdGenerator
 from qdrant_client import QdrantClient
 from qdrant_client.http import models as qdrant_models
 
@@ -51,15 +51,15 @@ async def coco_lifespan(
 
 @coco.function(memo=True)
 async def process_chunk(
+    id: int,
     filename: pathlib.PurePath,
     chunk: Chunk,
     target: qdrant.CollectionTarget,
 ) -> None:
-    chunk_id = _chunk_id(filename, chunk)
     embedding_vec = await _embedder.embed_async(chunk.text)
 
     point = qdrant.PointStruct(
-        id=chunk_id,
+        id=id,
         vector=embedding_vec.tolist(),
         payload={
             "filename": str(filename),
@@ -80,8 +80,14 @@ async def process_file(
     chunks = _splitter.split(
         text, chunk_size=2000, chunk_overlap=500, language="markdown"
     )
+    id_gen = IdGenerator()
     await asyncio.gather(
-        *(process_chunk(file.file_path.path, chunk, target) for chunk in chunks)
+        *(
+            process_chunk(
+                id_gen.next_id(chunk.text), file.file_path.path, chunk, target
+            )
+            for chunk in chunks
+        )
     )
 
 
@@ -147,11 +153,6 @@ def query() -> None:
         if not q:
             break
         query_once(client, q)
-
-
-def _chunk_id(filename: pathlib.PurePath, chunk: Chunk) -> str:
-    raw = f"{filename}:{chunk.start.char_offset}-{chunk.end.char_offset}"
-    return str(uuid.uuid5(uuid.NAMESPACE_URL, raw))
 
 
 def _qdrant_search(

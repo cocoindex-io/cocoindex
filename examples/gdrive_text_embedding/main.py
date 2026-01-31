@@ -25,6 +25,7 @@ from cocoindex.connectors import google_drive, postgres
 from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
 from cocoindex.ops.text import RecursiveSplitter
 from cocoindex.resources.chunk import Chunk
+from cocoindex.resources.id import IdGenerator
 
 
 DATABASE_URL = os.getenv(
@@ -58,8 +59,8 @@ async def coco_lifespan(
 
 @dataclass
 class DocEmbedding:
+    id: int
     filename: str
-    location: str
     text: str
     embedding: Annotated[NDArray, _embedder]
 
@@ -73,22 +74,28 @@ async def process_file(
     chunks = _splitter.split(
         text, chunk_size=2000, chunk_overlap=500, language="markdown"
     )
+    id_gen = IdGenerator()
     await asyncio.gather(
-        *(_emit_chunk(file.file_path.path.as_posix(), chunk, table) for chunk in chunks)
+        *(
+            _emit_chunk(
+                id_gen.next_id(chunk.text), file.file_path.path.as_posix(), chunk, table
+            )
+            for chunk in chunks
+        )
     )
 
 
 @coco.function(memo=True)
 async def _emit_chunk(
+    id: int,
     filename: str,
     chunk: Chunk,
     table: postgres.TableTarget[DocEmbedding],
 ) -> None:
-    location = f"{chunk.start.char_offset}:{chunk.end.char_offset}"
     table.declare_row(
         row=DocEmbedding(
+            id=id,
             filename=filename,
-            location=location,
             text=chunk.text,
             embedding=await _embedder.embed_async(chunk.text),
         ),
@@ -104,7 +111,7 @@ def app_main() -> None:
             table_name=TABLE_NAME,
             table_schema=postgres.TableSchema(
                 DocEmbedding,
-                primary_key=["filename", "location"],
+                primary_key=["id"],
             ),
             pg_schema_name=PG_SCHEMA_NAME,
         ),

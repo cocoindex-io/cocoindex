@@ -35,6 +35,7 @@ from cocoindex.ops.text import RecursiveSplitter
 from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
 from cocoindex.resources.chunk import Chunk
 from cocoindex.resources.file import FileLike, PatternFilePathMatcher
+from cocoindex.resources.id import IdGenerator
 
 
 TABLE_NAME = "pdf_embeddings"
@@ -67,6 +68,7 @@ def pdf_to_markdown(content: bytes) -> str:
 
 @dataclass
 class PdfEmbedding:
+    id: int
     filename: str
     chunk_start: int
     chunk_end: int
@@ -90,12 +92,14 @@ async def coco_lifespan(
 
 @coco.function(memo=True)
 async def process_chunk(
+    id: int,
     filename: pathlib.PurePath,
     chunk: Chunk,
     table: postgres.TableTarget[PdfEmbedding],
 ) -> None:
     table.declare_row(
         row=PdfEmbedding(
+            id=id,
             filename=str(filename),
             chunk_start=chunk.start.char_offset,
             chunk_end=chunk.end.char_offset,
@@ -115,8 +119,12 @@ async def process_file(
     chunks = _splitter.split(
         markdown, chunk_size=2000, chunk_overlap=500, language="markdown"
     )
+    id_gen = IdGenerator()
     await asyncio.gather(
-        *(process_chunk(file.file_path.path, chunk, table) for chunk in chunks)
+        *(
+            process_chunk(id_gen.next_id(chunk.text), file.file_path.path, chunk, table)
+            for chunk in chunks
+        )
     )
 
 
@@ -129,7 +137,7 @@ def app_main(sourcedir: pathlib.Path) -> None:
         table_name=TABLE_NAME,
         table_schema=postgres.TableSchema(
             PdfEmbedding,
-            primary_key=["filename", "chunk_start"],
+            primary_key=["id"],
         ),
         pg_schema_name=PG_SCHEMA_NAME,
     ).result()
