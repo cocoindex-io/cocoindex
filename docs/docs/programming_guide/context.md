@@ -1,6 +1,6 @@
 ---
 title: Context
-description: Sharing resources across your pipeline using ContextKey, builder.provide(), and use_context().
+description: Sharing resources across your pipeline and beyond using ContextKey, builder.provide(), use_context(), and get_context().
 ---
 
 # Context
@@ -62,3 +62,23 @@ def app_main(sourcedir: pathlib.Path) -> None:
 
     # ... rest of pipeline ...
 ```
+
+## Accessing context outside processing components
+
+If you need to access context values outside of CocoIndex processing components — for example, in query/serving logic that shares resources with your indexing pipeline — use `env.get_context()`:
+
+```python
+# Sync API
+db = coco.default_env().get_context(PG_DB)
+```
+
+```python
+# Async API
+db = (await coco_aio.default_env()).get_context(PG_DB)
+```
+
+This is useful when your application runs both indexing and serving in the same process and you want to initialize shared resources (like database connection pools or configuration) once in the lifespan.
+
+:::note
+`default_env()` starts the environment if it hasn't been started yet, which runs the lifespan function. If you're using an explicit environment, call `get_context()` directly on that environment instance.
+:::

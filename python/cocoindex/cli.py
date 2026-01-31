@@ -17,7 +17,7 @@ from cocoindex._internal.environment import (
     Environment,
     LazyEnvironment,
     EnvironmentInfo,
-    default_env,
+    default_env_lazy,
     default_env_loop,
     get_registered_environment_infos,
 )
@@ -157,7 +157,7 @@ def _ls_from_module(module_ref: str) -> None:
     # Sort: explicit environments first (by name), default environment last
     def sort_key(info: EnvironmentInfo) -> tuple[int, str]:
         env = info.env
-        if env is default_env():
+        if env is default_env_lazy():
             return (1, "")
         return (0, info.env_name or "")
 
