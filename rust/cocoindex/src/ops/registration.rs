@@ -24,7 +24,8 @@ fn register_executor_factories(registry: &mut ExecutorFactoryRegistry) -> Result
 
     targets::postgres::register(registry)?;
     targets::qdrant::register(registry)?;
-    targets::kuzu::register(registry, reqwest_client)?;
+    targets::kuzu::register(registry, reqwest_client.clone())?;
+    targets::ladybug::register(registry, reqwest_client)?;
 
     targets::neo4j::Factory::new().register(registry)?;
 
