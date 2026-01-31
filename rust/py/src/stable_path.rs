@@ -4,7 +4,8 @@ use pyo3::exceptions::PyTypeError;
 use pyo3::types::{PyBool, PyBytes, PyInt, PyList, PyString, PyTuple};
 
 use cocoindex_core::state::stable_path::{StableKey, StablePath};
-pub struct PyStableKey(StableKey);
+
+pub struct PyStableKey(pub(crate) StableKey);
 
 impl FromPyObject<'_, '_> for PyStableKey {
     type Error = PyErr;
