@@ -14,7 +14,6 @@ import datetime
 import decimal
 import json
 import sqlite3
-import struct
 import threading
 import uuid
 from dataclasses import dataclass, field
@@ -110,6 +109,30 @@ class ManagedConnection:
         self._conn.close()
 
 
+@dataclass
+class Vec0TableDef:
+    """
+    Configuration for vec0 virtual tables (sqlite-vec).
+
+    Vec0 virtual tables provide optimized vector similarity search with SIMD acceleration.
+    Use this for KNN queries on larger datasets. For small datasets or simple vector storage,
+    regular tables with float[N] columns are sufficient.
+
+    Attributes:
+        partition_key_columns: Column names to use as partition keys for sharding the index.
+        auxiliary_columns: Column names to mark as auxiliary (+prefix in vec0 DDL).
+            Auxiliary columns store additional data but cannot be used in KNN WHERE filters.
+    """
+
+    partition_key_columns: list[str] = field(default_factory=list)
+    auxiliary_columns: list[str] = field(default_factory=list)
+
+    @property
+    def module_name(self) -> str:
+        """Return the SQLite virtual table module name."""
+        return "vec0"
+
+
 # SQLite has a limit of 999 variables per query (SQLITE_MAX_VARIABLE_NUMBER)
 _BIND_LIMIT: int = 999
 
@@ -149,13 +172,6 @@ class _TypeMapping(NamedTuple):
 
     sqlite_type: str
     encoder: ValueEncoder | None = None
-
-
-def _serialize_vector(arr: np.ndarray) -> bytes:
-    """Serialize a numpy array to sqlite-vec compatible BLOB format."""
-    # sqlite-vec expects float32 in little-endian format
-    arr_f32 = arr.astype(np.float32)
-    return struct.pack(f"<{len(arr_f32)}f", *arr_f32)
 
 
 # Global mapping for leaf types
@@ -211,7 +227,7 @@ def _get_type_mapping(
     if base_type in _LEAF_TYPE_MAPPINGS:
         return _LEAF_TYPE_MAPPINGS[base_type]
 
-    # NumPy ndarray: serialize to sqlite-vec compatible BLOB format
+    # NumPy ndarray: serialize to sqlite-vec compatible format
     if base_type is np.ndarray:
         if vector_schema_provider is None:
             raise ValueError("VectorSchemaProvider is required for NumPy ndarray type.")
@@ -220,8 +236,12 @@ def _get_type_mapping(
         if vector_schema.size <= 0:
             raise ValueError(f"Invalid vector dimension: {vector_schema.size}")
 
-        # sqlite-vec uses BLOB storage with float32 serialization
-        return _TypeMapping("BLOB", _serialize_vector)
+        # sqlite-vec uses float[N] type (e.g., float[384])
+        import sqlite_vec  # type: ignore
+
+        return _TypeMapping(
+            f"float[{vector_schema.size}]", sqlite_vec.serialize_float32
+        )
 
     elif vector_schema_provider is not None:
         raise ValueError(
@@ -378,6 +398,7 @@ class _RowHandler(coco.TargetHandler[_RowKey, _RowValue, _RowFingerprint]):
     _managed_conn: ManagedConnection
     _table_name: str
     _table_schema: TableSchema[Any]
+    _is_virtual_table: bool
     _sink: coco.TargetActionSink[_RowAction, None]
 
     def __init__(
@@ -385,10 +406,12 @@ class _RowHandler(coco.TargetHandler[_RowKey, _RowValue, _RowFingerprint]):
         managed_conn: ManagedConnection,
         table_name: str,
         table_schema: TableSchema[Any],
+        is_virtual_table: bool = False,
     ) -> None:
         self._managed_conn = managed_conn
         self._table_name = table_name
         self._table_schema = table_schema
+        self._is_virtual_table = is_virtual_table
         self._sink = coco.TargetActionSink[_RowAction, None].from_fn(
             self._apply_actions
         )
@@ -434,31 +457,55 @@ class _RowHandler(coco.TargetHandler[_RowKey, _RowValue, _RowFingerprint]):
         if num_parameters == 0:
             return
 
-        # Build ON CONFLICT clause for SQLite
-        pk_list = ", ".join(f'"{c}"' for c in pk_cols)
-        if non_pk_cols:
-            update_list = ", ".join(f'"{c}" = excluded."{c}"' for c in non_pk_cols)
-            conflict_clause = f"ON CONFLICT ({pk_list}) DO UPDATE SET {update_list}"
-        else:
-            conflict_clause = f"ON CONFLICT ({pk_list}) DO NOTHING"
+        # Virtual tables (like vec0) don't support standard UPSERT syntax
+        # Use DELETE + INSERT for each row
+        if self._is_virtual_table:
+            pk_list = ", ".join(f'"{c}"' for c in pk_cols)
+            pk_placeholders = " AND ".join(f'"{c}" = ?' for c in pk_cols)
+            delete_sql = f"DELETE FROM {table_name} WHERE {pk_placeholders}"
 
-        # Batch multiple rows into one INSERT, respecting SQLite's bind parameter limit.
-        chunk_size = max(1, _BIND_LIMIT // num_parameters)
-        for upsert_chunk in (
-            upserts[i : i + chunk_size] for i in range(0, len(upserts), chunk_size)
-        ):
             placeholders = ", ".join("?" for _ in range(num_parameters))
-            values_sql_parts: list[str] = []
-            params: list[Any] = []
-            for action in upsert_chunk:
-                assert action.value is not None
-                values_sql_parts.append(f"({placeholders})")
-                # Values are encoded by TableTarget before being stored as target state values.
-                params.extend(action.value.get(col_name) for col_name in all_col_names)
+            insert_sql = (
+                f"INSERT INTO {table_name} ({col_list}) VALUES ({placeholders})"
+            )
 
-            values_sql = ", ".join(values_sql_parts)
-            sql = f"INSERT INTO {table_name} ({col_list}) VALUES {values_sql} {conflict_clause}"
-            conn.execute(sql, params)
+            for action in upserts:
+                assert action.value is not None
+                # Delete existing row if it exists
+                pk_params = [action.value.get(pk_col) for pk_col in pk_cols]
+                conn.execute(delete_sql, pk_params)
+                # Insert new row
+                row_params = [action.value.get(col_name) for col_name in all_col_names]
+                conn.execute(insert_sql, row_params)
+        else:
+            # Build ON CONFLICT clause for regular tables
+            insert_clause = "INSERT"
+            pk_list = ", ".join(f'"{c}"' for c in pk_cols)
+            if non_pk_cols:
+                update_list = ", ".join(f'"{c}" = excluded."{c}"' for c in non_pk_cols)
+                conflict_clause = f"ON CONFLICT ({pk_list}) DO UPDATE SET {update_list}"
+            else:
+                conflict_clause = f"ON CONFLICT ({pk_list}) DO NOTHING"
+
+            # Batch multiple rows into one INSERT, respecting SQLite's bind parameter limit.
+            chunk_size = max(1, _BIND_LIMIT // num_parameters)
+            for upsert_chunk in (
+                upserts[i : i + chunk_size] for i in range(0, len(upserts), chunk_size)
+            ):
+                placeholders = ", ".join("?" for _ in range(num_parameters))
+                values_sql_parts: list[str] = []
+                params: list[Any] = []
+                for action in upsert_chunk:
+                    assert action.value is not None
+                    values_sql_parts.append(f"({placeholders})")
+                    # Values are encoded by TableTarget before being stored as target state values.
+                    params.extend(
+                        action.value.get(col_name) for col_name in all_col_names
+                    )
+
+                values_sql = ", ".join(values_sql_parts)
+                sql = f"{insert_clause} INTO {table_name} ({col_list}) VALUES {values_sql} {conflict_clause}"
+                conn.execute(sql, params)
 
     def _execute_deletes(
         self, conn: sqlite3.Connection, deletes: list[_RowAction]
@@ -521,13 +568,21 @@ class _TableSpec:
 
     table_schema: TableSchema[Any]
     managed_by: Literal["system", "user"] = "system"
+    virtual_table_def: Vec0TableDef | None = None
 
 
-class _PkColumnTrackingRecord(NamedTuple):
-    """Primary-key column signature used for table-level main tracking record."""
+class _PkColumnInfo(NamedTuple):
+    """Information for a single primary key column."""
 
     name: str
     type: str
+
+
+class _TablePrimaryTrackingRecord(NamedTuple):
+    """Primary tracking information for a table (PK columns + virtual table config)."""
+
+    primary_key_columns: tuple[_PkColumnInfo, ...]
+    virtual_table_def: Vec0TableDef | None = None
 
 
 class _NonPkColumnTrackingRecord(NamedTuple):
@@ -550,13 +605,16 @@ _TableSubTrackingRecord = _NonPkColumnTrackingRecord | None
 def _table_composite_tracking_record_from_spec(
     spec: _TableSpec,
 ) -> statediff.CompositeTrackingRecord[
-    tuple[_PkColumnTrackingRecord, ...], str, _TableSubTrackingRecord
+    _TablePrimaryTrackingRecord, str, _TableSubTrackingRecord
 ]:
     schema = spec.table_schema
     col_by_name = schema.columns
-    pk_sig = tuple(
-        _PkColumnTrackingRecord(name=pk, type=col_by_name[pk].type)
-        for pk in schema.primary_key
+    pk_sig = _TablePrimaryTrackingRecord(
+        primary_key_columns=tuple(
+            _PkColumnInfo(name=pk, type=col_by_name[pk].type)
+            for pk in schema.primary_key
+        ),
+        virtual_table_def=spec.virtual_table_def,
     )
     sub: dict[str, _TableSubTrackingRecord] = {
         _col_subkey(col_name): _NonPkColumnTrackingRecord(
@@ -570,7 +628,7 @@ def _table_composite_tracking_record_from_spec(
 
 _TableTrackingRecord = statediff.MutualTrackingRecord[
     statediff.CompositeTrackingRecord[
-        tuple[_PkColumnTrackingRecord, ...], str, _TableSubTrackingRecord
+        _TablePrimaryTrackingRecord, str, _TableSubTrackingRecord
     ]
 ]
 
@@ -599,6 +657,69 @@ def _drop_table(conn: sqlite3.Connection, table_name: str) -> None:
     """Drop a table if it exists."""
     qualified_name = _qualified_table_name(table_name)
     conn.execute(f"DROP TABLE IF EXISTS {qualified_name}")
+
+
+def _create_virtual_table(
+    conn: sqlite3.Connection,
+    table_name: str,
+    schema: TableSchema[Any],
+    virtual_table_def: Vec0TableDef,
+    *,
+    has_vec_extension: bool,
+) -> None:
+    """
+    Create a virtual table.
+
+    For vec0, the syntax is:
+        CREATE VIRTUAL TABLE name USING vec0(
+            id integer primary key,
+            embedding float[384],
+            year integer partition key,
+            metadata text,
+            +auxiliary_data text
+        )
+    """
+    module_name = virtual_table_def.module_name
+
+    # Validate extension is loaded
+    if module_name == "vec0" and not has_vec_extension:
+        raise RuntimeError(
+            f"sqlite-vec extension required for {module_name} virtual tables"
+        )
+
+    qualified_name = _qualified_table_name(table_name)
+
+    # Build column definitions for virtual table syntax
+    col_defs = []
+    partition_keys = set(virtual_table_def.partition_key_columns)
+    auxiliary_cols = set(virtual_table_def.auxiliary_columns)
+
+    for col_name, col_def in schema.columns.items():
+        parts = []
+
+        # Add + prefix for auxiliary columns
+        if col_name in auxiliary_cols:
+            parts.append(f"+{col_name}")
+        else:
+            parts.append(col_name)
+
+        # Add type
+        parts.append(col_def.type)
+
+        # Add PRIMARY KEY marker
+        if col_name in schema.primary_key:
+            parts.append("primary key")
+
+        # Add PARTITION KEY marker
+        if col_name in partition_keys:
+            parts.append("partition key")
+
+        col_defs.append(" ".join(parts))
+
+    columns_sql = ",\n    ".join(col_defs)
+    sql = f"CREATE VIRTUAL TABLE {qualified_name} USING {module_name}(\n    {columns_sql}\n)"
+
+    conn.execute(sql)
 
 
 def _create_table(
@@ -730,6 +851,22 @@ def _apply_table_actions(
                 action = actions_list[i]
                 assert action.key == key
 
+                # Check if this is a virtual table (for special handling)
+                is_virtual = (
+                    not coco.is_non_existence(action.spec)
+                    and action.spec.virtual_table_def is not None
+                )
+
+                # Virtual tables can't use ALTER TABLE - force DROP+CREATE for column changes
+                if is_virtual and action.column_actions and action.main_action is None:
+                    # Upgrade to replace action
+                    action = _TableAction(
+                        key=action.key,
+                        spec=action.spec,
+                        main_action="replace",
+                        column_actions={},
+                    )
+
                 if action.main_action in ("replace", "delete"):
                     _drop_table(conn, key.table_name)
 
@@ -743,20 +880,32 @@ def _apply_table_actions(
                         managed_conn=managed_conn,
                         table_name=key.table_name,
                         table_schema=spec.table_schema,
+                        is_virtual_table=(spec.virtual_table_def is not None),
                     )
                 )
 
                 if action.main_action in ("insert", "upsert", "replace"):
-                    _create_table(
-                        conn,
-                        key.table_name,
-                        spec.table_schema,
-                        if_not_exists=(action.main_action == "upsert"),
-                        has_vec_extension=has_vec,
-                    )
+                    # Route to virtual or regular table creation
+                    if spec.virtual_table_def is not None:
+                        _create_virtual_table(
+                            conn,
+                            key.table_name,
+                            spec.table_schema,
+                            spec.virtual_table_def,
+                            has_vec_extension=has_vec,
+                        )
+                    else:
+                        _create_table(
+                            conn,
+                            key.table_name,
+                            spec.table_schema,
+                            if_not_exists=(action.main_action == "upsert"),
+                            has_vec_extension=has_vec,
+                        )
                     continue
 
                 # No main change: reconcile non-PK columns incrementally.
+                # (Virtual tables never reach here - they're forced to replace above)
                 if action.column_actions:
                     _apply_column_actions(
                         conn,
@@ -921,19 +1070,78 @@ class SqliteDatabase(connection.KeyedConnection[ManagedConnection]):
         table_schema: TableSchema[RowT],
         *,
         managed_by: Literal["system", "user"] = "system",
+        virtual_table_def: Vec0TableDef | None = None,
     ) -> TableTarget[RowT, coco.PendingS]:
         """
-        Create a TableTarget for writing rows to a SQLite table.
+        Create a TableTarget for writing rows to a SQLite table (regular or virtual).
 
         Args:
             table_name: Name of the table.
             table_schema: Schema definition including columns and primary key.
             managed_by: Whether the table is managed by "system" (CocoIndex creates/drops it)
                         or "user" (table must exist, CocoIndex only manages rows).
+            virtual_table_def: Optional virtual table configuration.
+                - None (default): Create a regular table
+                - Vec0TableDef: Create a vec0 virtual table (requires sqlite-vec extension)
 
         Returns:
             A TableTarget that can be used to declare rows.
+
+        Raises:
+            RuntimeError: If vec0 virtual table is requested but sqlite-vec extension is not loaded.
+            ValueError: If vec0 table configuration is invalid (e.g., no vector columns,
+                       invalid partition/auxiliary columns).
+
+        Note:
+            Virtual tables cannot be altered with ALTER TABLE. Schema changes
+            automatically trigger DROP + CREATE operations.
         """
+        # Validate vec0 virtual table configuration
+        if isinstance(virtual_table_def, Vec0TableDef):
+            # Check extension is loaded
+            if _VEC_EXTENSION not in self._value.loaded_extensions:
+                raise RuntimeError(
+                    "sqlite-vec extension must be loaded for vec0 virtual tables. "
+                    "Use connect(..., load_vec=True)"
+                )
+
+            # Validate at least one vector column exists
+            has_vector_col = any(
+                col_def.type.startswith("float[")
+                for col_def in table_schema.columns.values()
+            )
+            if not has_vector_col:
+                raise ValueError(
+                    "vec0 virtual tables require at least one float[N] vector column"
+                )
+
+            # Validate partition_key_columns exist in schema
+            all_cols = set(table_schema.columns.keys())
+            invalid_partition = set(virtual_table_def.partition_key_columns) - all_cols
+            if invalid_partition:
+                raise ValueError(
+                    f"Partition key columns not in schema: {invalid_partition}"
+                )
+
+            # Validate auxiliary_columns exist in schema
+            invalid_aux = set(virtual_table_def.auxiliary_columns) - all_cols
+            if invalid_aux:
+                raise ValueError(f"Auxiliary columns not in schema: {invalid_aux}")
+
+            # Validate vec0 primary key: must have exactly one integer PK column
+            if len(table_schema.primary_key) != 1:
+                raise ValueError(
+                    f"vec0 virtual tables require exactly one primary key column, "
+                    f"got {len(table_schema.primary_key)}: {table_schema.primary_key}"
+                )
+            pk_col_name = table_schema.primary_key[0]
+            pk_col_type = table_schema.columns[pk_col_name].type
+            if pk_col_type != "INTEGER":
+                raise ValueError(
+                    f"vec0 virtual tables require INTEGER primary key, "
+                    f"got {pk_col_type} for column '{pk_col_name}'"
+                )
+
         key = _TableKey(
             db_key=self.key,
             table_name=table_name,
@@ -941,6 +1149,7 @@ class SqliteDatabase(connection.KeyedConnection[ManagedConnection]):
         spec = _TableSpec(
             table_schema=table_schema,
             managed_by=managed_by,
+            virtual_table_def=virtual_table_def,
         )
         provider = coco.declare_target_state_with_child(
             _table_provider.target_state(key, spec)
@@ -1075,6 +1284,7 @@ __all__ = [
     "SqliteType",
     "TableSchema",
     "TableTarget",
+    "Vec0TableDef",
     "connect",
     "register_db",
 ]

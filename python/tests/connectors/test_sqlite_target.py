@@ -94,18 +94,6 @@ def sqlite_db() -> Iterator[tuple[sqlite.ManagedConnection, Path]]:
     db_path.unlink(missing_ok=True)
 
 
-@pytest.fixture
-def sqlite_db_with_vec() -> Iterator[tuple[sqlite.ManagedConnection, Path]]:
-    """Create a temporary SQLite database with sqlite-vec extension loaded."""
-    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
-        db_path = Path(f.name)
-
-    managed_conn = sqlite.connect(db_path, load_vec=True)
-    yield managed_conn, db_path
-    managed_conn.close()
-    db_path.unlink(missing_ok=True)
-
-
 # =============================================================================
 # Row types for testing
 # =============================================================================
@@ -124,18 +112,6 @@ class ExtendedRow:
     name: str
     value: int
     extra: str
-
-
-# Vector dimension for tests
-VECTOR_DIM = 4
-_vector_schema = VectorSchema(dtype=np.dtype(np.float32), size=VECTOR_DIM)
-
-
-@dataclass
-class VectorRow:
-    id: str
-    content: str
-    embedding: Annotated[NDArray[np.float32], _vector_schema]
 
 
 # =============================================================================
@@ -578,183 +554,596 @@ def test_user_managed_table(sqlite_db: tuple[sqlite.ManagedConnection, Path]) ->
 
 
 # =============================================================================
-# Vector test cases (require sqlite-vec)
+# Virtual table tests
 # =============================================================================
 
 
 @requires_sqlite_vec
-def test_vector_insert_and_read(
-    sqlite_db_with_vec: tuple[sqlite.ManagedConnection, Path],
+def test_vec0_virtual_table_basic(
+    sqlite_db: tuple[sqlite.ManagedConnection, Path],
 ) -> None:
-    """Test inserting and reading rows with vector columns."""
-    managed_conn, _ = sqlite_db_with_vec
+    """Test creating a basic vec0 virtual table with vectors."""
+    managed_conn, _ = sqlite_db
 
-    vector_rows: list[VectorRow] = []
+    @dataclass
+    class Vec0Row:
+        id: int
+        content: str
+        embedding: Annotated[
+            NDArray[np.float32], VectorSchema(dtype=np.dtype(np.float32), size=4)
+        ]
 
-    with sqlite.register_db("vector_test_db", managed_conn) as db:
+    rows: list[Vec0Row] = []
 
-        def declare_vector_table() -> None:
+    with sqlite.register_db("vec0_basic_db", managed_conn) as db:
+
+        def declare_vec0_table() -> None:
             table = coco.mount_run(
                 coco.component_subpath("setup", "table"),
                 db.declare_table_target,
-                "documents",
-                sqlite.TableSchema(VectorRow, primary_key=["id"]),
+                table_name="vec0_docs",
+                table_schema=sqlite.TableSchema(
+                    Vec0Row,
+                    primary_key=["id"],
+                ),
+                virtual_table_def=sqlite.Vec0TableDef(),
             ).result()
-            for row in vector_rows:
+
+            for row in rows:
                 table.declare_row(row=row)
 
         app = coco.App(
-            coco.AppConfig(name="test_vector_insert", environment=coco_env),
-            declare_vector_table,
+            coco.AppConfig(name="Vec0BasicTest", environment=coco_env),
+            declare_vec0_table,
         )
 
-        # Insert data with vectors
-        vector_rows.extend(
-            [
-                VectorRow(
-                    id="doc1",
-                    content="Hello world",
-                    embedding=np.array([1.0, 2.0, 3.0, 4.0], dtype=np.float32),
-                ),
-                VectorRow(
-                    id="doc2",
-                    content="Goodbye world",
-                    embedding=np.array([5.0, 6.0, 7.0, 8.0], dtype=np.float32),
-                ),
-            ]
-        )
+        # Insert initial rows
+        rows = [
+            Vec0Row(
+                id=1,
+                content="Doc 1",
+                embedding=np.array([1.0, 2.0, 3.0, 4.0], dtype=np.float32),
+            ),
+            Vec0Row(
+                id=2,
+                content="Doc 2",
+                embedding=np.array([5.0, 6.0, 7.0, 8.0], dtype=np.float32),
+            ),
+        ]
         app.update()
 
-        assert table_exists(managed_conn, "documents")
-        columns = get_table_columns(managed_conn, "documents")
-        assert "embedding" in columns
-        assert columns["embedding"] == "BLOB"
+        # Verify table was created as virtual table
+        with managed_conn.readonly() as conn:
+            cursor = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='vec0_docs'"
+            )
+            sql = cursor.fetchone()[0]
+            assert "VIRTUAL TABLE" in sql
+            assert "USING vec0" in sql
 
-        # Read and verify
-        data = read_table_data(managed_conn, "documents")
+        # Verify data and decode vectors
+        data = read_table_data(managed_conn, "vec0_docs")
         assert len(data) == 2
 
-        # Find doc1 and verify its vector
-        doc1 = next(row for row in data if row["id"] == "doc1")
-        assert doc1["content"] == "Hello world"
-        vector = decode_vector(doc1["embedding"], VECTOR_DIM)
-        assert vector == pytest.approx([1.0, 2.0, 3.0, 4.0])
+        doc1 = next(row for row in data if row["id"] == 1)
+        assert doc1["content"] == "Doc 1"
+        vector1 = decode_vector(doc1["embedding"], 4)
+        assert vector1 == pytest.approx([1.0, 2.0, 3.0, 4.0])
+
+        doc2 = next(row for row in data if row["id"] == 2)
+        assert doc2["content"] == "Doc 2"
+        vector2 = decode_vector(doc2["embedding"], 4)
+        assert vector2 == pytest.approx([5.0, 6.0, 7.0, 8.0])
+
+        # Test update
+        rows[0] = Vec0Row(
+            id=1,
+            content="Updated Doc 1",
+            embedding=np.array([9.0, 9.0, 9.0, 9.0], dtype=np.float32),
+        )
+        app.update()
+
+        data = read_table_data(managed_conn, "vec0_docs")
+        assert len(data) == 2
+        doc1 = next(row for row in data if row["id"] == 1)
+        assert doc1["content"] == "Updated Doc 1"
+        vector1 = decode_vector(doc1["embedding"], 4)
+        assert vector1 == pytest.approx([9.0, 9.0, 9.0, 9.0])
+
+        # Test delete
+        rows.pop(0)  # Remove doc1
+        app.update()
+
+        data = read_table_data(managed_conn, "vec0_docs")
+        assert len(data) == 1
+        assert data[0]["id"] == 2
 
 
 @requires_sqlite_vec
-def test_vector_update(
-    sqlite_db_with_vec: tuple[sqlite.ManagedConnection, Path],
+def test_vec0_with_partition_keys(
+    sqlite_db: tuple[sqlite.ManagedConnection, Path],
 ) -> None:
-    """Test updating rows with vector columns."""
-    managed_conn, _ = sqlite_db_with_vec
+    """Test vec0 virtual table with partition keys."""
+    managed_conn, _ = sqlite_db
 
-    vector_rows: list[VectorRow] = []
+    @dataclass
+    class Vec0PartitionedRow:
+        id: int
+        year: int
+        content: str
+        embedding: Annotated[
+            NDArray[np.float32], VectorSchema(dtype=np.dtype(np.float32), size=2)
+        ]
 
-    with sqlite.register_db("vector_update_db", managed_conn) as db:
+    rows: list[Vec0PartitionedRow] = []
 
-        def declare_vector_table() -> None:
+    with sqlite.register_db("vec0_partition_db", managed_conn) as db:
+
+        def declare_partitioned_table() -> None:
             table = coco.mount_run(
                 coco.component_subpath("setup", "table"),
                 db.declare_table_target,
-                "docs_update",
-                sqlite.TableSchema(VectorRow, primary_key=["id"]),
+                table_name="vec0_partitioned",
+                table_schema=sqlite.TableSchema(
+                    Vec0PartitionedRow,
+                    primary_key=["id"],
+                ),
+                virtual_table_def=sqlite.Vec0TableDef(
+                    partition_key_columns=["year"],
+                ),
             ).result()
-            for row in vector_rows:
+
+            for row in rows:
                 table.declare_row(row=row)
 
         app = coco.App(
-            coco.AppConfig(name="test_vector_update", environment=coco_env),
-            declare_vector_table,
+            coco.AppConfig(name="Vec0PartitionTest", environment=coco_env),
+            declare_partitioned_table,
         )
 
-        # Initial insert
-        vector_rows.append(
-            VectorRow(
-                id="doc1",
-                content="Original content",
-                embedding=np.array([1.0, 1.0, 1.0, 1.0], dtype=np.float32),
-            )
-        )
+        rows = [
+            Vec0PartitionedRow(
+                id=1,
+                year=2024,
+                content="Old doc",
+                embedding=np.array([1.0, 2.0], dtype=np.float32),
+            ),
+            Vec0PartitionedRow(
+                id=2,
+                year=2025,
+                content="New doc",
+                embedding=np.array([3.0, 4.0], dtype=np.float32),
+            ),
+        ]
         app.update()
 
-        data = read_table_data(managed_conn, "docs_update")
-        assert len(data) == 1
-        doc1 = data[0]
-        assert decode_vector(doc1["embedding"], VECTOR_DIM) == pytest.approx(
-            [1.0, 1.0, 1.0, 1.0]
-        )
-
-        # Update the vector
-        vector_rows.clear()
-        vector_rows.append(
-            VectorRow(
-                id="doc1",
-                content="Updated content",
-                embedding=np.array([9.0, 9.0, 9.0, 9.0], dtype=np.float32),
+        # Verify CREATE statement includes partition key
+        with managed_conn.readonly() as conn:
+            cursor = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='vec0_partitioned'"
             )
-        )
-        app.update()
+            sql = cursor.fetchone()[0]
+            assert "partition key" in sql.lower()
 
-        data = read_table_data(managed_conn, "docs_update")
-        assert len(data) == 1
-        doc1 = data[0]
-        assert doc1["content"] == "Updated content"
-        assert decode_vector(doc1["embedding"], VECTOR_DIM) == pytest.approx(
-            [9.0, 9.0, 9.0, 9.0]
-        )
+        data = read_table_data(managed_conn, "vec0_partitioned")
+        assert len(data) == 2
 
 
 @requires_sqlite_vec
-def test_vector_with_explicit_schema(
-    sqlite_db_with_vec: tuple[sqlite.ManagedConnection, Path],
+def test_vec0_with_auxiliary_columns(
+    sqlite_db: tuple[sqlite.ManagedConnection, Path],
 ) -> None:
-    """Test vector columns using explicit VectorSchema in column_overrides."""
-    managed_conn, _ = sqlite_db_with_vec
+    """Test vec0 virtual table with auxiliary columns."""
+    managed_conn, _ = sqlite_db
 
-    # Define a schema with explicit VectorSchema override
+    @dataclass
+    class Vec0AuxRow:
+        id: int
+        content: str
+        metadata: str  # Auxiliary column
+        embedding: Annotated[
+            NDArray[np.float32], VectorSchema(dtype=np.dtype(np.float32), size=2)
+        ]
+
+    rows: list[Vec0AuxRow] = []
+
+    with sqlite.register_db("vec0_aux_db", managed_conn) as db:
+
+        def declare_aux_table() -> None:
+            table = coco.mount_run(
+                coco.component_subpath("setup", "table"),
+                db.declare_table_target,
+                table_name="vec0_with_aux",
+                table_schema=sqlite.TableSchema(
+                    Vec0AuxRow,
+                    primary_key=["id"],
+                ),
+                virtual_table_def=sqlite.Vec0TableDef(
+                    auxiliary_columns=["metadata"],
+                ),
+            ).result()
+
+            for row in rows:
+                table.declare_row(row=row)
+
+        app = coco.App(
+            coco.AppConfig(name="Vec0AuxTest", environment=coco_env),
+            declare_aux_table,
+        )
+
+        rows = [
+            Vec0AuxRow(
+                id=1,
+                content="Doc",
+                metadata="extra info",
+                embedding=np.array([1.0, 2.0], dtype=np.float32),
+            ),
+        ]
+        app.update()
+
+        # Verify CREATE statement includes + prefix for auxiliary column
+        with managed_conn.readonly() as conn:
+            cursor = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='vec0_with_aux'"
+            )
+            sql = cursor.fetchone()[0]
+            assert "+metadata" in sql
+
+        data = read_table_data(managed_conn, "vec0_with_aux")
+        assert len(data) == 1
+        assert data[0]["metadata"] == "extra info"
+
+
+@requires_sqlite_vec
+def test_vec0_schema_change_forces_recreate(
+    sqlite_db: tuple[sqlite.ManagedConnection, Path],
+) -> None:
+    """Test that schema changes to vec0 virtual tables trigger DROP+CREATE."""
+    managed_conn, _ = sqlite_db
+
+    @dataclass
+    class Vec0RowV1:
+        id: int
+        content: str
+        embedding: Annotated[
+            NDArray[np.float32], VectorSchema(dtype=np.dtype(np.float32), size=2)
+        ]
+
+    @dataclass
+    class Vec0RowV2:
+        id: int
+        content: str
+        new_field: str  # Added column
+        embedding: Annotated[
+            NDArray[np.float32], VectorSchema(dtype=np.dtype(np.float32), size=2)
+        ]
+
+    row_schema: type[Vec0RowV1] | type[Vec0RowV2] = Vec0RowV1
+    rows: list[Vec0RowV1 | Vec0RowV2] = []
+
+    with sqlite.register_db("vec0_schema_db", managed_conn) as db:
+
+        def declare_evolving_table() -> None:
+            table = coco.mount_run(
+                coco.component_subpath("setup", "table"),
+                db.declare_table_target,
+                table_name="vec0_evolving",
+                table_schema=sqlite.TableSchema(
+                    row_schema,
+                    primary_key=["id"],
+                ),
+                virtual_table_def=sqlite.Vec0TableDef(),
+            ).result()
+
+            for row in rows:
+                table.declare_row(row=row)
+
+        app = coco.App(
+            coco.AppConfig(name="Vec0SchemaChangeTest", environment=coco_env),
+            declare_evolving_table,
+        )
+
+        # Initial schema
+        rows = [
+            Vec0RowV1(
+                id=1, content="Doc 1", embedding=np.array([1.0, 2.0], dtype=np.float32)
+            ),
+        ]
+        app.update()
+
+        columns = get_table_columns(managed_conn, "vec0_evolving")
+        assert "new_field" not in columns
+
+        # Change schema (add column) - should trigger DROP+CREATE
+        row_schema = Vec0RowV2
+        rows = [
+            Vec0RowV2(
+                id=1,
+                content="Doc 1",
+                new_field="value",
+                embedding=np.array([1.0, 2.0], dtype=np.float32),
+            ),
+        ]
+        app.update()
+
+        # Verify new column exists
+        columns = get_table_columns(managed_conn, "vec0_evolving")
+        assert "new_field" in columns
+
+        data = read_table_data(managed_conn, "vec0_evolving")
+        assert len(data) == 1
+        assert data[0]["new_field"] == "value"
+
+
+@requires_sqlite_vec
+def test_vec0_without_vector_column_raises_error(
+    sqlite_db: tuple[sqlite.ManagedConnection, Path],
+) -> None:
+    """Test that vec0 table without vector columns raises validation error."""
+    managed_conn, _ = sqlite_db
+
+    @dataclass
+    class NoVectorRow:
+        id: int
+        content: str
+
+    with sqlite.register_db("vec0_novector_db", managed_conn) as db:
+
+        def declare_invalid_table() -> None:
+            db.declare_table_target(
+                table_name="vec0_invalid",
+                table_schema=sqlite.TableSchema(
+                    NoVectorRow,
+                    primary_key=["id"],
+                ),
+                virtual_table_def=sqlite.Vec0TableDef(),
+            )
+
+        app = coco.App(
+            coco.AppConfig(name="Vec0NoVectorTest", environment=coco_env),
+            declare_invalid_table,
+        )
+
+        with pytest.raises(
+            ValueError, match="require at least one float\\[N\\] vector column"
+        ):
+            app.update()
+
+
+@requires_sqlite_vec
+def test_vec0_with_composite_pk_raises_error(
+    sqlite_db: tuple[sqlite.ManagedConnection, Path],
+) -> None:
+    """Test that vec0 table with composite primary key raises validation error."""
+    managed_conn, _ = sqlite_db
+
+    @dataclass
+    class CompositePkRow:
+        id1: int
+        id2: int
+        embedding: Annotated[
+            NDArray[np.float32], VectorSchema(dtype=np.dtype(np.float32), size=2)
+        ]
+
+    with sqlite.register_db("vec0_composite_db", managed_conn) as db:
+
+        def declare_invalid_table() -> None:
+            db.declare_table_target(
+                table_name="vec0_composite_pk",
+                table_schema=sqlite.TableSchema(
+                    CompositePkRow,
+                    primary_key=["id1", "id2"],
+                ),
+                virtual_table_def=sqlite.Vec0TableDef(),
+            )
+
+        app = coco.App(
+            coco.AppConfig(name="Vec0CompositePkTest", environment=coco_env),
+            declare_invalid_table,
+        )
+
+        with pytest.raises(ValueError, match="require exactly one primary key column"):
+            app.update()
+
+
+@requires_sqlite_vec
+def test_vec0_with_non_integer_pk_raises_error(
+    sqlite_db: tuple[sqlite.ManagedConnection, Path],
+) -> None:
+    """Test that vec0 table with non-integer primary key raises validation error."""
+    managed_conn, _ = sqlite_db
+
+    @dataclass
+    class StringPkRow:
+        id: str
+        embedding: Annotated[
+            NDArray[np.float32], VectorSchema(dtype=np.dtype(np.float32), size=2)
+        ]
+
+    with sqlite.register_db("vec0_stringpk_db", managed_conn) as db:
+
+        def declare_invalid_table() -> None:
+            db.declare_table_target(
+                table_name="vec0_string_pk",
+                table_schema=sqlite.TableSchema(
+                    StringPkRow,
+                    primary_key=["id"],
+                ),
+                virtual_table_def=sqlite.Vec0TableDef(),
+            )
+
+        app = coco.App(
+            coco.AppConfig(name="Vec0StringPkTest", environment=coco_env),
+            declare_invalid_table,
+        )
+
+        with pytest.raises(ValueError, match="require INTEGER primary key"):
+            app.update()
+
+
+@requires_sqlite_vec
+def test_vec0_without_extension_raises_error(
+    sqlite_db: tuple[sqlite.ManagedConnection, Path],
+) -> None:
+    """Test that vec0 table without sqlite-vec extension raises error."""
+    # Create a new connection without loading vec extension
+    _, db_path = sqlite_db
+    managed_conn_no_vec = sqlite.connect(str(db_path), load_vec=False)
+
+    @dataclass
+    class Vec0Row:
+        id: int
+        embedding: Annotated[
+            NDArray[np.float32], VectorSchema(dtype=np.dtype(np.float32), size=2)
+        ]
+
+    with sqlite.register_db("vec0_noext_db", managed_conn_no_vec) as db:
+
+        def declare_table_without_ext() -> None:
+            db.declare_table_target(
+                table_name="vec0_needs_ext",
+                table_schema=sqlite.TableSchema(
+                    Vec0Row,
+                    primary_key=["id"],
+                ),
+                virtual_table_def=sqlite.Vec0TableDef(),
+            )
+
+        app = coco.App(
+            coco.AppConfig(name="Vec0NoExtTest", environment=coco_env),
+            declare_table_without_ext,
+        )
+
+        with pytest.raises(RuntimeError, match="sqlite-vec extension must be loaded"):
+            app.update()
+
+    managed_conn_no_vec.close()
+
+
+@requires_sqlite_vec
+def test_vec0_invalid_partition_key_raises_error(
+    sqlite_db: tuple[sqlite.ManagedConnection, Path],
+) -> None:
+    """Test that vec0 table with invalid partition key column raises error."""
+    managed_conn, _ = sqlite_db
+
+    @dataclass
+    class Vec0Row:
+        id: int
+        embedding: Annotated[
+            NDArray[np.float32], VectorSchema(dtype=np.dtype(np.float32), size=2)
+        ]
+
+    with sqlite.register_db("vec0_badpartition_db", managed_conn) as db:
+
+        def declare_invalid_table() -> None:
+            db.declare_table_target(
+                table_name="vec0_bad_partition",
+                table_schema=sqlite.TableSchema(
+                    Vec0Row,
+                    primary_key=["id"],
+                ),
+                virtual_table_def=sqlite.Vec0TableDef(
+                    partition_key_columns=["nonexistent_column"],
+                ),
+            )
+
+        app = coco.App(
+            coco.AppConfig(name="Vec0BadPartitionTest", environment=coco_env),
+            declare_invalid_table,
+        )
+
+        with pytest.raises(ValueError, match="Partition key columns not in schema"):
+            app.update()
+
+
+@requires_sqlite_vec
+def test_vec0_invalid_auxiliary_column_raises_error(
+    sqlite_db: tuple[sqlite.ManagedConnection, Path],
+) -> None:
+    """Test that vec0 table with invalid auxiliary column raises error."""
+    managed_conn, _ = sqlite_db
+
+    @dataclass
+    class Vec0Row:
+        id: int
+        embedding: Annotated[
+            NDArray[np.float32], VectorSchema(dtype=np.dtype(np.float32), size=2)
+        ]
+
+    with sqlite.register_db("vec0_badaux_db", managed_conn) as db:
+
+        def declare_invalid_table() -> None:
+            db.declare_table_target(
+                table_name="vec0_bad_aux",
+                table_schema=sqlite.TableSchema(
+                    Vec0Row,
+                    primary_key=["id"],
+                ),
+                virtual_table_def=sqlite.Vec0TableDef(
+                    auxiliary_columns=["nonexistent_column"],
+                ),
+            )
+
+        app = coco.App(
+            coco.AppConfig(name="Vec0BadAuxTest", environment=coco_env),
+            declare_invalid_table,
+        )
+
+        with pytest.raises(ValueError, match="Auxiliary columns not in schema"):
+            app.update()
+
+
+@requires_sqlite_vec
+def test_vec0_with_column_overrides(
+    sqlite_db: tuple[sqlite.ManagedConnection, Path],
+) -> None:
+    """Test vec0 virtual table with VectorSchema in column_overrides."""
+    managed_conn, _ = sqlite_db
+
     explicit_vector_schema = VectorSchema(dtype=np.dtype(np.float32), size=3)
 
     @dataclass
-    class ExplicitVectorRow:
-        id: str
+    class Vec0OverrideRow:
+        id: int
         data: str
-        vec: NDArray[np.float32]  # No annotation here, use column_overrides instead
+        vec: NDArray[np.float32]  # No annotation, use column_overrides
 
-    explicit_rows: list[ExplicitVectorRow] = []
+    rows: list[Vec0OverrideRow] = []
 
-    with sqlite.register_db("vector_explicit_db", managed_conn) as db:
+    with sqlite.register_db("vec0_override_db", managed_conn) as db:
 
-        def declare_explicit_vector_table() -> None:
+        def declare_vec0_override_table() -> None:
             table = coco.mount_run(
                 coco.component_subpath("setup", "table"),
                 db.declare_table_target,
-                "explicit_vectors",
-                sqlite.TableSchema(
-                    ExplicitVectorRow,
+                table_name="vec0_overrides",
+                table_schema=sqlite.TableSchema(
+                    Vec0OverrideRow,
                     primary_key=["id"],
                     column_overrides={"vec": explicit_vector_schema},
                 ),
+                virtual_table_def=sqlite.Vec0TableDef(),
             ).result()
-            for row in explicit_rows:
+
+            for row in rows:
                 table.declare_row(row=row)
 
         app = coco.App(
-            coco.AppConfig(name="test_vector_explicit", environment=coco_env),
-            declare_explicit_vector_table,
+            coco.AppConfig(name="Vec0OverrideTest", environment=coco_env),
+            declare_vec0_override_table,
         )
 
-        explicit_rows.extend(
-            [
-                ExplicitVectorRow(
-                    id="v1",
-                    data="test data",
-                    vec=np.array([0.1, 0.2, 0.3], dtype=np.float32),
-                ),
-            ]
-        )
+        rows = [
+            Vec0OverrideRow(
+                id=1,
+                data="test data",
+                vec=np.array([0.1, 0.2, 0.3], dtype=np.float32),
+            ),
+        ]
         app.update()
 
-        data = read_table_data(managed_conn, "explicit_vectors")
+        data = read_table_data(managed_conn, "vec0_overrides")
         assert len(data) == 1
         row = data[0]
         assert row["data"] == "test data"
@@ -763,108 +1152,79 @@ def test_vector_with_explicit_schema(
 
 
 @requires_sqlite_vec
-def test_vector_delete(
-    sqlite_db_with_vec: tuple[sqlite.ManagedConnection, Path],
-) -> None:
-    """Test deleting rows with vector columns."""
-    managed_conn, _ = sqlite_db_with_vec
-
-    vector_rows: list[VectorRow] = []
-
-    with sqlite.register_db("vector_delete_db", managed_conn) as db:
-
-        def declare_vector_table() -> None:
-            table = coco.mount_run(
-                coco.component_subpath("setup", "table"),
-                db.declare_table_target,
-                "docs_delete",
-                sqlite.TableSchema(VectorRow, primary_key=["id"]),
-            ).result()
-            for row in vector_rows:
-                table.declare_row(row=row)
-
-        app = coco.App(
-            coco.AppConfig(name="test_vector_delete", environment=coco_env),
-            declare_vector_table,
-        )
-
-        # Insert multiple rows
-        vector_rows.extend(
-            [
-                VectorRow(
-                    id="doc1",
-                    content="First",
-                    embedding=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
-                ),
-                VectorRow(
-                    id="doc2",
-                    content="Second",
-                    embedding=np.array([0.0, 1.0, 0.0, 0.0], dtype=np.float32),
-                ),
-                VectorRow(
-                    id="doc3",
-                    content="Third",
-                    embedding=np.array([0.0, 0.0, 1.0, 0.0], dtype=np.float32),
-                ),
-            ]
-        )
-        app.update()
-
-        data = read_table_data(managed_conn, "docs_delete")
-        assert len(data) == 3
-
-        # Delete one row
-        vector_rows.pop(1)  # Remove doc2
-        app.update()
-
-        data = read_table_data(managed_conn, "docs_delete")
-        assert len(data) == 2
-        ids = [row["id"] for row in data]
-        assert "doc1" in ids
-        assert "doc2" not in ids
-        assert "doc3" in ids
-
-
-@requires_sqlite_vec
-def test_vector_without_extension_raises_error(
+def test_regular_table_vs_vec0_switch(
     sqlite_db: tuple[sqlite.ManagedConnection, Path],
 ) -> None:
-    """Test that using vector columns without sqlite-vec loaded raises an error."""
-    # Use the regular sqlite_db fixture, then close it and create a new one without vec
-    original_managed_conn, db_path = sqlite_db
-    original_managed_conn.close()
+    """Test switching between regular table and vec0 virtual table triggers recreation."""
+    managed_conn, _ = sqlite_db
 
-    # Create a new connection explicitly without loading sqlite-vec
-    managed_conn = sqlite.connect(db_path, load_vec=False)
+    @dataclass
+    class VectorRow:
+        id: int
+        content: str
+        embedding: Annotated[
+            NDArray[np.float32], VectorSchema(dtype=np.dtype(np.float32), size=2)
+        ]
 
-    vector_rows: list[VectorRow] = []
+    use_virtual = False
+    rows: list[VectorRow] = []
 
-    with sqlite.register_db("vector_no_ext_db", managed_conn) as db:
+    with sqlite.register_db("switch_db", managed_conn) as db:
 
-        def declare_vector_table() -> None:
+        def declare_table() -> None:
             table = coco.mount_run(
                 coco.component_subpath("setup", "table"),
                 db.declare_table_target,
-                "vectors_no_ext",
-                sqlite.TableSchema(VectorRow, primary_key=["id"]),
+                table_name="switchable",
+                table_schema=sqlite.TableSchema(
+                    VectorRow,
+                    primary_key=["id"],
+                ),
+                virtual_table_def=sqlite.Vec0TableDef() if use_virtual else None,
             ).result()
-            for row in vector_rows:
+
+            for row in rows:
                 table.declare_row(row=row)
 
         app = coco.App(
-            coco.AppConfig(name="test_vector_no_ext", environment=coco_env),
-            declare_vector_table,
+            coco.AppConfig(name="SwitchTest", environment=coco_env),
+            declare_table,
         )
 
-        vector_rows.append(
+        # Start with regular table
+        rows = [
             VectorRow(
-                id="doc1",
-                content="Test",
-                embedding=np.array([1.0, 2.0, 3.0, 4.0], dtype=np.float32),
+                id=1, content="Doc", embedding=np.array([1.0, 2.0], dtype=np.float32)
+            ),
+        ]
+        app.update()
+
+        # Verify it's a regular table
+        with managed_conn.readonly() as conn:
+            cursor = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='switchable'"
             )
-        )
+            sql = cursor.fetchone()[0]
+            assert "VIRTUAL TABLE" not in sql
 
-        with pytest.raises(RuntimeError, match="sqlite-vec extension is not loaded"):
-            app.update()
+        # Switch to virtual table
+        use_virtual = True
+        app.update()
 
-    managed_conn.close()
+        # Verify it's now a virtual table
+        with managed_conn.readonly() as conn:
+            cursor = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='switchable'"
+            )
+            sql = cursor.fetchone()[0]
+            assert "VIRTUAL TABLE" in sql
+            assert "USING vec0" in sql
+
+        # Currently, switching table types (regular <-> virtual) triggers DROP+CREATE,
+        # which does not preserve data. In the future, a "schema version" mechanism
+        # will allow preserving row data across such changes.
+        # TODO: Once schema versioning is implemented, change this assertion to:
+        #   assert len(data) == 1
+        #   assert data[0]["id"] == 1
+        data = read_table_data(managed_conn, "switchable")
+        assert len(data) == 0  # Data is not preserved during table type change
