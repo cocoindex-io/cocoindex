@@ -29,7 +29,7 @@ impl PyComponentProcessorContext {
     fn full_reprocess(&self) -> bool {
         self.0.full_reprocess()
     }
-  
+
     /// Get the next ID for the given key.
     ///
     /// Args:
