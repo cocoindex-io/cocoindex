@@ -27,8 +27,7 @@ jobs:
         runs-on: ${{ matrix.platform.runner }}
         env:
           SCCACHE_GHA_ENABLED: "true"
-          # Include Python version in RUSTFLAGS to ensure sccache uses separate cache per Python version
-          RUSTFLAGS: "-C debuginfo=0 ${{ matrix.platform.extra_rustflags }} --cfg py_version=\"${{ matrix.platform.python-version }}${{ matrix.platform.free-threaded && 't' || '' }}\""
+          RUSTFLAGS: "-C debuginfo=0 ${{ matrix.platform.extra_rustflags }}"
           CARGO_INCREMENTAL: "0"
           RUSTC_WRAPPER: "sccache"
 
@@ -68,6 +67,11 @@ jobs:
 
         - name: Install uv
           uses: astral-sh/setup-uv@v7
+
+        - name: Remove .python-version if exists
+          # Ensure uv uses Python from PATH (set by setup-python) rather than a pinned version
+          shell: bash
+          run: rm -f .python-version
 
         - name: Sync Python dependencies
           run: uv sync --no-dev --group ci
