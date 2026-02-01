@@ -27,7 +27,8 @@ jobs:
         runs-on: ${{ matrix.platform.runner }}
         env:
           SCCACHE_GHA_ENABLED: "true"
-          RUSTFLAGS: "-C debuginfo=0 ${{ matrix.platform.extra_rustflags }}"
+          # Include Python version in RUSTFLAGS to ensure sccache uses separate cache per Python version
+          RUSTFLAGS: "-C debuginfo=0 ${{ matrix.platform.extra_rustflags }} --cfg py_version=\"${{ matrix.platform.python-version }}${{ matrix.platform.free-threaded && 't' || '' }}\""
           CARGO_INCREMENTAL: "0"
           RUSTC_WRAPPER: "sccache"
 
@@ -60,6 +61,11 @@ jobs:
             # Python cache is huge and saves little time, so disabled for now, until we have higher cache size limits
             # cache: 'pip'
 
+        - name: Verify free-threaded interpreter
+          if: matrix.platform.free-threaded
+          run: |
+            python -c "import sys; print(f'GIL enabled: {sys._is_gil_enabled()}'); sys.exit(1) if sys._is_gil_enabled() else None"
+
         - name: Install uv
           uses: astral-sh/setup-uv@v7
 
@@ -73,9 +79,6 @@ jobs:
 
         - name: Run build-test hooks
           env:
-            RUSTFLAGS: "-C debuginfo=0 ${{ matrix.platform.extra_rustflags }}"
-            CARGO_INCREMENTAL: "0"
-            RUSTC_WRAPPER: "sccache"
             UV_NO_SYNC: "1"
             # Skip mypy-check - it runs in e2e_type_check workflow
             PREK_SKIP: mypy-check
