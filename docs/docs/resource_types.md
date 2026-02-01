@@ -187,7 +187,8 @@ Use these when you need multiple IDs for potentially non-distinct inputs, such a
 from cocoindex.resources.id import IdGenerator, UuidGenerator
 
 def process_document(doc: Document) -> list[Row]:
-    id_gen = IdGenerator()
+    # Use doc.path to distinguish generators within the same processing component
+    id_gen = IdGenerator(deps=doc.path)
     rows = []
     for chunk in split_into_chunks(doc.content):
         # Each call returns a distinct ID, even if chunks are identical
@@ -196,7 +197,8 @@ def process_document(doc: Document) -> list[Row]:
     return rows
 
 def process_with_uuids(doc: Document) -> list[Row]:
-    uuid_gen = UuidGenerator()
+    # Use doc.path to distinguish generators within the same processing component
+    uuid_gen = UuidGenerator(deps=doc.path)
     rows = []
     for chunk in split_into_chunks(doc.content):
         # Each call returns a distinct UUID, even if chunks are identical
@@ -204,6 +206,10 @@ def process_with_uuids(doc: Document) -> list[Row]:
         rows.append(Row(id=chunk_uuid, content=chunk.content))
     return rows
 ```
+
+**Constructor:**
+
+- `IdGenerator(deps=None)` / `UuidGenerator(deps=None)` — Create a generator. The `deps` parameter distinguishes generators within the same processing component. Use distinct `deps` values for different generator instances.
 
 **Methods:**
 
