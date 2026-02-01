@@ -101,7 +101,7 @@ ci = [
     { include-group = "ci-enabled-optional-deps" },
 ]
 
-dev-local = ["pre-commit"]
+dev-local = ["prek"]
 dev = [{ include-group = "ci" }, { include-group = "dev-local" }]
 
 [tool.uv]
