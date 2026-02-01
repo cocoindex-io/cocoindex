@@ -10,6 +10,7 @@ mod ops;
 mod prelude;
 mod profile;
 mod runtime;
+mod rwlock;
 mod stable_path;
 mod target_state;
 mod value;
@@ -76,5 +77,11 @@ fn core_module(m: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()>
     m.add_class::<ops::PyCustomLanguageConfig>()?;
     m.add_class::<ops::PyRecursiveSplitter>()?;
     m.add_function(wrap_pyfunction!(ops::detect_code_language, m)?)?;
+
+    // Synchronization primitives
+    m.add_class::<rwlock::RWLock>()?;
+    m.add_class::<rwlock::RWLockReadGuard>()?;
+    m.add_class::<rwlock::RWLockWriteGuard>()?;
+
     Ok(())
 }

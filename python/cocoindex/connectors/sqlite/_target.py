@@ -14,7 +14,6 @@ import datetime
 import decimal
 import json
 import sqlite3
-import threading
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -38,6 +37,7 @@ import numpy as np
 import cocoindex as coco
 from cocoindex.connectorkits import connection, statediff
 from cocoindex.connectorkits.fingerprint import fingerprint_object
+from cocoindex._internal.rwlock import RWLock
 from cocoindex._internal.datatype import (
     AnyType,
     MappingType,
@@ -67,10 +67,13 @@ class ManagedConnection:
     The connection uses autocommit mode (isolation_level=None). Use `transaction()`
     for write operations that need atomic commits, or `readonly()` for read-only
     operations that don't need transaction management.
+
+    Read operations can proceed concurrently, while write operations have exclusive
+    access. A fair (FIFO) read-write lock ensures neither readers nor writers starve.
     """
 
     _conn: sqlite3.Connection
-    _lock: threading.Lock = field(default_factory=threading.Lock)
+    _rwlock: RWLock = field(default_factory=RWLock)
     _loaded_extensions: set[str] = field(default_factory=set)
 
     @property
@@ -81,11 +84,12 @@ class ManagedConnection:
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:
         """
-        Acquire lock and execute within a transaction (BEGIN...COMMIT/ROLLBACK).
+        Acquire write lock and execute within a transaction (BEGIN...COMMIT/ROLLBACK).
 
-        Use for write operations that should be atomic.
+        Use for write operations that should be atomic. Only one transaction can
+        be active at a time, and it blocks all read operations.
         """
-        with self._lock:
+        with self._rwlock.write():
             self._conn.execute("BEGIN")
             try:
                 yield self._conn
@@ -97,11 +101,12 @@ class ManagedConnection:
     @contextmanager
     def readonly(self) -> Iterator[sqlite3.Connection]:
         """
-        Acquire lock for read-only operations.
+        Acquire read lock for read-only operations.
 
-        No transaction is started since the connection uses autocommit mode.
+        Multiple read operations can proceed concurrently. No transaction is
+        started since the connection uses autocommit mode.
         """
-        with self._lock:
+        with self._rwlock.read():
             yield self._conn
 
     def close(self) -> None:
