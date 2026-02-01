@@ -289,7 +289,7 @@ impl SourceIndexingContext {
                 setup_execution_ctx.import_ops[source_idx].source_id,
                 &setup_execution_ctx.setup_state.tracking_table,
                 pool,
-            );
+            )?;
             while let Some(key_metadata) = key_metadata_stream.next().await {
                 let key_metadata = key_metadata?;
                 let source_pk = value::KeyValue::from_json(
