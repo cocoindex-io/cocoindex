@@ -70,6 +70,7 @@ jobs:
 
         - name: Remove .python-version if exists
           # Ensure uv uses Python from PATH (set by setup-python) rather than a pinned version
+          shell: bash
           run: rm -f .python-version
 
         - name: Sync Python dependencies
