@@ -105,8 +105,6 @@ dev = [{ include-group = "ci" }, { include-group = "dev-local" }]
 [tool.uv]
 package = false
 
-free-threaded = ["sentence-transformers>=3.3.1", "colpali-engine"]
-
 [tool.mypy]
 python_version = "3.11"
 strict = true
@@ -130,7 +128,15 @@ disable_error_code = ["unused-ignore"]
 
 [[tool.mypy.overrides]]
 # Ignore missing imports for optional dependencies from cocoindex library
-module = ["sentence_transformers", "torch", "colpali_engine", "PIL", "aiohttp", "aiomysql", "pymysql"]
+module = [
+    "sentence_transformers",
+    "torch",
+    "colpali_engine",
+    "PIL",
+    "aiohttp",
+    "aiomysql",
+    "pymysql",
+]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]

@@ -13,16 +13,23 @@ jobs:
     build-test:
         strategy:
             matrix:
-                python-version: ["3.11"]
                 platform:
-                  - { runner: ubuntu-latest }
-                  - { runner: ubuntu-24.04-arm }
-                  - { runner: macos-latest, extra_rustflags: "-C split-debuginfo=off" }
-                  - { runner: macos-15-intel, extra_rustflags: "-C split-debuginfo=off" }
-                  - { runner: windows-latest }
+                  # Standard builds (Python 3.11)
+                  - { runner: ubuntu-latest, python-version: "3.11", free-threaded: false }
+                  - { runner: ubuntu-24.04-arm, python-version: "3.11", free-threaded: false }
+                  - { runner: macos-latest, python-version: "3.11", free-threaded: false, extra_rustflags: "-C split-debuginfo=off" }
+                  - { runner: macos-15-intel, python-version: "3.11", free-threaded: false, extra_rustflags: "-C split-debuginfo=off" }
+                  - { runner: windows-latest, python-version: "3.11", free-threaded: false }
+                  # Free-threaded builds (Python 3.14t)
+                  - { runner: ubuntu-latest, python-version: "3.14", free-threaded: true }
+                  - { runner: macos-latest, python-version: "3.14", free-threaded: true, extra_rustflags: "-C split-debuginfo=off" }
+                  - { runner: windows-latest, python-version: "3.14", free-threaded: true }
         runs-on: ${{ matrix.platform.runner }}
         env:
           SCCACHE_GHA_ENABLED: "true"
+          RUSTFLAGS: "-C debuginfo=0 ${{ matrix.platform.extra_rustflags }}"
+          CARGO_INCREMENTAL: "0"
+          RUSTC_WRAPPER: "sccache"
 
         steps:
         - uses: actions/checkout@v6
@@ -40,7 +47,7 @@ jobs:
         - name: Setup Rust Cache
           uses: Swatinem/rust-cache@v2
           with:
-            key: rust-${{ matrix.platform.runner }}
+            key: rust-${{ matrix.platform.runner }}-${{ matrix.platform.python-version }}-${{ matrix.platform.free-threaded }}
             cache-targets: 'true'
             cache-all-crates: 'false'
             cache-workspace-crates: 'false'
@@ -48,7 +55,8 @@ jobs:
         - uses: actions/setup-python@v6
           id: setup_python
           with:
-            python-version: ${{ matrix.python-version }}
+            python-version: ${{ matrix.platform.python-version }}
+            freethreaded: ${{ matrix.platform.free-threaded }}
             # Python cache is huge and saves little time, so disabled for now, until we have higher cache size limits
             # cache: 'pip'
 
@@ -95,63 +103,6 @@ jobs:
               echo "::error::Build-test checks failed. Please run 'prek run --all-files' locally."
               exit $status
             fi
-
-    build-test-free-threaded:
-        runs-on: ubuntu-latest
-        env:
-          RUSTFLAGS: "-C debuginfo=0"
-          CARGO_INCREMENTAL: "0"
-          SCCACHE_GHA_ENABLED: "true"
-          RUSTC_WRAPPER: "sccache"
-
-        steps:
-        - uses: actions/checkout@v4
-          with:
-            fetch-depth: 1
-
-        - name: Run sccache-cache
-          uses: mozilla-actions/sccache-action@v0.0.9
-
-        - name: Setup Python (3.14 free-threaded)
-          uses: actions/setup-python@v5
-          with:
-            python-version: '3.14'
-            allow-prereleases: true
-            freethreaded: true
-
-        - name: Verify interpreter configuration
-          run: |
-              python -c "import sys; print(f'GIL enabled: {sys._is_gil_enabled()}'); sys.exit(1) if sys._is_gil_enabled() else None"
-
-        - name: Setup Rust (stable)
-          run: rustup toolchain install stable --profile minimal
-
-        - name: Rust tests (no default features)
-          run: cargo test --no-default-features --verbose
-
-        - name: Rust tests
-          run: cargo test --verbose
-
-        - name: Setup venv
-          run: |
-            python -m venv .venv
-
-        - name: Install Python toolchains
-          run: |
-            .venv/bin/python -m pip install --upgrade pip
-            .venv/bin/python -m pip install maturin
-
-        - name: Python build (free-threaded)
-          run: |
-            .venv/bin/python -m maturin develop --no-default-features -F free-threaded --strip -E all-ci,free-threaded
-
-        - name: Python type check (mypy)
-          run: |
-            .venv/bin/python -m mypy python
-
-        - name: Python tests (free-threaded)
-          run: |
-            .venv/bin/python -m pytest --capture=no python/cocoindex/tests
 
     validate-3p-notices:
         runs-on: ubuntu-latest
