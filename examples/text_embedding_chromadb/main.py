@@ -99,9 +99,7 @@ async def search(query: str) -> cocoindex.QueryOutput:
                 "filename": results["metadatas"][0][i].get("filename", ""),
                 "text": (results["documents"][0][i] if results["documents"] else ""),
                 "embedding": (
-                    results["embeddings"][0][i]
-                    if results["embeddings"]
-                    else []
+                    results["embeddings"][0][i] if results["embeddings"] else []
                 ),
                 "score": 1.0 - results["distances"][0][i],
             }
