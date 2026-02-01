@@ -1,4 +1,3 @@
-import asyncio
 import dataclasses
 import json
 import logging
@@ -43,6 +42,7 @@ class ChromaDB(op.TargetSpec):
     tenant: str = chromadb.config.DEFAULT_TENANT
     database: str = chromadb.config.DEFAULT_DATABASE
     hnsw_config: HnswConfig | None = None
+    document_field: str | None = None
 
 
 @dataclasses.dataclass
@@ -60,6 +60,7 @@ class _State:
     value_fields_schema: list[FieldSchema]
     distance_metric: str
     hnsw_config: HnswConfig | None = None
+    api_key: str | None = None
 
 
 @dataclasses.dataclass
@@ -68,7 +69,7 @@ class _MutateContext:
     collection: chromadb.Collection
     key_field_schema: FieldSchema
     value_fields_schema: list[FieldSchema]
-    lock: asyncio.Lock
+    document_field: str | None
 
 
 def _get_client(spec: ChromaDB) -> chromadb.ClientAPI:
@@ -171,6 +172,10 @@ class _Connector:
 
         # Find vector fields
         vector_fields = [f for f in value_fields_schema if _is_vector_field(f)]
+        if not vector_fields:
+            raise ValueError(
+                "ChromaDB requires a vector field in the value schema for embeddings."
+            )
         if len(vector_fields) > 1:
             raise ValueError(
                 f"ChromaDB only supports a single vector field per collection, "
@@ -195,6 +200,7 @@ class _Connector:
             value_fields_schema=value_fields_schema,
             distance_metric=distance_metric,
             hnsw_config=spec.hnsw_config,
+            api_key=spec.api_key,
         )
 
     @staticmethod
@@ -214,10 +220,13 @@ class _Connector:
         return op.TargetStateCompatibility.COMPATIBLE
 
     @staticmethod
-    async def apply_setup_change(
+    def apply_setup_change(
         key: _CollectionKey, previous: _State | None, current: _State | None
     ) -> None:
         if previous is None and current is None:
+            return
+        state = current or previous
+        if state is None:
             return
 
         if key.client_type == ClientType.PERSISTENT:
@@ -230,6 +239,7 @@ class _Connector:
             client = chromadb.CloudClient(
                 tenant=key.tenant,
                 database=key.database,
+                api_key=state.api_key,
             )
         else:
             host, port_str = key.location.rsplit(":", 1)
@@ -248,9 +258,7 @@ class _Connector:
             )
             if should_delete:
                 try:
-                    await asyncio.to_thread(
-                        client.delete_collection, key.collection_name
-                    )
+                    client.delete_collection(key.collection_name)
                 except Exception as e:  # pylint: disable=broad-exception-caught
                     _logger.debug(
                         "Collection %s not found for deletion: %s",
@@ -264,32 +272,29 @@ class _Connector:
         # Get or create collection with HNSW metadata
         metadata = _build_hnsw_metadata(current.distance_metric, current.hnsw_config)
 
-        await asyncio.to_thread(
-            client.get_or_create_collection,
+        client.get_or_create_collection(
             name=key.collection_name,
             metadata=metadata,
         )
 
     @staticmethod
-    async def prepare(
+    def prepare(
         spec: ChromaDB,
         setup_state: _State,
     ) -> _MutateContext:
         client = _get_client(spec)
-        collection = await asyncio.to_thread(
-            client.get_collection, spec.collection_name
-        )
+        collection = client.get_collection(spec.collection_name)
 
         return _MutateContext(
             client=client,
             collection=collection,
             key_field_schema=setup_state.key_field_schema,
             value_fields_schema=setup_state.value_fields_schema,
-            lock=asyncio.Lock(),
+            document_field=spec.document_field,
         )
 
     @staticmethod
-    async def mutate(
+    def mutate(
         *all_mutations: tuple[_MutateContext, dict[Any, dict[str, Any] | None]],
     ) -> None:
         for context, mutations in all_mutations:
@@ -338,8 +343,7 @@ class _Connector:
                             continue
                         if field.name in value:
                             field_value = value[field.name]
-                            # Use document field for text content if present
-                            if field.name in ("content", "text", "document"):
+                            if field.name == context.document_field:
                                 if isinstance(field_value, str):
                                     document = field_value
                             else:
@@ -350,23 +354,19 @@ class _Connector:
                     metadatas_to_upsert.append(metadata)
                     documents_to_upsert.append(document)
 
-            async with context.lock:
-                # Execute deletes
-                if ids_to_delete:
-                    await asyncio.to_thread(
-                        context.collection.delete, ids=ids_to_delete
-                    )
+            # Execute deletes
+            if ids_to_delete:
+                context.collection.delete(ids=ids_to_delete)
 
-                # Execute upserts
-                if ids_to_upsert:
-                    await asyncio.to_thread(
-                        context.collection.upsert,
-                        ids=ids_to_upsert,
-                        embeddings=embeddings_to_upsert,
-                        metadatas=metadatas_to_upsert
-                        if any(metadatas_to_upsert)
-                        else None,
-                        documents=documents_to_upsert
-                        if any(documents_to_upsert)
-                        else None,
-                    )
+            # Execute upserts
+            if ids_to_upsert:
+                context.collection.upsert(
+                    ids=ids_to_upsert,
+                    embeddings=embeddings_to_upsert,
+                    metadatas=metadatas_to_upsert
+                    if any(metadatas_to_upsert)
+                    else None,
+                    documents=documents_to_upsert
+                    if any(documents_to_upsert)
+                    else None,
+                )
