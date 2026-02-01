@@ -691,8 +691,8 @@ pub(crate) async fn submit<Prof: EngineProfile>(
     let mut memos_with_mounts_to_store: Vec<(Fingerprint, FnCallMemo<Prof>)> = Vec::new();
     let (target_states_providers, declared_effects, child_path_set, finalized_fn_call_memos) =
         match comp_ctx.processing_state() {
-            ComponentProcessingAction::Build(building_state) => {
-                let mut building_state = building_state.lock().unwrap();
+            ComponentProcessingAction::Build(build_ctx) => {
+                let mut building_state = build_ctx.state.lock().unwrap();
                 let Some(building_state) = building_state.take() else {
                     internal_bail!(
                         "Processing for the component at {} is already finished",
@@ -803,15 +803,12 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                 } else {
                     item.states.iter().any(|(_, s)| s.is_deleted())
                 };
-                let prev_states = if full_reprocess {
-                    vec![]
-                } else {
-                    item.states
-                        .iter()
-                        .filter_map(|(_, s)| s.as_ref())
-                        .map(|s_bytes| Prof::TargetStateTrackingRecord::from_bytes(s_bytes))
-                        .collect::<Result<Vec<_>>>()?
-                };
+                let prev_states = item
+                    .states
+                    .iter()
+                    .filter_map(|(_, s)| s.as_ref())
+                    .map(|s_bytes| Prof::TargetStateTrackingRecord::from_bytes(s_bytes))
+                    .collect::<Result<Vec<_>>>()?;
 
                 let declared_target_state =
                     declared_target_states_to_process.remove(target_state_path);
@@ -1129,8 +1126,6 @@ fn finalize_fn_call_memoization<Prof: EngineProfile>(
 
     let mut deps_to_process: VecDeque<Fingerprint> = VecDeque::new();
 
-    let full_reprocess = comp_ctx.full_reprocess();
-
     // Extract memos from the in-memory map.
     for (fp, memo_lock) in fn_call_memos.iter() {
         let mut guard = memo_lock
@@ -1143,16 +1138,13 @@ fn finalize_fn_call_memoization<Prof: EngineProfile>(
         result.all_memos_fps.insert(*fp);
 
         if memo.already_stored {
-            if !full_reprocess {
-                for child_component in &memo.child_components {
-                    stable_path_set
-                        .add_child(child_component.as_ref(), StablePathSet::Component)?;
-                }
-                result
-                    .contained_target_state_paths
-                    .extend(memo.target_state_paths.into_iter());
-                deps_to_process.extend(memo.dependency_memo_entries.into_iter());
+            for child_component in &memo.child_components {
+                stable_path_set.add_child(child_component.as_ref(), StablePathSet::Component)?;
             }
+            result
+                .contained_target_state_paths
+                .extend(memo.target_state_paths.into_iter());
+            deps_to_process.extend(memo.dependency_memo_entries.into_iter());
         } else if memo.child_components.is_empty() {
             result.memos_without_mounts_to_store.push((*fp, memo));
         } else {
@@ -1165,7 +1157,7 @@ fn finalize_fn_call_memoization<Prof: EngineProfile>(
     // Transitively expand deps of already-stored memos (read from DB).
     // Collect their target_state_paths so those target states are not GC'd.
     // Use a single read transaction for all DB reads.
-    if !full_reprocess {
+    if !deps_to_process.is_empty() {
         let db_env = comp_ctx.app_ctx().env().db_env();
         let rtxn = db_env.read_txn()?;
         let db = comp_ctx.app_ctx().db();

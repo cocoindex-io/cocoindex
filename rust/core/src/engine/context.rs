@@ -108,6 +108,11 @@ pub(crate) struct ComponentBuildingState<Prof: EngineProfile> {
     pub fn_call_memos: HashMap<Fingerprint, Arc<tokio::sync::RwLock<FnCallMemoEntry<Prof>>>>,
 }
 
+pub(crate) struct ComponentBuildContext<Prof: EngineProfile> {
+    pub state: Mutex<Option<ComponentBuildingState<Prof>>>,
+    pub full_reprocess: bool,
+}
+
 pub(crate) struct ComponentDeleteContext<Prof: EngineProfile> {
     pub providers: rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
 }
@@ -119,7 +124,7 @@ pub(crate) enum ComponentProcessingMode {
 }
 
 pub(crate) enum ComponentProcessingAction<Prof: EngineProfile> {
-    Build(Mutex<Option<ComponentBuildingState<Prof>>>),
+    Build(ComponentBuildContext<Prof>),
     Delete(ComponentDeleteContext<Prof>),
 }
 
@@ -130,7 +135,6 @@ struct ComponentProcessorContextInner<Prof: EngineProfile> {
     components_readiness: ComponentBgChildReadiness,
 
     processing_stats: ProcessingStats,
-    full_reprocess: bool,
     // TODO: Add fields to record states, children components, etc.
 }
 
@@ -149,14 +153,17 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         full_reprocess: bool,
     ) -> Self {
         let processing_state = if mode == ComponentProcessingMode::Build {
-            ComponentProcessingAction::Build(Mutex::new(Some(ComponentBuildingState {
-                target_states: ComponentTargetStatesContext {
-                    declared_effects: Default::default(),
-                    provider_registry: TargetStateProviderRegistry::new(providers),
-                },
-                child_path_set: Default::default(),
-                fn_call_memos: Default::default(),
-            })))
+            ComponentProcessingAction::Build(ComponentBuildContext {
+                state: Mutex::new(Some(ComponentBuildingState {
+                    target_states: ComponentTargetStatesContext {
+                        declared_effects: Default::default(),
+                        provider_registry: TargetStateProviderRegistry::new(providers),
+                    },
+                    child_path_set: Default::default(),
+                    fn_call_memos: Default::default(),
+                })),
+                full_reprocess,
+            })
         } else {
             ComponentProcessingAction::Delete(ComponentDeleteContext { providers })
         };
@@ -167,7 +174,6 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
                 processing_action: processing_state,
                 components_readiness: Default::default(),
                 processing_stats,
-                full_reprocess,
             }),
         }
     }
@@ -193,8 +199,8 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         f: impl FnOnce(&mut ComponentBuildingState<Prof>) -> Result<T>,
     ) -> Result<T> {
         match &self.inner.processing_action {
-            ComponentProcessingAction::Build(building_state) => {
-                let mut building_state = building_state.lock().unwrap();
+            ComponentProcessingAction::Build(build_ctx) => {
+                let mut building_state = build_ctx.state.lock().unwrap();
                 let Some(building_state) = &mut *building_state else {
                     internal_bail!(
                         "Processing for the component at {} is already finished",
@@ -236,7 +242,10 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
     }
 
     pub fn full_reprocess(&self) -> bool {
-        self.inner.full_reprocess
+        match &self.inner.processing_action {
+            ComponentProcessingAction::Build(build_ctx) => build_ctx.full_reprocess,
+            ComponentProcessingAction::Delete { .. } => false,
+        }
     }
 }
 
