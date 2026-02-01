@@ -2134,11 +2134,6 @@ version = "0.3.0"
 source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/f2/1e/6c23d3470145be1d6ff29d93f2a521864788827d22e509e2b978eb5bb4cb/prek-0.3.0.tar.gz", hash = "sha256:e70f16bbaf2803e490b866cfa997ea5cc46e7ada55d61f0cdd84bc90b8d5ca7f", size = 316063, upload-time = "2026-01-22T04:00:01.648Z" }
 wheels = [
-name = "prek"
-version = "0.3.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/f2/1e/6c23d3470145be1d6ff29d93f2a521864788827d22e509e2b978eb5bb4cb/prek-0.3.0.tar.gz", hash = "sha256:e70f16bbaf2803e490b866cfa997ea5cc46e7ada55d61f0cdd84bc90b8d5ca7f", size = 316063, upload-time = "2026-01-22T04:00:01.648Z" }
-wheels = [
     { url = "https://files.pythonhosted.org/packages/84/49/469219c19bb00db678806f79fc084ac1ce9952004a183a798db26f6df22b/prek-0.3.0-py3-none-linux_armv6l.whl", hash = "sha256:7e5d40b22deff23e36f7ad91e24b8e62edf32f30f6dad420459f7ec7188233c3", size = 4317493, upload-time = "2026-01-22T03:59:51.769Z" },
     { url = "https://files.pythonhosted.org/packages/87/9f/f7afc49cc0fd92d1ba492929dc1573cb7004d09b61341aa6ee32a5288657/prek-0.3.0-py3-none-macosx_10_12_x86_64.whl", hash = "sha256:6712b58cbb5a7db0aaef180c489ce9f3462e0293d54e54baeedd75fc0d9d8c28", size = 4323961, upload-time = "2026-01-22T03:59:56.92Z" },
     { url = "https://files.pythonhosted.org/packages/42/94/ba36dc29e71d476bf71c3bac2b0c89cfcfc4b8973a0a6b20728f429f4560/prek-0.3.0-py3-none-macosx_11_0_arm64.whl", hash = "sha256:5f2c446fd9012a98c5690b4badf3f7dfb8d424cf0c6798a2d08ee56511f0a670", size = 3970121, upload-time = "2026-01-22T03:59:55.722Z" },
