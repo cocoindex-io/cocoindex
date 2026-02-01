@@ -363,10 +363,6 @@ class _Connector:
                 context.collection.upsert(
                     ids=ids_to_upsert,
                     embeddings=embeddings_to_upsert,
-                    metadatas=metadatas_to_upsert
-                    if any(metadatas_to_upsert)
-                    else None,
-                    documents=documents_to_upsert
-                    if any(documents_to_upsert)
-                    else None,
+                    metadatas=metadatas_to_upsert if any(metadatas_to_upsert) else None,
+                    documents=documents_to_upsert if any(documents_to_upsert) else None,
                 )
