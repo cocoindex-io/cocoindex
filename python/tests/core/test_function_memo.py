@@ -1,6 +1,9 @@
 import cocoindex as coco
 import pytest
 from dataclasses import dataclass
+from typing import Any
+
+from cocoindex._internal.runner import Runner
 
 from tests import common
 from tests.common.target_states import (
@@ -751,3 +754,251 @@ def test_memo_nested_functions_with_components_with_exception_async() -> None:
             data="content1A", prev=["content1A"], prev_may_be_missing=True
         ),
     }
+
+
+# ============================================================================
+# Memo with batching tests
+# ============================================================================
+
+
+@coco.function(memo=True, batching=True)
+def _batched_transform(inputs: list[SourceDataEntry]) -> list[str]:
+    for inp in inputs:
+        _metrics.increment("call.batched_transform")
+    return [f"batched: {entry.content}" for entry in inputs]
+
+
+@coco.function
+def _process_with_batched_transform() -> None:
+    for key, value in _plain_source_data.items():
+        transformed_value = _batched_transform(value)
+        coco.declare_target_state(GlobalDictTarget.target_state(key, transformed_value))
+
+
+def test_memo_with_batching() -> None:
+    """Test that memo=True works correctly with batching=True."""
+    GlobalDictTarget.store.clear()
+    _plain_source_data.clear()
+    _metrics.clear()
+
+    app = coco.App(
+        coco.AppConfig(name="test_memo_with_batching", environment=coco_env),
+        _process_with_batched_transform,
+    )
+
+    _plain_source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA1")
+    _plain_source_data["B"] = SourceDataEntry(name="B", version=1, content="contentB1")
+    app.update()
+    assert _metrics.collect() == {"call.batched_transform": 2}
+    assert GlobalDictTarget.store.data == {
+        "A": DictDataWithPrev(
+            data="batched: contentA1", prev=[], prev_may_be_missing=True
+        ),
+        "B": DictDataWithPrev(
+            data="batched: contentB1", prev=[], prev_may_be_missing=True
+        ),
+    }
+
+    # Same version for A (should be memoized), new version for B (should re-execute)
+    _plain_source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA2")
+    _plain_source_data["B"] = SourceDataEntry(name="B", version=2, content="contentB2")
+    app.update()
+    assert _metrics.collect() == {"call.batched_transform": 1}
+    assert GlobalDictTarget.store.data == {
+        "A": DictDataWithPrev(
+            data="batched: contentA1", prev=[], prev_may_be_missing=True
+        ),
+        "B": DictDataWithPrev(
+            data="batched: contentB2",
+            prev=["batched: contentB1"],
+            prev_may_be_missing=False,
+        ),
+    }
+
+    # No changes - everything should be memoized
+    app.update()
+    assert _metrics.collect() == {}
+
+
+@coco.function(memo=True, batching=True)
+async def _batched_transform_async(inputs: list[SourceDataEntry]) -> list[str]:
+    for inp in inputs:
+        _metrics.increment("call.batched_transform_async")
+    return [f"batched_async: {entry.content}" for entry in inputs]
+
+
+@coco.function
+async def _process_with_batched_transform_async() -> None:
+    for key, value in _plain_source_data.items():
+        transformed_value = await _batched_transform_async(value)
+        coco.declare_target_state(GlobalDictTarget.target_state(key, transformed_value))
+
+
+def test_memo_with_batching_async() -> None:
+    """Test that memo=True works correctly with batching=True for async functions."""
+    GlobalDictTarget.store.clear()
+    _plain_source_data.clear()
+    _metrics.clear()
+
+    app = coco.App(
+        coco.AppConfig(name="test_memo_with_batching_async", environment=coco_env),
+        _process_with_batched_transform_async,
+    )
+
+    _plain_source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA1")
+    _plain_source_data["B"] = SourceDataEntry(name="B", version=1, content="contentB1")
+    app.update()
+    assert _metrics.collect() == {"call.batched_transform_async": 2}
+    assert GlobalDictTarget.store.data == {
+        "A": DictDataWithPrev(
+            data="batched_async: contentA1", prev=[], prev_may_be_missing=True
+        ),
+        "B": DictDataWithPrev(
+            data="batched_async: contentB1", prev=[], prev_may_be_missing=True
+        ),
+    }
+
+    # Same version for A (should be memoized), new version for B (should re-execute)
+    _plain_source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA2")
+    _plain_source_data["B"] = SourceDataEntry(name="B", version=2, content="contentB2")
+    app.update()
+    assert _metrics.collect() == {"call.batched_transform_async": 1}
+
+    # No changes - everything should be memoized
+    app.update()
+    assert _metrics.collect() == {}
+
+
+# ============================================================================
+# Memo with runner tests
+# ============================================================================
+
+
+class MockRunner(Runner):
+    """Mock runner for testing memo with runner."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.call_count = 0
+
+    async def run(self, fn: Any, *args: Any, **kwargs: Any) -> Any:
+        self.call_count += 1
+        return await fn(*args, **kwargs)
+
+    def run_sync_fn(self, fn: Any, *args: Any, **kwargs: Any) -> Any:
+        self.call_count += 1
+        return fn(*args, **kwargs)
+
+
+_test_runner = MockRunner()
+
+
+@coco.function(memo=True, runner=_test_runner)
+def _runner_transform(entry: SourceDataEntry) -> str:
+    _metrics.increment("call.runner_transform")
+    return f"runner: {entry.content}"
+
+
+@coco.function
+def _process_with_runner_transform() -> None:
+    for key, value in _plain_source_data.items():
+        transformed_value = _runner_transform(value)
+        coco.declare_target_state(GlobalDictTarget.target_state(key, transformed_value))
+
+
+def test_memo_with_runner() -> None:
+    """Test that memo=True works correctly with runner."""
+    GlobalDictTarget.store.clear()
+    _plain_source_data.clear()
+    _metrics.clear()
+    _test_runner.call_count = 0
+
+    app = coco.App(
+        coco.AppConfig(name="test_memo_with_runner", environment=coco_env),
+        _process_with_runner_transform,
+    )
+
+    _plain_source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA1")
+    _plain_source_data["B"] = SourceDataEntry(name="B", version=1, content="contentB1")
+    app.update()
+    assert _metrics.collect() == {"call.runner_transform": 2}
+    assert GlobalDictTarget.store.data == {
+        "A": DictDataWithPrev(
+            data="runner: contentA1", prev=[], prev_may_be_missing=True
+        ),
+        "B": DictDataWithPrev(
+            data="runner: contentB1", prev=[], prev_may_be_missing=True
+        ),
+    }
+
+    # Same version for A (should be memoized), new version for B (should re-execute)
+    _plain_source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA2")
+    _plain_source_data["B"] = SourceDataEntry(name="B", version=2, content="contentB2")
+    app.update()
+    assert _metrics.collect() == {"call.runner_transform": 1}
+    assert GlobalDictTarget.store.data == {
+        "A": DictDataWithPrev(
+            data="runner: contentA1", prev=[], prev_may_be_missing=True
+        ),
+        "B": DictDataWithPrev(
+            data="runner: contentB2",
+            prev=["runner: contentB1"],
+            prev_may_be_missing=False,
+        ),
+    }
+
+    # No changes - everything should be memoized
+    app.update()
+    assert _metrics.collect() == {}
+
+
+_test_runner_async = MockRunner()
+
+
+@coco.function(memo=True, runner=_test_runner_async)
+async def _runner_transform_async(entry: SourceDataEntry) -> str:
+    _metrics.increment("call.runner_transform_async")
+    return f"runner_async: {entry.content}"
+
+
+@coco.function
+async def _process_with_runner_transform_async() -> None:
+    for key, value in _plain_source_data.items():
+        transformed_value = await _runner_transform_async(value)
+        coco.declare_target_state(GlobalDictTarget.target_state(key, transformed_value))
+
+
+def test_memo_with_runner_async() -> None:
+    """Test that memo=True works correctly with runner for async functions."""
+    GlobalDictTarget.store.clear()
+    _plain_source_data.clear()
+    _metrics.clear()
+    _test_runner_async.call_count = 0
+
+    app = coco.App(
+        coco.AppConfig(name="test_memo_with_runner_async", environment=coco_env),
+        _process_with_runner_transform_async,
+    )
+
+    _plain_source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA1")
+    _plain_source_data["B"] = SourceDataEntry(name="B", version=1, content="contentB1")
+    app.update()
+    assert _metrics.collect() == {"call.runner_transform_async": 2}
+    assert GlobalDictTarget.store.data == {
+        "A": DictDataWithPrev(
+            data="runner_async: contentA1", prev=[], prev_may_be_missing=True
+        ),
+        "B": DictDataWithPrev(
+            data="runner_async: contentB1", prev=[], prev_may_be_missing=True
+        ),
+    }
+
+    # Same version for A (should be memoized), new version for B (should re-execute)
+    _plain_source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA2")
+    _plain_source_data["B"] = SourceDataEntry(name="B", version=2, content="contentB2")
+    app.update()
+    assert _metrics.collect() == {"call.runner_transform_async": 1}
+
+    # No changes - everything should be memoized
+    app.update()
+    assert _metrics.collect() == {}

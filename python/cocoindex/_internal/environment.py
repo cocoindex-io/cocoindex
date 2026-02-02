@@ -187,6 +187,7 @@ class Environment:
         "_settings",
         "_context_provider",
         "_loop_runner",
+        "_async_context",
         "_info",
         "__weakref__",
     )
@@ -196,6 +197,7 @@ class Environment:
     _settings: setting.Settings
     _context_provider: ContextProvider
     _loop_runner: _LoopRunner
+    _async_context: core.AsyncContext
     _info: EnvironmentInfo
 
     def __init__(
@@ -214,10 +216,7 @@ class Environment:
         self._context_provider = context_provider or ContextProvider()
 
         if event_loop is None:
-            try:
-                event_loop = asyncio.get_running_loop()
-            except RuntimeError:
-                event_loop = asyncio.new_event_loop()
+            event_loop = get_event_loop_or_default()
 
         if event_loop.is_running():
             self._loop_runner = _LoopRunner.from_running_loop(event_loop)
@@ -227,8 +226,10 @@ class Environment:
             runner.ensure_running()
             self._loop_runner = runner
 
-        async_context = core.AsyncContext(self._loop_runner.loop)
-        self._core_env = core.Environment(dump_engine_object(settings), async_context)
+        self._async_context = core.AsyncContext(self._loop_runner.loop)
+        self._core_env = core.Environment(
+            dump_engine_object(settings), self._async_context
+        )
         self._info = info or EnvironmentInfo(self)
 
     @property
@@ -246,6 +247,11 @@ class Environment:
     @property
     def event_loop(self) -> asyncio.AbstractEventLoop:
         return self._loop_runner.loop
+
+    @property
+    def async_context(self) -> core.AsyncContext:
+        """Get the AsyncContext for this environment's event loop."""
+        return self._async_context
 
     def get_context(self, key: ContextKey[T]) -> T:
         """Get a context value provided during this environment's lifespan.
@@ -502,3 +508,15 @@ def reset_default_env_for_tests() -> None:
     This is intended for tests so lifespan registration does not leak across test modules.
     """
     asyncio.run(_default_env._reset())
+
+
+def get_event_loop_or_default() -> asyncio.AbstractEventLoop:
+    """Get the running event loop, or the default background loop if none.
+
+    Returns the currently running event loop if called from an async context.
+    Otherwise, returns the shared background loop (from default_env_loop()).
+    """
+    try:
+        return asyncio.get_running_loop()
+    except RuntimeError:
+        return default_env_loop()

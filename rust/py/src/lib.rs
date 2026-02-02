@@ -1,4 +1,5 @@
 mod app;
+mod batching;
 mod component;
 mod context;
 mod environment;
@@ -82,6 +83,11 @@ fn core_module(m: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()>
     m.add_class::<rwlock::RWLock>()?;
     m.add_class::<rwlock::RWLockReadGuard>()?;
     m.add_class::<rwlock::RWLockWriteGuard>()?;
+
+    // Batching infrastructure
+    m.add_class::<batching::PyBatchingOptions>()?;
+    m.add_class::<batching::PyBatchQueue>()?;
+    m.add_class::<batching::PyBatcher>()?;
 
     Ok(())
 }
