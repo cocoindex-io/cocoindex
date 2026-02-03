@@ -80,8 +80,8 @@ impl LlmEmbeddingClient for Client {
             payload["input_type"] = serde_json::Value::String(task_type.into());
         }
 
-        let resp = http::request(|| {
-            self.client
+        let resp = http::request(&self.client, |client| {
+            client
                 .post(url)
                 .header("Authorization", format!("Bearer {}", self.api_key))
                 .json(&payload)
