@@ -6,6 +6,7 @@ pub mod error;
 pub mod fingerprint;
 pub mod immutable;
 pub mod retryable;
+pub mod slow_warn;
 
 pub mod prelude;
 
