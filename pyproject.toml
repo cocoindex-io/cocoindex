@@ -71,6 +71,7 @@ editable-profile = "dev" # local editable builds
 embeddings = ["sentence-transformers>=3.3.1"]
 colpali = ["colpali-engine"]
 lancedb = ["lancedb>=0.25.0", "pyarrow>=19.0.0"]
+leann = ["leann>=0.3.5"]
 doris = ["aiohttp>=3.8.0", "aiomysql>=0.2.0", "pymysql>=1.0.0"]
 
 all = [
@@ -78,6 +79,7 @@ all = [
     "colpali-engine",
     "lancedb>=0.25.0",
     "pyarrow>=19.0.0",
+     "leann>=0.3.5",
     "aiohttp>=3.8.0",
     "aiomysql>=0.2.0",
     "pymysql>=1.0.0",
