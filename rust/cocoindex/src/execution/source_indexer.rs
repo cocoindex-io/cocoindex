@@ -549,7 +549,6 @@ impl SourceIndexingContext {
         }
     }
 
-    #[instrument(name = "source_indexing.update", skip_all, fields(flow_name = %self.flow.flow_instance.name, source_idx = %self.source_idx))]
     pub async fn update(
         self: &Arc<Self>,
         update_stats: &Arc<stats::UpdateStats>,
@@ -566,6 +565,7 @@ impl SourceIndexingContext {
             .map_err(Error::from)
     }
 
+    #[instrument(name = "source_indexing.update_once", skip_all, fields(flow_name = %self.flow.flow_instance.name, source_idx = %self.source_idx))]
     async fn update_once(
         self: &Arc<Self>,
         update_stats: &Arc<stats::UpdateStats>,
