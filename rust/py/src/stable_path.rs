@@ -1,9 +1,32 @@
 use crate::prelude::*;
 
+use pyo3::conversion::IntoPyObjectExt;
 use pyo3::exceptions::PyTypeError;
 use pyo3::types::{PyBool, PyBytes, PyInt, PyList, PyString, PyTuple};
 
 use cocoindex_core::state::stable_path::{StableKey, StablePath};
+
+impl PyStableKey {
+    pub fn to_py(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let obj = match &self.0 {
+            StableKey::Null => py.None().into_py_any(py),
+            StableKey::Bool(b) => PyBool::new(py, *b).into_py_any(py),
+            StableKey::Int(i) => PyInt::new(py, *i).into_py_any(py),
+            StableKey::Str(s) => PyString::new(py, s.as_ref()).into_py_any(py),
+            StableKey::Bytes(b) => PyBytes::new(py, b.as_ref()).into_py_any(py),
+            StableKey::Uuid(u) => (*u).into_pyobject(py)?.into_py_any(py),
+            StableKey::Array(arr) => {
+                let mut items = Vec::with_capacity(arr.len());
+                for k in arr.iter() {
+                    items.push(PyStableKey(k.clone()).to_py(py)?);
+                }
+                PyTuple::new(py, items)?.into_py_any(py)
+            }
+            StableKey::Fingerprint(fp) => PyBytes::new(py, fp.as_ref()).into_py_any(py),
+        };
+        Ok(obj?)
+    }
+}
 
 pub struct PyStableKey(pub(crate) StableKey);
 
