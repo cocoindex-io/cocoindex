@@ -53,7 +53,7 @@ repos:
 
         - id: maturin-develop
           name: maturin develop
-          entry: uv run maturin develop
+          entry: ./dev/run_maturin_develop.sh
           language: system
           files: ^(rust/|python/|Cargo\.toml|pyproject\.toml)
           pass_filenames: false
