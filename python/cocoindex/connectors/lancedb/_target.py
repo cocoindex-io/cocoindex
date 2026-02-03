@@ -670,6 +670,9 @@ class _TableHandler(
         coco.TargetReconcileOutput[_TableAction, _TableTrackingRecord, _RowHandler]
         | None
     ):
+        if isinstance(key, tuple) and not isinstance(key, _TableKey):
+            key = _TableKey(*key)
+
         tracking_record: _TableTrackingRecord | coco.NonExistenceType
 
         if coco.is_non_existence(desired_state):

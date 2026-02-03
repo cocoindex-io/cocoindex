@@ -389,6 +389,9 @@ class _CollectionHandler(
         ]
         | None
     ):
+        if isinstance(key, tuple) and not isinstance(key, _CollectionKey):
+            key = _CollectionKey(*key)
+
         tracking_record: _CollectionTrackingRecord | coco.NonExistenceType
 
         if coco.is_non_existence(desired_state):

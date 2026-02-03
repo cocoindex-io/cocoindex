@@ -254,6 +254,9 @@ class _RootHandler(
         coco.TargetReconcileOutput[_EntryAction, _EntryTrackingRecord, _EntryHandler]
         | None
     ):
+        if isinstance(key, tuple) and not isinstance(key, _RootKey):
+            key = _RootKey(*key)
+
         path = _resolve_root_path(key)
         return _reconcile_entry(
             path, desired_state, prev_possible_states, prev_may_be_missing
