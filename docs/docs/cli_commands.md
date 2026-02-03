@@ -26,6 +26,7 @@ cocoindex drop [OPTIONS] APP_TARGET
 | Option | Description |
 |--------|-------------|
 | `-f, --force` | Skip confirmation prompt. |
+| `-q, --quiet` | Avoid printing anything to the standard output, e.g. statistics. |
 | `--help` | Show this message and exit. |
 
 ---
@@ -123,6 +124,10 @@ cocoindex update [OPTIONS] APP_TARGET
 
 | Option | Description |
 |--------|-------------|
+| `-f, --force` | Skip confirmation prompt. |
+| `-q, --quiet` | Avoid printing anything to the standard output, e.g. statistics. |
+| `--reset` | Drop existing setup before updating (equivalent to running 'cocoindex drop' first). |
+| `--full-reprocess` | Reprocess everything and invalidate existing caches. |
 | `--help` | Show this message and exit. |
 
 ---

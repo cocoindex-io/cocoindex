@@ -26,6 +26,11 @@ pub(crate) fn use_or_invalidate_component_memoization<Prof: EngineProfile>(
     comp_ctx: &ComponentProcessorContext<Prof>,
     processor_fp: Option<Fingerprint>,
 ) -> Result<Option<Prof::FunctionData>> {
+    // Short-circuit to miss under full_reprocess
+    if comp_ctx.full_reprocess() {
+        return Ok(None);
+    }
+
     let key = db_schema::DbEntryKey::StablePath(
         comp_ctx.stable_path().clone(),
         db_schema::StablePathEntryKey::ComponentMemoization,
@@ -164,6 +169,10 @@ pub(crate) fn read_fn_call_memo<Prof: EngineProfile>(
     comp_ctx: &ComponentProcessorContext<Prof>,
     memo_fp: Fingerprint,
 ) -> Result<Option<FnCallMemo<Prof>>> {
+    // Short-circuit to miss under full_reprocess
+    if comp_ctx.full_reprocess() {
+        return Ok(None);
+    }
     let db_env = comp_ctx.app_ctx().env().db_env();
     let rtxn = db_env.read_txn()?;
     read_fn_call_memo_with_txn(&rtxn, comp_ctx.app_ctx().db(), comp_ctx, memo_fp)
@@ -682,8 +691,8 @@ pub(crate) async fn submit<Prof: EngineProfile>(
     let mut memos_with_mounts_to_store: Vec<(Fingerprint, FnCallMemo<Prof>)> = Vec::new();
     let (target_states_providers, declared_effects, child_path_set, finalized_fn_call_memos) =
         match comp_ctx.processing_state() {
-            ComponentProcessingAction::Build(building_state) => {
-                let mut building_state = building_state.lock().unwrap();
+            ComponentProcessingAction::Build(build_ctx) => {
+                let mut building_state = build_ctx.state.lock().unwrap();
                 let Some(building_state) = building_state.take() else {
                     internal_bail!(
                         "Processing for the component at {} is already finished",
@@ -785,9 +794,15 @@ pub(crate) async fn submit<Prof: EngineProfile>(
             tracking_info.version = curr_version;
             let mut declared_target_states_to_process = declared_effects;
 
+            let full_reprocess = comp_ctx.full_reprocess();
+
             // Deal with existing target states
             for (target_state_path, item) in tracking_info.effect_items.iter_mut() {
-                let prev_may_be_missing = item.states.iter().any(|(_, s)| s.is_deleted());
+                let prev_may_be_missing = if full_reprocess {
+                    true
+                } else {
+                    item.states.iter().any(|(_, s)| s.is_deleted())
+                };
                 let prev_states = item
                     .states
                     .iter()
@@ -1142,23 +1157,25 @@ fn finalize_fn_call_memoization<Prof: EngineProfile>(
     // Transitively expand deps of already-stored memos (read from DB).
     // Collect their target_state_paths so those target states are not GC'd.
     // Use a single read transaction for all DB reads.
-    let db_env = comp_ctx.app_ctx().env().db_env();
-    let rtxn = db_env.read_txn()?;
-    let db = comp_ctx.app_ctx().db();
-    while let Some(fp) = deps_to_process.pop_front() {
-        if !result.all_memos_fps.insert(fp) {
-            continue;
+    if !deps_to_process.is_empty() {
+        let db_env = comp_ctx.app_ctx().env().db_env();
+        let rtxn = db_env.read_txn()?;
+        let db = comp_ctx.app_ctx().db();
+        while let Some(fp) = deps_to_process.pop_front() {
+            if !result.all_memos_fps.insert(fp) {
+                continue;
+            }
+            let Some(memo) = read_fn_call_memo_with_txn(&rtxn, db, comp_ctx, fp)? else {
+                continue;
+            };
+            for child_component in &memo.child_components {
+                stable_path_set.add_child(child_component.as_ref(), StablePathSet::Component)?;
+            }
+            result
+                .contained_target_state_paths
+                .extend(memo.target_state_paths.into_iter());
+            deps_to_process.extend(memo.dependency_memo_entries.into_iter());
         }
-        let Some(memo) = read_fn_call_memo_with_txn(&rtxn, db, comp_ctx, fp)? else {
-            continue;
-        };
-        for child_component in &memo.child_components {
-            stable_path_set.add_child(child_component.as_ref(), StablePathSet::Component)?;
-        }
-        result
-            .contained_target_state_paths
-            .extend(memo.target_state_paths.into_iter());
-        deps_to_process.extend(memo.dependency_memo_entries.into_iter());
     }
     Ok(result)
 }

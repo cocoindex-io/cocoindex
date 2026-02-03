@@ -109,7 +109,11 @@ pub fn mount_run(
         .mount_child(&fn_ctx.0, stable_path.0)
         .into_py_result()?;
     let child_ctx = component
-        .new_processor_context_for_build(Some(&comp_ctx.0), comp_ctx.0.processing_stats().clone())
+        .new_processor_context_for_build(
+            Some(&comp_ctx.0),
+            comp_ctx.0.processing_stats().clone(),
+            comp_ctx.0.full_reprocess(),
+        )
         .into_py_result()?;
     let handle = component.run(processor, child_ctx).into_py_result()?;
     Ok(PyComponentMountRunHandle(Some(handle)))
@@ -128,7 +132,11 @@ pub fn mount(
         .mount_child(&fn_ctx.0, stable_path.0)
         .into_py_result()?;
     let child_ctx = component
-        .new_processor_context_for_build(Some(&comp_ctx.0), comp_ctx.0.processing_stats().clone())
+        .new_processor_context_for_build(
+            Some(&comp_ctx.0),
+            comp_ctx.0.processing_stats().clone(),
+            comp_ctx.0.full_reprocess(),
+        )
         .into_py_result()?;
     let handle = component
         .run_in_background(processor, child_ctx)
