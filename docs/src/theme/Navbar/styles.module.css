@@ -44,6 +44,12 @@
   width: auto;
 }
 
+.navbarIcon {
+  display: none;
+  height: 32px;
+  width: auto;
+}
+
 .navbarTitle {
   display: none;
 }
@@ -51,6 +57,7 @@
 .navbarItemsLeft {
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 1.5rem;
   flex: 1;
   font-size: 0.875rem;
@@ -75,6 +82,7 @@
   padding: 0;
   text-decoration: none;
   transition: opacity 0.15s ease;
+  position: relative;
 }
 
 .navbarItemsLeft :global(.navbar__link:hover) {
@@ -84,13 +92,25 @@
 }
 
 .navbarItemsLeft :global(.navbar__link--active) {
-  color: var(--ifm-color-primary);
-  font-weight: 500;
+  color: var(--navbar-link-color);
+  font-weight: 600;
+}
+
+.navbarItemsLeft :global(.navbar__link--active::after) {
+  content: '';
+  position: absolute;
+  bottom: -6px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 4px;
+  height: 4px;
+  background-color: var(--ifm-color-primary);
+  border-radius: 50%;
 }
 
 .navbarItemsLeft :global(.navbar__link--active:hover) {
-  color: var(--ifm-color-primary);
-  opacity: 0.8;
+  color: var(--navbar-link-color);
+  opacity: 1;
 }
 
 .navbarItemsRight {
@@ -101,9 +121,15 @@
   flex-shrink: 0;
 }
 
+.versionSelectorWrapper {
+  display: flex;
+  align-items: center;
+}
+
 .githubStarWrapper {
   display: flex;
   align-items: center;
+  width: 110px;
 }
 
 .navbarSearch {
@@ -139,6 +165,10 @@
   width: 20px;
   height: 20px;
   color: var(--navbar-link-color, #1f2328);
+}
+
+.navbarMobileMenuButtonHidden {
+  display: none !important;
 }
 
 /* Mobile styles */
@@ -185,8 +215,12 @@
     margin-right: 12px;
   }
 
-  .navbarMobileMenuButtonHidden {
-    display: none !important;
+  .navbarLogo {
+    display: none;
+  }
+
+  .navbarIcon {
+    display: block;
   }
 }
 

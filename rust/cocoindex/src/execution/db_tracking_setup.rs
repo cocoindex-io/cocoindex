@@ -1,8 +1,26 @@
 use crate::prelude::*;
 
+use crate::execution::db_tracking;
+use crate::lib_context::get_settings;
 use crate::setup::{CombinedState, ResourceSetupChange, ResourceSetupInfo, SetupChangeType};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
+use std::collections::{BTreeMap, BTreeSet};
+
+pub fn qualify_table_name_with_schema(table: &str) -> Result<String> {
+    let schema_name = get_settings()?.db_schema_name;
+
+    if let Some(schema) = schema_name {
+        let qualified_table_name = format!(
+            "{}.{}",
+            utils::db::sanitize_identifier(&schema),
+            utils::db::sanitize_identifier(table)
+        );
+        Ok(qualified_table_name)
+    } else {
+        Ok(utils::db::sanitize_identifier(table).to_string())
+    }
+}
 
 pub fn default_tracking_table_name(flow_name: &str) -> String {
     format!(
@@ -26,12 +44,12 @@ async fn upgrade_tracking_table(
     existing_version_id: i32,
 ) -> Result<()> {
     if existing_version_id < 1 && desired_state.version_id >= 1 {
-        let table_name = &desired_state.table_name;
+        let table_name = qualify_table_name_with_schema(&desired_state.table_name)?;
         let opt_fast_fingerprint_column = desired_state
             .has_fast_fingerprint_column
             .then(|| "processed_source_fp BYTEA,")
             .unwrap_or("");
-        let query =  format!(
+        let query = format!(
             "CREATE TABLE IF NOT EXISTS {table_name} (
                 source_id INTEGER NOT NULL,
                 source_key JSONB NOT NULL,
@@ -59,6 +77,7 @@ async fn upgrade_tracking_table(
 }
 
 async fn create_source_state_table(pool: &PgPool, table_name: &str) -> Result<()> {
+    let table_name = qualify_table_name_with_schema(table_name)?;
     let query = format!(
         "CREATE TABLE IF NOT EXISTS {table_name} (
             source_id INTEGER NOT NULL,
@@ -77,6 +96,7 @@ async fn delete_source_states_for_sources(
     table_name: &str,
     source_ids: &Vec<i32>,
 ) -> Result<()> {
+    let table_name = qualify_table_name_with_schema(table_name)?;
     let query = format!("DELETE FROM {} WHERE source_id = ANY($1)", table_name,);
     sqlx::query(&query).bind(source_ids).execute(pool).await?;
     Ok(())
@@ -92,6 +112,14 @@ pub struct TrackingTableSetupState {
     pub has_fast_fingerprint_column: bool,
 }
 
+/// Information about a target needed for cleanup operations
+#[derive(Debug, Clone)]
+pub struct TargetInfoForCleanup {
+    pub target_kind: String,
+    pub key_schema: Box<[schema::ValueType]>,
+    pub key_field_schemas: Vec<schema::FieldSchema>,
+}
+
 #[derive(Debug)]
 pub struct TrackingTableSetupChange {
     pub desired_state: Option<TrackingTableSetupState>,
@@ -104,6 +132,12 @@ pub struct TrackingTableSetupChange {
 
     pub source_names_need_state_cleanup: BTreeMap<i32, BTreeSet<String>>,
 
+    /// Target information for cleanup (target_id -> TargetInfoForCleanup)
+    pub desired_targets: Option<BTreeMap<i32, TargetInfoForCleanup>>,
+
+    /// Export contexts for targets (target_id -> export_context)
+    pub export_contexts: Option<Arc<BTreeMap<i32, Arc<dyn Any + Send + Sync>>>>,
+
     has_state_change: bool,
 }
 
@@ -112,6 +146,7 @@ impl TrackingTableSetupChange {
         desired: Option<&TrackingTableSetupState>,
         existing: &CombinedState<TrackingTableSetupState>,
         source_names_need_state_cleanup: BTreeMap<i32, BTreeSet<String>>,
+        desired_targets: Option<BTreeMap<i32, TargetInfoForCleanup>>,
     ) -> Option<Self> {
         let legacy_tracking_table_names = existing
             .legacy_values(desired, |v| &v.table_name)
@@ -138,11 +173,18 @@ impl TrackingTableSetupChange {
                 legacy_source_state_table_names,
                 min_existing_version_id,
                 source_names_need_state_cleanup,
+                desired_targets,
+                export_contexts: None,
                 has_state_change: existing.has_state_diff(desired, |v| v),
             })
         } else {
             None
         }
+    }
+
+    /// Attach export contexts for targets (called after targets are built)
+    pub fn attach_export_contexts(&mut self, contexts: BTreeMap<i32, Arc<dyn Any + Send + Sync>>) {
+        self.export_contexts = Some(Arc::new(contexts));
     }
 
     pub fn into_setup_info(
@@ -217,7 +259,8 @@ impl ResourceSetupChange for TrackingTableSetupChange {
 
         if !self.source_names_need_state_cleanup.is_empty() {
             changes.push(setup::ChangeDescription::Action(format!(
-                "Clean up legacy source states: {}. ",
+                "Clean up {} legacy source(s) including tracking metadata, target data, and source states: {}. ",
+                self.source_names_need_state_cleanup.len(),
                 self.source_names_need_state_cleanup
                     .values()
                     .flatten()
@@ -259,10 +302,13 @@ impl TrackingTableSetupChange {
         let lib_context = get_lib_context().await?;
         let pool = lib_context.require_builtin_db_pool()?;
         if let Some(desired) = &self.desired_state {
-            for lagacy_name in self.legacy_tracking_table_names.iter() {
+            // Attempt to rename legacy tables within the same schema
+            for legacy_name in self.legacy_tracking_table_names.iter() {
+                let qualified_legacy_table = qualify_table_name_with_schema(&legacy_name)?;
+                let qualified_desired_table = qualify_table_name_with_schema(&desired.table_name)?;
                 let query = format!(
                     "ALTER TABLE IF EXISTS {} RENAME TO {}",
-                    lagacy_name, desired.table_name
+                    qualified_legacy_table, qualified_desired_table
                 );
                 sqlx::query(&query).execute(pool).await?;
             }
@@ -272,26 +318,38 @@ impl TrackingTableSetupChange {
                     .await?;
             }
         } else {
-            for lagacy_name in self.legacy_tracking_table_names.iter() {
-                let query = format!("DROP TABLE IF EXISTS {lagacy_name}");
+            for legacy_name in self.legacy_tracking_table_names.iter() {
+                let qualified_legacy_table_name = qualify_table_name_with_schema(&legacy_name)?;
+                let query = format!("DROP TABLE IF EXISTS {}", qualified_legacy_table_name);
                 sqlx::query(&query).execute(pool).await?;
             }
+        }
+
+        // Clean up tracking metadata and target data for stale sources
+        // This must happen BEFORE source state table operations
+        if !self.source_names_need_state_cleanup.is_empty() {
+            self.cleanup_stale_sources(pool).await?;
         }
 
         let source_state_table_name = self
             .desired_state
             .as_ref()
             .and_then(|v| v.source_state_table_name.as_ref());
+
         if let Some(source_state_table_name) = source_state_table_name {
-            for lagacy_name in self.legacy_source_state_table_names.iter() {
+            for legacy_name in self.legacy_source_state_table_names.iter() {
+                let qualified_legacy_table_name =
+                    qualify_table_name_with_schema(legacy_name.as_str())?;
                 let query = format!(
-                    "ALTER TABLE IF EXISTS {lagacy_name} RENAME TO {source_state_table_name}"
+                    "ALTER TABLE IF EXISTS {qualified_legacy_table_name} RENAME TO {source_state_table_name}"
                 );
                 sqlx::query(&query).execute(pool).await?;
             }
             if !self.source_state_table_always_exists {
                 create_source_state_table(pool, source_state_table_name).await?;
             }
+
+            // Delete source state entries for cleaned up sources
             if !self.source_names_need_state_cleanup.is_empty() {
                 delete_source_states_for_sources(
                     pool,
@@ -305,11 +363,203 @@ impl TrackingTableSetupChange {
                 .await?;
             }
         } else {
-            for lagacy_name in self.legacy_source_state_table_names.iter() {
-                let query = format!("DROP TABLE IF EXISTS {lagacy_name}");
+            for legacy_name in self.legacy_source_state_table_names.iter() {
+                let qualified_legacy_table_name =
+                    qualify_table_name_with_schema(legacy_name.as_str())?;
+                let query = format!("DROP TABLE IF EXISTS {qualified_legacy_table_name}");
                 sqlx::query(&query).execute(pool).await?;
             }
         }
         Ok(())
+    }
+
+    /// Clean up tracking metadata and target data for stale sources
+    async fn cleanup_stale_sources(&self, pool: &PgPool) -> Result<()> {
+        // Early return if flow is being dropped
+        let Some(desired) = &self.desired_state else {
+            tracing::info!("Skipping stale source cleanup: flow is being dropped");
+            return Ok(());
+        };
+
+        let source_ids: Vec<i32> = self
+            .source_names_need_state_cleanup
+            .keys()
+            .copied()
+            .collect();
+
+        tracing::info!(
+            "Cleaning up tracking metadata and target data for {} stale source(s): {:?}",
+            source_ids.len(),
+            source_ids
+        );
+
+        // Stream tracking entries instead of loading all at once
+        let entries_stream = db_tracking::read_tracking_entries_for_sources_stream(
+            source_ids.clone(),
+            desired.clone(),
+            pool.clone(),
+        );
+
+        // Process with limited parallelism
+        // Use source_max_inflight_rows from global settings (default: 10 as fallback)
+        let lib_context = get_lib_context().await?;
+        let max_concurrent = lib_context.source_max_inflight_rows.unwrap_or(10);
+        self.cleanup_tracking_entries_streaming(Box::pin(entries_stream), pool, max_concurrent)
+            .await?;
+
+        // Delete tracking metadata
+        let rows_deleted =
+            db_tracking::delete_tracking_entries_for_sources(&source_ids, desired, pool).await?;
+
+        tracing::info!(
+            "Deleted {} tracking entries for stale sources",
+            rows_deleted
+        );
+
+        Ok(())
+    }
+
+    /// Stream tracking entries and clean up target data with limited parallelism
+    async fn cleanup_tracking_entries_streaming(
+        &self,
+        mut entries_stream: std::pin::Pin<
+            Box<dyn Stream<Item = Result<db_tracking::SourceTrackingEntryForCleanup>> + Send>,
+        >,
+        _pool: &PgPool,
+        max_concurrent: usize,
+    ) -> Result<()> {
+        use tokio::sync::Semaphore;
+        use tokio::task::JoinSet;
+
+        let semaphore = Arc::new(Semaphore::new(max_concurrent));
+        let mut join_set = JoinSet::new();
+        let mut total_processed = 0u64;
+        let mut total_deleted = 0u64;
+
+        // Stream entries one by one
+        while let Some(entry) = entries_stream.try_next().await? {
+            total_processed += 1;
+
+            let permit = semaphore.clone().acquire_owned().await?;
+
+            let desired_targets = self.desired_targets.clone();
+            let export_contexts = self.export_contexts.clone();
+
+            join_set.spawn(async move {
+                let result = Self::cleanup_single_tracking_entry(
+                    entry,
+                    desired_targets.as_ref(),
+                    export_contexts.as_ref(),
+                )
+                .await;
+                drop(permit);
+                result
+            });
+        }
+
+        while let Some(result) = join_set.join_next().await {
+            match result {
+                Ok(Ok(deleted_count)) => total_deleted += deleted_count,
+                Ok(Err(e)) => return Err(e),
+                Err(e) if !e.is_cancelled() => {
+                    return Err(internal_error!("Task panicked: {:?}", e));
+                }
+                _ => {}
+            }
+        }
+
+        tracing::info!(
+            "Processed {} tracking entries, deleted {} target rows",
+            total_processed,
+            total_deleted
+        );
+
+        Ok(())
+    }
+
+    /// Process a single tracking entry and delete its target data
+    async fn cleanup_single_tracking_entry(
+        entry: db_tracking::SourceTrackingEntryForCleanup,
+        desired_targets: Option<&BTreeMap<i32, TargetInfoForCleanup>>,
+        export_contexts: Option<&Arc<BTreeMap<i32, Arc<dyn Any + Send + Sync>>>>,
+    ) -> Result<u64> {
+        let Some(desired_targets) = desired_targets else {
+            return Ok(0);
+        };
+
+        let Some(target_keys) = entry.target_keys else {
+            return Ok(0);
+        };
+
+        let mut total_deleted = 0u64;
+
+        // One tracking entry can have keys for multiple targets (fanout)
+        for (target_id, tracked_keys) in target_keys {
+            // Get pre-computed target info (contains pre-computed field_schemas)
+            let target_info = match desired_targets.get(&target_id) {
+                Some(info) => info,
+                None => {
+                    // Target dropped, skip cleanup
+                    tracing::debug!("Skipping target_id {}: target no longer exists", target_id);
+                    continue;
+                }
+            };
+
+            // Parse tracked keys using pre-computed field_schemas
+            let mut parsed_keys = Vec::new();
+            for tracked_key_info in tracked_keys {
+                match value::KeyValue::from_json(
+                    tracked_key_info.key.clone(),
+                    &target_info.key_field_schemas,
+                )
+                .with_context(|| format!("Failed to parse key: {}", tracked_key_info.key))
+                {
+                    Ok(key) => parsed_keys.push(key),
+                    Err(e) => {
+                        tracing::warn!(
+                            "Failed to parse key for target_id {}: {}. Skipping key.",
+                            target_id,
+                            e
+                        );
+                    }
+                }
+            }
+
+            if parsed_keys.is_empty() {
+                continue;
+            }
+
+            // Get export context for this target
+            let export_context = export_contexts
+                .and_then(|ctxs| ctxs.get(&target_id))
+                .ok_or_else(|| internal_error!("No export context for target {}", target_id))?;
+
+            // Delete via target factory
+            let factory = crate::ops::get_target_factory(&target_info.target_kind)?;
+
+            let deletes: Vec<interface::ExportTargetDeleteEntry> = parsed_keys
+                .into_iter()
+                .map(|key| interface::ExportTargetDeleteEntry {
+                    key,
+                    additional_key: serde_json::Value::Null,
+                })
+                .collect();
+
+            let delete_count = deletes.len() as u64;
+
+            factory
+                .apply_mutation(vec![interface::ExportTargetMutationWithContext {
+                    mutation: interface::ExportTargetMutation {
+                        upserts: vec![],
+                        deletes,
+                    },
+                    export_context: &**export_context,
+                }])
+                .await?;
+
+            total_deleted += delete_count;
+        }
+
+        Ok(total_deleted)
     }
 }

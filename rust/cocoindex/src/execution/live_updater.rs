@@ -9,7 +9,7 @@ use indicatif::{MultiProgress, ProgressBar, ProgressFinish};
 use sqlx::PgPool;
 use std::fmt::Write;
 use tokio::{sync::watch, task::JoinSet, time::MissedTickBehavior};
-use tracing::Level;
+use tracing::{Instrument, Level};
 
 pub struct FlowLiveUpdaterUpdates {
     pub active_sources: Vec<String>,
@@ -359,7 +359,6 @@ impl SourceUpdateTask {
         update_title: &str,
         start_time: Option<std::time::Instant>,
     ) -> String {
-        self.source_update_stats.merge(stats);
         let mut message = format!(
             "{}.{} ({update_title}):{stats}",
             self.flow.flow_instance.name,
@@ -483,6 +482,7 @@ impl SourceUpdateTask {
         }
         self.multi_progress_bar
             .suspend(|| self.report_stats(&update_stats, update_title, Some(start_time), "✅ "));
+        self.source_update_stats.merge(&update_stats);
         Ok(())
     }
 
@@ -550,7 +550,7 @@ impl FlowLiveUpdater {
                 num_remaining_tasks_tx: num_remaining_tasks_tx.clone(),
                 multi_progress_bar: (*multi_progress_bar).clone(),
             };
-            join_set.spawn(source_update_task.run());
+            join_set.spawn(source_update_task.run().instrument(Span::current()));
             stats_per_task.push(source_update_stats);
         }
 

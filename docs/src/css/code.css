@@ -1,0 +1,137 @@
+/* Inline code styling - Radix UI Code component style */
+code {
+  font-family: 'Menlo', 'Consolas', 'Bitstream Vera Sans Mono', monospace, 'Apple Color Emoji', 'Segoe UI Emoji';
+  font-size: calc(0.95em * var(--scaling, 1));
+  line-height: 1.25;
+  letter-spacing: -0.007em;
+  background-color: var(--radix-gray-3);
+  color: var(--radix-gray-12);
+  padding: 0.125em 0.35em;
+  border-radius: calc(0.25em);
+  border: none;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+
+/* Dark mode inline code */
+[data-theme='dark'] code {
+  background-color: var(--radix-gray-3);
+  color: var(--radix-gray-12);
+}
+
+/* Code inside links */
+a code {
+  color: inherit;
+}
+
+/* Code blocks should not have these inline styles */
+pre code {
+  background-color: transparent;
+  padding: 0;
+  border-radius: 0;
+  font-size: inherit;
+  line-height: inherit;
+  color: inherit;
+}
+
+/* ===== Code Block Styling - Radix UI style ===== */
+
+/* Code block container - override Docusaurus defaults */
+.codeBlockContainer_node_modules-\@docusaurus-theme-classic-lib-theme-CodeBlock-Container-styles-module,
+[class*='codeBlockContainer'] {
+  --prism-background-color: var(--radix-gray-2);
+  --prism-color: var(--radix-gray-12);
+  border-radius: 8px !important;
+  overflow: hidden;
+  border: 1px solid var(--radix-gray-6) !important;
+  background: var(--radix-gray-2) !important;
+  color: var(--radix-gray-12);
+  margin-bottom: 1rem !important;
+  box-shadow: none !important;
+}
+
+/* Code block content wrapper */
+[class*='codeBlockContent'] {
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+/* The pre element inside code blocks */
+[class*='codeBlockContent'] pre,
+pre[class*='prism'],
+pre.prism-code,
+.prism-code {
+  font-family: 'Menlo', 'Consolas', 'Bitstream Vera Sans Mono', monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  padding: 0 !important;
+  margin: 0 !important;
+  background: var(--radix-gray-2) !important;
+  border-radius: 0;
+  border: none;
+  overflow-x: auto;
+}
+
+/* Code block title/header */
+[class*='codeBlockTitle'] {
+  font-family: 'Menlo', 'Consolas', 'Bitstream Vera Sans Mono', monospace;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 8px 16px;
+  background: var(--radix-gray-3);
+  border-bottom: 1px solid var(--radix-gray-6);
+  color: var(--radix-gray-11);
+}
+
+/* Copy button styling */
+[class*='copyButton'] {
+  background: transparent;
+  border: none;
+  color: var(--radix-gray-11);
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+[class*='codeBlockContainer']:hover [class*='copyButton'] {
+  opacity: 1;
+}
+
+[class*='copyButton']:hover {
+  background: var(--radix-gray-4);
+  color: var(--radix-gray-12);
+}
+
+/* Line numbers */
+[class*='codeBlockLines'] {
+  font-family: 'Menlo', 'Consolas', 'Bitstream Vera Sans Mono', monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  padding: 16px !important;
+}
+
+/* Dark mode code blocks */
+[data-theme='dark'] [class*='codeBlockContainer'] {
+  background: var(--radix-gray-2);
+  border-color: var(--radix-gray-6);
+}
+
+[data-theme='dark'] pre[class*='prism'],
+[data-theme='dark'] pre.prism-code,
+[data-theme='dark'] .prism-code {
+  background: var(--radix-gray-2) !important;
+}
+
+[data-theme='dark'] [class*='codeBlockTitle'] {
+  background: var(--radix-gray-3);
+  border-bottom-color: var(--radix-gray-6);
+  color: var(--radix-gray-11);
+}
+
+[data-theme='dark'] [class*='copyButton'] {
+  color: var(--radix-gray-11);
+}
+
+[data-theme='dark'] [class*='copyButton']:hover {
+  background: var(--radix-gray-4);
+  color: var(--radix-gray-12);
+}
