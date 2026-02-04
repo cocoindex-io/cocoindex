@@ -20,13 +20,13 @@
 </div>
 
 <div align="center">
-  
+
 [Step By Step Tutorial](https://cocoindex.io/examples-v1/multi-codebase-summarization)
 
 </div>
 
 <div align="center">
-  
+
 Star 🌟 [CocoIndex](https://github.com/cocoindex-io/cocoindex) if you like it!!
 
 </div>
