@@ -1,0 +1,12 @@
+/* Doc-specific styles - shared styles are now in custom.css */
+
+.theme-doc-sidebar-menu {
+  font-size: 0.875rem;
+  /* 14px */
+}
+
+/* Sidebar caret styles */
+.menu__caret:before,
+.menu__link--sublist-caret:after {
+  background: var(--ifm-menu-link-sublist-icon) 50% / 1rem 1rem;
+}

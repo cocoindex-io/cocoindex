@@ -71,6 +71,7 @@ const sidebars: SidebarsConfig = {
         'targets/lancedb',
         'targets/neo4j',
         'targets/kuzu',
+        'targets/doris',
       ],
     },
     {

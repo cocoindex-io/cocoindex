@@ -1,25 +1,7 @@
 import type { ReactNode } from 'react';
 import { FaGithub, FaYoutube } from 'react-icons/fa';
 import { MdMenuBook, MdDriveEta } from 'react-icons/md';
-
-type ButtonProps = {
-    href: string;
-    children: ReactNode;
-    margin?: string;
-};
-
-function Button({ href, children, margin = '0' }: ButtonProps): ReactNode {
-  return (
-        <a
-        href={href}
-        target='_blank'
-        rel='noopener noreferrer'
-        className='button-interactive'
-    >
-        {children}
-        </a>
-    );
-}
+import { Button } from '@site/src/components/Button';
 
 type GitHubButtonProps = {
     url: string;
@@ -28,8 +10,15 @@ type GitHubButtonProps = {
 
 function GitHubButton({ url, margin = '0' }: GitHubButtonProps): ReactNode {
     return (
-        <Button href={url} margin={margin}>
-            <FaGithub className='icon-button' />
+        <Button
+            href={url}
+            variant="outline"
+            size="4"
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{ margin }}
+        >
+            <FaGithub />
             View on GitHub
         </Button>
     );
@@ -42,8 +31,15 @@ type YouTubeButtonProps = {
 
 function YouTubeButton({ url, margin = '0' }: YouTubeButtonProps): ReactNode {
     return (
-        <Button href={url} margin={margin}>
-            <FaYoutube className='icon-button' />
+        <Button
+            href={url}
+            variant="outline"
+            size="4"
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{ margin }}
+        >
+            <FaYoutube />
             Watch on YouTube
         </Button>
     );
@@ -57,8 +53,15 @@ type DocumentationButtonProps = {
 
 function DocumentationButton({ url, text, margin }: DocumentationButtonProps): ReactNode {
     return (
-        <Button href={url} margin={margin}>
-            <MdMenuBook style={{ marginRight: '8px', verticalAlign: 'middle', fontSize: '1rem' }} />
+        <Button
+            href={url}
+            variant="outline"
+            size="4"
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{ margin }}
+        >
+            <MdMenuBook />
             {text}
         </Button>
     );
@@ -73,8 +76,15 @@ type ExampleButtonProps = {
 
 function ExampleButton({ href, text, margin }: ExampleButtonProps): ReactNode {
     return (
-        <Button href={href} margin={margin}>
-            <MdDriveEta style={{ marginRight: '8px', verticalAlign: 'middle', fontSize: '1rem' }} />
+        <Button
+            href={href}
+            variant="outline"
+            size="4"
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{ margin }}
+        >
+            <MdDriveEta />
             {text}
         </Button>
     );

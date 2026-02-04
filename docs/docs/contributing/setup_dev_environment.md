@@ -31,10 +31,10 @@ Follow the steps below to get CocoIndex built on the latest codebase locally - i
 
 - Setup your local development environment:
 
-  - Install and enable pre-commit hooks. This ensures all checks run automatically before each commit:
+  - Install and enable prek hooks. This ensures all checks run automatically before each commit:
 
     ```sh
-    uv run pre-commit install
+    uv run prek install
     ```
 
   - (Optionally) Install all optional dependencies:
@@ -90,4 +90,6 @@ Workaround:
 
 This wrapper sets `PYTHONHOME`/`PYTHONPATH` for that command only, so embedded Python can locate the stdlib and site-packages.
 
-Note: the cargo-test pre-commit hook uses this wrapper.
+:::info
+
+The cargo-test prek hook uses this wrapper.
