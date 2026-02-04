@@ -1,0 +1,75 @@
+# Apache Doris 4.0 + PostgreSQL for CocoIndex
+# Based on official Doris quick-start script (https://doris.apache.org/files/start-doris.sh)
+#
+# Usage:
+#   # Start Doris first (creates the network)
+#   curl -sSL https://doris.apache.org/files/start-doris.sh | bash
+#
+#   # Then start PostgreSQL
+#   docker compose up -d postgres
+#
+# Or use the all-in-one approach:
+#   docker compose up -d
+
+networks:
+  custom_network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.80.0/24
+
+services:
+  # Apache Doris Frontend
+  fe:
+    image: apache/doris:fe-4.0.1
+    hostname: fe
+    ports:
+      - "8030:8030"
+      - "9030:9030"
+      - "9010:9010"
+    environment:
+      - FE_SERVERS=fe1:172.20.80.2:9010
+      - FE_ID=1
+    networks:
+      custom_network:
+        ipv4_address: 172.20.80.2
+
+  # Apache Doris Backend
+  be:
+    image: apache/doris:be-4.0.1
+    hostname: be
+    ports:
+      - "8040:8040"
+      - "9050:9050"
+    environment:
+      - FE_SERVERS=fe1:172.20.80.2:9010
+      - BE_ADDR=172.20.80.3:9050
+    depends_on:
+      - fe
+    networks:
+      custom_network:
+        ipv4_address: 172.20.80.3
+
+  # PostgreSQL for CocoIndex internal state
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: sec_analytics_postgres
+    environment:
+      POSTGRES_USER: cocoindex
+      POSTGRES_PASSWORD: cocoindex
+      POSTGRES_DB: cocoindex
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cocoindex"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      custom_network:
+        ipv4_address: 172.20.80.4
+
+volumes:
+  postgres_data:
