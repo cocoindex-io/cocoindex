@@ -67,6 +67,7 @@ const sidebars: SidebarsConfig = {
       items: [
         'targets/postgres',
         'targets/qdrant',
+        'targets/pinecone',
         'targets/lancedb',
         'targets/neo4j',
         'targets/kuzu',
