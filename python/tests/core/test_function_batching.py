@@ -1,12 +1,29 @@
 """Tests for function batching and runner support."""
 
 import asyncio
-import time
 from typing import Any
 
 import cocoindex as coco
 from cocoindex._internal.runner import Runner
 import pytest
+
+
+# ============================================================================
+# Test utilities for event-based synchronization
+# ============================================================================
+
+
+async def wait_for_condition(
+    condition: Any, timeout: float = 2.0, interval: float = 0.01
+) -> None:
+    """Wait until condition() returns True, with timeout."""
+    elapsed = 0.0
+    while elapsed < timeout:
+        if condition():
+            return
+        await asyncio.sleep(interval)
+        elapsed += interval
+    raise TimeoutError(f"Condition not met within {timeout}s")
 
 
 # ============================================================================
@@ -50,43 +67,92 @@ async def test_batching_basic_async() -> None:
 # ============================================================================
 
 
-_batch_call_count = 0
-_batch_sizes: list[int] = []
+class TrackedBatcher:
+    """Helper class for tracking batch calls with event-based synchronization.
 
+    Uses pre-created events keyed by input value, similar to the Rust test pattern
+    where each input has its own oneshot receiver.
+    """
 
-@coco.function(batching=True)
-def _tracked_double(inputs: list[int]) -> list[int]:
-    """Sync batched function that tracks call count and batch sizes."""
-    global _batch_call_count
-    _batch_call_count += 1
-    _batch_sizes.append(len(inputs))
-    # Small delay to allow batching
-    time.sleep(0.05)
-    return [x * 2 for x in inputs]
+    def __init__(self) -> None:
+        self.batch_call_count = 0
+        self.batch_inputs: list[list[int]] = []
+        # Pre-created events keyed by input value
+        self.input_events: dict[int, asyncio.Event] = {}
+
+    def create_event(self, value: int) -> asyncio.Event:
+        """Create an event for a specific input value."""
+        event = asyncio.Event()
+        self.input_events[value] = event
+        return event
+
+    def create_function(self) -> Any:
+        """Create a tracked batched function."""
+        tracker = self
+
+        @coco.function(batching=True)
+        async def tracked_double(inputs: list[int]) -> list[int]:
+            """Async batched function that tracks calls and waits for signals."""
+            tracker.batch_call_count += 1
+            tracker.batch_inputs.append(sorted(inputs))
+            # Wait for all input events before returning
+            for v in inputs:
+                await tracker.input_events[v].wait()
+            return [x * 2 for x in inputs]
+
+        return tracked_double
 
 
 @pytest.mark.asyncio
 async def test_batching_concurrent_calls() -> None:
     """Test that concurrent calls get batched together."""
-    global _batch_call_count, _batch_sizes
-    _batch_call_count = 0
-    _batch_sizes = []
+    tracker = TrackedBatcher()
+    tracked_double = tracker.create_function()
 
-    # Submit multiple calls concurrently using asyncio.gather
-    results = await asyncio.gather(
-        _tracked_double(1),  # type: ignore[arg-type]
-        _tracked_double(2),  # type: ignore[arg-type]
-        _tracked_double(3),  # type: ignore[arg-type]
-        _tracked_double(4),  # type: ignore[arg-type]
-        _tracked_double(5),  # type: ignore[arg-type]
+    # Pre-create events for each input
+    for v in [1, 2, 3, 4, 5]:
+        tracker.create_event(v)
+
+    # Submit first call - it should execute inline
+    task1 = asyncio.create_task(tracked_double(1))
+
+    # Wait for first batch (inline call) to be recorded
+    await wait_for_condition(lambda: len(tracker.batch_inputs) >= 1)
+
+    # Now submit remaining calls - they should batch together
+    # since the first call is still ongoing
+    task2 = asyncio.create_task(tracked_double(2))
+    task3 = asyncio.create_task(tracked_double(3))
+    task4 = asyncio.create_task(tracked_double(4))
+    task5 = asyncio.create_task(tracked_double(5))
+
+    # Verify first batch is recorded, others are waiting
+    assert tracker.batch_inputs == [[1]]
+
+    # Unblock first call - this should trigger batch for 2-5
+    tracker.input_events[1].set()
+
+    # Wait for second batch to be recorded
+    await wait_for_condition(lambda: len(tracker.batch_inputs) >= 2)
+
+    # First call should be done
+    result1 = await task1
+    assert result1 == 2
+
+    # Unblock remaining calls
+    for v in [2, 3, 4, 5]:
+        tracker.input_events[v].set()
+
+    results = await asyncio.gather(task2, task3, task4, task5)
+
+    # Results should be correct
+    assert list(results) == [4, 6, 8, 10]
+
+    # Should have exactly 2 calls: [1] inline, then [2,3,4,5] batched
+    assert tracker.batch_call_count == 2, (
+        f"Expected 2 batch calls, got {tracker.batch_call_count}"
     )
-
-    # Results should be correct (order preserved with gather)
-    assert list(results) == [2, 4, 6, 8, 10]
-
-    # Should have fewer than 5 calls due to batching
-    # (exact number depends on timing, but should be batched)
-    assert _batch_call_count <= 3, f"Expected batching, got {_batch_call_count} calls"
+    assert tracker.batch_inputs == [[1], [2, 3, 4, 5]]
 
 
 # ============================================================================
@@ -94,37 +160,57 @@ async def test_batching_concurrent_calls() -> None:
 # ============================================================================
 
 
-_max_batch_sizes: list[int] = []
+class MaxBatchTracker:
+    """Helper for testing max_batch_size with event-based synchronization."""
 
+    def __init__(self, max_batch_size: int) -> None:
+        self.max_batch_size = max_batch_size
+        self.batch_sizes: list[int] = []
+        self.batch_events: list[asyncio.Event] = []
 
-@coco.function(batching=True, max_batch_size=2)
-def _limited_double(inputs: list[int]) -> list[int]:
-    """Batched function with max_batch_size=2."""
-    _max_batch_sizes.append(len(inputs))
-    time.sleep(0.02)
-    return [x * 2 for x in inputs]
+    def create_function(self) -> Any:
+        """Create a batched function with max_batch_size."""
+        tracker = self
+
+        @coco.function(batching=True, max_batch_size=tracker.max_batch_size)
+        async def limited_double(inputs: list[int]) -> list[int]:
+            """Batched function that tracks sizes and waits for signal."""
+            tracker.batch_sizes.append(len(inputs))
+            event = asyncio.Event()
+            tracker.batch_events.append(event)
+            await event.wait()
+            return [x * 2 for x in inputs]
+
+        return limited_double
 
 
 @pytest.mark.asyncio
 async def test_batching_max_batch_size() -> None:
     """Test that max_batch_size is respected."""
-    global _max_batch_sizes
-    _max_batch_sizes = []
+    tracker = MaxBatchTracker(max_batch_size=2)
+    limited_double = tracker.create_function()
 
-    # Submit 5 items concurrently using asyncio.gather
-    results = await asyncio.gather(
-        _limited_double(1),  # type: ignore[arg-type]
-        _limited_double(2),  # type: ignore[arg-type]
-        _limited_double(3),  # type: ignore[arg-type]
-        _limited_double(4),  # type: ignore[arg-type]
-        _limited_double(5),  # type: ignore[arg-type]
-    )
+    # Submit 5 items concurrently
+    task1 = asyncio.create_task(limited_double(1))
+    task2 = asyncio.create_task(limited_double(2))
+    task3 = asyncio.create_task(limited_double(3))
+    task4 = asyncio.create_task(limited_double(4))
+    task5 = asyncio.create_task(limited_double(5))
+
+    # Wait for batches to be recorded (should have multiple due to max_batch_size=2)
+    await wait_for_condition(lambda: len(tracker.batch_sizes) >= 1)
+
+    # Signal all events to let batches complete
+    for event in tracker.batch_events:
+        event.set()
+
+    results = await asyncio.gather(task1, task2, task3, task4, task5)
 
     # Results should be correct
     assert sorted(results) == [2, 4, 6, 8, 10]
 
     # All batch sizes should be <= 2
-    for size in _max_batch_sizes:
+    for size in tracker.batch_sizes:
         assert size <= 2, f"Batch size {size} exceeds max_batch_size=2"
 
 
@@ -134,18 +220,31 @@ async def test_batching_max_batch_size() -> None:
 
 
 class BatchedProcessor:
-    """Class with batched method."""
+    """Class with batched method using event-based synchronization.
+
+    Uses pre-created events keyed by input value.
+    """
 
     def __init__(self, multiplier: int):
         self.multiplier = multiplier
         self.call_count = 0
+        self.batch_inputs: list[list[int]] = []
+        self.input_events: dict[int, asyncio.Event] = {}
+
+    def create_event(self, value: int) -> asyncio.Event:
+        """Create an event for a specific input value."""
+        event = asyncio.Event()
+        self.input_events[value] = event
+        return event
 
     @coco.function(batching=True)
-    def multiply(self, inputs: list[int]) -> list[int]:
-        """Batched method that multiplies inputs."""
+    async def multiply(self, inputs: list[int]) -> list[int]:
+        """Batched method that multiplies inputs, waits for signals."""
         self.call_count += 1
-        # Small delay to allow concurrent calls to batch together
-        time.sleep(0.02)
+        self.batch_inputs.append(sorted(inputs))
+        # Wait for all input events
+        for v in inputs:
+            await self.input_events[v].wait()
         return [x * self.multiplier for x in inputs]
 
 
@@ -153,8 +252,16 @@ class BatchedProcessor:
 async def test_batching_method() -> None:
     """Test batching with methods."""
     proc = BatchedProcessor(3)
+    proc.create_event(5)
 
-    result = await proc.multiply(5)  # type: ignore[misc]
+    # Create task and wait for batch to be recorded
+    task = asyncio.create_task(proc.multiply(5))  # type: ignore[misc]
+    await wait_for_condition(lambda: len(proc.batch_inputs) >= 1)
+
+    # Signal completion
+    proc.input_events[5].set()
+
+    result = await task
     assert result == 15
 
 
@@ -163,15 +270,38 @@ async def test_batching_method_concurrent() -> None:
     """Test concurrent calls to batched method."""
     proc = BatchedProcessor(3)
 
-    results = await asyncio.gather(
-        proc.multiply(1),  # type: ignore[arg-type]
-        proc.multiply(2),  # type: ignore[arg-type]
-        proc.multiply(3),  # type: ignore[arg-type]
-    )
+    # Pre-create events
+    for v in [1, 2, 3]:
+        proc.create_event(v)
 
-    assert sorted(results) == [3, 6, 9]
-    # Should have fewer calls due to batching
-    assert proc.call_count <= 2
+    # Submit first call - it should execute inline
+    task1 = asyncio.create_task(proc.multiply(1))  # type: ignore[arg-type]
+
+    # Wait for first batch to be recorded
+    await wait_for_condition(lambda: len(proc.batch_inputs) >= 1)
+
+    # Submit remaining calls - they should batch together
+    task2 = asyncio.create_task(proc.multiply(2))  # type: ignore[arg-type]
+    task3 = asyncio.create_task(proc.multiply(3))  # type: ignore[arg-type]
+
+    # Unblock first call - triggers batch for 2,3
+    proc.input_events[1].set()
+
+    # Wait for second batch
+    await wait_for_condition(lambda: len(proc.batch_inputs) >= 2)
+
+    result1 = await task1
+    assert result1 == 3
+
+    # Unblock remaining calls
+    proc.input_events[2].set()
+    proc.input_events[3].set()
+
+    results = await asyncio.gather(task2, task3)
+
+    assert sorted(results) == [6, 9]
+    # Should have exactly 2 calls: [1] inline, [2,3] batched
+    assert proc.call_count == 2
 
 
 # ============================================================================
@@ -295,24 +425,36 @@ async def test_runner_queue_sharing() -> None:
     """Test that functions with the same runner share a queue."""
     runner = MockRunner()
     execution_order: list[str] = []
+    fn_events: list[asyncio.Event] = []
 
     @coco.function(runner=runner)
-    def fn_a(x: int) -> int:
+    async def fn_a(x: int) -> int:
         execution_order.append("a")
-        time.sleep(0.02)
+        event = asyncio.Event()
+        fn_events.append(event)
+        await event.wait()
         return x + 1
 
     @coco.function(runner=runner)
-    def fn_b(x: int) -> int:
+    async def fn_b(x: int) -> int:
         execution_order.append("b")
-        time.sleep(0.02)
+        event = asyncio.Event()
+        fn_events.append(event)
+        await event.wait()
         return x + 2
 
-    # Run both concurrently using asyncio.gather
-    r1, r2 = await asyncio.gather(
-        fn_a(1),  # type: ignore[arg-type]
-        fn_b(2),  # type: ignore[arg-type]
-    )
+    # Run both concurrently
+    task1 = asyncio.create_task(fn_a(1))
+    task2 = asyncio.create_task(fn_b(2))
+
+    # Wait for events to be registered
+    await wait_for_condition(lambda: len(fn_events) >= 2)
+
+    # Signal completion
+    for event in fn_events:
+        event.set()
+
+    r1, r2 = await asyncio.gather(task1, task2)
 
     assert r1 == 2
     assert r2 == 4
