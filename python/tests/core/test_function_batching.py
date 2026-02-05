@@ -255,7 +255,7 @@ async def test_batching_method() -> None:
     proc.create_event(5)
 
     # Create task and wait for batch to be recorded
-    task = asyncio.create_task(proc.multiply(5))  # type: ignore[misc]
+    task = asyncio.create_task(proc.multiply(5))
     await wait_for_condition(lambda: len(proc.batch_inputs) >= 1)
 
     # Signal completion
