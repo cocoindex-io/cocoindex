@@ -34,22 +34,6 @@ if TYPE_CHECKING:
 T = TypeVar("T")
 
 
-def dump_on_timeout(timeout: float = 30.0) -> None:
-    import faulthandler
-    import sys
-    import time
-
-    time.sleep(timeout)
-    faulthandler.dump_traceback(file=sys.stdout, all_threads=True)
-
-
-threading.Thread(
-    target=dump_on_timeout,
-    args=(30.0,),
-    daemon=True,
-).start()
-
-
 class _LoopRunner:
     """
     Owns an event loop and optionally a daemon thread running it.
