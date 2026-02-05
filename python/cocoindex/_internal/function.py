@@ -701,85 +701,37 @@ class AsyncFunction(Function[P, R_co]):
                 return runner_batch_fn_sync
 
         # No runner - use local closures (no pickling needed)
-        if self._batching:
-            # User function is a batch function: list[T] -> list[R]
-            if self._fn_is_async:
-                # Async batch function
-                if self._has_self:
+        assert self._batching, "No runner and no batching"
 
-                    async def batch_fn_async_self(inputs: list[Any]) -> list[Any]:
-                        return await fn(self_obj, inputs)  # type: ignore[no-any-return]
+        # User function is a batch function: list[T] -> list[R]
+        if self._fn_is_async:
+            # Async batch function
+            if self._has_self:
 
-                    return batch_fn_async_self
-                else:
+                async def batch_fn_async_self(inputs: list[Any]) -> list[Any]:
+                    return await fn(self_obj, inputs)  # type: ignore[no-any-return]
 
-                    async def batch_fn_async(inputs: list[Any]) -> list[Any]:
-                        return await fn(inputs)  # type: ignore[no-any-return]
-
-                    return batch_fn_async
+                return batch_fn_async_self
             else:
-                # Sync batch function - wrap with to_thread
-                if self._has_self:
 
-                    async def batch_fn_sync_self(inputs: list[Any]) -> list[Any]:
-                        return await asyncio.to_thread(fn, self_obj, inputs)  # type: ignore[no-any-return]
+                async def batch_fn_async(inputs: list[Any]) -> list[Any]:
+                    return await fn(inputs)  # type: ignore[no-any-return]
 
-                    return batch_fn_sync_self
-                else:
-
-                    async def batch_fn_sync(inputs: list[Any]) -> list[Any]:
-                        return await asyncio.to_thread(fn, inputs)  # type: ignore[no-any-return]
-
-                    return batch_fn_sync
-
+                return batch_fn_async
         else:
-            # Runner-only mode (no batching): input is (args, kwargs) tuple
-            # Process each item individually (max_batch_size=1)
-            if self._fn_is_async:
-                if self._has_self:
+            # Sync batch function - wrap with to_thread
+            if self._has_self:
 
-                    async def runner_only_async_self(inputs: list[Any]) -> list[Any]:
-                        results = []
-                        for args, kwargs in inputs:
-                            results.append(await fn(self_obj, *args, **kwargs))
-                        return results
+                async def batch_fn_sync_self(inputs: list[Any]) -> list[Any]:
+                    return await asyncio.to_thread(fn, self_obj, inputs)  # type: ignore[no-any-return]
 
-                    return runner_only_async_self
-                else:
-
-                    async def runner_only_async(inputs: list[Any]) -> list[Any]:
-                        results = []
-                        for args, kwargs in inputs:
-                            results.append(await fn(*args, **kwargs))
-                        return results
-
-                    return runner_only_async
+                return batch_fn_sync_self
             else:
-                # Sync function - wrap entire batch in to_thread
-                if self._has_self:
 
-                    async def runner_only_sync_self(inputs: list[Any]) -> list[Any]:
-                        def run_batch() -> list[Any]:
-                            results = []
-                            for args, kwargs in inputs:
-                                results.append(fn(self_obj, *args, **kwargs))
-                            return results
+                async def batch_fn_sync(inputs: list[Any]) -> list[Any]:
+                    return await asyncio.to_thread(fn, inputs)  # type: ignore[no-any-return]
 
-                        return await asyncio.to_thread(run_batch)
-
-                    return runner_only_sync_self
-                else:
-
-                    async def runner_only_sync(inputs: list[Any]) -> list[Any]:
-                        def run_batch() -> list[Any]:
-                            results = []
-                            for args, kwargs in inputs:
-                                results.append(fn(*args, **kwargs))
-                            return results
-
-                        return await asyncio.to_thread(run_batch)
-
-                    return runner_only_sync
+                return batch_fn_sync
 
     def _core_processor(
         self: AsyncFunction[P0, R_co],
