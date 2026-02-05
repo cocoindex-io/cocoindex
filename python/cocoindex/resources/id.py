@@ -19,6 +19,7 @@ from __future__ import annotations
 
 __all__ = ["IdGenerator", "UuidGenerator", "generate_id", "generate_uuid"]
 
+import time as _time
 import typing as _typing
 import uuid as _uuid
 

@@ -1,3 +1,5 @@
+import asyncio
+
 import cocoindex as coco
 import pytest
 from dataclasses import dataclass
@@ -769,9 +771,9 @@ def _batched_transform(inputs: list[SourceDataEntry]) -> list[str]:
 
 
 @coco.function
-def _process_with_batched_transform() -> None:
+async def _process_with_batched_transform() -> None:
     for key, value in _plain_source_data.items():
-        transformed_value = _batched_transform(value)
+        transformed_value = await _batched_transform(value)
         coco.declare_target_state(GlobalDictTarget.target_state(key, transformed_value))
 
 
@@ -885,9 +887,9 @@ class MockRunner(Runner):
         self.call_count += 1
         return await fn(*args, **kwargs)
 
-    def run_sync_fn(self, fn: Any, *args: Any, **kwargs: Any) -> Any:
+    async def run_sync_fn(self, fn: Any, *args: Any, **kwargs: Any) -> Any:
         self.call_count += 1
-        return fn(*args, **kwargs)
+        return await asyncio.to_thread(fn, *args, **kwargs)
 
 
 _test_runner = MockRunner()
@@ -900,9 +902,9 @@ def _runner_transform(entry: SourceDataEntry) -> str:
 
 
 @coco.function
-def _process_with_runner_transform() -> None:
+async def _process_with_runner_transform() -> None:
     for key, value in _plain_source_data.items():
-        transformed_value = _runner_transform(value)
+        transformed_value = await _runner_transform(value)
         coco.declare_target_state(GlobalDictTarget.target_state(key, transformed_value))
 
 

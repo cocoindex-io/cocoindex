@@ -72,7 +72,7 @@ async def process_chunk(
             id=id,
             filename=str(filename),
             code=chunk.text,
-            embedding=await _embedder.embed_async(chunk.text),
+            embedding=await _embedder.embed(chunk.text),
             start_line=chunk.start.line,
             end_line=chunk.end.line,
         ),
@@ -148,7 +148,7 @@ app = coco_aio.App(
 async def query_once(
     conn: lancedb.LanceAsyncConnection, query_text: str, *, top_k: int = TOP_K
 ) -> None:
-    query_vec = await _embedder.embed_async(query_text)
+    query_vec = await _embedder.embed(query_text)
 
     table = await conn.open_table(TABLE_NAME)
 

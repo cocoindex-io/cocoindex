@@ -56,7 +56,7 @@ async def process_chunk(
     chunk: Chunk,
     target: qdrant.CollectionTarget,
 ) -> None:
-    embedding_vec = await _embedder.embed_async(chunk.text)
+    embedding_vec = await _embedder.embed(chunk.text)
 
     point = qdrant.PointStruct(
         id=id,
@@ -130,8 +130,8 @@ app = coco_aio.App(
 # ============================================================================
 
 
-def query_once(client: QdrantClient, query: str, *, top_k: int = TOP_K) -> None:
-    query_vec = _embedder.embed(query)
+async def query_once(client: QdrantClient, query: str, *, top_k: int = TOP_K) -> None:
+    query_vec = await _embedder.embed(query)
     results = _qdrant_search(client, QDRANT_COLLECTION, query_vec.tolist(), top_k)
 
     for r in results:
@@ -141,18 +141,18 @@ def query_once(client: QdrantClient, query: str, *, top_k: int = TOP_K) -> None:
         print("---")
 
 
-def query() -> None:
+async def query() -> None:
     client = qdrant.create_client(QDRANT_URL, prefer_grpc=True)
     if len(sys.argv) > 1:
         q = " ".join(sys.argv[1:])
-        query_once(client, q)
+        await query_once(client, q)
         return
 
     while True:
         q = input("Enter search query (or Enter to quit): ").strip()
         if not q:
             break
-        query_once(client, q)
+        await query_once(client, q)
 
 
 def _qdrant_search(
@@ -187,4 +187,4 @@ def _qdrant_search(
 
 
 if __name__ == "__main__":
-    query()
+    asyncio.run(query())

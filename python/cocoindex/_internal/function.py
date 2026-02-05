@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import functools
 import inspect
+import pickle
 import threading
 from typing import (
     Callable,
@@ -22,7 +24,7 @@ from typing import (
 from cocoindex._internal.environment import Environment, get_event_loop_or_default
 
 from . import core
-from .runner import Runner
+from .runner import Runner, in_subprocess as _in_subprocess
 
 from .component_ctx import (
     ComponentContext,
@@ -46,9 +48,6 @@ SelfT = TypeVar("SelfT")  # For method's self parameter
 AsyncCallable: TypeAlias = Callable[P, Coroutine[Any, Any, R_co]]
 AnyCallable: TypeAlias = Callable[P, R_co] | AsyncCallable[P, R_co]
 
-# Type alias for Rust Batcher type (mypy doesn't know about it)
-_Batcher = Any
-
 
 # ============================================================================
 # Type protocols for batched function decorators
@@ -61,10 +60,13 @@ if TYPE_CHECKING:
         """Protocol for batched function decorator.
 
         Transforms:
-        - Sync: Callable[[list[T]], list[U]] -> Callable[[T], U]
+        - Sync: Callable[[list[T]], list[U]] -> Callable[[T], Awaitable[U]]
         - Async: Callable[[list[T]], Awaitable[list[U]]] -> Callable[[T], Awaitable[U]]
 
-        Note: For methods (functions with self parameter), the type transformation
+        Note: With batching=True or runner specified, the decorated function
+        is ALWAYS async, regardless of whether the underlying function is sync or async.
+
+        For methods (functions with self parameter), the type transformation
         is handled at runtime via descriptor protocol, but static typing is less
         precise. The decorated method will work correctly when called on an instance.
         """
@@ -74,11 +76,11 @@ if TYPE_CHECKING:
         def __call__(
             self, fn: Callable[[list[T]], Awaitable[list[U]]]
         ) -> AsyncFunction[[T], U]: ...
-        # Sync standalone functions (single list[T] parameter)
+        # Sync standalone functions (single list[T] parameter) - still returns AsyncFunction
         @overload
         def __call__(
             self, fn: Callable[[list[T]], list[U]]
-        ) -> SyncFunction[[T], U]: ...
+        ) -> AsyncFunction[[T], U]: ...
         # Fallback for methods with self parameter (less precise typing)
         # These overlap with above but handle multi-parameter functions like methods
         @overload
@@ -88,7 +90,22 @@ if TYPE_CHECKING:
         @overload
         def __call__(  # type: ignore[overload-overlap]
             self, fn: Callable[..., list[U]]
-        ) -> SyncFunction[..., U]: ...
+        ) -> AsyncFunction[..., U]: ...
+        def __call__(self, fn: Any) -> Any: ...
+
+    class _RunnerDecorator(Protocol):
+        """Protocol for runner function decorator (without batching).
+
+        With runner specified, the decorated function is ALWAYS async,
+        regardless of whether the underlying function is sync or async.
+        """
+
+        @overload
+        def __call__(
+            self, fn: Callable[P, Coroutine[Any, Any, R_co]]
+        ) -> AsyncFunction[P, R_co]: ...
+        @overload
+        def __call__(self, fn: Callable[P, R_co]) -> AsyncFunction[P, R_co]: ...
         def __call__(self, fn: Any) -> Any: ...
 
 
@@ -112,6 +129,185 @@ def _create_batcher(
 
 
 # ============================================================================
+# Picklable batch callable for subprocess execution
+# ============================================================================
+
+# Cache for expensive self objects in subprocess (keyed by pickle bytes).
+# This avoids re-initializing objects like SentenceTransformerEmbedder
+# (which loads models) on every subprocess call.
+_self_obj_cache: dict[bytes, Any] = {}
+
+
+def _unpickle_sync_batch_callable(
+    module_name: str, qualname: str, self_bytes: bytes | None, batching: bool
+) -> "_SyncBatchCallable":
+    """Unpickle a _SyncBatchCallable by looking up the decorated function.
+
+    Uses _self_obj_cache to avoid re-initializing expensive objects (like models)
+    on every subprocess call.
+    """
+    import importlib
+
+    module = importlib.import_module(module_name)
+
+    # Navigate the qualname to find the object
+    # e.g., "MyClass.my_method" -> module.MyClass.my_method
+    obj: Any = module
+    for part in qualname.split("."):
+        obj = getattr(obj, part)
+
+    # obj is now the decorated version (SyncFunction/AsyncFunction)
+    # Get the original function via __wrapped__
+    original_fn = obj.__wrapped__
+
+    # Unpickle self_obj with caching
+    if self_bytes is not None:
+        if self_bytes in _self_obj_cache:
+            self_obj = _self_obj_cache[self_bytes]
+        else:
+            self_obj = pickle.loads(self_bytes)
+            _self_obj_cache[self_bytes] = self_obj
+    else:
+        self_obj = None
+
+    return _SyncBatchCallable(original_fn, self_obj, batching)
+
+
+def _unpickle_async_batch_callable(
+    module_name: str, qualname: str, self_bytes: bytes | None, batching: bool
+) -> "_AsyncBatchCallable":
+    """Unpickle an _AsyncBatchCallable by looking up the decorated function.
+
+    Uses _self_obj_cache to avoid re-initializing expensive objects (like models)
+    on every subprocess call.
+    """
+    import importlib
+
+    module = importlib.import_module(module_name)
+
+    # Navigate the qualname to find the object
+    obj: Any = module
+    for part in qualname.split("."):
+        obj = getattr(obj, part)
+
+    # Get the original function via __wrapped__
+    original_fn = obj.__wrapped__
+
+    # Unpickle self_obj with caching
+    if self_bytes is not None:
+        if self_bytes in _self_obj_cache:
+            self_obj = _self_obj_cache[self_bytes]
+        else:
+            self_obj = pickle.loads(self_bytes)
+            _self_obj_cache[self_bytes] = self_obj
+    else:
+        self_obj = None
+
+    return _AsyncBatchCallable(original_fn, self_obj, batching)
+
+
+class _SyncBatchCallable:
+    """Picklable callable for executing batched sync functions.
+
+    Used when runner is specified to ensure the batch function can be pickled
+    for subprocess execution. Uses custom __reduce__ to handle decorated
+    functions/methods by storing (module, qualname) and looking up __wrapped__
+    on unpickle.
+    """
+
+    __slots__ = ("_fn", "_self_obj", "_batching")
+
+    def __init__(self, fn: Callable[..., Any], self_obj: Any, batching: bool) -> None:
+        self._fn = fn
+        self._self_obj = self_obj
+        self._batching = batching
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        """Custom pickle support to handle decorated functions/methods.
+
+        Pickles self_obj separately as bytes to enable caching in subprocess.
+        """
+        fn = self._fn
+        # Pickle self_obj separately to enable caching by bytes in subprocess
+        if self._self_obj is not None:
+            self_bytes = pickle.dumps(self._self_obj, protocol=pickle.HIGHEST_PROTOCOL)
+        else:
+            self_bytes = None
+        return (
+            _unpickle_sync_batch_callable,
+            (fn.__module__, fn.__qualname__, self_bytes, self._batching),
+        )
+
+    def __call__(self, inputs: list[Any]) -> list[Any]:
+        if self._batching:
+            # User function is a batch function: list[T] -> list[R]
+            if self._self_obj is not None:
+                return self._fn(self._self_obj, inputs)  # type: ignore[no-any-return]
+            else:
+                return self._fn(inputs)  # type: ignore[no-any-return]
+        else:
+            # Runner-only mode: input is (args, kwargs) tuple
+            results = []
+            for args, kwargs in inputs:
+                if self._self_obj is not None:
+                    results.append(self._fn(self._self_obj, *args, **kwargs))
+                else:
+                    results.append(self._fn(*args, **kwargs))
+            return results
+
+
+class _AsyncBatchCallable:
+    """Picklable callable for executing batched async functions.
+
+    Used when runner is specified to ensure the batch function can be pickled
+    for subprocess execution. Uses custom __reduce__ to handle decorated
+    functions/methods.
+    """
+
+    __slots__ = ("_fn", "_self_obj", "_batching")
+
+    def __init__(
+        self, fn: Callable[..., Coroutine[Any, Any, Any]], self_obj: Any, batching: bool
+    ) -> None:
+        self._fn = fn
+        self._self_obj = self_obj
+        self._batching = batching
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        """Custom pickle support to handle decorated functions/methods.
+
+        Pickles self_obj separately as bytes to enable caching in subprocess.
+        """
+        fn = self._fn
+        # Pickle self_obj separately to enable caching by bytes in subprocess
+        if self._self_obj is not None:
+            self_bytes = pickle.dumps(self._self_obj, protocol=pickle.HIGHEST_PROTOCOL)
+        else:
+            self_bytes = None
+        return (
+            _unpickle_async_batch_callable,
+            (fn.__module__, fn.__qualname__, self_bytes, self._batching),
+        )
+
+    async def __call__(self, inputs: list[Any]) -> list[Any]:
+        if self._batching:
+            # User function is an async batch function: list[T] -> list[R]
+            if self._self_obj is not None:
+                return await self._fn(self._self_obj, inputs)  # type: ignore[no-any-return]
+            else:
+                return await self._fn(inputs)  # type: ignore[no-any-return]
+        else:
+            # Runner-only mode: input is (args, kwargs) tuple
+            results = []
+            for args, kwargs in inputs:
+                if self._self_obj is not None:
+                    results.append(await self._fn(self._self_obj, *args, **kwargs))
+                else:
+                    results.append(await self._fn(*args, **kwargs))
+            return results
+
+
+# ============================================================================
 # Function base class
 # ============================================================================
 
@@ -120,6 +316,7 @@ class Function(Generic[P, R_co]):
     """Base class for sync and async functions with optional batching/runner support."""
 
     _fn: Callable[..., Any]
+    _fn_is_async: bool
     _memo: bool
     _processor_info: core.ComponentProcessorInfo
     _batching: bool
@@ -127,7 +324,7 @@ class Function(Generic[P, R_co]):
     _runner: Runner | None
     _has_self: bool
     _queues: dict[object, core.BatchQueue]
-    _batchers: dict[object, _Batcher]
+    _batchers: dict[object, core.Batcher]
     _lock: threading.Lock
 
     def __init__(
@@ -140,6 +337,7 @@ class Function(Generic[P, R_co]):
         runner: Runner | None = None,
     ) -> None:
         self._fn = fn
+        self._fn_is_async = inspect.iscoroutinefunction(fn)
         self._memo = memo
         self._processor_info = core.ComponentProcessorInfo(fn.__qualname__)
         self._batching = batching
@@ -164,7 +362,7 @@ class Function(Generic[P, R_co]):
 
     def _get_or_create_batcher(
         self, parent_ctx: ComponentContext | None, self_obj: Any
-    ) -> _Batcher:
+    ) -> core.Batcher:
         """Get or create batcher for this function/self combination."""
         batcher_key = self._get_batcher_key(self_obj)
 
@@ -264,23 +462,18 @@ def _has_self_parameter(fn: Callable[..., Any]) -> bool:
 
 
 class SyncFunction(Function[P, R_co]):
-    """Sync function with optional memoization and batching/runner support."""
+    """Sync function with optional memoization.
 
-    def __get__(
-        self, instance: Any, owner: type | None = None
-    ) -> _BoundSyncMethod[R_co] | SyncFunction[P, R_co]:
-        """Descriptor protocol for method binding (only for batching/runner)."""
-        if instance is None or not self._is_scheduled:
-            return self
-        return _BoundSyncMethod(self, instance)
+    Note: Batching/runner support is handled by AsyncFunction. When batching or
+    runner is specified, FunctionBuilder always creates AsyncFunction even for
+    sync underlying functions.
+    """
 
     def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R_co:
-        return self._call(None, args, kwargs)
+        # In subprocess, execute the raw function directly (no memo)
+        if _in_subprocess():
+            return self._fn(*args, **kwargs)  # type: ignore[no-any-return]
 
-    def _call(
-        self, self_obj: Any, args: tuple[Any, ...], kwargs: dict[str, Any]
-    ) -> R_co:
-        """Core implementation. self_obj is the bound instance for methods."""
         parent_ctx = _context_var.get(None)
         pending_memo: core.PendingFnCallMemo | None = None
         memo_fp: core.Fingerprint | None = None
@@ -289,20 +482,15 @@ class SyncFunction(Function[P, R_co]):
         try:
             # Check memo (when enabled and context available)
             if self._memo and parent_ctx is not None:
-                # Include self_obj in fingerprint for methods
-                fp_args = (self_obj, *args) if self_obj is not None else args
-                memo_fp = fingerprint_call(self._fn, fp_args, kwargs)
+                memo_fp = fingerprint_call(self._fn, args, kwargs)
                 r = core.reserve_memoization(parent_ctx._core_processor_ctx, memo_fp)
                 if not isinstance(r, core.PendingFnCallMemo):
                     parent_ctx._core_fn_call_ctx.join_child_memo(memo_fp)
                     return cast(R_co, r)
                 pending_memo = r
 
-            # Execute
-            if self._is_scheduled:
-                result = self._execute_scheduled(parent_ctx, self_obj, args, kwargs)
-            else:
-                result, fn_ctx = self._execute_direct(args, kwargs)
+            # Execute with context propagation
+            result, fn_ctx = self._execute_direct(args, kwargs)
 
             # Resolve memo if pending
             if pending_memo is not None:
@@ -332,76 +520,6 @@ class SyncFunction(Function[P, R_co]):
         finally:
             _context_var.reset(tok)
 
-    def _execute_scheduled(
-        self,
-        parent_ctx: ComponentContext | None,
-        self_obj: Any,
-        args: tuple[Any, ...],
-        kwargs: dict[str, Any],
-    ) -> R_co:
-        """Execute via batcher/runner."""
-        # Parse args based on mode
-        if self._batching:
-            # Batching mode: single input element, no kwargs
-            if kwargs:
-                raise ValueError("Batched functions do not support keyword arguments")
-            if len(args) < 1:
-                raise ValueError("Expected at least one input argument")
-            input_val = args[0]
-        else:
-            # Runner-only mode: wrap (args, kwargs) as single input
-            input_val = (args, kwargs)
-
-        batcher = self._get_or_create_batcher(parent_ctx, self_obj)
-        return batcher.run_sync(input_val)  # type: ignore[no-any-return]
-
-    def _create_batch_runner_fn(
-        self, self_obj: Any
-    ) -> Callable[[list[Any]], list[Any]]:
-        """Create the batch execution function."""
-        fn = self._fn
-
-        if self._batching:
-            # User function is a batch function: list[T] -> list[R]
-            if self._has_self:
-
-                def batch_fn(inputs: list[Any]) -> list[Any]:
-                    return fn(self_obj, inputs)  # type: ignore[no-any-return]
-
-            else:
-
-                def batch_fn(inputs: list[Any]) -> list[Any]:
-                    return fn(inputs)  # type: ignore[no-any-return]
-
-        else:
-            # Runner-only mode: input is (args, kwargs) tuple
-            # Process each item individually (max_batch_size=1)
-            if self._has_self:
-
-                def batch_fn(inputs: list[Any]) -> list[Any]:
-                    results = []
-                    for args, kwargs in inputs:
-                        results.append(fn(self_obj, *args, **kwargs))
-                    return results
-
-            else:
-
-                def batch_fn(inputs: list[Any]) -> list[Any]:
-                    results = []
-                    for args, kwargs in inputs:
-                        results.append(fn(*args, **kwargs))
-                    return results
-
-        if self._runner is not None:
-            runner = self._runner
-
-            def runner_batch_fn(inputs: list[Any]) -> list[Any]:
-                return runner.run_sync_fn(batch_fn, inputs)  # type: ignore[no-any-return]
-
-            return runner_batch_fn
-        else:
-            return batch_fn
-
     def _core_processor(
         self: SyncFunction[P0, R_co],
         env: Environment,
@@ -413,17 +531,6 @@ class SyncFunction(Function[P, R_co]):
         return _build_sync_core_processor(
             self._fn, env, path, args, kwargs, self._processor_info, memo_fp
         )
-
-
-class _BoundSyncMethod(Generic[R_co]):
-    """Bound method wrapper for SyncFunction with batching/runner."""
-
-    def __init__(self, func: SyncFunction[Any, R_co], instance: Any):
-        self._func = func
-        self._instance = instance
-
-    def __call__(self, *args: Any, **kwargs: Any) -> R_co:
-        return self._func._call(self._instance, args, kwargs)
 
 
 # ============================================================================
@@ -445,6 +552,12 @@ class _BoundAsyncMethod(Generic[R_co]):
 class AsyncFunction(Function[P, R_co]):
     """Async function with optional memoization and batching/runner support."""
 
+    @overload
+    def __get__(self, instance: None, owner: type) -> AsyncFunction[P, R_co]: ...
+    @overload
+    def __get__(
+        self, instance: object, owner: type | None = None
+    ) -> _BoundAsyncMethod[R_co]: ...
     def __get__(
         self, instance: Any, owner: type | None = None
     ) -> _BoundAsyncMethod[R_co] | AsyncFunction[P, R_co]:
@@ -460,6 +573,18 @@ class AsyncFunction(Function[P, R_co]):
         self, self_obj: Any, args: tuple[Any, ...], kwargs: dict[str, Any]
     ) -> R_co:
         """Core implementation. self_obj is the bound instance for methods."""
+        # In subprocess, execute the raw function directly (no batching/runner/memo)
+        if _in_subprocess():
+            if self._fn_is_async:
+                if self_obj is not None:
+                    return await self._fn(self_obj, *args, **kwargs)  # type: ignore[no-any-return]
+                return await self._fn(*args, **kwargs)  # type: ignore[no-any-return]
+            else:
+                # Sync underlying function
+                if self_obj is not None:
+                    return self._fn(self_obj, *args, **kwargs)  # type: ignore[no-any-return]
+                return self._fn(*args, **kwargs)  # type: ignore[no-any-return]
+
         parent_ctx = _context_var.get(None)
         pending_memo: core.PendingFnCallMemo | None = None
         memo_fp: core.Fingerprint | None = None
@@ -468,7 +593,6 @@ class AsyncFunction(Function[P, R_co]):
         try:
             # Check memo (when enabled and context available)
             if self._memo and parent_ctx is not None:
-                # Include self_obj in fingerprint for methods
                 fp_args = (self_obj, *args) if self_obj is not None else args
                 memo_fp = fingerprint_call(self._fn, fp_args, kwargs)
                 r = await core.reserve_memoization_async(
@@ -510,7 +634,14 @@ class AsyncFunction(Function[P, R_co]):
         context = parent_ctx._with_fn_call_ctx(fn_ctx)
         tok = _context_var.set(context)
         try:
-            result = await self._fn(*args, **kwargs)
+            if self._fn_is_async:
+                result = await self._fn(*args, **kwargs)
+            else:
+                print(
+                    "In _execute_direct: executing sync function in to_thread. fn: ",
+                    self._fn.__name__,
+                )
+                result = await asyncio.to_thread(self._fn, *args, **kwargs)
             return result, fn_ctx  # type: ignore[return-value]
         finally:
             _context_var.reset(tok)
@@ -539,50 +670,116 @@ class AsyncFunction(Function[P, R_co]):
         return await batcher.run(input_val)  # type: ignore[no-any-return]
 
     def _create_batch_runner_fn(self, self_obj: Any) -> Callable[[list[Any]], Any]:
-        """Create the batch execution function."""
+        """Create the batch execution function.
+
+        Always returns an async function (or sync for Batcher.new_sync).
+        Handles both sync and async underlying functions.
+        """
         fn = self._fn
-
-        if self._batching:
-            # User function is an async batch function: list[T] -> list[R]
-            if self._has_self:
-
-                async def batch_fn(inputs: list[Any]) -> list[Any]:
-                    return await fn(self_obj, inputs)  # type: ignore[no-any-return]
-
-            else:
-
-                async def batch_fn(inputs: list[Any]) -> list[Any]:
-                    return await fn(inputs)  # type: ignore[no-any-return]
-
-        else:
-            # Runner-only mode: input is (args, kwargs) tuple
-            # Process each item individually (max_batch_size=1)
-            if self._has_self:
-
-                async def batch_fn(inputs: list[Any]) -> list[Any]:
-                    results = []
-                    for args, kwargs in inputs:
-                        results.append(await fn(self_obj, *args, **kwargs))
-                    return results
-
-            else:
-
-                async def batch_fn(inputs: list[Any]) -> list[Any]:
-                    results = []
-                    for args, kwargs in inputs:
-                        results.append(await fn(*args, **kwargs))
-                    return results
-
         if self._runner is not None:
+            # Use picklable callable for subprocess execution
+            # Choose appropriate callable and runner method based on underlying fn type
             runner = self._runner
-            async_batch_fn = batch_fn
 
-            async def runner_batch_fn(inputs: list[Any]) -> list[Any]:
-                return await runner.run(async_batch_fn, inputs)  # type: ignore[arg-type]
+            if self._fn_is_async:
+                batch_callable = _AsyncBatchCallable(
+                    fn, self_obj if self._has_self else None, self._batching
+                )
 
-            return runner_batch_fn
+                async def runner_batch_fn_async(inputs: list[Any]) -> list[Any]:
+                    return await runner.run(batch_callable, inputs)  # type: ignore[arg-type]
+
+                return runner_batch_fn_async
+            else:
+                sync_batch_callable = _SyncBatchCallable(
+                    fn, self_obj if self._has_self else None, self._batching
+                )
+
+                async def runner_batch_fn_sync(inputs: list[Any]) -> list[Any]:
+                    return await runner.run_sync_fn(sync_batch_callable, inputs)  # type: ignore[arg-type]
+
+                return runner_batch_fn_sync
+
+        # No runner - use local closures (no pickling needed)
+        if self._batching:
+            # User function is a batch function: list[T] -> list[R]
+            if self._fn_is_async:
+                # Async batch function
+                if self._has_self:
+
+                    async def batch_fn_async_self(inputs: list[Any]) -> list[Any]:
+                        return await fn(self_obj, inputs)  # type: ignore[no-any-return]
+
+                    return batch_fn_async_self
+                else:
+
+                    async def batch_fn_async(inputs: list[Any]) -> list[Any]:
+                        return await fn(inputs)  # type: ignore[no-any-return]
+
+                    return batch_fn_async
+            else:
+                # Sync batch function - wrap with to_thread
+                if self._has_self:
+
+                    async def batch_fn_sync_self(inputs: list[Any]) -> list[Any]:
+                        return await asyncio.to_thread(fn, self_obj, inputs)  # type: ignore[no-any-return]
+
+                    return batch_fn_sync_self
+                else:
+
+                    async def batch_fn_sync(inputs: list[Any]) -> list[Any]:
+                        return await asyncio.to_thread(fn, inputs)  # type: ignore[no-any-return]
+
+                    return batch_fn_sync
+
         else:
-            return batch_fn
+            # Runner-only mode (no batching): input is (args, kwargs) tuple
+            # Process each item individually (max_batch_size=1)
+            if self._fn_is_async:
+                if self._has_self:
+
+                    async def runner_only_async_self(inputs: list[Any]) -> list[Any]:
+                        results = []
+                        for args, kwargs in inputs:
+                            results.append(await fn(self_obj, *args, **kwargs))
+                        return results
+
+                    return runner_only_async_self
+                else:
+
+                    async def runner_only_async(inputs: list[Any]) -> list[Any]:
+                        results = []
+                        for args, kwargs in inputs:
+                            results.append(await fn(*args, **kwargs))
+                        return results
+
+                    return runner_only_async
+            else:
+                # Sync function - wrap entire batch in to_thread
+                if self._has_self:
+
+                    async def runner_only_sync_self(inputs: list[Any]) -> list[Any]:
+                        def run_batch() -> list[Any]:
+                            results = []
+                            for args, kwargs in inputs:
+                                results.append(fn(self_obj, *args, **kwargs))
+                            return results
+
+                        return await asyncio.to_thread(run_batch)
+
+                    return runner_only_sync_self
+                else:
+
+                    async def runner_only_sync(inputs: list[Any]) -> list[Any]:
+                        def run_batch() -> list[Any]:
+                            results = []
+                            for args, kwargs in inputs:
+                                results.append(fn(*args, **kwargs))
+                            return results
+
+                        return await asyncio.to_thread(run_batch)
+
+                    return runner_only_sync
 
     def _core_processor(
         self: AsyncFunction[P0, R_co],
@@ -648,7 +845,18 @@ class FunctionBuilder:
         if not self._batching and self._runner is not None:
             max_batch_size = 1
 
-        if inspect.iscoroutinefunction(fn):
+        # When batching or runner is specified, always return AsyncFunction
+        # to avoid blocking threads while waiting for batch/runner execution.
+        # The underlying function can be sync or async - wrapped appropriately.
+        if self._batching or self._runner is not None:
+            wrapper = AsyncFunction(
+                fn,
+                memo=self._memo,
+                batching=self._batching,
+                max_batch_size=max_batch_size,
+                runner=self._runner,
+            )
+        elif inspect.iscoroutinefunction(fn):
             wrapper = AsyncFunction(
                 fn,
                 memo=self._memo,
@@ -670,6 +878,7 @@ class FunctionBuilder:
 
 
 # Overload for batching=True without fn (returns decorator that transforms list[T] -> T)
+# Always returns AsyncFunction regardless of underlying fn being sync/async
 @overload
 def function(
     fn: None = None,
@@ -682,7 +891,21 @@ def function(
 ) -> _BatchedDecorator: ...
 
 
-# Overload for keyword-only args without batching=True
+# Overload for runner specified without batching (returns async decorator)
+# Always returns AsyncFunction regardless of underlying fn being sync/async
+@overload
+def function(
+    fn: None = None,
+    /,
+    *,
+    runner: Runner,
+    memo: bool = False,
+    batching: Literal[False] = False,
+    max_batch_size: int | None = None,
+) -> _RunnerDecorator: ...
+
+
+# Overload for keyword-only args without batching or runner
 @overload
 def function(
     fn: None = None,
@@ -691,11 +914,11 @@ def function(
     memo: bool = False,
     batching: Literal[False] = False,
     max_batch_size: int | None = None,
-    runner: Runner | None = None,
+    runner: None = None,
 ) -> FunctionBuilder: ...
 
 
-# Overload for direct async function decoration
+# Overload for direct async function decoration (no batching, no runner)
 @overload
 def function(  # type: ignore[overload-overlap]
     fn: Callable[P, Coroutine[Any, Any, R_co]],
@@ -704,11 +927,11 @@ def function(  # type: ignore[overload-overlap]
     memo: bool = False,
     batching: Literal[False] = False,
     max_batch_size: int | None = None,
-    runner: Runner | None = None,
+    runner: None = None,
 ) -> AsyncFunction[P, R_co]: ...
 
 
-# Overload for direct sync function decoration
+# Overload for direct sync function decoration (no batching, no runner)
 @overload
 def function(  # type: ignore[overload-overlap]
     fn: Callable[P, R_co],
@@ -717,7 +940,7 @@ def function(  # type: ignore[overload-overlap]
     memo: bool = False,
     batching: Literal[False] = False,
     max_batch_size: int | None = None,
-    runner: Runner | None = None,
+    runner: None = None,
 ) -> SyncFunction[P, R_co]: ...
 def function(
     fn: Any = None,

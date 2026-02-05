@@ -16,11 +16,14 @@ from typing import Any, Callable, Coroutine, TypeVar, TYPE_CHECKING
 import threading
 import os
 import multiprocessing as mp
-
-if TYPE_CHECKING:
-    from . import core
+from . import core
 
 R = TypeVar("R")
+
+# Flag indicating if we're running inside a subprocess (GPU runner)
+# When True, @coco.function decorators should execute the raw function
+# without batching/runner/memo since those are already handled by the parent.
+_in_subprocess: bool = False
 
 
 class Runner(ABC):
@@ -50,8 +53,6 @@ class Runner(ABC):
         if self._queue is None:
             with self._queue_lock:
                 if self._queue is None:
-                    from . import core
-
                     self._queue = core.BatchQueue()
         return self._queue
 
@@ -67,11 +68,11 @@ class Runner(ABC):
         ...
 
     @abstractmethod
-    def run_sync_fn(self, fn: Callable[..., R], *args: Any, **kwargs: Any) -> R:
+    async def run_sync_fn(self, fn: Callable[..., R], *args: Any, **kwargs: Any) -> R:
         """Execute a sync function with args/kwargs.
 
-        This is sync because the function itself is sync.
-        Works from both sync and async contexts.
+        This is async to avoid blocking the event loop while waiting for execution.
+        The function itself is sync but execution may involve I/O (e.g., subprocess).
         """
         ...
 
@@ -121,6 +122,9 @@ def _subprocess_init(parent_pid: int) -> None:
     import signal
     import faulthandler
 
+    global _in_subprocess
+    _in_subprocess = True
+
     faulthandler.enable()
     try:
         signal.signal(signal.SIGINT, signal.SIG_IGN)
@@ -160,32 +164,37 @@ def _start_parent_watchdog(parent_pid: int) -> None:
 def _execute_in_subprocess(payload_bytes: bytes) -> bytes:
     """Run in subprocess: unpack, execute, return pickled result."""
     fn, args, kwargs = pickle.loads(payload_bytes)
-    if asyncio.iscoroutinefunction(fn):
-        result = asyncio.run(fn(*args, **kwargs))
-    else:
-        result = fn(*args, **kwargs)
+    result = fn(*args, **kwargs)
+    # Handle async callables (functions or callable objects with async __call__)
+    if asyncio.iscoroutine(result):
+        result = asyncio.run(result)
     return pickle.dumps(result, protocol=pickle.HIGHEST_PROTOCOL)
 
 
-def _submit_to_pool_sync(fn: Callable[..., Any], *args: Any) -> Any:
-    """Submit work to pool and wait synchronously."""
+async def _submit_to_pool_async(fn: Callable[..., Any], *args: Any) -> Any:
+    """Submit work to pool and wait asynchronously."""
+    loop = asyncio.get_running_loop()
     while True:
         pool = _get_pool()
         try:
-            future = pool.submit(fn, *args)
-            return future.result()
+            return await loop.run_in_executor(pool, fn, *args)
         except BrokenProcessPool:
             _restart_pool(old_pool=pool)
 
 
-def execute_in_subprocess(fn: Callable[..., R], *args: Any, **kwargs: Any) -> R:
+async def execute_in_subprocess(fn: Callable[..., R], *args: Any, **kwargs: Any) -> R:
     """Execute a function in a subprocess and return the result.
 
     The function and all arguments must be picklable.
     """
     payload = pickle.dumps((fn, args, kwargs), protocol=pickle.HIGHEST_PROTOCOL)
-    result_bytes = _submit_to_pool_sync(_execute_in_subprocess, payload)
+    result_bytes = await _submit_to_pool_async(_execute_in_subprocess, payload)
     return pickle.loads(result_bytes)  # type: ignore[no-any-return]
+
+
+def in_subprocess() -> bool:
+    """Check if we're running in a subprocess."""
+    return _in_subprocess
 
 
 # ============================================================================
@@ -219,12 +228,12 @@ class GPURunner(Runner):
 
         The async function is run via asyncio.run() in the subprocess.
         """
-        # Type ignore: execute_in_subprocess handles async fns by running asyncio.run() internally
-        return execute_in_subprocess(fn, *args, **kwargs)  # type: ignore[return-value]
+        # Type ignore: execute_in_subprocess handles async fns via asyncio.run() internally
+        return await execute_in_subprocess(fn, *args, **kwargs)  # type: ignore[arg-type]
 
-    def run_sync_fn(self, fn: Callable[..., R], *args: Any, **kwargs: Any) -> R:
+    async def run_sync_fn(self, fn: Callable[..., R], *args: Any, **kwargs: Any) -> R:
         """Execute a sync function in subprocess."""
-        return execute_in_subprocess(fn, *args, **kwargs)
+        return await execute_in_subprocess(fn, *args, **kwargs)
 
 
 # Singleton instance for public use

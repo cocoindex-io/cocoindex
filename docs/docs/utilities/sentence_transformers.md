@@ -8,7 +8,7 @@ The `SentenceTransformerEmbedder` class is a wrapper around SentenceTransformer 
 
 - Implements `VectorSchemaProvider` for seamless integration with CocoIndex connectors
 - Handles model caching and thread-safe GPU access automatically
-- Provides simple `embed()` and `embed_async()` methods
+- Provides simple `embed()` and `embed()` methods
 - Returns properly typed numpy arrays
 
 ## Installation
@@ -48,7 +48,7 @@ print(f"Dtype: {embedding.dtype}")  # Dtype: float32
 import asyncio
 
 async def embed_async_example():
-    embedding = await embedder.embed_async("Hello, world!")
+    embedding = await embedder.embed("Hello, world!")
     return embedding
 
 embedding = asyncio.run(embed_async_example())
@@ -102,6 +102,7 @@ def setup_table(db: postgres.PgDatabase):
 ```
 
 The connector will automatically:
+
 - Extract the vector dimension from `embedder.__coco_vector_schema__()`
 - Create the appropriate `vector(384)` column in Postgres
 - Handle type conversions properly
@@ -206,7 +207,7 @@ async def process_chunk(
             chunk_start=chunk.start.char_offset,
             chunk_end=chunk.end.char_offset,
             text=chunk.text,
-            embedding=await embedder.embed_async(chunk.text),
+            embedding=await embedder.embed(chunk.text),
         ),
     )
 
@@ -303,7 +304,7 @@ The `SentenceTransformerEmbedder` is thread-safe:
 
 - Model loading is lazy and uses double-checked locking
 - GPU access is protected by a lock to prevent concurrent operations
-- Safe to use in async contexts with `asyncio.to_thread()` (which `embed_async()` uses internally)
+- Safe to use in async contexts with `asyncio.to_thread()` (which `embed()` uses internally)
 
 ## Performance considerations
 
@@ -332,7 +333,7 @@ For better performance when embedding many texts, use async processing with `asy
 # Process many texts in parallel (with thread pool)
 async def embed_all(texts: list[str]):
     return await asyncio.gather(
-        *(embedder.embed_async(text) for text in texts)
+        *(embedder.embed(text) for text in texts)
     )
 
 embeddings = asyncio.run(embed_all(texts))
