@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import functools
 import inspect
 import pickle
@@ -588,7 +587,7 @@ class AsyncFunction(Function[P, R_co]):
         parent_ctx = _context_var.get(None)
         pending_memo: core.PendingFnCallMemo | None = None
         memo_fp: core.Fingerprint | None = None
-        fn_ctx: core.FnCallContext | None = None
+        fn_ctx = core.FnCallContext()
 
         try:
             # Check memo (when enabled and context available)
@@ -609,12 +608,16 @@ class AsyncFunction(Function[P, R_co]):
                     parent_ctx, self_obj, args, kwargs
                 )
             else:
-                result, fn_ctx = await self._execute_direct(args, kwargs)
+                parent_ctx = get_context_from_ctx()
+                tok = _context_var.set(parent_ctx._with_fn_call_ctx(fn_ctx))
+                try:
+                    result = await self._fn(*args, **kwargs)
+                finally:
+                    _context_var.reset(tok)
 
             # Resolve memo if pending
             if pending_memo is not None:
-                resolve_ctx = fn_ctx if fn_ctx is not None else core.FnCallContext()
-                if pending_memo.resolve(resolve_ctx, result):
+                if pending_memo.resolve(fn_ctx, result):
                     assert parent_ctx is not None and memo_fp is not None
                     parent_ctx._core_fn_call_ctx.join_child_memo(memo_fp)
 
@@ -624,27 +627,6 @@ class AsyncFunction(Function[P, R_co]):
                 pending_memo.close()
             if fn_ctx is not None and parent_ctx is not None:
                 parent_ctx._core_fn_call_ctx.join_child(fn_ctx)
-
-    async def _execute_direct(
-        self, args: tuple[Any, ...], kwargs: dict[str, Any]
-    ) -> tuple[R_co, core.FnCallContext]:
-        """Execute directly with context propagation."""
-        parent_ctx = get_context_from_ctx()
-        fn_ctx = core.FnCallContext()
-        context = parent_ctx._with_fn_call_ctx(fn_ctx)
-        tok = _context_var.set(context)
-        try:
-            if self._fn_is_async:
-                result = await self._fn(*args, **kwargs)
-            else:
-                print(
-                    "In _execute_direct: executing sync function in to_thread. fn: ",
-                    self._fn.__name__,
-                )
-                result = await asyncio.to_thread(self._fn, *args, **kwargs)
-            return result, fn_ctx  # type: ignore[return-value]
-        finally:
-            _context_var.reset(tok)
 
     async def _execute_scheduled(
         self,
@@ -719,19 +701,11 @@ class AsyncFunction(Function[P, R_co]):
 
                 return batch_fn_async
         else:
-            # Sync batch function - wrap with to_thread
+            # Sync batch function
             if self._has_self:
-
-                async def batch_fn_sync_self(inputs: list[Any]) -> list[Any]:
-                    return await asyncio.to_thread(fn, self_obj, inputs)  # type: ignore[no-any-return]
-
-                return batch_fn_sync_self
+                return lambda inputs: fn(self_obj, inputs)  # type: ignore[no-any-return]
             else:
-
-                async def batch_fn_sync(inputs: list[Any]) -> list[Any]:
-                    return await asyncio.to_thread(fn, inputs)  # type: ignore[no-any-return]
-
-                return batch_fn_sync
+                return fn  # type: ignore[no-any-return]
 
     def _core_processor(
         self: AsyncFunction[P0, R_co],
