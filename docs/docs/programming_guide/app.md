@@ -62,15 +62,18 @@ Call `update()` to execute the pipeline:
 
 ```python
 # Async API
-await app.update(report_to_stdout=True)
+await app.update(report_to_stdout=True, full_reprocess=False)
 ```
 
 ```python
 # Sync API
-app.update(report_to_stdout=True)
+app.update(report_to_stdout=True, full_reprocess=False)
 ```
 
-The `report_to_stdout` option prints periodic progress updates during execution.
+**Parameters:**
+
+- `report_to_stdout` option prints periodic progress updates during execution.
+- `full_reprocess` option reprocesses everything and invalidates existing caches. This forces all components to re-execute and all target states to be re-applied, even if they haven't changed.
 
 When you update an App, CocoIndex:
 
