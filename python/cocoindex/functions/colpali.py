@@ -35,7 +35,8 @@ def _get_colpali_model_and_processor(model_name: str) -> ColPaliModelInfo:
         ) from e
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    lower_model_name = model_name.lower()
+    # Strip any organization prefix to isolate the raw model name (e.g., `vidore/colqwen2-v1.0` -> `colqwen2-v1.0`)
+    lower_model_name = model_name.split("/")[-1].lower()
 
     # Determine model type from name
     if lower_model_name.startswith("colpali"):
