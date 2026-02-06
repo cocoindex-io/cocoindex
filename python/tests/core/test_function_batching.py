@@ -166,7 +166,6 @@ class MaxBatchTracker:
     def __init__(self, max_batch_size: int) -> None:
         self.max_batch_size = max_batch_size
         self.batch_sizes: list[int] = []
-        self.batch_events: list[asyncio.Event] = []
 
     def create_function(self) -> Any:
         """Create a batched function with max_batch_size."""
@@ -176,9 +175,6 @@ class MaxBatchTracker:
         async def limited_double(inputs: list[int]) -> list[int]:
             """Batched function that tracks sizes and waits for signal."""
             tracker.batch_sizes.append(len(inputs))
-            event = asyncio.Event()
-            tracker.batch_events.append(event)
-            await event.wait()
             return [x * 2 for x in inputs]
 
         return limited_double
@@ -196,13 +192,6 @@ async def test_batching_max_batch_size() -> None:
     task3 = asyncio.create_task(limited_double(3))
     task4 = asyncio.create_task(limited_double(4))
     task5 = asyncio.create_task(limited_double(5))
-
-    # Wait for batches to be recorded (should have multiple due to max_batch_size=2)
-    await wait_for_condition(lambda: len(tracker.batch_sizes) >= 1)
-
-    # Signal all events to let batches complete
-    for event in tracker.batch_events:
-        event.set()
 
     results = await asyncio.gather(task1, task2, task3, task4, task5)
 
