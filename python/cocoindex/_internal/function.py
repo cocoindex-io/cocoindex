@@ -287,11 +287,11 @@ class _BoundAsyncMethod(Generic[SelfT, P, R_co]):
     async def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R_co:
         return await self._func(self._instance, *args, **kwargs)
 
-    async def _execute_original_fn(self, *args: P.args, **kwargs: P.kwargs) -> R_co:
-        return await self._func._execute_original_fn(self._instance, *args, **kwargs)
+    async def _execute_orig_async_fn(self, *args: P.args, **kwargs: P.kwargs) -> R_co:
+        return await self._func._execute_orig_async_fn(self._instance, *args, **kwargs)
 
-    def _execute_original_fn_sync(self, *args: P.args, **kwargs: P.kwargs) -> R_co:
-        return self._func._execute_original_fn_sync(self._instance, *args, **kwargs)
+    def _execute_orig_sync_fn(self, *args: P.args, **kwargs: P.kwargs) -> R_co:
+        return self._func._execute_orig_sync_fn(self._instance, *args, **kwargs)
 
     @staticmethod
     def _unpickle(
@@ -309,7 +309,8 @@ class AsyncFunction(Function[P, R_co]):
     """Async function with optional memoization and batching/runner support."""
 
     __slots__ = (
-        "_fn",
+        "_orig_async_fn",
+        "_orig_sync_fn",
         "_fn_is_async",
         "_memo",
         "_processor_info",
@@ -322,8 +323,8 @@ class AsyncFunction(Function[P, R_co]):
         "_batchers_lock",
     )
 
-    _fn: Callable[P, Coroutine[Any, Any, R_co]] | Callable[P, R_co]
-    _fn_is_async: bool
+    _orig_async_fn: Callable[P, Coroutine[Any, Any, R_co]] | None
+    _orig_sync_fn: Callable[P, R_co] | None
     _memo: bool
     _processor_info: core.ComponentProcessorInfo
     _batching: bool
@@ -332,20 +333,24 @@ class AsyncFunction(Function[P, R_co]):
     _has_self: bool
     _queues: dict[object, core.BatchQueue]
 
-    _batchers: dict[object, core.Batcher]
+    _batchers: dict[object, core.Batcher[Any, R_co]]
     _batchers_lock: threading.Lock
 
     def __init__(
         self,
-        fn: Callable[P, Coroutine[Any, Any, R_co]] | Callable[P, R_co],
+        fn: AnyCallable[P, R_co],
         *,
         memo: bool,
         batching: bool = False,
         max_batch_size: int | None = None,
         runner: Runner | None = None,
     ) -> None:
-        self._fn = fn
-        self._fn_is_async = inspect.iscoroutinefunction(fn)
+        if inspect.iscoroutinefunction(fn):
+            self._orig_async_fn = fn
+            self._orig_sync_fn = None
+        else:
+            self._orig_async_fn = None
+            self._orig_sync_fn = fn  # type: ignore[assignment]
         self._memo = memo
         self._processor_info = core.ComponentProcessorInfo(fn.__qualname__)
         self._batching = batching
@@ -356,8 +361,22 @@ class AsyncFunction(Function[P, R_co]):
         self._batchers = {}
         self._batchers_lock = threading.Lock()
 
+    @property
+    def _any_fn(self) -> AnyCallable[P, R_co]:
+        if self._orig_async_fn is not None:
+            return self._orig_async_fn
+        else:
+            assert self._orig_sync_fn is not None
+            return self._orig_sync_fn
+
     def __reduce__(self) -> tuple[Any, ...]:
-        return AsyncFunction._unpickle, (self._fn.__module__, self._fn.__qualname__)
+        fn = (
+            self._orig_async_fn
+            if self._orig_async_fn is not None
+            else self._orig_sync_fn
+        )
+        assert fn is not None
+        return AsyncFunction._unpickle, (fn.__module__, fn.__qualname__)
 
     @staticmethod
     def _unpickle(module_name: str, qualname: str) -> AsyncFunction[P, R_co]:
@@ -382,13 +401,14 @@ class AsyncFunction(Function[P, R_co]):
 
     async def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R_co:
         """Core implementation."""
-        # In subprocess, execute the raw function directly (no batching/runner/memo)
-        if _in_subprocess():
-            if self._fn_is_async:
-                return await self._fn(*args, **kwargs)  # type: ignore
-            else:
-                # Sync underlying function
-                return self._fn(*args, **kwargs)  # type: ignore[return-value]
+
+        # # In subprocess, execute the raw function directly (no batching/runner/memo)
+        # if _in_subprocess():
+        #     if self._async_fn is not None:
+        #         return await self._async_fn(*args, **kwargs)
+        #     else:
+        #         assert self._sync_fn is not None
+        #         return await asyncio.to_thread(self._sync_fn, *args, **kwargs)
 
         parent_ctx = _context_var.get(None)
         pending_memo: core.PendingFnCallMemo | None = None
@@ -398,7 +418,7 @@ class AsyncFunction(Function[P, R_co]):
         try:
             # Check memo (when enabled and context available)
             if self._memo and parent_ctx is not None:
-                memo_fp = fingerprint_call(self._fn, args, kwargs)
+                memo_fp = fingerprint_call(self._any_fn, args, kwargs)
                 r = await core.reserve_memoization_async(
                     parent_ctx._core_processor_ctx, memo_fp
                 )
@@ -442,12 +462,11 @@ class AsyncFunction(Function[P, R_co]):
     ) -> R_co:
         """Execute via batcher/runner."""
         if not self._is_scheduled:
-            if self._fn_is_async:
-                return await self._execute_original_fn(*args, **kwargs)
+            if self._orig_async_fn is not None:
+                return await self._orig_async_fn(*args, **kwargs)
             else:
-                return await asyncio.to_thread(
-                    self._execute_original_fn_sync, *args, **kwargs
-                )
+                assert self._orig_sync_fn is not None
+                return await asyncio.to_thread(self._orig_sync_fn, *args, **kwargs)
 
         if self._has_self:
             if len(args) < 1:
@@ -471,37 +490,40 @@ class AsyncFunction(Function[P, R_co]):
             input_val = (actual_args, kwargs)
 
         batcher = self._get_or_create_batcher(async_ctx, self_obj)
-        return await batcher.run(input_val)  # type: ignore[no-any-return]
+        return await batcher.run(input_val)
 
-    async def _execute_original_fn(self, *args: P.args, **kwargs: P.kwargs) -> R_co:
-        return await self._fn(*args, **kwargs)  # type: ignore
+    async def _execute_orig_async_fn(self, *args: P.args, **kwargs: P.kwargs) -> R_co:
+        assert self._orig_async_fn is not None
+        return await self._orig_async_fn(*args, **kwargs)
 
-    def _execute_original_fn_sync(self, *args: P.args, **kwargs: P.kwargs) -> R_co:
-        return self._fn(*args, **kwargs)  # type: ignore
+    def _execute_orig_sync_fn(self, *args: P.args, **kwargs: P.kwargs) -> R_co:
+        assert self._orig_sync_fn is not None
+        return self._orig_sync_fn(*args, **kwargs)
 
-    def _create_batch_runner_fn(self, self_obj: Any) -> Callable[[list[Any]], Any]:
+    def _create_batch_runner_fn(
+        self, self_obj: Any
+    ) -> AnyCallable[[list[Any]], list[R_co]]:
         """Create the batch execution function.
 
         Always returns an async function (or sync for Batcher.new_sync).
         Handles both sync and async underlying functions.
         """
-        fn = self._fn
         if self._runner is not None:
             # Use picklable callable for subprocess execution
             # Choose appropriate callable and runner method based on underlying fn type
             bound_fn_obj = self.__get__(self_obj)
             batch_callable, runner_run = (
-                (bound_fn_obj._execute_original_fn, self._runner.run)
-                if self._fn_is_async
-                else (bound_fn_obj._execute_original_fn_sync, self._runner.run_sync_fn)
+                (bound_fn_obj._execute_orig_async_fn, self._runner.run)
+                if self._orig_async_fn is not None
+                else (bound_fn_obj._execute_orig_sync_fn, self._runner.run_sync_fn)
             )
             if self._batching:
 
-                async def runner_batch_fn_async(inputs: list[Any]) -> list[Any]:
+                async def runner_batch_fn_async(inputs: list[Any]) -> list[R_co]:
                     return await runner_run(batch_callable, inputs)  # type: ignore[arg-type]
             else:
 
-                async def runner_batch_fn_async(inputs: list[Any]) -> list[Any]:
+                async def runner_batch_fn_async(inputs: list[Any]) -> list[R_co]:
                     args, kwargs = inputs[0]
                     return [await runner_run(batch_callable, *args, **kwargs)]  # type: ignore[arg-type]
 
@@ -512,17 +534,18 @@ class AsyncFunction(Function[P, R_co]):
 
         # User function is a batch function: list[T] -> list[R]
         if self_obj is None:
-            return fn  # type: ignore
+            return self._any_fn  # type: ignore
 
-        if self._fn_is_async:
+        if (orig_async_fn := self._orig_async_fn) is not None:
 
             async def batch_fn_async_self(inputs: list[Any]) -> list[Any]:
-                return await fn(self_obj, inputs)  # type: ignore
+                return await orig_async_fn(self_obj, inputs)  # type: ignore
 
             return batch_fn_async_self
         else:
-            # Sync batch function
-            return lambda inputs: fn(self_obj, inputs)  # type: ignore
+            orig_sync_fn = self._orig_sync_fn
+            assert orig_sync_fn is not None
+            return lambda inputs: orig_sync_fn(self_obj, inputs)  # type: ignore
 
     @property
     def _is_scheduled(self) -> bool:
@@ -532,13 +555,13 @@ class AsyncFunction(Function[P, R_co]):
     def _get_batcher_key(self, self_obj: Any) -> object:
         """Key for batcher lookup (different from queue_id)."""
         if self_obj is not None:
-            return (id(self._fn), id(self_obj))
+            return (id(self._any_fn), id(self_obj))
         else:
-            return id(self._fn)
+            return id(self._any_fn)
 
     def _get_or_create_batcher(
         self, async_ctx: core.AsyncContext, self_obj: Any
-    ) -> core.Batcher:
+    ) -> core.Batcher[Any, R_co]:
         """Get or create batcher for this function/self combination."""
         batcher_key = self._get_batcher_key(self_obj)
 
@@ -563,7 +586,10 @@ class AsyncFunction(Function[P, R_co]):
                 )
             else:
                 batcher = core.Batcher.new_sync(
-                    queue, options, batch_runner_fn, async_ctx
+                    queue,
+                    options,
+                    batch_runner_fn,  # type: ignore[arg-type]
+                    async_ctx,
                 )
 
             self._batchers[batcher_key] = batcher
@@ -577,15 +603,31 @@ class AsyncFunction(Function[P, R_co]):
         **kwargs: P.kwargs,
     ) -> core.ComponentProcessor[R_co]:
         memo_fp = (
-            fingerprint_call(self._fn, (path, *args), kwargs) if self._memo else None
+            fingerprint_call(self._any_fn, (path, *args), kwargs)
+            if self._memo
+            else None
         )
         if self._is_scheduled:
             async_ctx = env.async_context
-            fn = lambda *args, **kwargs: self._execute(async_ctx, *args, **kwargs)
-        else:
-            fn = self._fn  # type: ignore[assignment]
-        return _build_async_core_processor(
-            fn, env, path, args, kwargs, self._processor_info, memo_fp
+            return _build_async_core_processor(
+                lambda *args, **kwargs: self._execute(async_ctx, *args, **kwargs),
+                env,
+                path,
+                args,
+                kwargs,
+                self._processor_info,
+                memo_fp,
+            )
+
+        orig_async_fn = self._orig_async_fn
+        if orig_async_fn is not None:
+            return _build_async_core_processor(
+                orig_async_fn, env, path, args, kwargs, self._processor_info, memo_fp
+            )
+
+        assert self._orig_sync_fn is not None
+        return _build_sync_core_processor(
+            self._orig_sync_fn, env, path, args, kwargs, self._processor_info, memo_fp
         )
 
 
