@@ -1,5 +1,6 @@
 import os
 import sys
+from dataclasses import dataclass, field
 from typing import Any, NamedTuple
 import pathlib
 
@@ -23,6 +24,7 @@ from cocoindex._internal.environment import (
 )
 from cocoindex._internal.setting import get_default_db_path
 from cocoindex.inspect import list_stable_paths_sync
+from cocoindex._internal.stable_path import StablePath, StableKey, ROOT_PATH
 
 
 # ---------------------------------------------------------------------------
@@ -395,6 +397,116 @@ uv run cocoindex update main.py
     (project_path / "README.md").write_text(readme_content)
 
 
+@dataclass
+class TreeNode:
+    """Represents a node in the stable path tree."""
+
+    is_component: bool = False
+    children: dict[StableKey, "TreeNode"] = field(default_factory=dict)
+
+
+def _add_path_to_tree(
+    root: TreeNode,
+    path: StablePath,
+    component_paths: set[StablePath],
+) -> None:
+    """
+    Add a path to the tree structure.
+
+    Args:
+        root: Root TreeNode
+        path: StablePath to add
+        component_paths: Set of paths that are components
+    """
+    parts = path.parts()
+    current = root
+    current_path = ROOT_PATH
+
+    # Skip root path (already handled when creating root node)
+    if path == ROOT_PATH:
+        return
+
+    # Traverse/create nodes for each part
+    for part in parts:
+        current_path = current_path / part
+
+        # Get or create child node
+        if part not in current.children:
+            current.children[part] = TreeNode()
+        current = current.children[part]
+
+        # Mark as component if this path is in component_paths
+        if current_path in component_paths:
+            current.is_component = True
+
+
+def _render_children(
+    node: TreeNode,
+    prefix: str,
+) -> list[str]:
+    """
+    Render children of a node.
+
+    Args:
+        node: The TreeNode whose children to render
+        prefix: Prefix string for indentation (e.g., "", "│   ", "    ")
+
+    Returns:
+        List of formatted lines
+    """
+    lines = []
+    # Sort children by str(key) for deterministic ordering
+    sorted_children = sorted(node.children.items(), key=lambda item: str(item[0]))
+
+    for idx, (key, child_node) in enumerate(sorted_children):
+        is_last = idx == len(sorted_children) - 1
+        # Determine connector: ├── for intermediate, └── for last
+        connector = "└──" if is_last else "├──"
+        # Build line with key label and [component] annotation if needed
+        key_str = str(key)  # Handles quotes, escaping automatically
+        line = f"{prefix}{connector} {key_str}"
+        if child_node.is_component:
+            line += " [component]"
+        lines.append(line)
+
+        # Render children recursively with updated prefix
+        child_prefix = prefix + ("    " if is_last else "│   ")
+        lines.extend(_render_children(child_node, child_prefix))
+
+    return lines
+
+
+def _render_paths_as_tree(paths: list[StablePath]) -> str:
+    """
+    Render stable paths as a tree with component annotations.
+
+    Args:
+        paths: List of stable paths (all are components)
+
+    Returns:
+        Formatted tree string
+    """
+    if not paths:
+        return "Found 0 stable paths:"
+
+    # Build component set for fast lookup
+    component_paths = {path for path in paths}
+
+    # Build tree structure - set root component status upfront
+    root = TreeNode(is_component=(ROOT_PATH in component_paths))
+    for path in paths:
+        _add_path_to_tree(root, path, component_paths)
+
+    # Render tree - special case for root
+    lines = [f"Found {len(paths)} stable paths:"]
+    root_line = "/"
+    if root.is_component:
+        root_line += " [component]"
+    lines.append(root_line)
+    lines.extend(_render_children(root, prefix=""))
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------------------
 # CLI group
 # ---------------------------------------------------------------------------
@@ -484,7 +596,13 @@ def ls(app_target: str | None, db: str | None) -> None:
 
 @cli.command()
 @click.argument("app_target", type=str)
-def show(app_target: str) -> None:
+@click.option(
+    "--tree",
+    is_flag=True,
+    default=False,
+    help="Display stable paths as a tree with component annotations.",
+)
+def show(app_target: str, tree: bool) -> None:
     """
     Show the app's stable paths.
 
@@ -492,9 +610,14 @@ def show(app_target: str) -> None:
     """
     app = _load_app(app_target)
     paths = list_stable_paths_sync(app)
-    click.echo(f"Found {len(paths)} stable paths:")
-    for path in paths:
-        click.echo(f"  {path}")
+
+    if tree:
+        output = _render_paths_as_tree(paths)
+        click.echo(output)
+    else:
+        click.echo(f"Found {len(paths)} stable paths:")
+        for path in paths:
+            click.echo(f"  {path}")
 
 
 async def _stop_all_environments() -> None:

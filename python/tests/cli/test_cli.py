@@ -678,3 +678,122 @@ class TestDropQuiet:
         result = run_cli("drop", "./single_app.py", "-f", "--quiet")
         assert "Preparing to drop" not in result.stdout
         assert "Dropped app" not in result.stdout
+
+
+# =============================================================================
+# Test: Show command with --tree flag
+# =============================================================================
+
+
+class TestShowTree:
+    """Tests for the show command with --tree flag."""
+
+    def test_show_tree_displays_tree_structure(self) -> None:
+        """show --tree should display stable paths as a tree."""
+        # First, run an app to create stable paths
+        run_cli("update", "./single_app.py")
+
+        # Run show with --tree flag
+        result = run_cli("show", "./single_app.py", "--tree")
+
+        # Should contain tree structure elements
+        assert "Found" in result.stdout
+        assert "stable paths:" in result.stdout
+        assert "/" in result.stdout
+        assert "├──" in result.stdout or "└──" in result.stdout
+
+    def test_show_tree_annotates_components(self) -> None:
+        """show --tree should annotate component nodes with [component]."""
+        # First, run an app to create stable paths
+        run_cli("update", "./single_app.py")
+
+        # Run show with --tree flag
+        result = run_cli("show", "./single_app.py", "--tree")
+
+        # Should contain component annotations
+        assert "[component]" in result.stdout
+
+    def test_show_tree_with_nested_structure(self) -> None:
+        """show --tree should correctly display nested tree structures with proper annotations."""
+        # First, run an app that creates a nested tree structure
+        run_cli("update", "./tree_test_app.py")
+
+        # Run show with --tree flag
+        result = run_cli("show", "./tree_test_app.py", "--tree")
+
+        # Should contain tree structure
+        assert "Found" in result.stdout
+        assert "stable paths:" in result.stdout
+        assert "/" in result.stdout
+
+        # Parse the output to verify structure
+        lines = result.stdout.split("\n")
+        output_text = result.stdout
+
+        # Find the root line - should be annotated as component
+        root_line = next(
+            (
+                l
+                for l in lines
+                if l.strip() == "/" or l.strip().startswith("/ [component]")
+            ),
+            None,
+        )
+        assert root_line is not None, "Root path should be present"
+        assert "[component]" in root_line, "Root should be annotated as [component]"
+
+        # Should have "group" node (may or may not be a component depending on implementation)
+        # Note: Python str() on StableKey doesn't preserve quotes, so check for "group" or group
+        assert "group" in output_text, "Should have 'group' node in output"
+
+        # Should have "item1" and "item2" as components under "group"
+        assert "item1" in output_text, "Should have 'item1' node"
+        assert "item2" in output_text, "Should have 'item2' node"
+        # Both should be annotated as components
+        item1_line = next((l for l in lines if "item1" in l), None)
+        item2_line = next((l for l in lines if "item2" in l), None)
+        assert item1_line is not None, "Should have 'item1' line"
+        assert item2_line is not None, "Should have 'item2' line"
+        assert "[component]" in item1_line, "item1 should be annotated as [component]"
+        assert "[component]" in item2_line, "item2 should be annotated as [component]"
+
+        # Should have "direct" as a component (direct child of root)
+        assert "direct" in output_text, "Should have 'direct' node"
+        direct_line = next((l for l in lines if "direct" in l), None)
+        assert direct_line is not None, "Should have 'direct' line"
+        assert "[component]" in direct_line, "direct should be annotated as [component]"
+
+        # Should have "setup" as a component
+        assert "setup" in output_text, "Should have 'setup' node"
+        setup_line = next((l for l in lines if "setup" in l), None)
+        assert setup_line is not None, "Should have 'setup' line"
+        assert "[component]" in setup_line, "setup should be annotated as [component]"
+
+        # Verify tree structure: item1 and item2 should be nested under group
+        # Find the line index for "group" and "item1"
+        group_idx = next(
+            (
+                i
+                for i, l in enumerate(lines)
+                if "group" in l and ("├──" in l or "└──" in l)
+            ),
+            None,
+        )
+        item1_idx = next(
+            (
+                i
+                for i, l in enumerate(lines)
+                if "item1" in l and ("├──" in l or "└──" in l)
+            ),
+            None,
+        )
+        assert group_idx is not None, "Should find 'group' line"
+        assert item1_idx is not None, "Should find 'item1' line"
+        # item1 should come after group (they're nested)
+        assert item1_idx > group_idx, (
+            "item1 should appear after group in nested structure"
+        )
+        # item1 line should have indentation indicating it's a child of group
+        assert "│   " in lines[item1_idx] or "    " in lines[item1_idx], (
+            "item1 should be indented as child of group"
+        )
