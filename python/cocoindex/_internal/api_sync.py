@@ -18,7 +18,11 @@ from .component_ctx import (
     build_child_path,
     get_context_from_ctx,
 )
-from .function import AnyCallable, create_core_component_processor
+from .function import (
+    AnyCallable,
+    create_core_component_processor,
+    function,
+)
 from .pending_marker import ResolvesTo
 from . import environment as _environment
 from .typing import NOT_SET, NotSetType
@@ -254,6 +258,7 @@ __all__ = [
     "App",
     "ProcessingUnitMountHandle",
     "ProcessingUnitMountRunHandle",
+    "function",
     "mount",
     "mount_run",
     "start",

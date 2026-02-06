@@ -4,6 +4,7 @@ import asyncio
 from typing import Any
 
 import cocoindex as coco
+import cocoindex.asyncio as coco_aio
 from cocoindex._internal.runner import Runner
 import pytest
 
@@ -31,11 +32,11 @@ async def wait_for_condition(
 # ============================================================================
 
 
-@coco.function(batching=True)
+@coco_aio.function(batching=True)
 def _double_sync(inputs: list[int]) -> list[int]:
     """Sync batched function that doubles inputs.
 
-    Note: With batching=True, this becomes an async function externally,
+    Note: With batching=True via coco_aio.function, this becomes an async function externally,
     even though the underlying implementation is sync.
     """
     return [x * 2 for x in inputs]
@@ -48,7 +49,7 @@ async def test_batching_basic_sync() -> None:
     assert result == 10
 
 
-@coco.function(batching=True)
+@coco_aio.function(batching=True)
 async def _double_async(inputs: list[int]) -> list[int]:
     """Async batched function that doubles inputs."""
     await asyncio.sleep(0.01)  # Simulate async work
@@ -90,7 +91,7 @@ class TrackedBatcher:
         """Create a tracked batched function."""
         tracker = self
 
-        @coco.function(batching=True)
+        @coco_aio.function(batching=True)
         async def tracked_double(inputs: list[int]) -> list[int]:
             """Async batched function that tracks calls and waits for signals."""
             tracker.batch_call_count += 1
@@ -165,7 +166,7 @@ class MaxBatchTracker:
         """Create a batched function with max_batch_size."""
         tracker = self
 
-        @coco.function(batching=True, max_batch_size=tracker.max_batch_size)
+        @coco_aio.function(batching=True, max_batch_size=tracker.max_batch_size)
         async def limited_double(inputs: list[int]) -> list[int]:
             """Batched function that tracks sizes and waits for signal."""
             tracker.batch_sizes.append(len(inputs))
@@ -220,7 +221,7 @@ class BatchedProcessor:
         self.input_events[value] = event
         return event
 
-    @coco.function(batching=True)
+    @coco_aio.function(batching=True)
     async def multiply(self, inputs: list[int]) -> list[int]:
         """Batched method that multiplies inputs, waits for signals."""
         self.call_count += 1
@@ -258,14 +259,14 @@ async def test_batching_method_concurrent() -> None:
         proc.create_event(v)
 
     # Submit first call - it should execute inline
-    task1 = asyncio.create_task(proc.multiply(1))  # type: ignore[arg-type]
+    task1 = asyncio.create_task(proc.multiply(1))
 
     # Wait for first batch to be recorded
     await wait_for_condition(lambda: len(proc.batch_inputs) >= 1)
 
     # Submit remaining calls - they should batch together
-    task2 = asyncio.create_task(proc.multiply(2))  # type: ignore[arg-type]
-    task3 = asyncio.create_task(proc.multiply(3))  # type: ignore[arg-type]
+    task2 = asyncio.create_task(proc.multiply(2))
+    task3 = asyncio.create_task(proc.multiply(3))
 
     # Unblock first call - triggers batch for 2,3
     proc.input_events[1].set()
@@ -295,11 +296,11 @@ async def test_batching_out_of_component() -> None:
     """Test that batched functions work outside of CocoIndex app."""
     # This should work without any component context
 
-    @coco.function(batching=True)
+    @coco_aio.function(batching=True)
     def standalone_double(inputs: list[int]) -> list[int]:
         return [x * 2 for x in inputs]
 
-    result = await standalone_double(42)  # type: ignore[misc]
+    result = await standalone_double(42)
     assert result == 84
 
 
@@ -311,7 +312,7 @@ async def test_batching_out_of_component() -> None:
 _async_batch_count = 0
 
 
-@coco.function(batching=True)
+@coco_aio.function(batching=True)
 async def _async_tracked_double(inputs: list[int]) -> list[int]:
     """Async batched function that tracks calls."""
     global _async_batch_count
@@ -371,11 +372,11 @@ async def test_runner_basic() -> None:
     """Test basic runner functionality."""
     runner = MockRunner()
 
-    @coco.function(runner=runner)
+    @coco_aio.function(runner=runner)
     def add_one(x: int) -> int:
         return x + 1
 
-    result = await add_one(5)  # type: ignore[misc]
+    result = await add_one(5)
     assert result == 6
     assert runner.call_count == 1
 
@@ -385,11 +386,11 @@ async def test_runner_with_batching() -> None:
     """Test runner combined with batching."""
     runner = MockRunner()
 
-    @coco.function(batching=True, runner=runner)
+    @coco_aio.function(batching=True, runner=runner)
     def double_batch(inputs: list[int]) -> list[int]:
         return [x * 2 for x in inputs]
 
-    result = await double_batch(5)  # type: ignore[misc]
+    result = await double_batch(5)
     assert result == 10
     assert runner.call_count >= 1
 
@@ -406,7 +407,7 @@ async def test_runner_queue_sharing() -> None:
     execution_order: list[str] = []
     fn_events: list[asyncio.Event] = []
 
-    @coco.function(runner=runner)
+    @coco_aio.function(runner=runner)
     async def fn_a(x: int) -> int:
         execution_order.append("a")
         event = asyncio.Event()
@@ -414,7 +415,7 @@ async def test_runner_queue_sharing() -> None:
         await event.wait()
         return x + 1
 
-    @coco.function(runner=runner)
+    @coco_aio.function(runner=runner)
     async def fn_b(x: int) -> int:
         execution_order.append("b")
         event = asyncio.Event()
@@ -452,11 +453,11 @@ async def test_runner_multiple_args() -> None:
     """Test runner with multiple positional arguments."""
     runner = MockRunner()
 
-    @coco.function(runner=runner)
+    @coco_aio.function(runner=runner)
     def add(a: int, b: int, c: int) -> int:
         return a + b + c
 
-    result = await add(1, 2, 3)  # type: ignore[misc]
+    result = await add(1, 2, 3)
     assert result == 6
     assert runner.call_count == 1
 
@@ -466,14 +467,14 @@ async def test_runner_with_kwargs() -> None:
     """Test runner with keyword arguments."""
     runner = MockRunner()
 
-    @coco.function(runner=runner)
+    @coco_aio.function(runner=runner)
     def greet(name: str, greeting: str = "Hello") -> str:
         return f"{greeting}, {name}!"
 
-    result1 = await greet("Alice")  # type: ignore[misc]
+    result1 = await greet("Alice")
     assert result1 == "Hello, Alice!"
 
-    result2 = await greet("Bob", greeting="Hi")  # type: ignore[misc]
+    result2 = await greet("Bob", greeting="Hi")
     assert result2 == "Hi, Bob!"
 
     assert runner.call_count == 2
@@ -484,14 +485,14 @@ async def test_runner_mixed_args_kwargs() -> None:
     """Test runner with both positional and keyword arguments."""
     runner = MockRunner()
 
-    @coco.function(runner=runner)
+    @coco_aio.function(runner=runner)
     def format_message(
         template: str, *values: int, prefix: str = "", suffix: str = ""
     ) -> str:
         formatted = template.format(*values)
         return f"{prefix}{formatted}{suffix}"
 
-    result = await format_message("{} + {} = {}", 1, 2, 3, prefix="[", suffix="]")  # type: ignore[misc]
+    result = await format_message("{} + {} = {}", 1, 2, 3, prefix="[", suffix="]")
     assert result == "[1 + 2 = 3]"
     assert runner.call_count == 1
 
@@ -501,7 +502,7 @@ async def test_runner_multiple_args_async() -> None:
     """Test async runner with multiple arguments."""
     runner = MockRunner()
 
-    @coco.function(runner=runner)
+    @coco_aio.function(runner=runner)
     async def async_add(a: int, b: int, c: int) -> int:
         return a + b + c
 
@@ -515,7 +516,7 @@ async def test_runner_with_kwargs_async() -> None:
     """Test async runner with keyword arguments."""
     runner = MockRunner()
 
-    @coco.function(runner=runner)
+    @coco_aio.function(runner=runner)
     async def async_greet(name: str, greeting: str = "Hello") -> str:
         return f"{greeting}, {name}!"
 
@@ -535,12 +536,12 @@ class RunnerProcessor:
     def __init__(self, multiplier: int):
         self.multiplier = multiplier
 
-    @coco.function(runner=coco.GPU)
+    @coco_aio.function(runner=coco.GPU)
     def multiply_sync(self, x: int) -> int:
         """Sync method with runner."""
         return x * self.multiplier
 
-    @coco.function(runner=coco.GPU)
+    @coco_aio.function(runner=coco.GPU)
     async def multiply_async(self, x: int) -> int:
         """Async method with runner."""
         return x * self.multiplier
@@ -551,7 +552,7 @@ async def test_runner_method_sync() -> None:
     """Test runner with sync method (no batching)."""
     proc = RunnerProcessor(3)
 
-    result = await proc.multiply_sync(5)  # type: ignore[misc]
+    result = await proc.multiply_sync(5)
     assert result == 15
 
 
@@ -570,9 +571,9 @@ async def test_runner_method_concurrent() -> None:
     proc = RunnerProcessor(3)
 
     results = await asyncio.gather(
-        proc.multiply_sync(1),  # type: ignore[arg-type]
-        proc.multiply_sync(2),  # type: ignore[arg-type]
-        proc.multiply_sync(3),  # type: ignore[arg-type]
+        proc.multiply_sync(1),
+        proc.multiply_sync(2),
+        proc.multiply_sync(3),
     )
 
     assert sorted(results) == [3, 6, 9]
@@ -588,12 +589,12 @@ async def test_memo_with_batching() -> None:
     """Test that memo=True works with batching (no warning, memo is supported)."""
 
     # This should not raise any warnings - memo is now supported with batching
-    @coco.function(batching=True, memo=True)
+    @coco_aio.function(batching=True, memo=True)
     def batched_with_memo(inputs: list[int]) -> list[int]:
         return [x * 2 for x in inputs]
 
     # Works outside of component context (memo just skipped)
-    result = await batched_with_memo(5)  # type: ignore[misc]
+    result = await batched_with_memo(5)
     assert result == 10
 
 
@@ -603,12 +604,12 @@ async def test_memo_with_runner() -> None:
     runner = MockRunner()
 
     # This should not raise any warnings - memo is now supported with runner
-    @coco.function(runner=runner, memo=True)
+    @coco_aio.function(runner=runner, memo=True)
     def runner_with_memo(x: int) -> int:
         return x + 1
 
     # Works outside of component context (memo just skipped)
-    result = await runner_with_memo(5)  # type: ignore[misc]
+    result = await runner_with_memo(5)
     assert result == 6
     assert runner.call_count == 1
 
@@ -622,7 +623,7 @@ async def test_memo_with_runner() -> None:
 # ============================================================================
 
 
-@coco.function(runner=coco.GPU)
+@coco_aio.function(runner=coco.GPU)
 def _gpu_add_one(x: int) -> int:
     """GPU runner test function."""
     return x + 1
@@ -631,11 +632,11 @@ def _gpu_add_one(x: int) -> int:
 @pytest.mark.asyncio
 async def test_gpu_runner_basic() -> None:
     """Test basic GPU runner functionality with subprocess."""
-    result = await _gpu_add_one(5)  # type: ignore[misc]
+    result = await _gpu_add_one(5)
     assert result == 6
 
 
-@coco.function(batching=True, runner=coco.GPU)
+@coco_aio.function(batching=True, runner=coco.GPU)
 def _gpu_double_batch(inputs: list[int]) -> list[int]:
     """GPU runner + batching test function."""
     return [x * 2 for x in inputs]
@@ -644,11 +645,11 @@ def _gpu_double_batch(inputs: list[int]) -> list[int]:
 @pytest.mark.asyncio
 async def test_gpu_runner_with_batching() -> None:
     """Test GPU runner combined with batching - subprocess must pickle the batch function."""
-    result = await _gpu_double_batch(5)  # type: ignore[misc]
+    result = await _gpu_double_batch(5)
     assert result == 10
 
 
-@coco.function(batching=True, max_batch_size=10, runner=coco.GPU)
+@coco_aio.function(batching=True, max_batch_size=10, runner=coco.GPU)
 def _gpu_double_batch_concurrent(inputs: list[int]) -> list[int]:
     """GPU runner + batching concurrent test function."""
     return [x * 2 for x in inputs]
@@ -658,9 +659,9 @@ def _gpu_double_batch_concurrent(inputs: list[int]) -> list[int]:
 async def test_gpu_runner_with_batching_concurrent() -> None:
     """Test GPU runner + batching with concurrent calls."""
     results = await asyncio.gather(
-        _gpu_double_batch_concurrent(1),  # type: ignore[arg-type]
-        _gpu_double_batch_concurrent(2),  # type: ignore[arg-type]
-        _gpu_double_batch_concurrent(3),  # type: ignore[arg-type]
+        _gpu_double_batch_concurrent(1),
+        _gpu_double_batch_concurrent(2),
+        _gpu_double_batch_concurrent(3),
     )
 
     assert sorted(results) == [2, 4, 6]
@@ -676,7 +677,7 @@ class GPUBatchedProcessor:
     def __init__(self, multiplier: int):
         self.multiplier = multiplier
 
-    @coco.function(batching=True, runner=coco.GPU)
+    @coco_aio.function(batching=True, runner=coco.GPU)
     def multiply(self, inputs: list[int]) -> list[int]:
         """Batched method that multiplies inputs, runs in subprocess."""
         return [x * self.multiplier for x in inputs]
@@ -687,7 +688,7 @@ async def test_gpu_runner_with_batching_method() -> None:
     """Test GPU runner + batching with a method (self parameter)."""
     proc = GPUBatchedProcessor(3)
 
-    result = await proc.multiply(5)  # type: ignore[misc]
+    result = await proc.multiply(5)
     assert result == 15
 
 
@@ -697,9 +698,9 @@ async def test_gpu_runner_with_batching_method_concurrent() -> None:
     proc = GPUBatchedProcessor(3)
 
     results = await asyncio.gather(
-        proc.multiply(1),  # type: ignore[arg-type]
-        proc.multiply(2),  # type: ignore[arg-type]
-        proc.multiply(3),  # type: ignore[arg-type]
+        proc.multiply(1),
+        proc.multiply(2),
+        proc.multiply(3),
     )
 
     assert sorted(results) == [3, 6, 9]

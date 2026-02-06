@@ -58,15 +58,42 @@ AnyCallable: TypeAlias = Callable[P, R_co] | AsyncCallable[P, R_co]
 
 if TYPE_CHECKING:
 
+    class _AsyncBatchedDecorator(Protocol):
+        """Protocol for batched function decorator used by @cocoindex.function.
+
+        Only accepts async underlying functions, since @cocoindex.function preserves
+        sync/async and batching requires an async interface.
+
+        Transforms:
+        - Async: Callable[[list[T]], Awaitable[list[U]]] -> Callable[[T], Awaitable[U]]
+
+        For methods (functions with self parameter), the type transformation
+        is handled at runtime via descriptor protocol, but static typing is less
+        precise. The decorated method will work correctly when called on an instance.
+        """
+
+        # Async standalone functions (single list[T] parameter)
+        @overload
+        def __call__(
+            self, fn: Callable[[list[T]], Awaitable[list[U]]]
+        ) -> AsyncFunction[[T], U]: ...
+        # Sync standalone functions (single list[T] parameter) - still returns AsyncFunction
+        @overload
+        def __call__(
+            self, fn: Callable[[list[T]], list[U]]
+        ) -> AsyncFunction[[T], U]: ...
+        # Methods with self parameter
+        def __call__(self, fn: Any) -> Any: ...
+
     class _BatchedDecorator(Protocol):
-        """Protocol for batched function decorator.
+        """Protocol for batched function decorator used by @cocoindex.asyncio.function.
+
+        Accepts both sync and async underlying functions, since @cocoindex.asyncio.function
+        always ensures the result is async.
 
         Transforms:
         - Sync: Callable[[list[T]], list[U]] -> Callable[[T], Awaitable[U]]
         - Async: Callable[[list[T]], Awaitable[list[U]]] -> Callable[[T], Awaitable[U]]
-
-        Note: With batching=True or runner specified, the decorated function
-        is ALWAYS async, regardless of whether the underlying function is sync or async.
 
         For methods (functions with self parameter), the type transformation
         is handled at runtime via descriptor protocol, but static typing is less
@@ -92,21 +119,6 @@ if TYPE_CHECKING:
         def __call__(  # type: ignore[overload-overlap]
             self, fn: Callable[[SelfT, list[T]], list[U]]
         ) -> AsyncFunction[[SelfT, T], U]: ...
-        def __call__(self, fn: Any) -> Any: ...
-
-    class _RunnerDecorator(Protocol):
-        """Protocol for runner function decorator (without batching).
-
-        With runner specified, the decorated function is ALWAYS async,
-        regardless of whether the underlying function is sync or async.
-        """
-
-        @overload
-        def __call__(
-            self, fn: Callable[P, Coroutine[Any, Any, R_co]]
-        ) -> AsyncFunction[P, R_co]: ...
-        @overload
-        def __call__(self, fn: Callable[P, R_co]) -> AsyncFunction[P, R_co]: ...
         def __call__(self, fn: Any) -> Any: ...
 
 
@@ -163,9 +175,8 @@ def _build_sync_core_processor(
 class SyncFunction(Function[P, R_co]):
     """Sync function with optional memoization.
 
-    Note: Batching/runner support is handled by AsyncFunction. When batching or
-    runner is specified, FunctionBuilder always creates AsyncFunction even for
-    sync underlying functions.
+    Does not support batching or runner — those require an async interface
+    and produce AsyncFunction (via @cocoindex.asyncio.function).
     """
 
     __slots__ = ("_fn", "_memo", "_processor_info")
@@ -323,7 +334,7 @@ class AsyncFunction(Function[P, R_co]):
         "_batchers_lock",
     )
 
-    _orig_async_fn: Callable[..., Coroutine[Any, Any, Any]] | None
+    _orig_async_fn: AsyncCallable[..., Any] | None
     _orig_sync_fn: Callable[..., Any] | None
     _memo: bool
     _processor_info: core.ComponentProcessorInfo
@@ -338,7 +349,7 @@ class AsyncFunction(Function[P, R_co]):
 
     def __init__(
         self,
-        async_fn: Callable[..., Coroutine[Any, Any, Any]] | None,
+        async_fn: AsyncCallable[..., Any] | None,
         sync_fn: Callable[..., Any] | None,
         *,
         memo: bool,
@@ -571,7 +582,11 @@ class AsyncFunction(Function[P, R_co]):
                     self._queues[batcher_key] = core.BatchQueue()
                 queue = self._queues[batcher_key]
 
-            options = core.BatchingOptions(max_batch_size=self._max_batch_size)
+            # When runner is specified without batching, use max_batch_size=1
+            # to process items individually through the shared queue.
+            options = core.BatchingOptions(
+                max_batch_size=self._max_batch_size if self._batching else 1
+            )
             if inspect.iscoroutinefunction(batch_runner_fn):
                 batcher = core.Batcher.new_async(
                     queue, options, batch_runner_fn, async_ctx
@@ -628,27 +643,7 @@ class AsyncFunction(Function[P, R_co]):
 # ============================================================================
 
 
-class SyncFunctionBuilder:
-    def __init__(
-        self,
-        *,
-        memo: bool = False,
-    ) -> None:
-        self._memo = memo
-
-    def __call__(self, fn: Callable[P, R_co]) -> SyncFunction[P, R_co]:
-        if inspect.iscoroutinefunction(fn):
-            raise ValueError(
-                "Async functions are not supported by @cocoindex.function decorator. "
-                "Please use @cocoindex.asyncio.function instead."
-            )
-
-        wrapper = SyncFunction(fn, memo=self._memo)
-        functools.update_wrapper(wrapper, fn)
-        return wrapper  # type: ignore[no-any-return]
-
-
-class FunctionBuilder:
+class _GenericFunctionBuilder:
     def __init__(
         self,
         *,
@@ -662,133 +657,117 @@ class FunctionBuilder:
         self._max_batch_size = max_batch_size
         self._runner = runner
 
+    def _build_sync(self, fn: Callable[P, R_co]) -> SyncFunction[P, R_co]:
+        if self._batching or self._runner is not None:
+            raise ValueError(
+                "Batching and runner require the function to be async. "
+                "Use @cocoindex.asyncio.function instead, or rewrite the function to be async."
+            )
+        wrapper = SyncFunction(fn, memo=self._memo)
+        functools.update_wrapper(wrapper, fn)
+        return wrapper
+
+    def _build_async(
+        self,
+        fn: AnyCallable[P, R_co],
+    ) -> AsyncFunction[P, R_co]:
+        async_fn, sync_fn = (
+            (fn, None) if inspect.iscoroutinefunction(fn) else (None, fn)
+        )
+        wrapper = AsyncFunction[P, R_co](
+            async_fn,
+            sync_fn,
+            memo=self._memo,
+            batching=self._batching,
+            max_batch_size=self._max_batch_size,
+            runner=self._runner,
+        )
+        functools.update_wrapper(wrapper, fn)
+        return wrapper
+
+
+# Only supports sync function -> sync function
+class _SyncFunctionBuilder(_GenericFunctionBuilder):
+    def __call__(self, fn: Callable[P, R_co]) -> SyncFunction[P, R_co]:
+        if inspect.iscoroutinefunction(fn):
+            raise ValueError(
+                "Async functions are not supported by @cocoindex.function decorator. "
+                "Please use @cocoindex.asyncio.function instead."
+            )
+        return self._build_sync(fn)
+
+
+# Supports sync function -> sync function and async function -> async function
+class _AutoFunctionBuilder(_GenericFunctionBuilder):
+    def __init__(self, *, memo: bool = False) -> None:
+        super().__init__(memo=memo)
+
     @overload
     def __call__(  # type: ignore[overload-overlap]
-        self,
-        fn: Callable[P, Coroutine[Any, Any, R_co]],
+        self, fn: AsyncCallable[P, R_co]
     ) -> AsyncFunction[P, R_co]: ...
     @overload
-    def __call__(  # type: ignore[overload-overlap]
+    def __call__(self, fn: Callable[P, R_co]) -> SyncFunction[P, R_co]: ...
+    def __call__(
         self, fn: Callable[P, R_co]
-    ) -> SyncFunction[P, R_co]: ...
+    ) -> AsyncFunction[P, R_co] | SyncFunction[P, R_co]:
+        if inspect.iscoroutinefunction(fn):
+            return self._build_async(fn)
+        return self._build_sync(fn)
+
+
+# Supports async function -> async function and sync function -> async function
+class _AsyncFunctionBuilder(_GenericFunctionBuilder):
+    @overload
     def __call__(
         self,
-        fn: Callable[P, Coroutine[Any, Any, R_co]] | Callable[P, R_co],
-    ) -> SyncFunction[P, R_co] | AsyncFunction[P, R_co]:
-        wrapper: Any
-
-        # When runner is specified without batching, use max_batch_size=1
-        # to process items individually through the shared queue.
-        max_batch_size = self._max_batch_size
-        if not self._batching and self._runner is not None:
-            max_batch_size = 1
-
-        # When batching or runner is specified, always return AsyncFunction
-        # to avoid blocking threads while waiting for batch/runner execution.
-        # The underlying function can be sync or async - wrapped appropriately.
-        if self._batching or self._runner is not None:
-            if inspect.iscoroutinefunction(fn):
-                wrapper = AsyncFunction(
-                    fn,
-                    None,
-                    memo=self._memo,
-                    batching=self._batching,
-                    max_batch_size=max_batch_size,
-                    runner=self._runner,
-                )
-            else:
-                wrapper = AsyncFunction(
-                    None,
-                    fn,
-                    memo=self._memo,
-                    batching=self._batching,
-                    max_batch_size=max_batch_size,
-                    runner=self._runner,
-                )
-
-        elif inspect.iscoroutinefunction(fn):
-            wrapper = AsyncFunction(
-                fn,
-                None,
-                memo=self._memo,
-                batching=self._batching,
-                max_batch_size=max_batch_size,
-                runner=self._runner,
-            )
-        else:
-            wrapper = SyncFunction(fn, memo=self._memo)
-
-        functools.update_wrapper(wrapper, fn)
-        return wrapper  # type: ignore[no-any-return]
+        fn: AsyncCallable[P, R_co],
+    ) -> AsyncFunction[P, R_co]: ...
+    @overload
+    def __call__(
+        self,
+        fn: Callable[P, R_co],
+    ) -> AsyncFunction[P, R_co]: ...
+    def __call__(
+        self,
+        fn: AnyCallable[P, R_co],
+    ) -> AsyncFunction[P, R_co]:
+        return self._build_async(fn)
 
 
-# Overload for batching=True without fn (returns decorator that transforms list[T] -> T)
-# Always returns AsyncFunction regardless of underlying fn being sync/async
+# Without batching / runner, supports both sync and async functions
 @overload
 def function(
-    fn: None = None,
-    /,
     *,
+    memo: bool = False,
+) -> _AutoFunctionBuilder: ...
+# Overload for batching=True
+@overload
+def function(
+    *,
+    memo: bool = False,
     batching: Literal[True],
     max_batch_size: int | None = None,
-    memo: bool = False,
     runner: Runner | None = None,
-) -> _BatchedDecorator: ...
-
-
-# Overload for runner specified without batching (returns async decorator)
-# Always returns AsyncFunction regardless of underlying fn being sync/async
+) -> _AsyncBatchedDecorator: ...
+# With batching / runner, only supports sync functions
 @overload
 def function(
-    fn: None = None,
-    /,
-    *,
-    runner: Runner,
-    memo: bool = False,
-    batching: Literal[False] = False,
-    max_batch_size: int | None = None,
-) -> _RunnerDecorator: ...
-
-
-# Overload for keyword-only args without batching or runner
-@overload
-def function(
-    fn: None = None,
-    /,
     *,
     memo: bool = False,
     batching: Literal[False] = False,
     max_batch_size: int | None = None,
-    runner: None = None,
-) -> FunctionBuilder: ...
-
-
-# Overload for direct async function decoration (no batching, no runner)
+    runner: Runner | None = None,
+) -> _SyncFunctionBuilder: ...
+# Overloads for direct function decoration
 @overload
 def function(  # type: ignore[overload-overlap]
-    fn: Callable[P, Coroutine[Any, Any, R_co]],
-    /,
-    *,
-    memo: bool = False,
-    batching: Literal[False] = False,
-    max_batch_size: int | None = None,
-    runner: None = None,
+    fn: AsyncCallable[P, R_co], /
 ) -> AsyncFunction[P, R_co]: ...
-
-
-# Overload for direct sync function decoration (no batching, no runner)
 @overload
-def function(  # type: ignore[overload-overlap]
-    fn: Callable[P, R_co],
-    /,
-    *,
-    memo: bool = False,
-    batching: Literal[False] = False,
-    max_batch_size: int | None = None,
-    runner: None = None,
-) -> SyncFunction[P, R_co]: ...
+def function(fn: Callable[P, R_co], /) -> SyncFunction[P, R_co]: ...
 def function(
-    fn: Any = None,
+    fn: Callable[P, R_co] | None = None,
     /,
     *,
     memo: bool = False,
@@ -796,7 +775,11 @@ def function(
     max_batch_size: int | None = None,
     runner: Runner | None = None,
 ) -> Any:
-    """Decorator for CocoIndex functions.
+    """Decorator for CocoIndex functions (exposed as @cocoindex.function).
+
+    Preserves the sync/async nature of the underlying function:
+    - Sync function -> SyncFunction (sync)
+    - Async function -> AsyncFunction (async)
 
     Args:
         fn: The function to decorate (optional, for use without parentheses)
@@ -805,21 +788,88 @@ def function(
         max_batch_size: Maximum batch size (only with batching=True)
         runner: Runner to execute the function (e.g., GPU for subprocess)
 
-    When batching is enabled:
-        - The function should take list[T] as input and return list[R]
-        - The external signature becomes T -> R (single input, single output)
-        - Multiple concurrent calls are batched together
-
-    When runner is specified:
-        - The function executes via the runner (e.g., in subprocess for GPU)
-        - All functions using the same runner share a queue
-        - If batching is not enabled, items are processed individually
+    Batching and runner require an async interface. With this decorator, only sync
+    underlying functions are accepted when batching/runner is specified. Use
+    @cocoindex.asyncio.function for sync underlying functions that need batching/runner.
 
     Memoization works with all modes:
         - Without batching/runner: requires ComponentContext
         - With batching/runner: ComponentContext optional, memo checked when available
     """
-    builder = FunctionBuilder(
+    builder = (
+        _SyncFunctionBuilder(
+            memo=memo, batching=batching, max_batch_size=max_batch_size, runner=runner
+        )
+        if batching or runner or max_batch_size is not None
+        else _AutoFunctionBuilder(memo=memo)
+    )
+    if fn is not None:
+        return builder(fn)
+    else:
+        return builder
+
+
+# Overload for batching=True
+@overload
+def async_function(
+    *,
+    memo: bool = False,
+    batching: Literal[True],
+    max_batch_size: int | None = None,
+    runner: Runner | None = None,
+) -> _BatchedDecorator: ...
+
+
+# Overload for keyword-only args without batching
+@overload
+def async_function(
+    *,
+    memo: bool = False,
+    batching: Literal[False] = False,
+    max_batch_size: int | None = None,
+    runner: Runner | None = None,
+) -> _AsyncFunctionBuilder: ...
+
+
+# Overloads for direct function decoration
+@overload
+def async_function(
+    fn: AsyncCallable[P, R_co],
+    /,
+) -> AsyncFunction[P, R_co]: ...
+@overload
+def async_function(
+    fn: Callable[P, R_co],
+    /,
+) -> AsyncFunction[P, R_co]: ...
+def async_function(
+    fn: Any = None,
+    /,
+    *,
+    memo: bool = False,
+    batching: bool = False,
+    max_batch_size: int | None = None,
+    runner: Runner | None = None,
+) -> Any:
+    """Decorator for CocoIndex functions (exposed as @cocoindex.asyncio.function).
+
+    Always yields an async function, equivalent to @cocoindex.function plus ensuring
+    the result is async. Accepts both sync and async underlying functions.
+
+    Args:
+        fn: The function to decorate (optional, for use without parentheses)
+        memo: Enable memoization (skip execution when inputs unchanged)
+        batching: Enable batching (function receives list[T], returns list[R])
+        max_batch_size: Maximum batch size (only with batching=True)
+        runner: Runner to execute the function (e.g., GPU for subprocess)
+
+    Batching and runner are fully supported since the result is always async.
+
+    Memoization works with all modes:
+        - Without batching/runner: requires ComponentContext
+        - With batching/runner: ComponentContext optional, memo checked when available
+    """
+    builder = _AsyncFunctionBuilder(
         memo=memo,
         batching=batching,
         max_batch_size=max_batch_size,

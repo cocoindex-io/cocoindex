@@ -57,9 +57,9 @@ CocoIndex provides both asynchronous and synchronous APIs to fit different appli
 
 The two packages relate as follows:
 
-- **APIs with async/sync variants** — Some core APIs have separate async and sync implementations. For example, the `App` class exists in both packages — `cocoindex.asyncio.App` provides an async `run()` method you call with `await`, while `cocoindex.App` provides a blocking `run()` method.
+- **APIs with async/sync variants** — Some core APIs have separate async and sync implementations. For example, the `App` class exists in both packages — `cocoindex.asyncio.App` provides an async `run()` method you call with `await`, while `cocoindex.App` provides a blocking `run()` method. The `@function` decorator also differs: `@coco.function` preserves sync/async, while `@coco_aio.function` always yields async. See [Function](./function.md#coco-function-vs-coco_aio-function) for details.
 
-- **Shared APIs** — Many APIs are non-blocking and work identically in both contexts. For instance, `component_subpath()` and target state declaration APIs are shared between both packages. Decorators like `@function` and `@lifespan` are also shared — they accept both sync and async functions. You can import these from either `cocoindex.asyncio` or `cocoindex`.
+- **Shared APIs** — Many APIs are non-blocking and work identically in both contexts. For instance, `component_subpath()` and target state declaration APIs are shared between both packages. The `@lifespan` decorator is also shared — it accepts both sync and async functions and can be imported from either package.
 
 ### Mixing sync and async
 
