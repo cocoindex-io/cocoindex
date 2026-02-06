@@ -40,7 +40,6 @@ log = "0.4.28"
 numpy = "0.27.0"
 pgvector = { version = "0.4.1", features = ["sqlx", "halfvec"] }
 pyo3 = { version = "0.27.1", features = [
-    "abi3-py311",
     "auto-initialize",
     "chrono",
     "uuid",
