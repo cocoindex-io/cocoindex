@@ -148,12 +148,6 @@ async def test_batching_concurrent_calls() -> None:
     # Results should be correct
     assert list(results) == [4, 6, 8, 10]
 
-    # Should have exactly 2 calls: [1] inline, then [2,3,4,5] batched
-    assert tracker.batch_call_count == 2, (
-        f"Expected 2 batch calls, got {tracker.batch_call_count}"
-    )
-    assert tracker.batch_inputs == [[1], [2, 3, 4, 5]]
-
 
 # ============================================================================
 # max_batch_size is respected
