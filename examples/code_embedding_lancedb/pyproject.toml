@@ -3,7 +3,7 @@ name = "code-embedding-lancedb-v1"
 version = "0.1.0"
 description = "CocoIndex v1 example: embed code files and store in LanceDB."
 requires-python = ">=3.11"
-dependencies = ["cocoindex[sentence_transformers,lancedb]>=1.0.0a8"]
+dependencies = ["cocoindex[sentence_transformers,lancedb]>=1.0.0a9"]
 
 [tool.uv]
 prerelease = "explicit"
