@@ -90,6 +90,7 @@ build-test = [
     "maturin>=1.10.0,<2.0",
     "pytest",
     "pytest-asyncio",
+    "pytest-timeout",
     "mypy",
     "ruff",
 ]
@@ -148,3 +149,11 @@ disallow_any_generics = false
 disallow_subclassing_any = false
 disallow_untyped_calls = false
 disallow_any_decorated = false
+
+[tool.pytest.ini_options]
+pythonpath = ["python"]
+timeout = 30
+log_cli = true
+log_cli_level = "INFO"
+log_format = "%(asctime)s %(levelname)s %(message)s"
+log_date_format = "%Y-%m-%d %H:%M:%S"
