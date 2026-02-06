@@ -19,7 +19,6 @@ from __future__ import annotations
 
 __all__ = ["IdGenerator", "UuidGenerator", "generate_id", "generate_uuid"]
 
-import time as _time
 import typing as _typing
 import uuid as _uuid
 
@@ -87,7 +86,7 @@ def generate_uuid(_dep: _typing.Any = None) -> _uuid.UUID:
     return _uuid.uuid4()
 
 
-class IdGenerator:
+class IdGenerator(_coco.NotMemoizable):
     """
     Generator for stable unique IDs that produces distinct IDs on each call.
 
@@ -150,7 +149,7 @@ class IdGenerator:
         return _generate_next_id(self._deps_fp, dep_fp, ordinal)
 
 
-class UuidGenerator:
+class UuidGenerator(_coco.NotMemoizable):
     """
     Generator for stable unique UUIDs that produces distinct UUIDs on each call.
 

@@ -81,8 +81,40 @@ Notes:
 - Registration is **MRO-aware**: if you register both a base class and a subclass, the **most specific** match wins.
 - Your key function must return the same kinds of stable objects as `__coco_memo_key__` (small primitives/tuples).
 
+## Prevent memoization for stateful types
+
+Some types maintain internal state that makes memoization semantically incorrect. For example, a generator that tracks call counts would produce wrong results if memoized.
+
+### Inherit from `NotMemoizable` (when you control the type)
+
+```python
+import cocoindex as coco
+
+class MyStatefulGenerator(coco.NotMemoizable):
+    def __init__(self) -> None:
+        self._counter = 0
+
+    def next_value(self) -> int:
+        self._counter += 1
+        return self._counter
+```
+
+### Register as not memoizable (when you don't control the type)
+
+For third-party types you can't modify:
+
+```python
+import cocoindex as coco
+from some_library import StatefulGenerator
+
+coco.register_not_memoizable(StatefulGenerator)
+```
+
+In either case, attempting to use the type as a memo key raises a clear error.
+
 ## Best practices
 
 - **Always include freshness for external resources**: e.g. file `(path, mtime_ns, size)`, HTTP `(url, etag)`, DB `(pk, updated_at)`.
 - **Keep keys small**: use identifiers + versions, not full payloads.
 - **Keys must be deterministic across processes**: no `id(obj)`, no pointer addresses, no random values.
+- **Mark stateful types as `NotMemoizable`**: prevent subtle bugs from incorrect memoization.
