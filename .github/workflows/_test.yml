@@ -44,14 +44,6 @@ jobs:
 
         - run: rustup toolchain install stable --profile minimal
 
-        - name: Setup Rust Cache
-          uses: Swatinem/rust-cache@v2
-          with:
-            key: rust-${{ matrix.platform.runner }}-${{ matrix.platform.python-version }}-${{ matrix.platform.free-threaded }}
-            cache-targets: 'true'
-            cache-all-crates: 'false'
-            cache-workspace-crates: 'false'
-
         - uses: actions/setup-python@v6
           id: setup_python
           with:
@@ -64,6 +56,14 @@ jobs:
           if: matrix.platform.free-threaded
           run: |
             python -c "import sys; print(f'GIL enabled: {sys._is_gil_enabled()}'); sys.exit(1) if sys._is_gil_enabled() else None"
+
+        - name: Setup Rust Cache
+          uses: Swatinem/rust-cache@v2
+          with:
+            key: rust-${{ matrix.platform.runner }}-${{ steps.setup_python.outputs.python-version }}-${{ matrix.platform.free-threaded }}
+            cache-targets: 'true'
+            cache-all-crates: 'false'
+            cache-workspace-crates: 'false'
 
         - name: Install uv
           uses: astral-sh/setup-uv@v7
