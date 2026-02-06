@@ -1,4 +1,4 @@
-<h1 align="center">SEC EDGAR Financial Analytics</h1> 
+<h1 align="center">SEC EDGAR Financial Analytics</h1>
 
 
 <div align="center">
@@ -17,7 +17,7 @@
 </div>
 
 <div align="center">
-  
+
 [Notebook](https://colab.research.google.com/github/cocoindex-io/cocoindex/blob/main/examples/sec_edgar_analytics/tutorial.ipynb)
 
 </div>
