@@ -23,7 +23,10 @@ from cocoindex._internal.environment import (
     get_registered_environment_infos,
 )
 from cocoindex._internal.setting import get_default_db_path
-from cocoindex.inspect import list_stable_paths_sync
+from cocoindex.inspect import (
+    list_stable_paths_sync,
+    list_stable_paths_with_types_sync,
+)
 from cocoindex._internal.stable_path import StablePath, StableKey, ROOT_PATH
 
 
@@ -476,21 +479,21 @@ def _render_children(
     return lines
 
 
-def _render_paths_as_tree(paths: list[StablePath]) -> str:
+def _render_paths_as_tree(
+    paths: list[StablePath], component_paths: set[StablePath]
+) -> str:
     """
     Render stable paths as a tree with component annotations.
 
     Args:
-        paths: List of stable paths (all are components)
+        paths: List of stable paths (includes directory nodes and component nodes)
+        component_paths: Set of stable paths that are true components
 
     Returns:
         Formatted tree string
     """
     if not paths:
         return "Found 0 stable paths:"
-
-    # Build component set for fast lookup
-    component_paths = {path for path in paths}
 
     # Build tree structure - set root component status upfront
     root = TreeNode(is_component=(ROOT_PATH in component_paths))
@@ -609,12 +612,15 @@ def show(app_target: str, tree: bool) -> None:
     `APP_TARGET`: `path/to/app.py`, `module`, `path/to/app.py:app_name`, or `module:app_name`.
     """
     app = _load_app(app_target)
-    paths = list_stable_paths_sync(app)
 
     if tree:
-        output = _render_paths_as_tree(paths)
+        items = list_stable_paths_with_types_sync(app)
+        paths = [p for (p, _is_component) in items]
+        component_paths = {p for (p, is_component) in items if is_component}
+        output = _render_paths_as_tree(paths, component_paths)
         click.echo(output)
     else:
+        paths = list_stable_paths_sync(app)
         click.echo(f"Found {len(paths)} stable paths:")
         for path in paths:
             click.echo(f"  {path}")

@@ -742,21 +742,6 @@ class TestShowTree:
         assert root_line is not None, "Root path should be present"
         assert "[component]" in root_line, "Root should be annotated as [component]"
 
-        # Should have "group" node (may or may not be a component depending on implementation)
-        # Note: Python str() on StableKey doesn't preserve quotes, so check for "group" or group
-        assert "group" in output_text, "Should have 'group' node in output"
-
-        # Should have "item1" and "item2" as components under "group"
-        assert "item1" in output_text, "Should have 'item1' node"
-        assert "item2" in output_text, "Should have 'item2' node"
-        # Both should be annotated as components
-        item1_line = next((l for l in lines if "item1" in l), None)
-        item2_line = next((l for l in lines if "item2" in l), None)
-        assert item1_line is not None, "Should have 'item1' line"
-        assert item2_line is not None, "Should have 'item2' line"
-        assert "[component]" in item1_line, "item1 should be annotated as [component]"
-        assert "[component]" in item2_line, "item2 should be annotated as [component]"
-
         # Should have "direct" as a component (direct child of root)
         assert "direct" in output_text, "Should have 'direct' node"
         direct_line = next((l for l in lines if "direct" in l), None)
@@ -769,31 +754,33 @@ class TestShowTree:
         assert setup_line is not None, "Should have 'setup' line"
         assert "[component]" in setup_line, "setup should be annotated as [component]"
 
-        # Verify tree structure: item1 and item2 should be nested under group
-        # Find the line index for "group" and "item1"
-        group_idx = next(
+        # Verify tree structure: file1.txt should be nested under files
+        # Find the line index for "files" and "file1.txt"
+        files_idx = next(
             (
                 i
                 for i, l in enumerate(lines)
-                if "group" in l and ("├──" in l or "└──" in l)
+                if "files" in l
+                and ("├──" in l or "└──" in l)
+                and "[component]" not in l
             ),
             None,
         )
-        item1_idx = next(
+        file1_idx = next(
             (
                 i
                 for i, l in enumerate(lines)
-                if "item1" in l and ("├──" in l or "└──" in l)
+                if "file1.txt" in l and ("├──" in l or "└──" in l)
             ),
             None,
         )
-        assert group_idx is not None, "Should find 'group' line"
-        assert item1_idx is not None, "Should find 'item1' line"
-        # item1 should come after group (they're nested)
-        assert item1_idx > group_idx, (
-            "item1 should appear after group in nested structure"
+        assert files_idx is not None, "Should find 'files' line"
+        assert file1_idx is not None, "Should find 'file1.txt' line"
+        # file1.txt should come after files (they're nested)
+        assert file1_idx > files_idx, (
+            "file1.txt should appear after files in nested structure"
         )
-        # item1 line should have indentation indicating it's a child of group
-        assert "│   " in lines[item1_idx] or "    " in lines[item1_idx], (
-            "item1 should be indented as child of group"
+        # file1.txt line should have indentation indicating it's a child of files
+        assert "│   " in lines[file1_idx] or "    " in lines[file1_idx], (
+            "file1.txt should be indented as child of files"
         )

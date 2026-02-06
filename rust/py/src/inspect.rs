@@ -13,6 +13,16 @@ pub fn list_stable_paths(app: &PyApp) -> PyResult<Vec<PyStablePath>> {
 }
 
 #[pyfunction]
+pub fn list_stable_paths_with_types(app: &PyApp) -> PyResult<Vec<(PyStablePath, bool)>> {
+    let items = db_inspect::list_stable_paths_with_types(&app.0).into_py_result()?;
+    let out = items
+        .into_iter()
+        .map(|(path, is_component)| (PyStablePath(path), is_component))
+        .collect();
+    Ok(out)
+}
+
+#[pyfunction]
 pub fn list_app_names(env: &PyEnvironment) -> PyResult<Vec<String>> {
     db_inspect::list_app_names(&env.0).into_py_result()
 }

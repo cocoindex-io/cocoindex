@@ -2,8 +2,9 @@ use crate::prelude::*;
 
 use crate::engine::environment::Environment;
 use crate::engine::{app::App, profile::EngineProfile};
-use crate::state::db_schema::DbEntryKey;
-use crate::state::stable_path::{StablePath, StablePathPrefix};
+use crate::state::db_schema::{self, DbEntryKey};
+use crate::state::stable_path::{StablePath, StablePathPrefix, StablePathRef};
+use cocoindex_utils::deser::from_msgpack_slice;
 use heed::types::{DecodeIgnore, Str};
 
 pub fn list_stable_paths<Prof: EngineProfile>(app: &App<Prof>) -> Result<Vec<StablePath>> {
@@ -29,6 +30,54 @@ pub fn list_stable_paths<Prof: EngineProfile>(app: &App<Prof>) -> Result<Vec<Sta
         result.push(path);
     }
     Ok(result)
+}
+
+/// List stable paths along with whether each node is a component
+pub fn list_stable_paths_with_types<Prof: EngineProfile>(
+    app: &App<Prof>,
+) -> Result<Vec<(StablePath, bool)>> {
+    let paths = list_stable_paths(app)?;
+    let db = app.app_ctx().db();
+    let txn = app.app_ctx().env().db_env().read_txn()?;
+
+    let mut out: Vec<(StablePath, bool)> = Vec::with_capacity(paths.len());
+    for path in paths {
+        if path.as_ref().is_empty() {
+            out.push((path, true));
+            continue;
+        }
+
+        let path_ref: StablePathRef<'_> = path.as_ref();
+        let Some((parent_ref, key)) = path_ref.split_parent() else {
+            out.push((path, true));
+            continue;
+        };
+
+        let node_type = get_path_node_type(db, &txn, parent_ref, key)?
+            .unwrap_or(db_schema::StablePathNodeType::Directory);
+        out.push((path, node_type == db_schema::StablePathNodeType::Component));
+    }
+
+    Ok(out)
+}
+
+fn get_path_node_type(
+    db: &db_schema::Database,
+    rtxn: &heed::RoTxn<'_>,
+    parent_path: StablePathRef<'_>,
+    key: &crate::state::stable_path::StableKey,
+) -> Result<Option<db_schema::StablePathNodeType>> {
+    let encoded_db_key = db_schema::DbEntryKey::StablePath(
+        parent_path.into(),
+        db_schema::StablePathEntryKey::ChildExistence(key.clone()),
+    )
+    .encode()?;
+    let db_value = db.get(rtxn, encoded_db_key.as_slice())?;
+    let Some(db_value) = db_value else {
+        return Ok(None);
+    };
+    let child_existence_info: db_schema::ChildExistenceInfo = from_msgpack_slice(db_value)?;
+    Ok(Some(child_existence_info.node_type))
 }
 
 pub fn list_app_names<Prof: EngineProfile>(env: &Environment<Prof>) -> Result<Vec<String>> {
