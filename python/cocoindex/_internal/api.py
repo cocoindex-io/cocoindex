@@ -22,7 +22,7 @@ from .function import function
 
 from .runner import GPU, Runner
 
-from .memo_key import register_memo_key_function
+from .memo_key import register_memo_key_function, NotMemoizable
 
 from .pending_marker import PendingS, ResolvedS, MaybePendingS, ResolvesTo
 
@@ -70,6 +70,7 @@ __all__ = [
     "Runner",
     # .memo_key
     "register_memo_key_function",
+    "NotMemoizable",
     # .pending_marker
     "MaybePendingS",
     "PendingS",
