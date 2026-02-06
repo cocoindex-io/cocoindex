@@ -109,10 +109,16 @@ def list_app_names(env: Environment) -> list[str]: ...
 class App:
     def __new__(cls, name: str, env: Environment) -> App: ...
     def update(
-        self, root_processor: ComponentProcessor[T_co], report_to_stdout: bool, full_reprocess: bool
+        self,
+        root_processor: ComponentProcessor[T_co],
+        report_to_stdout: bool,
+        full_reprocess: bool,
     ) -> T_co: ...
     async def update_async(
-        self, root_processor: ComponentProcessor[T_co], report_to_stdout: bool, full_reprocess: bool
+        self,
+        root_processor: ComponentProcessor[T_co],
+        report_to_stdout: bool,
+        full_reprocess: bool,
     ) -> T_co: ...
     def drop(self, report_to_stdout: bool) -> None: ...
     def drop_async(self, report_to_stdout: bool) -> Coroutine[Any, Any, None]: ...
@@ -270,20 +276,82 @@ class RWLockReadGuard:
     def release(self) -> None: ...
     def __enter__(self) -> "RWLockReadGuard": ...
     def __exit__(
-        self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: Any
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: Any,
     ) -> None: ...
     def __aenter__(self) -> Coroutine[Any, Any, "RWLockReadGuard"]: ...
     def __aexit__(
-        self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: Any
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: Any,
     ) -> Coroutine[Any, Any, None]: ...
 
 class RWLockWriteGuard:
     def release(self) -> None: ...
     def __enter__(self) -> "RWLockWriteGuard": ...
     def __exit__(
-        self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: Any
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: Any,
     ) -> None: ...
     def __aenter__(self) -> Coroutine[Any, Any, "RWLockWriteGuard"]: ...
     def __aexit__(
-        self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: Any
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: Any,
     ) -> Coroutine[Any, Any, None]: ...
+
+########################################################
+# Batching Infrastructure
+########################################################
+
+# --- BatchingOptions ---
+class BatchingOptions:
+    """Options for batching behavior."""
+
+    max_batch_size: int | None
+
+    def __new__(cls, max_batch_size: int | None = None) -> "BatchingOptions": ...
+
+# --- BatchQueue ---
+class BatchQueue:
+    """A shared queue that processes batches in FIFO order.
+
+    Multiple batchers can share the same queue. Each batcher provides its own
+    runner function, and batches are processed using the runner from the batcher
+    that created them.
+    """
+
+    def __new__(cls) -> "BatchQueue": ...
+
+# --- Batcher ---
+class Batcher:
+    """A batcher that collects inputs and submits them to a shared queue.
+
+    Each batcher maintains at most one non-full, non-sealed batch in the queue.
+    When inputs are submitted, they are added to the current batch or a new batch is created.
+
+    Multiple batchers can share the same queue with different runner functions.
+    Each batch uses the runner function from the batcher that created it.
+    """
+
+    @staticmethod
+    def new_sync(
+        queue: BatchQueue,
+        options: BatchingOptions,
+        runner_fn: Callable[[list[Any]], list[Any]],
+        async_ctx: AsyncContext,
+    ) -> "Batcher": ...
+    @staticmethod
+    def new_async(
+        queue: BatchQueue,
+        options: BatchingOptions,
+        runner_fn: Callable[[list[Any]], Coroutine[Any, Any, list[Any]]],
+        async_ctx: AsyncContext,
+    ) -> "Batcher": ...
+    def run(self, input: Any) -> Coroutine[Any, Any, Any]: ...

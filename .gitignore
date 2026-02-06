@@ -30,3 +30,5 @@ uv.lock
 examples/**/eval_*
 examples/**/uv.lock
 **/lancedb_data/
+
+.cocoindex_code/

@@ -97,7 +97,7 @@ async def _emit_chunk(
             id=id,
             filename=filename,
             text=chunk.text,
-            embedding=await _embedder.embed_async(chunk.text),
+            embedding=await _embedder.embed(chunk.text),
         ),
     )
 
@@ -145,7 +145,7 @@ app = coco_aio.App(
 
 
 async def query_once(query: str, *, top_k: int = TOP_K) -> None:
-    query_vec = await _embedder.embed_async(query)
+    query_vec = await _embedder.embed(query)
     pool = _state.pool
     assert pool is not None
 

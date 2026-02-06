@@ -34,11 +34,13 @@ impl PyComponentProcessorContext {
     /// Returns:
     ///     The next unique ID as an integer.
     #[pyo3(signature = (key=None))]
-    fn next_id(&self, key: Option<PyStableKey>) -> PyResult<u64> {
-        self.0
-            .app_ctx()
-            .next_id(key.as_ref().map(|k| &k.0))
-            .into_py_result()
+    fn next_id(&self, py: Python<'_>, key: Option<PyStableKey>) -> PyResult<u64> {
+        py.detach(|| {
+            self.0
+                .app_ctx()
+                .next_id(key.as_ref().map(|k| &k.0))
+                .into_py_result()
+        })
     }
 }
 

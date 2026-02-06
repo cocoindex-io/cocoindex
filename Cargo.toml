@@ -30,6 +30,7 @@ derivative = "2.2.0"
 encoding_rs = "0.8.35"
 env_logger = "0.11.8"
 futures = "0.3.31"
+hashlink = "0.11"
 hex = "0.4.3"
 indexmap = { version = "2.12.1", features = ["serde"] }
 indicatif = "0.17.11"

@@ -72,12 +72,13 @@ async def process_chunk(
     chunk: Chunk,
     table: postgres.TableTarget[CodeEmbedding],
 ) -> None:
+    embedding = await _embedder.embed(chunk.text)
     table.declare_row(
         row=CodeEmbedding(
             id=id,
             filename=str(filename),
             code=chunk.text,
-            embedding=await _embedder.embed_async(chunk.text),
+            embedding=embedding,
             start_line=chunk.start.line,
             end_line=chunk.end.line,
         ),
@@ -140,6 +141,7 @@ def app_main(sourcedir: pathlib.Path) -> None:
             file,
             target_table,
         )
+    # await asyncio.gather(*(process_file(file, None) for file in files))
 
 
 app = coco_aio.App(
@@ -155,7 +157,7 @@ app = coco_aio.App(
 
 
 async def query_once(pool: asyncpg.Pool, query: str, *, top_k: int = TOP_K) -> None:
-    query_vec = await _embedder.embed_async(query)
+    query_vec = await _embedder.embed(query)
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             f"""
@@ -194,6 +196,12 @@ async def query() -> None:
             await query_once(pool, q)
 
 
+async def update_index() -> None:
+    async with coco_aio.runtime():
+        await app.update(report_to_stdout=True)
+
+
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "query":
         asyncio.run(query())
+    asyncio.run(update_index())

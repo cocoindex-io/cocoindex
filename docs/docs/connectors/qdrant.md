@@ -292,7 +292,7 @@ async def process_document(
     text: str,
     target: qdrant.CollectionTarget,
 ) -> None:
-    embedding = await embedder.embed_async(text)
+    embedding = await embedder.embed(text)
 
     point = qdrant.PointStruct(
         id=doc_id,

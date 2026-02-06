@@ -204,7 +204,7 @@ async def process_file(
                 ),
             )
 
-    title_embedding = await _embedder.embed_async(metadata.title)
+    title_embedding = await _embedder.embed(metadata.title)
     embedding_table.declare_row(
         row=MetadataEmbeddingRow(
             id=uuid.uuid4(),
@@ -229,7 +229,7 @@ async def process_file(
                 filename=str(file.file_path.path),
                 location="abstract",
                 text=chunk.text,
-                embedding=await _embedder.embed_async(chunk.text),
+                embedding=await _embedder.embed(chunk.text),
             ),
         )
 
@@ -298,7 +298,7 @@ app = coco_aio.App(
 
 
 async def query_once(pool: asyncpg.Pool, query: str, *, top_k: int = TOP_K) -> None:
-    query_vec = await _embedder.embed_async(query)
+    query_vec = await _embedder.embed(query)
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             f"""

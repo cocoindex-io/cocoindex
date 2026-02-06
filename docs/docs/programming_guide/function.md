@@ -84,3 +84,96 @@ def process_chunk(chunk: Chunk) -> Embedding:
 :::note
 The change tracking capability is still under construction.
 :::
+
+### Batching
+
+With `batching=True`, multiple concurrent calls to the function are automatically batched together. This is useful for operations that are more efficient when processing multiple inputs at once, such as embedding models.
+
+When batching is enabled:
+
+- The function implementation receives a `list[T]` and returns a `list[R]`
+- The external signature becomes `async T -> R` (single input, single output)
+- **The decorated function is always async**, regardless of whether the underlying implementation is sync or async
+- Concurrent calls are collected and processed together
+
+```python
+@coco.function(batching=True, max_batch_size=32)
+def embed(texts: list[str]) -> list[list[float]]:
+    # Called with a batch of texts, returns a batch of embeddings
+    # The underlying function can be sync (like here) or async
+    return model.encode(texts)
+
+# External usage: always async, single input, single output
+embedding = await embed("hello world")  # Returns list[float]
+
+# Concurrent calls are automatically batched using asyncio.gather
+embeddings = await asyncio.gather(
+    embed("text1"),
+    embed("text2"),
+    embed("text3"),
+)
+```
+
+The `max_batch_size` parameter limits how many inputs can be processed in a single batch.
+
+:::tip When to use batching
+
+Batching is beneficial when:
+
+- The underlying operation has significant per-call overhead (e.g., GPU kernel launch)
+- The operation can process multiple inputs more efficiently than one at a time
+- You have concurrent calls from multiple coroutines
+
+Common use cases:
+
+- **Embedding models** — most embedding APIs and models are optimized for batch processing
+- **LLM inference** — batch multiple prompts together for better GPU utilization
+- **Database operations** — batch inserts or lookups
+
+:::
+
+### Runner
+
+The `runner` parameter allows functions to execute in a specific context, such as a subprocess for GPU isolation. This is useful when you need to isolate GPU memory or run code in a separate process.
+
+**When a runner is specified, the decorated function is always async**, regardless of whether the underlying implementation is sync or async. This allows efficient multiplexing while waiting for subprocess execution.
+
+```python
+@coco.function(runner=coco.GPU)
+def gpu_inference(data: bytes) -> bytes:
+    # This runs in a subprocess with GPU isolation
+    # The underlying function can be sync (like here) or async
+    return model.predict(data)
+
+# External usage: always async
+result = await gpu_inference(data)
+```
+
+The `coco.GPU` runner:
+
+- Executes the function in a subprocess
+- All functions using the same runner share a queue, ensuring serial execution
+- Useful for GPU workloads that need memory isolation
+
+You can combine batching with a runner:
+
+```python
+@coco.function(batching=True, max_batch_size=16, runner=coco.GPU)
+def batch_gpu_embed(texts: list[str]) -> list[list[float]]:
+    # Batched execution in a subprocess with GPU isolation
+    return gpu_model.encode(texts)
+
+# External usage: always async
+embedding = await batch_gpu_embed("hello world")
+
+# Concurrent calls
+embeddings = await asyncio.gather(
+    batch_gpu_embed("text1"),
+    batch_gpu_embed("text2"),
+    batch_gpu_embed("text3"),
+)
+```
+
+:::note
+When using a runner, the function and all its arguments must be picklable since they are serialized for subprocess execution.
+:::

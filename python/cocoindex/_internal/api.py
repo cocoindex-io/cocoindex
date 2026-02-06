@@ -20,6 +20,8 @@ from .environment import lifespan
 
 from .function import function
 
+from .runner import GPU, Runner
+
 from .memo_key import register_memo_key_function
 
 from .pending_marker import PendingS, ResolvedS, MaybePendingS, ResolvesTo
@@ -63,6 +65,9 @@ __all__ = [
     "lifespan",
     # .fn
     "function",
+    # .runner
+    "GPU",
+    "Runner",
     # .memo_key
     "register_memo_key_function",
     # .pending_marker
