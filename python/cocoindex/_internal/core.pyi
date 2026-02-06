@@ -22,7 +22,9 @@ from cocoindex._internal.typing import StableKey as StableKey
 
 __version__: str
 
+T = TypeVar("T")
 T_co = TypeVar("T_co", covariant=True)
+R_co = TypeVar("R_co", covariant=True)
 
 # --- StablePath ---
 class StablePath:
@@ -330,7 +332,7 @@ class BatchQueue:
     def __new__(cls) -> "BatchQueue": ...
 
 # --- Batcher ---
-class Batcher:
+class Batcher(Generic[T, R_co]):
     """A batcher that collects inputs and submits them to a shared queue.
 
     Each batcher maintains at most one non-full, non-sealed batch in the queue.
@@ -344,14 +346,14 @@ class Batcher:
     def new_sync(
         queue: BatchQueue,
         options: BatchingOptions,
-        runner_fn: Callable[[list[Any]], list[Any]],
+        runner_fn: Callable[[list[T]], list[R_co]],
         async_ctx: AsyncContext,
-    ) -> "Batcher": ...
+    ) -> "Batcher[T, R_co]": ...
     @staticmethod
     def new_async(
         queue: BatchQueue,
         options: BatchingOptions,
-        runner_fn: Callable[[list[Any]], Coroutine[Any, Any, list[Any]]],
+        runner_fn: Callable[[list[T]], Coroutine[Any, Any, list[R_co]]],
         async_ctx: AsyncContext,
-    ) -> "Batcher": ...
-    def run(self, input: Any) -> Coroutine[Any, Any, Any]: ...
+    ) -> "Batcher[T, R_co]": ...
+    def run(self, input: T) -> Coroutine[Any, Any, R_co]: ...
