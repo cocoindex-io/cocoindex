@@ -89,7 +89,7 @@ all = [
 ]
 
 [dependency-groups]
-build-test = ["maturin>=1.10.0,<2.0", "pytest", "pytest-asyncio", "mypy"]
+build-test = ["maturin>=1.10.0,<2.0", "pytest", "pytest-asyncio", "pytest-timeout", "mypy"]
 format = ["ruff"]
 type-stubs = ["types-psutil", "asyncpg-stubs"]
 ci-enabled-optional-deps = ["pydantic>=2.11.9"]
@@ -168,6 +168,7 @@ disallow_any_decorated = false
 
 [tool.pytest.ini_options]
 pythonpath = ["python"]
+timeout = 30
 log_cli = true
 log_cli_level = "INFO"
 log_format = "%(asctime)s %(levelname)s %(message)s"
