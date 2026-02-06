@@ -1,8 +1,28 @@
-# SEC EDGAR Financial Analytics
+<h1 align="center">SEC EDGAR Financial Analytics</h1> 
 
-[![GitHub](https://img.shields.io/github/stars/cocoindex/cocoindex?style=social)](https://github.com/cocoindex/cocoindex)
 
-Financial document analytics with **transparent ETL** and **hybrid search** using CocoIndex + Apache Doris.
+<div align="center">
+
+[![GitHub](https://img.shields.io/github/stars/cocoindex-io/cocoindex?color=5B5BD6)](https://github.com/cocoindex-io/cocoindex)
+[![Documentation](https://img.shields.io/badge/Documentation-394e79?logo=readthedocs&logoColor=00B9FF)](https://cocoindex.io/docs/getting_started/quickstart)
+[![License](https://img.shields.io/badge/license-Apache%202.0-5B5BD6?logoColor=white)](https://opensource.org/licenses/Apache-2.0)
+[![PyPI version](https://img.shields.io/pypi/v/cocoindex?color=5B5BD6)](https://pypi.org/project/cocoindex/)
+<!--[![PyPI - Downloads](https://img.shields.io/pypi/dm/cocoindex)](https://pypistats.org/packages/cocoindex) -->
+[![PyPI Downloads](https://static.pepy.tech/badge/cocoindex/month)](https://pepy.tech/projects/cocoindex)
+[![CI](https://github.com/cocoindex-io/cocoindex/actions/workflows/CI.yml/badge.svg?event=push&color=5B5BD6)](https://github.com/cocoindex-io/cocoindex/actions/workflows/CI.yml)
+[![release](https://github.com/cocoindex-io/cocoindex/actions/workflows/release.yml/badge.svg?event=push&color=5B5BD6)](https://github.com/cocoindex-io/cocoindex/actions/workflows/release.yml)
+[![Link Check](https://github.com/cocoindex-io/cocoindex/actions/workflows/links.yml/badge.svg)](https://github.com/cocoindex-io/cocoindex/actions/workflows/links.yml)
+[![Discord](https://img.shields.io/discord/1314801574169673738?logo=discord&color=5B5BD6&logoColor=white)](https://discord.com/invite/zpA9S2DR7s)
+
+</div>
+
+<div align="center">
+  
+[Notebook](https://colab.research.google.com/github/cocoindex-io/cocoindex/blob/main/examples/sec_edgar_analytics/tutorial.ipynb)
+
+</div>
+
+Financial document analytics with **transparent ETL** and **hybrid search** using [CocoIndex](https://github.com/cocoindex-io/cocoindex) + [Apache Doris](https://github.com/apache/doris). ✨ Star the repos if you like it!
 
 This example demonstrates how to build a production-ready document search system with:
 - **Vector search** for semantic similarity
