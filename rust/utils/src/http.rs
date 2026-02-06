@@ -1,13 +1,25 @@
+use std::time::Duration;
+
 use crate::error::{Error, Result};
 use crate::retryable::{self, IsRetryable};
+use crate::slow_warn::warn_if_slow;
+
+const SLOW_REQUEST_THRESHOLD: Duration = Duration::from_secs(30);
 
 pub async fn request(
-    req_builder: impl Fn() -> reqwest::RequestBuilder,
+    client: &reqwest::Client,
+    req_builder: impl Fn(&reqwest::Client) -> reqwest::RequestBuilder,
 ) -> Result<reqwest::Response> {
     let resp = retryable::run(
         || async {
-            let req = req_builder();
-            let resp = req.send().await?;
+            let request = req_builder(client).build()?;
+            let url = request.url().clone();
+            let resp = warn_if_slow(
+                &|| format!("HTTP request to {url}"),
+                SLOW_REQUEST_THRESHOLD,
+                client.execute(request),
+            )
+            .await?;
             let Err(err) = resp.error_for_status_ref() else {
                 return Ok(resp);
             };
