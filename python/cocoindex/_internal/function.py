@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import functools
+import importlib
 import inspect
 import pickle
 import threading
@@ -106,184 +108,6 @@ if TYPE_CHECKING:
         @overload
         def __call__(self, fn: Callable[P, R_co]) -> AsyncFunction[P, R_co]: ...
         def __call__(self, fn: Any) -> Any: ...
-
-# ============================================================================
-# Picklable batch callable for subprocess execution
-# ============================================================================
-
-# Cache for expensive self objects in subprocess (keyed by pickle bytes).
-# This avoids re-initializing objects like SentenceTransformerEmbedder
-# (which loads models) on every subprocess call.
-_self_obj_cache: dict[bytes, Any] = {}
-
-
-def _unpickle_sync_batch_callable(
-    module_name: str, qualname: str, self_bytes: bytes | None, batching: bool
-) -> "_SyncBatchCallable":
-    """Unpickle a _SyncBatchCallable by looking up the decorated function.
-
-    Uses _self_obj_cache to avoid re-initializing expensive objects (like models)
-    on every subprocess call.
-    """
-    import importlib
-
-    module = importlib.import_module(module_name)
-
-    # Navigate the qualname to find the object
-    # e.g., "MyClass.my_method" -> module.MyClass.my_method
-    obj: Any = module
-    for part in qualname.split("."):
-        obj = getattr(obj, part)
-
-    # obj is now the decorated version (SyncFunction/AsyncFunction)
-    # Get the original function via __wrapped__
-    original_fn = obj.__wrapped__
-
-    # Unpickle self_obj with caching
-    if self_bytes is not None:
-        if self_bytes in _self_obj_cache:
-            self_obj = _self_obj_cache[self_bytes]
-        else:
-            self_obj = pickle.loads(self_bytes)
-            _self_obj_cache[self_bytes] = self_obj
-    else:
-        self_obj = None
-
-    return _SyncBatchCallable(original_fn, self_obj, batching)
-
-
-def _unpickle_async_batch_callable(
-    module_name: str, qualname: str, self_bytes: bytes | None, batching: bool
-) -> "_AsyncBatchCallable":
-    """Unpickle an _AsyncBatchCallable by looking up the decorated function.
-
-    Uses _self_obj_cache to avoid re-initializing expensive objects (like models)
-    on every subprocess call.
-    """
-    import importlib
-
-    module = importlib.import_module(module_name)
-
-    # Navigate the qualname to find the object
-    obj: Any = module
-    for part in qualname.split("."):
-        obj = getattr(obj, part)
-
-    # Get the original function via __wrapped__
-    original_fn = obj.__wrapped__
-
-    # Unpickle self_obj with caching
-    if self_bytes is not None:
-        if self_bytes in _self_obj_cache:
-            self_obj = _self_obj_cache[self_bytes]
-        else:
-            self_obj = pickle.loads(self_bytes)
-            _self_obj_cache[self_bytes] = self_obj
-    else:
-        self_obj = None
-
-    return _AsyncBatchCallable(original_fn, self_obj, batching)
-
-
-class _SyncBatchCallable:
-    """Picklable callable for executing batched sync functions.
-
-    Used when runner is specified to ensure the batch function can be pickled
-    for subprocess execution. Uses custom __reduce__ to handle decorated
-    functions/methods by storing (module, qualname) and looking up __wrapped__
-    on unpickle.
-    """
-
-    __slots__ = ("_fn", "_self_obj", "_batching")
-
-    def __init__(self, fn: Callable[..., Any], self_obj: Any, batching: bool) -> None:
-        self._fn = fn
-        self._self_obj = self_obj
-        self._batching = batching
-
-    def __reduce__(self) -> tuple[Any, ...]:
-        """Custom pickle support to handle decorated functions/methods.
-
-        Pickles self_obj separately as bytes to enable caching in subprocess.
-        """
-        fn = self._fn
-        # Pickle self_obj separately to enable caching by bytes in subprocess
-        if self._self_obj is not None:
-            self_bytes = pickle.dumps(self._self_obj, protocol=pickle.HIGHEST_PROTOCOL)
-        else:
-            self_bytes = None
-        return (
-            _unpickle_sync_batch_callable,
-            (fn.__module__, fn.__qualname__, self_bytes, self._batching),
-        )
-
-    def __call__(self, inputs: list[Any]) -> list[Any]:
-        if self._batching:
-            # User function is a batch function: list[T] -> list[R]
-            if self._self_obj is not None:
-                return self._fn(self._self_obj, inputs)  # type: ignore[no-any-return]
-            else:
-                return self._fn(inputs)  # type: ignore[no-any-return]
-        else:
-            # Runner-only mode: input is (args, kwargs) tuple
-            results = []
-            for args, kwargs in inputs:
-                if self._self_obj is not None:
-                    results.append(self._fn(self._self_obj, *args, **kwargs))
-                else:
-                    results.append(self._fn(*args, **kwargs))
-            return results
-
-
-class _AsyncBatchCallable:
-    """Picklable callable for executing batched async functions.
-
-    Used when runner is specified to ensure the batch function can be pickled
-    for subprocess execution. Uses custom __reduce__ to handle decorated
-    functions/methods.
-    """
-
-    __slots__ = ("_fn", "_self_obj", "_batching")
-
-    def __init__(
-        self, fn: Callable[..., Coroutine[Any, Any, Any]], self_obj: Any, batching: bool
-    ) -> None:
-        self._fn = fn
-        self._self_obj = self_obj
-        self._batching = batching
-
-    def __reduce__(self) -> tuple[Any, ...]:
-        """Custom pickle support to handle decorated functions/methods.
-
-        Pickles self_obj separately as bytes to enable caching in subprocess.
-        """
-        fn = self._fn
-        # Pickle self_obj separately to enable caching by bytes in subprocess
-        if self._self_obj is not None:
-            self_bytes = pickle.dumps(self._self_obj, protocol=pickle.HIGHEST_PROTOCOL)
-        else:
-            self_bytes = None
-        return (
-            _unpickle_async_batch_callable,
-            (fn.__module__, fn.__qualname__, self_bytes, self._batching),
-        )
-
-    async def __call__(self, inputs: list[Any]) -> list[Any]:
-        if self._batching:
-            # User function is an async batch function: list[T] -> list[R]
-            if self._self_obj is not None:
-                return await self._fn(self._self_obj, inputs)  # type: ignore[no-any-return]
-            else:
-                return await self._fn(inputs)  # type: ignore[no-any-return]
-        else:
-            # Runner-only mode: input is (args, kwargs) tuple
-            results = []
-            for args, kwargs in inputs:
-                if self._self_obj is not None:
-                    results.append(await self._fn(self._self_obj, *args, **kwargs))
-                else:
-                    results.append(await self._fn(*args, **kwargs))
-            return results
 
 
 class Function(Protocol[P, R_co]):
@@ -436,6 +260,13 @@ def _build_async_core_processor(
     return core.ComponentProcessor.new_async(_build, processor_info, memo_fp)
 
 
+# Cache for expensive self objects in subprocess (keyed by pickle bytes).
+# This avoids re-initializing objects like SentenceTransformerEmbedder
+# (which loads models) on every subprocess call.
+_self_obj_cache: dict[bytes, Any] = {}
+_self_obj_cache_lock = threading.Lock()
+
+
 class _BoundAsyncMethod(Generic[SelfT, P, R_co]):
     """Bound method wrapper for AsyncFunction with batching/runner."""
 
@@ -447,8 +278,31 @@ class _BoundAsyncMethod(Generic[SelfT, P, R_co]):
         self._func = func
         self._instance = instance
 
+    def __reduce__(self) -> tuple[Any, ...]:
+        return _BoundAsyncMethod._unpickle, (
+            self._func,
+            pickle.dumps(self._instance, protocol=pickle.HIGHEST_PROTOCOL),
+        )
+
     async def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R_co:
         return await self._func(self._instance, *args, **kwargs)
+
+    async def _execute_original_fn(self, *args: P.args, **kwargs: P.kwargs) -> R_co:
+        return await self._func._execute_original_fn(self._instance, *args, **kwargs)
+
+    def _execute_original_fn_sync(self, *args: P.args, **kwargs: P.kwargs) -> R_co:
+        return self._func._execute_original_fn_sync(self._instance, *args, **kwargs)
+
+    @staticmethod
+    def _unpickle(
+        func: AsyncFunction[Concatenate[SelfT, P], R_co], self_obj_bytes: bytes
+    ) -> _BoundAsyncMethod[SelfT, Any, Any]:
+        with _self_obj_cache_lock:
+            self_obj = _self_obj_cache.get(self_obj_bytes, None)
+            if self_obj is None:
+                self_obj = pickle.loads(self_obj_bytes)
+                _self_obj_cache[self_obj_bytes] = self_obj
+        return _BoundAsyncMethod(func, self_obj)
 
 
 class AsyncFunction(Function[P, R_co]):
@@ -502,6 +356,14 @@ class AsyncFunction(Function[P, R_co]):
         self._batchers = {}
         self._batchers_lock = threading.Lock()
 
+    def __reduce__(self) -> tuple[Any, ...]:
+        return AsyncFunction._unpickle, (self._fn.__module__, self._fn.__qualname__)
+
+    @staticmethod
+    def _unpickle(module_name: str, qualname: str) -> AsyncFunction[P, R_co]:
+        module = importlib.import_module(module_name)
+        return functools.reduce(getattr, qualname.split("."), module)  # type: ignore[arg-type]
+
     @overload
     def __get__(self, instance: None, owner: type) -> AsyncFunction[P, R_co]: ...
     @overload
@@ -514,7 +376,7 @@ class AsyncFunction(Function[P, R_co]):
         self, instance: SelfT | None, owner: type | None = None
     ) -> _BoundAsyncMethod[SelfT, P0, R_co] | AsyncFunction[P, R_co]:
         """Descriptor protocol for method binding (only for batching/runner)."""
-        if instance is None or not self._is_scheduled:
+        if instance is None:
             return self
         return _BoundAsyncMethod(self, instance)  # type: ignore[arg-type]
 
@@ -580,7 +442,12 @@ class AsyncFunction(Function[P, R_co]):
     ) -> R_co:
         """Execute via batcher/runner."""
         if not self._is_scheduled:
-            return await self._fn(*args, **kwargs)  # type: ignore
+            if self._fn_is_async:
+                return await self._execute_original_fn(*args, **kwargs)
+            else:
+                return await asyncio.to_thread(
+                    self._execute_original_fn_sync, *args, **kwargs
+                )
 
         if self._has_self:
             if len(args) < 1:
@@ -606,6 +473,12 @@ class AsyncFunction(Function[P, R_co]):
         batcher = self._get_or_create_batcher(async_ctx, self_obj)
         return await batcher.run(input_val)  # type: ignore[no-any-return]
 
+    async def _execute_original_fn(self, *args: P.args, **kwargs: P.kwargs) -> R_co:
+        return await self._fn(*args, **kwargs)  # type: ignore
+
+    def _execute_original_fn_sync(self, *args: P.args, **kwargs: P.kwargs) -> R_co:
+        return self._fn(*args, **kwargs)  # type: ignore
+
     def _create_batch_runner_fn(self, self_obj: Any) -> Callable[[list[Any]], Any]:
         """Create the batch execution function.
 
@@ -616,22 +489,23 @@ class AsyncFunction(Function[P, R_co]):
         if self._runner is not None:
             # Use picklable callable for subprocess execution
             # Choose appropriate callable and runner method based on underlying fn type
-            runner = self._runner
-
-            if self._fn_is_async:
-                batch_callable = _AsyncBatchCallable(fn, self_obj, self._batching)  # type: ignore
+            bound_fn_obj = self.__get__(self_obj)
+            batch_callable, runner_run = (
+                (bound_fn_obj._execute_original_fn, self._runner.run)
+                if self._fn_is_async
+                else (bound_fn_obj._execute_original_fn_sync, self._runner.run_sync_fn)
+            )
+            if self._batching:
 
                 async def runner_batch_fn_async(inputs: list[Any]) -> list[Any]:
-                    return await runner.run(batch_callable, inputs)  # type: ignore[arg-type]
-
-                return runner_batch_fn_async
+                    return await runner_run(batch_callable, inputs)  # type: ignore[arg-type]
             else:
-                sync_batch_callable = _SyncBatchCallable(fn, self_obj, self._batching)
 
-                async def runner_batch_fn_sync(inputs: list[Any]) -> list[Any]:
-                    return await runner.run_sync_fn(sync_batch_callable, inputs)  # type: ignore[arg-type]
+                async def runner_batch_fn_async(inputs: list[Any]) -> list[Any]:
+                    args, kwargs = inputs[0]
+                    return [await runner_run(batch_callable, *args, **kwargs)]  # type: ignore[arg-type]
 
-                return runner_batch_fn_sync
+            return runner_batch_fn_async
 
         # No runner - use local closures (no pickling needed)
         assert self._batching, "No runner and no batching"

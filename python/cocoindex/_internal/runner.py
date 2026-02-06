@@ -12,12 +12,13 @@ import pickle
 from abc import ABC, abstractmethod
 from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
-from typing import Any, Callable, Coroutine, TypeVar, TYPE_CHECKING
+from typing import Any, Callable, Coroutine, TypeVar, ParamSpec
 import threading
 import os
 import multiprocessing as mp
 from . import core
 
+P = ParamSpec("P")
 R = TypeVar("R")
 
 # Flag indicating if we're running inside a subprocess (GPU runner)
@@ -58,7 +59,7 @@ class Runner(ABC):
 
     @abstractmethod
     async def run(
-        self, fn: Callable[..., Coroutine[Any, Any, R]], *args: Any, **kwargs: Any
+        self, fn: Callable[P, Coroutine[Any, Any, R]], *args: P.args, **kwargs: P.kwargs
     ) -> R:
         """Execute an async function with args/kwargs.
 
@@ -68,7 +69,9 @@ class Runner(ABC):
         ...
 
     @abstractmethod
-    async def run_sync_fn(self, fn: Callable[..., R], *args: Any, **kwargs: Any) -> R:
+    async def run_sync_fn(
+        self, fn: Callable[P, R], *args: P.args, **kwargs: P.kwargs
+    ) -> R:
         """Execute a sync function with args/kwargs.
 
         This is async to avoid blocking the event loop while waiting for execution.
@@ -222,7 +225,7 @@ class GPURunner(Runner):
             super().__init__()
 
     async def run(
-        self, fn: Callable[..., Coroutine[Any, Any, R]], *args: Any, **kwargs: Any
+        self, fn: Callable[P, Coroutine[Any, Any, R]], *args: P.args, **kwargs: P.kwargs
     ) -> R:
         """Execute an async function in subprocess.
 
@@ -231,7 +234,9 @@ class GPURunner(Runner):
         # Type ignore: execute_in_subprocess handles async fns via asyncio.run() internally
         return await execute_in_subprocess(fn, *args, **kwargs)  # type: ignore[arg-type]
 
-    async def run_sync_fn(self, fn: Callable[..., R], *args: Any, **kwargs: Any) -> R:
+    async def run_sync_fn(
+        self, fn: Callable[P, R], *args: P.args, **kwargs: P.kwargs
+    ) -> R:
         """Execute a sync function in subprocess."""
         return await execute_in_subprocess(fn, *args, **kwargs)
 
