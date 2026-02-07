@@ -287,7 +287,7 @@ class LazyEnvironment:
     _name: str
     _lifespan_fn_lock: threading.Lock
     _lifespan_fn: LifespanFn | None
-    _start_stop_lock: asyncio.Lock
+    _start_stop_lock: asyncio.Lock | None
     _exit_stack: AsyncExitStack | None
     _env: Environment | None
     _info: EnvironmentInfo
@@ -295,11 +295,17 @@ class LazyEnvironment:
     def __init__(self, name: str = "default") -> None:
         self._name = name
         self._lifespan_fn_lock = threading.Lock()
-        self._start_stop_lock = asyncio.Lock()
+        self._start_stop_lock = None  # Created lazily when needed
         self._lifespan_fn = None
         self._exit_stack = None
         self._env = None
         self._info = EnvironmentInfo(self)
+
+    def _get_start_stop_lock(self) -> asyncio.Lock:
+        """Get or create the start/stop lock (must be called from async context)."""
+        if self._start_stop_lock is None:
+            self._start_stop_lock = asyncio.Lock()
+        return self._start_stop_lock
 
     @property
     def name(self) -> str:
@@ -322,7 +328,7 @@ class LazyEnvironment:
         """
         Start the default environment (executes on the default environment's event loop).
         """
-        async with self._start_stop_lock:
+        async with self._get_start_stop_lock():
             if self._env is not None:
                 return self._env
             with self._lifespan_fn_lock:
@@ -410,7 +416,7 @@ class LazyEnvironment:
         """
         Stop the default environment (executes on the default environment's event loop).
         """
-        async with self._start_stop_lock:
+        async with self._get_start_stop_lock():
             exit_stack = self._exit_stack
             self._exit_stack = None
             self._env = None
