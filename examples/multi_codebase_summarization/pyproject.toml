@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Analyze multiple Python codebases and generate markdown documentation using LLM."
 requires-python = ">=3.11"
 dependencies = [
-    "cocoindex>=1.0.0a9",
+    "cocoindex>=1.0.0a10",
     "instructor>=1.4.0",
     "litellm>=1.40.0",
     "pydantic>=2.0.0",
