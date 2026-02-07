@@ -27,7 +27,7 @@ from cocoindex.connectors import localfs, postgres
 from cocoindex.ops.text import RecursiveSplitter, detect_code_language
 from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
 from cocoindex.resources.chunk import Chunk
-from cocoindex.resources.file import FileLike, PatternFilePathMatcher
+from cocoindex.resources.file import AsyncFileLike, FileLike, PatternFilePathMatcher
 from cocoindex.resources.id import IdGenerator
 
 
@@ -87,10 +87,10 @@ async def process_chunk(
 
 @coco.function(memo=True)
 async def process_file(
-    file: FileLike,
+    file: AsyncFileLike,
     table: postgres.TableTarget[CodeEmbedding],
 ) -> None:
-    text = file.read_text()
+    text = await file.read_text()
     # Detect programming language from filename
     language = detect_code_language(filename=str(file.file_path.path.name))
 
@@ -112,13 +112,13 @@ async def process_file(
 
 
 @coco.function
-def app_main(sourcedir: pathlib.Path) -> None:
+async def app_main(sourcedir: pathlib.Path) -> None:
     target_db = coco.use_context(PG_DB)
-    target_table = coco.mount_run(
+    target_table = await coco_aio.mount_run(
         coco.component_subpath("setup", "table"),
         target_db.declare_table_target,
         table_name=TABLE_NAME,
-        table_schema=postgres.TableSchema(
+        table_schema=await postgres.TableSchema.from_class(
             CodeEmbedding,
             primary_key=["id"],
         ),
@@ -134,14 +134,13 @@ def app_main(sourcedir: pathlib.Path) -> None:
             excluded_patterns=[".*/**", "target/**", "node_modules/**"],
         ),
     )
-    for file in files:
-        coco.mount(
+    async for file in files:
+        coco_aio.mount(
             coco.component_subpath("file", str(file.file_path.path)),
             process_file,
             file,
             target_table,
         )
-    # await asyncio.gather(*(process_file(file, None) for file in files))
 
 
 app = coco_aio.App(

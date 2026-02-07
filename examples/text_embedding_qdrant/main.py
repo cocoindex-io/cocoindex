@@ -92,17 +92,16 @@ async def process_file(
 
 
 @coco.function
-def app_main(sourcedir: pathlib.Path) -> None:
+async def app_main(sourcedir: pathlib.Path) -> None:
     target_db = coco.use_context(QDRANT_DB)
-    target_collection_handle = coco.mount_run(
+    target_collection = await coco_aio.mount_run(
         coco.component_subpath("setup", "collection"),
         target_db.declare_collection_target,
         collection_name=QDRANT_COLLECTION,
-        schema=qdrant.CollectionSchema(
+        schema=await qdrant.CollectionSchema.create(
             vectors=qdrant.QdrantVectorDef(schema=_embedder)
         ),
-    )
-    target_collection = target_collection_handle.result()
+    ).result()
     files = localfs.walk_dir(
         sourcedir,
         recursive=True,

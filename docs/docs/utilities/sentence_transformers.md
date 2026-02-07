@@ -59,7 +59,7 @@ embedding = asyncio.run(embed_async_example())
 The embedder automatically provides vector schema information:
 
 ```python
-schema = embedder.__coco_vector_schema__()
+schema = await embedder.__coco_vector_schema__()
 print(f"Dimension: {schema.size}")  # 384
 print(f"Dtype: {schema.dtype}")     # float32
 ```
@@ -90,10 +90,10 @@ class DocEmbedding:
     embedding: Annotated[NDArray, embedder]
 
 @coco.function
-def setup_table(db: postgres.PgDatabase):
+async def setup_table(db: postgres.PgDatabase):
     return db.declare_table_target(
         table_name="doc_embeddings",
-        table_schema=postgres.TableSchema(
+        table_schema=await postgres.TableSchema.from_class(
             DocEmbedding,
             primary_key=["filename"],
         ),
@@ -103,7 +103,7 @@ def setup_table(db: postgres.PgDatabase):
 
 The connector will automatically:
 
-- Extract the vector dimension from `embedder.__coco_vector_schema__()`
+- Extract the vector dimension from `await embedder.__coco_vector_schema__()`
 - Create the appropriate `vector(384)` column in Postgres
 - Handle type conversions properly
 
@@ -119,10 +119,10 @@ class CodeEmbedding:
     embedding: Annotated[NDArray, embedder]
 
 @coco.function
-def setup_table(db: lancedb.LanceDatabase):
+async def setup_table(db: lancedb.LanceDatabase):
     return db.declare_table_target(
         table_name="code_embeddings",
-        table_schema=lancedb.TableSchema(
+        table_schema=await lancedb.TableSchema.from_class(
             CodeEmbedding,
             primary_key=["filename"],
         ),
@@ -141,12 +141,11 @@ class DocEmbedding:
     embedding: Annotated[NDArray, embedder]
 
 @coco.function
-def setup_collection(db: qdrant.QdrantDatabase):
+async def setup_collection(db: qdrant.QdrantDatabase):
     return db.declare_collection_target(
         collection_name="doc_embeddings",
-        table_schema=qdrant.TableSchema(
-            DocEmbedding,
-            primary_key=["id"],
+        schema=await qdrant.CollectionSchema.create(
+            vectors=qdrant.QdrantVectorDef(schema=embedder),
         ),
     )
 ```
@@ -185,10 +184,10 @@ class DocEmbedding:
     embedding: Annotated[NDArray, embedder]
 
 @coco.function
-def setup_table(db: postgres.PgDatabase):
+async def setup_table(db: postgres.PgDatabase):
     return db.declare_table_target(
         table_name="doc_embeddings",
-        table_schema=postgres.TableSchema(
+        table_schema=await postgres.TableSchema.from_class(
             DocEmbedding,
             primary_key=["filename", "chunk_start"],
         ),

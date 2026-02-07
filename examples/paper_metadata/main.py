@@ -235,34 +235,34 @@ async def process_file(
 
 
 @coco.function
-def app_main(sourcedir: pathlib.Path) -> None:
+async def app_main(sourcedir: pathlib.Path) -> None:
     target_db = coco.use_context(PG_DB)
     with coco.component_subpath("setup"):
-        metadata_table = coco.mount_run(
+        metadata_table = await coco_aio.mount_run(
             coco.component_subpath("paper_metadata"),
             target_db.declare_table_target,
             table_name=TABLE_METADATA,
-            table_schema=postgres.TableSchema(
+            table_schema=await postgres.TableSchema.from_class(
                 PaperMetadataRow,
                 primary_key=["filename"],
             ),
             pg_schema_name=PG_SCHEMA_NAME,
         ).result()
-        author_table = coco.mount_run(
+        author_table = await coco_aio.mount_run(
             coco.component_subpath("author_papers"),
             target_db.declare_table_target,
             table_name=TABLE_AUTHOR_PAPERS,
-            table_schema=postgres.TableSchema(
+            table_schema=await postgres.TableSchema.from_class(
                 AuthorPaperRow,
                 primary_key=["author_name", "filename"],
             ),
             pg_schema_name=PG_SCHEMA_NAME,
         ).result()
-        embedding_table = coco.mount_run(
+        embedding_table = await coco_aio.mount_run(
             coco.component_subpath("metadata_embeddings"),
             target_db.declare_table_target,
             table_name=TABLE_EMBEDDINGS,
-            table_schema=postgres.TableSchema(
+            table_schema=await postgres.TableSchema.from_class(
                 MetadataEmbeddingRow,
                 primary_key=["id"],
             ),

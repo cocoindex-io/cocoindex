@@ -136,6 +136,9 @@ class AsyncFileLike(_Protocol[ResolvedPathT]):
         """
         return _decode_bytes(await self.read(), encoding, errors)
 
+    def __coco_memo_key__(self) -> object:
+        return (self.file_path.__coco_memo_key__(), self.modified_time)
+
 
 class FilePathMatcher(_Protocol):
     """Protocol for file path matchers that filter directories and files."""

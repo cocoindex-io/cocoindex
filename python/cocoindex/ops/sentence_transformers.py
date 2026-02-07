@@ -40,7 +40,7 @@ class SentenceTransformerEmbedder(_schema.VectorSchemaProvider):
         >>> embedder = SentenceTransformerEmbedder("sentence-transformers/all-MiniLM-L6-v2")
         >>>
         >>> # Get vector schema for database column definitions
-        >>> schema = embedder.__coco_vector_schema__()
+        >>> schema = await embedder.__coco_vector_schema__()
         >>> print(f"Embedding dimension: {schema.size}, dtype: {schema.dtype}")
         >>>
         >>> # Embed text to embedding
@@ -104,6 +104,7 @@ class SentenceTransformerEmbedder(_schema.VectorSchemaProvider):
         )  # type: ignore[assignment]
         return list(embeddings)
 
+    @coco_aio.function(runner=coco.GPU)
     def __coco_vector_schema__(self) -> _schema.VectorSchema:
         """Return vector schema information for this model.
 

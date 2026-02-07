@@ -281,14 +281,16 @@ async def app_main() -> None:
             coco.component_subpath("messages"),
             target_db.declare_table_target,
             table_name="hn_messages",
-            table_schema=postgres.TableSchema(HnMessage, primary_key=["id"]),
+            table_schema=await postgres.TableSchema.from_class(
+                HnMessage, primary_key=["id"]
+            ),
             pg_schema_name="coco_examples",
         ).result()
         topics_table = await coco_aio.mount_run(
             coco.component_subpath("topics"),
             target_db.declare_table_target,
             table_name="hn_topics",
-            table_schema=postgres.TableSchema(
+            table_schema=await postgres.TableSchema.from_class(
                 HnTopic, primary_key=["topic", "message_id"]
             ),
             pg_schema_name="coco_examples",

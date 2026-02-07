@@ -103,18 +103,18 @@ async def _emit_chunk(
 
 
 @coco.function
-def app_main() -> None:
+async def app_main() -> None:
     assert _state.db is not None
-    table = coco.mount_run(
+
+    table = await coco_aio.mount_run(
         coco.component_subpath("setup"),
-        lambda: _state.db.declare_table_target(
-            table_name=TABLE_NAME,
-            table_schema=postgres.TableSchema(
-                DocEmbedding,
-                primary_key=["id"],
-            ),
-            pg_schema_name=PG_SCHEMA_NAME,
+        _state.db.declare_table_target,
+        table_name=TABLE_NAME,
+        table_schema=await postgres.TableSchema.from_class(
+            DocEmbedding,
+            primary_key=["id"],
         ),
+        pg_schema_name=PG_SCHEMA_NAME,
     ).result()
 
     credential_path = os.environ["GOOGLE_SERVICE_ACCOUNT_CREDENTIAL"]

@@ -106,13 +106,15 @@ async def process_file(
 
 
 @coco.function
-def app_main(sourcedir: pathlib.Path) -> None:
+async def app_main(sourcedir: pathlib.Path) -> None:
     target_db = coco.use_context(LANCE_DB)
-    target_table = coco.mount_run(
+    target_table = await coco_aio.mount_run(
         coco.component_subpath("setup", "table"),
         target_db.declare_table_target,
         table_name=TABLE_NAME,
-        table_schema=lancedb.TableSchema(CodeEmbedding, primary_key=["id"]),
+        table_schema=await lancedb.TableSchema.from_class(
+            CodeEmbedding, primary_key=["id"]
+        ),
     ).result()
 
     # Process multiple file types across the repository

@@ -120,10 +120,11 @@ Define vector configurations for a collection using `CollectionSchema`. Unlike r
 
 ```python
 class CollectionSchema:
-    def __init__(
-        self,
+    @classmethod
+    async def create(
+        cls,
         vectors: QdrantVectorDef | dict[str, QdrantVectorDef],
-    ) -> None
+    ) -> CollectionSchema
 ```
 
 **Parameters:**
@@ -158,7 +159,7 @@ from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
 
 embedder = SentenceTransformerEmbedder("sentence-transformers/all-MiniLM-L6-v2")
 
-schema = qdrant.CollectionSchema(
+schema = await qdrant.CollectionSchema.create(
     vectors=qdrant.QdrantVectorDef(schema=embedder)
 )
 ```
@@ -181,7 +182,7 @@ For collections with multiple named vectors:
 from cocoindex.resources.schema import VectorSchema
 import numpy as np
 
-schema = qdrant.CollectionSchema(
+schema = await qdrant.CollectionSchema.create(
     vectors={
         "text_embedding": qdrant.QdrantVectorDef(
             schema=VectorSchema(dtype=np.float32, size=384),
@@ -222,7 +223,7 @@ from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
 
 embedder = SentenceTransformerEmbedder("sentence-transformers/all-MiniLM-L6-v2")
 
-schema = qdrant.CollectionSchema(
+schema = await qdrant.CollectionSchema.create(
     vectors=qdrant.QdrantVectorDef(schema=embedder)  # dimension inferred (384)
 )
 ```
@@ -233,7 +234,7 @@ Or with explicit configuration:
 from cocoindex.resources.schema import VectorSchema
 import numpy as np
 
-schema = qdrant.CollectionSchema(
+schema = await qdrant.CollectionSchema.create(
     vectors=qdrant.QdrantVectorDef(
         schema=VectorSchema(dtype=np.float32, size=384)
     )
@@ -248,7 +249,7 @@ For multi-vector configurations (multiple vectors per point stored together):
 from cocoindex.resources.schema import MultiVectorSchema, VectorSchema
 import numpy as np
 
-schema = qdrant.CollectionSchema(
+schema = await qdrant.CollectionSchema.create(
     vectors=qdrant.QdrantVectorDef(
         schema=MultiVectorSchema(
             vector_schema=VectorSchema(dtype=np.float32, size=384)
@@ -310,7 +311,7 @@ async def app_main() -> None:
         coco.component_subpath("setup", "collection"),
         db.declare_collection_target,
         collection_name="documents",
-        schema=qdrant.CollectionSchema(
+        schema=await qdrant.CollectionSchema.create(
             vectors=qdrant.QdrantVectorDef(schema=embedder)
         ),
     ).result()
@@ -340,7 +341,7 @@ async def app_main() -> None:
         coco.component_subpath("setup", "collection"),
         db.declare_collection_target,
         collection_name="multimodal_docs",
-        schema=qdrant.CollectionSchema(
+        schema=await qdrant.CollectionSchema.create(
             vectors={
                 "text": qdrant.QdrantVectorDef(
                     schema=text_embedder,

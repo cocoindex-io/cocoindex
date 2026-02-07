@@ -103,7 +103,7 @@ async def app_main() -> None:
             coco.component_subpath("table"),
             target_db.declare_table_target,
             table_name=TABLE_NAME,
-            table_schema=postgres.TableSchema(
+            table_schema=await postgres.TableSchema.from_class(
                 OutputProduct,
                 primary_key=["product_category", "product_name"],
             ),
