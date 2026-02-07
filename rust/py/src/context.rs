@@ -4,6 +4,7 @@ use crate::stable_path::PyStableKey;
 
 use crate::{environment::PyEnvironment, stable_path::PyStablePath};
 use cocoindex_core::engine::context::{ComponentProcessorContext, FnCallContext};
+use pyo3_async_runtimes::tokio::future_into_py;
 
 #[pyclass(name = "ComponentProcessorContext")]
 #[derive(Clone)]
@@ -32,14 +33,20 @@ impl PyComponentProcessorContext {
     ///     key: Optional stable key for the ID sequencer. If None, uses a default sequencer.
     ///
     /// Returns:
-    ///     The next unique ID as an integer.
+    ///     A coroutine that resolves to the next unique ID as an integer.
     #[pyo3(signature = (key=None))]
-    fn next_id(&self, py: Python<'_>, key: Option<PyStableKey>) -> PyResult<u64> {
-        py.detach(|| {
-            self.0
-                .app_ctx()
+    fn next_id<'py>(
+        &self,
+        py: Python<'py>,
+        key: Option<PyStableKey>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let app_ctx = self.0.app_ctx().clone();
+        future_into_py(py, async move {
+            let id = app_ctx
                 .next_id(key.as_ref().map(|k| &k.0))
-                .into_py_result()
+                .await
+                .into_py_result()?;
+            Ok(id)
         })
     }
 }

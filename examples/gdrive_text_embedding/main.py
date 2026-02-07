@@ -77,24 +77,22 @@ async def process_file(
     id_gen = IdGenerator()
     await asyncio.gather(
         *(
-            _emit_chunk(
-                id_gen.next_id(chunk.text), file.file_path.path.as_posix(), chunk, table
-            )
+            _emit_chunk(file.file_path.path.as_posix(), chunk, id_gen, table)
             for chunk in chunks
         )
     )
 
 
-@coco.function(memo=True)
+@coco.function
 async def _emit_chunk(
-    id: int,
     filename: str,
     chunk: Chunk,
+    id_gen: IdGenerator,
     table: postgres.TableTarget[DocEmbedding],
 ) -> None:
     table.declare_row(
         row=DocEmbedding(
-            id=id,
+            id=await id_gen.next_id(chunk.text),
             filename=filename,
             text=chunk.text,
             embedding=await _embedder.embed(chunk.text),
@@ -103,18 +101,18 @@ async def _emit_chunk(
 
 
 @coco.function
-def app_main() -> None:
+async def app_main() -> None:
     assert _state.db is not None
-    table = coco.mount_run(
+
+    table = await coco_aio.mount_run(
         coco.component_subpath("setup"),
-        lambda: _state.db.declare_table_target(
-            table_name=TABLE_NAME,
-            table_schema=postgres.TableSchema(
-                DocEmbedding,
-                primary_key=["id"],
-            ),
-            pg_schema_name=PG_SCHEMA_NAME,
+        _state.db.declare_table_target,
+        table_name=TABLE_NAME,
+        table_schema=await postgres.TableSchema.from_class(
+            DocEmbedding,
+            primary_key=["id"],
         ),
+        pg_schema_name=PG_SCHEMA_NAME,
     ).result()
 
     credential_path = os.environ["GOOGLE_SERVICE_ACCOUNT_CREDENTIAL"]

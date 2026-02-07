@@ -11,6 +11,7 @@ from typing import AsyncIterator, Iterator
 import pathlib
 
 from cocoindex.resources.file import (
+    AsyncFileLike,
     FileLike,
     FilePathMatcher,
     MatchAllFilePathMatcher,
@@ -65,7 +66,7 @@ class File(FileLike[pathlib.Path]):
             return f.read(size)
 
 
-class AsyncFile:
+class AsyncFile(AsyncFileLike[pathlib.Path]):
     """Async wrapper around a File that provides async read methods.
 
     Implements the AsyncFileLike protocol.

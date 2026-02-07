@@ -18,7 +18,7 @@ if _typing.TYPE_CHECKING:
 class VectorSchemaProvider(_typing.Protocol):
     """Additional information for a vector column."""
 
-    def __coco_vector_schema__(self) -> VectorSchema: ...
+    def __coco_vector_schema__(self) -> _typing.Awaitable[VectorSchema]: ...
 
 
 @_dataclasses.dataclass(slots=True, frozen=True)
@@ -28,7 +28,7 @@ class VectorSchema:
     dtype: _np.dtype
     size: int
 
-    def __coco_vector_schema__(self) -> VectorSchema:
+    async def __coco_vector_schema__(self) -> VectorSchema:
         return self
 
 
@@ -36,7 +36,7 @@ class VectorSchema:
 class MultiVectorSchemaProvider(_typing.Protocol):
     """Additional information for a vector column."""
 
-    def __coco_multi_vector_schema__(self) -> MultiVectorSchema: ...
+    def __coco_multi_vector_schema__(self) -> _typing.Awaitable[MultiVectorSchema]: ...
 
 
 @_dataclasses.dataclass(slots=True, frozen=True)
@@ -45,7 +45,7 @@ class MultiVectorSchema:
 
     vector_schema: VectorSchema
 
-    def __coco_multi_vector_schema__(self) -> MultiVectorSchema:
+    async def __coco_multi_vector_schema__(self) -> MultiVectorSchema:
         return self
 
 

@@ -112,17 +112,17 @@ def process_file(
 
 
 @coco.function
-def app_main(sourcedir: pathlib.Path) -> None:
+async def app_main(sourcedir: pathlib.Path) -> None:
     model, _, _ = get_colpali()
     dim = int(getattr(model, "dim", 128))
 
     target_db = coco.use_context(QDRANT_DB)
     with coco.component_subpath("setup"):
-        target_collection = coco.mount_run(
+        target_collection = await coco_aio.mount_run(
             coco.component_subpath("table"),
             target_db.declare_collection_target,
             collection_name=QDRANT_COLLECTION,
-            schema=qdrant.CollectionSchema(
+            schema=await qdrant.CollectionSchema.create(
                 vectors=qdrant.QdrantVectorDef(
                     schema=MultiVectorSchema(
                         vector_schema=VectorSchema(dtype=np.dtype(np.float32), size=dim)
