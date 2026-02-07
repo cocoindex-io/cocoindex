@@ -44,11 +44,9 @@ jobs:
     runs-on: ${{ matrix.platform.runner }}
     needs: [generate-3p-notices]
     env:
-      SCCACHE_GHA_ENABLED: "true"
-      # Isolate release cache from dev cache (security: prevent cache poisoning)
-      # Releases share cache with other releases, but not with PR/branch builds
-      SCCACHE_GHA_CACHE_TO: ${{ startsWith(github.ref, 'refs/tags/v') && 'release' || 'dev' }}
-      SCCACHE_GHA_CACHE_FROM: ${{ startsWith(github.ref, 'refs/tags/v') && 'release' || 'dev' }}
+      RUSTC_WRAPPER: "sccache"
+      # Use local file cache instead of GHA backend (v0.10.0 GHA backend has bugs)
+      SCCACHE_DIR: "/tmp/sccache"
     strategy:
       matrix:
         platform:
@@ -119,6 +117,14 @@ jobs:
       - uses: actions/download-artifact@v7
         with:
           name: THIRD_PARTY_NOTICES.html
+      - name: Cache sccache directory
+        uses: actions/cache@v4
+        with:
+          path: /tmp/sccache
+          # Isolate release vs dev cache (security: prevent cache poisoning)
+          key: ${{ startsWith(github.ref, 'refs/tags/v') && 'release' || 'dev' }}-sccache-${{ matrix.platform.os }}-${{ matrix.platform.target }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ startsWith(github.ref, 'refs/tags/v') && 'release' || 'dev' }}-sccache-${{ matrix.platform.os }}-${{ matrix.platform.target }}-
       - name: Remove .python-version if exists
         shell: bash
         run: rm -f .python-version
@@ -136,8 +142,8 @@ jobs:
         with:
           target: ${{ matrix.platform.target }}
           args: --release --out dist ${{ matrix.platform.maturin-args }}
-          # sccache: 'true' enables sccache and handles container integration
-          # Cache isolation via SCCACHE_GHA_CACHE_TO/FROM env vars (release vs dev)
+          # sccache v0.10.0 with local file cache (bypasses GHA backend bugs)
+          # Cache persisted via actions/cache@v4 (see step above)
           sccache: 'true'
           manylinux: auto
           container: ${{ matrix.platform.container }}
