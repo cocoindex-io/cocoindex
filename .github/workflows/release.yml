@@ -46,7 +46,8 @@ jobs:
     env:
       RUSTC_WRAPPER: "sccache"
       # Use local file cache instead of GHA backend (v0.10.0 GHA backend has bugs)
-      SCCACHE_DIR: "/tmp/sccache"
+      # Use workspace path so it's accessible in containers and on all platforms
+      SCCACHE_DIR: "${{ github.workspace }}/.sccache"
     strategy:
       matrix:
         platform:
@@ -120,7 +121,7 @@ jobs:
       - name: Cache sccache directory
         uses: actions/cache@v4
         with:
-          path: /tmp/sccache
+          path: ${{ github.workspace }}/.sccache
           # Isolate release vs dev cache (security: prevent cache poisoning)
           key: ${{ startsWith(github.ref, 'refs/tags/v') && 'release' || 'dev' }}-sccache-${{ matrix.platform.os }}-${{ matrix.platform.target }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
