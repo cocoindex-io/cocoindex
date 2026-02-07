@@ -13,6 +13,7 @@ See BUG_REPORT/COCOINDEX_FIX_README.md for detailed background on the bug fix.
 """
 
 import pathlib
+import sys
 import tempfile
 
 import pytest
@@ -30,7 +31,10 @@ async def test_async_app_with_fresh_event_loop_first() -> None:
     The bug this prevents: "Event loop is closed" errors caused by creating
     asyncio.Lock() at module initialization time.
     """
-    with tempfile.TemporaryDirectory() as tmpdir:
+    # On Windows, LMDB keeps files open, so we need to ignore cleanup errors
+    ignore_cleanup = sys.platform == "win32"
+
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=ignore_cleanup) as tmpdir:
         db_path = pathlib.Path(tmpdir) / "test.db"
 
         env = coco_aio.Environment(
@@ -59,7 +63,9 @@ async def test_async_app_with_fresh_event_loop_second() -> None:
     may create a new event loop. Without the fix, this could fail with
     "Event loop is closed" if the lock was bound to a previous loop.
     """
-    with tempfile.TemporaryDirectory() as tmpdir:
+    ignore_cleanup = sys.platform == "win32"
+
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=ignore_cleanup) as tmpdir:
         db_path = pathlib.Path(tmpdir) / "test.db"
 
         env = coco_aio.Environment(
@@ -84,7 +90,9 @@ async def test_async_app_with_fresh_event_loop_third() -> None:
     """
     Third test to further verify stability across multiple event loops.
     """
-    with tempfile.TemporaryDirectory() as tmpdir:
+    ignore_cleanup = sys.platform == "win32"
+
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=ignore_cleanup) as tmpdir:
         db_path = pathlib.Path(tmpdir) / "test.db"
 
         env = coco_aio.Environment(
@@ -112,7 +120,9 @@ async def test_multiple_sequential_app_updates() -> None:
     This verifies that the lazy lock can be reused correctly within the
     same event loop for multiple operations.
     """
-    with tempfile.TemporaryDirectory() as tmpdir:
+    ignore_cleanup = sys.platform == "win32"
+
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=ignore_cleanup) as tmpdir:
         db_path = pathlib.Path(tmpdir) / "test.db"
 
         env = coco_aio.Environment(coco_aio.Settings(db_path=db_path), name="seq_env")
