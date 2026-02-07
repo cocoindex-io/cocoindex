@@ -1,6 +1,7 @@
 import asyncio
 
 import cocoindex as coco
+import cocoindex.asyncio as coco_aio
 import pytest
 from dataclasses import dataclass
 from typing import Any
@@ -122,8 +123,8 @@ def test_memo_pure_function() -> None:
     }
 
 
-@coco.function(memo=True)
-async def _transform_entry_async(entry: SourceDataEntry) -> str:
+@coco_aio.function(memo=True)
+def _transform_entry_async(entry: SourceDataEntry) -> str:
     _metrics.increment("call.transform_entry_async")
     return f"processed: {entry.content}"
 
@@ -763,7 +764,7 @@ def test_memo_nested_functions_with_components_with_exception_async() -> None:
 # ============================================================================
 
 
-@coco.function(memo=True, batching=True)
+@coco_aio.function(memo=True, batching=True)
 def _batched_transform(inputs: list[SourceDataEntry]) -> list[str]:
     for inp in inputs:
         _metrics.increment("call.batched_transform")
@@ -822,7 +823,7 @@ def test_memo_with_batching() -> None:
     assert _metrics.collect() == {}
 
 
-@coco.function(memo=True, batching=True)
+@coco_aio.function(memo=True, batching=True)
 async def _batched_transform_async(inputs: list[SourceDataEntry]) -> list[str]:
     for inp in inputs:
         _metrics.increment("call.batched_transform_async")
@@ -895,7 +896,7 @@ class MockRunner(Runner):
 _test_runner = MockRunner()
 
 
-@coco.function(memo=True, runner=_test_runner)
+@coco_aio.function(memo=True, runner=_test_runner)
 def _runner_transform(entry: SourceDataEntry) -> str:
     _metrics.increment("call.runner_transform")
     return f"runner: {entry.content}"
@@ -957,8 +958,8 @@ def test_memo_with_runner() -> None:
 _test_runner_async = MockRunner()
 
 
-@coco.function(memo=True, runner=_test_runner_async)
-async def _runner_transform_async(entry: SourceDataEntry) -> str:
+@coco_aio.function(memo=True, runner=_test_runner_async)
+def _runner_transform_async(entry: SourceDataEntry) -> str:
     _metrics.increment("call.runner_transform_async")
     return f"runner_async: {entry.content}"
 

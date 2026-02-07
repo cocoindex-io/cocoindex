@@ -16,6 +16,7 @@ import numpy as _np
 from numpy.typing import NDArray as _NDArray
 
 import cocoindex as coco
+import cocoindex.asyncio as coco_aio
 from cocoindex.resources import schema as _schema
 
 if _typing.TYPE_CHECKING:
@@ -82,7 +83,7 @@ class SentenceTransformerEmbedder(_schema.VectorSchemaProvider):
                     self._model = SentenceTransformer(self._model_name_or_path)
         return self._model
 
-    @coco.function(batching=True, runner=coco.GPU, max_batch_size=64)
+    @coco_aio.function(batching=True, runner=coco.GPU, max_batch_size=64)
     def embed(self, texts: list[str]) -> list[_NDArray[_np.float32]]:
         """Embed texts to embedding vectors.
 
@@ -101,7 +102,6 @@ class SentenceTransformerEmbedder(_schema.VectorSchemaProvider):
             convert_to_numpy=True,
             normalize_embeddings=self._normalize_embeddings,
         )  # type: ignore[assignment]
-
         return list(embeddings)
 
     def __coco_vector_schema__(self) -> _schema.VectorSchema:

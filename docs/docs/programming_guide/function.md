@@ -22,6 +22,17 @@ async def process_file_async(file: FileLike) -> str:
     return await file.read_text_async()
 ```
 
+## `@coco.function` vs `@coco_aio.function`
+
+The `@function` decorator exists in both `cocoindex` and `cocoindex.asyncio`, but they behave differently:
+
+- **`@coco.function`** preserves the sync/async nature of the underlying function. Decorating a sync function yields a sync function; decorating an async function yields an async function.
+- **`@coco_aio.function`** always yields an async function. It is equivalent to `@coco.function` plus ensuring the result is async — if the underlying function is sync, it is turned into an async function.
+
+The expectation is simple: whenever `async` appears — either in the function definition (`async def`) or the decorator (`@coco_aio.function`, i.e. from `cocoindex.asyncio`) — the decorated function is async.
+
+This distinction matters for features like [batching](#batching) and [runner](#runner), which require an async interface. Use `@coco_aio.function` when you need these features with a sync underlying function.
+
 ## How to think about `@coco.function`
 
 Decorating a function tells CocoIndex that calls to it are part of the incremental update engine. You still write normal Python, but CocoIndex can now:
@@ -89,21 +100,23 @@ The change tracking capability is still under construction.
 
 With `batching=True`, multiple concurrent calls to the function are automatically batched together. This is useful for operations that are more efficient when processing multiple inputs at once, such as embedding models.
 
+Batching requires an async interface. If the underlying function is sync, use `@coco_aio.function(batching=True)` to make it async. If the underlying function is already `async def`, either `@coco.function` or `@coco_aio.function` works.
+
 When batching is enabled:
 
 - The function implementation receives a `list[T]` and returns a `list[R]`
 - The external signature becomes `async T -> R` (single input, single output)
-- **The decorated function is always async**, regardless of whether the underlying implementation is sync or async
 - Concurrent calls are collected and processed together
 
 ```python
-@coco.function(batching=True, max_batch_size=32)
+import cocoindex.asyncio as coco_aio
+
+@coco_aio.function(batching=True, max_batch_size=32)
 def embed(texts: list[str]) -> list[list[float]]:
     # Called with a batch of texts, returns a batch of embeddings
-    # The underlying function can be sync (like here) or async
     return model.encode(texts)
 
-# External usage: always async, single input, single output
+# External usage: async, single input, single output
 embedding = await embed("hello world")  # Returns list[float]
 
 # Concurrent calls are automatically batched using asyncio.gather
@@ -136,16 +149,17 @@ Common use cases:
 
 The `runner` parameter allows functions to execute in a specific context, such as a subprocess for GPU isolation. This is useful when you need to isolate GPU memory or run code in a separate process.
 
-**When a runner is specified, the decorated function is always async**, regardless of whether the underlying implementation is sync or async. This allows efficient multiplexing while waiting for subprocess execution.
+Like batching, a runner requires an async interface. If the underlying function is sync, use `@coco_aio.function(runner=...)` to make it async. If the underlying function is already `async def`, either decorator works.
 
 ```python
-@coco.function(runner=coco.GPU)
+import cocoindex.asyncio as coco_aio
+
+@coco_aio.function(runner=coco.GPU)
 def gpu_inference(data: bytes) -> bytes:
     # This runs in a subprocess with GPU isolation
-    # The underlying function can be sync (like here) or async
     return model.predict(data)
 
-# External usage: always async
+# External usage: async
 result = await gpu_inference(data)
 ```
 
@@ -158,12 +172,12 @@ The `coco.GPU` runner:
 You can combine batching with a runner:
 
 ```python
-@coco.function(batching=True, max_batch_size=16, runner=coco.GPU)
+@coco_aio.function(batching=True, max_batch_size=16, runner=coco.GPU)
 def batch_gpu_embed(texts: list[str]) -> list[list[float]]:
     # Batched execution in a subprocess with GPU isolation
     return gpu_model.encode(texts)
 
-# External usage: always async
+# External usage: async
 embedding = await batch_gpu_embed("hello world")
 
 # Concurrent calls

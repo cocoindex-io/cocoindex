@@ -18,8 +18,6 @@ from .target_state import (
 from .environment import Environment, EnvironmentBuilder, LifespanFn
 from .environment import lifespan
 
-from .function import function
-
 from .runner import GPU, Runner
 
 from .memo_key import register_memo_key_function, NotMemoizable
@@ -63,8 +61,6 @@ __all__ = [
     "EnvironmentBuilder",
     "LifespanFn",
     "lifespan",
-    # .fn
-    "function",
     # .runner
     "GPU",
     "Runner",
