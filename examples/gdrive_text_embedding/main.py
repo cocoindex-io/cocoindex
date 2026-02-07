@@ -77,24 +77,22 @@ async def process_file(
     id_gen = IdGenerator()
     await asyncio.gather(
         *(
-            _emit_chunk(
-                id_gen.next_id(chunk.text), file.file_path.path.as_posix(), chunk, table
-            )
+            _emit_chunk(file.file_path.path.as_posix(), chunk, id_gen, table)
             for chunk in chunks
         )
     )
 
 
-@coco.function(memo=True)
+@coco.function
 async def _emit_chunk(
-    id: int,
     filename: str,
     chunk: Chunk,
+    id_gen: IdGenerator,
     table: postgres.TableTarget[DocEmbedding],
 ) -> None:
     table.declare_row(
         row=DocEmbedding(
-            id=id,
+            id=await id_gen.next_id(chunk.text),
             filename=filename,
             text=chunk.text,
             embedding=await _embedder.embed(chunk.text),

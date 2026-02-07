@@ -246,7 +246,7 @@ def get_component_context() -> ComponentContext:
     return get_context_from_ctx()
 
 
-def next_id(key: StableKey = None) -> int:
+async def next_id(key: StableKey = None) -> int:
     """
     Get the next unique ID for the given key.
 
@@ -263,4 +263,4 @@ def next_id(key: StableKey = None) -> int:
         RuntimeError: If called outside an active component context.
     """
     ctx = get_context_from_ctx()
-    return ctx._core_processor_ctx.next_id(key)
+    return await ctx._core_processor_ctx.next_id(key)

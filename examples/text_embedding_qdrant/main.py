@@ -49,17 +49,17 @@ async def coco_lifespan(
     yield
 
 
-@coco.function(memo=True)
+@coco.function
 async def process_chunk(
-    id: int,
     filename: pathlib.PurePath,
     chunk: Chunk,
+    id_gen: IdGenerator,
     target: qdrant.CollectionTarget,
 ) -> None:
     embedding_vec = await _embedder.embed(chunk.text)
 
     point = qdrant.PointStruct(
-        id=id,
+        id=await id_gen.next_id(chunk.text),
         vector=embedding_vec.tolist(),
         payload={
             "filename": str(filename),
@@ -82,12 +82,7 @@ async def process_file(
     )
     id_gen = IdGenerator()
     await asyncio.gather(
-        *(
-            process_chunk(
-                id_gen.next_id(chunk.text), file.file_path.path, chunk, target
-            )
-            for chunk in chunks
-        )
+        *(process_chunk(file.file_path.path, chunk, id_gen, target) for chunk in chunks)
     )
 
 

@@ -60,13 +60,13 @@ impl SequencerState {
 ///
 /// Uses a two-layer locking strategy:
 /// - Main mutex protects the map of sequencers (held briefly)
-/// - Per-key mutex protects each sequencer's state (held during DB operations)
+/// - Per-key tokio mutex protects each sequencer's state (can be held across await points)
 ///
 /// This allows concurrent ID generation for different keys while serializing
 /// operations for the same key.
 #[derive(Default)]
 pub struct IdSequencerManager {
-    sequencers: Mutex<HashMap<StableKey, Arc<Mutex<SequencerState>>>>,
+    sequencers: Mutex<HashMap<StableKey, Arc<tokio::sync::Mutex<SequencerState>>>>,
 }
 
 impl IdSequencerManager {
@@ -81,7 +81,7 @@ impl IdSequencerManager {
     /// This function is thread-safe and handles concurrent access properly.
     /// Different keys can be processed in parallel, while same-key operations
     /// are serialized.
-    pub fn next_id(
+    pub async fn next_id(
         &self,
         db_env: &heed::Env,
         db: &db_schema::Database,
@@ -92,16 +92,16 @@ impl IdSequencerManager {
             let mut sequencers = self.sequencers.lock().unwrap();
             sequencers
                 .entry(key.clone())
-                .or_insert_with(|| Arc::new(Mutex::new(SequencerState::new())))
+                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(SequencerState::new())))
                 .clone()
         };
 
-        // Now work with the per-key state (main map lock is released)
-        let mut state = state_arc.lock().unwrap();
+        // Lock the per-key state (tokio mutex can be held across await)
+        let mut state = state_arc.lock().await;
 
         if state.needs_refill() {
             let batch_size = state.next_batch_size;
-            let start_id = Self::reserve_batch(db_env, db, key, batch_size)?;
+            let start_id = Self::reserve_batch(db_env, db, key, batch_size).await?;
             state.refill(start_id, batch_size);
         }
 
@@ -109,7 +109,7 @@ impl IdSequencerManager {
     }
 
     /// Reserve a batch of IDs from the database.
-    fn reserve_batch(
+    async fn reserve_batch(
         db_env: &heed::Env,
         db: &db_schema::Database,
         key: &StableKey,

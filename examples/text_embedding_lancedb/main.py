@@ -59,16 +59,16 @@ async def coco_lifespan(
     yield
 
 
-@coco.function(memo=True)
+@coco.function
 async def process_chunk(
-    id: int,
     filename: pathlib.PurePath,
     chunk: Chunk,
+    id_gen: IdGenerator,
     table: lancedb.TableTarget[DocEmbedding],
 ) -> None:
     table.declare_row(
         row=DocEmbedding(
-            id=id,
+            id=await id_gen.next_id(chunk.text),
             filename=str(filename),
             chunk_start=chunk.start.char_offset,
             chunk_end=chunk.end.char_offset,
@@ -89,10 +89,7 @@ async def process_file(
     )
     id_gen = IdGenerator()
     await asyncio.gather(
-        *(
-            process_chunk(id_gen.next_id(chunk.text), file.file_path.path, chunk, table)
-            for chunk in chunks
-        )
+        *(process_chunk(file.file_path.path, chunk, id_gen, table) for chunk in chunks)
     )
 
 

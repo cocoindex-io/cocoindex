@@ -152,19 +152,19 @@ The same distinction applies to `generate_uuid` vs `UuidGenerator`.
 
 ### generate_id / generate_uuid
 
-Functions that return the **same** ID/UUID for the **same** `dep` value. These are idempotent: calling multiple times with identical `dep` yields identical results.
+Async functions that return the **same** ID/UUID for the **same** `dep` value. These are idempotent: calling multiple times with identical `dep` yields identical results.
 
 ```python
 from cocoindex.resources.id import generate_id, generate_uuid
 
-def process_item(item: Item) -> Row:
+async def process_item(item: Item) -> Row:
     # Same item.key always gets the same ID
-    item_id = generate_id(item.key)
+    item_id = await generate_id(item.key)
     return Row(id=item_id, data=item.data)
 
-def process_document(doc: Document) -> Row:
+async def process_document(doc: Document) -> Row:
     # Same doc.path always gets the same UUID
-    doc_uuid = generate_uuid(doc.path)
+    doc_uuid = await generate_uuid(doc.path)
     return Row(id=doc_uuid, content=doc.content)
 ```
 
@@ -186,23 +186,23 @@ Use these when you need multiple IDs for potentially non-distinct inputs, such a
 ```python
 from cocoindex.resources.id import IdGenerator, UuidGenerator
 
-def process_document(doc: Document) -> list[Row]:
+async def process_document(doc: Document) -> list[Row]:
     # Use doc.path to distinguish generators within the same processing component
     id_gen = IdGenerator(deps=doc.path)
     rows = []
     for chunk in split_into_chunks(doc.content):
         # Each call returns a distinct ID, even if chunks are identical
-        chunk_id = id_gen.next_id(chunk.content)
+        chunk_id = await id_gen.next_id(chunk.content)
         rows.append(Row(id=chunk_id, content=chunk.content))
     return rows
 
-def process_with_uuids(doc: Document) -> list[Row]:
+async def process_with_uuids(doc: Document) -> list[Row]:
     # Use doc.path to distinguish generators within the same processing component
     uuid_gen = UuidGenerator(deps=doc.path)
     rows = []
     for chunk in split_into_chunks(doc.content):
         # Each call returns a distinct UUID, even if chunks are identical
-        chunk_uuid = uuid_gen.next_uuid(chunk.content)
+        chunk_uuid = await uuid_gen.next_uuid(chunk.content)
         rows.append(Row(id=chunk_uuid, content=chunk.content))
     return rows
 ```
@@ -213,5 +213,5 @@ def process_with_uuids(doc: Document) -> list[Row]:
 
 **Methods:**
 
-- `IdGenerator.next_id(dep=None)` — Generate the next unique integer ID (distinct on each call)
-- `UuidGenerator.next_uuid(dep=None)` — Generate the next unique UUID (distinct on each call)
+- `async IdGenerator.next_id(dep=None)` — Generate the next unique integer ID (distinct on each call)
+- `async UuidGenerator.next_uuid(dep=None)` — Generate the next unique UUID (distinct on each call)

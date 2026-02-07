@@ -83,7 +83,7 @@ class SentenceTransformerEmbedder(_schema.VectorSchemaProvider):
                     self._model = SentenceTransformer(self._model_name_or_path)
         return self._model
 
-    @coco_aio.function(batching=True, runner=coco.GPU, max_batch_size=64)
+    @coco_aio.function(batching=True, runner=coco.GPU, memo=True, max_batch_size=64)
     def embed(self, texts: list[str]) -> list[_NDArray[_np.float32]]:
         """Embed texts to embedding vectors.
 
@@ -104,7 +104,7 @@ class SentenceTransformerEmbedder(_schema.VectorSchemaProvider):
         )  # type: ignore[assignment]
         return list(embeddings)
 
-    @coco_aio.function(runner=coco.GPU)
+    @coco_aio.function(runner=coco.GPU, memo=True)
     def __coco_vector_schema__(self) -> _schema.VectorSchema:
         """Return vector schema information for this model.
 

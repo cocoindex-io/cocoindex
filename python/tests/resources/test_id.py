@@ -23,10 +23,10 @@ _uuid_generator_results: dict[str, list[uuid.UUID]] = {}
 
 
 @coco.function
-def _app_main_generate_id(deps: list[str]) -> None:
+async def _app_main_generate_id(deps: list[str]) -> None:
     """App main that generates IDs for each dependency."""
     for dep in deps:
-        _generate_id_results[dep] = generate_id(dep)
+        _generate_id_results[dep] = await generate_id(dep)
 
 
 def test_generate_id_stability() -> None:
@@ -120,19 +120,27 @@ def test_generate_uuid_different_deps() -> None:
 
 
 @coco.function
-def _app_main_id_generator(deps: list[str], count: int) -> None:
+async def _app_main_id_generator(deps: list[str], count: int) -> None:
     """App main that generates multiple IDs for each dependency."""
     for dep in deps:
         gen = IdGenerator()
-        _id_generator_results[dep] = [gen.next_id(dep) for _ in range(count)]
+        ids = []
+        for _ in range(count):
+            ids.append(await gen.next_id(dep))
+        _id_generator_results[dep] = ids
 
 
 @coco.function
-def _app_main_id_generator_with_deps(generator_deps: list[str], count: int) -> None:
+async def _app_main_id_generator_with_deps(
+    generator_deps: list[str], count: int
+) -> None:
     """App main that generates IDs with different constructor deps."""
     for gen_dep in generator_deps:
         gen = IdGenerator(deps=gen_dep)  # Use gen_dep as constructor argument
-        _id_generator_results[gen_dep] = [gen.next_id() for _ in range(count)]
+        ids = []
+        for _ in range(count):
+            ids.append(await gen.next_id())
+        _id_generator_results[gen_dep] = ids
 
 
 def test_id_generator_multiple_ids() -> None:
