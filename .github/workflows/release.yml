@@ -48,6 +48,8 @@ jobs:
       # Use local file cache instead of GHA backend (v0.10.0 GHA backend has bugs)
       # Use workspace path so it's accessible in containers and on all platforms
       SCCACHE_DIR: "${{ github.workspace }}/.sccache"
+      # Explicitly disable GHA backend (maturin-action tries to enable it)
+      SCCACHE_GHA_ENABLED: "false"
     strategy:
       matrix:
         platform:
@@ -118,6 +120,9 @@ jobs:
       - uses: actions/download-artifact@v7
         with:
           name: THIRD_PARTY_NOTICES.html
+      - name: Create sccache directory
+        shell: bash
+        run: mkdir -p "${{ github.workspace }}/.sccache"
       - name: Cache sccache directory
         uses: actions/cache@v4
         with:
