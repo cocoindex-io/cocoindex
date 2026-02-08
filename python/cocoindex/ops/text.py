@@ -81,7 +81,7 @@ class SeparatorSplitter:
             A list of Chunk objects containing the split text with position information.
         """
         raw_chunks = self._splitter.split(text)
-        return [_convert_chunk(c) for c in raw_chunks]
+        return [_convert_chunk(c, text) for c in raw_chunks]
 
 
 class CustomLanguageConfig:
@@ -177,13 +177,24 @@ class RecursiveSplitter:
         raw_chunks = self._splitter.split(
             text, chunk_size, min_chunk_size, chunk_overlap, language
         )
-        return [_convert_chunk(c) for c in raw_chunks]
+        return [_convert_chunk(c, text) for c in raw_chunks]
 
 
-def _convert_chunk(raw: _core.Chunk) -> _chunk.Chunk:
-    """Convert a raw PyO3 chunk to a Python Chunk dataclass."""
+def _convert_chunk(raw: _core.Chunk, text: str) -> _chunk.Chunk:
+    """Convert a raw PyO3 chunk to a Python Chunk dataclass.
+
+    Args:
+        raw: The raw chunk from Rust (contains byte offsets and position info).
+        text: The original text to slice from.
+
+    Returns:
+        A Chunk with the extracted text content and position information.
+    """
+    # Extract chunk text efficiently using byte offsets
+    chunk_text = text[raw.start_byte : raw.end_byte]
+
     return _chunk.Chunk(
-        text=raw.text,
+        text=chunk_text,
         start=_chunk.TextPosition(
             byte_offset=raw.start_byte,
             char_offset=raw.start_char_offset,
