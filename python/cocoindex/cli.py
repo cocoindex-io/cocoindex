@@ -35,6 +35,30 @@ from cocoindex._internal.stable_path import StablePath, StableKey, ROOT_PATH
 # ---------------------------------------------------------------------------
 
 
+def _get_tree_chars() -> tuple[str, str, str]:
+    """
+    Get tree drawing characters, using ASCII fallbacks on Windows or when console can't handle Unicode.
+
+    Returns:
+        Tuple of (connector_intermediate, connector_last, vertical_line)
+    """
+    # Check if we're on Windows or if stdout encoding can't handle Unicode
+    try:
+        # On Windows, use ASCII fallbacks to avoid encoding issues
+        if sys.platform == "win32":
+            return ("|--", "\\--", "|")
+
+        encoding = getattr(sys.stdout, "encoding", None) or sys.getdefaultencoding()
+        if encoding and encoding.lower() in ("cp1252", "ascii", "latin1"):
+            # Use ASCII alternatives for encodings that can't handle Unicode box-drawing
+            return ("|--", "\\--", "|")
+    except (AttributeError, TypeError):
+        pass
+
+    # Use Unicode box-drawing characters
+    return ("├──", "└──", "│")
+
+
 class AppSpecifier(NamedTuple):
     """Parsed app specifier."""
 
@@ -458,13 +482,16 @@ def _render_children(
         List of formatted lines
     """
     lines = []
+    # Get tree characters (Unicode or ASCII fallback)
+    connector_intermediate, connector_last, vertical_line = _get_tree_chars()
+
     # Sort children by str(key) for deterministic ordering
     sorted_children = sorted(node.children.items(), key=lambda item: str(item[0]))
 
     for idx, (key, child_node) in enumerate(sorted_children):
         is_last = idx == len(sorted_children) - 1
-        # Determine connector: ├── for intermediate, └── for last
-        connector = "└──" if is_last else "├──"
+        # Determine connector: connector_last for last, connector_intermediate for others
+        connector = connector_last if is_last else connector_intermediate
         # Build line with key label and [component] annotation if needed
         key_str = str(key)  # Handles quotes, escaping automatically
         line = f"{prefix}{connector} {key_str}"
@@ -473,7 +500,7 @@ def _render_children(
         lines.append(line)
 
         # Render children recursively with updated prefix
-        child_prefix = prefix + ("    " if is_last else "│   ")
+        child_prefix = prefix + ("    " if is_last else f"{vertical_line}   ")
         lines.extend(_render_children(child_node, child_prefix))
 
     return lines
@@ -615,16 +642,14 @@ def show(app_target: str, tree: bool) -> None:
 
     if tree:
         items = list_stable_paths_with_types_sync(app)
-        paths = [StablePath(item.path) for item in items]
-        component_paths = {
-            StablePath(item.path)
-            for item in items
-            if item.node_type == _core.StablePathNodeType.component()
-        }
-        root_in_paths = any(path == ROOT_PATH for path in paths)
-        if not root_in_paths:
-            paths.insert(0, ROOT_PATH)
-        component_paths.add(ROOT_PATH)
+        component_node_type = _core.StablePathNodeType.component()
+        paths: list[StablePath] = []
+        component_paths: set[StablePath] = set()
+        for item in items:
+            path = StablePath(item.path)
+            paths.append(path)
+            if item.node_type == component_node_type:
+                component_paths.add(path)
         output = _render_paths_as_tree(paths, component_paths)
         click.echo(output)
     else:

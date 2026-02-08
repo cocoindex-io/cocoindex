@@ -700,7 +700,14 @@ class TestShowTree:
         assert "Found" in result.stdout
         assert "stable paths:" in result.stdout
         assert "/" in result.stdout
-        assert "├──" in result.stdout or "└──" in result.stdout
+        # Should contain tree structure (accept both Unicode and ASCII)
+        has_tree_chars = (
+            "├──" in result.stdout
+            or "└──" in result.stdout
+            or "|--" in result.stdout
+            or "\\--" in result.stdout
+        )
+        assert has_tree_chars, "Should contain tree structure characters"
 
     def test_show_tree_annotates_components(self) -> None:
         """show --tree should annotate component nodes with [component]."""
@@ -746,13 +753,17 @@ class TestShowTree:
         assert "files" in output_text, "Should have 'files' node in output"
         # Find the "files" line and verify it's NOT annotated as a component
         files_line = None
+        tree_connectors = ("├──", "└──", "|--", "\\--")
         for line in lines:
-            if ("├──" in line or "└──" in line) and "files" in line:
-                # Check if "files" is the node name (not part of a filename)
+            if (
+                any(connector in line for connector in tree_connectors)
+                and "files" in line
+            ):
                 parts = line.split()
                 connector_idx = None
                 for i, part in enumerate(parts):
-                    if part in ("├──", "└──"):
+                    if part in tree_connectors:
+                        connector_idx = i
                         connector_idx = i
                         break
                 if connector_idx is not None and connector_idx + 1 < len(parts):
@@ -801,7 +812,7 @@ class TestShowTree:
                 i
                 for i, l in enumerate(lines)
                 if "files" in l
-                and ("├──" in l or "└──" in l)
+                and any(connector in l for connector in tree_connectors)
                 and "[component]" not in l
             ),
             None,
@@ -810,7 +821,8 @@ class TestShowTree:
             (
                 i
                 for i, l in enumerate(lines)
-                if "file1.txt" in l and ("├──" in l or "└──" in l)
+                if "file1.txt" in l
+                and any(connector in l for connector in tree_connectors)
             ),
             None,
         )
