@@ -114,10 +114,12 @@ jupyter notebook tutorial.ipynb
 ```
 
 The notebook will:
-1. Create sample data (Apple, Microsoft, JPMorgan)
+1. Create simplified sample data (Apple, Microsoft, JPMorgan) for offline demo
 2. Set up database tables
 3. Build the search index
 4. Run example queries
+
+> The sample data is synthetic and condensed for demonstration purposes. It includes realistic filing structure, PII patterns (emails, phones, SSNs) for the scrubbing pipeline, and multi-format sources (TXT, JSON, PDF). See [About the Sample Data](#about-the-sample-data) for links to real SEC filings.
 
 ## Example Queries
 
@@ -272,6 +274,39 @@ This demo validates techniques needed for healthcare document search:
 | Temporal relevance (encounters) | Filing date recency scoring | ✅ Tested |
 | PHI de-identification | PII scrubbing | ✅ Implemented |
 | Audit lineage | CocoInsight visualization | ✅ Built-in |
+
+## About the Sample Data
+
+This tutorial uses **simplified synthetic data** for offline demonstration. The sample filings include realistic structure (risk factors, metadata, contact information) but are condensed to keep the demo fast and self-contained.
+
+To work with real SEC filings, you can download directly from EDGAR:
+
+### Real Data Sources
+
+| Data Type | API / URL | Example |
+|-----------|-----------|---------|
+| **Company Facts (JSON)** | `https://data.sec.gov/api/xbrl/companyfacts/CIK{number}.json` | [Apple](https://data.sec.gov/api/xbrl/companyfacts/CIK0000320193.json), [Microsoft](https://data.sec.gov/api/xbrl/companyfacts/CIK0000789019.json), [JPMorgan](https://data.sec.gov/api/xbrl/companyfacts/CIK0000019617.json) |
+| **Full-Text Filings** | [EDGAR Full-Text Search](https://efts.sec.gov/LATEST/search-index?q=%2210-K%22&forms=10-K) | Search and download 10-K/10-Q filings |
+| **Filing Submissions** | `https://data.sec.gov/submissions/CIK{number}.json` | [Apple](https://data.sec.gov/submissions/CIK0000320193.json) |
+| **PDF Exhibits** | Linked from each filing's index page on EDGAR | See examples below |
+
+### Real Filing Exhibits (HTML)
+
+| Company | Exhibit 21 (Subsidiaries) | Exhibit 31 (SOX Certification) |
+|---------|---------------------------|-------------------------------|
+| **Apple** | [EX-21.1](https://www.sec.gov/Archives/edgar/data/320193/000032019325000079/a10-kexhibit21109272025.htm) | [EX-31.1](https://www.sec.gov/Archives/edgar/data/320193/000032019325000079/a10-kexhibit31109272025.htm) |
+| **Microsoft** | [EX-21](https://www.sec.gov/Archives/edgar/data/789019/000095017025100235/msft-ex21.htm) | [EX-31.1](https://www.sec.gov/Archives/edgar/data/789019/000095017025100235/msft-ex31_1.htm) |
+| **JPMorgan** | [EX-21](https://www.sec.gov/Archives/edgar/data/19617/000001961725000270/corp10k2024exhibit21.htm) | [EX-31.1](https://www.sec.gov/Archives/edgar/data/19617/000001961725000270/corp10k2024exhibit311.htm) |
+
+### Real Proxy Statements (PDF)
+
+| Company | DEF 14A Proxy Statement |
+|---------|------------------------|
+| **Apple** | [2026 Proxy Statement](https://www.sec.gov/Archives/edgar/data/320193/000130817926000008/aapl_courtesy-pdf.pdf) (2.3 MB) |
+| **Microsoft** | [2025 Proxy Statement](https://www.sec.gov/Archives/edgar/data/789019/000119312525245150/d908201ddef14a1.pdf) (8.4 MB) |
+| **JPMorgan** | [2025 Proxy Statement](https://www.jpmorganchase.com/content/dam/jpmc/jpmorgan-chase-and-co/investor-relations/documents/proxy-statement2025.pdf) (31.4 MB) |
+
+> **Note**: SEC EDGAR requires a `User-Agent` header with your name and email for programmatic access. Rate limit is 10 requests/second. See [Accessing EDGAR Data](https://www.sec.gov/search-filings/edgar-search-assistance/accessing-edgar-data).
 
 ## Project Structure
 
