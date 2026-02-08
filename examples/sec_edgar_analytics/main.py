@@ -43,15 +43,13 @@ from search import (
 
 load_dotenv()
 
-DORIS_CONFIG = {
-    "fe_host": os.environ.get("DORIS_FE_HOST", "localhost"),
-    "fe_http_port": int(os.environ.get("DORIS_HTTP_PORT", "8030")),
-    "be_load_host": os.environ.get("DORIS_BE_LOAD_HOST", None),
-    "query_port": int(os.environ.get("DORIS_QUERY_PORT", "9030")),
-    "username": os.environ.get("DORIS_USERNAME", "root"),
-    "password": os.environ.get("DORIS_PASSWORD", ""),
-    "database": os.environ.get("DORIS_DATABASE", "sec_analytics"),
-}
+DORIS_FE_HOST: str = os.environ.get("DORIS_FE_HOST", "localhost")
+DORIS_FE_HTTP_PORT: int = int(os.environ.get("DORIS_HTTP_PORT", "8030"))
+DORIS_BE_LOAD_HOST: str | None = os.environ.get("DORIS_BE_LOAD_HOST", None)
+DORIS_QUERY_PORT: int = int(os.environ.get("DORIS_QUERY_PORT", "9030"))
+DORIS_USERNAME: str = os.environ.get("DORIS_USERNAME", "root")
+DORIS_PASSWORD: str = os.environ.get("DORIS_PASSWORD", "")
+DORIS_DATABASE: str = os.environ.get("DORIS_DATABASE", "sec_analytics")
 
 TABLE_CHUNKS = "filing_chunks"
 
@@ -61,7 +59,12 @@ TABLE_CHUNKS = "filing_chunks"
 # =============================================================================
 
 
-def process_and_collect(doc, text_field: str, metadata, collector):
+def process_and_collect(
+    doc: cocoindex.DataScope,
+    text_field: str,
+    metadata: cocoindex.DataSlice,
+    collector: cocoindex.flow.DataCollector,
+) -> None:
     """
     Common chunk processing for all source types.
 
@@ -168,13 +171,13 @@ def sec_filing_flow(
     chunk_collector.export(
         "filing_chunks",
         coco_doris.DorisTarget(
-            fe_host=DORIS_CONFIG["fe_host"],
-            fe_http_port=DORIS_CONFIG["fe_http_port"],
-            be_load_host=DORIS_CONFIG["be_load_host"],
-            query_port=DORIS_CONFIG["query_port"],
-            username=DORIS_CONFIG["username"],
-            password=DORIS_CONFIG["password"],
-            database=DORIS_CONFIG["database"],
+            fe_host=DORIS_FE_HOST,
+            fe_http_port=DORIS_FE_HTTP_PORT,
+            be_load_host=DORIS_BE_LOAD_HOST,
+            query_port=DORIS_QUERY_PORT,
+            username=DORIS_USERNAME,
+            password=DORIS_PASSWORD,
+            database=DORIS_DATABASE,
             table=TABLE_CHUNKS,
         ),
         primary_key_fields=["chunk_id"],
@@ -205,7 +208,7 @@ async def search(
     Hybrid search using RRF (Reciprocal Rank Fusion).
     Combines semantic similarity and keyword matching.
     """
-    table = f"{DORIS_CONFIG['database']}.{TABLE_CHUNKS}"
+    table = f"{DORIS_DATABASE}.{TABLE_CHUNKS}"
     embedding = format_embedding(await text_to_embedding.eval_async(query))
     keywords = extract_keywords(query)
 
@@ -248,7 +251,16 @@ async def search(
             "lex_rank": r[8],
             "rrf_score": float(r[9]),
         }
-        for r in await doris_query(DORIS_CONFIG, sql)
+        for r in await doris_query(
+            {
+                "fe_host": DORIS_FE_HOST,
+                "query_port": DORIS_QUERY_PORT,
+                "username": DORIS_USERNAME,
+                "password": DORIS_PASSWORD,
+                "database": DORIS_DATABASE,
+            },
+            sql,
+        )
     ]
 
 
