@@ -257,7 +257,7 @@ impl<'a> StablePathEntryTrackingInfo<'a> {
     }
 }
 
-#[derive(Serialize, Deserialize, PartialEq, Eq, Clone, Copy)]
+#[derive(Serialize, Deserialize, PartialEq, Eq, Clone, Copy, Debug)]
 pub enum StablePathNodeType {
     #[serde(rename = "D")]
     Directory,
