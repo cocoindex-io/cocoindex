@@ -47,16 +47,65 @@ jobs:
       matrix:
         platform:
           # Standard ABI3 builds (Python 3.11+)
-          - { os: linux, runner: ubuntu-latest, target: x86_64, python-version: "3.13", free-threaded: false, container: "ghcr.io/rust-cross/manylinux_2_28-cross:x86_64" }
-          - { os: linux, runner: ubuntu-24.04-arm, target: aarch64, python-version: "3.13", free-threaded: false, container: "ghcr.io/rust-cross/manylinux_2_28-cross:aarch64" }
-          - { os: macos, runner: macos-latest, target: aarch64, python-version: "3.13", free-threaded: false }
-          - { os: macos, runner: macos-15-intel, target: x86_64, python-version: "3.13", free-threaded: false }
-          - { os: windows, runner: windows-latest, target: x64, python-version: "3.13", free-threaded: false }
-          # Free-threaded builds (Python 3.14t)
-          - { os: linux, runner: ubuntu-latest, target: x86_64, python-version: "3.14", free-threaded: true, container: "ghcr.io/rust-cross/manylinux_2_28-cross:x86_64" }
-          - { os: linux, runner: ubuntu-24.04-arm, target: aarch64, python-version: "3.14", free-threaded: true, container: "ghcr.io/rust-cross/manylinux_2_28-cross:aarch64" }
-          - { os: macos, runner: macos-latest, target: aarch64, python-version: "3.14", free-threaded: true }
-          - { os: windows, runner: windows-latest, target: x64, python-version: "3.14", free-threaded: true }
+          - os: linux
+            runner: ubuntu-latest
+            target: x86_64
+            python-version: "3.13"
+            free-threaded: false
+            container: "ghcr.io/rust-cross/manylinux_2_28-cross:x86_64"
+            maturin-args: ""
+          - os: linux
+            runner: ubuntu-24.04-arm
+            target: aarch64
+            python-version: "3.13"
+            free-threaded: false
+            container: "ghcr.io/rust-cross/manylinux_2_28-cross:aarch64"
+            maturin-args: ""
+          - os: macos
+            runner: macos-latest
+            target: aarch64
+            python-version: "3.13"
+            free-threaded: false
+            maturin-args: ""
+          - os: macos
+            runner: macos-15-intel
+            target: x86_64
+            python-version: "3.13"
+            free-threaded: false
+            maturin-args: ""
+          - os: windows
+            runner: windows-latest
+            target: x64
+            python-version: "3.13"
+            free-threaded: false
+            maturin-args: ""
+          # Free-threaded builds (Python 3.14t) - use container with explicit interpreter
+          - os: linux
+            runner: ubuntu-latest
+            target: x86_64
+            python-version: "3.14"
+            free-threaded: true
+            container: "ghcr.io/rust-cross/manylinux_2_28-cross:x86_64"
+            maturin-args: "--no-default-features --interpreter 3.14t"
+          - os: linux
+            runner: ubuntu-24.04-arm
+            target: aarch64
+            python-version: "3.14"
+            free-threaded: true
+            container: "ghcr.io/rust-cross/manylinux_2_28-cross:aarch64"
+            maturin-args: "--no-default-features --interpreter 3.14t"
+          - os: macos
+            runner: macos-latest
+            target: aarch64
+            python-version: "3.14"
+            free-threaded: true
+            maturin-args: "--no-default-features --interpreter 3.14t"
+          - os: windows
+            runner: windows-latest
+            target: x64
+            python-version: "3.14"
+            free-threaded: true
+            maturin-args: "--no-default-features --interpreter 3.14t"
     steps:
       - uses: actions/checkout@v6
         with:
@@ -76,8 +125,7 @@ jobs:
         if: matrix.platform.free-threaded
         run: |
           python -c "import sys; print(f'GIL enabled: {sys._is_gil_enabled()}'); sys.exit(1) if sys._is_gil_enabled() else None"
-      - name: Build wheels (standard)
-        if: ${{ !matrix.platform.free-threaded }}
+      - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
