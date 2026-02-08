@@ -66,9 +66,14 @@ def cleanup_artifacts() -> None:
 
 
 @pytest.fixture(autouse=True)
-def clean_before_and_after() -> Generator[None, None, None]:
-    """Clean up test artifacts before and after each test."""
+def clean_before_and_after(
+    monkeypatch: pytest.MonkeyPatch,
+) -> Generator[None, None, None]:
+    """Clean up test artifacts and environment before and after each test."""
     cleanup_artifacts()
+    for key in list(os.environ):
+        if key.startswith("COCOINDEX_"):
+            monkeypatch.delenv(key)
     yield
     cleanup_artifacts()
 
