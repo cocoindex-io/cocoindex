@@ -10,7 +10,6 @@ license = "Apache-2.0"
 
 [workspace.dependencies]
 pyo3 = { version = "0.27.1", features = [
-    "abi3-py311",
     "auto-initialize",
     "chrono",
     "uuid",
@@ -83,6 +82,7 @@ uuid = { version = "1.18.1", features = ["serde", "v4", "v8"] }
 tokio-stream = "0.1.17"
 async-stream = "0.3.6"
 neo4rs = "0.8.0"
+falkordb = { version = "0.1.11", features = ["tokio"] }
 bytes = "1.11.0"
 rand = "0.9.2"
 indoc = "2.0.7"

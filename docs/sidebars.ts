@@ -69,6 +69,7 @@ const sidebars: SidebarsConfig = {
         'targets/qdrant',
         'targets/pinecone',
         'targets/lancedb',
+        'targets/chromadb',
         'targets/neo4j',
         'targets/kuzu',
         'targets/doris',

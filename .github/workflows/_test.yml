@@ -13,16 +13,23 @@ jobs:
     build-test:
         strategy:
             matrix:
-                python-version: ["3.11"]
                 platform:
-                  - { runner: ubuntu-latest }
-                  - { runner: ubuntu-24.04-arm }
-                  - { runner: macos-latest, extra_rustflags: "-C split-debuginfo=off" }
-                  - { runner: macos-15-intel, extra_rustflags: "-C split-debuginfo=off" }
-                  - { runner: windows-latest }
+                  # Standard builds (Python 3.11)
+                  - { runner: ubuntu-latest, python-version: "3.11", free-threaded: false }
+                  - { runner: ubuntu-24.04-arm, python-version: "3.11", free-threaded: false }
+                  - { runner: macos-latest, python-version: "3.11", free-threaded: false, extra_rustflags: "-C split-debuginfo=off" }
+                  - { runner: macos-15-intel, python-version: "3.11", free-threaded: false, extra_rustflags: "-C split-debuginfo=off" }
+                  - { runner: windows-latest, python-version: "3.11", free-threaded: false }
+                  # Free-threaded builds (Python 3.14t)
+                  - { runner: ubuntu-latest, python-version: "3.14", free-threaded: true }
+                  - { runner: macos-latest, python-version: "3.14", free-threaded: true, extra_rustflags: "-C split-debuginfo=off" }
+                  - { runner: windows-latest, python-version: "3.14", free-threaded: true }
         runs-on: ${{ matrix.platform.runner }}
         env:
           SCCACHE_GHA_ENABLED: "true"
+          RUSTFLAGS: "-C debuginfo=0 ${{ matrix.platform.extra_rustflags }}"
+          CARGO_INCREMENTAL: "0"
+          RUSTC_WRAPPER: "sccache"
 
         steps:
         - uses: actions/checkout@v6
@@ -37,23 +44,34 @@ jobs:
 
         - run: rustup toolchain install stable --profile minimal
 
+        - uses: actions/setup-python@v6
+          id: setup_python
+          with:
+            python-version: ${{ matrix.platform.python-version }}
+            freethreaded: ${{ matrix.platform.free-threaded }}
+            # Python cache is huge and saves little time, so disabled for now, until we have higher cache size limits
+            # cache: 'pip'
+
+        - name: Verify free-threaded interpreter
+          if: matrix.platform.free-threaded
+          run: |
+            python -c "import sys; print(f'GIL enabled: {sys._is_gil_enabled()}'); sys.exit(1) if sys._is_gil_enabled() else None"
+
         - name: Setup Rust Cache
           uses: Swatinem/rust-cache@v2
           with:
-            key: rust-${{ matrix.platform.runner }}
+            key: rust-${{ matrix.platform.runner }}-${{ steps.setup_python.outputs.python-version }}-${{ matrix.platform.free-threaded }}
             cache-targets: 'true'
             cache-all-crates: 'false'
             cache-workspace-crates: 'false'
 
-        - uses: actions/setup-python@v6
-          id: setup_python
-          with:
-            python-version: ${{ matrix.python-version }}
-            # Python cache is huge and saves little time, so disabled for now, until we have higher cache size limits
-            # cache: 'pip'
-
         - name: Install uv
           uses: astral-sh/setup-uv@v7
+
+        - name: Remove .python-version if exists
+          # Ensure uv uses Python from PATH (set by setup-python) rather than a pinned version
+          shell: bash
+          run: rm -f .python-version
 
         - name: Sync Python dependencies
           run: uv sync --no-dev --group ci
@@ -65,9 +83,6 @@ jobs:
 
         - name: Run build-test hooks
           env:
-            RUSTFLAGS: "-C debuginfo=0 ${{ matrix.platform.extra_rustflags }}"
-            CARGO_INCREMENTAL: "0"
-            RUSTC_WRAPPER: "sccache"
             UV_NO_SYNC: "1"
             # Skip mypy-check - it runs in e2e_type_check workflow
             PREK_SKIP: mypy-check

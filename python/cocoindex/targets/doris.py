@@ -114,6 +114,7 @@ class DorisTarget(op.TargetSpec):
     username: str = "root"
     password: str = ""
     enable_https: bool = False
+    be_load_host: str | None = None  # If set, rewrite stream load redirect to this host
 
     # Behavior
     batch_size: int = 10000
@@ -748,44 +749,79 @@ async def _stream_load(
     data = json.dumps(rows, ensure_ascii=False, cls=_NumpyEncoder)
 
     async def do_stream_load() -> dict[str, Any]:
-        async with session.put(
-            url,
-            data=data,
-            headers=headers,
-            timeout=aiohttp.ClientTimeout(total=spec.stream_load_timeout),
-        ) as response:
-            # Check for auth errors
-            if response.status in (401, 403):
-                raise DorisAuthError(
-                    f"Authentication failed: HTTP {response.status}",
-                    host=spec.fe_host,
-                    port=spec.fe_http_port,
-                )
+        load_timeout = aiohttp.ClientTimeout(total=spec.stream_load_timeout)
 
-            # Parse response - VeloDB/Doris may return wrong Content-Type
-            text = await response.text()
-            try:
-                result: dict[str, Any] = json.loads(text)
-            except json.JSONDecodeError:
-                raise DorisStreamLoadError(
-                    message=f"Invalid JSON response: {text[:200]}",
-                    status="ParseError",
-                )
+        if spec.be_load_host:
+            # Disable auto-redirect so we can rewrite the BE address.
+            # Useful when BE is behind Docker/NAT and its advertised address
+            # is unreachable from the client (e.g. Docker on macOS).
+            async def _send(target_url: str) -> tuple[int, str, str]:
+                async with session.put(
+                    target_url,
+                    data=data,
+                    headers=headers,
+                    timeout=load_timeout,
+                    allow_redirects=False,
+                ) as resp:
+                    return (
+                        resp.status,
+                        resp.headers.get("Location", ""),
+                        await resp.text(),
+                    )
 
-            # Use case-insensitive status check for robustness
-            # (different Doris versions may return different case)
-            status = result.get("Status", "Unknown")
-            status_upper = status.upper() if isinstance(status, str) else ""
-            if status_upper not in ("SUCCESS", "PUBLISH TIMEOUT"):
-                raise DorisStreamLoadError(
-                    message=result.get("Message", "Unknown error"),
-                    status=status,
-                    error_url=result.get("ErrorURL"),
-                    loaded_rows=result.get("NumberLoadedRows", 0),
-                    filtered_rows=result.get("NumberFilteredRows", 0),
-                )
+            status_code, location, text = await _send(url)
 
-            return result
+            if status_code == 307 and location:
+                from urllib.parse import urlparse, urlunparse
+
+                parsed = urlparse(location)
+                rewritten = urlunparse(
+                    parsed._replace(
+                        netloc=f"{spec.be_load_host}:{parsed.port or spec.fe_http_port}"
+                    )
+                )
+                status_code, _, text = await _send(rewritten)
+        else:
+            async with session.put(
+                url,
+                data=data,
+                headers=headers,
+                timeout=load_timeout,
+            ) as response:
+                status_code = response.status
+                text = await response.text()
+
+        # Check for auth errors
+        if status_code in (401, 403):
+            raise DorisAuthError(
+                f"Authentication failed: HTTP {status_code}",
+                host=spec.fe_host,
+                port=spec.fe_http_port,
+            )
+
+        # Parse response - VeloDB/Doris may return wrong Content-Type
+        try:
+            result: dict[str, Any] = json.loads(text)
+        except json.JSONDecodeError:
+            raise DorisStreamLoadError(
+                message=f"Invalid JSON response: {text[:200]}",
+                status="ParseError",
+            )
+
+        # Use case-insensitive status check for robustness
+        # (different Doris versions may return different case)
+        status = result.get("Status", "Unknown")
+        status_upper = status.upper() if isinstance(status, str) else ""
+        if status_upper not in ("SUCCESS", "PUBLISH TIMEOUT"):
+            raise DorisStreamLoadError(
+                message=result.get("Message", "Unknown error"),
+                status=status,
+                error_url=result.get("ErrorURL"),
+                loaded_rows=result.get("NumberLoadedRows", 0),
+                filtered_rows=result.get("NumberFilteredRows", 0),
+            )
+
+        return result
 
     retry_config = RetryConfig(
         max_retries=spec.max_retries,

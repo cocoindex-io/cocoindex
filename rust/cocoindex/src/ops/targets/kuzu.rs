@@ -80,10 +80,12 @@ impl KuzuThinClient {
         let query = json!({
             "query": cyper_builder.query
         });
-        http::request(|| self.reqwest_client.post(&self.query_url).json(&query))
-            .await
-            .map_err(Error::from)
-            .with_context(|| "Kuzu API error")?;
+        http::request(&self.reqwest_client, |client| {
+            client.post(&self.query_url).json(&query)
+        })
+        .await
+        .map_err(Error::from)
+        .with_context(|| "Kuzu API error")?;
         Ok(())
     }
 }

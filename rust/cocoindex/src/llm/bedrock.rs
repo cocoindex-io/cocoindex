@@ -106,8 +106,8 @@ impl LlmGenerationClient for Client {
 
         let encoded_api_key = encode(&self.api_key);
 
-        let resp = http::request(|| {
-            self.client
+        let resp = http::request(&self.client, |client| {
+            client
                 .post(&url)
                 .header(
                     "Authorization",

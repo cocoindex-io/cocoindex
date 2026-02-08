@@ -108,7 +108,6 @@ pytestmark = [
         not DORIS_CONFIGURED,
         reason="Doris not configured (set DORIS_FE_HOST and DORIS_PASSWORD)",
     ),
-    pytest.mark.integration,
 ]
 
 
