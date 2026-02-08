@@ -46,6 +46,7 @@ load_dotenv()
 DORIS_CONFIG = {
     "fe_host": os.environ.get("DORIS_FE_HOST", "localhost"),
     "fe_http_port": int(os.environ.get("DORIS_HTTP_PORT", "8030")),
+    "be_load_host": os.environ.get("DORIS_BE_LOAD_HOST", None),
     "query_port": int(os.environ.get("DORIS_QUERY_PORT", "9030")),
     "username": os.environ.get("DORIS_USERNAME", "root"),
     "password": os.environ.get("DORIS_PASSWORD", ""),
@@ -101,6 +102,7 @@ def process_and_collect(doc, text_field: str, metadata, collector):
 # =============================================================================
 # FLOW DEFINITION
 # =============================================================================
+
 
 @cocoindex.flow_def(name="SECFilingAnalytics")
 def sec_filing_flow(
@@ -168,6 +170,7 @@ def sec_filing_flow(
         coco_doris.DorisTarget(
             fe_host=DORIS_CONFIG["fe_host"],
             fe_http_port=DORIS_CONFIG["fe_http_port"],
+            be_load_host=DORIS_CONFIG["be_load_host"],
             query_port=DORIS_CONFIG["query_port"],
             username=DORIS_CONFIG["username"],
             password=DORIS_CONFIG["password"],
@@ -275,7 +278,9 @@ async def _main() -> None:
 
         for i, r in enumerate(results, 1):
             print(f"{i}. [{r['rrf_score']:.4f}] {r['doc_filename']}")
-            print(f"   CIK: {r['cik']} | Source: {r['source_type']} | Topics: {r['topics']}")
+            print(
+                f"   CIK: {r['cik']} | Source: {r['source_type']} | Topics: {r['topics']}"
+            )
             print(f"   {r['text'][:150]}...")
             print()
 
