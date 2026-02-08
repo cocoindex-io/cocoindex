@@ -8,11 +8,13 @@ use cocoindex_ops_text::split::{
 use pyo3::prelude::*;
 
 /// A chunk of text with its range and position information (returned to Python).
+///
+/// Note: This struct does not include the text content itself. Instead, it provides
+/// byte offsets (start_byte, end_byte) so Python can efficiently slice the original
+/// text without copying data across the FFI boundary.
 #[pyclass(name = "Chunk")]
 #[derive(Clone)]
 pub struct PyChunk {
-    #[pyo3(get)]
-    pub text: String,
     #[pyo3(get)]
     pub start_byte: usize,
     #[pyo3(get)]
@@ -32,10 +34,8 @@ pub struct PyChunk {
 }
 
 impl PyChunk {
-    fn from_chunk(chunk: &Chunk, text: &str) -> Self {
-        let chunk_text = &text[chunk.range.start..chunk.range.end];
+    fn from_chunk(chunk: &Chunk) -> Self {
         Self {
-            text: chunk_text.to_string(),
             start_byte: chunk.range.start,
             end_byte: chunk.range.end,
             start_char_offset: chunk.start.char_offset,
@@ -116,12 +116,11 @@ impl PySeparatorSplitter {
     ///
     /// Returns:
     ///     A list of chunks.
-    fn split(&self, text: &str) -> Vec<PyChunk> {
-        let chunks = self.splitter.split(text);
-        chunks
-            .iter()
-            .map(|c| PyChunk::from_chunk(c, text))
-            .collect()
+    fn split(&self, py: Python<'_>, text: &str) -> Vec<PyChunk> {
+        py.detach(|| {
+            let chunks = self.splitter.split(text);
+            chunks.iter().map(PyChunk::from_chunk).collect()
+        })
     }
 }
 
@@ -202,23 +201,23 @@ impl PyRecursiveSplitter {
     #[pyo3(signature = (text, chunk_size, min_chunk_size=None, chunk_overlap=None, language=None))]
     fn split(
         &self,
+        py: Python<'_>,
         text: &str,
         chunk_size: usize,
         min_chunk_size: Option<usize>,
         chunk_overlap: Option<usize>,
         language: Option<String>,
     ) -> Vec<PyChunk> {
-        let config = RecursiveChunkConfig {
-            chunk_size,
-            min_chunk_size,
-            chunk_overlap,
-            language,
-        };
+        py.detach(|| {
+            let config = RecursiveChunkConfig {
+                chunk_size,
+                min_chunk_size,
+                chunk_overlap,
+                language,
+            };
 
-        let chunks = self.chunker.split(text, config);
-        chunks
-            .iter()
-            .map(|c| PyChunk::from_chunk(c, text))
-            .collect()
+            let chunks = self.chunker.split(text, config);
+            chunks.iter().map(PyChunk::from_chunk).collect()
+        })
     }
 }
