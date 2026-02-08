@@ -5,7 +5,7 @@ description = "SEC EDGAR financial document analytics with CocoIndex + Apache Do
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "cocoindex>=0.3.29",
+    "cocoindex>=0.3.30",
     # Doris connector
     "aiohttp>=3.9.0",
     "aiomysql>=0.2.0",
