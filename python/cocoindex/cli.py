@@ -615,8 +615,16 @@ def show(app_target: str, tree: bool) -> None:
 
     if tree:
         items = list_stable_paths_with_types_sync(app)
-        paths = [p for (p, _is_component) in items]
-        component_paths = {p for (p, is_component) in items if is_component}
+        paths = [StablePath(item.path) for item in items]
+        component_paths = {
+            StablePath(item.path)
+            for item in items
+            if item.node_type == _core.StablePathNodeType.component()
+        }
+        root_in_paths = any(path == ROOT_PATH for path in paths)
+        if not root_in_paths:
+            paths.insert(0, ROOT_PATH)
+        component_paths.add(ROOT_PATH)
         output = _render_paths_as_tree(paths, component_paths)
         click.echo(output)
     else:

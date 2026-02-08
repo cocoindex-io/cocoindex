@@ -1,6 +1,6 @@
 use crate::prelude::*;
 
-use pyo3::IntoPyObject;
+use pyo3::IntoPyObjectExt;
 use pyo3::exceptions::PyTypeError;
 use pyo3::types::{PyBool, PyBytes, PyInt, PyList, PyString, PyTuple};
 use pyo3::{Py, PyAny, Python};
@@ -86,29 +86,19 @@ impl PyStablePath {
 fn stable_key_to_py(py: Python<'_>, key: &StableKey) -> PyResult<Py<PyAny>> {
     match key {
         StableKey::Null => Ok(py.None().into()),
-        StableKey::Bool(b) => {
-            let builtins = py.import("builtins")?;
-            let bool_type = builtins.getattr("bool")?;
-            let obj = bool_type.call1((*b,))?;
-            Ok(obj.into())
-        }
-        StableKey::Int(i) => Ok(i.into_pyobject(py)?.into()),
-        StableKey::Str(s) => Ok(s.as_ref().into_pyobject(py)?.into()),
-        StableKey::Bytes(b) => Ok(PyBytes::new(py, b.as_ref()).into_pyobject(py)?.into()),
-        StableKey::Uuid(u) => {
-            let uuid_module = py.import("uuid")?;
-            let uuid_class = uuid_module.getattr("UUID")?;
-            let uuid_obj = uuid_class.call1((u.to_string(),))?;
-            Ok(uuid_obj.into_pyobject(py)?.into())
-        }
+        StableKey::Bool(b) => Ok((*b).into_py_any(py)?),
+        StableKey::Int(i) => Ok((*i).into_py_any(py)?),
+        StableKey::Str(s) => Ok(s.as_ref().into_py_any(py)?),
+        StableKey::Bytes(b) => Ok(PyBytes::new(py, b.as_ref()).into_py_any(py)?),
+        StableKey::Uuid(u) => Ok((*u).into_py_any(py)?),
         StableKey::Array(arr) => {
             let mut items: Vec<Py<PyAny>> = Vec::with_capacity(arr.len());
             for item in arr.iter() {
                 items.push(stable_key_to_py(py, item)?);
             }
             let py_tuple = PyTuple::new(py, items)?;
-            Ok(py_tuple.into_pyobject(py)?.into())
+            Ok(py_tuple.into_py_any(py)?)
         }
-        StableKey::Fingerprint(fp) => Ok(fp.to_string().into_pyobject(py)?.into()),
+        StableKey::Fingerprint(fp) => Ok(fp.to_string().into_py_any(py)?),
     }
 }

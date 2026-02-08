@@ -5,6 +5,7 @@ use crate::engine::{app::App, profile::EngineProfile};
 use crate::state::db_schema::{self, DbEntryKey};
 use crate::state::stable_path::{StablePath, StablePathPrefix, StablePathRef};
 use cocoindex_utils::deser::from_msgpack_slice;
+use futures::stream::{self, Stream};
 use heed::types::{DecodeIgnore, Str};
 
 pub fn list_stable_paths<Prof: EngineProfile>(app: &App<Prof>) -> Result<Vec<StablePath>> {
@@ -32,33 +33,41 @@ pub fn list_stable_paths<Prof: EngineProfile>(app: &App<Prof>) -> Result<Vec<Sta
     Ok(result)
 }
 
-/// List stable paths along with whether each node is a component
-pub fn list_stable_paths_with_types<Prof: EngineProfile>(
+/// Represents a stable path with its node type information.
+#[derive(Clone, Debug)]
+pub struct StablePathWithType {
+    pub path: StablePath,
+    pub node_type: db_schema::StablePathNodeType,
+}
+
+// Re-export StablePathNodeType for use in Python bindings
+pub use db_schema::StablePathNodeType;
+
+/// List stable paths along with their node types as an async stream.
+pub async fn list_stable_paths_with_types<Prof: EngineProfile>(
     app: &App<Prof>,
-) -> Result<Vec<(StablePath, bool)>> {
+) -> Result<impl Stream<Item = Result<StablePathWithType>> + '_> {
     let paths = list_stable_paths(app)?;
     let db = app.app_ctx().db();
     let txn = app.app_ctx().env().db_env().read_txn()?;
 
-    let mut out: Vec<(StablePath, bool)> = Vec::with_capacity(paths.len());
+    let mut results = Vec::with_capacity(paths.len());
     for path in paths {
-        if path.as_ref().is_empty() {
-            out.push((path, true));
-            continue;
-        }
-
-        let path_ref: StablePathRef<'_> = path.as_ref();
-        let Some((parent_ref, key)) = path_ref.split_parent() else {
-            out.push((path, true));
-            continue;
+        let node_type = if path.as_ref().is_empty() {
+            db_schema::StablePathNodeType::Component
+        } else {
+            let path_ref: StablePathRef<'_> = path.as_ref();
+            if let Some((parent_ref, key)) = path_ref.split_parent() {
+                get_path_node_type(db, &txn, parent_ref, key)?
+                    .unwrap_or(db_schema::StablePathNodeType::Directory)
+            } else {
+                db_schema::StablePathNodeType::Component
+            }
         };
-
-        let node_type = get_path_node_type(db, &txn, parent_ref, key)?
-            .unwrap_or(db_schema::StablePathNodeType::Directory);
-        out.push((path, node_type == db_schema::StablePathNodeType::Component));
+        results.push(Ok(StablePathWithType { path, node_type }));
     }
 
-    Ok(out)
+    Ok(stream::iter(results))
 }
 
 fn get_path_node_type(

@@ -742,6 +742,46 @@ class TestShowTree:
         assert root_line is not None, "Root path should be present"
         assert "[component]" in root_line, "Root should be annotated as [component]"
 
+        # Should have "files" node as an intermediate node (NOT a component)
+        assert "files" in output_text, "Should have 'files' node in output"
+        # Find the "files" line and verify it's NOT annotated as a component
+        files_line = None
+        for line in lines:
+            if ("├──" in line or "└──" in line) and "files" in line:
+                # Check if "files" is the node name (not part of a filename)
+                parts = line.split()
+                connector_idx = None
+                for i, part in enumerate(parts):
+                    if part in ("├──", "└──"):
+                        connector_idx = i
+                        break
+                if connector_idx is not None and connector_idx + 1 < len(parts):
+                    node_name = parts[connector_idx + 1]
+                    if node_name == "files":
+                        files_line = line
+                        break
+
+        assert files_line is not None, "Should have 'files' intermediate node line"
+        assert "[component]" not in files_line, (
+            f"'files' should NOT be annotated as [component] (it's an intermediate node). "
+            f"Line: {files_line}"
+        )
+
+        # Should have "file1.txt" and "file2.txt" as components under "files"
+        assert "file1.txt" in output_text, "Should have 'file1.txt' node"
+        assert "file2.txt" in output_text, "Should have 'file2.txt' node"
+        # Both should be annotated as components
+        file1_line = next((l for l in lines if "file1.txt" in l), None)
+        file2_line = next((l for l in lines if "file2.txt" in l), None)
+        assert file1_line is not None, "Should have 'file1.txt' line"
+        assert file2_line is not None, "Should have 'file2.txt' line"
+        assert "[component]" in file1_line, (
+            "file1.txt should be annotated as [component]"
+        )
+        assert "[component]" in file2_line, (
+            "file2.txt should be annotated as [component]"
+        )
+
         # Should have "direct" as a component (direct child of root)
         assert "direct" in output_text, "Should have 'direct' node"
         direct_line = next((l for l in lines if "direct" in l), None)
@@ -754,7 +794,7 @@ class TestShowTree:
         assert setup_line is not None, "Should have 'setup' line"
         assert "[component]" in setup_line, "setup should be annotated as [component]"
 
-        # Verify tree structure: file1.txt should be nested under files
+        # Verify tree structure: file1.txt and file2.txt should be nested under files
         # Find the line index for "files" and "file1.txt"
         files_idx = next(
             (
@@ -774,9 +814,10 @@ class TestShowTree:
             ),
             None,
         )
-        assert files_idx is not None, "Should find 'files' line"
+
         assert file1_idx is not None, "Should find 'file1.txt' line"
         # file1.txt should come after files (they're nested)
+        assert file1_idx is not None and files_idx is not None
         assert file1_idx > files_idx, (
             "file1.txt should appear after files in nested structure"
         )

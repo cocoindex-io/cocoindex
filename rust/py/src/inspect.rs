@@ -1,6 +1,9 @@
 use crate::{app::PyApp, environment::PyEnvironment, prelude::*, stable_path::PyStablePath};
 
 use cocoindex_core::inspect::db_inspect;
+use cocoindex_core::inspect::db_inspect::StablePathNodeType;
+use futures::StreamExt;
+use pyo3_async_runtimes::tokio::future_into_py;
 
 #[pyfunction]
 pub fn list_stable_paths(app: &PyApp) -> PyResult<Vec<PyStablePath>> {
@@ -12,14 +15,69 @@ pub fn list_stable_paths(app: &PyApp) -> PyResult<Vec<PyStablePath>> {
     Ok(py_stable_paths)
 }
 
+#[pyclass(name = "StablePathNodeType")]
+#[derive(Clone, Copy, Debug)]
+pub struct PyStablePathNodeType(pub StablePathNodeType);
+
+#[pymethods]
+impl PyStablePathNodeType {
+    #[staticmethod]
+    pub fn directory() -> Self {
+        Self(StablePathNodeType::Directory)
+    }
+
+    #[staticmethod]
+    pub fn component() -> Self {
+        Self(StablePathNodeType::Component)
+    }
+
+    pub fn __eq__(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+
+    pub fn __str__(&self) -> String {
+        match self.0 {
+            StablePathNodeType::Directory => "Directory".to_string(),
+            StablePathNodeType::Component => "Component".to_string(),
+        }
+    }
+
+    pub fn __repr__(&self) -> String {
+        format!("StablePathNodeType.{}", self.__str__())
+    }
+}
+
+#[pyclass(name = "StablePathWithType")]
+#[derive(Clone)]
+pub struct PyStablePathWithType {
+    #[pyo3(get)]
+    pub path: PyStablePath,
+    #[pyo3(get)]
+    pub node_type: PyStablePathNodeType,
+}
+
 #[pyfunction]
-pub fn list_stable_paths_with_types(app: &PyApp) -> PyResult<Vec<(PyStablePath, bool)>> {
-    let items = db_inspect::list_stable_paths_with_types(&app.0).into_py_result()?;
-    let out = items
-        .into_iter()
-        .map(|(path, is_component)| (PyStablePath(path), is_component))
-        .collect();
-    Ok(out)
+pub fn list_stable_paths_with_types<'py>(
+    app: &PyApp,
+    py: Python<'py>,
+) -> PyResult<Bound<'py, PyAny>> {
+    let app_clone = app.0.clone();
+    let fut = future_into_py(py, async move {
+        let stream = db_inspect::list_stable_paths_with_types(&app_clone)
+            .await
+            .into_py_result()?;
+        let mut results = Vec::new();
+        let mut stream = stream;
+        while let Some(item) = stream.next().await {
+            let item = item.into_py_result()?;
+            results.push(PyStablePathWithType {
+                path: PyStablePath(item.path),
+                node_type: PyStablePathNodeType(item.node_type),
+            });
+        }
+        Ok(results)
+    })?;
+    Ok(fut)
 }
 
 #[pyfunction]

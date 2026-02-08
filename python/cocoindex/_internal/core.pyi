@@ -105,7 +105,17 @@ class Environment:
 
 # --- Inspect helpers ---
 def list_app_names(env: Environment) -> list[str]: ...
-def list_stable_paths_with_types(app: App) -> list[tuple[StablePath, bool]]: ...
+async def list_stable_paths_with_types(app: App) -> list[StablePathWithType]: ...
+
+class StablePathNodeType:
+    @staticmethod
+    def directory() -> StablePathNodeType: ...
+    @staticmethod
+    def component() -> StablePathNodeType: ...
+
+class StablePathWithType:
+    path: StablePath
+    node_type: StablePathNodeType
 
 # --- App ---
 class App:
