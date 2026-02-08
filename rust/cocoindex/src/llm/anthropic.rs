@@ -91,8 +91,8 @@ impl LlmGenerationClient for Client {
 
         let encoded_api_key = encode(&self.api_key);
 
-        let resp = http::request(|| {
-            self.client
+        let resp = http::request(&self.client, |client| {
+            client
                 .post(url)
                 .header("x-api-key", encoded_api_key.as_ref())
                 .header("anthropic-version", "2023-06-01")

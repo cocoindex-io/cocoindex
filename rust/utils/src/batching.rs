@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
 use tokio::sync::{oneshot, watch};
 use tokio_util::task::AbortOnDropHandle;
-use tracing::error;
+use tracing::{Instrument, Span, error};
 
 use crate::{
     error::{Error, ResidualError, Result},
@@ -184,13 +184,16 @@ impl<R: Runner + 'static> Batcher<R> {
                 };
 
                 let data = self.data.clone();
-                let handle = AbortOnDropHandle::new(tokio::spawn(async move {
-                    let mut outputs = data.runner.run(vec![input]).await?;
-                    if outputs.len() != 1 {
-                        internal_bail!("Expected 1 output, got {}", outputs.len());
+                let handle = AbortOnDropHandle::new(tokio::spawn(
+                    async move {
+                        let mut outputs = data.runner.run(vec![input]).await?;
+                        if outputs.len() != 1 {
+                            internal_bail!("Expected 1 output, got {}", outputs.len());
+                        }
+                        Ok(outputs.next().unwrap())
                     }
-                    Ok(outputs.next().unwrap())
-                }));
+                    .instrument(Span::current()),
+                ));
                 Ok(handle.await??)
             }
             BatchExecutionAction::Batched {

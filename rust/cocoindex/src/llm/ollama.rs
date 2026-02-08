@@ -102,10 +102,8 @@ impl LlmGenerationClient for Client {
             system: request.system_prompt.as_ref().map(|s| s.as_ref()),
             stream: Some(false),
         };
-        let res = http::request(|| {
-            self.reqwest_client
-                .post(self.generate_url.as_str())
-                .json(&req)
+        let res = http::request(&self.reqwest_client, |client| {
+            client.post(self.generate_url.as_str()).json(&req)
         })
         .await
         .map_err(Error::from)
@@ -146,10 +144,12 @@ impl LlmEmbeddingClient for Client {
             model: request.model,
             input: texts,
         };
-        let resp = http::request(|| self.reqwest_client.post(self.embed_url.as_str()).json(&req))
-            .await
-            .map_err(Error::from)
-            .with_context(|| "Ollama API error")?;
+        let resp = http::request(&self.reqwest_client, |client| {
+            client.post(self.embed_url.as_str()).json(&req)
+        })
+        .await
+        .map_err(Error::from)
+        .with_context(|| "Ollama API error")?;
 
         let embedding_resp: OllamaEmbeddingResponse =
             resp.json().await.with_context(|| "Invalid JSON")?;

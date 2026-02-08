@@ -334,7 +334,7 @@ pub async fn create_lib_context(settings: settings::Settings) -> Result<LibConte
 
 static GET_SETTINGS_FN: Mutex<Option<Box<dyn Fn() -> Result<settings::Settings> + Send + Sync>>> =
     Mutex::new(None);
-fn get_settings() -> Result<settings::Settings> {
+pub fn get_settings() -> Result<settings::Settings> {
     let get_settings_fn = GET_SETTINGS_FN.lock().unwrap();
     let settings = if let Some(get_settings_fn) = &*get_settings_fn {
         get_settings_fn()?

@@ -56,6 +56,8 @@ The spec takes the following fields:
 
 * `enable_https` (`bool`, default: `False`): Whether to use HTTPS for Stream Load.
 
+* `be_load_host` (`str`, optional): If set, rewrite the host in Stream Load redirects to this value. Doris FE redirects Stream Load requests (HTTP 307) to a BE node, but the BE's advertised address may be unreachable from the client (e.g. a Docker-internal IP when running on macOS). Setting this to `"localhost"` makes the client connect to the mapped port on the host instead. Leave unset for production clusters where BE nodes are directly reachable.
+
 ### Behavior
 
 * `batch_size` (`int`, default: `10000`): Maximum number of rows per Stream Load batch.

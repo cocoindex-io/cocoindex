@@ -144,8 +144,8 @@ impl LlmGenerationClient for AiStudioClient {
         }
 
         let url = self.get_api_url(request.model, "generateContent");
-        let resp = http::request(|| {
-            self.client
+        let resp = http::request(&self.client, |client| {
+            client
                 .post(&url)
                 .header("x-goog-api-key", &self.api_key)
                 .json(&payload)
@@ -207,8 +207,8 @@ impl LlmEmbeddingClient for AiStudioClient {
             request.task_type.as_deref(),
             request.output_dimension,
         );
-        let resp = http::request(|| {
-            self.client
+        let resp = http::request(&self.client, |client| {
+            client
                 .post(&url)
                 .header("x-goog-api-key", &self.api_key)
                 .json(&payload)
