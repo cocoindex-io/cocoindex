@@ -68,13 +68,18 @@ def _create_synthetic_sample_data() -> None:
 
     # TXT FILINGS (10-K Risk Factors)
     sample_filings = {
-        "0000320193_2024-11-01_10-K.txt": """APPLE INC. FORM 10-K ANNUAL REPORT
+        "0000320193_2025-11-01_10-K.txt": """APPLE INC. FORM 10-K ANNUAL REPORT
+Filed with the Securities and Exchange Commission
+Registrant's telephone number, including area code: (555) 012-3456
+Investor Relations Contact: investor.relations@example.com
+
 ITEM 1A. RISK FACTORS
 
 CYBERSECURITY RISKS
 The Company faces significant cybersecurity risks, including potential data breaches,
 ransomware attacks, and unauthorized access to our systems. We have invested heavily
-in security infrastructure to mitigate these threats.
+in security infrastructure to mitigate these threats. For security incident reports,
+contact our CISO office at security-incidents@example.com or call (555) 012-3457.
 
 CLIMATE CHANGE
 Climate change poses risks to our global supply chain and manufacturing operations.
@@ -86,13 +91,22 @@ to enhance our products and services including Siri and computational photograph
 
 SUPPLY CHAIN
 Our products are manufactured by outsourcing partners primarily in Asia. Supply chain
-disruptions from logistics issues or geopolitical tensions could impact production.""",
-        "0000789019_2024-10-15_10-K.txt": """MICROSOFT CORPORATION FORM 10-K ANNUAL REPORT
+disruptions from logistics issues or geopolitical tensions could impact production.
+
+For additional information, contact Apple Investor Relations at (555) 012-3458
+or visit investor.apple.com. Transfer agent: Equiniti Trust Company,
+shareowner@example.com, (555) 012-3459.""",
+        "0000789019_2025-10-15_10-K.txt": """MICROSOFT CORPORATION FORM 10-K ANNUAL REPORT
+Filed with the Securities and Exchange Commission
+Registrant's telephone number, including area code: (555) 021-6543
+Investor Relations: ir-contact@example.com
+
 ITEM 1A. RISK FACTORS
 
 CLOUD INFRASTRUCTURE
 Our Azure cloud platform faces intense competition from AWS and Google Cloud.
 Cybersecurity threats continue to evolve and require constant vigilance.
+Report vulnerabilities to security-team@example.com or call (555) 021-6544.
 
 AI INTEGRATION
 We are integrating artificial intelligence across our product portfolio.
@@ -100,8 +114,15 @@ Our Copilot AI assistant represents significant investment in machine learning.
 
 REGULATORY COMPLIANCE
 We operate in a complex regulatory environment. Privacy regulations like GDPR
-require continuous compliance investment across all markets.""",
-        "0000019617_2024-03-01_10-K.txt": """JPMORGAN CHASE & CO. FORM 10-K ANNUAL REPORT
+require continuous compliance investment across all markets.
+
+Media inquiries: media-contact@example.com, (555) 021-6545.
+Investor Relations: (555) 021-6546.""",
+        "0000019617_2025-03-01_10-K.txt": """JPMORGAN CHASE & CO. FORM 10-K ANNUAL REPORT
+Filed with the Securities and Exchange Commission
+Registrant's telephone number, including area code: (555) 034-7890
+Investor Relations Contact: ir-contact@example.com
+
 ITEM 1A. RISK FACTORS
 
 CREDIT RISK
@@ -111,10 +132,19 @@ Economic downturns may result in increased loan defaults.
 CYBERSECURITY
 We face constant cybersecurity threats from criminal organizations.
 We invest over $700 million annually in cybersecurity.
+Report suspicious activity to fraud-report@example.com or (555) 034-7891.
 
 CLIMATE RISK
 Climate change poses transition and physical risks to our business.
-We have committed to align financing with Paris Agreement goals.""",
+We have committed to align financing with Paris Agreement goals.
+
+Contact: JPMorgan Chase Investor Relations, investor-info@example.com, (555) 034-7892.
+
+EXHIBIT 10.1 - EMPLOYMENT AGREEMENT (EXCERPT)
+Executive: Jane A. Doe, Managing Director
+SSN: 287-65-4321 [Filed inadvertently - to be redacted per Reg S-T Rule 83]
+Annual Base Salary: $450,000
+Contact: jane.doe@example.com, (555) 034-7893""",
     }
 
     for filename, content in sample_filings.items():
@@ -133,14 +163,14 @@ We have committed to align financing with Paris Agreement goals.""",
                         "units": {
                             "USD": [
                                 {
-                                    "end": "2024-09-28",
+                                    "end": "2025-09-28",
                                     "val": 394328000000,
-                                    "filed": "2024-11-01",
+                                    "filed": "2025-11-01",
                                 },
                                 {
-                                    "end": "2023-09-30",
+                                    "end": "2024-09-30",
                                     "val": 383285000000,
-                                    "filed": "2023-11-03",
+                                    "filed": "2024-11-03",
                                 },
                             ]
                         },
@@ -151,9 +181,9 @@ We have committed to align financing with Paris Agreement goals.""",
                         "units": {
                             "USD": [
                                 {
-                                    "end": "2024-09-28",
+                                    "end": "2025-09-28",
                                     "val": 93736000000,
-                                    "filed": "2024-11-01",
+                                    "filed": "2025-11-01",
                                 },
                             ]
                         },
@@ -172,9 +202,9 @@ We have committed to align financing with Paris Agreement goals.""",
                         "units": {
                             "USD": [
                                 {
-                                    "end": "2024-06-30",
+                                    "end": "2025-06-30",
                                     "val": 245122000000,
-                                    "filed": "2024-10-15",
+                                    "filed": "2025-10-15",
                                 },
                             ]
                         },
@@ -193,9 +223,9 @@ We have committed to align financing with Paris Agreement goals.""",
                         "units": {
                             "USD": [
                                 {
-                                    "end": "2023-12-31",
+                                    "end": "2024-12-31",
                                     "val": 158104000000,
-                                    "filed": "2024-03-01",
+                                    "filed": "2025-03-01",
                                 },
                             ]
                         },
@@ -212,9 +242,9 @@ We have committed to align financing with Paris Agreement goals.""",
 
     # PDF EXHIBITS (minimal valid PDFs)
     sample_pdfs = {
-        "0000320193_2024-ex21.pdf": "APPLE INC - SUBSIDIARIES\n\n1. Apple Sales International\n2. Apple Operations International\n3. Braeburn Capital, Inc.",
-        "0000789019_2024-ex21.pdf": "MICROSOFT CORPORATION - SUBSIDIARIES\n\n1. LinkedIn Corporation\n2. GitHub, Inc.\n3. Nuance Communications",
-        "0000019617_2024-ex21.pdf": "JPMORGAN CHASE & CO - SUBSIDIARIES\n\n1. JPMorgan Chase Bank, N.A.\n2. J.P. Morgan Securities LLC",
+        "0000320193_2025-ex21.pdf": "APPLE INC - SUBSIDIARIES\n\n1. Apple Sales International\n2. Apple Operations International\n3. Braeburn Capital, Inc.\n\nRegistered Agent: Corporation Trust Company\nContact: agent.services@example.com, (555) 045-0001",
+        "0000789019_2025-ex21.pdf": "MICROSOFT CORPORATION - SUBSIDIARIES\n\n1. LinkedIn Corporation\n2. GitHub, Inc.\n3. Nuance Communications\n\nRegistered Agent: Corporation Service Company\nContact: agent.notices@example.com, (555) 045-0002",
+        "0000019617_2025-ex21.pdf": "JPMORGAN CHASE & CO - SUBSIDIARIES\n\n1. JPMorgan Chase Bank, N.A.\n2. J.P. Morgan Securities LLC\n\nNotices to:\nGeneral Counsel\nEmail: legal.notices@example.com\nPhone: (555) 045-0003\n\nEmployee referenced: SSN 000-12-3456 [REDACTION REQUIRED]",
     }
 
     for filename, text_content in sample_pdfs.items():
