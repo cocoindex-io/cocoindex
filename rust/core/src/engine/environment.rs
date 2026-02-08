@@ -60,9 +60,12 @@ impl<Prof: EngineProfile> Environment<Prof> {
     /// Migrate legacy LMDB files from the old layout (directly in `base_path`)
     /// into the new `db_path` subdirectory.
     fn migrate_legacy_db_files(base_path: &PathBuf, db_path: &PathBuf) -> Result<()> {
-        const LMDB_FILES: &[&str] = &["data.mdb", "lock.mdb"];
-        let any_legacy = LMDB_FILES.iter().any(|name| base_path.join(name).exists());
-        if !any_legacy {
+        let legacy_files: Vec<PathBuf> = ["data.mdb", "lock.mdb"]
+            .iter()
+            .map(|name| base_path.join(name))
+            .filter(|path| path.exists())
+            .collect();
+        if legacy_files.is_empty() {
             return Ok(());
         }
         info!(
@@ -70,12 +73,9 @@ impl<Prof: EngineProfile> Environment<Prof> {
             base_path.display(),
             db_path.display()
         );
-        for name in LMDB_FILES {
-            let src = base_path.join(name);
-            if src.exists() {
-                let dst = db_path.join(name);
-                std::fs::rename(&src, &dst)?;
-            }
+        for src in legacy_files {
+            let dst = db_path.join(src.file_name().unwrap());
+            std::fs::rename(&src, &dst)?;
         }
         Ok(())
     }
