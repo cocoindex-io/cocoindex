@@ -1,0 +1,5 @@
+/.pinecone_cache
+
+# Ignore environment files
+.env
+.env.*
