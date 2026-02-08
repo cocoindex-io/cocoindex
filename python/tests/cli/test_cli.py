@@ -764,7 +764,6 @@ class TestShowTree:
                 for i, part in enumerate(parts):
                     if part in tree_connectors:
                         connector_idx = i
-                        connector_idx = i
                         break
                 if connector_idx is not None and connector_idx + 1 < len(parts):
                     node_name = parts[connector_idx + 1]
@@ -834,6 +833,10 @@ class TestShowTree:
             "file1.txt should appear after files in nested structure"
         )
         # file1.txt line should have indentation indicating it's a child of files
-        assert "│   " in lines[file1_idx] or "    " in lines[file1_idx], (
-            "file1.txt should be indented as child of files"
+        # Accept both Unicode (│   ) and ASCII (|   ) vertical lines, or spaces
+        has_indentation = (
+            "│   " in lines[file1_idx]
+            or "|   " in lines[file1_idx]
+            or "    " in lines[file1_idx]
         )
+        assert has_indentation, f"file1.txt should be indented as child of files"
