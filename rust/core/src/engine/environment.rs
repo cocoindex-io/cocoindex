@@ -32,13 +32,16 @@ impl<Prof: EngineProfile> Environment<Prof> {
         target_states_providers: Arc<Mutex<TargetStateProviderRegistry<Prof>>>,
         host_runtime_ctx: Prof::HostRuntimeCtx,
     ) -> Result<Self> {
+        let db_path = settings.db_path.join("mdb");
         // Create the directory if not exists.
-        std::fs::create_dir_all(&settings.db_path)?;
+        std::fs::create_dir_all(&db_path)?;
+        // Backward compatibility: migrate LMDB files from old layout into mdb/.
+        Self::migrate_legacy_db_files(&settings.db_path, &db_path)?;
         let db_env = unsafe {
             heed::EnvOpenOptions::new()
                 .max_dbs(MAX_DBS)
                 .map_size(LMDB_MAP_SIZE)
-                .open(settings.db_path.clone())
+                .open(db_path)
         }?;
         let cleared_count = db_env.clear_stale_readers()?;
         if cleared_count > 0 {
@@ -52,6 +55,29 @@ impl<Prof: EngineProfile> Environment<Prof> {
             host_runtime_ctx,
         });
         Ok(Self { inner: state })
+    }
+
+    /// Migrate legacy LMDB files from the old layout (directly in `base_path`)
+    /// into the new `db_path` subdirectory.
+    fn migrate_legacy_db_files(base_path: &PathBuf, db_path: &PathBuf) -> Result<()> {
+        const LMDB_FILES: &[&str] = &["data.mdb", "lock.mdb"];
+        let any_legacy = LMDB_FILES.iter().any(|name| base_path.join(name).exists());
+        if !any_legacy {
+            return Ok(());
+        }
+        info!(
+            "Migrating legacy LMDB files from {} to {}",
+            base_path.display(),
+            db_path.display()
+        );
+        for name in LMDB_FILES {
+            let src = base_path.join(name);
+            if src.exists() {
+                let dst = db_path.join(name);
+                std::fs::rename(&src, &dst)?;
+            }
+        }
+        Ok(())
     }
 
     pub fn db_env(&self) -> &heed::Env {
