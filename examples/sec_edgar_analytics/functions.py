@@ -8,11 +8,13 @@ when re-running Jupyter notebook cells.
 Functions are registered with CocoIndex once when this module is first imported.
 """
 
+import io
 import re
 import json
 from dataclasses import dataclass
 
 import cocoindex
+from docling.document_converter import DocumentConverter
 
 
 # =============================================================================
@@ -308,6 +310,19 @@ def extract_topics(text: str) -> list[str]:
             topics.append(topic)
 
     return topics
+
+
+# =============================================================================
+# PDF CONVERSION
+# =============================================================================
+
+
+@cocoindex.op.function(cache=True, behavior_version=1)
+def pdf_to_markdown(content: bytes) -> str:
+    """Convert PDF bytes to markdown text using docling."""
+    converter = DocumentConverter()
+    result = converter.convert(io.BytesIO(content))
+    return result.document.export_to_markdown()
 
 
 # =============================================================================
