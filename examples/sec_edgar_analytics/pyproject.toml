@@ -5,14 +5,18 @@ description = "SEC EDGAR financial document analytics with CocoIndex + Apache Do
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "cocoindex @ file:///Users/zhhanz/Documents/rust/src/tomz/cocoindex",
+    "cocoindex>=0.3.30",
     # Doris connector
     "aiohttp>=3.9.0",
     "aiomysql>=0.2.0",
     # Embeddings
     "sentence-transformers>=2.2.0",
-    # PDF processing (optional - for full PDF support)
-    # "marker-pdf>=1.0.0",
+    # PDF processing
+    "docling>=2.0.0",
+    # LLM summary (optional)
+    "anthropic>=0.18.0",
+    # Data handling
+    "httpx>=0.27.0",
     # Utilities
     "python-dotenv>=1.0.0",
     "jupyter>=1.1.1",
@@ -21,7 +25,7 @@ dependencies = [
 
 [project.optional-dependencies]
 pdf = [
-    "marker-pdf>=1.0.0",
+    "docling>=2.0.0",
 ]
 dev = [
     "pytest>=8.0.0",
