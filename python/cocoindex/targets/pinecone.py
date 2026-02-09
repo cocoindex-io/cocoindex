@@ -7,6 +7,7 @@ Supports:
 - Namespace isolation
 """
 
+import json
 import asyncio
 import dataclasses
 import logging
@@ -120,8 +121,6 @@ def _convert_value_for_pinecone(value: Any) -> Any:
 
     # Convert complex types to JSON strings
     if isinstance(value, dict):
-        import json
-
         return json.dumps(value)
 
     # Convert other types to strings
