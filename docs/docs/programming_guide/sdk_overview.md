@@ -21,8 +21,8 @@ The CocoIndex SDK is organized into several modules:
 | Package | Description |
 |---------|-------------|
 | `cocoindex.connectors` | Connectors for data sources and targets |
-| `cocoindex.resources` | Provide common data models and abstractions shared across connectors and extra utilities |
-| `cocoindex.ops` | Extra utilities for performing common data processing tasks (e.g., text splitting, embedding with SentenceTransformers) |
+| `cocoindex.resources` | Common data models and abstractions shared across connectors and built-in operations |
+| `cocoindex.ops` | Built-in operations for common data processing tasks (e.g., text splitting, embedding with SentenceTransformers) |
 
 Import connectors and extras by their specific sub-module:
 
