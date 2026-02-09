@@ -215,7 +215,7 @@ Vector dimensions are typically determined by the embedding model. By using a `V
 
 A `VectorSchemaProvider` can be:
 
-- **An embedding model** (e.g., [`SentenceTransformerEmbedder`](../utilities/sentence_transformers.md)) — dimension is inferred from the model
+- **An embedding model** (e.g., [`SentenceTransformerEmbedder`](../ops/sentence_transformers.md)) — dimension is inferred from the model
 - **A `VectorSchema`** — for explicit size and dtype when not using an embedder
 
 ```python

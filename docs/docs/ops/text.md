@@ -1,6 +1,6 @@
-# Text Processing Utilities
+# Text Processing
 
-The `cocoindex.ops.text` module provides utilities for text processing, including:
+The `cocoindex.ops.text` module provides operations for text processing, including:
 
 - Code language detection
 - Text chunking and splitting

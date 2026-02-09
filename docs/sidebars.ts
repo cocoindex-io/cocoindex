@@ -45,12 +45,11 @@ const sidebars: SidebarsConfig = {
     },
     {
       type: 'category',
-      label: 'Utilities',
+      label: 'Built-in Operations',
       collapsed: false,
       items: [
-        'utilities/index',
-        'utilities/sentence_transformers',
-        'utilities/text',
+        'ops/sentence_transformers',
+        'ops/text',
       ],
     },
     {

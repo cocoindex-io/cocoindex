@@ -238,7 +238,7 @@ For `NDArray` fields, a `VectorSchemaProvider` specifies the vector dimension an
 
 A `VectorSchemaProvider` can be:
 
-- **An embedding model** (e.g., [`SentenceTransformerEmbedder`](../utilities/sentence_transformers.md)) — dimension is inferred from the model
+- **An embedding model** (e.g., [`SentenceTransformerEmbedder`](../ops/sentence_transformers.md)) — dimension is inferred from the model
 - **A `VectorSchema`** — for explicit size and dtype when not using an embedder
 
 ```python
