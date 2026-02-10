@@ -231,8 +231,8 @@ def app_main(
                 entry,
                 recursive=True,
                 path_matcher=PatternFilePathMatcher(
-                    included_patterns=["*.py"],
-                    excluded_patterns=[".*", "__pycache__"],
+                    included_patterns=["**/*.py"],
+                    excluded_patterns=["**/.*", "**/__pycache__"],
                 ),
             )
         )

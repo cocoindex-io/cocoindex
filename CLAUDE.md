@@ -161,7 +161,7 @@ def app_main(sourcedir: pathlib.Path, outdir: pathlib.Path) -> None:
     ).result()
 
     files = localfs.walk_dir(
-        sourcedir, path_matcher=PatternFilePathMatcher(included_patterns=["*.md"])
+        sourcedir, path_matcher=PatternFilePathMatcher(included_patterns=["**/*.md"])
     )
     with coco.component_subpath("process"):
         for f in files:
