@@ -5,9 +5,9 @@ use std::path::Path;
 use std::{path::PathBuf, sync::Arc};
 use tracing::warn;
 
-use super::shared::pattern_matcher::PatternMatcher;
 use crate::base::field_attrs;
 use crate::{fields_value, ops::sdk::*};
+use cocoindex_ops_text::pattern_matcher::PatternMatcher;
 
 #[derive(Debug, Deserialize)]
 pub struct Spec {

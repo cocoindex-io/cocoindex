@@ -24,7 +24,7 @@ cocoindex_utils = { path = "../utils", features = [
     "yaml",
 ] }
 cocoindex_py_utils = { path = "../py_utils" }
-cocoindex_extra_text = { path = "../extra_text" }
+cocoindex_ops_text = { path = "../ops_text" }
 
 pyo3 = { workspace = true }
 pythonize = { workspace = true }
@@ -62,7 +62,6 @@ schemars = { workspace = true }
 reqwest = { workspace = true }
 async-openai = { workspace = true }
 
-globset = { workspace = true }
 unicase = { workspace = true }
 google-drive3 = { workspace = true }
 hyper-util = { workspace = true }

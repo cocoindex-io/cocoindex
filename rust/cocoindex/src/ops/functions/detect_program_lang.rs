@@ -1,5 +1,5 @@
 use crate::ops::sdk::*;
-use cocoindex_extra_text::prog_langs;
+use cocoindex_ops_text::prog_langs;
 
 pub struct Args {
     filename: ResolvedOpArg,
