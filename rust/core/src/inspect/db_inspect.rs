@@ -4,8 +4,9 @@ use crate::engine::environment::Environment;
 use crate::engine::{app::App, profile::EngineProfile};
 use crate::state::db_schema::{self, DbEntryKey};
 use crate::state::stable_path::{StablePath, StablePathPrefix, StablePathRef};
+use async_stream::try_stream;
 use cocoindex_utils::deser::from_msgpack_slice;
-use futures::stream::{self, Stream};
+use futures::stream::Stream;
 use heed::types::{DecodeIgnore, Str};
 
 pub fn list_stable_paths<Prof: EngineProfile>(app: &App<Prof>) -> Result<Vec<StablePath>> {
@@ -44,15 +45,72 @@ pub struct StablePathWithType {
 pub use db_schema::StablePathNodeType;
 
 /// List stable paths along with their node types as an async stream.
-pub async fn list_stable_paths_with_types<Prof: EngineProfile>(
+pub fn list_stable_paths_with_types_stream<Prof: EngineProfile>(
     app: &App<Prof>,
-) -> Result<impl Stream<Item = Result<StablePathWithType>> + '_> {
-    let paths = list_stable_paths(app)?;
+) -> impl Stream<Item = Result<StablePathWithType>> + '_ {
+    try_stream! {
+        let encoded_key_prefix =
+            DbEntryKey::StablePathPrefixPrefix(StablePathPrefix::default()).encode()?;
+        let db = app.app_ctx().db();
+        let txn = app.app_ctx().env().db_env().read_txn()?;
+
+        let mut last_prefix: Option<Vec<u8>> = None;
+        for entry in db.prefix_iter(&txn, encoded_key_prefix.as_ref())? {
+            let (raw_key, _) = entry?;
+            if let Some(last_prefix) = &last_prefix
+                && raw_key.starts_with(last_prefix)
+            {
+                continue;
+            }
+            let key: DbEntryKey = DbEntryKey::decode(raw_key)?;
+            let path = match key {
+                DbEntryKey::StablePath(path, _) => path,
+                other => Err(internal_error!("Expected StablePath, got {other:?}"))?,
+            };
+            last_prefix = Some(DbEntryKey::StablePathPrefix(path.as_ref()).encode()?);
+
+            let node_type = if path.as_ref().is_empty() {
+                db_schema::StablePathNodeType::Component
+            } else {
+                let path_ref: StablePathRef<'_> = path.as_ref();
+                if let Some((parent_ref, key)) = path_ref.split_parent() {
+                    get_path_node_type(db, &txn, parent_ref, key)?
+                        .unwrap_or(db_schema::StablePathNodeType::Directory)
+                } else {
+                    db_schema::StablePathNodeType::Component
+                }
+            };
+
+            yield StablePathWithType { path, node_type };
+        }
+    }
+}
+
+/// List stable paths along with their node types, collecting all results synchronously.
+pub fn list_stable_paths_with_types_collect<Prof: EngineProfile>(
+    app: &App<Prof>,
+) -> Result<Vec<StablePathWithType>> {
+    let encoded_key_prefix =
+        DbEntryKey::StablePathPrefixPrefix(StablePathPrefix::default()).encode()?;
     let db = app.app_ctx().db();
     let txn = app.app_ctx().env().db_env().read_txn()?;
 
-    let mut results = Vec::with_capacity(paths.len());
-    for path in paths {
+    let mut items = Vec::new();
+    let mut last_prefix: Option<Vec<u8>> = None;
+    for entry in db.prefix_iter(&txn, encoded_key_prefix.as_ref())? {
+        let (raw_key, _) = entry?;
+        if let Some(last_prefix) = &last_prefix
+            && raw_key.starts_with(last_prefix)
+        {
+            continue;
+        }
+        let key: DbEntryKey = DbEntryKey::decode(raw_key)?;
+        let path = match key {
+            DbEntryKey::StablePath(path, _) => path,
+            other => return Err(internal_error!("Expected StablePath, got {other:?}")),
+        };
+        last_prefix = Some(DbEntryKey::StablePathPrefix(path.as_ref()).encode()?);
+
         let node_type = if path.as_ref().is_empty() {
             db_schema::StablePathNodeType::Component
         } else {
@@ -64,10 +122,10 @@ pub async fn list_stable_paths_with_types<Prof: EngineProfile>(
                 db_schema::StablePathNodeType::Component
             }
         };
-        results.push(Ok(StablePathWithType { path, node_type }));
-    }
 
-    Ok(stream::iter(results))
+        items.push(StablePathWithType { path, node_type });
+    }
+    Ok(items)
 }
 
 fn get_path_node_type(

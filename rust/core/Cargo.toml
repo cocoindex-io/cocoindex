@@ -27,6 +27,7 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 futures = { workspace = true }
 async-trait = { workspace = true }
+async-stream = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
