@@ -107,6 +107,22 @@ The connector automatically creates the appropriate `vector(N)` column. See the 
 
 Below are common providers with their model strings and configuration. The `litellm` module is re-exported from `cocoindex.ops.litellm` for setting provider-specific variables. See the [LiteLLM embedding docs](https://docs.litellm.ai/docs/embedding/supported_embedding) for the full list.
 
+### Ollama
+
+| Model                    | Model string                  |
+|--------------------------|-------------------------------|
+| Nomic Embed Text         | `ollama/nomic-embed-text`     |
+| MXBai Embed Large        | `ollama/mxbai-embed-large`    |
+| All MiniLM               | `ollama/all-minilm`           |
+| Snowflake Arctic Embed   | `ollama/snowflake-arctic-embed` |
+| BGE M3                   | `ollama/bge-m3`               |
+
+No API key required. Ollama must be running locally (default `http://localhost:11434`). Pull the model first with `ollama pull <model-name>`.
+
+```python
+embedder = LiteLLMEmbedder("ollama/nomic-embed-text", api_base="http://localhost:11434")
+```
+
 ### OpenAI
 
 | Model | Model string |
