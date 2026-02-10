@@ -17,6 +17,7 @@ The way to map data from a data collector to a target depends on data model of t
 | [Postgres](/docs/targets/postgres) | Relational Database, Vector Search (PGVector)   |
 | [Qdrant](/docs/targets/qdrant)     | Vector Database, Keyword Search       |
 | [LanceDB](/docs/targets/lancedb)   | Vector Database, Keyword Search         |
+| [Pinecone](/docs/targets/pinecone) | Vector Database, Keyword Search       |
 | [ChromaDB](/docs/targets/chromadb) | Vector Database, Text Search            |
 | [Apache Doris](/docs/targets/doris) | Analytical Database, Vector Search, Full-Text Search |
 | [Neo4j](/docs/targets/neo4j)       | [Property graph](#property-graph-targets)        |

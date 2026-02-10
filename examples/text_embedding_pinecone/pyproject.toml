@@ -1,0 +1,13 @@
+[project]
+name = "text-embedding-pinecone"
+version = "0.1.0"
+description = "Simple example for cocoindex: build embedding index and export to Pinecone."
+requires-python = ">=3.11"
+dependencies = [
+	"cocoindex[embeddings,pinecone]>=0.3.26,<1",
+	"python-dotenv>=1.0.1",
+	"pinecone>=3.0.0"
+]
+
+[tool.setuptools]
+packages = []
