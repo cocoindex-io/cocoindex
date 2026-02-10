@@ -114,7 +114,7 @@ impl TargetHandler<PyEngineProfile> for PyTargetHandler {
                 py,
                 "reconcile",
                 (
-                    PyStableKey(key).to_py(py)?,
+                    PyStableKey(key),
                     desired_effect.as_ref().unwrap_or(non_existence).bind(py),
                     prev_possible_states,
                     prev_may_be_missing,
