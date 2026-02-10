@@ -68,6 +68,7 @@ profile = "release"      # wheel / normal builds
 editable-profile = "dev" # local editable builds
 
 [project.optional-dependencies]
+litellm = ["litellm>=1.81.0"]
 sentence_transformers = ["sentence-transformers>=3.3.1"]
 colpali = ["colpali-engine"]
 lancedb = ["lancedb>=0.25.0", "pyarrow>=19.0.0"]
@@ -77,6 +78,7 @@ sqlite = ["sqlite-vec>=0.1.6"]
 google_drive = ["google-api-python-client>=2.0.0", "google-auth>=2.0.0"]
 
 all = [
+    "litellm>=1.81.0",
     "sentence-transformers>=3.3.1",
     "colpali-engine",
     "lancedb>=0.25.0",
@@ -139,6 +141,8 @@ disable_error_code = ["unused-ignore"]
 # Ignore missing imports for optional dependencies from cocoindex library
 # Use wildcards to cover all submodules (e.g., google.oauth2.service_account)
 module = [
+    "litellm",
+    "litellm.*",
     "sentence_transformers",
     "sentence_transformers.*",
     "colpali_engine",
