@@ -1217,7 +1217,7 @@ dependencies = [
  "blake2",
  "bytes",
  "chrono",
- "cocoindex_extra_text",
+ "cocoindex_ops_text",
  "cocoindex_py_utils",
  "cocoindex_utils",
  "config",
@@ -1227,7 +1227,6 @@ dependencies = [
  "expect-test",
  "falkordb",
  "futures",
- "globset",
  "google-cloud-aiplatform-v1",
  "google-cloud-gax",
  "google-drive3",
@@ -1279,9 +1278,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "cocoindex_extra_text"
+name = "cocoindex_ops_text"
 version = "999.0.0"
 dependencies = [
+ "anyhow",
+ "globset",
  "regex",
  "tree-sitter",
  "tree-sitter-c",

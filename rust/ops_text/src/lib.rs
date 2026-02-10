@@ -5,5 +5,6 @@
 //! - Text splitting by separators
 //! - Recursive text chunking with syntax awareness
 
+pub mod pattern_matcher;
 pub mod prog_langs;
 pub mod split;

@@ -1,11 +1,13 @@
 [package]
-name = "cocoindex_extra_text"
+name = "cocoindex_ops_text"
 version = { workspace = true }
 edition = { workspace = true }
 rust-version = { workspace = true }
 license = { workspace = true }
 
 [dependencies]
+anyhow = { workspace = true }
+globset = { workspace = true }
 regex = { workspace = true }
 unicase = { workspace = true }
 

@@ -11,8 +11,8 @@ use crate::{
     prelude::*,
 };
 
-// Re-export core types from extra_text
-pub use cocoindex_extra_text::split::{
+// Re-export core types from ops_text
+pub use cocoindex_ops_text::split::{
     // Recursive chunker
     CustomLanguageConfig,
     // Separator splitter
