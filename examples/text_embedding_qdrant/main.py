@@ -100,7 +100,7 @@ async def app_main(sourcedir: pathlib.Path) -> None:
     files = localfs.walk_dir(
         sourcedir,
         recursive=True,
-        path_matcher=PatternFilePathMatcher(included_patterns=["*.md"]),
+        path_matcher=PatternFilePathMatcher(included_patterns=["**/*.md"]),
     )
     with coco.component_subpath("file"):
         for f in files:

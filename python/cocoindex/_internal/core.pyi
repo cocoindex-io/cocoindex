@@ -264,6 +264,16 @@ class RecursiveSplitter:
 
 def detect_code_language(*, filename: str) -> str | None: ...
 
+# --- PatternMatcher (from ops) ---
+class PatternMatcher:
+    def __new__(
+        cls,
+        included_patterns: list[str] | None = None,
+        excluded_patterns: list[str] | None = None,
+    ) -> "PatternMatcher": ...
+    def is_dir_included(self, path: str) -> bool: ...
+    def is_file_included(self, path: str) -> bool: ...
+
 ########################################################
 # Synchronization Primitives
 ########################################################

@@ -127,8 +127,14 @@ async def app_main(sourcedir: pathlib.Path) -> None:
         sourcedir,
         recursive=True,
         path_matcher=PatternFilePathMatcher(
-            included_patterns=["*.py", "*.rs", "*.toml", "*.md", "*.mdx"],
-            excluded_patterns=[".*/**", "target/**", "node_modules/**"],
+            included_patterns=[
+                "**/*.py",
+                "**/*.rs",
+                "**/*.toml",
+                "**/*.md",
+                "**/*.mdx",
+            ],
+            excluded_patterns=["**/.*", "**/target", "**/node_modules"],
         ),
     )
     async for file in files:

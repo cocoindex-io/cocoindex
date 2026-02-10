@@ -120,22 +120,26 @@ class MyMatcher(FilePathMatcher):
 
 #### PatternFilePathMatcher
 
-A built-in `FilePathMatcher` implementation using glob patterns:
+A built-in `FilePathMatcher` implementation using [globset](https://docs.rs/globset/#syntax) patterns:
 
 ```python
 from cocoindex.resources.file import PatternFilePathMatcher
 
 # Include only Python and Markdown files, exclude tests and hidden dirs
 matcher = PatternFilePathMatcher(
-    included_patterns=["*.py", "*.md"],
+    included_patterns=["**/*.py", "**/*.md"],
     excluded_patterns=["**/test_*", "**/.*"],
 )
 ```
 
 **Parameters:**
 
-- `included_patterns` — Glob patterns for files to include. If `None`, all files are included.
-- `excluded_patterns` — Glob patterns for files/directories to exclude. Excluded directories are not traversed.
+- `included_patterns` — Glob patterns ([globset](https://docs.rs/globset) syntax) for files to include. Use `**/*.ext` to match at any depth. If `None`, all files are included.
+- `excluded_patterns` — Glob patterns ([globset](https://docs.rs/globset) syntax) for files/directories to exclude. Excluded directories are not traversed.
+
+:::note
+Patterns use [globset](https://docs.rs/globset) semantics: `*.py` matches only in the root directory; use `**/*.py` to match at any depth.
+:::
 
 ## Vector Schema
 

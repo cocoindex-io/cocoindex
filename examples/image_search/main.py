@@ -114,7 +114,7 @@ async def app_main(sourcedir: pathlib.Path) -> None:
         sourcedir,
         recursive=True,
         path_matcher=PatternFilePathMatcher(
-            included_patterns=["*.jpg", "*.jpeg", "*.png"]
+            included_patterns=["**/*.jpg", "**/*.jpeg", "**/*.png"]
         ),
     )
     for f in files:

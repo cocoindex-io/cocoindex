@@ -18,7 +18,7 @@ def process_file(file: FileLike, outdir: pathlib.Path) -> None:
 @coco.function
 def app_main(sourcedir: pathlib.Path, outdir: pathlib.Path) -> None:
     files = localfs.walk_dir(
-        sourcedir, path_matcher=PatternFilePathMatcher(included_patterns=["*.md"])
+        sourcedir, path_matcher=PatternFilePathMatcher(included_patterns=["**/*.md"])
     )
     for f in files:
         coco.mount(

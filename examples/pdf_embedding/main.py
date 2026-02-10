@@ -142,7 +142,7 @@ async def app_main(sourcedir: pathlib.Path) -> None:
     files = localfs.walk_dir(
         sourcedir,
         recursive=True,
-        path_matcher=PatternFilePathMatcher(included_patterns=["*.pdf"]),
+        path_matcher=PatternFilePathMatcher(included_patterns=["**/*.pdf"]),
     )
     for f in files:
         coco.mount(

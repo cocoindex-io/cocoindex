@@ -337,7 +337,7 @@ def app_main() -> None:
     # Example (walk a directory):
     #   files = localfs.walk_dir(
     #       sourcedir,
-    #       path_matcher=PatternFilePathMatcher(included_patterns=["*.pdf"]),
+    #       path_matcher=PatternFilePathMatcher(included_patterns=["**/*.pdf"]),
     #   )
 
     # 3) Mount a processing unit for each input under a stable path

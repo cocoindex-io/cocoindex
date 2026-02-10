@@ -1,5 +1,6 @@
 //! Text processing operations exposed to Python.
 
+use cocoindex_ops_text::pattern_matcher::PatternMatcher;
 use cocoindex_ops_text::prog_langs;
 use cocoindex_ops_text::split::{
     Chunk, CustomLanguageConfig, KeepSeparator, RecursiveChunkConfig, RecursiveChunker,
@@ -219,5 +220,40 @@ impl PyRecursiveSplitter {
             let chunks = self.chunker.split(text, config);
             chunks.iter().map(PyChunk::from_chunk).collect()
         })
+    }
+}
+
+/// A pattern matcher using globset patterns for filtering file paths.
+#[pyclass(name = "PatternMatcher")]
+pub struct PyPatternMatcher {
+    matcher: PatternMatcher,
+}
+
+#[pymethods]
+impl PyPatternMatcher {
+    /// Create a new PatternMatcher.
+    ///
+    /// Args:
+    ///     included_patterns: Glob patterns for files to include. If None, all files are included.
+    ///     excluded_patterns: Glob patterns for files/directories to exclude.
+    #[new]
+    #[pyo3(signature = (included_patterns=None, excluded_patterns=None))]
+    fn new(
+        included_patterns: Option<Vec<String>>,
+        excluded_patterns: Option<Vec<String>>,
+    ) -> PyResult<Self> {
+        let matcher = PatternMatcher::new(included_patterns, excluded_patterns)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{}", e)))?;
+        Ok(Self { matcher })
+    }
+
+    /// Check if a directory should be included (traversed).
+    fn is_dir_included(&self, path: &str) -> bool {
+        self.matcher.is_dir_included(path)
+    }
+
+    /// Check if a file should be included based on both include and exclude patterns.
+    fn is_file_included(&self, path: &str) -> bool {
+        self.matcher.is_file_included(path)
     }
 }
