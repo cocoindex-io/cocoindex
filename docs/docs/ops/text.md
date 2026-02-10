@@ -1,3 +1,8 @@
+---
+title: Text Processing
+description: CocoIndex text processing operations including code language detection, text chunking, and syntax-aware splitting.
+---
+
 # Text Processing
 
 The `cocoindex.ops.text` module provides operations for text processing, including:

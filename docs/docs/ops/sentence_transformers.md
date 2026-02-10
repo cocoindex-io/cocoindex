@@ -1,4 +1,9 @@
-# Sentence Transformers Integration
+---
+title: Sentence Transformers Embedding
+description: CocoIndex integration with sentence-transformers for local text embeddings with automatic model caching and GPU access.
+---
+
+# Sentence Transformers Embedding
 
 The `cocoindex.ops.sentence_transformers` module provides integration with the [sentence-transformers](https://www.sbert.net/) library for text embeddings.
 
@@ -38,20 +43,14 @@ embedder = SentenceTransformerEmbedder("sentence-transformers/all-MiniLM-L6-v2")
 
 ### Embedding text
 
+The `embed()` method converts text into a `numpy.ndarray` of `float32`. It supports both sync and async usage:
+
 ```python
-# Embed a single text (returns 1D array)
-embedding = embedder.embed("Hello, world!")
-print(f"Shape: {embedding.shape}")  # Shape: (384,)
-print(f"Dtype: {embedding.dtype}")  # Dtype: float32
+# In a CocoIndex function
+embedding = await embedder.embed("Hello, world!")
 
-# Async embedding
-import asyncio
-
-async def embed_async_example():
-    embedding = await embedder.embed("Hello, world!")
-    return embedding
-
-embedding = asyncio.run(embed_async_example())
+# Use the embedding in a dataclass row, store in a vector database, etc.
+table.declare_row(row=CodeEmbedding(code="Hello, world!", embedding=embedding))
 ```
 
 ### Using as a type annotation
@@ -75,11 +74,7 @@ class CodeEmbedding:
     end_line: int
 ```
 
-When you pass this dataclass to a connector's `TableSchema.from_class()`, the connector automatically reads the embedder annotation to determine the vector column's dimension and dtype.
-
-## Using with CocoIndex connectors
-
-### With Postgres
+When you pass this dataclass to a connector's `TableSchema.from_class()`, the connector automatically reads the embedder annotation to determine the vector column's dimension and dtype. For example, with Postgres:
 
 ```python
 from cocoindex.connectors import postgres
@@ -97,39 +92,7 @@ target_table = await coco_aio.mount_run(
 ).result()
 ```
 
-The connector will automatically create the appropriate `vector(384)` column in Postgres.
-
-### With LanceDB
-
-```python
-from cocoindex.connectors import lancedb
-
-target_table = await coco_aio.mount_run(
-    coco.component_subpath("setup", "table"),
-    target_db.declare_table_target,
-    table_name="code_embeddings",
-    table_schema=await lancedb.TableSchema.from_class(
-        CodeEmbedding, primary_key=["id"]
-    ),
-).result()
-```
-
-### With Qdrant
-
-Qdrant uses `QdrantVectorDef` to pass the embedder's schema when creating a collection:
-
-```python
-from cocoindex.connectors import qdrant
-
-target_collection = await coco_aio.mount_run(
-    coco.component_subpath("setup", "collection"),
-    target_db.declare_collection_target,
-    collection_name="text_embeddings",
-    schema=await qdrant.CollectionSchema.create(
-        vectors=qdrant.QdrantVectorDef(schema=embedder)
-    ),
-).result()
-```
+The connector automatically creates the appropriate `vector(384)` column. See the [Connectors](../connectors/postgres.md) docs for other supported backends (LanceDB, Qdrant, SQLite).
 
 ## Example: text embedding pipeline
 
