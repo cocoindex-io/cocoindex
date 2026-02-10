@@ -6,6 +6,8 @@ rust-version = { workspace = true }
 license = { workspace = true }
 
 [dependencies]
+anyhow = { workspace = true }
+globset = { workspace = true }
 regex = { workspace = true }
 unicase = { workspace = true }
 
