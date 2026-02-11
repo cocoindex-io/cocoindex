@@ -174,7 +174,6 @@ pub fn declare_target_state<'py>(
 
 #[pyfunction]
 pub fn declare_target_state_with_child<'py>(
-    _py: Python<'py>,
     comp_ctx: &'py PyComponentProcessorContext,
     fn_ctx: &'py PyFnCallContext,
     provider: &PyTargetStateProvider,
