@@ -32,7 +32,7 @@ pub struct ImportedItem {
 }
 
 /// All entities and imports extracted from one file.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileExtraction {
     pub file: PathBuf,
     pub entities: Vec<Entity>,
