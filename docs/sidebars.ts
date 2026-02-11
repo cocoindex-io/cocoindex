@@ -71,6 +71,7 @@ const sidebars: SidebarsConfig = {
         'targets/lancedb',
         'targets/chromadb',
         'targets/neo4j',
+        'targets/ladybug',
         'targets/kuzu',
         'targets/doris',
       ],
