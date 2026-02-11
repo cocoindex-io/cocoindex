@@ -10,10 +10,14 @@ Vector support is provided via the sqlite-vec extension.
 
 from __future__ import annotations
 
+from typing import cast
+
+
 import datetime
 import decimal
 import json
 import sqlite3
+import sys
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -74,6 +78,7 @@ class ManagedConnection:
     _conn: sqlite3.Connection
     _rwlock: RWLock = field(default_factory=RWLock)
     _loaded_extensions: set[str] = field(default_factory=set)
+    key: str = "default"  # Key assigned when registered with register_db()
 
     @property
     def loaded_extensions(self) -> Set[str]:
@@ -89,12 +94,12 @@ class ManagedConnection:
         be active at a time, and it blocks all read operations.
         """
         with self._rwlock.write():
-            self._conn.execute("BEGIN")
+            self._conn.execute("BEGIN IMMEDIATE")
             try:
                 yield self._conn
-                self._conn.execute("COMMIT")
+                self._conn.commit()
             except Exception:
-                self._conn.execute("ROLLBACK")
+                self._conn.rollback()
                 raise
 
     @contextmanager
@@ -392,18 +397,21 @@ class TableSchema(Generic[RowT]):
 class _RowAction(NamedTuple):
     """Action to perform on a row."""
 
+    db_key: str
+    table_name: str
+    table_schema: TableSchema[Any]
+    is_virtual_table: bool
     key: _RowKey
     value: _RowValue | None  # None means delete
 
 
-class _RowHandler(coco.TargetHandler[_RowKey, _RowValue, _RowFingerprint]):
+class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
     """Handler for row-level target states within a table."""
 
     _managed_conn: ManagedConnection
     _table_name: str
     _table_schema: TableSchema[Any]
     _is_virtual_table: bool
-    _sink: coco.TargetActionSink[_RowAction, None]
 
     def __init__(
         self,
@@ -416,131 +424,38 @@ class _RowHandler(coco.TargetHandler[_RowKey, _RowValue, _RowFingerprint]):
         self._table_name = table_name
         self._table_schema = table_schema
         self._is_virtual_table = is_virtual_table
-        self._sink = coco.TargetActionSink[_RowAction, None].from_fn(
-            self._apply_actions
-        )
-
-    def _apply_actions(self, actions: Sequence[_RowAction]) -> None:
-        """Apply row actions (upserts and deletes) to the database."""
-
-        if not actions:
-            return
-
-        upserts: list[_RowAction] = []
-        deletes: list[_RowAction] = []
-
-        for action in actions:
-            if action.value is None:
-                deletes.append(action)
-            else:
-                upserts.append(action)
-
-        with self._managed_conn.transaction() as conn:
-            # Process upserts
-            if upserts:
-                self._execute_upserts(conn, upserts)
-
-            # Process deletes
-            if deletes:
-                self._execute_deletes(conn, deletes)
-
-    def _execute_upserts(
-        self, conn: sqlite3.Connection, upserts: list[_RowAction]
-    ) -> None:
-        """Execute upsert operations."""
-        table_name = _qualified_table_name(self._table_name)
-        columns = self._table_schema.columns
-        pk_cols = self._table_schema.primary_key
-        all_col_names = list(columns.keys())
-        non_pk_cols = [c for c in all_col_names if c not in pk_cols]
-
-        # Build column lists
-        col_list = ", ".join(f'"{c}"' for c in all_col_names)
-
-        num_parameters = len(all_col_names)
-        if num_parameters == 0:
-            return
-
-        # Virtual tables (like vec0) don't support standard UPSERT syntax
-        # Use DELETE + INSERT for each row
-        if self._is_virtual_table:
-            pk_list = ", ".join(f'"{c}"' for c in pk_cols)
-            pk_placeholders = " AND ".join(f'"{c}" = ?' for c in pk_cols)
-            delete_sql = f"DELETE FROM {table_name} WHERE {pk_placeholders}"
-
-            placeholders = ", ".join("?" for _ in range(num_parameters))
-            insert_sql = (
-                f"INSERT INTO {table_name} ({col_list}) VALUES ({placeholders})"
-            )
-
-            for action in upserts:
-                assert action.value is not None
-                # Delete existing row if it exists
-                pk_params = [action.value.get(pk_col) for pk_col in pk_cols]
-                conn.execute(delete_sql, pk_params)
-                # Insert new row
-                row_params = [action.value.get(col_name) for col_name in all_col_names]
-                conn.execute(insert_sql, row_params)
-        else:
-            # Build ON CONFLICT clause for regular tables
-            insert_clause = "INSERT"
-            pk_list = ", ".join(f'"{c}"' for c in pk_cols)
-            if non_pk_cols:
-                update_list = ", ".join(f'"{c}" = excluded."{c}"' for c in non_pk_cols)
-                conflict_clause = f"ON CONFLICT ({pk_list}) DO UPDATE SET {update_list}"
-            else:
-                conflict_clause = f"ON CONFLICT ({pk_list}) DO NOTHING"
-
-            # Batch multiple rows into one INSERT, respecting SQLite's bind parameter limit.
-            chunk_size = max(1, _BIND_LIMIT // num_parameters)
-            for upsert_chunk in (
-                upserts[i : i + chunk_size] for i in range(0, len(upserts), chunk_size)
-            ):
-                placeholders = ", ".join("?" for _ in range(num_parameters))
-                values_sql_parts: list[str] = []
-                params: list[Any] = []
-                for action in upsert_chunk:
-                    assert action.value is not None
-                    values_sql_parts.append(f"({placeholders})")
-                    # Values are encoded by TableTarget before being stored as target state values.
-                    params.extend(
-                        action.value.get(col_name) for col_name in all_col_names
-                    )
-
-                values_sql = ", ".join(values_sql_parts)
-                sql = f"{insert_clause} INTO {table_name} ({col_list}) VALUES {values_sql} {conflict_clause}"
-                conn.execute(sql, params)
-
-    def _execute_deletes(
-        self, conn: sqlite3.Connection, deletes: list[_RowAction]
-    ) -> None:
-        """Execute delete operations."""
-        table_name = _qualified_table_name(self._table_name)
-        pk_cols = self._table_schema.primary_key
-
-        # Build WHERE clause for primary key
-        where_parts = [f'"{c}" = ?' for c in pk_cols]
-        where_clause = " AND ".join(where_parts)
-        sql = f"DELETE FROM {table_name} WHERE {where_clause}"
-
-        for action in deletes:
-            conn.execute(sql, list(action.key))
 
     def reconcile(
         self,
-        key: _RowKey,
+        key: coco.StableKey,
         desired_state: _RowValue | coco.NonExistenceType,
         prev_possible_states: Collection[_RowFingerprint],
         prev_may_be_missing: bool,
         /,
     ) -> coco.TargetReconcileOutput[_RowAction, _RowFingerprint] | None:
+        # Key conversion
+        if isinstance(key, tuple):
+            pass
+        else:
+            # Should be tuple for row key
+            if not isinstance(key, tuple):
+                # This might happen if single-value PK is passed as scalar
+                key = (key,)
+        key = cast(_RowKey, key)
         if coco.is_non_existence(desired_state):
             # Delete case - only if it might exist
             if not prev_possible_states and not prev_may_be_missing:
                 return None
             return coco.TargetReconcileOutput(
-                action=_RowAction(key=key, value=None),
-                sink=self._sink,
+                action=_RowAction(
+                    db_key=self._managed_conn.key,
+                    table_name=self._table_name,
+                    table_schema=self._table_schema,
+                    is_virtual_table=self._is_virtual_table,
+                    key=key,
+                    value=None,
+                ),
+                sink=_row_action_sink,
                 tracking_record=coco.NON_EXISTENCE,
             )
 
@@ -553,17 +468,127 @@ class _RowHandler(coco.TargetHandler[_RowKey, _RowValue, _RowFingerprint]):
             return None
 
         return coco.TargetReconcileOutput(
-            action=_RowAction(key=key, value=desired_state),
-            sink=self._sink,
+            action=_RowAction(
+                db_key=self._managed_conn.key,
+                table_name=self._table_name,
+                table_schema=self._table_schema,
+                is_virtual_table=self._is_virtual_table,
+                key=key,
+                value=desired_state,
+            ),
+            sink=_row_action_sink,
             tracking_record=target_fp,
         )
 
 
+def _apply_row_actions(actions: Sequence[_RowAction]) -> None:
+    """Stable action sink for row-level operations."""
+    # Group by (db_key, table_name)
+    by_context: dict[tuple[str, str], list[_RowAction]] = {}
+    for action in actions:
+        by_context.setdefault((action.db_key, action.table_name), []).append(action)
+
+    for (db_key, table_name), context_actions in by_context.items():
+        managed_conn = _db_registry.get(db_key)
+        # Use first action to get schema info
+        sample = context_actions[0]
+        is_virtual = sample.is_virtual_table
+        schema = sample.table_schema
+
+        # Merge actions for the same key. UPSERT wins over DELETE.
+        merged_upserts: dict[_RowKey, _RowAction] = {}
+        merged_deletes: dict[_RowKey, _RowAction] = {}
+
+        for action in context_actions:
+            if action.value is not None:
+                merged_upserts[action.key] = action
+                merged_deletes.pop(action.key, None)
+            else:
+                if action.key not in merged_upserts:
+                    merged_deletes[action.key] = action
+
+        upserts = list(merged_upserts.values())
+        deletes = list(merged_deletes.values())
+
+        # print(f"DEBUG: Processing rows for {table_name}: {len(upserts)} upserts, {len(deletes)} deletes")
+
+        with managed_conn.transaction() as conn:
+            if upserts:
+                _execute_row_upserts(conn, table_name, schema, is_virtual, upserts)
+            if deletes:
+                _execute_row_deletes(conn, table_name, schema, deletes)
+
+
+_row_action_sink = coco.TargetActionSink[_RowAction, None].from_fn(_apply_row_actions)
+
+
+def _execute_row_upserts(
+    conn: sqlite3.Connection,
+    table_name: str,
+    schema: TableSchema[Any],
+    is_virtual: bool,
+    upserts: list[_RowAction],
+) -> None:
+    pk_cols = schema.primary_key
+    all_col_names = list(schema.columns.keys())
+    qualified_name = _qualified_table_name(table_name)
+
+    if is_virtual:
+        pk_placeholders = " AND ".join(f'"{c}" = ?' for c in pk_cols)
+        delete_sql = f"DELETE FROM {qualified_name} WHERE {pk_placeholders}"
+        val_placeholders = ", ".join(["?"] * len(all_col_names))
+        col_list = ", ".join(f'"{c}"' for c in all_col_names)
+        insert_sql = (
+            f"INSERT INTO {qualified_name} ({col_list}) VALUES ({val_placeholders})"
+        )
+
+        for action in upserts:
+            assert action.value is not None
+            pk_params = [action.value.get(pk_col) for pk_col in pk_cols]
+            conn.execute(delete_sql, pk_params)
+            row_params = [action.value.get(col_name) for col_name in all_col_names]
+            conn.execute(insert_sql, row_params)
+    else:
+        pk_list = ", ".join(f'"{c}"' for c in pk_cols)
+        col_list = ", ".join(f'"{c}"' for c in all_col_names)
+        val_placeholders = ", ".join(["?"] * len(all_col_names))
+        sql = f"INSERT INTO {qualified_name} ({col_list}) VALUES ({val_placeholders})"
+
+        non_pk_cols = [c for c in all_col_names if c not in pk_cols]
+        if non_pk_cols:
+            update_parts = [f'"{c}" = excluded."{c}"' for c in non_pk_cols]
+            sql += f" ON CONFLICT({pk_list}) DO UPDATE SET " + ", ".join(update_parts)
+        else:
+            sql += f" ON CONFLICT({pk_list}) DO NOTHING"
+
+        for action in upserts:
+            assert action.value is not None
+            row_params = [action.value.get(col_name) for col_name in all_col_names]
+            conn.execute(sql, row_params)
+
+
+def _execute_row_deletes(
+    conn: sqlite3.Connection,
+    table_name: str,
+    schema: TableSchema[Any],
+    deletes: list[_RowAction],
+) -> None:
+    qualified_name = _qualified_table_name(table_name)
+    pk_cols = schema.primary_key
+    pk_placeholders = " AND ".join(f'"{c}" = ?' for c in pk_cols)
+    delete_sql = f"DELETE FROM {qualified_name} WHERE {pk_placeholders}"
+
+    for action in deletes:
+        pk_params = [action.key[i] for i, _ in enumerate(pk_cols)]
+        conn.execute(delete_sql, pk_params)
+
+
 class _TableKey(NamedTuple):
-    """Key identifying a table: (database_key, table_name)."""
+    """Key identifying a table: (database_key, table_name, schema_fingerprint)."""
 
     db_key: str  # Stable key for the database
     table_name: str
+    schema_fingerprint: str  # Fingerprint of the table schema/def
 
 
 @dataclass
@@ -854,6 +879,7 @@ def _apply_table_actions(
             for i in idxs:
                 action = actions_list[i]
                 assert action.key == key
+                # print(f"DEBUG: Table action for {key.table_name}: main={action.main_action}, cols={list(action.column_actions.keys())}")
 
                 # Check if this is a virtual table (for special handling)
                 is_virtual = (
@@ -861,7 +887,7 @@ def _apply_table_actions(
                     and action.spec.virtual_table_def is not None
                 )
 
-                # Virtual tables can't use ALTER TABLE - force DROP+CREATE for column changes
+                # Virtual tables can't use ALTER TABLE - force DROP + CREATE for column changes
                 if is_virtual and action.column_actions and action.main_action is None:
                     # Upgrade to replace action
                     action = _TableAction(
@@ -891,6 +917,7 @@ def _apply_table_actions(
                 if action.main_action in ("insert", "upsert", "replace"):
                     # Route to virtual or regular table creation
                     if spec.virtual_table_def is not None:
+                        # print(f"DEBUG: Creating virtual table {key.table_name}")
                         _create_virtual_table(
                             conn,
                             key.table_name,
@@ -899,6 +926,7 @@ def _apply_table_actions(
                             has_vec_extension=has_vec,
                         )
                     else:
+                        # print(f"DEBUG: Creating table {key.table_name}")
                         _create_table(
                             conn,
                             key.table_name,
@@ -927,14 +955,12 @@ _table_action_sink = coco.TargetActionSink[_TableAction, _RowHandler].from_fn(
 )
 
 
-class _TableHandler(
-    coco.TargetHandler[_TableKey, _TableSpec, _TableTrackingRecord, _RowHandler]
-):
+class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHandler]):
     """Handler for table-level target states."""
 
     def reconcile(
         self,
-        key: _TableKey,
+        key: coco.StableKey,
         desired_state: _TableSpec | coco.NonExistenceType,
         prev_possible_states: Collection[_TableTrackingRecord],
         prev_may_be_missing: bool,
@@ -944,7 +970,18 @@ class _TableHandler(
         | None
     ):
         if isinstance(key, tuple) and not isinstance(key, _TableKey):
-            key = _TableKey(*key)
+            # _TableKey expects (db_key, table_name, schema_fingerprint)
+            key_args = cast(tuple[Any, ...], key)
+            if len(key_args) == 2:
+                # Backend migration: treat old keys (db_key, table_name) as having empty fingerprint
+                # This ensures they don't crash but will be treated as different from new keys
+                key = _TableKey(cast(str, key_args[0]), cast(str, key_args[1]), "")
+            else:
+                key = _TableKey(*cast(tuple[str, str, str], key_args))
+
+        # print(f"DEBUG: Table {key.table_name} reconcile: prev={list(prev_possible_states)}, missing={prev_may_be_missing}")
+        # Ensure key is _TableKey
+        key = cast(_TableKey, key)
 
         tracking_record: _TableTrackingRecord | coco.NonExistenceType
 
@@ -973,6 +1010,9 @@ class _TableHandler(
                 action = statediff.diff(t)
                 if action is not None:
                     column_actions[sub_key] = action
+
+        # Root Cause Fix (Actually Reverted): Returning None here causes provider errors.
+        # Stability is instead achieved by using a stable ActionSink for rows.
 
         return coco.TargetReconcileOutput(
             action=_TableAction(
@@ -1004,14 +1044,12 @@ class TableTarget(
         RowT: The type of row objects (dict, dataclass, NamedTuple, or Pydantic model).
     """
 
-    _provider: coco.TargetStateProvider[_RowKey, _RowValue, None, coco.MaybePendingS]
+    _provider: coco.TargetStateProvider[_RowValue, None, coco.MaybePendingS]
     _table_schema: TableSchema[RowT]
 
     def __init__(
         self,
-        provider: coco.TargetStateProvider[
-            _RowKey, _RowValue, None, coco.MaybePendingS
-        ],
+        provider: coco.TargetStateProvider[_RowValue, None, coco.MaybePendingS],
         table_schema: TableSchema[RowT],
     ) -> None:
         self._provider = provider
@@ -1149,9 +1187,27 @@ class SqliteDatabase(connection.KeyedConnection[ManagedConnection]):
                     f"got {pk_col_type} for column '{pk_col_name}'"
                 )
 
+        # Calculate schema fingerprint
+        # Convert to simple types for memoization safety
+        schema_data: dict[str, Any] = {
+            "columns": [
+                (name, col.type, col.nullable, col.is_vector)
+                for name, col in sorted(table_schema.columns.items())
+            ],
+            "primary_key": sorted(table_schema.primary_key),
+        }
+        if virtual_table_def is not None:
+            schema_data["virtual_table"] = {
+                "partition_keys": sorted(virtual_table_def.partition_key_columns),
+                "auxiliary_columns": sorted(virtual_table_def.auxiliary_columns),
+            }
+
+        fingerprint = fingerprint_object(schema_data).hex()
+        # print(f"DEBUG: declare_table_target {table_name}: fingerprint={fingerprint}")
         key = _TableKey(
             db_key=self.key,
             table_name=table_name,
+            schema_fingerprint=fingerprint,
         )
         spec = _TableSpec(
             table_schema=table_schema,
@@ -1161,10 +1217,15 @@ class SqliteDatabase(connection.KeyedConnection[ManagedConnection]):
         provider = coco.declare_target_state_with_child(
             _table_provider.target_state(key, spec)
         )
+        print(
+            f"DEBUG: declare_table_target {table_name}: key={key}, provider_id={id(provider)}"
+        )
+        sys.stdout.flush()
         return TableTarget(provider, table_schema)
 
 
-def register_db(key: str, managed_conn: ManagedConnection) -> SqliteDatabase:
+@contextmanager
+def register_db(key: str, managed_conn: ManagedConnection) -> Iterator[SqliteDatabase]:
     """
     Register a SQLite database connection with a stable key.
 
@@ -1200,8 +1261,10 @@ def register_db(key: str, managed_conn: ManagedConnection) -> SqliteDatabase:
             # db is automatically unregistered here
         ```
     """
-    _db_registry.register(key, managed_conn)
-    return SqliteDatabase(_db_registry.name, key, managed_conn, _db_registry)
+    managed_conn.key = key
+    db = SqliteDatabase(_db_registry.name, key, managed_conn, _db_registry)
+    with _db_registry.register(key, managed_conn):
+        yield db
 
 
 def connect(

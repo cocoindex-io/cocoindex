@@ -16,7 +16,6 @@ impl EngineProfile for PyEngineProfile {
     type FunctionData = crate::value::PyValue;
 
     type TargetHdl = PyTargetHandler;
-    type TargetStateKey = cocoindex_core::state::stable_path::StableKey;
     type TargetStateTrackingRecord = crate::value::PyValue;
     type TargetAction = Py<PyAny>;
     type TargetActionSink = PyTargetActionSink;

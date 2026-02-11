@@ -211,7 +211,7 @@ pub fn register_root_target_states_provider(
         .unwrap()
         .register(
             TargetStatePath::new(
-                utils::fingerprint::Fingerprint::from(&name).into_py_result()?,
+                cocoindex_core::state::stable_path::StableKey::Str(Arc::from(name)),
                 None,
             ),
             PyTargetHandler(handler),

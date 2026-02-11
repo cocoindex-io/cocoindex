@@ -39,14 +39,7 @@ pub trait EngineProfile: Debug + Clone + PartialEq + Eq + Hash + Default + 'stat
     type FunctionData: Clone + Send + Sync + Persist + 'static;
 
     type TargetHdl: TargetHandler<Self>;
-    type TargetStateKey: Clone
-        + std::fmt::Debug
-        + Send
-        + Eq
-        + Hash
-        + Persist
-        + StableFingerprint
-        + 'static;
+    // TargetStateKey is removed in favor of using StableKey directly.
     type TargetStateTrackingRecord: Send + Persist + 'static;
     type TargetAction: Send + 'static;
     type TargetActionSink: TargetActionSink<Self>;

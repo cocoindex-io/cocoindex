@@ -12,7 +12,7 @@ use crate::engine::context::{
     FnCallMemo,
 };
 use crate::engine::context::{FnCallContext, FnCallMemoEntry};
-use crate::engine::profile::{EngineProfile, Persist, StableFingerprint};
+use crate::engine::profile::{EngineProfile, Persist};
 use crate::engine::target_state::{
     TargetActionSink, TargetHandler, TargetStateProvider, TargetStateProviderRegistry,
 };
@@ -182,13 +182,13 @@ pub fn declare_target_state<Prof: EngineProfile>(
     comp_ctx: &ComponentProcessorContext<Prof>,
     fn_ctx: &FnCallContext,
     provider: TargetStateProvider<Prof>,
-    key: Prof::TargetStateKey,
+    key: StableKey,
     value: Prof::TargetStateValue,
 ) -> Result<()> {
     let target_state_path = make_target_state_path(&provider, &key);
     let declared_effect = DeclaredEffect {
         provider,
-        key,
+        item_key: key,
         value,
         child_provider: None,
     };
@@ -201,7 +201,7 @@ pub fn declare_target_state<Prof: EngineProfile>(
             btree_map::Entry::Occupied(entry) => {
                 client_bail!(
                     "Target state already declared with key: {:?}",
-                    entry.get().key
+                    entry.get().item_key
                 );
             }
             btree_map::Entry::Vacant(entry) => {
@@ -218,7 +218,7 @@ pub fn declare_target_state_with_child<Prof: EngineProfile>(
     comp_ctx: &ComponentProcessorContext<Prof>,
     fn_ctx: &FnCallContext,
     provider: TargetStateProvider<Prof>,
-    key: Prof::TargetStateKey,
+    key: StableKey,
     value: Prof::TargetStateValue,
 ) -> Result<TargetStateProvider<Prof>> {
     let target_state_path = make_target_state_path(&provider, &key);
@@ -229,7 +229,7 @@ pub fn declare_target_state_with_child<Prof: EngineProfile>(
             .register_lazy(target_state_path.clone())?;
         let declared_effect = DeclaredEffect {
             provider,
-            key,
+            item_key: key,
             value,
             child_provider: Some(child_provider.clone()),
         };
@@ -241,7 +241,7 @@ pub fn declare_target_state_with_child<Prof: EngineProfile>(
             btree_map::Entry::Occupied(entry) => {
                 client_bail!(
                     "Target state already declared with key: {:?}",
-                    entry.get().key
+                    entry.get().item_key
                 );
             }
             btree_map::Entry::Vacant(entry) => {
@@ -258,10 +258,9 @@ pub fn declare_target_state_with_child<Prof: EngineProfile>(
 
 fn make_target_state_path<Prof: EngineProfile>(
     provider: &TargetStateProvider<Prof>,
-    key: &Prof::TargetStateKey,
+    key: &StableKey,
 ) -> TargetStatePath {
-    let fp = key.stable_fingerprint();
-    provider.target_state_path().concat(fp)
+    provider.target_state_path().concat(key.clone())
 }
 
 struct ChildrenPathInfo {
@@ -816,7 +815,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                     match declared_target_state {
                         Some(declared_effect) => (
                             Cow::Owned(declared_effect.provider),
-                            declared_effect.key,
+                            declared_effect.item_key,
                             Some(declared_effect.value),
                             declared_effect.child_provider,
                         ),
@@ -840,7 +839,8 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                                 );
                                 continue;
                             };
-                            let effect_key = Prof::TargetStateKey::from_bytes(item.key.as_ref())?;
+                            let effect_key: StableKey = storekey::decode(item.key.as_ref())
+                                .map_err(|e| internal_error!("Failed to decode StableKey: {e}"))?;
                             (
                                 Cow::Borrowed(target_states_provider),
                                 effect_key,
@@ -884,18 +884,19 @@ pub(crate) async fn submit<Prof: EngineProfile>(
 
             // Deal with new target states
             for (target_state_path, target_state) in declared_target_states_to_process {
-                let effect_key_bytes = target_state.key.to_bytes()?;
+                let effect_key_bytes = storekey::encode_vec(&target_state.item_key)
+                    .map_err(|e| internal_error!("Failed to encode StableKey: {e}"))?;
                 let Some(recon_output) = target_state
                     .provider
                     .handler()
                     .ok_or_else(|| {
                         internal_error!(
                             "provider not ready for target state with key {:?}",
-                            target_state.key
+                            target_state.item_key
                         )
                     })?
                     .reconcile(
-                        target_state.key,
+                        target_state.item_key,
                         Some(target_state.value),
                         /*&prev_states=*/ &[],
                         /*prev_may_be_missing=*/ true,

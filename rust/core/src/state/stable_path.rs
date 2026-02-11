@@ -186,34 +186,6 @@ impl storekey::Decode for StableKey {
     }
 }
 
-impl crate::engine::profile::Persist for StableKey {
-    fn to_bytes(&self) -> Result<bytes::Bytes> {
-        let buf = storekey::encode_vec(self)
-            .map_err(|e| internal_error!("Failed to encode StableKey: {e}"))?;
-        Ok(bytes::Bytes::from(buf))
-    }
-
-    fn from_bytes(data: &[u8]) -> Result<Self> {
-        storekey::decode(std::io::Cursor::new(data))
-            .map_err(|e| internal_error!("Failed to decode StableKey: {e}"))
-    }
-}
-
-impl crate::engine::profile::StableFingerprint for StableKey {
-    fn stable_fingerprint(&self) -> utils::fingerprint::Fingerprint {
-        match self {
-            StableKey::Fingerprint(fp) => *fp,
-            _ => {
-                let mut fingerprinter = utils::fingerprint::Fingerprinter::default();
-                let bytes = crate::engine::profile::Persist::to_bytes(self)
-                    .expect("StableKey encoding for fingerprint");
-                fingerprinter.write_raw_bytes(&bytes);
-                fingerprinter.into_fingerprint()
-            }
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct StablePathRef<'a>(pub &'a [StableKey]);
 

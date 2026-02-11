@@ -162,7 +162,7 @@ def test_invalid_keys() -> None:
         pass
 
     def declare_invalid_key() -> None:
-        coco.declare_target_state(AnyKeyTarget.target_state(Foo(), "val"))
+        coco.declare_target_state(AnyKeyTarget.target_state(Foo(), "val"))  # type: ignore[arg-type]
 
     app = coco.App(
         coco.AppConfig(name="test_invalid_keys", environment=coco_env),
@@ -179,7 +179,7 @@ def test_nested_container_keys() -> None:
     key_expected = (1, 2)
 
     def declare_list_key() -> None:
-        coco.declare_target_state(AnyKeyTarget.target_state(key_input, "val"))
+        coco.declare_target_state(AnyKeyTarget.target_state(key_input, "val"))  # type: ignore[arg-type]
 
     app = coco.App(
         coco.AppConfig(name="test_nested_keys", environment=coco_env), declare_list_key

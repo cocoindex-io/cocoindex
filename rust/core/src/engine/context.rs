@@ -72,7 +72,7 @@ impl<Prof: EngineProfile> AppContext<Prof> {
 
 pub(crate) struct DeclaredEffect<Prof: EngineProfile> {
     pub provider: TargetStateProvider<Prof>,
-    pub key: Prof::TargetStateKey,
+    pub item_key: StableKey,
     pub value: Prof::TargetStateValue,
     pub child_provider: Option<TargetStateProvider<Prof>>,
 }
