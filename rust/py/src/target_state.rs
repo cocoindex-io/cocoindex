@@ -154,7 +154,6 @@ impl PyTargetStateProvider {
 
 #[pyfunction]
 pub fn declare_target_state<'py>(
-    _py: Python<'py>,
     comp_ctx: &'py PyComponentProcessorContext,
     fn_ctx: &'py PyFnCallContext,
     provider: &PyTargetStateProvider,

@@ -4,10 +4,10 @@ use serde::{Deserialize, Serialize};
 use crate::state::stable_path::StableKey;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct TargetStatePath(pub Arc<[StableKey]>);
+pub struct TargetStatePath(Arc<[utils::fingerprint::Fingerprint]>);
 
-impl std::borrow::Borrow<[StableKey]> for TargetStatePath {
-    fn borrow(&self) -> &[StableKey] {
+impl std::borrow::Borrow<[utils::fingerprint::Fingerprint]> for TargetStatePath {
+    fn borrow(&self) -> &[utils::fingerprint::Fingerprint] {
         &self.0
     }
 }
@@ -26,7 +26,7 @@ impl storekey::Encode for TargetStatePath {
         &self,
         e: &mut storekey::Writer<W>,
     ) -> Result<(), storekey::EncodeError> {
-        self.0.as_ref().encode(e)
+        self.0.encode(e)
     }
 }
 
@@ -34,40 +34,38 @@ impl storekey::Decode for TargetStatePath {
     fn decode<D: std::io::BufRead>(
         d: &mut storekey::Reader<D>,
     ) -> Result<Self, storekey::DecodeError> {
-        let parts: Vec<StableKey> = storekey::Decode::decode(d)?;
+        let parts: Vec<utils::fingerprint::Fingerprint> = storekey::Decode::decode(d)?;
         Ok(Self(Arc::from(parts)))
     }
 }
 
 impl TargetStatePath {
     pub fn new(key_part: StableKey, parent: Option<&Self>) -> Self {
-        let inner: Arc<[StableKey]> = match parent {
+        let fp = utils::fingerprint::Fingerprint::from(&key_part).unwrap();
+        let inner: Arc<[utils::fingerprint::Fingerprint]> = match parent {
             Some(parent) => parent
                 .0
                 .iter()
-                .chain(std::iter::once(&key_part))
+                .chain(std::iter::once(&fp))
                 .cloned()
                 .collect(),
-            None => Arc::new([key_part]),
+            None => Arc::new([fp]),
         };
         Self(inner)
     }
 
     pub fn concat(&self, part: StableKey) -> Self {
-        Self(
-            self.0
-                .iter()
-                .chain(std::iter::once(&part))
-                .cloned()
-                .collect(),
-        )
+        let fp = utils::fingerprint::Fingerprint::from(&part).unwrap();
+        let inner: Arc<[utils::fingerprint::Fingerprint]> =
+            self.0.iter().chain(std::iter::once(&fp)).cloned().collect();
+        Self(inner)
     }
 
-    pub fn provider_path(&self) -> &[StableKey] {
+    pub fn provider_path(&self) -> &[utils::fingerprint::Fingerprint] {
         &self.0[..self.0.len() - 1]
     }
 
-    pub fn as_slice(&self) -> &[StableKey] {
+    pub fn as_slice(&self) -> &[utils::fingerprint::Fingerprint] {
         &self.0
     }
 }

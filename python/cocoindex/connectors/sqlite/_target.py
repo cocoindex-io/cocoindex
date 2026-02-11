@@ -973,13 +973,9 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
             # _TableKey expects (db_key, table_name, schema_fingerprint)
             key_args = cast(tuple[Any, ...], key)
             if len(key_args) == 2:
-                # Backend migration: treat old keys (db_key, table_name) as having empty fingerprint
-                # This ensures they don't crash but will be treated as different from new keys
                 key = _TableKey(cast(str, key_args[0]), cast(str, key_args[1]), "")
             else:
                 key = _TableKey(*cast(tuple[str, str, str], key_args))
-
-        # print(f"DEBUG: Table {key.table_name} reconcile: prev={list(prev_possible_states)}, missing={prev_may_be_missing}")
         # Ensure key is _TableKey
         key = cast(_TableKey, key)
 

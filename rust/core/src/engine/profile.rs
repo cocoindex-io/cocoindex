@@ -39,7 +39,6 @@ pub trait EngineProfile: Debug + Clone + PartialEq + Eq + Hash + Default + 'stat
     type FunctionData: Clone + Send + Sync + Persist + 'static;
 
     type TargetHdl: TargetHandler<Self>;
-    // TargetStateKey is removed in favor of using StableKey directly.
     type TargetStateTrackingRecord: Send + Persist + 'static;
     type TargetAction: Send + 'static;
     type TargetActionSink: TargetActionSink<Self>;
