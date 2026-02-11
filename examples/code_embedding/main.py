@@ -65,26 +65,6 @@ async def coco_lifespan(
         yield
 
 
-@coco.function
-async def process_chunk(
-    filename: pathlib.PurePath,
-    chunk: Chunk,
-    id_gen: IdGenerator,
-    table: postgres.TableTarget[CodeEmbedding],
-) -> None:
-    embedding = await _embedder.embed(chunk.text)
-    table.declare_row(
-        row=CodeEmbedding(
-            id=await id_gen.next_id(chunk.text),
-            filename=str(filename),
-            code=chunk.text,
-            embedding=embedding,
-            start_line=chunk.start.line,
-            end_line=chunk.end.line,
-        ),
-    )
-
-
 @coco.function(memo=True)
 async def process_file(
     file: AsyncFileLike,
@@ -103,24 +83,38 @@ async def process_file(
         language=language,
     )
     id_gen = IdGenerator()
-    await asyncio.gather(
-        *(process_chunk(file.file_path.path, chunk, id_gen, table) for chunk in chunks)
-    )
+
+    async def process_chunk(chunk: Chunk) -> None:
+        embedding = await _embedder.embed(chunk.text)
+        table.declare_row(
+            row=CodeEmbedding(
+                id=await id_gen.next_id(chunk.text),
+                filename=str(file.file_path.path),
+                code=chunk.text,
+                embedding=embedding,
+                start_line=chunk.start.line,
+                end_line=chunk.end.line,
+            ),
+        )
+
+    await coco_aio.map(process_chunk, chunks)
 
 
 @coco.function
 async def app_main(sourcedir: pathlib.Path) -> None:
     target_db = coco.use_context(PG_DB)
-    target_table = await coco_aio.mount_run(
-        coco.component_subpath("setup", "table"),
-        target_db.declare_table_target,
-        table_name=TABLE_NAME,
-        table_schema=await postgres.TableSchema.from_class(
-            CodeEmbedding,
-            primary_key=["id"],
-        ),
-        pg_schema_name=PG_SCHEMA_NAME,
-    ).result()
+
+    with coco.component_subpath("setup"):
+        target_table = await coco_aio.mount_target(
+            target_db.table_target(
+                table_name=TABLE_NAME,
+                table_schema=await postgres.TableSchema.from_class(
+                    CodeEmbedding,
+                    primary_key=["id"],
+                ),
+                pg_schema_name=PG_SCHEMA_NAME,
+            )
+        )
 
     # Process multiple file types across the repository
     files = localfs.walk_dir(
@@ -137,13 +131,11 @@ async def app_main(sourcedir: pathlib.Path) -> None:
             excluded_patterns=["**/.*", "**/target", "**/node_modules"],
         ),
     )
-    async for file in files:
-        coco_aio.mount(
-            coco.component_subpath("file", str(file.file_path.path)),
-            process_file,
-            file,
-            target_table,
-        )
+    with coco.component_subpath("file"):
+        # The first argument `files` is iterated.
+        # The element is passed to `process_file` as the first argument.
+        # And its "key" is also provided as the component subpath.
+        coco_aio.mount_each(process_file, files, target_table)
 
 
 app = coco_aio.App(

@@ -195,7 +195,7 @@ async def process_project(
 ) -> None:
     """Process a single project: extract info from all files, aggregate, and output markdown."""
     # Extract info from each file.
-    file_infos = await asyncio.gather(*[extract_file_info(f) for f in files])
+    file_infos = await coco_aio.map(extract_file_info, files)
 
     # Aggregate into project-level summary
     project_info = await aggregate_project_info(project_name, file_infos)
@@ -208,7 +208,7 @@ async def process_project(
 
 
 @coco.function
-def app_main(
+async def app_main(
     root_dir: pathlib.Path,
     output_dir: pathlib.Path,
 ) -> None:
@@ -218,34 +218,34 @@ def app_main(
     Scans subdirectories of root_dir, treating each as a Python project,
     and generates markdown documentation for each.
     """
-    # List subdirectories (each is a project)
-    for entry in root_dir.resolve().iterdir():
-        # Skip non-directories and hidden directories
-        if not entry.is_dir() or entry.name.startswith("."):
-            continue
-        project_name = entry.name
+    with coco.component_subpath("project"):
+        # List subdirectories (each is a project)
+        for entry in root_dir.resolve().iterdir():
+            # Skip non-directories and hidden directories
+            if not entry.is_dir() or entry.name.startswith("."):
+                continue
+            project_name = entry.name
 
-        # Walk Python files in this project, excluding .venv directories
-        files = list(
-            localfs.walk_dir(
-                entry,
-                recursive=True,
-                path_matcher=PatternFilePathMatcher(
-                    included_patterns=["**/*.py"],
-                    excluded_patterns=["**/.*", "**/__pycache__"],
-                ),
+            # Walk Python files in this project, excluding .venv directories
+            files = list(
+                localfs.walk_dir(
+                    entry,
+                    recursive=True,
+                    path_matcher=PatternFilePathMatcher(
+                        included_patterns=["**/*.py"],
+                        excluded_patterns=["**/.*", "**/__pycache__"],
+                    ),
+                )
             )
-        )
 
-        if files:
-            # Mount a component to process this project
-            coco.mount(
-                coco.component_subpath("project", project_name),
-                process_project,
-                project_name,
-                files,
-                output_dir,
-            )
+            if files:
+                # Mount a component to process this project
+                coco_aio.mount(
+                    process_project,
+                    project_name,
+                    files,
+                    output_dir,
+                )
 
 
 app = coco.App(
