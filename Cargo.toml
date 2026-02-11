@@ -5,6 +5,7 @@ members = [
     "rust/py",
     "rust/py_utils",
     "rust/ops_text",
+    "rust/api",
 ]
 resolver = "2"
 

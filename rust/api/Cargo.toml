@@ -1,0 +1,36 @@
+[package]
+name = "cocoindex"
+version = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+license = { workspace = true }
+
+[dependencies]
+cocoindex_core = { path = "../core" }
+cocoindex_utils = { path = "../utils" }
+thiserror = "2"
+bytes = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+rmp-serde = { workspace = true }
+tokio = { workspace = true }
+futures = { workspace = true }
+tracing = { workspace = true }
+blake2 = { workspace = true }
+glob = "0.3"
+async-trait = { workspace = true }
+rpds = { workspace = true }
+storekey = { workspace = true }
+heed = "0.22.0"
+chrono = { workspace = true }
+
+tree-sitter = { version = "0.25", optional = true }
+tree-sitter-rust = { version = "0.24", optional = true }
+
+[features]
+default = []
+tree-sitter = ["dep:tree-sitter", "dep:tree-sitter-rust"]
+
+[dev-dependencies]
+tempfile = "3"
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
