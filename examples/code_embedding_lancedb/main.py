@@ -60,19 +60,19 @@ async def coco_lifespan(
     yield
 
 
-@coco.function(memo=True)
+@coco.function
 async def process_chunk(
-    id: int,
     filename: pathlib.PurePath,
     chunk: Chunk,
+    id_gen: IdGenerator,
     table: lancedb.TableTarget[CodeEmbedding],
 ) -> None:
     table.declare_row(
         row=CodeEmbedding(
-            id=id,
+            id=await id_gen.next_id(chunk.text),
             filename=str(filename),
             code=chunk.text,
-            embedding=await _embedder.embed_async(chunk.text),
+            embedding=await _embedder.embed(chunk.text),
             start_line=chunk.start.line,
             end_line=chunk.end.line,
         ),
@@ -98,21 +98,20 @@ async def process_file(
     )
     id_gen = IdGenerator()
     await asyncio.gather(
-        *(
-            process_chunk(id_gen.next_id(chunk.text), file.file_path.path, chunk, table)
-            for chunk in chunks
-        )
+        *(process_chunk(file.file_path.path, chunk, id_gen, table) for chunk in chunks)
     )
 
 
 @coco.function
-def app_main(sourcedir: pathlib.Path) -> None:
+async def app_main(sourcedir: pathlib.Path) -> None:
     target_db = coco.use_context(LANCE_DB)
-    target_table = coco.mount_run(
+    target_table = await coco_aio.mount_run(
         coco.component_subpath("setup", "table"),
         target_db.declare_table_target,
         table_name=TABLE_NAME,
-        table_schema=lancedb.TableSchema(CodeEmbedding, primary_key=["id"]),
+        table_schema=await lancedb.TableSchema.from_class(
+            CodeEmbedding, primary_key=["id"]
+        ),
     ).result()
 
     # Process multiple file types across the repository
@@ -120,8 +119,14 @@ def app_main(sourcedir: pathlib.Path) -> None:
         sourcedir,
         recursive=True,
         path_matcher=PatternFilePathMatcher(
-            included_patterns=["*.py", "*.rs", "*.toml", "*.md", "*.mdx"],
-            excluded_patterns=[".*/**", "target/**", "node_modules/**"],
+            included_patterns=[
+                "**/*.py",
+                "**/*.rs",
+                "**/*.toml",
+                "**/*.md",
+                "**/*.mdx",
+            ],
+            excluded_patterns=["**/.*", "**/target", "**/node_modules"],
         ),
     )
     for file in files:
@@ -148,7 +153,7 @@ app = coco_aio.App(
 async def query_once(
     conn: lancedb.LanceAsyncConnection, query_text: str, *, top_k: int = TOP_K
 ) -> None:
-    query_vec = await _embedder.embed_async(query_text)
+    query_vec = await _embedder.embed(query_text)
 
     table = await conn.open_table(TABLE_NAME)
 

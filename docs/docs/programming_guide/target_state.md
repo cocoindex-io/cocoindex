@@ -64,11 +64,13 @@ dir_target.declare_file(filename="output.html", content=html)
 from cocoindex.connectors import postgres
 
 # Declare the table target state, get a TableTarget
-table = coco.mount_run(
+table = await coco_aio.mount_run(
     coco.component_subpath("setup", "table"),
     db.declare_table_target,
     table_name="doc_embeddings",
-    table_schema=postgres.TableSchema(DocEmbedding, primary_key=["filename", "chunk_start"]),
+    table_schema=await postgres.TableSchema.from_class(
+        DocEmbedding, primary_key=["filename", "chunk_start"]
+    ),
 ).result()
 
 # Declare a child target state (a row)

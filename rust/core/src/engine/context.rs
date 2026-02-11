@@ -60,12 +60,13 @@ impl<Prof: EngineProfile> AppContext<Prof> {
     /// Get the next ID for the given key.
     ///
     /// IDs are allocated in batches for efficiency. The key can be `None` for a default sequencer.
-    pub fn next_id(&self, key: Option<&StableKey>) -> Result<u64> {
+    pub async fn next_id(&self, key: Option<&StableKey>) -> Result<u64> {
         let default_key = StableKey::Null;
         let key = key.unwrap_or(&default_key);
         self.inner
             .id_sequencer_manager
             .next_id(self.inner.env.db_env(), &self.inner.db, key)
+            .await
     }
 }
 

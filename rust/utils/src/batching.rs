@@ -1,14 +1,14 @@
 use async_trait::async_trait;
+use hashlink::LinkedHashMap;
 use serde::{Deserialize, Serialize};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use tokio::sync::{oneshot, watch};
 use tokio_util::task::AbortOnDropHandle;
-use tracing::error;
+use tracing::{Instrument, Span, error};
 
-use crate::{
-    error::{Error, ResidualError, Result},
-    internal_bail,
-};
+use crate::error::{Error, ResidualError, Result};
+use crate::internal_bail;
+
 #[async_trait]
 pub trait Runner: Send + Sync {
     type Input: Send;
@@ -18,6 +18,50 @@ pub trait Runner: Send + Sync {
         &self,
         inputs: Vec<Self::Input>,
     ) -> Result<impl ExactSizeIterator<Item = Self::Output>>;
+}
+
+/// Entry for a pending batch in the queue.
+struct PendingBatchEntry<R: Runner + 'static> {
+    /// Weak reference to the batcher that owns this batch.
+    /// Allows graceful handling if batcher is dropped while batch is pending.
+    batcher_data: Weak<BatcherData<R>>,
+    /// The actual batch of inputs waiting to be processed.
+    batch: Batch<R::Input, R::Output>,
+}
+
+/// Shared queue state protected by a Mutex.
+struct BatchQueueState<R: Runner + 'static> {
+    /// Per-batcher pending batches, keyed by batcher pointer address.
+    /// LinkedHashMap preserves insertion order for FIFO semantics.
+    pending_batches: LinkedHashMap<usize, PendingBatchEntry<R>>,
+    /// Count of batches currently executing across all batchers.
+    ongoing_count: usize,
+}
+
+/// A shared queue that processes batches in FIFO order.
+///
+/// Multiple batchers can share the same queue. Each batcher has its own runner
+/// function, and batches are processed using the runner from the batcher that
+/// created them.
+pub struct BatchQueue<R: Runner + 'static> {
+    state: Mutex<BatchQueueState<R>>,
+}
+
+impl<R: Runner + 'static> BatchQueue<R> {
+    pub fn new() -> Self {
+        Self {
+            state: Mutex::new(BatchQueueState {
+                pending_batches: LinkedHashMap::new(),
+                ongoing_count: 0,
+            }),
+        }
+    }
+}
+
+impl<R: Runner + 'static> Default for BatchQueue<R> {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 struct Batch<I, O> {
@@ -39,24 +83,15 @@ impl<I, O> Default for Batch<I, O> {
     }
 }
 
-#[derive(Default)]
-enum BatcherState<I, O> {
-    #[default]
-    Idle,
-    Busy {
-        pending_batch: Option<Batch<I, O>>,
-        ongoing_count: usize,
-    },
-}
-
 struct BatcherData<R: Runner + 'static> {
     runner: R,
-    state: Mutex<BatcherState<R::Input, R::Output>>,
+    options: BatchingOptions,
+    queue: Arc<BatchQueue<R>>,
 }
 
 impl<R: Runner + 'static> BatcherData<R> {
     async fn run_batch(self: &Arc<Self>, batch: Batch<R::Input, R::Output>) {
-        let _kick_off_next = BatchKickOffNext { batcher_data: self };
+        let _kick_off_next = BatchKickOffNext { queue: &self.queue };
         let num_inputs = batch.inputs.len();
 
         let mut num_cancelled_rx = batch.num_cancelled_rx;
@@ -105,7 +140,6 @@ impl<R: Runner + 'static> BatcherData<R> {
 
 pub struct Batcher<R: Runner + 'static> {
     data: Arc<BatcherData<R>>,
-    options: BatchingOptions,
 }
 
 enum BatchExecutionAction<R: Runner + 'static> {
@@ -123,74 +157,83 @@ pub struct BatchingOptions {
     pub max_batch_size: Option<usize>,
 }
 impl<R: Runner + 'static> Batcher<R> {
-    pub fn new(runner: R, options: BatchingOptions) -> Self {
+    pub fn new(runner: R, queue: Arc<BatchQueue<R>>, options: BatchingOptions) -> Self {
         Self {
             data: Arc::new(BatcherData {
                 runner,
-                state: Mutex::new(BatcherState::Idle),
+                options,
+                queue,
             }),
-            options,
         }
     }
+
     pub async fn run(&self, input: R::Input) -> Result<R::Output> {
+        let batcher_key = Arc::as_ptr(&self.data) as usize;
+
         let batch_exec_action: BatchExecutionAction<R> = {
-            let mut state = self.data.state.lock().unwrap();
-            match &mut *state {
-                state @ BatcherState::Idle => {
-                    *state = BatcherState::Busy {
-                        pending_batch: None,
-                        ongoing_count: 1,
-                    };
-                    BatchExecutionAction::Inline { input }
+            let mut queue_state = self.data.queue.state.lock().unwrap();
+
+            if queue_state.ongoing_count == 0 {
+                // Queue is idle - execute inline
+                queue_state.ongoing_count = 1;
+                BatchExecutionAction::Inline { input }
+            } else {
+                // Queue is busy - add to pending batch for this batcher
+                let entry = queue_state
+                    .pending_batches
+                    .entry(batcher_key)
+                    .or_insert_with(|| PendingBatchEntry {
+                        batcher_data: Arc::downgrade(&self.data),
+                        batch: Batch::default(),
+                    });
+
+                entry.batch.inputs.push(input);
+                let (output_tx, output_rx) = oneshot::channel();
+                entry.batch.output_txs.push(output_tx);
+                let num_cancelled_tx = entry.batch.num_cancelled_tx.clone();
+
+                // Check if we need to flush due to max_batch_size
+                let should_flush = self
+                    .data
+                    .options
+                    .max_batch_size
+                    .map(|max_size| entry.batch.inputs.len() >= max_size)
+                    .unwrap_or(false);
+
+                if should_flush {
+                    // Remove and execute immediately
+                    let entry = queue_state.pending_batches.remove(&batcher_key).unwrap();
+                    queue_state.ongoing_count += 1;
+                    let data = self.data.clone();
+                    tokio::spawn(async move {
+                        data.run_batch(entry.batch).await;
+                    });
                 }
-                BatcherState::Busy {
-                    pending_batch,
-                    ongoing_count,
-                } => {
-                    let batch = pending_batch.get_or_insert_default();
-                    batch.inputs.push(input);
 
-                    let (output_tx, output_rx) = oneshot::channel();
-                    batch.output_txs.push(output_tx);
-
-                    let num_cancelled_tx = batch.num_cancelled_tx.clone();
-
-                    // Check if we've reached max_batch_size and need to flush immediately
-                    let should_flush = self
-                        .options
-                        .max_batch_size
-                        .map(|max_size| batch.inputs.len() >= max_size)
-                        .unwrap_or(false);
-
-                    if should_flush {
-                        // Take the batch and trigger execution
-                        let batch_to_run = pending_batch.take().unwrap();
-                        *ongoing_count += 1;
-                        let data = self.data.clone();
-                        tokio::spawn(async move { data.run_batch(batch_to_run).await });
-                    }
-
-                    BatchExecutionAction::Batched {
-                        output_rx,
-                        num_cancelled_tx,
-                    }
+                BatchExecutionAction::Batched {
+                    output_rx,
+                    num_cancelled_tx,
                 }
             }
         };
+
         match batch_exec_action {
             BatchExecutionAction::Inline { input } => {
                 let _kick_off_next = BatchKickOffNext {
-                    batcher_data: &self.data,
+                    queue: &self.data.queue,
                 };
 
                 let data = self.data.clone();
-                let handle = AbortOnDropHandle::new(tokio::spawn(async move {
-                    let mut outputs = data.runner.run(vec![input]).await?;
-                    if outputs.len() != 1 {
-                        internal_bail!("Expected 1 output, got {}", outputs.len());
+                let handle = AbortOnDropHandle::new(tokio::spawn(
+                    async move {
+                        let mut outputs = data.runner.run(vec![input]).await?;
+                        if outputs.len() != 1 {
+                            internal_bail!("Expected 1 output, got {}", outputs.len());
+                        }
+                        Ok(outputs.next().unwrap())
                     }
-                    Ok(outputs.next().unwrap())
-                }));
+                    .instrument(Span::current()),
+                ));
                 Ok(handle.await??)
             }
             BatchExecutionAction::Batched {
@@ -207,37 +250,28 @@ impl<R: Runner + 'static> Batcher<R> {
 }
 
 struct BatchKickOffNext<'a, R: Runner + 'static> {
-    batcher_data: &'a Arc<BatcherData<R>>,
+    queue: &'a Arc<BatchQueue<R>>,
 }
 
 impl<'a, R: Runner + 'static> Drop for BatchKickOffNext<'a, R> {
     fn drop(&mut self) {
-        let mut state = self.batcher_data.state.lock().unwrap();
+        let mut queue_state = self.queue.state.lock().unwrap();
 
-        match &mut *state {
-            BatcherState::Idle => {
-                // Nothing to do, already idle
-                return;
-            }
-            BatcherState::Busy {
-                pending_batch,
-                ongoing_count,
-            } => {
-                // Decrement the ongoing count first
-                *ongoing_count -= 1;
+        queue_state.ongoing_count -= 1;
 
-                if *ongoing_count == 0 {
-                    // All batches done, check if there's a pending batch
-                    if let Some(batch) = pending_batch.take() {
-                        // Kick off the pending batch and set ongoing_count to 1
-                        *ongoing_count = 1;
-                        let data = self.batcher_data.clone();
-                        tokio::spawn(async move { data.run_batch(batch).await });
-                    } else {
-                        // No pending batch, transition to Idle
-                        *state = BatcherState::Idle;
-                    }
+        if queue_state.ongoing_count == 0 {
+            // Try to pop front pending batch (FIFO)
+            while let Some((_, entry)) = queue_state.pending_batches.pop_front() {
+                if let Some(batcher_data) = entry.batcher_data.upgrade() {
+                    // Batcher still alive - execute this batch
+                    queue_state.ongoing_count = 1;
+                    tokio::spawn(async move {
+                        batcher_data.run_batch(entry.batch).await;
+                    });
+                    break;
                 }
+                // Batcher was dropped - batch will be cancelled automatically
+                // when output_txs are dropped. Continue to next pending batch.
             }
         }
     }
@@ -264,6 +298,10 @@ impl BatchRecvCancellationGuard {
         self.num_cancelled_tx = None;
     }
 }
+
+// ============================================================================
+// Tests
+// ============================================================================
 
 #[cfg(test)]
 mod tests {
@@ -323,7 +361,8 @@ mod tests {
         let runner = TestRunner {
             recorded_calls: recorded_calls.clone(),
         };
-        let batcher = Arc::new(Batcher::new(runner, BatchingOptions::default()));
+        let queue = Arc::new(BatchQueue::<TestRunner>::new());
+        let batcher = Arc::new(Batcher::new(runner, queue, BatchingOptions::default()));
 
         let (n1_tx, n1_rx) = oneshot::channel::<()>();
         let (n2_tx, n2_rx) = oneshot::channel::<()>();
@@ -386,8 +425,10 @@ mod tests {
         let runner = TestRunner {
             recorded_calls: recorded_calls.clone(),
         };
+        let queue = Arc::new(BatchQueue::<TestRunner>::new());
         let batcher = Arc::new(Batcher::new(
             runner,
+            queue,
             BatchingOptions {
                 max_batch_size: Some(2),
             },
@@ -488,8 +529,10 @@ mod tests {
         let runner = TestRunner {
             recorded_calls: recorded_calls.clone(),
         };
+        let queue = Arc::new(BatchQueue::<TestRunner>::new());
         let batcher = Arc::new(Batcher::new(
             runner,
+            queue,
             BatchingOptions {
                 max_batch_size: Some(2),
             },

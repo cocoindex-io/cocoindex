@@ -117,8 +117,8 @@ from cocoindex.resources.file import PatternFilePathMatcher
 
 # Include only .py and .md files, exclude hidden directories and test files
 matcher = PatternFilePathMatcher(
-    included_patterns=["*.py", "*.md"],
-    excluded_patterns=["**/.*", "**/test_*", "**/__pycache__/**"],
+    included_patterns=["**/*.py", "**/*.md"],
+    excluded_patterns=["**/.*", "**/test_*", "**/__pycache__"],
 )
 
 for file in localfs.walk_dir("/path/to/project", recursive=True, path_matcher=matcher):
@@ -137,7 +137,7 @@ from cocoindex.resources.file import FileLike, PatternFilePathMatcher
 def app_main(sourcedir: pathlib.Path) -> None:
     # Register base directory for stable memoization
     source = localfs.register_base_dir("source", sourcedir)
-    matcher = PatternFilePathMatcher(included_patterns=["*.md"])
+    matcher = PatternFilePathMatcher(included_patterns=["**/*.md"])
 
     for file in localfs.walk_dir(source, recursive=True, path_matcher=matcher):
         coco.mount(

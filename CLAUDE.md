@@ -161,7 +161,7 @@ def app_main(sourcedir: pathlib.Path, outdir: pathlib.Path) -> None:
     ).result()
 
     files = localfs.walk_dir(
-        sourcedir, path_matcher=PatternFilePathMatcher(included_patterns=["*.md"])
+        sourcedir, path_matcher=PatternFilePathMatcher(included_patterns=["**/*.md"])
     )
     with coco.component_subpath("process"):
         for f in files:
@@ -202,3 +202,17 @@ We distinguish between **internal modules** (under packages with `_` prefix, e.g
 ### Testing Guidelines
 
 We prefer end-to-end tests on user-facing APIs, over unit tests on smaller internal functions. With this said, there're cases where unit tests are necessary, e.g. for internal logic with various situations and edge cases, in which case it's usually easier to cover various scenarios with unit tests.
+
+### Sync vs Async
+
+The Rust core (`rust/core`, `rust/utils`) uses **async-first** design with Tokio. The `rust/py` crate bridges Rust async to Python, offering both sync and async APIs:
+
+* Rust core exposes async functions
+* `rust/py` provides sync wrappers that use `block_on()` to call async Rust from sync Python
+* Python gets both `cocoindex` (sync) and `cocoindex.asyncio` (async) APIs
+
+When adding new functionality that involves I/O or concurrency:
+
+* Implement async in Rust
+* Bridge to Python via `rust/py`, providing both sync and async variants if needed
+* Avoid `asyncio.run()` in Python when Rust can handle the sync/async bridging

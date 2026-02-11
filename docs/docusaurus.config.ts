@@ -59,6 +59,14 @@ const config: Config = {
             from: '/about/contributing',
             to: '/contributing/guide',
           },
+          {
+            from: '/utilities/sentence_transformers',
+            to: '/ops/sentence_transformers',
+          },
+          {
+            from: '/utilities/text',
+            to: '/ops/text',
+          },
         ],
       },
     ],

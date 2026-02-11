@@ -117,18 +117,19 @@ def TableTarget.declare_row(
 Define the table structure using a Python class (dataclass, NamedTuple, or Pydantic model):
 
 ```python
-def TableSchema.__init__(
-    self,
-    columns: type[RowT],
+@classmethod
+async def TableSchema.from_class(
+    cls,
+    record_type: type[RowT],
     primary_key: list[str],
     *,
     column_specs: dict[str, LanceType | VectorSchemaProvider] | None = None,
-) -> None
+) -> TableSchema[RowT]
 ```
 
 **Parameters:**
 
-- `columns` — A record type whose fields define table columns.
+- `record_type` — A record type whose fields define table columns.
 - `primary_key` — List of column names forming the primary key.
 - `column_specs` — Optional per-column overrides for type mapping or vector configuration.
 
@@ -142,7 +143,7 @@ class OutputDocument:
     content: str
     embedding: Annotated[NDArray, embedder]
 
-schema = lancedb.TableSchema(
+schema = await lancedb.TableSchema.from_class(
     OutputDocument,
     primary_key=["doc_id"],
 )
@@ -186,7 +187,7 @@ For `NDArray` fields, a `VectorSchemaProvider` specifies the vector dimension an
 
 A `VectorSchemaProvider` can be:
 
-- **An embedding model** (e.g., [`SentenceTransformerEmbedder`](../utilities/sentence_transformers.md)) — dimension is inferred from the model
+- **An embedding model** (e.g., [`SentenceTransformerEmbedder`](../ops/sentence_transformers.md)) — dimension is inferred from the model
 - **A `VectorSchema`** — for explicit size and dtype when not using an embedder
 
 ```python
@@ -270,7 +271,7 @@ async def app_main() -> None:
         coco.component_subpath("setup", "table"),
         db.declare_table_target,
         table_name="documents",
-        table_schema=lancedb.TableSchema(
+        table_schema=await lancedb.TableSchema.from_class(
             OutputDocument,
             primary_key=["doc_id"],
         ),

@@ -1,0 +1,38 @@
+name: Prek Autoupdate
+
+on:
+  schedule:
+    - cron: "0 0 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  autoupdate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install prek
+        uses: j178/prek-action@v1
+        with:
+          install-only: true
+
+      - name: Run prek auto-update
+        run: prek auto-update
+
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@v8
+        with:
+          commit-message: "ci: update prek hooks"
+          title: "ci: update prek hooks"
+          body: |
+            Automated prek hook version updates.
+
+            This PR was created by the prek autoupdate workflow.
+          branch: prek-autoupdate
+          labels: |
+            dependencies
+            ci

@@ -28,7 +28,7 @@ from cocoindex._internal import memo_key as _memo_key
 
 
 @_coco.function(memo=True)
-def generate_id(_dep: _typing.Any = None) -> int:
+async def generate_id(_dep: _typing.Any = None) -> int:
     """
     Generate a stable unique ID for a given dependency value.
 
@@ -49,12 +49,12 @@ def generate_id(_dep: _typing.Any = None) -> int:
 
     Example:
         @coco.function(memo=True)
-        def process_item(item: Item) -> Row:
+        async def process_item(item: Item) -> Row:
             # Same item.key always gets the same ID
-            item_id = generate_id(item.key)
+            item_id = await generate_id(item.key)
             return Row(id=item_id, data=item.data)
     """
-    return _component_ctx.next_id(None)
+    return await _component_ctx.next_id(None)
 
 
 @_coco.function(memo=True)
@@ -86,7 +86,7 @@ def generate_uuid(_dep: _typing.Any = None) -> _uuid.UUID:
     return _uuid.uuid4()
 
 
-class IdGenerator:
+class IdGenerator(_coco.NotMemoizable):
     """
     Generator for stable unique IDs that produces distinct IDs on each call.
 
@@ -123,7 +123,7 @@ class IdGenerator:
         self._deps_fp = _memo_key.memo_key(deps).as_bytes()
         self._ordinals = {}
 
-    def next_id(self, dep: _typing.Any = None) -> int:
+    async def next_id(self, dep: _typing.Any = None) -> int:
         """
         Generate the next unique ID.
 
@@ -146,10 +146,10 @@ class IdGenerator:
         self._ordinals[dep_fp] = ordinal + 1
 
         # Call internal memoized function with (deps_fp, dep_fp, ordinal)
-        return _generate_next_id(self._deps_fp, dep_fp, ordinal)
+        return await _generate_next_id(self._deps_fp, dep_fp, ordinal)
 
 
-class UuidGenerator:
+class UuidGenerator(_coco.NotMemoizable):
     """
     Generator for stable unique UUIDs that produces distinct UUIDs on each call.
 
@@ -214,9 +214,9 @@ class UuidGenerator:
 
 
 @_coco.function(memo=True)
-def _generate_next_id(_deps_fp: bytes, _dep_fp: bytes, _ordinal: int) -> int:
+async def _generate_next_id(_deps_fp: bytes, _dep_fp: bytes, _ordinal: int) -> int:
     """Internal memoized function that generates the actual ID."""
-    return _component_ctx.next_id(None)
+    return await _component_ctx.next_id(None)
 
 
 @_coco.function(memo=True)

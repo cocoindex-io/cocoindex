@@ -10,7 +10,7 @@ anyhow = { workspace = true }
 async-trait = { workspace = true }
 tracing = { workspace = true }
 axum = { workspace = true }
-serde = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 base64 = { workspace = true }
 tokio = { workspace = true }
@@ -19,6 +19,7 @@ futures = { workspace = true }
 blake2 = { workspace = true }
 itertools = { workspace = true }
 indexmap = { workspace = true }
+hashlink = { workspace = true }
 hex = { workspace = true }
 serde_path_to_error = { workspace = true }
 rmp-serde = { workspace = true }

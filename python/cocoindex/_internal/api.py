@@ -18,9 +18,9 @@ from .target_state import (
 from .environment import Environment, EnvironmentBuilder, LifespanFn
 from .environment import lifespan
 
-from .function import function
+from .runner import GPU, Runner
 
-from .memo_key import register_memo_key_function
+from .memo_key import register_memo_key_function, NotMemoizable
 
 from .pending_marker import PendingS, ResolvedS, MaybePendingS, ResolvesTo
 
@@ -61,10 +61,12 @@ __all__ = [
     "EnvironmentBuilder",
     "LifespanFn",
     "lifespan",
-    # .fn
-    "function",
+    # .runner
+    "GPU",
+    "Runner",
     # .memo_key
     "register_memo_key_function",
+    "NotMemoizable",
     # .pending_marker
     "MaybePendingS",
     "PendingS",

@@ -81,7 +81,7 @@ async def process_product(
 ) -> None:
     full_description = f"Category: {product.product_category}\nName: {product.product_name}\n\n{product.description}"
     total_value = product.price * product.amount
-    embedding = await _embedder.embed_async(full_description)
+    embedding = await _embedder.embed(full_description)
     table.declare_row(
         row=OutputProduct(
             product_category=product.product_category,
@@ -103,7 +103,7 @@ async def app_main() -> None:
             coco.component_subpath("table"),
             target_db.declare_table_target,
             table_name=TABLE_NAME,
-            table_schema=postgres.TableSchema(
+            table_schema=await postgres.TableSchema.from_class(
                 OutputProduct,
                 primary_key=["product_category", "product_name"],
             ),
@@ -133,7 +133,7 @@ app = coco_aio.App(
 
 
 async def query_once(pool: asyncpg.Pool, query: str, *, top_k: int = TOP_K) -> None:
-    query_vec = await _embedder.embed_async(query)
+    query_vec = await _embedder.embed(query)
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             f"""

@@ -22,7 +22,9 @@ from cocoindex._internal.typing import StableKey as StableKey
 
 __version__: str
 
+T = TypeVar("T")
 T_co = TypeVar("T_co", covariant=True)
+R_co = TypeVar("R_co", covariant=True)
 
 # --- StablePath ---
 class StablePath:
@@ -71,7 +73,7 @@ class ComponentProcessorContext:
     @property
     def stable_path(self) -> StablePath: ...
     def join_fn_call(self, child_fn_ctx: FnCallContext) -> None: ...
-    def next_id(self, key: StableKey | None = None) -> int: ...
+    async def next_id(self, key: StableKey | None = None) -> int: ...
 
 # --- FnCallContext ---
 class FnCallContext:
@@ -109,10 +111,16 @@ def list_app_names(env: Environment) -> list[str]: ...
 class App:
     def __new__(cls, name: str, env: Environment) -> App: ...
     def update(
-        self, root_processor: ComponentProcessor[T_co], report_to_stdout: bool, full_reprocess: bool
+        self,
+        root_processor: ComponentProcessor[T_co],
+        report_to_stdout: bool,
+        full_reprocess: bool,
     ) -> T_co: ...
     async def update_async(
-        self, root_processor: ComponentProcessor[T_co], report_to_stdout: bool, full_reprocess: bool
+        self,
+        root_processor: ComponentProcessor[T_co],
+        report_to_stdout: bool,
+        full_reprocess: bool,
     ) -> T_co: ...
     def drop(self, report_to_stdout: bool) -> None: ...
     def drop_async(self, report_to_stdout: bool) -> Coroutine[Any, Any, None]: ...
@@ -256,6 +264,16 @@ class RecursiveSplitter:
 
 def detect_code_language(*, filename: str) -> str | None: ...
 
+# --- PatternMatcher (from ops) ---
+class PatternMatcher:
+    def __new__(
+        cls,
+        included_patterns: list[str] | None = None,
+        excluded_patterns: list[str] | None = None,
+    ) -> "PatternMatcher": ...
+    def is_dir_included(self, path: str) -> bool: ...
+    def is_file_included(self, path: str) -> bool: ...
+
 ########################################################
 # Synchronization Primitives
 ########################################################
@@ -270,20 +288,82 @@ class RWLockReadGuard:
     def release(self) -> None: ...
     def __enter__(self) -> "RWLockReadGuard": ...
     def __exit__(
-        self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: Any
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: Any,
     ) -> None: ...
     def __aenter__(self) -> Coroutine[Any, Any, "RWLockReadGuard"]: ...
     def __aexit__(
-        self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: Any
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: Any,
     ) -> Coroutine[Any, Any, None]: ...
 
 class RWLockWriteGuard:
     def release(self) -> None: ...
     def __enter__(self) -> "RWLockWriteGuard": ...
     def __exit__(
-        self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: Any
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: Any,
     ) -> None: ...
     def __aenter__(self) -> Coroutine[Any, Any, "RWLockWriteGuard"]: ...
     def __aexit__(
-        self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: Any
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: Any,
     ) -> Coroutine[Any, Any, None]: ...
+
+########################################################
+# Batching Infrastructure
+########################################################
+
+# --- BatchingOptions ---
+class BatchingOptions:
+    """Options for batching behavior."""
+
+    max_batch_size: int | None
+
+    def __new__(cls, max_batch_size: int | None = None) -> "BatchingOptions": ...
+
+# --- BatchQueue ---
+class BatchQueue:
+    """A shared queue that processes batches in FIFO order.
+
+    Multiple batchers can share the same queue. Each batcher provides its own
+    runner function, and batches are processed using the runner from the batcher
+    that created them.
+    """
+
+    def __new__(cls) -> "BatchQueue": ...
+
+# --- Batcher ---
+class Batcher(Generic[T, R_co]):
+    """A batcher that collects inputs and submits them to a shared queue.
+
+    Each batcher maintains at most one non-full, non-sealed batch in the queue.
+    When inputs are submitted, they are added to the current batch or a new batch is created.
+
+    Multiple batchers can share the same queue with different runner functions.
+    Each batch uses the runner function from the batcher that created it.
+    """
+
+    @staticmethod
+    def new_sync(
+        queue: BatchQueue,
+        options: BatchingOptions,
+        runner_fn: Callable[[list[T]], list[R_co]],
+        async_ctx: AsyncContext,
+    ) -> "Batcher[T, R_co]": ...
+    @staticmethod
+    def new_async(
+        queue: BatchQueue,
+        options: BatchingOptions,
+        runner_fn: Callable[[list[T]], Coroutine[Any, Any, list[R_co]]],
+        async_ctx: AsyncContext,
+    ) -> "Batcher[T, R_co]": ...
+    def run(self, input: T) -> Coroutine[Any, Any, R_co]: ...

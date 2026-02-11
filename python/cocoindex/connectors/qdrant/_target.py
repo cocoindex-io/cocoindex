@@ -75,12 +75,12 @@ class _ResolvedQdrantVectorDef(NamedTuple):
     multivector_comparator: Literal["max_sim"]
 
 
-def _resolve_vector_def(vector_def: QdrantVectorDef) -> _ResolvedQdrantVectorDef:
+async def _resolve_vector_def(vector_def: QdrantVectorDef) -> _ResolvedQdrantVectorDef:
     resolved_schema: schema.VectorSchema | schema.MultiVectorSchema
     if isinstance(vector_def.schema, schema.VectorSchemaProvider):
-        resolved_schema = vector_def.schema.__coco_vector_schema__()
+        resolved_schema = await vector_def.schema.__coco_vector_schema__()
     elif isinstance(vector_def.schema, schema.MultiVectorSchemaProvider):
-        resolved_schema = vector_def.schema.__coco_multi_vector_schema__()
+        resolved_schema = await vector_def.schema.__coco_multi_vector_schema__()
     else:
         raise ValueError(f"Invalid vector definition: {vector_def}")
     return _ResolvedQdrantVectorDef(
@@ -120,16 +120,41 @@ class CollectionSchema:
 
     _vectors: _ResolvedQdrantVectorDef | dict[str, _ResolvedQdrantVectorDef]
 
-    def __init__(self, vectors: QdrantVectorDef | dict[str, QdrantVectorDef]) -> None:
+    def __init__(
+        self,
+        vectors: _ResolvedQdrantVectorDef | dict[str, _ResolvedQdrantVectorDef],
+    ) -> None:
+        """
+        Create a CollectionSchema from pre-resolved vector definitions.
+
+        For constructing from unresolved ``QdrantVectorDef``, use the async
+        classmethod ``create`` instead.
+        """
+        self._vectors = vectors
+
+    @classmethod
+    async def create(
+        cls,
+        vectors: QdrantVectorDef | dict[str, QdrantVectorDef],
+    ) -> "CollectionSchema":
+        """
+        Create a CollectionSchema by resolving vector definitions.
+
+        Args:
+            vectors: Either a single QdrantVectorDef (for unnamed vector) or a dictionary
+                     mapping vector field names to QdrantVectorDef.
+        """
+        resolved: _ResolvedQdrantVectorDef | dict[str, _ResolvedQdrantVectorDef]
         if isinstance(vectors, QdrantVectorDef):
-            self._vectors = _resolve_vector_def(vectors)
+            resolved = await _resolve_vector_def(vectors)
         elif isinstance(vectors, dict):
-            self._vectors = {
-                name: _resolve_vector_def(vector_def)
+            resolved = {
+                name: await _resolve_vector_def(vector_def)
                 for name, vector_def in vectors.items()
             }
         else:
             raise ValueError(f"Invalid vector definition: {vectors}")
+        return cls(resolved)
 
     @property
     def vectors(

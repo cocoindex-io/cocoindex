@@ -18,7 +18,6 @@ from typing import (
     Literal,
     NamedTuple,
     Sequence,
-    overload,
 )
 
 from typing_extensions import TypeVar
@@ -129,7 +128,7 @@ _LEAF_TYPE_MAPPINGS: dict[type, _TypeMapping] = {
 _JSON_MAPPING = _TypeMapping(pa.string(), _json_encoder)
 
 
-def _get_type_mapping(
+async def _get_type_mapping(
     python_type: Any, *, vector_schema_provider: VectorSchemaProvider | None = None
 ) -> _TypeMapping:
     """
@@ -155,7 +154,7 @@ def _get_type_mapping(
     if base_type is np.ndarray:
         if vector_schema_provider is None:
             raise ValueError("VectorSchemaProvider is required for NumPy ndarray type.")
-        vector_schema = vector_schema_provider.__coco_vector_schema__()
+        vector_schema = await vector_schema_provider.__coco_vector_schema__()
 
         if vector_schema.size <= 0:
             raise ValueError(f"Invalid vector dimension: {vector_schema.size}")
@@ -206,54 +205,27 @@ class TableSchema(Generic[RowT]):
     primary_key: list[str]  # Column names that form the primary key
     row_type: type[RowT] | None  # The row type, if provided
 
-    @overload
-    def __init__(
-        self: "TableSchema[dict[str, Any]]",
-        columns: dict[str, ColumnDef],
-        primary_key: list[str],
-    ) -> None: ...
-
-    @overload
-    def __init__(
-        self: "TableSchema[RowT]",
-        columns: type[RowT],
-        primary_key: list[str],
-        *,
-        column_specs: dict[str, LanceType | VectorSchemaProvider] | None = None,
-    ) -> None: ...
-
     def __init__(
         self,
-        columns: type[RowT] | dict[str, ColumnDef],
+        columns: dict[str, ColumnDef],
         primary_key: list[str],
         *,
-        column_specs: dict[str, LanceType | VectorSchemaProvider] | None = None,
+        row_type: type[RowT] | None = None,
     ) -> None:
         """
-        Create a TableSchema.
+        Create a TableSchema from pre-resolved column definitions.
+
+        For constructing from a record type, use the async classmethod
+        ``from_class`` instead.
 
         Args:
-            columns: Either a record type (dataclass, NamedTuple, or Pydantic model)
-                     or a dict mapping column names to ColumnDef.
-                     When a record type is provided, Python types are automatically
-                     mapped to PyArrow types.
+            columns: A dict mapping column names to ColumnDef.
             primary_key: List of column names that form the primary key.
-            column_specs: Optional dict mapping column names to LanceType or VectorSchemaProvider
-                         to override the default type mapping.
+            row_type: Optional original record type.
         """
-        if isinstance(columns, dict):
-            self.columns = columns
-            self.row_type = None
-        elif is_record_type(columns):
-            self.columns = self._columns_from_record_type(columns, column_specs)
-            self.row_type = columns
-        else:
-            raise TypeError(
-                f"columns must be a record type (dataclass, NamedTuple, Pydantic model) "
-                f"or a dict[str, ColumnDef], got {type(columns)}"
-            )
-
+        self.columns = columns
         self.primary_key = primary_key
+        self.row_type = row_type
 
         # Validate primary key columns exist
         for pk in self.primary_key:
@@ -262,8 +234,35 @@ class TableSchema(Generic[RowT]):
                     f"Primary key column '{pk}' not found in columns: {list(self.columns.keys())}"
                 )
 
+    @classmethod
+    async def from_class(
+        cls,
+        record_type: type[RowT],
+        primary_key: list[str],
+        *,
+        column_specs: dict[str, LanceType | VectorSchemaProvider] | None = None,
+    ) -> "TableSchema[RowT]":
+        """
+        Create a TableSchema from a record type (dataclass, NamedTuple, or Pydantic model).
+
+        Python types are automatically mapped to PyArrow types.
+
+        Args:
+            record_type: A record type (dataclass, NamedTuple, or Pydantic model).
+            primary_key: List of column names that form the primary key.
+            column_specs: Optional dict mapping column names to LanceType or
+                          VectorSchemaProvider to override the default type mapping.
+        """
+        if not is_record_type(record_type):
+            raise TypeError(
+                f"record_type must be a record type (dataclass, NamedTuple, Pydantic model), "
+                f"got {type(record_type)}"
+            )
+        columns = await cls._columns_from_record_type(record_type, column_specs)
+        return cls(columns, primary_key, row_type=record_type)
+
     @staticmethod
-    def _columns_from_record_type(
+    async def _columns_from_record_type(
         record_type: type,
         column_specs: dict[str, LanceType | VectorSchemaProvider] | None,
     ) -> dict[str, ColumnDef]:
@@ -296,7 +295,7 @@ class TableSchema(Generic[RowT]):
                     lance_type_annotation.pa_type, lance_type_annotation.encoder
                 )
             else:
-                type_mapping = _get_type_mapping(
+                type_mapping = await _get_type_mapping(
                     field.type_hint, vector_schema_provider=vector_schema_provider
                 )
 
