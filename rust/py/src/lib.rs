@@ -58,6 +58,7 @@ fn core_module(m: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()>
     m.add_class::<runtime::PyAsyncContext>()?;
 
     m.add_class::<stable_path::PyStablePath>()?;
+    m.add_class::<stable_path::PySymbol>()?;
 
     // Fingerprints (stable 16-byte digest wrapper)
     m.add_class::<fingerprint::PyFingerprint>()?;

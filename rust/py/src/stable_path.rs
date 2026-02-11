@@ -28,16 +28,52 @@ impl FromPyObject<'_, '_> for PyStableKey {
                 parts.push(PyStableKey::extract(item?.as_borrowed())?.0);
             }
             StableKey::Array(Arc::from(parts))
+        } else if obj.is_instance_of::<PySymbol>() {
+            let sym = obj.extract::<PySymbol>()?;
+            StableKey::Symbol(sym.0)
         } else if let Ok(uuid_value) = obj.extract::<uuid::Uuid>() {
             StableKey::Uuid(uuid_value)
         } else {
             return Err(PyTypeError::new_err(
-                "Unsupported StableKey Python type. Only support None, bool, int, str, bytes, tuple, list, and uuid",
+                "Unsupported StableKey Python type. Only support None, bool, int, str, bytes, tuple, list, uuid, and Symbol",
             ));
         };
         Ok(Self(part))
     }
 }
+
+#[pyclass(name = "Symbol", frozen)]
+#[derive(Clone)]
+pub struct PySymbol(pub Arc<str>);
+
+#[pymethods]
+impl PySymbol {
+    #[new]
+    pub fn new(name: &str) -> Self {
+        Self(Arc::from(name))
+    }
+
+    #[getter]
+    pub fn name(&self) -> &str {
+        &self.0
+    }
+
+    pub fn __repr__(&self) -> String {
+        format!("Symbol({})", self.0)
+    }
+
+    pub fn __eq__(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+
+    pub fn __hash__(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.0.hash(&mut hasher);
+        hasher.finish()
+    }
+}
+
 #[pyclass(name = "StablePath")]
 #[derive(Clone)]
 pub struct PyStablePath(pub StablePath);
