@@ -4,7 +4,11 @@ import uuid
 
 from . import core
 
-StableKey = None | bool | int | str | bytes | uuid.UUID | tuple["StableKey", ...]
+Symbol = core.Symbol
+
+StableKey = (
+    None | bool | int | str | bytes | uuid.UUID | Symbol | tuple["StableKey", ...]
+)
 
 _ROOT_PATH = core.StablePath()
 
