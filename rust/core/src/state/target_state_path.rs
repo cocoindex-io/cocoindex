@@ -40,16 +40,15 @@ impl storekey::Decode for TargetStatePath {
 }
 
 impl TargetStatePath {
-    pub fn new(key_part: StableKey, parent: Option<&Self>) -> Self {
-        let fp = utils::fingerprint::Fingerprint::from(&key_part).unwrap();
+    pub fn new(key_part: utils::fingerprint::Fingerprint, parent: Option<&Self>) -> Self {
         let inner: Arc<[utils::fingerprint::Fingerprint]> = match parent {
             Some(parent) => parent
                 .0
                 .iter()
-                .chain(std::iter::once(&fp))
+                .chain(std::iter::once(&key_part))
                 .cloned()
                 .collect(),
-            None => Arc::new([fp]),
+            None => Arc::new([key_part]),
         };
         Self(inner)
     }
