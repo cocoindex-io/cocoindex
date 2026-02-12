@@ -14,18 +14,13 @@ StableKey = None | bool | int | str | bytes | uuid.UUID | Symbol | tuple[StableK
 
 #### Symbol
 
-A namespaced key type that cannot collide with user-provided strings. Used internally by convenience APIs (e.g., `mount_target()` uses a predefined symbol like `Symbol("cocoindex/setup")` as a top-level path segment).
-
-### StableKeyProvider
-
-An object that provides a `StableKey`. An argument is a StableKeyProvider if it satisfies any of:
-
-1. It is itself a `StableKey` value.
-2. It implements `__coco_stable_key__() -> StableKey`.
+A namespaced key type that cannot collide with user-provided strings. Used internally by convenience APIs (e.g., `mount_target()` uses a predefined symbol as a top-level path segment).
 
 ### Target
 
-A target object (e.g., from `target_db.table_target(...)`) that declares a container target state and provides a child target (e.g., `TableTarget`) for declaring child target states (rows, files, points). A target is also a **StableKeyProvider**.
+A target object (e.g., from `target_db.table_target(...)`) that declares a container target state and provides a child target (e.g., `TableTarget`) for declaring child target states (rows, files, points).
+
+Targets have globally unique keys by construction. For example, a Postgres table target's key is composed from `"cocoindex.io/postgres"`, the database key, and the table name — so it is inherently unique without relying on user-provided subpaths.
 
 ## API Summary
 
@@ -33,7 +28,7 @@ A target object (e.g., from `target_db.table_target(...)`) that declares a conta
 |-----|---------|---------|
 | `mount()` | Mount an independent component | `MountHandle` |
 | `use_mount()` | Mount a dependent component, caller depends on result | `T` |
-| `mount_each()` | Mount one component per item in an iterable | `None` |
+| `mount_each()` | Mount one component per item in a keyed iterable | `None` |
 | `mount_target()` | Mount a target (sugar over `use_mount()`) | `T` |
 | `map()` | Run a function concurrently on each item (no mounting) | `list[T]` |
 
@@ -44,18 +39,15 @@ A target object (e.g., from `target_db.table_target(...)`) that declares a conta
 Mount an independent processing component. The child component can refresh independently of its parent in live mode.
 
 ```python
-await coco_aio.mount(subpath, fn, *args, **kwargs) -> MountHandle
-await coco_aio.mount(fn, first_arg, *args, **kwargs) -> MountHandle
+coco_aio.mount(subpath, fn, *args, **kwargs) -> MountHandle
 ```
 
 **Parameters:**
-- `subpath` *(optional, ComponentSubpath)* — Explicit component subpath. If omitted, `first_arg` (i.e., `args[0]` for passthrough) must be a **StableKeyProvider**.
+- `subpath` *(ComponentSubpath)* — The component subpath.
 - `fn` *(callable)* — The function to run as the processing component.
 - `*args, **kwargs` — Passthrough arguments to `fn`.
 
 **Returns:** `MountHandle` with a `ready()` method.
-
-**Subpath resolution:** When `subpath` is omitted, the component path is derived from the stable key of the first passthrough argument. This avoids redundancy when the key is already carried by the argument (e.g., a `FileLike` whose path is the key).
 
 ### `use_mount()`
 
@@ -67,7 +59,6 @@ The `use_` prefix (consistent with `use_context()`) signals that the caller crea
 
 ```python
 await coco_aio.use_mount(subpath, fn, *args, **kwargs) -> T
-await coco_aio.use_mount(fn, first_arg, *args, **kwargs) -> T
 ```
 
 **Parameters:** Same as `mount()`.
@@ -76,41 +67,39 @@ await coco_aio.use_mount(fn, first_arg, *args, **kwargs) -> T
 
 ### `mount_each()`
 
-Mount one independent component per item in an iterable. Sugar over a loop of `mount()` calls.
+Mount one independent component per item in a keyed iterable. Sugar over a loop of `mount()` calls.
 
 ```python
 coco_aio.mount_each(fn, items, *args, **kwargs) -> None
 ```
 
 **Parameters:**
-- `fn` *(callable)* — The function to run for each item. The item is passed as the first argument.
-- `items` *(Iterable[T])* — The items to iterate. Each element must be a **StableKeyProvider** (its stable key is used as the component subpath).
-- `*args, **kwargs` — Additional passthrough arguments to `fn` (appended after the item).
+- `fn` *(callable)* — The function to run for each item. The item value is passed as the first argument.
+- `items` *(Iterable[tuple[StableKey, T]])* — A keyed iterable. Each element is a `(key, value)` pair. The key is used as the component subpath; the value is passed to `fn`.
+- `*args, **kwargs` — Additional passthrough arguments to `fn` (appended after the item value).
 
 **Returns:** `None`.
 
+**Note on keys:** Stable keys are a property of membership in a collection, not an intrinsic property of the element. For example, a file's relative path is only unique within its directory. Source connectors provide key-value pairs (e.g., via an `items()` method) where the connector determines the appropriate key.
+
 **Equivalent to:**
 ```python
-for item in items:
-    coco_aio.mount(fn, item, *args, **kwargs)
-    # which is equivalent to:
-    # coco_aio.mount(coco.component_subpath(item.__coco_stable_key__()), fn, item, *args, **kwargs)
+for key, item in items:
+    coco_aio.mount(coco.component_subpath(key), fn, item, *args, **kwargs)
 ```
 
 ### `mount_target()`
 
 Mount a target, ensuring its container target state is applied before returning the child target. Sugar over `use_mount()` for targets.
 
-Internally uses a predefined `Symbol("cocoindex/setup")` as a top-level path segment, so the target's component path won't collide with user-defined paths. Users do **not** need to wrap `mount_target()` in `with coco.component_subpath("setup")`.
+Targets have globally unique keys by construction (e.g., a Postgres table target's key includes `"cocoindex.io/postgres"`, the database key, and the table name). The component subpath is derived from this key automatically. Users do **not** need to provide an explicit subpath or wrap in `with coco.component_subpath(...)`.
 
 ```python
 await coco_aio.mount_target(target) -> T
-await coco_aio.mount_target(subpath, target) -> T
 ```
 
 **Parameters:**
-- `subpath` *(optional, ComponentSubpath)* — Explicit component subpath. If omitted, derived from the target's stable key, under the internal `Symbol("cocoindex/setup")` prefix.
-- `target` — A target object (e.g., from `target_db.table_target(...)`). Must be a **StableKeyProvider**.
+- `target` — A target object (e.g., from `target_db.table_target(...)`).
 
 **Returns:** The child target (e.g., `TableTarget[T]`), ready to use.
 
@@ -129,31 +118,13 @@ await coco_aio.map(fn, items, *args, **kwargs) -> list[T]
 
 **Returns:** `list[T]` — Results from each invocation (may be `list[None]` for side-effecting functions).
 
-## Subpath Resolution Rules
-
-For `mount()`, `use_mount()`, and `mount_target()`, the first positional argument is inspected to determine whether it is a `ComponentSubpath`:
-
-1. If the first argument is a `ComponentSubpath` instance, it is consumed as the subpath. The remaining arguments are `fn, *args, **kwargs` (for `mount`/`use_mount`) or `target` (for `mount_target`).
-2. Otherwise, no explicit subpath is provided. The stable key is extracted from:
-   - `mount()` / `use_mount()`: The first passthrough argument (`args[0]`), which must be a **StableKeyProvider**.
-   - `mount_target()`: The target, which must be a **StableKeyProvider**. Additionally, the path is prefixed with `Symbol("cocoindex/setup")`.
-
-The `component_subpath()` context manager still composes with these APIs:
-
-```python
-with coco.component_subpath("process"):
-    coco_aio.mount_each(process_file, files, target_table)
-    # Each item's path: current_path / "process" / item.__coco_stable_key__()
-```
-
 ## Migration from Previous API
 
 | Before | After |
 |--------|-------|
 | `await mount_run(subpath, fn, *args).result()` | `await use_mount(subpath, fn, *args)` |
-| `mount(subpath, fn, item, *args)` where subpath derived from item | `mount(fn, item, *args)` |
-| `for item in items: mount(subpath(item), fn, item, *args)` | `mount_each(fn, items, *args)` |
-| `with component_subpath("setup"): await mount_run(subpath, declare_target, ...).result()` | `await mount_target(target)` |
+| `for key, item in items: mount(subpath(key), fn, item, *args)` | `mount_each(fn, items, *args)` |
+| `with component_subpath("setup"): await mount_run(...).result()` | `await mount_target(target)` |
 | `await asyncio.gather(*(fn(item) for item in items))` | `await map(fn, items)` |
 
 ## Example: Before and After
@@ -174,14 +145,13 @@ async def app_main(sourcedir: pathlib.Path) -> None:
     ).result()
 
     files = localfs.walk_dir(sourcedir, ...)
-    with coco.component_subpath("file"):
-        async for file in files:
-            coco_aio.mount(
-                coco.component_subpath(str(file.file_path.path)),
-                process_file,
-                file,
-                target_table,
-            )
+    async for file in files:
+        coco_aio.mount(
+            coco.component_subpath("file", str(file.file_path.path)),
+            process_file,
+            file,
+            target_table,
+        )
 ```
 
 ### After
