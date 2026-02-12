@@ -35,7 +35,7 @@ ReturnT = TypeVar("ReturnT")
 ResolvedT = TypeVar("ResolvedT")
 
 
-class ProcessingUnitMountRunHandle(Generic[ReturnT]):
+class ComponentMountRunHandle(Generic[ReturnT]):
     """Handle for a processing unit that was started with `mount_run()`. Allows getting the result."""
 
     __slots__ = ("_core", "_lock", "_cached_result", "_parent_ctx")
@@ -63,7 +63,7 @@ class ProcessingUnitMountRunHandle(Generic[ReturnT]):
             return self._cached_result
 
 
-class ProcessingUnitMountHandle:
+class ComponentMountHandle:
     """Handle for a processing unit that was started with `mount()`. Allows waiting until ready."""
 
     __slots__ = ("_core", "_lock", "_ready_called")
@@ -91,34 +91,34 @@ def mount_run(
     processor_fn: AnyCallable[P, ResolvesTo[ReturnT]],
     *args: P.args,
     **kwargs: P.kwargs,
-) -> ProcessingUnitMountRunHandle[ReturnT]: ...
+) -> ComponentMountRunHandle[ReturnT]: ...
 @overload
 def mount_run(
     subpath: ComponentSubpath,
     processor_fn: AnyCallable[P, Sequence[ResolvesTo[ReturnT]]],
     *args: P.args,
     **kwargs: P.kwargs,
-) -> ProcessingUnitMountRunHandle[Sequence[ReturnT]]: ...
+) -> ComponentMountRunHandle[Sequence[ReturnT]]: ...
 @overload
 def mount_run(
     subpath: ComponentSubpath,
     processor_fn: AnyCallable[P, Mapping[K, ResolvesTo[ReturnT]]],
     *args: P.args,
     **kwargs: P.kwargs,
-) -> ProcessingUnitMountRunHandle[Mapping[K, ReturnT]]: ...
+) -> ComponentMountRunHandle[Mapping[K, ReturnT]]: ...
 @overload
 def mount_run(
     subpath: ComponentSubpath,
     processor_fn: AnyCallable[P, ReturnT],
     *args: P.args,
     **kwargs: P.kwargs,
-) -> ProcessingUnitMountRunHandle[ReturnT]: ...
+) -> ComponentMountRunHandle[ReturnT]: ...
 def mount_run(
     subpath: ComponentSubpath,
     processor_fn: AnyCallable[P, Any],
     *args: P.args,
     **kwargs: P.kwargs,
-) -> ProcessingUnitMountRunHandle[Any]:
+) -> ComponentMountRunHandle[Any]:
     """
     Mount and run a processing unit, returning a handle to await its result.
 
@@ -148,7 +148,7 @@ def mount_run(
         parent_ctx._core_processor_ctx,
         parent_ctx._core_fn_call_ctx,
     )
-    return ProcessingUnitMountRunHandle(core_handle, parent_ctx._core_processor_ctx)
+    return ComponentMountRunHandle(core_handle, parent_ctx._core_processor_ctx)
 
 
 def mount(
@@ -156,7 +156,7 @@ def mount(
     processor_fn: AnyCallable[P, Any],
     *args: P.args,
     **kwargs: P.kwargs,
-) -> ProcessingUnitMountHandle:
+) -> ComponentMountHandle:
     """
     Mount a processing unit in the background and return a handle to wait until ready.
 
@@ -186,7 +186,7 @@ def mount(
         parent_ctx._core_processor_ctx,
         parent_ctx._core_fn_call_ctx,
     )
-    return ProcessingUnitMountHandle(core_handle)
+    return ComponentMountHandle(core_handle)
 
 
 class App(AppBase[P, ReturnT]):
@@ -256,8 +256,8 @@ def runtime() -> Any:
 
 __all__ = [
     "App",
-    "ProcessingUnitMountHandle",
-    "ProcessingUnitMountRunHandle",
+    "ComponentMountHandle",
+    "ComponentMountRunHandle",
     "function",
     "mount",
     "mount_run",

@@ -132,8 +132,8 @@ with ctx.attach():
 
 **Mount handles:**
 
-* `mount()` → `ProcessingUnitMountHandle`: call `wait_until_ready()` to block until target states are synced
-* `mount_run()` → `ProcessingUnitMountRunHandle[T]`: call `result()` to get return value (implicitly waits)
+* `mount()` → `ComponentMountHandle`: call `wait_until_ready()` to block until target states are synced
+* `mount_run()` → `ComponentMountRunHandle[T]`: call `result()` to get return value (implicitly waits)
 
 ### How syncing works
 

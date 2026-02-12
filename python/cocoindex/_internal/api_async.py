@@ -6,6 +6,7 @@ from typing import (
     Any,
     AsyncIterator,
     Awaitable,
+    Concatenate,
     Callable,
     Generic,
     Iterable,
@@ -24,6 +25,7 @@ from .component_ctx import (
     build_child_path,
     get_context_from_ctx,
 )
+from .stable_path import StableKey
 from .function import (
     AnyCallable,
     create_core_component_processor,
@@ -34,11 +36,12 @@ from .typing import NOT_SET, NotSetType
 
 P = ParamSpec("P")
 K = TypeVar("K")
+T = TypeVar("T")
 ReturnT = TypeVar("ReturnT")
 ResolvedT = TypeVar("ResolvedT")
 
 
-class ProcessingUnitMountRunHandle(Generic[ReturnT]):
+class ComponentMountRunHandle(Generic[ReturnT]):
     """Handle for a processing unit that was started with `mount_run()`. Allows awaiting the result."""
 
     __slots__ = ("_core", "_lock", "_cached_result", "_parent_ctx")
@@ -66,25 +69,26 @@ class ProcessingUnitMountRunHandle(Generic[ReturnT]):
             return self._cached_result
 
 
-class ProcessingUnitMountHandle:
-    """Handle for a processing unit that was started with `mount()`. Allows waiting until ready."""
+class ComponentMountHandle:
+    """Handle for processing unit(s) started with `mount()` or `mount_each()`. Allows waiting until ready."""
 
-    __slots__ = ("_core", "_lock", "_ready_called")
+    __slots__ = ("_cores", "_lock", "_ready_called")
 
-    _core: core.ComponentMountHandle
+    _cores: list[core.ComponentMountHandle]
     _lock: asyncio.Lock
     _ready_called: bool
 
-    def __init__(self, core_handle: core.ComponentMountHandle) -> None:
-        self._core = core_handle
+    def __init__(self, core_handles: list[core.ComponentMountHandle]) -> None:
+        self._cores = core_handles
         self._lock = asyncio.Lock()
         self._ready_called = False
 
     async def ready(self) -> None:
-        """Wait until the processing unit is ready. Can be called multiple times."""
+        """Wait until all processing units are ready. Can be called multiple times."""
         async with self._lock:
             if not self._ready_called:
-                await self._core.ready_async()
+                for c in self._cores:
+                    await c.ready_async()
                 self._ready_called = True
 
 
@@ -94,34 +98,34 @@ def mount_run(
     processor_fn: AnyCallable[P, ResolvesTo[ReturnT]],
     *args: P.args,
     **kwargs: P.kwargs,
-) -> ProcessingUnitMountRunHandle[ReturnT]: ...
+) -> ComponentMountRunHandle[ReturnT]: ...
 @overload
 def mount_run(
     subpath: ComponentSubpath,
     processor_fn: AnyCallable[P, Sequence[ResolvesTo[ReturnT]]],
     *args: P.args,
     **kwargs: P.kwargs,
-) -> ProcessingUnitMountRunHandle[Sequence[ReturnT]]: ...
+) -> ComponentMountRunHandle[Sequence[ReturnT]]: ...
 @overload
 def mount_run(
     subpath: ComponentSubpath,
     processor_fn: AnyCallable[P, Mapping[K, ResolvesTo[ReturnT]]],
     *args: P.args,
     **kwargs: P.kwargs,
-) -> ProcessingUnitMountRunHandle[Mapping[K, ReturnT]]: ...
+) -> ComponentMountRunHandle[Mapping[K, ReturnT]]: ...
 @overload
 def mount_run(
     subpath: ComponentSubpath,
     processor_fn: AnyCallable[P, ReturnT],
     *args: P.args,
     **kwargs: P.kwargs,
-) -> ProcessingUnitMountRunHandle[ReturnT]: ...
+) -> ComponentMountRunHandle[ReturnT]: ...
 def mount_run(
     subpath: ComponentSubpath,
     processor_fn: AnyCallable[P, Any],
     *args: P.args,
     **kwargs: P.kwargs,
-) -> ProcessingUnitMountRunHandle[Any]:
+) -> ComponentMountRunHandle[Any]:
     """
     Mount and run a processing unit, returning a handle to await its result.
 
@@ -151,7 +155,7 @@ def mount_run(
         parent_ctx._core_processor_ctx,
         parent_ctx._core_fn_call_ctx,
     )
-    return ProcessingUnitMountRunHandle(core_handle, parent_ctx._core_processor_ctx)
+    return ComponentMountRunHandle(core_handle, parent_ctx._core_processor_ctx)
 
 
 def mount(
@@ -159,7 +163,7 @@ def mount(
     processor_fn: AnyCallable[P, Any],
     *args: P.args,
     **kwargs: P.kwargs,
-) -> ProcessingUnitMountHandle:
+) -> ComponentMountHandle:
     """
     Mount a processing unit in the background and return a handle to wait until ready.
 
@@ -189,14 +193,58 @@ def mount(
         parent_ctx._core_processor_ctx,
         parent_ctx._core_fn_call_ctx,
     )
-    return ProcessingUnitMountHandle(core_handle)
+    return ComponentMountHandle([core_handle])
+
+
+def mount_each(
+    fn: AnyCallable[Concatenate[T, P], Any],
+    items: Iterable[tuple[StableKey, T]],
+    *args: P.args,
+    **kwargs: P.kwargs,
+) -> ComponentMountHandle:
+    """
+    Mount one independent component per item in a keyed iterable.
+
+    Sugar over a loop of mount() calls. Each item's key is used as the component subpath.
+
+    Args:
+        fn: The function to run for each item. The item value is passed as the first argument.
+        items: A keyed iterable of (key, value) pairs. The key becomes the component subpath.
+        *args: Additional arguments passed to fn after the item value.
+        **kwargs: Additional keyword arguments passed to fn.
+
+    Returns:
+        A handle that can be used to wait until all processing units are ready.
+
+    Example:
+        coco_aio.mount_each(process_file, files.items(), target_table)
+
+        # Equivalent to:
+        # for key, item in files.items():
+        #     coco_aio.mount(coco.component_subpath(key), process_file, item, target_table)
+    """
+    parent_ctx = get_context_from_ctx()
+    core_handles: list[core.ComponentMountHandle] = []
+    for key, item in items:
+        child_path = build_child_path(parent_ctx, ComponentSubpath(key))
+        processor = create_core_component_processor(
+            fn, parent_ctx._env, child_path, (item, *args), kwargs
+        )
+        core_handle = core.mount(
+            processor,
+            child_path,
+            parent_ctx._core_processor_ctx,
+            parent_ctx._core_fn_call_ctx,
+        )
+        core_handles.append(core_handle)
+    return ComponentMountHandle(core_handles)
 
 
 async def map(
-    fn: Callable[..., Awaitable[ReturnT]],
-    items: Iterable[Any],
-    *args: Any,
-    **kwargs: Any,
+    fn: Callable[Concatenate[T, P], Awaitable[ReturnT]],
+    items: Iterable[T],
+    *args: P.args,
+    **kwargs: P.kwargs,
 ) -> list[ReturnT]:
     """
     Run a function concurrently on each item in an iterable.
@@ -282,11 +330,12 @@ async def runtime() -> AsyncIterator[None]:
 
 __all__ = [
     "App",
-    "ProcessingUnitMountHandle",
-    "ProcessingUnitMountRunHandle",
+    "ComponentMountHandle",
+    "ComponentMountRunHandle",
     "function",
     "map",
     "mount",
+    "mount_each",
     "mount_run",
     "start",
     "stop",
