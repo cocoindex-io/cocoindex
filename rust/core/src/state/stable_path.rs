@@ -13,6 +13,7 @@ pub enum StableKey {
     Uuid(uuid::Uuid),
     Array(Arc<[StableKey]>),
     Fingerprint(utils::fingerprint::Fingerprint),
+    Symbol(Arc<str>),
 }
 
 impl Serialize for StableKey {
@@ -36,6 +37,11 @@ impl Serialize for StableKey {
                 map.serialize_entry("fp", fp)?;
                 map.end()
             }
+            StableKey::Symbol(s) => {
+                let mut map = serializer.serialize_map(Some(1))?;
+                map.serialize_entry("sym", s.as_ref())?;
+                map.end()
+            }
         }
     }
 }
@@ -54,6 +60,7 @@ impl<'de> Deserialize<'de> for StableKey {
             Bytes(Vec<u8>),
             Uuid { uuid: uuid::Uuid },
             Fp { fp: utils::fingerprint::Fingerprint },
+            Sym { sym: String },
             Array(Vec<Repr>),
         }
 
@@ -67,6 +74,7 @@ impl<'de> Deserialize<'de> for StableKey {
                     Repr::Bytes(b) => StableKey::Bytes(Arc::from(b)),
                     Repr::Uuid { uuid } => StableKey::Uuid(uuid),
                     Repr::Fp { fp } => StableKey::Fingerprint(fp),
+                    Repr::Sym { sym } => StableKey::Symbol(Arc::from(sym)),
                     Repr::Array(items) => StableKey::Array(Arc::from(
                         items
                             .into_iter()
@@ -113,6 +121,7 @@ impl std::fmt::Display for StableKey {
                 f.write_char(']')
             }
             StableKey::Fingerprint(fp) => write!(f, "{fp}"),
+            StableKey::Symbol(s) => write!(f, "@{s}"),
         }
     }
 }
@@ -153,6 +162,10 @@ impl storekey::Encode for StableKey {
                 e.write_u8(10)?;
                 storekey::Encode::encode(fp, e)?;
             }
+            StableKey::Symbol(s) => {
+                e.write_u8(11)?;
+                e.write_slice(s.as_bytes())?;
+            }
         }
         Ok(())
     }
@@ -181,6 +194,7 @@ impl storekey::Decode for StableKey {
                 let fp: utils::fingerprint::Fingerprint = storekey::Decode::decode(d)?;
                 Ok(StableKey::Fingerprint(fp))
             }
+            11 => Ok(StableKey::Symbol(d.read_string()?.into())),
             _ => Err(storekey::DecodeError::InvalidFormat),
         }
     }
@@ -357,6 +371,7 @@ mod tests {
                 StableKey::Bytes(Arc::from(&b"\0"[..])),
             ])),
             StableKey::Fingerprint(fp),
+            StableKey::Symbol(Arc::from("cocoindex/setup")),
         ];
 
         for original in cases {
@@ -400,6 +415,10 @@ mod tests {
             (
                 StableKey::Fingerprint(fp),
                 json!({ "fp": serde_json::to_value(fp).expect("fp to value") }),
+            ),
+            (
+                StableKey::Symbol(Arc::from("cocoindex/setup")),
+                json!({ "sym": "cocoindex/setup" }),
             ),
             (
                 StableKey::Array(Arc::from([

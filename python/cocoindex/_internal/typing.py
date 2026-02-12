@@ -5,10 +5,12 @@ from typing import Any, Mapping, Sequence, TYPE_CHECKING, Union
 from typing_extensions import TypeIs
 
 if TYPE_CHECKING:
-    from cocoindex._internal.core import Fingerprint
+    from cocoindex._internal.core import Fingerprint, Symbol
 
 # --- StableKey type alias (accepted by StablePath.concat) ---
-StableKey = Union[None, bool, int, str, bytes, uuid.UUID, tuple["StableKey", ...]]
+StableKey = Union[
+    None, bool, int, str, bytes, uuid.UUID, "Symbol", tuple["StableKey", ...]
+]
 
 # --- Fingerprintable type alias (accepted by fingerprint_simple_object) ---
 Fingerprintable = Union[
