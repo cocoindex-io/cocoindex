@@ -1,9 +1,9 @@
 ---
 title: Resource Types
-description: Common data types for files shared across CocoIndex connectors and utilities.
+description: Common data types for files, vector schemas, and IDs shared across CocoIndex connectors and built-in operations.
 ---
 
-The `cocoindex.resources` package provides common data models and abstractions shared across connectors and utility modules, ensuring a consistent interface for working with data.
+The `cocoindex.resources` package provides common data models and abstractions shared across connectors and built-in operation modules, ensuring a consistent interface for working with data.
 
 ## File
 
@@ -120,22 +120,110 @@ class MyMatcher(FilePathMatcher):
 
 #### PatternFilePathMatcher
 
-A built-in `FilePathMatcher` implementation using glob patterns:
+A built-in `FilePathMatcher` implementation using [globset](https://docs.rs/globset/#syntax) patterns:
 
 ```python
 from cocoindex.resources.file import PatternFilePathMatcher
 
 # Include only Python and Markdown files, exclude tests and hidden dirs
 matcher = PatternFilePathMatcher(
-    included_patterns=["*.py", "*.md"],
+    included_patterns=["**/*.py", "**/*.md"],
     excluded_patterns=["**/test_*", "**/.*"],
 )
 ```
 
 **Parameters:**
 
-- `included_patterns` — Glob patterns for files to include. If `None`, all files are included.
-- `excluded_patterns` — Glob patterns for files/directories to exclude. Excluded directories are not traversed.
+- `included_patterns` — Glob patterns ([globset](https://docs.rs/globset) syntax) for files to include. Use `**/*.ext` to match at any depth. If `None`, all files are included.
+- `excluded_patterns` — Glob patterns ([globset](https://docs.rs/globset) syntax) for files/directories to exclude. Excluded directories are not traversed.
+
+:::note
+Patterns use [globset](https://docs.rs/globset) semantics: `*.py` matches only in the root directory; use `**/*.py` to match at any depth.
+:::
+
+## Vector Schema
+
+The schema module (`cocoindex.resources.schema`) defines types that describe vector columns. CocoIndex connectors use these to automatically configure the correct column type (e.g., `vector(384)` in Postgres, `fixed_size_list<float32>(384)` in LanceDB).
+
+### VectorSchema
+
+A frozen dataclass that describes a vector column's dtype and dimension.
+
+```python
+from cocoindex.resources.schema import VectorSchema
+import numpy as np
+
+schema = VectorSchema(dtype=np.dtype(np.float32), size=768)
+```
+
+**Fields:**
+
+- `dtype` — NumPy dtype of each element (e.g., `np.float32`)
+- `size` — Number of dimensions in the vector (e.g., `384`)
+
+You can construct `VectorSchema` directly when using a custom embedding model that doesn't implement `VectorSchemaProvider`:
+
+```python
+from cocoindex.resources.schema import VectorSchema
+
+# For a custom CLIP model with known dimension
+schema = VectorSchema(dtype=np.dtype(np.float32), size=768)
+
+# Use it in a Qdrant vector definition
+target_collection = await coco_aio.mount_run(
+    coco.component_subpath("setup", "collection"),
+    target_db.declare_collection_target,
+    collection_name="image_search",
+    schema=await qdrant.CollectionSchema.create(
+        vectors=qdrant.QdrantVectorDef(schema=schema, distance="cosine")
+    ),
+).result()
+```
+
+### VectorSchemaProvider
+
+A protocol for objects that can provide vector schema information. The primary use case is as metadata in `Annotated` type annotations — connectors extract vector column configuration from the annotation automatically.
+
+Any object that implements the `__coco_vector_schema__()` method satisfies this protocol. The built-in [`SentenceTransformerEmbedder`](./ops/sentence_transformers.md) implements it.
+
+```python
+from typing import Annotated
+from numpy.typing import NDArray
+from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
+
+embedder = SentenceTransformerEmbedder("sentence-transformers/all-MiniLM-L6-v2")
+
+@dataclass
+class DocEmbedding:
+    id: int
+    text: str
+    embedding: Annotated[NDArray, embedder]  # embedder provides vector schema
+```
+
+When a connector's `TableSchema.from_class()` encounters an `Annotated[NDArray, provider]` field where `provider` is a `VectorSchemaProvider`, it calls `__coco_vector_schema__()` to determine the column's dimension and dtype.
+
+`VectorSchema` itself also implements `VectorSchemaProvider` (returning itself), so you can use a `VectorSchema` directly as an annotation:
+
+```python
+schema = VectorSchema(dtype=np.dtype(np.float32), size=768)
+
+@dataclass
+class ImageEmbedding:
+    id: int
+    embedding: Annotated[NDArray, schema]
+```
+
+### MultiVectorSchema / MultiVectorSchemaProvider
+
+Analogous types for multi-vector columns (e.g., ColBERT-style token-level embeddings). `MultiVectorSchema` wraps a `VectorSchema` describing the individual vectors. Used by connectors like [Qdrant](./connectors/qdrant.md) that support multi-vector storage.
+
+```python
+from cocoindex.resources.schema import MultiVectorSchema, VectorSchema
+
+multi_schema = MultiVectorSchema(
+    vector_schema=VectorSchema(dtype=np.dtype(np.float32), size=128)
+)
+```
 
 ## ID Generation
 
@@ -152,19 +240,19 @@ The same distinction applies to `generate_uuid` vs `UuidGenerator`.
 
 ### generate_id / generate_uuid
 
-Functions that return the **same** ID/UUID for the **same** `dep` value. These are idempotent: calling multiple times with identical `dep` yields identical results.
+Async functions that return the **same** ID/UUID for the **same** `dep` value. These are idempotent: calling multiple times with identical `dep` yields identical results.
 
 ```python
 from cocoindex.resources.id import generate_id, generate_uuid
 
-def process_item(item: Item) -> Row:
+async def process_item(item: Item) -> Row:
     # Same item.key always gets the same ID
-    item_id = generate_id(item.key)
+    item_id = await generate_id(item.key)
     return Row(id=item_id, data=item.data)
 
-def process_document(doc: Document) -> Row:
+async def process_document(doc: Document) -> Row:
     # Same doc.path always gets the same UUID
-    doc_uuid = generate_uuid(doc.path)
+    doc_uuid = await generate_uuid(doc.path)
     return Row(id=doc_uuid, content=doc.content)
 ```
 
@@ -186,23 +274,23 @@ Use these when you need multiple IDs for potentially non-distinct inputs, such a
 ```python
 from cocoindex.resources.id import IdGenerator, UuidGenerator
 
-def process_document(doc: Document) -> list[Row]:
+async def process_document(doc: Document) -> list[Row]:
     # Use doc.path to distinguish generators within the same processing component
     id_gen = IdGenerator(deps=doc.path)
     rows = []
     for chunk in split_into_chunks(doc.content):
         # Each call returns a distinct ID, even if chunks are identical
-        chunk_id = id_gen.next_id(chunk.content)
+        chunk_id = await id_gen.next_id(chunk.content)
         rows.append(Row(id=chunk_id, content=chunk.content))
     return rows
 
-def process_with_uuids(doc: Document) -> list[Row]:
+async def process_with_uuids(doc: Document) -> list[Row]:
     # Use doc.path to distinguish generators within the same processing component
     uuid_gen = UuidGenerator(deps=doc.path)
     rows = []
     for chunk in split_into_chunks(doc.content):
         # Each call returns a distinct UUID, even if chunks are identical
-        chunk_uuid = uuid_gen.next_uuid(chunk.content)
+        chunk_uuid = await uuid_gen.next_uuid(chunk.content)
         rows.append(Row(id=chunk_uuid, content=chunk.content))
     return rows
 ```
@@ -213,5 +301,5 @@ def process_with_uuids(doc: Document) -> list[Row]:
 
 **Methods:**
 
-- `IdGenerator.next_id(dep=None)` — Generate the next unique integer ID (distinct on each call)
-- `UuidGenerator.next_uuid(dep=None)` — Generate the next unique UUID (distinct on each call)
+- `async IdGenerator.next_id(dep=None)` — Generate the next unique integer ID (distinct on each call)
+- `async UuidGenerator.next_uuid(dep=None)` — Generate the next unique UUID (distinct on each call)

@@ -23,6 +23,25 @@ _KeyFn = typing.Callable[[typing.Any], typing.Any]
 _memo_key_fns: dict[type, _KeyFn] = {}
 
 
+class NotMemoizable:
+    """
+    Base class for objects that must not be used as memoization keys.
+
+    Inherit from this class when an object maintains internal state that would
+    make memoization semantically incorrect (e.g., generators that track call counts).
+
+    Attempting to use a `NotMemoizable` instance as a memo key will raise TypeError.
+    """
+
+    __slots__ = ()
+
+    def __coco_memo_key__(self) -> typing.NoReturn:
+        raise TypeError(
+            f"{type(self).__name__} cannot be used as a memoization key. "
+            "This type maintains internal state that is incompatible with memoization."
+        )
+
+
 def register_memo_key_function(typ: type, key_fn: _KeyFn) -> None:
     """Register a memo key function for a type.
 
@@ -30,6 +49,28 @@ def register_memo_key_function(typ: type, key_fn: _KeyFn) -> None:
     """
 
     _memo_key_fns[typ] = key_fn
+
+
+def register_not_memoizable(typ: type) -> None:
+    """Register a type as not memoizable.
+
+    Use this for third-party types that maintain internal state incompatible
+    with memoization, but which you cannot modify to inherit from `NotMemoizable`.
+
+    Example:
+        import cocoindex as coco
+        from some_library import StatefulGenerator
+
+        coco.register_not_memoizable(StatefulGenerator)
+    """
+
+    def _raise_not_memoizable(obj: object) -> typing.NoReturn:
+        raise TypeError(
+            f"{type(obj).__name__} cannot be used as a memoization key. "
+            "This type maintains internal state that is incompatible with memoization."
+        )
+
+    _memo_key_fns[typ] = _raise_not_memoizable
 
 
 def unregister_memo_key_function(typ: type) -> None:
@@ -185,7 +226,9 @@ def fingerprint_call(
 
 
 __all__ = [
+    "NotMemoizable",
     "register_memo_key_function",
+    "register_not_memoizable",
     "unregister_memo_key_function",
     "fingerprint_call",
 ]

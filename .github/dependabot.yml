@@ -11,13 +11,3 @@ updates:
       prefix: "ci"
       include: "scope"
 
-  - package-ecosystem: "pre-commit"
-    directory: "/"
-    schedule:
-      interval: "weekly"
-    labels:
-      - "dependencies"
-      - "pre-commit"
-    commit-message:
-      prefix: "ci"
-      include: "scope"

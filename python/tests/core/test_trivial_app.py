@@ -92,6 +92,37 @@ async def test_async_app_async_client() -> None:
     assert await app.update() == "Hello async_app 3"
 
 
+# --- Async App by Wrapping Sync Function ---
+
+
+@coco_aio.function()
+def trivial_fn_async_wrapped(s: str, i: int) -> str:
+    return f"{s} {i}"
+
+
+@pytest.mark.asyncio
+async def test_async_app_async_client_wrapped() -> None:
+    app = coco_aio.App(
+        coco.AppConfig(name="async_app_async_client_wrapped", environment=coco_env),
+        trivial_fn_async_wrapped,
+        "Hello async_app",
+        3,
+    )
+    assert await app.update() == "Hello async_app 3"
+
+
+def test_async_app_async_client_wrapped_sync() -> None:
+    app = coco.App(
+        coco.AppConfig(
+            name="async_app_async_client_wrapped_sync", environment=coco_env
+        ),
+        trivial_fn_async_wrapped,
+        "Hello async_app",
+        3,
+    )
+    assert app.update() == "Hello async_app 3"
+
+
 # === Async Bare App ===
 
 

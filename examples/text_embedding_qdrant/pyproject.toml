@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "CocoIndex v1 example: embed markdown files and store in Qdrant."
 requires-python = ">=3.11"
 dependencies = [
-    "cocoindex[sentence_transformers,qdrant]>=1.0.0a8",
+    "cocoindex[sentence_transformers,qdrant]>=1.0.0a10",
     "numpy",
     "qdrant-client>=1.16.0",
 ]

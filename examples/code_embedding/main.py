@@ -27,7 +27,7 @@ from cocoindex.connectors import localfs, postgres
 from cocoindex.ops.text import RecursiveSplitter, detect_code_language
 from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
 from cocoindex.resources.chunk import Chunk
-from cocoindex.resources.file import FileLike, PatternFilePathMatcher
+from cocoindex.resources.file import AsyncFileLike, FileLike, PatternFilePathMatcher
 from cocoindex.resources.id import IdGenerator
 
 
@@ -65,19 +65,20 @@ async def coco_lifespan(
         yield
 
 
-@coco.function(memo=True)
+@coco.function
 async def process_chunk(
-    id: int,
     filename: pathlib.PurePath,
     chunk: Chunk,
+    id_gen: IdGenerator,
     table: postgres.TableTarget[CodeEmbedding],
 ) -> None:
+    embedding = await _embedder.embed(chunk.text)
     table.declare_row(
         row=CodeEmbedding(
-            id=id,
+            id=await id_gen.next_id(chunk.text),
             filename=str(filename),
             code=chunk.text,
-            embedding=await _embedder.embed_async(chunk.text),
+            embedding=embedding,
             start_line=chunk.start.line,
             end_line=chunk.end.line,
         ),
@@ -86,10 +87,10 @@ async def process_chunk(
 
 @coco.function(memo=True)
 async def process_file(
-    file: FileLike,
+    file: AsyncFileLike,
     table: postgres.TableTarget[CodeEmbedding],
 ) -> None:
-    text = file.read_text()
+    text = await file.read_text()
     # Detect programming language from filename
     language = detect_code_language(filename=str(file.file_path.path.name))
 
@@ -103,21 +104,18 @@ async def process_file(
     )
     id_gen = IdGenerator()
     await asyncio.gather(
-        *(
-            process_chunk(id_gen.next_id(chunk.text), file.file_path.path, chunk, table)
-            for chunk in chunks
-        )
+        *(process_chunk(file.file_path.path, chunk, id_gen, table) for chunk in chunks)
     )
 
 
 @coco.function
-def app_main(sourcedir: pathlib.Path) -> None:
+async def app_main(sourcedir: pathlib.Path) -> None:
     target_db = coco.use_context(PG_DB)
-    target_table = coco.mount_run(
+    target_table = await coco_aio.mount_run(
         coco.component_subpath("setup", "table"),
         target_db.declare_table_target,
         table_name=TABLE_NAME,
-        table_schema=postgres.TableSchema(
+        table_schema=await postgres.TableSchema.from_class(
             CodeEmbedding,
             primary_key=["id"],
         ),
@@ -129,12 +127,18 @@ def app_main(sourcedir: pathlib.Path) -> None:
         sourcedir,
         recursive=True,
         path_matcher=PatternFilePathMatcher(
-            included_patterns=["*.py", "*.rs", "*.toml", "*.md", "*.mdx"],
-            excluded_patterns=[".*/**", "target/**", "node_modules/**"],
+            included_patterns=[
+                "**/*.py",
+                "**/*.rs",
+                "**/*.toml",
+                "**/*.md",
+                "**/*.mdx",
+            ],
+            excluded_patterns=["**/.*", "**/target", "**/node_modules"],
         ),
     )
-    for file in files:
-        coco.mount(
+    async for file in files:
+        coco_aio.mount(
             coco.component_subpath("file", str(file.file_path.path)),
             process_file,
             file,
@@ -155,7 +159,7 @@ app = coco_aio.App(
 
 
 async def query_once(pool: asyncpg.Pool, query: str, *, top_k: int = TOP_K) -> None:
-    query_vec = await _embedder.embed_async(query)
+    query_vec = await _embedder.embed(query)
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             f"""
@@ -194,6 +198,12 @@ async def query() -> None:
             await query_once(pool, q)
 
 
+async def update_index() -> None:
+    async with coco_aio.runtime():
+        await app.update(report_to_stdout=True)
+
+
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "query":
         asyncio.run(query())
+    asyncio.run(update_index())

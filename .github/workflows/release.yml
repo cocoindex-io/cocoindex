@@ -46,11 +46,66 @@ jobs:
     strategy:
       matrix:
         platform:
-          - { os: linux, runner: ubuntu-latest, target: x86_64, container: "ghcr.io/rust-cross/manylinux_2_28-cross:x86_64" }
-          - { os: linux, runner: ubuntu-24.04-arm, target: aarch64, container: "ghcr.io/rust-cross/manylinux_2_28-cross:aarch64" }
-          - { os: macos, runner: macos-latest, target: aarch64 }
-          - { os: macos, runner: macos-15-intel, target: x86_64 }
-          - { os: windows, runner: windows-latest, target: x64 }
+          # Standard ABI3 builds (Python 3.11+)
+          - os: linux
+            runner: ubuntu-latest
+            target: x86_64
+            python-version: "3.13"
+            free-threaded: false
+            container: "ghcr.io/rust-cross/manylinux_2_28-cross:x86_64"
+            maturin-args: ""
+          - os: linux
+            runner: ubuntu-24.04-arm
+            target: aarch64
+            python-version: "3.13"
+            free-threaded: false
+            container: "ghcr.io/rust-cross/manylinux_2_28-cross:aarch64"
+            maturin-args: ""
+          - os: macos
+            runner: macos-latest
+            target: aarch64
+            python-version: "3.13"
+            free-threaded: false
+            maturin-args: ""
+          - os: macos
+            runner: macos-15-intel
+            target: x86_64
+            python-version: "3.13"
+            free-threaded: false
+            maturin-args: ""
+          - os: windows
+            runner: windows-latest
+            target: x64
+            python-version: "3.13"
+            free-threaded: false
+            maturin-args: ""
+          # Free-threaded builds (Python 3.14t) - use container with explicit interpreter
+          - os: linux
+            runner: ubuntu-latest
+            target: x86_64
+            python-version: "3.14"
+            free-threaded: true
+            container: "ghcr.io/rust-cross/manylinux_2_28-cross:x86_64"
+            maturin-args: "--no-default-features --interpreter 3.14t"
+          - os: linux
+            runner: ubuntu-24.04-arm
+            target: aarch64
+            python-version: "3.14"
+            free-threaded: true
+            container: "ghcr.io/rust-cross/manylinux_2_28-cross:aarch64"
+            maturin-args: "--no-default-features --interpreter 3.14t"
+          - os: macos
+            runner: macos-latest
+            target: aarch64
+            python-version: "3.14"
+            free-threaded: true
+            maturin-args: "--no-default-features --interpreter 3.14t"
+          - os: windows
+            runner: windows-latest
+            target: x64
+            python-version: "3.14"
+            free-threaded: true
+            maturin-args: "--no-default-features --interpreter 3.14t"
     steps:
       - uses: actions/checkout@v6
         with:
@@ -58,10 +113,18 @@ jobs:
       - uses: actions/download-artifact@v7
         with:
           name: THIRD_PARTY_NOTICES.html
+      - name: Remove .python-version if exists
+        shell: bash
+        run: rm -f .python-version
       - uses: actions/setup-python@v6
         with:
-          python-version: 3.13
+          python-version: ${{ matrix.platform.python-version }}
+          freethreaded: ${{ matrix.platform.free-threaded }}
       - run: python ./.github/scripts/update_version.py
+      - name: Verify free-threaded interpreter
+        if: matrix.platform.free-threaded
+        run: |
+          python -c "import sys; print(f'GIL enabled: {sys._is_gil_enabled()}'); sys.exit(1) if sys._is_gil_enabled() else None"
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
@@ -70,10 +133,19 @@ jobs:
           sccache: 'true'
           manylinux: auto
           container: ${{ matrix.platform.container }}
+      - name: Build wheels (free-threaded)
+        if: matrix.platform.free-threaded
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.platform.target }}
+          args: --release --out dist --no-default-features
+          sccache: 'true'
+          manylinux: auto
+          container: ${{ matrix.platform.container }}
       - name: Upload wheels
         uses: actions/upload-artifact@v6
         with:
-          name: wheels-${{ matrix.platform.os }}-${{ matrix.platform.target }}
+          name: wheels-${{ matrix.platform.os }}-${{ matrix.platform.target }}${{ matrix.platform.free-threaded && '-freethreaded' || '' }}
           path: dist
 
   test-abi3:
@@ -81,7 +153,7 @@ jobs:
     needs: build
     strategy:
       matrix:
-        py: ["3.11", "3.12", "3.13"]
+        py: ["3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/download-artifact@v7
         with:
@@ -92,6 +164,24 @@ jobs:
       - run: python -V
       - run: pip install --find-links=./ cocoindex
       - run: python -c "import cocoindex, sys; print('import ok on', sys.version)"
+
+  test-free-threaded:
+    runs-on: ubuntu-24.04
+    needs: build
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: wheels-linux-x86_64-freethreaded
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+          freethreaded: true
+      - run: python -V
+      - name: Verify free-threaded interpreter
+        run: |
+          python -c "import sys; print(f'GIL enabled: {sys._is_gil_enabled()}'); sys.exit(1) if sys._is_gil_enabled() else None"
+      - run: pip install --find-links=./ cocoindex
+      - run: python -c "import cocoindex, sys; print('import ok on', sys.version, '(free-threaded)')"
 
 
   sdist:
@@ -122,7 +212,8 @@ jobs:
   release:
     name: Release
     runs-on: ubuntu-latest
-    needs: [build, test-abi3, sdist, generate-3p-notices]
+    needs: [build, test-abi3, test-free-threaded, sdist, generate-3p-notices]
+    if: ${{ startsWith(github.ref, 'refs/tags/') }}
     permissions:
       # Use to sign the release artifacts
       id-token: write
@@ -150,7 +241,6 @@ jobs:
         with:
           subject-path: 'wheels-*/*'
       - name: Publish to PyPI
-        if: ${{ startsWith(github.ref, 'refs/tags/') }}
         uses: PyO3/maturin-action@v1
         with:
           command: upload

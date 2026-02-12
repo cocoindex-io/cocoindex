@@ -43,6 +43,7 @@ pub async fn reserve_memoization<Prof: EngineProfile>(
     comp_exec_ctx: &ComponentProcessorContext<Prof>,
     memo_fp: Fingerprint,
 ) -> Result<FnCallMemoGuard<Prof>> {
+    // println!("BEGIN reserve_memoization in Rust");
     let mut try_write = false;
     loop {
         // We clone out the Arc so we don't hold any mutexes across `.await`.

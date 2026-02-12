@@ -150,18 +150,19 @@ def TableTarget.declare_row(
 Define the table structure using a Python class (dataclass, NamedTuple, or Pydantic model):
 
 ```python
-def TableSchema.__init__(
-    self,
-    columns: type[RowT],
+@classmethod
+async def TableSchema.from_class(
+    cls,
+    record_type: type[RowT],
     primary_key: list[str],
     *,
     column_overrides: dict[str, SqliteType | VectorSchemaProvider] | None = None,
-) -> None
+) -> TableSchema[RowT]
 ```
 
 **Parameters:**
 
-- `columns` — A record type whose fields define table columns.
+- `record_type` — A record type whose fields define table columns.
 - `primary_key` — List of column names forming the primary key.
 - `column_overrides` — Optional per-column overrides for type mapping or vector configuration.
 
@@ -175,7 +176,7 @@ class OutputProduct:
     price: float
     embedding: Annotated[NDArray, embedder]
 
-schema = sqlite.TableSchema(
+schema = await sqlite.TableSchema.from_class(
     OutputProduct,
     primary_key=["category", "name"],
 )
@@ -237,7 +238,7 @@ For `NDArray` fields, a `VectorSchemaProvider` specifies the vector dimension an
 
 A `VectorSchemaProvider` can be:
 
-- **An embedding model** (e.g., [`SentenceTransformerEmbedder`](../utilities/sentence_transformers.md)) — dimension is inferred from the model
+- **An embedding model** (e.g., [`SentenceTransformerEmbedder`](../ops/sentence_transformers.md)) — dimension is inferred from the model
 - **A `VectorSchema`** — for explicit size and dtype when not using an embedder
 
 ```python
@@ -338,11 +339,11 @@ class VectorDocument:
     metadata: str
 
 # Create vec0 virtual table with partition key and auxiliary column
-table = coco.mount_run(
+table = await coco_aio.mount_run(
     coco.component_subpath("setup", "table"),
     db.declare_table_target,
     table_name="documents",
-    table_schema=sqlite.TableSchema(
+    table_schema=await sqlite.TableSchema.from_class(
         VectorDocument,
         primary_key=["id"],
     ),
@@ -366,6 +367,7 @@ A future schema versioning mechanism will allow preserving row data across table
 
 ```python
 import cocoindex as coco
+import cocoindex.asyncio as coco_aio
 from cocoindex.connectors import sqlite
 
 DATABASE_PATH = "mydb.sqlite"
@@ -388,15 +390,15 @@ def coco_lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
     managed_conn.close()
 
 @coco.function
-def app_main() -> None:
+async def app_main() -> None:
     db = coco.use_context(SQLITE_DB)
 
     # Declare table target state
-    table = coco.mount_run(
+    table = await coco_aio.mount_run(
         coco.component_subpath("setup", "table"),
         db.declare_table_target,
         table_name="products",
-        table_schema=sqlite.TableSchema(
+        table_schema=await sqlite.TableSchema.from_class(
             OutputProduct,
             primary_key=["category", "name"],
         ),
@@ -411,6 +413,7 @@ def app_main() -> None:
 
 ```python
 import cocoindex as coco
+import cocoindex.asyncio as coco_aio
 from cocoindex.connectors import sqlite
 from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
 from dataclasses import dataclass
@@ -440,15 +443,15 @@ def coco_lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
     managed_conn.close()
 
 @coco.function
-def app_main() -> None:
+async def app_main() -> None:
     db = coco.use_context(SQLITE_DB)
 
     # Create vec0 virtual table with partition key and auxiliary column
-    table = coco.mount_run(
+    table = await coco_aio.mount_run(
         coco.component_subpath("setup", "table"),
         db.declare_table_target,
         table_name="documents",
-        table_schema=sqlite.TableSchema(
+        table_schema=await sqlite.TableSchema.from_class(
             VectorDocument,
             primary_key=["id"],
         ),
@@ -465,7 +468,7 @@ def app_main() -> None:
             category="tech",
             title="Introduction to AI",
             content="Artificial intelligence is...",
-            embedding=embedder.embed("Artificial intelligence is..."),
+            embedding=await embedder.embed("Artificial intelligence is..."),
             metadata='{"source": "blog", "date": "2025-01-15"}',
         ),
         # ... more documents

@@ -8,14 +8,15 @@ from __future__ import annotations
 
 __all__ = ["SentenceTransformerEmbedder"]
 
-import asyncio
-
 import threading as _threading
 import typing as _typing
+from typing import Any as _Any
 
 import numpy as _np
 from numpy.typing import NDArray as _NDArray
 
+import cocoindex as coco
+import cocoindex.asyncio as coco_aio
 from cocoindex.resources import schema as _schema
 
 if _typing.TYPE_CHECKING:
@@ -39,7 +40,7 @@ class SentenceTransformerEmbedder(_schema.VectorSchemaProvider):
         >>> embedder = SentenceTransformerEmbedder("sentence-transformers/all-MiniLM-L6-v2")
         >>>
         >>> # Get vector schema for database column definitions
-        >>> schema = embedder.__coco_vector_schema__()
+        >>> schema = await embedder.__coco_vector_schema__()
         >>> print(f"Embedding dimension: {schema.size}, dtype: {schema.dtype}")
         >>>
         >>> # Embed text to embedding
@@ -59,6 +60,18 @@ class SentenceTransformerEmbedder(_schema.VectorSchemaProvider):
         self._model: SentenceTransformer | None = None
         self._lock = _threading.Lock()
 
+    def __getstate__(self) -> dict[str, _Any]:
+        return {
+            "model_name_or_path": self._model_name_or_path,
+            "normalize_embeddings": self._normalize_embeddings,
+        }
+
+    def __setstate__(self, state: dict[str, _Any]) -> None:
+        self._model_name_or_path = state["model_name_or_path"]
+        self._normalize_embeddings = state["normalize_embeddings"]
+        self._model = None
+        self._lock = _threading.Lock()
+
     def _get_model(self) -> SentenceTransformer:
         """Lazy-load the model (thread-safe)."""
         if self._model is None:
@@ -67,44 +80,31 @@ class SentenceTransformerEmbedder(_schema.VectorSchemaProvider):
                 if self._model is None:
                     from sentence_transformers import SentenceTransformer
 
-                    self._model = SentenceTransformer(
-                        self._model_name_or_path,
-                    )
+                    self._model = SentenceTransformer(self._model_name_or_path)
         return self._model
 
-    def embed(self, text: str) -> _NDArray[_np.float32]:
-        """Embed text to an embedding vector.
+    @coco_aio.function(batching=True, runner=coco.GPU, memo=True, max_batch_size=64)
+    def embed(self, texts: list[str]) -> list[_NDArray[_np.float32]]:
+        """Embed texts to embedding vectors.
+
+        With batching enabled, this function receives a batch of texts and returns
+        a batch of embeddings. The external signature is still single text -> single embedding.
 
         Args:
-            text: The text string to embed.
+            texts: List of text strings to embed (batched input).
 
         Returns:
-            Numpy array of shape (dim,) containing the embedding vector.
+            List of numpy arrays, each of shape (dim,) containing an embedding vector.
         """
         model = self._get_model()
+        embeddings: _NDArray[_np.float32] = model.encode(
+            texts,
+            convert_to_numpy=True,
+            normalize_embeddings=self._normalize_embeddings,
+        )  # type: ignore[assignment]
+        return list(embeddings)
 
-        # Use the lock to prevent concurrent GPU access
-        with self._lock:
-            embeddings: _NDArray[_np.float32] = model.encode(
-                [text],
-                convert_to_numpy=True,
-                normalize_embeddings=self._normalize_embeddings,
-            )  # type: ignore[assignment]
-
-        result: _NDArray[_np.float32] = embeddings[0]  # type: ignore[assignment]
-        return result
-
-    async def embed_async(self, text: str) -> _NDArray[_np.float32]:
-        """Embed text to an embedding vector asynchronously.
-
-        Args:
-            text: The text string to embed.
-
-        Returns:
-            Numpy array of shape (dim,) containing the embedding vector.
-        """
-        return await asyncio.to_thread(self.embed, text)
-
+    @coco_aio.function(runner=coco.GPU, memo=True)
     def __coco_vector_schema__(self) -> _schema.VectorSchema:
         """Return vector schema information for this model.
 

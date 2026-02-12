@@ -8,6 +8,10 @@ license = { workspace = true }
 [lib]
 crate-type = ["cdylib"]
 
+[features]
+default = ["abi3"]
+abi3 = ["pyo3/abi3-py311"]
+
 [dependencies]
 cocoindex_core = { path = "../core" }
 cocoindex_utils = { path = "../utils" }

@@ -18,9 +18,9 @@ from .target_state import (
 from .environment import Environment, EnvironmentBuilder, LifespanFn
 from .environment import lifespan
 
-from .function import function
+from .runner import GPU, Runner
 
-from .memo_key import register_memo_key_function
+from .memo_key import register_memo_key_function, NotMemoizable
 
 from .pending_marker import PendingS, ResolvedS, MaybePendingS, ResolvesTo
 
@@ -34,7 +34,7 @@ from .component_ctx import (
 
 from .setting import Settings
 
-from .stable_path import ROOT_PATH, StablePath, StableKey
+from .stable_path import ROOT_PATH, StablePath, StableKey, Symbol
 
 from .typing import NonExistenceType, NON_EXISTENCE, is_non_existence
 
@@ -61,10 +61,12 @@ __all__ = [
     "EnvironmentBuilder",
     "LifespanFn",
     "lifespan",
-    # .fn
-    "function",
+    # .runner
+    "GPU",
+    "Runner",
     # .memo_key
     "register_memo_key_function",
+    "NotMemoizable",
     # .pending_marker
     "MaybePendingS",
     "PendingS",
@@ -82,6 +84,7 @@ __all__ = [
     "ROOT_PATH",
     "StablePath",
     "StableKey",
+    "Symbol",
     # .typing
     "NON_EXISTENCE",
     "NonExistenceType",
