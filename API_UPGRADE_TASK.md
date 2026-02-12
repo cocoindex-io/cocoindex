@@ -7,7 +7,7 @@ Implementation plan for the v1 API sugar. See [API_UPGRADE_SPEC.md](API_UPGRADE_
 These are new APIs added alongside the existing ones. No existing code breaks.
 
 - [X] **1.** Add `Symbol` type to `StableKey` union
-- [ ] **2.** Implement `coco_aio.map(fn, items, *args, **kwargs)`
+- [X] **2.** Implement `coco_aio.map(fn, items, *args, **kwargs)`
 - [ ] **3.** Implement `coco_aio.mount_target(target)` (sugar over `mount_run()`)
 - [ ] **4.** Implement `coco_aio.mount_each(fn, items, *args, **kwargs)` where `items` is `Iterable[tuple[StableKey, T]]`
 - [ ] **5.** Update source connectors to return keyed iterables (e.g., `items()` returning `Iterator[tuple[StableKey, T]]`)

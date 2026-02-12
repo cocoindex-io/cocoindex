@@ -5,7 +5,10 @@ from contextlib import asynccontextmanager
 from typing import (
     Any,
     AsyncIterator,
+    Awaitable,
+    Callable,
     Generic,
+    Iterable,
     Mapping,
     Sequence,
     ParamSpec,
@@ -189,6 +192,29 @@ def mount(
     return ProcessingUnitMountHandle(core_handle)
 
 
+async def map(
+    fn: Callable[..., Awaitable[ReturnT]],
+    items: Iterable[Any],
+    *args: Any,
+    **kwargs: Any,
+) -> list[ReturnT]:
+    """
+    Run a function concurrently on each item in an iterable.
+    No processing components are created — this is pure concurrent execution
+    (async tasks) within the current component.
+
+    Args:
+        fn: The function to apply to each item. The item is passed as the first argument.
+        items: The items to iterate.
+        *args: Additional passthrough arguments to fn (appended after the item).
+        **kwargs: Additional passthrough keyword arguments to fn.
+
+    Returns:
+        Results from each invocation.
+    """
+    return list(await asyncio.gather(*(fn(item, *args, **kwargs) for item in items)))
+
+
 class App(AppBase[P, ReturnT]):
     async def update(
         self, *, report_to_stdout: bool = False, full_reprocess: bool = False
@@ -259,6 +285,7 @@ __all__ = [
     "ProcessingUnitMountHandle",
     "ProcessingUnitMountRunHandle",
     "function",
+    "map",
     "mount",
     "mount_run",
     "start",
