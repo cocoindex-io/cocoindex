@@ -33,6 +33,8 @@ impl<'py> IntoPyObject<'py> for PyStableKey {
             }
 
             StableKey::Fingerprint(fp) => PyBytes::new(py, fp.as_ref()).into_bound_py_any(py),
+
+            StableKey::Symbol(s) => PySymbol(s).into_pyobject(py)?.into_bound_py_any(py),
         }
     }
 }
