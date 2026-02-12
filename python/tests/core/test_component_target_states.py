@@ -970,7 +970,9 @@ def test_restore_from_gc_failed_components() -> None:
 
 
 async def _declare_dicts_in_sub_components_mount_each() -> None:
-    coco_aio.mount_each(_declare_one_dict, [(name, name) for name in _source_data])
+    await coco_aio.mount_each(
+        _declare_one_dict, [(name, name) for name in _source_data]
+    )
 
 
 @pytest.mark.asyncio
