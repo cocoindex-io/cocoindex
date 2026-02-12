@@ -47,85 +47,66 @@ pub use db_schema::StablePathNodeType;
 /// List stable paths along with their node types as an async stream.
 pub fn list_stable_paths_with_types_stream<Prof: EngineProfile>(
     app: &App<Prof>,
-) -> impl Stream<Item = Result<StablePathWithType>> + '_ {
-    try_stream! {
-        let encoded_key_prefix =
-            DbEntryKey::StablePathPrefixPrefix(StablePathPrefix::default()).encode()?;
-        let db = app.app_ctx().db();
-        let txn = app.app_ctx().env().db_env().read_txn()?;
+) -> impl Stream<Item = Result<StablePathWithType>> + Send + 'static {
+    // Run the LMDB iteration on a dedicated thread (RoTxn and cursors are !Send),
+    // and forward results over a Tokio mpsc channel. The returned stream is then
+    // driven from the receiver side, which is Send.
+    let app_ctx = app.app_ctx().clone();
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<Result<StablePathWithType>>(128);
 
-        let mut last_prefix: Option<Vec<u8>> = None;
-        for entry in db.prefix_iter(&txn, encoded_key_prefix.as_ref())? {
-            let (raw_key, _) = entry?;
-            if let Some(last_prefix) = &last_prefix
-                && raw_key.starts_with(last_prefix)
-            {
-                continue;
-            }
-            let key: DbEntryKey = DbEntryKey::decode(raw_key)?;
-            let path = match key {
-                DbEntryKey::StablePath(path, _) => path,
-                other => Err(internal_error!("Expected StablePath, got {other:?}"))?,
-            };
-            last_prefix = Some(DbEntryKey::StablePathPrefix(path.as_ref()).encode()?);
+    std::thread::spawn(move || {
+        let result: Result<()> = (|| {
+            let encoded_key_prefix =
+                DbEntryKey::StablePathPrefixPrefix(StablePathPrefix::default()).encode()?;
+            let db = app_ctx.db();
+            let txn = app_ctx.env().db_env().read_txn()?;
 
-            let node_type = if path.as_ref().is_empty() {
-                db_schema::StablePathNodeType::Component
-            } else {
-                let path_ref: StablePathRef<'_> = path.as_ref();
-                if let Some((parent_ref, key)) = path_ref.split_parent() {
-                    get_path_node_type(db, &txn, parent_ref, key)?
-                        .unwrap_or(db_schema::StablePathNodeType::Directory)
-                } else {
-                    db_schema::StablePathNodeType::Component
+            let mut last_prefix: Option<Vec<u8>> = None;
+            for entry in db.prefix_iter(&txn, encoded_key_prefix.as_ref())? {
+                let (raw_key, _) = entry?;
+                if let Some(last_prefix) = &last_prefix
+                    && raw_key.starts_with(last_prefix)
+                {
+                    continue;
                 }
-            };
+                let key: DbEntryKey = DbEntryKey::decode(raw_key)?;
+                let path = match key {
+                    DbEntryKey::StablePath(path, _) => path,
+                    other => return Err(internal_error!("Expected StablePath, got {other:?}")),
+                };
+                last_prefix = Some(DbEntryKey::StablePathPrefix(path.as_ref()).encode()?);
 
-            yield StablePathWithType { path, node_type };
-        }
-    }
-}
+                let node_type = if path.as_ref().is_empty() {
+                    db_schema::StablePathNodeType::Component
+                } else {
+                    let path_ref: StablePathRef<'_> = path.as_ref();
+                    if let Some((parent_ref, key)) = path_ref.split_parent() {
+                        get_path_node_type(db, &txn, parent_ref, key)?
+                            .unwrap_or(db_schema::StablePathNodeType::Directory)
+                    } else {
+                        db_schema::StablePathNodeType::Component
+                    }
+                };
 
-/// List stable paths along with their node types, collecting all results synchronously.
-pub fn list_stable_paths_with_types_collect<Prof: EngineProfile>(
-    app: &App<Prof>,
-) -> Result<Vec<StablePathWithType>> {
-    let encoded_key_prefix =
-        DbEntryKey::StablePathPrefixPrefix(StablePathPrefix::default()).encode()?;
-    let db = app.app_ctx().db();
-    let txn = app.app_ctx().env().db_env().read_txn()?;
-
-    let mut items = Vec::new();
-    let mut last_prefix: Option<Vec<u8>> = None;
-    for entry in db.prefix_iter(&txn, encoded_key_prefix.as_ref())? {
-        let (raw_key, _) = entry?;
-        if let Some(last_prefix) = &last_prefix
-            && raw_key.starts_with(last_prefix)
-        {
-            continue;
-        }
-        let key: DbEntryKey = DbEntryKey::decode(raw_key)?;
-        let path = match key {
-            DbEntryKey::StablePath(path, _) => path,
-            other => return Err(internal_error!("Expected StablePath, got {other:?}")),
-        };
-        last_prefix = Some(DbEntryKey::StablePathPrefix(path.as_ref()).encode()?);
-
-        let node_type = if path.as_ref().is_empty() {
-            db_schema::StablePathNodeType::Component
-        } else {
-            let path_ref: StablePathRef<'_> = path.as_ref();
-            if let Some((parent_ref, key)) = path_ref.split_parent() {
-                get_path_node_type(db, &txn, parent_ref, key)?
-                    .unwrap_or(db_schema::StablePathNodeType::Directory)
-            } else {
-                db_schema::StablePathNodeType::Component
+                let item = StablePathWithType { path, node_type };
+                if tx.blocking_send(Ok(item)).is_err() {
+                    break;
+                }
             }
-        };
 
-        items.push(StablePathWithType { path, node_type });
+            Ok(())
+        })();
+
+        if let Err(err) = result {
+            let _ = tx.blocking_send(Err(err));
+        }
+    });
+
+    try_stream! {
+        while let Some(item) = rx.recv().await {
+            yield item?;
+        }
     }
-    Ok(items)
 }
 
 fn get_path_node_type(

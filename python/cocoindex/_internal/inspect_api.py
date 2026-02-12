@@ -11,7 +11,7 @@ async def list_stable_paths(app: AppBase[Any, Any]) -> list[StablePath]:
     return [StablePath(path) for path in core.list_stable_paths(core_app)]
 
 
-def list_stable_paths_with_types(
+async def list_stable_paths_with_types(
     app: AppBase[Any, Any],
 ) -> list[core.StablePathWithType]:
     """
@@ -21,8 +21,8 @@ def list_stable_paths_with_types(
     - component nodes (node_type=StablePathNodeType.component)
     - intermediate directory nodes (node_type=StablePathNodeType.directory)
     """
-    _env, core_app = app._get_core_env_app_sync()
-    return core.list_stable_paths_with_types(core_app)
+    core_app = await app._get_core()
+    return await core.list_stable_paths_with_types(core_app)
 
 
 def list_stable_paths_sync(app: AppBase[Any, Any]) -> list[StablePath]:
@@ -32,8 +32,7 @@ def list_stable_paths_sync(app: AppBase[Any, Any]) -> list[StablePath]:
 def list_stable_paths_with_types_sync(
     app: AppBase[Any, Any],
 ) -> list[core.StablePathWithType]:
-    """Synchronous wrapper for list_stable_paths_with_types (now just an alias)."""
-    return list_stable_paths_with_types(app)
+    return asyncio.run(list_stable_paths_with_types(app))
 
 
 __all__ = [
