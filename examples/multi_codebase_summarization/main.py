@@ -13,7 +13,6 @@ This example demonstrates a CocoIndex pipeline that:
 
 from __future__ import annotations
 
-import asyncio
 import os
 import pathlib
 from typing import Collection
@@ -22,6 +21,7 @@ import instructor
 from litellm import acompletion
 
 import cocoindex as coco
+import cocoindex.asyncio as coco_aio
 from cocoindex.connectors import localfs
 from cocoindex.resources.file import FileLike, PatternFilePathMatcher
 
@@ -195,7 +195,7 @@ async def process_project(
 ) -> None:
     """Process a single project: extract info from all files, aggregate, and output markdown."""
     # Extract info from each file.
-    file_infos = await asyncio.gather(*[extract_file_info(f) for f in files])
+    file_infos = await coco_aio.map(extract_file_info, files)
 
     # Aggregate into project-level summary
     project_info = await aggregate_project_info(project_name, file_infos)
@@ -208,7 +208,7 @@ async def process_project(
 
 
 @coco.function
-def app_main(
+async def app_main(
     root_dir: pathlib.Path,
     output_dir: pathlib.Path,
 ) -> None:
@@ -239,7 +239,7 @@ def app_main(
 
         if files:
             # Mount a component to process this project
-            coco.mount(
+            coco_aio.mount(
                 coco.component_subpath("project", project_name),
                 process_project,
                 project_name,
@@ -248,8 +248,8 @@ def app_main(
             )
 
 
-app = coco.App(
-    "MultiCodebaseSummarization",
+app = coco_aio.App(
+    coco_aio.AppConfig(name="MultiCodebaseSummarization"),
     app_main,
     root_dir=pathlib.Path("../"),
     output_dir=pathlib.Path("./output"),

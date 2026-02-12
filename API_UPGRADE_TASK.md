@@ -16,7 +16,7 @@ These are new APIs added alongside the existing ones. No existing code breaks.
 
 Update all examples to use `map()`, `mount_target()`, `mount_each()`. Still using `mount_run()` where `mount_target()` doesn't apply.
 
-- [ ] **6.** Migrate examples:
+- [X] **6.** Migrate examples:
   amazon_s3_embedding, code_embedding, code_embedding_lancedb, custom_source_hn, docs_to_knowledge_graph, files_transform, gdrive_text_embedding, hn_trending_topics, image_search, image_search_colpali, manuals_llm_extraction, meeting_notes_graph, multi_codebase_summarization, paper_metadata, patient_intake_extraction, patient_intake_extraction_baml, patient_intake_extraction_dspy, pdf_elements_embedding, pdf_embedding, pdf_to_markdown, postgres_source, product_recommendation, text_embedding, text_embedding_lancedb, text_embedding_qdrant
 
 ## Phase 3: Breaking Change
