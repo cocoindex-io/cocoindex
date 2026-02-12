@@ -283,7 +283,7 @@ class _Connector:
         setup_state: _State,
     ) -> _MutateContext:
         client = _get_client(spec)
-        collection = client.get_collection(spec.collection_name)
+        collection = client.get_or_create_collection(spec.collection_name)
 
         return _MutateContext(
             client=client,
