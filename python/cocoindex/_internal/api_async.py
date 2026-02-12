@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Hashable
 from contextlib import asynccontextmanager
+from collections.abc import AsyncIterable
 from typing import (
     Any,
     AsyncIterator,
@@ -210,9 +211,9 @@ def mount(
     return ComponentMountHandle([core_handle])
 
 
-def mount_each(
+async def mount_each(
     fn: AnyCallable[Concatenate[T, P], Any],
-    items: Iterable[tuple[StableKey, T]],
+    items: Iterable[tuple[StableKey, T]] | AsyncIterable[tuple[StableKey, T]],
     *args: P.args,
     **kwargs: P.kwargs,
 ) -> ComponentMountHandle:
@@ -220,10 +221,12 @@ def mount_each(
     Mount one independent component per item in a keyed iterable.
 
     Sugar over a loop of mount() calls. Each item's key is used as the component subpath.
+    Accepts both sync and async iterables; prefers async iteration when available.
 
     Args:
         fn: The function to run for each item. The item value is passed as the first argument.
-        items: A keyed iterable of (key, value) pairs. The key becomes the component subpath.
+        items: A keyed iterable of (key, value) pairs (sync or async). The key becomes the
+            component subpath.
         *args: Additional arguments passed to fn after the item value.
         **kwargs: Additional keyword arguments passed to fn.
 
@@ -231,7 +234,7 @@ def mount_each(
         A handle that can be used to wait until all processing units are ready.
 
     Example:
-        coco_aio.mount_each(process_file, files.items(), target_table)
+        await coco_aio.mount_each(process_file, files.items(), target_table)
 
         # Equivalent to:
         # for key, item in files.items():
@@ -239,7 +242,8 @@ def mount_each(
     """
     parent_ctx = get_context_from_ctx()
     core_handles: list[core.ComponentMountHandle] = []
-    for key, item in items:
+
+    def _mount_one(key: StableKey, item: Any) -> None:
         child_path = build_child_path(parent_ctx, ComponentSubpath(key))
         processor = create_core_component_processor(
             fn, parent_ctx._env, child_path, (item, *args), kwargs
@@ -251,6 +255,13 @@ def mount_each(
             parent_ctx._core_fn_call_ctx,
         )
         core_handles.append(core_handle)
+
+    if isinstance(items, AsyncIterable):
+        async for key, item in items:
+            _mount_one(key, item)
+    else:
+        for key, item in items:
+            _mount_one(key, item)
     return ComponentMountHandle(core_handles)
 
 

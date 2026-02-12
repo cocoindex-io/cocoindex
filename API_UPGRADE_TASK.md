@@ -10,7 +10,7 @@ These are new APIs added alongside the existing ones. No existing code breaks.
 - [X] **2.** Implement `coco_aio.map(fn, items, *args, **kwargs)`
 - [X] **3.** Implement `coco_aio.mount_target(target)` (sugar over `mount_run()`)
 - [X] **4.** Implement `coco_aio.mount_each(fn, items, *args, **kwargs)` where `items` is `Iterable[tuple[StableKey, T]]`
-- [ ] **5.** Update source connectors to return keyed iterables (e.g., `items()` returning `Iterator[tuple[StableKey, T]]`)
+- [X] **5.** Update source connectors to return keyed iterables (e.g., `items()` returning `Iterator[tuple[StableKey, T]]`)
 
 ## Phase 2: Migrate Examples to Non-Breaking Sugar
 
