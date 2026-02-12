@@ -2,7 +2,7 @@
     <img src="https://cocoindex.io/images/github.svg" alt="CocoIndex">
 </p>
 
-<h1 align="center">Multi Codebase Summarization </h1>
+<h1 align="center">Self-Updating Wiki for Your Codebases with LLM</h1>
 
 <div align="center">
 
@@ -31,7 +31,7 @@ Star 🌟 [CocoIndex](https://github.com/cocoindex-io/cocoindex) if you like it!
 
 </div>
 
-<img width="2732" height="1536" alt="image" src="https://github.com/user-attachments/assets/15feef96-f6d0-4f00-9a7a-b9bdb6a45ac5" />
+<img width="1366" height="768" alt="cover-0a6fa4e51bb8b18149a08c074f2d9ed8" src="https://github.com/user-attachments/assets/ed36f8b9-bf91-4183-beef-321b35ab3505" />
 
 
 
