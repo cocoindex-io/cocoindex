@@ -90,16 +90,29 @@ for key, item in items:
 
 ### `mount_target()`
 
-Mount a target, ensuring its container target state is applied before returning the child target. Sugar over `use_mount()` for targets.
+Mount a target, ensuring its container target state is applied before returning the child target. Sugar over `use_mount()` combined with `declare_target_state_with_child()`.
+
+The `target` argument is a `TargetState` — the same type created by `TargetStateProvider.target_state(key, value)` and normally passed to `coco.declare_target_state_with_child()`. For example, this is what `PgDatabase.declare_table_target()` does internally today:
+
+```python
+# Current manual workflow (inside declare_table_target):
+provider = coco.declare_target_state_with_child(
+    _table_provider.target_state(key, spec)   # <-- this is the TargetState
+)
+return TableTarget(provider, table_schema)
+```
+
+With `mount_target()`, the user passes the `TargetState` directly, and `mount_target()` handles declaring it in a separate component, waiting for it to be applied, and returning the child target:
+
+```python
+await coco_aio.mount_target(target_state) -> T
+```
 
 Targets have globally unique keys by construction (e.g., a Postgres table target's key includes `"cocoindex.io/postgres"`, the database key, and the table name). The component subpath is derived from this key automatically. Users do **not** need to provide an explicit subpath or wrap in `with coco.component_subpath(...)`.
 
-```python
-await coco_aio.mount_target(target) -> T
-```
-
 **Parameters:**
-- `target` — A target object (e.g., from `target_db.table_target(...)`).
+
+- `target_state` *(TargetState)* — A `TargetState` with a child handler, as created by `TargetStateProvider.target_state(key, value)`. The key must be globally unique (target connectors ensure this by construction).
 
 **Returns:** The child target (e.g., `TableTarget[T]`), ready to use.
 
