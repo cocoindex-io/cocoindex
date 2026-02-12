@@ -29,7 +29,7 @@ Targets have globally unique keys by construction. For example, a Postgres table
 | `mount()` | Mount an independent component | `MountHandle` |
 | `use_mount()` | Mount a dependent component, caller depends on result | `T` |
 | `mount_each()` | Mount one component per item in a keyed iterable | `None` |
-| `mount_target()` | Mount a target (sugar over `use_mount()`) | `T` |
+| `mount_target()` | Mount a target (sugar over `use_mount()`) | `TargetStateProvider` |
 | `map()` | Run a function concurrently on each item (no mounting) | `list[T]` |
 
 ## API Details
@@ -90,22 +90,12 @@ for key, item in items:
 
 ### `mount_target()`
 
-Mount a target, ensuring its container target state is applied before returning the child target. Sugar over `use_mount()` combined with `declare_target_state_with_child()`.
+Mount a target, ensuring its container target state is applied before returning the child `TargetStateProvider`. Sugar over `mount_run()` combined with `declare_target_state_with_child()`.
 
-The `target` argument is a `TargetState` — the same type created by `TargetStateProvider.target_state(key, value)` and normally passed to `coco.declare_target_state_with_child()`. For example, this is what `PgDatabase.declare_table_target()` does internally today:
-
-```python
-# Current manual workflow (inside declare_table_target):
-provider = coco.declare_target_state_with_child(
-    _table_provider.target_state(key, spec)   # <-- this is the TargetState
-)
-return TableTarget(provider, table_schema)
-```
-
-With `mount_target()`, the user passes the `TargetState` directly, and `mount_target()` handles declaring it in a separate component, waiting for it to be applied, and returning the child target:
+The `target_state` argument is a `TargetState` — the same type created by `TargetStateProvider.target_state(key, value)` and normally passed to `coco.declare_target_state_with_child()`.
 
 ```python
-await coco_aio.mount_target(target_state) -> T
+await coco_aio.mount_target(target_state) -> TargetStateProvider
 ```
 
 Targets have globally unique keys by construction (e.g., a Postgres table target's key includes `"cocoindex.io/postgres"`, the database key, and the table name). The component subpath is derived from this key automatically. Users do **not** need to provide an explicit subpath or wrap in `with coco.component_subpath(...)`.
@@ -114,7 +104,20 @@ Targets have globally unique keys by construction (e.g., a Postgres table target
 
 - `target_state` *(TargetState)* — A `TargetState` with a child handler, as created by `TargetStateProvider.target_state(key, value)`. The key must be globally unique (target connectors ensure this by construction).
 
-**Returns:** The child target (e.g., `TableTarget[T]`), ready to use.
+**Returns:** `TargetStateProvider` — The resolved child provider, ready to declare child target states.
+
+**Connector convenience methods:** Each target connector provides a pair of methods:
+
+- A method returning `TargetState` (e.g., `target_db.table_target(...)`) — for use with `mount_target()` directly.
+- An `async` convenience method (e.g., `await target_db.mount_table_target(...)`) — calls `mount_target()` internally and wraps the result in the connector-specific type (e.g., `TableTarget`).
+
+| Connector | `TargetState` method                  | Convenience method                          | Returns            |
+| --------- | --------------------------------------- | ------------------------------------------- | ------------------ |
+| Postgres  | `PgDatabase.table_target()`             | `PgDatabase.mount_table_target()`           | `TableTarget`      |
+| LanceDB   | `LanceDatabase.table_target()`          | `LanceDatabase.mount_table_target()`        | `TableTarget`      |
+| SQLite    | `SqliteDatabase.table_target()`         | `SqliteDatabase.mount_table_target()`       | `TableTarget`      |
+| Qdrant    | `QdrantDatabase.collection_target()`    | `QdrantDatabase.mount_collection_target()`  | `CollectionTarget` |
+| Local FS  | `localfs.dir_target()`                  | `localfs.mount_dir_target()`                | `DirTarget`        |
 
 ### `map()`
 
@@ -174,14 +177,12 @@ async def app_main(sourcedir: pathlib.Path) -> None:
 async def app_main(sourcedir: pathlib.Path) -> None:
     target_db = coco.use_context(PG_DB)
 
-    target_table = await coco_aio.mount_target(
-        target_db.table_target(
-            table_name=TABLE_NAME,
-            table_schema=await postgres.TableSchema.from_class(
-                CodeEmbedding, primary_key=["id"]
-            ),
-            pg_schema_name=PG_SCHEMA_NAME,
-        )
+    target_table = await target_db.mount_table_target(
+        table_name=TABLE_NAME,
+        table_schema=await postgres.TableSchema.from_class(
+            CodeEmbedding, primary_key=["id"]
+        ),
+        pg_schema_name=PG_SCHEMA_NAME,
     )
 
     files = localfs.walk_dir(sourcedir, ...)

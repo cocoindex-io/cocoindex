@@ -48,6 +48,7 @@ from cocoindex._internal.datatype import (
     analyze_type_info,
     is_record_type,
 )
+from cocoindex._internal.api_async import mount_target as _mount_target
 from cocoindex.resources.schema import VectorSchemaProvider
 
 # Type aliases
@@ -711,7 +712,7 @@ class _TableHandler(
 
 # Register the root target states provider
 _table_provider = coco.register_root_target_states_provider(
-    "cocoindex.io/lancedb/table", _TableHandler()
+    "cocoindex/lancedb/table", _TableHandler()
 )
 
 
@@ -813,13 +814,61 @@ class LanceDatabase(connection.KeyedConnection[LanceAsyncConnection]):
         Returns:
             A TableTarget that can be used to declare rows.
         """
+        provider = coco.declare_target_state_with_child(
+            self.table_target(table_name, table_schema, managed_by=managed_by)
+        )
+        return TableTarget(provider, table_schema)
+
+    def table_target(
+        self,
+        table_name: str,
+        table_schema: TableSchema[RowT],
+        *,
+        managed_by: Literal["system", "user"] = "system",
+    ) -> coco.TargetState[_RowHandler]:
+        """
+        Create a TargetState for a LanceDB table target.
+
+        Use with ``coco_aio.mount_target()`` to mount and get a child provider,
+        or with ``mount_table_target()`` for a convenience wrapper.
+
+        Args:
+            table_name: Name of the table.
+            table_schema: Schema definition including columns and primary key.
+            managed_by: Whether the table is managed by "system" or "user".
+
+        Returns:
+            A TargetState that can be passed to ``mount_target()``.
+        """
         key = _TableKey(db_key=self.key, table_name=table_name)
         spec = _TableSpec(
             table_schema=table_schema,
             managed_by=managed_by,
         )
-        provider = coco.declare_target_state_with_child(
-            _table_provider.target_state(key, spec)
+        return _table_provider.target_state(key, spec)
+
+    async def mount_table_target(
+        self,
+        table_name: str,
+        table_schema: TableSchema[RowT],
+        *,
+        managed_by: Literal["system", "user"] = "system",
+    ) -> TableTarget[RowT]:
+        """
+        Mount a table target and return a ready-to-use TableTarget.
+
+        Sugar over ``table_target()`` + ``coco_aio.mount_target()`` + wrapping.
+
+        Args:
+            table_name: Name of the table.
+            table_schema: Schema definition including columns and primary key.
+            managed_by: Whether the table is managed by "system" or "user".
+
+        Returns:
+            A TableTarget that can be used to declare rows.
+        """
+        provider = await _mount_target(
+            self.table_target(table_name, table_schema, managed_by=managed_by)
         )
         return TableTarget(provider, table_schema)
 

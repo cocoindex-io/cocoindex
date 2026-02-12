@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Hashable
 from contextlib import asynccontextmanager
 from typing import (
     Any,
@@ -26,6 +27,13 @@ from .function import (
     create_core_component_processor,
     async_function as function,
 )
+from .stable_path import Symbol
+from .target_state import (
+    TargetState,
+    TargetStateProvider,
+    TargetHandler,
+    declare_target_state_with_child,
+)
 from .typing import NOT_SET, NotSetType
 
 
@@ -33,6 +41,12 @@ P = ParamSpec("P")
 K = TypeVar("K")
 ReturnT = TypeVar("ReturnT")
 ResolvedT = TypeVar("ResolvedT")
+
+_KeyT = TypeVar("_KeyT", bound=Hashable)
+_ValueT = TypeVar("_ValueT")
+_ChildHandlerT = TypeVar(
+    "_ChildHandlerT", bound="TargetHandler[Any, Any, Any, Any] | None"
+)
 
 
 class ProcessingUnitMountRunHandle(Generic[ReturnT]):
@@ -189,6 +203,43 @@ def mount(
     return ProcessingUnitMountHandle(core_handle)
 
 
+_MOUNT_TARGET_SYMBOL = Symbol("cocoindex/mount_target")
+
+
+async def mount_target(
+    target_state: TargetState[TargetHandler[_KeyT, _ValueT, Any, _ChildHandlerT]],
+) -> TargetStateProvider[_KeyT, _ValueT, _ChildHandlerT]:
+    """
+    Mount a target, ensuring its container target state is applied before returning
+    the child TargetStateProvider.
+
+    Sugar over ``mount_run()`` combined with ``declare_target_state_with_child()``.
+    The component subpath is derived automatically from the target's globally unique key.
+
+    Args:
+        target_state: A TargetState with a child handler, as created by
+            ``TargetStateProvider.target_state(key, value)``. The key must be globally
+            unique (target connectors ensure this by construction).
+
+    Returns:
+        The resolved child TargetStateProvider, ready to use for declaring child
+        target states.
+
+    Example::
+
+        provider = await coco_aio.mount_target(
+            target_db.table_target(table_name=TABLE_NAME, table_schema=schema)
+        )
+    """
+    subpath = ComponentSubpath(
+        _MOUNT_TARGET_SYMBOL,
+        target_state._provider.memo_key,
+        target_state._key,
+    )
+    handle = mount_run(subpath, declare_target_state_with_child, target_state)
+    return await handle.result()  # type: ignore[no-any-return, return-value]
+
+
 class App(AppBase[P, ReturnT]):
     async def update(
         self, *, report_to_stdout: bool = False, full_reprocess: bool = False
@@ -261,6 +312,7 @@ __all__ = [
     "function",
     "mount",
     "mount_run",
+    "mount_target",
     "start",
     "stop",
     "default_env",
