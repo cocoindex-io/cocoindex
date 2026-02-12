@@ -7,6 +7,7 @@ This module provides a two-level target state system for Qdrant:
 """
 
 from __future__ import annotations
+import cocoindex as coco
 
 import asyncio
 from dataclasses import dataclass
@@ -223,7 +224,12 @@ class _PointHandler(coco.TargetHandler[qdrant_models.PointStruct, _PointFingerpr
         prev_may_be_missing: bool,
         /,
     ) -> coco.TargetReconcileOutput[_PointAction, _PointFingerprint] | None:
-        key = cast(_PointId, key)
+        if isinstance(key, tuple) or isinstance(key, (str, int)):
+            key = cast(_PointId, key[0]) if isinstance(key, tuple) else key
+        else:
+            raise TypeError(
+                f"PointId key must be a str, int, or tuple, got {type(key)}"
+            )
         if coco.is_non_existence(desired_state):
             if not prev_possible_states and not prev_may_be_missing:
                 return None
@@ -411,11 +417,11 @@ class _CollectionHandler(
         ]
         | None
     ):
-        if isinstance(key, tuple) and not isinstance(key, _CollectionKey):
+        if isinstance(key, tuple):
             key_args = cast(tuple[str, str], key)
             key = _CollectionKey(*key_args)
-        key = cast(_CollectionKey, key)
-
+        else:
+            raise TypeError(f"Collection key must be a tuple, got {type(key)}")
         tracking_record: _CollectionTrackingRecord | coco.NonExistenceType
 
         if coco.is_non_existence(desired_state):

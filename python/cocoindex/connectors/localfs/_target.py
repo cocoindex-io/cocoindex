@@ -1,6 +1,7 @@
 """Local filesystem target utilities."""
 
 from __future__ import annotations
+import cocoindex as coco
 
 import os
 import pathlib
@@ -253,10 +254,11 @@ class _RootHandler(coco.TargetHandler[_EntrySpec, _EntryTrackingRecord, _EntryHa
         coco.TargetReconcileOutput[_EntryAction, _EntryTrackingRecord, _EntryHandler]
         | None
     ):
-        if isinstance(key, tuple) and not isinstance(key, _RootKey):
+        if isinstance(key, tuple):
             key_args = cast(tuple[str | None, str], key)
             key = _RootKey(*key_args)
-        key = cast(_RootKey, key)
+        else:
+            raise TypeError(f"Root key must be a tuple, got {type(key)}")
 
         path = _resolve_root_path(key)
         return _reconcile_entry(

@@ -24,7 +24,6 @@ from typing import (
     NamedTuple,
     Sequence,
     cast,
-    overload,
 )
 
 from typing_extensions import TypeVar
@@ -481,13 +480,10 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
         prev_may_be_missing: bool,
         /,
     ) -> coco.TargetReconcileOutput[_RowAction, _RowFingerprint] | None:
-        # Key conversion
         if isinstance(key, tuple):
-            pass
+            key = cast(_RowKey, key)
         else:
-            if not isinstance(key, tuple):
-                key = (key,)
-        key = cast(_RowKey, key)
+            raise TypeError(f"Row key must be a tuple, got {type(key)}")
         if coco.is_non_existence(desired_state):
             # Delete case - only if it might exist
             if not prev_possible_states and not prev_may_be_missing:
@@ -817,10 +813,11 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
         coco.TargetReconcileOutput[_TableAction, _TableTrackingRecord, _RowHandler]
         | None
     ):
-        if isinstance(key, tuple) and not isinstance(key, _TableKey):
+        if isinstance(key, tuple):
             key_args = cast(tuple[str, str | None, str], key)
             key = _TableKey(*key_args)
-        key = cast(_TableKey, key)
+        else:
+            raise TypeError(f"Table key must be a tuple, got {type(key)}")
 
         tracking_record: _TableTrackingRecord | coco.NonExistenceType
 

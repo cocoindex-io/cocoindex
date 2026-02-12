@@ -8,9 +8,6 @@ This module provides a two-level target state system for LanceDB:
 
 from __future__ import annotations
 
-from typing import cast
-
-
 import json
 from dataclasses import dataclass
 from typing import (
@@ -21,6 +18,7 @@ from typing import (
     Literal,
     NamedTuple,
     Sequence,
+    cast,
 )
 
 from typing_extensions import TypeVar
@@ -411,10 +409,12 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
     ) -> None:
         """Execute delete operations using LanceDB's delete."""
         pk_cols = self._table_schema.primary_key
+        print(f"DEBUG: LanceDB deleting {len(deletes)} rows. PK cols: {pk_cols}")
 
         # Build delete conditions for each row
         # LanceDB delete syntax: table.delete("column = value")
         for action in deletes:
+            print(f"DEBUG: Processing delete for key: {action.key}")
             conditions = []
             for i, pk_col in enumerate(pk_cols):
                 pk_value = action.key[i]
@@ -425,6 +425,7 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
                     conditions.append(f"{pk_col} = {pk_value}")
 
             condition = " AND ".join(conditions)
+            print(f"DEBUG: Generated delete condition: {condition}")
             await table.delete(condition)
 
     def _build_pyarrow_schema(self) -> pa.Schema:
@@ -443,16 +444,10 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
         prev_may_be_missing: bool,
         /,
     ) -> coco.TargetReconcileOutput[_RowAction, _RowFingerprint] | None:
-        # Key conversion
         if isinstance(key, tuple):
-            # _RowKey is tuple[Any, ...]
-            pass
+            key = cast(_RowKey, key)
         else:
-            # Should be tuple for row key
-            if not isinstance(key, tuple):
-                # This might happen if single-value PK is passed as scalar
-                key = (key,)
-        key = cast(_RowKey, key)
+            raise TypeError(f"Row key must be a tuple, got {type(key)}")
         if coco.is_non_existence(desired_state):
             # Delete case - only if it might exist
             if not prev_possible_states and not prev_may_be_missing:
@@ -680,14 +675,11 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
         coco.TargetReconcileOutput[_TableAction, _TableTrackingRecord, _RowHandler]
         | None
     ):
-        if isinstance(key, tuple) and not isinstance(key, _TableKey):
-            # _TableKey expects (str, str)
+        if isinstance(key, tuple):
             key_args = cast(tuple[str, str], key)
             key = _TableKey(*key_args)
-
-        # Ensure key is _TableKey
-        key = cast(_TableKey, key)
-
+        else:
+            raise TypeError(f"Table key must be a tuple, got {type(key)}")
         tracking_record: _TableTrackingRecord | coco.NonExistenceType
 
         if coco.is_non_existence(desired_state):
