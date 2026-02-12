@@ -26,7 +26,7 @@ Update all examples to use `map()`, `mount_target()`, `mount_each()`. Still usin
 
 ## Phase 4: Migrate Remaining Usages
 
-- [ ] **9.** Update any remaining `mount_run()` calls in examples and connectors to `use_mount()`
+- [X] **9.** Update any remaining `mount_run()` calls in examples and connectors to `use_mount()`
 
 ## Phase 5: Documentation
 
