@@ -966,6 +966,128 @@ def test_restore_from_gc_failed_components() -> None:
 
 
 ##################################################################################
+# Test for mount_each
+
+
+async def _declare_dicts_in_sub_components_mount_each() -> None:
+    coco_aio.mount_each(_declare_one_dict, [(name, name) for name in _source_data])
+
+
+@pytest.mark.asyncio
+async def test_mount_each_insert() -> None:
+    DictsTarget.store.clear()
+    _source_data.clear()
+
+    app = coco_aio.App(
+        coco.AppConfig(name="test_mount_each_insert", environment=coco_env),
+        _declare_dicts_in_sub_components_mount_each,
+    )
+
+    _source_data["D1"] = {"a": 1, "b": 2}
+    _source_data["D2"] = {}
+    await app.update()
+    assert DictsTarget.store.data == {
+        "D1": {
+            "a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
+            "b": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
+        },
+        "D2": {},
+    }
+    assert DictsTarget.store.metrics.collect() == {"sink": 2, "insert": 2}
+    assert DictsTarget.store.collect_child_metrics() == {"sink": 1, "upsert": 2}
+
+    _source_data["D2"]["c"] = 3
+    _source_data["D3"] = {"a": 4}
+    await app.update()
+    assert DictsTarget.store.data == {
+        "D1": {
+            "a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
+            "b": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
+        },
+        "D2": {
+            "c": DictDataWithPrev(data=3, prev=[], prev_may_be_missing=True),
+        },
+        "D3": {
+            "a": DictDataWithPrev(data=4, prev=[], prev_may_be_missing=True),
+        },
+    }
+    assert DictsTarget.store.metrics.collect() == {"sink": 3, "insert": 1}
+    assert DictsTarget.store.collect_child_metrics() == {"sink": 2, "upsert": 2}
+    assert await coco_inspect.list_stable_paths(app) == [
+        coco.ROOT_PATH,
+        coco.ROOT_PATH / "D1",
+        coco.ROOT_PATH / "D1" / "setup",
+        coco.ROOT_PATH / "D2",
+        coco.ROOT_PATH / "D2" / "setup",
+        coco.ROOT_PATH / "D3",
+        coco.ROOT_PATH / "D3" / "setup",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_mount_each_delete() -> None:
+    DictsTarget.store.clear()
+    _source_data.clear()
+
+    app = coco_aio.App(
+        coco.AppConfig(name="test_mount_each_delete", environment=coco_env),
+        _declare_dicts_in_sub_components_mount_each,
+    )
+
+    _source_data["D1"] = {"a": 1, "b": 2}
+    _source_data["D2"] = {}
+    await app.update()
+    assert DictsTarget.store.metrics.collect() == {"sink": 2, "insert": 2}
+
+    del _source_data["D1"]
+    _source_data["D2"]["c"] = 3
+    _source_data["D3"] = {"a": 4}
+    await app.update()
+    assert DictsTarget.store.data == {
+        "D2": {
+            "c": DictDataWithPrev(data=3, prev=[], prev_may_be_missing=True),
+        },
+        "D3": {
+            "a": DictDataWithPrev(data=4, prev=[], prev_may_be_missing=True),
+        },
+    }
+    assert DictsTarget.store.metrics.collect() == {"sink": 3, "insert": 1, "delete": 1}
+    assert await coco_inspect.list_stable_paths(app) == [
+        coco.ROOT_PATH,
+        coco.ROOT_PATH / "D2",
+        coco.ROOT_PATH / "D2" / "setup",
+        coco.ROOT_PATH / "D3",
+        coco.ROOT_PATH / "D3" / "setup",
+    ]
+
+    # Re-insert after deletion
+    _source_data["D1"] = {"a": 3, "c": 4}
+    await app.update()
+    assert DictsTarget.store.data == {
+        "D1": {
+            "a": DictDataWithPrev(data=3, prev=[], prev_may_be_missing=True),
+            "c": DictDataWithPrev(data=4, prev=[], prev_may_be_missing=True),
+        },
+        "D2": {
+            "c": DictDataWithPrev(data=3, prev=[], prev_may_be_missing=True),
+        },
+        "D3": {
+            "a": DictDataWithPrev(data=4, prev=[], prev_may_be_missing=True),
+        },
+    }
+    assert DictsTarget.store.metrics.collect() == {"sink": 3, "insert": 1}
+    assert await coco_inspect.list_stable_paths(app) == [
+        coco.ROOT_PATH,
+        coco.ROOT_PATH / "D1",
+        coco.ROOT_PATH / "D1" / "setup",
+        coco.ROOT_PATH / "D2",
+        coco.ROOT_PATH / "D2" / "setup",
+        coco.ROOT_PATH / "D3",
+        coco.ROOT_PATH / "D3" / "setup",
+    ]
+
+
+##################################################################################
 # Test for async target states
 
 
