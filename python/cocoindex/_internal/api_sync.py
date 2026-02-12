@@ -35,8 +35,8 @@ ReturnT = TypeVar("ReturnT")
 ResolvedT = TypeVar("ResolvedT")
 
 
-class ComponentMountRunHandle(Generic[ReturnT]):
-    """Handle for a processing unit that was started with `mount_run()`. Allows getting the result."""
+class _ComponentMountRunHandle(Generic[ReturnT]):
+    """Internal handle for a processing unit that was started with `use_mount()`."""
 
     __slots__ = ("_core", "_lock", "_cached_result", "_parent_ctx")
 
@@ -86,41 +86,46 @@ class ComponentMountHandle:
 
 
 @overload
-def mount_run(
+def use_mount(
     subpath: ComponentSubpath,
     processor_fn: AnyCallable[P, ResolvesTo[ReturnT]],
     *args: P.args,
     **kwargs: P.kwargs,
-) -> ComponentMountRunHandle[ReturnT]: ...
+) -> ReturnT: ...
 @overload
-def mount_run(
+def use_mount(
     subpath: ComponentSubpath,
     processor_fn: AnyCallable[P, Sequence[ResolvesTo[ReturnT]]],
     *args: P.args,
     **kwargs: P.kwargs,
-) -> ComponentMountRunHandle[Sequence[ReturnT]]: ...
+) -> Sequence[ReturnT]: ...
 @overload
-def mount_run(
+def use_mount(
     subpath: ComponentSubpath,
     processor_fn: AnyCallable[P, Mapping[K, ResolvesTo[ReturnT]]],
     *args: P.args,
     **kwargs: P.kwargs,
-) -> ComponentMountRunHandle[Mapping[K, ReturnT]]: ...
+) -> Mapping[K, ReturnT]: ...
 @overload
-def mount_run(
+def use_mount(
     subpath: ComponentSubpath,
     processor_fn: AnyCallable[P, ReturnT],
     *args: P.args,
     **kwargs: P.kwargs,
-) -> ComponentMountRunHandle[ReturnT]: ...
-def mount_run(
+) -> ReturnT: ...
+def use_mount(
     subpath: ComponentSubpath,
     processor_fn: AnyCallable[P, Any],
     *args: P.args,
     **kwargs: P.kwargs,
-) -> ComponentMountRunHandle[Any]:
+) -> Any:
     """
-    Mount and run a processing unit, returning a handle to await its result.
+    Mount a dependent processing component and return its result.
+
+    The child component cannot refresh independently — re-executing the child
+    requires re-executing the parent. The ``use_`` prefix (consistent with
+    ``use_context()``) signals that the caller creates a dependency on the
+    child's result.
 
     Args:
         subpath: The component subpath (from component_subpath()).
@@ -129,12 +134,12 @@ def mount_run(
         **kwargs: Keyword arguments to pass to the function.
 
     Returns:
-        A handle that can be used to get the result.
+        The return value of processor_fn.
 
     Example:
-        target = coco.mount_run(
+        target = coco.use_mount(
             coco.component_subpath("setup"), declare_dir_target, outdir
-        ).result()
+        )
     """
     parent_ctx = get_context_from_ctx()
     child_path = build_child_path(parent_ctx, subpath)
@@ -148,7 +153,7 @@ def mount_run(
         parent_ctx._core_processor_ctx,
         parent_ctx._core_fn_call_ctx,
     )
-    return ComponentMountRunHandle(core_handle, parent_ctx._core_processor_ctx)
+    return core_handle.result(parent_ctx._core_processor_ctx)
 
 
 def mount(
@@ -257,10 +262,9 @@ def runtime() -> Any:
 __all__ = [
     "App",
     "ComponentMountHandle",
-    "ComponentMountRunHandle",
     "function",
     "mount",
-    "mount_run",
+    "use_mount",
     "start",
     "stop",
     "default_env",

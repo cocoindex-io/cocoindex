@@ -56,8 +56,8 @@ _ChildHandlerT = TypeVar(
 )
 
 
-class ComponentMountRunHandle(Generic[ReturnT]):
-    """Handle for a processing unit that was started with `mount_run()`. Allows awaiting the result."""
+class _ComponentMountRunHandle(Generic[ReturnT]):
+    """Internal handle for a processing unit that was started with `use_mount()`."""
 
     __slots__ = ("_core", "_lock", "_cached_result", "_parent_ctx")
 
@@ -108,41 +108,46 @@ class ComponentMountHandle:
 
 
 @overload
-def mount_run(
+async def use_mount(
     subpath: ComponentSubpath,
     processor_fn: AnyCallable[P, ResolvesTo[ReturnT]],
     *args: P.args,
     **kwargs: P.kwargs,
-) -> ComponentMountRunHandle[ReturnT]: ...
+) -> ReturnT: ...
 @overload
-def mount_run(
+async def use_mount(
     subpath: ComponentSubpath,
     processor_fn: AnyCallable[P, Sequence[ResolvesTo[ReturnT]]],
     *args: P.args,
     **kwargs: P.kwargs,
-) -> ComponentMountRunHandle[Sequence[ReturnT]]: ...
+) -> Sequence[ReturnT]: ...
 @overload
-def mount_run(
+async def use_mount(
     subpath: ComponentSubpath,
     processor_fn: AnyCallable[P, Mapping[K, ResolvesTo[ReturnT]]],
     *args: P.args,
     **kwargs: P.kwargs,
-) -> ComponentMountRunHandle[Mapping[K, ReturnT]]: ...
+) -> Mapping[K, ReturnT]: ...
 @overload
-def mount_run(
+async def use_mount(
     subpath: ComponentSubpath,
     processor_fn: AnyCallable[P, ReturnT],
     *args: P.args,
     **kwargs: P.kwargs,
-) -> ComponentMountRunHandle[ReturnT]: ...
-def mount_run(
+) -> ReturnT: ...
+async def use_mount(
     subpath: ComponentSubpath,
     processor_fn: AnyCallable[P, Any],
     *args: P.args,
     **kwargs: P.kwargs,
-) -> ComponentMountRunHandle[Any]:
+) -> Any:
     """
-    Mount and run a processing unit, returning a handle to await its result.
+    Mount a dependent processing component and return its result.
+
+    The child component cannot refresh independently — re-executing the child
+    requires re-executing the parent. The ``use_`` prefix (consistent with
+    ``use_context()``) signals that the caller creates a dependency on the
+    child's result.
 
     Args:
         subpath: The component subpath (from component_subpath()).
@@ -151,12 +156,12 @@ def mount_run(
         **kwargs: Keyword arguments to pass to the function.
 
     Returns:
-        A handle that can be used to get the result.
+        The return value of processor_fn.
 
     Example:
-        target = await coco.mount_run(
+        target = await coco_aio.use_mount(
             coco.component_subpath("setup"), declare_table_target, table_name
-        ).result()
+        )
     """
     parent_ctx = get_context_from_ctx()
     child_path = build_child_path(parent_ctx, subpath)
@@ -170,7 +175,7 @@ def mount_run(
         parent_ctx._core_processor_ctx,
         parent_ctx._core_fn_call_ctx,
     )
-    return ComponentMountRunHandle(core_handle, parent_ctx._core_processor_ctx)
+    return await core_handle.result_async(parent_ctx._core_processor_ctx)
 
 
 def mount(
@@ -298,7 +303,7 @@ async def mount_target(
     Mount a target, ensuring its container target state is applied before returning
     the child TargetStateProvider.
 
-    Sugar over ``mount_run()`` combined with ``declare_target_state_with_child()``.
+    Sugar over ``use_mount()`` combined with ``declare_target_state_with_child()``.
     The component subpath is derived automatically from the target's globally unique key.
 
     Args:
@@ -321,8 +326,7 @@ async def mount_target(
         target_state._provider.memo_key,
         target_state._key,
     )
-    handle = mount_run(subpath, declare_target_state_with_child, target_state)
-    return await handle.result()  # type: ignore[no-any-return, return-value]
+    return await use_mount(subpath, declare_target_state_with_child, target_state)  # type: ignore[no-any-return, return-value]
 
 
 class App(AppBase[P, ReturnT]):
@@ -393,13 +397,12 @@ async def runtime() -> AsyncIterator[None]:
 __all__ = [
     "App",
     "ComponentMountHandle",
-    "ComponentMountRunHandle",
     "function",
     "map",
     "mount",
     "mount_each",
-    "mount_run",
     "mount_target",
+    "use_mount",
     "start",
     "stop",
     "default_env",

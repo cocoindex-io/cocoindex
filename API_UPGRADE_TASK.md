@@ -8,7 +8,7 @@ These are new APIs added alongside the existing ones. No existing code breaks.
 
 - [X] **1.** Add `Symbol` type to `StableKey` union
 - [X] **2.** Implement `coco_aio.map(fn, items, *args, **kwargs)`
-- [X] **3.** Implement `coco_aio.mount_target(target)` (sugar over `mount_run()`)
+- [X] **3.** Implement `coco_aio.mount_target(target)` (sugar over `use_mount()`)
 - [X] **4.** Implement `coco_aio.mount_each(fn, items, *args, **kwargs)` where `items` is `Iterable[tuple[StableKey, T]]`
 - [X] **5.** Update source connectors to return keyed iterables (e.g., `items()` returning `Iterator[tuple[StableKey, T]]`)
 
@@ -21,8 +21,8 @@ Update all examples to use `map()`, `mount_target()`, `mount_each()`. Still usin
 
 ## Phase 3: Breaking Change
 
-- [ ] **7.** Rename `mount_run()` to `use_mount()` and change async return from handle to direct value (`T` instead of `Handle[T]`)
-- [ ] **8.** Update internal code and tests for `use_mount()`
+- [X] **7.** Rename `mount_run()` to `use_mount()` and change async return from handle to direct value (`T` instead of `Handle[T]`)
+- [X] **8.** Update internal code and tests for `use_mount()`
 
 ## Phase 4: Migrate Remaining Usages
 

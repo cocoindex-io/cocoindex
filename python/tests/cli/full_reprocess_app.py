@@ -26,11 +26,11 @@ def create_targets(target: DirTarget, create_b: bool) -> None:
 @coco.function
 def app_main(create_b: bool = True) -> None:
     """Main app function that creates targets A and optionally B."""
-    target = coco.mount_run(
+    target = coco.use_mount(
         coco.component_subpath("setup"),
         declare_dir_target,
         pathlib.Path("./out_full_reprocess"),
-    ).result()
+    )
     coco.mount(coco.component_subpath("create"), create_targets, target, create_b)
 
 

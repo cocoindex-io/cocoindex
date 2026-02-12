@@ -231,12 +231,12 @@ def test_insert_and_update(connector_fixture: tuple[Connection, Path]) -> None:
     with connector.register_db("test_db", conn) as db:
 
         async def declare_target() -> None:
-            table = await coco_aio.mount_run(
+            table = await coco_aio.use_mount(
                 coco.component_subpath("setup", "table"),
                 db.declare_table_target,
                 "test_table",
                 await connector.TableSchema.from_class(RowType, primary_key=["id"]),
-            ).result()
+            )
             for row in source_rows:
                 table.declare_row(row=row)
 

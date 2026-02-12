@@ -370,11 +370,11 @@ def declare_dir_target(
 
     Example:
         ```python
-        target = coco.mount_run(
+        target = coco.use_mount(
             coco.component_subpath("setup"),
             localfs.declare_dir_target,
             Path("./output"),
-        ).result()
+        )
 
         target.declare_file("hello.txt", content="Hello, world!")
         ```

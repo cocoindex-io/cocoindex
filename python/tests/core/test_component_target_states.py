@@ -19,11 +19,11 @@ _source_data: dict[str, dict[str, Any]] = {}
 def _declare_dicts_data_together() -> None:
     with coco.component_subpath("dict"):
         for name, data in _source_data.items():
-            single_dict_provider = coco.mount_run(
+            single_dict_provider = coco.use_mount(
                 coco.component_subpath(name),
                 DictsTarget.declare_dict_target,
                 name,
-            ).result()
+            )
             for key, value in data.items():
                 coco.declare_target_state(single_dict_provider.target_state(key, value))
 
@@ -209,9 +209,9 @@ def test_dicts_data_together_delete_entry() -> None:
 
 
 def _declare_one_dict(name: str) -> None:
-    dict_provider = coco.mount_run(
+    dict_provider = coco.use_mount(
         coco.component_subpath("setup"), DictsTarget.declare_dict_target, name
-    ).result()
+    )
     for key, value in _source_data[name].items():
         coco.declare_target_state(dict_provider.target_state(key, value))
 
@@ -422,9 +422,9 @@ def _declare_one_dict_data(name: str, provider: coco.TargetStateProvider[str]) -
 
 
 def _declare_dict_containers_together() -> None:
-    providers = coco.mount_run(
+    providers = coco.use_mount(
         coco.component_subpath("setup"), _declare_dict_containers, _source_data.keys()
-    ).result()
+    )
     for name, provider in providers.items():
         coco.mount(coco.component_subpath(name), _declare_one_dict_data, name, provider)
 
@@ -609,9 +609,9 @@ def test_dicts_containers_together_delete_entry() -> None:
 
 
 async def _declare_dict_containers_together_async() -> None:
-    providers = await coco_aio.mount_run(
+    providers = await coco_aio.use_mount(
         coco.component_subpath("setup"), _declare_dict_containers, _source_data.keys()
-    ).result()
+    )
     for name, provider in providers.items():
         coco_aio.mount(
             coco.component_subpath(name), _declare_one_dict_data, name, provider
@@ -835,9 +835,9 @@ def test_proceed_with_failed_creation() -> None:
 
 
 def _declare_one_dict_w_exception(name: str) -> None:
-    dict_provider = coco.mount_run(
+    dict_provider = coco.use_mount(
         coco.component_subpath("setup"), DictsTarget.declare_dict_target, name
-    ).result()
+    )
     for key, value in _source_data[name].items():
         coco.declare_target_state(dict_provider.target_state(key, value))
     raise ValueError("injected test exception (which is expected)")
@@ -1095,11 +1095,11 @@ async def test_mount_each_delete() -> None:
 
 async def _declare_async_dicts_data_together() -> None:
     for name, data in _source_data.items():
-        single_dict_provider = await coco_aio.mount_run(
+        single_dict_provider = await coco_aio.use_mount(
             coco.component_subpath("dict", name),
             AsyncDictsTarget.declare_dict_target,
             name,
-        ).result()
+        )
         for key, value in data.items():
             coco.declare_target_state(single_dict_provider.target_state(key, value))
 

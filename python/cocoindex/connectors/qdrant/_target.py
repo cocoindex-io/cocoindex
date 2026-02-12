@@ -536,14 +536,14 @@ class QdrantDatabase(connection.KeyedConnection[QdrantClient]):
             @coco.function
             def app_main() -> None:
                 db = coco.use_context(QDRANT_DB)
-                target = coco.mount_run(
+                target = coco.use_mount(
                     coco.component_subpath("setup"),
                     db.declare_collection_target,
                     collection_name="my_collection",
                     schema=CollectionSchema(
                         vectors={"embedding": QdrantVectorSpec(dim=384)}
                     ),
-                ).result()
+                )
                 # Use target to declare points...
             ```
         """
