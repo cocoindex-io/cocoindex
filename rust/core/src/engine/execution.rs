@@ -839,8 +839,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                                 );
                                 continue;
                             };
-                            let effect_key: StableKey = storekey::decode(item.key.as_ref())
-                                .map_err(|e| internal_error!("Failed to decode StableKey: {e}"))?;
+                            let effect_key: StableKey = storekey::decode(item.key.as_ref())?;
                             (
                                 Cow::Borrowed(target_states_provider),
                                 effect_key,

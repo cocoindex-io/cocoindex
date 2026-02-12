@@ -1,7 +1,6 @@
 """Local filesystem target utilities."""
 
 from __future__ import annotations
-import cocoindex as coco
 
 import os
 import pathlib
