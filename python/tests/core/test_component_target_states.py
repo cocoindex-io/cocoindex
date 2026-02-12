@@ -1197,3 +1197,88 @@ def test_async_dicts_sync_app() -> None:
         coco.ROOT_PATH / "dict" / "D2",
         coco.ROOT_PATH / "dict" / "D3",
     ]
+
+
+##################################################################################
+# Tests for coco_aio.mount_target()
+##################################################################################
+
+
+_mount_target_source_data: dict[str, dict[str, Any]] = {}
+
+
+async def _declare_dicts_with_mount_target() -> None:
+    with coco.component_subpath("dict"):
+        for name, data in _mount_target_source_data.items():
+            single_dict_provider = await coco_aio.mount_target(
+                DictsTarget.dict_target(name)
+            )
+            for key, value in data.items():
+                coco.declare_target_state(single_dict_provider.target_state(key, value))
+
+
+def test_mount_target_insert() -> None:
+    DictsTarget.store.clear()
+    _mount_target_source_data.clear()
+
+    app = coco.App(
+        coco.AppConfig(name="test_mount_target_insert", environment=coco_env),
+        _declare_dicts_with_mount_target,
+    )
+
+    _mount_target_source_data["D1"] = {"a": 1, "b": 2}
+    _mount_target_source_data["D2"] = {}
+    app.update()
+    assert DictsTarget.store.data == {
+        "D1": {
+            "a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
+            "b": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
+        },
+        "D2": {},
+    }
+    assert DictsTarget.store.metrics.collect() == {"sink": 2, "insert": 2}
+    assert DictsTarget.store.collect_child_metrics() == {"sink": 1, "upsert": 2}
+
+    # Verify stable paths contain the mount_target symbol
+    paths = coco_inspect.list_stable_paths_sync(app)
+    assert coco.ROOT_PATH in paths
+    assert coco.ROOT_PATH / "dict" in paths
+
+
+def test_mount_target_delete() -> None:
+    DictsTarget.store.clear()
+    _mount_target_source_data.clear()
+
+    app = coco.App(
+        coco.AppConfig(name="test_mount_target_delete", environment=coco_env),
+        _declare_dicts_with_mount_target,
+    )
+
+    _mount_target_source_data["D1"] = {"a": 1, "b": 2}
+    _mount_target_source_data["D2"] = {"c": 3}
+    app.update()
+    assert DictsTarget.store.data == {
+        "D1": {
+            "a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
+            "b": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
+        },
+        "D2": {
+            "c": DictDataWithPrev(data=3, prev=[], prev_may_be_missing=True),
+        },
+    }
+    assert DictsTarget.store.metrics.collect() == {"sink": 2, "insert": 2}
+    assert DictsTarget.store.collect_child_metrics() == {"sink": 2, "upsert": 3}
+
+    # Delete D2, modify D1
+    del _mount_target_source_data["D2"]
+    _mount_target_source_data["D1"]["c"] = 4
+    app.update()
+    assert DictsTarget.store.data == {
+        "D1": {
+            "a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
+            "b": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
+            "c": DictDataWithPrev(data=4, prev=[], prev_may_be_missing=True),
+        },
+    }
+    assert DictsTarget.store.metrics.collect() == {"sink": 2, "delete": 1}
+    assert DictsTarget.store.collect_child_metrics() == {"sink": 1, "upsert": 1}

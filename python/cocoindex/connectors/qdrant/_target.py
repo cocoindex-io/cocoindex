@@ -33,6 +33,7 @@ except ImportError as e:
 import cocoindex as coco
 from cocoindex.connectorkits import connection, statediff
 from cocoindex.connectorkits.fingerprint import fingerprint_object
+from cocoindex._internal.api_async import mount_target as _mount_target
 from cocoindex.resources import schema
 
 # Public alias for Qdrant point model
@@ -446,7 +447,7 @@ class _CollectionHandler(
 
 
 _collection_provider = coco.register_root_target_states_provider(
-    "cocoindex.io/qdrant/collection", _CollectionHandler()
+    "cocoindex/qdrant/collection", _CollectionHandler()
 )
 
 
@@ -546,10 +547,58 @@ class QdrantDatabase(connection.KeyedConnection[QdrantClient]):
                 # Use target to declare points...
             ```
         """
+        provider = coco.declare_target_state_with_child(
+            self.collection_target(collection_name, schema, managed_by=managed_by)
+        )
+        return CollectionTarget(provider)
+
+    def collection_target(
+        self,
+        collection_name: str,
+        schema: CollectionSchema,
+        *,
+        managed_by: Literal["system", "user"] = "system",
+    ) -> "coco.TargetState[_PointHandler]":
+        """
+        Create a TargetState for a Qdrant collection target.
+
+        Use with ``coco_aio.mount_target()`` to mount and get a child provider,
+        or with ``mount_collection_target()`` for a convenience wrapper.
+
+        Args:
+            collection_name: Name of the collection in Qdrant.
+            schema: CollectionSchema defining vector fields.
+            managed_by: Whether the collection is managed by the system or user.
+
+        Returns:
+            A TargetState that can be passed to ``mount_target()``.
+        """
         key = _CollectionKey(db_key=self.key, collection_name=collection_name)
         spec = _CollectionSpec(schema=schema, managed_by=managed_by)
-        provider = coco.declare_target_state_with_child(
-            _collection_provider.target_state(key, spec)
+        return _collection_provider.target_state(key, spec)
+
+    async def mount_collection_target(
+        self,
+        collection_name: str,
+        schema: CollectionSchema,
+        *,
+        managed_by: Literal["system", "user"] = "system",
+    ) -> "CollectionTarget[coco.ResolvedS]":
+        """
+        Mount a collection target and return a ready-to-use CollectionTarget.
+
+        Sugar over ``collection_target()`` + ``coco_aio.mount_target()`` + wrapping.
+
+        Args:
+            collection_name: Name of the collection in Qdrant.
+            schema: CollectionSchema defining vector fields.
+            managed_by: Whether the collection is managed by the system or user.
+
+        Returns:
+            A CollectionTarget for declaring points.
+        """
+        provider = await _mount_target(
+            self.collection_target(collection_name, schema, managed_by=managed_by)
         )
         return CollectionTarget(provider)
 
