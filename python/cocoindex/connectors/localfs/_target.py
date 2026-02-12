@@ -177,7 +177,7 @@ class _EntryTrackingRecord:
 
 
 class _EntryHandler(
-    coco.TargetHandler[_EntryName, _EntrySpec, _EntryTrackingRecord, "_EntryHandler"]
+    coco.TargetHandler[_EntrySpec, _EntryTrackingRecord, "_EntryHandler"]
 ):
     """Handler for file and directory entries within a parent directory."""
 
@@ -190,7 +190,7 @@ class _EntryHandler(
 
     def reconcile(
         self,
-        key: _EntryName,
+        key: coco.StableKey,
         desired_state: _EntrySpec | coco.NonExistenceType,
         prev_possible_states: Collection[_EntryTrackingRecord],
         prev_may_be_missing: bool,
@@ -199,6 +199,7 @@ class _EntryHandler(
         coco.TargetReconcileOutput[_EntryAction, _EntryTrackingRecord, "_EntryHandler"]
         | None
     ):
+        key = cast(_EntryName, key)
         path = self._base_path / key
         return _reconcile_entry(
             path, desired_state, prev_possible_states, prev_may_be_missing
@@ -238,14 +239,12 @@ def _resolve_root_path(key: _RootKey) -> pathlib.Path:
     return (base_path / key.path).resolve()
 
 
-class _RootHandler(
-    coco.TargetHandler[_RootKey, _EntrySpec, _EntryTrackingRecord, _EntryHandler]
-):
+class _RootHandler(coco.TargetHandler[_EntrySpec, _EntryTrackingRecord, _EntryHandler]):
     """Handler for root-level entries (files and directories)."""
 
     def reconcile(
         self,
-        key: _RootKey,
+        key: coco.StableKey,
         desired_state: _EntrySpec | coco.NonExistenceType,
         prev_possible_states: Collection[_EntryTrackingRecord],
         prev_may_be_missing: bool,
@@ -254,6 +253,12 @@ class _RootHandler(
         coco.TargetReconcileOutput[_EntryAction, _EntryTrackingRecord, _EntryHandler]
         | None
     ):
+        if isinstance(key, tuple):
+            key_args = cast(tuple[str | None, str], key)
+            key = _RootKey(*key_args)
+        else:
+            raise TypeError(f"Root key must be a tuple, got {type(key)}")
+
         path = _resolve_root_path(key)
         return _reconcile_entry(
             path, desired_state, prev_possible_states, prev_may_be_missing
@@ -282,14 +287,12 @@ class DirTarget(Generic[coco.MaybePendingS], coco.ResolvesTo["DirTarget"]):
     files and directories that are no longer declared.
     """
 
-    _provider: coco.TargetStateProvider[
-        _EntryName, _EntrySpec, _EntryHandler, coco.MaybePendingS
-    ]
+    _provider: coco.TargetStateProvider[_EntrySpec, _EntryHandler, coco.MaybePendingS]
 
     def __init__(
         self,
         provider: coco.TargetStateProvider[
-            _EntryName, _EntrySpec, _EntryHandler, coco.MaybePendingS
+            _EntrySpec, _EntryHandler, coco.MaybePendingS
         ],
     ) -> None:
         self._provider = provider

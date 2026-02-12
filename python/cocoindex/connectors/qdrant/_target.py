@@ -7,6 +7,7 @@ This module provides a two-level target state system for Qdrant:
 """
 
 from __future__ import annotations
+import cocoindex as coco
 
 import asyncio
 from dataclasses import dataclass
@@ -169,9 +170,7 @@ class _PointAction(NamedTuple):
     point: qdrant_models.PointStruct | None
 
 
-class _PointHandler(
-    coco.TargetHandler[_PointId, qdrant_models.PointStruct, _PointFingerprint]
-):
+class _PointHandler(coco.TargetHandler[qdrant_models.PointStruct, _PointFingerprint]):
     _db_key: str
     _collection_name: str
     _sink: coco.TargetActionSink[_PointAction]
@@ -219,12 +218,18 @@ class _PointHandler(
 
     def reconcile(
         self,
-        key: _PointId,
+        key: coco.StableKey,
         desired_state: qdrant_models.PointStruct | coco.NonExistenceType,
         prev_possible_states: Collection[_PointFingerprint],
         prev_may_be_missing: bool,
         /,
     ) -> coco.TargetReconcileOutput[_PointAction, _PointFingerprint] | None:
+        if isinstance(key, tuple) or isinstance(key, (str, int)):
+            key = cast(_PointId, key[0]) if isinstance(key, tuple) else key
+        else:
+            raise TypeError(
+                f"PointId key must be a str, int, or tuple, got {type(key)}"
+            )
         if coco.is_non_existence(desired_state):
             if not prev_possible_states and not prev_may_be_missing:
                 return None
@@ -311,9 +316,7 @@ def create_client(url: str, *, prefer_grpc: bool = True, **kwargs: Any) -> Qdran
 
 
 class _CollectionHandler(
-    coco.TargetHandler[
-        _CollectionKey, _CollectionSpec, _CollectionTrackingRecord, _PointHandler
-    ]
+    coco.TargetHandler[_CollectionSpec, _CollectionTrackingRecord, _PointHandler]
 ):
     _sink: coco.TargetActionSink[_CollectionAction, _PointHandler]
 
@@ -403,7 +406,7 @@ class _CollectionHandler(
 
     def reconcile(
         self,
-        key: _CollectionKey,
+        key: coco.StableKey,
         desired_state: _CollectionSpec | coco.NonExistenceType,
         prev_possible_states: Collection[_CollectionTrackingRecord],
         prev_may_be_missing: bool,
@@ -414,6 +417,11 @@ class _CollectionHandler(
         ]
         | None
     ):
+        if isinstance(key, tuple):
+            key_args = cast(tuple[str, str], key)
+            key = _CollectionKey(*key_args)
+        else:
+            raise TypeError(f"Collection key must be a tuple, got {type(key)}")
         tracking_record: _CollectionTrackingRecord | coco.NonExistenceType
 
         if coco.is_non_existence(desired_state):
@@ -474,13 +482,13 @@ class CollectionTarget(
     """
 
     _provider: coco.TargetStateProvider[
-        _PointId, qdrant_models.PointStruct, None, coco.MaybePendingS
+        qdrant_models.PointStruct, None, coco.MaybePendingS
     ]
 
     def __init__(
         self,
         provider: coco.TargetStateProvider[
-            _PointId, qdrant_models.PointStruct, None, coco.MaybePendingS
+            qdrant_models.PointStruct, None, coco.MaybePendingS
         ],
     ) -> None:
         self._provider = provider

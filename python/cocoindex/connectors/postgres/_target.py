@@ -23,6 +23,7 @@ from typing import (
     Literal,
     NamedTuple,
     Sequence,
+    cast,
 )
 
 from typing_extensions import TypeVar
@@ -359,7 +360,7 @@ class _RowAction(NamedTuple):
     value: _RowValue | None  # None means delete
 
 
-class _RowHandler(coco.TargetHandler[_RowKey, _RowValue, _RowFingerprint]):
+class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
     """Handler for row-level target states within a table."""
 
     _pool: asyncpg.Pool
@@ -473,12 +474,16 @@ class _RowHandler(coco.TargetHandler[_RowKey, _RowValue, _RowFingerprint]):
 
     def reconcile(
         self,
-        key: _RowKey,
+        key: coco.StableKey,
         desired_state: _RowValue | coco.NonExistenceType,
         prev_possible_states: Collection[_RowFingerprint],
         prev_may_be_missing: bool,
         /,
     ) -> coco.TargetReconcileOutput[_RowAction, _RowFingerprint] | None:
+        if isinstance(key, tuple):
+            key = cast(_RowKey, key)
+        else:
+            raise TypeError(f"Row key must be a tuple, got {type(key)}")
         if coco.is_non_existence(desired_state):
             # Delete case - only if it might exist
             if not prev_possible_states and not prev_may_be_missing:
@@ -594,9 +599,7 @@ _db_registry: connection.ConnectionRegistry[asyncpg.Pool] = (
 )
 
 
-class _TableHandler(
-    coco.TargetHandler[_TableKey, _TableSpec, _TableTrackingRecord, _RowHandler]
-):
+class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHandler]):
     """Handler for table-level target states."""
 
     _sink: coco.TargetActionSink[_TableAction, _RowHandler]
@@ -801,7 +804,7 @@ class _TableHandler(
 
     def reconcile(
         self,
-        key: _TableKey,
+        key: coco.StableKey,
         desired_state: _TableSpec | coco.NonExistenceType,
         prev_possible_states: Collection[_TableTrackingRecord],
         prev_may_be_missing: bool,
@@ -810,6 +813,12 @@ class _TableHandler(
         coco.TargetReconcileOutput[_TableAction, _TableTrackingRecord, _RowHandler]
         | None
     ):
+        if isinstance(key, tuple):
+            key_args = cast(tuple[str, str | None, str], key)
+            key = _TableKey(*key_args)
+        else:
+            raise TypeError(f"Table key must be a tuple, got {type(key)}")
+
         tracking_record: _TableTrackingRecord | coco.NonExistenceType
 
         if coco.is_non_existence(desired_state):
@@ -868,14 +877,12 @@ class TableTarget(
         RowT: The type of row objects (dict, dataclass, NamedTuple, or Pydantic model).
     """
 
-    _provider: coco.TargetStateProvider[_RowKey, _RowValue, None, coco.MaybePendingS]
+    _provider: coco.TargetStateProvider[_RowValue, None, coco.MaybePendingS]
     _table_schema: TableSchema[RowT]
 
     def __init__(
         self,
-        provider: coco.TargetStateProvider[
-            _RowKey, _RowValue, None, coco.MaybePendingS
-        ],
+        provider: coco.TargetStateProvider[_RowValue, None, coco.MaybePendingS],
         table_schema: TableSchema[RowT],
     ) -> None:
         self._provider = provider

@@ -1,6 +1,9 @@
 use crate::prelude::*;
 
-use crate::{engine::profile::EngineProfile, state::target_state_path::TargetStatePath};
+use crate::{
+    engine::profile::EngineProfile,
+    state::{stable_path::StableKey, target_state_path::TargetStatePath},
+};
 
 use std::hash::Hash;
 
@@ -34,7 +37,7 @@ pub struct TargetReconcileOutput<Prof: EngineProfile> {
 pub trait TargetHandler<Prof: EngineProfile>: Send + Sync + Sized + 'static {
     fn reconcile(
         &self,
-        key: Prof::TargetStateKey,
+        key: StableKey,
         desired_target_state: Option<Prof::TargetStateValue>,
         prev_possible_states: &[Prof::TargetStateTrackingRecord],
         prev_may_be_missing: bool,

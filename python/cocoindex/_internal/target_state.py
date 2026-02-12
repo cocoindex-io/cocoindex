@@ -18,30 +18,29 @@ from typing_extensions import TypeVar
 from . import core
 from .component_ctx import get_context_from_ctx
 from .pending_marker import PendingS, MaybePendingS, ResolvesTo
-from .typing import NonExistenceType
+from .typing import NonExistenceType, StableKey
 
 
 ActionT = TypeVar("ActionT")
 ActionT_co = TypeVar("ActionT_co", covariant=True)
 ActionT_contra = TypeVar("ActionT_contra", contravariant=True)
-KeyT = TypeVar("KeyT", bound=Hashable)
-KeyT_contra = TypeVar("KeyT_contra", contravariant=True, bound=Hashable)
+
 ValueT = TypeVar("ValueT", default=Any)
 ValueT_contra = TypeVar("ValueT_contra", contravariant=True, default=Any)
 TrackingRecordT = TypeVar("TrackingRecordT", default=Any)
 TrackingRecordT_co = TypeVar("TrackingRecordT_co", covariant=True, default=Any)
 HandlerT_co = TypeVar(
-    "HandlerT_co", covariant=True, bound="TargetHandler[Any, Any, Any, Any]"
+    "HandlerT_co", covariant=True, bound="TargetHandler[Any, Any, Any]"
 )
 OptChildHandlerT = TypeVar(
     "OptChildHandlerT",
-    bound="TargetHandler[Any, Any, Any, Any] | None",
+    bound="TargetHandler[Any, Any, Any] | None",
     default=None,
     covariant=True,
 )
 OptChildHandlerT_co = TypeVar(
     "OptChildHandlerT_co",
-    bound="TargetHandler[Any, Any, Any, Any] | None",
+    bound="TargetHandler[Any, Any, Any] | None",
     default=None,
     covariant=True,
 )
@@ -144,12 +143,10 @@ class TargetReconcileOutput(
     tracking_record: TrackingRecordT_co | NonExistenceType
 
 
-class TargetHandler(
-    Protocol[KeyT_contra, ValueT_contra, TrackingRecordT, OptChildHandlerT_co]
-):
+class TargetHandler(Protocol[ValueT_contra, TrackingRecordT, OptChildHandlerT_co]):
     def reconcile(
         self,
-        key: KeyT_contra,
+        key: StableKey,
         desired_target_state: ValueT_contra | NonExistenceType,
         prev_possible_states: Collection[TrackingRecordT],
         prev_may_be_missing: bool,
@@ -158,8 +155,8 @@ class TargetHandler(
 
 
 class TargetStateProvider(
-    Generic[KeyT, ValueT, OptChildHandlerT, MaybePendingS],
-    ResolvesTo["TargetStateProvider[KeyT, ValueT, OptChildHandlerT]"],
+    Generic[ValueT, OptChildHandlerT, MaybePendingS],
+    ResolvesTo["TargetStateProvider[ValueT, OptChildHandlerT]"],
 ):
     __slots__ = ("_core", "memo_key")
     _core: core.TargetStateProvider
@@ -170,8 +167,8 @@ class TargetStateProvider(
         self.memo_key = core_provider.coco_memo_key()
 
     def target_state(
-        self: TargetStateProvider[KeyT, ValueT, OptChildHandlerT],
-        key: KeyT,
+        self: TargetStateProvider[ValueT, OptChildHandlerT],
+        key: StableKey,
         value: ValueT,
     ) -> "TargetState[OptChildHandlerT]":
         return TargetState(self, key, value)
@@ -181,20 +178,20 @@ class TargetStateProvider(
 
 
 PendingTargetStateProvider: TypeAlias = TargetStateProvider[
-    KeyT, ValueT, OptChildHandlerT, PendingS
+    ValueT, OptChildHandlerT, PendingS
 ]
 
 
 class TargetState(Generic[OptChildHandlerT]):
     __slots__ = ("_provider", "_key", "_value")
-    _provider: TargetStateProvider[Any, Any, OptChildHandlerT]
+    _provider: TargetStateProvider[Any, OptChildHandlerT]
     _key: Any
     _value: Any
 
     def __init__(
         self,
-        provider: TargetStateProvider[KeyT, ValueT, OptChildHandlerT],
-        key: KeyT,
+        provider: TargetStateProvider[ValueT, OptChildHandlerT],
+        key: StableKey,
         value: ValueT,
     ):
         self._provider = provider
@@ -220,8 +217,8 @@ def declare_target_state(target_state: TargetState[None]) -> None:
 
 
 def declare_target_state_with_child(
-    target_state: TargetState[TargetHandler[KeyT, ValueT, Any, OptChildHandlerT]],
-) -> PendingTargetStateProvider[KeyT, ValueT, OptChildHandlerT]:
+    target_state: TargetState[TargetHandler[ValueT, Any, OptChildHandlerT]],
+) -> PendingTargetStateProvider[ValueT, OptChildHandlerT]:
     """
     Declare a target state with a child handler within the current component context.
 
@@ -243,7 +240,7 @@ def declare_target_state_with_child(
 
 
 def register_root_target_states_provider(
-    name: str, handler: TargetHandler[KeyT, ValueT, Any, OptChildHandlerT]
-) -> TargetStateProvider[KeyT, ValueT, OptChildHandlerT]:
+    name: str, handler: TargetHandler[ValueT, Any, OptChildHandlerT]
+) -> TargetStateProvider[ValueT, OptChildHandlerT]:
     provider = core.register_root_target_states_provider(name, handler)
     return TargetStateProvider(provider)
