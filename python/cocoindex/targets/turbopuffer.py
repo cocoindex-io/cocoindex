@@ -1,15 +1,30 @@
 import dataclasses
 import json
 import logging
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
-import turbopuffer  # type: ignore
+if TYPE_CHECKING:
+    import turbopuffer  # type: ignore
 
 from cocoindex import op
 from cocoindex.engine_type import FieldSchema, BasicValueType
 from cocoindex.index import IndexOptions, VectorSimilarityMetric
 
 _logger = logging.getLogger(__name__)
+
+
+def _get_turbopuffer() -> Any:
+    """Lazily import turbopuffer to avoid import errors when not installed."""
+    try:
+        import turbopuffer  # type: ignore
+
+        return turbopuffer
+    except ImportError:
+        raise ImportError(
+            "turbopuffer is required for Turbopuffer connector. "
+            "Install it with: pip install turbopuffer"
+        )
+
 
 _TURBOPUFFER_DISTANCE_METRIC: dict[VectorSimilarityMetric, str] = {
     VectorSimilarityMetric.COSINE_SIMILARITY: "cosine_distance",
@@ -48,7 +63,8 @@ class _MutateContext:
 
 
 def _get_client(spec: Turbopuffer) -> Any:
-    return turbopuffer.Turbopuffer(
+    tpuf = _get_turbopuffer()
+    return tpuf.Turbopuffer(
         api_key=spec.api_key,
         region=spec.region,
     )
@@ -162,7 +178,8 @@ class _Connector:
             )
             if should_delete:
                 try:
-                    client = turbopuffer.Turbopuffer(
+                    tpuf = _get_turbopuffer()
+                    client = tpuf.Turbopuffer(
                         api_key=state.api_key,
                         region=key.region,
                     )

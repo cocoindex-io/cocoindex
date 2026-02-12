@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 2
 requires-python = ">=3.11"
 resolution-markers = [
     "python_full_version >= '3.13'",
@@ -444,6 +444,7 @@ all = [
     { name = "pyarrow" },
     { name = "pymysql" },
     { name = "sentence-transformers" },
+    { name = "turbopuffer" },
 ]
 chromadb = [
     { name = "chromadb" },
@@ -462,6 +463,9 @@ embeddings = [
 lancedb = [
     { name = "lancedb" },
     { name = "pyarrow" },
+]
+turbopuffer = [
+    { name = "turbopuffer" },
 ]
 
 [package.dev-dependencies]
@@ -527,10 +531,12 @@ requires-dist = [
     { name = "rich", specifier = ">=14.0.0" },
     { name = "sentence-transformers", marker = "extra == 'all'", specifier = ">=3.3.1" },
     { name = "sentence-transformers", marker = "extra == 'embeddings'", specifier = ">=3.3.1" },
+    { name = "turbopuffer", marker = "extra == 'all'", specifier = ">=1.0.0" },
+    { name = "turbopuffer", marker = "extra == 'turbopuffer'", specifier = ">=1.0.0" },
     { name = "typing-extensions", specifier = ">=4.12" },
     { name = "watchfiles", specifier = ">=1.1.0" },
 ]
-provides-extras = ["all", "chromadb", "colpali", "doris", "embeddings", "lancedb"]
+provides-extras = ["all", "chromadb", "colpali", "doris", "embeddings", "lancedb", "turbopuffer"]
 
 [package.metadata.requires-dev]
 build-test = [
@@ -3254,6 +3260,15 @@ wheels = [
 ]
 
 [[package]]
+name = "sniffio"
+version = "1.3.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/a2/87/a6771e1546d97e7e041b6ae58d80074f81b7d5121207425c964ddf5cfdbd/sniffio-1.3.1.tar.gz", hash = "sha256:f4324edc670a0f49750a81b895f35c3adb843cca46f0530f79fc1babb23789dc", size = 20372, upload-time = "2024-02-25T23:20:04.057Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e9/44/75a9c9421471a6c4805dbf2356f7c181a29c1879239abab1ea2cc8f38b40/sniffio-1.3.1-py3-none-any.whl", hash = "sha256:2f6da418d1f1e0fddd844478f41680e794e6051915791a034ff65e5f100525a2", size = 10235, upload-time = "2024-02-25T23:20:01.196Z" },
+]
+
+[[package]]
 name = "sympy"
 version = "1.14.0"
 source = { registry = "https://pypi.org/simple" }
@@ -3429,6 +3444,26 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/d0/66/b1eb52839f563623d185f0927eb3530ee4d5ffe9d377cdaf5346b306689e/triton-3.4.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:31c1d84a5c0ec2c0f8e8a072d7fd150cab84a9c239eaddc6706c081bfae4eb04", size = 155560068, upload-time = "2025-07-30T19:58:37.081Z" },
     { url = "https://files.pythonhosted.org/packages/30/7b/0a685684ed5322d2af0bddefed7906674f67974aa88b0fae6e82e3b766f6/triton-3.4.0-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:00be2964616f4c619193cb0d1b29a99bd4b001d7dc333816073f92cf2a8ccdeb", size = 155569223, upload-time = "2025-07-30T19:58:44.017Z" },
     { url = "https://files.pythonhosted.org/packages/20/63/8cb444ad5cdb25d999b7d647abac25af0ee37d292afc009940c05b82dda0/triton-3.4.0-cp313-cp313t-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:7936b18a3499ed62059414d7df563e6c163c5e16c3773678a3ee3d417865035d", size = 155659780, upload-time = "2025-07-30T19:58:51.171Z" },
+]
+
+[[package]]
+name = "turbopuffer"
+version = "1.15.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "aiohttp" },
+    { name = "anyio" },
+    { name = "distro" },
+    { name = "httpx" },
+    { name = "orjson" },
+    { name = "pybase64" },
+    { name = "pydantic" },
+    { name = "sniffio" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/d3/95/cd21fad366bd8b56df7f053317d03d4a60b1b3a0bc867e7c92f4e5458ae5/turbopuffer-1.15.0.tar.gz", hash = "sha256:503f1451394f80846e9c8ad2dc869b5213a506cf78e448b0f056a996dc10f861", size = 153942, upload-time = "2026-02-08T06:26:34.264Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/8f/7c/76161c6482f5e876cf021af0e5e0a703f3deb16268380fcd08d4aac1b46a/turbopuffer-1.15.0-py3-none-any.whl", hash = "sha256:064f558fe97e0337b7d9cb6b161502df9ca0628f04ae70fe4e5cc03900ee8430", size = 115658, upload-time = "2026-02-08T06:26:33.055Z" },
 ]
 
 [[package]]
