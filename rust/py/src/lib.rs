@@ -53,11 +53,12 @@ fn core_module(m: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()>
     m.add_class::<environment::PyEnvironment>()?;
 
     m.add_function(wrap_pyfunction!(inspect::list_stable_paths, m)?)?;
-    m.add_function(wrap_pyfunction!(inspect::list_stable_paths_with_types, m)?)?;
+    m.add_function(wrap_pyfunction!(inspect::iter_stable_paths_with_types, m)?)?;
     m.add_function(wrap_pyfunction!(inspect::list_app_names, m)?)?;
 
     m.add_class::<inspect::PyStablePathNodeType>()?;
     m.add_class::<inspect::PyStablePathWithType>()?;
+    m.add_class::<inspect::PyStablePathWithTypeAsyncIterator>()?;
 
     m.add_class::<runtime::PyAsyncContext>()?;
 

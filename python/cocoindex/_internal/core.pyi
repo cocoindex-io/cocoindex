@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from typing import (
     Any,
+    Awaitable,
     Callable,
     Coroutine,
     Generic,
@@ -116,7 +117,7 @@ class Environment:
 
 # --- Inspect helpers ---
 def list_app_names(env: Environment) -> list[str]: ...
-async def list_stable_paths_with_types(app: App) -> list[StablePathWithType]: ...
+def iter_stable_paths_with_types(app: App) -> StablePathWithTypeAsyncIterator: ...
 
 class StablePathNodeType:
     @staticmethod
@@ -127,6 +128,13 @@ class StablePathNodeType:
 class StablePathWithType:
     path: StablePath
     node_type: StablePathNodeType
+
+
+class StablePathWithTypeAsyncIterator:
+    """Async iterator of StablePathWithType; use with async for."""
+
+    def __aiter__(self) -> StablePathWithTypeAsyncIterator: ...
+    def __anext__(self) -> Awaitable[StablePathWithType]: ...
 
 # --- App ---
 class App:

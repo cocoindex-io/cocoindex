@@ -1,8 +1,12 @@
+use std::pin::Pin;
+use std::sync::Arc;
+
 use crate::{app::PyApp, environment::PyEnvironment, prelude::*, stable_path::PyStablePath};
 
 use cocoindex_core::inspect::db_inspect;
 use cocoindex_core::inspect::db_inspect::StablePathNodeType;
-use futures::{StreamExt, pin_mut};
+use futures::stream::Stream;
+use pyo3::exceptions::PyStopAsyncIteration;
 use pyo3_async_runtimes::tokio::future_into_py;
 
 #[pyfunction]
@@ -56,26 +60,68 @@ pub struct PyStablePathWithType {
     pub node_type: PyStablePathNodeType,
 }
 
+/// Python async iterator that yields `StablePathWithType` items one-by-one (no blocking calls, no forwarder).
+#[pyclass(name = "StablePathWithTypeAsyncIterator")]
+pub struct PyStablePathWithTypeAsyncIterator {
+    /// Stream wrapped in async Mutex to allow &self access without blocking Python thread.
+    /// Pin<Box<...>> is needed because streams are not Unpin.
+    stream: Arc<
+        tokio::sync::Mutex<
+            Pin<Box<dyn Stream<Item = Result<db_inspect::StablePathWithType>> + Send>>,
+        >,
+    >,
+}
+
+#[pymethods]
+impl PyStablePathWithTypeAsyncIterator {
+    fn __aiter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    fn __anext__<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        use futures::StreamExt;
+
+        let stream = Arc::clone(&self.stream);
+        future_into_py(py, async move {
+            let mut guard = stream.lock().await;
+            match StreamExt::next(&mut *guard).await {
+                None => Err(PyStopAsyncIteration::new_err(())),
+                Some(result) => {
+                    let item = result.into_py_result()?;
+                    Python::attach(|py| {
+                        Py::new(
+                            py,
+                            PyStablePathWithType {
+                                path: PyStablePath(item.path),
+                                node_type: PyStablePathNodeType(item.node_type),
+                            },
+                        )
+                        .map(|p| p.into_any())
+                    })
+                    .map_err(|e| e.into())
+                }
+            }
+        })
+    }
+}
+
 #[pyfunction]
-pub fn list_stable_paths_with_types<'py>(
+pub fn iter_stable_paths_with_types<'py>(
     app: &PyApp,
     py: Python<'py>,
 ) -> PyResult<Bound<'py, PyAny>> {
     let app_clone = app.0.clone();
-    let fut = future_into_py(py, async move {
-        let stream = db_inspect::list_stable_paths_with_types_stream(&app_clone);
-        pin_mut!(stream);
-        let mut results = Vec::new();
-        while let Some(item) = stream.next().await {
-            let item = item.into_py_result()?;
-            results.push(PyStablePathWithType {
-                path: PyStablePath(item.path),
-                node_type: PyStablePathNodeType(item.node_type),
-            });
-        }
-        Ok(results)
-    })?;
-    Ok(fut)
+    let stream = db_inspect::iter_stable_paths_with_types(&app_clone);
+
+    // Box and pin the stream to store it in the iterator.
+    // No forwarder task needed - we poll the stream directly.
+    let stream: Pin<Box<dyn Stream<Item = Result<db_inspect::StablePathWithType>> + Send>> =
+        Box::pin(stream);
+
+    let iterator = PyStablePathWithTypeAsyncIterator {
+        stream: Arc::new(tokio::sync::Mutex::new(stream)),
+    };
+    Ok(Py::new(py, iterator)?.into_any().into_bound(py))
 }
 
 #[pyfunction]

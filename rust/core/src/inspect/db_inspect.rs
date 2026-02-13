@@ -4,10 +4,10 @@ use crate::engine::environment::Environment;
 use crate::engine::{app::App, profile::EngineProfile};
 use crate::state::db_schema::{self, DbEntryKey};
 use crate::state::stable_path::{StablePath, StablePathPrefix, StablePathRef};
-use async_stream::try_stream;
 use cocoindex_utils::deser::from_msgpack_slice;
 use futures::stream::Stream;
 use heed::types::{DecodeIgnore, Str};
+use tokio_stream::wrappers::ReceiverStream;
 
 pub fn list_stable_paths<Prof: EngineProfile>(app: &App<Prof>) -> Result<Vec<StablePath>> {
     let encoded_key_prefix =
@@ -44,15 +44,13 @@ pub struct StablePathWithType {
 // Re-export StablePathNodeType for use in Python bindings
 pub use db_schema::StablePathNodeType;
 
-/// List stable paths along with their node types as an async stream.
-pub fn list_stable_paths_with_types_stream<Prof: EngineProfile>(
+/// Returns a stream of stable paths with their node types.
+/// LMDB iteration runs on a dedicated thread (RoTxn/cursors are !Send); items are sent over a channel.
+pub fn iter_stable_paths_with_types<Prof: EngineProfile>(
     app: &App<Prof>,
 ) -> impl Stream<Item = Result<StablePathWithType>> + Send + 'static {
-    // Run the LMDB iteration on a dedicated thread (RoTxn and cursors are !Send),
-    // and forward results over a Tokio mpsc channel. The returned stream is then
-    // driven from the receiver side, which is Send.
     let app_ctx = app.app_ctx().clone();
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<Result<StablePathWithType>>(128);
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<StablePathWithType>>(128);
 
     std::thread::spawn(move || {
         let result: Result<()> = (|| {
@@ -102,11 +100,7 @@ pub fn list_stable_paths_with_types_stream<Prof: EngineProfile>(
         }
     });
 
-    try_stream! {
-        while let Some(item) = rx.recv().await {
-            yield item?;
-        }
-    }
+    ReceiverStream::new(rx)
 }
 
 fn get_path_node_type(
