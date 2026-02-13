@@ -89,7 +89,7 @@ Given the same code and inputs, updates are repeatable. When data or code change
 An App is the top-level runner and entry point. A **processing component** is the unit of incremental execution *within* an app.
 
 - Your app's main function runs as the **root processing component** at the root path.
-- Each call to `mount()` or `mount_run()` declares a **child processing component** at a child path.
+- Each call to `mount()` or `use_mount()` declares a **child processing component** at a child path. Sugar APIs like `mount_each()` and `mount_target()` also create child components.
 - Each processing component declares a set of target states, and CocoIndex syncs them atomically when that component finishes.
 
 This is why `app.update()` does not "run everything from scratch": CocoIndex uses the component path tree to decide what can be reused and what must re-run.

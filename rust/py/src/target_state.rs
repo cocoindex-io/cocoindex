@@ -6,13 +6,15 @@ use cocoindex_core::engine::target_state::{
     TargetStateProviderRegistry,
 };
 use cocoindex_core::state::target_state_path::TargetStatePath;
-use pyo3::types::{PyList, PySequence};
+use pyo3::types::{PyList, PySequence, PyTuple};
 
 use crate::context::{PyComponentProcessorContext, PyFnCallContext};
 use crate::prelude::*;
 
+use crate::stable_path::PyStableKey;
+
 use crate::runtime::{PyAsyncContext, PyCallback, python_objects};
-use crate::value::{PyKey, PyValue};
+use crate::value::PyValue;
 
 #[pyclass(name = "TargetActionSink")]
 #[derive(Clone)]
@@ -99,7 +101,7 @@ pub struct PyTargetHandler(Py<PyAny>);
 impl TargetHandler<PyEngineProfile> for PyTargetHandler {
     fn reconcile(
         &self,
-        key: Arc<PyKey>,
+        key: cocoindex_core::state::stable_path::StableKey,
         desired_effect: Option<Py<PyAny>>,
         prev_possible_states: &[PyValue],
         prev_may_be_missing: bool,
@@ -112,7 +114,7 @@ impl TargetHandler<PyEngineProfile> for PyTargetHandler {
                 py,
                 "reconcile",
                 (
-                    key.value().bind(py),
+                    PyStableKey(key),
                     desired_effect.as_ref().unwrap_or(non_existence).bind(py),
                     prev_possible_states,
                     prev_may_be_missing,
@@ -148,23 +150,30 @@ impl PyTargetStateProvider {
     pub fn coco_memo_key(&self) -> String {
         self.0.target_state_path().to_string()
     }
+
+    pub fn stable_key_chain<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
+        let chain = self.0.stable_key_chain();
+        let py_keys: Vec<Bound<'py, PyAny>> = chain
+            .into_iter()
+            .map(|k| PyStableKey(k).into_pyobject(py))
+            .collect::<Result<_, _>>()?;
+        PyTuple::new(py, py_keys)
+    }
 }
 
 #[pyfunction]
 pub fn declare_target_state<'py>(
-    py: Python<'py>,
     comp_ctx: &'py PyComponentProcessorContext,
     fn_ctx: &'py PyFnCallContext,
     provider: &PyTargetStateProvider,
-    key: Py<PyAny>,
+    key: PyStableKey,
     value: Py<PyAny>,
 ) -> PyResult<()> {
-    let py_key = PyKey::new(py, key).into_py_result()?;
     cocoindex_core::engine::execution::declare_target_state(
         &comp_ctx.0,
         &fn_ctx.0,
         provider.0.clone(),
-        Arc::new(py_key),
+        key.0,
         value,
     )
     .into_py_result()?;
@@ -173,19 +182,17 @@ pub fn declare_target_state<'py>(
 
 #[pyfunction]
 pub fn declare_target_state_with_child<'py>(
-    py: Python<'py>,
     comp_ctx: &'py PyComponentProcessorContext,
     fn_ctx: &'py PyFnCallContext,
     provider: &PyTargetStateProvider,
-    key: Py<PyAny>,
+    key: PyStableKey,
     value: Py<PyAny>,
 ) -> PyResult<PyTargetStateProvider> {
-    let py_key = PyKey::new(py, key).into_py_result()?;
     let output = cocoindex_core::engine::execution::declare_target_state_with_child(
         &comp_ctx.0,
         &fn_ctx.0,
         provider.0.clone(),
-        Arc::new(py_key),
+        key.0,
         value,
     )
     .into_py_result()?;
@@ -209,13 +216,7 @@ pub fn register_root_target_states_provider(
     let provider = root_target_states_provider_registry()
         .lock()
         .unwrap()
-        .register(
-            TargetStatePath::new(
-                utils::fingerprint::Fingerprint::from(&name).into_py_result()?,
-                None,
-            ),
-            PyTargetHandler(handler),
-        )
+        .register_root(name, PyTargetHandler(handler))
         .into_py_result()?;
     Ok(PyTargetStateProvider(provider))
 }

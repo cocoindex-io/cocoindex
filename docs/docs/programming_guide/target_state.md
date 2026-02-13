@@ -38,23 +38,26 @@ Target states can be nested — a directory contains files, a table contains row
 
 Container target states (like a directory or table) are typically top-level — you can declare them directly. Child target states (like files or rows) require the container to be ready first.
 
-The pattern is:
-
-1. **Declare the container target state** (e.g., a directory or table) using `mount_run()`
-2. **Call `.result()`** to wait until it's ready and get a target (e.g., `DirTarget`, `TableTarget`)
-3. **Use the target** to declare child target states (e.g., files or rows)
+Connectors provide convenience methods that mount the container and return a ready-to-use target in one step:
 
 ### Example: writing a file to a directory
+
+For simple cases where each processing component writes a single file, you can declare the file directly:
 
 ```python
 from cocoindex.connectors import localfs
 
-# Declare the directory target state, get a DirTarget
-dir_target = coco.mount_run(
-    coco.component_subpath("setup"), localfs.declare_dir_target, outdir
-).result()
+# Declare a single file target state directly
+localfs.declare_file(outdir / "output.html", html, create_parent_dirs=True)
+```
 
-# Declare a child target state (a file)
+When you need a `DirTarget` to declare multiple files, use the connector's convenience method:
+
+```python
+# Mount a directory target, get a ready-to-use DirTarget
+dir_target = await localfs.mount_dir_target(outdir)
+
+# Declare child target states (files)
 dir_target.declare_file(filename="output.html", content=html)
 ```
 
@@ -63,21 +66,19 @@ dir_target.declare_file(filename="output.html", content=html)
 ```python
 from cocoindex.connectors import postgres
 
-# Declare the table target state, get a TableTarget
-table = await coco_aio.mount_run(
-    coco.component_subpath("setup", "table"),
-    db.declare_table_target,
+# Mount a table target, get a ready-to-use TableTarget
+table = await target_db.mount_table_target(
     table_name="doc_embeddings",
     table_schema=await postgres.TableSchema.from_class(
-        DocEmbedding, primary_key=["filename", "chunk_start"]
+        DocEmbedding, primary_key=["id"]
     ),
-).result()
+)
 
 # Declare a child target state (a row)
 table.declare_row(row=DocEmbedding(...))
 ```
 
-See [Processing Component](./processing_component.md) for more on `mount_run()`.
+These convenience methods wrap [`mount_target()`](./processing_component.md#mount-target), which automatically derives the component path from the target's globally unique key. See [Processing Component](./processing_component.md) for more on mounting APIs.
 
 :::tip Type safety
 Targets like `DirTarget` and `TableTarget` have two statuses: **pending** (just created) and **resolved** (after the container target state is ready). The type system tracks this — if you try to use a pending target before it's resolved, type checkers like mypy will flag the error.

@@ -46,21 +46,21 @@ def _lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
 
 @coco.function
 def build_alpha() -> None:
-    dir_target = coco.mount_run(
+    dir_target = coco.use_mount(
         coco.component_subpath("out"),
         declare_dir_target,
         OUT_DIR_ALPHA,
-    ).result()
+    )
     dir_target.declare_file("output.txt", "From Alpha env\n")
 
 
 @coco.function
 def build_default() -> None:
-    dir_target = coco.mount_run(
+    dir_target = coco.use_mount(
         coco.component_subpath("out"),
         declare_dir_target,
         OUT_DIR_DEFAULT,
-    ).result()
+    )
     dir_target.declare_file("output.txt", "From Default env\n")
 
 

@@ -5,15 +5,14 @@ use std::{fmt::Write as FmtWrite, io::Write};
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum StableKey {
     Null,
+    Symbol(Arc<str>),
     Bool(bool),
     Int(i64),
-
     Str(Arc<str>),
     Bytes(Arc<[u8]>),
     Uuid(uuid::Uuid),
     Array(Arc<[StableKey]>),
     Fingerprint(utils::fingerprint::Fingerprint),
-    Symbol(Arc<str>),
 }
 
 impl Serialize for StableKey {
@@ -132,11 +131,17 @@ impl storekey::Encode for StableKey {
             StableKey::Null => {
                 e.write_u8(2)?;
             }
-            StableKey::Bool(false) => {
+            StableKey::Symbol(s) => {
                 e.write_u8(3)?;
+                e.write_slice(s.as_bytes())?;
+            }
+            StableKey::Bool(false) => {
+                e.write_u8(4)?;
+                e.write_u8(0)?;
             }
             StableKey::Bool(true) => {
                 e.write_u8(4)?;
+                e.write_u8(1)?;
             }
             StableKey::Int(i) => {
                 e.write_u8(5)?;
@@ -162,10 +167,6 @@ impl storekey::Encode for StableKey {
                 e.write_u8(10)?;
                 storekey::Encode::encode(fp, e)?;
             }
-            StableKey::Symbol(s) => {
-                e.write_u8(11)?;
-                e.write_slice(s.as_bytes())?;
-            }
         }
         Ok(())
     }
@@ -177,8 +178,8 @@ impl storekey::Decode for StableKey {
     ) -> Result<Self, storekey::DecodeError> {
         match d.read_u8()? {
             2 => Ok(StableKey::Null),
-            3 => Ok(StableKey::Bool(false)),
-            4 => Ok(StableKey::Bool(true)),
+            3 => Ok(StableKey::Symbol(d.read_string()?.into())),
+            4 => Ok(StableKey::Bool(d.read_u8()? != 0)),
             5 => Ok(StableKey::Int(d.read_i64()?)),
             6 => Ok(StableKey::Str(d.read_string()?.into())),
             7 => Ok(StableKey::Bytes(Arc::from(d.read_vec()?))),
@@ -194,7 +195,6 @@ impl storekey::Decode for StableKey {
                 let fp: utils::fingerprint::Fingerprint = storekey::Decode::decode(d)?;
                 Ok(StableKey::Fingerprint(fp))
             }
-            11 => Ok(StableKey::Symbol(d.read_string()?.into())),
             _ => Err(storekey::DecodeError::InvalidFormat),
         }
     }

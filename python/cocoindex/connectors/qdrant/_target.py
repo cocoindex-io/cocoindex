@@ -7,6 +7,7 @@ This module provides a two-level target state system for Qdrant:
 """
 
 from __future__ import annotations
+import cocoindex as coco
 
 import asyncio
 from dataclasses import dataclass
@@ -33,6 +34,8 @@ except ImportError as e:
 import cocoindex as coco
 from cocoindex.connectorkits import connection, statediff
 from cocoindex.connectorkits.fingerprint import fingerprint_object
+from cocoindex._internal.api_async import mount_target as _mount_target
+from cocoindex._internal.datatype import TypeChecker
 from cocoindex.resources import schema
 
 # Public alias for Qdrant point model
@@ -41,6 +44,7 @@ PointStruct = qdrant_models.PointStruct
 # Type aliases
 _PointId = str | int
 _PointFingerprint = bytes
+_POINT_ID_CHECKER: TypeChecker[str | int] = TypeChecker(str | int)  # type: ignore[arg-type]
 
 
 class QdrantVectorDef(NamedTuple):
@@ -169,9 +173,7 @@ class _PointAction(NamedTuple):
     point: qdrant_models.PointStruct | None
 
 
-class _PointHandler(
-    coco.TargetHandler[_PointId, qdrant_models.PointStruct, _PointFingerprint]
-):
+class _PointHandler(coco.TargetHandler[qdrant_models.PointStruct, _PointFingerprint]):
     _db_key: str
     _collection_name: str
     _sink: coco.TargetActionSink[_PointAction]
@@ -219,12 +221,13 @@ class _PointHandler(
 
     def reconcile(
         self,
-        key: _PointId,
+        key: coco.StableKey,
         desired_state: qdrant_models.PointStruct | coco.NonExistenceType,
         prev_possible_states: Collection[_PointFingerprint],
         prev_may_be_missing: bool,
         /,
     ) -> coco.TargetReconcileOutput[_PointAction, _PointFingerprint] | None:
+        key = _POINT_ID_CHECKER.check(key)
         if coco.is_non_existence(desired_state):
             if not prev_possible_states and not prev_may_be_missing:
                 return None
@@ -250,6 +253,9 @@ class _PointHandler(
 class _CollectionKey(NamedTuple):
     db_key: str
     collection_name: str
+
+
+_COLLECTION_KEY_CHECKER = TypeChecker(tuple[str, str])
 
 
 @dataclass
@@ -311,9 +317,7 @@ def create_client(url: str, *, prefer_grpc: bool = True, **kwargs: Any) -> Qdran
 
 
 class _CollectionHandler(
-    coco.TargetHandler[
-        _CollectionKey, _CollectionSpec, _CollectionTrackingRecord, _PointHandler
-    ]
+    coco.TargetHandler[_CollectionSpec, _CollectionTrackingRecord, _PointHandler]
 ):
     _sink: coco.TargetActionSink[_CollectionAction, _PointHandler]
 
@@ -403,7 +407,7 @@ class _CollectionHandler(
 
     def reconcile(
         self,
-        key: _CollectionKey,
+        key: coco.StableKey,
         desired_state: _CollectionSpec | coco.NonExistenceType,
         prev_possible_states: Collection[_CollectionTrackingRecord],
         prev_may_be_missing: bool,
@@ -414,6 +418,7 @@ class _CollectionHandler(
         ]
         | None
     ):
+        key = _CollectionKey(*_COLLECTION_KEY_CHECKER.check(key))
         tracking_record: _CollectionTrackingRecord | coco.NonExistenceType
 
         if coco.is_non_existence(desired_state):
@@ -446,7 +451,7 @@ class _CollectionHandler(
 
 
 _collection_provider = coco.register_root_target_states_provider(
-    "cocoindex.io/qdrant/collection", _CollectionHandler()
+    "cocoindex/qdrant/collection", _CollectionHandler()
 )
 
 
@@ -474,13 +479,13 @@ class CollectionTarget(
     """
 
     _provider: coco.TargetStateProvider[
-        _PointId, qdrant_models.PointStruct, None, coco.MaybePendingS
+        qdrant_models.PointStruct, None, coco.MaybePendingS
     ]
 
     def __init__(
         self,
         provider: coco.TargetStateProvider[
-            _PointId, qdrant_models.PointStruct, None, coco.MaybePendingS
+            qdrant_models.PointStruct, None, coco.MaybePendingS
         ],
     ) -> None:
         self._provider = provider
@@ -535,21 +540,69 @@ class QdrantDatabase(connection.KeyedConnection[QdrantClient]):
             @coco.function
             def app_main() -> None:
                 db = coco.use_context(QDRANT_DB)
-                target = coco.mount_run(
+                target = coco.use_mount(
                     coco.component_subpath("setup"),
                     db.declare_collection_target,
                     collection_name="my_collection",
                     schema=CollectionSchema(
                         vectors={"embedding": QdrantVectorSpec(dim=384)}
                     ),
-                ).result()
+                )
                 # Use target to declare points...
             ```
         """
+        provider = coco.declare_target_state_with_child(
+            self.collection_target(collection_name, schema, managed_by=managed_by)
+        )
+        return CollectionTarget(provider)
+
+    def collection_target(
+        self,
+        collection_name: str,
+        schema: CollectionSchema,
+        *,
+        managed_by: Literal["system", "user"] = "system",
+    ) -> "coco.TargetState[_PointHandler]":
+        """
+        Create a TargetState for a Qdrant collection target.
+
+        Use with ``coco_aio.mount_target()`` to mount and get a child provider,
+        or with ``mount_collection_target()`` for a convenience wrapper.
+
+        Args:
+            collection_name: Name of the collection in Qdrant.
+            schema: CollectionSchema defining vector fields.
+            managed_by: Whether the collection is managed by the system or user.
+
+        Returns:
+            A TargetState that can be passed to ``mount_target()``.
+        """
         key = _CollectionKey(db_key=self.key, collection_name=collection_name)
         spec = _CollectionSpec(schema=schema, managed_by=managed_by)
-        provider = coco.declare_target_state_with_child(
-            _collection_provider.target_state(key, spec)
+        return _collection_provider.target_state(key, spec)
+
+    async def mount_collection_target(
+        self,
+        collection_name: str,
+        schema: CollectionSchema,
+        *,
+        managed_by: Literal["system", "user"] = "system",
+    ) -> "CollectionTarget[coco.ResolvedS]":
+        """
+        Mount a collection target and return a ready-to-use CollectionTarget.
+
+        Sugar over ``collection_target()`` + ``coco_aio.mount_target()`` + wrapping.
+
+        Args:
+            collection_name: Name of the collection in Qdrant.
+            schema: CollectionSchema defining vector fields.
+            managed_by: Whether the collection is managed by the system or user.
+
+        Returns:
+            A CollectionTarget for declaring points.
+        """
+        provider = await _mount_target(
+            self.collection_target(collection_name, schema, managed_by=managed_by)
         )
         return CollectionTarget(provider)
 

@@ -6,8 +6,11 @@ import typing
 from typing import (
     Annotated,
     Any,
+    Callable,
+    Generic,
     Iterator,
     NamedTuple,
+    TypeVar,
     get_type_hints,
 )
 
@@ -254,3 +257,159 @@ def analyze_type_info(t: Any, *, nullable: bool = False) -> DataTypeInfo:
         annotations=annotations,
         nullable=nullable,
     )
+
+
+# =============================================================================
+# TypeChecker: Pre-built runtime type validation for StableKey values
+# =============================================================================
+
+_CheckFn = Callable[[Any, str], None]
+
+
+def _build_check_fn(tp: Any) -> _CheckFn:
+    """
+    Build a validation closure for the given type annotation.
+
+    Returns a function ``(value, path) -> None`` that raises ``TypeError``
+    on mismatch.  *path* carries positional context for error messages
+    (empty string at top level, ``"[0]"`` for tuple element 0, etc.).
+    """
+    origin = typing.get_origin(tp)
+    args = typing.get_args(tp)
+
+    # NoneType
+    if tp is type(None):
+
+        def check_none(value: Any, path: str) -> None:
+            if value is not None:
+                loc = f" at {path}" if path else ""
+                raise TypeError(f"expected None{loc}, got {type(value).__name__}")
+
+        return check_none
+
+    # Any — accept everything
+    if tp is Any:
+        return lambda _v, _p: None
+
+    # Union: str | int, str | None, etc.
+    if origin in (types.UnionType, typing.Union):
+        sub_fns = [_build_check_fn(a) for a in args]
+
+        def check_union(value: Any, path: str) -> None:
+            for fn in sub_fns:
+                try:
+                    fn(value, path)
+                    return
+                except TypeError:
+                    continue
+            loc = f" at {path}" if path else ""
+            raise TypeError(
+                f"expected {tp}{loc}, got {type(value).__name__}: {value!r}"
+            )
+
+        return check_union
+
+    # Tuple types
+    if origin is tuple:
+        if len(args) == 2 and args[1] is Ellipsis:
+            # Variable-length: tuple[X, ...]
+            if args[0] is Any:
+
+                def check_var_tuple_any(value: Any, path: str) -> None:
+                    if not isinstance(value, tuple):
+                        loc = f" at {path}" if path else ""
+                        raise TypeError(
+                            f"expected tuple{loc}, got {type(value).__name__}"
+                        )
+
+                return check_var_tuple_any
+
+            elem_fn = _build_check_fn(args[0])
+
+            def check_var_tuple(value: Any, path: str) -> None:
+                if not isinstance(value, tuple):
+                    loc = f" at {path}" if path else ""
+                    raise TypeError(f"expected tuple{loc}, got {type(value).__name__}")
+                for i, elem in enumerate(value):
+                    elem_fn(elem, f"{path}[{i}]")
+
+            return check_var_tuple
+
+        if args:
+            # Fixed-length: tuple[X, Y, ...]
+            elem_fns = [_build_check_fn(a) for a in args]
+            expected_len = len(args)
+
+            def check_fixed_tuple(value: Any, path: str) -> None:
+                if not isinstance(value, tuple):
+                    loc = f" at {path}" if path else ""
+                    raise TypeError(f"expected {tp}{loc}, got {type(value).__name__}")
+                if len(value) != expected_len:
+                    loc = f" at {path}" if path else ""
+                    raise TypeError(
+                        f"expected tuple of length {expected_len}{loc}, "
+                        f"got length {len(value)}"
+                    )
+                for i, (elem, fn) in enumerate(zip(value, elem_fns)):
+                    fn(elem, f"{path}[{i}]")
+
+            return check_fixed_tuple
+
+        # Bare tuple (no args) — just check isinstance
+        def check_bare_tuple(value: Any, path: str) -> None:
+            if not isinstance(value, tuple):
+                loc = f" at {path}" if path else ""
+                raise TypeError(f"expected tuple{loc}, got {type(value).__name__}")
+
+        return check_bare_tuple
+
+    # Simple concrete type: str, int, bytes, uuid.UUID, etc.
+    if isinstance(tp, type):
+
+        def check_isinstance(value: Any, path: str) -> None:
+            if not isinstance(value, tp):
+                loc = f" at {path}" if path else ""
+                raise TypeError(
+                    f"expected {tp.__name__}{loc}, got {type(value).__name__}: {value!r}"
+                )
+
+        return check_isinstance
+
+    raise ValueError(f"Unsupported type for TypeChecker: {tp}")
+
+
+T = TypeVar("T")
+
+
+class TypeChecker(Generic[T]):
+    """
+    Pre-built runtime type checker.
+
+    Analyzes a type annotation once at construction time and builds optimized
+    validation closures.  At check time, validation is a fast series of
+    ``isinstance`` calls and tuple-length comparisons — no reflection.
+
+    Usage::
+
+        _TABLE_KEY_CHECKER: TypeChecker[tuple[str, str]] = TypeChecker(tuple[str, str])
+
+        # In reconcile():
+        key = _TableKey(*_TABLE_KEY_CHECKER.check(key))
+    """
+
+    __slots__ = ("_expected_type", "_check_fn")
+
+    def __init__(self, expected_type: type[T]) -> None:
+        self._expected_type = expected_type
+        self._check_fn = _build_check_fn(expected_type)
+
+    def check(self, value: Any) -> T:
+        """Validate *value* and return it typed as ``T``.
+
+        Raises ``TypeError`` with a descriptive message on mismatch.
+        """
+        self._check_fn(value, "")
+        return value  # type: ignore[no-any-return]
+
+    def __repr__(self) -> str:
+        return f"TypeChecker({self._expected_type})"

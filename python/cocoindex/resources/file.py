@@ -44,7 +44,7 @@ class FileLike(_Protocol[ResolvedPathT]):
     @property
     def stable_key(self) -> _StableKey:
         """Return the stable key for this file."""
-        return str(self.file_path.path)
+        return self.file_path.path.as_posix()
 
     @property
     def file_path(self) -> "FilePath[ResolvedPathT]":

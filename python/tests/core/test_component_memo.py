@@ -66,10 +66,10 @@ def _declare_transform_dict_data() -> list[SourceDataResult]:
     results: list[SourceDataResult] = []
     for name in sorted(_source_data):
         entry = _source_data[name]
-        handle = coco.mount_run(
+        result = coco.use_mount(
             coco.component_subpath(entry.name), _declare_transform_dict_entry, entry
         )
-        results.append(handle.result())
+        results.append(result)
     return results
 
 
@@ -175,13 +175,13 @@ def test_source_data_memo_cleanup() -> None:
     assert coco_inspect.list_stable_paths_sync(app) == [coco.ROOT_PATH]
 
 
-def test_source_data_memo_mount_run() -> None:
+def test_source_data_memo_use_mount() -> None:
     GlobalDictTarget.store.clear()
     _source_data.clear()
     _metrics.clear()
 
     app = coco.App(
-        coco.AppConfig(name="test_source_data_memo_mount_run", environment=coco_env),
+        coco.AppConfig(name="test_source_data_memo_use_mount", environment=coco_env),
         _declare_transform_dict_data,
     )
 
@@ -282,14 +282,14 @@ def test_source_data_memo_mount_run() -> None:
     ]
 
 
-def test_source_data_memo_mount_run_cleanup() -> None:
+def test_source_data_memo_use_mount_cleanup() -> None:
     GlobalDictTarget.store.clear()
     _source_data.clear()
     _metrics.clear()
 
     app = coco.App(
         coco.AppConfig(
-            name="test_source_data_memo_mount_run_cleanup", environment=coco_env
+            name="test_source_data_memo_use_mount_cleanup", environment=coco_env
         ),
         _declare_transform_dict_data,
     )

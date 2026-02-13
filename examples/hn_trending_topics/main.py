@@ -276,25 +276,20 @@ async def app_main() -> None:
 
     # Set up table targets
     target_db = coco.use_context(PG_DB)
-    with coco.component_subpath("setup"):
-        messages_table = await coco_aio.mount_run(
-            coco.component_subpath("messages"),
-            target_db.declare_table_target,
-            table_name="hn_messages",
-            table_schema=await postgres.TableSchema.from_class(
-                HnMessage, primary_key=["id"]
-            ),
-            pg_schema_name="coco_examples",
-        ).result()
-        topics_table = await coco_aio.mount_run(
-            coco.component_subpath("topics"),
-            target_db.declare_table_target,
-            table_name="hn_topics",
-            table_schema=await postgres.TableSchema.from_class(
-                HnTopic, primary_key=["topic", "message_id"]
-            ),
-            pg_schema_name="coco_examples",
-        ).result()
+    messages_table = await target_db.mount_table_target(
+        table_name="hn_messages",
+        table_schema=await postgres.TableSchema.from_class(
+            HnMessage, primary_key=["id"]
+        ),
+        pg_schema_name="coco_examples",
+    )
+    topics_table = await target_db.mount_table_target(
+        table_name="hn_topics",
+        table_schema=await postgres.TableSchema.from_class(
+            HnTopic, primary_key=["topic", "message_id"]
+        ),
+        pg_schema_name="coco_examples",
+    )
     targets = TableTargets(messages=messages_table, topics=topics_table)
 
     # Fetch thread IDs from HackerNews
@@ -302,13 +297,9 @@ async def app_main() -> None:
         thread_ids = await fetch_thread_list(session)
 
     # Process threads (each component fetches its own thread data)
-    for thread_id in thread_ids:
-        coco_aio.mount(
-            coco.component_subpath("thread", thread_id),
-            process_thread,
-            thread_id,
-            targets,
-        )
+    await coco_aio.mount_each(
+        process_thread, ((tid, tid) for tid in thread_ids), targets
+    )
 
 
 # ============================================================================

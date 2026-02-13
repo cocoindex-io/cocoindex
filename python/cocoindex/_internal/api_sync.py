@@ -35,8 +35,8 @@ ReturnT = TypeVar("ReturnT")
 ResolvedT = TypeVar("ResolvedT")
 
 
-class ProcessingUnitMountRunHandle(Generic[ReturnT]):
-    """Handle for a processing unit that was started with `mount_run()`. Allows getting the result."""
+class _ComponentMountRunHandle(Generic[ReturnT]):
+    """Internal handle for a processing unit that was started with `use_mount()`."""
 
     __slots__ = ("_core", "_lock", "_cached_result", "_parent_ctx")
 
@@ -63,7 +63,7 @@ class ProcessingUnitMountRunHandle(Generic[ReturnT]):
             return self._cached_result
 
 
-class ProcessingUnitMountHandle:
+class ComponentMountHandle:
     """Handle for a processing unit that was started with `mount()`. Allows waiting until ready."""
 
     __slots__ = ("_core", "_lock", "_ready_called")
@@ -86,41 +86,46 @@ class ProcessingUnitMountHandle:
 
 
 @overload
-def mount_run(
+def use_mount(
     subpath: ComponentSubpath,
     processor_fn: AnyCallable[P, ResolvesTo[ReturnT]],
     *args: P.args,
     **kwargs: P.kwargs,
-) -> ProcessingUnitMountRunHandle[ReturnT]: ...
+) -> ReturnT: ...
 @overload
-def mount_run(
+def use_mount(
     subpath: ComponentSubpath,
     processor_fn: AnyCallable[P, Sequence[ResolvesTo[ReturnT]]],
     *args: P.args,
     **kwargs: P.kwargs,
-) -> ProcessingUnitMountRunHandle[Sequence[ReturnT]]: ...
+) -> Sequence[ReturnT]: ...
 @overload
-def mount_run(
+def use_mount(
     subpath: ComponentSubpath,
     processor_fn: AnyCallable[P, Mapping[K, ResolvesTo[ReturnT]]],
     *args: P.args,
     **kwargs: P.kwargs,
-) -> ProcessingUnitMountRunHandle[Mapping[K, ReturnT]]: ...
+) -> Mapping[K, ReturnT]: ...
 @overload
-def mount_run(
+def use_mount(
     subpath: ComponentSubpath,
     processor_fn: AnyCallable[P, ReturnT],
     *args: P.args,
     **kwargs: P.kwargs,
-) -> ProcessingUnitMountRunHandle[ReturnT]: ...
-def mount_run(
+) -> ReturnT: ...
+def use_mount(
     subpath: ComponentSubpath,
     processor_fn: AnyCallable[P, Any],
     *args: P.args,
     **kwargs: P.kwargs,
-) -> ProcessingUnitMountRunHandle[Any]:
+) -> Any:
     """
-    Mount and run a processing unit, returning a handle to await its result.
+    Mount a dependent processing component and return its result.
+
+    The child component cannot refresh independently — re-executing the child
+    requires re-executing the parent. The ``use_`` prefix (consistent with
+    ``use_context()``) signals that the caller creates a dependency on the
+    child's result.
 
     Args:
         subpath: The component subpath (from component_subpath()).
@@ -129,12 +134,12 @@ def mount_run(
         **kwargs: Keyword arguments to pass to the function.
 
     Returns:
-        A handle that can be used to get the result.
+        The return value of processor_fn.
 
     Example:
-        target = coco.mount_run(
+        target = coco.use_mount(
             coco.component_subpath("setup"), declare_dir_target, outdir
-        ).result()
+        )
     """
     parent_ctx = get_context_from_ctx()
     child_path = build_child_path(parent_ctx, subpath)
@@ -148,7 +153,7 @@ def mount_run(
         parent_ctx._core_processor_ctx,
         parent_ctx._core_fn_call_ctx,
     )
-    return ProcessingUnitMountRunHandle(core_handle, parent_ctx._core_processor_ctx)
+    return core_handle.result(parent_ctx._core_processor_ctx)
 
 
 def mount(
@@ -156,7 +161,7 @@ def mount(
     processor_fn: AnyCallable[P, Any],
     *args: P.args,
     **kwargs: P.kwargs,
-) -> ProcessingUnitMountHandle:
+) -> ComponentMountHandle:
     """
     Mount a processing unit in the background and return a handle to wait until ready.
 
@@ -186,7 +191,7 @@ def mount(
         parent_ctx._core_processor_ctx,
         parent_ctx._core_fn_call_ctx,
     )
-    return ProcessingUnitMountHandle(core_handle)
+    return ComponentMountHandle(core_handle)
 
 
 class App(AppBase[P, ReturnT]):
@@ -256,11 +261,10 @@ def runtime() -> Any:
 
 __all__ = [
     "App",
-    "ProcessingUnitMountHandle",
-    "ProcessingUnitMountRunHandle",
+    "ComponentMountHandle",
     "function",
     "mount",
-    "mount_run",
+    "use_mount",
     "start",
     "stop",
     "default_env",

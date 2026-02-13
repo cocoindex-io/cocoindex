@@ -1,6 +1,7 @@
 import pathlib
 
 import cocoindex as coco
+import cocoindex.asyncio as coco_aio
 from cocoindex.resources.file import FileLike, PatternFilePathMatcher
 from cocoindex.connectors import localfs
 from markdown_it import MarkdownIt
@@ -16,21 +17,15 @@ def process_file(file: FileLike, outdir: pathlib.Path) -> None:
 
 
 @coco.function
-def app_main(sourcedir: pathlib.Path, outdir: pathlib.Path) -> None:
+async def app_main(sourcedir: pathlib.Path, outdir: pathlib.Path) -> None:
     files = localfs.walk_dir(
         sourcedir, path_matcher=PatternFilePathMatcher(included_patterns=["**/*.md"])
     )
-    for f in files:
-        coco.mount(
-            coco.component_subpath(f.stable_key),
-            process_file,
-            f,
-            outdir,
-        )
+    await coco_aio.mount_each(process_file, files.items(), outdir)
 
 
-app = coco.App(
-    coco.AppConfig(name="FilesTransform"),
+app = coco_aio.App(
+    coco_aio.AppConfig(name="FilesTransform"),
     app_main,
     sourcedir=pathlib.Path("./data"),
     outdir=pathlib.Path("./output_html"),

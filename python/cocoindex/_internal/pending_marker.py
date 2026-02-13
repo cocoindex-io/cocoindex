@@ -39,14 +39,14 @@ Typical usage
 -------------
 CocoIndex provides the following API to mount and block on the result of a component:
 
-    def mount_run(
+    def use_mount(
         processor_fn: Callable[..., ResolvesTo[T]],
         ...
     ) -> T:
         ...
 
 Then `processor_fn` may return a pending object that implements `ResolvesTo[T]`,
-and `mount_run` is typed to return the resolved variant `T`.
+and `use_mount` is typed to return the resolved variant `T`.
 
 If you define a custom struct/class that carries pending/resolved providers
 (together with other non-provider values) and they want it to be returned as a
@@ -121,9 +121,9 @@ class ResolvesTo(Generic[ResolvedT]):
 
     This is a *static typing hook* that allows APIs like:
 
-        def mount_run(fn: Callable[..., ResolvesTo[T]]) -> T: ...
+        def use_mount(fn: Callable[..., ResolvesTo[T]]) -> T: ...
 
-    Users can return a pending variant from `fn`, and `mount_run` returns the
+    Users can return a pending variant from `fn`, and `use_mount` returns the
     resolved variant. The bridge is this method, which tells the type checker
     how to map from "pending container" to "resolved container".
     """

@@ -17,11 +17,11 @@ env = coco.Environment(coco.Settings.from_env(db_path=DB_PATH))
 
 @coco.function
 def build() -> None:
-    dir_target = coco.mount_run(
+    dir_target = coco.use_mount(
         coco.component_subpath("out"),
         declare_dir_target,
         OUT_DIR,
-    ).result()
+    )
     dir_target.declare_file("hello.txt", "Hello from App1\n")
 
 

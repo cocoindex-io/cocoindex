@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+from collections.abc import AsyncIterable
 from typing import (
     Any,
     AsyncIterator,
-    Generic,
+    Awaitable,
+    Concatenate,
+    Callable,
+    Iterable,
     Mapping,
     Sequence,
     ParamSpec,
@@ -21,106 +25,96 @@ from .component_ctx import (
     build_child_path,
     get_context_from_ctx,
 )
+from .stable_path import StableKey
 from .function import (
     AnyCallable,
     create_core_component_processor,
     async_function as function,
+)
+from .stable_path import Symbol
+from .target_state import (
+    TargetState,
+    TargetStateProvider,
+    TargetHandler,
+    declare_target_state_with_child,
 )
 from .typing import NOT_SET, NotSetType
 
 
 P = ParamSpec("P")
 K = TypeVar("K")
+T = TypeVar("T")
 ReturnT = TypeVar("ReturnT")
 ResolvedT = TypeVar("ResolvedT")
 
-
-class ProcessingUnitMountRunHandle(Generic[ReturnT]):
-    """Handle for a processing unit that was started with `mount_run()`. Allows awaiting the result."""
-
-    __slots__ = ("_core", "_lock", "_cached_result", "_parent_ctx")
-
-    _core: core.ComponentMountRunHandle[ReturnT]
-    _lock: asyncio.Lock
-    _cached_result: ReturnT | NotSetType
-    _parent_ctx: core.ComponentProcessorContext
-
-    def __init__(
-        self,
-        core_handle: core.ComponentMountRunHandle[ReturnT],
-        parent_ctx: core.ComponentProcessorContext,
-    ) -> None:
-        self._core = core_handle
-        self._lock = asyncio.Lock()
-        self._cached_result = NOT_SET
-        self._parent_ctx = parent_ctx
-
-    async def result(self) -> ReturnT:
-        """Get the result of the processing unit. Can be called multiple times."""
-        async with self._lock:
-            if isinstance(self._cached_result, NotSetType):
-                self._cached_result = await self._core.result_async(self._parent_ctx)
-            return self._cached_result
+_ValueT = TypeVar("_ValueT")
+_ChildHandlerT = TypeVar("_ChildHandlerT", bound="TargetHandler[Any, Any, Any] | None")
 
 
-class ProcessingUnitMountHandle:
-    """Handle for a processing unit that was started with `mount()`. Allows waiting until ready."""
+class ComponentMountHandle:
+    """Handle for processing unit(s) started with `mount()` or `mount_each()`. Allows waiting until ready."""
 
-    __slots__ = ("_core", "_lock", "_ready_called")
+    __slots__ = ("_cores", "_lock", "_ready_called")
 
-    _core: core.ComponentMountHandle
+    _cores: list[core.ComponentMountHandle]
     _lock: asyncio.Lock
     _ready_called: bool
 
-    def __init__(self, core_handle: core.ComponentMountHandle) -> None:
-        self._core = core_handle
+    def __init__(self, core_handles: list[core.ComponentMountHandle]) -> None:
+        self._cores = core_handles
         self._lock = asyncio.Lock()
         self._ready_called = False
 
     async def ready(self) -> None:
-        """Wait until the processing unit is ready. Can be called multiple times."""
+        """Wait until all processing units are ready. Can be called multiple times."""
         async with self._lock:
             if not self._ready_called:
-                await self._core.ready_async()
+                for c in self._cores:
+                    await c.ready_async()
                 self._ready_called = True
 
 
 @overload
-def mount_run(
+async def use_mount(
     subpath: ComponentSubpath,
     processor_fn: AnyCallable[P, ResolvesTo[ReturnT]],
     *args: P.args,
     **kwargs: P.kwargs,
-) -> ProcessingUnitMountRunHandle[ReturnT]: ...
+) -> ReturnT: ...
 @overload
-def mount_run(
+async def use_mount(
     subpath: ComponentSubpath,
     processor_fn: AnyCallable[P, Sequence[ResolvesTo[ReturnT]]],
     *args: P.args,
     **kwargs: P.kwargs,
-) -> ProcessingUnitMountRunHandle[Sequence[ReturnT]]: ...
+) -> Sequence[ReturnT]: ...
 @overload
-def mount_run(
+async def use_mount(
     subpath: ComponentSubpath,
     processor_fn: AnyCallable[P, Mapping[K, ResolvesTo[ReturnT]]],
     *args: P.args,
     **kwargs: P.kwargs,
-) -> ProcessingUnitMountRunHandle[Mapping[K, ReturnT]]: ...
+) -> Mapping[K, ReturnT]: ...
 @overload
-def mount_run(
+async def use_mount(
     subpath: ComponentSubpath,
     processor_fn: AnyCallable[P, ReturnT],
     *args: P.args,
     **kwargs: P.kwargs,
-) -> ProcessingUnitMountRunHandle[ReturnT]: ...
-def mount_run(
+) -> ReturnT: ...
+async def use_mount(
     subpath: ComponentSubpath,
     processor_fn: AnyCallable[P, Any],
     *args: P.args,
     **kwargs: P.kwargs,
-) -> ProcessingUnitMountRunHandle[Any]:
+) -> Any:
     """
-    Mount and run a processing unit, returning a handle to await its result.
+    Mount a dependent processing component and return its result.
+
+    The child component cannot refresh independently — re-executing the child
+    requires re-executing the parent. The ``use_`` prefix (consistent with
+    ``use_context()``) signals that the caller creates a dependency on the
+    child's result.
 
     Args:
         subpath: The component subpath (from component_subpath()).
@@ -129,12 +123,12 @@ def mount_run(
         **kwargs: Keyword arguments to pass to the function.
 
     Returns:
-        A handle that can be used to get the result.
+        The return value of processor_fn.
 
     Example:
-        target = await coco.mount_run(
+        target = await coco_aio.use_mount(
             coco.component_subpath("setup"), declare_table_target, table_name
-        ).result()
+        )
     """
     parent_ctx = get_context_from_ctx()
     child_path = build_child_path(parent_ctx, subpath)
@@ -148,7 +142,7 @@ def mount_run(
         parent_ctx._core_processor_ctx,
         parent_ctx._core_fn_call_ctx,
     )
-    return ProcessingUnitMountRunHandle(core_handle, parent_ctx._core_processor_ctx)
+    return await core_handle.result_async(parent_ctx._core_processor_ctx)
 
 
 def mount(
@@ -156,7 +150,7 @@ def mount(
     processor_fn: AnyCallable[P, Any],
     *args: P.args,
     **kwargs: P.kwargs,
-) -> ProcessingUnitMountHandle:
+) -> ComponentMountHandle:
     """
     Mount a processing unit in the background and return a handle to wait until ready.
 
@@ -186,7 +180,119 @@ def mount(
         parent_ctx._core_processor_ctx,
         parent_ctx._core_fn_call_ctx,
     )
-    return ProcessingUnitMountHandle(core_handle)
+    return ComponentMountHandle([core_handle])
+
+
+async def mount_each(
+    fn: AnyCallable[Concatenate[T, P], Any],
+    items: Iterable[tuple[StableKey, T]] | AsyncIterable[tuple[StableKey, T]],
+    *args: P.args,
+    **kwargs: P.kwargs,
+) -> ComponentMountHandle:
+    """
+    Mount one independent component per item in a keyed iterable.
+
+    Sugar over a loop of mount() calls. Each item's key is used as the component subpath.
+    Accepts both sync and async iterables; prefers async iteration when available.
+
+    Args:
+        fn: The function to run for each item. The item value is passed as the first argument.
+        items: A keyed iterable of (key, value) pairs (sync or async). The key becomes the
+            component subpath.
+        *args: Additional arguments passed to fn after the item value.
+        **kwargs: Additional keyword arguments passed to fn.
+
+    Returns:
+        A handle that can be used to wait until all processing units are ready.
+
+    Example:
+        await coco_aio.mount_each(process_file, files.items(), target_table)
+
+        # Equivalent to:
+        # for key, item in files.items():
+        #     coco_aio.mount(coco.component_subpath(key), process_file, item, target_table)
+    """
+    parent_ctx = get_context_from_ctx()
+    core_handles: list[core.ComponentMountHandle] = []
+
+    def _mount_one(key: StableKey, item: Any) -> None:
+        child_path = build_child_path(parent_ctx, ComponentSubpath(key))
+        processor = create_core_component_processor(
+            fn, parent_ctx._env, child_path, (item, *args), kwargs
+        )
+        core_handle = core.mount(
+            processor,
+            child_path,
+            parent_ctx._core_processor_ctx,
+            parent_ctx._core_fn_call_ctx,
+        )
+        core_handles.append(core_handle)
+
+    if isinstance(items, AsyncIterable):
+        async for key, item in items:
+            _mount_one(key, item)
+    else:
+        for key, item in items:
+            _mount_one(key, item)
+    return ComponentMountHandle(core_handles)
+
+
+async def map(
+    fn: Callable[Concatenate[T, P], Awaitable[ReturnT]],
+    items: Iterable[T],
+    *args: P.args,
+    **kwargs: P.kwargs,
+) -> list[ReturnT]:
+    """
+    Run a function concurrently on each item in an iterable.
+    No processing components are created — this is pure concurrent execution
+    (async tasks) within the current component.
+
+    Args:
+        fn: The function to apply to each item. The item is passed as the first argument.
+        items: The items to iterate.
+        *args: Additional passthrough arguments to fn (appended after the item).
+        **kwargs: Additional passthrough keyword arguments to fn.
+
+    Returns:
+        Results from each invocation.
+    """
+    return list(await asyncio.gather(*(fn(item, *args, **kwargs) for item in items)))
+
+
+_MOUNT_TARGET_SYMBOL = Symbol("cocoindex/mount_target")
+
+
+async def mount_target(
+    target_state: TargetState[TargetHandler[_ValueT, Any, _ChildHandlerT]],
+) -> TargetStateProvider[_ValueT, _ChildHandlerT]:
+    """
+    Mount a target, ensuring its container target state is applied before returning
+    the child TargetStateProvider.
+
+    Sugar over ``use_mount()`` combined with ``declare_target_state_with_child()``.
+    The component subpath is derived automatically from the target's globally unique key.
+
+    Args:
+        target_state: A TargetState with a child handler, as created by
+            ``TargetStateProvider.target_state(key, value)``. The key must be globally
+            unique (target connectors ensure this by construction).
+
+    Returns:
+        The resolved child TargetStateProvider, ready to use for declaring child
+        target states.
+
+    Example::
+
+        provider = await coco_aio.mount_target(
+            target_db.table_target(table_name=TABLE_NAME, table_schema=schema)
+        )
+    """
+    subpath = ComponentSubpath(_MOUNT_TARGET_SYMBOL) / (
+        *target_state._provider._core.stable_key_chain(),
+        target_state._key,
+    )
+    return await use_mount(subpath, declare_target_state_with_child, target_state)  # type: ignore[no-any-return, return-value]
 
 
 class App(AppBase[P, ReturnT]):
@@ -256,11 +362,13 @@ async def runtime() -> AsyncIterator[None]:
 
 __all__ = [
     "App",
-    "ProcessingUnitMountHandle",
-    "ProcessingUnitMountRunHandle",
+    "ComponentMountHandle",
     "function",
+    "map",
     "mount",
-    "mount_run",
+    "mount_each",
+    "mount_target",
+    "use_mount",
     "start",
     "stop",
     "default_env",

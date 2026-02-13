@@ -98,17 +98,14 @@ async def process_product(
 @coco.function
 async def app_main() -> None:
     target_db = coco.use_context(PG_DB)
-    with coco.component_subpath("setup"):
-        target_table = await coco_aio.mount_run(
-            coco.component_subpath("table"),
-            target_db.declare_table_target,
-            table_name=TABLE_NAME,
-            table_schema=await postgres.TableSchema.from_class(
-                OutputProduct,
-                primary_key=["product_category", "product_name"],
-            ),
-            pg_schema_name=PG_SCHEMA_NAME,
-        ).result()
+    target_table = await target_db.mount_table_target(
+        table_name=TABLE_NAME,
+        table_schema=await postgres.TableSchema.from_class(
+            OutputProduct,
+            primary_key=["product_category", "product_name"],
+        ),
+        pg_schema_name=PG_SCHEMA_NAME,
+    )
 
     source = postgres.PgTableSource(
         coco.use_context(SOURCE_POOL),
@@ -116,14 +113,11 @@ async def app_main() -> None:
         row_type=SourceProduct,
     )
 
-    with coco.component_subpath("row"):
-        async for product in source.fetch_rows():
-            coco_aio.mount(
-                coco.component_subpath(product.product_category, product.product_name),
-                process_product,
-                product,
-                target_table,
-            )
+    await coco_aio.mount_each(
+        process_product,
+        source.fetch_rows().items(lambda p: (p.product_category, p.product_name)),
+        target_table,
+    )
 
 
 app = coco_aio.App(

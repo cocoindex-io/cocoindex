@@ -1,6 +1,9 @@
 use crate::prelude::*;
 
-use crate::{engine::profile::EngineProfile, state::target_state_path::TargetStatePath};
+use crate::{
+    engine::profile::EngineProfile,
+    state::{stable_path::StableKey, target_state_path::TargetStatePath},
+};
 
 use std::hash::Hash;
 
@@ -34,7 +37,7 @@ pub struct TargetReconcileOutput<Prof: EngineProfile> {
 pub trait TargetHandler<Prof: EngineProfile>: Send + Sync + Sized + 'static {
     fn reconcile(
         &self,
-        key: Prof::TargetStateKey,
+        key: StableKey,
         desired_target_state: Option<Prof::TargetStateValue>,
         prev_possible_states: &[Prof::TargetStateTrackingRecord],
         prev_may_be_missing: bool,
@@ -42,6 +45,8 @@ pub trait TargetHandler<Prof: EngineProfile>: Send + Sync + Sized + 'static {
 }
 
 pub(crate) struct TargetStateProviderInner<Prof: EngineProfile> {
+    parent_provider: Option<TargetStateProvider<Prof>>,
+    stable_key: StableKey,
     target_state_path: TargetStatePath,
     handler: OnceLock<Prof::TargetHdl>,
     orphaned: OnceLock<()>,
@@ -53,15 +58,6 @@ pub struct TargetStateProvider<Prof: EngineProfile> {
 }
 
 impl<Prof: EngineProfile> TargetStateProvider<Prof> {
-    pub fn new(target_state_path: TargetStatePath) -> Self {
-        Self {
-            inner: Arc::new(TargetStateProviderInner {
-                target_state_path,
-                handler: OnceLock::new(),
-                orphaned: OnceLock::new(),
-            }),
-        }
-    }
     pub fn target_state_path(&self) -> &TargetStatePath {
         &self.inner.target_state_path
     }
@@ -75,6 +71,17 @@ impl<Prof: EngineProfile> TargetStateProvider<Prof> {
             .handler
             .set(handler)
             .map_err(|_| internal_error!("Handler is already fulfilled"))
+    }
+
+    pub fn stable_key_chain(&self) -> Vec<StableKey> {
+        let mut chain = vec![self.inner.stable_key.clone()];
+        let mut current = self;
+        while let Some(parent) = &current.inner.parent_provider {
+            chain.push(parent.inner.stable_key.clone());
+            current = parent;
+        }
+        chain.reverse();
+        chain
     }
 
     pub fn is_orphaned(&self) -> bool {
@@ -114,13 +121,17 @@ impl<Prof: EngineProfile> TargetStateProviderRegistry<Prof> {
         Ok(())
     }
 
-    pub fn register(
+    pub fn register_root(
         &mut self,
-        target_state_path: TargetStatePath,
+        name: String,
         handler: Prof::TargetHdl,
     ) -> Result<TargetStateProvider<Prof>> {
+        let target_state_path =
+            TargetStatePath::new(utils::fingerprint::Fingerprint::from(&name)?, None);
         let provider = TargetStateProvider {
             inner: Arc::new(TargetStateProviderInner {
+                parent_provider: None,
+                stable_key: StableKey::Symbol(name.into()),
                 target_state_path: target_state_path.clone(),
                 handler: OnceLock::from(handler),
                 orphaned: OnceLock::new(),
@@ -132,10 +143,14 @@ impl<Prof: EngineProfile> TargetStateProviderRegistry<Prof> {
 
     pub fn register_lazy(
         &mut self,
-        target_state_path: TargetStatePath,
+        parent_provider: &TargetStateProvider<Prof>,
+        stable_key: StableKey,
     ) -> Result<TargetStateProvider<Prof>> {
+        let target_state_path = parent_provider.target_state_path().concat(&stable_key);
         let provider = TargetStateProvider {
             inner: Arc::new(TargetStateProviderInner {
+                parent_provider: Some(parent_provider.clone()),
+                stable_key,
                 target_state_path: target_state_path.clone(),
                 handler: OnceLock::new(),
                 orphaned: OnceLock::new(),
