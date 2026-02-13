@@ -24,6 +24,7 @@ except ImportError as e:
 
 from cocoindex.connectorkits import connection
 from cocoindex.resources import file
+from cocoindex._internal.stable_path import StableKey
 
 
 # Default base dir for unregistered Google Drive access (not registered)
@@ -227,6 +228,14 @@ class GoogleDriveSource:
 
     def files(self) -> Iterable[DriveFile]:
         return list_files(self._spec)
+
+    def items(self) -> Iterator[tuple[StableKey, DriveFile]]:
+        """Iterate as (key, file) pairs for use with mount_each().
+
+        The key is the file's name path.
+        """
+        for file in self.files():
+            yield (file.stable_key, file)
 
 
 __all__ = [

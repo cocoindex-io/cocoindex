@@ -51,8 +51,8 @@ async def coco_lifespan(
 
 @coco.function
 async def process_chunk(
-    filename: pathlib.PurePath,
     chunk: Chunk,
+    filename: pathlib.PurePath,
     id_gen: IdGenerator,
     target: qdrant.CollectionTarget,
 ) -> None:
@@ -81,35 +81,24 @@ async def process_file(
         text, chunk_size=2000, chunk_overlap=500, language="markdown"
     )
     id_gen = IdGenerator()
-    await asyncio.gather(
-        *(process_chunk(file.file_path.path, chunk, id_gen, target) for chunk in chunks)
-    )
+    await coco_aio.map(process_chunk, chunks, file.file_path.path, id_gen, target)
 
 
 @coco.function
 async def app_main(sourcedir: pathlib.Path) -> None:
     target_db = coco.use_context(QDRANT_DB)
-    target_collection = await coco_aio.mount_run(
-        coco.component_subpath("setup", "collection"),
-        target_db.declare_collection_target,
+    target_collection = await target_db.mount_collection_target(
         collection_name=QDRANT_COLLECTION,
         schema=await qdrant.CollectionSchema.create(
             vectors=qdrant.QdrantVectorDef(schema=_embedder)
         ),
-    ).result()
+    )
     files = localfs.walk_dir(
         sourcedir,
         recursive=True,
         path_matcher=PatternFilePathMatcher(included_patterns=["**/*.md"]),
     )
-    with coco.component_subpath("file"):
-        for f in files:
-            coco.mount(
-                coco.component_subpath(str(f.file_path.path)),
-                process_file,
-                f,
-                target_collection,
-            )
+    await coco_aio.mount_each(process_file, files.items(), target_collection)
 
 
 app = coco_aio.App(

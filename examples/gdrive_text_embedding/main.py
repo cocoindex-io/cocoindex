@@ -75,18 +75,15 @@ async def process_file(
         text, chunk_size=2000, chunk_overlap=500, language="markdown"
     )
     id_gen = IdGenerator()
-    await asyncio.gather(
-        *(
-            _emit_chunk(file.file_path.path.as_posix(), chunk, id_gen, table)
-            for chunk in chunks
-        )
+    await coco_aio.map(
+        _emit_chunk, chunks, file.file_path.path.as_posix(), id_gen, table
     )
 
 
 @coco.function
 async def _emit_chunk(
-    filename: str,
     chunk: Chunk,
+    filename: str,
     id_gen: IdGenerator,
     table: postgres.TableTarget[DocEmbedding],
 ) -> None:
@@ -104,16 +101,14 @@ async def _emit_chunk(
 async def app_main() -> None:
     assert _state.db is not None
 
-    table = await coco_aio.mount_run(
-        coco.component_subpath("setup"),
-        _state.db.declare_table_target,
+    table = await _state.db.mount_table_target(
         table_name=TABLE_NAME,
         table_schema=await postgres.TableSchema.from_class(
             DocEmbedding,
             primary_key=["id"],
         ),
         pg_schema_name=PG_SCHEMA_NAME,
-    ).result()
+    )
 
     credential_path = os.environ["GOOGLE_SERVICE_ACCOUNT_CREDENTIAL"]
     root_folder_ids = [
@@ -127,13 +122,7 @@ async def app_main() -> None:
         root_folder_ids=root_folder_ids,
     )
 
-    for file in source.files():
-        coco.mount(
-            coco.component_subpath("file", file.file_path.path.as_posix()),
-            process_file,
-            file,
-            table,
-        )
+    await coco_aio.mount_each(process_file, source.items(), table)
 
 
 app = coco_aio.App(

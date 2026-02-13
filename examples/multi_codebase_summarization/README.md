@@ -56,7 +56,7 @@ This example shows how to use [instructor](https://github.com/jxnl/instructor) w
 - **Unified Data Model**: Same `CodebaseInfo` type for both file-level and project-level extraction
 - **LLM-Generated Mermaid Graphs**: The LLM generates mermaid syntax directly with:
   - Bold text for `@coco.function` decorated functions
-  - Thick arrows (`==>`) for `mount`/`mount_run` calls
+  - Thick arrows (`==>`) for `mount`/`use_mount` calls
 - **Incremental Processing**: CocoIndex handles caching - only re-processes changed files
 - **Multi-Project Support**: Processes multiple codebases in parallel
 
@@ -78,7 +78,7 @@ graph TD
     process_file --> helper_func[helper_func]
 ```
 
-*Bold = `@coco.function`, thick arrows (`==>`) = `mount`/`mount_run` calls*
+*Bold = `@coco.function`, thick arrows (`==>`) = `mount`/`use_mount` calls*
 
 ## Run
 

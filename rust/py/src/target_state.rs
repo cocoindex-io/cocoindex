@@ -6,7 +6,7 @@ use cocoindex_core::engine::target_state::{
     TargetStateProviderRegistry,
 };
 use cocoindex_core::state::target_state_path::TargetStatePath;
-use pyo3::types::{PyList, PySequence};
+use pyo3::types::{PyList, PySequence, PyTuple};
 
 use crate::context::{PyComponentProcessorContext, PyFnCallContext};
 use crate::prelude::*;
@@ -150,6 +150,15 @@ impl PyTargetStateProvider {
     pub fn coco_memo_key(&self) -> String {
         self.0.target_state_path().to_string()
     }
+
+    pub fn stable_key_chain<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
+        let chain = self.0.stable_key_chain();
+        let py_keys: Vec<Bound<'py, PyAny>> = chain
+            .into_iter()
+            .map(|k| PyStableKey(k).into_pyobject(py))
+            .collect::<Result<_, _>>()?;
+        PyTuple::new(py, py_keys)
+    }
 }
 
 #[pyfunction]
@@ -207,13 +216,7 @@ pub fn register_root_target_states_provider(
     let provider = root_target_states_provider_registry()
         .lock()
         .unwrap()
-        .register(
-            TargetStatePath::new(
-                utils::fingerprint::Fingerprint::from(&name).into_py_result()?,
-                None,
-            ),
-            PyTargetHandler(handler),
-        )
+        .register_root(name, PyTargetHandler(handler))
         .into_py_result()?;
     Ok(PyTargetStateProvider(provider))
 }
