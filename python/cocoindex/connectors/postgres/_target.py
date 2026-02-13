@@ -23,7 +23,6 @@ from typing import (
     Literal,
     NamedTuple,
     Sequence,
-    cast,
 )
 
 from typing_extensions import TypeVar
@@ -46,6 +45,7 @@ from cocoindex._internal.datatype import (
     MappingType,
     SequenceType,
     RecordType,
+    TypeChecker,
     UnionType,
     analyze_type_info,
     is_record_type,
@@ -54,6 +54,7 @@ from cocoindex.resources.schema import VectorSchemaProvider
 
 # Type aliases
 _RowKey = tuple[Any, ...]  # Primary key values as tuple
+_ROW_KEY_CHECKER = TypeChecker(tuple[Any, ...])
 _RowValue = dict[str, Any]  # Column name -> value
 _RowFingerprint = bytes
 ValueEncoder = Callable[[Any], Any]
@@ -480,10 +481,7 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
         prev_may_be_missing: bool,
         /,
     ) -> coco.TargetReconcileOutput[_RowAction, _RowFingerprint] | None:
-        if isinstance(key, tuple):
-            key = cast(_RowKey, key)
-        else:
-            raise TypeError(f"Row key must be a tuple, got {type(key)}")
+        key = _ROW_KEY_CHECKER.check(key)
         if coco.is_non_existence(desired_state):
             # Delete case - only if it might exist
             if not prev_possible_states and not prev_may_be_missing:
@@ -515,6 +513,9 @@ class _TableKey(NamedTuple):
     db_key: str  # Stable key for the database
     pg_schema_name: str | None
     table_name: str
+
+
+_TABLE_KEY_CHECKER = TypeChecker(tuple[str, str | None, str])
 
 
 @dataclass
@@ -813,11 +814,7 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
         coco.TargetReconcileOutput[_TableAction, _TableTrackingRecord, _RowHandler]
         | None
     ):
-        if isinstance(key, tuple):
-            key_args = cast(tuple[str, str | None, str], key)
-            key = _TableKey(*key_args)
-        else:
-            raise TypeError(f"Table key must be a tuple, got {type(key)}")
+        key = _TableKey(*_TABLE_KEY_CHECKER.check(key))
 
         tracking_record: _TableTrackingRecord | coco.NonExistenceType
 

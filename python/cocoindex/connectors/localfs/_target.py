@@ -10,6 +10,7 @@ from typing import Collection, Generic, Literal, NamedTuple, Sequence, cast
 
 import cocoindex as coco
 from cocoindex.connectorkits.fingerprint import fingerprint_bytes
+from cocoindex._internal.datatype import TypeChecker
 
 from ._common import FilePath, CWD_BASE_DIR, path_registry, to_file_path
 
@@ -18,6 +19,7 @@ from ._common import FilePath, CWD_BASE_DIR, path_registry, to_file_path
 # =============================================================================
 
 _EntryName = str  # File or directory name (path segment)
+_ENTRY_NAME_CHECKER = TypeChecker(str)
 _FileContent = bytes
 _FileFingerprint = bytes
 
@@ -199,7 +201,7 @@ class _EntryHandler(
         coco.TargetReconcileOutput[_EntryAction, _EntryTrackingRecord, "_EntryHandler"]
         | None
     ):
-        key = cast(_EntryName, key)
+        key = _ENTRY_NAME_CHECKER.check(key)
         path = self._base_path / key
         return _reconcile_entry(
             path, desired_state, prev_possible_states, prev_may_be_missing
@@ -216,6 +218,9 @@ class _RootKey(NamedTuple):
 
     base_dir_key: str | None  # None for CWD
     path: str
+
+
+_ROOT_KEY_CHECKER = TypeChecker(tuple[str | None, str])
 
 
 def _get_base_dir_key(file_path: FilePath) -> str | None:
@@ -253,11 +258,7 @@ class _RootHandler(coco.TargetHandler[_EntrySpec, _EntryTrackingRecord, _EntryHa
         coco.TargetReconcileOutput[_EntryAction, _EntryTrackingRecord, _EntryHandler]
         | None
     ):
-        if isinstance(key, tuple):
-            key_args = cast(tuple[str | None, str], key)
-            key = _RootKey(*key_args)
-        else:
-            raise TypeError(f"Root key must be a tuple, got {type(key)}")
+        key = _RootKey(*_ROOT_KEY_CHECKER.check(key))
 
         path = _resolve_root_path(key)
         return _reconcile_entry(
