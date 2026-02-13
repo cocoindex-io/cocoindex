@@ -34,6 +34,7 @@ except ImportError as e:
 import cocoindex as coco
 from cocoindex.connectorkits import connection, statediff
 from cocoindex.connectorkits.fingerprint import fingerprint_object
+from cocoindex._internal.datatype import TypeChecker
 from cocoindex.resources import schema
 
 # Public alias for Qdrant point model
@@ -42,6 +43,7 @@ PointStruct = qdrant_models.PointStruct
 # Type aliases
 _PointId = str | int
 _PointFingerprint = bytes
+_POINT_ID_CHECKER: TypeChecker[str | int] = TypeChecker(str | int)  # type: ignore[arg-type]
 
 
 class QdrantVectorDef(NamedTuple):
@@ -224,12 +226,7 @@ class _PointHandler(coco.TargetHandler[qdrant_models.PointStruct, _PointFingerpr
         prev_may_be_missing: bool,
         /,
     ) -> coco.TargetReconcileOutput[_PointAction, _PointFingerprint] | None:
-        if isinstance(key, tuple) or isinstance(key, (str, int)):
-            key = cast(_PointId, key[0]) if isinstance(key, tuple) else key
-        else:
-            raise TypeError(
-                f"PointId key must be a str, int, or tuple, got {type(key)}"
-            )
+        key = _POINT_ID_CHECKER.check(key)
         if coco.is_non_existence(desired_state):
             if not prev_possible_states and not prev_may_be_missing:
                 return None
@@ -255,6 +252,9 @@ class _PointHandler(coco.TargetHandler[qdrant_models.PointStruct, _PointFingerpr
 class _CollectionKey(NamedTuple):
     db_key: str
     collection_name: str
+
+
+_COLLECTION_KEY_CHECKER = TypeChecker(tuple[str, str])
 
 
 @dataclass
@@ -417,11 +417,7 @@ class _CollectionHandler(
         ]
         | None
     ):
-        if isinstance(key, tuple):
-            key_args = cast(tuple[str, str], key)
-            key = _CollectionKey(*key_args)
-        else:
-            raise TypeError(f"Collection key must be a tuple, got {type(key)}")
+        key = _CollectionKey(*_COLLECTION_KEY_CHECKER.check(key))
         tracking_record: _CollectionTrackingRecord | coco.NonExistenceType
 
         if coco.is_non_existence(desired_state):
