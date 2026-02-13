@@ -46,5 +46,14 @@ class StablePath:
     def __hash__(self) -> int:
         return hash(self._core)
 
+    def parts(self) -> list[StableKey]:
+        """
+        Return the sequence of StableKey parts that make up this path.
+
+        Returns:
+            List of StableKey values (None, bool, int, str, bytes, uuid.UUID, or tuple)
+        """
+        return self._core.parts()
+
 
 ROOT_PATH = StablePath()
