@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Collection, Generic, Literal, NamedTuple, Sequence, cast
 
 import cocoindex as coco
+from cocoindex._internal.api_async import mount_target as _mount_target
 from cocoindex.connectorkits.fingerprint import fingerprint_bytes
 from cocoindex._internal.datatype import TypeChecker
 
@@ -271,7 +272,7 @@ class _RootHandler(coco.TargetHandler[_EntrySpec, _EntryTrackingRecord, _EntryHa
 # =============================================================================
 
 _root_provider = coco.register_root_target_states_provider(
-    "cocoindex.io/localfs", _RootHandler()
+    "cocoindex/localfs", _RootHandler()
 )
 
 
@@ -373,26 +374,74 @@ def declare_dir_target(
 
     Example:
         ```python
-        target = coco.mount_run(
+        target = coco.use_mount(
             coco.component_subpath("setup"),
             localfs.declare_dir_target,
             Path("./output"),
-        ).result()
+        )
 
         target.declare_file("hello.txt", content="Hello, world!")
         ```
     """
+    provider = coco.declare_target_state_with_child(
+        dir_target(path, create_parent_dirs=create_parent_dirs)
+    )
+    return DirTarget(provider)
+
+
+def dir_target(
+    path: FilePath | pathlib.Path,
+    *,
+    create_parent_dirs: bool = True,
+) -> coco.TargetState[_EntryHandler]:
+    """
+    Create a TargetState for a local directory target.
+
+    Use with ``coco_aio.mount_target()`` to mount and get a child provider,
+    or with ``mount_dir_target()`` for a convenience wrapper.
+
+    Args:
+        path: The filesystem path for the directory. Can be a FilePath (with stable
+            base directory key) or a pathlib.Path (uses CWD as base directory).
+        create_parent_dirs: If True, create parent directories if they don't exist.
+            Defaults to True.
+
+    Returns:
+        A TargetState that can be passed to ``mount_target()``.
+    """
     file_path = to_file_path(path)
     key = _RootKey(
         base_dir_key=_get_base_dir_key(file_path),
-        path=str(file_path.path),
+        path=file_path.path.as_posix(),
     )
     spec = _EntrySpec(
         entry_spec=_DirSpec(),
         create_parent_dirs=create_parent_dirs,
     )
-    provider = coco.declare_target_state_with_child(
-        _root_provider.target_state(key, spec)
+    return _root_provider.target_state(key, spec)
+
+
+async def mount_dir_target(
+    path: FilePath | pathlib.Path,
+    *,
+    create_parent_dirs: bool = True,
+) -> DirTarget[coco.ResolvedS]:
+    """
+    Mount a directory target and return a ready-to-use DirTarget.
+
+    Sugar over ``dir_target()`` + ``coco_aio.mount_target()`` + wrapping.
+
+    Args:
+        path: The filesystem path for the directory. Can be a FilePath (with stable
+            base directory key) or a pathlib.Path (uses CWD as base directory).
+        create_parent_dirs: If True, create parent directories if they don't exist.
+            Defaults to True.
+
+    Returns:
+        A DirTarget that can be used to declare files and subdirectories.
+    """
+    provider = await _mount_target(
+        dir_target(path, create_parent_dirs=create_parent_dirs)
     )
     return DirTarget(provider)
 
@@ -434,7 +483,7 @@ def declare_file(
     file_path = to_file_path(path)
     key = _RootKey(
         base_dir_key=_get_base_dir_key(file_path),
-        path=str(file_path.path),
+        path=file_path.path.as_posix(),
     )
     spec = _EntrySpec(
         entry_spec=content,
@@ -446,4 +495,10 @@ def declare_file(
     coco.declare_target_state(target_state)
 
 
-__all__ = ["DirTarget", "declare_dir_target", "declare_file"]
+__all__ = [
+    "DirTarget",
+    "declare_dir_target",
+    "declare_file",
+    "dir_target",
+    "mount_dir_target",
+]

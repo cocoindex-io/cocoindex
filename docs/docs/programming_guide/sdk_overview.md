@@ -41,10 +41,11 @@ from cocoindex.resources.chunk import Chunk
 `StableKey` is a type alias defining what values can be used when creating component paths via `coco.component_subpath()`:
 
 ```python
-StableKey = None | bool | int | str | bytes | uuid.UUID | tuple[StableKey, ...]
+StableKey = None | bool | int | str | bytes | uuid.UUID | Symbol | tuple[StableKey, ...]
 ```
 
 Common examples include strings (like `"setup"` or `"table"`), integers, and UUIDs. Tuples allow composite keys when needed.
+`Symbol` provides predefined names that will never conflict with strings (which typically come from runtime data).
 
 Each processing component must be mounted at a unique path. See [Processing Component](./processing_component.md) for how the component path tree affects target states and ownership.
 

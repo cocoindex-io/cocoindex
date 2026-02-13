@@ -4,6 +4,7 @@ import pathlib
 from dotenv import load_dotenv
 
 import cocoindex as coco
+import cocoindex.asyncio as coco_aio
 from cocoindex.resources.file import FileLike, PatternFilePathMatcher
 from cocoindex.connectors import localfs
 from baml_client import b
@@ -31,26 +32,19 @@ async def process_patient_form(file: FileLike, outdir: pathlib.Path) -> None:
 
 
 @coco.function
-def app_main(sourcedir: pathlib.Path, outdir: pathlib.Path) -> None:
+async def app_main(sourcedir: pathlib.Path, outdir: pathlib.Path) -> None:
     """Main application function that processes patient intake forms."""
     files = localfs.walk_dir(
         sourcedir,
         path_matcher=PatternFilePathMatcher(included_patterns=["**/*.pdf"]),
     )
-
-    for f in files:
-        coco.mount(
-            coco.component_subpath("process", str(f.file_path.path)),
-            process_patient_form,
-            f,
-            outdir,
-        )
+    await coco_aio.mount_each(process_patient_form, files.items(), outdir)
 
 
 load_dotenv()
 
-app = coco.App(
-    coco.AppConfig(name="PatientIntakeExtractionBaml"),
+app = coco_aio.App(
+    coco_aio.AppConfig(name="PatientIntakeExtractionBaml"),
     app_main,
     sourcedir=pathlib.Path("./data/patient_forms"),
     outdir=pathlib.Path("./output_patients"),

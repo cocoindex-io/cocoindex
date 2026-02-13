@@ -24,21 +24,21 @@ async def lifespan(builder: coco_aio.EnvironmentBuilder) -> AsyncGenerator[None]
 
 @coco.function
 def build1() -> None:
-    dir_target = coco.mount_run(
+    dir_target = coco.use_mount(
         coco.component_subpath("out"),
         declare_dir_target,
         coco.use_context(_ROOT_PATH) / "out_multi_1",
-    ).result()
+    )
     dir_target.declare_file("hello.txt", "Hello from MultiApp1\n")
 
 
 @coco.function
 def build2() -> None:
-    dir_target = coco.mount_run(
+    dir_target = coco.use_mount(
         coco.component_subpath("out"),
         declare_dir_target,
         coco.use_context(_ROOT_PATH) / "out_multi_2",
-    ).result()
+    )
     dir_target.declare_file("world.txt", "Hello from MultiApp2\n")
 
 

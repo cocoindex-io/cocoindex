@@ -25,11 +25,11 @@ def write_timestamp(target: DirTarget) -> None:
 
 @coco.function
 def app_main() -> None:
-    target = coco.mount_run(
+    target = coco.use_mount(
         coco.component_subpath("setup"),
         declare_dir_target,
         pathlib.Path("./out_memo"),
-    ).result()
+    )
     coco.mount(coco.component_subpath("write"), write_timestamp, target)
 
 

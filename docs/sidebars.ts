@@ -22,6 +22,7 @@ const sidebars: SidebarsConfig = {
         'programming_guide/processing_component',
         'programming_guide/target_state',
         'programming_guide/function',
+        'programming_guide/processing_helpers',
         'programming_guide/app',
         'programming_guide/context',
       ],

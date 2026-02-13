@@ -62,8 +62,8 @@ async def coco_lifespan(
 
 @coco.function
 async def process_chunk(
-    filename: pathlib.PurePath,
     chunk: Chunk,
+    filename: pathlib.PurePath,
     id_gen: IdGenerator,
     table: lancedb.TableTarget[CodeEmbedding],
 ) -> None:
@@ -97,22 +97,18 @@ async def process_file(
         language=language,
     )
     id_gen = IdGenerator()
-    await asyncio.gather(
-        *(process_chunk(file.file_path.path, chunk, id_gen, table) for chunk in chunks)
-    )
+    await coco_aio.map(process_chunk, chunks, file.file_path.path, id_gen, table)
 
 
 @coco.function
 async def app_main(sourcedir: pathlib.Path) -> None:
     target_db = coco.use_context(LANCE_DB)
-    target_table = await coco_aio.mount_run(
-        coco.component_subpath("setup", "table"),
-        target_db.declare_table_target,
+    target_table = await target_db.mount_table_target(
         table_name=TABLE_NAME,
         table_schema=await lancedb.TableSchema.from_class(
             CodeEmbedding, primary_key=["id"]
         ),
-    ).result()
+    )
 
     # Process multiple file types across the repository
     files = localfs.walk_dir(
@@ -129,13 +125,7 @@ async def app_main(sourcedir: pathlib.Path) -> None:
             excluded_patterns=["**/.*", "**/target", "**/node_modules"],
         ),
     )
-    for file in files:
-        coco.mount(
-            coco.component_subpath("file", str(file.file_path.path)),
-            process_file,
-            file,
-            target_table,
-        )
+    await coco_aio.mount_each(process_file, files.items(), target_table)
 
 
 app = coco_aio.App(

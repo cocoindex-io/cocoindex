@@ -53,7 +53,7 @@ impl TargetStatePath {
         Self(inner)
     }
 
-    pub fn concat(&self, part: StableKey) -> Self {
+    pub fn concat(&self, part: &StableKey) -> Self {
         let fp = utils::fingerprint::Fingerprint::from(&part).unwrap();
         let inner: Arc<[utils::fingerprint::Fingerprint]> =
             self.0.iter().chain(std::iter::once(&fp)).cloned().collect();

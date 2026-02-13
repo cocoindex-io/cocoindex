@@ -32,12 +32,19 @@ See [StableKey](./sdk_overview.md#stablekey) in the SDK Overview for details on 
 
 ## Mount
 
-Mounting is how you declare (instantiate) a processing component within an app at a specific path, so CocoIndex knows that component exists, should run, and owns a set of target states. CocoIndex provides two APIs: `mount()` and `mount_run()`.
+Mounting is how you declare (instantiate) a processing component within an app at a specific path, so CocoIndex knows that component exists, should run, and owns a set of target states.
 
-- `mount()` sets up a processing component in a child path without depending on data from it. This allows the component to refresh independently in live mode.
-- `mount_run()` returns a value from the component's execution to the caller. The component at that path cannot refresh independently without re-executing the caller.
+CocoIndex provides two core mounting APIs:
 
-Usually, only use `mount_run()` when you need the return value.
+- **`mount()`** — sets up a processing component in a child path without depending on data from it. This allows the component to refresh independently in live mode.
+- **`use_mount()`** — returns a value from the component's execution to the caller. The component at that path cannot refresh independently without re-executing the caller.
+
+And two async-only sugar APIs that simplify common patterns:
+
+- **`mount_each()`** — mounts one component per item in a keyed iterable
+- **`mount_target()`** — mounts a target without an explicit subpath
+
+See also [Processing Helpers](./processing_helpers.md) for utility APIs like `map()` that operate within a component without creating new ones.
 
 ### `mount()`
 
@@ -72,37 +79,78 @@ handle.wait_until_ready()  # Blocks until ready
 
 You usually only need to call `ready()` (or `wait_until_ready()` in sync) when you have logic that depends on the processing component's target states being applied — for example, querying the latest data from a target table after syncing it.
 
-### `mount_run()`
+### `use_mount()`
 
-Use `mount_run()` when you need the processing component's return value. It returns a handle with a `result()` method:
+Use `use_mount()` when you need the processing component's return value. It mounts the component, waits until it's ready, and returns the value directly:
 
 ```python
-handle = coco_aio.mount_run(
+table = await coco_aio.use_mount(
     coco.component_subpath("setup"),
     setup_table,
     table_name="docs",
 )
-table = await handle.result()  # Waits until ready, then returns the value
 ```
-
-Calling `result()` waits until the processing component is ready and then returns the value.
 
 The corresponding sync API:
 
 ```python
-handle = coco.mount_run(
+table = coco.use_mount(
     coco.component_subpath("setup"),
     setup_table,
     table_name="docs",
 )
-table = handle.result()  # Blocks until ready, then returns the value
 ```
 
-A common use of `mount_run()` is to obtain a [target](./target_state#where-do-targets-come-from) after its container target state is applied.
+A common use of `use_mount()` is to obtain a [target](./target_state#where-do-targets-come-from) after its container target state is applied.
+
+### `mount_each()` {#mount-each}
+
+`mount_each()` mounts one processing component per item in a keyed iterable. It's async-only (available in `coco_aio`).
+
+```python
+files = localfs.walk_dir(sourcedir, path_matcher=PatternFilePathMatcher(included_patterns=["**/*.md"]))
+await coco_aio.mount_each(process_file, files.items(), target)
+```
+
+Each item in the iterable is a `(key, value)` tuple. The key becomes the component subpath, and the value is passed as the first argument to the function. Any additional arguments are passed through.
+
+This is equivalent to:
+
+```python
+for key, file in files.items():
+    coco.mount(coco.component_subpath(key), process_file, file, target)
+```
+
+Source connectors provide an `items()` method that returns `(StableKey, T)` pairs. For example, `localfs.walk_dir(...).items()` yields `(relative_path, File)` tuples.
+
+### `mount_target()` {#mount-target}
+
+`mount_target()` mounts a target without requiring an explicit subpath. It's async-only (available in `coco_aio`).
+
+```python
+from cocoindex.connectors import localfs
+
+dir_target = await coco_aio.mount_target(localfs.dir_target(outdir))
+```
+
+The component path is derived automatically from the target's globally unique key — you don't need to create a `component_subpath` for it. This is sugar over calling `use_mount()` with a target declaration function.
+
+Connectors also provide convenience methods that wrap `mount_target()`:
+
+```python
+# Equivalent to the above
+dir_target = await localfs.mount_dir_target(outdir)
+
+# PostgreSQL example
+table = await target_db.mount_table_target(
+    table_name="doc_embeddings",
+    table_schema=await postgres.TableSchema.from_class(DocEmbedding, primary_key=["id"]),
+)
+```
 
 ### Using `component_subpath` as a context manager
 
-You can also use `component_subpath()` as a context manager to create nested paths without repeating common prefixes:
+You can use `component_subpath()` as a context manager to create nested paths without repeating common prefixes:
 
 ```python
 with coco.component_subpath("process"):
@@ -126,6 +174,10 @@ for f in files:
         target,
     )
 ```
+
+:::tip
+When iterating over keyed items, prefer [`mount_each()`](#mount-each) — it handles the loop and subpath creation for you.
+:::
 
 ## How target states sync
 

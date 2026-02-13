@@ -20,11 +20,11 @@ def _declare_dicts() -> None:
     """Create dict target states for testing."""
     with coco.component_subpath("dict"):
         for name, data in _source_data.items():
-            single_dict_provider = coco.mount_run(
+            single_dict_provider = coco.use_mount(
                 coco.component_subpath(name),
                 DictsTarget.declare_dict_target,
                 name,
-            ).result()
+            )
             for key, value in data.items():
                 coco.declare_target_state(single_dict_provider.target_state(key, value))
 

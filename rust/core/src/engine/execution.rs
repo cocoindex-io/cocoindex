@@ -185,7 +185,7 @@ pub fn declare_target_state<Prof: EngineProfile>(
     key: StableKey,
     value: Prof::TargetStateValue,
 ) -> Result<()> {
-    let target_state_path = make_target_state_path(&provider, &key);
+    let target_state_path = provider.target_state_path().concat(&key);
     let declared_effect = DeclaredEffect {
         provider,
         item_key: key,
@@ -221,12 +221,11 @@ pub fn declare_target_state_with_child<Prof: EngineProfile>(
     key: StableKey,
     value: Prof::TargetStateValue,
 ) -> Result<TargetStateProvider<Prof>> {
-    let target_state_path = make_target_state_path(&provider, &key);
     let child_provider = comp_ctx.update_building_state(|building_state| {
         let child_provider = building_state
             .target_states
             .provider_registry
-            .register_lazy(target_state_path.clone())?;
+            .register_lazy(&provider, key.clone())?;
         let declared_effect = DeclaredEffect {
             provider,
             item_key: key,
@@ -236,7 +235,7 @@ pub fn declare_target_state_with_child<Prof: EngineProfile>(
         match building_state
             .target_states
             .declared_effects
-            .entry(target_state_path.clone())
+            .entry(child_provider.target_state_path().clone())
         {
             btree_map::Entry::Occupied(entry) => {
                 client_bail!(
@@ -251,16 +250,11 @@ pub fn declare_target_state_with_child<Prof: EngineProfile>(
         Ok(child_provider)
     })?;
     fn_ctx.update(|inner| {
-        inner.target_state_paths.push(target_state_path);
+        inner
+            .target_state_paths
+            .push(child_provider.target_state_path().clone());
     });
     Ok(child_provider)
-}
-
-fn make_target_state_path<Prof: EngineProfile>(
-    provider: &TargetStateProvider<Prof>,
-    key: &StableKey,
-) -> TargetStatePath {
-    provider.target_state_path().concat(key.clone())
 }
 
 struct ChildrenPathInfo {

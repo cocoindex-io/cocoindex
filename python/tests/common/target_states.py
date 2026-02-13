@@ -274,6 +274,11 @@ class DictsTarget:
             DictsTarget._provider.target_state(name, None)
         )
 
+    @staticmethod
+    def dict_target(name: str) -> coco.TargetState[DictTargetStateStore]:
+        """Create a TargetState for use with mount_target()."""
+        return DictsTarget._provider.target_state(name, None)
+
 
 class AsyncDictsTarget:
     store = DictsTargetStateStore(use_async=True)

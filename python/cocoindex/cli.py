@@ -327,11 +327,11 @@ def app_main() -> None:
 
     # 1) Declare targets/target states
     # Example (local filesystem):
-    #   target = coco.mount_run(
+    #   target = coco.use_mount(
     #       coco.component_subpath("setup"),
     #       localfs.declare_dir_target,
     #       outdir,
-    #   ).result()
+    #   )
 
     # 2) Enumerate inputs
     # Example (walk a directory):

@@ -34,21 +34,21 @@ env2 = coco.Environment(coco.Settings.from_env(db_path=DB_PATH_2))
 
 @coco.function
 def build1() -> None:
-    dir_target = coco.mount_run(
+    dir_target = coco.use_mount(
         coco.component_subpath("out"),
         declare_dir_target,
         OUT_DIR_1,
-    ).result()
+    )
     dir_target.declare_file("db1.txt", "Hello from DB1App\n")
 
 
 @coco.function
 def build2() -> None:
-    dir_target = coco.mount_run(
+    dir_target = coco.use_mount(
         coco.component_subpath("out"),
         declare_dir_target,
         OUT_DIR_2,
-    ).result()
+    )
     dir_target.declare_file("db2.txt", "Hello from DB2App\n")
 
 
