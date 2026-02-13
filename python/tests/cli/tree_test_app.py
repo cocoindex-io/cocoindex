@@ -30,12 +30,12 @@ def process_file(file_name: str, target: DirTarget) -> None:
 @coco.function
 def app_main() -> None:
     """Main app function that creates a tree with non-component intermediate nodes."""
-    # Create output directory target
-    dir_target = coco.mount_run(
+    # Create output directory target (use_mount returns the result directly)
+    dir_target = coco.use_mount(
         coco.component_subpath("setup"),
         declare_dir_target,
         OUT_DIR,
-    ).result()
+    )
 
     # Mount file components using path composition
     # Try using the / operator to construct paths, similar to scope / 'files' / file.name
