@@ -190,6 +190,22 @@ class SyncFunction(Function[P, R_co]):
         self._memo = memo
         self._processor_info = core.ComponentProcessorInfo(fn.__qualname__)
 
+    @overload
+    def __get__(self, instance: None, owner: type) -> SyncFunction[P, R_co]: ...
+    @overload
+    def __get__(
+        self: SyncFunction[Concatenate[SelfT, P0], R_co],
+        instance: SelfT,
+        owner: type[SelfT] | None = None,
+    ) -> _BoundSyncMethod[SelfT]: ...
+    def __get__(
+        self, instance: SelfT | None, owner: type | None = None
+    ) -> _BoundSyncMethod[SelfT] | SyncFunction[P, R_co]:
+        """Descriptor protocol for method binding."""
+        if instance is None:
+            return self
+        return _BoundSyncMethod(self, instance)  # type: ignore[arg-type]
+
     def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R_co:
         # In subprocess, execute the raw function directly (no memo)
         if _in_subprocess():
@@ -242,6 +258,21 @@ class SyncFunction(Function[P, R_co]):
         return _build_sync_core_processor(
             self._fn, env, path, args, kwargs, self._processor_info, memo_fp
         )
+
+
+class _BoundSyncMethod(Generic[SelfT]):
+    """Bound method wrapper for SyncFunction."""
+
+    __slots__ = ("_func", "_instance")
+
+    def __init__(
+        self, func: SyncFunction[Concatenate[SelfT, ...], Any], instance: SelfT
+    ):
+        self._func = func
+        self._instance = instance
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        return self._func(self._instance, *args, **kwargs)
 
 
 # ============================================================================
