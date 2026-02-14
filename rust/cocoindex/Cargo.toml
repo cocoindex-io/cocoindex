@@ -101,3 +101,4 @@ redis = { workspace = true }
 expect-test = { workspace = true }
 encoding_rs = { workspace = true }
 tokio-util = { workspace = true }
+notify = { workspace = true }
