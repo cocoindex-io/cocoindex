@@ -70,7 +70,6 @@ def test_regular_method() -> None:
         process_all,
     )
 
-    # First run - should execute transform twice
     app.update()
     assert _metrics.collect() == {"call.transform": 2}
     assert GlobalDictTarget.store.data == {
@@ -82,7 +81,6 @@ def test_regular_method() -> None:
         ),
     }
 
-    # Second run - should use memoization (no new calls)
     app.update()
     assert _metrics.collect() == {}
 
@@ -130,15 +128,17 @@ def test_static_method() -> None:
         process_all,
     )
 
-    # First run - should execute transform twice
     app.update()
     assert _metrics.collect() == {"call.static_transform": 2}
     assert GlobalDictTarget.store.data == {
-        "A": DictDataWithPrev(data="static: contentA", prev=[], prev_may_be_missing=True),
-        "B": DictDataWithPrev(data="static: contentB", prev=[], prev_may_be_missing=True),
+        "A": DictDataWithPrev(
+            data="static: contentA", prev=[], prev_may_be_missing=True
+        ),
+        "B": DictDataWithPrev(
+            data="static: contentB", prev=[], prev_may_be_missing=True
+        ),
     }
 
-    # Second run - should use memoization (no new calls)
     app.update()
     assert _metrics.collect() == {}
 
@@ -188,15 +188,17 @@ def test_class_method() -> None:
         process_all,
     )
 
-    # First run - should execute transform twice
     app.update()
     assert _metrics.collect() == {"call.class_transform": 2}
     assert GlobalDictTarget.store.data == {
-        "A": DictDataWithPrev(data="class: contentA", prev=[], prev_may_be_missing=True),
-        "B": DictDataWithPrev(data="class: contentB", prev=[], prev_may_be_missing=True),
+        "A": DictDataWithPrev(
+            data="class: contentA", prev=[], prev_may_be_missing=True
+        ),
+        "B": DictDataWithPrev(
+            data="class: contentB", prev=[], prev_may_be_missing=True
+        ),
     }
 
-    # Second run - should use memoization (no new calls)
     app.update()
     assert _metrics.collect() == {}
 
@@ -246,15 +248,17 @@ def test_async_method() -> None:
         process_all,
     )
 
-    # First run - should execute transform twice
     app.update()
     assert _metrics.collect() == {"call.async_transform": 2}
     assert GlobalDictTarget.store.data == {
-        "A": DictDataWithPrev(data="async: contentA", prev=[], prev_may_be_missing=True),
-        "B": DictDataWithPrev(data="async: contentB", prev=[], prev_may_be_missing=True),
+        "A": DictDataWithPrev(
+            data="async: contentA", prev=[], prev_may_be_missing=True
+        ),
+        "B": DictDataWithPrev(
+            data="async: contentB", prev=[], prev_may_be_missing=True
+        ),
     }
 
-    # Second run - should use memoization (no new calls)
     app.update()
     assert _metrics.collect() == {}
 
@@ -304,7 +308,6 @@ def test_async_class_method() -> None:
         process_all,
     )
 
-    # First run - should execute transform twice
     app.update()
     assert _metrics.collect() == {"call.async_class_transform": 2}
     assert GlobalDictTarget.store.data == {
@@ -316,6 +319,5 @@ def test_async_class_method() -> None:
         ),
     }
 
-    # Second run - should use memoization (no new calls)
     app.update()
     assert _metrics.collect() == {}
