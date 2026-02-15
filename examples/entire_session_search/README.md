@@ -1,6 +1,6 @@
 # Entire Session Search
 
-Semantic search over AI coding sessions captured by [Entire](https://entire.dev), powered by CocoIndex.
+Semantic search over AI coding sessions captured by [Entire](https://entire.io), powered by CocoIndex.
 
 ## What it does
 
@@ -13,7 +13,7 @@ Because CocoIndex is incremental, re-running after new sessions only processes w
 ## Prerequisites
 
 - Postgres with pgvector extension
-- [Entire](https://entire.dev) installed with some captured sessions
+- [Entire](https://entire.io) installed with some captured sessions
 - Python 3.11+
 
 ## Setup
