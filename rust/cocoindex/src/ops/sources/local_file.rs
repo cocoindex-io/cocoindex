@@ -16,6 +16,7 @@ pub struct Spec {
     included_patterns: Option<Vec<String>>,
     excluded_patterns: Option<Vec<String>>,
     max_file_size: Option<i64>,
+    watch_changes: Option<bool>,
 }
 
 struct Executor {
@@ -23,6 +24,7 @@ struct Executor {
     binary: bool,
     pattern_matcher: PatternMatcher,
     max_file_size: Option<i64>,
+    watch_changes: bool,
 }
 
 async fn ensure_metadata<'a>(
@@ -176,6 +178,64 @@ impl SourceExecutor for Executor {
         })
     }
 
+    async fn change_stream(
+        &self,
+    ) -> Result<Option<BoxStream<'async_trait, Result<SourceChangeMessage>>>> {
+        use async_stream::stream;
+        use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
+        use tokio::sync::mpsc;
+
+        if !self.watch_changes {
+            return Ok(None);
+        }
+
+        // bridge notify callback -> async stream
+        let (tx, mut rx) = mpsc::channel::<PathBuf>(100);
+
+        let root_path = self.root_path.clone();
+
+        let mut watcher = RecommendedWatcher::new(
+            move |res: notify::Result<notify::Event>| {
+                if let Ok(event) = res {
+                    for path in event.paths {
+                        let _ = tx.blocking_send(path);
+                    }
+                }
+            },
+            Config::default(),
+        )?;
+
+        watcher.watch(&root_path, RecursiveMode::Recursive)?;
+
+        let stream = stream! {
+            // keep watcher alive
+            let _watcher = watcher;
+
+            while let Some(path) = rx.recv().await {
+                if let Some(path_str) = path.to_str() {
+                    if self.pattern_matcher.is_file_included(path_str) {
+                        let change = SourceChange {
+                            key: KeyValue::from_single_part(path_str.to_string()),
+                            key_aux_info: serde_json::Value::Null,
+                            data: PartialSourceRowData {
+                                ordinal: None,
+                                content_version_fp: None,
+                                value: None,
+                            },
+                        };
+
+                        yield Ok(SourceChangeMessage {
+                            changes: vec![change],
+                            ack_fn: None,
+                        });
+                    }
+                }
+            }
+        };
+
+        Ok(Some(stream.boxed()))
+    }
+
     fn provides_ordinal(&self) -> bool {
         true
     }
@@ -232,6 +292,7 @@ impl SourceFactoryBase for Factory {
             binary: spec.binary,
             pattern_matcher: PatternMatcher::new(spec.included_patterns, spec.excluded_patterns)?,
             max_file_size: spec.max_file_size,
+            watch_changes: spec.watch_changes.unwrap_or(false),
         }))
     }
 }
