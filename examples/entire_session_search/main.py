@@ -1,7 +1,7 @@
 """
 Entire Session Search - CocoIndex pipeline example.
 
-Indexes AI coding session data captured by Entire (https://entire.dev)
+Indexes AI coding session data captured by Entire (https://entire.io)
 into Postgres with pgvector for semantic search.
 
 Handles four file types from Entire's checkpoint format:
