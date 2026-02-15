@@ -188,7 +188,10 @@ async def process_file(
         id_gen = IdGenerator()
         await coco_aio.map(
             process_chunk,
-            [ChunkInput(text=c.text, content_type="transcript", role=c.role) for c in chunks],
+            [
+                ChunkInput(text=c.text, content_type="transcript", role=c.role)
+                for c in chunks
+            ],
             info,
             id_gen,
             emb_table,
@@ -219,7 +222,10 @@ async def process_file(
             id_gen = IdGenerator()
             await coco_aio.map(
                 process_chunk,
-                [ChunkInput(text=c.text, content_type="context", role="") for c in chunks],
+                [
+                    ChunkInput(text=c.text, content_type="context", role="")
+                    for c in chunks
+                ],
                 info,
                 id_gen,
                 emb_table,
@@ -346,9 +352,7 @@ async def query_once(pool: asyncpg.Pool, query: str, *, top_k: int = TOP_K) -> N
         tag = r["content_type"]
         if r["role"]:
             tag += f"/{r['role']}"
-        print(
-            f"[{score:.3f}] {r['checkpoint_id']}/{r['session_index']} ({tag})"
-        )
+        print(f"[{score:.3f}] {r['checkpoint_id']}/{r['session_index']} ({tag})")
         print(f"    {r['text'][:200]}")
         print("---")
 
