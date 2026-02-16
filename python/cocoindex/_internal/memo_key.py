@@ -225,6 +225,13 @@ def fingerprint_call(
     return core.fingerprint_simple_object(call_key_obj)
 
 
+# Register memo key for class types.
+register_memo_key_function(
+    type,
+    lambda cls: (getattr(cls, "__module__", None), getattr(cls, "__qualname__", None)),
+)
+
+
 __all__ = [
     "NotMemoizable",
     "register_memo_key_function",
