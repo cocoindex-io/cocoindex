@@ -25,7 +25,7 @@ from cocoindex._internal.environment import (
 from cocoindex._internal.setting import get_default_db_path
 from cocoindex.inspect import (
     list_stable_paths_sync,
-    list_stable_paths_with_types_sync,
+    list_stable_paths_info_sync,
 )
 from cocoindex._internal.stable_path import StablePath, StableKey, ROOT_PATH
 
@@ -641,7 +641,7 @@ def show(app_target: str, tree: bool) -> None:
     app = _load_app(app_target)
 
     if tree:
-        items = list_stable_paths_with_types_sync(app)
+        items = list_stable_paths_info_sync(app)
         component_node_type = _core.StablePathNodeType.component()
         paths: list[StablePath] = []
         component_paths: set[StablePath] = set()

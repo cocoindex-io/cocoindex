@@ -51,29 +51,27 @@ impl PyStablePathNodeType {
     }
 }
 
-#[pyclass(name = "StablePathWithType")]
+#[pyclass(name = "StablePathInfo")]
 #[derive(Clone)]
-pub struct PyStablePathWithType {
+pub struct PyStablePathInfo {
     #[pyo3(get)]
     pub path: PyStablePath,
     #[pyo3(get)]
     pub node_type: PyStablePathNodeType,
 }
 
-/// Python async iterator that yields `StablePathWithType` items one-by-one (no blocking calls, no forwarder).
-#[pyclass(name = "StablePathWithTypeAsyncIterator")]
-pub struct PyStablePathWithTypeAsyncIterator {
+/// Python async iterator that yields `StablePathInfo` items one-by-one (no blocking calls, no forwarder).
+#[pyclass(name = "StablePathInfoAsyncIterator")]
+pub struct PyStablePathInfoAsyncIterator {
     /// Stream wrapped in async Mutex to allow &self access without blocking Python thread.
     /// Pin<Box<...>> is needed because streams are not Unpin.
     stream: Arc<
-        tokio::sync::Mutex<
-            Pin<Box<dyn Stream<Item = Result<db_inspect::StablePathWithType>> + Send>>,
-        >,
+        tokio::sync::Mutex<Pin<Box<dyn Stream<Item = Result<db_inspect::StablePathInfo>> + Send>>>,
     >,
 }
 
 #[pymethods]
-impl PyStablePathWithTypeAsyncIterator {
+impl PyStablePathInfoAsyncIterator {
     fn __aiter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
         slf
     }
@@ -91,7 +89,7 @@ impl PyStablePathWithTypeAsyncIterator {
                     Python::attach(|py| {
                         Py::new(
                             py,
-                            PyStablePathWithType {
+                            PyStablePathInfo {
                                 path: PyStablePath(item.path),
                                 node_type: PyStablePathNodeType(item.node_type),
                             },
@@ -106,19 +104,16 @@ impl PyStablePathWithTypeAsyncIterator {
 }
 
 #[pyfunction]
-pub fn iter_stable_paths_with_types<'py>(
-    app: &PyApp,
-    py: Python<'py>,
-) -> PyResult<Bound<'py, PyAny>> {
+pub fn iter_stable_paths<'py>(app: &PyApp, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
     let app_clone = app.0.clone();
-    let stream = db_inspect::iter_stable_paths_with_types(&app_clone);
+    let stream = db_inspect::iter_stable_paths(&app_clone);
 
     // Box and pin the stream to store it in the iterator.
     // No forwarder task needed - we poll the stream directly.
-    let stream: Pin<Box<dyn Stream<Item = Result<db_inspect::StablePathWithType>> + Send>> =
+    let stream: Pin<Box<dyn Stream<Item = Result<db_inspect::StablePathInfo>> + Send>> =
         Box::pin(stream);
 
-    let iterator = PyStablePathWithTypeAsyncIterator {
+    let iterator = PyStablePathInfoAsyncIterator {
         stream: Arc::new(tokio::sync::Mutex::new(stream)),
     };
     Ok(Py::new(py, iterator)?.into_any().into_bound(py))

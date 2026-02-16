@@ -147,28 +147,11 @@ impl PyStablePath {
         self.0
             .as_ref()
             .iter()
-            .map(|key| stable_key_to_py(py, key))
+            .map(|key| {
+                PyStableKey(key.clone())
+                    .into_pyobject(py)
+                    .map(|b| b.unbind())
+            })
             .collect()
-    }
-}
-
-fn stable_key_to_py(py: Python<'_>, key: &StableKey) -> PyResult<Py<PyAny>> {
-    match key {
-        StableKey::Null => Ok(py.None().into()),
-        StableKey::Bool(b) => Ok((*b).into_py_any(py)?),
-        StableKey::Int(i) => Ok((*i).into_py_any(py)?),
-        StableKey::Str(s) => Ok(s.as_ref().into_py_any(py)?),
-        StableKey::Symbol(s) => Ok(Py::new(py, PySymbol(Arc::clone(s)))?.into_any()),
-        StableKey::Bytes(b) => Ok(PyBytes::new(py, b.as_ref()).into_py_any(py)?),
-        StableKey::Uuid(u) => Ok((*u).into_py_any(py)?),
-        StableKey::Array(arr) => {
-            let mut items: Vec<Py<PyAny>> = Vec::with_capacity(arr.len());
-            for item in arr.iter() {
-                items.push(stable_key_to_py(py, item)?);
-            }
-            let py_tuple = PyTuple::new(py, items)?;
-            Ok(py_tuple.into_py_any(py)?)
-        }
-        StableKey::Fingerprint(fp) => Ok(fp.to_string().into_py_any(py)?),
     }
 }

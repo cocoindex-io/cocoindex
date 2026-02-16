@@ -34,9 +34,9 @@ pub fn list_stable_paths<Prof: EngineProfile>(app: &App<Prof>) -> Result<Vec<Sta
     Ok(result)
 }
 
-/// Represents a stable path with its node type information.
+/// Represents a stable path with metadata (e.g. node type); more properties may be added.
 #[derive(Clone, Debug)]
-pub struct StablePathWithType {
+pub struct StablePathInfo {
     pub path: StablePath,
     pub node_type: db_schema::StablePathNodeType,
 }
@@ -44,13 +44,13 @@ pub struct StablePathWithType {
 // Re-export StablePathNodeType for use in Python bindings
 pub use db_schema::StablePathNodeType;
 
-/// Returns a stream of stable paths with their node types.
+/// Returns a stream of stable paths with their metadata (e.g. node type).
 /// LMDB iteration runs on a dedicated thread (RoTxn/cursors are !Send); items are sent over a channel.
-pub fn iter_stable_paths_with_types<Prof: EngineProfile>(
+pub fn iter_stable_paths<Prof: EngineProfile>(
     app: &App<Prof>,
-) -> impl Stream<Item = Result<StablePathWithType>> + Send + 'static {
+) -> impl Stream<Item = Result<StablePathInfo>> + Send + 'static {
     let app_ctx = app.app_ctx().clone();
-    let (tx, rx) = tokio::sync::mpsc::channel::<Result<StablePathWithType>>(128);
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<StablePathInfo>>(128);
 
     std::thread::spawn(move || {
         let result: Result<()> = (|| {
@@ -86,7 +86,7 @@ pub fn iter_stable_paths_with_types<Prof: EngineProfile>(
                     }
                 };
 
-                let item = StablePathWithType { path, node_type };
+                let item = StablePathInfo { path, node_type };
                 if tx.blocking_send(Ok(item)).is_err() {
                     break;
                 }

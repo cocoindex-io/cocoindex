@@ -117,7 +117,7 @@ class Environment:
 
 # --- Inspect helpers ---
 def list_app_names(env: Environment) -> list[str]: ...
-def iter_stable_paths_with_types(app: App) -> StablePathWithTypeAsyncIterator: ...
+def iter_stable_paths(app: App) -> StablePathInfoAsyncIterator: ...
 
 class StablePathNodeType:
     @staticmethod
@@ -125,16 +125,16 @@ class StablePathNodeType:
     @staticmethod
     def component() -> StablePathNodeType: ...
 
-class StablePathWithType:
+class StablePathInfo:
     path: StablePath
     node_type: StablePathNodeType
 
 
-class StablePathWithTypeAsyncIterator:
-    """Async iterator of StablePathWithType; use with async for."""
+class StablePathInfoAsyncIterator:
+    """Async iterator of StablePathInfo; use with async for."""
 
-    def __aiter__(self) -> StablePathWithTypeAsyncIterator: ...
-    def __anext__(self) -> Awaitable[StablePathWithType]: ...
+    def __aiter__(self) -> StablePathInfoAsyncIterator: ...
+    def __anext__(self) -> Awaitable[StablePathInfo]: ...
 
 # --- App ---
 class App:
