@@ -130,6 +130,30 @@ If you don't specify the `language` field, or the language you specified doesn't
 the input will be treated as plain text,
 in which case the input text is treated as an article and split will be based on blank lines, punctuation marks, whitespaces, etc.
 
+## SplitBySeparators
+
+`SplitBySeparators` splits text by specified regex separators only, without recursive chunking. This is useful when you want direct control over how text is split, e.g. splitting by blank lines or specific delimiters.
+
+The spec takes the following fields:
+
+* `separators_regex` (`list[str]`): A list of regex patterns to use as separators. See [regex syntax](https://docs.rs/regex/latest/regex/#syntax) for supported regular expression syntax.
+* `keep_separator` (`Literal["NONE", "LEFT", "RIGHT"]`, default: `"NONE"`): Whether to attach the matched separator to the chunk on its left or right, or discard it.
+* `include_empty` (`bool`, default: `False`): Whether to include empty chunks in the output.
+* `trim` (`bool`, default: `True`): Whether to trim whitespace from each chunk.
+
+Input data:
+
+* `text` (*Str*): The text to split.
+
+Return: [*KTable*](/docs/core/data_types#ktable), each row represents a chunk, with the following sub fields:
+
+* `location` (*Range*): The location of the chunk.
+* `text` (*Str*): The text of the chunk.
+* `start` / `end` (*Struct*): Details about the start position (inclusive) and end position (exclusive) of the chunk. They have the following sub fields:
+  * `offset` (*Int64*): The byte offset of the position.
+  * `line` (*Int64*): The line number of the position. Starting from 1.
+  * `column` (*Int64*): The column number of the position. Starting from 1.
+
 ## SentenceTransformerEmbed
 
 `SentenceTransformerEmbed` embeds a text into a vector space using the [SentenceTransformer](https://huggingface.co/sentence-transformers) library.
