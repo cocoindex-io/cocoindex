@@ -26,6 +26,8 @@ The spec takes the following fields:
 *   `max_file_size` (`int`, optional): if provided, files exceeding this size in bytes will be treated as non-existent and skipped during processing.
     This is useful to avoid processing large files that are not relevant to your use case, such as videos or backups.
     If not specified, no size limit is applied.
+*   `watch_changes` (`bool`, optional): if `True`, the source watches the file system for changes and automatically triggers updates when files are added, modified, or deleted.
+    Defaults to `False`.
 
 ### Schema
 
