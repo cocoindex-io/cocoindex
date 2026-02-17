@@ -51,7 +51,7 @@ See also [Processing Helpers](./processing_helpers.md) for utility APIs like `ma
 Use `mount()` when you don't need a return value from the processing component. It schedules the processing component to run and returns a handle:
 
 ```python
-handle = coco_aio.mount(
+handle = await coco_aio.mount(
     coco.component_subpath("process", filename),
     process_file,
     file,

@@ -118,7 +118,7 @@ def list_app_names(env: Environment) -> list[str]: ...
 
 # --- App ---
 class App:
-    def __new__(cls, name: str, env: Environment) -> App: ...
+    def __new__(cls, name: str, env: Environment, max_inflight_components: int | None = None) -> App: ...
     def update(
         self,
         root_processor: ComponentProcessor[T_co],
@@ -167,6 +167,18 @@ def mount(
     fn_ctx: FnCallContext,
 ) -> ComponentMountHandle: ...
 def mount_run(
+    processor: ComponentProcessor[T_co],
+    stable_path: StablePath,
+    comp_ctx: ComponentProcessorContext,
+    fn_ctx: FnCallContext,
+) -> ComponentMountRunHandle[T_co]: ...
+async def mount_async(
+    processor: ComponentProcessor[T_co],
+    stable_path: StablePath,
+    comp_ctx: ComponentProcessorContext,
+    fn_ctx: FnCallContext,
+) -> ComponentMountHandle: ...
+async def mount_run_async(
     processor: ComponentProcessor[T_co],
     stable_path: StablePath,
     comp_ctx: ComponentProcessorContext,

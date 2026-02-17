@@ -239,7 +239,7 @@ async def app_main(
 
         if files:
             # Mount a component to process this project
-            coco_aio.mount(
+            await coco_aio.mount(
                 coco.component_subpath("project", project_name),
                 process_project,
                 project_name,

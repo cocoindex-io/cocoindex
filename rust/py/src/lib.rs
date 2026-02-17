@@ -33,6 +33,8 @@ fn core_module(m: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()>
     m.add_class::<component::PyComponentMountRunHandle>()?;
     m.add_function(wrap_pyfunction!(component::mount, m)?)?;
     m.add_function(wrap_pyfunction!(component::mount_run, m)?)?;
+    m.add_function(wrap_pyfunction!(component::mount_async, m)?)?;
+    m.add_function(wrap_pyfunction!(component::mount_run_async, m)?)?;
 
     m.add_class::<context::PyComponentProcessorContext>()?;
     m.add_class::<context::PyFnCallContext>()?;

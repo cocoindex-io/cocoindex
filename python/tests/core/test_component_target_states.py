@@ -613,7 +613,7 @@ async def _declare_dict_containers_together_async() -> None:
         coco.component_subpath("setup"), _declare_dict_containers, _source_data.keys()
     )
     for name, provider in providers.items():
-        coco_aio.mount(
+        await coco_aio.mount(
             coco.component_subpath(name), _declare_one_dict_data, name, provider
         )
 

@@ -106,6 +106,36 @@ For example, an app that processes files might mount one component per file:
 
 See [Processing Component](./processing_component.md) for how mounting and component paths define these boundaries.
 
+## Concurrency control
+
+By default, CocoIndex limits the number of concurrently executing processing components to **1024** per app. When components perform resource-intensive work (e.g., calling external APIs, running ML models), you may want to lower this limit.
+
+Set `max_inflight_components` in `AppConfig` to control the limit:
+
+```python
+app = coco.App(
+    coco.AppConfig(name="MyPipeline", max_inflight_components=4),
+    app_main,
+    sourcedir=pathlib.Path("./data"),
+)
+```
+
+With `max_inflight_components=4`, at most 4 processing components execute at the same time. When a component finishes, the next pending one starts.
+
+Setting `max_inflight_components=1` serializes all components — only one runs at a time.
+
+You can also set the limit via the `COCOINDEX_MAX_INFLIGHT_COMPONENTS` environment variable:
+
+```bash
+export COCOINDEX_MAX_INFLIGHT_COMPONENTS=4
+```
+
+**Precedence:** `AppConfig` value > environment variable > default (1024).
+
+:::info[Deadlock Prevention]
+When a parent component mounts a child, the parent releases its concurrency slot so the child can make progress. This prevents deadlocks in nested mount scenarios — even with `max_inflight_components=1`, a parent mounting a child will not block forever.
+:::
+
 ## Database path
 
 CocoIndex needs a database path (`db_path`) to store its internal state. This database tracks target states and memoized results from previous runs, enabling CocoIndex to compute what changed and apply only the necessary updates.
