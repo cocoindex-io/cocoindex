@@ -12,6 +12,56 @@ For each argument value, CocoIndex derives a “key fragment” with this preced
 
 The final memoization key is a deterministic fingerprint of the full call key.
 
+## Automatic support for dataclasses and Pydantic models
+
+CocoIndex automatically supports Python dataclasses and Pydantic v2 models without requiring `__coco_memo_key__()`:
+
+**Dataclasses**: All fields are included in definition order.
+
+```python
+from dataclasses import dataclass
+
+@dataclass
+class Point:
+    x: int
+    y: int
+
+# Works automatically - no __coco_memo_key__ needed
+@coco.function(memo=True)
+def process_point(p: Point) -> str:
+    return f"Point({p.x}, {p.y})"
+```
+
+**Pydantic v2 models**: All fields are included (set and unset), preserving field definition order.
+
+```python
+from pydantic import BaseModel
+
+class Config(BaseModel):
+    name: str
+    value: int = 42
+
+# Works automatically - no __coco_memo_key__ needed
+@coco.function(memo=True)
+def process_config(cfg: Config) -> str:
+    return f"Config {cfg.name} = {cfg.value}"
+```
+
+### Override automatic handling
+
+If you need custom behavior, implement `__coco_memo_key__()` - it takes precedence over automatic handling:
+
+```python
+@dataclass
+class Point:
+    x: int
+    y: int
+    transient_data: str  # Don't include in memo key
+
+    def __coco_memo_key__(self) -> object:
+        return (self.x, self.y)  # Only x and y matter for memoization
+```
+
 ## Define `__coco_memo_key__` (preferred when you control the type)
 
 Implement a method on your class:

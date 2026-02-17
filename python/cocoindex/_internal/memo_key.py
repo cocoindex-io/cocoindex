@@ -8,6 +8,7 @@ canonical call key object into a fixed-size fingerprint.
 
 from __future__ import annotations
 
+import dataclasses
 import math
 import pickle
 import struct
@@ -21,6 +22,48 @@ _KeyFn = typing.Callable[[typing.Any], typing.Any]
 
 
 _memo_key_fns: dict[type, _KeyFn] = {}
+
+
+def _is_dataclass_instance(obj: object) -> bool:
+    """Check if obj is a dataclass instance (not a class)."""
+    return dataclasses.is_dataclass(obj) and not isinstance(obj, type)
+
+
+def _is_pydantic_model(obj: object) -> bool:
+    """Check if obj is a Pydantic v2 model instance."""
+    return hasattr(obj, "__pydantic_fields__") and not isinstance(obj, type)  # type: ignore[attr-defined]
+
+
+def _canonicalize_dataclass(obj: object) -> Fingerprintable:
+    """Canonicalize a dataclass instance.
+
+    Preserves field definition order and includes all fields.
+    Format: ("dataclass", module, qualname, ((field_name, value), ...))
+    """
+    typ = type(obj)
+    # Get fields in definition order
+    fields = dataclasses.fields(obj)  # type: ignore[arg-type]
+    field_items: list[tuple[str, Fingerprintable]] = []
+    for field in fields:
+        value = getattr(obj, field.name)
+        field_items.append((field.name, _canonicalize(value, _seen=None)))
+    return ("dataclass", typ.__module__, typ.__qualname__, tuple(field_items))
+
+
+def _canonicalize_pydantic(obj: object) -> Fingerprintable:
+    """Canonicalize a Pydantic v2 model instance.
+
+    Includes all fields (set and unset) to ensure determinism.
+    Format: ("pydantic", module, qualname, ((field_name, value), ...))
+    """
+    typ = type(obj)
+    # Get all field names from model fields
+    field_names = list(obj.__pydantic_fields__.keys())  # type: ignore[attr-defined]
+    field_items: list[tuple[str, Fingerprintable]] = []
+    for name in field_names:
+        value = getattr(obj, name)
+        field_items.append((name, _canonicalize(value, _seen=None)))
+    return ("pydantic", typ.__module__, typ.__qualname__, tuple(field_items))
 
 
 class NotMemoizable:
@@ -136,7 +179,15 @@ def _canonicalize(obj: object, _seen: dict[int, int] | None) -> Fingerprintable:
             k = fn(obj)
             return ("hook", base.__module__, base.__qualname__, _canonicalize(k, _seen))
 
-    # 3) Cycle / shared-reference tracking
+    # 3) Dataclass instances (check before containers since dataclasses may be sequences)
+    if _is_dataclass_instance(obj):
+        return _canonicalize_dataclass(obj)
+
+    # 4) Pydantic v2 models (check before containers since they may be sequences)
+    if _is_pydantic_model(obj):
+        return _canonicalize_pydantic(obj)
+
+    # 5) Cycle / shared-reference tracking
     #
     # Note: we intentionally do this before branching on container types, so the
     # logic is shared and we support cyclic/self-referential structures.
@@ -146,7 +197,7 @@ def _canonicalize(obj: object, _seen: dict[int, int] | None) -> Fingerprintable:
         return ("ref", ordinal)
     _seen[oid] = len(_seen)
 
-    # 4) Containers
+    # 6) Containers
     if isinstance(obj, typing.Sequence):
         return ("seq", tuple(_canonicalize(e, _seen) for e in obj))
 
@@ -162,7 +213,7 @@ def _canonicalize(obj: object, _seen: dict[int, int] | None) -> Fingerprintable:
         elts.sort(key=_stable_sort_key)
         return ("set", tuple(elts))
 
-    # 5) Fallback
+    # 7) Fallback
     try:
         payload = pickle.dumps(obj, protocol=pickle.HIGHEST_PROTOCOL)
         # Tag to avoid colliding with user-provided raw bytes.
