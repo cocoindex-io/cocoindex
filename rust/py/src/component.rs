@@ -98,6 +98,7 @@ impl ComponentProcessor<PyEngineProfile> for PyComponentProcessor {
 
 #[pyfunction]
 pub fn mount_run(
+    py: Python<'_>,
     processor: PyComponentProcessor,
     stable_path: PyStablePath,
     comp_ctx: PyComponentProcessorContext,
@@ -115,12 +116,17 @@ pub fn mount_run(
             comp_ctx.0.full_reprocess(),
         )
         .into_py_result()?;
-    let handle = component.run(processor, child_ctx).into_py_result()?;
-    Ok(PyComponentMountRunHandle(Some(handle)))
+    py.detach(|| {
+        get_runtime().block_on(async {
+            let handle = component.run(processor, child_ctx).await.into_py_result()?;
+            Ok(PyComponentMountRunHandle(Some(handle)))
+        })
+    })
 }
 
 #[pyfunction]
 pub fn mount(
+    py: Python<'_>,
     processor: PyComponentProcessor,
     stable_path: PyStablePath,
     comp_ctx: PyComponentProcessorContext,
@@ -138,10 +144,70 @@ pub fn mount(
             comp_ctx.0.full_reprocess(),
         )
         .into_py_result()?;
-    let handle = component
-        .run_in_background(processor, child_ctx)
+    py.detach(|| {
+        get_runtime().block_on(async {
+            let handle = component
+                .run_in_background(processor, child_ctx)
+                .await
+                .into_py_result()?;
+            Ok(PyComponentMountHandle(Some(handle)))
+        })
+    })
+}
+
+#[pyfunction]
+pub fn mount_run_async<'py>(
+    py: Python<'py>,
+    processor: PyComponentProcessor,
+    stable_path: PyStablePath,
+    comp_ctx: PyComponentProcessorContext,
+    fn_ctx: &PyFnCallContext,
+) -> PyResult<Bound<'py, PyAny>> {
+    let component = comp_ctx
+        .0
+        .component()
+        .mount_child(&fn_ctx.0, stable_path.0)
         .into_py_result()?;
-    Ok(PyComponentMountHandle(Some(handle)))
+    let child_ctx = component
+        .new_processor_context_for_build(
+            Some(&comp_ctx.0),
+            comp_ctx.0.processing_stats().clone(),
+            comp_ctx.0.full_reprocess(),
+        )
+        .into_py_result()?;
+    future_into_py(py, async move {
+        let handle = component.run(processor, child_ctx).await.into_py_result()?;
+        Ok(PyComponentMountRunHandle(Some(handle)))
+    })
+}
+
+#[pyfunction]
+pub fn mount_async<'py>(
+    py: Python<'py>,
+    processor: PyComponentProcessor,
+    stable_path: PyStablePath,
+    comp_ctx: PyComponentProcessorContext,
+    fn_ctx: &PyFnCallContext,
+) -> PyResult<Bound<'py, PyAny>> {
+    let component = comp_ctx
+        .0
+        .component()
+        .mount_child(&fn_ctx.0, stable_path.0)
+        .into_py_result()?;
+    let child_ctx = component
+        .new_processor_context_for_build(
+            Some(&comp_ctx.0),
+            comp_ctx.0.processing_stats().clone(),
+            comp_ctx.0.full_reprocess(),
+        )
+        .into_py_result()?;
+    future_into_py(py, async move {
+        let handle = component
+            .run_in_background(processor, child_ctx)
+            .await
+            .into_py_result()?;
+        Ok(PyComponentMountHandle(Some(handle)))
+    })
 }
 
 #[pyclass(name = "ComponentMountRunHandle")]

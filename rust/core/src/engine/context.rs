@@ -22,6 +22,7 @@ struct AppContextInner<Prof: EngineProfile> {
     db: db_schema::Database,
     app_reg: AppRegistration<Prof>,
     id_sequencer_manager: IdSequencerManager,
+    inflight_semaphore: Option<Arc<tokio::sync::Semaphore>>,
 }
 
 #[derive(Clone)]
@@ -34,13 +35,17 @@ impl<Prof: EngineProfile> AppContext<Prof> {
         env: Environment<Prof>,
         db: db_schema::Database,
         app_reg: AppRegistration<Prof>,
+        max_inflight_components: Option<usize>,
     ) -> Self {
+        let inflight_semaphore =
+            max_inflight_components.map(|n| Arc::new(tokio::sync::Semaphore::new(n)));
         Self {
             inner: Arc::new(AppContextInner {
                 env,
                 db,
                 app_reg,
                 id_sequencer_manager: IdSequencerManager::new(),
+                inflight_semaphore,
             }),
         }
     }
@@ -55,6 +60,10 @@ impl<Prof: EngineProfile> AppContext<Prof> {
 
     pub fn app_reg(&self) -> &AppRegistration<Prof> {
         &self.inner.app_reg
+    }
+
+    pub fn inflight_semaphore(&self) -> Option<&Arc<tokio::sync::Semaphore>> {
+        self.inner.inflight_semaphore.as_ref()
     }
 
     /// Get the next ID for the given key.
@@ -136,6 +145,7 @@ struct ComponentProcessorContextInner<Prof: EngineProfile> {
     components_readiness: ComponentBgChildReadiness,
 
     processing_stats: ProcessingStats,
+    inflight_permit: Mutex<Option<tokio::sync::OwnedSemaphorePermit>>,
     // TODO: Add fields to record states, children components, etc.
 }
 
@@ -175,6 +185,7 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
                 processing_action: processing_state,
                 components_readiness: Default::default(),
                 processing_stats,
+                inflight_permit: Mutex::new(None),
             }),
         }
     }
@@ -236,6 +247,15 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
 
     pub fn join_fn_call(&self, _fn_ctx: &FnCallContext) {
         // Nothing needs to be incorporated for now
+    }
+
+    pub(crate) fn set_inflight_permit(&self, permit: tokio::sync::OwnedSemaphorePermit) {
+        *self.inner.inflight_permit.lock().unwrap() = Some(permit);
+    }
+
+    /// Release the inflight permit if held. No-op after first call.
+    pub(crate) fn release_inflight_permit(&self) {
+        *self.inner.inflight_permit.lock().unwrap() = None;
     }
 
     pub fn processing_stats(&self) -> &ProcessingStats {

@@ -290,11 +290,28 @@ impl<Prof: EngineProfile> Component<Prof> {
         }
     }
 
-    pub fn run(
+    pub async fn run(
         self,
         processor: Prof::ComponentProc,
         context: ComponentProcessorContext<Prof>,
     ) -> Result<ComponentMountRunHandle<Prof>> {
+        // Release parent's inflight permit (deadlock prevention).
+        // On a component's first child mount, the parent gives up its slot
+        // so children can make progress.
+        if let Some(parent_ctx) = context.parent_context() {
+            parent_ctx.release_inflight_permit();
+        }
+
+        // Acquire inflight permit (waits if quota exhausted).
+        if let Some(sem) = self.app_ctx().inflight_semaphore() {
+            let permit = sem
+                .clone()
+                .acquire_owned()
+                .await
+                .map_err(|_| internal_error!("Inflight semaphore closed"))?;
+            context.set_inflight_permit(permit);
+        }
+
         let relative_path = self.relative_path(&context)?;
         let child_readiness_guard = context
             .parent_context()
@@ -321,12 +338,27 @@ impl<Prof: EngineProfile> Component<Prof> {
         Ok(ComponentMountRunHandle { join_handle })
     }
 
-    pub fn run_in_background(
+    pub async fn run_in_background(
         self,
         processor: Prof::ComponentProc,
         context: ComponentProcessorContext<Prof>,
     ) -> Result<ComponentExecutionHandle> {
         // TODO: Skip building and reuse cached result if the component is already built and up to date.
+
+        // Release parent's inflight permit (deadlock prevention).
+        if let Some(parent_ctx) = context.parent_context() {
+            parent_ctx.release_inflight_permit();
+        }
+
+        // Acquire inflight permit (waits if quota exhausted).
+        if let Some(sem) = self.app_ctx().inflight_semaphore() {
+            let permit = sem
+                .clone()
+                .acquire_owned()
+                .await
+                .map_err(|_| internal_error!("Inflight semaphore closed"))?;
+            context.set_inflight_permit(permit);
+        }
 
         let child_readiness_guard = context
             .parent_context()

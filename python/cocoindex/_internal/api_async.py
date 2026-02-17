@@ -136,7 +136,7 @@ async def use_mount(
     processor = create_core_component_processor(
         processor_fn, parent_ctx._env, child_path, args, kwargs
     )
-    core_handle = core.mount_run(
+    core_handle = await core.mount_run_async(
         processor,
         child_path,
         parent_ctx._core_processor_ctx,
@@ -145,7 +145,7 @@ async def use_mount(
     return await core_handle.result_async(parent_ctx._core_processor_ctx)
 
 
-def mount(
+async def mount(
     subpath: ComponentSubpath,
     processor_fn: AnyCallable[P, Any],
     *args: P.args,
@@ -166,7 +166,7 @@ def mount(
     Example:
         with coco.component_subpath("process"):
             for f in files:
-                coco.mount(coco.component_subpath(str(f.relative_path)), process_file, f, target)
+                await coco_aio.mount(coco.component_subpath(str(f.relative_path)), process_file, f, target)
     """
     parent_ctx = get_context_from_ctx()
     child_path = build_child_path(parent_ctx, subpath)
@@ -174,7 +174,7 @@ def mount(
     processor = create_core_component_processor(
         processor_fn, parent_ctx._env, child_path, args, kwargs
     )
-    core_handle = core.mount(
+    core_handle = await core.mount_async(
         processor,
         child_path,
         parent_ctx._core_processor_ctx,
@@ -215,12 +215,12 @@ async def mount_each(
     parent_ctx = get_context_from_ctx()
     core_handles: list[core.ComponentMountHandle] = []
 
-    def _mount_one(key: StableKey, item: Any) -> None:
+    async def _mount_one(key: StableKey, item: Any) -> None:
         child_path = build_child_path(parent_ctx, ComponentSubpath(key))
         processor = create_core_component_processor(
             fn, parent_ctx._env, child_path, (item, *args), kwargs
         )
-        core_handle = core.mount(
+        core_handle = await core.mount_async(
             processor,
             child_path,
             parent_ctx._core_processor_ctx,
@@ -230,10 +230,10 @@ async def mount_each(
 
     if isinstance(items, AsyncIterable):
         async for key, item in items:
-            _mount_one(key, item)
+            await _mount_one(key, item)
     else:
         for key, item in items:
-            _mount_one(key, item)
+            await _mount_one(key, item)
     return ComponentMountHandle(core_handles)
 
 

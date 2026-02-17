@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import threading
 from dataclasses import dataclass
 from typing import (
@@ -19,11 +20,15 @@ from .function import AnyCallable, AsyncCallable
 P = ParamSpec("P")
 R = TypeVar("R")
 
+_ENV_MAX_INFLIGHT_COMPONENTS = "COCOINDEX_MAX_INFLIGHT_COMPONENTS"
+_DEFAULT_MAX_INFLIGHT_COMPONENTS = 1024
+
 
 @dataclass(frozen=True)
 class AppConfig:
     name: str
     environment: Environment | LazyEnvironment = _default_env
+    max_inflight_components: int | None = None
 
 
 class AppBase(Generic[P, R]):
@@ -73,6 +78,15 @@ class AppBase(Generic[P, R]):
         self._app_kwargs = dict(kwargs)
         self._environment = config.environment
 
+        max_inflight = config.max_inflight_components
+        if max_inflight is None:
+            env_val = os.environ.get(_ENV_MAX_INFLIGHT_COMPONENTS)
+            if env_val is not None:
+                max_inflight = int(env_val)
+            else:
+                max_inflight = _DEFAULT_MAX_INFLIGHT_COMPONENTS
+        self._max_inflight_components = max_inflight
+
         self._lock = threading.Lock()
         self._core_env_app = None
 
@@ -100,5 +114,8 @@ class AppBase(Generic[P, R]):
     def _ensure_core_env_app(self, env: Environment) -> tuple[Environment, core.App]:
         with self._lock:
             if self._core_env_app is None:
-                self._core_env_app = (env, core.App(self._name, env._core_env))
+                self._core_env_app = (
+                    env,
+                    core.App(self._name, env._core_env, self._max_inflight_components),
+                )
             return self._core_env_app
