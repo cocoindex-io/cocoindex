@@ -1,3 +1,5 @@
+//! Split utilities - re-exports and schema helpers.
+
 use crate::{
     base::field_attrs,
     fields_value,
@@ -6,87 +8,30 @@ use crate::{
         BasicValueType, EnrichedValueType, FieldSchema, KTableInfo, OpArgsResolver, StructSchema,
         StructSchemaBuilder, TableKind, TableSchema, make_output_type, schema,
     },
+    prelude::*,
 };
-use anyhow::Result;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OutputPosition {
-    pub char_offset: usize,
-    pub line: u32,
-    pub column: u32,
-}
+// Re-export core types from ops_text
+pub use cocoindex_ops_text::split::{
+    // Recursive chunker
+    CustomLanguageConfig,
+    // Separator splitter
+    KeepSeparator,
+    OutputPosition,
+    RecursiveChunkConfig,
+    RecursiveChunker,
+    RecursiveSplitConfig,
+    SeparatorSplitConfig,
+    SeparatorSplitter,
+};
 
-impl OutputPosition {
-    pub fn into_output(self) -> value::Value {
-        value::Value::Struct(fields_value!(
-            self.char_offset as i64,
-            self.line as i64,
-            self.column as i64
-        ))
-    }
-}
-
-pub struct Position {
-    pub byte_offset: usize,
-    pub output: Option<OutputPosition>,
-}
-
-impl Position {
-    pub fn new(byte_offset: usize) -> Self {
-        Self {
-            byte_offset,
-            output: None,
-        }
-    }
-}
-
-/// Fill OutputPosition for the requested byte offsets.
-pub fn set_output_positions<'a>(text: &str, positions: impl Iterator<Item = &'a mut Position>) {
-    let mut positions = positions.collect::<Vec<_>>();
-    positions.sort_by_key(|o| o.byte_offset);
-
-    let mut positions_iter = positions.iter_mut();
-    let Some(mut next_position) = positions_iter.next() else {
-        return;
-    };
-
-    let mut char_offset = 0;
-    let mut line = 1;
-    let mut column = 1;
-    for (byte_offset, ch) in text.char_indices() {
-        while next_position.byte_offset == byte_offset {
-            next_position.output = Some(OutputPosition {
-                char_offset,
-                line,
-                column,
-            });
-            if let Some(p) = positions_iter.next() {
-                next_position = p
-            } else {
-                return;
-            }
-        }
-        char_offset += 1;
-        if ch == '\n' {
-            line += 1;
-            column = 1;
-        } else {
-            column += 1;
-        }
-    }
-
-    loop {
-        next_position.output = Some(OutputPosition {
-            char_offset,
-            line,
-            column,
-        });
-        if let Some(p) = positions_iter.next() {
-            next_position = p
-        } else {
-            return;
-        }
-    }
+/// Convert an OutputPosition to cocoindex Value format.
+pub fn output_position_to_value(pos: OutputPosition) -> value::Value {
+    value::Value::Struct(fields_value!(
+        pos.char_offset as i64,
+        pos.line as i64,
+        pos.column as i64
+    ))
 }
 
 /// Build the common chunk output schema used by splitters.

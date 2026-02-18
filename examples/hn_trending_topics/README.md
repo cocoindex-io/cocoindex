@@ -32,6 +32,10 @@ We appreciate a star ⭐ at [CocoIndex Github](https://github.com/cocoindex-io/c
 
 [Install Postgres](https://cocoindex.io/docs/getting_started/installation#-install-postgres) if you don't have one.
 
+## Environment
+
+Create a `.env` file from `.env.example`, and fill `OPENAI_API_KEY`.
+
 ## Run
 
 Install dependencies:

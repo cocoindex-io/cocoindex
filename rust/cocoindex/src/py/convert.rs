@@ -10,8 +10,6 @@ use pyo3::types::{PyList, PyTuple};
 use pyo3::{exceptions::PyException, prelude::*};
 use pythonize::{depythonize, pythonize};
 
-use py_utils::{AnyhowIntoPyResult, IntoPyResult};
-
 fn basic_value_to_py_object<'py>(
     py: Python<'py>,
     v: &value::BasicValue,
@@ -23,14 +21,14 @@ fn basic_value_to_py_object<'py>(
         value::BasicValue::Int64(v) => v.into_bound_py_any(py)?,
         value::BasicValue::Float32(v) => v.into_bound_py_any(py)?,
         value::BasicValue::Float64(v) => v.into_bound_py_any(py)?,
-        value::BasicValue::Range(v) => pythonize(py, v).into_py_result()?,
+        value::BasicValue::Range(v) => pythonize(py, v)?,
         value::BasicValue::Uuid(uuid_val) => uuid_val.into_bound_py_any(py)?,
         value::BasicValue::Date(v) => v.into_bound_py_any(py)?,
         value::BasicValue::Time(v) => v.into_bound_py_any(py)?,
         value::BasicValue::LocalDateTime(v) => v.into_bound_py_any(py)?,
         value::BasicValue::OffsetDateTime(v) => v.into_bound_py_any(py)?,
         value::BasicValue::TimeDelta(v) => v.into_bound_py_any(py)?,
-        value::BasicValue::Json(v) => pythonize(py, v).into_py_result()?,
+        value::BasicValue::Json(v) => pythonize(py, v)?,
         value::BasicValue::Vector(v) => handle_vector_to_py(py, v)?,
         value::BasicValue::UnionVariant { tag_id, value } => {
             (*tag_id, basic_value_to_py_object(py, value)?).into_bound_py_any(py)?
@@ -62,7 +60,7 @@ pub fn key_to_py_object<'py, 'a>(
             value::KeyPart::Str(v) => v.into_bound_py_any(py)?,
             value::KeyPart::Bool(v) => v.into_bound_py_any(py)?,
             value::KeyPart::Int64(v) => v.into_bound_py_any(py)?,
-            value::KeyPart::Range(v) => pythonize(py, v).into_py_result()?,
+            value::KeyPart::Range(v) => pythonize(py, v)?,
             value::KeyPart::Uuid(v) => v.into_bound_py_any(py)?,
             value::KeyPart::Date(v) => v.into_bound_py_any(py)?,
             value::KeyPart::Struct(v) => key_to_py_object(py, v)?,
@@ -315,29 +313,29 @@ pub fn value_from_py_object<'py>(
 
                     schema::TableKind::KTable(info) => {
                         let num_key_parts = info.num_key_parts;
-                        value::Value::KTable(
-                            values
-                                .into_iter()
-                                .map(|v| {
-                                    let mut iter = v.fields.into_iter();
-                                    if iter.len() < num_key_parts {
-                                        anyhow::bail!(
-                                            "Invalid KTable value: expect at least {} fields, got {}",
-                                            num_key_parts,
-                                            iter.len()
-                                        );
-                                    }
-                                    let keys: Box<[value::KeyPart]> = (0..num_key_parts)
-                                        .map(|_| iter.next().unwrap().into_key())
-                                        .collect::<Result<_>>()?;
-                                    let values = value::FieldValues {
-                                        fields: iter.collect::<Vec<_>>(),
-                                    };
-                                    Ok((KeyValue(keys), values.into()))
-                                })
-                                .collect::<Result<BTreeMap<_, _>>>()
-                                .into_py_result()?,
-                        )
+                        let k_table_values = values
+                            .into_iter()
+                            .map(|v| {
+                                let mut iter = v.fields.into_iter();
+                                if iter.len() < num_key_parts {
+                                    client_bail!(
+                                        "Invalid KTable value: expect at least {} fields, got {}",
+                                        num_key_parts,
+                                        iter.len()
+                                    );
+                                }
+                                let keys: Box<[value::KeyPart]> = (0..num_key_parts)
+                                    .map(|_| iter.next().unwrap().into_key())
+                                    .collect::<Result<_>>()?;
+                                let values = value::FieldValues {
+                                    fields: iter.collect::<Vec<_>>(),
+                                };
+                                Ok((KeyValue(keys), values.into()))
+                            })
+                            .collect::<Result<BTreeMap<_, _>>>();
+                        let k_table_values = k_table_values.into_py_result()?;
+
+                        value::Value::KTable(k_table_values)
                     }
                 }
             }
@@ -362,11 +360,9 @@ mod tests {
             let py_object = value_to_py_object(py, original_value)
                 .expect("Failed to convert Rust value to Python object");
 
-            println!("Python object: {py_object:?}");
             let roundtripped_value = value_from_py_object(value_type, &py_object)
                 .expect("Failed to convert Python object back to Rust value");
 
-            println!("Roundtripped value: {roundtripped_value:?}");
             assert_eq!(
                 original_value, &roundtripped_value,
                 "Value mismatch after roundtrip"

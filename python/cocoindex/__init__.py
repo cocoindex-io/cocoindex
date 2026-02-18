@@ -2,55 +2,70 @@
 Cocoindex is a framework for building and running indexing pipelines.
 """
 
-from ._version import __version__
-
-from . import _version_check
-
-from . import _engine  # type: ignore
-from . import functions, sources, targets, cli, utils
-
+from . import (
+    _engine,  # type: ignore
+    _version_check,
+    cli,
+    functions,
+    sources,
+    targets,
+    utils,
+)
 from . import targets as storages  # Deprecated: Use targets instead
-
+from ._version import __version__
 from .auth_registry import (
     AuthEntryReference,
     add_auth_entry,
     add_transient_auth_entry,
     ref_auth_entry,
 )
-from .flow import FlowBuilder, DataScope, DataSlice, Flow, transform_flow
-from .flow import flow_def
-from .flow import EvaluateAndDumpOptions, GeneratedField
-from .flow import FlowLiveUpdater, FlowLiveUpdaterOptions, FlowUpdaterStatusUpdates
-from .flow import open_flow
-from .flow import add_flow_def, remove_flow  # DEPRECATED
-from .flow import update_all_flows_async, setup_all_flows, drop_all_flows
-from .lib import settings, init, start_server, stop
-from .llm import LlmSpec, LlmApiType
+from .flow import (  # DEPRECATED
+    DataScope,
+    DataSlice,
+    EvaluateAndDumpOptions,
+    Flow,
+    FlowBuilder,
+    FlowLiveUpdater,
+    FlowLiveUpdaterOptions,
+    FlowUpdaterStatusUpdates,
+    GeneratedField,
+    add_flow_def,
+    drop_all_flows,
+    flow_def,
+    open_flow,
+    remove_flow,
+    setup_all_flows,
+    transform_flow,
+    update_all_flows_async,
+)
 from .index import (
     FtsIndexDef,
-    VectorSimilarityMetric,
-    VectorIndexDef,
-    IndexOptions,
     HnswVectorIndexMethod,
+    IndexOptions,
     IvfFlatVectorIndexMethod,
+    VectorIndexDef,
+    VectorSimilarityMetric,
 )
+from .lib import init, settings, start_server, stop
+from .llm import LlmApiType, LlmSpec
+from .query_handler import QueryHandlerResultFields, QueryInfo, QueryOutput
 from .setting import (
     DatabaseConnectionSpec,
-    SurrealDBConnectionSpec,
-    Settings,
+    GlobalExecutionOptions,
     ServerSettings,
+    Settings,
+    SurrealDBConnectionSpec,
+    get_app_namespace,
 )
-from .setting import get_app_namespace
-from .query_handler import QueryHandlerResultFields, QueryInfo, QueryOutput
 from .typing import (
-    Int64,
     Float32,
     Float64,
+    Int64,
+    Json,
     LocalDateTime,
     OffsetDateTime,
     Range,
     Vector,
-    Json,
 )
 
 _engine.init_pyo3_runtime()
@@ -108,6 +123,7 @@ __all__ = [
     # Settings
     "DatabaseConnectionSpec",
     "SurrealDBConnectionSpec",
+    "GlobalExecutionOptions",
     "Settings",
     "ServerSettings",
     "get_app_namespace",

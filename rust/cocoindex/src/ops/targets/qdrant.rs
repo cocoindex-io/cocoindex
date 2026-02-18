@@ -5,9 +5,9 @@ use crate::ops::registry::ExecutorFactoryRegistry;
 use crate::setup;
 use qdrant_client::Qdrant;
 use qdrant_client::qdrant::{
-    CreateCollectionBuilder, DeletePointsBuilder, DenseVector, Distance, MultiDenseVector,
-    MultiVectorComparator, MultiVectorConfigBuilder, NamedVectors, PointId, PointStruct,
-    PointsIdsList, UpsertPointsBuilder, Value as QdrantValue, Vector as QdrantVector,
+    CreateCollectionBuilder, DeletePointsBuilder, DenseVector, Distance, HnswConfigDiffBuilder,
+    MultiDenseVector, MultiVectorComparator, MultiVectorConfigBuilder, NamedVectors, PointId,
+    PointStruct, PointsIdsList, UpsertPointsBuilder, Value as QdrantValue, Vector as QdrantVector,
     VectorParamsBuilder, VectorsConfigBuilder,
 };
 
@@ -95,11 +95,11 @@ fn encode_dense_vector(v: &BasicValue) -> Result<DenseVector> {
                     BasicValue::Float32(f) => *f,
                     BasicValue::Float64(f) => *f as f32,
                     BasicValue::Int64(i) => *i as f32,
-                    _ => bail!("Unsupported vector type: {:?}", elem.kind()),
+                    _ => client_bail!("Unsupported vector type: {:?}", elem.kind()),
                 })
             })
             .collect::<Result<Vec<_>>>()?,
-        _ => bail!("Expected a vector field, got {:?}", v),
+        _ => client_bail!("Expected a vector field, got {:?}", v),
     };
     Ok(vec.into())
 }
@@ -110,7 +110,7 @@ fn encode_multi_dense_vector(v: &BasicValue) -> Result<MultiDenseVector> {
             .iter()
             .map(encode_dense_vector)
             .collect::<Result<Vec<_>>>()?,
-        _ => bail!("Expected a vector field, got {:?}", v),
+        _ => client_bail!("Expected a vector field, got {:?}", v),
     };
     Ok(vecs.into())
 }
@@ -139,6 +139,10 @@ struct VectorDef {
     metric: spec::VectorSimilarityMetric,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     multi_vector_comparator: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    hnsw_m: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    hnsw_ef_construction: Option<u32>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SetupState {
@@ -225,12 +229,23 @@ impl SetupChange {
                         params = params.multivector_config(MultiVectorConfigBuilder::new(
                             MultiVectorComparator::from_str_name(multi_vector_comparator)
                                 .ok_or_else(|| {
-                                    anyhow!(
+                                    client_error!(
                                         "unrecognized multi vector comparator: {}",
                                         multi_vector_comparator
                                     )
                                 })?,
                         ));
+                    }
+                    // Apply HNSW configuration if specified
+                    if vector_def.hnsw_m.is_some() || vector_def.hnsw_ef_construction.is_some() {
+                        let mut hnsw_config = HnswConfigDiffBuilder::default();
+                        if let Some(m) = vector_def.hnsw_m {
+                            hnsw_config = hnsw_config.m(m as u64);
+                        }
+                        if let Some(ef_construction) = vector_def.hnsw_ef_construction {
+                            hnsw_config = hnsw_config.ef_construct(ef_construction as u64);
+                        }
+                        params = params.hnsw_config(hnsw_config);
                     }
                     vectors_config.add_named_vector_params(name, params);
                 }
@@ -293,7 +308,7 @@ fn key_to_point_id(key_value: &KeyValue) -> Result<PointId> {
         KeyPart::Str(v) => PointId::from(v.to_string()),
         KeyPart::Int64(v) => PointId::from(*v as u64),
         KeyPart::Uuid(v) => PointId::from(v.to_string()),
-        e => bail!("Invalid Qdrant point ID: {e}"),
+        e => client_bail!("Invalid Qdrant point ID: {e}"),
     };
 
     Ok(point_id)
@@ -322,7 +337,7 @@ fn values_to_payload(
                         }
                     },
                     _ => {
-                        bail!("Expected a vector field, got {:?}", value);
+                        client_bail!("Expected a vector field, got {:?}", value);
                     }
                 };
                 vectors = vectors.add_vector(field_name.clone(), vector);
@@ -394,6 +409,8 @@ impl TargetFactoryBase for Factory {
                                 vector_size: vector_shape.vector_size(),
                                 metric: DEFAULT_VECTOR_SIMILARITY_METRIC,
                                 multi_vector_comparator: vector_shape.multi_vector_comparator().map(|s| s.as_str_name().to_string()),
+                                hnsw_m: None,
+                                hnsw_ef_construction: None,
                             },
                         );
                     } else if matches!(
@@ -425,8 +442,17 @@ impl TargetFactoryBase for Factory {
                             } else {
                                 api_bail!("Field `{}` specified more than once in vector index definition", vector_index.field_name);
                             }
-                            if vector_index.method.is_some() {
-                                api_bail!("Vector index method is not configurable for Qdrant yet");
+                            // Handle VectorIndexMethod - Qdrant only supports HNSW
+                            if let Some(method) = &vector_index.method {
+                                match method {
+                                    spec::VectorIndexMethod::Hnsw { m, ef_construction } => {
+                                        vector_def.hnsw_m = *m;
+                                        vector_def.hnsw_ef_construction = *ef_construction;
+                                    }
+                                    spec::VectorIndexMethod::IvfFlat { .. } => {
+                                        api_bail!("IVFFlat vector index method is not supported for Qdrant. Only HNSW is supported.");
+                                    }
+                                }
                             }
                         }
                         None => {

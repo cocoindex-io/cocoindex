@@ -44,6 +44,7 @@ The spec `coco_lancedb.LanceDB` takes the following fields:
 * `table_name` (`str`, required): The name of the table to export the data to.
 * `db_options` (`coco_lancedb.DatabaseOptions`, optional): Advanced database options.
   * `storage_options` (`dict[str, Any]`, optional): Passed through to LanceDB when connecting.
+* `num_transactions_before_optimize` (`int`, optional, default: 50): The number of transactions before calling `optimize()` for the LanceDB table.
 
 Additional notes:
 
@@ -52,7 +53,7 @@ Additional notes:
 
 :::info
 
-LanceDB has a limitation that it cannot build a vector index on an empty table (see [LanceDB issue #4034](https://github.com/lancedb/lance/issues/4034)).
+LanceDB has a limitation that it cannot build a vector index on an empty table (see [LanceDB issue #4034](https://github.com/lance-format/lance/issues/4034)).
 If you want to use vector indexes, you can run the flow once to populate the target table with data, and then create the vector indexes.
 
 :::

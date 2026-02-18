@@ -23,6 +23,12 @@ def text_to_embedding(
     )
 
 
+qdrant_connection = cocoindex.add_auth_entry(
+    "Qdrant",
+    cocoindex.targets.QdrantConnection(grpc_url=QDRANT_URL),
+)
+
+
 @cocoindex.flow_def(name="TextEmbeddingWithQdrant")
 def text_embedding_flow(
     flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope
@@ -57,7 +63,10 @@ def text_embedding_flow(
 
     doc_embeddings.export(
         "doc_embeddings",
-        cocoindex.targets.Qdrant(collection_name=QDRANT_COLLECTION),
+        cocoindex.targets.Qdrant(
+            collection_name=QDRANT_COLLECTION,
+            connection=qdrant_connection,
+        ),
         primary_key_fields=["id"],
     )
 

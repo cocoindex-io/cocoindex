@@ -1,11 +1,13 @@
 use async_stream::try_stream;
 use std::borrow::Cow;
+use std::fs::Metadata;
+use std::path::Path;
 use std::{path::PathBuf, sync::Arc};
 use tracing::warn;
 
-use super::shared::pattern_matcher::PatternMatcher;
 use crate::base::field_attrs;
 use crate::{fields_value, ops::sdk::*};
+use cocoindex_ops_text::pattern_matcher::PatternMatcher;
 
 #[derive(Debug, Deserialize)]
 pub struct Spec {
@@ -14,6 +16,7 @@ pub struct Spec {
     included_patterns: Option<Vec<String>>,
     excluded_patterns: Option<Vec<String>>,
     max_file_size: Option<i64>,
+    watch_changes: Option<bool>,
 }
 
 struct Executor {
@@ -21,6 +24,18 @@ struct Executor {
     binary: bool,
     pattern_matcher: PatternMatcher,
     max_file_size: Option<i64>,
+    watch_changes: bool,
+}
+
+async fn ensure_metadata<'a>(
+    path: &Path,
+    metadata: &'a mut Option<Metadata>,
+) -> std::io::Result<&'a Metadata> {
+    if metadata.is_none() {
+        // Follow symlinks.
+        *metadata = Some(tokio::fs::metadata(path).await?);
+    }
+    Ok(metadata.as_ref().unwrap())
 }
 
 #[async_trait]
@@ -46,21 +61,43 @@ impl SourceExecutor for Executor {
                         warn!("Skipped ill-formed file path: {}", path.display());
                         continue;
                     };
-                    if path.is_dir() {
+                    // We stat per entry at most once when needed.
+                    let mut metadata: Option<Metadata> = None;
+
+                    // For symlinks, if the target doesn't exist, log and skip.
+                    let file_type = entry.file_type().await?;
+                    if file_type.is_symlink() {
+                        if let Err(e) = ensure_metadata(&path, &mut metadata).await {
+                            if e.kind() == std::io::ErrorKind::NotFound {
+                                warn!("Skipped broken symlink: {}", path.display());
+                                continue;
+                            }
+                            Err(e)?;
+                        }
+                    }
+                    let is_dir = if file_type.is_dir() {
+                        true
+                    } else if file_type.is_symlink() {
+                        // Follow symlinks to classify the target.
+                        ensure_metadata(&path, &mut metadata).await?.is_dir()
+                    } else {
+                        false
+                    };
+                    if is_dir {
                         if !self.pattern_matcher.is_excluded(relative_path) {
                             new_dirs.push(Cow::Owned(path));
                         }
                     } else if self.pattern_matcher.is_file_included(relative_path) {
                         // Check file size limit
-                        if let Some(max_size) = self.max_file_size {
-                            if let Ok(metadata) = path.metadata() {
-                                if metadata.len() > max_size as u64 {
-                                    continue;
-                                }
-                            }
+                        if let Some(max_size) = self.max_file_size
+                            && let Ok(metadata) = ensure_metadata(&path, &mut metadata).await
+                            && metadata.len() > max_size as u64
+                        {
+                            continue;
                         }
                         let ordinal: Option<Ordinal> = if options.include_ordinal {
-                            Some(path.metadata()?.modified()?.try_into()?)
+                            let metadata = ensure_metadata(&path, &mut metadata).await?;
+                            Some(metadata.modified()?.try_into()?)
                         } else {
                             None
                         };
@@ -96,9 +133,10 @@ impl SourceExecutor for Executor {
             });
         }
         let path = self.root_path.join(path);
+        let mut metadata: Option<Metadata> = None;
         // Check file size limit
         if let Some(max_size) = self.max_file_size {
-            if let Ok(metadata) = path.metadata() {
+            if let Ok(metadata) = ensure_metadata(&path, &mut metadata).await {
                 if metadata.len() > max_size as u64 {
                     return Ok(PartialSourceRowData {
                         value: Some(SourceValue::NonExistence),
@@ -109,7 +147,8 @@ impl SourceExecutor for Executor {
             }
         }
         let ordinal = if options.include_ordinal {
-            Some(path.metadata()?.modified()?.try_into()?)
+            let metadata = ensure_metadata(&path, &mut metadata).await?;
+            Some(metadata.modified()?.try_into()?)
         } else {
             None
         };
@@ -137,6 +176,64 @@ impl SourceExecutor for Executor {
             ordinal,
             content_version_fp: None,
         })
+    }
+
+    async fn change_stream(
+        &self,
+    ) -> Result<Option<BoxStream<'async_trait, Result<SourceChangeMessage>>>> {
+        use async_stream::stream;
+        use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
+        use tokio::sync::mpsc;
+
+        if !self.watch_changes {
+            return Ok(None);
+        }
+
+        // bridge notify callback -> async stream
+        let (tx, mut rx) = mpsc::channel::<PathBuf>(100);
+
+        let root_path = self.root_path.clone();
+
+        let mut watcher = RecommendedWatcher::new(
+            move |res: notify::Result<notify::Event>| {
+                if let Ok(event) = res {
+                    for path in event.paths {
+                        let _ = tx.blocking_send(path);
+                    }
+                }
+            },
+            Config::default(),
+        )?;
+
+        watcher.watch(&root_path, RecursiveMode::Recursive)?;
+
+        let stream = stream! {
+            // keep watcher alive
+            let _watcher = watcher;
+
+            while let Some(path) = rx.recv().await {
+                if let Some(path_str) = path.to_str() {
+                    if self.pattern_matcher.is_file_included(path_str) {
+                        let change = SourceChange {
+                            key: KeyValue::from_single_part(path_str.to_string()),
+                            key_aux_info: serde_json::Value::Null,
+                            data: PartialSourceRowData {
+                                ordinal: None,
+                                content_version_fp: None,
+                                value: None,
+                            },
+                        };
+
+                        yield Ok(SourceChangeMessage {
+                            changes: vec![change],
+                            ack_fn: None,
+                        });
+                    }
+                }
+            }
+        };
+
+        Ok(Some(stream.boxed()))
     }
 
     fn provides_ordinal(&self) -> bool {
@@ -195,6 +292,7 @@ impl SourceFactoryBase for Factory {
             binary: spec.binary,
             pattern_matcher: PatternMatcher::new(spec.included_patterns, spec.excluded_patterns)?,
             max_file_size: spec.max_file_size,
+            watch_changes: spec.watch_changes.unwrap_or(false),
         }))
     }
 }

@@ -13,72 +13,108 @@ jobs:
     build-test:
         strategy:
             matrix:
-                python-version: [3.11]
                 platform:
-                  - { runner: ubuntu-latest, python_exec: ".venv/bin/python" }
-                  - { runner: ubuntu-24.04-arm, python_exec: ".venv/bin/python" }
-                  - { runner: macos-latest, python_exec: ".venv/bin/python", extra_rustflags: "-C split-debuginfo=off"}
-                  - { runner: macos-15-intel, python_exec: ".venv/bin/python", extra_rustflags: "-C split-debuginfo=off"}
-                  - { runner: windows-latest, python_exec: ".venv\\Scripts\\python" }
+                  # Standard builds (Python 3.11)
+                  - { runner: ubuntu-latest, python-version: "3.11", free-threaded: false }
+                  - { runner: ubuntu-24.04-arm, python-version: "3.11", free-threaded: false }
+                  - { runner: macos-latest, python-version: "3.11", free-threaded: false, extra_rustflags: "-C split-debuginfo=off" }
+                  - { runner: macos-15-intel, python-version: "3.11", free-threaded: false, extra_rustflags: "-C split-debuginfo=off" }
+                  - { runner: windows-latest, python-version: "3.11", free-threaded: false }
+                  # Free-threaded builds (Python 3.14t)
+                  - { runner: ubuntu-latest, python-version: "3.14", free-threaded: true }
+                  - { runner: macos-latest, python-version: "3.14", free-threaded: true, extra_rustflags: "-C split-debuginfo=off" }
+                  - { runner: windows-latest, python-version: "3.14", free-threaded: true }
         runs-on: ${{ matrix.platform.runner }}
         env:
+          SCCACHE_GHA_ENABLED: "true"
           RUSTFLAGS: "-C debuginfo=0 ${{ matrix.platform.extra_rustflags }}"
           CARGO_INCREMENTAL: "0"
-          SCCACHE_GHA_ENABLED: "true"
           RUSTC_WRAPPER: "sccache"
 
         steps:
-        - uses: actions/checkout@v4
+        - uses: actions/checkout@v6
           with:
             fetch-depth: 1
 
-        - name: Run sccache-cache
+        - name: Setup sccache
           uses: mozilla-actions/sccache-action@v0.0.9
-
-        - uses: actions/setup-python@v5
-          id: setup_python
           with:
-            python-version: ${{ matrix.python-version }}
-            # Python cache is huge and saves little time, so disabled for now, until we have higher cache size limits
-            # cache: 'pip'
+            # Latest version doesn't work well because of https://github.com/mozilla/sccache/issues/2554
+            version: "v0.12.0"
 
         - run: rustup toolchain install stable --profile minimal
 
-        # Disable Rust cache until we have higher cache size limits
-        # - name: Rust Cache
-        #   uses: Swatinem/rust-cache@v2
-        #   with:
-        #     key: rust-${{ matrix.platform.runner }}-${{ matrix.python-version }}
-        #     cache-targets: 'false'
-        #     cache-all-crates: 'false'
-        #     cache-workspace-crates: 'false'
+        - uses: actions/setup-python@v6
+          id: setup_python
+          with:
+            python-version: ${{ matrix.platform.python-version }}
+            freethreaded: ${{ matrix.platform.free-threaded }}
+            # Python cache is huge and saves little time, so disabled for now, until we have higher cache size limits
+            # cache: 'pip'
 
-        - name: Rust tests (no default features)
-          run: cargo test --no-default-features --verbose
+        - name: Verify free-threaded interpreter
+          if: matrix.platform.free-threaded
+          run: |
+            python -c "import sys; print(f'GIL enabled: {sys._is_gil_enabled()}'); sys.exit(1) if sys._is_gil_enabled() else None"
 
-        - name: Rust tests
-          run: cargo test --verbose
+        - name: Setup Rust Cache
+          uses: Swatinem/rust-cache@v2
+          with:
+            key: rust-${{ matrix.platform.runner }}-${{ steps.setup_python.outputs.python-version }}-${{ matrix.platform.free-threaded }}
+            cache-targets: 'true'
+            cache-all-crates: 'false'
+            cache-workspace-crates: 'false'
 
-        - name: Setup venv
+        - name: Install uv
+          uses: astral-sh/setup-uv@v7
+
+        - name: Remove .python-version if exists
+          # Ensure uv uses Python from PATH (set by setup-python) rather than a pinned version
+          shell: bash
+          run: rm -f .python-version
+
+        - name: Sync Python dependencies
+          run: uv sync --no-dev --group ci
+
+        - name: Install prek
+          uses: j178/prek-action@v1
+          with:
+            install-only: true
+
+        - name: Run build-test hooks
+          env:
+            UV_NO_SYNC: "1"
+            # Skip mypy-check - it runs in e2e_type_check workflow
+            PREK_SKIP: mypy-check
+          shell: bash
           run: |
-            python -m venv .venv
-        - name: Install Python toolchains
-          run: |
-            ${{ matrix.platform.python_exec }} -m pip install maturin
-        - name: Python build
-          run: |
-            ${{ matrix.platform.python_exec }} -m maturin develop --strip -E all-ci
-        - name: Python type check (mypy)
-          run: |
-            ${{ matrix.platform.python_exec }} -m mypy
-        - name: Python tests
-          run: |
-            ${{ matrix.platform.python_exec }} -m pytest --capture=no python/cocoindex/tests
+            set +e
+
+            if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+              echo "Running prek on PR diff against target branch: ${{ github.base_ref }}"
+              git fetch --no-tags --prune --depth=1 origin \
+                "${{ github.base_ref }}:refs/remotes/origin/${{ github.base_ref }}"
+
+              prek run \
+                --from-ref "origin/${{ github.base_ref }}" \
+                --to-ref "${{ github.sha }}" \
+                --show-diff-on-failure
+              status=$?
+            else
+              echo "Running prek on all files (event: ${{ github.event_name }})"
+              prek run --all-files --show-diff-on-failure
+              status=$?
+            fi
+
+            if [ $status -ne 0 ]; then
+              echo "::error::Build-test checks failed. Please run 'prek run --all-files' locally."
+              exit $status
+            fi
 
     validate-3p-notices:
         runs-on: ubuntu-latest
         steps:
-        - uses: actions/checkout@v4
+        - uses: actions/checkout@v6
           with:
             fetch-depth: 1
         - name: Install Rust toolchain

@@ -5,7 +5,6 @@ use crate::llm::{
     GeneratedOutput, LlmGenerateRequest, LlmGenerateResponse, LlmGenerationClient, OutputFormat,
     ToJsonSchemaOptions, detect_image_mime_type,
 };
-use anyhow::Context;
 use urlencoding::encode;
 
 pub struct Client {
@@ -22,9 +21,8 @@ impl Client {
         let api_key = if let Some(key) = api_key {
             key
         } else {
-            std::env::var("ANTHROPIC_API_KEY").map_err(|_| {
-                anyhow::anyhow!("ANTHROPIC_API_KEY environment variable must be set")
-            })?
+            std::env::var("ANTHROPIC_API_KEY")
+                .map_err(|_| client_error!("ANTHROPIC_API_KEY environment variable must be set"))?
         };
 
         Ok(Self {
@@ -93,19 +91,19 @@ impl LlmGenerationClient for Client {
 
         let encoded_api_key = encode(&self.api_key);
 
-        let resp = http::request(|| {
-            self.client
+        let resp = http::request(&self.client, |client| {
+            client
                 .post(url)
                 .header("x-api-key", encoded_api_key.as_ref())
                 .header("anthropic-version", "2023-06-01")
                 .json(&payload)
         })
         .await
-        .context("Anthropic API error")?;
+        .with_context(|| "Anthropic API error")?;
 
-        let mut resp_json: serde_json::Value = resp.json().await.context("Invalid JSON")?;
+        let mut resp_json: serde_json::Value = resp.json().await.with_context(|| "Invalid JSON")?;
         if let Some(error) = resp_json.get("error") {
-            bail!("Anthropic API error: {:?}", error);
+            client_bail!("Anthropic API error: {:?}", error);
         }
 
         // Debug print full response
@@ -143,16 +141,16 @@ impl LlmGenerationClient for Client {
                                     value
                                 }
                                 Err(e2) => {
-                                    return Err(anyhow::anyhow!(format!(
+                                    return Err(client_error!(
                                         "No structured tool output or text found in response, and permissive JSON5 parsing also failed: {e}; {e2}"
-                                    )));
+                                    ));
                                 }
                             }
                         }
                     }
                 }
                 _ => {
-                    return Err(anyhow::anyhow!(
+                    return Err(client_error!(
                         "No structured tool output or text found in response"
                     ));
                 }

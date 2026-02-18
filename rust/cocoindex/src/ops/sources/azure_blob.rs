@@ -7,9 +7,9 @@ use azure_storage_blobs::prelude::*;
 use futures::StreamExt;
 use std::sync::Arc;
 
-use super::shared::pattern_matcher::PatternMatcher;
 use crate::base::field_attrs;
 use crate::ops::sdk::*;
+use cocoindex_ops_text::pattern_matcher::PatternMatcher;
 
 #[derive(Debug, Deserialize)]
 pub struct Spec {

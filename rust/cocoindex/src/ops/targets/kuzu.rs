@@ -80,9 +80,12 @@ impl KuzuThinClient {
         let query = json!({
             "query": cyper_builder.query
         });
-        http::request(|| self.reqwest_client.post(&self.query_url).json(&query))
-            .await
-            .context("Kuzu API error")?;
+        http::request(&self.reqwest_client, |client| {
+            client.post(&self.query_url).json(&query)
+        })
+        .await
+        .map_err(Error::from)
+        .with_context(|| "Kuzu API error")?;
         Ok(())
     }
 }
@@ -362,7 +365,7 @@ fn append_basic_value(cypher: &mut CypherBuilder, basic_value: &BasicValue) -> R
             write!(cypher.query_mut(), "]")?;
         }
         v @ (BasicValue::UnionVariant { .. } | BasicValue::Time(_) | BasicValue::Json(_)) => {
-            bail!("value types are not supported in Kuzu: {}", v.kind());
+            client_bail!("value types are not supported in Kuzu: {}", v.kind());
         }
     }
     Ok(())
@@ -793,8 +796,8 @@ impl TargetFactoryBase for Factory {
                             value_columns: to_kuzu_cols(&analyzed.schema.value_fields)?,
                         },
                         referenced_node_tables: (analyzed.rel.as_ref())
-                            .map(|rel| {
-                                anyhow::Ok((to_dep_table(&rel.source)?, to_dep_table(&rel.target)?))
+                            .map(|rel| -> Result<_> {
+                                Ok((to_dep_table(&rel.source)?, to_dep_table(&rel.target)?))
                             })
                             .transpose()?,
                     };
@@ -961,7 +964,7 @@ impl TargetFactoryBase for Factory {
                 for delete in rel_mutation.mutation.deletes.iter_mut() {
                     let mut additional_keys = match delete.additional_key.take() {
                         serde_json::Value::Array(keys) => keys,
-                        _ => return Err(invariance_violation()),
+                        _ => return Err(invariance_violation().into()),
                     };
                     if additional_keys.len() != 2 {
                         api_bail!(

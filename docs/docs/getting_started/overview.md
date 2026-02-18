@@ -30,6 +30,3 @@ collector.collect(...)
 # export to db, vector db, graph db ...
 collector.export(...)
 ```
-
-Get Started:
-- [Quick Start](https://cocoindex.io/docs/getting_started/quickstart)

@@ -2,7 +2,8 @@ use super::{
     factory_bases::*, functions, registry::ExecutorFactoryRegistry, sdk::ExecutorFactory, sources,
     targets,
 };
-use anyhow::Result;
+use crate::prelude::*;
+use cocoindex_utils::client_error;
 use std::sync::{LazyLock, RwLock};
 
 fn register_executor_factories(registry: &mut ExecutorFactoryRegistry) -> Result<()> {
@@ -26,7 +27,7 @@ fn register_executor_factories(registry: &mut ExecutorFactoryRegistry) -> Result
     targets::kuzu::register(registry, reqwest_client)?;
 
     targets::neo4j::Factory::new().register(registry)?;
-    targets::surrealdb::register(registry)?;
+    targets::falkordb::Factory::new().register(registry)?;
 
     Ok(())
 }
@@ -69,28 +70,28 @@ pub fn get_source_factory(
     kind: &str,
 ) -> Result<std::sync::Arc<dyn super::interface::SourceFactory + Send + Sync>> {
     get_optional_source_factory(kind)
-        .ok_or_else(|| anyhow::anyhow!("Source factory not found for op kind: {}", kind))
+        .ok_or_else(|| client_error!("Source factory not found for op kind: {}", kind))
 }
 
 pub fn get_function_factory(
     kind: &str,
 ) -> Result<std::sync::Arc<dyn super::interface::SimpleFunctionFactory + Send + Sync>> {
     get_optional_function_factory(kind)
-        .ok_or_else(|| anyhow::anyhow!("Function factory not found for op kind: {}", kind))
+        .ok_or_else(|| client_error!("Function factory not found for op kind: {}", kind))
 }
 
 pub fn get_target_factory(
     kind: &str,
 ) -> Result<std::sync::Arc<dyn super::interface::TargetFactory + Send + Sync>> {
     get_optional_target_factory(kind)
-        .ok_or_else(|| anyhow::anyhow!("Target factory not found for op kind: {}", kind))
+        .ok_or_else(|| client_error!("Target factory not found for op kind: {}", kind))
 }
 
 pub fn get_attachment_factory(
     kind: &str,
 ) -> Result<std::sync::Arc<dyn super::interface::TargetAttachmentFactory + Send + Sync>> {
     get_optional_attachment_factory(kind)
-        .ok_or_else(|| anyhow::anyhow!("Attachment factory not found for op kind: {}", kind))
+        .ok_or_else(|| client_error!("Attachment factory not found for op kind: {}", kind))
 }
 
 pub fn register_factory(name: String, factory: ExecutorFactory) -> Result<()> {

@@ -69,4 +69,4 @@ if [[ -n "${PYTHONPATH_DETECTED}" ]]; then
   fi
 fi
 
-exec cargo test "$@"
+exec uv run cargo test "$@"

@@ -36,10 +36,14 @@ pub struct Settings {
     #[serde(default)]
     pub database: Option<DatabaseConnectionSpec>,
     #[serde(default)]
+    pub db_schema_name: Option<String>,
+    #[serde(default)]
     #[allow(dead_code)] // Used via serialization/deserialization to Python
     pub app_namespace: String,
     #[serde(default)]
     pub global_execution_options: GlobalExecutionOptions,
+    #[serde(default)]
+    pub ignore_target_drop_failures: bool,
 }
 
 #[cfg(test)]
@@ -172,5 +176,16 @@ mod tests {
             }
             _ => panic!("Expected Postgres connection spec"),
         }
+    }
+
+    #[test]
+    fn test_settings_deserialize_with_schema() {
+        let json = r#"{
+            "db_schema_name": "custom_schema"
+        }"#;
+
+        let settings: Settings = serde_json::from_str(json).unwrap();
+
+        assert_eq!(settings.db_schema_name, Some("custom_schema".to_string()));
     }
 }

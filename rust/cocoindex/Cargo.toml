@@ -10,8 +10,9 @@ name = "cocoindex_engine"
 crate-type = ["cdylib"]
 
 [features]
-default = ["legacy-states-v0"]
+default = ["legacy-states-v0", "abi3"]
 legacy-states-v0 = []
+abi3 = ["pyo3/abi3-py311"]
 
 [dependencies]
 cocoindex_utils = { path = "../utils", features = [
@@ -23,6 +24,7 @@ cocoindex_utils = { path = "../utils", features = [
     "yaml",
 ] }
 cocoindex_py_utils = { path = "../py_utils" }
+cocoindex_ops_text = { path = "../ops_text" }
 
 pyo3 = { workspace = true }
 pythonize = { workspace = true }
@@ -60,39 +62,6 @@ schemars = { workspace = true }
 reqwest = { workspace = true }
 async-openai = { workspace = true }
 
-tree-sitter = "0.25.10"
-tree-sitter-language = "0.1.5"
-# Per language tree-sitter parsers
-tree-sitter-c = "0.24.1"
-tree-sitter-cpp = "0.23.4"
-tree-sitter-c-sharp = "0.23.1"
-tree-sitter-css = "0.23.2"
-tree-sitter-fortran = "0.5.1"
-tree-sitter-go = "0.23.4"
-tree-sitter-html = "0.23.2"
-tree-sitter-java = "0.23.5"
-tree-sitter-javascript = "0.23.1"
-tree-sitter-json = "0.24.8"
-# The other more popular crate tree-sitter-kotlin requires tree-sitter < 0.23 for now
-tree-sitter-kotlin-ng = "1.1.0"
-tree-sitter-md = "0.5.1"
-tree-sitter-pascal = "0.10.0"
-tree-sitter-php = "0.23.11"
-tree-sitter-python = "0.23.6"
-tree-sitter-r = "1.2.0"
-tree-sitter-ruby = "0.23.1"
-tree-sitter-rust = "0.24.0"
-tree-sitter-scala = "0.24.0"
-tree-sitter-sequel = "0.3.11"
-tree-sitter-swift = "0.7.1"
-tree-sitter-toml-ng = "0.7.0"
-tree-sitter-typescript = "0.23.2"
-tree-sitter-xml = "0.7.0"
-tree-sitter-yaml = "0.7.2"
-tree-sitter-solidity = "1.2.13"
-
-
-globset = { workspace = true }
 unicase = { workspace = true }
 google-drive3 = { workspace = true }
 hyper-util = { workspace = true }
@@ -107,6 +76,8 @@ uuid = { workspace = true }
 tokio-stream = { workspace = true }
 async-stream = { workspace = true }
 neo4rs = { workspace = true }
+falkordb = { workspace = true }
+surrealdb = { workspace = true }
 bytes = { workspace = true }
 rand = { workspace = true }
 indoc = { workspace = true }
@@ -131,5 +102,4 @@ redis = { workspace = true }
 expect-test = { workspace = true }
 encoding_rs = { workspace = true }
 tokio-util = { workspace = true }
-surrealdb = { workspace = true }
-deadpool = { workspace = true }
+notify = { workspace = true }

@@ -20,7 +20,7 @@ impl SourceLogicFingerprint {
         let import_op = &exec_plan.import_ops[source_idx];
         let mut fp = Fingerprinter::default();
         if exec_plan.export_ops.len() != export_exec_ctx.len() {
-            bail!("`export_ops` count does not match `export_exec_ctx` count");
+            internal_bail!("`export_ops` count does not match `export_exec_ctx` count");
         }
         for (export_op, export_op_exec_ctx) in
             std::iter::zip(exec_plan.export_ops.iter(), export_exec_ctx.iter())

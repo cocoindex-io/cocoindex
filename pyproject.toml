@@ -1,5 +1,5 @@
 [build-system]
-requires = ["maturin>=1.7.8,<2.0"]
+requires = ["maturin>=1.10.0,<2.0"]
 build-backend = "maturin"
 
 [project]
@@ -16,7 +16,7 @@ dependencies = [
     "python-dotenv>=1.1.0",
     "watchfiles>=1.1.0",
     "numpy>=1.23.2",
-    "psutil>=7.0.0",
+    "psutil>=7.2.1",
 ]
 license = "Apache-2.0"
 license-files = ["THIRD_PARTY_NOTICES.html"]
@@ -32,6 +32,7 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: Free Threading :: 2 - Beta",
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Topic :: Text Processing :: Indexing",
     "Intended Audience :: Developers",
@@ -63,31 +64,50 @@ include = ["THIRD_PARTY_NOTICES.html"]
 # Point to the crate within the workspace
 manifest-path = "rust/cocoindex/Cargo.toml"
 
-[project.optional-dependencies]
-dev = [
-    "pytest",
-    "pytest-asyncio",
-    "ruff",
-    "mypy",
-    "pre-commit",
-    "pydantic>=2.11.9",
-]
+profile = "release"      # wheel / normal builds
+editable-profile = "dev" # local editable builds
 
+[project.optional-dependencies]
 embeddings = ["sentence-transformers>=3.3.1"]
 colpali = ["colpali-engine"]
 lancedb = ["lancedb>=0.25.0", "pyarrow>=19.0.0"]
+chromadb = ["chromadb>=0.4.0"]
+doris = ["aiohttp>=3.8.0", "aiomysql>=0.2.0", "pymysql>=1.0.0"]
 
-# We need to repeat the dependency above to make it available for the `all` feature.
-# Indirect dependencies such as "cocoindex[embeddings]" will not work for local development.
 all = [
     "sentence-transformers>=3.3.1",
     "colpali-engine",
     "lancedb>=0.25.0",
     "pyarrow>=19.0.0",
+    "chromadb>=0.4.0",
+    "aiohttp>=3.8.0",
+    "aiomysql>=0.2.0",
+    "pymysql>=1.0.0",
 ]
 
-# This is the set of dependencies that needs to be installed for the CI workflow.
-all-ci = ["pytest", "pytest-asyncio", "mypy", "pydantic>=2.11.9"]
+[dependency-groups]
+build-test = [
+    "maturin>=1.10.0,<2.0",
+    "pytest",
+    "pytest-asyncio",
+    "pytest-timeout",
+    "mypy",
+    "ruff",
+]
+type-stubs = ["types-psutil>=7.2.1"]
+ci-enabled-optional-deps = ["pydantic>=2.11.9"]
+
+ci = [
+    { include-group = "build-test" },
+    { include-group = "type-stubs" },
+    { include-group = "ci-enabled-optional-deps" },
+]
+
+dev-local = ["prek"]
+dev = [{ include-group = "ci" }, { include-group = "dev-local" }]
+
+[tool.uv]
+package = false
 
 [tool.mypy]
 python_version = "3.11"
@@ -112,7 +132,7 @@ disable_error_code = ["unused-ignore"]
 
 [[tool.mypy.overrides]]
 # Ignore missing imports for optional dependencies from cocoindex library
-module = ["sentence_transformers", "torch", "colpali_engine", "PIL"]
+module = ["sentence_transformers", "torch", "colpali_engine", "PIL", "aiohttp", "aiomysql", "pymysql", "chromadb"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
@@ -129,3 +149,11 @@ disallow_any_generics = false
 disallow_subclassing_any = false
 disallow_untyped_calls = false
 disallow_any_decorated = false
+
+[tool.pytest.ini_options]
+pythonpath = ["python"]
+timeout = 30
+log_cli = true
+log_cli_level = "INFO"
+log_format = "%(asctime)s %(levelname)s %(message)s"
+log_date_format = "%Y-%m-%d %H:%M:%S"

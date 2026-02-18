@@ -90,17 +90,29 @@ def _load_field(
 class Settings:
     """Settings for the cocoindex library."""
 
-    database: DatabaseConnectionSpec | SurrealDBConnectionSpec | None = None
+    ignore_target_drop_failures: bool = False
+    database: DatabaseConnectionSpec | None = None
+    db_schema_name: str | None = None
     app_namespace: str = ""
     global_execution_options: GlobalExecutionOptions | None = None
 
     @classmethod
     def from_env(cls) -> Self:
         """Load settings from environment variables."""
-        database: DatabaseConnectionSpec | SurrealDBConnectionSpec | None = None
-        surreal_url = os.getenv("COCOINDEX_SURREALDB_URL")
-        if surreal_url is not None:
-            surreal_kwargs: dict[str, Any] = {"url": surreal_url}
+
+        ignore_target_drop_failures_dict: dict[str, Any] = {}
+        _load_field(
+            ignore_target_drop_failures_dict,
+            "ignore_target_drop_failures",
+            "COCOINDEX_IGNORE_TARGET_DROP_FAILURES",
+            parse=lambda v: v.lower() == "true",
+        )
+
+        database_url = os.getenv("COCOINDEX_DATABASE_URL")
+        if database_url is not None:
+            db_kwargs: dict[str, Any] = {"url": database_url}
+            _load_field(db_kwargs, "user", "COCOINDEX_DATABASE_USER")
+            _load_field(db_kwargs, "password", "COCOINDEX_DATABASE_PASSWORD")
             _load_field(
                 surreal_kwargs, "namespace", "COCOINDEX_SURREALDB_NS", required=True
             )
@@ -145,12 +157,19 @@ class Settings:
             "COCOINDEX_SOURCE_MAX_INFLIGHT_BYTES",
             parse=int,
         )
+        db_schema_name = os.getenv("COCOINDEX_DATABASE_SCHEMA_NAME")
         global_execution_options = GlobalExecutionOptions(**exec_kwargs)
 
         app_namespace = os.getenv("COCOINDEX_APP_NAMESPACE", "")
 
+        ignore_target_drop_failures = ignore_target_drop_failures_dict.get(
+            "ignore_target_drop_failures", False
+        )
+
         return cls(
+            ignore_target_drop_failures=ignore_target_drop_failures,
             database=database,
+            db_schema_name=db_schema_name,
             app_namespace=app_namespace,
             global_execution_options=global_execution_options,
         )

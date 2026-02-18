@@ -16,11 +16,14 @@ dist/
 
 *.egg-info/
 
-# Output of `cocoindex eval`
-examples/**/eval_*
-
 /.vscode
 /*.session.sql
 
 # mypy daemon environment
 .dmypy.json
+
+# Output of `cocoindex eval`
+examples/**/eval_*
+examples/**/uv.lock
+
+.cocoindex_code/

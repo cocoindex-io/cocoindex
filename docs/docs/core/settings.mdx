@@ -91,8 +91,8 @@ But be careful that if you call `cocoindex.init()` only under the path of main (
 `cocoindex.Settings` is a dataclass that contains the following fields:
 
 * `app_namespace` (type: `str`, required): The namespace of the application.
-* `database` (type: `DatabaseConnectionSpec`, optional): The connection to the Postgres database.
-* `surreal` (type: `SurrealDBConnectionSpec`, optional): The connection to the SurrealDB database (alternative internal persistence backend).
+* `db_schema_name` (type: `str`, optional): The database schema name to be used for storing CocoIndex internal metadata and tracking tables.
+* `database` (type: `DatabaseConnectionSpec`, required): The connection to the Postgres database.
 * `global_execution_options` (type: `GlobalExecutionOptions`, optional): The global execution options shared by all  flows.
 
 ### App Namespace
@@ -105,6 +105,16 @@ You can also get the current app namespace by calling `cocoindex.get_app_namespa
 If not set, all flows are in a default unnamed namespace.
 
 *Environment variable*: `COCOINDEX_APP_NAMESPACE`
+
+### Database Schema Name
+
+The `db_schema_name` field specifies the Postgres schema where CocoIndex internal tables (like metadata and tracking tables) will be stored.
+
+If not set, CocoIndex will use the default schema of the database connection (usually `public`).
+
+Note that the schema will be automatically created if it doesn't already exist.
+
+*Environment variable*: `COCOINDEX_DATABASE_SCHEMA_NAME`
 
 ### DatabaseConnectionSpec
 
@@ -183,7 +193,8 @@ This is the list of environment variables, each of which has a corresponding fie
 | environment variable | corresponding field in `Settings` | required? |
 |---------------------|-------------------|----------|
 | `COCOINDEX_APP_NAMESPACE` | `app_namespace` | No |
-| `COCOINDEX_DATABASE_URL` | `database.url` | Yes (No if you use SurrealDB) |
+| `COCOINDEX_DATABASE_SCHEMA_NAME` | `db_schema_name` | No |
+| `COCOINDEX_DATABASE_URL` | `database.url` | Yes |
 | `COCOINDEX_DATABASE_USER` | `database.user` | No |
 | `COCOINDEX_DATABASE_PASSWORD` | `database.password` | No |
 | `COCOINDEX_DATABASE_MAX_CONNECTIONS` | `database.max_connections` | No (default: `25`) |

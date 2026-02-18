@@ -108,7 +108,7 @@ def _start_parent_watchdog(
     This runs in a background daemon thread so it never blocks pool work.
     """
 
-    import psutil  # type: ignore
+    import psutil
 
     if parent_pid is None:
         parent_pid = os.getppid()
