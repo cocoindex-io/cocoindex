@@ -50,13 +50,13 @@ cocoindex update main.py
 Search your sessions:
 
 ```sh
-python main.py query "how did I fix the auth bug"
+python main.py "how did I fix the auth bug"
 ```
 
 Or start an interactive search:
 
 ```sh
-python main.py query
+python main.py
 ```
 
 ## Configuration
