@@ -35,7 +35,7 @@ pip install -e .
 
 ```sh
 # .env
-COCOINDEX_DB=postgres://cocoindex:cocoindex@localhost/cocoindex
+COCOINDEX_DB=./cocoindex.db
 POSTGRES_URL=postgres://cocoindex:cocoindex@localhost/cocoindex
 ```
 
@@ -63,7 +63,7 @@ python main.py query
 
 | Variable | Default | Description |
 |---|---|---|
-| `COCOINDEX_DB` | (required) | Postgres URL for CocoIndex internal state |
+| `COCOINDEX_DB` | `./cocoindex.db` | SQLite path for CocoIndex internal state |
 | `POSTGRES_URL` | `postgres://cocoindex:cocoindex@localhost/cocoindex` | Postgres connection for embedding/metadata tables |
 | `TABLE_EMBEDDINGS` | `session_embeddings` | Embeddings table name |
 | `TABLE_METADATA` | `session_metadata` | Metadata table name |
