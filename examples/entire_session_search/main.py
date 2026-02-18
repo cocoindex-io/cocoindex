@@ -357,8 +357,8 @@ async def query_once(pool: asyncpg.Pool, query: str, *, top_k: int = TOP_K) -> N
 
 async def query() -> None:
     async with await postgres.create_pool(DATABASE_URL) as pool:
-        if len(sys.argv) > 2:
-            q = " ".join(sys.argv[2:])
+        if len(sys.argv) > 1:
+            q = " ".join(sys.argv[1:])
             await query_once(pool, q)
             return
 
@@ -370,5 +370,4 @@ async def query() -> None:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "query":
-        asyncio.run(query())
+    asyncio.run(query())
