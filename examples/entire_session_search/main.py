@@ -181,11 +181,11 @@ async def process_file(
 ) -> None:
     info = extract_session_info(file)
     filename = file.file_path.path.name
+    id_gen = IdGenerator()
 
     if filename == "full.jsonl":
         content = file.read_text()
         chunks = parse_transcript(content)
-        id_gen = IdGenerator()
         await coco_aio.map(
             process_chunk,
             [
@@ -200,7 +200,6 @@ async def process_file(
     elif filename == "prompt.txt":
         text = file.read_text().strip()
         if text:
-            id_gen = IdGenerator()
             emb_table.declare_row(
                 row=SessionEmbeddingRow(
                     id=await id_gen.next_id(text),
@@ -219,7 +218,6 @@ async def process_file(
             chunks = _splitter.split(
                 text, chunk_size=2000, chunk_overlap=500, language="markdown"
             )
-            id_gen = IdGenerator()
             await coco_aio.map(
                 process_chunk,
                 [
