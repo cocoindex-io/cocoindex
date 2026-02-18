@@ -84,7 +84,7 @@ impl<'de> serde::Deserialize<'de> for TrackedTargetKeyInfo {
 /// (source_id, target_key)
 pub type TrackedTargetKeyForSource = Vec<(i32, Vec<TrackedTargetKeyInfo>)>;
 
-#[derive(sqlx::FromRow, Debug, Deserialize)]
+#[derive(sqlx::FromRow, Debug)]
 pub struct SourceTrackingInfoForProcessing {
     pub memoization_info: Option<sqlx::types::Json<Option<StoredMemoizationInfo>>>,
 
@@ -99,7 +99,7 @@ pub async fn read_source_tracking_info_for_processing(
     source_id: i32,
     source_key_json: &serde_json::Value,
     db_setup: &TrackingTableSetupState,
-    db_executor: impl sqlx::Executor<'_, Database = sqlx::Postgres>,
+    pool: &PgPool,
 ) -> Result<Option<SourceTrackingInfoForProcessing>> {
     let table_name = qualify_table_name_with_schema(&db_setup.table_name)?;
     let query_str = format!(
@@ -114,13 +114,13 @@ pub async fn read_source_tracking_info_for_processing(
     let tracking_info = sqlx::query_as(&query_str)
         .bind(source_id)
         .bind(source_key_json)
-        .fetch_optional(db_executor)
+        .fetch_optional(pool)
         .await?;
 
     Ok(tracking_info)
 }
 
-#[derive(sqlx::FromRow, Debug, Deserialize)]
+#[derive(sqlx::FromRow, Debug)]
 pub struct SourceTrackingInfoForPrecommit {
     pub max_process_ordinal: i64,
     pub staging_target_keys: sqlx::types::Json<TrackedTargetKeyForSource>,
@@ -215,7 +215,7 @@ pub async fn touch_max_process_ordinal(
     Ok(())
 }
 
-#[derive(sqlx::FromRow, Debug, Deserialize)]
+#[derive(sqlx::FromRow, Debug)]
 pub struct SourceTrackingInfoForCommit {
     pub staging_target_keys: sqlx::types::Json<TrackedTargetKeyForSource>,
     pub process_ordinal: Option<i64>,

@@ -36,7 +36,7 @@ class VectorIndexDef:
     """
 
     field_name: str
-    metric: VectorSimilarityMetric = VectorSimilarityMetric.COSINE_SIMILARITY
+    metric: VectorSimilarityMetric
     method: VectorIndexMethod | None = None
 
 

@@ -40,21 +40,6 @@ class DatabaseConnectionSpec:
 
 
 @dataclass
-class SurrealDBConnectionSpec:
-    """
-    Connection spec for SurrealDB (used for internal persistence when configured).
-
-    Typical endpoint: ws://localhost:8000
-    """
-
-    url: str
-    namespace: str
-    database: str
-    user: str | None = None
-    password: str | None = None
-
-
-@dataclass
 class GlobalExecutionOptions:
     """Global execution options."""
 
@@ -114,35 +99,20 @@ class Settings:
             _load_field(db_kwargs, "user", "COCOINDEX_DATABASE_USER")
             _load_field(db_kwargs, "password", "COCOINDEX_DATABASE_PASSWORD")
             _load_field(
-                surreal_kwargs, "namespace", "COCOINDEX_SURREALDB_NS", required=True
+                db_kwargs,
+                "max_connections",
+                "COCOINDEX_DATABASE_MAX_CONNECTIONS",
+                parse=int,
             )
             _load_field(
-                surreal_kwargs, "database", "COCOINDEX_SURREALDB_DB", required=True
+                db_kwargs,
+                "min_connections",
+                "COCOINDEX_DATABASE_MIN_CONNECTIONS",
+                parse=int,
             )
-            _load_field(surreal_kwargs, "user", "COCOINDEX_SURREALDB_USER")
-            _load_field(surreal_kwargs, "password", "COCOINDEX_SURREALDB_PASSWORD")
-            database = SurrealDBConnectionSpec(**surreal_kwargs)
+            database = DatabaseConnectionSpec(**db_kwargs)
         else:
-            database_url = os.getenv("COCOINDEX_DATABASE_URL")
-            if database_url is not None:
-                db_kwargs: dict[str, Any] = {"url": database_url}
-                _load_field(db_kwargs, "user", "COCOINDEX_DATABASE_USER")
-                _load_field(db_kwargs, "password", "COCOINDEX_DATABASE_PASSWORD")
-                _load_field(
-                    db_kwargs,
-                    "max_connections",
-                    "COCOINDEX_DATABASE_MAX_CONNECTIONS",
-                    parse=int,
-                )
-                _load_field(
-                    db_kwargs,
-                    "min_connections",
-                    "COCOINDEX_DATABASE_MIN_CONNECTIONS",
-                    parse=int,
-                )
-                database = DatabaseConnectionSpec(**db_kwargs)
-            else:
-                database = None
+            database = None
 
         exec_kwargs: dict[str, Any] = dict()
         _load_field(
