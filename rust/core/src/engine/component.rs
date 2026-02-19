@@ -1,5 +1,6 @@
 use crate::engine::runtime::get_runtime;
 use crate::prelude::*;
+use std::collections::HashSet;
 
 use crate::engine::context::FnCallContext;
 use crate::engine::context::{AppContext, ComponentProcessingMode, ComponentProcessorContext};
@@ -98,11 +99,20 @@ impl ComponentBgChildReadinessState {
 #[derive(Debug, Default, Clone)]
 struct ComponentRunOutcome {
     has_exception: bool,
+    logic_deps: HashSet<Fingerprint>,
 }
 
 impl ComponentRunOutcome {
+    fn exception() -> Self {
+        Self {
+            has_exception: true,
+            ..Default::default()
+        }
+    }
+
     fn merge(&mut self, other: Self) {
         self.has_exception |= other.has_exception;
+        self.logic_deps.extend(other.logic_deps);
     }
 }
 
@@ -318,12 +328,7 @@ impl<Prof: EngineProfile> Component<Prof> {
                 let result = self.execute_once(&context, Some(&processor)).await;
                 let (outcome, output) = match result {
                     Ok((outcome, output)) => (outcome, Ok(output)),
-                    Err(err) => (
-                        ComponentRunOutcome {
-                            has_exception: true,
-                        },
-                        Err(err),
-                    ),
+                    Err(err) => (ComponentRunOutcome::exception(), Err(err)),
                 };
                 child_readiness_guard.map(|guard| guard.resolve(outcome));
                 output?
@@ -366,11 +371,11 @@ impl<Prof: EngineProfile> Component<Prof> {
                 error!("component build failed:\n{err:?}");
             }
             child_readiness_guard.map(|guard| {
-                guard.resolve(result.map(|(outcome, _)| outcome).unwrap_or_else(|_| {
-                    ComponentRunOutcome {
-                        has_exception: true,
-                    }
-                }))
+                guard.resolve(
+                    result
+                        .map(|(outcome, _)| outcome)
+                        .unwrap_or_else(|_| ComponentRunOutcome::exception()),
+                )
             });
             Ok(())
         });
@@ -391,9 +396,7 @@ impl<Prof: EngineProfile> Component<Prof> {
                 Ok((outcome, _)) => outcome.clone(),
                 Err(err) => {
                     error!("component delete failed:\n{err}");
-                    ComponentRunOutcome {
-                        has_exception: true,
-                    }
+                    ComponentRunOutcome::exception()
                 }
             };
             if let Some(guard) = child_readiness_guard {
@@ -491,12 +494,16 @@ impl<Prof: EngineProfile> Component<Prof> {
                 // Wait until children components ready.
                 let components_readiness = processor_context.components_readiness();
                 components_readiness.set_build_done();
-                let children_outcome = components_readiness
+                let mut children_outcome = components_readiness
                     .readiness()
                     .wait()
                     .await
                     .clone()
                     .into_result()?;
+
+                // Merge children's logic deps into this component's context.
+                processor_context
+                    .merge_logic_deps(std::mem::take(&mut children_outcome.logic_deps));
 
                 let (ret, submit_output) = ret_n_submit_output?;
                 let build_output = match ret {

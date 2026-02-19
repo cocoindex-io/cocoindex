@@ -175,6 +175,8 @@ pub struct ComponentMemoizationInfo<'a> {
     pub processor_fp: Fingerprint,
     #[serde(rename = "R", borrow)]
     pub return_value: MemoizedValue<'a>,
+    #[serde(rename = "L", default, skip_serializing_if = "Vec::is_empty")]
+    pub logic_deps: Vec<Fingerprint>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -182,6 +184,8 @@ pub struct FunctionMemoizationEntry<'a> {
     /// Memoization info is stored in the component metadata
     #[serde(rename = "R", borrow)]
     pub return_value: MemoizedValue<'a>,
+    #[serde(rename = "L", default, skip_serializing_if = "Vec::is_empty")]
+    pub logic_deps: Vec<Fingerprint>,
 
     /// Relative paths to the parent components (legacy field, no longer written).
     #[serde(rename = "C", default, skip_serializing_if = "Vec::is_empty")]

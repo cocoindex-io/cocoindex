@@ -95,6 +95,7 @@ pub struct FnCallMemo<Prof: EngineProfile> {
     pub ret: Prof::FunctionData,
     pub(crate) target_state_paths: Vec<TargetStatePath>,
     pub(crate) dependency_memo_entries: HashSet<Fingerprint>,
+    pub(crate) logic_deps: HashSet<Fingerprint>,
     pub(crate) already_stored: bool,
 }
 
@@ -145,7 +146,9 @@ struct ComponentProcessorContextInner<Prof: EngineProfile> {
 
     processing_stats: ProcessingStats,
     inflight_permit: Mutex<Option<tokio::sync::OwnedSemaphorePermit>>,
-    // TODO: Add fields to record states, children components, etc.
+
+    /// Logic fingerprints accumulated from function calls and child components.
+    logic_deps: Mutex<HashSet<Fingerprint>>,
 }
 
 #[derive(Clone)]
@@ -185,6 +188,7 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
                 components_readiness: Default::default(),
                 processing_stats,
                 inflight_permit: Mutex::new(None),
+                logic_deps: Mutex::new(HashSet::new()),
             }),
         }
     }
@@ -244,8 +248,22 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         }
     }
 
-    pub fn join_fn_call(&self, _fn_ctx: &FnCallContext) {
-        // Nothing needs to be incorporated for now
+    pub fn join_fn_call(&self, fn_ctx: &FnCallContext) {
+        let fn_logic_deps = fn_ctx.update(|inner| inner.logic_deps.clone());
+        self.inner.logic_deps.lock().unwrap().extend(fn_logic_deps);
+    }
+
+    /// Merge additional logic deps (e.g. from child components) into this component's set.
+    pub(crate) fn merge_logic_deps(&self, deps: impl IntoIterator<Item = Fingerprint>) {
+        self.inner.logic_deps.lock().unwrap().extend(deps);
+    }
+
+    /// Take the accumulated logic deps as a sorted Vec for deterministic storage.
+    pub(crate) fn take_logic_deps(&self) -> Vec<Fingerprint> {
+        let deps = std::mem::take(&mut *self.inner.logic_deps.lock().unwrap());
+        let mut v: Vec<_> = deps.into_iter().collect();
+        v.sort();
+        v
     }
 
     pub(crate) fn set_inflight_permit(&self, permit: tokio::sync::OwnedSemaphorePermit) {
@@ -279,6 +297,9 @@ pub struct FnCallContextInner {
     /// Whether the function (directly or transitively) mounted any child components.
     /// If true, function-level memoization is disabled for this call.
     pub has_child_components: bool,
+
+    /// Logic fingerprints encountered transitively during this function call.
+    pub logic_deps: HashSet<Fingerprint>,
 }
 
 #[derive(Default)]
@@ -298,6 +319,13 @@ impl FnCallContext {
                 .dependency_memo_entries
                 .extend(child_inner.dependency_memo_entries);
             inner.has_child_components |= child_inner.has_child_components;
+            inner.logic_deps.extend(child_inner.logic_deps);
+        });
+    }
+
+    pub fn add_logic_dep(&self, fp: Fingerprint) {
+        self.update(|inner| {
+            inner.logic_deps.insert(fp);
         });
     }
 
