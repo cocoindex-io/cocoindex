@@ -6,6 +6,7 @@ mod environment;
 mod fingerprint;
 mod function;
 mod inspect;
+mod logic_registry;
 mod memo_key;
 mod ops;
 mod prelude;
@@ -79,6 +80,16 @@ fn core_module(m: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()>
     m.add_function(wrap_pyfunction!(memo_key::fingerprint_simple_object, m)?)?;
     m.add_function(wrap_pyfunction!(memo_key::fingerprint_bytes, m)?)?;
     m.add_function(wrap_pyfunction!(memo_key::fingerprint_str, m)?)?;
+
+    // Logic change detection
+    m.add_function(wrap_pyfunction!(
+        logic_registry::register_logic_fingerprint,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        logic_registry::unregister_logic_fingerprint,
+        m
+    )?)?;
 
     // Text processing operations
     m.add_class::<ops::PyChunk>()?;

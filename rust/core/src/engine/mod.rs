@@ -5,6 +5,7 @@ pub mod environment;
 pub mod execution;
 pub mod function;
 pub mod id_sequencer;
+pub mod logic_registry;
 pub mod profile;
 pub mod runtime;
 pub mod stats;

@@ -5,6 +5,7 @@ import functools
 import importlib
 import inspect
 import pickle
+import textwrap
 import threading
 from typing import (
     Callable,
@@ -158,9 +159,12 @@ def _build_sync_core_processor(
     kwargs: dict[str, Any],
     processor_info: core.ComponentProcessorInfo,
     memo_fp: core.Fingerprint | None = None,
+    logic_fp: core.Fingerprint | None = None,
 ) -> core.ComponentProcessor[R_co]:
     def _build(comp_ctx: core.ComponentProcessorContext) -> R_co:
         fn_ctx = core.FnCallContext()
+        if logic_fp is not None:
+            fn_ctx.add_logic_dep(logic_fp)
         context = ComponentContext(env, path, comp_ctx, fn_ctx)
         tok = _context_var.set(context)
         try:
@@ -179,16 +183,25 @@ class SyncFunction(Function[P, R_co]):
     and produce AsyncFunction (via @cocoindex.asyncio.function).
     """
 
-    __slots__ = ("_fn", "_memo", "_processor_info")
+    __slots__ = ("_fn", "_memo", "_processor_info", "_logic_fp")
 
     _fn: Callable[P, R_co]
     _memo: bool
     _processor_info: core.ComponentProcessorInfo
+    _logic_fp: core.Fingerprint
 
     def __init__(self, fn: Callable[P, R_co], *, memo: bool):
         self._fn = fn
         self._memo = memo
         self._processor_info = core.ComponentProcessorInfo(fn.__qualname__)
+        source = textwrap.dedent(inspect.getsource(fn))
+        self._logic_fp = core.fingerprint_str(source)
+        core.register_logic_fingerprint(self._logic_fp)
+
+    def __del__(self) -> None:
+        fp = getattr(self, "_logic_fp", None)
+        if fp is not None:
+            core.unregister_logic_fingerprint(fp)
 
     @overload
     def __get__(self, instance: None, owner: type) -> SyncFunction[P, R_co]: ...
@@ -231,6 +244,7 @@ class SyncFunction(Function[P, R_co]):
                 if isinstance(r, core.PendingFnCallMemo):
                     try:
                         fn_ctx = core.FnCallContext()
+                        fn_ctx.add_logic_dep(self._logic_fp)
                         ret = _call_in_context(fn_ctx)
                         if r.resolve(fn_ctx, ret):
                             parent_ctx._core_fn_call_ctx.join_child_memo(memo_fp)
@@ -242,6 +256,7 @@ class SyncFunction(Function[P, R_co]):
                     return cast(R_co, r)
             else:
                 fn_ctx = core.FnCallContext()
+                fn_ctx.add_logic_dep(self._logic_fp)
                 return _call_in_context(fn_ctx)
         finally:
             if fn_ctx is not None:
@@ -256,7 +271,14 @@ class SyncFunction(Function[P, R_co]):
     ) -> core.ComponentProcessor[R_co]:
         memo_fp = fingerprint_call(self._fn, args, kwargs) if self._memo else None
         return _build_sync_core_processor(
-            self._fn, env, path, args, kwargs, self._processor_info, memo_fp
+            self._fn,
+            env,
+            path,
+            args,
+            kwargs,
+            self._processor_info,
+            memo_fp,
+            self._logic_fp,
         )
 
 
@@ -288,9 +310,12 @@ def _build_async_core_processor(
     kwargs: dict[str, Any],
     processor_info: core.ComponentProcessorInfo,
     memo_fp: core.Fingerprint | None = None,
+    logic_fp: core.Fingerprint | None = None,
 ) -> core.ComponentProcessor[R_co]:
     async def _build(comp_ctx: core.ComponentProcessorContext) -> R_co:
         fn_ctx = core.FnCallContext()
+        if logic_fp is not None:
+            fn_ctx.add_logic_dep(logic_fp)
         context = ComponentContext(env, path, comp_ctx, fn_ctx)
         tok = _context_var.set(context)
         try:
@@ -356,6 +381,7 @@ class AsyncFunction(Function[P, R_co]):
         "_fn_is_async",
         "_memo",
         "_processor_info",
+        "_logic_fp",
         "_batching",
         "_max_batch_size",
         "_runner",
@@ -395,6 +421,9 @@ class AsyncFunction(Function[P, R_co]):
         self._orig_sync_fn = sync_fn
         self._memo = memo
         self._processor_info = core.ComponentProcessorInfo(fn.__qualname__)
+        source = textwrap.dedent(inspect.getsource(fn))
+        self._logic_fp = core.fingerprint_str(source)
+        core.register_logic_fingerprint(self._logic_fp)
         self._batching = batching
         self._max_batch_size = max_batch_size
         self._runner = runner
@@ -402,6 +431,11 @@ class AsyncFunction(Function[P, R_co]):
         self._queues = {}
         self._batchers = {}
         self._batchers_lock = threading.Lock()
+
+    def __del__(self) -> None:
+        fp = getattr(self, "_logic_fp", None)
+        if fp is not None:
+            core.unregister_logic_fingerprint(fp)
 
     @property
     def _any_fn(self) -> AnyCallable[P, R_co]:
@@ -448,6 +482,7 @@ class AsyncFunction(Function[P, R_co]):
         pending_memo: core.PendingFnCallMemo | None = None
         memo_fp: core.Fingerprint | None = None
         fn_ctx = core.FnCallContext()
+        fn_ctx.add_logic_dep(self._logic_fp)
 
         try:
             # Check memo (when enabled and context available)
@@ -655,17 +690,32 @@ class AsyncFunction(Function[P, R_co]):
                 kwargs,
                 self._processor_info,
                 memo_fp,
+                self._logic_fp,
             )
 
         orig_async_fn = self._orig_async_fn
         if orig_async_fn is not None:
             return _build_async_core_processor(
-                orig_async_fn, env, path, args, kwargs, self._processor_info, memo_fp
+                orig_async_fn,
+                env,
+                path,
+                args,
+                kwargs,
+                self._processor_info,
+                memo_fp,
+                self._logic_fp,
             )
 
         assert self._orig_sync_fn is not None
         return _build_sync_core_processor(
-            self._orig_sync_fn, env, path, args, kwargs, self._processor_info, memo_fp
+            self._orig_sync_fn,
+            env,
+            path,
+            args,
+            kwargs,
+            self._processor_info,
+            memo_fp,
+            self._logic_fp,
         )
 
 

@@ -12,6 +12,7 @@ use crate::engine::context::{
     FnCallMemo,
 };
 use crate::engine::context::{FnCallContext, FnCallMemoEntry};
+use crate::engine::logic_registry;
 use crate::engine::profile::{EngineProfile, Persist};
 use crate::engine::target_state::{
     TargetActionSink, TargetHandler, TargetStateProvider, TargetStateProviderRegistry,
@@ -46,7 +47,9 @@ pub(crate) fn use_or_invalidate_component_memoization<Prof: EngineProfile>(
         };
         if let Some(processor_fp) = processor_fp {
             let memo_info: db_schema::ComponentMemoizationInfo<'_> = from_msgpack_slice(&data)?;
-            if memo_info.processor_fp == processor_fp {
+            if memo_info.processor_fp == processor_fp
+                && logic_registry::all_contained(&memo_info.logic_deps)
+            {
                 let bytes = match memo_info.return_value {
                     db_schema::MemoizedValue::Inlined(b) => b,
                 };
@@ -105,6 +108,7 @@ fn write_component_memoization<Prof: EngineProfile>(
     let memo_info = db_schema::ComponentMemoizationInfo {
         processor_fp,
         return_value: db_schema::MemoizedValue::Inlined(Cow::Borrowed(bytes.as_ref())),
+        logic_deps: comp_ctx.take_logic_deps(),
     };
     let encoded = rmp_serde::to_vec_named(&memo_info)?;
     db.put(wtxn, key.as_slice(), encoded.as_slice())?;
@@ -129,6 +133,7 @@ fn write_fn_call_memo<Prof: EngineProfile>(
         child_components: vec![],
         target_state_paths: memo.target_state_paths,
         dependency_memo_entries: memo.dependency_memo_entries.into_iter().collect(),
+        logic_deps: memo.logic_deps.into_iter().collect(),
     };
     let encoded = rmp_serde::to_vec_named(&fn_call_memo)?;
     db.put(wtxn, key.as_slice(), encoded.as_slice())?;
@@ -152,6 +157,9 @@ fn read_fn_call_memo_with_txn<Prof: EngineProfile>(
         return Ok(None);
     };
     let fn_call_memo: db_schema::FunctionMemoizationEntry<'_> = from_msgpack_slice(&data)?;
+    if !logic_registry::all_contained(&fn_call_memo.logic_deps) {
+        return Ok(None);
+    }
     if !fn_call_memo.child_components.is_empty() {
         // Legacy entry stored child component paths. Invalidate it so the function re-runs,
         // detects the child components, logs a warning, and the entry is cleaned up.
@@ -165,6 +173,7 @@ fn read_fn_call_memo_with_txn<Prof: EngineProfile>(
         ret,
         target_state_paths: fn_call_memo.target_state_paths,
         dependency_memo_entries: fn_call_memo.dependency_memo_entries.into_iter().collect(),
+        logic_deps: fn_call_memo.logic_deps.into_iter().collect(),
         already_stored: true,
     }))
 }
