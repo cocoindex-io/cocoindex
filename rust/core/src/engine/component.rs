@@ -256,11 +256,7 @@ impl<Prof: EngineProfile> Component<Prof> {
     }
 
     pub fn mount_child(&self, fn_ctx: &FnCallContext, stable_path: StablePath) -> Result<Self> {
-        let relative_path: StablePath = stable_path
-            .as_ref()
-            .strip_parent(self.stable_path().as_ref())?
-            .into();
-        fn_ctx.update(|inner| inner.child_components.push(relative_path));
+        fn_ctx.update(|inner| inner.has_child_components = true);
         Ok(self.get_child(stable_path))
     }
 
@@ -519,12 +515,7 @@ impl<Prof: EngineProfile> Component<Prof> {
                             } else {
                                 None
                             };
-                            post_submit_for_build(
-                                processor_context,
-                                comp_memo,
-                                submit_output.memos_with_mounts_to_store,
-                            )
-                            .await?;
+                            post_submit_for_build(processor_context, comp_memo).await?;
                         }
                         Some(ComponentBuildOutput {
                             ret,

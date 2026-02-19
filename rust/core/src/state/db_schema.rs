@@ -183,15 +183,15 @@ pub struct FunctionMemoizationEntry<'a> {
     #[serde(rename = "R", borrow)]
     pub return_value: MemoizedValue<'a>,
 
-    /// Relative paths to the parent components.
-    #[serde(rename = "C")]
+    /// Relative paths to the parent components (legacy field, no longer written).
+    #[serde(rename = "C", default, skip_serializing_if = "Vec::is_empty")]
     pub child_components: Vec<StablePath>,
     /// Target states that are declared by the function.
-    #[serde(rename = "E")]
+    #[serde(rename = "E", default, skip_serializing_if = "Vec::is_empty")]
     pub target_state_paths: Vec<TargetStatePath>,
     /// Dependency entries that are declared by the function.
     /// Only needs to keep dependencies with side effects other than return value (child components / target states / dependency entries with side effects).
-    #[serde(rename = "D")]
+    #[serde(rename = "D", default, skip_serializing_if = "Vec::is_empty")]
     pub dependency_memo_entries: Vec<Fingerprint>,
 }
 
@@ -227,7 +227,7 @@ pub struct EffectInfoItem<'a> {
     #[serde_as(as = "Bytes")]
     #[serde(rename = "P", borrow)]
     pub key: Cow<'a, [u8]>,
-    #[serde(rename = "S", borrow)]
+    #[serde(rename = "S", borrow, default, skip_serializing_if = "Vec::is_empty")]
     pub states: Vec<(/*version*/ u64, EffectInfoItemState<'a>)>,
 }
 

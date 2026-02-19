@@ -18,11 +18,18 @@ impl<Prof: EngineProfile> PendingFnCallMemo<Prof> {
         mut self,
         fn_ctx: &FnCallContext,
         ret: impl FnOnce() -> Prof::FunctionData,
-    ) -> bool {
+    ) -> Result<bool> {
+        let has_child_components = fn_ctx.update(|inner| inner.has_child_components);
+        if has_child_components {
+            *self.guard = FnCallMemoEntry::Ready(None);
+            client_bail!(
+                "A function with memo=True mounted child components. \
+                 Either mount the function as a component, or set memo=False."
+            );
+        }
         let memo_ret = fn_ctx.update(|inner| {
             Some(FnCallMemo {
                 ret: ret(),
-                child_components: std::mem::take(&mut inner.child_components),
                 target_state_paths: std::mem::take(&mut inner.target_state_paths),
                 dependency_memo_entries: std::mem::take(&mut inner.dependency_memo_entries),
                 already_stored: false,
@@ -30,7 +37,7 @@ impl<Prof: EngineProfile> PendingFnCallMemo<Prof> {
         });
         let resolved = memo_ret.is_some();
         *self.guard = FnCallMemoEntry::Ready(memo_ret);
-        resolved
+        Ok(resolved)
     }
 }
 

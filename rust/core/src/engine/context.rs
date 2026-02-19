@@ -93,7 +93,6 @@ pub(crate) struct ComponentTargetStatesContext<Prof: EngineProfile> {
 
 pub struct FnCallMemo<Prof: EngineProfile> {
     pub ret: Prof::FunctionData,
-    pub(crate) child_components: Vec<StablePath>,
     pub(crate) target_state_paths: Vec<TargetStatePath>,
     pub(crate) dependency_memo_entries: HashSet<Fingerprint>,
     pub(crate) already_stored: bool,
@@ -102,7 +101,7 @@ pub struct FnCallMemo<Prof: EngineProfile> {
 pub enum FnCallMemoEntry<Prof: EngineProfile> {
     /// Memoization result is pending, i.e. the function call is not finished yet.
     Pending,
-    /// Memoization result is ready. None means memoization is disabled, e.g. it creates target states providers.
+    /// Memoization result is ready. None means memoization is disabled, e.g. it mounts child components.
     Ready(Option<FnCallMemo<Prof>>),
 }
 
@@ -274,10 +273,12 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
 pub struct FnCallContextInner {
     /// Target states that are declared by the function.
     pub target_state_paths: Vec<TargetStatePath>,
-    /// Dependency entries that are declared by the function. Only needs to keep dependencies with side effects (child components / target states / dependency entries with side effects).
+    /// Dependency entries that are declared by the function. Only needs to keep dependencies with side effects (target states / dependency entries with side effects).
     pub dependency_memo_entries: HashSet<Fingerprint>,
 
-    pub child_components: Vec<StablePath>,
+    /// Whether the function (directly or transitively) mounted any child components.
+    /// If true, function-level memoization is disabled for this call.
+    pub has_child_components: bool,
 }
 
 #[derive(Default)]
@@ -296,7 +297,7 @@ impl FnCallContext {
             inner
                 .dependency_memo_entries
                 .extend(child_inner.dependency_memo_entries);
-            inner.child_components.extend(child_inner.child_components);
+            inner.has_child_components |= child_inner.has_child_components;
         });
     }
 

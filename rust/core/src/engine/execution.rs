@@ -126,7 +126,7 @@ fn write_fn_call_memo<Prof: EngineProfile>(
     let ret_bytes = memo.ret.to_bytes()?;
     let fn_call_memo = db_schema::FunctionMemoizationEntry {
         return_value: db_schema::MemoizedValue::Inlined(Cow::Borrowed(ret_bytes.as_ref())),
-        child_components: memo.child_components,
+        child_components: vec![],
         target_state_paths: memo.target_state_paths,
         dependency_memo_entries: memo.dependency_memo_entries.into_iter().collect(),
     };
@@ -152,13 +152,17 @@ fn read_fn_call_memo_with_txn<Prof: EngineProfile>(
         return Ok(None);
     };
     let fn_call_memo: db_schema::FunctionMemoizationEntry<'_> = from_msgpack_slice(&data)?;
+    if !fn_call_memo.child_components.is_empty() {
+        // Legacy entry stored child component paths. Invalidate it so the function re-runs,
+        // detects the child components, logs a warning, and the entry is cleaned up.
+        return Ok(None);
+    }
     let return_value_bytes = match fn_call_memo.return_value {
         db_schema::MemoizedValue::Inlined(b) => b,
     };
     let ret = Prof::FunctionData::from_bytes(return_value_bytes.as_ref())?;
     Ok(Some(FnCallMemo {
         ret,
-        child_components: fn_call_memo.child_components,
         target_state_paths: fn_call_memo.target_state_paths,
         dependency_memo_entries: fn_call_memo.dependency_memo_entries.into_iter().collect(),
         already_stored: true,
@@ -668,7 +672,6 @@ impl<Prof: EngineProfile> SinkInput<Prof> {
 
 pub(crate) struct SubmitOutput<Prof: EngineProfile> {
     pub built_target_states_providers: Option<TargetStateProviderRegistry<Prof>>,
-    pub memos_with_mounts_to_store: Vec<(Fingerprint, FnCallMemo<Prof>)>,
     pub touched_previous_states: bool,
 }
 
@@ -681,7 +684,6 @@ pub(crate) async fn submit<Prof: EngineProfile>(
     let processor_name = processor.map(|p| p.processor_info().name.as_str());
 
     let mut built_target_states_providers: Option<TargetStateProviderRegistry<Prof>> = None;
-    let mut memos_with_mounts_to_store: Vec<(Fingerprint, FnCallMemo<Prof>)> = Vec::new();
     let (target_states_providers, declared_effects, child_path_set, finalized_fn_call_memos) =
         match comp_ctx.processing_state() {
             ComponentProcessingAction::Build(build_ctx) => {
@@ -693,13 +695,9 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                     );
                 };
 
-                let mut child_path_set = building_state.child_path_set;
-                let finalized_fn_call_memos = finalize_fn_call_memoization(
-                    comp_ctx,
-                    building_state.fn_call_memos,
-                    &mut memos_with_mounts_to_store,
-                    &mut child_path_set,
-                )?;
+                let child_path_set = building_state.child_path_set;
+                let finalized_fn_call_memos =
+                    finalize_fn_call_memoization(comp_ctx, building_state.fn_call_memos)?;
                 (
                     &built_target_states_providers
                         .get_or_insert(building_state.target_states.provider_registry)
@@ -753,7 +751,6 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                         Some(db_schema::StablePathNodeType::Component) => {
                             return Ok(SubmitOutput {
                                 built_target_states_providers: None,
-                                memos_with_mounts_to_store,
                                 touched_previous_states: false,
                             });
                         }
@@ -975,7 +972,6 @@ pub(crate) async fn submit<Prof: EngineProfile>(
 
     Ok(SubmitOutput {
         built_target_states_providers,
-        memos_with_mounts_to_store,
         touched_previous_states,
     })
 }
@@ -984,9 +980,8 @@ pub(crate) async fn submit<Prof: EngineProfile>(
 pub(crate) async fn post_submit_for_build<Prof: EngineProfile>(
     comp_ctx: &ComponentProcessorContext<Prof>,
     comp_memo: Option<(Fingerprint, &'_ Prof::FunctionData)>,
-    memos_with_mounts_to_store: Vec<(Fingerprint, FnCallMemo<Prof>)>,
 ) -> Result<()> {
-    if comp_memo.is_none() && memos_with_mounts_to_store.is_empty() {
+    if comp_memo.is_none() {
         return Ok(());
     }
     let db_env = comp_ctx.app_ctx().env().db_env();
@@ -995,9 +990,6 @@ pub(crate) async fn post_submit_for_build<Prof: EngineProfile>(
 
     if let Some((fp, ret)) = comp_memo {
         write_component_memoization(&mut wtxn, db, comp_ctx, fp, &ret)?;
-    }
-    for (fp, memo) in memos_with_mounts_to_store {
-        write_fn_call_memo(&mut wtxn, db, comp_ctx, fp, memo)?;
     }
     wtxn.commit()?;
     Ok(())
@@ -1113,8 +1105,6 @@ struct FinalizedFnCallMemoization<Prof: EngineProfile> {
 fn finalize_fn_call_memoization<Prof: EngineProfile>(
     comp_ctx: &ComponentProcessorContext<Prof>,
     fn_call_memos: HashMap<Fingerprint, Arc<tokio::sync::RwLock<FnCallMemoEntry<Prof>>>>,
-    memos_with_mounts_to_store: &mut Vec<(Fingerprint, FnCallMemo<Prof>)>,
-    stable_path_set: &mut ChildStablePathSet,
 ) -> Result<FinalizedFnCallMemoization<Prof>> {
     let mut result = FinalizedFnCallMemoization::default();
 
@@ -1132,17 +1122,12 @@ fn finalize_fn_call_memoization<Prof: EngineProfile>(
         result.all_memos_fps.insert(*fp);
 
         if memo.already_stored {
-            for child_component in &memo.child_components {
-                stable_path_set.add_child(child_component.as_ref(), StablePathSet::Component)?;
-            }
             result
                 .contained_target_state_paths
                 .extend(memo.target_state_paths.into_iter());
             deps_to_process.extend(memo.dependency_memo_entries.into_iter());
-        } else if memo.child_components.is_empty() {
-            result.memos_without_mounts_to_store.push((*fp, memo));
         } else {
-            memos_with_mounts_to_store.push((*fp, memo));
+            result.memos_without_mounts_to_store.push((*fp, memo));
         }
         // For non-stored memos, their dependencies were already resolved in this run,
         // so they exist in `fn_call_memos` and will be visited by the outer loop.
@@ -1162,9 +1147,6 @@ fn finalize_fn_call_memoization<Prof: EngineProfile>(
             let Some(memo) = read_fn_call_memo_with_txn(&rtxn, db, comp_ctx, fp)? else {
                 continue;
             };
-            for child_component in &memo.child_components {
-                stable_path_set.add_child(child_component.as_ref(), StablePathSet::Component)?;
-            }
             result
                 .contained_target_state_paths
                 .extend(memo.target_state_paths.into_iter());
