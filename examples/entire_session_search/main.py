@@ -101,12 +101,12 @@ class SessionMetadataRow:
 def extract_session_info(file: FileLike) -> SessionInfo:
     """Extract checkpoint_id and session_index from file path.
 
-    Entire layout: <shard>/<checkpoint_id>/<session_idx>/<filename>
+    Entire layout: <checkpoint_id[:2]>/<checkpoint_id[2:]>/<session_idx>/<filename>
     """
     parts = file.file_path.path.parts
-    # parts[-1] is the filename, [-2] is session_index, [-3] is checkpoint_id
+    # Shard (parts[-4]) is the first 2 chars of the checkpoint ID, concatenate to get the full 12-char ID
     return SessionInfo(
-        checkpoint_id=parts[-3],
+        checkpoint_id=parts[-4] + parts[-3],
         session_index=parts[-2],
     )
 
@@ -236,25 +236,23 @@ async def process_file(
         except json.JSONDecodeError:
             return
 
-        # Extract a prompt summary from the metadata if available
-        prompt_summary = meta.get("prompt_summary", meta.get("title", ""))
+        summary = meta.get("summary", {})
+        prompt_summary = summary.get("intent", "")
 
-        # Token counts
-        total_tokens = meta.get("total_tokens", 0)
-        if not total_tokens:
-            input_t = meta.get("input_tokens", 0) or 0
-            output_t = meta.get("output_tokens", 0) or 0
-            total_tokens = input_t + output_t
+        token_usage = meta.get("token_usage", {})
+        input_t = token_usage.get("input_tokens", 0) or 0
+        output_t = token_usage.get("output_tokens", 0) or 0
+        total_tokens = input_t + output_t
 
-        # Files touched
         files_touched = meta.get("files_touched", [])
-        if isinstance(files_touched, list):
-            files_touched_str = json.dumps(files_touched)
-        else:
-            files_touched_str = str(files_touched)
+        files_touched_str = (
+            json.dumps(files_touched)
+            if isinstance(files_touched, list)
+            else str(files_touched)
+        )
 
-        # Agent percentage
-        agent_pct = meta.get("agent_percentage")
+        initial_attr = meta.get("initial_attribution", {})
+        agent_pct = initial_attr.get("agent_percentage")
         if agent_pct is not None:
             agent_pct = float(agent_pct)
 

@@ -89,8 +89,8 @@ graph TD
 ## Entire checkpoint layout
 
 ```
-<shard>/<checkpoint_id>/<session_idx>/
-  ├── metadata.json     # token counts, files touched, timestamps
+<checkpoint_id[:2]>/<checkpoint_id[2:]>/<session_idx>/
+  ├── metadata.json     # token counts, files touched, timestamps (note: if one prompt spans multiple commits, each gets its own checkpoint with the same token data; don't sum across checkpoints)
   ├── full.jsonl        # conversation transcript
   ├── prompt.txt        # user's initial prompt
   ├── context.md        # AI-generated session summary
