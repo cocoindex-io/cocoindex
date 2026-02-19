@@ -14,7 +14,9 @@ pub struct PyPendingFnCallMemo(Option<PendingFnCallMemo<PyEngineProfile>>);
 impl PyPendingFnCallMemo {
     pub fn resolve(&mut self, fn_ctx: &PyFnCallContext, ret: Py<PyAny>) -> PyResult<bool> {
         let resolved = if let Some(pending_memo) = self.0.take() {
-            pending_memo.resolve(&fn_ctx.0, || PyValue::new(ret))
+            pending_memo
+                .resolve(&fn_ctx.0, || PyValue::new(ret))
+                .into_py_result()?
         } else {
             false
         };
