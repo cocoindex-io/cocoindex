@@ -22,6 +22,8 @@ coco_env = common.create_test_env(__file__)
 _TEST_DIR = pathlib.Path(__file__).parent
 _V1_PATH = str(_TEST_DIR / "mod_logic_v1.py")
 _V2_PATH = str(_TEST_DIR / "mod_logic_v2.py")
+_VER1_PATH = str(_TEST_DIR / "mod_logic_ver1.py")
+_VER2_PATH = str(_TEST_DIR / "mod_logic_ver2.py")
 _FAKE_MODULE = "tests.core._dynamic_logic_change_module"
 
 
@@ -378,3 +380,48 @@ def test_transitive_component_mounts_bar_comp_memo() -> None:
     # v2: second run — bar_comp_memo cached again
     app.update()
     assert metrics.collect() == {"foo_comp_mounts_bar_comp_memo": 1}
+
+
+# ============================================================================
+# E8: Explicit version bump invalidates memo (identical function body)
+# ============================================================================
+
+
+def test_fn_memo_invalidated_on_version_bump() -> None:
+    """Bumping the version= parameter invalidates memo even when the function body is identical."""
+    GlobalDictTarget.store.clear()
+    metrics = Metrics()
+    current_module: list[Any] = []
+
+    @coco.function
+    def app_main() -> None:
+        mod = current_module[0]
+        result = mod.transform_memo_ver("A", "value1")
+        coco.declare_target_state(GlobalDictTarget.target_state("A", result))
+
+    app = coco.App(
+        coco.AppConfig(
+            name="test_fn_memo_invalidated_on_version_bump", environment=coco_env
+        ),
+        app_main,
+    )
+
+    # version=1: first run — function executes
+    mod = _load_module(_VER1_PATH, metrics, current_module)
+    app.update()
+    assert metrics.collect() == {"transform_memo_ver": 1}
+    assert GlobalDictTarget.store.data["A"].data == "ver: value1"
+
+    # version=1: second run — memo hit
+    app.update()
+    assert metrics.collect() == {}
+
+    # version=2: identical body but version bumped — memo invalidated
+    mod = _load_module(_VER2_PATH, metrics, current_module, old_module=mod)
+    app.update()
+    assert metrics.collect() == {"transform_memo_ver": 1}
+    assert GlobalDictTarget.store.data["A"].data == "ver: value1"
+
+    # version=2: second run — memo hit again
+    app.update()
+    assert metrics.collect() == {}
