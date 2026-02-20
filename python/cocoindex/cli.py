@@ -640,23 +640,27 @@ def show(app_target: str, tree: bool) -> None:
     """
     app = _load_app(app_target)
 
-    if tree:
-        items = list_stable_paths_info_sync(app)
-        component_node_type = _core.StablePathNodeType.component()
-        paths: list[StablePath] = []
-        component_paths: set[StablePath] = set()
-        for item in items:
-            path = StablePath(item.path)
-            paths.append(path)
-            if item.node_type == component_node_type:
-                component_paths.add(path)
-        output = _render_paths_as_tree(paths, component_paths)
-        click.echo(output)
-    else:
-        paths = list_stable_paths_sync(app)
-        click.echo(f"Found {len(paths)} stable paths:")
-        for path in paths:
-            click.echo(f"  {path}")
+    try:
+        if tree:
+            items = list_stable_paths_info_sync(app)
+            component_node_type = _core.StablePathNodeType.component()
+            paths: list[StablePath] = []
+            component_paths: set[StablePath] = set()
+            for item in items:
+                path = StablePath(item.path)
+                paths.append(path)
+                if item.node_type == component_node_type:
+                    component_paths.add(path)
+            output = _render_paths_as_tree(paths, component_paths)
+            click.echo(output)
+        else:
+            paths = list_stable_paths_sync(app)
+            click.echo(f"Found {len(paths)} stable paths:")
+            for path in paths:
+                click.echo(f"  {path}")
+    finally:
+        env_loop = default_env_loop()
+        asyncio.run_coroutine_threadsafe(_stop_all_environments(), env_loop).result()
 
 
 async def _stop_all_environments() -> None:
