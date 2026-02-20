@@ -92,10 +92,6 @@ def process_chunk(chunk: Chunk) -> Embedding:
     return embed(chunk.text)
 ```
 
-:::note
-The change tracking capability is still under construction.
-:::
-
 ### Batching
 
 With `batching=True`, multiple concurrent calls to the function are automatically batched together. This is useful for operations that are more efficient when processing multiple inputs at once, such as embedding models.
