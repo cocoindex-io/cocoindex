@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import ast
 import asyncio
 import functools
+import hashlib
 import importlib
 import inspect
 import pickle
@@ -176,6 +178,37 @@ def _build_sync_core_processor(
     return core.ComponentProcessor.new_sync(_build, processor_info, memo_fp)
 
 
+def _strip_docstring(body: list[ast.stmt]) -> None:
+    """Remove leading docstring from a function/class body in-place."""
+    if (
+        body
+        and isinstance(body[0], ast.Expr)
+        and isinstance(body[0].value, ast.Constant)
+        and isinstance(body[0].value.value, str)
+    ):
+        body.pop(0)
+
+
+def _compute_logic_fingerprint(fn: Callable[..., Any]) -> core.Fingerprint:
+    """Compute a fingerprint from the function's canonical AST.
+
+    Uses AST instead of raw source text so that comment, whitespace,
+    formatting, and docstring changes do not cause false cache invalidations.
+    Falls back to bytecode hashing when source is unavailable.
+    """
+    try:
+        source = textwrap.dedent(inspect.getsource(fn))
+        tree = ast.parse(source)
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                node.decorator_list = []
+                _strip_docstring(node.body)
+        canonical = ast.dump(tree, include_attributes=False, annotate_fields=True)
+    except (OSError, SyntaxError):
+        canonical = f"<bytecode>{hashlib.sha256(fn.__code__.co_code).hexdigest()}"
+    return core.fingerprint_str(canonical)
+
+
 class SyncFunction(Function[P, R_co]):
     """Sync function with optional memoization.
 
@@ -194,8 +227,7 @@ class SyncFunction(Function[P, R_co]):
         self._fn = fn
         self._memo = memo
         self._processor_info = core.ComponentProcessorInfo(fn.__qualname__)
-        source = textwrap.dedent(inspect.getsource(fn))
-        self._logic_fp = core.fingerprint_str(source)
+        self._logic_fp = _compute_logic_fingerprint(fn)
         core.register_logic_fingerprint(self._logic_fp)
 
     def __del__(self) -> None:
@@ -421,8 +453,7 @@ class AsyncFunction(Function[P, R_co]):
         self._orig_sync_fn = sync_fn
         self._memo = memo
         self._processor_info = core.ComponentProcessorInfo(fn.__qualname__)
-        source = textwrap.dedent(inspect.getsource(fn))
-        self._logic_fp = core.fingerprint_str(source)
+        self._logic_fp = _compute_logic_fingerprint(fn)
         core.register_logic_fingerprint(self._logic_fp)
         self._batching = batching
         self._max_batch_size = max_batch_size
