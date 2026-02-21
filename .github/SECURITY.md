@@ -3,7 +3,7 @@
 ## Reporting a Vulnerability
 If you discover a security vulnerability in CocoIndex, please report it responsibly to our security team:
 
-**Email:** [support@cocoindex.io](mailto:support@cocoindex.io)
+**Email:** [security@cocoindex.io](mailto:security@cocoindex.io)
 
 ⚠️ Please do not file GitHub issues for security vulnerabilities as they are public! ⚠️
 
