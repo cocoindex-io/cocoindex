@@ -370,9 +370,6 @@ impl ResourceSetupChange for MetadataTableSetup {
 
 impl MetadataTableSetup {
     pub async fn apply_change(&self) -> Result<()> {
-        if !self.metadata_table_missing {
-            return Ok(());
-        }
         let lib_context = get_lib_context().await?;
         let pool = lib_context.require_builtin_db_pool()?;
         let db_schema = get_settings()?.db_schema_name;

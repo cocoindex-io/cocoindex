@@ -10,10 +10,11 @@ This module tests that:
 
 import os
 from unittest.mock import patch
+
 import pytest
 
 import cocoindex
-from cocoindex import op
+from cocoindex import SurrealDBConnectionSpec, op
 from cocoindex.setting import Settings
 
 
@@ -163,6 +164,29 @@ class TestOptionalDatabase:
             assert settings.database.url == test_url
             assert settings.database.user is None
             assert settings.database.password is None
+
+    def test_settings_from_env_with_surreal(self) -> None:
+        """Test that Settings.from_env() prefers SurrealDB config when provided."""
+        with patch.dict(
+            os.environ,
+            {
+                "COCOINDEX_SURREALDB_URL": "ws://localhost:8000",
+                "COCOINDEX_SURREALDB_NS": "testns",
+                "COCOINDEX_SURREALDB_DB": "testdb",
+                "COCOINDEX_SURREALDB_USER": "root",
+                "COCOINDEX_SURREALDB_PASSWORD": "root",
+                # Also set Postgres vars; Surreal should take precedence
+                "COCOINDEX_DATABASE_URL": "postgresql://localhost:5432/test",
+            },
+            clear=False,
+        ):
+            settings = Settings.from_env()
+            assert isinstance(settings.database, SurrealDBConnectionSpec)
+            assert settings.database.url == "ws://localhost:8000"
+            assert settings.database.namespace == "testns"
+            assert settings.database.database == "testdb"
+            assert settings.database.user == "root"
+            assert settings.database.password == "root"
 
     def test_multiple_init_calls(self) -> None:
         """Test that multiple init calls work correctly."""

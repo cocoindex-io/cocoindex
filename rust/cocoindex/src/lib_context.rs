@@ -4,8 +4,12 @@ use crate::prelude::*;
 
 use crate::builder::AnalyzedFlow;
 use crate::execution::source_indexer::SourceIndexingContext;
+use crate::persistence::{
+    InternalPersistence, postgres::PostgresPersistence, surreal::SurrealDBPersistence,
+    surrealdb_pool::SurrealDBPool,
+};
 use crate::service::query_handler::{QueryHandler, QueryHandlerSpec};
-use crate::settings;
+use crate::settings::{self, PostgresConnectionSpec, SurrealDBConnectionSpec};
 use crate::setup::ObjectSetupChange;
 use axum::http::StatusCode;
 use cocoindex_utils::error::ApiError;
@@ -82,7 +86,7 @@ impl FlowExecutionContext {
         &self,
         flow: &Arc<AnalyzedFlow>,
         source_idx: usize,
-        pool: &PgPool,
+        persistence: &Arc<dyn InternalPersistence>,
     ) -> Result<&Arc<SourceIndexingContext>> {
         self.source_indexing_contexts[source_idx]
             .get_or_try_init(|| async move {
@@ -91,7 +95,7 @@ impl FlowExecutionContext {
                         flow.clone(),
                         source_idx,
                         self.setup_execution_context.clone(),
-                        pool,
+                        persistence.clone(),
                     )
                     .await?,
                 )
@@ -171,8 +175,13 @@ pub fn get_auth_registry() -> &'static Arc<AuthRegistry> {
     &AUTH_REGISTRY
 }
 
+pub enum PoolVariant {
+    Postgres(PgPool),
+    SurrealDB(SurrealDBPool),
+}
+
 type PoolKey = (String, Option<String>);
-type PoolValue = Arc<tokio::sync::OnceCell<PgPool>>;
+type PoolValue = Arc<tokio::sync::OnceCell<PoolVariant>>;
 
 #[derive(Default)]
 pub struct DbPools {
@@ -180,7 +189,7 @@ pub struct DbPools {
 }
 
 impl DbPools {
-    pub async fn get_pool(&self, conn_spec: &settings::DatabaseConnectionSpec) -> Result<PgPool> {
+    pub async fn get_pg_pool(&self, conn_spec: &PostgresConnectionSpec) -> Result<PgPool> {
         let db_pool_cell = {
             let key = (conn_spec.url.clone(), conn_spec.user.clone());
             let mut db_pools = self.pools.lock().unwrap();
@@ -225,7 +234,33 @@ impl DbPools {
                 Ok::<_, Error>(pool)
             })
             .await?;
-        Ok(pool.clone())
+        match pool {
+            PoolVariant::Postgres(x) => Ok(x.clone()),
+            _ => Err(anyhow!("Unexpected pool variant")),
+        }
+    }
+
+    pub async fn get_surrealdb_pool(
+        &self,
+        conn_spec: &SurrealDBConnectionSpec,
+    ) -> Result<SurrealDBPool> {
+        Ok(SurrealDBPool::new(conn_spec.clone()))
+    }
+
+    pub async fn get_pool(
+        &self,
+        conn_spec: &settings::DatabaseConnectionSpec,
+    ) -> Result<PoolVariant> {
+        match conn_spec {
+            settings::DatabaseConnectionSpec::Postgres(conn_spec) => {
+                let pool = self.get_pg_pool(&conn_spec).await?;
+                Ok(PoolVariant::Postgres(pool))
+            }
+            settings::DatabaseConnectionSpec::SurrealDB(conn_spec) => {
+                let pool = self.get_surrealdb_pool(conn_spec).await?;
+                Ok(PoolVariant::SurrealDB(pool))
+            }
+        }
     }
 }
 
@@ -234,7 +269,9 @@ pub struct LibSetupContext {
     pub global_setup_change: setup::GlobalSetupChange,
 }
 pub struct PersistenceContext {
-    pub builtin_db_pool: PgPool,
+    pub persistence: Arc<dyn InternalPersistence>,
+    pub builtin_postgres_pool: Option<PgPool>,
+    pub builtin_surrealdb_pool: Option<SurrealDBPool>,
     pub setup_ctx: tokio::sync::RwLock<LibSetupContext>,
 }
 
@@ -274,14 +311,32 @@ impl LibContext {
         self.persistence_ctx.as_ref().ok_or_else(|| {
             client_error!(
                 "Database is required for this operation. \
-                         The easiest way is to set COCOINDEX_DATABASE_URL environment variable. \
+                         The easiest way is to set COCOINDEX_DATABASE_URL (Postgres) or COCOINDEX_SURREALDB_URL (SurrealDB) environment variable. \
                          Please see https://cocoindex.io/docs/core/settings for more details."
             )
         })
     }
 
-    pub fn require_builtin_db_pool(&self) -> Result<&PgPool> {
-        Ok(&self.require_persistence_ctx()?.builtin_db_pool)
+    pub fn require_builtin_postgres_pool(&self) -> Result<&PgPool> {
+        self.require_persistence_ctx()?
+            .builtin_postgres_pool
+            .as_ref()
+            .ok_or_else(|| {
+                anyhow!("Postgres pool is not available for the configured persistence backend")
+            })
+    }
+
+    pub fn require_builtin_surrealdb_pool(&self) -> Result<&SurrealDBPool> {
+        self.require_persistence_ctx()?
+            .builtin_surrealdb_pool
+            .as_ref()
+            .ok_or_else(|| {
+                anyhow!("SurrealDB pool is not available for the configured persistence backend")
+            })
+    }
+
+    pub fn require_persistence(&self) -> Result<Arc<dyn InternalPersistence>> {
+        Ok(self.require_persistence_ctx()?.persistence.clone())
     }
 }
 
@@ -300,18 +355,46 @@ pub async fn create_lib_context(settings: settings::Settings) -> Result<LibConte
     });
 
     let db_pools = DbPools::default();
-    let persistence_ctx = if let Some(database_spec) = &settings.database {
-        let pool = db_pools.get_pool(database_spec).await?;
-        let all_setup_states = setup::get_existing_setup_state(&pool).await?;
-        Some(PersistenceContext {
-            builtin_db_pool: pool,
-            setup_ctx: tokio::sync::RwLock::new(LibSetupContext {
-                global_setup_change: setup::GlobalSetupChange::from_setup_states(&all_setup_states),
-                all_setup_states,
-            }),
-        })
+
+    let persistence_ctx = if let Some(conf) = settings.database {
+        let pool = db_pools.get_pool(&conf).await?;
+        match pool {
+            PoolVariant::Postgres(pool) => {
+                let persistence: Arc<dyn InternalPersistence> =
+                    Arc::new(PostgresPersistence::new(pool.clone()));
+                let all_setup_states =
+                    setup::get_existing_setup_state(persistence.as_ref()).await?;
+                Some(PersistenceContext {
+                    persistence,
+                    builtin_postgres_pool: Some(pool),
+                    builtin_surrealdb_pool: None,
+                    setup_ctx: tokio::sync::RwLock::new(LibSetupContext {
+                        global_setup_change: setup::GlobalSetupChange::from_setup_states(
+                            &all_setup_states,
+                        ),
+                        all_setup_states,
+                    }),
+                })
+            }
+            PoolVariant::SurrealDB(pool) => {
+                let persistence = SurrealDBPersistence::new(pool.clone());
+                let persistence: Arc<dyn InternalPersistence> = Arc::new(persistence);
+                let all_setup_states =
+                    setup::get_existing_setup_state(persistence.as_ref()).await?;
+                Some(PersistenceContext {
+                    persistence,
+                    builtin_postgres_pool: None,
+                    builtin_surrealdb_pool: Some(pool),
+                    setup_ctx: tokio::sync::RwLock::new(LibSetupContext {
+                        global_setup_change: setup::GlobalSetupChange::from_setup_states(
+                            &all_setup_states,
+                        ),
+                        all_setup_states,
+                    }),
+                })
+            }
+        }
     } else {
-        // No database configured
         None
     };
 
@@ -398,20 +481,22 @@ mod tests {
             .await
             .unwrap();
         assert!(lib_context.persistence_ctx.is_none());
-        assert!(lib_context.require_builtin_db_pool().is_err());
+        assert!(lib_context.require_builtin_postgres_pool().is_err());
     }
 
     #[tokio::test]
     async fn test_persistence_context_type_safety() {
         // This test ensures that PersistenceContext groups related fields together
         let settings = settings::Settings {
-            database: Some(settings::DatabaseConnectionSpec {
-                url: "postgresql://test".to_string(),
-                user: None,
-                password: None,
-                max_connections: 10,
-                min_connections: 1,
-            }),
+            database: Some(settings::DatabaseConnectionSpec::Postgres(
+                PostgresConnectionSpec {
+                    url: "postgresql://test".to_string(),
+                    user: None,
+                    password: None,
+                    max_connections: 10,
+                    min_connections: 1,
+                },
+            )),
             ..Default::default()
         };
 

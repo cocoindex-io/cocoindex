@@ -229,6 +229,7 @@ pub async fn evaluate_data(
     let execution_ctx = flow_ctx.use_execution_ctx().await?;
     let source_row_key_ctx =
         SourceRowKeyContextHolder::create(&flow_ctx, &execution_ctx, query).await?;
+    let persistence = lib_context.require_persistence()?;
     let evaluate_output = row_indexer::evaluate_source_entry_with_memory(
         &source_row_key_ctx.as_context(),
         &source_row_key_ctx.key_aux_info,
@@ -237,7 +238,7 @@ pub async fn evaluate_data(
             enable_cache: true,
             evaluation_only: true,
         },
-        lib_context.require_builtin_db_pool()?,
+        &persistence,
     )
     .await?
     .ok_or_else(|| {
@@ -259,9 +260,10 @@ pub async fn update(
     State(lib_context): State<Arc<LibContext>>,
 ) -> std::result::Result<Json<stats::IndexUpdateInfo>, ApiError> {
     let flow_ctx = lib_context.get_flow_context(&flow_name)?;
+    let persistence = lib_context.require_persistence()?;
     let live_updater = execution::FlowLiveUpdater::start(
         flow_ctx.clone(),
-        lib_context.require_builtin_db_pool()?,
+        persistence,
         &lib_context.multi_progress_bar,
         execution::FlowLiveUpdaterOptions {
             live_mode: false,
@@ -283,11 +285,12 @@ pub async fn get_row_indexing_status(
     let execution_ctx = flow_ctx.use_execution_ctx().await?;
     let source_row_key_ctx =
         SourceRowKeyContextHolder::create(&flow_ctx, &execution_ctx, query).await?;
+    let persistence = lib_context.require_persistence()?;
     let indexing_status = indexing_status::get_source_row_indexing_status(
         &source_row_key_ctx.as_context(),
         &source_row_key_ctx.key_aux_info,
         &execution_ctx.setup_execution_context,
-        lib_context.require_builtin_db_pool()?,
+        persistence,
     )
     .await?;
     Ok(Json(indexing_status))

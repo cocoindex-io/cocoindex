@@ -1,10 +1,9 @@
 """All builtin targets."""
 
 from dataclasses import dataclass
-from typing import Sequence, Literal
+from typing import Literal, Sequence
 
-from .. import op
-from .. import index
+from .. import index, op
 from ..auth_registry import AuthEntryReference
 from ..setting import DatabaseConnectionSpec
 
@@ -199,3 +198,35 @@ class KuzuDeclaration(op.DeclarationSpec):
     connection: AuthEntryReference[KuzuConnection]
     nodes_label: str
     primary_key_fields: Sequence[str]
+
+
+@dataclass
+class SurrealDBConnection:
+    """Connection spec for SurrealDB."""
+
+    # WebSocket RPC url, e.g. "ws://localhost:8000"
+    url: str
+    # Namespace and database to use.
+    namespace: str
+    database: str
+    # Auth (root user).
+    user: str
+    password: str
+
+
+class SurrealDB(op.TargetSpec):
+    """Multi-model storage powered by SurrealDB (vectors + graph relations)."""
+
+    connection: AuthEntryReference[SurrealDBConnection]
+    table_name: str | None = None
+    # TODO: should we add vector indexes?
+    mapping: Nodes | Relationships | None = None
+
+
+class SurrealDBDeclaration(op.DeclarationSpec):
+    """Declarations for SurrealDB."""
+
+    kind = "SurrealDB"
+    connection: AuthEntryReference[SurrealDBConnection]
+    primary_key_fields: Sequence[str]
+    vector_indexes: Sequence[index.VectorIndexDef] = ()

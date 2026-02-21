@@ -1,6 +1,6 @@
-from enum import Enum
 from dataclasses import dataclass
-from typing import Sequence, Union, Any
+from enum import Enum
+from typing import Any, Sequence, Union
 
 
 class VectorSimilarityMetric(Enum):

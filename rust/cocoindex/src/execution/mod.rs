@@ -10,4 +10,4 @@ pub(crate) mod stats;
 mod live_updater;
 pub(crate) use live_updater::*;
 
-mod db_tracking;
+pub(crate) mod db_tracking;

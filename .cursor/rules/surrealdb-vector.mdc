@@ -1,0 +1,60 @@
+---
+description: This rule provides information for creating vector indexes and vector queries in SurrealDB
+alwaysApply: false
+---
+
+## HNSW Index
+
+### Examples
+
+```surql
+DEFINE INDEX hnsw_idx ON pts FIELDS point HNSW DIMENSION 4;
+```
+
+With specific distance function `EUCLIDEAN` and type `F64`. Other available types: F64, F32, I64, I32, I16.
+
+```surql
+DEFINE INDEX hnsw_idx ON pts FIELDS point HNSW DIMENSION 4 DIST EUCLIDEAN TYPE F64;
+```
+
+Full-table example:
+
+```surql
+DEFINE TABLE OVERWRITE document SCHEMALESS;
+DEFINE FIELD OVERWRITE embedding ON document TYPE array<float>;
+DEFINE INDEX OVERWRITE hnsw_idx_document ON document
+    FIELDS embedding
+    HNSW DIMENSION 384
+    DIST COSINE
+    TYPE F32
+    EFC 150 M 12 M0 24;
+```
+
+### Querying
+
+When using HNSW, the `<|10, 40|>` notation in the WHERE clause means you want the top 10, using an effort value of 40.
+
+For effort values, 40 is a default recommended value. 17 is very fast, but misses some results.
+
+```surql
+SELECT
+    *,
+    vector::distance::knn() AS dist
+FROM document
+WHERE embedding <|10, 40|> $vector;
+```
+
+The example above will use the distance function defined by the index. That's what `vector::distance::knn()` means.
+
+A more complex example, returning score and filtering by a threshold:
+
+```surql
+SELECT *, score
+FROM (
+    SELECT *, (1 - vector::distance::knn()) AS score
+    FROM document
+    WHERE embedding <|20,40|> $vector
+)
+WHERE score >= $threshold
+ORDER BY score DESC;
+```

@@ -3,9 +3,9 @@ Data types for settings of the cocoindex library.
 """
 
 import os
-
-from typing import Callable, Self, Any, overload
 from dataclasses import dataclass
+from typing import Any, Callable, Self, overload
+
 from . import _engine  # type: ignore
 
 

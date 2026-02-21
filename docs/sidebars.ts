@@ -66,6 +66,7 @@ const sidebars: SidebarsConfig = {
       collapsed: true,
       items: [
         'targets/postgres',
+        'targets/surrealdb',
         'targets/qdrant',
         'targets/pinecone',
         'targets/lancedb',

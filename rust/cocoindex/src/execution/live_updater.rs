@@ -6,7 +6,6 @@ use crate::{
 use super::stats;
 use futures::future::try_join_all;
 use indicatif::{MultiProgress, ProgressBar, ProgressFinish};
-use sqlx::PgPool;
 use std::fmt::Write;
 use tokio::{sync::watch, task::JoinSet, time::MissedTickBehavior};
 use tracing::{Instrument, Level};
@@ -93,7 +92,7 @@ struct SourceUpdateTask {
     execution_ctx: Arc<tokio::sync::OwnedRwLockReadGuard<crate::lib_context::FlowExecutionContext>>,
     source_update_stats: Arc<stats::UpdateStats>,
     operation_in_process_stats: Arc<stats::OperationInProcessStats>,
-    pool: PgPool,
+    persistence: Arc<dyn InternalPersistence>,
     options: FlowLiveUpdaterOptions,
 
     status_tx: watch::Sender<FlowLiveUpdaterStatus>,
@@ -128,7 +127,7 @@ impl SourceUpdateTask {
     async fn run(self) -> Result<()> {
         let source_indexing_context = self
             .execution_ctx
-            .get_source_indexing_context(&self.flow, self.source_idx, &self.pool)
+            .get_source_indexing_context(&self.flow, self.source_idx, &self.persistence)
             .await?;
         let initial_update_options = super::source_indexer::UpdateOptions {
             expect_little_diff: false,
@@ -516,7 +515,7 @@ impl FlowLiveUpdater {
     #[instrument(name = "flow_live_updater.start", skip_all, fields(flow_name = %flow_ctx.flow_name()))]
     pub async fn start(
         flow_ctx: Arc<FlowContext>,
-        pool: &PgPool,
+        persistence: Arc<dyn InternalPersistence>,
         multi_progress_bar: &LazyLock<MultiProgress>,
         options: FlowLiveUpdaterOptions,
     ) -> Result<Self> {
@@ -544,7 +543,7 @@ impl FlowLiveUpdater {
                 execution_ctx: execution_ctx.clone(),
                 source_update_stats: source_update_stats.clone(),
                 operation_in_process_stats: operation_in_process_stats.clone(),
-                pool: pool.clone(),
+                persistence: persistence.clone(),
                 options: options.clone(),
                 status_tx: status_tx.clone(),
                 num_remaining_tasks_tx: num_remaining_tasks_tx.clone(),

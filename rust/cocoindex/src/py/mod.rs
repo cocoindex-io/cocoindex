@@ -167,7 +167,7 @@ impl FlowLiveUpdater {
             let lib_context = get_lib_context().await.into_py_result()?;
             let live_updater = execution::FlowLiveUpdater::start(
                 flow,
-                lib_context.require_builtin_db_pool().into_py_result()?,
+                lib_context.require_persistence().into_py_result()?,
                 &lib_context.multi_progress_bar,
                 options.into_inner(),
             )
@@ -232,7 +232,7 @@ impl Flow {
                         &execution_ctx.setup_execution_context,
                         &self.0.flow.data_schema,
                         options.into_inner(),
-                        lib_context.require_builtin_db_pool()?,
+                        lib_context.require_persistence()?,
                     )
                     .await
                 })

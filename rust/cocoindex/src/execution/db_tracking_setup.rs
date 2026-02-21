@@ -563,3 +563,63 @@ impl TrackingTableSetupChange {
         Ok(total_deleted)
     }
 }
+
+/// Postgres helper used by the Postgres persistence backend.
+pub async fn apply_change_with_pool(
+    change: &TrackingTableSetupChange,
+    pool: &PgPool,
+) -> Result<()> {
+    if let Some(desired) = &change.desired_state {
+        for lagacy_name in change.legacy_tracking_table_names.iter() {
+            let query = format!(
+                "ALTER TABLE IF EXISTS {} RENAME TO {}",
+                lagacy_name, desired.table_name
+            );
+            sqlx::query(&query).execute(pool).await?;
+        }
+
+        if change.min_existing_version_id != Some(desired.version_id) {
+            upgrade_tracking_table(pool, desired, change.min_existing_version_id.unwrap_or(0))
+                .await?;
+        }
+    } else {
+        for lagacy_name in change.legacy_tracking_table_names.iter() {
+            let query = format!("DROP TABLE IF EXISTS {lagacy_name}");
+            sqlx::query(&query).execute(pool).await?;
+        }
+    }
+
+    let source_state_table_name = change
+        .desired_state
+        .as_ref()
+        .and_then(|v| v.source_state_table_name.as_ref());
+    if let Some(source_state_table_name) = source_state_table_name {
+        for lagacy_name in change.legacy_source_state_table_names.iter() {
+            let query =
+                format!("ALTER TABLE IF EXISTS {lagacy_name} RENAME TO {source_state_table_name}");
+            sqlx::query(&query).execute(pool).await?;
+        }
+        if !change.source_state_table_always_exists {
+            create_source_state_table(pool, source_state_table_name).await?;
+        }
+        if !change.source_names_need_state_cleanup.is_empty() {
+            delete_source_states_for_sources(
+                pool,
+                source_state_table_name,
+                &change
+                    .source_names_need_state_cleanup
+                    .keys()
+                    .copied()
+                    .collect::<Vec<_>>(),
+            )
+            .await?;
+        }
+    } else {
+        for lagacy_name in change.legacy_source_state_table_names.iter() {
+            let query = format!("DROP TABLE IF EXISTS {lagacy_name}");
+            sqlx::query(&query).execute(pool).await?;
+        }
+    }
+
+    Ok(())
+}
