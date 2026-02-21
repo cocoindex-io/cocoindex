@@ -41,27 +41,9 @@ jobs:
       - name: Sync Python dependencies
         run: uv sync --no-dev --group ci
 
-      - name: Cache pre-commit
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pre-commit
-          key: precommit-e2e-type-check-${{ matrix.python-version }}
-
-      - name: Install pre-commit
-        run: pip install pre-commit
-
       - name: Run mypy-check hook
+        uses: j178/prek-action@v1
+        with:
+          extra-args: 'mypy-check --all-files'
         env:
           UV_NO_SYNC: "1"
-        shell: bash
-        run: |
-          set +e
-
-          echo "Running mypy-check on all files (event: ${{ github.event_name }})"
-          pre-commit run mypy-check --all-files --show-diff-on-failure
-          status=$?
-
-          if [ $status -ne 0 ]; then
-            echo "::error::E2E type check failed. Please run 'uv run pre-commit run --all-files' locally."
-            exit $status
-          fi

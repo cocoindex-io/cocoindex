@@ -1,5 +1,5 @@
-use super::shared::pattern_matcher::PatternMatcher;
 use chrono::Duration;
+use cocoindex_ops_text::pattern_matcher::PatternMatcher;
 use google_drive3::{
     DriveHub,
     api::{File, Scope},

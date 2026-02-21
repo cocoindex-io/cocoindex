@@ -10,8 +10,9 @@ name = "cocoindex_engine"
 crate-type = ["cdylib"]
 
 [features]
-default = ["legacy-states-v0"]
+default = ["legacy-states-v0", "abi3"]
 legacy-states-v0 = []
+abi3 = ["pyo3/abi3-py311"]
 
 [dependencies]
 cocoindex_utils = { path = "../utils", features = [
@@ -23,7 +24,7 @@ cocoindex_utils = { path = "../utils", features = [
     "yaml",
 ] }
 cocoindex_py_utils = { path = "../py_utils" }
-cocoindex_extra_text = { path = "../extra_text" }
+cocoindex_ops_text = { path = "../ops_text" }
 
 pyo3 = { workspace = true }
 pythonize = { workspace = true }
@@ -61,7 +62,6 @@ schemars = { workspace = true }
 reqwest = { workspace = true }
 async-openai = { workspace = true }
 
-globset = { workspace = true }
 unicase = { workspace = true }
 google-drive3 = { workspace = true }
 hyper-util = { workspace = true }
@@ -76,6 +76,7 @@ uuid = { workspace = true }
 tokio-stream = { workspace = true }
 async-stream = { workspace = true }
 neo4rs = { workspace = true }
+falkordb = { workspace = true }
 bytes = { workspace = true }
 rand = { workspace = true }
 indoc = { workspace = true }
@@ -100,3 +101,4 @@ redis = { workspace = true }
 expect-test = { workspace = true }
 encoding_rs = { workspace = true }
 tokio-util = { workspace = true }
+notify = { workspace = true }

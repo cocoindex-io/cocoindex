@@ -1,0 +1,9 @@
+[project]
+name = "docs-to-kg-falkordb"
+version = "0.1.0"
+description = "Example for cocoindex: extract triples from files and build knowledge graph using FalkorDB."
+requires-python = ">=3.11"
+dependencies = ["cocoindex>=0.3.9"]
+
+[tool.setuptools]
+packages = []

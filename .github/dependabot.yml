@@ -10,3 +10,4 @@ updates:
     commit-message:
       prefix: "ci"
       include: "scope"
+

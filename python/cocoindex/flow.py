@@ -769,7 +769,12 @@ class Flow:
         return get_flow_full_name(self._name)
 
     def update(
-        self, /, *, reexport_targets: bool = False, full_reprocess: bool = False
+        self,
+        /,
+        *,
+        reexport_targets: bool = False,
+        full_reprocess: bool = False,
+        print_stats: bool = False,
     ) -> _engine.IndexUpdateInfo:
         """
         Update the index defined by the flow.
@@ -777,12 +782,19 @@ class Flow:
         """
         return execution_context.run(
             self.update_async(
-                reexport_targets=reexport_targets, full_reprocess=full_reprocess
+                reexport_targets=reexport_targets,
+                full_reprocess=full_reprocess,
+                print_stats=print_stats,
             )
         )
 
     async def update_async(
-        self, /, *, reexport_targets: bool = False, full_reprocess: bool = False
+        self,
+        /,
+        *,
+        reexport_targets: bool = False,
+        full_reprocess: bool = False,
+        print_stats: bool = False,
     ) -> _engine.IndexUpdateInfo:
         """
         Update the index defined by the flow.
@@ -794,6 +806,7 @@ class Flow:
                 live_mode=False,
                 reexport_targets=reexport_targets,
                 full_reprocess=full_reprocess,
+                print_stats=print_stats,
             ),
         ) as updater:
             await updater.wait_async()

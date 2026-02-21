@@ -32,6 +32,7 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: Free Threading :: 2 - Beta",
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Topic :: Text Processing :: Indexing",
     "Intended Audience :: Developers",
@@ -70,12 +71,18 @@ editable-profile = "dev" # local editable builds
 embeddings = ["sentence-transformers>=3.3.1"]
 colpali = ["colpali-engine"]
 lancedb = ["lancedb>=0.25.0", "pyarrow>=19.0.0"]
+chromadb = ["chromadb>=0.4.0"]
+doris = ["aiohttp>=3.8.0", "aiomysql>=0.2.0", "pymysql>=1.0.0"]
 
 all = [
     "sentence-transformers>=3.3.1",
     "colpali-engine",
     "lancedb>=0.25.0",
     "pyarrow>=19.0.0",
+    "chromadb>=0.4.0",
+    "aiohttp>=3.8.0",
+    "aiomysql>=0.2.0",
+    "pymysql>=1.0.0",
 ]
 
 [dependency-groups]
@@ -83,6 +90,7 @@ build-test = [
     "maturin>=1.10.0,<2.0",
     "pytest",
     "pytest-asyncio",
+    "pytest-timeout",
     "mypy",
     "ruff",
 ]
@@ -95,7 +103,7 @@ ci = [
     { include-group = "ci-enabled-optional-deps" },
 ]
 
-dev-local = ["pre-commit"]
+dev-local = ["prek"]
 dev = [{ include-group = "ci" }, { include-group = "dev-local" }]
 
 [tool.uv]
@@ -124,7 +132,7 @@ disable_error_code = ["unused-ignore"]
 
 [[tool.mypy.overrides]]
 # Ignore missing imports for optional dependencies from cocoindex library
-module = ["sentence_transformers", "torch", "colpali_engine", "PIL"]
+module = ["sentence_transformers", "torch", "colpali_engine", "PIL", "aiohttp", "aiomysql", "pymysql", "chromadb"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
@@ -141,3 +149,11 @@ disallow_any_generics = false
 disallow_subclassing_any = false
 disallow_untyped_calls = false
 disallow_any_decorated = false
+
+[tool.pytest.ini_options]
+pythonpath = ["python"]
+timeout = 30
+log_cli = true
+log_cli_level = "INFO"
+log_format = "%(asctime)s %(levelname)s %(message)s"
+log_date_format = "%Y-%m-%d %H:%M:%S"
