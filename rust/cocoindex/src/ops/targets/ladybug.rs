@@ -79,10 +79,12 @@ impl LadybugThinClient {
         let query = json!({
             "query": cyper_builder.query
         });
-        http::request(|| self.reqwest_client.post(&self.query_url).json(&query))
-            .await
-            .map_err(Error::from)
-            .with_context(|| "Ladybug API error")?;
+        http::request(&self.reqwest_client, |client| {
+            client.post(&self.query_url).json(&query)
+        })
+        .await
+        .map_err(Error::from)
+        .with_context(|| "Ladybug API error")?;
         Ok(())
     }
 }

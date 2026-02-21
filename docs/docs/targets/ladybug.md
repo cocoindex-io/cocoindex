@@ -7,7 +7,7 @@ import { ExampleButton } from '../../src/components/GitHubButton';
 
 # Ladybug
 
-Exports data to a [Ladybug](https://github.com/LadybugDB/ladybug) graph database. Ladybug is a maintained fork of Kuzu that carries forth the original vision of Kuzu, with added functionality for the lakehouse ecosystem. Just like Kuzu, Ladybug follows the structurd property graph model and functions as a fast, embedded database with a permissive (MIT) license.
+Exports data to a [Ladybug](https://github.com/LadybugDB/ladybug) graph database. Ladybug is a maintained fork of Kuzu that carries forth the original vision of Kuzu, with added functionality for the lakehouse ecosystem. Just like Kuzu, Ladybug follows the structured property graph model and functions as a fast, embedded database with a permissive (MIT) license.
 
 ## Get Started
 

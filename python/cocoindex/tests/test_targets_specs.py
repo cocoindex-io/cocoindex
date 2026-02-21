@@ -1,6 +1,14 @@
 from cocoindex.auth_registry import AuthEntryReference, ref_auth_entry
 from cocoindex.engine_object import dump_engine_object
-from cocoindex.targets import Ladybug, LadybugConnection, LadybugDeclaration, Nodes
+from cocoindex.targets import (
+    Kuzu,
+    KuzuConnection,
+    KuzuDeclaration,
+    Ladybug,
+    LadybugConnection,
+    LadybugDeclaration,
+    Nodes,
+)
 
 
 def test_ladybug_target_dump() -> None:
@@ -25,3 +33,21 @@ def test_ladybug_declaration_dump() -> None:
     assert dumped["kind"] == "Ladybug"
     assert dumped["nodes_label"] == "Place"
     assert dumped["primary_key_fields"] == ["name"]
+
+
+def test_kuzu_aliases_dump_as_ladybug() -> None:
+    conn_ref: AuthEntryReference[KuzuConnection] = ref_auth_entry("ladybug")
+    target = Kuzu(connection=conn_ref, mapping=Nodes(label="Document"))
+    target_dumped = dump_engine_object(target)
+    assert target_dumped["mapping"]["kind"] == "Node"
+    assert target_dumped["mapping"]["label"] == "Document"
+
+    decl = KuzuDeclaration(
+        connection=conn_ref,
+        nodes_label="Place",
+        primary_key_fields=["name"],
+    )
+    decl_dumped = dump_engine_object(decl)
+    assert decl_dumped["kind"] == "Ladybug"
+    assert decl_dumped["nodes_label"] == "Place"
+    assert decl_dumped["primary_key_fields"] == ["name"]
