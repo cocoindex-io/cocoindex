@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 
 import cocoindex as coco
 import cocoindex.asyncio as coco_aio
-from cocoindex.resources.file import FileLike, PatternFilePathMatcher
+from cocoindex.resources.file import AsyncFileLike, PatternFilePathMatcher
 from cocoindex.connectors import localfs
 from baml_client import b
 from baml_client.types import Patient
@@ -20,9 +20,9 @@ async def extract_patient_info(content: bytes) -> Patient:
 
 
 @coco.function(memo=True)
-async def process_patient_form(file: FileLike, outdir: pathlib.Path) -> None:
+async def process_patient_form(file: AsyncFileLike, outdir: pathlib.Path) -> None:
     """Process a patient intake form PDF and extract structured information."""
-    content = file.read()
+    content = await file.read()
     patient_info = await extract_patient_info(content)
     patient_json = patient_info.model_dump_json(indent=2)
     output_filename = file.file_path.path.stem + ".json"

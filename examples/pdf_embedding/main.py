@@ -34,7 +34,7 @@ from cocoindex.connectors import localfs, postgres
 from cocoindex.ops.text import RecursiveSplitter
 from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
 from cocoindex.resources.chunk import Chunk
-from cocoindex.resources.file import FileLike, PatternFilePathMatcher
+from cocoindex.resources.file import AsyncFileLike, PatternFilePathMatcher
 from cocoindex.resources.id import IdGenerator
 
 
@@ -111,10 +111,10 @@ async def process_chunk(
 
 @coco.function(memo=True)
 async def process_file(
-    file: FileLike,
+    file: AsyncFileLike,
     table: postgres.TableTarget[PdfEmbedding],
 ) -> None:
-    content = file.read()
+    content = await file.read()
     markdown = pdf_to_markdown(content)
     chunks = _splitter.split(
         markdown, chunk_size=2000, chunk_overlap=500, language="markdown"
