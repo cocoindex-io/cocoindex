@@ -24,14 +24,11 @@ except ImportError as e:
 
 from cocoindex.connectorkits import connection
 from cocoindex.resources import file
-from cocoindex._internal.stable_path import StableKey
 
 
 # Default base dir for unregistered Google Drive access (not registered)
 # The value is an empty string since Google Drive doesn't need a resolved base path
-_DEFAULT_DRIVE_BASE_DIR = connection.KeyedConnection[str](
-    "cocoindex/google_drive", "", ""
-)
+_DEFAULT_DRIVE_BASE_DIR = connection.keyed_value("cocoindex/google_drive", "")
 
 
 class DriveFilePath(file.FilePath[str]):
@@ -52,8 +49,10 @@ class DriveFilePath(file.FilePath[str]):
         file_id: str,
         _base_dir: connection.KeyedConnection[str] | None = None,
     ) -> None:
-        self._base_dir = _base_dir if _base_dir is not None else _DEFAULT_DRIVE_BASE_DIR
-        self._path = PurePath(path)
+        super().__init__(
+            _base_dir if _base_dir is not None else _DEFAULT_DRIVE_BASE_DIR,
+            PurePath(path),
+        )
         self._file_id = file_id
 
     def resolve(self) -> str:
@@ -229,13 +228,13 @@ class GoogleDriveSource:
     def files(self) -> Iterable[DriveFile]:
         return list_files(self._spec)
 
-    def items(self) -> Iterator[tuple[StableKey, DriveFile]]:
+    def items(self) -> Iterator[tuple[str, DriveFile]]:
         """Iterate as (key, file) pairs for use with mount_each().
 
         The key is the file's name path.
         """
         for file in self.files():
-            yield (file.stable_key, file)
+            yield (file.file_path.path.as_posix(), file)
 
 
 __all__ = [

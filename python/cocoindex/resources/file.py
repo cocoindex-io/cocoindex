@@ -268,6 +268,14 @@ class FilePath(_Generic[ResolvedPathT]):
     _base_dir: _connection.KeyedConnection[ResolvedPathT]
     _path: _PurePath
 
+    def __init__(
+        self,
+        base_dir: _connection.KeyedConnection[ResolvedPathT],
+        path: _PurePath,
+    ) -> None:
+        self._base_dir = base_dir
+        self._path = path
+
     @property
     def base_dir(self) -> _connection.KeyedConnection[ResolvedPathT]:
         """The base directory for this path."""

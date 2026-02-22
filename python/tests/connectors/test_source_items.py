@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from cocoindex.connectors import localfs
 
 
@@ -69,3 +71,52 @@ class TestDirWalkerItems:
             assert key == "test.txt"
         finally:
             localfs.unregister_base_dir("test_stable_key")
+
+
+@pytest.mark.asyncio
+class TestDirWalkerAsyncItems:
+    """Tests for DirWalker.items() async iteration."""
+
+    async def test_async_items_flat_directory(self, tmp_path: Path) -> None:
+        """async items() yields (str, AsyncFile) pairs."""
+        (tmp_path / "a.txt").write_text("hello")
+        (tmp_path / "b.txt").write_text("world")
+
+        base = localfs.register_base_dir("test_async_flat", tmp_path)
+        try:
+            walker = localfs.walk_dir(base)
+            items: list[tuple[str, localfs.AsyncFile]] = []
+            async for item in walker.items():
+                items.append(item)
+
+            items.sort(key=lambda x: x[0])
+            assert len(items) == 2
+            assert items[0][0] == "a.txt"
+            assert items[1][0] == "b.txt"
+            assert isinstance(items[0][1], localfs.AsyncFile)
+            assert isinstance(items[1][1], localfs.AsyncFile)
+            assert await items[0][1].read_text() == "hello"
+            assert await items[1][1].read_text() == "world"
+        finally:
+            localfs.unregister_base_dir("test_async_flat")
+
+    async def test_async_items_recursive(self, tmp_path: Path) -> None:
+        """async items() with recursive walk includes subdirectory paths."""
+        sub = tmp_path / "sub"
+        sub.mkdir()
+        (tmp_path / "root.txt").write_text("root")
+        (sub / "nested.txt").write_text("nested")
+
+        base = localfs.register_base_dir("test_async_recursive", tmp_path)
+        try:
+            walker = localfs.walk_dir(base, recursive=True)
+            items: list[tuple[str, localfs.AsyncFile]] = []
+            async for item in walker.items():
+                items.append(item)
+
+            items.sort(key=lambda x: x[0])
+            assert len(items) == 2
+            assert items[0][0] == "root.txt"
+            assert items[1][0] == "sub/nested.txt"
+        finally:
+            localfs.unregister_base_dir("test_async_recursive")

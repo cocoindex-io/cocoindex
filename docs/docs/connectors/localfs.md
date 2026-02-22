@@ -107,6 +107,20 @@ async for file in localfs.walk_dir("/path/to/documents", recursive=True):
 
 The async variant runs file I/O in a thread pool, keeping the event loop responsive. See [`FileLike` / `AsyncFileLike`](../resource_types.md#filelike--asyncfilelike) for details on the file objects.
 
+### Keyed iteration with `items()`
+
+`DirWalker.items()` returns keyed `(str, file)` pairs, useful for associating each file with a stable string key (its relative path):
+
+```python
+# Asynchronous - yields (str, AsyncFile) pairs
+async for key, file in localfs.walk_dir("/path/to/dir", recursive=True).items():
+    content = await file.read()
+
+# Synchronous - yields (str, File) pairs
+for key, file in localfs.walk_dir("/path/to/dir", recursive=True).items():
+    content = file.read()
+```
+
 ### Filtering files
 
 Use `PatternFilePathMatcher` to filter which files and directories are included:

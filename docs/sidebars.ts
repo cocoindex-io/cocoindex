@@ -37,6 +37,7 @@ const sidebars: SidebarsConfig = {
       label: 'Connectors',
       collapsed: false,
       items: [
+        'connectors/amazon_s3',
         'connectors/lancedb',
         'connectors/localfs',
         'connectors/postgres',

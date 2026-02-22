@@ -182,7 +182,7 @@ app.update(report_to_stdout=True)
 
 ### Internal vs External Modules
 
-We distinguish between **internal modules** (under packages with `_` prefix, e.g. `_internal.*`) and **external modules** (which users can directly import).
+We distinguish between **internal modules** (under packages with `_` prefix, e.g. `_internal.*` or `connectors.*._source`) and **external modules** (which users can directly import).
 
 **External modules** (user-facing, e.g. `cocoindex/ops/sentence_transformers.py`):
 
@@ -199,6 +199,10 @@ We distinguish between **internal modules** (under packages with `_` prefix, e.g
 * Less strict since users shouldn't import these directly
 * Standard library and internal imports don't need underscore prefix
 * Only prefix symbols that are truly private to the module itself (e.g. `_context_var` for a module-private ContextVar)
+
+### Type Annotations
+
+Avoid `Any` whenever feasible. Use specific types — including concrete types from third-party libraries. Only use `Any` when the type is truly generic and no downstream code needs to downcast it.
 
 ### Testing Guidelines
 
