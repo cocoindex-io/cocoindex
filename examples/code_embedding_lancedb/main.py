@@ -24,7 +24,7 @@ import cocoindex.asyncio as coco_aio
 from cocoindex.connectors import localfs, lancedb
 from cocoindex.ops.text import RecursiveSplitter, detect_code_language
 from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
-from cocoindex.resources.file import FileLike, PatternFilePathMatcher
+from cocoindex.resources.file import AsyncFileLike, PatternFilePathMatcher
 from cocoindex.resources.chunk import Chunk
 from cocoindex.resources.id import IdGenerator
 
@@ -81,10 +81,10 @@ async def process_chunk(
 
 @coco.function(memo=True)
 async def process_file(
-    file: FileLike,
+    file: AsyncFileLike,
     table: lancedb.TableTarget[CodeEmbedding],
 ) -> None:
-    text = file.read_text()
+    text = await file.read_text()
     # Detect programming language from filename
     language = detect_code_language(filename=str(file.file_path.path.name))
 

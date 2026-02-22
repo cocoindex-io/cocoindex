@@ -29,7 +29,7 @@ import cocoindex.asyncio as coco_aio
 from cocoindex.connectors import localfs, postgres
 from cocoindex.ops.text import RecursiveSplitter
 from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
-from cocoindex.resources.file import FileLike, PatternFilePathMatcher
+from cocoindex.resources.file import AsyncFileLike, PatternFilePathMatcher
 from cocoindex.resources.id import IdGenerator
 
 from models import ChunkInput, SessionInfo, TranscriptChunk
@@ -98,7 +98,7 @@ class SessionMetadataRow:
 # ---------------------------------------------------------------------------
 
 
-def extract_session_info(file: FileLike) -> SessionInfo:
+def extract_session_info(file: AsyncFileLike) -> SessionInfo:
     """Extract checkpoint_id and session_index from file path.
 
     Entire layout: <checkpoint_id[:2]>/<checkpoint_id[2:]>/<session_idx>/<filename>
@@ -175,7 +175,7 @@ async def process_chunk(
 
 @coco.function(memo=True)
 async def process_file(
-    file: FileLike,
+    file: AsyncFileLike,
     emb_table: postgres.TableTarget[SessionEmbeddingRow],
     meta_table: postgres.TableTarget[SessionMetadataRow],
 ) -> None:
@@ -184,7 +184,7 @@ async def process_file(
     id_gen = IdGenerator()
 
     if filename == "full.jsonl":
-        content = file.read_text()
+        content = await file.read_text()
         chunks = parse_transcript(content)
         await coco_aio.map(
             process_chunk,
@@ -198,7 +198,7 @@ async def process_file(
         )
 
     elif filename == "prompt.txt":
-        text = file.read_text().strip()
+        text = (await file.read_text()).strip()
         if text:
             emb_table.declare_row(
                 row=SessionEmbeddingRow(
@@ -213,7 +213,7 @@ async def process_file(
             )
 
     elif filename == "context.md":
-        text = file.read_text().strip()
+        text = (await file.read_text()).strip()
         if text:
             chunks = _splitter.split(
                 text, chunk_size=2000, chunk_overlap=500, language="markdown"
@@ -230,7 +230,7 @@ async def process_file(
             )
 
     elif filename == "metadata.json":
-        content = file.read_text()
+        content = await file.read_text()
         try:
             meta = json.loads(content)
         except json.JSONDecodeError:
