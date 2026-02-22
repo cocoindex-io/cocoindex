@@ -15,6 +15,7 @@ __all__ = [
     "S3Walker",
     "get_object",
     "list_objects",
+    "read",
 ]
 
 from datetime import datetime
@@ -34,6 +35,17 @@ from cocoindex.resources import file
 
 
 _REGISTRY_NAME = "cocoindex/amazon_s3"
+
+
+def _parse_s3_uri(uri: str) -> tuple[str, str]:
+    """Parse an ``s3://bucket/key`` URI into *(bucket_name, key)*."""
+    if not uri.startswith("s3://"):
+        raise ValueError(f"Invalid S3 URI {uri!r}: expected 's3://bucket/key'.")
+    without_scheme = uri[len("s3://") :]
+    slash_idx = without_scheme.find("/")
+    if slash_idx == -1:
+        raise ValueError(f"Invalid S3 URI {uri!r}: expected 's3://bucket/key'.")
+    return without_scheme[:slash_idx], without_scheme[slash_idx + 1 :]
 
 
 class S3FilePath(file.FilePath[str]):
@@ -209,14 +221,7 @@ async def get_object(
                 "Pass either get_object(client, 's3://bucket/key') "
                 "or get_object(client, 'bucket', 'key')."
             )
-        without_scheme = bucket_name_or_uri[len("s3://") :]
-        slash_idx = without_scheme.find("/")
-        if slash_idx == -1:
-            raise ValueError(
-                f"Invalid S3 URI {bucket_name_or_uri!r}: expected 's3://bucket/key'."
-            )
-        bucket_name = without_scheme[:slash_idx]
-        key = without_scheme[slash_idx + 1 :]
+        bucket_name, key = _parse_s3_uri(bucket_name_or_uri)
     else:
         bucket_name = bucket_name_or_uri
         if key is None:
@@ -225,6 +230,32 @@ async def get_object(
             )
     base_dir = connection.keyed_value(_REGISTRY_NAME, bucket_name)
     return await _s3file_from_head(client, bucket_name, key, base_dir)
+
+
+async def read(client: AioBaseClient, uri: str, size: int = -1) -> bytes:
+    """
+    Read object content directly from an S3 URI.
+
+    This is a convenience shortcut that skips the metadata fetch
+    (``head_object``) performed by :func:`get_object`.
+
+    Args:
+        client: An aiobotocore S3 client.
+        uri: An S3 URI (``s3://bucket/key``).
+        size: Number of bytes to read. If -1 (default), read the entire object.
+
+    Returns:
+        The object content as bytes.
+    """
+    bucket_name, key = _parse_s3_uri(uri)
+    if size >= 0:
+        response = await client.get_object(
+            Bucket=bucket_name, Key=key, Range=f"bytes=0-{size - 1}"
+        )
+    else:
+        response = await client.get_object(Bucket=bucket_name, Key=key)
+    async with response["Body"] as stream:
+        return bytes(await stream.read())
 
 
 class S3Walker:
