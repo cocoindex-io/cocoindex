@@ -53,8 +53,10 @@ class FilePath(file.FilePath[pathlib.Path]):
             path: The path (relative to the base directory, or absolute).
             _base_dir: Internal parameter. The base directory. If None, uses CWD_BASE_DIR.
         """
-        self._base_dir = _base_dir if _base_dir is not None else CWD_BASE_DIR
-        self._path = pathlib.PurePath(path)
+        super().__init__(
+            _base_dir if _base_dir is not None else CWD_BASE_DIR,
+            pathlib.PurePath(path),
+        )
 
     def resolve(self) -> pathlib.Path:
         """Resolve this FilePath to an absolute filesystem path."""
