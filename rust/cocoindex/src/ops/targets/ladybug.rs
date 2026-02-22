@@ -22,8 +22,7 @@ const SELF_CONTAINED_TAG_FIELD_NAME: &str = "__self_contained";
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct ConnectionSpec {
-    /// The URL of the [Kuzu API server](https://kuzu.com/docs/api/server/overview),
-    /// e.g. `http://localhost:8000`.
+    /// The URL of the Ladybug API server, e.g. `http://localhost:8000`.
     api_server_url: String,
 }
 
@@ -41,7 +40,7 @@ pub struct Declaration {
 }
 
 ////////////////////////////////////////////////////////////
-// Utils to deal with Kuzu
+// Utils to deal with Ladybug
 ////////////////////////////////////////////////////////////
 
 struct CypherBuilder {
@@ -60,12 +59,12 @@ impl CypherBuilder {
     }
 }
 
-struct KuzuThinClient {
+struct LadybugThinClient {
     reqwest_client: reqwest::Client,
     query_url: String,
 }
 
-impl KuzuThinClient {
+impl LadybugThinClient {
     fn new(conn_spec: &ConnectionSpec, reqwest_client: reqwest::Client) -> Self {
         Self {
             reqwest_client,
@@ -85,19 +84,19 @@ impl KuzuThinClient {
         })
         .await
         .map_err(Error::from)
-        .with_context(|| "Kuzu API error")?;
+        .with_context(|| "Ladybug API error")?;
         Ok(())
     }
 }
 
-fn kuzu_table_type(elem_type: &ElementType) -> &'static str {
+fn ladybug_table_type(elem_type: &ElementType) -> &'static str {
     match elem_type {
         ElementType::Node(_) => "NODE",
         ElementType::Relationship(_) => "REL",
     }
 }
 
-fn basic_type_to_kuzu(basic_type: &BasicValueType) -> Result<String> {
+fn basic_type_to_ladybug(basic_type: &BasicValueType) -> Result<String> {
     Ok(match basic_type {
         BasicValueType::Bytes => "BLOB".to_string(),
         BasicValueType::Str => "STRING".to_string(),
@@ -113,17 +112,17 @@ fn basic_type_to_kuzu(basic_type: &BasicValueType) -> Result<String> {
         BasicValueType::TimeDelta => "INTERVAL".to_string(),
         BasicValueType::Vector(t) => format!(
             "{}[{}]",
-            basic_type_to_kuzu(&t.element_type)?,
+            basic_type_to_ladybug(&t.element_type)?,
             t.dimension
                 .map_or_else(|| "".to_string(), |d| d.to_string())
         ),
         t @ (BasicValueType::Union(_) | BasicValueType::Time | BasicValueType::Json) => {
-            api_bail!("{t} is not supported in Kuzu")
+            api_bail!("{t} is not supported in Ladybug")
         }
     })
 }
 
-fn struct_schema_to_kuzu(struct_schema: &StructSchema) -> Result<String> {
+fn struct_schema_to_ladybug(struct_schema: &StructSchema) -> Result<String> {
     Ok(format!(
         "STRUCT({})",
         struct_schema
@@ -132,18 +131,18 @@ fn struct_schema_to_kuzu(struct_schema: &StructSchema) -> Result<String> {
             .map(|f| Ok(format!(
                 "{} {}",
                 f.name,
-                value_type_to_kuzu(&f.value_type.typ)?
+                value_type_to_ladybug(&f.value_type.typ)?
             )))
             .collect::<Result<Vec<_>>>()?
             .join(", ")
     ))
 }
 
-fn value_type_to_kuzu(value_type: &ValueType) -> Result<String> {
+fn value_type_to_ladybug(value_type: &ValueType) -> Result<String> {
     Ok(match value_type {
-        ValueType::Basic(basic_type) => basic_type_to_kuzu(basic_type)?,
-        ValueType::Struct(struct_type) => struct_schema_to_kuzu(struct_type)?,
-        ValueType::Table(table_type) => format!("{}[]", struct_schema_to_kuzu(&table_type.row)?),
+        ValueType::Basic(basic_type) => basic_type_to_ladybug(basic_type)?,
+        ValueType::Struct(struct_type) => struct_schema_to_ladybug(struct_type)?,
+        ValueType::Table(table_type) => format!("{}[]", struct_schema_to_ladybug(&table_type.row)?),
     })
 }
 
@@ -228,8 +227,8 @@ fn append_upsert_table(
         TableUpsertionAction::Create { keys, values } => {
             write!(
                 cypher.query_mut(),
-                "CREATE {kuzu_table_type} TABLE IF NOT EXISTS {table_name} (",
-                kuzu_table_type = kuzu_table_type(elem_type),
+                "CREATE {ladybug_table_type} TABLE IF NOT EXISTS {table_name} (",
+                ladybug_table_type = ladybug_table_type(elem_type),
                 table_name = elem_type.label(),
             )?;
             if let Some((src, tgt)) = &setup_change.referenced_node_tables {
@@ -238,7 +237,7 @@ fn append_upsert_table(
             cypher.query_mut().push_str(
                 keys.iter()
                     .chain(values.iter())
-                    .map(|(name, kuzu_type)| format!("{name} {kuzu_type}"))
+                    .map(|(name, ladybug_type)| format!("{name} {ladybug_type}"))
                     .join(", ")
                     .as_str(),
             );
@@ -268,10 +267,10 @@ fn append_upsert_table(
                     "ALTER TABLE {table_name} DROP IF EXISTS {name};"
                 )?;
             }
-            for (name, kuzu_type) in columns_to_upsert.iter() {
+            for (name, ladybug_type) in columns_to_upsert.iter() {
                 writeln!(
                     cypher.query_mut(),
-                    "ALTER TABLE {table_name} ADD {name} {kuzu_type};",
+                    "ALTER TABLE {table_name} ADD {name} {ladybug_type};",
                 )?;
             }
         }
@@ -280,7 +279,7 @@ fn append_upsert_table(
 }
 
 ////////////////////////////////////////////////////////////
-// Utils to convert value to Kuzu literals
+// Utils to convert value to Ladybug literals
 ////////////////////////////////////////////////////////////
 
 fn append_string_literal(cypher: &mut CypherBuilder, s: &str) -> Result<()> {
@@ -365,7 +364,7 @@ fn append_basic_value(cypher: &mut CypherBuilder, basic_value: &BasicValue) -> R
             write!(cypher.query_mut(), "]")?;
         }
         v @ (BasicValue::UnionVariant { .. } | BasicValue::Time(_) | BasicValue::Json(_)) => {
-            client_bail!("value types are not supported in Kuzu: {}", v.kind());
+            client_bail!("value types are not supported in Ladybug: {}", v.kind());
         }
     }
     Ok(())
@@ -456,7 +455,7 @@ fn append_value(
 
 struct ExportContext {
     conn_ref: AuthEntryReference<ConnectionSpec>,
-    kuzu_client: KuzuThinClient,
+    ladybug_client: LadybugThinClient,
     analyzed_data_coll: AnalyzedDataCollection,
 }
 
@@ -722,7 +721,7 @@ fn append_maybe_gc_node(
 // Factory implementation
 ////////////////////////////////////////////////////////////
 
-type KuzuGraphElement = GraphElementType<ConnectionSpec>;
+type LadybugGraphElement = GraphElementType<ConnectionSpec>;
 
 struct Factory {
     reqwest_client: reqwest::Client,
@@ -735,11 +734,11 @@ impl TargetFactoryBase for Factory {
     type SetupState = SetupState;
     type SetupChange = GraphElementDataSetupChange;
 
-    type SetupKey = KuzuGraphElement;
+    type SetupKey = LadybugGraphElement;
     type ExportContext = ExportContext;
 
     fn name(&self) -> &str {
-        "Kuzu"
+        "Ladybug"
     }
 
     async fn build(
@@ -749,7 +748,7 @@ impl TargetFactoryBase for Factory {
         context: Arc<FlowInstanceContext>,
     ) -> Result<(
         Vec<TypedExportDataCollectionBuildOutput<Self>>,
-        Vec<(KuzuGraphElement, SetupState)>,
+        Vec<(LadybugGraphElement, SetupState)>,
     )> {
         let (analyzed_data_colls, declared_graph_elements) = analyze_graph_mappings(
             data_collections
@@ -763,37 +762,37 @@ impl TargetFactoryBase for Factory {
                 }),
             declarations.iter().map(|d| (&d.connection, &d.decl)),
         )?;
-        fn to_kuzu_cols(fields: &[FieldSchema]) -> Result<IndexMap<String, String>> {
+        fn to_ladybug_cols(fields: &[FieldSchema]) -> Result<IndexMap<String, String>> {
             fields
                 .iter()
-                .map(|f| Ok((f.name.clone(), value_type_to_kuzu(&f.value_type.typ)?)))
+                .map(|f| Ok((f.name.clone(), value_type_to_ladybug(&f.value_type.typ)?)))
                 .collect::<Result<IndexMap<_, _>>>()
         }
         let data_coll_outputs: Vec<TypedExportDataCollectionBuildOutput<Self>> =
             std::iter::zip(data_collections, analyzed_data_colls.into_iter())
                 .map(|(data_coll, analyzed)| {
                     if !data_coll.index_options.vector_indexes.is_empty() {
-                        api_bail!("Vector indexes are not supported for Kuzu yet");
+                        api_bail!("Vector indexes are not supported for Ladybug yet");
                     }
                     if !data_coll.index_options.fts_indexes.is_empty() {
-                        api_bail!("FTS indexes are not supported for Kuzu target");
+                        api_bail!("FTS indexes are not supported for Ladybug target");
                     }
                     fn to_dep_table(
                         field_mapping: &AnalyzedGraphElementFieldMapping,
                     ) -> Result<ReferencedNodeTable> {
                         Ok(ReferencedNodeTable {
                             table_name: field_mapping.schema.elem_type.label().to_string(),
-                            key_columns: to_kuzu_cols(&field_mapping.schema.key_fields)?,
+                            key_columns: to_ladybug_cols(&field_mapping.schema.key_fields)?,
                         })
                     }
-                    let setup_key = KuzuGraphElement {
+                    let setup_key = LadybugGraphElement {
                         connection: data_coll.spec.connection.clone(),
                         typ: analyzed.schema.elem_type.clone(),
                     };
                     let desired_setup_state = SetupState {
                         schema: TableColumnsSchema {
-                            key_columns: to_kuzu_cols(&analyzed.schema.key_fields)?,
-                            value_columns: to_kuzu_cols(&analyzed.schema.value_fields)?,
+                            key_columns: to_ladybug_cols(&analyzed.schema.key_fields)?,
+                            value_columns: to_ladybug_cols(&analyzed.schema.value_fields)?,
                         },
                         referenced_node_tables: (analyzed.rel.as_ref())
                             .map(|rel| -> Result<_> {
@@ -804,7 +803,7 @@ impl TargetFactoryBase for Factory {
 
                     let export_context = ExportContext {
                         conn_ref: data_coll.spec.connection.clone(),
-                        kuzu_client: KuzuThinClient::new(
+                        ladybug_client: LadybugThinClient::new(
                             &context
                                 .auth_registry
                                 .get::<ConnectionSpec>(&data_coll.spec.connection)?,
@@ -823,8 +822,8 @@ impl TargetFactoryBase for Factory {
             .map(|(decl, graph_elem_schema)| {
                 let setup_state = SetupState {
                     schema: TableColumnsSchema {
-                        key_columns: to_kuzu_cols(&graph_elem_schema.key_fields)?,
-                        value_columns: to_kuzu_cols(&graph_elem_schema.value_fields)?,
+                        key_columns: to_ladybug_cols(&graph_elem_schema.key_fields)?,
+                        value_columns: to_ladybug_cols(&graph_elem_schema.value_fields)?,
                     },
                     referenced_node_tables: None,
                 };
@@ -840,7 +839,7 @@ impl TargetFactoryBase for Factory {
 
     async fn diff_setup_states(
         &self,
-        _key: KuzuGraphElement,
+        _key: LadybugGraphElement,
         desired: Option<SetupState>,
         existing: CombinedState<SetupState>,
         _flow_instance_ctx: Arc<FlowInstanceContext>,
@@ -884,10 +883,10 @@ impl TargetFactoryBase for Factory {
         )
     }
 
-    fn describe_resource(&self, key: &KuzuGraphElement) -> Result<String> {
+    fn describe_resource(&self, key: &LadybugGraphElement) -> Result<String> {
         Ok(format!(
-            "Kuzu {} TABLE {}",
-            kuzu_table_type(&key.typ),
+            "Ladybug {} TABLE {}",
+            ladybug_table_type(&key.typ),
             key.typ.label()
         ))
     }
@@ -921,7 +920,7 @@ impl TargetFactoryBase for Factory {
                 .push(mutation);
         }
         for mutations in mutations_by_conn.into_values() {
-            let kuzu_client = &mutations[0].export_context.kuzu_client;
+            let ladybug_client = &mutations[0].export_context.ladybug_client;
             let mut cypher = CypherBuilder::new();
             writeln!(cypher.query_mut(), "BEGIN TRANSACTION;")?;
 
@@ -1028,7 +1027,7 @@ impl TargetFactoryBase for Factory {
             }
 
             writeln!(cypher.query_mut(), "COMMIT;")?;
-            kuzu_client.run_cypher(cypher).await?;
+            ladybug_client.run_cypher(cypher).await?;
         }
         Ok(())
     }
@@ -1047,7 +1046,7 @@ impl TargetFactoryBase for Factory {
         }
         for (conn, changes) in changes_by_conn.into_iter() {
             let conn_spec = context.auth_registry.get::<ConnectionSpec>(&conn)?;
-            let kuzu_client = KuzuThinClient::new(&conn_spec, self.reqwest_client.clone());
+            let ladybug_client = LadybugThinClient::new(&conn_spec, self.reqwest_client.clone());
 
             let (node_changes, rel_changes): (Vec<_>, Vec<_>) =
                 changes.into_iter().partition(|c| match &c.key.typ {
@@ -1083,7 +1082,7 @@ impl TargetFactoryBase for Factory {
                 append_delete_orphaned_nodes(&mut cypher, table)?;
             }
 
-            kuzu_client.run_cypher(cypher).await?;
+            ladybug_client.run_cypher(cypher).await?;
         }
         Ok(())
     }

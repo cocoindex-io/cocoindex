@@ -179,23 +179,29 @@ class FalkorDBDeclaration(op.DeclarationSpec):
 
 
 @dataclass
-class KuzuConnection:
-    """Connection spec for Kuzu."""
+class LadybugConnection:
+    """Connection spec for Ladybug."""
 
     api_server_url: str
 
 
-class Kuzu(op.TargetSpec):
-    """Graph storage powered by Kuzu."""
+class Ladybug(op.TargetSpec):
+    """Graph storage powered by Ladybug."""
 
-    connection: AuthEntryReference[KuzuConnection]
+    connection: AuthEntryReference[LadybugConnection]
     mapping: Nodes | Relationships
 
 
-class KuzuDeclaration(op.DeclarationSpec):
-    """Declarations for Kuzu."""
+class LadybugDeclaration(op.DeclarationSpec):
+    """Declarations for Ladybug."""
 
-    kind = "Kuzu"
-    connection: AuthEntryReference[KuzuConnection]
+    kind = "Ladybug"
+    connection: AuthEntryReference[LadybugConnection]
     nodes_label: str
     primary_key_fields: Sequence[str]
+
+
+# Backward-compatible aliases for the retired Kuzu target.
+KuzuConnection = LadybugConnection
+Kuzu = Ladybug
+KuzuDeclaration = LadybugDeclaration
