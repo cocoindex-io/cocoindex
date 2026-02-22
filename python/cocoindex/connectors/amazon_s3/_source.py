@@ -19,7 +19,7 @@ __all__ = [
 
 from datetime import datetime
 from pathlib import PurePath
-from typing import AsyncIterator
+from typing import AsyncIterator, overload
 
 try:
     from aiobotocore.client import AioBaseClient  # type: ignore[import-untyped]
@@ -156,18 +156,33 @@ async def _s3file_from_head(
     )
 
 
+@overload
+async def get_object(client: AioBaseClient, uri: str, /) -> S3File: ...
+@overload
+async def get_object(
+    client: AioBaseClient, bucket_name: str, key: str, /
+) -> S3File: ...
+
+
 async def get_object(
     client: AioBaseClient,
-    bucket_name: str,
-    key: str,
+    bucket_name_or_uri: str,
+    key: str | None = None,
 ) -> S3File:
     """
     Get a single object from an S3 bucket by its key.
 
+    Accepts either an S3 URI or a bucket name with a separate key:
+
+    * ``get_object(client, "s3://my-bucket/data/config.json")``
+    * ``get_object(client, "my-bucket", "data/config.json")``
+
     Args:
         client: An aiobotocore S3 client.
-        bucket_name: The S3 bucket name.
-        key: The full S3 object key.
+        bucket_name_or_uri: Either a full S3 URI (``s3://bucket/key``) or the
+            bucket name when *key* is supplied separately.
+        key: The full S3 object key.  Required when *bucket_name_or_uri* is a
+            bucket name; must be omitted (or ``None``) when a URI is given.
 
     Returns:
         An S3File (async) for the specified object.
@@ -179,9 +194,35 @@ async def get_object(
 
         session = aiobotocore.session.get_session()
         async with session.create_client("s3") as client:
+            # Via S3 URI:
+            f = await amazon_s3.get_object(client, "s3://my-bucket/data/config.json")
+            data = await f.read()
+
+            # Via bucket name + key:
             f = await amazon_s3.get_object(client, "my-bucket", "data/config.json")
             data = await f.read()
     """
+    if bucket_name_or_uri.startswith("s3://"):
+        if key is not None:
+            raise ValueError(
+                "Cannot specify both an S3 URI and a separate key. "
+                "Pass either get_object(client, 's3://bucket/key') "
+                "or get_object(client, 'bucket', 'key')."
+            )
+        without_scheme = bucket_name_or_uri[len("s3://") :]
+        slash_idx = without_scheme.find("/")
+        if slash_idx == -1:
+            raise ValueError(
+                f"Invalid S3 URI {bucket_name_or_uri!r}: expected 's3://bucket/key'."
+            )
+        bucket_name = without_scheme[:slash_idx]
+        key = without_scheme[slash_idx + 1 :]
+    else:
+        bucket_name = bucket_name_or_uri
+        if key is None:
+            raise ValueError(
+                "key must be provided when bucket_name_or_uri is not an S3 URI."
+            )
     base_dir = connection.keyed_value(_REGISTRY_NAME, bucket_name)
     return await _s3file_from_head(client, bucket_name, key, base_dir)
 

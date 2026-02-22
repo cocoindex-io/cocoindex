@@ -124,16 +124,16 @@ Fetch a single object from an S3 bucket by its key.
 ```python
 async def get_object(
     client: AioBaseClient,
-    bucket_name: str,
-    key: str,
+    bucket_name_or_uri: str,
+    key: str | None = None,
 ) -> S3File
 ```
 
 **Parameters:**
 
 - `client` — An aiobotocore S3 client.
-- `bucket_name` — The S3 bucket name.
-- `key` — The full S3 object key.
+- `bucket_name_or_uri` — Either a full S3 URI (`s3://bucket/key`) or the bucket name when `key` is supplied separately.
+- `key` — The full S3 object key. Required when `bucket_name_or_uri` is a bucket name; must be omitted when a URI is given.
 
 **Returns:** An `S3File` (AsyncFileLike) for the specified object.
 
@@ -145,6 +145,11 @@ from cocoindex.connectors import amazon_s3
 
 session = aiobotocore.session.get_session()
 async with session.create_client("s3") as client:
+    # Via S3 URI:
+    f = await amazon_s3.get_object(client, "s3://my-bucket/data/config.json")
+    data = await f.read()
+
+    # Via bucket name + key:
     f = await amazon_s3.get_object(client, "my-bucket", "data/config.json")
     data = await f.read()
 ```
