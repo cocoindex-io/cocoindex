@@ -624,7 +624,6 @@ class AsyncFunction(Function[P, R_co]):
         Handles both sync and async underlying functions.
         """
         if self._runner is not None:
-            # Use picklable callable for subprocess execution
             # Choose appropriate callable and runner method based on underlying fn type
             bound_fn_obj = self.__get__(self_obj)
             batch_callable, runner_run = (

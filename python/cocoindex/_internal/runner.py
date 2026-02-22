@@ -1,8 +1,11 @@
 """
 Runner base class and GPU runner implementation.
 
-Runners execute functions in specific contexts (e.g., subprocess for GPU isolation).
-Each runner owns a BatchQueue that serializes execution.
+Runners execute functions in specific contexts. Each runner owns a BatchQueue
+that serializes execution.
+
+The GPU runner runs in-process by default with an async lock for serialization.
+Set COCOINDEX_RUN_GPU_IN_SUBPROCESS=1 for subprocess isolation.
 """
 
 from __future__ import annotations
@@ -206,13 +209,19 @@ def in_subprocess() -> bool:
 
 
 class GPURunner(Runner):
-    """Singleton runner that executes in subprocess for GPU isolation.
+    """Singleton runner for GPU workloads.
+
+    By default, runs in-process with an async lock ensuring serial execution.
+    Set COCOINDEX_RUN_GPU_IN_SUBPROCESS=1 for subprocess isolation.
 
     All functions using this runner share the same queue (inherited from Runner),
     ensuring serial execution of GPU workloads.
     """
 
     _instance: GPURunner | None = None
+    _use_subprocess: bool | None
+    _gpu_lock: asyncio.Lock | None
+    _gpu_lock_loop: asyncio.AbstractEventLoop | None
 
     def __new__(cls) -> GPURunner:
         if cls._instance is None:
@@ -223,22 +232,52 @@ class GPURunner(Runner):
         # Only initialize once (singleton)
         if not hasattr(self, "_queue"):
             super().__init__()
+            self._use_subprocess = None
+            self._gpu_lock = None
+            self._gpu_lock_loop = None
+
+    def _should_use_subprocess(self) -> bool:
+        """Check if subprocess mode is enabled (reads env var lazily on first call)."""
+        if self._use_subprocess is None:
+            self._use_subprocess = (
+                os.environ.get("COCOINDEX_RUN_GPU_IN_SUBPROCESS") == "1"
+            )
+        return self._use_subprocess
+
+    def _get_gpu_lock(self) -> asyncio.Lock:
+        """Get or create the GPU async lock, recreating if the event loop changed."""
+        loop = asyncio.get_running_loop()
+        if self._gpu_lock is None or self._gpu_lock_loop is not loop:
+            self._gpu_lock = asyncio.Lock()
+            self._gpu_lock_loop = loop
+        return self._gpu_lock
 
     async def run(
         self, fn: Callable[P, Coroutine[Any, Any, R]], *args: P.args, **kwargs: P.kwargs
     ) -> R:
-        """Execute an async function in subprocess.
+        """Execute an async function.
 
-        The async function is run via asyncio.run() in the subprocess.
+        Default: in-process under async lock.
+        Subprocess mode: via execute_in_subprocess (asyncio.run() in subprocess).
         """
-        # Type ignore: execute_in_subprocess handles async fns via asyncio.run() internally
-        return await execute_in_subprocess(fn, *args, **kwargs)  # type: ignore[arg-type]
+        if self._should_use_subprocess():
+            # Type ignore: execute_in_subprocess handles async fns via asyncio.run() internally
+            return await execute_in_subprocess(fn, *args, **kwargs)  # type: ignore[arg-type]
+        async with self._get_gpu_lock():
+            return await fn(*args, **kwargs)
 
     async def run_sync_fn(
         self, fn: Callable[P, R], *args: P.args, **kwargs: P.kwargs
     ) -> R:
-        """Execute a sync function in subprocess."""
-        return await execute_in_subprocess(fn, *args, **kwargs)
+        """Execute a sync function.
+
+        Default: in-process via asyncio.to_thread under async lock.
+        Subprocess mode: via execute_in_subprocess.
+        """
+        if self._should_use_subprocess():
+            return await execute_in_subprocess(fn, *args, **kwargs)
+        async with self._get_gpu_lock():
+            return await asyncio.to_thread(fn, *args, **kwargs)
 
 
 # Singleton instance for public use

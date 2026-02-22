@@ -143,7 +143,7 @@ Common use cases:
 
 ### Runner
 
-The `runner` parameter allows functions to execute in a specific context, such as a subprocess for GPU isolation. This is useful when you need to isolate GPU memory or run code in a separate process.
+The `runner` parameter allows functions to execute in a specific context, such as a dedicated GPU runner that serializes GPU workloads.
 
 Like batching, a runner requires an async interface. If the underlying function is sync, use `@coco_aio.function(runner=...)` to make it async. If the underlying function is already `async def`, either decorator works.
 
@@ -152,7 +152,7 @@ import cocoindex.asyncio as coco_aio
 
 @coco_aio.function(runner=coco.GPU)
 def gpu_inference(data: bytes) -> bytes:
-    # This runs in a subprocess with GPU isolation
+    # Runs with GPU serialization
     return model.predict(data)
 
 # External usage: async
@@ -161,16 +161,16 @@ result = await gpu_inference(data)
 
 The `coco.GPU` runner:
 
-- Executes the function in a subprocess
+- By default, runs in-process with an async lock ensuring serial execution of GPU workloads
 - All functions using the same runner share a queue, ensuring serial execution
-- Useful for GPU workloads that need memory isolation
+- Set the environment variable `COCOINDEX_RUN_GPU_IN_SUBPROCESS=1` to run in a subprocess for GPU memory isolation
 
 You can combine batching with a runner:
 
 ```python
 @coco_aio.function(batching=True, max_batch_size=16, runner=coco.GPU)
 def batch_gpu_embed(texts: list[str]) -> list[list[float]]:
-    # Batched execution in a subprocess with GPU isolation
+    # Batched execution with GPU serialization
     return gpu_model.encode(texts)
 
 # External usage: async
@@ -185,5 +185,5 @@ embeddings = await asyncio.gather(
 ```
 
 :::note
-When using a runner, the function and all its arguments must be picklable since they are serialized for subprocess execution.
+By default, `coco.GPU` runs functions in-process, so no pickling is required. When using subprocess mode (`COCOINDEX_RUN_GPU_IN_SUBPROCESS=1`), the function and all its arguments must be picklable since they are serialized for subprocess execution.
 :::
