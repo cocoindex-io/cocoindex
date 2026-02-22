@@ -26,6 +26,7 @@ The connector provides two ways to read from S3:
 
 - `list_objects()` — List and iterate over objects in a bucket (with optional prefix and filtering)
 - `get_object()` — Fetch a single object by its key
+- `read()` — Read object content directly by S3 URI
 
 Both require an aiobotocore S3 client, which you create and manage yourself:
 
@@ -152,6 +153,33 @@ async with session.create_client("s3") as client:
     # Via bucket name + key:
     f = await amazon_s3.get_object(client, "my-bucket", "data/config.json")
     data = await f.read()
+```
+
+### read
+
+Read object content directly from an S3 URI, without fetching metadata first.
+
+```python
+async def read(
+    client: AioBaseClient,
+    uri: str,
+    size: int = -1,
+) -> bytes
+```
+
+**Parameters:**
+
+- `client` — An aiobotocore S3 client.
+- `uri` — An S3 URI (`s3://bucket/key`).
+- `size` — Number of bytes to read. If -1 (default), read the entire object.
+
+**Returns:** The object content as bytes.
+
+**Example:**
+
+```python
+async with session.create_client("s3") as client:
+    data = await amazon_s3.read(client, "s3://my-bucket/data/config.json")
 ```
 
 ### S3FilePath
