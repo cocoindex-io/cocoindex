@@ -18,7 +18,7 @@ mod target_state;
 mod value;
 
 #[pyo3::pymodule]
-#[pyo3(name = "core")]
+#[pyo3(name = "core", gil_used = false)]
 fn core_module(m: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()> {
     use pyo3::prelude::*;
 
