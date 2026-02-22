@@ -2,11 +2,10 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
-from collections.abc import AsyncIterable
+from collections.abc import AsyncIterable, Coroutine
 from typing import (
     Any,
     AsyncIterator,
-    Awaitable,
     Concatenate,
     Callable,
     Iterable,
@@ -238,8 +237,8 @@ async def mount_each(
 
 
 async def map(
-    fn: Callable[Concatenate[T, P], Awaitable[ReturnT]],
-    items: Iterable[T],
+    fn: Callable[Concatenate[T, P], Coroutine[Any, Any, ReturnT]],
+    items: Iterable[T] | AsyncIterable[T],
     *args: P.args,
     **kwargs: P.kwargs,
 ) -> list[ReturnT]:
@@ -250,14 +249,22 @@ async def map(
 
     Args:
         fn: The function to apply to each item. The item is passed as the first argument.
-        items: The items to iterate.
+        items: The items to iterate (sync or async).
         *args: Additional passthrough arguments to fn (appended after the item).
         **kwargs: Additional passthrough keyword arguments to fn.
 
     Returns:
         Results from each invocation.
     """
-    return list(await asyncio.gather(*(fn(item, *args, **kwargs) for item in items)))
+    tasks: list[asyncio.Task[ReturnT]] = []
+    async with asyncio.TaskGroup() as tg:
+        if isinstance(items, AsyncIterable):
+            async for item in items:
+                tasks.append(tg.create_task(fn(item, *args, **kwargs)))
+        else:
+            for item in items:
+                tasks.append(tg.create_task(fn(item, *args, **kwargs)))
+    return [t.result() for t in tasks]
 
 
 _MOUNT_TARGET_SYMBOL = Symbol("cocoindex/mount_target")
