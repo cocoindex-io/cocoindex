@@ -1,6 +1,7 @@
 """Tests for function batching and runner support."""
 
 import asyncio
+from collections.abc import Iterator
 from typing import Any
 
 import cocoindex as coco
@@ -615,12 +616,23 @@ async def test_memo_with_runner() -> None:
 
 
 # ============================================================================
-# GPU Runner tests (subprocess with pickling)
+# GPU Runner tests (in-process by default, subprocess with COCOINDEX_RUN_GPU_IN_SUBPROCESS=1)
 #
 # The @coco.function decorator with runner=coco.GPU works with normal syntax.
-# Functions and methods are pickled using __reduce__ which stores (module, qualname)
-# and reconstructs via __wrapped__ on unpickle.
+# In subprocess mode, functions and methods are pickled using __reduce__ which
+# stores (module, qualname) and reconstructs via __wrapped__ on unpickle.
 # ============================================================================
+
+
+@pytest.fixture()
+def _reset_gpu_runner() -> Iterator[None]:
+    """Reset GPURunner's cached subprocess mode and lock between tests."""
+    yield
+    coco.GPU._use_subprocess = None
+    coco.GPU._gpu_lock = None
+
+
+# --- In-process mode (default) tests ---
 
 
 @coco_aio.function(runner=coco.GPU)
@@ -631,7 +643,7 @@ def _gpu_add_one(x: int) -> int:
 
 @pytest.mark.asyncio
 async def test_gpu_runner_basic() -> None:
-    """Test basic GPU runner functionality with subprocess."""
+    """Test basic GPU runner functionality (in-process by default)."""
     result = await _gpu_add_one(5)
     assert result == 6
 
@@ -644,7 +656,7 @@ def _gpu_double_batch(inputs: list[int]) -> list[int]:
 
 @pytest.mark.asyncio
 async def test_gpu_runner_with_batching() -> None:
-    """Test GPU runner combined with batching - subprocess must pickle the batch function."""
+    """Test GPU runner combined with batching."""
     result = await _gpu_double_batch(5)
     assert result == 10
 
@@ -670,7 +682,6 @@ async def test_gpu_runner_with_batching_concurrent() -> None:
 class GPUBatchedProcessor:
     """Class with batched method that runs on GPU.
 
-    Both the class and its instances must be picklable for subprocess execution.
     Normal @decorator syntax works - pickling uses __reduce__ with (module, qualname).
     """
 
@@ -679,7 +690,7 @@ class GPUBatchedProcessor:
 
     @coco_aio.function(batching=True, runner=coco.GPU)
     def multiply(self, inputs: list[int]) -> list[int]:
-        """Batched method that multiplies inputs, runs in subprocess."""
+        """Batched method that multiplies inputs."""
         return [x * self.multiplier for x in inputs]
 
 
@@ -706,6 +717,136 @@ async def test_gpu_runner_with_batching_method_concurrent() -> None:
     assert sorted(results) == [3, 6, 9]
 
 
+@pytest.mark.asyncio
+async def test_gpu_runner_inprocess_serialization() -> None:
+    """Test that in-process GPU runner serializes concurrent calls."""
+    execution_order: list[int] = []
+
+    @coco_aio.function(runner=coco.GPU)
+    async def _track_execution(task_id: int) -> int:
+        execution_order.append(task_id)
+        await asyncio.sleep(0.01)
+        return task_id
+
+    results = await asyncio.gather(
+        _track_execution(1),
+        _track_execution(2),
+        _track_execution(3),
+    )
+    assert sorted(results) == [1, 2, 3]
+    # All 3 executed (order may vary due to batching queue, but all completed)
+    assert sorted(execution_order) == [1, 2, 3]
+
+
+# --- Subprocess mode tests (COCOINDEX_RUN_GPU_IN_SUBPROCESS=1) ---
+# These use separate function definitions to avoid stale Rust batcher caches
+# from in-process tests (batcher cache is per-function and holds event loop refs).
+
+
+@coco_aio.function(runner=coco.GPU)
+def _gpu_add_one_subprocess(x: int) -> int:
+    """GPU runner subprocess test function."""
+    return x + 1
+
+
+@coco_aio.function(batching=True, runner=coco.GPU)
+def _gpu_double_batch_subprocess(inputs: list[int]) -> list[int]:
+    """GPU runner subprocess + batching test function."""
+    return [x * 2 for x in inputs]
+
+
+@coco_aio.function(batching=True, max_batch_size=10, runner=coco.GPU)
+def _gpu_double_batch_concurrent_subprocess(inputs: list[int]) -> list[int]:
+    """GPU runner subprocess + batching concurrent test function."""
+    return [x * 2 for x in inputs]
+
+
+class GPUBatchedProcessorSubprocess:
+    """Class with batched method for subprocess GPU tests."""
+
+    def __init__(self, multiplier: int):
+        self.multiplier = multiplier
+
+    @coco_aio.function(batching=True, runner=coco.GPU)
+    def multiply(self, inputs: list[int]) -> list[int]:
+        return [x * self.multiplier for x in inputs]
+
+
+@pytest.mark.asyncio
+async def test_gpu_runner_subprocess_basic(
+    monkeypatch: pytest.MonkeyPatch, _reset_gpu_runner: None
+) -> None:
+    """Test GPU runner in subprocess mode."""
+    monkeypatch.setenv("COCOINDEX_RUN_GPU_IN_SUBPROCESS", "1")
+    coco.GPU._use_subprocess = None  # Force re-read
+
+    result = await _gpu_add_one_subprocess(5)
+    assert result == 6
+
+
+@pytest.mark.asyncio
+async def test_gpu_runner_subprocess_with_batching(
+    monkeypatch: pytest.MonkeyPatch, _reset_gpu_runner: None
+) -> None:
+    """Test GPU runner subprocess mode with batching."""
+    monkeypatch.setenv("COCOINDEX_RUN_GPU_IN_SUBPROCESS", "1")
+    coco.GPU._use_subprocess = None
+
+    result = await _gpu_double_batch_subprocess(5)
+    assert result == 10
+
+
+@pytest.mark.asyncio
+async def test_gpu_runner_subprocess_with_batching_concurrent(
+    monkeypatch: pytest.MonkeyPatch, _reset_gpu_runner: None
+) -> None:
+    """Test GPU runner subprocess mode with batching and concurrent calls."""
+    monkeypatch.setenv("COCOINDEX_RUN_GPU_IN_SUBPROCESS", "1")
+    coco.GPU._use_subprocess = None
+
+    results = await asyncio.gather(
+        _gpu_double_batch_concurrent_subprocess(1),
+        _gpu_double_batch_concurrent_subprocess(2),
+        _gpu_double_batch_concurrent_subprocess(3),
+    )
+    assert sorted(results) == [2, 4, 6]
+
+
+@pytest.mark.asyncio
+async def test_gpu_runner_subprocess_with_method(
+    monkeypatch: pytest.MonkeyPatch, _reset_gpu_runner: None
+) -> None:
+    """Test GPU runner subprocess mode with method."""
+    monkeypatch.setenv("COCOINDEX_RUN_GPU_IN_SUBPROCESS", "1")
+    coco.GPU._use_subprocess = None
+
+    proc = GPUBatchedProcessorSubprocess(3)
+    result = await proc.multiply(5)
+    assert result == 15
+
+
+# --- Lazy env var reading test ---
+
+
+@pytest.mark.asyncio
+async def test_gpu_runner_lazy_env_var(
+    monkeypatch: pytest.MonkeyPatch, _reset_gpu_runner: None
+) -> None:
+    """Test that env var is read lazily on first call, not at init time."""
+    # Initially not set — defaults to in-process
+    coco.GPU._use_subprocess = None
+    assert coco.GPU._should_use_subprocess() is False
+
+    # Set env var after init, reset cache
+    monkeypatch.setenv("COCOINDEX_RUN_GPU_IN_SUBPROCESS", "1")
+    coco.GPU._use_subprocess = None
+    assert coco.GPU._should_use_subprocess() is True
+
+    # Cached — changing env var without reset doesn't affect it
+    monkeypatch.delenv("COCOINDEX_RUN_GPU_IN_SUBPROCESS")
+    assert coco.GPU._should_use_subprocess() is True  # still cached
+
+
 # Note: With always-async design, functions with batching/runner are always async.
 # The underlying implementation can be sync - it gets wrapped appropriately.
-# Subprocess execution still works for sync underlying functions.
+# Both in-process and subprocess execution work for sync underlying functions.
