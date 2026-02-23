@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "CocoIndex v1 example: embed S3 text files into Postgres/pgvector."
 requires-python = ">=3.11"
 dependencies = [
-    "cocoindex[amazon_s3,postgres,sentence_transformers]>=1.0.0a10",
+    "cocoindex[amazon_s3,postgres,sentence_transformers]>=1.0.0a21",
     "asyncpg>=0.29.0",
     "pgvector>=0.4.1",
     "numpy",
