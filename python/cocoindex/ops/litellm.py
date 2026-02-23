@@ -79,7 +79,7 @@ class LiteLLMEmbedder(_schema.VectorSchemaProvider):
             self._dim = len(embedding)
             return self._dim
 
-    @coco_aio.function(batching=True, memo=True, max_batch_size=64)
+    @coco_aio.function(batching=True, memo=True, max_batch_size=64, version=1)
     async def embed(self, texts: list[str]) -> list[_NDArray[_np.float32]]:
         """Embed texts to embedding vectors.
 
