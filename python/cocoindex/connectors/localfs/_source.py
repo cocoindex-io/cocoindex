@@ -10,7 +10,7 @@ from typing import AsyncIterator, Iterator
 
 import pathlib
 
-from cocoindex.connectorkits.async_adpaters import KeyedDualModeIter
+from cocoindex.connectorkits.async_adapters import KeyedDualModeIter
 from cocoindex.resources.file import (
     AsyncFileLike,
     FileLike,
@@ -218,7 +218,7 @@ class DirWalker:
 
     async def __aiter__(self) -> AsyncIterator[AsyncFile]:
         """Asynchronously iterate over files, yielding AsyncFile objects."""
-        from cocoindex.connectorkits.async_adpaters import sync_to_async_iter
+        from cocoindex.connectorkits.async_adapters import sync_to_async_iter
 
         async for file in sync_to_async_iter(lambda: iter(self)):
             yield AsyncFile(file)
