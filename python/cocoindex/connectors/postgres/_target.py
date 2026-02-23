@@ -60,8 +60,8 @@ _RowValue = dict[str, Any]  # Column name -> value
 _RowFingerprint = bytes
 ValueEncoder = Callable[[Any], Any]
 
-# Postgres protocol parameter limit (also used in the Rust implementation).
-_BIND_LIMIT: int = 65535
+# asyncpg enforces a protocol limit of 32767 bind parameters per query.
+_BIND_LIMIT: int = 32767
 
 
 def _qualified_table_name(table_name: str, pg_schema_name: str | None) -> str:
