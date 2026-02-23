@@ -626,10 +626,9 @@ async def test_memo_with_runner() -> None:
 
 @pytest.fixture()
 def _reset_gpu_runner() -> Iterator[None]:
-    """Reset GPURunner's cached subprocess mode and lock between tests."""
+    """Reset GPURunner's cached subprocess mode between tests."""
     yield
     coco.GPU._use_subprocess = None
-    coco.GPU._gpu_lock = None
 
 
 # --- In-process mode (default) tests ---

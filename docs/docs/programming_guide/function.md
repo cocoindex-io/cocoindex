@@ -161,8 +161,8 @@ result = await gpu_inference(data)
 
 The `coco.GPU` runner:
 
-- By default, runs in-process with an async lock ensuring serial execution of GPU workloads
-- All functions using the same runner share a queue, ensuring serial execution
+- By default, runs in-process with all functions sharing a queue for serial execution
+- Sync functions run on a dedicated GPU thread to avoid blocking the event loop
 - Set the environment variable `COCOINDEX_RUN_GPU_IN_SUBPROCESS=1` to run in a subprocess for GPU memory isolation
 
 You can combine batching with a runner:

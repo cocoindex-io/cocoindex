@@ -11,9 +11,10 @@ Set COCOINDEX_RUN_GPU_IN_SUBPROCESS=1 for subprocess isolation.
 from __future__ import annotations
 
 import asyncio
+import functools
 import pickle
 from abc import ABC, abstractmethod
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from typing import Any, Callable, Coroutine, TypeVar, ParamSpec
 import threading
@@ -211,17 +212,14 @@ def in_subprocess() -> bool:
 class GPURunner(Runner):
     """Singleton runner for GPU workloads.
 
-    By default, runs in-process with an async lock ensuring serial execution.
-    Set COCOINDEX_RUN_GPU_IN_SUBPROCESS=1 for subprocess isolation.
-
-    All functions using this runner share the same queue (inherited from Runner),
-    ensuring serial execution of GPU workloads.
+    By default, runs in-process. Serialization is handled by the BatchQueue
+    (inherited from Runner) and the dedicated single-worker thread pool for
+    sync functions. Set COCOINDEX_RUN_GPU_IN_SUBPROCESS=1 for subprocess isolation.
     """
 
     _instance: GPURunner | None = None
     _use_subprocess: bool | None
-    _gpu_lock: asyncio.Lock | None
-    _gpu_lock_loop: asyncio.AbstractEventLoop | None
+    _gpu_executor: ThreadPoolExecutor | None
 
     def __new__(cls) -> GPURunner:
         if cls._instance is None:
@@ -233,8 +231,7 @@ class GPURunner(Runner):
         if not hasattr(self, "_queue"):
             super().__init__()
             self._use_subprocess = None
-            self._gpu_lock = None
-            self._gpu_lock_loop = None
+            self._gpu_executor = None
 
     def _should_use_subprocess(self) -> bool:
         """Check if subprocess mode is enabled (reads env var lazily on first call)."""
@@ -244,40 +241,41 @@ class GPURunner(Runner):
             )
         return self._use_subprocess
 
-    def _get_gpu_lock(self) -> asyncio.Lock:
-        """Get or create the GPU async lock, recreating if the event loop changed."""
-        loop = asyncio.get_running_loop()
-        if self._gpu_lock is None or self._gpu_lock_loop is not loop:
-            self._gpu_lock = asyncio.Lock()
-            self._gpu_lock_loop = loop
-        return self._gpu_lock
+    def _get_gpu_executor(self) -> ThreadPoolExecutor:
+        """Get or create the dedicated GPU thread pool (single worker)."""
+        if self._gpu_executor is None:
+            self._gpu_executor = ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="gpu"
+            )
+        return self._gpu_executor
 
     async def run(
         self, fn: Callable[P, Coroutine[Any, Any, R]], *args: P.args, **kwargs: P.kwargs
     ) -> R:
         """Execute an async function.
 
-        Default: in-process under async lock.
+        Default: in-process directly.
         Subprocess mode: via execute_in_subprocess (asyncio.run() in subprocess).
         """
         if self._should_use_subprocess():
             # Type ignore: execute_in_subprocess handles async fns via asyncio.run() internally
             return await execute_in_subprocess(fn, *args, **kwargs)  # type: ignore[arg-type]
-        async with self._get_gpu_lock():
-            return await fn(*args, **kwargs)
+        return await fn(*args, **kwargs)
 
     async def run_sync_fn(
         self, fn: Callable[P, R], *args: P.args, **kwargs: P.kwargs
     ) -> R:
         """Execute a sync function.
 
-        Default: in-process via asyncio.to_thread under async lock.
+        Default: in-process on a dedicated single-worker GPU thread.
         Subprocess mode: via execute_in_subprocess.
         """
         if self._should_use_subprocess():
             return await execute_in_subprocess(fn, *args, **kwargs)
-        async with self._get_gpu_lock():
-            return await asyncio.to_thread(fn, *args, **kwargs)
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            self._get_gpu_executor(), functools.partial(fn, *args, **kwargs)
+        )
 
 
 # Singleton instance for public use
