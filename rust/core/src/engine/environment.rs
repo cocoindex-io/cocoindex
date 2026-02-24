@@ -5,13 +5,16 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, path::PathBuf, u32};
 
-// TODO: Expose these as settings.
-const MAX_DBS: u32 = 1024;
-const LMDB_MAP_SIZE: usize = 0x1_0000_0000; // 4GiB
+const DEFAULT_MAX_DBS: u32 = 1024;
+const DEFAULT_LMDB_MAP_SIZE: usize = 0x1_0000_0000; // 4GiB
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct EnvironmentSettings {
     pub db_path: PathBuf,
+    #[serde(default)]
+    pub lmdb_max_dbs: Option<u32>,
+    #[serde(default)]
+    pub lmdb_map_size: Option<usize>,
 }
 
 struct EnvironmentInner<Prof: EngineProfile> {
@@ -37,10 +40,12 @@ impl<Prof: EngineProfile> Environment<Prof> {
         std::fs::create_dir_all(&db_path)?;
         // Backward compatibility: migrate LMDB files from old layout into mdb/.
         Self::migrate_legacy_db_files(&settings.db_path, &db_path)?;
+        let max_dbs = settings.lmdb_max_dbs.unwrap_or(DEFAULT_MAX_DBS);
+        let map_size = settings.lmdb_map_size.unwrap_or(DEFAULT_LMDB_MAP_SIZE);
         let db_env = unsafe {
             heed::EnvOpenOptions::new()
-                .max_dbs(MAX_DBS)
-                .map_size(LMDB_MAP_SIZE)
+                .max_dbs(max_dbs)
+                .map_size(map_size)
                 .open(db_path)
         }?;
         let cleared_count = db_env.clear_stale_readers()?;
