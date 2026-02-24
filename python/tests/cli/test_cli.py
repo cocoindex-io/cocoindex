@@ -701,18 +701,10 @@ class TestShowTree:
         # Run show with --tree flag
         result = run_cli("show", "./single_app.py", "--tree")
 
-        # Should contain tree structure elements
-        assert "Found" in result.stdout
-        assert "stable paths:" in result.stdout
+        # Should contain tree structure (indented bullet list)
+        assert "Stable paths" in result.stdout
         assert "/" in result.stdout
-        # Should contain tree structure (accept both Unicode and ASCII)
-        has_tree_chars = (
-            "├──" in result.stdout
-            or "└──" in result.stdout
-            or "|--" in result.stdout
-            or "\\--" in result.stdout
-        )
-        assert has_tree_chars, "Should contain tree structure characters"
+        assert "- " in result.stdout, "Should use bullet list format"
 
     def test_show_tree_annotates_components(self) -> None:
         """show --tree should annotate component nodes with [component]."""
@@ -733,21 +725,23 @@ class TestShowTree:
         # Run show with --tree flag
         result = run_cli("show", "./tree_test_app.py", "--tree")
 
-        # Should contain tree structure
-        assert "Found" in result.stdout
-        assert "stable paths:" in result.stdout
+        # Should contain tree structure (streaming header: "Stable paths:")
+        assert "Stable paths" in result.stdout
         assert "/" in result.stdout
 
         # Parse the output to verify structure
         lines = result.stdout.split("\n")
         output_text = result.stdout
 
-        # Find the root line - should be annotated as component
+        # Find the root line - should be annotated as component (- / or /)
         root_line = next(
             (
                 l
                 for l in lines
-                if l.strip() == "/" or l.strip().startswith("/ [component]")
+                if l.strip() == "/"
+                or l.strip().startswith("/ [component]")
+                or l.strip() == "- /"
+                or (l.strip().startswith("- /") and "[component]" in l)
             ),
             None,
         )
@@ -756,26 +750,11 @@ class TestShowTree:
 
         # Should have "files" node as an intermediate node (NOT a component)
         assert "files" in output_text, "Should have 'files' node in output"
-        # Find the "files" line and verify it's NOT annotated as a component
-        files_line = None
-        tree_connectors = ("├──", "└──", "|--", "\\--")
-        for line in lines:
-            if (
-                any(connector in line for connector in tree_connectors)
-                and "files" in line
-            ):
-                parts = line.split()
-                connector_idx = None
-                for i, part in enumerate(parts):
-                    if part in tree_connectors:
-                        connector_idx = i
-                        break
-                if connector_idx is not None and connector_idx + 1 < len(parts):
-                    node_name = parts[connector_idx + 1]
-                    if node_name == "files":
-                        files_line = line
-                        break
-
+        files_line = next(
+            (l for l in lines if "files" in l and l.strip().endswith("files")), None
+        )
+        if files_line is None:
+            files_line = next((l for l in lines if "files" in l), None)
         assert files_line is not None, "Should have 'files' intermediate node line"
         assert "[component]" not in files_line, (
             f"'files' should NOT be annotated as [component] (it's an intermediate node). "
@@ -810,38 +789,23 @@ class TestShowTree:
         assert "[component]" in setup_line, "setup should be annotated as [component]"
 
         # Verify tree structure: file1.txt and file2.txt should be nested under files
-        # Find the line index for "files" and "file1.txt"
         files_idx = next(
-            (
-                i
-                for i, l in enumerate(lines)
-                if "files" in l
-                and any(connector in l for connector in tree_connectors)
-                and "[component]" not in l
-            ),
+            (i for i, l in enumerate(lines) if "files" in l and "[component]" not in l),
             None,
         )
         file1_idx = next(
-            (
-                i
-                for i, l in enumerate(lines)
-                if "file1.txt" in l
-                and any(connector in l for connector in tree_connectors)
-            ),
+            (i for i, l in enumerate(lines) if "file1.txt" in l),
             None,
         )
 
         assert file1_idx is not None, "Should find 'file1.txt' line"
-        # file1.txt should come after files (they're nested)
         assert file1_idx is not None and files_idx is not None
         assert file1_idx > files_idx, (
             "file1.txt should appear after files in nested structure"
         )
-        # file1.txt line should have indentation indicating it's a child of files
-        # Accept both Unicode (│   ) and ASCII (|   ) vertical lines, or spaces
-        has_indentation = (
-            "│   " in lines[file1_idx]
-            or "|   " in lines[file1_idx]
-            or "    " in lines[file1_idx]
+        # file1.txt line should have more indentation than files (child in bullet list)
+        files_indent = len(lines[files_idx]) - len(lines[files_idx].lstrip())
+        file1_indent = len(lines[file1_idx]) - len(lines[file1_idx].lstrip())
+        assert file1_indent > files_indent, (
+            "file1.txt should be indented as child of files"
         )
-        assert has_indentation, f"file1.txt should be indented as child of files"
