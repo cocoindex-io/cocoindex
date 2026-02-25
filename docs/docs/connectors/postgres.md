@@ -213,7 +213,7 @@ def PgDatabase.declare_table_target(
 - `pg_schema_name` — Optional PostgreSQL schema name (defaults to `"public"`).
 - `managed_by` — Whether CocoIndex manages the table lifecycle (`"system"`) or assumes it exists (`"user"`).
 
-**Returns:** A pending `TableTarget`. Use `mount_run(...).result()` to wait for resolution.
+**Returns:** A pending `TableTarget`. Use the convenience wrapper `await db.mount_table_target(table_name=..., table_schema=...)` to resolve.
 
 #### Rows (child states)
 
@@ -381,7 +381,6 @@ schema = postgres.TableSchema(
 
 ```python
 import cocoindex as coco
-import cocoindex.asyncio as coco_aio
 from cocoindex.connectors import postgres
 
 DATABASE_URL = "postgresql://localhost/mydb"
@@ -395,8 +394,8 @@ class OutputProduct:
     description: str
     embedding: Annotated[NDArray, embedder]
 
-@coco_aio.lifespan
-async def coco_lifespan(builder: coco_aio.EnvironmentBuilder) -> AsyncIterator[None]:
+@coco.lifespan
+async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]:
     async with await postgres.create_pool(DATABASE_URL) as pool:
         builder.provide(PG_DB, postgres.register_db("main_db", pool))
         yield
@@ -406,15 +405,13 @@ async def app_main() -> None:
     db = coco.use_context(PG_DB)
 
     # Declare table target state
-    table = await coco_aio.mount_run(
-        coco.component_subpath("setup", "table"),
-        db.declare_table_target,
+    table = await db.mount_table_target(
         table_name="products",
         table_schema=await postgres.TableSchema.from_class(
             OutputProduct,
             primary_key=["category", "name"],
         ),
-    ).result()
+    )
 
     # Declare rows
     for product in products:

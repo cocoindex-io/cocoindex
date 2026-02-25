@@ -3,7 +3,7 @@ title: Processing Helpers
 description: Utility APIs for common patterns within processing components, such as applying a function across a collection of items.
 ---
 
-CocoIndex provides helper APIs for common patterns you use inside a [processing component](./processing_component.md). These are async-only and available in `coco_aio`.
+CocoIndex provides helper APIs for common patterns you use inside a [processing component](./processing_component.md). These are async-only.
 
 ## `map()` {#map}
 
@@ -14,7 +14,7 @@ CocoIndex provides helper APIs for common patterns you use inside a [processing 
 async def process_file(file: FileLike, table: postgres.TableTarget[DocEmbedding]) -> None:
     chunks = splitter.split(file.read_text())
     id_gen = IdGenerator()
-    await coco_aio.map(process_chunk, chunks, file.file_path.path, id_gen, table)
+    await coco.map(process_chunk, chunks, file.file_path.path, id_gen, table)
 ```
 
 The first argument to the function receives each item; additional arguments are passed through to every call. `map()` returns a `list` of the results, in the same order as the input items.

@@ -9,12 +9,11 @@ This document provides an overview of the CocoIndex Python SDK organization and 
 
 The CocoIndex SDK is organized into several modules:
 
-### Core packages
+### Core package
 
 | Package | Description |
 |---------|-------------|
-| `cocoindex.asyncio` | Asynchronous core APIs for `async`/`await` workflows |
-| `cocoindex` | Synchronous core APIs |
+| `cocoindex` | All core APIs — async by default, sync variants have a `_blocking` suffix |
 
 ### Sub-packages
 
@@ -51,20 +50,23 @@ Each processing component must be mounted at a unique path. See [Processing Comp
 
 ## Async vs sync APIs
 
-CocoIndex provides both asynchronous and synchronous APIs to fit different application patterns.
+CocoIndex's API is **async-first**: most APIs are `async` and intended to be called with `await`.
 
-- **`cocoindex.asyncio`** — Use for applications that leverage `async`/`await`, or when integrating with async frameworks and I/O-bound workloads.
-- **`cocoindex`** — Use for synchronous applications or simpler scripts.
+For entry points that are typically called outside of async contexts (e.g., scripts or CLI usage), sync variants are provided with a `_blocking` suffix:
 
-The two packages relate as follows:
+| Async | Sync (blocking) |
+|-------|-----------------|
+| `await app.update(...)` | `app.update_blocking(...)` |
+| `await app.drop(...)` | `app.drop_blocking(...)` |
+| `await coco.start()` | `coco.start_blocking()` |
+| `await coco.stop()` | `coco.stop_blocking()` |
+| `async with coco.runtime():` | `with coco.runtime():` |
 
-- **APIs with async/sync variants** — Some core APIs have separate async and sync implementations. For example, the `App` class exists in both packages — `cocoindex.asyncio.App` provides an async `run()` method you call with `await`, while `cocoindex.App` provides a blocking `run()` method. The `@function` decorator also differs: `@coco.function` preserves sync/async, while `@coco_aio.function` always yields async. See [Function](./function.md#cocofunction-vs-coco_aiofunction) for details.
-
-- **Shared APIs** — Many APIs are non-blocking and work identically in both contexts. For instance, `component_subpath()` and target state declaration APIs are shared between both packages. The `@lifespan` decorator is also shared — it accepts both sync and async functions and can be imported from either package.
+Mount APIs (`mount`, `use_mount`, `mount_each`, `mount_target`, `map`) are async-only. The `@coco.function` / `@coco.fn` decorator preserves the sync/async nature of the underlying function.
 
 ### Mixing sync and async
 
-You cannot directly call an async function from a sync function, and you should avoid calling a blocking sync function from an async function — just like any Python program. However, when you **mount a processing component**, the processing component's function is scheduled to run on CocoIndex's runtime (Rust core) — it is not a direct function call. This means you can mount either sync or async processing component functions from either a sync or async context.
+You cannot directly call an async function from a sync function, and you should avoid calling a blocking sync function from an async function — just like any Python program. However, when you **mount a processing component**, the processing component's function is scheduled to run on CocoIndex's runtime (Rust core) — it is not a direct function call. This means your pipeline's main function can mount either sync or async processing component functions.
 
 As a result, you need to make sure each processing component uses sync or async consistently internally, but there are no such constraints across processing components. This introduces extra flexibility and composability across your pipeline.
 
@@ -74,20 +76,20 @@ As a result, you need to make sure each processing component uses sync or async 
 
 ```python
 import asyncio
-import cocoindex.asyncio as coco_aio
+import cocoindex as coco
 
-@coco_aio.lifespan
-async def coco_lifespan(builder: coco_aio.EnvironmentBuilder):
+@coco.lifespan
+async def coco_lifespan(builder: coco.EnvironmentBuilder):
     builder.settings.db_path = pathlib.Path("./cocoindex.db")
     # async resource setup can go here
     yield
 
-@coco_aio.function
-def app_main(sourcedir: pathlib.Path):
+@coco.fn
+async def app_main(sourcedir: pathlib.Path):
     # ... processing logic (can call async functions internally) ...
     pass
 
-app = coco_aio.App(coco_aio.AppConfig(name="MyApp"), app_main, sourcedir=pathlib.Path("./data"))
+app = coco.App(coco.AppConfig(name="MyApp"), app_main, sourcedir=pathlib.Path("./data"))
 
 async def main():
     await app.update(report_to_stdout=True)
@@ -96,7 +98,7 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 
-### Synchronous APIs
+### Synchronous entry point
 
 ```python
 import cocoindex as coco
@@ -106,15 +108,15 @@ def coco_lifespan(builder: coco.EnvironmentBuilder):
     builder.settings.db_path = pathlib.Path("./cocoindex.db")
     yield
 
-@coco.function
-def app_main(sourcedir: pathlib.Path):
+@coco.fn
+async def app_main(sourcedir: pathlib.Path):
     # ... processing logic ...
     pass
 
 app = coco.App(coco.AppConfig(name="MyApp"), app_main, sourcedir=pathlib.Path("./data"))
 
 def main():
-    app.update(report_to_stdout=True)
+    app.update_blocking(report_to_stdout=True)
 
 if __name__ == "__main__":
     main()
@@ -122,7 +124,7 @@ if __name__ == "__main__":
 
 ### Mixing sync and async
 
-A sync function can mount an async processing component:
+An async main function can mount sync or async processing component functions:
 
 ```python
 import cocoindex as coco
@@ -136,28 +138,22 @@ async def fetch_and_process(url: str):
     # ... declare target states with data ...
 
 @coco.function
-def app_main(urls: list[str]):
-    # Sync function mounting async processing components
+async def app_main(urls: list[str]):
+    # Async function mounting async processing components
     for url in urls:
-        coco.mount(coco.component_subpath(url), fetch_and_process, url)
+        await coco.mount(coco.component_subpath(url), fetch_and_process, url)
 ```
 
-The reverse also works — an async function can mount sync processing components.
-
-:::tip
-Whether `app_main` (the root processing component's function) is sync or async is orthogonal to whether you use `coco_aio.App` or `coco.App`.
-:::
+The reverse also works — an async main function can mount sync processing components.
 
 ## Common import pattern
 
 A typical CocoIndex application imports from multiple modules:
 
 ```python
-import cocoindex.asyncio as coco_aio  # or: import cocoindex as coco
+import cocoindex as coco
 
 from cocoindex.connectors import localfs, postgres
 from cocoindex.ops.text import RecursiveSplitter
 from cocoindex.resources.file import FileLike
 ```
-
-The aliases `coco_aio` and `coco` are common conventions in examples.

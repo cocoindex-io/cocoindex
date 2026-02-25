@@ -63,12 +63,11 @@ Create a new file `main.py`:
 import pathlib
 
 import cocoindex as coco
-import cocoindex.asyncio as coco_aio
 from cocoindex.connectors import localfs
 from cocoindex.resources.file import PatternFilePathMatcher
 from docling.document_converter import DocumentConverter
 
-app = coco_aio.App(
+app = coco.App(
     "PdfToMarkdown",
     app_main,
     sourcedir=pathlib.Path("./pdf_files"),
@@ -91,7 +90,7 @@ async def app_main(sourcedir: pathlib.Path, outdir: pathlib.Path) -> None:
         recursive=True,
         path_matcher=PatternFilePathMatcher(included_patterns=["**/*.pdf"]),
     )
-    await coco_aio.mount_each(process_file, files.items(), outdir)
+    await coco.mount_each(process_file, files.items(), outdir)
 ```
 
 `mount_each()` mounts one processing component per file. Each item from `files.items()` is a `(key, file)` pair — the key (the file's relative path) becomes the component subpath automatically.

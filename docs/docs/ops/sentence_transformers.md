@@ -83,13 +83,11 @@ table_schema = await postgres.TableSchema.from_class(
     CodeEmbedding,
     primary_key=["id"],
 )
-target_table = await coco_aio.mount_run(
-    coco.component_subpath("setup", "table"),
-    target_db.declare_table_target,
+target_table = await target_db.mount_table_target(
     table_name="code_embeddings",
     table_schema=table_schema,
     pg_schema_name="my_schema",
-).result()
+)
 ```
 
 The connector automatically creates the appropriate `vector(384)` column. See the [Connectors](../connectors/postgres.md) docs for other supported backends (LanceDB, Qdrant, SQLite).
@@ -107,7 +105,6 @@ from typing import Annotated, AsyncIterator
 from numpy.typing import NDArray
 
 import cocoindex as coco
-import cocoindex.asyncio as coco_aio
 from cocoindex.connectors import localfs, postgres
 from cocoindex.ops.text import RecursiveSplitter
 from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
@@ -164,16 +161,14 @@ async def process_file(
 @coco.function
 async def app_main(sourcedir: pathlib.Path) -> None:
     target_db = coco.use_context(PG_DB)
-    target_table = await coco_aio.mount_run(
-        coco.component_subpath("setup", "table"),
-        target_db.declare_table_target,
+    target_table = await target_db.mount_table_target(
         table_name="doc_embeddings",
         table_schema=await postgres.TableSchema.from_class(
             DocEmbedding,
             primary_key=["id"],
         ),
         pg_schema_name="public",
-    ).result()
+    )
 
     files = localfs.walk_dir(
         sourcedir,
@@ -182,7 +177,7 @@ async def app_main(sourcedir: pathlib.Path) -> None:
     )
     with coco.component_subpath("file"):
         for f in files:
-            coco.mount(
+            await coco.mount(
                 coco.component_subpath(str(f.file_path.path)),
                 process_file,
                 f,
