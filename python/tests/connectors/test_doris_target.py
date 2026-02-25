@@ -17,13 +17,13 @@ from __future__ import annotations
 import os
 import time
 import uuid
+from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import Any
+from typing import Annotated, Any
 
 import numpy as np
 import pytest
 from numpy.typing import NDArray
-from typing import Annotated
 
 import cocoindex as coco
 from cocoindex.resources.schema import VectorSchema
@@ -39,6 +39,7 @@ coco_env = common.create_test_env(__file__)
 try:
     import pymysql  # type: ignore[import-untyped]
     import aiohttp  # type: ignore[import-untyped]  # noqa: F401
+
     DEPS_AVAILABLE = True
 except ImportError:
     DEPS_AVAILABLE = False
@@ -167,7 +168,9 @@ def table_name() -> str:
 
 
 @pytest.fixture(autouse=True)
-def cleanup_table(config: "doris.DorisConnectionConfig", table_name: str):
+def cleanup_table(
+    config: "doris.DorisConnectionConfig", table_name: str
+) -> Iterator[None]:
     """Ensure the test table is cleaned up after each test."""
     yield
     try:
@@ -177,15 +180,18 @@ def cleanup_table(config: "doris.DorisConnectionConfig", table_name: str):
 
 
 @pytest.fixture(autouse=True, scope="session")
-def ensure_database():
+def ensure_database() -> None:
     """Make sure the test database exists."""
     if not DORIS_CONFIGURED:
         return
     c = _doris_config()
     conn = pymysql.connect(
-        host=c.fe_host, port=c.query_port,
-        user=c.username, password=c.password,
-        autocommit=True, connect_timeout=10,
+        host=c.fe_host,
+        port=c.query_port,
+        user=c.username,
+        password=c.password,
+        autocommit=True,
+        connect_timeout=10,
     )
     try:
         with conn.cursor() as cur:
@@ -247,7 +253,9 @@ def test_create_table_and_insert_rows(
         time.sleep(2)
 
         assert _table_exists(config, table_name)
-        data = _query(config, f"SELECT * FROM `{config.database}`.`{table_name}` ORDER BY id")
+        data = _query(
+            config, f"SELECT * FROM `{config.database}`.`{table_name}` ORDER BY id"
+        )
         assert len(data) == 2
         assert data[0]["name"] == "Alice"
         assert data[1]["name"] == "Bob"
@@ -257,7 +265,9 @@ def test_create_table_and_insert_rows(
         app.update()
         time.sleep(2)
 
-        data = _query(config, f"SELECT * FROM `{config.database}`.`{table_name}` ORDER BY id")
+        data = _query(
+            config, f"SELECT * FROM `{config.database}`.`{table_name}` ORDER BY id"
+        )
         assert len(data) == 3
         assert data[2]["name"] == "Charlie"
 
@@ -297,7 +307,9 @@ def test_update_row(
         app.update()
         time.sleep(2)
 
-        data = _query(config, f"SELECT * FROM `{config.database}`.`{table_name}` ORDER BY id")
+        data = _query(
+            config, f"SELECT * FROM `{config.database}`.`{table_name}` ORDER BY id"
+        )
         assert len(data) == 2
         alice = next(r for r in data if r["id"] == "1")
         assert alice["name"] == "Alice Updated"
@@ -332,7 +344,9 @@ def test_delete_row(
         app.update()
         time.sleep(2)
 
-        data = _query(config, f"SELECT * FROM `{config.database}`.`{table_name}` ORDER BY id")
+        data = _query(
+            config, f"SELECT * FROM `{config.database}`.`{table_name}` ORDER BY id"
+        )
         assert len(data) == 3
 
         # Remove Bob
@@ -343,7 +357,9 @@ def test_delete_row(
         app.update()
         time.sleep(2)
 
-        data = _query(config, f"SELECT * FROM `{config.database}`.`{table_name}` ORDER BY id")
+        data = _query(
+            config, f"SELECT * FROM `{config.database}`.`{table_name}` ORDER BY id"
+        )
         assert len(data) == 2
         ids = [r["id"] for r in data]
         assert "2" not in ids
@@ -381,14 +397,18 @@ def test_dict_rows(
             declare_dict_table,
         )
 
-        dict_rows.extend([
-            {"id": "1", "name": "Item1", "count": 10},
-            {"id": "2", "name": "Item2", "count": 20},
-        ])
+        dict_rows.extend(
+            [
+                {"id": "1", "name": "Item1", "count": 10},
+                {"id": "2", "name": "Item2", "count": 20},
+            ]
+        )
         app.update()
         time.sleep(2)
 
-        data = _query(config, f"SELECT * FROM `{config.database}`.`{table_name}` ORDER BY id")
+        data = _query(
+            config, f"SELECT * FROM `{config.database}`.`{table_name}` ORDER BY id"
+        )
         assert len(data) == 2
         assert data[0]["name"] == "Item1"
 
@@ -432,11 +452,13 @@ def test_vector_index_creation(
 
         vec_rows = [
             VectorRow(
-                id="1", content="hello world",
+                id="1",
+                content="hello world",
                 embedding=np.array([1.0, 2.0, 3.0, 4.0], dtype=np.float32),
             ),
             VectorRow(
-                id="2", content="foo bar",
+                id="2",
+                content="foo bar",
                 embedding=np.array([5.0, 6.0, 7.0, 8.0], dtype=np.float32),
             ),
         ]
@@ -456,7 +478,10 @@ def test_vector_index_creation(
         )
 
         # Verify data was inserted
-        data = _query(config, f"SELECT id, content FROM `{config.database}`.`{table_name}` ORDER BY id")
+        data = _query(
+            config,
+            f"SELECT id, content FROM `{config.database}`.`{table_name}` ORDER BY id",
+        )
         assert len(data) == 2
         assert data[0]["content"] == "hello world"
         assert data[1]["content"] == "foo bar"
@@ -489,12 +514,16 @@ def test_no_change_optimization(
         app.update()
         time.sleep(2)
 
-        data1 = _query(config, f"SELECT * FROM `{config.database}`.`{table_name}` ORDER BY id")
+        data1 = _query(
+            config, f"SELECT * FROM `{config.database}`.`{table_name}` ORDER BY id"
+        )
         assert len(data1) == 2
 
         # Run update again with the same data — should be a no-op
         app.update()
         time.sleep(1)
 
-        data2 = _query(config, f"SELECT * FROM `{config.database}`.`{table_name}` ORDER BY id")
+        data2 = _query(
+            config, f"SELECT * FROM `{config.database}`.`{table_name}` ORDER BY id"
+        )
         assert data1 == data2
