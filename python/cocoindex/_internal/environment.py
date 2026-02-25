@@ -5,6 +5,7 @@ Environment module.
 from __future__ import annotations
 
 import asyncio
+import atexit
 from inspect import isasyncgenfunction
 import threading
 import warnings
@@ -481,6 +482,41 @@ def default_env_loop() -> asyncio.AbstractEventLoop:
 
         _bg_loop_runner = _LoopRunner.create_new_running()
         return _bg_loop_runner.loop
+
+
+def _shutdown_background_loop_at_exit() -> None:
+    """
+    Atexit hook: stop and close the default env background loop if it was started.
+
+    Prevents the background loop thread from outliving the interpreter, which can
+    cause SIGSEGV or GIL errors during finalization (e.g. on Ubuntu CI). Safe to
+    call even if the loop was never started (no-op).
+    """
+    global _bg_loop_runner  # pylint: disable=global-statement
+
+    with _bg_loop_lock:
+        runner = _bg_loop_runner
+        _bg_loop_runner = None
+
+    if runner is None:
+        return
+
+    loop = runner.loop
+    if loop.is_closed():
+        return
+
+    try:
+        thread = runner.thread
+        if thread is not None and thread.is_alive():
+            loop.call_soon_threadsafe(loop.stop)
+            thread.join(timeout=1.0)
+        if thread is None or not thread.is_alive():
+            loop.close()
+    except Exception:
+        pass
+
+
+atexit.register(_shutdown_background_loop_at_exit)
 
 
 def start_sync() -> Environment:
