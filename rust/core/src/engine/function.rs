@@ -72,9 +72,12 @@ pub async fn reserve_memoization<Prof: EngineProfile>(
             // If pending, attempt to become the resolver by acquiring a write lock.
             let mut guard = memo_entry.write_owned().await;
             if let FnCallMemoEntry::Pending = &*guard {
-                let stored_fn_call_memo = read_fn_call_memo(comp_exec_ctx, memo_fp)?;
-                if let Some(fn_call_memo) = stored_fn_call_memo {
-                    *guard = FnCallMemoEntry::Ready(Some(fn_call_memo));
+                // Under full_reprocess, force execution (do not load cached memo).
+                if !comp_exec_ctx.full_reprocess() {
+                    let stored_fn_call_memo = read_fn_call_memo(comp_exec_ctx, memo_fp)?;
+                    if let Some(fn_call_memo) = stored_fn_call_memo {
+                        *guard = FnCallMemoEntry::Ready(Some(fn_call_memo));
+                    }
                 }
             }
             match &mut *guard {
