@@ -18,7 +18,6 @@ from cocoindex._internal.environment import (
     LazyEnvironment,
     EnvironmentInfo,
     default_env_lazy,
-    default_env_loop,
     get_registered_environment_infos,
 )
 from cocoindex._internal.setting import get_default_db_path
@@ -143,73 +142,80 @@ def _print_app_group(
     return has_missing
 
 
-def _ls_from_module(module_ref: str) -> None:
-    """List apps from a loaded module, grouped by environment."""
+async def _ls_from_module_async(module_ref: str) -> None:
+    """List apps from a loaded module, grouped by environment. Uses async env access so CLI never starts the background loop."""
     try:
         load_user_app(module_ref)
     except UserAppLoaderError as e:
         raise RuntimeError(f"Failed to load module '{module_ref}'") from e
 
-    env_infos = get_registered_environment_infos()
-    if not env_infos:
-        click.echo(f"No apps are defined in '{module_ref}'.")
-        return
+    try:
+        env_infos = get_registered_environment_infos()
+        if not env_infos:
+            click.echo(f"No apps are defined in '{module_ref}'.")
+            return
 
-    # Sort: explicit environments first (by name), default environment last
-    def sort_key(info: EnvironmentInfo) -> tuple[int, str]:
-        env = info.env
-        if env is default_env_lazy():
-            return (1, "")
-        return (0, info.env_name or "")
+        # Sort: explicit environments first (by name), default environment last
+        def sort_key(info: EnvironmentInfo) -> tuple[int, str]:
+            env = info.env
+            if env is default_env_lazy():
+                return (1, "")
+            return (0, info.env_name or "")
 
-    sorted_infos = sorted(env_infos, key=sort_key)
+        sorted_infos = sorted(env_infos, key=sort_key)
 
-    has_missing = False
-    first_group = True
+        has_missing = False
+        first_group = True
 
-    for info in sorted_infos:
-        apps = info.get_apps()
-        if not apps:
-            continue
+        for info in sorted_infos:
+            apps = info.get_apps()
+            if not apps:
+                continue
 
-        env = info.env
-        if env is None:
-            continue
+            env = info.env
+            if env is None:
+                continue
 
-        if not first_group:
+            if not first_group:
+                click.echo("")
+            first_group = False
+
+            env_name = info.env_name or ""
+            if isinstance(env, LazyEnvironment):
+                actual_env = await env._get_env()
+            else:
+                actual_env = env
+            db_path = _format_db_path(actual_env)
+            persisted_names = _get_persisted_app_names(actual_env)
+            has_missing |= _print_app_group(env_name, db_path, apps, persisted_names)
+
+        if first_group:
+            click.echo(f"No apps are defined in '{module_ref}'.")
+            return
+
+        if has_missing:
             click.echo("")
-        first_group = False
-
-        env_name = info.env_name or ""
-        actual_env = env._get_env_sync()
-        db_path = _format_db_path(actual_env)
-        persisted_names = _get_persisted_app_names(actual_env)
-        has_missing |= _print_app_group(env_name, db_path, apps, persisted_names)
-
-    if first_group:
-        click.echo(f"No apps are defined in '{module_ref}'.")
-        return
-
-    if has_missing:
-        click.echo("")
-        click.echo("Notes:")
-        click.echo(
-            "  [+]: Apps present in module, but not yet run (no persisted state)."
-        )
+            click.echo("Notes:")
+            click.echo(
+                "  [+]: Apps present in module, but not yet run (no persisted state)."
+            )
+    finally:
+        await _stop_all_environments()
 
 
-def _ls_from_database(db_path: str) -> None:
-    """List all persisted apps from a specific database."""
-    import pathlib
-
-    from cocoindex._internal.setting import Settings
-
+async def _ls_from_database_async(db_path: str) -> None:
+    """List all persisted apps from a specific database. Passes the running loop explicitly so the CLI never starts the background loop."""
     db_path_obj = pathlib.Path(db_path)
     if not db_path_obj.exists():
         raise click.ClickException(f"Database path does not exist: {db_path}")
 
     try:
-        env = Environment(Settings(db_path=db_path_obj))
+        from cocoindex._internal.setting import Settings
+
+        env = Environment(
+            Settings(db_path=db_path_obj),
+            event_loop=asyncio.get_running_loop(),
+        )
         persisted_names = _get_persisted_app_names(env)
     except Exception as e:
         raise click.ClickException(f"Failed to open database: {e}") from e
@@ -494,14 +500,14 @@ def ls(app_target: str | None, db: str | None) -> None:
                 "Warning: --db is ignored when APP_TARGET is specified.", err=True
             )
         spec = _parse_app_target(app_target)
-        _ls_from_module(spec.module_ref)
+        asyncio.run(_ls_from_module_async(spec.module_ref))
     elif db:
-        _ls_from_database(db)
+        asyncio.run(_ls_from_database_async(db))
     else:
         # Try to use default db path from environment variable
         default_db = get_default_db_path()
         if default_db:
-            _ls_from_database(str(default_db))
+            asyncio.run(_ls_from_database_async(str(default_db)))
         else:
             raise click.ClickException(
                 "Please specify either APP_TARGET or --db option "
@@ -540,8 +546,7 @@ def show(app_target: str, tree: bool) -> None:
         finally:
             await _stop_all_environments()
 
-    env_loop = default_env_loop()
-    asyncio.run_coroutine_threadsafe(_do(), env_loop).result()
+    asyncio.run(_do())
 
 
 async def _stop_all_environments() -> None:
@@ -639,8 +644,7 @@ def update(
         finally:
             await _stop_all_environments()
 
-    env_loop = default_env_loop()
-    asyncio.run_coroutine_threadsafe(_do(), env_loop).result()
+    asyncio.run(_do())
 
 
 @cli.command()
@@ -673,40 +677,40 @@ def drop(app_target: str, force: bool = False, quiet: bool = False) -> None:
     """
     app = _load_app(app_target)
 
-    # Get the actual environment to check persisted state
-    env = app._environment._get_env_sync()
-    persisted_names = _get_persisted_app_names(env)
-
-    if not quiet:
-        click.echo(
-            f"Preparing to drop app '{app._name}' from environment '{env.name}' (db path: {env.settings.db_path})"
-        )
-
-    if app._name not in persisted_names:
-        if not quiet:
-            click.echo(f"App '{app._name}' has no persisted state. Nothing to drop.")
-        return
-
-    if not force:
-        if not _confirm_yes(
-            f"Type 'yes' to drop app '{app._name}' and all its target states"
-        ):
-            if not quiet:
-                click.echo("Drop operation aborted.")
-            return
-
     async def _do() -> None:
         try:
+            env = await app._environment._get_env()
+            persisted_names = _get_persisted_app_names(env)
+
+            if not quiet:
+                click.echo(
+                    f"Preparing to drop app '{app._name}' from environment '{env.name}' (db path: {env.settings.db_path})"
+                )
+
+            if app._name not in persisted_names:
+                if not quiet:
+                    click.echo(
+                        f"App '{app._name}' has no persisted state. Nothing to drop."
+                    )
+                return
+
+            if not force:
+                if not _confirm_yes(
+                    f"Type 'yes' to drop app '{app._name}' and all its target states"
+                ):
+                    if not quiet:
+                        click.echo("Drop operation aborted.")
+                    return
+
             await _drop_app(app, report_to_stdout=not quiet)
+            if not quiet:
+                click.echo(
+                    f"Dropped app '{app._name}' from environment '{env.name}' and reverted its target states."
+                )
         finally:
             await _stop_all_environments()
-        if not quiet:
-            click.echo(
-                f"Dropped app '{app._name}' from environment '{env.name}' and reverted its target states."
-            )
 
-    env_loop = default_env_loop()
-    asyncio.run_coroutine_threadsafe(_do(), env_loop).result()
+    asyncio.run(_do())
 
 
 @cli.command()

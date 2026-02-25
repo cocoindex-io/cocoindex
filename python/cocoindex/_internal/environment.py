@@ -5,7 +5,6 @@ Environment module.
 from __future__ import annotations
 
 import asyncio
-import atexit
 from inspect import isasyncgenfunction
 import threading
 import warnings
@@ -482,40 +481,6 @@ def default_env_loop() -> asyncio.AbstractEventLoop:
 
         _bg_loop_runner = _LoopRunner.create_new_running()
         return _bg_loop_runner.loop
-
-
-def _shutdown_background_loop() -> None:
-    """
-    Stop and close the global background event loop at interpreter shutdown.
-
-    Only closes the loop after the loop thread has exited. Closing a loop while
-    its thread is still running is unsafe (can cause crashes during finalization).
-    """
-    global _bg_loop_runner  # pylint: disable=global-statement
-
-    with _bg_loop_lock:
-        runner = _bg_loop_runner
-        _bg_loop_runner = None
-
-    if runner is None:
-        return
-
-    loop = runner.loop
-    if loop.is_closed():
-        return
-
-    try:
-        thread = runner.thread
-        if thread is not None and thread.is_alive():
-            loop.call_soon_threadsafe(loop.stop)
-            thread.join(timeout=1.0)
-        if thread is None or not thread.is_alive():
-            loop.close()
-    except Exception:
-        pass
-
-
-atexit.register(_shutdown_background_loop)
 
 
 def start_sync() -> Environment:
