@@ -34,35 +34,33 @@ def _is_pydantic_model(obj: object) -> bool:
     return hasattr(obj, "__pydantic_fields__") and not isinstance(obj, type)  # type: ignore[attr-defined]
 
 
-def _canonicalize_dataclass(obj: object) -> Fingerprintable:
+def _canonicalize_dataclass(obj: object, _seen: dict[int, int]) -> Fingerprintable:
     """Canonicalize a dataclass instance.
 
     Preserves field definition order and includes all fields.
     Format: ("dataclass", module, qualname, ((field_name, value), ...))
     """
     typ = type(obj)
-    # Get fields in definition order
     fields = dataclasses.fields(obj)  # type: ignore[arg-type]
     field_items: list[tuple[str, Fingerprintable]] = []
     for field in fields:
         value = getattr(obj, field.name)
-        field_items.append((field.name, _canonicalize(value, _seen=None)))
+        field_items.append((field.name, _canonicalize(value, _seen)))
     return ("dataclass", typ.__module__, typ.__qualname__, tuple(field_items))
 
 
-def _canonicalize_pydantic(obj: object) -> Fingerprintable:
+def _canonicalize_pydantic(obj: object, _seen: dict[int, int]) -> Fingerprintable:
     """Canonicalize a Pydantic v2 model instance.
 
     Includes all fields (set and unset) to ensure determinism.
     Format: ("pydantic", module, qualname, ((field_name, value), ...))
     """
     typ = type(obj)
-    # Get all field names from model fields
     field_names = list(obj.__pydantic_fields__.keys())  # type: ignore[attr-defined]
     field_items: list[tuple[str, Fingerprintable]] = []
     for name in field_names:
         value = getattr(obj, name)
-        field_items.append((name, _canonicalize(value, _seen=None)))
+        field_items.append((name, _canonicalize(value, _seen)))
     return ("pydantic", typ.__module__, typ.__qualname__, tuple(field_items))
 
 
@@ -179,15 +177,7 @@ def _canonicalize(obj: object, _seen: dict[int, int] | None) -> Fingerprintable:
             k = fn(obj)
             return ("hook", base.__module__, base.__qualname__, _canonicalize(k, _seen))
 
-    # 3) Dataclass instances (check before containers since dataclasses may be sequences)
-    if _is_dataclass_instance(obj):
-        return _canonicalize_dataclass(obj)
-
-    # 4) Pydantic v2 models (check before containers since they may be sequences)
-    if _is_pydantic_model(obj):
-        return _canonicalize_pydantic(obj)
-
-    # 5) Cycle / shared-reference tracking
+    # 3) Cycle / shared-reference tracking
     #
     # Note: we intentionally do this before branching on container types, so the
     # logic is shared and we support cyclic/self-referential structures.
@@ -197,7 +187,7 @@ def _canonicalize(obj: object, _seen: dict[int, int] | None) -> Fingerprintable:
         return ("ref", ordinal)
     _seen[oid] = len(_seen)
 
-    # 6) Containers
+    # 4) Containers
     if isinstance(obj, typing.Sequence):
         return ("seq", tuple(_canonicalize(e, _seen) for e in obj))
 
@@ -212,6 +202,14 @@ def _canonicalize(obj: object, _seen: dict[int, int] | None) -> Fingerprintable:
         elts = [_canonicalize(e, _seen) for e in obj]
         elts.sort(key=_stable_sort_key)
         return ("set", tuple(elts))
+
+    # 5) Dataclass instances
+    if _is_dataclass_instance(obj):
+        return _canonicalize_dataclass(obj, _seen)
+
+    # 6) Pydantic v2 models
+    if _is_pydantic_model(obj):
+        return _canonicalize_pydantic(obj, _seen)
 
     # 7) Fallback
     try:
