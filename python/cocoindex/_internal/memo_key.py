@@ -42,11 +42,15 @@ def _canonicalize_dataclass(obj: object, _seen: dict[int, int]) -> Fingerprintab
     """
     typ = type(obj)
     fields = dataclasses.fields(obj)  # type: ignore[arg-type]
-    field_items: list[tuple[str, Fingerprintable]] = []
-    for field in fields:
-        value = getattr(obj, field.name)
-        field_items.append((field.name, _canonicalize(value, _seen)))
-    return ("dataclass", typ.__module__, typ.__qualname__, tuple(field_items))
+    return (
+        "dataclass",
+        typ.__module__,
+        typ.__qualname__,
+        tuple(
+            (field.name, _canonicalize(getattr(obj, field.name), _seen))
+            for field in fields
+        ),
+    )
 
 
 def _canonicalize_pydantic(obj: object, _seen: dict[int, int]) -> Fingerprintable:
@@ -56,12 +60,13 @@ def _canonicalize_pydantic(obj: object, _seen: dict[int, int]) -> Fingerprintabl
     Format: ("pydantic", module, qualname, ((field_name, value), ...))
     """
     typ = type(obj)
-    field_names = list(obj.__pydantic_fields__.keys())  # type: ignore[attr-defined]
-    field_items: list[tuple[str, Fingerprintable]] = []
-    for name in field_names:
-        value = getattr(obj, name)
-        field_items.append((name, _canonicalize(value, _seen)))
-    return ("pydantic", typ.__module__, typ.__qualname__, tuple(field_items))
+    field_names = obj.__pydantic_fields__.keys()  # type: ignore[attr-defined]
+    return (
+        "pydantic",
+        typ.__module__,
+        typ.__qualname__,
+        tuple((name, _canonicalize(getattr(obj, name), _seen)) for name in field_names),
+    )
 
 
 class NotMemoizable:
