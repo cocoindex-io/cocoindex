@@ -28,6 +28,34 @@ async def _declare_dicts() -> None:
                 coco.declare_target_state(single_dict_provider.target_state(key, value))
 
 
+def test_drop_blocking() -> None:
+    """Test that drop_blocking() reverts target states and clears the database."""
+    DictsTarget.store.clear()
+    _source_data.clear()
+
+    app = coco.App(
+        coco.AppConfig(name="test_drop_blocking", environment=coco_env),
+        _declare_dicts,
+    )
+
+    # Run app to create target states
+    _source_data["D1"] = {"a": 1, "b": 2}
+    app.update_blocking()
+    assert DictsTarget.store.data == {
+        "D1": {
+            "a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
+            "b": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
+        },
+    }
+
+    # Drop the app
+    app.drop_blocking()
+
+    # Verify target states were reverted and database is cleared
+    assert DictsTarget.store.data == {}
+    assert coco_inspect.list_stable_paths_sync(app) == []
+
+
 @pytest.mark.asyncio
 async def test_drop_reverts_target_states() -> None:
     """Test that drop() reverts all target states created by the app."""
