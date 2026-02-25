@@ -10,8 +10,7 @@ from .user_app_loader import load_user_app, Error as UserAppLoaderError
 
 import asyncio
 import cocoindex as coco
-import cocoindex.asyncio as coco_aio
-from cocoindex._internal.app import AppBase
+from cocoindex._internal.app import App
 from cocoindex._internal import core as _core
 from cocoindex._internal.environment import (
     Environment,
@@ -128,7 +127,7 @@ def _format_env_header(env_name: str, db_path: str) -> str:
 def _print_app_group(
     env_name: str,
     db_path: str,
-    apps: list[AppBase[Any, Any]],
+    apps: list[App[Any, Any]],
     persisted_names: set[str],
 ) -> bool:
     """Print a group of apps under an environment. Returns True if any app is not persisted."""
@@ -224,7 +223,7 @@ def _ls_from_database(db_path: str) -> None:
         click.echo(f"  {name}")
 
 
-def _load_app(app_target: str) -> AppBase[Any, Any]:
+def _load_app(app_target: str) -> App[Any, Any]:
     """
     Load an app from a specifier.
 
@@ -250,7 +249,7 @@ def _load_app(app_target: str) -> AppBase[Any, Any]:
             )
 
     # Get all apps from target environments
-    apps: list[AppBase[Any, Any]] = []
+    apps: list[App[Any, Any]] = []
     for info in env_infos:
         apps.extend(info.get_apps())
 
@@ -315,7 +314,7 @@ def coco_lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
 
 
 @coco.function
-def app_main() -> None:
+async def app_main() -> None:
     """Define your main pipeline here.
 
     Common pattern:
@@ -328,7 +327,7 @@ def app_main() -> None:
 
     # 1) Declare targets/target states
     # Example (local filesystem):
-    #   target = coco.use_mount(
+    #   target = await coco.use_mount(
     #       coco.component_subpath("setup"),
     #       localfs.declare_dir_target,
     #       outdir,
@@ -344,7 +343,7 @@ def app_main() -> None:
     # 3) Mount a processing unit for each input under a stable path
     # Example:
     #   for f in files:
-    #       coco.mount(
+    #       await coco.mount(
     #           coco.component_subpath("process", str(f.relative_path)),
     #           process_file_function,
     #           f,
@@ -551,24 +550,6 @@ async def _stop_all_environments() -> None:
             await env.stop()
 
 
-async def _update_app(app: AppBase[Any, Any], *args: Any, **kwargs: Any) -> Any:
-    if isinstance(app, coco_aio.App):
-        return await app.update(*args, **kwargs)
-    if isinstance(app, coco.App):
-        return await asyncio.to_thread(app.update, *args, **kwargs)
-    raise ValueError(f"Invalid app: {app}. Expected coco.App or coco_aio.App.")
-
-
-async def _drop_app(app: AppBase[Any, Any], *args: Any, **kwargs: Any) -> None:
-    if isinstance(app, coco_aio.App):
-        await app.drop(*args, **kwargs)
-        return
-    if isinstance(app, coco.App):
-        await asyncio.to_thread(app.drop, *args, **kwargs)
-        return
-    raise ValueError(f"Invalid app: {app}. Expected coco.App or coco_aio.App.")
-
-
 @cli.command()
 @click.argument("app_target", type=str)
 @click.option(
@@ -631,11 +612,9 @@ def update(
 
                 persisted_names = _get_persisted_app_names(env)
                 if app._name in persisted_names:
-                    await _drop_app(app, report_to_stdout=not quiet)
+                    await app.drop(report_to_stdout=not quiet)
 
-            await _update_app(
-                app, report_to_stdout=not quiet, full_reprocess=full_reprocess
-            )
+            await app.update(report_to_stdout=not quiet, full_reprocess=full_reprocess)
         finally:
             await _stop_all_environments()
 
@@ -697,7 +676,7 @@ def drop(app_target: str, force: bool = False, quiet: bool = False) -> None:
 
     async def _do() -> None:
         try:
-            await _drop_app(app, report_to_stdout=not quiet)
+            await app.drop(report_to_stdout=not quiet)
         finally:
             await _stop_all_environments()
         if not quiet:

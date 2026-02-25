@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from qdrant_client import QdrantClient
 
-import cocoindex.asyncio as coco_aio
+import cocoindex as coco
 from cocoindex.connectors import qdrant
 
 try:
@@ -30,7 +30,7 @@ _client: QdrantClient | None = None
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # type: ignore[override]
     global _client
-    async with coco_aio.runtime():
+    async with coco.runtime():
         # Initialize client for API endpoints
         _client = qdrant.create_client(image_search.QDRANT_URL, prefer_grpc=True)
         await image_search.app.update(report_to_stdout=True)

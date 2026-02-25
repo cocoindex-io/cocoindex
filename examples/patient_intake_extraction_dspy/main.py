@@ -7,7 +7,6 @@ from dotenv import load_dotenv
 import pymupdf
 
 import cocoindex as coco
-import cocoindex.asyncio as coco_aio
 from cocoindex.connectors import localfs
 from cocoindex.resources.file import FileLike, PatternFilePathMatcher
 
@@ -76,15 +75,15 @@ async def app_main(sourcedir: pathlib.Path, outdir: pathlib.Path) -> None:
         sourcedir,
         path_matcher=PatternFilePathMatcher(included_patterns=["**/*.pdf"]),
     )
-    await coco_aio.mount_each(process_patient_form, files.items(), outdir)
+    await coco.mount_each(process_patient_form, files.items(), outdir)
 
 
 load_dotenv()
 lm = dspy.LM("gemini/gemini-2.5-flash")
 dspy.configure(lm=lm)
 
-app = coco_aio.App(
-    coco_aio.AppConfig(name="PatientIntakeExtractionDSPy"),
+app = coco.App(
+    coco.AppConfig(name="PatientIntakeExtractionDSPy"),
     app_main,
     sourcedir=pathlib.Path("./data/patient_forms"),
     outdir=pathlib.Path("./output_patients"),

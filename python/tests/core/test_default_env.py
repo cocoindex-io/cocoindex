@@ -46,7 +46,7 @@ def _default_env() -> Iterator[None]:
 def test_default_env(_default_env: None) -> None:
     assert not _env_db_path.exists()
     with coco.runtime():
-        coco.default_env()
+        pass
     assert _env_db_path.exists()
 
 
@@ -65,7 +65,7 @@ def test_app(_default_env: None) -> None:
 
     assert _num_active_resources == 0
     with coco.runtime():
-        assert app.update() == "Hello 1"
+        assert app.update_blocking() == "Hello 1"
         assert _num_active_resources == 1
     assert _num_active_resources == 0
 
@@ -79,7 +79,7 @@ def test_app_implicit_startup(_default_env: None) -> None:
     )
 
     assert _num_active_resources == 0
-    assert app.update() == "Hello 1"
+    assert app.update_blocking() == "Hello 1"
     assert _num_active_resources == 1
 
 
@@ -121,11 +121,14 @@ def _simple_fn(s: str) -> str:
     return f"result: {s}"
 
 
-def test_default_env_uses_cocoindex_db_env_var(_default_env_from_env_var: None) -> None:
+@pytest.mark.asyncio
+async def test_default_env_uses_cocoindex_db_env_var(
+    _default_env_from_env_var: None,
+) -> None:
     """Test that default env uses COCOINDEX_DB when lifespan doesn't set db_path."""
     assert not _env_db_path_from_env_var.exists()
-    with coco.runtime():
-        env = coco.default_env()._get_env_sync()
+    async with coco.runtime():
+        env = await coco.default_env()
         assert env.settings.db_path == _env_db_path_from_env_var
     assert _env_db_path_from_env_var.exists()
 
@@ -139,5 +142,5 @@ def test_app_uses_cocoindex_db_env_var(_default_env_from_env_var: None) -> None:
     )
 
     with coco.runtime():
-        result = app.update()
+        result = app.update_blocking()
         assert result == "result: test"

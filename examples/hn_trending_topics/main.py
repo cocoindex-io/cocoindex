@@ -20,7 +20,6 @@ import asyncpg
 from litellm import acompletion
 
 import cocoindex as coco
-import cocoindex.asyncio as coco_aio
 from cocoindex.connectors import postgres
 
 from models import TopicsResponse
@@ -185,8 +184,8 @@ async def fetch_thread(session: aiohttp.ClientSession, thread_id: str) -> Thread
 # ============================================================================
 
 
-@coco_aio.lifespan
-async def coco_lifespan(builder: coco_aio.EnvironmentBuilder) -> AsyncIterator[None]:
+@coco.lifespan
+async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]:
     """Set up CocoIndex environment with PostgreSQL database."""
     # For CocoIndex internal states
     builder.settings.db_path = pathlib.Path("./cocoindex.db")
@@ -297,17 +296,15 @@ async def app_main() -> None:
         thread_ids = await fetch_thread_list(session)
 
     # Process threads (each component fetches its own thread data)
-    await coco_aio.mount_each(
-        process_thread, ((tid, tid) for tid in thread_ids), targets
-    )
+    await coco.mount_each(process_thread, ((tid, tid) for tid in thread_ids), targets)
 
 
 # ============================================================================
 # App definition
 # ============================================================================
 
-app = coco_aio.App(
-    coco_aio.AppConfig(name="HNTrendingTopics"),
+app = coco.App(
+    coco.AppConfig(name="HNTrendingTopics"),
     app_main,
 )
 

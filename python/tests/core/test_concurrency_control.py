@@ -7,7 +7,6 @@ import time
 import pytest
 
 import cocoindex as coco
-import cocoindex.asyncio as coco_aio
 
 from tests.common import create_test_env
 
@@ -76,49 +75,31 @@ def _noop() -> None:
 
 
 @coco.function
-def _child_mounts_grandchild() -> None:
+async def _child_mounts_grandchild() -> None:
     """Child that mounts a grandchild — tests permit release on first child mount."""
-    coco.mount(coco.component_subpath("gc"), _noop)
-
-
-@coco.function
-async def _async_child_mounts_grandchild() -> None:
-    await coco_aio.mount(coco.component_subpath("gc"), _noop)
+    await coco.mount(coco.component_subpath("gc"), _noop)
 
 
 # ── Root functions ───────────────────────────────────────────────────────
 
 
-def _main_flat(count: int) -> None:
-    """Sync root: mount *count* independent slow children."""
+async def _main_flat(count: int) -> None:
+    """Mount *count* independent slow children."""
     for i in range(count):
-        coco.mount(coco.component_subpath(str(i)), _slow_leaf)
+        await coco.mount(coco.component_subpath(str(i)), _slow_leaf)
 
 
-async def _main_flat_async(count: int) -> None:
-    """Async root: mount *count* independent slow children."""
-    for i in range(count):
-        await coco_aio.mount(coco.component_subpath(str(i)), _slow_leaf)
-
-
-def _main_nested() -> None:
-    """Sync root → child → grandchild nesting."""
+async def _main_nested() -> None:
+    """Root → child → grandchild nesting."""
     for i in range(4):
-        coco.mount(coco.component_subpath(str(i)), _child_mounts_grandchild)
-
-
-async def _main_nested_async() -> None:
-    """Async root → child → grandchild nesting."""
-    for i in range(4):
-        await coco_aio.mount(
-            coco.component_subpath(str(i)), _async_child_mounts_grandchild
-        )
+        await coco.mount(coco.component_subpath(str(i)), _child_mounts_grandchild)
 
 
 # ── Test 1: Quota enforcement ───────────────────────────────────────────
 
 
-def test_quota_limits_concurrency() -> None:
+@pytest.mark.asyncio
+async def test_quota_limits_concurrency() -> None:
     """With max_inflight_components=2, at most 2 leaf components run at once."""
     _tracker.reset()
     app = coco.App(
@@ -128,24 +109,6 @@ def test_quota_limits_concurrency() -> None:
             max_inflight_components=2,
         ),
         _main_flat,
-        6,
-    )
-    app.update()
-    assert _tracker.total == 6
-    assert _tracker.peak <= 2
-
-
-@pytest.mark.asyncio
-async def test_quota_limits_concurrency_async() -> None:
-    """Async variant: with max_inflight_components=2, peak concurrency <= 2."""
-    _tracker.reset()
-    app = coco_aio.App(
-        coco.AppConfig(
-            name="test_quota_limits_concurrency_async",
-            environment=coco_env,
-            max_inflight_components=2,
-        ),
-        _main_flat_async,
         6,
     )
     await app.update()
@@ -165,7 +128,7 @@ def test_quota_one_serializes() -> None:
         _main_flat,
         4,
     )
-    app.update()
+    app.update_blocking()
     assert _tracker.total == 4
     assert _tracker.peak == 1
 
@@ -173,7 +136,8 @@ def test_quota_one_serializes() -> None:
 # ── Test 2: Deadlock prevention ──────────────────────────────────────────
 
 
-def test_deadlock_prevention() -> None:
+@pytest.mark.asyncio
+async def test_deadlock_prevention() -> None:
     """Nested mount (parent → child → grandchild) with quota=2 completes without deadlock."""
     app = coco.App(
         coco.AppConfig(
@@ -184,7 +148,7 @@ def test_deadlock_prevention() -> None:
         _main_nested,
     )
     # If permit release on first child mount is broken, this deadlocks (test timeout fires).
-    app.update()
+    await app.update()
 
 
 def test_deadlock_prevention_quota_one() -> None:
@@ -197,21 +161,7 @@ def test_deadlock_prevention_quota_one() -> None:
         ),
         _main_nested,
     )
-    app.update()
-
-
-@pytest.mark.asyncio
-async def test_deadlock_prevention_async() -> None:
-    """Async variant: nested mount with quota=2 completes without deadlock."""
-    app = coco_aio.App(
-        coco.AppConfig(
-            name="test_deadlock_prevention_async",
-            environment=coco_env,
-            max_inflight_components=2,
-        ),
-        _main_nested_async,
-    )
-    await app.update()
+    app.update_blocking()
 
 
 # ── Test 3: Default limit (1024) ──────────────────────────────────────────
@@ -225,7 +175,7 @@ def test_default_limit() -> None:
         _main_flat,
         6,
     )
-    app.update()
+    app.update_blocking()
     assert _tracker.total == 6
     # Default limit is 1024, far above 6, so all 6 children overlap → peak should exceed 2
     assert _tracker.peak > 2
@@ -245,7 +195,7 @@ def test_env_var_fallback() -> None:
             _main_flat,
             6,
         )
-        app.update()
+        app.update_blocking()
     finally:
         if original is None:
             os.environ.pop("COCOINDEX_MAX_INFLIGHT_COMPONENTS", None)

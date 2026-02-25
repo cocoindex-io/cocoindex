@@ -25,7 +25,6 @@ import asyncpg
 from numpy.typing import NDArray
 
 import cocoindex as coco
-import cocoindex.asyncio as coco_aio
 from cocoindex.connectors import localfs, postgres
 from cocoindex.ops.text import RecursiveSplitter
 from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
@@ -58,9 +57,9 @@ _splitter = RecursiveSplitter()
 # ---------------------------------------------------------------------------
 
 
-@coco_aio.lifespan
+@coco.lifespan
 async def coco_lifespan(
-    builder: coco_aio.EnvironmentBuilder,
+    builder: coco.EnvironmentBuilder,
 ) -> AsyncIterator[None]:
     async with await postgres.create_pool(DATABASE_URL) as pool:
         builder.provide(PG_DB, postgres.register_db("entire_session_db", pool))
@@ -186,7 +185,7 @@ async def process_file(
     if filename == "full.jsonl":
         content = await file.read_text()
         chunks = parse_transcript(content)
-        await coco_aio.map(
+        await coco.map(
             process_chunk,
             [
                 ChunkInput(text=c.text, content_type="transcript", role=c.role)
@@ -218,7 +217,7 @@ async def process_file(
             chunks = _splitter.split(
                 text, chunk_size=2000, chunk_overlap=500, language="markdown"
             )
-            await coco_aio.map(
+            await coco.map(
                 process_chunk,
                 [
                     ChunkInput(text=c.text, content_type="context", role="")
@@ -308,11 +307,11 @@ async def app_main(checkpoints_dir: pathlib.Path) -> None:
             excluded_patterns=["**/content_hash.txt"],
         ),
     )
-    await coco_aio.mount_each(process_file, files.items(), emb_table, meta_table)
+    await coco.mount_each(process_file, files.items(), emb_table, meta_table)
 
 
-app = coco_aio.App(
-    coco_aio.AppConfig(name="EntireSessionSearch"),
+app = coco.App(
+    coco.AppConfig(name="EntireSessionSearch"),
     app_main,
     checkpoints_dir=pathlib.Path("./entire_checkpoints"),
 )

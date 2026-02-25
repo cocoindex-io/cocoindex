@@ -33,8 +33,8 @@ env2 = coco.Environment(coco.Settings.from_env(db_path=DB_PATH_2))
 
 
 @coco.function
-def build1() -> None:
-    dir_target = coco.use_mount(
+async def build1() -> None:
+    dir_target = await coco.use_mount(
         coco.component_subpath("out"),
         declare_dir_target,
         OUT_DIR_1,
@@ -43,8 +43,8 @@ def build1() -> None:
 
 
 @coco.function
-def build2() -> None:
-    dir_target = coco.use_mount(
+async def build2() -> None:
+    dir_target = await coco.use_mount(
         coco.component_subpath("out"),
         declare_dir_target,
         OUT_DIR_2,

@@ -16,8 +16,8 @@ env = coco.Environment(coco.Settings.from_env(db_path=DB_PATH))
 
 
 @coco.function
-def build() -> None:
-    dir_target = coco.use_mount(
+async def build() -> None:
+    dir_target = await coco.use_mount(
         coco.component_subpath("out"),
         declare_dir_target,
         OUT_DIR,

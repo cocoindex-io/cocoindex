@@ -3,7 +3,6 @@
 from dataclasses import dataclass
 
 import cocoindex as coco
-import cocoindex.asyncio as coco_aio
 
 from tests import common
 from tests.common.target_states import (
@@ -70,7 +69,7 @@ def test_regular_method() -> None:
         process_all,
     )
 
-    app.update()
+    app.update_blocking()
     assert _metrics.collect() == {"call.transform": 2}
     assert GlobalDictTarget.store.data == {
         "A": DictDataWithPrev(
@@ -81,7 +80,7 @@ def test_regular_method() -> None:
         ),
     }
 
-    app.update()
+    app.update_blocking()
     assert _metrics.collect() == {}
 
 
@@ -128,7 +127,7 @@ def test_static_method() -> None:
         process_all,
     )
 
-    app.update()
+    app.update_blocking()
     assert _metrics.collect() == {"call.static_transform": 2}
     assert GlobalDictTarget.store.data == {
         "A": DictDataWithPrev(
@@ -139,7 +138,7 @@ def test_static_method() -> None:
         ),
     }
 
-    app.update()
+    app.update_blocking()
     assert _metrics.collect() == {}
 
 
@@ -188,7 +187,7 @@ def test_class_method() -> None:
         process_all,
     )
 
-    app.update()
+    app.update_blocking()
     assert _metrics.collect() == {"call.class_transform": 2}
     assert GlobalDictTarget.store.data == {
         "A": DictDataWithPrev(
@@ -199,7 +198,7 @@ def test_class_method() -> None:
         ),
     }
 
-    app.update()
+    app.update_blocking()
     assert _metrics.collect() == {}
 
 
@@ -214,7 +213,7 @@ class AsyncProcessor:
     def __init__(self, prefix: str):
         self.prefix = prefix
 
-    @coco_aio.function(memo=True)
+    @coco.fn.as_async(memo=True)
     async def transform(self, entry: SourceDataEntry) -> str:
         """Async instance method with memoization."""
         _metrics.increment("call.async_transform")
@@ -248,7 +247,7 @@ def test_async_method() -> None:
         process_all,
     )
 
-    app.update()
+    app.update_blocking()
     assert _metrics.collect() == {"call.async_transform": 2}
     assert GlobalDictTarget.store.data == {
         "A": DictDataWithPrev(
@@ -259,7 +258,7 @@ def test_async_method() -> None:
         ),
     }
 
-    app.update()
+    app.update_blocking()
     assert _metrics.collect() == {}
 
 
@@ -274,7 +273,7 @@ class AsyncClassProcessor:
     default_prefix = "async_class"
 
     @classmethod
-    @coco_aio.function(memo=True)
+    @coco.fn.as_async(memo=True)
     async def transform(cls, entry: SourceDataEntry) -> str:
         """Async class method with memoization."""
         _metrics.increment("call.async_class_transform")
@@ -308,7 +307,7 @@ def test_async_class_method() -> None:
         process_all,
     )
 
-    app.update()
+    app.update_blocking()
     assert _metrics.collect() == {"call.async_class_transform": 2}
     assert GlobalDictTarget.store.data == {
         "A": DictDataWithPrev(
@@ -319,5 +318,5 @@ def test_async_class_method() -> None:
         ),
     }
 
-    app.update()
+    app.update_blocking()
     assert _metrics.collect() == {}

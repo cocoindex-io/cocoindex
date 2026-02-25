@@ -21,7 +21,6 @@ import instructor
 from litellm import acompletion
 
 import cocoindex as coco
-import cocoindex.asyncio as coco_aio
 from cocoindex.connectors import localfs
 from cocoindex.resources.file import FileLike, PatternFilePathMatcher
 
@@ -195,7 +194,7 @@ async def process_project(
 ) -> None:
     """Process a single project: extract info from all files, aggregate, and output markdown."""
     # Extract info from each file.
-    file_infos = await coco_aio.map(extract_file_info, files)
+    file_infos = await coco.map(extract_file_info, files)
 
     # Aggregate into project-level summary
     project_info = await aggregate_project_info(project_name, file_infos)
@@ -239,7 +238,7 @@ async def app_main(
 
         if files:
             # Mount a component to process this project
-            await coco_aio.mount(
+            await coco.mount(
                 coco.component_subpath("project", project_name),
                 process_project,
                 project_name,
@@ -248,8 +247,8 @@ async def app_main(
             )
 
 
-app = coco_aio.App(
-    coco_aio.AppConfig(name="MultiCodebaseSummarization"),
+app = coco.App(
+    coco.AppConfig(name="MultiCodebaseSummarization"),
     app_main,
     root_dir=pathlib.Path("../"),
     output_dir=pathlib.Path("./output"),

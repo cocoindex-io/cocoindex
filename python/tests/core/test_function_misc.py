@@ -1,13 +1,13 @@
 import pytest
-import cocoindex.asyncio as coco_aio
+import cocoindex as coco
 
 
-@coco_aio.function
+@coco.fn.as_async
 def async_wrapped_fn_1(s: str, i: int) -> str:
     return f"{s} {i}"
 
 
-@coco_aio.function()
+@coco.fn.as_async()
 def async_wrapped_fn_2(s: str, i: int) -> str:
     return f"{s} {i}"
 

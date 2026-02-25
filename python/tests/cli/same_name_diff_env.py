@@ -45,8 +45,8 @@ def _lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
 
 
 @coco.function
-def build_alpha() -> None:
-    dir_target = coco.use_mount(
+async def build_alpha() -> None:
+    dir_target = await coco.use_mount(
         coco.component_subpath("out"),
         declare_dir_target,
         OUT_DIR_ALPHA,
@@ -55,8 +55,8 @@ def build_alpha() -> None:
 
 
 @coco.function
-def build_default() -> None:
-    dir_target = coco.use_mount(
+async def build_default() -> None:
+    dir_target = await coco.use_mount(
         coco.component_subpath("out"),
         declare_dir_target,
         OUT_DIR_DEFAULT,

@@ -93,14 +93,14 @@ def foo_comp_calls_bar_memo(key: str, value: str) -> None:
 
 
 @coco.function
-def foo_comp_mounts_bar_comp_plain(key: str, value: str) -> None:
+async def foo_comp_mounts_bar_comp_plain(key: str, value: str) -> None:
     assert _metrics is not None
     _metrics.increment("foo_comp_mounts_bar_comp_plain")
-    coco.mount(coco.component_subpath(key), bar_comp_plain, key, value)
+    await coco.mount(coco.component_subpath(key), bar_comp_plain, key, value)
 
 
 @coco.function
-def foo_comp_mounts_bar_comp_memo(key: str, value: str) -> None:
+async def foo_comp_mounts_bar_comp_memo(key: str, value: str) -> None:
     assert _metrics is not None
     _metrics.increment("foo_comp_mounts_bar_comp_memo")
-    coco.mount(coco.component_subpath(key), bar_comp_memo, key, value)
+    await coco.mount(coco.component_subpath(key), bar_comp_memo, key, value)

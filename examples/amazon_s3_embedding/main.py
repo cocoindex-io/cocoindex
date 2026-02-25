@@ -22,7 +22,6 @@ from aiobotocore.client import AioBaseClient
 from numpy.typing import NDArray
 
 import cocoindex as coco
-import cocoindex.asyncio as coco_aio
 from cocoindex.connectors import amazon_s3, postgres
 from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
 from cocoindex.ops.text import RecursiveSplitter
@@ -49,9 +48,9 @@ _embedder = SentenceTransformerEmbedder("sentence-transformers/all-MiniLM-L6-v2"
 _splitter = RecursiveSplitter()
 
 
-@coco_aio.lifespan
+@coco.lifespan
 async def coco_lifespan(
-    builder: coco_aio.EnvironmentBuilder,
+    builder: coco.EnvironmentBuilder,
 ) -> AsyncIterator[None]:
     async with await postgres.create_pool(DATABASE_URL) as pool:
         builder.provide(PG_DB, postgres.register_db("s3_embedding_db", pool))
@@ -103,9 +102,7 @@ async def process_file(
         text, chunk_size=2000, chunk_overlap=500, language="markdown"
     )
     id_gen = IdGenerator()
-    await coco_aio.map(
-        process_chunk, chunks, file.file_path.path.as_posix(), id_gen, table
-    )
+    await coco.map(process_chunk, chunks, file.file_path.path.as_posix(), id_gen, table)
 
 
 @coco.function
@@ -127,11 +124,11 @@ async def app_main() -> None:
         prefix=S3_PREFIX,
         path_matcher=PatternFilePathMatcher(included_patterns=["**/*.md"]),
     )
-    await coco_aio.mount_each(process_file, files.items(), target_table)
+    await coco.mount_each(process_file, files.items(), target_table)
 
 
-app = coco_aio.App(
-    coco_aio.AppConfig(name="AmazonS3EmbeddingV1"),
+app = coco.App(
+    coco.AppConfig(name="AmazonS3EmbeddingV1"),
     app_main,
 )
 

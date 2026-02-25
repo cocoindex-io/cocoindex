@@ -34,7 +34,7 @@ except ImportError as e:
 import cocoindex as coco
 from cocoindex.connectorkits import connection, statediff
 from cocoindex.connectorkits.fingerprint import fingerprint_object
-from cocoindex._internal.api_async import mount_target as _mount_target
+from cocoindex._internal.api import mount_target as _mount_target
 from cocoindex._internal.datatype import TypeChecker
 from cocoindex.resources import schema
 
@@ -566,7 +566,7 @@ class QdrantDatabase(connection.KeyedConnection[QdrantClient]):
         """
         Create a TargetState for a Qdrant collection target.
 
-        Use with ``coco_aio.mount_target()`` to mount and get a child provider,
+        Use with ``coco.mount_target()`` to mount and get a child provider,
         or with ``mount_collection_target()`` for a convenience wrapper.
 
         Args:
@@ -591,7 +591,7 @@ class QdrantDatabase(connection.KeyedConnection[QdrantClient]):
         """
         Mount a collection target and return a ready-to-use CollectionTarget.
 
-        Sugar over ``collection_target()`` + ``coco_aio.mount_target()`` + wrapping.
+        Sugar over ``collection_target()`` + ``coco.mount_target()`` + wrapping.
 
         Args:
             collection_name: Name of the collection in Qdrant.

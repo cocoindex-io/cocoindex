@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import pathlib
 import sys
 from dataclasses import dataclass
 from typing import Annotated, AsyncIterator
@@ -20,7 +19,6 @@ import asyncpg
 from numpy.typing import NDArray
 
 import cocoindex as coco
-import cocoindex.asyncio as coco_aio
 from cocoindex.connectors import postgres
 from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
 
@@ -60,9 +58,9 @@ class OutputProduct:
     embedding: Annotated[NDArray, _embedder]
 
 
-@coco_aio.lifespan
+@coco.lifespan
 async def coco_lifespan(
-    builder: coco_aio.EnvironmentBuilder,
+    builder: coco.EnvironmentBuilder,
 ) -> AsyncIterator[None]:
     # Provide resources needed across the CocoIndex environment
     async with (
@@ -113,15 +111,15 @@ async def app_main() -> None:
         row_type=SourceProduct,
     )
 
-    await coco_aio.mount_each(
+    await coco.mount_each(
         process_product,
         source.fetch_rows().items(lambda p: (p.product_category, p.product_name)),
         target_table,
     )
 
 
-app = coco_aio.App(
-    coco_aio.AppConfig(name="PostgresSourceV1"),
+app = coco.App(
+    coco.AppConfig(name="PostgresSourceV1"),
     app_main,
 )
 

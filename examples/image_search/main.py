@@ -25,7 +25,6 @@ from transformers import CLIPModel, CLIPProcessor
 import numpy as np
 
 import cocoindex as coco
-import cocoindex.asyncio as coco_aio
 from cocoindex.connectors import localfs, qdrant
 from cocoindex.resources.file import FileLike, PatternFilePathMatcher
 from cocoindex.resources.schema import VectorSchema
@@ -64,9 +63,9 @@ def embed_image_bytes(img_bytes: bytes) -> list[float]:
     return features[0].tolist()
 
 
-@coco_aio.lifespan
+@coco.lifespan
 async def coco_lifespan(
-    builder: coco_aio.EnvironmentBuilder,
+    builder: coco.EnvironmentBuilder,
 ) -> AsyncIterator[None]:
     # Provide resources needed across the CocoIndex environment
     client = qdrant.create_client(QDRANT_URL, prefer_grpc=True)
@@ -114,11 +113,11 @@ async def app_main(sourcedir: pathlib.Path) -> None:
             included_patterns=["**/*.jpg", "**/*.jpeg", "**/*.png"]
         ),
     )
-    await coco_aio.mount_each(process_file, files.items(), target_collection)
+    await coco.mount_each(process_file, files.items(), target_collection)
 
 
-app = coco_aio.App(
-    coco_aio.AppConfig(name="ImageSearchQdrantV1"),
+app = coco.App(
+    coco.AppConfig(name="ImageSearchQdrantV1"),
     app_main,
     sourcedir=pathlib.Path("./img"),
 )
