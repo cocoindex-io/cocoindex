@@ -28,7 +28,11 @@ pub struct App<Prof: EngineProfile> {
 }
 
 impl<Prof: EngineProfile> App<Prof> {
-    pub fn new(name: &str, env: Environment<Prof>) -> Result<Self> {
+    pub fn new(
+        name: &str,
+        env: Environment<Prof>,
+        max_inflight_components: Option<usize>,
+    ) -> Result<Self> {
         let app_reg = AppRegistration::new(name, &env)?;
 
         let db = {
@@ -38,7 +42,7 @@ impl<Prof: EngineProfile> App<Prof> {
             db
         };
 
-        let app_ctx = AppContext::new(env, db, app_reg);
+        let app_ctx = AppContext::new(env, db, app_reg, max_inflight_components);
         let root_component = Component::new(app_ctx, StablePath::root());
         Ok(Self { root_component })
     }
@@ -61,7 +65,8 @@ impl<Prof: EngineProfile> App<Prof> {
         let run_fut = async {
             self.root_component
                 .clone()
-                .run(root_processor, context)?
+                .run(root_processor, context)
+                .await?
                 .result(None)
                 .await
         };

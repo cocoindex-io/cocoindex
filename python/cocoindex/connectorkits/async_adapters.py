@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-__all__ = ["async_to_sync_iter", "sync_to_async_iter"]
+__all__ = ["KeyedDualModeIter", "async_to_sync_iter", "sync_to_async_iter"]
 
 import asyncio as _asyncio
 import queue as _queue
@@ -10,11 +10,18 @@ import threading as _threading
 from typing import (
     AsyncIterator,
     Callable,
+    Generic as _Generic,
     Iterator,
+    Protocol as _Protocol,
 )
 from typing_extensions import TypeVar as _TypeVar
 
 _T = _TypeVar("_T")
+_K = _TypeVar("_K")
+_AsyncT = _TypeVar("_AsyncT")
+_SyncT = _TypeVar("_SyncT")
+_AsyncT_co = _TypeVar("_AsyncT_co", covariant=True)
+_SyncT_co = _TypeVar("_SyncT_co", covariant=True)
 
 DEFAULT_QUEUE_SIZE = 1024
 
@@ -174,3 +181,55 @@ def async_to_sync_iter(
         except _queue.Empty:
             pass
         thread.join(timeout=1.0)
+
+
+class _DualModeIterable(_Protocol[_AsyncT_co, _SyncT_co]):
+    """Protocol for objects supporting both async and sync iteration."""
+
+    def __aiter__(self) -> AsyncIterator[_AsyncT_co]: ...
+    def __iter__(self) -> Iterator[_SyncT_co]: ...
+
+
+class KeyedDualModeIter(_Generic[_K, _AsyncT, _SyncT]):
+    """Dual-mode ``(key, item)`` pair iterator.
+
+    Wraps a dual-mode iterable (one that supports both ``async for`` and
+    ``for``) with a key function to produce ``(key, item)`` pairs in both
+    async and sync contexts.
+
+    Async iteration yields ``(K, AsyncT)`` pairs; sync iteration yields
+    ``(K, SyncT)`` pairs.
+
+    Example::
+
+        keyed = KeyedDualModeIter(walker, lambda f: f.file_path.path.as_posix())
+
+        # Async (primary)
+        async for key, file in keyed:
+            content = await file.read()
+
+        # Sync
+        for key, file in keyed:
+            content = file.read()
+    """
+
+    _iterable: _DualModeIterable[_AsyncT, _SyncT]
+    _key_fn: Callable[[_AsyncT | _SyncT], _K]
+
+    def __init__(
+        self,
+        iterable: _DualModeIterable[_AsyncT, _SyncT],
+        key_fn: Callable[[_AsyncT | _SyncT], _K],
+    ) -> None:
+        self._iterable = iterable
+        self._key_fn = key_fn
+
+    async def __aiter__(self) -> AsyncIterator[tuple[_K, _AsyncT]]:
+        """Asynchronously iterate as ``(key, item)`` pairs."""
+        async for item in self._iterable:
+            yield (self._key_fn(item), item)
+
+    def __iter__(self) -> Iterator[tuple[_K, _SyncT]]:
+        """Synchronously iterate as ``(key, item)`` pairs."""
+        for item in self._iterable:
+            yield (self._key_fn(item), item)

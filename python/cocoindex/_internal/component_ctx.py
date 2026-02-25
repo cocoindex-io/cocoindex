@@ -99,7 +99,7 @@ class ComponentSubpath:
     Represents a relative path to create a sub-scope.
 
     Can be:
-    - Passed to mount()/mount_run() as the first argument
+    - Passed to mount()/use_mount() as the first argument
     - Used as a context manager to apply the subpath to all nested mount calls
 
     Example:
@@ -152,13 +152,13 @@ class ComponentSubpath:
 
 def component_subpath(*key_parts: StableKey) -> ComponentSubpath:
     """
-    Create a component subpath for use with mount()/mount_run() or as a context manager.
+    Create a component subpath for use with mount()/use_mount() or as a context manager.
 
     Args:
         *key_parts: One or more StableKey values to form the subpath
 
     Returns:
-        A ComponentSubpath that can be passed to mount/mount_run or used as a context manager
+        A ComponentSubpath that can be passed to mount/use_mount or used as a context manager
 
     Examples:
         # As first argument to mount
@@ -179,7 +179,7 @@ def get_context_from_ctx() -> ComponentContext:
         return ctx_var
     raise RuntimeError(
         "No ComponentContext available. This function must be called from within "
-        "an active component context (inside a mount/mount_run call or App.update)."
+        "an active component context (inside a mount/use_mount call or App.update)."
     )
 
 

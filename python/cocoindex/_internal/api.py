@@ -34,7 +34,7 @@ from .component_ctx import (
 
 from .setting import Settings
 
-from .stable_path import ROOT_PATH, StablePath, StableKey
+from .stable_path import ROOT_PATH, StablePath, StableKey, Symbol
 
 from .typing import NonExistenceType, NON_EXISTENCE, is_non_existence
 
@@ -84,6 +84,7 @@ __all__ = [
     "ROOT_PATH",
     "StablePath",
     "StableKey",
+    "Symbol",
     # .typing
     "NON_EXISTENCE",
     "NonExistenceType",

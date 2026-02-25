@@ -23,6 +23,7 @@ from typing import (
     TypeVar as _TypeVar,
 )
 
+from cocoindex._internal import core as _core
 from cocoindex import StableKey as _StableKey
 from cocoindex.connectorkits import connection as _connection
 
@@ -43,7 +44,7 @@ class FileLike(_Protocol[ResolvedPathT]):
     @property
     def stable_key(self) -> _StableKey:
         """Return the stable key for this file."""
-        return str(self.file_path.path)
+        return self.file_path.path.as_posix()
 
     @property
     def file_path(self) -> "FilePath[ResolvedPathT]":
@@ -165,7 +166,17 @@ class MatchAllFilePathMatcher(FilePathMatcher):
 
 
 class PatternFilePathMatcher(FilePathMatcher):
-    """Pattern matcher that handles include and exclude glob patterns for files."""
+    """Pattern matcher that handles include and exclude glob patterns for files.
+
+    Uses `globset <https://docs.rs/globset>` semantics for pattern matching.
+    Patterns are matched against the full relative path (with forward slashes).
+    Common patterns:
+
+    - `**/*.py` — matches Python files at any depth
+    - `*.py` — matches Python files only in the root directory
+    - `**/.*` — matches dot-prefixed entries (hidden files/dirs) at any depth
+    - `{*.md,*.txt}` — matches multiple extensions using alternation
+    """
 
     def __init__(
         self,
@@ -176,39 +187,24 @@ class PatternFilePathMatcher(FilePathMatcher):
         Create a new PatternFilePathMatcher from optional include and exclude pattern lists.
 
         Args:
-            included_patterns: Patterns matching full path of files to be included.
-            excluded_patterns: Patterns matching full path of files and directories
-                to be excluded. If a directory is excluded, all files and
+            included_patterns: Glob patterns (globset syntax) matching full path of files
+                to be included. Use ``**/*.ext`` to match at any depth.
+            excluded_patterns: Glob patterns (globset syntax) matching full path of files
+                and directories to be excluded. If a directory is excluded, all files and
                 subdirectories within it are also excluded.
+
+        Raises:
+            ValueError: If any pattern is invalid.
         """
-        self._included_patterns = included_patterns
-        self._excluded_patterns = excluded_patterns
-
-    def _matches_any(self, path: _PurePath, patterns: list[str]) -> bool:
-        """Check if the path matches any of the given glob patterns."""
-        return any(path.match(pattern) for pattern in patterns)
-
-    def _is_excluded(self, path: _PurePath) -> bool:
-        """Check if a file or directory is excluded by the exclude patterns."""
-        if self._excluded_patterns is None:
-            return False
-        return self._matches_any(path, self._excluded_patterns)
+        self._matcher = _core.PatternMatcher(included_patterns, excluded_patterns)
 
     def is_dir_included(self, path: _PurePath) -> bool:
         """Check if a directory should be included based on the exclude patterns."""
-        return not self._is_excluded(path)
+        return self._matcher.is_dir_included(path.as_posix())
 
     def is_file_included(self, path: _PurePath) -> bool:
-        """
-        Check if a file should be included based on both include and exclude patterns.
-
-        Should be called for each file.
-        """
-        if self._is_excluded(path):
-            return False
-        if self._included_patterns is None:
-            return True
-        return self._matches_any(path, self._included_patterns)
+        """Check if a file should be included based on both include and exclude patterns."""
+        return self._matcher.is_file_included(path.as_posix())
 
 
 _BOM_ENCODINGS = [
@@ -271,6 +267,14 @@ class FilePath(_Generic[ResolvedPathT]):
 
     _base_dir: _connection.KeyedConnection[ResolvedPathT]
     _path: _PurePath
+
+    def __init__(
+        self,
+        base_dir: _connection.KeyedConnection[ResolvedPathT],
+        path: _PurePath,
+    ) -> None:
+        self._base_dir = base_dir
+        self._path = path
 
     @property
     def base_dir(self) -> _connection.KeyedConnection[ResolvedPathT]:

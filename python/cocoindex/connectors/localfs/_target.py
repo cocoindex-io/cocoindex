@@ -9,7 +9,9 @@ from dataclasses import dataclass
 from typing import Collection, Generic, Literal, NamedTuple, Sequence, cast
 
 import cocoindex as coco
+from cocoindex._internal.api_async import mount_target as _mount_target
 from cocoindex.connectorkits.fingerprint import fingerprint_bytes
+from cocoindex._internal.datatype import TypeChecker
 
 from ._common import FilePath, CWD_BASE_DIR, path_registry, to_file_path
 
@@ -18,6 +20,7 @@ from ._common import FilePath, CWD_BASE_DIR, path_registry, to_file_path
 # =============================================================================
 
 _EntryName = str  # File or directory name (path segment)
+_ENTRY_NAME_CHECKER = TypeChecker(str)
 _FileContent = bytes
 _FileFingerprint = bytes
 
@@ -177,7 +180,7 @@ class _EntryTrackingRecord:
 
 
 class _EntryHandler(
-    coco.TargetHandler[_EntryName, _EntrySpec, _EntryTrackingRecord, "_EntryHandler"]
+    coco.TargetHandler[_EntrySpec, _EntryTrackingRecord, "_EntryHandler"]
 ):
     """Handler for file and directory entries within a parent directory."""
 
@@ -190,7 +193,7 @@ class _EntryHandler(
 
     def reconcile(
         self,
-        key: _EntryName,
+        key: coco.StableKey,
         desired_state: _EntrySpec | coco.NonExistenceType,
         prev_possible_states: Collection[_EntryTrackingRecord],
         prev_may_be_missing: bool,
@@ -199,6 +202,7 @@ class _EntryHandler(
         coco.TargetReconcileOutput[_EntryAction, _EntryTrackingRecord, "_EntryHandler"]
         | None
     ):
+        key = _ENTRY_NAME_CHECKER.check(key)
         path = self._base_path / key
         return _reconcile_entry(
             path, desired_state, prev_possible_states, prev_may_be_missing
@@ -215,6 +219,9 @@ class _RootKey(NamedTuple):
 
     base_dir_key: str | None  # None for CWD
     path: str
+
+
+_ROOT_KEY_CHECKER = TypeChecker(tuple[str | None, str])
 
 
 def _get_base_dir_key(file_path: FilePath) -> str | None:
@@ -238,14 +245,12 @@ def _resolve_root_path(key: _RootKey) -> pathlib.Path:
     return (base_path / key.path).resolve()
 
 
-class _RootHandler(
-    coco.TargetHandler[_RootKey, _EntrySpec, _EntryTrackingRecord, _EntryHandler]
-):
+class _RootHandler(coco.TargetHandler[_EntrySpec, _EntryTrackingRecord, _EntryHandler]):
     """Handler for root-level entries (files and directories)."""
 
     def reconcile(
         self,
-        key: _RootKey,
+        key: coco.StableKey,
         desired_state: _EntrySpec | coco.NonExistenceType,
         prev_possible_states: Collection[_EntryTrackingRecord],
         prev_may_be_missing: bool,
@@ -254,6 +259,8 @@ class _RootHandler(
         coco.TargetReconcileOutput[_EntryAction, _EntryTrackingRecord, _EntryHandler]
         | None
     ):
+        key = _RootKey(*_ROOT_KEY_CHECKER.check(key))
+
         path = _resolve_root_path(key)
         return _reconcile_entry(
             path, desired_state, prev_possible_states, prev_may_be_missing
@@ -265,7 +272,7 @@ class _RootHandler(
 # =============================================================================
 
 _root_provider = coco.register_root_target_states_provider(
-    "cocoindex.io/localfs", _RootHandler()
+    "cocoindex/localfs", _RootHandler()
 )
 
 
@@ -282,14 +289,12 @@ class DirTarget(Generic[coco.MaybePendingS], coco.ResolvesTo["DirTarget"]):
     files and directories that are no longer declared.
     """
 
-    _provider: coco.TargetStateProvider[
-        _EntryName, _EntrySpec, _EntryHandler, coco.MaybePendingS
-    ]
+    _provider: coco.TargetStateProvider[_EntrySpec, _EntryHandler, coco.MaybePendingS]
 
     def __init__(
         self,
         provider: coco.TargetStateProvider[
-            _EntryName, _EntrySpec, _EntryHandler, coco.MaybePendingS
+            _EntrySpec, _EntryHandler, coco.MaybePendingS
         ],
     ) -> None:
         self._provider = provider
@@ -369,26 +374,74 @@ def declare_dir_target(
 
     Example:
         ```python
-        target = coco.mount_run(
+        target = coco.use_mount(
             coco.component_subpath("setup"),
             localfs.declare_dir_target,
             Path("./output"),
-        ).result()
+        )
 
         target.declare_file("hello.txt", content="Hello, world!")
         ```
     """
+    provider = coco.declare_target_state_with_child(
+        dir_target(path, create_parent_dirs=create_parent_dirs)
+    )
+    return DirTarget(provider)
+
+
+def dir_target(
+    path: FilePath | pathlib.Path,
+    *,
+    create_parent_dirs: bool = True,
+) -> coco.TargetState[_EntryHandler]:
+    """
+    Create a TargetState for a local directory target.
+
+    Use with ``coco_aio.mount_target()`` to mount and get a child provider,
+    or with ``mount_dir_target()`` for a convenience wrapper.
+
+    Args:
+        path: The filesystem path for the directory. Can be a FilePath (with stable
+            base directory key) or a pathlib.Path (uses CWD as base directory).
+        create_parent_dirs: If True, create parent directories if they don't exist.
+            Defaults to True.
+
+    Returns:
+        A TargetState that can be passed to ``mount_target()``.
+    """
     file_path = to_file_path(path)
     key = _RootKey(
         base_dir_key=_get_base_dir_key(file_path),
-        path=str(file_path.path),
+        path=file_path.path.as_posix(),
     )
     spec = _EntrySpec(
         entry_spec=_DirSpec(),
         create_parent_dirs=create_parent_dirs,
     )
-    provider = coco.declare_target_state_with_child(
-        _root_provider.target_state(key, spec)
+    return _root_provider.target_state(key, spec)
+
+
+async def mount_dir_target(
+    path: FilePath | pathlib.Path,
+    *,
+    create_parent_dirs: bool = True,
+) -> DirTarget[coco.ResolvedS]:
+    """
+    Mount a directory target and return a ready-to-use DirTarget.
+
+    Sugar over ``dir_target()`` + ``coco_aio.mount_target()`` + wrapping.
+
+    Args:
+        path: The filesystem path for the directory. Can be a FilePath (with stable
+            base directory key) or a pathlib.Path (uses CWD as base directory).
+        create_parent_dirs: If True, create parent directories if they don't exist.
+            Defaults to True.
+
+    Returns:
+        A DirTarget that can be used to declare files and subdirectories.
+    """
+    provider = await _mount_target(
+        dir_target(path, create_parent_dirs=create_parent_dirs)
     )
     return DirTarget(provider)
 
@@ -430,7 +483,7 @@ def declare_file(
     file_path = to_file_path(path)
     key = _RootKey(
         base_dir_key=_get_base_dir_key(file_path),
-        path=str(file_path.path),
+        path=file_path.path.as_posix(),
     )
     spec = _EntrySpec(
         entry_spec=content,
@@ -442,4 +495,10 @@ def declare_file(
     coco.declare_target_state(target_state)
 
 
-__all__ = ["DirTarget", "declare_dir_target", "declare_file"]
+__all__ = [
+    "DirTarget",
+    "declare_dir_target",
+    "declare_file",
+    "dir_target",
+    "mount_dir_target",
+]

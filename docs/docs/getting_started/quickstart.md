@@ -63,12 +63,13 @@ Create a new file `main.py`:
 import pathlib
 
 import cocoindex as coco
+import cocoindex.asyncio as coco_aio
 from cocoindex.connectors import localfs
 from cocoindex.resources.file import PatternFilePathMatcher
 from docling.document_converter import DocumentConverter
 
-app = coco.App(
-    coco.AppConfig(name="PdfToMarkdown"),
+app = coco_aio.App(
+    "PdfToMarkdown",
     app_main,
     sourcedir=pathlib.Path("./pdf_files"),
     outdir=pathlib.Path("./out"),
@@ -84,24 +85,18 @@ This defines a CocoIndex App — the top-level runnable unit in CocoIndex.
 
 ```python title="main.py"
 @coco.function
-def app_main(sourcedir: pathlib.Path, outdir: pathlib.Path) -> None:
+async def app_main(sourcedir: pathlib.Path, outdir: pathlib.Path) -> None:
     files = localfs.walk_dir(
         sourcedir,
         recursive=True,
-        path_matcher=PatternFilePathMatcher(included_patterns=["*.pdf"]),
+        path_matcher=PatternFilePathMatcher(included_patterns=["**/*.pdf"]),
     )
-    for f in files:
-        coco.mount(
-            coco.component_subpath("process", str(f.file_path.path)),
-            process_file,
-            f,
-            outdir,
-        )
+    await coco_aio.mount_each(process_file, files.items(), outdir)
 ```
 
-For each file, `coco.mount()` mounts a processing component. It's up to you to pick the process granularity, for example it can be at directory level, at file level, or at page level.
+`mount_each()` mounts one processing component per file. Each item from `files.items()` is a `(key, file)` pair — the key (the file's relative path) becomes the component subpath automatically.
 
-In this example, because we want to independently convert each file to Markdown, it is the most natural to pick it at the file level.
+It's up to you to pick the process granularity — it can be at directory level, at file level, or at page level. In this example, because we want to independently convert each file to Markdown, the file level is the most natural choice.
 
 <DocumentationButton url="/docs-v1/programming_guide/processing_component" text="Processing Component" />
 

@@ -22,6 +22,7 @@ struct AppContextInner<Prof: EngineProfile> {
     db: db_schema::Database,
     app_reg: AppRegistration<Prof>,
     id_sequencer_manager: IdSequencerManager,
+    inflight_semaphore: Option<Arc<tokio::sync::Semaphore>>,
 }
 
 #[derive(Clone)]
@@ -34,13 +35,17 @@ impl<Prof: EngineProfile> AppContext<Prof> {
         env: Environment<Prof>,
         db: db_schema::Database,
         app_reg: AppRegistration<Prof>,
+        max_inflight_components: Option<usize>,
     ) -> Self {
+        let inflight_semaphore =
+            max_inflight_components.map(|n| Arc::new(tokio::sync::Semaphore::new(n)));
         Self {
             inner: Arc::new(AppContextInner {
                 env,
                 db,
                 app_reg,
                 id_sequencer_manager: IdSequencerManager::new(),
+                inflight_semaphore,
             }),
         }
     }
@@ -55,6 +60,10 @@ impl<Prof: EngineProfile> AppContext<Prof> {
 
     pub fn app_reg(&self) -> &AppRegistration<Prof> {
         &self.inner.app_reg
+    }
+
+    pub fn inflight_semaphore(&self) -> Option<&Arc<tokio::sync::Semaphore>> {
+        self.inner.inflight_semaphore.as_ref()
     }
 
     /// Get the next ID for the given key.
@@ -72,7 +81,7 @@ impl<Prof: EngineProfile> AppContext<Prof> {
 
 pub(crate) struct DeclaredEffect<Prof: EngineProfile> {
     pub provider: TargetStateProvider<Prof>,
-    pub key: Prof::TargetStateKey,
+    pub item_key: StableKey,
     pub value: Prof::TargetStateValue,
     pub child_provider: Option<TargetStateProvider<Prof>>,
 }
@@ -84,16 +93,16 @@ pub(crate) struct ComponentTargetStatesContext<Prof: EngineProfile> {
 
 pub struct FnCallMemo<Prof: EngineProfile> {
     pub ret: Prof::FunctionData,
-    pub(crate) child_components: Vec<StablePath>,
     pub(crate) target_state_paths: Vec<TargetStatePath>,
     pub(crate) dependency_memo_entries: HashSet<Fingerprint>,
+    pub(crate) logic_deps: HashSet<Fingerprint>,
     pub(crate) already_stored: bool,
 }
 
 pub enum FnCallMemoEntry<Prof: EngineProfile> {
     /// Memoization result is pending, i.e. the function call is not finished yet.
     Pending,
-    /// Memoization result is ready. None means memoization is disabled, e.g. it creates target states providers.
+    /// Memoization result is ready. None means memoization is disabled, e.g. it mounts child components.
     Ready(Option<FnCallMemo<Prof>>),
 }
 
@@ -136,7 +145,10 @@ struct ComponentProcessorContextInner<Prof: EngineProfile> {
     components_readiness: ComponentBgChildReadiness,
 
     processing_stats: ProcessingStats,
-    // TODO: Add fields to record states, children components, etc.
+    inflight_permit: Mutex<Option<tokio::sync::OwnedSemaphorePermit>>,
+
+    /// Logic fingerprints accumulated from function calls and child components.
+    logic_deps: Mutex<HashSet<Fingerprint>>,
 }
 
 #[derive(Clone)]
@@ -175,6 +187,8 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
                 processing_action: processing_state,
                 components_readiness: Default::default(),
                 processing_stats,
+                inflight_permit: Mutex::new(None),
+                logic_deps: Mutex::new(HashSet::new()),
             }),
         }
     }
@@ -234,8 +248,31 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         }
     }
 
-    pub fn join_fn_call(&self, _fn_ctx: &FnCallContext) {
-        // Nothing needs to be incorporated for now
+    pub fn join_fn_call(&self, fn_ctx: &FnCallContext) {
+        let fn_logic_deps = fn_ctx.update(|inner| inner.logic_deps.clone());
+        self.inner.logic_deps.lock().unwrap().extend(fn_logic_deps);
+    }
+
+    /// Merge additional logic deps (e.g. from child components) into this component's set.
+    pub(crate) fn merge_logic_deps(&self, deps: impl IntoIterator<Item = Fingerprint>) {
+        self.inner.logic_deps.lock().unwrap().extend(deps);
+    }
+
+    /// Take the accumulated logic deps as a sorted Vec for deterministic storage.
+    pub(crate) fn take_logic_deps(&self) -> Vec<Fingerprint> {
+        let deps = std::mem::take(&mut *self.inner.logic_deps.lock().unwrap());
+        let mut v: Vec<_> = deps.into_iter().collect();
+        v.sort();
+        v
+    }
+
+    pub(crate) fn set_inflight_permit(&self, permit: tokio::sync::OwnedSemaphorePermit) {
+        *self.inner.inflight_permit.lock().unwrap() = Some(permit);
+    }
+
+    /// Release the inflight permit if held. No-op after first call.
+    pub(crate) fn release_inflight_permit(&self) {
+        *self.inner.inflight_permit.lock().unwrap() = None;
     }
 
     pub fn processing_stats(&self) -> &ProcessingStats {
@@ -254,10 +291,15 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
 pub struct FnCallContextInner {
     /// Target states that are declared by the function.
     pub target_state_paths: Vec<TargetStatePath>,
-    /// Dependency entries that are declared by the function. Only needs to keep dependencies with side effects (child components / target states / dependency entries with side effects).
+    /// Dependency entries that are declared by the function. Only needs to keep dependencies with side effects (target states / dependency entries with side effects).
     pub dependency_memo_entries: HashSet<Fingerprint>,
 
-    pub child_components: Vec<StablePath>,
+    /// Whether the function (directly or transitively) mounted any child components.
+    /// If true, function-level memoization is disabled for this call.
+    pub has_child_components: bool,
+
+    /// Logic fingerprints encountered transitively during this function call.
+    pub logic_deps: HashSet<Fingerprint>,
 }
 
 #[derive(Default)]
@@ -276,7 +318,14 @@ impl FnCallContext {
             inner
                 .dependency_memo_entries
                 .extend(child_inner.dependency_memo_entries);
-            inner.child_components.extend(child_inner.child_components);
+            inner.has_child_components |= child_inner.has_child_components;
+            inner.logic_deps.extend(child_inner.logic_deps);
+        });
+    }
+
+    pub fn add_logic_dep(&self, fp: Fingerprint) {
+        self.update(|inner| {
+            inner.logic_deps.insert(fp);
         });
     }
 

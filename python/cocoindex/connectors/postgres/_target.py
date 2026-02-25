@@ -8,6 +8,7 @@ This module provides a two-level target state system for PostgreSQL:
 
 from __future__ import annotations
 
+import asyncio
 import datetime
 import decimal
 import ipaddress
@@ -45,20 +46,23 @@ from cocoindex._internal.datatype import (
     MappingType,
     SequenceType,
     RecordType,
+    TypeChecker,
     UnionType,
     analyze_type_info,
     is_record_type,
 )
+from cocoindex._internal.api_async import mount_target as _mount_target
 from cocoindex.resources.schema import VectorSchemaProvider
 
 # Type aliases
 _RowKey = tuple[Any, ...]  # Primary key values as tuple
+_ROW_KEY_CHECKER = TypeChecker(tuple[Any, ...])
 _RowValue = dict[str, Any]  # Column name -> value
 _RowFingerprint = bytes
 ValueEncoder = Callable[[Any], Any]
 
-# Postgres protocol parameter limit (also used in the Rust implementation).
-_BIND_LIMIT: int = 65535
+# asyncpg enforces a protocol limit of 32767 bind parameters per query.
+_BIND_LIMIT: int = 32767
 
 
 def _qualified_table_name(table_name: str, pg_schema_name: str | None) -> str:
@@ -359,7 +363,7 @@ class _RowAction(NamedTuple):
     value: _RowValue | None  # None means delete
 
 
-class _RowHandler(coco.TargetHandler[_RowKey, _RowValue, _RowFingerprint]):
+class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
     """Handler for row-level target states within a table."""
 
     _pool: asyncpg.Pool
@@ -396,33 +400,28 @@ class _RowHandler(coco.TargetHandler[_RowKey, _RowValue, _RowFingerprint]):
             else:
                 upserts.append(action)
 
-        async with self._pool.acquire() as conn:
-            async with conn.transaction():
-                # Process upserts
-                if upserts:
-                    await self._execute_upserts(conn, upserts)
+        async with asyncio.TaskGroup() as tg:
+            self._schedule_upserts(tg, upserts)
+            self._schedule_deletes(tg, deletes)
 
-                # Process deletes
-                if deletes:
-                    await self._execute_deletes(conn, deletes)
-
-    async def _execute_upserts(
+    def _schedule_upserts(
         self,
-        conn: asyncpg.pool.PoolConnectionProxy[asyncpg.Record],
+        tg: asyncio.TaskGroup,
         upserts: list[_RowAction],
     ) -> None:
-        """Execute upsert operations."""
+        """Schedule upsert chunks as parallel tasks."""
+        if not upserts:
+            return
+
         table_name = _qualified_table_name(self._table_name, self._schema_name)
         columns = self._table_schema.columns
         pk_cols = self._table_schema.primary_key
         all_col_names = list(columns.keys())
         non_pk_cols = [c for c in all_col_names if c not in pk_cols]
 
-        # Build column lists
         col_list = ", ".join(f'"{c}"' for c in all_col_names)
         pk_list = ", ".join(f'"{c}"' for c in pk_cols)
 
-        # Build ON CONFLICT clause
         if non_pk_cols:
             update_list = ", ".join(f'"{c}" = EXCLUDED."{c}"' for c in non_pk_cols)
             conflict_clause = f"ON CONFLICT ({pk_list}) DO UPDATE SET {update_list}"
@@ -433,52 +432,98 @@ class _RowHandler(coco.TargetHandler[_RowKey, _RowValue, _RowFingerprint]):
         if num_parameters == 0:
             return
 
-        # Batch multiple rows into one INSERT, respecting Postgres' bind parameter limit.
         chunk_size = max(1, _BIND_LIMIT // num_parameters)
-        for upsert_chunk in (
-            upserts[i : i + chunk_size] for i in range(0, len(upserts), chunk_size)
-        ):
-            values_sql_parts: list[str] = []
-            params: list[Any] = []
-            for row_idx, action in enumerate(upsert_chunk):
-                assert action.value is not None
-                base = row_idx * num_parameters
-                placeholders = ", ".join(
-                    f"${base + j + 1}" for j in range(num_parameters)
+        for i in range(0, len(upserts), chunk_size):
+            chunk = upserts[i : i + chunk_size]
+            tg.create_task(
+                self._execute_upsert_chunk(
+                    table_name,
+                    col_list,
+                    conflict_clause,
+                    all_col_names,
+                    num_parameters,
+                    chunk,
                 )
-                values_sql_parts.append(f"({placeholders})")
-                # Values are encoded by TableTarget before being stored as target state values.
-                params.extend(action.value.get(col_name) for col_name in all_col_names)
+            )
 
-            values_sql = ", ".join(values_sql_parts)
-            sql = f"INSERT INTO {table_name} ({col_list}) VALUES {values_sql} {conflict_clause}"
+    async def _execute_upsert_chunk(
+        self,
+        table_name: str,
+        col_list: str,
+        conflict_clause: str,
+        all_col_names: list[str],
+        num_parameters: int,
+        chunk: list[_RowAction],
+    ) -> None:
+        """Execute a single upsert chunk."""
+        values_sql_parts: list[str] = []
+        params: list[Any] = []
+        for row_idx, action in enumerate(chunk):
+            assert action.value is not None
+            base = row_idx * num_parameters
+            placeholders = ", ".join(f"${base + j + 1}" for j in range(num_parameters))
+            values_sql_parts.append(f"({placeholders})")
+            params.extend(action.value.get(col_name) for col_name in all_col_names)
+
+        values_sql = ", ".join(values_sql_parts)
+        sql = f"INSERT INTO {table_name} ({col_list}) VALUES {values_sql} {conflict_clause}"
+        async with self._pool.acquire() as conn:
             await conn.execute(sql, *params)
 
-    async def _execute_deletes(
+    def _schedule_deletes(
         self,
-        conn: asyncpg.pool.PoolConnectionProxy[asyncpg.Record],
+        tg: asyncio.TaskGroup,
         deletes: list[_RowAction],
     ) -> None:
-        """Execute delete operations."""
+        """Schedule delete chunks as parallel tasks."""
+        if not deletes:
+            return
+
         table_name = _qualified_table_name(self._table_name, self._schema_name)
         pk_cols = self._table_schema.primary_key
+        num_pk = len(pk_cols)
 
-        # Build WHERE clause for primary key
-        where_parts = [f'"{c}" = ${i + 1}' for i, c in enumerate(pk_cols)]
-        where_clause = " AND ".join(where_parts)
-        sql = f"DELETE FROM {table_name} WHERE {where_clause}"
+        chunk_size = max(1, _BIND_LIMIT // num_pk)
+        for i in range(0, len(deletes), chunk_size):
+            chunk = deletes[i : i + chunk_size]
+            tg.create_task(
+                self._execute_delete_chunk(table_name, pk_cols, num_pk, chunk)
+            )
 
-        for action in deletes:
-            await conn.execute(sql, *action.key)
+    async def _execute_delete_chunk(
+        self,
+        table_name: str,
+        pk_cols: list[str],
+        num_pk: int,
+        chunk: list[_RowAction],
+    ) -> None:
+        """Execute a single batched delete chunk."""
+        params: list[Any] = []
+        if num_pk == 1:
+            placeholders = ", ".join(f"${i + 1}" for i in range(len(chunk)))
+            sql = f'DELETE FROM {table_name} WHERE "{pk_cols[0]}" IN ({placeholders})'
+            params.extend(action.key[0] for action in chunk)
+        else:
+            or_parts: list[str] = []
+            for row_idx, action in enumerate(chunk):
+                base = row_idx * num_pk
+                and_parts = [f'"{pk_cols[j]}" = ${base + j + 1}' for j in range(num_pk)]
+                or_parts.append(f"({' AND '.join(and_parts)})")
+                params.extend(action.key)
+            sql = f"DELETE FROM {table_name} WHERE {' OR '.join(or_parts)}"
+
+        async with self._pool.acquire() as conn:
+            await conn.execute(sql, *params)
 
     def reconcile(
         self,
-        key: _RowKey,
+        key: coco.StableKey,
         desired_state: _RowValue | coco.NonExistenceType,
         prev_possible_states: Collection[_RowFingerprint],
         prev_may_be_missing: bool,
         /,
     ) -> coco.TargetReconcileOutput[_RowAction, _RowFingerprint] | None:
+        key = _ROW_KEY_CHECKER.check(key)
         if coco.is_non_existence(desired_state):
             # Delete case - only if it might exist
             if not prev_possible_states and not prev_may_be_missing:
@@ -510,6 +555,9 @@ class _TableKey(NamedTuple):
     db_key: str  # Stable key for the database
     pg_schema_name: str | None
     table_name: str
+
+
+_TABLE_KEY_CHECKER = TypeChecker(tuple[str, str | None, str])
 
 
 @dataclass
@@ -594,9 +642,7 @@ _db_registry: connection.ConnectionRegistry[asyncpg.Pool] = (
 )
 
 
-class _TableHandler(
-    coco.TargetHandler[_TableKey, _TableSpec, _TableTrackingRecord, _RowHandler]
-):
+class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHandler]):
     """Handler for table-level target states."""
 
     _sink: coco.TargetActionSink[_TableAction, _RowHandler]
@@ -801,7 +847,7 @@ class _TableHandler(
 
     def reconcile(
         self,
-        key: _TableKey,
+        key: coco.StableKey,
         desired_state: _TableSpec | coco.NonExistenceType,
         prev_possible_states: Collection[_TableTrackingRecord],
         prev_may_be_missing: bool,
@@ -810,6 +856,8 @@ class _TableHandler(
         coco.TargetReconcileOutput[_TableAction, _TableTrackingRecord, _RowHandler]
         | None
     ):
+        key = _TableKey(*_TABLE_KEY_CHECKER.check(key))
+
         tracking_record: _TableTrackingRecord | coco.NonExistenceType
 
         if coco.is_non_existence(desired_state):
@@ -852,7 +900,7 @@ class _TableHandler(
 
 # Register the root target states provider
 _table_provider = coco.register_root_target_states_provider(
-    "cocoindex.io/postgres/table", _TableHandler()
+    "cocoindex/postgres/table", _TableHandler()
 )
 
 
@@ -868,14 +916,12 @@ class TableTarget(
         RowT: The type of row objects (dict, dataclass, NamedTuple, or Pydantic model).
     """
 
-    _provider: coco.TargetStateProvider[_RowKey, _RowValue, None, coco.MaybePendingS]
+    _provider: coco.TargetStateProvider[_RowValue, None, coco.MaybePendingS]
     _table_schema: TableSchema[RowT]
 
     def __init__(
         self,
-        provider: coco.TargetStateProvider[
-            _RowKey, _RowValue, None, coco.MaybePendingS
-        ],
+        provider: coco.TargetStateProvider[_RowValue, None, coco.MaybePendingS],
         table_schema: TableSchema[RowT],
     ) -> None:
         self._provider = provider
@@ -956,6 +1002,39 @@ class PgDatabase(connection.KeyedConnection[asyncpg.Pool]):
         Returns:
             A TableTarget that can be used to declare rows.
         """
+        provider = coco.declare_target_state_with_child(
+            self.table_target(
+                table_name,
+                table_schema,
+                pg_schema_name=pg_schema_name,
+                managed_by=managed_by,
+            )
+        )
+        return TableTarget(provider, table_schema)
+
+    def table_target(
+        self,
+        table_name: str,
+        table_schema: TableSchema[RowT],
+        *,
+        pg_schema_name: str | None = None,
+        managed_by: Literal["system", "user"] = "system",
+    ) -> coco.TargetState[_RowHandler]:
+        """
+        Create a TargetState for a PostgreSQL table target.
+
+        Use with ``coco_aio.mount_target()`` to mount and get a child provider,
+        or with ``mount_table_target()`` for a convenience wrapper.
+
+        Args:
+            table_name: Name of the table.
+            table_schema: Schema definition including columns and primary key.
+            pg_schema_name: Optional PostgreSQL schema name (default is "public").
+            managed_by: Whether the table is managed by "system" or "user".
+
+        Returns:
+            A TargetState that can be passed to ``mount_target()``.
+        """
         key = _TableKey(
             db_key=self.key,
             pg_schema_name=pg_schema_name,
@@ -965,8 +1044,37 @@ class PgDatabase(connection.KeyedConnection[asyncpg.Pool]):
             table_schema=table_schema,
             managed_by=managed_by,
         )
-        provider = coco.declare_target_state_with_child(
-            _table_provider.target_state(key, spec)
+        return _table_provider.target_state(key, spec)
+
+    async def mount_table_target(
+        self,
+        table_name: str,
+        table_schema: TableSchema[RowT],
+        *,
+        pg_schema_name: str | None = None,
+        managed_by: Literal["system", "user"] = "system",
+    ) -> TableTarget[RowT]:
+        """
+        Mount a table target and return a ready-to-use TableTarget.
+
+        Sugar over ``table_target()`` + ``coco_aio.mount_target()`` + wrapping.
+
+        Args:
+            table_name: Name of the table.
+            table_schema: Schema definition including columns and primary key.
+            pg_schema_name: Optional PostgreSQL schema name (default is "public").
+            managed_by: Whether the table is managed by "system" or "user".
+
+        Returns:
+            A TableTarget that can be used to declare rows.
+        """
+        provider = await _mount_target(
+            self.table_target(
+                table_name,
+                table_schema,
+                pg_schema_name=pg_schema_name,
+                managed_by=managed_by,
+            )
         )
         return TableTarget(provider, table_schema)
 

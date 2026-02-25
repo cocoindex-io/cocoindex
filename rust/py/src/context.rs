@@ -72,4 +72,9 @@ impl PyFnCallContext {
         });
         Ok(())
     }
+
+    pub fn add_logic_dep(&self, fp: PyFingerprint) -> PyResult<()> {
+        self.0.add_logic_dep(fp.0);
+        Ok(())
+    }
 }

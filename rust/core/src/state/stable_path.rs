@@ -5,9 +5,9 @@ use std::{fmt::Write as FmtWrite, io::Write};
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum StableKey {
     Null,
+    Symbol(Arc<str>),
     Bool(bool),
     Int(i64),
-
     Str(Arc<str>),
     Bytes(Arc<[u8]>),
     Uuid(uuid::Uuid),
@@ -36,6 +36,11 @@ impl Serialize for StableKey {
                 map.serialize_entry("fp", fp)?;
                 map.end()
             }
+            StableKey::Symbol(s) => {
+                let mut map = serializer.serialize_map(Some(1))?;
+                map.serialize_entry("sym", s.as_ref())?;
+                map.end()
+            }
         }
     }
 }
@@ -54,6 +59,7 @@ impl<'de> Deserialize<'de> for StableKey {
             Bytes(Vec<u8>),
             Uuid { uuid: uuid::Uuid },
             Fp { fp: utils::fingerprint::Fingerprint },
+            Sym { sym: String },
             Array(Vec<Repr>),
         }
 
@@ -67,6 +73,7 @@ impl<'de> Deserialize<'de> for StableKey {
                     Repr::Bytes(b) => StableKey::Bytes(Arc::from(b)),
                     Repr::Uuid { uuid } => StableKey::Uuid(uuid),
                     Repr::Fp { fp } => StableKey::Fingerprint(fp),
+                    Repr::Sym { sym } => StableKey::Symbol(Arc::from(sym)),
                     Repr::Array(items) => StableKey::Array(Arc::from(
                         items
                             .into_iter()
@@ -113,6 +120,7 @@ impl std::fmt::Display for StableKey {
                 f.write_char(']')
             }
             StableKey::Fingerprint(fp) => write!(f, "{fp}"),
+            StableKey::Symbol(s) => write!(f, "@{s}"),
         }
     }
 }
@@ -123,11 +131,17 @@ impl storekey::Encode for StableKey {
             StableKey::Null => {
                 e.write_u8(2)?;
             }
-            StableKey::Bool(false) => {
+            StableKey::Symbol(s) => {
                 e.write_u8(3)?;
+                e.write_slice(s.as_bytes())?;
+            }
+            StableKey::Bool(false) => {
+                e.write_u8(4)?;
+                e.write_u8(0)?;
             }
             StableKey::Bool(true) => {
                 e.write_u8(4)?;
+                e.write_u8(1)?;
             }
             StableKey::Int(i) => {
                 e.write_u8(5)?;
@@ -164,8 +178,8 @@ impl storekey::Decode for StableKey {
     ) -> Result<Self, storekey::DecodeError> {
         match d.read_u8()? {
             2 => Ok(StableKey::Null),
-            3 => Ok(StableKey::Bool(false)),
-            4 => Ok(StableKey::Bool(true)),
+            3 => Ok(StableKey::Symbol(d.read_string()?.into())),
+            4 => Ok(StableKey::Bool(d.read_u8()? != 0)),
             5 => Ok(StableKey::Int(d.read_i64()?)),
             6 => Ok(StableKey::Str(d.read_string()?.into())),
             7 => Ok(StableKey::Bytes(Arc::from(d.read_vec()?))),
@@ -357,6 +371,7 @@ mod tests {
                 StableKey::Bytes(Arc::from(&b"\0"[..])),
             ])),
             StableKey::Fingerprint(fp),
+            StableKey::Symbol(Arc::from("cocoindex/setup")),
         ];
 
         for original in cases {
@@ -400,6 +415,10 @@ mod tests {
             (
                 StableKey::Fingerprint(fp),
                 json!({ "fp": serde_json::to_value(fp).expect("fp to value") }),
+            ),
+            (
+                StableKey::Symbol(Arc::from("cocoindex/setup")),
+                json!({ "sym": "cocoindex/setup" }),
             ),
             (
                 StableKey::Array(Arc::from([

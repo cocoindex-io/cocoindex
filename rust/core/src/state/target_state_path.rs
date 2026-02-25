@@ -1,6 +1,8 @@
 use crate::prelude::*;
 use serde::{Deserialize, Serialize};
 
+use crate::state::stable_path::StableKey;
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct TargetStatePath(Arc<[utils::fingerprint::Fingerprint]>);
 
@@ -51,14 +53,11 @@ impl TargetStatePath {
         Self(inner)
     }
 
-    pub fn concat(&self, part: utils::fingerprint::Fingerprint) -> Self {
-        Self(
-            self.0
-                .iter()
-                .chain(std::iter::once(&part))
-                .cloned()
-                .collect(),
-        )
+    pub fn concat(&self, part: &StableKey) -> Self {
+        let fp = utils::fingerprint::Fingerprint::from(&part).unwrap();
+        let inner: Arc<[utils::fingerprint::Fingerprint]> =
+            self.0.iter().chain(std::iter::once(&fp)).cloned().collect();
+        Self(inner)
     }
 
     pub fn provider_path(&self) -> &[utils::fingerprint::Fingerprint] {

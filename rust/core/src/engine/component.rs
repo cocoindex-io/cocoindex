@@ -1,5 +1,6 @@
 use crate::engine::runtime::get_runtime;
 use crate::prelude::*;
+use std::collections::HashSet;
 
 use crate::engine::context::FnCallContext;
 use crate::engine::context::{AppContext, ComponentProcessingMode, ComponentProcessorContext};
@@ -98,11 +99,20 @@ impl ComponentBgChildReadinessState {
 #[derive(Debug, Default, Clone)]
 struct ComponentRunOutcome {
     has_exception: bool,
+    logic_deps: HashSet<Fingerprint>,
 }
 
 impl ComponentRunOutcome {
+    fn exception() -> Self {
+        Self {
+            has_exception: true,
+            ..Default::default()
+        }
+    }
+
     fn merge(&mut self, other: Self) {
         self.has_exception |= other.has_exception;
+        self.logic_deps.extend(other.logic_deps);
     }
 }
 
@@ -256,11 +266,7 @@ impl<Prof: EngineProfile> Component<Prof> {
     }
 
     pub fn mount_child(&self, fn_ctx: &FnCallContext, stable_path: StablePath) -> Result<Self> {
-        let relative_path: StablePath = stable_path
-            .as_ref()
-            .strip_parent(self.stable_path().as_ref())?
-            .into();
-        fn_ctx.update(|inner| inner.child_components.push(relative_path));
+        fn_ctx.update(|inner| inner.has_child_components = true);
         Ok(self.get_child(stable_path))
     }
 
@@ -290,11 +296,28 @@ impl<Prof: EngineProfile> Component<Prof> {
         }
     }
 
-    pub fn run(
+    pub async fn run(
         self,
         processor: Prof::ComponentProc,
         context: ComponentProcessorContext<Prof>,
     ) -> Result<ComponentMountRunHandle<Prof>> {
+        // Release parent's inflight permit (deadlock prevention).
+        // On a component's first child mount, the parent gives up its slot
+        // so children can make progress.
+        if let Some(parent_ctx) = context.parent_context() {
+            parent_ctx.release_inflight_permit();
+        }
+
+        // Acquire inflight permit (waits if quota exhausted).
+        if let Some(sem) = self.app_ctx().inflight_semaphore() {
+            let permit = sem
+                .clone()
+                .acquire_owned()
+                .await
+                .map_err(|_| internal_error!("Inflight semaphore closed"))?;
+            context.set_inflight_permit(permit);
+        }
+
         let relative_path = self.relative_path(&context)?;
         let child_readiness_guard = context
             .parent_context()
@@ -305,12 +328,7 @@ impl<Prof: EngineProfile> Component<Prof> {
                 let result = self.execute_once(&context, Some(&processor)).await;
                 let (outcome, output) = match result {
                     Ok((outcome, output)) => (outcome, Ok(output)),
-                    Err(err) => (
-                        ComponentRunOutcome {
-                            has_exception: true,
-                        },
-                        Err(err),
-                    ),
+                    Err(err) => (ComponentRunOutcome::exception(), Err(err)),
                 };
                 child_readiness_guard.map(|guard| guard.resolve(outcome));
                 output?
@@ -321,12 +339,27 @@ impl<Prof: EngineProfile> Component<Prof> {
         Ok(ComponentMountRunHandle { join_handle })
     }
 
-    pub fn run_in_background(
+    pub async fn run_in_background(
         self,
         processor: Prof::ComponentProc,
         context: ComponentProcessorContext<Prof>,
     ) -> Result<ComponentExecutionHandle> {
         // TODO: Skip building and reuse cached result if the component is already built and up to date.
+
+        // Release parent's inflight permit (deadlock prevention).
+        if let Some(parent_ctx) = context.parent_context() {
+            parent_ctx.release_inflight_permit();
+        }
+
+        // Acquire inflight permit (waits if quota exhausted).
+        if let Some(sem) = self.app_ctx().inflight_semaphore() {
+            let permit = sem
+                .clone()
+                .acquire_owned()
+                .await
+                .map_err(|_| internal_error!("Inflight semaphore closed"))?;
+            context.set_inflight_permit(permit);
+        }
 
         let child_readiness_guard = context
             .parent_context()
@@ -338,11 +371,11 @@ impl<Prof: EngineProfile> Component<Prof> {
                 error!("component build failed:\n{err:?}");
             }
             child_readiness_guard.map(|guard| {
-                guard.resolve(result.map(|(outcome, _)| outcome).unwrap_or_else(|_| {
-                    ComponentRunOutcome {
-                        has_exception: true,
-                    }
-                }))
+                guard.resolve(
+                    result
+                        .map(|(outcome, _)| outcome)
+                        .unwrap_or_else(|_| ComponentRunOutcome::exception()),
+                )
             });
             Ok(())
         });
@@ -363,9 +396,7 @@ impl<Prof: EngineProfile> Component<Prof> {
                 Ok((outcome, _)) => outcome.clone(),
                 Err(err) => {
                     error!("component delete failed:\n{err}");
-                    ComponentRunOutcome {
-                        has_exception: true,
-                    }
+                    ComponentRunOutcome::exception()
                 }
             };
             if let Some(guard) = child_readiness_guard {
@@ -463,12 +494,16 @@ impl<Prof: EngineProfile> Component<Prof> {
                 // Wait until children components ready.
                 let components_readiness = processor_context.components_readiness();
                 components_readiness.set_build_done();
-                let children_outcome = components_readiness
+                let mut children_outcome = components_readiness
                     .readiness()
                     .wait()
                     .await
                     .clone()
                     .into_result()?;
+
+                // Merge children's logic deps into this component's context.
+                processor_context
+                    .merge_logic_deps(std::mem::take(&mut children_outcome.logic_deps));
 
                 let (ret, submit_output) = ret_n_submit_output?;
                 let build_output = match ret {
@@ -487,12 +522,7 @@ impl<Prof: EngineProfile> Component<Prof> {
                             } else {
                                 None
                             };
-                            post_submit_for_build(
-                                processor_context,
-                                comp_memo,
-                                submit_output.memos_with_mounts_to_store,
-                            )
-                            .await?;
+                            post_submit_for_build(processor_context, comp_memo).await?;
                         }
                         Some(ComponentBuildOutput {
                             ret,

@@ -102,6 +102,7 @@ cocoindex show [OPTIONS] APP_TARGET
 
 | Option | Description |
 |--------|-------------|
+| `--tree` | Display stable paths as a tree with component annotations. |
 | `--help` | Show this message and exit. |
 
 ---

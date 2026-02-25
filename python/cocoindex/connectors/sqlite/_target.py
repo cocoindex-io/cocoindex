@@ -9,6 +9,7 @@ Vector support is provided via the sqlite-vec extension.
 """
 
 from __future__ import annotations
+import cocoindex as coco
 
 import datetime
 import decimal
@@ -42,14 +43,17 @@ from cocoindex._internal.datatype import (
     MappingType,
     SequenceType,
     RecordType,
+    TypeChecker,
     UnionType,
     analyze_type_info,
     is_record_type,
 )
+from cocoindex._internal.api_async import mount_target as _mount_target
 from cocoindex.resources.schema import VectorSchemaProvider
 
 # Type aliases
 _RowKey = tuple[Any, ...]  # Primary key values as tuple
+_ROW_KEY_CHECKER = TypeChecker(tuple[Any, ...])
 _RowValue = dict[str, Any]  # Column name -> value
 _RowFingerprint = bytes
 ValueEncoder = Callable[[Any], Any]
@@ -396,7 +400,7 @@ class _RowAction(NamedTuple):
     value: _RowValue | None  # None means delete
 
 
-class _RowHandler(coco.TargetHandler[_RowKey, _RowValue, _RowFingerprint]):
+class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
     """Handler for row-level target states within a table."""
 
     _managed_conn: ManagedConnection
@@ -528,12 +532,13 @@ class _RowHandler(coco.TargetHandler[_RowKey, _RowValue, _RowFingerprint]):
 
     def reconcile(
         self,
-        key: _RowKey,
+        key: coco.StableKey,
         desired_state: _RowValue | coco.NonExistenceType,
         prev_possible_states: Collection[_RowFingerprint],
         prev_may_be_missing: bool,
         /,
     ) -> coco.TargetReconcileOutput[_RowAction, _RowFingerprint] | None:
+        key = _ROW_KEY_CHECKER.check(key)
         if coco.is_non_existence(desired_state):
             # Delete case - only if it might exist
             if not prev_possible_states and not prev_may_be_missing:
@@ -564,6 +569,9 @@ class _TableKey(NamedTuple):
 
     db_key: str  # Stable key for the database
     table_name: str
+
+
+_TABLE_KEY_CHECKER = TypeChecker(tuple[str, str])
 
 
 @dataclass
@@ -927,14 +935,12 @@ _table_action_sink = coco.TargetActionSink[_TableAction, _RowHandler].from_fn(
 )
 
 
-class _TableHandler(
-    coco.TargetHandler[_TableKey, _TableSpec, _TableTrackingRecord, _RowHandler]
-):
+class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHandler]):
     """Handler for table-level target states."""
 
     def reconcile(
         self,
-        key: _TableKey,
+        key: coco.StableKey,
         desired_state: _TableSpec | coco.NonExistenceType,
         prev_possible_states: Collection[_TableTrackingRecord],
         prev_may_be_missing: bool,
@@ -943,6 +949,7 @@ class _TableHandler(
         coco.TargetReconcileOutput[_TableAction, _TableTrackingRecord, _RowHandler]
         | None
     ):
+        key = _TableKey(*_TABLE_KEY_CHECKER.check(key))
         tracking_record: _TableTrackingRecord | coco.NonExistenceType
 
         if coco.is_non_existence(desired_state):
@@ -985,7 +992,7 @@ class _TableHandler(
 
 # Register the root target states provider
 _table_provider = coco.register_root_target_states_provider(
-    "cocoindex.io/sqlite/table", _TableHandler()
+    "cocoindex/sqlite/table", _TableHandler()
 )
 
 
@@ -1001,14 +1008,12 @@ class TableTarget(
         RowT: The type of row objects (dict, dataclass, NamedTuple, or Pydantic model).
     """
 
-    _provider: coco.TargetStateProvider[_RowKey, _RowValue, None, coco.MaybePendingS]
+    _provider: coco.TargetStateProvider[_RowValue, None, coco.MaybePendingS]
     _table_schema: TableSchema[RowT]
 
     def __init__(
         self,
-        provider: coco.TargetStateProvider[
-            _RowKey, _RowValue, None, coco.MaybePendingS
-        ],
+        provider: coco.TargetStateProvider[_RowValue, None, coco.MaybePendingS],
         table_schema: TableSchema[RowT],
     ) -> None:
         self._provider = provider
@@ -1100,16 +1105,46 @@ class SqliteDatabase(connection.KeyedConnection[ManagedConnection]):
             Virtual tables cannot be altered with ALTER TABLE. Schema changes
             automatically trigger DROP + CREATE operations.
         """
-        # Validate vec0 virtual table configuration
+        provider = coco.declare_target_state_with_child(
+            self.table_target(
+                table_name,
+                table_schema,
+                managed_by=managed_by,
+                virtual_table_def=virtual_table_def,
+            )
+        )
+        return TableTarget(provider, table_schema)
+
+    def table_target(
+        self,
+        table_name: str,
+        table_schema: TableSchema[RowT],
+        *,
+        managed_by: Literal["system", "user"] = "system",
+        virtual_table_def: Vec0TableDef | None = None,
+    ) -> coco.TargetState[_RowHandler]:
+        """
+        Create a TargetState for a SQLite table target.
+
+        Use with ``coco_aio.mount_target()`` to mount and get a child provider,
+        or with ``mount_table_target()`` for a convenience wrapper.
+
+        Args:
+            table_name: Name of the table.
+            table_schema: Schema definition including columns and primary key.
+            managed_by: Whether the table is managed by "system" or "user".
+            virtual_table_def: Optional virtual table configuration.
+
+        Returns:
+            A TargetState that can be passed to ``mount_target()``.
+        """
+        # Validate vec0 virtual table configuration (same as declare_table_target)
         if isinstance(virtual_table_def, Vec0TableDef):
-            # Check extension is loaded
             if _VEC_EXTENSION not in self._value.loaded_extensions:
                 raise RuntimeError(
                     "sqlite-vec extension must be loaded for vec0 virtual tables. "
                     "Use connect(..., load_vec=True)"
                 )
-
-            # Validate at least one vector column exists
             has_vector_col = any(
                 col_def.type.startswith("float[")
                 for col_def in table_schema.columns.values()
@@ -1118,21 +1153,15 @@ class SqliteDatabase(connection.KeyedConnection[ManagedConnection]):
                 raise ValueError(
                     "vec0 virtual tables require at least one float[N] vector column"
                 )
-
-            # Validate partition_key_columns exist in schema
             all_cols = set(table_schema.columns.keys())
             invalid_partition = set(virtual_table_def.partition_key_columns) - all_cols
             if invalid_partition:
                 raise ValueError(
                     f"Partition key columns not in schema: {invalid_partition}"
                 )
-
-            # Validate auxiliary_columns exist in schema
             invalid_aux = set(virtual_table_def.auxiliary_columns) - all_cols
             if invalid_aux:
                 raise ValueError(f"Auxiliary columns not in schema: {invalid_aux}")
-
-            # Validate vec0 primary key: must have exactly one integer PK column
             if len(table_schema.primary_key) != 1:
                 raise ValueError(
                     f"vec0 virtual tables require exactly one primary key column, "
@@ -1146,17 +1175,43 @@ class SqliteDatabase(connection.KeyedConnection[ManagedConnection]):
                     f"got {pk_col_type} for column '{pk_col_name}'"
                 )
 
-        key = _TableKey(
-            db_key=self.key,
-            table_name=table_name,
-        )
+        key = _TableKey(db_key=self.key, table_name=table_name)
         spec = _TableSpec(
             table_schema=table_schema,
             managed_by=managed_by,
             virtual_table_def=virtual_table_def,
         )
-        provider = coco.declare_target_state_with_child(
-            _table_provider.target_state(key, spec)
+        return _table_provider.target_state(key, spec)
+
+    async def mount_table_target(
+        self,
+        table_name: str,
+        table_schema: TableSchema[RowT],
+        *,
+        managed_by: Literal["system", "user"] = "system",
+        virtual_table_def: Vec0TableDef | None = None,
+    ) -> TableTarget[RowT]:
+        """
+        Mount a table target and return a ready-to-use TableTarget.
+
+        Sugar over ``table_target()`` + ``coco_aio.mount_target()`` + wrapping.
+
+        Args:
+            table_name: Name of the table.
+            table_schema: Schema definition including columns and primary key.
+            managed_by: Whether the table is managed by "system" or "user".
+            virtual_table_def: Optional virtual table configuration.
+
+        Returns:
+            A TableTarget that can be used to declare rows.
+        """
+        provider = await _mount_target(
+            self.table_target(
+                table_name,
+                table_schema,
+                managed_by=managed_by,
+                virtual_table_def=virtual_table_def,
+            )
         )
         return TableTarget(provider, table_schema)
 

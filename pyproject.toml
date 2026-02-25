@@ -76,6 +76,7 @@ postgres = ["asyncpg>=0.31.0", "pgvector>=0.4.2"]
 qdrant = ["qdrant-client>=1.6.0"]
 sqlite = ["sqlite-vec>=0.1.6"]
 google_drive = ["google-api-python-client>=2.0.0", "google-auth>=2.0.0"]
+amazon_s3 = ["aiobotocore>=2.0.0"]
 
 all = [
     "litellm>=1.81.0",
@@ -89,6 +90,7 @@ all = [
     "sqlite-vec>=0.1.6",
     "google-api-python-client>=2.0.0",
     "google-auth>=2.0.0",
+    "aiobotocore>=2.0.0",
 ]
 
 [dependency-groups]
@@ -98,6 +100,8 @@ build-test = [
     "pytest-asyncio",
     "pytest-timeout",
     "mypy",
+    "moto[s3]>=5.0.0",
+    "aiomoto[s3]>=0.3.0",
 ]
 format = ["ruff"]
 type-stubs = ["types-psutil", "asyncpg-stubs"]
@@ -159,6 +163,14 @@ module = [
     "googleapiclient.*",
     "google.oauth2",
     "google.oauth2.*",
+    "boto3",
+    "boto3.*",
+    "botocore",
+    "botocore.*",
+    "aiobotocore",
+    "aiobotocore.*",
+    "aiohttp",
+    "aiohttp.*",
 ]
 ignore_missing_imports = true
 

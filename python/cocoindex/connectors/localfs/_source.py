@@ -10,6 +10,7 @@ from typing import AsyncIterator, Iterator
 
 import pathlib
 
+from cocoindex.connectorkits.async_adapters import KeyedDualModeIter
 from cocoindex.resources.file import (
     AsyncFileLike,
     FileLike,
@@ -198,9 +199,26 @@ class DirWalker:
             # Add subdirectories in reverse order to maintain consistent traversal
             dirs_to_process.extend(reversed(subdirs))
 
+    def items(self) -> KeyedDualModeIter[str, AsyncFile, File]:
+        """Return a dual-mode iterator of (key, file) pairs for use with mount_each().
+
+        The key is the file's relative path within the walked directory.
+
+        Supports both async and sync iteration::
+
+            # Async
+            async for key, file in walker.items():
+                content = await file.read()
+
+            # Sync
+            for key, file in walker.items():
+                content = file.read()
+        """
+        return KeyedDualModeIter(self, lambda f: f.file_path.path.as_posix())
+
     async def __aiter__(self) -> AsyncIterator[AsyncFile]:
         """Asynchronously iterate over files, yielding AsyncFile objects."""
-        from cocoindex.connectorkits.async_adpaters import sync_to_async_iter
+        from cocoindex.connectorkits.async_adapters import sync_to_async_iter
 
         async for file in sync_to_async_iter(lambda: iter(self)):
             yield AsyncFile(file)

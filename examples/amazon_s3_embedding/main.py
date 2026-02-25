@@ -1,0 +1,184 @@
+"""
+Amazon S3 Text Embedding (v1) — CocoIndex pipeline example.
+
+- List markdown files from an S3 bucket
+- Chunk text (RecursiveSplitter)
+- Embed chunks (SentenceTransformers)
+- Store into Postgres with pgvector column (no vector index)
+- Query demo using pgvector cosine distance (<=>)
+"""
+
+from __future__ import annotations
+
+import asyncio
+import os
+import sys
+from dataclasses import dataclass
+from typing import AsyncIterator, Annotated
+
+import aiobotocore.session
+import asyncpg
+from aiobotocore.client import AioBaseClient
+from numpy.typing import NDArray
+
+import cocoindex as coco
+import cocoindex.asyncio as coco_aio
+from cocoindex.connectors import amazon_s3, postgres
+from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
+from cocoindex.ops.text import RecursiveSplitter
+from cocoindex.resources.chunk import Chunk
+from cocoindex.resources.file import PatternFilePathMatcher
+from cocoindex.resources.id import IdGenerator
+
+
+DATABASE_URL = os.getenv(
+    "POSTGRES_URL", "postgres://cocoindex:cocoindex@localhost/cocoindex"
+)
+TABLE_NAME = "amazon_s3_doc_embeddings"
+PG_SCHEMA_NAME = "coco_examples"
+TOP_K = 5
+
+# S3 configuration
+S3_BUCKET = os.environ["S3_BUCKET"]
+S3_PREFIX = os.getenv("S3_PREFIX", "")
+
+PG_DB = coco.ContextKey[postgres.PgDatabase]("pg_db")
+S3_CLIENT = coco.ContextKey[AioBaseClient]("s3_client")
+
+_embedder = SentenceTransformerEmbedder("sentence-transformers/all-MiniLM-L6-v2")
+_splitter = RecursiveSplitter()
+
+
+@coco_aio.lifespan
+async def coco_lifespan(
+    builder: coco_aio.EnvironmentBuilder,
+) -> AsyncIterator[None]:
+    async with await postgres.create_pool(DATABASE_URL) as pool:
+        builder.provide(PG_DB, postgres.register_db("s3_embedding_db", pool))
+
+        # Create aiobotocore S3 client.
+        # Set AWS_ENDPOINT_URL for S3-compatible services (e.g. MinIO).
+        session = aiobotocore.session.get_session()
+        async with session.create_client("s3") as s3_client:
+            builder.provide(S3_CLIENT, s3_client)
+            yield
+
+
+@dataclass
+class DocEmbedding:
+    id: int
+    filename: str
+    chunk_start: int
+    chunk_end: int
+    text: str
+    embedding: Annotated[NDArray, _embedder]
+
+
+@coco.function
+async def process_chunk(
+    chunk: Chunk,
+    filename: str,
+    id_gen: IdGenerator,
+    table: postgres.TableTarget[DocEmbedding],
+) -> None:
+    table.declare_row(
+        row=DocEmbedding(
+            id=await id_gen.next_id(chunk.text),
+            filename=filename,
+            chunk_start=chunk.start.char_offset,
+            chunk_end=chunk.end.char_offset,
+            text=chunk.text,
+            embedding=await _embedder.embed(chunk.text),
+        ),
+    )
+
+
+@coco.function(memo=True)
+async def process_file(
+    file: amazon_s3.S3File,
+    table: postgres.TableTarget[DocEmbedding],
+) -> None:
+    text = await file.read_text()
+    chunks = _splitter.split(
+        text, chunk_size=2000, chunk_overlap=500, language="markdown"
+    )
+    id_gen = IdGenerator()
+    await coco_aio.map(
+        process_chunk, chunks, file.file_path.path.as_posix(), id_gen, table
+    )
+
+
+@coco.function
+async def app_main() -> None:
+    target_db = coco.use_context(PG_DB)
+    target_table = await target_db.mount_table_target(
+        table_name=TABLE_NAME,
+        table_schema=await postgres.TableSchema.from_class(
+            DocEmbedding,
+            primary_key=["id"],
+        ),
+        pg_schema_name=PG_SCHEMA_NAME,
+    )
+
+    client = coco.use_context(S3_CLIENT)
+    files = amazon_s3.list_objects(
+        client,
+        S3_BUCKET,
+        prefix=S3_PREFIX,
+        path_matcher=PatternFilePathMatcher(included_patterns=["**/*.md"]),
+    )
+    await coco_aio.mount_each(process_file, files.items(), target_table)
+
+
+app = coco_aio.App(
+    coco_aio.AppConfig(name="AmazonS3EmbeddingV1"),
+    app_main,
+)
+
+
+# ============================================================================
+# Query demo (no vector index)
+# ============================================================================
+
+
+async def query_once(pool: asyncpg.Pool, query: str, *, top_k: int = TOP_K) -> None:
+    query_vec = await _embedder.embed(query)
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            f"""
+            SELECT
+                filename,
+                text,
+                embedding <=> $1 AS distance
+            FROM "{PG_SCHEMA_NAME}"."{TABLE_NAME}"
+            ORDER BY distance ASC
+            LIMIT $2
+            """,
+            query_vec,
+            top_k,
+        )
+
+    for r in rows:
+        score = 1.0 - float(r["distance"])
+        print(f"[{score:.3f}] {r['filename']}")
+        print(f"    {r['text']}")
+        print("---")
+
+
+async def query() -> None:
+    async with await postgres.create_pool(DATABASE_URL) as pool:
+        if len(sys.argv) > 2:
+            q = " ".join(sys.argv[2:])
+            await query_once(pool, q)
+            return
+
+        while True:
+            q = input("Enter search query (or Enter to quit): ").strip()
+            if not q:
+                break
+            await query_once(pool, q)
+
+
+if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "query":
+        asyncio.run(query())

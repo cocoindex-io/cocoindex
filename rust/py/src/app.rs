@@ -14,8 +14,13 @@ pub struct PyApp(pub Arc<App<PyEngineProfile>>);
 #[pymethods]
 impl PyApp {
     #[new]
-    pub fn new(name: &str, env: &PyEnvironment) -> PyResult<Self> {
-        let app = App::new(name, env.0.clone()).into_py_result()?;
+    #[pyo3(signature = (name, env, max_inflight_components=None))]
+    pub fn new(
+        name: &str,
+        env: &PyEnvironment,
+        max_inflight_components: Option<usize>,
+    ) -> PyResult<Self> {
+        let app = App::new(name, env.0.clone(), max_inflight_components).into_py_result()?;
         Ok(Self(Arc::new(app)))
     }
 

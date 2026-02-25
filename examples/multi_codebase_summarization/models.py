@@ -28,7 +28,7 @@ Mermaid graph showing CocoIndex function call relationships. Requirements:
 - Use 'graph TD' (top-down) layout
 - Include ONLY functions defined in this codebase (not external libraries)
 - Use **bold** text for @coco.function decorated functions
-- Use thick arrows (==>) for coco.mount/coco.mount_run calls
+- Use thick arrows (==>) for coco.mount/coco.use_mount calls
 - Use normal arrows (-->) for regular function calls
 - Include a comment with the app name if this is for a coco.App
 

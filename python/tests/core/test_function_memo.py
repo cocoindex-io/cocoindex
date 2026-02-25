@@ -484,6 +484,7 @@ def _declare_dict_data_w_components() -> None:
 
 
 def test_memo_nested_functions_with_components() -> None:
+    """A memo=True function that mounts child components should raise an error."""
     GlobalDictTarget.store.clear()
     _dict_source_data.clear()
     _metrics.clear()
@@ -500,117 +501,10 @@ def test_memo_nested_functions_with_components() -> None:
         version=1,
         content={
             "1A": SourceDataEntry(name="1A", version=1, content="content1A"),
-            "1B": SourceDataEntry(name="1B", version=1, content="content1B"),
         },
     )
-    _dict_source_data["D2"] = DictSourceDataEntry(
-        name="D2",
-        version=1,
-        content={"2A": SourceDataEntry(name="2A", version=1, content="content2A")},
-    )
-    app.update()
-    assert _metrics.collect() == {
-        "call.declare_dict_data_entry_w_components": 2,
-        "call.declare_data_entry": 3,
-    }
-    assert GlobalDictTarget.store.data == {
-        "1A": DictDataWithPrev(data="content1A", prev=[], prev_may_be_missing=True),
-        "1B": DictDataWithPrev(data="content1B", prev=[], prev_may_be_missing=True),
-        "2A": DictDataWithPrev(data="content2A", prev=[], prev_may_be_missing=True),
-    }
-
-    app.update()
-    assert _metrics.collect() == {}
-    assert GlobalDictTarget.store.data == {
-        "1A": DictDataWithPrev(data="content1A", prev=[], prev_may_be_missing=True),
-        "1B": DictDataWithPrev(data="content1B", prev=[], prev_may_be_missing=True),
-        "2A": DictDataWithPrev(data="content2A", prev=[], prev_may_be_missing=True),
-    }
-
-    _dict_source_data["D1"].version = 2
-    _dict_source_data["D1"].content["1A"] = SourceDataEntry(
-        name="1A", version=2, content="content1A2"
-    )
-    del _dict_source_data["D1"].content["1B"]
-    app.update()
-    assert _metrics.collect() == {
-        "call.declare_dict_data_entry_w_components": 1,
-        "call.declare_data_entry": 1,
-    }
-    assert GlobalDictTarget.store.data == {
-        "1A": DictDataWithPrev(
-            data="content1A2", prev=["content1A"], prev_may_be_missing=False
-        ),
-        "2A": DictDataWithPrev(data="content2A", prev=[], prev_may_be_missing=True),
-    }
-
-    del _dict_source_data["D1"]
-    app.update()
-    assert _metrics.collect() == {}
-    assert GlobalDictTarget.store.data == {
-        "2A": DictDataWithPrev(data="content2A", prev=[], prev_may_be_missing=True),
-    }
-
-    # The same version reappears after deletion. Verify cached values are not used.
-    _dict_source_data["D1"] = DictSourceDataEntry(
-        name="D1",
-        version=2,
-        content={
-            "1A": SourceDataEntry(name="1A", version=2, content="content1A2.2"),
-        },
-    )
-    app.update()
-    assert _metrics.collect() == {
-        "call.declare_dict_data_entry_w_components": 1,
-        "call.declare_data_entry": 1,
-    }
-    assert GlobalDictTarget.store.data == {
-        "1A": DictDataWithPrev(data="content1A2.2", prev=[], prev_may_be_missing=True),
-        "2A": DictDataWithPrev(data="content2A", prev=[], prev_may_be_missing=True),
-    }
-
-
-def test_memo_nested_functions_with_components_with_exception() -> None:
-    GlobalDictTarget.store.clear()
-    _dict_source_data.clear()
-    _metrics.clear()
-
-    app = coco.App(
-        coco.AppConfig(
-            name="test_memo_nested_functions_with_components_with_exception",
-            environment=coco_env,
-        ),
-        _declare_dict_data_w_components,
-    )
-
-    _dict_source_data["D1"] = DictSourceDataEntry(
-        name="D1",
-        version=1,
-        content={
-            "1A": SourceDataEntry(name="1A", version=1, content="content1A"),
-        },
-    )
-    try:
-        GlobalDictTarget.store.sink_exception = True
+    with pytest.raises(Exception, match="memo=True mounted child components"):
         app.update()
-    finally:
-        GlobalDictTarget.store.sink_exception = False
-    assert _metrics.collect() == {
-        "call.declare_dict_data_entry_w_components": 1,
-        "call.declare_data_entry": 1,
-    }
-    assert GlobalDictTarget.store.data == {}
-
-    app.update()
-    assert _metrics.collect() == {
-        "call.declare_dict_data_entry_w_components": 1,
-        "call.declare_data_entry": 1,
-    }
-    assert GlobalDictTarget.store.data == {
-        "1A": DictDataWithPrev(
-            data="content1A", prev=["content1A"], prev_may_be_missing=True
-        ),
-    }
 
 
 @coco.function(memo=True)
@@ -629,6 +523,7 @@ async def _declare_dict_data_w_components_async() -> None:
 
 
 def test_memo_nested_functions_with_components_async() -> None:
+    """A memo=True async function that mounts child components should raise an error."""
     GlobalDictTarget.store.clear()
     _dict_source_data.clear()
     _metrics.clear()
@@ -646,117 +541,10 @@ def test_memo_nested_functions_with_components_async() -> None:
         version=1,
         content={
             "1A": SourceDataEntry(name="1A", version=1, content="content1A"),
-            "1B": SourceDataEntry(name="1B", version=1, content="content1B"),
         },
     )
-    _dict_source_data["D2"] = DictSourceDataEntry(
-        name="D2",
-        version=1,
-        content={"2A": SourceDataEntry(name="2A", version=1, content="content2A")},
-    )
-    app.update()
-    assert _metrics.collect() == {
-        "call.declare_dict_data_entry_w_components_async": 2,
-        "call.declare_data_entry": 3,
-    }
-    assert GlobalDictTarget.store.data == {
-        "1A": DictDataWithPrev(data="content1A", prev=[], prev_may_be_missing=True),
-        "1B": DictDataWithPrev(data="content1B", prev=[], prev_may_be_missing=True),
-        "2A": DictDataWithPrev(data="content2A", prev=[], prev_may_be_missing=True),
-    }
-
-    app.update()
-    assert _metrics.collect() == {}
-    assert GlobalDictTarget.store.data == {
-        "1A": DictDataWithPrev(data="content1A", prev=[], prev_may_be_missing=True),
-        "1B": DictDataWithPrev(data="content1B", prev=[], prev_may_be_missing=True),
-        "2A": DictDataWithPrev(data="content2A", prev=[], prev_may_be_missing=True),
-    }
-
-    _dict_source_data["D1"].version = 2
-    _dict_source_data["D1"].content["1A"] = SourceDataEntry(
-        name="1A", version=2, content="content1A2"
-    )
-    del _dict_source_data["D1"].content["1B"]
-    app.update()
-    assert _metrics.collect() == {
-        "call.declare_dict_data_entry_w_components_async": 1,
-        "call.declare_data_entry": 1,
-    }
-    assert GlobalDictTarget.store.data == {
-        "1A": DictDataWithPrev(
-            data="content1A2", prev=["content1A"], prev_may_be_missing=False
-        ),
-        "2A": DictDataWithPrev(data="content2A", prev=[], prev_may_be_missing=True),
-    }
-
-    del _dict_source_data["D1"]
-    app.update()
-    assert _metrics.collect() == {}
-    assert GlobalDictTarget.store.data == {
-        "2A": DictDataWithPrev(data="content2A", prev=[], prev_may_be_missing=True),
-    }
-
-    # The same version reappears after deletion. Verify cached values are not used.
-    _dict_source_data["D1"] = DictSourceDataEntry(
-        name="D1",
-        version=2,
-        content={
-            "1A": SourceDataEntry(name="1A", version=2, content="content1A2.2"),
-        },
-    )
-    app.update()
-    assert _metrics.collect() == {
-        "call.declare_dict_data_entry_w_components_async": 1,
-        "call.declare_data_entry": 1,
-    }
-    assert GlobalDictTarget.store.data == {
-        "1A": DictDataWithPrev(data="content1A2.2", prev=[], prev_may_be_missing=True),
-        "2A": DictDataWithPrev(data="content2A", prev=[], prev_may_be_missing=True),
-    }
-
-
-def test_memo_nested_functions_with_components_with_exception_async() -> None:
-    GlobalDictTarget.store.clear()
-    _dict_source_data.clear()
-    _metrics.clear()
-
-    app = coco.App(
-        coco.AppConfig(
-            name="test_memo_nested_functions_with_components_with_exception_async",
-            environment=coco_env,
-        ),
-        _declare_dict_data_w_components_async,
-    )
-
-    _dict_source_data["D1"] = DictSourceDataEntry(
-        name="D1",
-        version=1,
-        content={
-            "1A": SourceDataEntry(name="1A", version=1, content="content1A"),
-        },
-    )
-    try:
-        GlobalDictTarget.store.sink_exception = True
+    with pytest.raises(Exception, match="memo=True mounted child components"):
         app.update()
-    finally:
-        GlobalDictTarget.store.sink_exception = False
-    assert _metrics.collect() == {
-        "call.declare_dict_data_entry_w_components_async": 1,
-        "call.declare_data_entry": 1,
-    }
-    assert GlobalDictTarget.store.data == {}
-
-    app.update()
-    assert _metrics.collect() == {
-        "call.declare_dict_data_entry_w_components_async": 1,
-        "call.declare_data_entry": 1,
-    }
-    assert GlobalDictTarget.store.data == {
-        "1A": DictDataWithPrev(
-            data="content1A", prev=["content1A"], prev_may_be_missing=True
-        ),
-    }
 
 
 # ============================================================================

@@ -32,7 +32,7 @@ import cocoindex.asyncio as coco_aio
 from cocoindex.connectors import localfs, postgres
 from cocoindex.ops.text import CustomLanguageConfig, RecursiveSplitter
 from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
-from cocoindex.resources.file import FileLike, PatternFilePathMatcher
+from cocoindex.resources.file import AsyncFileLike, PatternFilePathMatcher
 
 from models import AuthorModel, PaperMetadataModel
 
@@ -172,12 +172,12 @@ async def coco_lifespan(
 
 @coco.function(memo=True)
 async def process_file(
-    file: FileLike,
+    file: AsyncFileLike,
     metadata_table: postgres.TableTarget[PaperMetadataRow],
     author_table: postgres.TableTarget[AuthorPaperRow],
     embedding_table: postgres.TableTarget[MetadataEmbeddingRow],
 ) -> None:
-    content = file.read()
+    content = await file.read()
 
     basic_info = extract_basic_info(content)
     first_page_md = pdf_to_markdown(basic_info.first_page)
@@ -237,52 +237,39 @@ async def process_file(
 @coco.function
 async def app_main(sourcedir: pathlib.Path) -> None:
     target_db = coco.use_context(PG_DB)
-    with coco.component_subpath("setup"):
-        metadata_table = await coco_aio.mount_run(
-            coco.component_subpath("paper_metadata"),
-            target_db.declare_table_target,
-            table_name=TABLE_METADATA,
-            table_schema=await postgres.TableSchema.from_class(
-                PaperMetadataRow,
-                primary_key=["filename"],
-            ),
-            pg_schema_name=PG_SCHEMA_NAME,
-        ).result()
-        author_table = await coco_aio.mount_run(
-            coco.component_subpath("author_papers"),
-            target_db.declare_table_target,
-            table_name=TABLE_AUTHOR_PAPERS,
-            table_schema=await postgres.TableSchema.from_class(
-                AuthorPaperRow,
-                primary_key=["author_name", "filename"],
-            ),
-            pg_schema_name=PG_SCHEMA_NAME,
-        ).result()
-        embedding_table = await coco_aio.mount_run(
-            coco.component_subpath("metadata_embeddings"),
-            target_db.declare_table_target,
-            table_name=TABLE_EMBEDDINGS,
-            table_schema=await postgres.TableSchema.from_class(
-                MetadataEmbeddingRow,
-                primary_key=["id"],
-            ),
-            pg_schema_name=PG_SCHEMA_NAME,
-        ).result()
+    metadata_table = await target_db.mount_table_target(
+        table_name=TABLE_METADATA,
+        table_schema=await postgres.TableSchema.from_class(
+            PaperMetadataRow,
+            primary_key=["filename"],
+        ),
+        pg_schema_name=PG_SCHEMA_NAME,
+    )
+    author_table = await target_db.mount_table_target(
+        table_name=TABLE_AUTHOR_PAPERS,
+        table_schema=await postgres.TableSchema.from_class(
+            AuthorPaperRow,
+            primary_key=["author_name", "filename"],
+        ),
+        pg_schema_name=PG_SCHEMA_NAME,
+    )
+    embedding_table = await target_db.mount_table_target(
+        table_name=TABLE_EMBEDDINGS,
+        table_schema=await postgres.TableSchema.from_class(
+            MetadataEmbeddingRow,
+            primary_key=["id"],
+        ),
+        pg_schema_name=PG_SCHEMA_NAME,
+    )
 
     files = localfs.walk_dir(
         sourcedir,
         recursive=True,
-        path_matcher=PatternFilePathMatcher(included_patterns=["*.pdf"]),
+        path_matcher=PatternFilePathMatcher(included_patterns=["**/*.pdf"]),
     )
-    for f in files:
-        coco.mount(
-            coco.component_subpath("file", str(f.file_path.path)),
-            process_file,
-            f,
-            metadata_table,
-            author_table,
-            embedding_table,
-        )
+    await coco_aio.mount_each(
+        process_file, files.items(), metadata_table, author_table, embedding_table
+    )
 
 
 app = coco_aio.App(

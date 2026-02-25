@@ -57,7 +57,8 @@ cocoindex/
 │   │   │   ├── environment.py  # Environment and lifespan handling
 │   │   │   ├── function.py     # @coco.function decorator implementation
 │   │   │   ├── component_ctx.py # ComponentContext and component_subpath
-│   │   │   └── target_state.py # Target state implementation
+│   │   │   ├── target_state.py # Target state implementation
+│   │   │   └── core.pyi        # Type stubs for the Rust extension module (update when PyO3 APIs change)
 │   │   ├── connectors/         # External system connectors (localfs, postgres, qdrant, lancedb, google_drive)
 │   │   ├── connectorkits/      # Connector building utilities
 │   │   ├── resources/          # Abstractions: file.py (FileLike), chunk.py (Chunk), schema.py
@@ -132,8 +133,8 @@ with ctx.attach():
 
 **Mount handles:**
 
-* `mount()` → `ProcessingUnitMountHandle`: call `wait_until_ready()` to block until target states are synced
-* `mount_run()` → `ProcessingUnitMountRunHandle[T]`: call `result()` to get return value (implicitly waits)
+* `mount()` → `ComponentMountHandle`: call `wait_until_ready()` to block until target states are synced
+* `mount_run()` → `ComponentMountRunHandle[T]`: call `result()` to get return value (implicitly waits)
 
 ### How syncing works
 
@@ -161,7 +162,7 @@ def app_main(sourcedir: pathlib.Path, outdir: pathlib.Path) -> None:
     ).result()
 
     files = localfs.walk_dir(
-        sourcedir, path_matcher=PatternFilePathMatcher(included_patterns=["*.md"])
+        sourcedir, path_matcher=PatternFilePathMatcher(included_patterns=["**/*.md"])
     )
     with coco.component_subpath("process"):
         for f in files:
@@ -181,7 +182,7 @@ app.update(report_to_stdout=True)
 
 ### Internal vs External Modules
 
-We distinguish between **internal modules** (under packages with `_` prefix, e.g. `_internal.*`) and **external modules** (which users can directly import).
+We distinguish between **internal modules** (under packages with `_` prefix, e.g. `_internal.*` or `connectors.*._source`) and **external modules** (which users can directly import).
 
 **External modules** (user-facing, e.g. `cocoindex/ops/sentence_transformers.py`):
 
@@ -198,6 +199,10 @@ We distinguish between **internal modules** (under packages with `_` prefix, e.g
 * Less strict since users shouldn't import these directly
 * Standard library and internal imports don't need underscore prefix
 * Only prefix symbols that are truly private to the module itself (e.g. `_context_var` for a module-private ContextVar)
+
+### Type Annotations
+
+Avoid `Any` whenever feasible. Use specific types — including concrete types from third-party libraries. Only use `Any` when the type is truly generic and no downstream code needs to downcast it.
 
 ### Testing Guidelines
 

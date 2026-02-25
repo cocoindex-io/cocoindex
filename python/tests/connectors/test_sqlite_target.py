@@ -133,12 +133,12 @@ async def declare_table_and_rows() -> None:
     """Declare table and rows from global source data."""
     assert _sqlite_db is not None
 
-    table = coco.mount_run(
+    table = coco.use_mount(
         coco.component_subpath("setup", "table"),
         _sqlite_db.declare_table_target,
         _table_name,
         await sqlite.TableSchema.from_class(_row_type, primary_key=["id"]),
-    ).result()
+    )
 
     for row in _source_rows:
         table.declare_row(row=row)
@@ -284,12 +284,12 @@ def test_different_schema_types(
     with sqlite.register_db("test_schema_types_db", managed_conn) as db:
 
         async def declare_extended_table() -> None:
-            table = coco.mount_run(
+            table = coco.use_mount(
                 coco.component_subpath("setup", "table"),
                 db.declare_table_target,
                 "extended_table",
                 await sqlite.TableSchema.from_class(ExtendedRow, primary_key=["id"]),
-            ).result()
+            )
             for row in extended_rows:
                 table.declare_row(row=row)
 
@@ -329,12 +329,12 @@ def test_drop_table(sqlite_db: tuple[sqlite.ManagedConnection, Path]) -> None:
 
         async def declare_table_conditionally() -> None:
             if _source_rows:  # Only declare if there are rows
-                table = coco.mount_run(
+                table = coco.use_mount(
                     coco.component_subpath("setup", "table"),
                     db.declare_table_target,
                     _table_name,
                     await sqlite.TableSchema.from_class(_row_type, primary_key=["id"]),
-                ).result()
+                )
                 for row in _source_rows:
                     table.declare_row(row=row)
 
@@ -404,19 +404,19 @@ def test_multiple_tables(sqlite_db: tuple[sqlite.ManagedConnection, Path]) -> No
         async def declare_multiple_tables() -> None:
             schema = await sqlite.TableSchema.from_class(SimpleRow, primary_key=["id"])
 
-            table1 = coco.mount_run(
+            table1 = coco.use_mount(
                 coco.component_subpath("setup", "table1"),
                 db.declare_table_target,
                 "users",
                 schema,
-            ).result()
+            )
 
-            table2 = coco.mount_run(
+            table2 = coco.use_mount(
                 coco.component_subpath("setup", "table2"),
                 db.declare_table_target,
                 "products",
                 schema,
-            ).result()
+            )
 
             for row in table1_rows:
                 table1.declare_row(row=row)
@@ -463,7 +463,7 @@ def test_dict_rows(sqlite_db: tuple[sqlite.ManagedConnection, Path]) -> None:
     with sqlite.register_db("dict_table_db", managed_conn) as db:
 
         def declare_dict_table() -> None:
-            table = coco.mount_run(
+            table = coco.use_mount(
                 coco.component_subpath("setup", "table"),
                 db.declare_table_target,
                 "dict_table",
@@ -475,7 +475,7 @@ def test_dict_rows(sqlite_db: tuple[sqlite.ManagedConnection, Path]) -> None:
                     },
                     primary_key=["id"],
                 ),
-            ).result()
+            )
 
             for row in dict_rows:
                 table.declare_row(row=row)
@@ -517,13 +517,13 @@ def test_user_managed_table(sqlite_db: tuple[sqlite.ManagedConnection, Path]) ->
     with sqlite.register_db("user_managed_db", managed_conn) as db:
 
         async def declare_user_managed_rows() -> None:
-            table = coco.mount_run(
+            table = coco.use_mount(
                 coco.component_subpath("setup", "table"),
                 db.declare_table_target,
                 "user_managed",
                 await sqlite.TableSchema.from_class(SimpleRow, primary_key=["id"]),
                 managed_by="user",
-            ).result()
+            )
 
             for row in user_rows:
                 table.declare_row(row=row)
@@ -580,7 +580,7 @@ def test_vec0_virtual_table_basic(
     with sqlite.register_db("vec0_basic_db", managed_conn) as db:
 
         async def declare_vec0_table() -> None:
-            table = coco.mount_run(
+            table = coco.use_mount(
                 coco.component_subpath("setup", "table"),
                 db.declare_table_target,
                 table_name="vec0_docs",
@@ -589,7 +589,7 @@ def test_vec0_virtual_table_basic(
                     primary_key=["id"],
                 ),
                 virtual_table_def=sqlite.Vec0TableDef(),
-            ).result()
+            )
 
             for row in rows:
                 table.declare_row(row=row)
@@ -682,7 +682,7 @@ def test_vec0_with_partition_keys(
     with sqlite.register_db("vec0_partition_db", managed_conn) as db:
 
         async def declare_partitioned_table() -> None:
-            table = coco.mount_run(
+            table = coco.use_mount(
                 coco.component_subpath("setup", "table"),
                 db.declare_table_target,
                 table_name="vec0_partitioned",
@@ -693,7 +693,7 @@ def test_vec0_with_partition_keys(
                 virtual_table_def=sqlite.Vec0TableDef(
                     partition_key_columns=["year"],
                 ),
-            ).result()
+            )
 
             for row in rows:
                 table.declare_row(row=row)
@@ -752,7 +752,7 @@ def test_vec0_with_auxiliary_columns(
     with sqlite.register_db("vec0_aux_db", managed_conn) as db:
 
         async def declare_aux_table() -> None:
-            table = coco.mount_run(
+            table = coco.use_mount(
                 coco.component_subpath("setup", "table"),
                 db.declare_table_target,
                 table_name="vec0_with_aux",
@@ -763,7 +763,7 @@ def test_vec0_with_auxiliary_columns(
                 virtual_table_def=sqlite.Vec0TableDef(
                     auxiliary_columns=["metadata"],
                 ),
-            ).result()
+            )
 
             for row in rows:
                 table.declare_row(row=row)
@@ -826,7 +826,7 @@ def test_vec0_schema_change_forces_recreate(
     with sqlite.register_db("vec0_schema_db", managed_conn) as db:
 
         async def declare_evolving_table() -> None:
-            table = coco.mount_run(
+            table = coco.use_mount(
                 coco.component_subpath("setup", "table"),
                 db.declare_table_target,
                 table_name="vec0_evolving",
@@ -835,7 +835,7 @@ def test_vec0_schema_change_forces_recreate(
                     primary_key=["id"],
                 ),
                 virtual_table_def=sqlite.Vec0TableDef(),
-            ).result()
+            )
 
             for row in rows:
                 table.declare_row(row=row)
@@ -1116,7 +1116,7 @@ def test_vec0_with_column_overrides(
     with sqlite.register_db("vec0_override_db", managed_conn) as db:
 
         async def declare_vec0_override_table() -> None:
-            table = coco.mount_run(
+            table = coco.use_mount(
                 coco.component_subpath("setup", "table"),
                 db.declare_table_target,
                 table_name="vec0_overrides",
@@ -1126,7 +1126,7 @@ def test_vec0_with_column_overrides(
                     column_overrides={"vec": explicit_vector_schema},
                 ),
                 virtual_table_def=sqlite.Vec0TableDef(),
-            ).result()
+            )
 
             for row in rows:
                 table.declare_row(row=row)
@@ -1174,7 +1174,7 @@ def test_regular_table_vs_vec0_switch(
     with sqlite.register_db("switch_db", managed_conn) as db:
 
         async def declare_table() -> None:
-            table = coco.mount_run(
+            table = coco.use_mount(
                 coco.component_subpath("setup", "table"),
                 db.declare_table_target,
                 table_name="switchable",
@@ -1183,7 +1183,7 @@ def test_regular_table_vs_vec0_switch(
                     primary_key=["id"],
                 ),
                 virtual_table_def=sqlite.Vec0TableDef() if use_virtual else None,
-            ).result()
+            )
 
             for row in rows:
                 table.declare_row(row=row)

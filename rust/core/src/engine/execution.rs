@@ -12,7 +12,8 @@ use crate::engine::context::{
     FnCallMemo,
 };
 use crate::engine::context::{FnCallContext, FnCallMemoEntry};
-use crate::engine::profile::{EngineProfile, Persist, StableFingerprint};
+use crate::engine::logic_registry;
+use crate::engine::profile::{EngineProfile, Persist};
 use crate::engine::target_state::{
     TargetActionSink, TargetHandler, TargetStateProvider, TargetStateProviderRegistry,
 };
@@ -46,7 +47,9 @@ pub(crate) fn use_or_invalidate_component_memoization<Prof: EngineProfile>(
         };
         if let Some(processor_fp) = processor_fp {
             let memo_info: db_schema::ComponentMemoizationInfo<'_> = from_msgpack_slice(&data)?;
-            if memo_info.processor_fp == processor_fp {
+            if memo_info.processor_fp == processor_fp
+                && logic_registry::all_contained(&memo_info.logic_deps)
+            {
                 let bytes = match memo_info.return_value {
                     db_schema::MemoizedValue::Inlined(b) => b,
                 };
@@ -105,6 +108,7 @@ fn write_component_memoization<Prof: EngineProfile>(
     let memo_info = db_schema::ComponentMemoizationInfo {
         processor_fp,
         return_value: db_schema::MemoizedValue::Inlined(Cow::Borrowed(bytes.as_ref())),
+        logic_deps: comp_ctx.take_logic_deps(),
     };
     let encoded = rmp_serde::to_vec_named(&memo_info)?;
     db.put(wtxn, key.as_slice(), encoded.as_slice())?;
@@ -126,9 +130,10 @@ fn write_fn_call_memo<Prof: EngineProfile>(
     let ret_bytes = memo.ret.to_bytes()?;
     let fn_call_memo = db_schema::FunctionMemoizationEntry {
         return_value: db_schema::MemoizedValue::Inlined(Cow::Borrowed(ret_bytes.as_ref())),
-        child_components: memo.child_components,
+        child_components: vec![],
         target_state_paths: memo.target_state_paths,
         dependency_memo_entries: memo.dependency_memo_entries.into_iter().collect(),
+        logic_deps: memo.logic_deps.into_iter().collect(),
     };
     let encoded = rmp_serde::to_vec_named(&fn_call_memo)?;
     db.put(wtxn, key.as_slice(), encoded.as_slice())?;
@@ -152,15 +157,23 @@ fn read_fn_call_memo_with_txn<Prof: EngineProfile>(
         return Ok(None);
     };
     let fn_call_memo: db_schema::FunctionMemoizationEntry<'_> = from_msgpack_slice(&data)?;
+    if !logic_registry::all_contained(&fn_call_memo.logic_deps) {
+        return Ok(None);
+    }
+    if !fn_call_memo.child_components.is_empty() {
+        // Legacy entry stored child component paths. Invalidate it so the function re-runs,
+        // detects the child components, logs a warning, and the entry is cleaned up.
+        return Ok(None);
+    }
     let return_value_bytes = match fn_call_memo.return_value {
         db_schema::MemoizedValue::Inlined(b) => b,
     };
     let ret = Prof::FunctionData::from_bytes(return_value_bytes.as_ref())?;
     Ok(Some(FnCallMemo {
         ret,
-        child_components: fn_call_memo.child_components,
         target_state_paths: fn_call_memo.target_state_paths,
         dependency_memo_entries: fn_call_memo.dependency_memo_entries.into_iter().collect(),
+        logic_deps: fn_call_memo.logic_deps.into_iter().collect(),
         already_stored: true,
     }))
 }
@@ -182,13 +195,13 @@ pub fn declare_target_state<Prof: EngineProfile>(
     comp_ctx: &ComponentProcessorContext<Prof>,
     fn_ctx: &FnCallContext,
     provider: TargetStateProvider<Prof>,
-    key: Prof::TargetStateKey,
+    key: StableKey,
     value: Prof::TargetStateValue,
 ) -> Result<()> {
-    let target_state_path = make_target_state_path(&provider, &key);
+    let target_state_path = provider.target_state_path().concat(&key);
     let declared_effect = DeclaredEffect {
         provider,
-        key,
+        item_key: key,
         value,
         child_provider: None,
     };
@@ -201,7 +214,7 @@ pub fn declare_target_state<Prof: EngineProfile>(
             btree_map::Entry::Occupied(entry) => {
                 client_bail!(
                     "Target state already declared with key: {:?}",
-                    entry.get().key
+                    entry.get().item_key
                 );
             }
             btree_map::Entry::Vacant(entry) => {
@@ -218,30 +231,29 @@ pub fn declare_target_state_with_child<Prof: EngineProfile>(
     comp_ctx: &ComponentProcessorContext<Prof>,
     fn_ctx: &FnCallContext,
     provider: TargetStateProvider<Prof>,
-    key: Prof::TargetStateKey,
+    key: StableKey,
     value: Prof::TargetStateValue,
 ) -> Result<TargetStateProvider<Prof>> {
-    let target_state_path = make_target_state_path(&provider, &key);
     let child_provider = comp_ctx.update_building_state(|building_state| {
         let child_provider = building_state
             .target_states
             .provider_registry
-            .register_lazy(target_state_path.clone())?;
+            .register_lazy(&provider, key.clone())?;
         let declared_effect = DeclaredEffect {
             provider,
-            key,
+            item_key: key,
             value,
             child_provider: Some(child_provider.clone()),
         };
         match building_state
             .target_states
             .declared_effects
-            .entry(target_state_path.clone())
+            .entry(child_provider.target_state_path().clone())
         {
             btree_map::Entry::Occupied(entry) => {
                 client_bail!(
                     "Target state already declared with key: {:?}",
-                    entry.get().key
+                    entry.get().item_key
                 );
             }
             btree_map::Entry::Vacant(entry) => {
@@ -251,17 +263,11 @@ pub fn declare_target_state_with_child<Prof: EngineProfile>(
         Ok(child_provider)
     })?;
     fn_ctx.update(|inner| {
-        inner.target_state_paths.push(target_state_path);
+        inner
+            .target_state_paths
+            .push(child_provider.target_state_path().clone());
     });
     Ok(child_provider)
-}
-
-fn make_target_state_path<Prof: EngineProfile>(
-    provider: &TargetStateProvider<Prof>,
-    key: &Prof::TargetStateKey,
-) -> TargetStatePath {
-    let fp = key.stable_fingerprint();
-    provider.target_state_path().concat(fp)
 }
 
 struct ChildrenPathInfo {
@@ -675,7 +681,6 @@ impl<Prof: EngineProfile> SinkInput<Prof> {
 
 pub(crate) struct SubmitOutput<Prof: EngineProfile> {
     pub built_target_states_providers: Option<TargetStateProviderRegistry<Prof>>,
-    pub memos_with_mounts_to_store: Vec<(Fingerprint, FnCallMemo<Prof>)>,
     pub touched_previous_states: bool,
 }
 
@@ -688,7 +693,6 @@ pub(crate) async fn submit<Prof: EngineProfile>(
     let processor_name = processor.map(|p| p.processor_info().name.as_str());
 
     let mut built_target_states_providers: Option<TargetStateProviderRegistry<Prof>> = None;
-    let mut memos_with_mounts_to_store: Vec<(Fingerprint, FnCallMemo<Prof>)> = Vec::new();
     let (target_states_providers, declared_effects, child_path_set, finalized_fn_call_memos) =
         match comp_ctx.processing_state() {
             ComponentProcessingAction::Build(build_ctx) => {
@@ -700,13 +704,9 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                     );
                 };
 
-                let mut child_path_set = building_state.child_path_set;
-                let finalized_fn_call_memos = finalize_fn_call_memoization(
-                    comp_ctx,
-                    building_state.fn_call_memos,
-                    &mut memos_with_mounts_to_store,
-                    &mut child_path_set,
-                )?;
+                let child_path_set = building_state.child_path_set;
+                let finalized_fn_call_memos =
+                    finalize_fn_call_memoization(comp_ctx, building_state.fn_call_memos)?;
                 (
                     &built_target_states_providers
                         .get_or_insert(building_state.target_states.provider_registry)
@@ -760,7 +760,6 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                         Some(db_schema::StablePathNodeType::Component) => {
                             return Ok(SubmitOutput {
                                 built_target_states_providers: None,
-                                memos_with_mounts_to_store,
                                 touched_previous_states: false,
                             });
                         }
@@ -816,7 +815,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                     match declared_target_state {
                         Some(declared_effect) => (
                             Cow::Owned(declared_effect.provider),
-                            declared_effect.key,
+                            declared_effect.item_key,
                             Some(declared_effect.value),
                             declared_effect.child_provider,
                         ),
@@ -840,7 +839,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                                 );
                                 continue;
                             };
-                            let effect_key = Prof::TargetStateKey::from_bytes(item.key.as_ref())?;
+                            let effect_key: StableKey = storekey::decode(item.key.as_ref())?;
                             (
                                 Cow::Borrowed(target_states_provider),
                                 effect_key,
@@ -884,18 +883,19 @@ pub(crate) async fn submit<Prof: EngineProfile>(
 
             // Deal with new target states
             for (target_state_path, target_state) in declared_target_states_to_process {
-                let effect_key_bytes = target_state.key.to_bytes()?;
+                let effect_key_bytes = storekey::encode_vec(&target_state.item_key)
+                    .map_err(|e| internal_error!("Failed to encode StableKey: {e}"))?;
                 let Some(recon_output) = target_state
                     .provider
                     .handler()
                     .ok_or_else(|| {
                         internal_error!(
                             "provider not ready for target state with key {:?}",
-                            target_state.key
+                            target_state.item_key
                         )
                     })?
                     .reconcile(
-                        target_state.key,
+                        target_state.item_key,
                         Some(target_state.value),
                         /*&prev_states=*/ &[],
                         /*prev_may_be_missing=*/ true,
@@ -981,7 +981,6 @@ pub(crate) async fn submit<Prof: EngineProfile>(
 
     Ok(SubmitOutput {
         built_target_states_providers,
-        memos_with_mounts_to_store,
         touched_previous_states,
     })
 }
@@ -990,9 +989,8 @@ pub(crate) async fn submit<Prof: EngineProfile>(
 pub(crate) async fn post_submit_for_build<Prof: EngineProfile>(
     comp_ctx: &ComponentProcessorContext<Prof>,
     comp_memo: Option<(Fingerprint, &'_ Prof::FunctionData)>,
-    memos_with_mounts_to_store: Vec<(Fingerprint, FnCallMemo<Prof>)>,
 ) -> Result<()> {
-    if comp_memo.is_none() && memos_with_mounts_to_store.is_empty() {
+    if comp_memo.is_none() {
         return Ok(());
     }
     let db_env = comp_ctx.app_ctx().env().db_env();
@@ -1001,9 +999,6 @@ pub(crate) async fn post_submit_for_build<Prof: EngineProfile>(
 
     if let Some((fp, ret)) = comp_memo {
         write_component_memoization(&mut wtxn, db, comp_ctx, fp, &ret)?;
-    }
-    for (fp, memo) in memos_with_mounts_to_store {
-        write_fn_call_memo(&mut wtxn, db, comp_ctx, fp, memo)?;
     }
     wtxn.commit()?;
     Ok(())
@@ -1119,8 +1114,6 @@ struct FinalizedFnCallMemoization<Prof: EngineProfile> {
 fn finalize_fn_call_memoization<Prof: EngineProfile>(
     comp_ctx: &ComponentProcessorContext<Prof>,
     fn_call_memos: HashMap<Fingerprint, Arc<tokio::sync::RwLock<FnCallMemoEntry<Prof>>>>,
-    memos_with_mounts_to_store: &mut Vec<(Fingerprint, FnCallMemo<Prof>)>,
-    stable_path_set: &mut ChildStablePathSet,
 ) -> Result<FinalizedFnCallMemoization<Prof>> {
     let mut result = FinalizedFnCallMemoization::default();
 
@@ -1138,17 +1131,12 @@ fn finalize_fn_call_memoization<Prof: EngineProfile>(
         result.all_memos_fps.insert(*fp);
 
         if memo.already_stored {
-            for child_component in &memo.child_components {
-                stable_path_set.add_child(child_component.as_ref(), StablePathSet::Component)?;
-            }
             result
                 .contained_target_state_paths
                 .extend(memo.target_state_paths.into_iter());
             deps_to_process.extend(memo.dependency_memo_entries.into_iter());
-        } else if memo.child_components.is_empty() {
-            result.memos_without_mounts_to_store.push((*fp, memo));
         } else {
-            memos_with_mounts_to_store.push((*fp, memo));
+            result.memos_without_mounts_to_store.push((*fp, memo));
         }
         // For non-stored memos, their dependencies were already resolved in this run,
         // so they exist in `fn_call_memos` and will be visited by the outer loop.
@@ -1168,9 +1156,6 @@ fn finalize_fn_call_memoization<Prof: EngineProfile>(
             let Some(memo) = read_fn_call_memo_with_txn(&rtxn, db, comp_ctx, fp)? else {
                 continue;
             };
-            for child_component in &memo.child_components {
-                stable_path_set.add_child(child_component.as_ref(), StablePathSet::Component)?;
-            }
             result
                 .contained_target_state_paths
                 .extend(memo.target_state_paths.into_iter());

@@ -117,36 +117,27 @@ async def app_main(sourcedir: pathlib.Path) -> None:
     dim = int(getattr(model, "dim", 128))
 
     target_db = coco.use_context(QDRANT_DB)
-    with coco.component_subpath("setup"):
-        target_collection = await coco_aio.mount_run(
-            coco.component_subpath("table"),
-            target_db.declare_collection_target,
-            collection_name=QDRANT_COLLECTION,
-            schema=await qdrant.CollectionSchema.create(
-                vectors=qdrant.QdrantVectorDef(
-                    schema=MultiVectorSchema(
-                        vector_schema=VectorSchema(dtype=np.dtype(np.float32), size=dim)
-                    ),
-                    distance="cosine",
-                    multivector_comparator="max_sim",
-                )
-            ),
-        ).result()
+    target_collection = await target_db.mount_collection_target(
+        collection_name=QDRANT_COLLECTION,
+        schema=await qdrant.CollectionSchema.create(
+            vectors=qdrant.QdrantVectorDef(
+                schema=MultiVectorSchema(
+                    vector_schema=VectorSchema(dtype=np.dtype(np.float32), size=dim)
+                ),
+                distance="cosine",
+                multivector_comparator="max_sim",
+            )
+        ),
+    )
 
     files = localfs.walk_dir(
         sourcedir,
         recursive=True,
         path_matcher=PatternFilePathMatcher(
-            included_patterns=["*.jpg", "*.jpeg", "*.png"]
+            included_patterns=["**/*.jpg", "**/*.jpeg", "**/*.png"]
         ),
     )
-    for f in files:
-        coco.mount(
-            coco.component_subpath("file", str(f.file_path.path)),
-            process_file,
-            f,
-            target_collection,
-        )
+    await coco_aio.mount_each(process_file, files.items(), target_collection)
 
 
 app = coco_aio.App(

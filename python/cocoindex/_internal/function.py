@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import ast
 import asyncio
 import functools
+import hashlib
 import importlib
 import inspect
 import pickle
+import textwrap
 import threading
 from typing import (
     Callable,
@@ -158,9 +161,12 @@ def _build_sync_core_processor(
     kwargs: dict[str, Any],
     processor_info: core.ComponentProcessorInfo,
     memo_fp: core.Fingerprint | None = None,
+    logic_fp: core.Fingerprint | None = None,
 ) -> core.ComponentProcessor[R_co]:
     def _build(comp_ctx: core.ComponentProcessorContext) -> R_co:
         fn_ctx = core.FnCallContext()
+        if logic_fp is not None:
+            fn_ctx.add_logic_dep(logic_fp)
         context = ComponentContext(env, path, comp_ctx, fn_ctx)
         tok = _context_var.set(context)
         try:
@@ -172,6 +178,49 @@ def _build_sync_core_processor(
     return core.ComponentProcessor.new_sync(_build, processor_info, memo_fp)
 
 
+def _strip_docstring(body: list[ast.stmt]) -> None:
+    """Remove leading docstring from a function/class body in-place."""
+    if (
+        body
+        and isinstance(body[0], ast.Expr)
+        and isinstance(body[0].value, ast.Constant)
+        and isinstance(body[0].value.value, str)
+    ):
+        body.pop(0)
+
+
+def _compute_logic_fingerprint(
+    fn: Callable[..., Any], *, version: int | None = None
+) -> core.Fingerprint:
+    """Compute a fingerprint from the function's canonical AST.
+
+    Uses AST instead of raw source text so that comment, whitespace,
+    formatting, and docstring changes do not cause false cache invalidations.
+    Falls back to bytecode hashing when source is unavailable.
+
+    When *version* is provided, it is used as the canonical representation
+    instead of the AST — bumping version forces re-execution.
+
+    The fully-qualified module + qualname is always included so that
+    identical function bodies in different modules don't collide.
+    """
+    if version is not None:
+        canonical = f"<version>({version})"
+    else:
+        try:
+            source = textwrap.dedent(inspect.getsource(fn))
+            tree = ast.parse(source)
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    node.decorator_list = []
+                    _strip_docstring(node.body)
+            canonical = ast.dump(tree, include_attributes=False, annotate_fields=True)
+        except (OSError, SyntaxError):
+            canonical = f"<bytecode>{hashlib.sha256(fn.__code__.co_code).hexdigest()}"
+    payload = f"{fn.__module__}.{fn.__qualname__}\n{canonical}"
+    return core.fingerprint_str(payload)
+
+
 class SyncFunction(Function[P, R_co]):
     """Sync function with optional memoization.
 
@@ -179,16 +228,42 @@ class SyncFunction(Function[P, R_co]):
     and produce AsyncFunction (via @cocoindex.asyncio.function).
     """
 
-    __slots__ = ("_fn", "_memo", "_processor_info")
+    __slots__ = ("_fn", "_memo", "_processor_info", "_logic_fp")
 
     _fn: Callable[P, R_co]
     _memo: bool
     _processor_info: core.ComponentProcessorInfo
+    _logic_fp: core.Fingerprint
 
-    def __init__(self, fn: Callable[P, R_co], *, memo: bool):
+    def __init__(
+        self, fn: Callable[P, R_co], *, memo: bool, version: int | None = None
+    ):
         self._fn = fn
         self._memo = memo
         self._processor_info = core.ComponentProcessorInfo(fn.__qualname__)
+        self._logic_fp = _compute_logic_fingerprint(fn, version=version)
+        core.register_logic_fingerprint(self._logic_fp)
+
+    def __del__(self) -> None:
+        fp = getattr(self, "_logic_fp", None)
+        if fp is not None:
+            core.unregister_logic_fingerprint(fp)
+
+    @overload
+    def __get__(self, instance: None, owner: type) -> SyncFunction[P, R_co]: ...
+    @overload
+    def __get__(
+        self: SyncFunction[Concatenate[SelfT, P0], R_co],
+        instance: SelfT,
+        owner: type[SelfT] | None = None,
+    ) -> _BoundSyncMethod[SelfT]: ...
+    def __get__(
+        self, instance: SelfT | None, owner: type | None = None
+    ) -> _BoundSyncMethod[SelfT] | SyncFunction[P, R_co]:
+        """Descriptor protocol for method binding."""
+        if instance is None:
+            return self
+        return _BoundSyncMethod(self, instance)  # type: ignore[arg-type]
 
     def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R_co:
         # In subprocess, execute the raw function directly (no memo)
@@ -215,6 +290,7 @@ class SyncFunction(Function[P, R_co]):
                 if isinstance(r, core.PendingFnCallMemo):
                     try:
                         fn_ctx = core.FnCallContext()
+                        fn_ctx.add_logic_dep(self._logic_fp)
                         ret = _call_in_context(fn_ctx)
                         if r.resolve(fn_ctx, ret):
                             parent_ctx._core_fn_call_ctx.join_child_memo(memo_fp)
@@ -226,6 +302,7 @@ class SyncFunction(Function[P, R_co]):
                     return cast(R_co, r)
             else:
                 fn_ctx = core.FnCallContext()
+                fn_ctx.add_logic_dep(self._logic_fp)
                 return _call_in_context(fn_ctx)
         finally:
             if fn_ctx is not None:
@@ -240,8 +317,30 @@ class SyncFunction(Function[P, R_co]):
     ) -> core.ComponentProcessor[R_co]:
         memo_fp = fingerprint_call(self._fn, args, kwargs) if self._memo else None
         return _build_sync_core_processor(
-            self._fn, env, path, args, kwargs, self._processor_info, memo_fp
+            self._fn,
+            env,
+            path,
+            args,
+            kwargs,
+            self._processor_info,
+            memo_fp,
+            self._logic_fp,
         )
+
+
+class _BoundSyncMethod(Generic[SelfT]):
+    """Bound method wrapper for SyncFunction."""
+
+    __slots__ = ("_func", "_instance")
+
+    def __init__(
+        self, func: SyncFunction[Concatenate[SelfT, ...], Any], instance: SelfT
+    ):
+        self._func = func
+        self._instance = instance
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        return self._func(self._instance, *args, **kwargs)
 
 
 # ============================================================================
@@ -257,9 +356,12 @@ def _build_async_core_processor(
     kwargs: dict[str, Any],
     processor_info: core.ComponentProcessorInfo,
     memo_fp: core.Fingerprint | None = None,
+    logic_fp: core.Fingerprint | None = None,
 ) -> core.ComponentProcessor[R_co]:
     async def _build(comp_ctx: core.ComponentProcessorContext) -> R_co:
         fn_ctx = core.FnCallContext()
+        if logic_fp is not None:
+            fn_ctx.add_logic_dep(logic_fp)
         context = ComponentContext(env, path, comp_ctx, fn_ctx)
         tok = _context_var.set(context)
         try:
@@ -325,6 +427,7 @@ class AsyncFunction(Function[P, R_co]):
         "_fn_is_async",
         "_memo",
         "_processor_info",
+        "_logic_fp",
         "_batching",
         "_max_batch_size",
         "_runner",
@@ -356,6 +459,7 @@ class AsyncFunction(Function[P, R_co]):
         batching: bool = False,
         max_batch_size: int | None = None,
         runner: Runner | None = None,
+        version: int | None = None,
     ) -> None:
         fn = async_fn or sync_fn
         if fn is None:
@@ -364,6 +468,8 @@ class AsyncFunction(Function[P, R_co]):
         self._orig_sync_fn = sync_fn
         self._memo = memo
         self._processor_info = core.ComponentProcessorInfo(fn.__qualname__)
+        self._logic_fp = _compute_logic_fingerprint(fn, version=version)
+        core.register_logic_fingerprint(self._logic_fp)
         self._batching = batching
         self._max_batch_size = max_batch_size
         self._runner = runner
@@ -371,6 +477,11 @@ class AsyncFunction(Function[P, R_co]):
         self._queues = {}
         self._batchers = {}
         self._batchers_lock = threading.Lock()
+
+    def __del__(self) -> None:
+        fp = getattr(self, "_logic_fp", None)
+        if fp is not None:
+            core.unregister_logic_fingerprint(fp)
 
     @property
     def _any_fn(self) -> AnyCallable[P, R_co]:
@@ -417,6 +528,7 @@ class AsyncFunction(Function[P, R_co]):
         pending_memo: core.PendingFnCallMemo | None = None
         memo_fp: core.Fingerprint | None = None
         fn_ctx = core.FnCallContext()
+        fn_ctx.add_logic_dep(self._logic_fp)
 
         try:
             # Check memo (when enabled and context available)
@@ -512,7 +624,6 @@ class AsyncFunction(Function[P, R_co]):
         Handles both sync and async underlying functions.
         """
         if self._runner is not None:
-            # Use picklable callable for subprocess execution
             # Choose appropriate callable and runner method based on underlying fn type
             bound_fn_obj = self.__get__(self_obj)
             batch_callable, runner_run = (
@@ -624,17 +735,32 @@ class AsyncFunction(Function[P, R_co]):
                 kwargs,
                 self._processor_info,
                 memo_fp,
+                self._logic_fp,
             )
 
         orig_async_fn = self._orig_async_fn
         if orig_async_fn is not None:
             return _build_async_core_processor(
-                orig_async_fn, env, path, args, kwargs, self._processor_info, memo_fp
+                orig_async_fn,
+                env,
+                path,
+                args,
+                kwargs,
+                self._processor_info,
+                memo_fp,
+                self._logic_fp,
             )
 
         assert self._orig_sync_fn is not None
         return _build_sync_core_processor(
-            self._orig_sync_fn, env, path, args, kwargs, self._processor_info, memo_fp
+            self._orig_sync_fn,
+            env,
+            path,
+            args,
+            kwargs,
+            self._processor_info,
+            memo_fp,
+            self._logic_fp,
         )
 
 
@@ -651,11 +777,13 @@ class _GenericFunctionBuilder:
         batching: bool = False,
         max_batch_size: int | None = None,
         runner: Runner | None = None,
+        version: int | None = None,
     ) -> None:
         self._memo = memo
         self._batching = batching
         self._max_batch_size = max_batch_size
         self._runner = runner
+        self._version = version
 
     def _build_sync(self, fn: Callable[P, R_co]) -> SyncFunction[P, R_co]:
         if self._batching or self._runner is not None:
@@ -663,7 +791,7 @@ class _GenericFunctionBuilder:
                 "Batching and runner require the function to be async. "
                 "Use @cocoindex.asyncio.function instead, or rewrite the function to be async."
             )
-        wrapper = SyncFunction(fn, memo=self._memo)
+        wrapper = SyncFunction(fn, memo=self._memo, version=self._version)
         functools.update_wrapper(wrapper, fn)
         return wrapper
 
@@ -681,6 +809,7 @@ class _GenericFunctionBuilder:
             batching=self._batching,
             max_batch_size=self._max_batch_size,
             runner=self._runner,
+            version=self._version,
         )
         functools.update_wrapper(wrapper, fn)
         return wrapper
@@ -699,8 +828,8 @@ class _SyncFunctionBuilder(_GenericFunctionBuilder):
 
 # Supports sync function -> sync function and async function -> async function
 class _AutoFunctionBuilder(_GenericFunctionBuilder):
-    def __init__(self, *, memo: bool = False) -> None:
-        super().__init__(memo=memo)
+    def __init__(self, *, memo: bool = False, version: int | None = None) -> None:
+        super().__init__(memo=memo, version=version)
 
     @overload
     def __call__(  # type: ignore[overload-overlap]
@@ -740,6 +869,7 @@ class _AsyncFunctionBuilder(_GenericFunctionBuilder):
 def function(
     *,
     memo: bool = False,
+    version: int | None = None,
 ) -> _AutoFunctionBuilder: ...
 # Overload for batching=True
 @overload
@@ -749,6 +879,7 @@ def function(
     batching: Literal[True],
     max_batch_size: int | None = None,
     runner: Runner | None = None,
+    version: int | None = None,
 ) -> _AsyncBatchedDecorator: ...
 # With batching / runner, only supports sync functions
 @overload
@@ -758,6 +889,7 @@ def function(
     batching: Literal[False] = False,
     max_batch_size: int | None = None,
     runner: Runner | None = None,
+    version: int | None = None,
 ) -> _SyncFunctionBuilder: ...
 # Overloads for direct function decoration
 @overload
@@ -774,6 +906,7 @@ def function(
     batching: bool = False,
     max_batch_size: int | None = None,
     runner: Runner | None = None,
+    version: int | None = None,
 ) -> Any:
     """Decorator for CocoIndex functions (exposed as @cocoindex.function).
 
@@ -787,6 +920,9 @@ def function(
         batching: Enable batching (function receives list[T], returns list[R])
         max_batch_size: Maximum batch size (only with batching=True)
         runner: Runner to execute the function (e.g., GPU for subprocess)
+        version: Explicit version number for change tracking. When specified,
+            the version is used as the logic fingerprint instead of the AST.
+            Bump this to force re-execution even when code looks the same.
 
     Batching and runner require an async interface. With this decorator, only sync
     underlying functions are accepted when batching/runner is specified. Use
@@ -798,10 +934,14 @@ def function(
     """
     builder = (
         _SyncFunctionBuilder(
-            memo=memo, batching=batching, max_batch_size=max_batch_size, runner=runner
+            memo=memo,
+            batching=batching,
+            max_batch_size=max_batch_size,
+            runner=runner,
+            version=version,
         )
         if batching or runner or max_batch_size is not None
-        else _AutoFunctionBuilder(memo=memo)
+        else _AutoFunctionBuilder(memo=memo, version=version)
     )
     if fn is not None:
         return builder(fn)
@@ -817,6 +957,7 @@ def async_function(
     batching: Literal[True],
     max_batch_size: int | None = None,
     runner: Runner | None = None,
+    version: int | None = None,
 ) -> _BatchedDecorator: ...
 
 
@@ -828,6 +969,7 @@ def async_function(
     batching: Literal[False] = False,
     max_batch_size: int | None = None,
     runner: Runner | None = None,
+    version: int | None = None,
 ) -> _AsyncFunctionBuilder: ...
 
 
@@ -850,6 +992,7 @@ def async_function(
     batching: bool = False,
     max_batch_size: int | None = None,
     runner: Runner | None = None,
+    version: int | None = None,
 ) -> Any:
     """Decorator for CocoIndex functions (exposed as @cocoindex.asyncio.function).
 
@@ -862,6 +1005,9 @@ def async_function(
         batching: Enable batching (function receives list[T], returns list[R])
         max_batch_size: Maximum batch size (only with batching=True)
         runner: Runner to execute the function (e.g., GPU for subprocess)
+        version: Explicit version number for change tracking. When specified,
+            the version is used as the logic fingerprint instead of the AST.
+            Bump this to force re-execution even when code looks the same.
 
     Batching and runner are fully supported since the result is always async.
 
@@ -874,6 +1020,7 @@ def async_function(
         batching=batching,
         max_batch_size=max_batch_size,
         runner=runner,
+        version=version,
     )
     if fn is not None:
         return builder(fn)

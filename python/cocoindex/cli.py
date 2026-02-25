@@ -1,6 +1,6 @@
 import os
 import sys
-from typing import Any, NamedTuple
+from typing import Any, AsyncIterator, NamedTuple
 import pathlib
 
 import click
@@ -22,7 +22,8 @@ from cocoindex._internal.environment import (
     get_registered_environment_infos,
 )
 from cocoindex._internal.setting import get_default_db_path
-from cocoindex.inspect import list_stable_paths_sync
+from cocoindex.inspect import iter_stable_paths
+from cocoindex._internal.stable_path import StablePath
 
 
 # ---------------------------------------------------------------------------
@@ -327,17 +328,17 @@ def app_main() -> None:
 
     # 1) Declare targets/target states
     # Example (local filesystem):
-    #   target = coco.mount_run(
+    #   target = coco.use_mount(
     #       coco.component_subpath("setup"),
     #       localfs.declare_dir_target,
     #       outdir,
-    #   ).result()
+    #   )
 
     # 2) Enumerate inputs
     # Example (walk a directory):
     #   files = localfs.walk_dir(
     #       sourcedir,
-    #       path_matcher=PatternFilePathMatcher(included_patterns=["*.pdf"]),
+    #       path_matcher=PatternFilePathMatcher(included_patterns=["**/*.pdf"]),
     #   )
 
     # 3) Mount a processing unit for each input under a stable path
@@ -393,6 +394,34 @@ uv run cocoindex update main.py
 - `pyproject.toml` - Project metadata and dependencies
 """
     (project_path / "README.md").write_text(readme_content)
+
+
+async def _print_tree_streaming(
+    items: AsyncIterator[Any],
+    component_node_type: Any,
+) -> None:
+    """
+    Print stable paths as a simple indented bullet list. No lookahead or
+    "last sibling" logic; each line is "  " * (depth - 1) + "- " + label.
+    """
+    click.echo("Stable paths:")
+    count = 0
+    async for item in items:
+        path = StablePath(item.path)
+        parts = path.parts()
+        is_component = item.node_type == component_node_type
+        if not parts:
+            line = "- /"
+        else:
+            indent = "  " * (len(parts) - 1)
+            label = str(parts[-1])
+            line = f"{indent}- {label}"
+        if is_component:
+            line += " [component]"
+        click.echo(line)
+        count += 1
+    if count == 0:
+        click.echo("(none)")
 
 
 # ---------------------------------------------------------------------------
@@ -484,17 +513,35 @@ def ls(app_target: str | None, db: str | None) -> None:
 
 @cli.command()
 @click.argument("app_target", type=str)
-def show(app_target: str) -> None:
+@click.option(
+    "--tree",
+    is_flag=True,
+    default=False,
+    help="Display stable paths as a tree with component annotations.",
+)
+def show(app_target: str, tree: bool) -> None:
     """
     Show the app's stable paths.
 
     `APP_TARGET`: `path/to/app.py`, `module`, `path/to/app.py:app_name`, or `module:app_name`.
     """
     app = _load_app(app_target)
-    paths = list_stable_paths_sync(app)
-    click.echo(f"Found {len(paths)} stable paths:")
-    for path in paths:
-        click.echo(f"  {path}")
+
+    async def _do() -> None:
+        try:
+            if tree:
+                component_node_type = _core.StablePathNodeType.component()
+                await _print_tree_streaming(iter_stable_paths(app), component_node_type)
+            else:
+                click.echo("Stable paths:")
+                async for item in iter_stable_paths(app):
+                    path = StablePath(item.path)
+                    click.echo(f"  {path}")
+        finally:
+            await _stop_all_environments()
+
+    env_loop = default_env_loop()
+    asyncio.run_coroutine_threadsafe(_do(), env_loop).result()
 
 
 async def _stop_all_environments() -> None:

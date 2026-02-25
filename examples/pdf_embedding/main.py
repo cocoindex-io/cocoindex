@@ -34,7 +34,7 @@ from cocoindex.connectors import localfs, postgres
 from cocoindex.ops.text import RecursiveSplitter
 from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
 from cocoindex.resources.chunk import Chunk
-from cocoindex.resources.file import FileLike, PatternFilePathMatcher
+from cocoindex.resources.file import AsyncFileLike, PatternFilePathMatcher
 from cocoindex.resources.id import IdGenerator
 
 
@@ -92,8 +92,8 @@ async def coco_lifespan(
 
 @coco.function
 async def process_chunk(
-    filename: pathlib.PurePath,
     chunk: Chunk,
+    filename: pathlib.PurePath,
     id_gen: IdGenerator,
     table: postgres.TableTarget[PdfEmbedding],
 ) -> None:
@@ -111,46 +111,36 @@ async def process_chunk(
 
 @coco.function(memo=True)
 async def process_file(
-    file: FileLike,
+    file: AsyncFileLike,
     table: postgres.TableTarget[PdfEmbedding],
 ) -> None:
-    content = file.read()
+    content = await file.read()
     markdown = pdf_to_markdown(content)
     chunks = _splitter.split(
         markdown, chunk_size=2000, chunk_overlap=500, language="markdown"
     )
     id_gen = IdGenerator()
-    await asyncio.gather(
-        *(process_chunk(file.file_path.path, chunk, id_gen, table) for chunk in chunks)
-    )
+    await coco_aio.map(process_chunk, chunks, file.file_path.path, id_gen, table)
 
 
 @coco.function
 async def app_main(sourcedir: pathlib.Path) -> None:
     target_db = coco.use_context(PG_DB)
-    target_table = await coco_aio.mount_run(
-        coco.component_subpath("setup", "table"),
-        target_db.declare_table_target,
+    target_table = await target_db.mount_table_target(
         table_name=TABLE_NAME,
         table_schema=await postgres.TableSchema.from_class(
             PdfEmbedding,
             primary_key=["id"],
         ),
         pg_schema_name=PG_SCHEMA_NAME,
-    ).result()
+    )
 
     files = localfs.walk_dir(
         sourcedir,
         recursive=True,
-        path_matcher=PatternFilePathMatcher(included_patterns=["*.pdf"]),
+        path_matcher=PatternFilePathMatcher(included_patterns=["**/*.pdf"]),
     )
-    for f in files:
-        coco.mount(
-            coco.component_subpath("file", str(f.file_path.path)),
-            process_file,
-            f,
-            target_table,
-        )
+    await coco_aio.mount_each(process_file, files.items(), target_table)
 
 
 app = coco_aio.App(

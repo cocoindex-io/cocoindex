@@ -21,7 +21,8 @@ from typing import (
 from typing_extensions import TypeVar
 
 from cocoindex._internal.datatype import RecordType, is_record_type
-from cocoindex.connectorkits.async_adpaters import async_to_sync_iter
+from cocoindex._internal.stable_path import StableKey
+from cocoindex.connectorkits.async_adapters import async_to_sync_iter
 
 try:
     import asyncpg  # type: ignore
@@ -112,6 +113,17 @@ class RowFetcher(Generic[RowT]):
     def __iter__(self) -> Iterator[RowT]:
         """Synchronously iterate over rows."""
         return async_to_sync_iter(self.__aiter__)
+
+    async def items(
+        self, key: Callable[[RowT], StableKey]
+    ) -> AsyncIterator[tuple[StableKey, RowT]]:
+        """Async iterate as (key, row) pairs for use with mount_each().
+
+        Args:
+            key: A function that extracts a StableKey from each row.
+        """
+        async for row in self:
+            yield (key(row), row)
 
 
 class PgTableSource(Generic[RowT]):

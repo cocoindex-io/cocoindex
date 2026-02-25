@@ -107,6 +107,20 @@ async for file in localfs.walk_dir("/path/to/documents", recursive=True):
 
 The async variant runs file I/O in a thread pool, keeping the event loop responsive. See [`FileLike` / `AsyncFileLike`](../resource_types.md#filelike--asyncfilelike) for details on the file objects.
 
+### Keyed iteration with `items()`
+
+`DirWalker.items()` returns keyed `(str, file)` pairs, useful for associating each file with a stable string key (its relative path):
+
+```python
+# Asynchronous - yields (str, AsyncFile) pairs
+async for key, file in localfs.walk_dir("/path/to/dir", recursive=True).items():
+    content = await file.read()
+
+# Synchronous - yields (str, File) pairs
+for key, file in localfs.walk_dir("/path/to/dir", recursive=True).items():
+    content = file.read()
+```
+
 ### Filtering files
 
 Use `PatternFilePathMatcher` to filter which files and directories are included:
@@ -117,8 +131,8 @@ from cocoindex.resources.file import PatternFilePathMatcher
 
 # Include only .py and .md files, exclude hidden directories and test files
 matcher = PatternFilePathMatcher(
-    included_patterns=["*.py", "*.md"],
-    excluded_patterns=["**/.*", "**/test_*", "**/__pycache__/**"],
+    included_patterns=["**/*.py", "**/*.md"],
+    excluded_patterns=["**/.*", "**/test_*", "**/__pycache__"],
 )
 
 for file in localfs.walk_dir("/path/to/project", recursive=True, path_matcher=matcher):
@@ -137,7 +151,7 @@ from cocoindex.resources.file import FileLike, PatternFilePathMatcher
 def app_main(sourcedir: pathlib.Path) -> None:
     # Register base directory for stable memoization
     source = localfs.register_base_dir("source", sourcedir)
-    matcher = PatternFilePathMatcher(included_patterns=["*.md"])
+    matcher = PatternFilePathMatcher(included_patterns=["**/*.md"])
 
     for file in localfs.walk_dir(source, recursive=True, path_matcher=matcher):
         coco.mount(

@@ -83,7 +83,7 @@ class DictTargetStateStore:
 
     def reconcile(
         self,
-        key: str,
+        key: coco.StableKey,
         desired_state: Any | coco.NonExistenceType,
         prev_possible_states: Collection[Any],
         prev_may_be_missing: bool,
@@ -93,6 +93,7 @@ class DictTargetStateStore:
         ]
         | None
     ):
+        assert isinstance(key, str)
         # Short-circuit no-change case
         if coco.is_non_existence(desired_state):
             if len(prev_possible_states) == 0:
@@ -201,7 +202,7 @@ class DictsTargetStateStore:
 
     def reconcile(
         self,
-        key: str,
+        key: coco.StableKey,
         desired_state: None | coco.NonExistenceType,
         prev_possible_states: Collection[None],
         prev_may_be_missing: bool,
@@ -211,6 +212,7 @@ class DictsTargetStateStore:
         ]
         | None
     ):
+        assert isinstance(key, str)
         sink: coco.TargetActionSink[
             _DictTargetStateStoreAction, DictTargetStateStore
         ] = (
@@ -271,6 +273,11 @@ class DictsTarget:
         return coco.declare_target_state_with_child(
             DictsTarget._provider.target_state(name, None)
         )
+
+    @staticmethod
+    def dict_target(name: str) -> coco.TargetState[DictTargetStateStore]:
+        """Create a TargetState for use with mount_target()."""
+        return DictsTarget._provider.target_state(name, None)
 
 
 class AsyncDictsTarget:

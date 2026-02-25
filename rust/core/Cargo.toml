@@ -16,6 +16,7 @@ indicatif = { workspace = true }
 storekey = { workspace = true }
 serde = { workspace = true, features = ["rc", "derive"] }
 tokio = { workspace = true }
+tokio-stream = { workspace = true }
 rmp = { workspace = true }
 rmp-serde = { workspace = true }
 rpds = { workspace = true }
