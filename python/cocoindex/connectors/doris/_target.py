@@ -21,7 +21,6 @@ Requirements:
 from __future__ import annotations
 
 import asyncio
-import dataclasses
 import datetime
 import decimal
 import json
@@ -89,6 +88,7 @@ def _get_aiohttp() -> Any:
     """Lazily import aiohttp."""
     try:
         import aiohttp  # type: ignore[import-not-found]
+
         return aiohttp
     except ImportError:
         raise ImportError(
@@ -101,6 +101,7 @@ def _get_pymysql() -> Any:
     """Lazily import pymysql (sync MySQL client for DDL)."""
     try:
         import pymysql  # type: ignore[import-not-found]
+
         return pymysql
     except ImportError:
         raise ImportError(
@@ -112,6 +113,7 @@ def _get_pymysql() -> Any:
 # ============================================================
 # JSON encoder for numpy arrays
 # ============================================================
+
 
 class _NumpyEncoder(json.JSONEncoder):
     def default(self, obj: Any) -> Any:
@@ -130,7 +132,9 @@ class DorisError(Exception):
 
 
 class DorisConnectionError(DorisError):
-    def __init__(self, message: str, host: str, port: int, cause: Exception | None = None):
+    def __init__(
+        self, message: str, host: str, port: int, cause: Exception | None = None
+    ):
         self.host = host
         self.port = port
         self.cause = cause
@@ -142,8 +146,14 @@ class DorisAuthError(DorisConnectionError):
 
 
 class DorisStreamLoadError(DorisError):
-    def __init__(self, message: str, status: str, error_url: str | None = None,
-                 loaded_rows: int = 0, filtered_rows: int = 0):
+    def __init__(
+        self,
+        message: str,
+        status: str,
+        error_url: str | None = None,
+        loaded_rows: int = 0,
+        filtered_rows: int = 0,
+    ):
         self.status = status
         self.error_url = error_url
         self.loaded_rows = loaded_rows
@@ -172,11 +182,21 @@ class RetryConfig:
 
 def _is_retryable_error(e: Exception) -> bool:
     """Check if an error is retryable (transient)."""
-    if isinstance(e, (asyncio.TimeoutError, ConnectionError, ConnectionResetError, ConnectionRefusedError)):
+    if isinstance(
+        e,
+        (
+            asyncio.TimeoutError,
+            ConnectionError,
+            ConnectionResetError,
+            ConnectionRefusedError,
+        ),
+    ):
         return True
     try:
         aiohttp = _get_aiohttp()
-        if isinstance(e, (aiohttp.ClientConnectorError, aiohttp.ServerDisconnectedError)):
+        if isinstance(
+            e, (aiohttp.ClientConnectorError, aiohttp.ServerDisconnectedError)
+        ):
             return True
     except ImportError:
         pass
@@ -207,19 +227,31 @@ async def _with_retry(
                 raise
             last_error = e
             if attempt < config.max_retries:
-                delay = min(config.base_delay * (config.exponential_base ** attempt), config.max_delay)
-                _logger.warning("%s failed (attempt %d/%d), retrying in %.1fs: %s",
-                                operation_name, attempt + 1, config.max_retries + 1, delay, e)
+                delay = min(
+                    config.base_delay * (config.exponential_base**attempt),
+                    config.max_delay,
+                )
+                _logger.warning(
+                    "%s failed (attempt %d/%d), retrying in %.1fs: %s",
+                    operation_name,
+                    attempt + 1,
+                    config.max_retries + 1,
+                    delay,
+                    e,
+                )
                 await asyncio.sleep(delay)
     raise DorisConnectionError(
         f"{operation_name} failed after {config.max_retries + 1} attempts",
-        host="", port=0, cause=last_error,
+        host="",
+        port=0,
+        cause=last_error,
     )
 
 
 # ============================================================
 # Type mapping: Python -> Doris SQL
 # ============================================================
+
 
 class _TypeMapping(NamedTuple):
     doris_type: str
@@ -237,7 +269,9 @@ _LEAF_TYPE_MAPPINGS: dict[type, _TypeMapping] = {
     datetime.date: _TypeMapping("DATE", lambda v: v.isoformat()),
     datetime.time: _TypeMapping("VARCHAR(20)", lambda v: v.isoformat()),
     datetime.datetime: _TypeMapping("DATETIME(6)", lambda v: v.isoformat()),
-    datetime.timedelta: _TypeMapping("BIGINT", lambda v: int(v.total_seconds() * 1_000_000)),
+    datetime.timedelta: _TypeMapping(
+        "BIGINT", lambda v: int(v.total_seconds() * 1_000_000)
+    ),
 }
 
 _JSON_MAPPING = _TypeMapping("JSON", lambda v: json.dumps(v, default=str))
@@ -245,6 +279,7 @@ _JSON_MAPPING = _TypeMapping("JSON", lambda v: json.dumps(v, default=str))
 
 class DorisType(NamedTuple):
     """Annotation to override default Doris type mapping via typing.Annotated."""
+
     doris_type: str
     encoder: ValueEncoder | None = None
 
@@ -270,13 +305,17 @@ async def _get_type_mapping(
         if schema.size <= 0:
             raise ValueError(f"Invalid vector dimension: {schema.size}")
         return _TypeMapping(
-            f"ARRAY<FLOAT>",
+            "ARRAY<FLOAT>",
             lambda v: v.tolist() if hasattr(v, "tolist") else list(v),
         )
     elif vector_schema_provider is not None:
-        raise ValueError(f"VectorSchemaProvider only supported for ndarray. Got: {python_type}")
+        raise ValueError(
+            f"VectorSchemaProvider only supported for ndarray. Got: {python_type}"
+        )
 
-    if isinstance(type_info.variant, (SequenceType, MappingType, RecordType, UnionType, AnyType)):
+    if isinstance(
+        type_info.variant, (SequenceType, MappingType, RecordType, UnionType, AnyType)
+    ):
         return _JSON_MAPPING
 
     return _JSON_MAPPING
@@ -288,7 +327,7 @@ async def _get_type_mapping(
 
 
 class ColumnDef(NamedTuple):
-    type: str              # Doris SQL type
+    type: str  # Doris SQL type
     nullable: bool = True
     encoder: ValueEncoder | None = None
     is_vector: bool = False
@@ -313,7 +352,9 @@ class TableSchema(Generic[RowT]):
         self.row_type = row_type
         for pk in self.primary_key:
             if pk not in self.columns:
-                raise ValueError(f"PK column '{pk}' not in columns: {list(self.columns.keys())}")
+                raise ValueError(
+                    f"PK column '{pk}' not in columns: {list(self.columns.keys())}"
+                )
 
     @classmethod
     async def from_class(
@@ -324,7 +365,9 @@ class TableSchema(Generic[RowT]):
         column_overrides: dict[str, DorisType | VectorSchemaProvider] | None = None,
     ) -> "TableSchema[RowT]":
         if not is_record_type(record_type):
-            raise TypeError(f"record_type must be a record type, got {type(record_type)}")
+            raise TypeError(
+                f"record_type must be a record type, got {type(record_type)}"
+            )
         columns = await cls._columns_from_record_type(record_type, column_overrides)
         return cls(columns, primary_key, row_type=record_type)
 
@@ -354,9 +397,13 @@ class TableSchema(Generic[RowT]):
                 vector_schema_provider = override
 
             if doris_type_annotation is not None:
-                mapping = _TypeMapping(doris_type_annotation.doris_type, doris_type_annotation.encoder)
+                mapping = _TypeMapping(
+                    doris_type_annotation.doris_type, doris_type_annotation.encoder
+                )
             else:
-                mapping = await _get_type_mapping(f.type_hint, vector_schema_provider=vector_schema_provider)
+                mapping = await _get_type_mapping(
+                    f.type_hint, vector_schema_provider=vector_schema_provider
+                )
 
             dim: int | None = None
             if vector_schema_provider is not None:
@@ -378,9 +425,11 @@ class TableSchema(Generic[RowT]):
 # Doris connection
 # ============================================================
 
+
 @dataclass
 class DorisConnectionConfig:
     """Configuration for a Doris connection."""
+
     fe_host: str
     database: str
     fe_http_port: int = 8080
@@ -403,6 +452,7 @@ class DorisConnectionConfig:
 @dataclass
 class ManagedConnection:
     """A Doris connection wrapper with an aiohttp session and config."""
+
     config: DorisConnectionConfig
     _session: "aiohttp.ClientSession | None" = field(default=None, repr=False)
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
@@ -544,32 +594,52 @@ async def _stream_load(
         load_timeout = aiohttp_mod.ClientTimeout(total=config.stream_load_timeout)
 
         if config.be_load_host:
+
             async def _send(target_url: str) -> tuple[int, str, str]:
-                async with session.put(target_url, data=data, headers=headers,
-                                       timeout=load_timeout, allow_redirects=False) as resp:
-                    return resp.status, resp.headers.get("Location", ""), await resp.text()
+                async with session.put(
+                    target_url,
+                    data=data,
+                    headers=headers,
+                    timeout=load_timeout,
+                    allow_redirects=False,
+                ) as resp:
+                    return (
+                        resp.status,
+                        resp.headers.get("Location", ""),
+                        await resp.text(),
+                    )
 
             status_code, location, text = await _send(url)
             if status_code == 307 and location:
                 from urllib.parse import urlparse, urlunparse
+
                 parsed = urlparse(location)
-                rewritten = urlunparse(parsed._replace(
-                    netloc=f"{config.be_load_host}:{parsed.port or config.fe_http_port}"
-                ))
+                rewritten = urlunparse(
+                    parsed._replace(
+                        netloc=f"{config.be_load_host}:{parsed.port or config.fe_http_port}"
+                    )
+                )
                 status_code, _, text = await _send(rewritten)
         else:
-            async with session.put(url, data=data, headers=headers, timeout=load_timeout) as response:
+            async with session.put(
+                url, data=data, headers=headers, timeout=load_timeout
+            ) as response:
                 status_code = response.status
                 text = await response.text()
 
         if status_code in (401, 403):
-            raise DorisAuthError(f"Authentication failed: HTTP {status_code}",
-                                 host=config.fe_host, port=config.fe_http_port)
+            raise DorisAuthError(
+                f"Authentication failed: HTTP {status_code}",
+                host=config.fe_host,
+                port=config.fe_http_port,
+            )
 
         try:
-            result = json.loads(text)
+            result: dict[str, Any] = json.loads(text)
         except json.JSONDecodeError:
-            raise DorisStreamLoadError(f"Invalid response: {text[:200]}", status="ParseError")
+            raise DorisStreamLoadError(
+                f"Invalid response: {text[:200]}", status="ParseError"
+            )
 
         load_status = result.get("Status", "Unknown")
         if load_status not in ("Success", "Publish Timeout"):
@@ -587,7 +657,9 @@ async def _stream_load(
         base_delay=config.retry_base_delay,
         max_delay=config.retry_max_delay,
     )
-    return await _with_retry(do_stream_load, retry_config, f"Stream Load to {table_name}")
+    return await _with_retry(
+        do_stream_load, retry_config, f"Stream Load to {table_name}"
+    )
 
 
 async def _execute_delete(
@@ -632,9 +704,12 @@ async def _execute_delete(
 @dataclass
 class VectorIndexDef:
     """Vector index configuration."""
+
     field_name: str
-    index_type: str = "HNSW"       # "HNSW" or "IVF"
-    metric_type: str = "l2_distance"  # "l2_distance", "inner_product", "cosine_distance"
+    index_type: str = "HNSW"  # "HNSW" or "IVF"
+    metric_type: str = (
+        "l2_distance"  # "l2_distance", "inner_product", "cosine_distance"
+    )
     max_degree: int | None = None
     ef_construction: int | None = None
     nlist: int | None = None
@@ -643,6 +718,7 @@ class VectorIndexDef:
 @dataclass
 class InvertedIndexDef:
     """Inverted index for full-text search."""
+
     field_name: str
     parser: str | None = None  # "chinese", "english", "unicode", etc.
 
@@ -695,7 +771,9 @@ def _generate_create_table_ddl(
             props.append(f'"ef_construction" = "{idx.ef_construction}"')
         if idx.nlist is not None:
             props.append(f'"nlist" = "{idx.nlist}"')
-        col_defs.append(f"    INDEX {idx_name} (`{idx.field_name}`) USING ANN PROPERTIES ({', '.join(props)})")
+        col_defs.append(
+            f"    INDEX {idx_name} (`{idx.field_name}`) USING ANN PROPERTIES ({', '.join(props)})"
+        )
 
     # Inverted indexes
     for inv in inverted_indexes or []:
@@ -750,7 +828,9 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
         self._managed_conn = managed_conn
         self._table_name = table_name
         self._table_schema = table_schema
-        self._sink = coco.TargetActionSink[_RowAction, None].from_fn(self._apply_actions)
+        self._sink = coco.TargetActionSink[_RowAction, None].from_fn(
+            self._apply_actions
+        )
 
     def _apply_actions(self, actions: Sequence[_RowAction]) -> None:
         """Apply row actions (upserts and deletes) to Doris."""
@@ -829,7 +909,9 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
             )
 
         target_fp = fingerprint_object(desired_state)
-        if not prev_may_be_missing and all(prev == target_fp for prev in prev_possible_states):
+        if not prev_may_be_missing and all(
+            prev == target_fp for prev in prev_possible_states
+        ):
             return None
 
         return coco.TargetReconcileOutput(
@@ -895,13 +977,20 @@ def _table_composite_tracking_record_from_spec(
     col_by_name = schema.columns
     pk_sig = _TablePrimaryTrackingRecord(
         primary_key_columns=tuple(
-            _PkColumnInfo(name=pk, type=col_by_name[pk].type) for pk in schema.primary_key
+            _PkColumnInfo(name=pk, type=col_by_name[pk].type)
+            for pk in schema.primary_key
         ),
-        vector_indexes=tuple(v.field_name for v in spec.vector_indexes) if spec.vector_indexes else None,
-        inverted_indexes=tuple(v.field_name for v in spec.inverted_indexes) if spec.inverted_indexes else None,
+        vector_indexes=tuple(v.field_name for v in spec.vector_indexes)
+        if spec.vector_indexes
+        else None,
+        inverted_indexes=tuple(v.field_name for v in spec.inverted_indexes)
+        if spec.inverted_indexes
+        else None,
     )
     sub: dict[str, _TableSubTrackingRecord] = {
-        _col_subkey(col_name): _NonPkColumnTrackingRecord(type=col_def.type, nullable=col_def.nullable)
+        _col_subkey(col_name): _NonPkColumnTrackingRecord(
+            type=col_def.type, nullable=col_def.nullable
+        )
         for col_name, col_def in schema.columns.items()
         if col_name not in schema.primary_key
     }
@@ -948,7 +1037,10 @@ def _apply_table_actions(
             if action.main_action in ("replace", "delete"):
                 # Drop table
                 try:
-                    _execute_ddl_sync(config, f"DROP TABLE IF EXISTS `{config.database}`.`{key.table_name}`")
+                    _execute_ddl_sync(
+                        config,
+                        f"DROP TABLE IF EXISTS `{config.database}`.`{key.table_name}`",
+                    )
                 except Exception as e:
                     _logger.warning("Failed to drop table %s: %s", key.table_name, e)
 
@@ -983,7 +1075,7 @@ def _apply_table_actions(
                 for sub_key, col_action in action.column_actions.items():
                     if not sub_key.startswith(_COL_SUBKEY_PREFIX):
                         continue
-                    col_name = sub_key[len(_COL_SUBKEY_PREFIX):]
+                    col_name = sub_key[len(_COL_SUBKEY_PREFIX) :]
                     if col_name in spec.table_schema.primary_key:
                         continue
 
@@ -992,7 +1084,7 @@ def _apply_table_actions(
                         try:
                             _execute_ddl_sync(
                                 config,
-                                f'ALTER TABLE `{config.database}`.`{key.table_name}` DROP COLUMN `{col_name}`'
+                                f"ALTER TABLE `{config.database}`.`{key.table_name}` DROP COLUMN `{col_name}`",
                             )
                         except Exception:
                             pass
@@ -1001,8 +1093,8 @@ def _apply_table_actions(
                         try:
                             _execute_ddl_sync(
                                 config,
-                                f'ALTER TABLE `{config.database}`.`{key.table_name}` '
-                                f'ADD COLUMN `{col_name}` {col_def.type} {nullable}'
+                                f"ALTER TABLE `{config.database}`.`{key.table_name}` "
+                                f"ADD COLUMN `{col_name}` {col_def.type} {nullable}",
                             )
                         except Exception:
                             pass
@@ -1023,7 +1115,10 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
         prev_possible_states: Collection[_TableTrackingRecord],
         prev_may_be_missing: bool,
         /,
-    ) -> coco.TargetReconcileOutput[_TableAction, _TableTrackingRecord, _RowHandler] | None:
+    ) -> (
+        coco.TargetReconcileOutput[_TableAction, _TableTrackingRecord, _RowHandler]
+        | None
+    ):
         key = _TableKey(*_TABLE_KEY_CHECKER.check(key))
         tracking_record: _TableTrackingRecord | coco.NonExistenceType
 
@@ -1031,13 +1126,17 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
             tracking_record = coco.NON_EXISTENCE
         else:
             tracking_record = statediff.MutualTrackingRecord(
-                tracking_record=_table_composite_tracking_record_from_spec(desired_state),
+                tracking_record=_table_composite_tracking_record_from_spec(
+                    desired_state
+                ),
                 managed_by=desired_state.managed_by,
             )
 
         resolved = statediff.resolve_system_transition(
             statediff.TrackingRecordTransition(
-                tracking_record, prev_possible_states, prev_may_be_missing,
+                tracking_record,
+                prev_possible_states,
+                prev_may_be_missing,
             )
         )
         main_action, column_transitions = statediff.diff_composite(resolved)
@@ -1085,7 +1184,8 @@ class DorisDatabase(connection.KeyedConnection[ManagedConnection]):
     ) -> "DorisTableTarget[RowT, coco.PendingS]":
         provider = coco.declare_target_state_with_child(
             self.table_target(
-                table_name, table_schema,
+                table_name,
+                table_schema,
                 managed_by=managed_by,
                 vector_indexes=vector_indexes,
                 inverted_indexes=inverted_indexes,
@@ -1122,7 +1222,8 @@ class DorisDatabase(connection.KeyedConnection[ManagedConnection]):
     ) -> "DorisTableTarget[RowT]":
         provider = await _mount_target(
             self.table_target(
-                table_name, table_schema,
+                table_name,
+                table_schema,
                 managed_by=managed_by,
                 vector_indexes=vector_indexes,
                 inverted_indexes=inverted_indexes,
@@ -1199,8 +1300,12 @@ async def connect_async(
             "Install it with: pip install aiomysql"
         )
     return await aiomysql.connect(
-        host=fe_host, port=query_port, user=username,
-        password=password, db=database, autocommit=True,
+        host=fe_host,
+        port=query_port,
+        user=username,
+        password=password,
+        db=database,
+        autocommit=True,
     )
 
 
