@@ -213,7 +213,7 @@ _doris_db: "doris.DorisDatabase | None" = None
 
 async def _declare_table_and_rows() -> None:
     assert _doris_db is not None
-    table = coco.use_mount(
+    table = await coco.use_mount(
         coco.component_subpath("setup", "table"),
         _doris_db.declare_table_target,
         _table_name,
@@ -247,7 +247,7 @@ def test_create_table_and_insert_rows(
             SimpleRow(id="1", name="Alice", value=100),
             SimpleRow(id="2", name="Bob", value=200),
         ]
-        app.update()
+        app.update_blocking()
 
         # Doris needs a moment to make data visible
         time.sleep(2)
@@ -262,7 +262,7 @@ def test_create_table_and_insert_rows(
 
         # Insert one more row
         _source_rows.append(SimpleRow(id="3", name="Charlie", value=300))
-        app.update()
+        app.update_blocking()
         time.sleep(2)
 
         data = _query(
@@ -296,7 +296,7 @@ def test_update_row(
             SimpleRow(id="1", name="Alice", value=100),
             SimpleRow(id="2", name="Bob", value=200),
         ]
-        app.update()
+        app.update_blocking()
         time.sleep(2)
 
         # Update a row
@@ -304,7 +304,7 @@ def test_update_row(
             SimpleRow(id="1", name="Alice Updated", value=150),
             SimpleRow(id="2", name="Bob", value=200),
         ]
-        app.update()
+        app.update_blocking()
         time.sleep(2)
 
         data = _query(
@@ -341,7 +341,7 @@ def test_delete_row(
             SimpleRow(id="2", name="Bob", value=200),
             SimpleRow(id="3", name="Charlie", value=300),
         ]
-        app.update()
+        app.update_blocking()
         time.sleep(2)
 
         data = _query(
@@ -354,7 +354,7 @@ def test_delete_row(
             SimpleRow(id="1", name="Alice", value=100),
             SimpleRow(id="3", name="Charlie", value=300),
         ]
-        app.update()
+        app.update_blocking()
         time.sleep(2)
 
         data = _query(
@@ -375,8 +375,8 @@ def test_dict_rows(
 
     with doris.register_db("test_dict_db", managed_conn) as db:
 
-        def declare_dict_table() -> None:
-            table = coco.use_mount(
+        async def declare_dict_table() -> None:
+            table = await coco.use_mount(
                 coco.component_subpath("setup", "table"),
                 db.declare_table_target,
                 table_name,
@@ -403,7 +403,7 @@ def test_dict_rows(
                 {"id": "2", "name": "Item2", "count": 20},
             ]
         )
-        app.update()
+        app.update_blocking()
         time.sleep(2)
 
         data = _query(
@@ -429,7 +429,7 @@ def test_vector_index_creation(
     with doris.register_db("test_vec_db", managed_conn) as db:
 
         async def declare_vec_table() -> None:
-            table = coco.use_mount(
+            table = await coco.use_mount(
                 coco.component_subpath("setup", "table"),
                 db.declare_table_target,
                 table_name,
@@ -462,7 +462,7 @@ def test_vector_index_creation(
                 embedding=np.array([5.0, 6.0, 7.0, 8.0], dtype=np.float32),
             ),
         ]
-        app.update()
+        app.update_blocking()
         time.sleep(2)
 
         assert _table_exists(config, table_name)
@@ -511,7 +511,7 @@ def test_no_change_optimization(
             SimpleRow(id="1", name="Alice", value=100),
             SimpleRow(id="2", name="Bob", value=200),
         ]
-        app.update()
+        app.update_blocking()
         time.sleep(2)
 
         data1 = _query(
@@ -520,7 +520,7 @@ def test_no_change_optimization(
         assert len(data1) == 2
 
         # Run update again with the same data — should be a no-op
-        app.update()
+        app.update_blocking()
         time.sleep(1)
 
         data2 = _query(

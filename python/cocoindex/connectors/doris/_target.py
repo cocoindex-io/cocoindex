@@ -58,7 +58,7 @@ from cocoindex._internal.datatype import (
     analyze_type_info,
     is_record_type,
 )
-from cocoindex._internal.api_async import mount_target as _mount_target
+from cocoindex._internal.api import mount_target as _mount_target
 from cocoindex.resources.schema import VectorSchemaProvider
 
 if TYPE_CHECKING:
