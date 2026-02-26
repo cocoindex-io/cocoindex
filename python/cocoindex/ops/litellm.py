@@ -14,7 +14,7 @@ from typing import Any as _Any
 import numpy as _np
 from numpy.typing import NDArray as _NDArray
 
-import cocoindex.asyncio as coco_aio
+import cocoindex as coco
 from cocoindex.resources import schema as _schema
 
 import litellm as litellm
@@ -79,7 +79,7 @@ class LiteLLMEmbedder(_schema.VectorSchemaProvider):
             self._dim = len(embedding)
             return self._dim
 
-    @coco_aio.function(batching=True, memo=True, max_batch_size=64, version=1)
+    @coco.fn.as_async(batching=True, memo=True, max_batch_size=64, version=1)
     async def embed(self, texts: list[str]) -> list[_NDArray[_np.float32]]:
         """Embed texts to embedding vectors.
 
@@ -101,7 +101,7 @@ class LiteLLMEmbedder(_schema.VectorSchemaProvider):
             _np.array(item["embedding"], dtype=_np.float32) for item in response.data
         ]
 
-    @coco_aio.function(memo=True)
+    @coco.fn.as_async(memo=True)
     async def __coco_vector_schema__(self) -> _schema.VectorSchema:
         """Return vector schema information for this model.
 

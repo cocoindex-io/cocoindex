@@ -21,17 +21,17 @@ DB_PATH = _HERE / "cocoindex.db"
 OUT_DIR = _HERE / "out_tree_test"
 
 
-@coco.function
+@coco.fn
 def process_file(file_name: str, target: DirTarget) -> None:
     """Process a single file - this creates a component at /"files"/file_name."""
     target.declare_file(file_name, f"Content for {file_name}\n")
 
 
-@coco.function
-def app_main() -> None:
+@coco.fn
+async def app_main() -> None:
     """Main app function that creates a tree with non-component intermediate nodes."""
     # Create output directory target (use_mount returns the result directly)
-    dir_target = coco.use_mount(
+    dir_target = await coco.use_mount(
         coco.component_subpath("setup"),
         declare_dir_target,
         OUT_DIR,
@@ -41,11 +41,13 @@ def app_main() -> None:
     # Try using the / operator to construct paths, similar to scope / 'files' / file.name
     # The "files" part should be just part of the path, not a component itself
     files_subpath = coco.component_subpath("files")
-    coco.mount(files_subpath / "file1.txt", process_file, "file1.txt", dir_target)
-    coco.mount(files_subpath / "file2.txt", process_file, "file2.txt", dir_target)
+    await coco.mount(files_subpath / "file1.txt", process_file, "file1.txt", dir_target)
+    await coco.mount(files_subpath / "file2.txt", process_file, "file2.txt", dir_target)
 
     # Also mount a direct child of root (not under "files")
-    coco.mount(coco.component_subpath("direct"), process_file, "direct.txt", dir_target)
+    await coco.mount(
+        coco.component_subpath("direct"), process_file, "direct.txt", dir_target
+    )
 
 
 app = coco.App(

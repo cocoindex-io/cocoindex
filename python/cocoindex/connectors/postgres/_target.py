@@ -51,7 +51,7 @@ from cocoindex._internal.datatype import (
     analyze_type_info,
     is_record_type,
 )
-from cocoindex._internal.api_async import mount_target as _mount_target
+from cocoindex._internal.api import mount_target as _mount_target
 from cocoindex.resources.schema import VectorSchemaProvider
 
 # Type aliases
@@ -1023,7 +1023,7 @@ class PgDatabase(connection.KeyedConnection[asyncpg.Pool]):
         """
         Create a TargetState for a PostgreSQL table target.
 
-        Use with ``coco_aio.mount_target()`` to mount and get a child provider,
+        Use with ``coco.mount_target()`` to mount and get a child provider,
         or with ``mount_table_target()`` for a convenience wrapper.
 
         Args:
@@ -1057,7 +1057,7 @@ class PgDatabase(connection.KeyedConnection[asyncpg.Pool]):
         """
         Mount a table target and return a ready-to-use TableTarget.
 
-        Sugar over ``table_target()`` + ``coco_aio.mount_target()`` + wrapping.
+        Sugar over ``table_target()`` + ``coco.mount_target()`` + wrapping.
 
         Args:
             table_name: Name of the table.

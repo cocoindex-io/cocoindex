@@ -74,7 +74,7 @@ def test_fn_memo_invalidated_on_logic_change() -> None:
     metrics = Metrics()
     current_module: list[Any] = []
 
-    @coco.function
+    @coco.fn
     def app_main() -> None:
         mod = current_module[0]
         result = mod.transform_memo("A", "value1")
@@ -89,22 +89,22 @@ def test_fn_memo_invalidated_on_logic_change() -> None:
 
     # v1: first run — function executes
     mod = _load_module(_V1_PATH, metrics, current_module)
-    app.update()
+    app.update_blocking()
     assert metrics.collect() == {"transform_memo": 1}
     assert GlobalDictTarget.store.data["A"].data == "v1: value1"
 
     # v1: second run — memo hit
-    app.update()
+    app.update_blocking()
     assert metrics.collect() == {}
 
     # v2: logic changed — memo invalidated, function re-executes
     mod = _load_module(_V2_PATH, metrics, current_module, old_module=mod)
-    app.update()
+    app.update_blocking()
     assert metrics.collect() == {"transform_memo": 1}
     assert GlobalDictTarget.store.data["A"].data == "v2: value1"
 
     # v2: second run — memo hit again
-    app.update()
+    app.update_blocking()
     assert metrics.collect() == {}
 
 
@@ -119,10 +119,12 @@ def test_component_memo_invalidated_on_logic_change() -> None:
     metrics = Metrics()
     current_module: list[Any] = []
 
-    @coco.function
-    def app_main() -> None:
+    @coco.fn
+    async def app_main() -> None:
         mod = current_module[0]
-        coco.mount(coco.component_subpath("A"), mod.declare_entry_memo, "A", "value1")
+        await coco.mount(
+            coco.component_subpath("A"), mod.declare_entry_memo, "A", "value1"
+        )
 
     app = coco.App(
         coco.AppConfig(
@@ -133,22 +135,22 @@ def test_component_memo_invalidated_on_logic_change() -> None:
 
     # v1: first run — component executes
     mod = _load_module(_V1_PATH, metrics, current_module)
-    app.update()
+    app.update_blocking()
     assert metrics.collect() == {"declare_entry_memo": 1}
     assert GlobalDictTarget.store.data["A"].data == "v1: value1"
 
     # v1: second run — component memo hit
-    app.update()
+    app.update_blocking()
     assert metrics.collect() == {}
 
     # v2: logic changed — component memo invalidated
     mod = _load_module(_V2_PATH, metrics, current_module, old_module=mod)
-    app.update()
+    app.update_blocking()
     assert metrics.collect() == {"declare_entry_memo": 1}
     assert GlobalDictTarget.store.data["A"].data == "v2: value1"
 
     # v2: second run — component memo hit again
-    app.update()
+    app.update_blocking()
     assert metrics.collect() == {}
 
 
@@ -163,7 +165,7 @@ def test_transitive_fn_memo_bar_memo_changes() -> None:
     metrics = Metrics()
     current_module: list[Any] = []
 
-    @coco.function
+    @coco.fn
     def app_main() -> None:
         mod = current_module[0]
         result = mod.foo_calls_bar_memo("A", "value1")
@@ -178,22 +180,22 @@ def test_transitive_fn_memo_bar_memo_changes() -> None:
 
     # v1: first run — both foo and bar execute
     mod = _load_module(_V1_PATH, metrics, current_module)
-    app.update()
+    app.update_blocking()
     assert metrics.collect() == {"foo_calls_bar_memo": 1, "bar_memo": 1}
     assert GlobalDictTarget.store.data["A"].data == "bar_v1: value1"
 
     # v1: second run — foo memo hit (bar not called either)
-    app.update()
+    app.update_blocking()
     assert metrics.collect() == {}
 
     # v2: bar's logic changed — foo's memo invalidated transitively
     mod = _load_module(_V2_PATH, metrics, current_module, old_module=mod)
-    app.update()
+    app.update_blocking()
     assert metrics.collect() == {"foo_calls_bar_memo": 1, "bar_memo": 1}
     assert GlobalDictTarget.store.data["A"].data == "bar_v2: value1"
 
     # v2: second run — memo hit again
-    app.update()
+    app.update_blocking()
     assert metrics.collect() == {}
 
 
@@ -203,7 +205,7 @@ def test_transitive_fn_memo_bar_plain_changes() -> None:
     metrics = Metrics()
     current_module: list[Any] = []
 
-    @coco.function
+    @coco.fn
     def app_main() -> None:
         mod = current_module[0]
         result = mod.foo_calls_bar_plain("A", "value1")
@@ -218,22 +220,22 @@ def test_transitive_fn_memo_bar_plain_changes() -> None:
 
     # v1: first run — both foo and bar execute
     mod = _load_module(_V1_PATH, metrics, current_module)
-    app.update()
+    app.update_blocking()
     assert metrics.collect() == {"foo_calls_bar_plain": 1, "bar_plain": 1}
     assert GlobalDictTarget.store.data["A"].data == "bar_v1: value1"
 
     # v1: second run — foo memo hit (bar not called since foo is cached)
-    app.update()
+    app.update_blocking()
     assert metrics.collect() == {}
 
     # v2: bar's logic changed — foo's memo invalidated transitively
     mod = _load_module(_V2_PATH, metrics, current_module, old_module=mod)
-    app.update()
+    app.update_blocking()
     assert metrics.collect() == {"foo_calls_bar_plain": 1, "bar_plain": 1}
     assert GlobalDictTarget.store.data["A"].data == "bar_v2: value1"
 
     # v2: second run — memo hit again
-    app.update()
+    app.update_blocking()
     assert metrics.collect() == {}
 
 
@@ -248,10 +250,10 @@ def test_transitive_component_calls_bar_memo() -> None:
     metrics = Metrics()
     current_module: list[Any] = []
 
-    @coco.function
-    def app_main() -> None:
+    @coco.fn
+    async def app_main() -> None:
         mod = current_module[0]
-        coco.mount(
+        await coco.mount(
             coco.component_subpath("A"), mod.foo_comp_calls_bar_memo, "A", "value1"
         )
 
@@ -264,22 +266,22 @@ def test_transitive_component_calls_bar_memo() -> None:
 
     # v1: first run — foo runs, bar_memo executes
     mod = _load_module(_V1_PATH, metrics, current_module)
-    app.update()
+    app.update_blocking()
     assert metrics.collect() == {"foo_comp_calls_bar_memo": 1, "bar_memo": 1}
     assert GlobalDictTarget.store.data["A"].data == "bar_v1: value1"
 
     # v1: second run — foo re-runs (non-memo component), bar_memo cached
-    app.update()
+    app.update_blocking()
     assert metrics.collect() == {"foo_comp_calls_bar_memo": 1}
 
     # v2: bar's logic changed — bar's fn memo invalidated
     mod = _load_module(_V2_PATH, metrics, current_module, old_module=mod)
-    app.update()
+    app.update_blocking()
     assert metrics.collect() == {"foo_comp_calls_bar_memo": 1, "bar_memo": 1}
     assert GlobalDictTarget.store.data["A"].data == "bar_v2: value1"
 
     # v2: second run — bar_memo cached again
-    app.update()
+    app.update_blocking()
     assert metrics.collect() == {"foo_comp_calls_bar_memo": 1}
 
 
@@ -289,10 +291,10 @@ def test_transitive_component_mounts_bar_comp_plain() -> None:
     metrics = Metrics()
     current_module: list[Any] = []
 
-    @coco.function
-    def app_main() -> None:
+    @coco.fn
+    async def app_main() -> None:
         mod = current_module[0]
-        coco.mount(
+        await coco.mount(
             coco.component_subpath("A"),
             mod.foo_comp_mounts_bar_comp_plain,
             "A",
@@ -308,7 +310,7 @@ def test_transitive_component_mounts_bar_comp_plain() -> None:
 
     # v1: first run — foo and bar both execute
     mod = _load_module(_V1_PATH, metrics, current_module)
-    app.update()
+    app.update_blocking()
     assert metrics.collect() == {
         "foo_comp_mounts_bar_comp_plain": 1,
         "bar_comp_plain": 1,
@@ -316,7 +318,7 @@ def test_transitive_component_mounts_bar_comp_plain() -> None:
     assert GlobalDictTarget.store.data["A"].data == "bar_v1: value1"
 
     # v1: second run — both non-memo, both re-run
-    app.update()
+    app.update_blocking()
     assert metrics.collect() == {
         "foo_comp_mounts_bar_comp_plain": 1,
         "bar_comp_plain": 1,
@@ -324,7 +326,7 @@ def test_transitive_component_mounts_bar_comp_plain() -> None:
 
     # v2: bar's code changed — bar produces new output
     mod = _load_module(_V2_PATH, metrics, current_module, old_module=mod)
-    app.update()
+    app.update_blocking()
     assert metrics.collect() == {
         "foo_comp_mounts_bar_comp_plain": 1,
         "bar_comp_plain": 1,
@@ -338,10 +340,10 @@ def test_transitive_component_mounts_bar_comp_memo() -> None:
     metrics = Metrics()
     current_module: list[Any] = []
 
-    @coco.function
-    def app_main() -> None:
+    @coco.fn
+    async def app_main() -> None:
         mod = current_module[0]
-        coco.mount(
+        await coco.mount(
             coco.component_subpath("A"),
             mod.foo_comp_mounts_bar_comp_memo,
             "A",
@@ -357,7 +359,7 @@ def test_transitive_component_mounts_bar_comp_memo() -> None:
 
     # v1: first run — foo runs, bar_comp_memo executes
     mod = _load_module(_V1_PATH, metrics, current_module)
-    app.update()
+    app.update_blocking()
     assert metrics.collect() == {
         "foo_comp_mounts_bar_comp_memo": 1,
         "bar_comp_memo": 1,
@@ -365,12 +367,12 @@ def test_transitive_component_mounts_bar_comp_memo() -> None:
     assert GlobalDictTarget.store.data["A"].data == "bar_v1: value1"
 
     # v1: second run — foo re-runs (non-memo), bar_comp_memo cached (memo component)
-    app.update()
+    app.update_blocking()
     assert metrics.collect() == {"foo_comp_mounts_bar_comp_memo": 1}
 
     # v2: bar's code changed — bar's component memo invalidated
     mod = _load_module(_V2_PATH, metrics, current_module, old_module=mod)
-    app.update()
+    app.update_blocking()
     assert metrics.collect() == {
         "foo_comp_mounts_bar_comp_memo": 1,
         "bar_comp_memo": 1,
@@ -378,7 +380,7 @@ def test_transitive_component_mounts_bar_comp_memo() -> None:
     assert GlobalDictTarget.store.data["A"].data == "bar_v2: value1"
 
     # v2: second run — bar_comp_memo cached again
-    app.update()
+    app.update_blocking()
     assert metrics.collect() == {"foo_comp_mounts_bar_comp_memo": 1}
 
 
@@ -393,7 +395,7 @@ def test_fn_memo_invalidated_on_version_bump() -> None:
     metrics = Metrics()
     current_module: list[Any] = []
 
-    @coco.function
+    @coco.fn
     def app_main() -> None:
         mod = current_module[0]
         result = mod.transform_memo_ver("A", "value1")
@@ -408,20 +410,20 @@ def test_fn_memo_invalidated_on_version_bump() -> None:
 
     # version=1: first run — function executes
     mod = _load_module(_VER1_PATH, metrics, current_module)
-    app.update()
+    app.update_blocking()
     assert metrics.collect() == {"transform_memo_ver": 1}
     assert GlobalDictTarget.store.data["A"].data == "ver: value1"
 
     # version=1: second run — memo hit
-    app.update()
+    app.update_blocking()
     assert metrics.collect() == {}
 
     # version=2: identical body but version bumped — memo invalidated
     mod = _load_module(_VER2_PATH, metrics, current_module, old_module=mod)
-    app.update()
+    app.update_blocking()
     assert metrics.collect() == {"transform_memo_ver": 1}
     assert GlobalDictTarget.store.data["A"].data == "ver: value1"
 
     # version=2: second run — memo hit again
-    app.update()
+    app.update_blocking()
     assert metrics.collect() == {}

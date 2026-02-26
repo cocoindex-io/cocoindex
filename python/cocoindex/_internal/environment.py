@@ -29,7 +29,7 @@ from ..engine_object import dump_engine_object
 from .context_keys import ContextKey, ContextProvider
 
 if TYPE_CHECKING:
-    from cocoindex._internal.app import AppBase
+    from cocoindex._internal.app import App
 
 T = TypeVar("T")
 
@@ -130,7 +130,7 @@ class EnvironmentInfo:
     __slots__ = ("_env_ref", "_app_registry", "_app_registry_lock")
 
     _env_ref: weakref.ReferenceType[Environment | LazyEnvironment]
-    _app_registry: weakref.WeakValueDictionary[str, AppBase[Any, Any]]
+    _app_registry: weakref.WeakValueDictionary[str, App[Any, Any]]
     _app_registry_lock: threading.Lock
 
     def __init__(self, env: Environment | LazyEnvironment) -> None:
@@ -140,7 +140,7 @@ class EnvironmentInfo:
         with _environment_info_lock:
             _environment_infos.append(self)
 
-    def register_app(self, name: str, app: AppBase[Any, Any]) -> None:
+    def register_app(self, name: str, app: App[Any, Any]) -> None:
         """Register an app with this environment."""
         with self._app_registry_lock:
             if name in self._app_registry:
@@ -149,7 +149,7 @@ class EnvironmentInfo:
                 )
             self._app_registry[name] = app
 
-    def get_apps(self) -> list[AppBase[Any, Any]]:
+    def get_apps(self) -> list[App[Any, Any]]:
         """Get all registered apps for this environment."""
         with self._app_registry_lock:
             return list(self._app_registry.values())

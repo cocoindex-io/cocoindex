@@ -20,7 +20,6 @@ import asyncpg
 from numpy.typing import NDArray
 
 import cocoindex as coco
-import cocoindex.asyncio as coco_aio
 from cocoindex.connectors import google_drive, postgres
 from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
 from cocoindex.ops.text import RecursiveSplitter
@@ -47,9 +46,9 @@ _embedder = SentenceTransformerEmbedder("sentence-transformers/all-MiniLM-L6-v2"
 _splitter = RecursiveSplitter()
 
 
-@coco_aio.lifespan
+@coco.lifespan
 async def coco_lifespan(
-    builder: coco_aio.EnvironmentBuilder,
+    builder: coco.EnvironmentBuilder,
 ) -> AsyncIterator[None]:
     async with await postgres.create_pool(DATABASE_URL) as pool:
         _state.pool = pool
@@ -65,7 +64,7 @@ class DocEmbedding:
     embedding: Annotated[NDArray, _embedder]
 
 
-@coco.function(memo=True)
+@coco.fn(memo=True)
 async def process_file(
     file: google_drive.DriveFile,
     table: postgres.TableTarget[DocEmbedding],
@@ -75,12 +74,10 @@ async def process_file(
         text, chunk_size=2000, chunk_overlap=500, language="markdown"
     )
     id_gen = IdGenerator()
-    await coco_aio.map(
-        _emit_chunk, chunks, file.file_path.path.as_posix(), id_gen, table
-    )
+    await coco.map(_emit_chunk, chunks, file.file_path.path.as_posix(), id_gen, table)
 
 
-@coco.function
+@coco.fn
 async def _emit_chunk(
     chunk: Chunk,
     filename: str,
@@ -97,7 +94,7 @@ async def _emit_chunk(
     )
 
 
-@coco.function
+@coco.fn
 async def app_main() -> None:
     assert _state.db is not None
 
@@ -122,11 +119,11 @@ async def app_main() -> None:
         root_folder_ids=root_folder_ids,
     )
 
-    await coco_aio.mount_each(process_file, source.items(), table)
+    await coco.mount_each(process_file, source.items(), table)
 
 
-app = coco_aio.App(
-    coco_aio.AppConfig(name="GoogleDriveTextEmbeddingV1"),
+app = coco.App(
+    coco.AppConfig(name="GoogleDriveTextEmbeddingV1"),
     app_main,
 )
 
@@ -159,7 +156,7 @@ async def query_once(query: str, *, top_k: int = TOP_K) -> None:
 
 
 async def query() -> None:
-    async with coco_aio.runtime():
+    async with coco.runtime():
         if len(sys.argv) > 2:
             q = " ".join(sys.argv[2:])
             await query_once(q)

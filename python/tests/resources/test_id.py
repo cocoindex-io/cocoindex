@@ -22,7 +22,7 @@ _id_generator_results: dict[str, list[int]] = {}
 _uuid_generator_results: dict[str, list[uuid.UUID]] = {}
 
 
-@coco.function
+@coco.fn
 async def _app_main_generate_id(deps: list[str]) -> None:
     """App main that generates IDs for each dependency."""
     for dep in deps:
@@ -40,7 +40,7 @@ def test_generate_id_stability() -> None:
     )
 
     # First run
-    app.update()
+    app.update_blocking()
     first_run_results = dict(_generate_id_results)
     # IDs are sequential integers starting from 1 (0 is reserved)
     assert first_run_results == {"A": 1, "B": 2, "C": 3}
@@ -48,7 +48,7 @@ def test_generate_id_stability() -> None:
     # Second run - function re-executes since no memo=True
     # If generate_id is stable, we should get the same IDs
     _generate_id_results.clear()
-    app.update()
+    app.update_blocking()
     second_run_results = dict(_generate_id_results)
 
     assert first_run_results == second_run_results
@@ -64,12 +64,12 @@ def test_generate_id_different_deps() -> None:
         deps=["X", "Y"],
     )
 
-    app.update()
+    app.update_blocking()
     # IDs are sequential integers starting from 1
     assert _generate_id_results == {"X": 1, "Y": 2}
 
 
-@coco.function
+@coco.fn
 def _app_main_generate_uuid(deps: list[str]) -> None:
     """App main that generates UUIDs for each dependency."""
     for dep in deps:
@@ -87,7 +87,7 @@ def test_generate_uuid_stability() -> None:
     )
 
     # First run
-    app.update()
+    app.update_blocking()
     first_run_results = dict(_generate_uuid_results)
     assert len(first_run_results) == 3
     # All UUIDs should be unique
@@ -99,7 +99,7 @@ def test_generate_uuid_stability() -> None:
     # Second run - function re-executes since no memo=True
     # If generate_uuid is stable, we should get the same UUIDs
     _generate_uuid_results.clear()
-    app.update()
+    app.update_blocking()
     second_run_results = dict(_generate_uuid_results)
 
     assert first_run_results == second_run_results
@@ -115,11 +115,11 @@ def test_generate_uuid_different_deps() -> None:
         deps=["X", "Y"],
     )
 
-    app.update()
+    app.update_blocking()
     assert _generate_uuid_results["X"] != _generate_uuid_results["Y"]
 
 
-@coco.function
+@coco.fn
 async def _app_main_id_generator(deps: list[str], count: int) -> None:
     """App main that generates multiple IDs for each dependency."""
     for dep in deps:
@@ -130,7 +130,7 @@ async def _app_main_id_generator(deps: list[str], count: int) -> None:
         _id_generator_results[dep] = ids
 
 
-@coco.function
+@coco.fn
 async def _app_main_id_generator_with_deps(
     generator_deps: list[str], count: int
 ) -> None:
@@ -154,7 +154,7 @@ def test_id_generator_multiple_ids() -> None:
         count=5,
     )
 
-    app.update()
+    app.update_blocking()
     # IDs are sequential integers starting from 1
     assert _id_generator_results == {"A": [1, 2, 3, 4, 5]}
 
@@ -171,14 +171,14 @@ def test_id_generator_stability() -> None:
     )
 
     # First run
-    app.update()
+    app.update_blocking()
     first_run_results = {k: list(v) for k, v in _id_generator_results.items()}
     # IDs are sequential integers starting from 1, allocated per dep
     assert first_run_results == {"A": [1, 2, 3], "B": [4, 5, 6]}
 
     # Second run - function re-executes since no memo=True
     _id_generator_results.clear()
-    app.update()
+    app.update_blocking()
     second_run_results = {k: list(v) for k, v in _id_generator_results.items()}
 
     assert first_run_results == second_run_results
@@ -195,7 +195,7 @@ def test_id_generator_different_deps() -> None:
         count=2,
     )
 
-    app.update()
+    app.update_blocking()
     # IDs are sequential integers starting from 1
     assert _id_generator_results == {"X": [1, 2], "Y": [3, 4]}
 
@@ -212,7 +212,7 @@ def test_id_generator_constructor_deps() -> None:
     )
 
     # First run
-    app.update()
+    app.update_blocking()
     first_run_results = {k: list(v) for k, v in _id_generator_results.items()}
     # Both generators use the same next_id() call (no arg), but different constructor deps
     # So they should produce distinct ID sequences
@@ -220,12 +220,12 @@ def test_id_generator_constructor_deps() -> None:
 
     # Second run - verify stability
     _id_generator_results.clear()
-    app.update()
+    app.update_blocking()
     second_run_results = {k: list(v) for k, v in _id_generator_results.items()}
     assert first_run_results == second_run_results
 
 
-@coco.function
+@coco.fn
 def _app_main_uuid_generator(deps: list[str], count: int) -> None:
     """App main that generates multiple UUIDs for each dependency."""
     for dep in deps:
@@ -233,7 +233,7 @@ def _app_main_uuid_generator(deps: list[str], count: int) -> None:
         _uuid_generator_results[dep] = [gen.next_uuid(dep) for _ in range(count)]
 
 
-@coco.function
+@coco.fn
 def _app_main_uuid_generator_with_deps(generator_deps: list[str], count: int) -> None:
     """App main that generates UUIDs with different constructor deps."""
     for gen_dep in generator_deps:
@@ -252,7 +252,7 @@ def test_uuid_generator_multiple_uuids() -> None:
         count=5,
     )
 
-    app.update()
+    app.update_blocking()
     uuids = _uuid_generator_results["A"]
     assert len(uuids) == 5
     # All UUIDs should be unique
@@ -274,12 +274,12 @@ def test_uuid_generator_stability() -> None:
     )
 
     # First run
-    app.update()
+    app.update_blocking()
     first_run_results = {k: list(v) for k, v in _uuid_generator_results.items()}
 
     # Second run - function re-executes since no memo=True
     _uuid_generator_results.clear()
-    app.update()
+    app.update_blocking()
     second_run_results = {k: list(v) for k, v in _uuid_generator_results.items()}
 
     assert first_run_results == second_run_results
@@ -296,7 +296,7 @@ def test_uuid_generator_different_deps() -> None:
         count=2,
     )
 
-    app.update()
+    app.update_blocking()
     uuids_x = set(_uuid_generator_results["X"])
     uuids_y = set(_uuid_generator_results["Y"])
     # UUIDs for different deps should be different
@@ -317,7 +317,7 @@ def test_uuid_generator_constructor_deps() -> None:
     )
 
     # First run
-    app.update()
+    app.update_blocking()
     first_run_results = {k: list(v) for k, v in _uuid_generator_results.items()}
     # Both generators use the same next_uuid() call (no arg), but different constructor deps
     # So they should produce distinct UUID sequences
@@ -329,6 +329,6 @@ def test_uuid_generator_constructor_deps() -> None:
 
     # Second run - verify stability
     _uuid_generator_results.clear()
-    app.update()
+    app.update_blocking()
     second_run_results = {k: list(v) for k, v in _uuid_generator_results.items()}
     assert first_run_results == second_run_results

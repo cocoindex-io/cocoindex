@@ -170,14 +170,12 @@ from cocoindex.resources.schema import VectorSchema
 schema = VectorSchema(dtype=np.dtype(np.float32), size=768)
 
 # Use it in a Qdrant vector definition
-target_collection = await coco_aio.mount_run(
-    coco.component_subpath("setup", "collection"),
-    target_db.declare_collection_target,
+target_collection = await target_db.mount_collection_target(
     collection_name="image_search",
     schema=await qdrant.CollectionSchema.create(
         vectors=qdrant.QdrantVectorDef(schema=schema, distance="cosine")
     ),
-).result()
+)
 ```
 
 ### VectorSchemaProvider

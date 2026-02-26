@@ -1,12 +1,12 @@
 ---
 title: Function
-description: Understanding the @coco.function decorator, its capabilities like memoization and change tracking.
+description: Understanding the @coco.fn decorator, its capabilities like memoization and change tracking.
 ---
 
-It's common to factor work into helper functions (for parsing, chunking, embedding, formatting, etc.). In CocoIndex, you can decorate any Python function with `@coco.function` when you want to add incremental capabilities to it. The decorated function is still a normal Python function: its signature stays the same, and you can call it normally.
+It's common to factor work into helper functions (for parsing, chunking, embedding, formatting, etc.). In CocoIndex, you can decorate any Python function with `@coco.fn` when you want to add incremental capabilities to it. The decorated function is still a normal Python function: its signature stays the same, and you can call it normally.
 
 ```python
-@coco.function
+@coco.fn
 def process_file(file: FileLike) -> str:
     return file.read_text()
 
@@ -17,23 +17,43 @@ result = process_file(file)
 The function can be sync or async:
 
 ```python
-@coco.function
+@coco.fn
 async def process_file_async(file: FileLike) -> str:
     return await file.read_text_async()
 ```
 
-## `@coco.function` vs `@coco_aio.function`
+`@coco.fn` preserves the sync/async nature of the underlying function. Decorating a sync function yields a sync function; decorating an async function yields an async function.
 
-The `@function` decorator exists in both `cocoindex` and `cocoindex.asyncio`, but they behave differently:
+## `@coco.fn.as_async`
 
-- **`@coco.function`** preserves the sync/async nature of the underlying function. Decorating a sync function yields a sync function; decorating an async function yields an async function.
-- **`@coco_aio.function`** always yields an async function. It is equivalent to `@coco.function` plus ensuring the result is async — if the underlying function is sync, it is turned into an async function.
+Use `@coco.fn.as_async` when you need an **async** interface for a function that has a sync underlying implementation. This is required for features like [batching](#batching) and [runner](#runner), which need an async entry point.
 
-The expectation is simple: whenever `async` appears — either in the function definition (`async def`) or the decorator (`@coco_aio.function`, i.e. from `cocoindex.asyncio`) — the decorated function is async.
+```python
+@coco.fn.as_async
+def embed(text: str) -> list[float]:
+    return model.encode([text])[0]
 
-This distinction matters for features like [batching](#batching) and [runner](#runner), which require an async interface. Use `@coco_aio.function` when you need these features with a sync underlying function.
+# External usage: always async, even though the function body is sync
+embedding = await embed("hello world")
+```
 
-## How to think about `@coco.function`
+`@coco.fn.as_async` is equivalent to wrapping the function in `asyncio.to_thread()` — the sync function runs on a thread pool and doesn't block the event loop.
+
+You can also call any `@coco.fn`-decorated function asynchronously via the `.as_async()` method, without changing its primary signature:
+
+```python
+@coco.fn
+def expensive_fn(data: bytes) -> bytes:
+    return process(data)
+
+# Primary call is sync:
+result = expensive_fn(data)
+
+# Async call via .as_async():
+result = await expensive_fn.as_async(data)
+```
+
+## How to think about `@coco.fn`
 
 Decorating a function tells CocoIndex that calls to it are part of the incremental update engine. You still write normal Python, but CocoIndex can now:
 
@@ -46,14 +66,14 @@ If you don't need any of the above for a helper, keep it as a plain Python funct
 
 ## Capabilities
 
-The `@coco.function` decorator provides the following additional capabilities.
+The `@coco.fn` decorator provides the following additional capabilities.
 
 ### Memoization
 
 With `memo=True`, the function is memoized. When input data and code haven't changed, CocoIndex skips recomputation of that function body entirely — it carries over target states declared during the function's previous invocation, and returns its previous return value.
 
 ```python
-@coco.function(memo=True)
+@coco.fn(memo=True)
 def process_chunk(chunk: Chunk) -> Embedding:
     # This computation is skipped if chunk and code are unchanged
     return embed(chunk.text)
@@ -81,12 +101,12 @@ See [Memoization Keys](../advanced_topics/memoization_keys.md) for details on ho
 
 ### Change tracking
 
-The logic of a function decorated with `@coco.function` is tracked based on the content of the function. When a function's implementation changes, CocoIndex detects this and re-executes the places where it's called.
+The logic of a function decorated with `@coco.fn` is tracked based on the content of the function. When a function's implementation changes, CocoIndex detects this and re-executes the places where it's called.
 
 You can also explicitly control the behavior version with a `version` option:
 
 ```python
-@coco.function(memo=True, version=2)
+@coco.fn(memo=True, version=2)
 def process_chunk(chunk: Chunk) -> Embedding:
     # Bumping version forces re-execution even if code looks the same
     return embed(chunk.text)
@@ -96,7 +116,7 @@ def process_chunk(chunk: Chunk) -> Embedding:
 
 With `batching=True`, multiple concurrent calls to the function are automatically batched together. This is useful for operations that are more efficient when processing multiple inputs at once, such as embedding models.
 
-Batching requires an async interface. If the underlying function is sync, use `@coco_aio.function(batching=True)` to make it async. If the underlying function is already `async def`, either `@coco.function` or `@coco_aio.function` works.
+Batching requires an async interface. If the underlying function is sync, use `@coco.fn.as_async(batching=True)` to make it async. If the underlying function is already `async def`, `@coco.fn(batching=True)` works directly.
 
 When batching is enabled:
 
@@ -105,9 +125,7 @@ When batching is enabled:
 - Concurrent calls are collected and processed together
 
 ```python
-import cocoindex.asyncio as coco_aio
-
-@coco_aio.function(batching=True, max_batch_size=32)
+@coco.fn.as_async(batching=True, max_batch_size=32)
 def embed(texts: list[str]) -> list[list[float]]:
     # Called with a batch of texts, returns a batch of embeddings
     return model.encode(texts)
@@ -145,12 +163,10 @@ Common use cases:
 
 The `runner` parameter allows functions to execute in a specific context, such as a dedicated GPU runner that serializes GPU workloads.
 
-Like batching, a runner requires an async interface. If the underlying function is sync, use `@coco_aio.function(runner=...)` to make it async. If the underlying function is already `async def`, either decorator works.
+Like batching, a runner requires an async interface. If the underlying function is sync, use `@coco.fn.as_async(runner=...)` to make it async. If the underlying function is already `async def`, `@coco.fn(runner=...)` works directly.
 
 ```python
-import cocoindex.asyncio as coco_aio
-
-@coco_aio.function(runner=coco.GPU)
+@coco.fn.as_async(runner=coco.GPU)
 def gpu_inference(data: bytes) -> bytes:
     # Runs with GPU serialization
     return model.predict(data)
@@ -168,7 +184,7 @@ The `coco.GPU` runner:
 You can combine batching with a runner:
 
 ```python
-@coco_aio.function(batching=True, max_batch_size=16, runner=coco.GPU)
+@coco.fn.as_async(batching=True, max_batch_size=16, runner=coco.GPU)
 def batch_gpu_embed(texts: list[str]) -> list[list[float]]:
     # Batched execution with GPU serialization
     return gpu_model.encode(texts)

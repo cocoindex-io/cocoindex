@@ -27,7 +27,7 @@ from cocoindex._internal import component_ctx as _component_ctx
 from cocoindex._internal import memo_key as _memo_key
 
 
-@_coco.function(memo=True)
+@_coco.fn(memo=True)
 async def generate_id(_dep: _typing.Any = None) -> int:
     """
     Generate a stable unique ID for a given dependency value.
@@ -48,7 +48,7 @@ async def generate_id(_dep: _typing.Any = None) -> int:
         A unique integer ID (IDs start from 1; 0 is reserved).
 
     Example:
-        @coco.function(memo=True)
+        @coco.fn(memo=True)
         async def process_item(item: Item) -> Row:
             # Same item.key always gets the same ID
             item_id = await generate_id(item.key)
@@ -57,7 +57,7 @@ async def generate_id(_dep: _typing.Any = None) -> int:
     return await _component_ctx.next_id(None)
 
 
-@_coco.function(memo=True)
+@_coco.fn(memo=True)
 def generate_uuid(_dep: _typing.Any = None) -> _uuid.UUID:
     """
     Generate a stable unique UUID for a given dependency value.
@@ -77,7 +77,7 @@ def generate_uuid(_dep: _typing.Any = None) -> _uuid.UUID:
         A unique UUID.
 
     Example:
-        @coco.function(memo=True)
+        @coco.fn(memo=True)
         def process_item(item: Item) -> Row:
             # Same item.key always gets the same UUID
             item_uuid = generate_uuid(item.key)
@@ -104,7 +104,7 @@ class IdGenerator(_coco.NotMemoizable):
             IdGenerator instances. Defaults to None.
 
     Example:
-        @coco.function(memo=True)
+        @coco.fn(memo=True)
         def process_document(doc: Document) -> list[Row]:
             id_gen = IdGenerator(doc.path)  # Use doc.path to distinguish generators
             rows = []
@@ -168,7 +168,7 @@ class UuidGenerator(_coco.NotMemoizable):
             UuidGenerator instances. Defaults to None.
 
     Example:
-        @coco.function(memo=True)
+        @coco.fn(memo=True)
         def process_document(doc: Document) -> list[Row]:
             uuid_gen = UuidGenerator(doc.path)  # Use doc.path to distinguish generators
             rows = []
@@ -213,13 +213,13 @@ class UuidGenerator(_coco.NotMemoizable):
         return _generate_next_uuid(self._deps_fp, dep_fp, ordinal)
 
 
-@_coco.function(memo=True)
+@_coco.fn(memo=True)
 async def _generate_next_id(_deps_fp: bytes, _dep_fp: bytes, _ordinal: int) -> int:
     """Internal memoized function that generates the actual ID."""
     return await _component_ctx.next_id(None)
 
 
-@_coco.function(memo=True)
+@_coco.fn(memo=True)
 def _generate_next_uuid(_deps_fp: bytes, _dep_fp: bytes, _ordinal: int) -> _uuid.UUID:
     """Internal memoized function that generates the actual UUID."""
     return _uuid.uuid4()

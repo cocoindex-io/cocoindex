@@ -94,7 +94,7 @@ def QdrantDatabase.declare_collection_target(
 - `schema` — Schema definition specifying vector configurations (see [Collection Schema](#collection-schema)).
 - `managed_by` — Whether CocoIndex manages the collection lifecycle (`"system"`) or assumes it exists (`"user"`).
 
-**Returns:** A pending `CollectionTarget`. Use `mount_run(...).result()` to wait for resolution.
+**Returns:** A pending `CollectionTarget`. Use the convenience wrapper `await db.mount_collection_target(collection_name=..., schema=...)` to resolve.
 
 #### Points (child states)
 
@@ -271,7 +271,6 @@ The `distance` parameter in `QdrantVectorDef` specifies the similarity metric:
 
 ```python
 import cocoindex as coco
-import cocoindex.asyncio as coco_aio
 from cocoindex.connectors import qdrant
 from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
 from typing import AsyncIterator
@@ -281,13 +280,13 @@ QDRANT_DB = coco.ContextKey[qdrant.QdrantDatabase]("qdrant_db")
 
 embedder = SentenceTransformerEmbedder("sentence-transformers/all-MiniLM-L6-v2")
 
-@coco_aio.lifespan
-async def coco_lifespan(builder: coco_aio.EnvironmentBuilder) -> AsyncIterator[None]:
+@coco.lifespan
+async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]:
     client = qdrant.create_client(QDRANT_URL)
     builder.provide(QDRANT_DB, qdrant.register_db("main_vectors", client))
     yield
 
-@coco.function
+@coco.fn
 async def process_document(
     doc_id: str,
     text: str,
@@ -302,23 +301,21 @@ async def process_document(
     )
     target.declare_point(point)
 
-@coco.function
+@coco.fn
 async def app_main() -> None:
     db = coco.use_context(QDRANT_DB)
 
     # Declare collection target state
-    collection = await coco_aio.mount_run(
-        coco.component_subpath("setup", "collection"),
-        db.declare_collection_target,
+    collection = await db.mount_collection_target(
         collection_name="documents",
         schema=await qdrant.CollectionSchema.create(
             vectors=qdrant.QdrantVectorDef(schema=embedder)
         ),
-    ).result()
+    )
 
     # Declare points
     for doc_id, text in documents:
-        await coco_aio.mount_run(
+        await coco.mount(
             coco.component_subpath("doc", doc_id),
             process_document,
             doc_id,
@@ -333,13 +330,11 @@ async def app_main() -> None:
 from cocoindex.resources.schema import VectorSchema
 import numpy as np
 
-@coco.function
+@coco.fn
 async def app_main() -> None:
     db = coco.use_context(QDRANT_DB)
 
-    collection = await coco_aio.mount_run(
-        coco.component_subpath("setup", "collection"),
-        db.declare_collection_target,
+    collection = await db.mount_collection_target(
         collection_name="multimodal_docs",
         schema=await qdrant.CollectionSchema.create(
             vectors={
@@ -353,7 +348,7 @@ async def app_main() -> None:
                 ),
             }
         ),
-    ).result()
+    )
 
     # Declare points with named vectors
     for doc in documents:

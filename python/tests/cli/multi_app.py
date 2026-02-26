@@ -6,15 +6,14 @@ import pathlib
 from typing import AsyncGenerator
 
 import cocoindex as coco
-import cocoindex.asyncio as coco_aio
 from cocoindex.connectors.localfs import declare_dir_target
 
 
 _ROOT_PATH = coco.ContextKey[pathlib.Path]("root_path")
 
 
-@coco_aio.lifespan
-async def lifespan(builder: coco_aio.EnvironmentBuilder) -> AsyncGenerator[None]:
+@coco.lifespan
+async def lifespan(builder: coco.EnvironmentBuilder) -> AsyncGenerator[None]:
     root_path = pathlib.Path(__file__).resolve().parent
 
     builder.provide(_ROOT_PATH, root_path)
@@ -22,9 +21,9 @@ async def lifespan(builder: coco_aio.EnvironmentBuilder) -> AsyncGenerator[None]
     yield
 
 
-@coco.function
-def build1() -> None:
-    dir_target = coco.use_mount(
+@coco.fn
+async def build1() -> None:
+    dir_target = await coco.use_mount(
         coco.component_subpath("out"),
         declare_dir_target,
         coco.use_context(_ROOT_PATH) / "out_multi_1",
@@ -32,9 +31,9 @@ def build1() -> None:
     dir_target.declare_file("hello.txt", "Hello from MultiApp1\n")
 
 
-@coco.function
-def build2() -> None:
-    dir_target = coco.use_mount(
+@coco.fn
+async def build2() -> None:
+    dir_target = await coco.use_mount(
         coco.component_subpath("out"),
         declare_dir_target,
         coco.use_context(_ROOT_PATH) / "out_multi_2",
@@ -44,7 +43,7 @@ def build2() -> None:
 
 # Two apps in the same module
 app1 = coco.App("MultiApp1", build1)
-app2 = coco_aio.App("MultiApp2", build2)
+app2 = coco.App("MultiApp2", build2)
 
 # Default app (what gets run if you don't specify :app_name)
 app = app1

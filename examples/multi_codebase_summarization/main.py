@@ -21,7 +21,6 @@ import instructor
 from litellm import acompletion
 
 import cocoindex as coco
-import cocoindex.asyncio as coco_aio
 from cocoindex.connectors import localfs
 from cocoindex.resources.file import FileLike, PatternFilePathMatcher
 
@@ -33,7 +32,7 @@ LLM_MODEL = os.environ.get("LLM_MODEL", "gemini/gemini-2.5-flash")
 _instructor_client = instructor.from_litellm(acompletion, mode=instructor.Mode.JSON)
 
 
-@coco.function(memo=True)
+@coco.fn(memo=True)
 async def extract_file_info(file: FileLike) -> CodebaseInfo:
     """Extract structured information from a single Python file using LLM."""
     content = file.read_text()
@@ -63,7 +62,7 @@ Instructions:
     return CodebaseInfo.model_validate(result.model_dump())
 
 
-@coco.function
+@coco.fn
 async def aggregate_project_info(
     project_name: str,
     file_infos: list[CodebaseInfo],
@@ -128,7 +127,7 @@ Create a unified CodebaseInfo that:
     return result
 
 
-@coco.function
+@coco.fn
 def generate_markdown(
     project_name: str, info: CodebaseInfo, file_infos: list[CodebaseInfo]
 ) -> str:
@@ -187,7 +186,7 @@ def generate_markdown(
     return "\n".join(lines)
 
 
-@coco.function(memo=True)
+@coco.fn(memo=True)
 async def process_project(
     project_name: str,
     files: Collection[localfs.File],
@@ -195,7 +194,7 @@ async def process_project(
 ) -> None:
     """Process a single project: extract info from all files, aggregate, and output markdown."""
     # Extract info from each file.
-    file_infos = await coco_aio.map(extract_file_info, files)
+    file_infos = await coco.map(extract_file_info, files)
 
     # Aggregate into project-level summary
     project_info = await aggregate_project_info(project_name, file_infos)
@@ -207,7 +206,7 @@ async def process_project(
     )
 
 
-@coco.function
+@coco.fn
 async def app_main(
     root_dir: pathlib.Path,
     output_dir: pathlib.Path,
@@ -239,7 +238,7 @@ async def app_main(
 
         if files:
             # Mount a component to process this project
-            await coco_aio.mount(
+            await coco.mount(
                 coco.component_subpath("project", project_name),
                 process_project,
                 project_name,
@@ -248,8 +247,8 @@ async def app_main(
             )
 
 
-app = coco_aio.App(
-    coco_aio.AppConfig(name="MultiCodebaseSummarization"),
+app = coco.App(
+    coco.AppConfig(name="MultiCodebaseSummarization"),
     app_main,
     root_dir=pathlib.Path("../"),
     output_dir=pathlib.Path("./output"),

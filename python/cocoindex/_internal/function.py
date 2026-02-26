@@ -89,9 +89,9 @@ if TYPE_CHECKING:
         def __call__(self, fn: Any) -> Any: ...
 
     class _BatchedDecorator(Protocol):
-        """Protocol for batched function decorator used by @cocoindex.asyncio.function.
+        """Protocol for batched function decorator used by @coco.fn.as_async.
 
-        Accepts both sync and async underlying functions, since @cocoindex.asyncio.function
+        Accepts both sync and async underlying functions, since @coco.fn.as_async
         always ensures the result is async.
 
         Transforms:
@@ -225,7 +225,7 @@ class SyncFunction(Function[P, R_co]):
     """Sync function with optional memoization.
 
     Does not support batching or runner — those require an async interface
-    and produce AsyncFunction (via @cocoindex.asyncio.function).
+    and produce AsyncFunction (via @coco.fn.as_async).
     """
 
     __slots__ = ("_fn", "_memo", "_processor_info", "_logic_fp")
@@ -308,6 +308,10 @@ class SyncFunction(Function[P, R_co]):
             if fn_ctx is not None:
                 parent_ctx._core_fn_call_ctx.join_child(fn_ctx)
 
+    async def as_async(self, *args: P.args, **kwargs: P.kwargs) -> R_co:
+        """Call this sync function wrapped in async (runs via asyncio.to_thread)."""
+        return await asyncio.to_thread(self, *args, **kwargs)
+
     def _core_processor(
         self: SyncFunction[P0, R_co],
         env: Environment,
@@ -341,6 +345,10 @@ class _BoundSyncMethod(Generic[SelfT]):
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         return self._func(self._instance, *args, **kwargs)
+
+    async def as_async(self, *args: Any, **kwargs: Any) -> Any:
+        """Call this bound sync method wrapped in async (runs via asyncio.to_thread)."""
+        return await asyncio.to_thread(self, *args, **kwargs)
 
 
 # ============================================================================
@@ -399,6 +407,10 @@ class _BoundAsyncMethod(Generic[SelfT]):
 
     async def __call__(self, *args: Any, **kwargs: Any) -> Any:
         return await self._func(self._instance, *args, **kwargs)
+
+    async def as_async(self, *args: Any, **kwargs: Any) -> Any:
+        """Call this bound async method (same as __call__)."""
+        return await self(*args, **kwargs)
 
     async def _execute_orig_async_fn(self, *args: Any, **kwargs: Any) -> Any:
         return await self._func._execute_orig_async_fn(self._instance, *args, **kwargs)
@@ -520,6 +532,10 @@ class AsyncFunction(Function[P, R_co]):
         if instance is None:
             return self
         return _BoundAsyncMethod(self, instance)  # type: ignore[arg-type]
+
+    async def as_async(self, *args: P.args, **kwargs: P.kwargs) -> R_co:
+        """Call this async function (same as __call__)."""
+        return await self(*args, **kwargs)
 
     async def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R_co:
         """Core implementation."""
@@ -789,7 +805,7 @@ class _GenericFunctionBuilder:
         if self._batching or self._runner is not None:
             raise ValueError(
                 "Batching and runner require the function to be async. "
-                "Use @cocoindex.asyncio.function instead, or rewrite the function to be async."
+                "Use @coco.fn.as_async instead, or rewrite the function to be async."
             )
         wrapper = SyncFunction(fn, memo=self._memo, version=self._version)
         functools.update_wrapper(wrapper, fn)
@@ -820,8 +836,9 @@ class _SyncFunctionBuilder(_GenericFunctionBuilder):
     def __call__(self, fn: Callable[P, R_co]) -> SyncFunction[P, R_co]:
         if inspect.iscoroutinefunction(fn):
             raise ValueError(
-                "Async functions are not supported by @cocoindex.function decorator. "
-                "Please use @cocoindex.asyncio.function instead."
+                "Async functions are not supported by @coco.fn decorator "
+                "when batching or runner is specified. "
+                "Please use @coco.fn.as_async instead."
             )
         return self._build_sync(fn)
 
@@ -864,168 +881,183 @@ class _AsyncFunctionBuilder(_GenericFunctionBuilder):
         return self._build_async(fn)
 
 
-# Without batching / runner, supports both sync and async functions
-@overload
-def function(
-    *,
-    memo: bool = False,
-    version: int | None = None,
-) -> _AutoFunctionBuilder: ...
-# Overload for batching=True
-@overload
-def function(
-    *,
-    memo: bool = False,
-    batching: Literal[True],
-    max_batch_size: int | None = None,
-    runner: Runner | None = None,
-    version: int | None = None,
-) -> _AsyncBatchedDecorator: ...
-# With batching / runner, only supports sync functions
-@overload
-def function(
-    *,
-    memo: bool = False,
-    batching: Literal[False] = False,
-    max_batch_size: int | None = None,
-    runner: Runner | None = None,
-    version: int | None = None,
-) -> _SyncFunctionBuilder: ...
-# Overloads for direct function decoration
-@overload
-def function(  # type: ignore[overload-overlap]
-    fn: AsyncCallable[P, R_co], /
-) -> AsyncFunction[P, R_co]: ...
-@overload
-def function(fn: Callable[P, R_co], /) -> SyncFunction[P, R_co]: ...
-def function(
-    fn: Callable[P, R_co] | None = None,
-    /,
-    *,
-    memo: bool = False,
-    batching: bool = False,
-    max_batch_size: int | None = None,
-    runner: Runner | None = None,
-    version: int | None = None,
-) -> Any:
-    """Decorator for CocoIndex functions (exposed as @cocoindex.function).
+class _FunctionDecorator:
+    """Namespace for @coco.fn and @coco.fn.as_async decorators."""
 
-    Preserves the sync/async nature of the underlying function:
-    - Sync function -> SyncFunction (sync)
-    - Async function -> AsyncFunction (async)
+    # --- @coco.fn(...) / @coco.fn ---
 
-    Args:
-        fn: The function to decorate (optional, for use without parentheses)
-        memo: Enable memoization (skip execution when inputs unchanged)
-        batching: Enable batching (function receives list[T], returns list[R])
-        max_batch_size: Maximum batch size (only with batching=True)
-        runner: Runner to execute the function (e.g., GPU for subprocess)
-        version: Explicit version number for change tracking. When specified,
-            the version is used as the logic fingerprint instead of the AST.
-            Bump this to force re-execution even when code looks the same.
+    # Without batching / runner, supports both sync and async functions
+    @overload
+    def __call__(
+        self,
+        *,
+        memo: bool = False,
+        version: int | None = None,
+    ) -> _AutoFunctionBuilder: ...
+    # Overload for batching=True
+    @overload
+    def __call__(
+        self,
+        *,
+        memo: bool = False,
+        batching: Literal[True],
+        max_batch_size: int | None = None,
+        runner: Runner | None = None,
+        version: int | None = None,
+    ) -> _AsyncBatchedDecorator: ...
+    # With batching / runner, only supports sync functions
+    @overload
+    def __call__(
+        self,
+        *,
+        memo: bool = False,
+        batching: Literal[False] = False,
+        max_batch_size: int | None = None,
+        runner: Runner | None = None,
+        version: int | None = None,
+    ) -> _SyncFunctionBuilder: ...
+    # Overloads for direct function decoration
+    @overload
+    def __call__(  # type: ignore[overload-overlap]
+        self, fn: AsyncCallable[P, R_co], /
+    ) -> AsyncFunction[P, R_co]: ...
+    @overload
+    def __call__(self, fn: Callable[P, R_co], /) -> SyncFunction[P, R_co]: ...
+    def __call__(  # type: ignore[misc]
+        self,
+        fn: Callable[P, R_co] | None = None,
+        /,
+        *,
+        memo: bool = False,
+        batching: bool = False,
+        max_batch_size: int | None = None,
+        runner: Runner | None = None,
+        version: int | None = None,
+    ) -> Any:
+        """Decorator for CocoIndex functions (exposed as @coco.fn).
 
-    Batching and runner require an async interface. With this decorator, only sync
-    underlying functions are accepted when batching/runner is specified. Use
-    @cocoindex.asyncio.function for sync underlying functions that need batching/runner.
+        Preserves the sync/async nature of the underlying function:
+        - Sync function -> SyncFunction (sync)
+        - Async function -> AsyncFunction (async)
 
-    Memoization works with all modes:
-        - Without batching/runner: requires ComponentContext
-        - With batching/runner: ComponentContext optional, memo checked when available
-    """
-    builder = (
-        _SyncFunctionBuilder(
+        Args:
+            fn: The function to decorate (optional, for use without parentheses)
+            memo: Enable memoization (skip execution when inputs unchanged)
+            batching: Enable batching (function receives list[T], returns list[R])
+            max_batch_size: Maximum batch size (only with batching=True)
+            runner: Runner to execute the function (e.g., GPU for subprocess)
+            version: Explicit version number for change tracking. When specified,
+                the version is used as the logic fingerprint instead of the AST.
+                Bump this to force re-execution even when code looks the same.
+
+        Batching and runner require an async interface. With this decorator, only
+        async underlying functions are accepted when batching/runner is specified.
+        Use @coco.fn.as_async for sync underlying functions that need
+        batching/runner.
+
+        Memoization works with all modes:
+            - Without batching/runner: requires ComponentContext
+            - With batching/runner: ComponentContext optional, memo checked when available
+        """
+        builder = (
+            _SyncFunctionBuilder(
+                memo=memo,
+                batching=batching,
+                max_batch_size=max_batch_size,
+                runner=runner,
+                version=version,
+            )
+            if batching or runner or max_batch_size is not None
+            else _AutoFunctionBuilder(memo=memo, version=version)
+        )
+        if fn is not None:
+            return builder(fn)
+        else:
+            return builder
+
+    # --- @coco.fn.as_async(...) / @coco.fn.as_async ---
+
+    # Overload for batching=True
+    @overload
+    def as_async(
+        self,
+        *,
+        memo: bool = False,
+        batching: Literal[True],
+        max_batch_size: int | None = None,
+        runner: Runner | None = None,
+        version: int | None = None,
+    ) -> _BatchedDecorator: ...
+    # Overload for keyword-only args without batching
+    @overload
+    def as_async(
+        self,
+        *,
+        memo: bool = False,
+        batching: Literal[False] = False,
+        max_batch_size: int | None = None,
+        runner: Runner | None = None,
+        version: int | None = None,
+    ) -> _AsyncFunctionBuilder: ...
+    # Overloads for direct function decoration
+    @overload
+    def as_async(
+        self,
+        fn: AsyncCallable[P, R_co],
+        /,
+    ) -> AsyncFunction[P, R_co]: ...
+    @overload
+    def as_async(
+        self,
+        fn: Callable[P, R_co],
+        /,
+    ) -> AsyncFunction[P, R_co]: ...
+    def as_async(  # type: ignore[misc]
+        self,
+        fn: Any = None,
+        /,
+        *,
+        memo: bool = False,
+        batching: bool = False,
+        max_batch_size: int | None = None,
+        runner: Runner | None = None,
+        version: int | None = None,
+    ) -> Any:
+        """Decorator for CocoIndex functions (exposed as @coco.fn.as_async).
+
+        Always yields an async function, equivalent to @coco.fn plus ensuring
+        the result is async. Accepts both sync and async underlying functions.
+
+        Args:
+            fn: The function to decorate (optional, for use without parentheses)
+            memo: Enable memoization (skip execution when inputs unchanged)
+            batching: Enable batching (function receives list[T], returns list[R])
+            max_batch_size: Maximum batch size (only with batching=True)
+            runner: Runner to execute the function (e.g., GPU for subprocess)
+            version: Explicit version number for change tracking. When specified,
+                the version is used as the logic fingerprint instead of the AST.
+                Bump this to force re-execution even when code looks the same.
+
+        Batching and runner are fully supported since the result is always async.
+
+        Memoization works with all modes:
+            - Without batching/runner: requires ComponentContext
+            - With batching/runner: ComponentContext optional, memo checked when available
+        """
+        builder = _AsyncFunctionBuilder(
             memo=memo,
             batching=batching,
             max_batch_size=max_batch_size,
             runner=runner,
             version=version,
         )
-        if batching or runner or max_batch_size is not None
-        else _AutoFunctionBuilder(memo=memo, version=version)
-    )
-    if fn is not None:
-        return builder(fn)
-    else:
-        return builder
+        if fn is not None:
+            return builder(fn)
+        else:
+            return builder
 
 
-# Overload for batching=True
-@overload
-def async_function(
-    *,
-    memo: bool = False,
-    batching: Literal[True],
-    max_batch_size: int | None = None,
-    runner: Runner | None = None,
-    version: int | None = None,
-) -> _BatchedDecorator: ...
-
-
-# Overload for keyword-only args without batching
-@overload
-def async_function(
-    *,
-    memo: bool = False,
-    batching: Literal[False] = False,
-    max_batch_size: int | None = None,
-    runner: Runner | None = None,
-    version: int | None = None,
-) -> _AsyncFunctionBuilder: ...
-
-
-# Overloads for direct function decoration
-@overload
-def async_function(
-    fn: AsyncCallable[P, R_co],
-    /,
-) -> AsyncFunction[P, R_co]: ...
-@overload
-def async_function(
-    fn: Callable[P, R_co],
-    /,
-) -> AsyncFunction[P, R_co]: ...
-def async_function(
-    fn: Any = None,
-    /,
-    *,
-    memo: bool = False,
-    batching: bool = False,
-    max_batch_size: int | None = None,
-    runner: Runner | None = None,
-    version: int | None = None,
-) -> Any:
-    """Decorator for CocoIndex functions (exposed as @cocoindex.asyncio.function).
-
-    Always yields an async function, equivalent to @cocoindex.function plus ensuring
-    the result is async. Accepts both sync and async underlying functions.
-
-    Args:
-        fn: The function to decorate (optional, for use without parentheses)
-        memo: Enable memoization (skip execution when inputs unchanged)
-        batching: Enable batching (function receives list[T], returns list[R])
-        max_batch_size: Maximum batch size (only with batching=True)
-        runner: Runner to execute the function (e.g., GPU for subprocess)
-        version: Explicit version number for change tracking. When specified,
-            the version is used as the logic fingerprint instead of the AST.
-            Bump this to force re-execution even when code looks the same.
-
-    Batching and runner are fully supported since the result is always async.
-
-    Memoization works with all modes:
-        - Without batching/runner: requires ComponentContext
-        - With batching/runner: ComponentContext optional, memo checked when available
-    """
-    builder = _AsyncFunctionBuilder(
-        memo=memo,
-        batching=batching,
-        max_batch_size=max_batch_size,
-        runner=runner,
-        version=version,
-    )
-    if fn is not None:
-        return builder(fn)
-    else:
-        return builder
+fn = _FunctionDecorator()
 
 
 def create_core_component_processor(

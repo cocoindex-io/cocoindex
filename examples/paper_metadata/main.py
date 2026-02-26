@@ -28,7 +28,6 @@ from dotenv import load_dotenv
 from pypdf import PdfReader, PdfWriter
 
 import cocoindex as coco
-import cocoindex.asyncio as coco_aio
 from cocoindex.connectors import localfs, postgres
 from cocoindex.ops.text import CustomLanguageConfig, RecursiveSplitter
 from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
@@ -104,7 +103,7 @@ class MetadataEmbeddingRow:
 # =========================================================================
 
 
-@coco.function
+@coco.fn
 def extract_basic_info(content: bytes) -> PaperBasicInfo:
     """Extract first page bytes and page count from a PDF."""
     reader = PdfReader(io.BytesIO(content))
@@ -117,7 +116,7 @@ def extract_basic_info(content: bytes) -> PaperBasicInfo:
     return PaperBasicInfo(num_pages=len(reader.pages), first_page=output.getvalue())
 
 
-@coco.function
+@coco.fn
 def pdf_to_markdown(content: bytes) -> str:
     """Convert PDF bytes to text using pypdf."""
     reader = PdfReader(io.BytesIO(content))
@@ -125,7 +124,7 @@ def pdf_to_markdown(content: bytes) -> str:
     return page_text or ""
 
 
-@coco.function
+@coco.fn
 def extract_metadata(markdown: str) -> PaperMetadataModel:
     """Extract paper metadata from first-page text using an LLM."""
     client = openai_client()
@@ -156,9 +155,9 @@ def extract_metadata(markdown: str) -> PaperMetadataModel:
     return PaperMetadataModel.model_validate_json(content)
 
 
-@coco_aio.lifespan
+@coco.lifespan
 async def coco_lifespan(
-    builder: coco_aio.EnvironmentBuilder,
+    builder: coco.EnvironmentBuilder,
 ) -> AsyncIterator[None]:
     # Provide resources needed across the CocoIndex environment
     database_url = os.getenv("POSTGRES_URL")
@@ -170,7 +169,7 @@ async def coco_lifespan(
         yield
 
 
-@coco.function(memo=True)
+@coco.fn(memo=True)
 async def process_file(
     file: AsyncFileLike,
     metadata_table: postgres.TableTarget[PaperMetadataRow],
@@ -234,7 +233,7 @@ async def process_file(
         )
 
 
-@coco.function
+@coco.fn
 async def app_main(sourcedir: pathlib.Path) -> None:
     target_db = coco.use_context(PG_DB)
     metadata_table = await target_db.mount_table_target(
@@ -267,13 +266,13 @@ async def app_main(sourcedir: pathlib.Path) -> None:
         recursive=True,
         path_matcher=PatternFilePathMatcher(included_patterns=["**/*.pdf"]),
     )
-    await coco_aio.mount_each(
+    await coco.mount_each(
         process_file, files.items(), metadata_table, author_table, embedding_table
     )
 
 
-app = coco_aio.App(
-    coco_aio.AppConfig(name="PaperMetadataV1"),
+app = coco.App(
+    coco.AppConfig(name="PaperMetadataV1"),
     app_main,
     sourcedir=pathlib.Path("./papers"),
 )

@@ -27,13 +27,13 @@ The type parameter (`postgres.PgDatabase`, `AppConfig`) enables type checking â€
 In your [lifespan function](./app.md#defining-a-lifespan), use `builder.provide()` to make resources available:
 
 ```python
-import cocoindex.asyncio as coco_aio
+import cocoindex as coco
 from cocoindex.connectors import postgres
 
-PG_DB = coco_aio.ContextKey[postgres.PgDatabase]("pg_db")
+PG_DB = coco.ContextKey[postgres.PgDatabase]("pg_db")
 
-@coco_aio.lifespan
-async def coco_lifespan(builder: coco_aio.EnvironmentBuilder) -> AsyncIterator[None]:
+@coco.lifespan
+async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]:
     builder.settings.db_path = pathlib.Path("./cocoindex.db")
 
     # Create and provide a database connection
@@ -49,18 +49,16 @@ The resource is available for the lifetime of the environment. When the lifespan
 In processing components, use `coco.use_context()` to retrieve provided resources:
 
 ```python
-@coco.function
+@coco.fn
 async def app_main(sourcedir: pathlib.Path) -> None:
     db = coco.use_context(PG_DB)  # Returns postgres.PgDatabase
 
-    table = await coco_aio.mount_run(
-        coco.component_subpath("setup", "table"),
-        db.declare_table_target,
+    table = await db.mount_table_target(
         table_name="docs",
         table_schema=await postgres.TableSchema.from_class(
             Doc, primary_key=["id"]
         ),
-    ).result()
+    )
 
     # ... rest of pipeline ...
 ```
@@ -76,7 +74,7 @@ db = coco.default_env().get_context(PG_DB)
 
 ```python
 # Async API
-db = (await coco_aio.default_env()).get_context(PG_DB)
+db = (await coco.default_env()).get_context(PG_DB)
 ```
 
 This is useful when your application runs both indexing and serving in the same process and you want to initialize shared resources (like database connection pools or configuration) once in the lifespan.

@@ -127,7 +127,7 @@ def SqliteDatabase.declare_table_target(
 - `table_schema` — Schema definition including columns and primary key (see [Table Schema](#table-schema-from-python-class)).
 - `managed_by` — Whether CocoIndex manages the table lifecycle (`"system"`) or assumes it exists (`"user"`).
 
-**Returns:** A pending `TableTarget`. Use `mount_run(...).result()` to wait for resolution.
+**Returns:** A pending `TableTarget`. Use the convenience wrapper `await db.mount_table_target(table_name=..., table_schema=...)` to resolve.
 
 #### Rows (Child States)
 
@@ -339,9 +339,7 @@ class VectorDocument:
     metadata: str
 
 # Create vec0 virtual table with partition key and auxiliary column
-table = await coco_aio.mount_run(
-    coco.component_subpath("setup", "table"),
-    db.declare_table_target,
+table = await db.mount_table_target(
     table_name="documents",
     table_schema=await sqlite.TableSchema.from_class(
         VectorDocument,
@@ -351,7 +349,7 @@ table = await coco_aio.mount_run(
         partition_key_columns=["category"],
         auxiliary_columns=["metadata"],
     ),
-).result()
+)
 ```
 
 :::warning Current Limitations
@@ -367,7 +365,6 @@ A future schema versioning mechanism will allow preserving row data across table
 
 ```python
 import cocoindex as coco
-import cocoindex.asyncio as coco_aio
 from cocoindex.connectors import sqlite
 
 DATABASE_PATH = "mydb.sqlite"
@@ -389,20 +386,18 @@ def coco_lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
         yield
     managed_conn.close()
 
-@coco.function
+@coco.fn
 async def app_main() -> None:
     db = coco.use_context(SQLITE_DB)
 
     # Declare table target state
-    table = await coco_aio.mount_run(
-        coco.component_subpath("setup", "table"),
-        db.declare_table_target,
+    table = await db.mount_table_target(
         table_name="products",
         table_schema=await sqlite.TableSchema.from_class(
             OutputProduct,
             primary_key=["category", "name"],
         ),
-    ).result()
+    )
 
     # Declare rows
     for product in products:
@@ -413,7 +408,6 @@ async def app_main() -> None:
 
 ```python
 import cocoindex as coco
-import cocoindex.asyncio as coco_aio
 from cocoindex.connectors import sqlite
 from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
 from dataclasses import dataclass
@@ -442,14 +436,12 @@ def coco_lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
         yield
     managed_conn.close()
 
-@coco.function
+@coco.fn
 async def app_main() -> None:
     db = coco.use_context(SQLITE_DB)
 
     # Create vec0 virtual table with partition key and auxiliary column
-    table = await coco_aio.mount_run(
-        coco.component_subpath("setup", "table"),
-        db.declare_table_target,
+    table = await db.mount_table_target(
         table_name="documents",
         table_schema=await sqlite.TableSchema.from_class(
             VectorDocument,
@@ -459,7 +451,7 @@ async def app_main() -> None:
             partition_key_columns=["category"],  # Partition index by category
             auxiliary_columns=["metadata"],       # Store but don't index for KNN
         ),
-    ).result()
+    )
 
     # Declare document rows
     docs = [
