@@ -16,14 +16,17 @@ class Metrics:
 
     def __init__(self, data: dict[str, int] | None = None) -> None:
         self.data = data or {}
+        self._lock = threading.Lock()
 
     def increment(self, metric: str) -> None:
-        self.data[metric] = self.data.get(metric, 0) + 1
+        with self._lock:
+            self.data[metric] = self.data.get(metric, 0) + 1
 
     def collect(self) -> dict[str, int]:
-        m = self.data
-        self.data = {}
-        return m
+        with self._lock:
+            m = self.data
+            self.data = {}
+            return m
 
     def __repr__(self) -> str:
         return f"Metrics{self.data}"
@@ -43,7 +46,8 @@ class Metrics:
             return False
 
     def clear(self) -> None:
-        self.data.clear()
+        with self._lock:
+            self.data.clear()
 
 
 class DictTargetStateStore:
