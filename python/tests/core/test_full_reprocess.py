@@ -24,14 +24,14 @@ _source_data: dict[str, SourceDataEntry] = {}
 _metrics = Metrics()
 
 
-@coco.function(memo=True)
+@coco.fn(memo=True)
 def _declare_dict_entry(entry: SourceDataEntry) -> None:
     """Memoized function that declares a target state."""
     _metrics.increment("calls")
     coco.declare_target_state(GlobalDictTarget.target_state(entry.name, entry.content))
 
 
-@coco.function(memo=True)
+@coco.fn(memo=True)
 async def _declare_dict_data_memoized(data_version: int) -> None:
     """Main function that mounts child components. Memoized to test component memoization.
 
@@ -42,7 +42,7 @@ async def _declare_dict_data_memoized(data_version: int) -> None:
         await coco.mount(coco.component_subpath(entry.name), _declare_dict_entry, entry)
 
 
-@coco.function
+@coco.fn
 async def _declare_dict_data() -> None:
     """Main function that mounts child components. Not memoized."""
     _metrics.increment("root_component")

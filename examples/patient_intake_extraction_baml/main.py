@@ -11,14 +11,14 @@ from baml_client.types import Patient
 import baml_py
 
 
-@coco.function
+@coco.fn
 async def extract_patient_info(content: bytes) -> Patient:
     """Extract patient information from PDF content using BAML."""
     pdf = baml_py.Pdf.from_base64(base64.b64encode(content).decode("utf-8"))
     return await b.ExtractPatientInfo(pdf)
 
 
-@coco.function(memo=True)
+@coco.fn(memo=True)
 async def process_patient_form(file: AsyncFileLike, outdir: pathlib.Path) -> None:
     """Process a patient intake form PDF and extract structured information."""
     content = await file.read()
@@ -30,7 +30,7 @@ async def process_patient_form(file: AsyncFileLike, outdir: pathlib.Path) -> Non
     )
 
 
-@coco.function
+@coco.fn
 async def app_main(sourcedir: pathlib.Path, outdir: pathlib.Path) -> None:
     """Main application function that processes patient intake forms."""
     files = localfs.walk_dir(

@@ -18,7 +18,7 @@ OUT_DIR = _HERE / "out_unbound"
 env = coco.Environment(coco.Settings.from_env(db_path=DB_PATH))
 
 
-@coco.function
+@coco.fn
 async def build() -> None:
     dir_target = await coco.use_mount(
         coco.component_subpath("out"),

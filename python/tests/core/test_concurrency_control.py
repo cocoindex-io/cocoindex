@@ -59,7 +59,7 @@ _SLEEP = 0.1  # 100ms — enough to guarantee overlap between concurrent childre
 # ── Component functions ─────────────────────────────────────────────────
 
 
-@coco.function
+@coco.fn
 def _slow_leaf() -> None:
     """Leaf component that sleeps to create overlapping execution windows."""
     _tracker.enter()
@@ -69,12 +69,12 @@ def _slow_leaf() -> None:
         _tracker.exit()
 
 
-@coco.function
+@coco.fn
 def _noop() -> None:
     pass
 
 
-@coco.function
+@coco.fn
 async def _child_mounts_grandchild() -> None:
     """Child that mounts a grandchild — tests permit release on first child mount."""
     await coco.mount(coco.component_subpath("gc"), _noop)

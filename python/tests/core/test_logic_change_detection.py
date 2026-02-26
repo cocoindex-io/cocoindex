@@ -74,7 +74,7 @@ def test_fn_memo_invalidated_on_logic_change() -> None:
     metrics = Metrics()
     current_module: list[Any] = []
 
-    @coco.function
+    @coco.fn
     def app_main() -> None:
         mod = current_module[0]
         result = mod.transform_memo("A", "value1")
@@ -119,7 +119,7 @@ def test_component_memo_invalidated_on_logic_change() -> None:
     metrics = Metrics()
     current_module: list[Any] = []
 
-    @coco.function
+    @coco.fn
     async def app_main() -> None:
         mod = current_module[0]
         await coco.mount(
@@ -165,7 +165,7 @@ def test_transitive_fn_memo_bar_memo_changes() -> None:
     metrics = Metrics()
     current_module: list[Any] = []
 
-    @coco.function
+    @coco.fn
     def app_main() -> None:
         mod = current_module[0]
         result = mod.foo_calls_bar_memo("A", "value1")
@@ -205,7 +205,7 @@ def test_transitive_fn_memo_bar_plain_changes() -> None:
     metrics = Metrics()
     current_module: list[Any] = []
 
-    @coco.function
+    @coco.fn
     def app_main() -> None:
         mod = current_module[0]
         result = mod.foo_calls_bar_plain("A", "value1")
@@ -250,7 +250,7 @@ def test_transitive_component_calls_bar_memo() -> None:
     metrics = Metrics()
     current_module: list[Any] = []
 
-    @coco.function
+    @coco.fn
     async def app_main() -> None:
         mod = current_module[0]
         await coco.mount(
@@ -291,7 +291,7 @@ def test_transitive_component_mounts_bar_comp_plain() -> None:
     metrics = Metrics()
     current_module: list[Any] = []
 
-    @coco.function
+    @coco.fn
     async def app_main() -> None:
         mod = current_module[0]
         await coco.mount(
@@ -340,7 +340,7 @@ def test_transitive_component_mounts_bar_comp_memo() -> None:
     metrics = Metrics()
     current_module: list[Any] = []
 
-    @coco.function
+    @coco.fn
     async def app_main() -> None:
         mod = current_module[0]
         await coco.mount(
@@ -395,7 +395,7 @@ def test_fn_memo_invalidated_on_version_bump() -> None:
     metrics = Metrics()
     current_module: list[Any] = []
 
-    @coco.function
+    @coco.fn
     def app_main() -> None:
         mod = current_module[0]
         result = mod.transform_memo_ver("A", "value1")

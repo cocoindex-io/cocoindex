@@ -94,7 +94,7 @@ async def coco_lifespan(
     yield
 
 
-@coco.function(memo=True)
+@coco.fn(memo=True)
 def process_file(
     file: FileLike,
     target: qdrant.CollectionTarget,
@@ -110,7 +110,7 @@ def process_file(
     target.declare_point(point)
 
 
-@coco.function
+@coco.fn
 async def app_main(sourcedir: pathlib.Path) -> None:
     model, _, _ = get_colpali()
     dim = int(getattr(model, "dim", 128))

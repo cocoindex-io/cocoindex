@@ -22,7 +22,7 @@ _id_generator_results: dict[str, list[int]] = {}
 _uuid_generator_results: dict[str, list[uuid.UUID]] = {}
 
 
-@coco.function
+@coco.fn
 async def _app_main_generate_id(deps: list[str]) -> None:
     """App main that generates IDs for each dependency."""
     for dep in deps:
@@ -69,7 +69,7 @@ def test_generate_id_different_deps() -> None:
     assert _generate_id_results == {"X": 1, "Y": 2}
 
 
-@coco.function
+@coco.fn
 def _app_main_generate_uuid(deps: list[str]) -> None:
     """App main that generates UUIDs for each dependency."""
     for dep in deps:
@@ -119,7 +119,7 @@ def test_generate_uuid_different_deps() -> None:
     assert _generate_uuid_results["X"] != _generate_uuid_results["Y"]
 
 
-@coco.function
+@coco.fn
 async def _app_main_id_generator(deps: list[str], count: int) -> None:
     """App main that generates multiple IDs for each dependency."""
     for dep in deps:
@@ -130,7 +130,7 @@ async def _app_main_id_generator(deps: list[str], count: int) -> None:
         _id_generator_results[dep] = ids
 
 
-@coco.function
+@coco.fn
 async def _app_main_id_generator_with_deps(
     generator_deps: list[str], count: int
 ) -> None:
@@ -225,7 +225,7 @@ def test_id_generator_constructor_deps() -> None:
     assert first_run_results == second_run_results
 
 
-@coco.function
+@coco.fn
 def _app_main_uuid_generator(deps: list[str], count: int) -> None:
     """App main that generates multiple UUIDs for each dependency."""
     for dep in deps:
@@ -233,7 +233,7 @@ def _app_main_uuid_generator(deps: list[str], count: int) -> None:
         _uuid_generator_results[dep] = [gen.next_uuid(dep) for _ in range(count)]
 
 
-@coco.function
+@coco.fn
 def _app_main_uuid_generator_with_deps(generator_deps: list[str], count: int) -> None:
     """App main that generates UUIDs with different constructor deps."""
     for gen_dep in generator_deps:

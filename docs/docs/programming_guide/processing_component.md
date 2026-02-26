@@ -199,7 +199,7 @@ Use `coco.get_component_context()` to capture the current context, and `context.
 ```python
 from concurrent.futures import ThreadPoolExecutor
 
-@coco.function
+@coco.fn
 def app_main() -> None:
     # Capture the current context
     ctx = coco.get_component_context()

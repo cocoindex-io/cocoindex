@@ -467,7 +467,7 @@ class CollectionTarget(
         ```python
         from qdrant_client.http import models as qdrant_models
 
-        @coco.function
+        @coco.fn
         def process_doc(doc: Doc, target: CollectionTarget) -> None:
             point = qdrant_models.PointStruct(
                 id=doc.id,
@@ -537,7 +537,7 @@ class QdrantDatabase(connection.KeyedConnection[QdrantClient]):
 
         Example:
             ```python
-            @coco.function
+            @coco.fn
             def app_main() -> None:
                 db = coco.use_context(QDRANT_DB)
                 target = coco.use_mount(

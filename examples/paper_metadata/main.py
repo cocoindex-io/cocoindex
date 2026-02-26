@@ -103,7 +103,7 @@ class MetadataEmbeddingRow:
 # =========================================================================
 
 
-@coco.function
+@coco.fn
 def extract_basic_info(content: bytes) -> PaperBasicInfo:
     """Extract first page bytes and page count from a PDF."""
     reader = PdfReader(io.BytesIO(content))
@@ -116,7 +116,7 @@ def extract_basic_info(content: bytes) -> PaperBasicInfo:
     return PaperBasicInfo(num_pages=len(reader.pages), first_page=output.getvalue())
 
 
-@coco.function
+@coco.fn
 def pdf_to_markdown(content: bytes) -> str:
     """Convert PDF bytes to text using pypdf."""
     reader = PdfReader(io.BytesIO(content))
@@ -124,7 +124,7 @@ def pdf_to_markdown(content: bytes) -> str:
     return page_text or ""
 
 
-@coco.function
+@coco.fn
 def extract_metadata(markdown: str) -> PaperMetadataModel:
     """Extract paper metadata from first-page text using an LLM."""
     client = openai_client()
@@ -169,7 +169,7 @@ async def coco_lifespan(
         yield
 
 
-@coco.function(memo=True)
+@coco.fn(memo=True)
 async def process_file(
     file: AsyncFileLike,
     metadata_table: postgres.TableTarget[PaperMetadataRow],
@@ -233,7 +233,7 @@ async def process_file(
         )
 
 
-@coco.function
+@coco.fn
 async def app_main(sourcedir: pathlib.Path) -> None:
     target_db = coco.use_context(PG_DB)
     metadata_table = await target_db.mount_table_target(

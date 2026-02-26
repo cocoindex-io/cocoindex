@@ -48,7 +48,7 @@ async def coco_lifespan(
     yield
 
 
-@coco.function
+@coco.fn
 async def process_chunk(
     chunk: Chunk,
     filename: pathlib.PurePath,
@@ -70,7 +70,7 @@ async def process_chunk(
     target.declare_point(point)
 
 
-@coco.function(memo=True)
+@coco.fn(memo=True)
 async def process_file(
     file: AsyncFileLike,
     target: qdrant.CollectionTarget,
@@ -83,7 +83,7 @@ async def process_file(
     await coco.map(process_chunk, chunks, file.file_path.path, id_gen, target)
 
 
-@coco.function
+@coco.fn
 async def app_main(sourcedir: pathlib.Path) -> None:
     target_db = coco.use_context(QDRANT_DB)
     target_collection = await target_db.mount_collection_target(

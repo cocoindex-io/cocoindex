@@ -10,7 +10,7 @@ CocoIndex provides helper APIs for common patterns you use inside a [processing 
 `map()` applies an async function to each item in a collection, running all calls concurrently within the current processing component. Unlike [`mount()`](./processing_component.md#mount) and [`mount_each()`](./processing_component.md#mount-each), it does **not** create child processing components — it's purely concurrent execution (similar to `asyncio.gather()`).
 
 ```python
-@coco.function(memo=True)
+@coco.fn(memo=True)
 async def process_file(file: FileLike, table: postgres.TableTarget[DocEmbedding]) -> None:
     chunks = splitter.split(file.read_text())
     id_gen = IdGenerator()

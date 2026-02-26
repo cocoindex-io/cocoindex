@@ -21,13 +21,13 @@ DB_PATH = _HERE / "cocoindex.db"
 OUT_DIR = _HERE / "out_tree_test"
 
 
-@coco.function
+@coco.fn
 def process_file(file_name: str, target: DirTarget) -> None:
     """Process a single file - this creates a component at /"files"/file_name."""
     target.declare_file(file_name, f"Content for {file_name}\n")
 
 
-@coco.function
+@coco.fn
 async def app_main() -> None:
     """Main app function that creates a tree with non-component intermediate nodes."""
     # Create output directory target (use_mount returns the result directly)

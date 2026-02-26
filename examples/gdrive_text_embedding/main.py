@@ -64,7 +64,7 @@ class DocEmbedding:
     embedding: Annotated[NDArray, _embedder]
 
 
-@coco.function(memo=True)
+@coco.fn(memo=True)
 async def process_file(
     file: google_drive.DriveFile,
     table: postgres.TableTarget[DocEmbedding],
@@ -77,7 +77,7 @@ async def process_file(
     await coco.map(_emit_chunk, chunks, file.file_path.path.as_posix(), id_gen, table)
 
 
-@coco.function
+@coco.fn
 async def _emit_chunk(
     chunk: Chunk,
     filename: str,
@@ -94,7 +94,7 @@ async def _emit_chunk(
     )
 
 
-@coco.function
+@coco.fn
 async def app_main() -> None:
     assert _state.db is not None
 

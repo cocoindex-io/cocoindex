@@ -32,7 +32,7 @@ env1 = coco.Environment(coco.Settings.from_env(db_path=DB_PATH_1))
 env2 = coco.Environment(coco.Settings.from_env(db_path=DB_PATH_2))
 
 
-@coco.function
+@coco.fn
 async def build1() -> None:
     dir_target = await coco.use_mount(
         coco.component_subpath("out"),
@@ -42,7 +42,7 @@ async def build1() -> None:
     dir_target.declare_file("db1.txt", "Hello from DB1App\n")
 
 
-@coco.function
+@coco.fn
 async def build2() -> None:
     dir_target = await coco.use_mount(
         coco.component_subpath("out"),

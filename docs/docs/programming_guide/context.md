@@ -49,7 +49,7 @@ The resource is available for the lifetime of the environment. When the lifespan
 In processing components, use `coco.use_context()` to retrieve provided resources:
 
 ```python
-@coco.function
+@coco.fn
 async def app_main(sourcedir: pathlib.Path) -> None:
     db = coco.use_context(PG_DB)  # Returns postgres.PgDatabase
 

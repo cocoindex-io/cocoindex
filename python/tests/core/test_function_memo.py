@@ -42,13 +42,13 @@ _dict_source_data: dict[str, DictSourceDataEntry] = {}
 _metrics = Metrics()
 
 
-@coco.function(memo=True)
+@coco.fn(memo=True)
 def _transform_entry(entry: SourceDataEntry) -> str:
     _metrics.increment("call.transform_entry")
     return f"processed: {entry.content}"
 
 
-@coco.function
+@coco.fn
 def _process_plain_source_data() -> None:
     for key, value in _plain_source_data.items():
         transformed_value = _transform_entry(value)
@@ -128,7 +128,7 @@ def _transform_entry_async(entry: SourceDataEntry) -> str:
     return f"processed: {entry.content}"
 
 
-@coco.function
+@coco.fn
 async def _process_plain_source_data_async() -> None:
     for key, value in _plain_source_data.items():
         transformed_value = await _transform_entry_async(value)
@@ -202,13 +202,13 @@ def test_memo_pure_function_async() -> None:
     }
 
 
-@coco.function(memo=True)
+@coco.fn(memo=True)
 def _declare_data_entry(key: str, entry: SourceDataEntry) -> None:
     _metrics.increment("call.declare_data_entry")
     coco.declare_target_state(GlobalDictTarget.target_state(key, entry.content))
 
 
-@coco.function
+@coco.fn
 def _declare_plain_data() -> None:
     for key, value in _plain_source_data.items():
         _declare_data_entry(key, value)
@@ -269,13 +269,13 @@ def test_memo_function_with_target_states() -> None:
     }
 
 
-@coco.function(memo=True)
+@coco.fn(memo=True)
 async def _declare_data_entry_async(key: str, entry: SourceDataEntry) -> None:
     _metrics.increment("call.declare_data_entry_async")
     coco.declare_target_state(GlobalDictTarget.target_state(key, entry.content))
 
 
-@coco.function
+@coco.fn
 async def _declare_plain_data_async() -> None:
     for key, value in _plain_source_data.items():
         await _declare_data_entry_async(key, value)
@@ -369,14 +369,14 @@ def test_memo_function_with_target_states_with_exception() -> None:
     }
 
 
-@coco.function(memo=True)
+@coco.fn(memo=True)
 def _declare_dict_data_entry(entry: DictSourceDataEntry) -> None:
     _metrics.increment("call.declare_dict_data_entry")
     for key, value in entry.content.items():
         _declare_data_entry(key, value)
 
 
-@coco.function
+@coco.fn
 def _declare_dict_data() -> None:
     for entry in _dict_source_data.values():
         _declare_dict_data_entry(entry)
@@ -469,14 +469,14 @@ def test_memo_nested_functions_with_target_states() -> None:
     }
 
 
-@coco.function(memo=True)
+@coco.fn(memo=True)
 async def _declare_dict_data_entry_w_components(entry: DictSourceDataEntry) -> None:
     _metrics.increment("call.declare_dict_data_entry_w_components")
     for key, value in entry.content.items():
         await coco.mount(coco.component_subpath(key), _declare_data_entry, key, value)
 
 
-@coco.function
+@coco.fn
 async def _declare_dict_data_w_components() -> None:
     for entry in _dict_source_data.values():
         await _declare_dict_data_entry_w_components(entry)
@@ -506,7 +506,7 @@ def test_memo_nested_functions_with_components() -> None:
         app.update_blocking()
 
 
-@coco.function(memo=True)
+@coco.fn(memo=True)
 async def _declare_dict_data_entry_w_components_async(
     entry: DictSourceDataEntry,
 ) -> None:
@@ -515,7 +515,7 @@ async def _declare_dict_data_entry_w_components_async(
         await coco.mount(coco.component_subpath(key), _declare_data_entry, key, value)
 
 
-@coco.function
+@coco.fn
 async def _declare_dict_data_w_components_async() -> None:
     for entry in _dict_source_data.values():
         await _declare_dict_data_entry_w_components_async(entry)
@@ -558,7 +558,7 @@ def _batched_transform(inputs: list[SourceDataEntry]) -> list[str]:
     return [f"batched: {entry.content}" for entry in inputs]
 
 
-@coco.function
+@coco.fn
 async def _process_with_batched_transform() -> None:
     for key, value in _plain_source_data.items():
         transformed_value = await _batched_transform(value)
@@ -617,7 +617,7 @@ async def _batched_transform_async(inputs: list[SourceDataEntry]) -> list[str]:
     return [f"batched_async: {entry.content}" for entry in inputs]
 
 
-@coco.function
+@coco.fn
 async def _process_with_batched_transform_async() -> None:
     for key, value in _plain_source_data.items():
         transformed_value = await _batched_transform_async(value)
@@ -689,7 +689,7 @@ def _runner_transform(entry: SourceDataEntry) -> str:
     return f"runner: {entry.content}"
 
 
-@coco.function
+@coco.fn
 async def _process_with_runner_transform() -> None:
     for key, value in _plain_source_data.items():
         transformed_value = await _runner_transform(value)
@@ -751,7 +751,7 @@ def _runner_transform_async(entry: SourceDataEntry) -> str:
     return f"runner_async: {entry.content}"
 
 
-@coco.function
+@coco.fn
 async def _process_with_runner_transform_async() -> None:
     for key, value in _plain_source_data.items():
         transformed_value = await _runner_transform_async(value)

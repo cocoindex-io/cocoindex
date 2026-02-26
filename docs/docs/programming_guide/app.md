@@ -135,7 +135,7 @@ With `COCOINDEX_DB` set, you can create and run apps without any additional conf
 ```python
 import cocoindex as coco
 
-@coco.function
+@coco.fn
 def app_main() -> None:
     # ... your pipeline logic ...
 

@@ -38,7 +38,7 @@ class PatientExtractor(dspy.Module):
         return result.patient
 
 
-@coco.function
+@coco.fn
 def extract_patient(pdf_content: bytes) -> Patient:
     """Extract patient information from PDF content."""
     pdf_doc = pymupdf.open(stream=pdf_content, filetype="pdf")
@@ -56,7 +56,7 @@ def extract_patient(pdf_content: bytes) -> Patient:
     return patient
 
 
-@coco.function(memo=True)
+@coco.fn(memo=True)
 def process_patient_form(file: FileLike, outdir: pathlib.Path) -> None:
     """Process a patient intake form PDF and extract structured information."""
     content = file.read()
@@ -68,7 +68,7 @@ def process_patient_form(file: FileLike, outdir: pathlib.Path) -> None:
     )
 
 
-@coco.function
+@coco.fn
 async def app_main(sourcedir: pathlib.Path, outdir: pathlib.Path) -> None:
     """Main application function that processes patient intake forms."""
     files = localfs.walk_dir(

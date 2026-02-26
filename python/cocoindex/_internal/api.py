@@ -26,7 +26,7 @@ from .stable_path import StableKey
 from .function import (
     AnyCallable,
     create_core_component_processor,
-    function,
+    fn,
 )
 from .stable_path import Symbol
 from .target_state import (
@@ -35,9 +35,6 @@ from .target_state import (
     TargetHandler,
     declare_target_state_with_child,
 )
-
-# Alias: coco.fn is the same as coco.function
-fn = function
 
 # ============================================================================
 # Re-exports from internal modules (shared types)
@@ -419,7 +416,6 @@ __all__ = [
     "App",
     "AppConfig",
     # .function
-    "function",
     "fn",
     # .context_keys
     "ContextKey",

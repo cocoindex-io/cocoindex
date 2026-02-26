@@ -20,7 +20,7 @@ from cocoindex.resources.file import PatternFilePathMatcher
 _converter = DocumentConverter()
 
 
-@coco.function(memo=True)
+@coco.fn(memo=True)
 def process_file(
     file: localfs.File,
     outdir: pathlib.Path,
@@ -34,7 +34,7 @@ def process_file(
     localfs.declare_file(outdir / outname, markdown, create_parent_dirs=True)
 
 
-@coco.function
+@coco.fn
 async def app_main(sourcedir: pathlib.Path, outdir: pathlib.Path) -> None:
     files = localfs.walk_dir(
         sourcedir,

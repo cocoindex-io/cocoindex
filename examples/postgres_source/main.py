@@ -72,7 +72,7 @@ async def coco_lifespan(
         yield
 
 
-@coco.function(memo=True)
+@coco.fn(memo=True)
 async def process_product(
     product: SourceProduct,
     table: postgres.TableTarget[OutputProduct],
@@ -93,7 +93,7 @@ async def process_product(
     )
 
 
-@coco.function
+@coco.fn
 async def app_main() -> None:
     target_db = coco.use_context(PG_DB)
     target_table = await target_db.mount_table_target(

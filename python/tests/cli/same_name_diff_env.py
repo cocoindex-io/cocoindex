@@ -44,7 +44,7 @@ def _lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
     yield
 
 
-@coco.function
+@coco.fn
 async def build_alpha() -> None:
     dir_target = await coco.use_mount(
         coco.component_subpath("out"),
@@ -54,7 +54,7 @@ async def build_alpha() -> None:
     dir_target.declare_file("output.txt", "From Alpha env\n")
 
 
-@coco.function
+@coco.fn
 async def build_default() -> None:
     dir_target = await coco.use_mount(
         coco.component_subpath("out"),

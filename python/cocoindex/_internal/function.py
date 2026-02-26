@@ -89,9 +89,9 @@ if TYPE_CHECKING:
         def __call__(self, fn: Any) -> Any: ...
 
     class _BatchedDecorator(Protocol):
-        """Protocol for batched function decorator used by @coco.function.as_async.
+        """Protocol for batched function decorator used by @coco.fn.as_async.
 
-        Accepts both sync and async underlying functions, since @coco.function.as_async
+        Accepts both sync and async underlying functions, since @coco.fn.as_async
         always ensures the result is async.
 
         Transforms:
@@ -225,7 +225,7 @@ class SyncFunction(Function[P, R_co]):
     """Sync function with optional memoization.
 
     Does not support batching or runner — those require an async interface
-    and produce AsyncFunction (via @coco.function.as_async).
+    and produce AsyncFunction (via @coco.fn.as_async).
     """
 
     __slots__ = ("_fn", "_memo", "_processor_info", "_logic_fp")
@@ -805,7 +805,7 @@ class _GenericFunctionBuilder:
         if self._batching or self._runner is not None:
             raise ValueError(
                 "Batching and runner require the function to be async. "
-                "Use @coco.function.as_async instead, or rewrite the function to be async."
+                "Use @coco.fn.as_async instead, or rewrite the function to be async."
             )
         wrapper = SyncFunction(fn, memo=self._memo, version=self._version)
         functools.update_wrapper(wrapper, fn)
@@ -836,9 +836,9 @@ class _SyncFunctionBuilder(_GenericFunctionBuilder):
     def __call__(self, fn: Callable[P, R_co]) -> SyncFunction[P, R_co]:
         if inspect.iscoroutinefunction(fn):
             raise ValueError(
-                "Async functions are not supported by @coco.function decorator "
+                "Async functions are not supported by @coco.fn decorator "
                 "when batching or runner is specified. "
-                "Please use @coco.function.as_async instead."
+                "Please use @coco.fn.as_async instead."
             )
         return self._build_sync(fn)
 
@@ -882,9 +882,9 @@ class _AsyncFunctionBuilder(_GenericFunctionBuilder):
 
 
 class _FunctionDecorator:
-    """Namespace for @coco.function and @coco.function.as_async decorators."""
+    """Namespace for @coco.fn and @coco.fn.as_async decorators."""
 
-    # --- @coco.function(...) / @coco.function ---
+    # --- @coco.fn(...) / @coco.fn ---
 
     # Without batching / runner, supports both sync and async functions
     @overload
@@ -934,7 +934,7 @@ class _FunctionDecorator:
         runner: Runner | None = None,
         version: int | None = None,
     ) -> Any:
-        """Decorator for CocoIndex functions (exposed as @coco.function).
+        """Decorator for CocoIndex functions (exposed as @coco.fn).
 
         Preserves the sync/async nature of the underlying function:
         - Sync function -> SyncFunction (sync)
@@ -952,7 +952,7 @@ class _FunctionDecorator:
 
         Batching and runner require an async interface. With this decorator, only
         async underlying functions are accepted when batching/runner is specified.
-        Use @coco.function.as_async for sync underlying functions that need
+        Use @coco.fn.as_async for sync underlying functions that need
         batching/runner.
 
         Memoization works with all modes:
@@ -975,7 +975,7 @@ class _FunctionDecorator:
         else:
             return builder
 
-    # --- @coco.function.as_async(...) / @coco.function.as_async ---
+    # --- @coco.fn.as_async(...) / @coco.fn.as_async ---
 
     # Overload for batching=True
     @overload
@@ -1023,9 +1023,9 @@ class _FunctionDecorator:
         runner: Runner | None = None,
         version: int | None = None,
     ) -> Any:
-        """Decorator for CocoIndex functions (exposed as @coco.function.as_async).
+        """Decorator for CocoIndex functions (exposed as @coco.fn.as_async).
 
-        Always yields an async function, equivalent to @coco.function plus ensuring
+        Always yields an async function, equivalent to @coco.fn plus ensuring
         the result is async. Accepts both sync and async underlying functions.
 
         Args:
@@ -1057,10 +1057,7 @@ class _FunctionDecorator:
             return builder
 
 
-function = _FunctionDecorator()
-
-# Keep async_function as an alias for backward compatibility during migration.
-async_function = function.as_async
+fn = _FunctionDecorator()
 
 
 def create_core_component_processor(

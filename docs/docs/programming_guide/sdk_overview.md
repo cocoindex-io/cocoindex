@@ -62,7 +62,7 @@ For entry points that are typically called outside of async contexts (e.g., scri
 | `await coco.stop()` | `coco.stop_blocking()` |
 | `async with coco.runtime():` | `with coco.runtime():` |
 
-Mount APIs (`mount`, `use_mount`, `mount_each`, `mount_target`, `map`) are async-only. The `@coco.function` / `@coco.fn` decorator preserves the sync/async nature of the underlying function.
+Mount APIs (`mount`, `use_mount`, `mount_each`, `mount_target`, `map`) are async-only. The `@coco.fn` decorator preserves the sync/async nature of the underlying function.
 
 ### Mixing sync and async
 
@@ -129,7 +129,7 @@ An async main function can mount sync or async processing component functions:
 ```python
 import cocoindex as coco
 
-@coco.function
+@coco.fn
 async def fetch_and_process(url: str):
     # Async processing component — uses await internally
     async with aiohttp.ClientSession() as session:
@@ -137,7 +137,7 @@ async def fetch_and_process(url: str):
             data = await response.text()
     # ... declare target states with data ...
 
-@coco.function
+@coco.fn
 async def app_main(urls: list[str]):
     # Async function mounting async processing components
     for url in urls:

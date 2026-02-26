@@ -261,7 +261,7 @@ async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]
     builder.provide(LANCE_DB, lancedb.register_db("main_db", conn))
     yield
 
-@coco.function
+@coco.fn
 async def app_main() -> None:
     db = coco.use_context(LANCE_DB)
 

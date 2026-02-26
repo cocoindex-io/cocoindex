@@ -15,7 +15,7 @@ def coco_lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
     yield
 
 
-@coco.function
+@coco.fn
 def create_targets(target: DirTarget, create_b: bool) -> None:
     """Create target files A and optionally B."""
     target.declare_file("target_a.txt", "content_a")
@@ -23,7 +23,7 @@ def create_targets(target: DirTarget, create_b: bool) -> None:
         target.declare_file("target_b.txt", "content_b")
 
 
-@coco.function
+@coco.fn
 async def app_main(create_b: bool = True) -> None:
     """Main app function that creates targets A and optionally B."""
     target = await coco.use_mount(

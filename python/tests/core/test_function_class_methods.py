@@ -1,4 +1,4 @@
-"""Tests for @coco.function decorator on class methods."""
+"""Tests for @coco.fn decorator on class methods."""
 
 from dataclasses import dataclass
 
@@ -37,19 +37,19 @@ class Processor:
     def __init__(self, prefix: str):
         self.prefix = prefix
 
-    @coco.function(memo=True)
+    @coco.fn(memo=True)
     def transform(self, entry: SourceDataEntry) -> str:
         _metrics.increment("call.transform")
         return f"{self.prefix}: {entry.content}"
 
-    @coco.function
+    @coco.fn
     def process_entry(self, key: str, entry: SourceDataEntry) -> None:
         transformed = self.transform(entry)  # type: ignore[call-arg, arg-type]
         coco.declare_target_state(GlobalDictTarget.target_state(key, transformed))
 
 
 def test_regular_method() -> None:
-    """Test @coco.function on regular instance methods."""
+    """Test @coco.fn on regular instance methods."""
     GlobalDictTarget.store.clear()
     _metrics.clear()
 
@@ -59,7 +59,7 @@ def test_regular_method() -> None:
         "B": SourceDataEntry(name="B", version=1, content="contentB"),
     }
 
-    @coco.function
+    @coco.fn
     def process_all() -> None:
         for key, entry in source_data.items():
             processor.process_entry(key, entry)  # type: ignore[call-arg, arg-type]
@@ -93,14 +93,14 @@ class StaticProcessor:
     """Test class with static methods."""
 
     @staticmethod
-    @coco.function(memo=True)
+    @coco.fn(memo=True)
     def transform(entry: SourceDataEntry) -> str:
         """Static method with memoization."""
         _metrics.increment("call.static_transform")
         return f"static: {entry.content}"
 
     @staticmethod
-    @coco.function
+    @coco.fn
     def process_entry(key: str, entry: SourceDataEntry) -> None:
         """Static method that uses another memoized static method."""
         transformed = StaticProcessor.transform(entry)
@@ -108,7 +108,7 @@ class StaticProcessor:
 
 
 def test_static_method() -> None:
-    """Test @coco.function on static methods."""
+    """Test @coco.fn on static methods."""
     GlobalDictTarget.store.clear()
     _metrics.clear()
 
@@ -117,7 +117,7 @@ def test_static_method() -> None:
         "B": SourceDataEntry(name="B", version=1, content="contentB"),
     }
 
-    @coco.function
+    @coco.fn
     def process_all() -> None:
         for key, entry in source_data.items():
             StaticProcessor.process_entry(key, entry)
@@ -153,14 +153,14 @@ class ClassProcessor:
     default_prefix = "class"
 
     @classmethod
-    @coco.function(memo=True)
+    @coco.fn(memo=True)
     def transform(cls, entry: SourceDataEntry) -> str:
         """Class method with memoization."""
         _metrics.increment("call.class_transform")
         return f"{cls.default_prefix}: {entry.content}"
 
     @classmethod
-    @coco.function
+    @coco.fn
     def process_entry(cls, key: str, entry: SourceDataEntry) -> None:
         """Class method that uses another memoized class method."""
         transformed = cls.transform(entry)  # type: ignore[call-arg, arg-type]
@@ -168,7 +168,7 @@ class ClassProcessor:
 
 
 def test_class_method() -> None:
-    """Test @coco.function on class methods."""
+    """Test @coco.fn on class methods."""
     GlobalDictTarget.store.clear()
     _metrics.clear()
 
@@ -177,7 +177,7 @@ def test_class_method() -> None:
         "B": SourceDataEntry(name="B", version=1, content="contentB"),
     }
 
-    @coco.function
+    @coco.fn
     def process_all() -> None:
         for key, entry in source_data.items():
             ClassProcessor.process_entry(key, entry)  # type: ignore[call-arg, arg-type]
@@ -219,7 +219,7 @@ class AsyncProcessor:
         _metrics.increment("call.async_transform")
         return f"{self.prefix}: {entry.content}"
 
-    @coco.function
+    @coco.fn
     async def process_entry(self, key: str, entry: SourceDataEntry) -> None:
         """Async instance method that uses another memoized async method."""
         transformed = await self.transform(entry)
@@ -227,7 +227,7 @@ class AsyncProcessor:
 
 
 def test_async_method() -> None:
-    """Test @coco.function on async instance methods."""
+    """Test @coco.fn on async instance methods."""
     GlobalDictTarget.store.clear()
     _metrics.clear()
 
@@ -237,7 +237,7 @@ def test_async_method() -> None:
         "B": SourceDataEntry(name="B", version=1, content="contentB"),
     }
 
-    @coco.function
+    @coco.fn
     async def process_all() -> None:
         for key, entry in source_data.items():
             await processor.process_entry(key, entry)
@@ -280,7 +280,7 @@ class AsyncClassProcessor:
         return f"{cls.default_prefix}: {entry.content}"
 
     @classmethod
-    @coco.function
+    @coco.fn
     async def process_entry(cls, key: str, entry: SourceDataEntry) -> None:
         """Async class method that uses another memoized async class method."""
         transformed = await cls.transform(entry)  # type: ignore[call-arg, arg-type]
@@ -288,7 +288,7 @@ class AsyncClassProcessor:
 
 
 def test_async_class_method() -> None:
-    """Test @coco.function on async class methods."""
+    """Test @coco.fn on async class methods."""
     GlobalDictTarget.store.clear()
     _metrics.clear()
 
@@ -297,7 +297,7 @@ def test_async_class_method() -> None:
         "B": SourceDataEntry(name="B", version=1, content="contentB"),
     }
 
-    @coco.function
+    @coco.fn
     async def process_all() -> None:
         for key, entry in source_data.items():
             await AsyncClassProcessor.process_entry(key, entry)  # type: ignore[call-arg, arg-type]

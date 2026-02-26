@@ -313,7 +313,7 @@ def coco_lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
     yield
 
 
-@coco.function
+@coco.fn
 async def app_main() -> None:
     """Define your main pipeline here.
 

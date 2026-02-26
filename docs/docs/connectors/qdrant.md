@@ -286,7 +286,7 @@ async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]
     builder.provide(QDRANT_DB, qdrant.register_db("main_vectors", client))
     yield
 
-@coco.function
+@coco.fn
 async def process_document(
     doc_id: str,
     text: str,
@@ -301,7 +301,7 @@ async def process_document(
     )
     target.declare_point(point)
 
-@coco.function
+@coco.fn
 async def app_main() -> None:
     db = coco.use_context(QDRANT_DB)
 
@@ -330,7 +330,7 @@ async def app_main() -> None:
 from cocoindex.resources.schema import VectorSchema
 import numpy as np
 
-@coco.function
+@coco.fn
 async def app_main() -> None:
     db = coco.use_context(QDRANT_DB)
 

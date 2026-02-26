@@ -617,7 +617,7 @@ async def test_memo_with_runner() -> None:
 # ============================================================================
 # GPU Runner tests (in-process by default, subprocess with COCOINDEX_RUN_GPU_IN_SUBPROCESS=1)
 #
-# The @coco.function decorator with runner=coco.GPU works with normal syntax.
+# The @coco.fn decorator with runner=coco.GPU works with normal syntax.
 # In subprocess mode, functions and methods are pickled using __reduce__ which
 # stores (module, qualname) and reconstructs via __wrapped__ on unpickle.
 # ============================================================================

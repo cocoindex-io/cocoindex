@@ -83,7 +83,7 @@ This defines a CocoIndex App — the top-level runnable unit in CocoIndex.
 ![Processing components](/img/quickstart/components.svg)
 
 ```python title="main.py"
-@coco.function
+@coco.fn
 async def app_main(sourcedir: pathlib.Path, outdir: pathlib.Path) -> None:
     files = localfs.walk_dir(
         sourcedir,
@@ -108,7 +108,7 @@ This function converts a single PDF to Markdown:
 ```python title="main.py"
 _converter = DocumentConverter()
 
-@coco.function(memo=True)
+@coco.fn(memo=True)
 def process_file(
     file: localfs.File,
     outdir: pathlib.Path,

@@ -73,7 +73,7 @@ class DocEmbedding:
     embedding: Annotated[NDArray, _embedder]
 
 
-@coco.function
+@coco.fn
 async def process_chunk(
     chunk: Chunk,
     filename: str,
@@ -92,7 +92,7 @@ async def process_chunk(
     )
 
 
-@coco.function(memo=True)
+@coco.fn(memo=True)
 async def process_file(
     file: amazon_s3.S3File,
     table: postgres.TableTarget[DocEmbedding],
@@ -105,7 +105,7 @@ async def process_file(
     await coco.map(process_chunk, chunks, file.file_path.path.as_posix(), id_gen, table)
 
 
-@coco.function
+@coco.fn
 async def app_main() -> None:
     target_db = coco.use_context(PG_DB)
     target_table = await target_db.mount_table_target(

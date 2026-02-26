@@ -11,7 +11,7 @@ _HERE = pathlib.Path(__file__).resolve().parent
 OUT_DIR = _HERE / "out_default_db"
 
 
-@coco.function
+@coco.fn
 async def build() -> None:
     dir_target = await coco.use_mount(
         coco.component_subpath("out"),

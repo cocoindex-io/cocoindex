@@ -6,7 +6,7 @@ from tests.common import create_test_env
 coco_env = create_test_env(__file__)
 
 
-@coco.function()
+@coco.fn()
 def trivial_fn_sync(s: str, i: int) -> str:
     return f"{s} {i}"
 
@@ -37,7 +37,7 @@ async def test_sync_bare_app() -> None:
     assert await app.update() == "Hello sync_bare_app 2"
 
 
-@coco.function()
+@coco.fn()
 async def trivial_fn_async(s: str, i: int) -> str:
     return f"{s} {i}"
 

@@ -354,7 +354,7 @@ class DirTarget(Generic[coco.MaybePendingS], coco.ResolvesTo["DirTarget"]):
         return self._provider.memo_key
 
 
-@coco.function
+@coco.fn
 def declare_dir_target(
     path: FilePath | pathlib.Path,
     *,
@@ -446,7 +446,7 @@ async def mount_dir_target(
     return DirTarget(provider)
 
 
-@coco.function
+@coco.fn
 def declare_file(
     path: FilePath | pathlib.Path,
     content: bytes | str,

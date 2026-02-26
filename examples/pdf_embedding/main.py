@@ -89,7 +89,7 @@ async def coco_lifespan(
         yield
 
 
-@coco.function
+@coco.fn
 async def process_chunk(
     chunk: Chunk,
     filename: pathlib.PurePath,
@@ -108,7 +108,7 @@ async def process_chunk(
     )
 
 
-@coco.function(memo=True)
+@coco.fn(memo=True)
 async def process_file(
     file: AsyncFileLike,
     table: postgres.TableTarget[PdfEmbedding],
@@ -122,7 +122,7 @@ async def process_file(
     await coco.map(process_chunk, chunks, file.file_path.path, id_gen, table)
 
 
-@coco.function
+@coco.fn
 async def app_main(sourcedir: pathlib.Path) -> None:
     target_db = coco.use_context(PG_DB)
     target_table = await target_db.mount_table_target(

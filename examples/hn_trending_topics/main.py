@@ -95,7 +95,7 @@ class HnTopic:
 # ============================================================================
 
 
-@coco.function
+@coco.fn
 async def extract_topics(text: str | None) -> list[str]:
     """Extract topics from text using LLM."""
     if not text or not text.strip():
@@ -203,7 +203,7 @@ class TableTargets:
     topics: postgres.TableTarget[HnTopic]
 
 
-@coco.function
+@coco.fn
 async def process_thread(
     thread_id: str,
     targets: TableTargets,
@@ -265,7 +265,7 @@ async def process_thread(
             )
 
 
-@coco.function
+@coco.fn
 async def app_main() -> None:
     """Main pipeline function."""
     print("Starting HackerNews Trending Topics Pipeline")

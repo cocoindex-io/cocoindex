@@ -21,7 +21,7 @@ async def lifespan(builder: coco.EnvironmentBuilder) -> AsyncGenerator[None]:
     yield
 
 
-@coco.function
+@coco.fn
 async def build1() -> None:
     dir_target = await coco.use_mount(
         coco.component_subpath("out"),
@@ -31,7 +31,7 @@ async def build1() -> None:
     dir_target.declare_file("hello.txt", "Hello from MultiApp1\n")
 
 
-@coco.function
+@coco.fn
 async def build2() -> None:
     dir_target = await coco.use_mount(
         coco.component_subpath("out"),

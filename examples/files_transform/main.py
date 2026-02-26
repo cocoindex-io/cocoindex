@@ -8,14 +8,14 @@ from markdown_it import MarkdownIt
 _markdown_it = MarkdownIt("gfm-like")
 
 
-@coco.function(memo=True)
+@coco.fn(memo=True)
 def process_file(file: FileLike, outdir: pathlib.Path) -> None:
     html = _markdown_it.render(file.read_text())
     outname = "__".join(file.file_path.path.parts) + ".html"
     localfs.declare_file(outdir / outname, html, create_parent_dirs=True)
 
 
-@coco.function
+@coco.fn
 async def app_main(sourcedir: pathlib.Path, outdir: pathlib.Path) -> None:
     files = localfs.walk_dir(
         sourcedir, path_matcher=PatternFilePathMatcher(included_patterns=["**/*.md"])

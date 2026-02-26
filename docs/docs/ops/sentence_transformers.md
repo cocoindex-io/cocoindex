@@ -126,7 +126,7 @@ class DocEmbedding:
     text: str
     embedding: Annotated[NDArray, _embedder]
 
-@coco.function
+@coco.fn
 async def process_chunk(
     filename: pathlib.PurePath,
     chunk: Chunk,
@@ -144,7 +144,7 @@ async def process_chunk(
         ),
     )
 
-@coco.function(memo=True)
+@coco.fn(memo=True)
 async def process_file(
     file: FileLike,
     table: postgres.TableTarget[DocEmbedding],
@@ -158,7 +158,7 @@ async def process_file(
         *(process_chunk(file.file_path.path, chunk, id_gen, table) for chunk in chunks)
     )
 
-@coco.function
+@coco.fn
 async def app_main(sourcedir: pathlib.Path) -> None:
     target_db = coco.use_context(PG_DB)
     target_table = await target_db.mount_table_target(

@@ -386,7 +386,7 @@ def coco_lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
         yield
     managed_conn.close()
 
-@coco.function
+@coco.fn
 async def app_main() -> None:
     db = coco.use_context(SQLITE_DB)
 
@@ -436,7 +436,7 @@ def coco_lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
         yield
     managed_conn.close()
 
-@coco.function
+@coco.fn
 async def app_main() -> None:
     db = coco.use_context(SQLITE_DB)
 

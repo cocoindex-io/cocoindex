@@ -152,7 +152,7 @@ def parse_transcript(content: str) -> list[TranscriptChunk]:
 # ---------------------------------------------------------------------------
 
 
-@coco.function
+@coco.fn
 async def process_chunk(
     chunk: ChunkInput,
     info: SessionInfo,
@@ -172,7 +172,7 @@ async def process_chunk(
     )
 
 
-@coco.function(memo=True)
+@coco.fn(memo=True)
 async def process_file(
     file: AsyncFileLike,
     emb_table: postgres.TableTarget[SessionEmbeddingRow],
@@ -272,7 +272,7 @@ async def process_file(
 # ---------------------------------------------------------------------------
 
 
-@coco.function
+@coco.fn
 async def app_main(checkpoints_dir: pathlib.Path) -> None:
     target_db = coco.use_context(PG_DB)
 

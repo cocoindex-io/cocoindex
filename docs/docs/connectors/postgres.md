@@ -144,7 +144,7 @@ class SourceProduct:
     name: str
     description: str
 
-@coco.function
+@coco.fn
 async def app_main(pool: asyncpg.Pool) -> None:
     source = postgres.PgTableSource(
         pool,
@@ -400,7 +400,7 @@ async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]
         builder.provide(PG_DB, postgres.register_db("main_db", pool))
         yield
 
-@coco.function
+@coco.fn
 async def app_main() -> None:
     db = coco.use_context(PG_DB)
 
