@@ -57,12 +57,12 @@ import pathlib
 env1 = coco.Environment(coco.Settings.from_env(db_path=pathlib.Path("./db1/cocoindex.db")))
 env2 = coco.Environment(coco.Settings.from_env(db_path=pathlib.Path("./db2/cocoindex.db")))
 
-@coco.function
+@coco.fn
 def build1() -> None:
     # ... pipeline logic for env1 ...
     pass
 
-@coco.function
+@coco.fn
 def build2() -> None:
     # ... pipeline logic for env2 ...
     pass
@@ -93,7 +93,7 @@ def _lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
     builder.settings.db_path = pathlib.Path("./default/cocoindex.db")
     yield
 
-@coco.function
+@coco.fn
 def build() -> None:
     # ... pipeline logic ...
     pass

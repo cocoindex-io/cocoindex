@@ -387,7 +387,7 @@ class DirTarget:
         coco.declare_target_state(target_state)
 
 
-@coco.function
+@coco.fn
 def declare_dir_target(path: pathlib.Path) -> DirTarget:
     """Declare a directory target and return an API for declaring files."""
     parent_ts = _root_provider.target_state(

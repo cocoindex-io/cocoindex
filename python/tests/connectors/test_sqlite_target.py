@@ -133,7 +133,7 @@ async def declare_table_and_rows() -> None:
     """Declare table and rows from global source data."""
     assert _sqlite_db is not None
 
-    table = coco.use_mount(
+    table = await coco.use_mount(
         coco.component_subpath("setup", "table"),
         _sqlite_db.declare_table_target,
         _table_name,
@@ -173,7 +173,7 @@ def test_create_table_and_insert_rows(
             SimpleRow(id="1", name="Alice", value=100),
             SimpleRow(id="2", name="Bob", value=200),
         ]
-        app.update()
+        app.update_blocking()
 
         assert table_exists(managed_conn, _table_name)
         data = read_table_data(managed_conn, _table_name)
@@ -183,7 +183,7 @@ def test_create_table_and_insert_rows(
 
         # Insert more data
         _source_rows.append(SimpleRow(id="3", name="Charlie", value=300))
-        app.update()
+        app.update_blocking()
 
         data = read_table_data(managed_conn, _table_name)
         assert len(data) == 3
@@ -212,7 +212,7 @@ def test_update_row(sqlite_db: tuple[sqlite.ManagedConnection, Path]) -> None:
             SimpleRow(id="1", name="Alice", value=100),
             SimpleRow(id="2", name="Bob", value=200),
         ]
-        app.update()
+        app.update_blocking()
 
         data = read_table_data(managed_conn, _table_name)
         assert len(data) == 2
@@ -222,7 +222,7 @@ def test_update_row(sqlite_db: tuple[sqlite.ManagedConnection, Path]) -> None:
             SimpleRow(id="1", name="Alice Updated", value=150),
             SimpleRow(id="2", name="Bob", value=200),
         ]
-        app.update()
+        app.update_blocking()
 
         data = read_table_data(managed_conn, _table_name)
         assert len(data) == 2
@@ -253,7 +253,7 @@ def test_delete_row(sqlite_db: tuple[sqlite.ManagedConnection, Path]) -> None:
             SimpleRow(id="2", name="Bob", value=200),
             SimpleRow(id="3", name="Charlie", value=300),
         ]
-        app.update()
+        app.update_blocking()
 
         data = read_table_data(managed_conn, _table_name)
         assert len(data) == 3
@@ -263,7 +263,7 @@ def test_delete_row(sqlite_db: tuple[sqlite.ManagedConnection, Path]) -> None:
             SimpleRow(id="1", name="Alice", value=100),
             SimpleRow(id="3", name="Charlie", value=300),
         ]
-        app.update()
+        app.update_blocking()
 
         data = read_table_data(managed_conn, _table_name)
         assert len(data) == 2
@@ -284,7 +284,7 @@ def test_different_schema_types(
     with sqlite.register_db("test_schema_types_db", managed_conn) as db:
 
         async def declare_extended_table() -> None:
-            table = coco.use_mount(
+            table = await coco.use_mount(
                 coco.component_subpath("setup", "table"),
                 db.declare_table_target,
                 "extended_table",
@@ -304,7 +304,7 @@ def test_different_schema_types(
                 ExtendedRow(id="2", name="Bob", value=200, extra="more_data"),
             ]
         )
-        app.update()
+        app.update_blocking()
 
         columns = get_table_columns(managed_conn, "extended_table")
         assert "extra" in columns
@@ -329,7 +329,7 @@ def test_drop_table(sqlite_db: tuple[sqlite.ManagedConnection, Path]) -> None:
 
         async def declare_table_conditionally() -> None:
             if _source_rows:  # Only declare if there are rows
-                table = coco.use_mount(
+                table = await coco.use_mount(
                     coco.component_subpath("setup", "table"),
                     db.declare_table_target,
                     _table_name,
@@ -345,13 +345,13 @@ def test_drop_table(sqlite_db: tuple[sqlite.ManagedConnection, Path]) -> None:
 
         # Create table with data
         _source_rows = [SimpleRow(id="1", name="Alice", value=100)]
-        app.update()
+        app.update_blocking()
 
         assert table_exists(managed_conn, _table_name)
 
         # Remove all rows (table should be dropped)
         _source_rows = []
-        app.update()
+        app.update_blocking()
 
         assert not table_exists(managed_conn, _table_name)
 
@@ -380,13 +380,13 @@ def test_no_change_optimization(
             SimpleRow(id="1", name="Alice", value=100),
             SimpleRow(id="2", name="Bob", value=200),
         ]
-        app.update()
+        app.update_blocking()
 
         data1 = read_table_data(managed_conn, _table_name)
         assert len(data1) == 2
 
         # Run update again with same data - should be a no-op
-        app.update()
+        app.update_blocking()
 
         data2 = read_table_data(managed_conn, _table_name)
         assert data1 == data2
@@ -404,14 +404,14 @@ def test_multiple_tables(sqlite_db: tuple[sqlite.ManagedConnection, Path]) -> No
         async def declare_multiple_tables() -> None:
             schema = await sqlite.TableSchema.from_class(SimpleRow, primary_key=["id"])
 
-            table1 = coco.use_mount(
+            table1 = await coco.use_mount(
                 coco.component_subpath("setup", "table1"),
                 db.declare_table_target,
                 "users",
                 schema,
             )
 
-            table2 = coco.use_mount(
+            table2 = await coco.use_mount(
                 coco.component_subpath("setup", "table2"),
                 db.declare_table_target,
                 "products",
@@ -442,7 +442,7 @@ def test_multiple_tables(sqlite_db: tuple[sqlite.ManagedConnection, Path]) -> No
                 SimpleRow(id="p2", name="Product2", value=200),
             ]
         )
-        app.update()
+        app.update_blocking()
 
         assert table_exists(managed_conn, "users")
         assert table_exists(managed_conn, "products")
@@ -462,8 +462,8 @@ def test_dict_rows(sqlite_db: tuple[sqlite.ManagedConnection, Path]) -> None:
 
     with sqlite.register_db("dict_table_db", managed_conn) as db:
 
-        def declare_dict_table() -> None:
-            table = coco.use_mount(
+        async def declare_dict_table() -> None:
+            table = await coco.use_mount(
                 coco.component_subpath("setup", "table"),
                 db.declare_table_target,
                 "dict_table",
@@ -491,7 +491,7 @@ def test_dict_rows(sqlite_db: tuple[sqlite.ManagedConnection, Path]) -> None:
                 {"id": "2", "name": "Item2", "count": 20},
             ]
         )
-        app.update()
+        app.update_blocking()
 
         data = read_table_data(managed_conn, "dict_table")
         assert len(data) == 2
@@ -517,7 +517,7 @@ def test_user_managed_table(sqlite_db: tuple[sqlite.ManagedConnection, Path]) ->
     with sqlite.register_db("user_managed_db", managed_conn) as db:
 
         async def declare_user_managed_rows() -> None:
-            table = coco.use_mount(
+            table = await coco.use_mount(
                 coco.component_subpath("setup", "table"),
                 db.declare_table_target,
                 "user_managed",
@@ -539,14 +539,14 @@ def test_user_managed_table(sqlite_db: tuple[sqlite.ManagedConnection, Path]) ->
                 SimpleRow(id="1", name="Alice", value=100),
             ]
         )
-        app.update()
+        app.update_blocking()
 
         data = read_table_data(managed_conn, "user_managed")
         assert len(data) == 1
 
         # Clear rows - table should remain (user-managed)
         user_rows.clear()
-        app.update()
+        app.update_blocking()
 
         # Table should still exist
         assert table_exists(managed_conn, "user_managed")
@@ -580,7 +580,7 @@ def test_vec0_virtual_table_basic(
     with sqlite.register_db("vec0_basic_db", managed_conn) as db:
 
         async def declare_vec0_table() -> None:
-            table = coco.use_mount(
+            table = await coco.use_mount(
                 coco.component_subpath("setup", "table"),
                 db.declare_table_target,
                 table_name="vec0_docs",
@@ -612,7 +612,7 @@ def test_vec0_virtual_table_basic(
                 embedding=np.array([5.0, 6.0, 7.0, 8.0], dtype=np.float32),
             ),
         ]
-        app.update()
+        app.update_blocking()
 
         # Verify table was created as virtual table
         with managed_conn.readonly() as conn:
@@ -643,7 +643,7 @@ def test_vec0_virtual_table_basic(
             content="Updated Doc 1",
             embedding=np.array([9.0, 9.0, 9.0, 9.0], dtype=np.float32),
         )
-        app.update()
+        app.update_blocking()
 
         data = read_table_data(managed_conn, "vec0_docs")
         assert len(data) == 2
@@ -654,7 +654,7 @@ def test_vec0_virtual_table_basic(
 
         # Test delete
         rows.pop(0)  # Remove doc1
-        app.update()
+        app.update_blocking()
 
         data = read_table_data(managed_conn, "vec0_docs")
         assert len(data) == 1
@@ -682,7 +682,7 @@ def test_vec0_with_partition_keys(
     with sqlite.register_db("vec0_partition_db", managed_conn) as db:
 
         async def declare_partitioned_table() -> None:
-            table = coco.use_mount(
+            table = await coco.use_mount(
                 coco.component_subpath("setup", "table"),
                 db.declare_table_target,
                 table_name="vec0_partitioned",
@@ -717,7 +717,7 @@ def test_vec0_with_partition_keys(
                 embedding=np.array([3.0, 4.0], dtype=np.float32),
             ),
         ]
-        app.update()
+        app.update_blocking()
 
         # Verify CREATE statement includes partition key
         with managed_conn.readonly() as conn:
@@ -752,7 +752,7 @@ def test_vec0_with_auxiliary_columns(
     with sqlite.register_db("vec0_aux_db", managed_conn) as db:
 
         async def declare_aux_table() -> None:
-            table = coco.use_mount(
+            table = await coco.use_mount(
                 coco.component_subpath("setup", "table"),
                 db.declare_table_target,
                 table_name="vec0_with_aux",
@@ -781,7 +781,7 @@ def test_vec0_with_auxiliary_columns(
                 embedding=np.array([1.0, 2.0], dtype=np.float32),
             ),
         ]
-        app.update()
+        app.update_blocking()
 
         # Verify CREATE statement includes + prefix for auxiliary column
         with managed_conn.readonly() as conn:
@@ -826,7 +826,7 @@ def test_vec0_schema_change_forces_recreate(
     with sqlite.register_db("vec0_schema_db", managed_conn) as db:
 
         async def declare_evolving_table() -> None:
-            table = coco.use_mount(
+            table = await coco.use_mount(
                 coco.component_subpath("setup", "table"),
                 db.declare_table_target,
                 table_name="vec0_evolving",
@@ -851,7 +851,7 @@ def test_vec0_schema_change_forces_recreate(
                 id=1, content="Doc 1", embedding=np.array([1.0, 2.0], dtype=np.float32)
             ),
         ]
-        app.update()
+        app.update_blocking()
 
         columns = get_table_columns(managed_conn, "vec0_evolving")
         assert "new_field" not in columns
@@ -866,7 +866,7 @@ def test_vec0_schema_change_forces_recreate(
                 embedding=np.array([1.0, 2.0], dtype=np.float32),
             ),
         ]
-        app.update()
+        app.update_blocking()
 
         # Verify new column exists
         columns = get_table_columns(managed_conn, "vec0_evolving")
@@ -909,7 +909,7 @@ def test_vec0_without_vector_column_raises_error(
         with pytest.raises(
             ValueError, match="require at least one float\\[N\\] vector column"
         ):
-            app.update()
+            app.update_blocking()
 
 
 @requires_sqlite_vec
@@ -945,7 +945,7 @@ def test_vec0_with_composite_pk_raises_error(
         )
 
         with pytest.raises(ValueError, match="require exactly one primary key column"):
-            app.update()
+            app.update_blocking()
 
 
 @requires_sqlite_vec
@@ -980,7 +980,7 @@ def test_vec0_with_non_integer_pk_raises_error(
         )
 
         with pytest.raises(ValueError, match="require INTEGER primary key"):
-            app.update()
+            app.update_blocking()
 
 
 @requires_sqlite_vec
@@ -1017,7 +1017,7 @@ def test_vec0_without_extension_raises_error(
         )
 
         with pytest.raises(RuntimeError, match="sqlite-vec extension must be loaded"):
-            app.update()
+            app.update_blocking()
 
     managed_conn_no_vec.close()
 
@@ -1056,7 +1056,7 @@ def test_vec0_invalid_partition_key_raises_error(
         )
 
         with pytest.raises(ValueError, match="Partition key columns not in schema"):
-            app.update()
+            app.update_blocking()
 
 
 @requires_sqlite_vec
@@ -1093,7 +1093,7 @@ def test_vec0_invalid_auxiliary_column_raises_error(
         )
 
         with pytest.raises(ValueError, match="Auxiliary columns not in schema"):
-            app.update()
+            app.update_blocking()
 
 
 @requires_sqlite_vec
@@ -1116,7 +1116,7 @@ def test_vec0_with_column_overrides(
     with sqlite.register_db("vec0_override_db", managed_conn) as db:
 
         async def declare_vec0_override_table() -> None:
-            table = coco.use_mount(
+            table = await coco.use_mount(
                 coco.component_subpath("setup", "table"),
                 db.declare_table_target,
                 table_name="vec0_overrides",
@@ -1143,7 +1143,7 @@ def test_vec0_with_column_overrides(
                 vec=np.array([0.1, 0.2, 0.3], dtype=np.float32),
             ),
         ]
-        app.update()
+        app.update_blocking()
 
         data = read_table_data(managed_conn, "vec0_overrides")
         assert len(data) == 1
@@ -1174,7 +1174,7 @@ def test_regular_table_vs_vec0_switch(
     with sqlite.register_db("switch_db", managed_conn) as db:
 
         async def declare_table() -> None:
-            table = coco.use_mount(
+            table = await coco.use_mount(
                 coco.component_subpath("setup", "table"),
                 db.declare_table_target,
                 table_name="switchable",
@@ -1199,7 +1199,7 @@ def test_regular_table_vs_vec0_switch(
                 id=1, content="Doc", embedding=np.array([1.0, 2.0], dtype=np.float32)
             ),
         ]
-        app.update()
+        app.update_blocking()
 
         # Verify it's a regular table
         with managed_conn.readonly() as conn:
@@ -1211,7 +1211,7 @@ def test_regular_table_vs_vec0_switch(
 
         # Switch to virtual table
         use_virtual = True
-        app.update()
+        app.update_blocking()
 
         # Verify it's now a virtual table
         with managed_conn.readonly() as conn:

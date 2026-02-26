@@ -92,13 +92,11 @@ table_schema = await postgres.TableSchema.from_class(
     DocEmbedding,
     primary_key=["id"],
 )
-target_table = await coco_aio.mount_run(
-    coco.component_subpath("setup", "table"),
-    target_db.declare_table_target,
+target_table = await target_db.mount_table_target(
     table_name="doc_embeddings",
     table_schema=table_schema,
     pg_schema_name="my_schema",
-).result()
+)
 ```
 
 The connector automatically creates the appropriate `vector(N)` column. See the [Connectors](../connectors/postgres.md) docs for other supported backends (LanceDB, Qdrant, SQLite).

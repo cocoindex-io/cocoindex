@@ -14,7 +14,7 @@ def set_metrics(metrics: Metrics) -> None:
     _metrics = metrics
 
 
-@coco.function(memo=True, version=2)
+@coco.fn(memo=True, version=2)
 def transform_memo_ver(key: str, value: str) -> str:
     assert _metrics is not None
     _metrics.increment("transform_memo_ver")

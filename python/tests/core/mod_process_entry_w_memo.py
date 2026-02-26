@@ -12,7 +12,7 @@ def set_metrics(metrics: Metrics) -> None:
     _metrics = metrics
 
 
-@coco.function(memo=True)
+@coco.fn(memo=True)
 def process_entry(key: str, value: str) -> None:
     assert _metrics is not None
     _metrics.increment("calls")

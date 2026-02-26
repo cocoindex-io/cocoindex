@@ -21,7 +21,6 @@ import asyncpg
 from numpy.typing import NDArray
 
 import cocoindex as coco
-import cocoindex.asyncio as coco_aio
 from cocoindex.connectors import localfs, postgres
 from cocoindex.ops.text import RecursiveSplitter
 from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
@@ -44,9 +43,9 @@ _embedder = SentenceTransformerEmbedder("sentence-transformers/all-MiniLM-L6-v2"
 _splitter = RecursiveSplitter()
 
 
-@coco_aio.lifespan
+@coco.lifespan
 async def coco_lifespan(
-    builder: coco_aio.EnvironmentBuilder,
+    builder: coco.EnvironmentBuilder,
 ) -> AsyncIterator[None]:
     # Provide resources needed across the CocoIndex environment
     async with await postgres.create_pool(DATABASE_URL) as pool:
@@ -64,7 +63,7 @@ class DocEmbedding:
     embedding: Annotated[NDArray, _embedder]
 
 
-@coco.function
+@coco.fn
 async def process_chunk(
     chunk: Chunk,
     filename: pathlib.PurePath,
@@ -83,7 +82,7 @@ async def process_chunk(
     )
 
 
-@coco.function(memo=True)
+@coco.fn(memo=True)
 async def process_file(
     file: AsyncFileLike,
     table: postgres.TableTarget[DocEmbedding],
@@ -93,10 +92,10 @@ async def process_file(
         text, chunk_size=2000, chunk_overlap=500, language="markdown"
     )
     id_gen = IdGenerator()
-    await coco_aio.map(process_chunk, chunks, file.file_path.path, id_gen, table)
+    await coco.map(process_chunk, chunks, file.file_path.path, id_gen, table)
 
 
-@coco.function
+@coco.fn
 async def app_main(sourcedir: pathlib.Path) -> None:
     target_db = coco.use_context(PG_DB)
     target_table = await target_db.mount_table_target(
@@ -113,11 +112,11 @@ async def app_main(sourcedir: pathlib.Path) -> None:
         recursive=True,
         path_matcher=PatternFilePathMatcher(included_patterns=["**/*.md"]),
     )
-    await coco_aio.mount_each(process_file, files.items(), target_table)
+    await coco.mount_each(process_file, files.items(), target_table)
 
 
-app = coco_aio.App(
-    coco_aio.AppConfig(name="TextEmbeddingV1"),
+app = coco.App(
+    coco.AppConfig(name="TextEmbeddingV1"),
     app_main,
     sourcedir=pathlib.Path("./markdown_files"),
 )

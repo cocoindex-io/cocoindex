@@ -201,7 +201,7 @@ import cocoindex as coco
 from cocoindex.connectors import amazon_s3
 from cocoindex.resources.file import AsyncFileLike, PatternFilePathMatcher
 
-@coco.function
+@coco.fn
 async def app_main(bucket: str) -> None:
     session = aiobotocore.session.get_session()
     async with session.create_client("s3") as client:
@@ -219,7 +219,7 @@ async def app_main(bucket: str) -> None:
                     file,
                 )
 
-@coco.function(memo=True)
+@coco.fn(memo=True)
 async def process_file(file: AsyncFileLike[str]) -> None:
     text = await file.read_text()
     # ... process the file content ...

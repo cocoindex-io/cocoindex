@@ -7,7 +7,6 @@ from dotenv import load_dotenv
 import pymupdf
 
 import cocoindex as coco
-import cocoindex.asyncio as coco_aio
 from cocoindex.connectors import localfs
 from cocoindex.resources.file import FileLike, PatternFilePathMatcher
 
@@ -39,7 +38,7 @@ class PatientExtractor(dspy.Module):
         return result.patient
 
 
-@coco.function
+@coco.fn
 def extract_patient(pdf_content: bytes) -> Patient:
     """Extract patient information from PDF content."""
     pdf_doc = pymupdf.open(stream=pdf_content, filetype="pdf")
@@ -57,7 +56,7 @@ def extract_patient(pdf_content: bytes) -> Patient:
     return patient
 
 
-@coco.function(memo=True)
+@coco.fn(memo=True)
 def process_patient_form(file: FileLike, outdir: pathlib.Path) -> None:
     """Process a patient intake form PDF and extract structured information."""
     content = file.read()
@@ -69,22 +68,22 @@ def process_patient_form(file: FileLike, outdir: pathlib.Path) -> None:
     )
 
 
-@coco.function
+@coco.fn
 async def app_main(sourcedir: pathlib.Path, outdir: pathlib.Path) -> None:
     """Main application function that processes patient intake forms."""
     files = localfs.walk_dir(
         sourcedir,
         path_matcher=PatternFilePathMatcher(included_patterns=["**/*.pdf"]),
     )
-    await coco_aio.mount_each(process_patient_form, files.items(), outdir)
+    await coco.mount_each(process_patient_form, files.items(), outdir)
 
 
 load_dotenv()
 lm = dspy.LM("gemini/gemini-2.5-flash")
 dspy.configure(lm=lm)
 
-app = coco_aio.App(
-    coco_aio.AppConfig(name="PatientIntakeExtractionDSPy"),
+app = coco.App(
+    coco.AppConfig(name="PatientIntakeExtractionDSPy"),
     app_main,
     sourcedir=pathlib.Path("./data/patient_forms"),
     outdir=pathlib.Path("./output_patients"),

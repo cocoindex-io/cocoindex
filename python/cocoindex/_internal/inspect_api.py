@@ -2,17 +2,17 @@ import asyncio
 from typing import Any, AsyncIterator
 
 from . import core
-from .app import AppBase
+from .app import App
 from .stable_path import StablePath
 
 
-async def list_stable_paths(app: AppBase[Any, Any]) -> list[StablePath]:
+async def list_stable_paths(app: App[Any, Any]) -> list[StablePath]:
     """Convenience: collect paths from iter_stable_paths (delegates to new API)."""
     return [StablePath(item.path) async for item in iter_stable_paths(app)]
 
 
 async def iter_stable_paths(
-    app: AppBase[Any, Any],
+    app: App[Any, Any],
 ) -> AsyncIterator[core.StablePathInfo]:
     """
     Async iterator of stable paths with metadata (e.g. node type; no buffering).
@@ -26,18 +26,18 @@ async def iter_stable_paths(
         yield item
 
 
-def list_stable_paths_sync(app: AppBase[Any, Any]) -> list[StablePath]:
+def list_stable_paths_sync(app: App[Any, Any]) -> list[StablePath]:
     return asyncio.run(list_stable_paths(app))
 
 
 async def _iter_stable_paths_collected(
-    app: AppBase[Any, Any],
+    app: App[Any, Any],
 ) -> list[core.StablePathInfo]:
     return [item async for item in iter_stable_paths(app)]
 
 
 def list_stable_paths_info_sync(
-    app: AppBase[Any, Any],
+    app: App[Any, Any],
 ) -> list[core.StablePathInfo]:
     return asyncio.run(_iter_stable_paths_collected(app))
 

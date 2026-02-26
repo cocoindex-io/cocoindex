@@ -147,7 +147,7 @@ import cocoindex as coco
 from cocoindex.connectors import localfs
 from cocoindex.resources.file import FileLike, PatternFilePathMatcher
 
-@coco.function
+@coco.fn
 def app_main(sourcedir: pathlib.Path) -> None:
     # Register base directory for stable memoization
     source = localfs.register_base_dir("source", sourcedir)
@@ -160,7 +160,7 @@ def app_main(sourcedir: pathlib.Path) -> None:
             file,
         )
 
-@coco.function(memo=True)
+@coco.fn(memo=True)
 def process_file(file: FileLike) -> None:
     text = file.read_text()
     # ... process the file content ...
@@ -175,7 +175,7 @@ The `localfs` connector provides target state APIs for writing files. CocoIndex 
 Declare a single file target. This is the simplest way to write a file.
 
 ```python
-@coco.function
+@coco.fn
 def declare_file(
     path: FilePath | Path,
     content: bytes | str,
@@ -193,7 +193,7 @@ def declare_file(
 **Example:**
 
 ```python
-@coco.function
+@coco.fn
 def app_main() -> None:
     output = localfs.register_base_dir("output", Path("./out"))
 
@@ -211,7 +211,7 @@ def app_main() -> None:
 Declare a directory target for writing multiple files. Returns a `DirTarget` for declaring files within.
 
 ```python
-@coco.function
+@coco.fn
 def declare_dir_target(
     path: FilePath | Path,
     *,
@@ -224,7 +224,7 @@ def declare_dir_target(
 - `path` — The filesystem path for the directory. Can be a `FilePath` or `pathlib.Path`.
 - `create_parent_dirs` — If `True`, create parent directories if they don't exist. Defaults to `True`.
 
-**Returns:** A pending `DirTarget`. Use `mount_run(...).result()` to wait for resolution.
+**Returns:** A pending `DirTarget`. Use `await coco.mount_target(...)` or the convenience wrapper `await localfs.mount_dir_target(path)` to resolve.
 
 ### DirTarget.declare_file
 
@@ -274,29 +274,25 @@ import cocoindex as coco
 from cocoindex.connectors import localfs
 from cocoindex.resources.file import FileLike, PatternFilePathMatcher
 
-@coco.function
-def app_main(sourcedir: pathlib.Path, outdir: pathlib.Path) -> None:
+@coco.fn
+async def app_main(sourcedir: pathlib.Path, outdir: pathlib.Path) -> None:
     # Register directories for stable memoization
     source = localfs.register_base_dir("source", sourcedir)
     output = localfs.register_base_dir("output", outdir)
 
     # Declare output directory target
-    target = coco.mount_run(
-        coco.component_subpath("setup"),
-        localfs.declare_dir_target,
-        output,
-    ).result()
+    target = await localfs.mount_dir_target(output)
 
     # Process files and write outputs
     for file in localfs.walk_dir(source, recursive=True):
-        coco.mount(
+        await coco.mount(
             coco.component_subpath("file", str(file.file_path.path)),
             process_file,
             file,
             target,
         )
 
-@coco.function(memo=True)
+@coco.fn(memo=True)
 def process_file(file: FileLike, target: localfs.DirTarget) -> None:
     # Transform the file
     content = file.read_text().upper()

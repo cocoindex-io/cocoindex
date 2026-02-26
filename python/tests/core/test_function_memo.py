@@ -1,7 +1,6 @@
 import asyncio
 
 import cocoindex as coco
-import cocoindex.asyncio as coco_aio
 import pytest
 from dataclasses import dataclass
 from typing import Any
@@ -43,13 +42,13 @@ _dict_source_data: dict[str, DictSourceDataEntry] = {}
 _metrics = Metrics()
 
 
-@coco.function(memo=True)
+@coco.fn(memo=True)
 def _transform_entry(entry: SourceDataEntry) -> str:
     _metrics.increment("call.transform_entry")
     return f"processed: {entry.content}"
 
 
-@coco.function
+@coco.fn
 def _process_plain_source_data() -> None:
     for key, value in _plain_source_data.items():
         transformed_value = _transform_entry(value)
@@ -68,7 +67,7 @@ def test_memo_pure_function() -> None:
 
     _plain_source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA1")
     _plain_source_data["B"] = SourceDataEntry(name="B", version=1, content="contentB1")
-    app.update()
+    app.update_blocking()
     assert _metrics.collect() == {"call.transform_entry": 2}
     assert GlobalDictTarget.store.data == {
         "A": DictDataWithPrev(
@@ -81,7 +80,7 @@ def test_memo_pure_function() -> None:
 
     _plain_source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA2")
     _plain_source_data["B"] = SourceDataEntry(name="B", version=2, content="contentB2")
-    app.update()
+    app.update_blocking()
     assert _metrics.collect() == {"call.transform_entry": 1}
     assert GlobalDictTarget.store.data == {
         "A": DictDataWithPrev(
@@ -94,7 +93,7 @@ def test_memo_pure_function() -> None:
         ),
     }
 
-    app.update()
+    app.update_blocking()
     assert _metrics.collect() == {}
     assert GlobalDictTarget.store.data == {
         "A": DictDataWithPrev(
@@ -108,13 +107,13 @@ def test_memo_pure_function() -> None:
     }
 
     _plain_source_data.clear()
-    app.update()
+    app.update_blocking()
     assert _metrics.collect() == {}
     assert GlobalDictTarget.store.data == {}
 
     # The same version reappears after deletion. Verify cached values are not used.
     _plain_source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA1")
-    app.update()
+    app.update_blocking()
     assert _metrics.collect() == {"call.transform_entry": 1}
     assert GlobalDictTarget.store.data == {
         "A": DictDataWithPrev(
@@ -123,13 +122,13 @@ def test_memo_pure_function() -> None:
     }
 
 
-@coco_aio.function(memo=True)
+@coco.fn.as_async(memo=True)
 def _transform_entry_async(entry: SourceDataEntry) -> str:
     _metrics.increment("call.transform_entry_async")
     return f"processed: {entry.content}"
 
 
-@coco.function
+@coco.fn
 async def _process_plain_source_data_async() -> None:
     for key, value in _plain_source_data.items():
         transformed_value = await _transform_entry_async(value)
@@ -148,7 +147,7 @@ def test_memo_pure_function_async() -> None:
 
     _plain_source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA1")
     _plain_source_data["B"] = SourceDataEntry(name="B", version=1, content="contentB1")
-    app.update()
+    app.update_blocking()
     assert _metrics.collect() == {"call.transform_entry_async": 2}
     assert GlobalDictTarget.store.data == {
         "A": DictDataWithPrev(
@@ -161,7 +160,7 @@ def test_memo_pure_function_async() -> None:
 
     _plain_source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA2")
     _plain_source_data["B"] = SourceDataEntry(name="B", version=2, content="contentB2")
-    app.update()
+    app.update_blocking()
     assert _metrics.collect() == {"call.transform_entry_async": 1}
     assert GlobalDictTarget.store.data == {
         "A": DictDataWithPrev(
@@ -174,7 +173,7 @@ def test_memo_pure_function_async() -> None:
         ),
     }
 
-    app.update()
+    app.update_blocking()
     assert _metrics.collect() == {}
     assert GlobalDictTarget.store.data == {
         "A": DictDataWithPrev(
@@ -188,13 +187,13 @@ def test_memo_pure_function_async() -> None:
     }
 
     _plain_source_data.clear()
-    app.update()
+    app.update_blocking()
     assert _metrics.collect() == {}
     assert GlobalDictTarget.store.data == {}
 
     # The same version reappears after deletion. Verify cached values are not used.
     _plain_source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA1")
-    app.update()
+    app.update_blocking()
     assert _metrics.collect() == {"call.transform_entry_async": 1}
     assert GlobalDictTarget.store.data == {
         "A": DictDataWithPrev(
@@ -203,13 +202,13 @@ def test_memo_pure_function_async() -> None:
     }
 
 
-@coco.function(memo=True)
+@coco.fn(memo=True)
 def _declare_data_entry(key: str, entry: SourceDataEntry) -> None:
     _metrics.increment("call.declare_data_entry")
     coco.declare_target_state(GlobalDictTarget.target_state(key, entry.content))
 
 
-@coco.function
+@coco.fn
 def _declare_plain_data() -> None:
     for key, value in _plain_source_data.items():
         _declare_data_entry(key, value)
@@ -229,7 +228,7 @@ def test_memo_function_with_target_states() -> None:
 
     _plain_source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA1")
     _plain_source_data["B"] = SourceDataEntry(name="B", version=1, content="contentB1")
-    app.update()
+    app.update_blocking()
     assert _metrics.collect() == {"call.declare_data_entry": 2}
     assert GlobalDictTarget.store.data == {
         "A": DictDataWithPrev(data="contentA1", prev=[], prev_may_be_missing=True),
@@ -238,7 +237,7 @@ def test_memo_function_with_target_states() -> None:
 
     _plain_source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA2")
     _plain_source_data["B"] = SourceDataEntry(name="B", version=2, content="contentB2")
-    app.update()
+    app.update_blocking()
     assert _metrics.collect() == {"call.declare_data_entry": 1}
     assert GlobalDictTarget.store.data == {
         "A": DictDataWithPrev(data="contentA1", prev=[], prev_may_be_missing=True),
@@ -247,7 +246,7 @@ def test_memo_function_with_target_states() -> None:
         ),
     }
 
-    app.update()
+    app.update_blocking()
     assert _metrics.collect() == {}
     assert GlobalDictTarget.store.data == {
         "A": DictDataWithPrev(data="contentA1", prev=[], prev_may_be_missing=True),
@@ -257,26 +256,26 @@ def test_memo_function_with_target_states() -> None:
     }
 
     _plain_source_data.clear()
-    app.update()
+    app.update_blocking()
     assert _metrics.collect() == {}
     assert GlobalDictTarget.store.data == {}
 
     # The same version reappears after deletion. Verify cached values are not used.
     _plain_source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA1")
-    app.update()
+    app.update_blocking()
     assert _metrics.collect() == {"call.declare_data_entry": 1}
     assert GlobalDictTarget.store.data == {
         "A": DictDataWithPrev(data="contentA1", prev=[], prev_may_be_missing=True),
     }
 
 
-@coco.function(memo=True)
+@coco.fn(memo=True)
 async def _declare_data_entry_async(key: str, entry: SourceDataEntry) -> None:
     _metrics.increment("call.declare_data_entry_async")
     coco.declare_target_state(GlobalDictTarget.target_state(key, entry.content))
 
 
-@coco.function
+@coco.fn
 async def _declare_plain_data_async() -> None:
     for key, value in _plain_source_data.items():
         await _declare_data_entry_async(key, value)
@@ -296,7 +295,7 @@ def test_memo_function_with_target_states_async() -> None:
 
     _plain_source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA1")
     _plain_source_data["B"] = SourceDataEntry(name="B", version=1, content="contentB1")
-    app.update()
+    app.update_blocking()
     assert _metrics.collect() == {"call.declare_data_entry_async": 2}
     assert GlobalDictTarget.store.data == {
         "A": DictDataWithPrev(data="contentA1", prev=[], prev_may_be_missing=True),
@@ -305,7 +304,7 @@ def test_memo_function_with_target_states_async() -> None:
 
     _plain_source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA2")
     _plain_source_data["B"] = SourceDataEntry(name="B", version=2, content="contentB2")
-    app.update()
+    app.update_blocking()
     assert _metrics.collect() == {"call.declare_data_entry_async": 1}
     assert GlobalDictTarget.store.data == {
         "A": DictDataWithPrev(data="contentA1", prev=[], prev_may_be_missing=True),
@@ -314,7 +313,7 @@ def test_memo_function_with_target_states_async() -> None:
         ),
     }
 
-    app.update()
+    app.update_blocking()
     assert _metrics.collect() == {}
     assert GlobalDictTarget.store.data == {
         "A": DictDataWithPrev(data="contentA1", prev=[], prev_may_be_missing=True),
@@ -324,13 +323,13 @@ def test_memo_function_with_target_states_async() -> None:
     }
 
     _plain_source_data.clear()
-    app.update()
+    app.update_blocking()
     assert _metrics.collect() == {}
     assert GlobalDictTarget.store.data == {}
 
     # The same version reappears after deletion. Verify cached values are not used.
     _plain_source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA1")
-    app.update()
+    app.update_blocking()
     assert _metrics.collect() == {"call.declare_data_entry_async": 1}
     assert GlobalDictTarget.store.data == {
         "A": DictDataWithPrev(data="contentA1", prev=[], prev_may_be_missing=True),
@@ -355,13 +354,13 @@ def test_memo_function_with_target_states_with_exception() -> None:
     try:
         GlobalDictTarget.store.sink_exception = True
         with pytest.raises(Exception):
-            app.update()
+            app.update_blocking()
     finally:
         GlobalDictTarget.store.sink_exception = False
     assert _metrics.collect() == {"call.declare_data_entry": 1}
     assert GlobalDictTarget.store.data == {}
 
-    app.update()
+    app.update_blocking()
     assert _metrics.collect() == {"call.declare_data_entry": 1}
     assert GlobalDictTarget.store.data == {
         "A": DictDataWithPrev(
@@ -370,14 +369,14 @@ def test_memo_function_with_target_states_with_exception() -> None:
     }
 
 
-@coco.function(memo=True)
+@coco.fn(memo=True)
 def _declare_dict_data_entry(entry: DictSourceDataEntry) -> None:
     _metrics.increment("call.declare_dict_data_entry")
     for key, value in entry.content.items():
         _declare_data_entry(key, value)
 
 
-@coco.function
+@coco.fn
 def _declare_dict_data() -> None:
     for entry in _dict_source_data.values():
         _declare_dict_data_entry(entry)
@@ -408,7 +407,7 @@ def test_memo_nested_functions_with_target_states() -> None:
         version=1,
         content={"2A": SourceDataEntry(name="2A", version=1, content="content2A")},
     )
-    app.update()
+    app.update_blocking()
     assert _metrics.collect() == {
         "call.declare_dict_data_entry": 2,
         "call.declare_data_entry": 3,
@@ -419,7 +418,7 @@ def test_memo_nested_functions_with_target_states() -> None:
         "2A": DictDataWithPrev(data="content2A", prev=[], prev_may_be_missing=True),
     }
 
-    app.update()
+    app.update_blocking()
     assert _metrics.collect() == {}
     assert GlobalDictTarget.store.data == {
         "1A": DictDataWithPrev(data="content1A", prev=[], prev_may_be_missing=True),
@@ -432,7 +431,7 @@ def test_memo_nested_functions_with_target_states() -> None:
         name="1A", version=2, content="content1A2"
     )
     del _dict_source_data["D1"].content["1B"]
-    app.update()
+    app.update_blocking()
     assert _metrics.collect() == {
         "call.declare_dict_data_entry": 1,
         "call.declare_data_entry": 1,
@@ -445,7 +444,7 @@ def test_memo_nested_functions_with_target_states() -> None:
     }
 
     del _dict_source_data["D1"]
-    app.update()
+    app.update_blocking()
     assert _metrics.collect() == {}
     assert GlobalDictTarget.store.data == {
         "2A": DictDataWithPrev(data="content2A", prev=[], prev_may_be_missing=True),
@@ -459,7 +458,7 @@ def test_memo_nested_functions_with_target_states() -> None:
             "1A": SourceDataEntry(name="1A", version=2, content="content1A2.2"),
         },
     )
-    app.update()
+    app.update_blocking()
     assert _metrics.collect() == {
         "call.declare_dict_data_entry": 1,
         "call.declare_data_entry": 1,
@@ -470,17 +469,17 @@ def test_memo_nested_functions_with_target_states() -> None:
     }
 
 
-@coco.function(memo=True)
-def _declare_dict_data_entry_w_components(entry: DictSourceDataEntry) -> None:
+@coco.fn(memo=True)
+async def _declare_dict_data_entry_w_components(entry: DictSourceDataEntry) -> None:
     _metrics.increment("call.declare_dict_data_entry_w_components")
     for key, value in entry.content.items():
-        coco.mount(coco.component_subpath(key), _declare_data_entry, key, value)
+        await coco.mount(coco.component_subpath(key), _declare_data_entry, key, value)
 
 
-@coco.function
-def _declare_dict_data_w_components() -> None:
+@coco.fn
+async def _declare_dict_data_w_components() -> None:
     for entry in _dict_source_data.values():
-        _declare_dict_data_entry_w_components(entry)
+        await _declare_dict_data_entry_w_components(entry)
 
 
 def test_memo_nested_functions_with_components() -> None:
@@ -504,19 +503,19 @@ def test_memo_nested_functions_with_components() -> None:
         },
     )
     with pytest.raises(Exception, match="memo=True mounted child components"):
-        app.update()
+        app.update_blocking()
 
 
-@coco.function(memo=True)
+@coco.fn(memo=True)
 async def _declare_dict_data_entry_w_components_async(
     entry: DictSourceDataEntry,
 ) -> None:
     _metrics.increment("call.declare_dict_data_entry_w_components_async")
     for key, value in entry.content.items():
-        coco.mount(coco.component_subpath(key), _declare_data_entry, key, value)
+        await coco.mount(coco.component_subpath(key), _declare_data_entry, key, value)
 
 
-@coco.function
+@coco.fn
 async def _declare_dict_data_w_components_async() -> None:
     for entry in _dict_source_data.values():
         await _declare_dict_data_entry_w_components_async(entry)
@@ -544,7 +543,7 @@ def test_memo_nested_functions_with_components_async() -> None:
         },
     )
     with pytest.raises(Exception, match="memo=True mounted child components"):
-        app.update()
+        app.update_blocking()
 
 
 # ============================================================================
@@ -552,14 +551,14 @@ def test_memo_nested_functions_with_components_async() -> None:
 # ============================================================================
 
 
-@coco_aio.function(memo=True, batching=True)
+@coco.fn.as_async(memo=True, batching=True)
 def _batched_transform(inputs: list[SourceDataEntry]) -> list[str]:
     for inp in inputs:
         _metrics.increment("call.batched_transform")
     return [f"batched: {entry.content}" for entry in inputs]
 
 
-@coco.function
+@coco.fn
 async def _process_with_batched_transform() -> None:
     for key, value in _plain_source_data.items():
         transformed_value = await _batched_transform(value)
@@ -579,7 +578,7 @@ def test_memo_with_batching() -> None:
 
     _plain_source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA1")
     _plain_source_data["B"] = SourceDataEntry(name="B", version=1, content="contentB1")
-    app.update()
+    app.update_blocking()
     assert _metrics.collect() == {"call.batched_transform": 2}
     assert GlobalDictTarget.store.data == {
         "A": DictDataWithPrev(
@@ -593,7 +592,7 @@ def test_memo_with_batching() -> None:
     # Same version for A (should be memoized), new version for B (should re-execute)
     _plain_source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA2")
     _plain_source_data["B"] = SourceDataEntry(name="B", version=2, content="contentB2")
-    app.update()
+    app.update_blocking()
     assert _metrics.collect() == {"call.batched_transform": 1}
     assert GlobalDictTarget.store.data == {
         "A": DictDataWithPrev(
@@ -607,18 +606,18 @@ def test_memo_with_batching() -> None:
     }
 
     # No changes - everything should be memoized
-    app.update()
+    app.update_blocking()
     assert _metrics.collect() == {}
 
 
-@coco_aio.function(memo=True, batching=True)
+@coco.fn.as_async(memo=True, batching=True)
 async def _batched_transform_async(inputs: list[SourceDataEntry]) -> list[str]:
     for inp in inputs:
         _metrics.increment("call.batched_transform_async")
     return [f"batched_async: {entry.content}" for entry in inputs]
 
 
-@coco.function
+@coco.fn
 async def _process_with_batched_transform_async() -> None:
     for key, value in _plain_source_data.items():
         transformed_value = await _batched_transform_async(value)
@@ -638,7 +637,7 @@ def test_memo_with_batching_async() -> None:
 
     _plain_source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA1")
     _plain_source_data["B"] = SourceDataEntry(name="B", version=1, content="contentB1")
-    app.update()
+    app.update_blocking()
     assert _metrics.collect() == {"call.batched_transform_async": 2}
     assert GlobalDictTarget.store.data == {
         "A": DictDataWithPrev(
@@ -652,11 +651,11 @@ def test_memo_with_batching_async() -> None:
     # Same version for A (should be memoized), new version for B (should re-execute)
     _plain_source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA2")
     _plain_source_data["B"] = SourceDataEntry(name="B", version=2, content="contentB2")
-    app.update()
+    app.update_blocking()
     assert _metrics.collect() == {"call.batched_transform_async": 1}
 
     # No changes - everything should be memoized
-    app.update()
+    app.update_blocking()
     assert _metrics.collect() == {}
 
 
@@ -684,13 +683,13 @@ class MockRunner(Runner):
 _test_runner = MockRunner()
 
 
-@coco_aio.function(memo=True, runner=_test_runner)
+@coco.fn.as_async(memo=True, runner=_test_runner)
 def _runner_transform(entry: SourceDataEntry) -> str:
     _metrics.increment("call.runner_transform")
     return f"runner: {entry.content}"
 
 
-@coco.function
+@coco.fn
 async def _process_with_runner_transform() -> None:
     for key, value in _plain_source_data.items():
         transformed_value = await _runner_transform(value)
@@ -711,7 +710,7 @@ def test_memo_with_runner() -> None:
 
     _plain_source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA1")
     _plain_source_data["B"] = SourceDataEntry(name="B", version=1, content="contentB1")
-    app.update()
+    app.update_blocking()
     assert _metrics.collect() == {"call.runner_transform": 2}
     assert GlobalDictTarget.store.data == {
         "A": DictDataWithPrev(
@@ -725,7 +724,7 @@ def test_memo_with_runner() -> None:
     # Same version for A (should be memoized), new version for B (should re-execute)
     _plain_source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA2")
     _plain_source_data["B"] = SourceDataEntry(name="B", version=2, content="contentB2")
-    app.update()
+    app.update_blocking()
     assert _metrics.collect() == {"call.runner_transform": 1}
     assert GlobalDictTarget.store.data == {
         "A": DictDataWithPrev(
@@ -739,20 +738,20 @@ def test_memo_with_runner() -> None:
     }
 
     # No changes - everything should be memoized
-    app.update()
+    app.update_blocking()
     assert _metrics.collect() == {}
 
 
 _test_runner_async = MockRunner()
 
 
-@coco_aio.function(memo=True, runner=_test_runner_async)
+@coco.fn.as_async(memo=True, runner=_test_runner_async)
 def _runner_transform_async(entry: SourceDataEntry) -> str:
     _metrics.increment("call.runner_transform_async")
     return f"runner_async: {entry.content}"
 
 
-@coco.function
+@coco.fn
 async def _process_with_runner_transform_async() -> None:
     for key, value in _plain_source_data.items():
         transformed_value = await _runner_transform_async(value)
@@ -773,7 +772,7 @@ def test_memo_with_runner_async() -> None:
 
     _plain_source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA1")
     _plain_source_data["B"] = SourceDataEntry(name="B", version=1, content="contentB1")
-    app.update()
+    app.update_blocking()
     assert _metrics.collect() == {"call.runner_transform_async": 2}
     assert GlobalDictTarget.store.data == {
         "A": DictDataWithPrev(
@@ -787,9 +786,9 @@ def test_memo_with_runner_async() -> None:
     # Same version for A (should be memoized), new version for B (should re-execute)
     _plain_source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA2")
     _plain_source_data["B"] = SourceDataEntry(name="B", version=2, content="contentB2")
-    app.update()
+    app.update_blocking()
     assert _metrics.collect() == {"call.runner_transform_async": 1}
 
     # No changes - everything should be memoized
-    app.update()
+    app.update_blocking()
     assert _metrics.collect() == {}
