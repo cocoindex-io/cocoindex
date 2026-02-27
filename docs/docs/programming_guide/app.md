@@ -37,7 +37,7 @@ app = coco.App("MyPipeline", app_main, sourcedir=pathlib.Path("./data"))
 ```
 
 :::tip
-The main function can be sync or async. See [Mixing Sync and Async](./sdk_overview.md#mixing-sync-and-async) for details.
+The main function can be sync or async. See [How Sync and Async Work Together](./sdk_overview.md#how-sync-and-async-work-together) for details.
 :::
 
 ## Updating an app

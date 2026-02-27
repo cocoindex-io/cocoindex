@@ -24,35 +24,6 @@ async def process_file_async(file: FileLike) -> str:
 
 `@coco.fn` preserves the sync/async nature of the underlying function. Decorating a sync function yields a sync function; decorating an async function yields an async function.
 
-## `@coco.fn.as_async`
-
-Use `@coco.fn.as_async` when you need an **async** interface for a function that has a sync underlying implementation. This is required for features like [batching](#batching) and [runner](#runner), which need an async entry point.
-
-```python
-@coco.fn.as_async
-def embed(text: str) -> list[float]:
-    return model.encode([text])[0]
-
-# External usage: always async, even though the function body is sync
-embedding = await embed("hello world")
-```
-
-`@coco.fn.as_async` is equivalent to wrapping the function in `asyncio.to_thread()` — the sync function runs on a thread pool and doesn't block the event loop.
-
-You can also call any `@coco.fn`-decorated function asynchronously via the `.as_async()` method, without changing its primary signature:
-
-```python
-@coco.fn
-def expensive_fn(data: bytes) -> bytes:
-    return process(data)
-
-# Primary call is sync:
-result = expensive_fn(data)
-
-# Async call via .as_async():
-result = await expensive_fn.as_async(data)
-```
-
 ## How to think about `@coco.fn`
 
 Decorating a function tells CocoIndex that calls to it are part of the incremental update engine. You still write normal Python, but CocoIndex can now:
@@ -112,11 +83,40 @@ def process_chunk(chunk: Chunk) -> Embedding:
     return embed(chunk.text)
 ```
 
+### Async adapter
+
+Use `@coco.fn.as_async` when you need an **async** interface for a function that has a sync underlying implementation. This is useful for compute-intensive leaf functions, and is required for features like [batching](#batching) and [runner](#runner).
+
+```python
+@coco.fn.as_async
+def embed(text: str) -> list[float]:
+    return model.encode([text])[0]
+
+# External usage: always async, even though the function body is sync
+embedding = await embed("hello world")
+```
+
+`@coco.fn.as_async` is equivalent to wrapping the function in `asyncio.to_thread()` — the sync function runs on a thread pool and doesn't block the event loop.
+
+You can also call any `@coco.fn`-decorated function asynchronously via the `.as_async()` method, without changing its primary signature:
+
+```python
+@coco.fn
+def expensive_fn(data: bytes) -> bytes:
+    return process(data)
+
+# Primary call is sync:
+result = expensive_fn(data)
+
+# Async call via .as_async():
+result = await expensive_fn.as_async(data)
+```
+
 ### Batching
 
 With `batching=True`, multiple concurrent calls to the function are automatically batched together. This is useful for operations that are more efficient when processing multiple inputs at once, such as embedding models.
 
-Batching requires an async interface. If the underlying function is sync, use `@coco.fn.as_async(batching=True)` to make it async. If the underlying function is already `async def`, `@coco.fn(batching=True)` works directly.
+Batching requires an async interface. If the underlying function is sync, use `@coco.fn.as_async(batching=True)`. If the underlying function is already `async def`, `@coco.fn(batching=True)` works directly.
 
 When batching is enabled:
 
