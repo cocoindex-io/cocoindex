@@ -58,8 +58,8 @@ class Settings:
 
     db_path: os.PathLike[str] | None = None
     global_execution_options: GlobalExecutionOptions | None = None
-    lmdb_max_dbs: int | None = None
-    lmdb_map_size: int | None = None
+    lmdb_max_dbs: int = 1024
+    lmdb_map_size: int = 0x1_0000_0000  # 4 GiB
 
     @classmethod
     def from_env(cls, db_path: os.PathLike[str] | None = None) -> Self:
