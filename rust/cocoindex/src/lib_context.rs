@@ -39,6 +39,8 @@ async fn build_setup_context(
         Some(&setup_execution_context.setup_state),
         existing_flow_ss,
         &analyzed_flow.flow_instance_ctx,
+        analyzed_flow.execution_plan.clone(),
+        setup_execution_context.export_ops.clone(),
     )
     .await?;
 
