@@ -387,6 +387,13 @@ pub async fn diff_flow_setup_states(
     desired_state: Option<&FlowSetupState<DesiredMode>>,
     existing_state: Option<&FlowSetupState<ExistingMode>>,
     flow_instance_ctx: &Arc<FlowInstanceContext>,
+    execution_plan: Shared<
+        BoxFuture<
+            'static,
+            std::result::Result<Arc<plan::ExecutionPlan>, cocoindex_utils::error::SharedError>,
+        >,
+    >,
+    export_op_execution_contexts: Vec<exec_ctx::ExportOpExecutionContext>,
 ) -> Result<FlowSetupChange> {
     let metadata_change = diff_state(
         existing_state.map(|e| &e.metadata),
@@ -453,6 +460,8 @@ pub async fn diff_flow_setup_states(
             .unwrap_or_default(),
         source_names_needs_states_cleanup,
         desired_targets_for_cleanup,
+        execution_plan,
+        export_op_execution_contexts,
     );
 
     let mut target_resources = Vec::new();
@@ -674,16 +683,6 @@ async fn apply_changes_for_flow(
     )
     .await?;
 
-    if let Some(tracking_table) = &flow_setup_change.tracking_table {
-        maybe_update_resource_setup(
-            "tracking table",
-            write,
-            std::iter::once(tracking_table),
-            |setup_change| setup_change[0].setup_change.apply_change(),
-        )
-        .await?;
-    }
-
     let mut setup_change_by_target_kind = IndexMap::<&str, Vec<_>>::new();
     for target_resource in &flow_setup_change.target_resources {
         setup_change_by_target_kind
@@ -747,6 +746,16 @@ async fn apply_changes_for_flow(
 
                    Ok::<(), Error>(())
                 },
+        )
+        .await?;
+    }
+    // Apply tracking table change after target changes, since it may need to clean up tracking states based on the target info.
+    if let Some(tracking_table) = &flow_setup_change.tracking_table {
+        maybe_update_resource_setup(
+            "tracking table",
+            write,
+            std::iter::once(tracking_table),
+            |setup_change| setup_change[0].setup_change.apply_change(),
         )
         .await?;
     }
@@ -949,8 +958,14 @@ async fn get_flow_setup_change<'a>(
         FlowSetupChangeAction::Drop => {
             let existing_state = setup_ctx.all_setup_states.flows.get(flow_ctx.flow_name());
             buffer.insert(
-                diff_flow_setup_states(None, existing_state, &flow_ctx.flow.flow_instance_ctx)
-                    .await?,
+                diff_flow_setup_states(
+                    None,
+                    existing_state,
+                    &flow_ctx.flow.flow_instance_ctx,
+                    flow_ctx.flow.execution_plan.clone(),
+                    vec![],
+                )
+                .await?,
             )
         }
     };
@@ -966,45 +981,6 @@ pub(crate) async fn apply_changes_for_flow_ctx(
     db_pool: &PgPool,
     write: &mut (dyn std::io::Write + Send),
 ) -> Result<()> {
-    // Attach export contexts to tracking table setup change
-    if let FlowSetupChangeAction::Setup = action
-        && let Some(tracking_table) = &mut flow_exec_ctx.setup_change.tracking_table
-        && let Some(setup_change) = &mut tracking_table.setup_change
-    {
-        // Get execution plan with export contexts
-        let execution_plan = flow_ctx
-            .flow
-            .execution_plan
-            .clone()
-            .await
-            .map_err(|e| internal_error!("Failed to get execution plan: {:?}", e))?;
-
-        // Build map of target_id -> export_context using flow_exec_ctx.setup_execution_context
-        let mut export_contexts = BTreeMap::new();
-        for (export_op, exec_ctx_export_op) in execution_plan
-            .export_ops
-            .iter()
-            .zip(flow_exec_ctx.setup_execution_context.export_ops.iter())
-        {
-            export_contexts.insert(
-                exec_ctx_export_op.target_id,
-                export_op.export_context.clone(),
-            );
-        }
-
-        // Attach to tracking change
-        setup_change.attach_export_contexts(export_contexts);
-
-        tracing::debug!(
-            "Attached export contexts for {} targets to tracking table setup change",
-            setup_change
-                .export_contexts
-                .as_ref()
-                .map(|c| c.len())
-                .unwrap_or(0)
-        );
-    }
-
     let mut setup_change_buffer = None;
     let setup_change = get_flow_setup_change(
         setup_ctx,

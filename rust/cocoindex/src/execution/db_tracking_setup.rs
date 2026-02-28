@@ -1,8 +1,10 @@
+use crate::builder::exec_ctx::ExportOpExecutionContext;
 use crate::prelude::*;
 
 use crate::execution::db_tracking;
 use crate::lib_context::get_settings;
 use crate::setup::{CombinedState, ResourceSetupChange, ResourceSetupInfo, SetupChangeType};
+use cocoindex_utils::error::{SharedError, SharedResultExt};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use std::collections::{BTreeMap, BTreeSet};
@@ -120,7 +122,6 @@ pub struct TargetInfoForCleanup {
     pub key_field_schemas: Vec<schema::FieldSchema>,
 }
 
-#[derive(Debug)]
 pub struct TrackingTableSetupChange {
     pub desired_state: Option<TrackingTableSetupState>,
 
@@ -135,10 +136,43 @@ pub struct TrackingTableSetupChange {
     /// Target information for cleanup (target_id -> TargetInfoForCleanup)
     pub desired_targets: Option<BTreeMap<i32, TargetInfoForCleanup>>,
 
-    /// Export contexts for targets (target_id -> export_context)
-    pub export_contexts: Option<Arc<BTreeMap<i32, Arc<dyn Any + Send + Sync>>>>,
+    /// Lazily resolved execution plan (awaited only when cleanup needs export contexts)
+    pub execution_plan:
+        Shared<BoxFuture<'static, std::result::Result<Arc<plan::ExecutionPlan>, SharedError>>>,
+    pub export_op_execution_contexts: Vec<ExportOpExecutionContext>,
 
     has_state_change: bool,
+}
+
+impl std::fmt::Debug for TrackingTableSetupChange {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TrackingTableSetupChange")
+            .field("desired_state", &self.desired_state)
+            .field("min_existing_version_id", &self.min_existing_version_id)
+            .field(
+                "legacy_tracking_table_names",
+                &self.legacy_tracking_table_names,
+            )
+            .field(
+                "source_state_table_always_exists",
+                &self.source_state_table_always_exists,
+            )
+            .field(
+                "legacy_source_state_table_names",
+                &self.legacy_source_state_table_names,
+            )
+            .field(
+                "source_names_need_state_cleanup",
+                &self.source_names_need_state_cleanup,
+            )
+            .field("desired_targets", &self.desired_targets)
+            .field(
+                "export_op_execution_contexts",
+                &self.export_op_execution_contexts,
+            )
+            .field("has_state_change", &self.has_state_change)
+            .finish_non_exhaustive()
+    }
 }
 
 impl TrackingTableSetupChange {
@@ -147,6 +181,10 @@ impl TrackingTableSetupChange {
         existing: &CombinedState<TrackingTableSetupState>,
         source_names_need_state_cleanup: BTreeMap<i32, BTreeSet<String>>,
         desired_targets: Option<BTreeMap<i32, TargetInfoForCleanup>>,
+        execution_plan: Shared<
+            BoxFuture<'static, std::result::Result<Arc<plan::ExecutionPlan>, SharedError>>,
+        >,
+        export_op_execution_contexts: Vec<ExportOpExecutionContext>,
     ) -> Option<Self> {
         let legacy_tracking_table_names = existing
             .legacy_values(desired, |v| &v.table_name)
@@ -174,17 +212,13 @@ impl TrackingTableSetupChange {
                 min_existing_version_id,
                 source_names_need_state_cleanup,
                 desired_targets,
-                export_contexts: None,
+                execution_plan,
+                export_op_execution_contexts,
                 has_state_change: existing.has_state_diff(desired, |v| v),
             })
         } else {
             None
         }
-    }
-
-    /// Attach export contexts for targets (called after targets are built)
-    pub fn attach_export_contexts(&mut self, contexts: BTreeMap<i32, Arc<dyn Any + Send + Sync>>) {
-        self.export_contexts = Some(Arc::new(contexts));
     }
 
     pub fn into_setup_info(
@@ -436,6 +470,17 @@ impl TrackingTableSetupChange {
         let mut total_processed = 0u64;
         let mut total_deleted = 0u64;
 
+        // Lazily resolve the execution plan and build export contexts map
+        let execution_plan = self.execution_plan.clone().await.into_result()?;
+        let export_contexts: Arc<BTreeMap<i32, Arc<dyn Any + Send + Sync>>> = Arc::new(
+            execution_plan
+                .export_ops
+                .iter()
+                .zip(self.export_op_execution_contexts.iter())
+                .map(|(op, ctx)| (ctx.target_id, op.export_context.clone()))
+                .collect(),
+        );
+
         // Stream entries one by one
         while let Some(entry) = entries_stream.try_next().await? {
             total_processed += 1;
@@ -443,13 +488,13 @@ impl TrackingTableSetupChange {
             let permit = semaphore.clone().acquire_owned().await?;
 
             let desired_targets = self.desired_targets.clone();
-            let export_contexts = self.export_contexts.clone();
+            let export_contexts = export_contexts.clone();
 
             join_set.spawn(async move {
                 let result = Self::cleanup_single_tracking_entry(
                     entry,
                     desired_targets.as_ref(),
-                    export_contexts.as_ref(),
+                    &export_contexts,
                 )
                 .await;
                 drop(permit);
@@ -481,7 +526,7 @@ impl TrackingTableSetupChange {
     async fn cleanup_single_tracking_entry(
         entry: db_tracking::SourceTrackingEntryForCleanup,
         desired_targets: Option<&BTreeMap<i32, TargetInfoForCleanup>>,
-        export_contexts: Option<&Arc<BTreeMap<i32, Arc<dyn Any + Send + Sync>>>>,
+        export_contexts: &BTreeMap<i32, Arc<dyn Any + Send + Sync>>,
     ) -> Result<u64> {
         let Some(desired_targets) = desired_targets else {
             return Ok(0);
@@ -531,7 +576,7 @@ impl TrackingTableSetupChange {
 
             // Get export context for this target
             let export_context = export_contexts
-                .and_then(|ctxs| ctxs.get(&target_id))
+                .get(&target_id)
                 .ok_or_else(|| internal_error!("No export context for target {}", target_id))?;
 
             // Delete via target factory
