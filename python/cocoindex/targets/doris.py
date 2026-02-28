@@ -625,16 +625,16 @@ def _build_vector_index_properties(idx: "_VectorIndex") -> list[str]:
 
 
 def _generate_create_table_ddl(key: _TableKey, state: _State) -> str:
-    """Generate CREATE TABLE DDL for Doris."""
-    _validate_identifier(key.database)
-    _validate_identifier(key.table)
+    """Generate CREATE TABLE DDL for Doris.
 
+    Identifiers (database, table, field names, index names) are validated
+    at the entrance points (get_persistent_key / get_setup_state).
+    """
     columns = []
     key_column_names = []
 
     # Key columns - must use VARCHAR instead of TEXT/STRING
     for field in state.key_fields_schema:
-        _validate_identifier(field.name)
         doris_type = _convert_value_type_to_doris_type(field.value_type)
         key_type = _convert_to_key_column_type(doris_type)
         columns.append(f"    {field.name} {key_type} NOT NULL")
@@ -642,7 +642,6 @@ def _generate_create_table_ddl(key: _TableKey, state: _State) -> str:
 
     # Value columns
     for field in state.value_fields_schema:
-        _validate_identifier(field.name)
         doris_type = _convert_value_type_to_doris_type(field.value_type)
         # Vector columns must be NOT NULL for index creation
         base_type = field.value_type.type
@@ -654,8 +653,6 @@ def _generate_create_table_ddl(key: _TableKey, state: _State) -> str:
 
     # Vector indexes (inline definition)
     for idx in state.vector_indexes or []:
-        _validate_identifier(idx.name)
-        _validate_identifier(idx.field_name)
         props = _build_vector_index_properties(idx)
         columns.append(
             f"    INDEX {idx.name} ({idx.field_name}) USING ANN PROPERTIES ({', '.join(props)})"
@@ -663,8 +660,6 @@ def _generate_create_table_ddl(key: _TableKey, state: _State) -> str:
 
     # Inverted indexes
     for inv_idx in state.inverted_indexes or []:
-        _validate_identifier(inv_idx.name)
-        _validate_identifier(inv_idx.field_name)
         if inv_idx.parser:
             columns.append(
                 f'    INDEX {inv_idx.name} ({inv_idx.field_name}) USING INVERTED PROPERTIES ("parser" = "{inv_idx.parser}")'
@@ -993,8 +988,10 @@ async def _get_table_model(spec: DorisTarget, database: str, table: str) -> str 
 
 
 async def _create_database_if_not_exists(spec: DorisTarget, database: str) -> None:
-    """Create database if it doesn't exist."""
-    _validate_identifier(database)
+    """Create database if it doesn't exist.
+
+    The database name is validated at the entrance point (get_persistent_key).
+    """
     # Create a spec with no database to execute CREATE DATABASE
     temp_spec = dataclasses.replace(spec, database="")
     await _execute_ddl(temp_spec, f"CREATE DATABASE IF NOT EXISTS {database}")
@@ -1035,12 +1032,8 @@ async def _execute_delete(
             "Install it with: pip install aiomysql"
         )
 
-    # Validate identifiers to prevent SQL injection (values are parameterized)
-    _validate_identifier(spec.database)
-    _validate_identifier(spec.table)
-    for field_name in key_field_names:
-        _validate_identifier(field_name)
-
+    # Identifiers (database, table, field names) are validated at the entrance
+    # points (get_persistent_key / get_setup_state). Values are parameterized.
     total_deleted = 0
     is_composite_key = len(key_field_names) > 1
 
@@ -1491,6 +1484,8 @@ def _validate_inverted_index_column(
 class _Connector:
     @staticmethod
     def get_persistent_key(spec: DorisTarget) -> _TableKey:
+        _validate_identifier(spec.database)
+        _validate_identifier(spec.table)
         return _TableKey(
             fe_host=spec.fe_host,
             database=spec.database,
@@ -1506,6 +1501,13 @@ class _Connector:
     ) -> _State:
         if len(key_fields_schema) == 0:
             raise ValueError("Doris requires at least one key field")
+
+        # Validate all field names at the entrance to prevent SQL injection
+        # in downstream SQL construction.
+        for field in key_fields_schema:
+            _validate_identifier(field.name)
+        for field in value_fields_schema:
+            _validate_identifier(field.name)
 
         # Extract vector indexes
         vector_indexes: list[_VectorIndex] | None = None
@@ -1574,6 +1576,14 @@ class _Connector:
                 )
                 for idx in index_options.fts_indexes
             ]
+
+        # Validate index identifiers
+        for vi in vector_indexes or []:
+            _validate_identifier(vi.field_name)
+        for ii in inverted_indexes or []:
+            _validate_identifier(ii.field_name)
+            if ii.parser is not None:
+                _validate_identifier(ii.parser)
 
         return _State(
             key_fields_schema=key_fields_schema,
@@ -1795,7 +1805,6 @@ class _Connector:
 
         for field in current.value_fields_schema:
             if field.name in missing_columns:
-                _validate_identifier(field.name)
                 doris_type = _convert_value_type_to_doris_type(field.value_type)
                 base_type = field.value_type.type
 

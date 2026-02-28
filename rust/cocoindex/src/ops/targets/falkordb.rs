@@ -67,6 +67,8 @@ pub struct GraphPool {
 impl GraphPool {
     async fn get_client(&self, spec: &ConnectionSpec) -> Result<Arc<ClientWithGraph>> {
         let graph_key = GraphKey::from_spec(spec);
+        utils::db::validate_identifier(&graph_key.graph)
+            .with_context(|| "FalkorDB: invalid graph name")?;
         let cell = {
             let mut clients = self.clients.lock().unwrap();
             clients.entry(graph_key.clone()).or_default().clone()

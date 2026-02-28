@@ -832,6 +832,20 @@ impl TargetFactoryBase for TargetFactory {
                     );
                 }
 
+                // Validate user-provided identifiers
+                if let Some(ref table_name) = d.spec.table_name {
+                    utils::db::validate_identifier(table_name)
+                        .with_context(|| format!("Postgres target '{}': invalid table_name", d.name))?;
+                }
+                if let Some(ref schema) = d.spec.schema {
+                    utils::db::validate_identifier(schema)
+                        .with_context(|| format!("Postgres target '{}': invalid schema", d.name))?;
+                }
+                for vector_index in &d.index_options.vector_indexes {
+                    utils::db::validate_identifier(&vector_index.field_name)
+                        .with_context(|| format!("Postgres target '{}': invalid vector index field_name", d.name))?;
+                }
+
                 let table_id = TableId {
                     database: d.spec.database.clone(),
                     schema: d.spec.schema.clone(),
