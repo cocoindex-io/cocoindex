@@ -868,6 +868,10 @@ impl SourceFactoryBase for Factory {
         spec: Spec,
         context: Arc<FlowInstanceContext>,
     ) -> Result<Box<dyn SourceExecutor>> {
+        // Validate user-provided identifiers
+        utils::db::validate_identifier(&spec.table_name)
+            .with_context(|| "Postgres source: invalid table_name")?;
+
         let db_pool = get_db_pool(spec.database.as_ref(), &context.auth_registry).await?;
 
         // Fetch table schema for dynamic type handling
@@ -879,16 +883,21 @@ impl SourceFactoryBase for Factory {
         )
         .await?;
 
-        let notification_ctx = spec.notification.map(|spec| {
-            let channel_name = spec.channel_name.unwrap_or_else(|| {
-                format!("{}__{}__cocoindex", context.flow_instance_name, source_name)
-            });
-            NotificationContext {
-                function_name: format!("{channel_name}_n"),
-                trigger_name: format!("{channel_name}_t"),
-                channel_name,
-            }
-        });
+        let notification_ctx = spec
+            .notification
+            .map(|spec| -> Result<_> {
+                let channel_name = spec.channel_name.unwrap_or_else(|| {
+                    format!("{}__{}__cocoindex", context.flow_instance_name, source_name)
+                });
+                utils::db::validate_identifier(&channel_name)
+                    .with_context(|| "Postgres source: invalid channel_name")?;
+                Ok(NotificationContext {
+                    function_name: format!("{channel_name}_n"),
+                    trigger_name: format!("{channel_name}_t"),
+                    channel_name,
+                })
+            })
+            .transpose()?;
 
         let executor = PostgresSourceExecutor {
             db_pool,

@@ -365,6 +365,38 @@ pub fn analyze_graph_mappings<'a, AuthEntry: 'a>(
     let data_coll_inputs: Vec<_> = data_coll_inputs.collect();
     let decls: Vec<_> = declarations.collect();
 
+    // Validate all graph element identifiers to prevent injection
+    for d in data_coll_inputs.iter() {
+        match d.mapping {
+            GraphElementMapping::Node(spec) => {
+                utils::db::validate_identifier(&spec.label)
+                    .with_context(|| format!("Invalid node label: {}", spec.label))?;
+            }
+            GraphElementMapping::Relationship(spec) => {
+                utils::db::validate_identifier(&spec.rel_type)
+                    .with_context(|| format!("Invalid relationship type: {}", spec.rel_type))?;
+                utils::db::validate_identifier(&spec.source.label)
+                    .with_context(|| format!("Invalid source node label: {}", spec.source.label))?;
+                utils::db::validate_identifier(&spec.target.label)
+                    .with_context(|| format!("Invalid target node label: {}", spec.target.label))?;
+                for field in &spec.source.fields {
+                    utils::db::validate_identifier(field.get_target()).with_context(|| {
+                        format!("Invalid source field name: {}", field.get_target())
+                    })?;
+                }
+                for field in &spec.target.fields {
+                    utils::db::validate_identifier(field.get_target()).with_context(|| {
+                        format!("Invalid target field name: {}", field.get_target())
+                    })?;
+                }
+            }
+        }
+    }
+    for (_, decl) in decls.iter() {
+        utils::db::validate_identifier(&decl.nodes_label)
+            .with_context(|| format!("Invalid declared node label: {}", decl.nodes_label))?;
+    }
+
     // 1a. Prepare graph element types
     let graph_elem_types = data_coll_inputs
         .iter()

@@ -1,6 +1,7 @@
 import asyncio
 import dataclasses
 import logging
+import re
 import threading
 import uuid
 import weakref
@@ -232,6 +233,12 @@ def _convert_basic_type_to_pa_type(basic_type: BasicValueType) -> pa.DataType:
     assert False, f"Unsupported type kind for LanceDB: {kind}"
 
 
+def _validate_identifier(name: str) -> None:
+    """Validate SQL identifier to prevent injection."""
+    if not re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*$", name):
+        raise ValueError(f"Invalid identifier: {name}")
+
+
 def _convert_key_value_to_sql(v: Any) -> str:
     if isinstance(v, str):
         escaped = v.replace("'", "''")
@@ -354,6 +361,7 @@ class _Connector:
     ) -> _State:
         if len(key_fields_schema) != 1:
             raise ValueError("LanceDB only supports a single key field")
+        _validate_identifier(key_fields_schema[0].name)
 
         def _get_method_suffix(method: VectorIndexMethod | None) -> str:
             """Get a suffix string representing the index method for the index name.
