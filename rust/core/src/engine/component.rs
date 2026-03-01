@@ -5,7 +5,8 @@ use std::collections::HashSet;
 use crate::engine::context::FnCallContext;
 use crate::engine::context::{AppContext, ComponentProcessingMode, ComponentProcessorContext};
 use crate::engine::execution::{
-    cleanup_tombstone, post_submit_for_build, submit, use_or_invalidate_component_memoization,
+    cleanup_tombstone, post_submit_for_build, submit, update_component_memo_states,
+    use_or_invalidate_component_memoization,
 };
 use crate::engine::profile::EngineProfile;
 use crate::engine::stats::ProcessingStats;
@@ -44,6 +45,27 @@ pub trait ComponentProcessor<Prof: EngineProfile>: Send + Sync + 'static {
     fn memo_key_fingerprint(&self) -> Option<Fingerprint>;
 
     fn processor_info(&self) -> &ComponentProcessorInfo;
+
+    /// Whether this processor has a memo state handler for post-fingerprint validation.
+    fn has_memo_state_handler(&self) -> bool {
+        false
+    }
+
+    /// Validate or collect memo states after a fingerprint match.
+    /// `stored_states`: `Some(states)` on cache hit, `None` on cache miss (collect initial states).
+    /// Returns `(new_states, can_reuse, states_changed)`:
+    /// - `can_reuse`: when true, the cached value is valid and can be returned without re-execution.
+    /// - `states_changed`: when true, the new states differ from stored states and must be persisted.
+    ///   This can be true even when `can_reuse` is true (e.g. mtime changed but content hash unchanged).
+    fn handle_memo_states(
+        &self,
+        host_runtime_ctx: &Prof::HostRuntimeCtx,
+        stored_states: Option<Vec<Prof::FunctionData>>,
+    ) -> Result<impl Future<Output = Result<(Vec<Prof::FunctionData>, bool, bool)>> + Send + 'static>
+    {
+        let _ = (host_runtime_ctx, stored_states);
+        Ok(async { Ok((vec![], true, false)) })
+    }
 }
 
 struct ComponentInner<Prof: EngineProfile> {
@@ -414,6 +436,9 @@ impl<Prof: EngineProfile> Component<Prof> {
     ) -> Result<(ComponentRunOutcome, Option<ComponentBuildOutput<Prof>>)> {
         let mut reported_processor_name: Option<Cow<'_, str>> = None;
         let mut memo_fp_to_store: Option<Fingerprint> = None;
+        // Memo states collected from state validation (on cache hit with invalid states)
+        // or to be collected after execution (on cache miss).
+        let mut memo_states_for_store: Option<Vec<Prof::FunctionData>> = None;
         let processing_stats = processor_context.processing_stats();
 
         if let Some(processor) = processor {
@@ -424,18 +449,47 @@ impl<Prof: EngineProfile> Component<Prof> {
             // If it hits, we can immediately return without processing/submitting/waiting.
 
             match use_or_invalidate_component_memoization(processor_context, memo_fp_to_store) {
-                Ok(Some(ret)) => {
-                    processing_stats.update(processor_name.as_ref(), |stats| {
-                        stats.num_execution_starts += 1;
-                        stats.num_unchanged += 1;
-                    });
-                    return Ok((
-                        ComponentRunOutcome::default(),
-                        Some(ComponentBuildOutput {
-                            ret,
-                            built_target_states_providers: Default::default(),
-                        }),
-                    ));
+                Ok(Some((ret, memo_states))) => {
+                    // If processor has state handler and there are stored states, validate them.
+                    if processor.has_memo_state_handler() && !memo_states.is_empty() {
+                        let fut = processor.handle_memo_states(
+                            processor_context.app_ctx().env().host_runtime_ctx(),
+                            Some(memo_states),
+                        )?;
+                        let (new_states, can_reuse, states_changed) = fut.await?;
+                        if can_reuse {
+                            // Memo is reusable — update stored states if they changed
+                            if states_changed {
+                                update_component_memo_states(processor_context, &new_states)?;
+                            }
+                            processing_stats.update(processor_name.as_ref(), |stats| {
+                                stats.num_execution_starts += 1;
+                                stats.num_unchanged += 1;
+                            });
+                            return Ok((
+                                ComponentRunOutcome::default(),
+                                Some(ComponentBuildOutput {
+                                    ret,
+                                    built_target_states_providers: Default::default(),
+                                }),
+                            ));
+                        }
+                        // Not reusable — fall through to re-execution
+                        memo_states_for_store = Some(new_states);
+                    } else {
+                        // No state handler or no states — use cached result directly
+                        processing_stats.update(processor_name.as_ref(), |stats| {
+                            stats.num_execution_starts += 1;
+                            stats.num_unchanged += 1;
+                        });
+                        return Ok((
+                            ComponentRunOutcome::default(),
+                            Some(ComponentBuildOutput {
+                                ret,
+                                built_target_states_providers: Default::default(),
+                            }),
+                        ));
+                    }
                 }
                 Err(err) => {
                     error!("component memoization restore failed: {err:?}");
@@ -509,6 +563,26 @@ impl<Prof: EngineProfile> Component<Prof> {
                 let build_output = match ret {
                     Some(ret) => {
                         if !children_outcome.has_exception {
+                            // Collect initial memo states on cache miss if processor has a state handler.
+                            let memo_states = if let Some(processor) = processor
+                                && processor.has_memo_state_handler()
+                            {
+                                if let Some(states) = memo_states_for_store.take() {
+                                    // From invalid cache hit path
+                                    states
+                                } else {
+                                    // Cache miss — collect initial states
+                                    let fut = processor.handle_memo_states(
+                                        processor_context.app_ctx().env().host_runtime_ctx(),
+                                        None,
+                                    )?;
+                                    let (initial_states, _, _) = fut.await?;
+                                    initial_states
+                                }
+                            } else {
+                                vec![]
+                            };
+
                             let comp_memo = if let Some(fp) = memo_fp_to_store
                                 && let last_memo_fp = processor_context
                                     .component()
@@ -518,7 +592,7 @@ impl<Prof: EngineProfile> Component<Prof> {
                                     .unwrap()
                                 && *last_memo_fp == memo_fp_to_store
                             {
-                                Some((fp, &ret))
+                                Some((fp, &ret, memo_states.as_slice()))
                             } else {
                                 None
                             };
