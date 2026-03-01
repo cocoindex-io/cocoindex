@@ -8,6 +8,7 @@ canonical call key object into a fixed-size fingerprint.
 
 from __future__ import annotations
 
+import functools
 import math
 import pickle
 import struct
@@ -18,9 +19,15 @@ from .typing import Fingerprintable
 
 
 _KeyFn = typing.Callable[[typing.Any], typing.Any]
+_StateFn = typing.Callable[[typing.Any, typing.Any], typing.Any]
 
 
-_memo_key_fns: dict[type, _KeyFn] = {}
+class _MemoFns(typing.NamedTuple):
+    key_fn: _KeyFn
+    state_fn: _StateFn | None = None
+
+
+_memo_fns: dict[type, _MemoFns] = {}
 
 
 class NotMemoizable:
@@ -42,13 +49,18 @@ class NotMemoizable:
         )
 
 
-def register_memo_key_function(typ: type, key_fn: _KeyFn) -> None:
+def register_memo_key_function(
+    typ: type, key_fn: _KeyFn, *, state_fn: _StateFn | None = None
+) -> None:
     """Register a memo key function for a type.
 
     Resolution is MRO-aware: the most specific registered base type wins.
+
+    If *state_fn* is provided it is stored separately and used for memo state
+    validation (see ``_canonicalize``).
     """
 
-    _memo_key_fns[typ] = key_fn
+    _memo_fns[typ] = _MemoFns(key_fn, state_fn)
 
 
 def register_not_memoizable(typ: type) -> None:
@@ -70,13 +82,13 @@ def register_not_memoizable(typ: type) -> None:
             "This type maintains internal state that is incompatible with memoization."
         )
 
-    _memo_key_fns[typ] = _raise_not_memoizable
+    _memo_fns[typ] = _MemoFns(_raise_not_memoizable)
 
 
 def unregister_memo_key_function(typ: type) -> None:
     """Remove a previously registered memo key function (best-effort)."""
 
-    _memo_key_fns.pop(typ, None)
+    _memo_fns.pop(typ, None)
 
 
 def _stable_sort_key(v: Fingerprintable) -> tuple[typing.Any, ...]:
@@ -109,7 +121,11 @@ def _stable_sort_key(v: Fingerprintable) -> tuple[typing.Any, ...]:
     return (99,)
 
 
-def _canonicalize(obj: object, _seen: dict[int, int] | None) -> Fingerprintable:
+def _canonicalize(
+    obj: object,
+    _seen: dict[int, int] | None,
+    state_methods: list[typing.Callable[..., typing.Any]] | None = None,
+) -> Fingerprintable:
     # 0) Cycle / shared-reference tracking for containers
     if _seen is None:
         _seen = {}
@@ -128,13 +144,34 @@ def _canonicalize(obj: object, _seen: dict[int, int] | None) -> Fingerprintable:
     if hook is not None and callable(hook):
         k = hook()
         typ = type(obj)
-        return ("hook", typ.__module__, typ.__qualname__, _canonicalize(k, _seen))
+        tag = "hook"
+        state_hook = getattr(obj, "__coco_memo_state__", None)
+        if state_hook is not None and callable(state_hook):
+            tag = "shook"
+            if state_methods is not None:
+                state_methods.append(state_hook)
+        return (
+            tag,
+            typ.__module__,
+            typ.__qualname__,
+            _canonicalize(k, _seen, state_methods),
+        )
 
     for base in type(obj).__mro__:
-        fn = _memo_key_fns.get(base)
-        if fn is not None:
-            k = fn(obj)
-            return ("hook", base.__module__, base.__qualname__, _canonicalize(k, _seen))
+        memo = _memo_fns.get(base)
+        if memo is not None:
+            k = memo.key_fn(obj)
+            tag = "hook"
+            if memo.state_fn is not None:
+                tag = "shook"
+                if state_methods is not None:
+                    state_methods.append(functools.partial(memo.state_fn, obj))
+            return (
+                tag,
+                base.__module__,
+                base.__qualname__,
+                _canonicalize(k, _seen, state_methods),
+            )
 
     # 3) Cycle / shared-reference tracking
     #
@@ -148,17 +185,22 @@ def _canonicalize(obj: object, _seen: dict[int, int] | None) -> Fingerprintable:
 
     # 4) Containers
     if isinstance(obj, typing.Sequence):
-        return ("seq", tuple(_canonicalize(e, _seen) for e in obj))
+        return ("seq", tuple(_canonicalize(e, _seen, state_methods) for e in obj))
 
     if isinstance(obj, typing.Mapping):
         items: list[tuple[Fingerprintable, Fingerprintable]] = []
         for k, v in obj.items():
-            items.append((_canonicalize(k, _seen), _canonicalize(v, _seen)))
+            items.append(
+                (
+                    _canonicalize(k, _seen, state_methods),
+                    _canonicalize(v, _seen, state_methods),
+                )
+            )
         items.sort(key=lambda kv: (_stable_sort_key(kv[0]), _stable_sort_key(kv[1])))
         return ("map", tuple(items))
 
     if isinstance(obj, (set, frozenset)):
-        elts = [_canonicalize(e, _seen) for e in obj]
+        elts = [_canonicalize(e, _seen, state_methods) for e in obj]
         elts.sort(key=_stable_sort_key)
         return ("set", tuple(elts))
 
@@ -180,14 +222,18 @@ def _make_call_key_obj(
     kwargs: dict[str, object],
     *,
     version: str | int | None = None,
+    state_methods: list[typing.Callable[..., typing.Any]] | None = None,
 ) -> Fingerprintable:
     function_identity = (
         getattr(func, "__module__", None),
         getattr(func, "__qualname__", None),
     )
-    canonical_args = tuple(_canonicalize(a, _seen=None) for a in args)
+    canonical_args = tuple(
+        _canonicalize(a, _seen=None, state_methods=state_methods) for a in args
+    )
     canonical_kwargs = tuple(
-        (k, _canonicalize(v, _seen=None)) for k, v in sorted(kwargs.items())
+        (k, _canonicalize(v, _seen=None, state_methods=state_methods))
+        for k, v in sorted(kwargs.items())
     )
     return (
         "memo_call_v1",
@@ -208,11 +254,16 @@ def fingerprint_call(
     kwargs: dict[str, object],
     *,
     version: str | int | None = None,
+    state_methods: list[typing.Callable[..., typing.Any]] | None = None,
 ) -> core.Fingerprint:
     """Compute the deterministic fingerprint for a function call.
 
     Returns a `cocoindex._internal.core.Fingerprint` object (Python wrapper around a
     stable 16-byte digest). Use `bytes(fp)` or `fp.as_bytes()` to get raw bytes.
+
+    If *state_methods* is provided, any state methods discovered during
+    canonicalization are appended to it (used by the execution layer for memo
+    state validation).
     """
 
     call_key_obj = _make_call_key_obj(
@@ -220,6 +271,7 @@ def fingerprint_call(
         args,
         kwargs,
         version=version,
+        state_methods=state_methods,
     )
     # One Python -> Rust call.
     return core.fingerprint_simple_object(call_key_obj)

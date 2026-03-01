@@ -96,6 +96,7 @@ pub struct FnCallMemo<Prof: EngineProfile> {
     pub(crate) target_state_paths: Vec<TargetStatePath>,
     pub(crate) dependency_memo_entries: HashSet<Fingerprint>,
     pub(crate) logic_deps: HashSet<Fingerprint>,
+    pub memo_states: Vec<Prof::FunctionData>,
     pub(crate) already_stored: bool,
 }
 

@@ -72,7 +72,7 @@ fn core_module(m: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()>
     m.add_class::<fingerprint::PyFingerprint>()?;
 
     // Function memoization
-    m.add_class::<function::PyPendingFnCallMemo>()?;
+    m.add_class::<function::PyFnCallMemoGuard>()?;
     m.add_function(wrap_pyfunction!(function::reserve_memoization, m)?)?;
     m.add_function(wrap_pyfunction!(function::reserve_memoization_async, m)?)?;
 

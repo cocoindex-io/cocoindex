@@ -177,6 +177,8 @@ pub struct ComponentMemoizationInfo<'a> {
     pub return_value: MemoizedValue<'a>,
     #[serde(rename = "L", default, skip_serializing_if = "Vec::is_empty")]
     pub logic_deps: Vec<Fingerprint>,
+    #[serde(rename = "S", default, skip_serializing_if = "Vec::is_empty", borrow)]
+    pub memo_states: Vec<MemoizedValue<'a>>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -197,6 +199,8 @@ pub struct FunctionMemoizationEntry<'a> {
     /// Only needs to keep dependencies with side effects other than return value (child components / target states / dependency entries with side effects).
     #[serde(rename = "D", default, skip_serializing_if = "Vec::is_empty")]
     pub dependency_memo_entries: Vec<Fingerprint>,
+    #[serde(rename = "S", default, skip_serializing_if = "Vec::is_empty", borrow)]
+    pub memo_states: Vec<MemoizedValue<'a>>,
 }
 
 #[serde_as]

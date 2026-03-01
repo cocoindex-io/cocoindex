@@ -14,6 +14,7 @@ from typing import (
     Any,
     Concatenate,
     Generic,
+    NamedTuple,
     TypeVar,
     ParamSpec,
     Coroutine,
@@ -37,6 +38,7 @@ from .component_ctx import (
     get_context_from_ctx,
 )
 from .memo_key import fingerprint_call
+from .typing import NON_EXISTENCE
 
 
 P = ParamSpec("P")
@@ -135,6 +137,119 @@ class Function(Protocol[P, R_co]):
     ) -> core.ComponentProcessor[R_co]: ...
 
 
+class StateMethodsResult(NamedTuple):
+    """Result of calling memo state methods."""
+
+    new_states: list[Any]
+    can_reuse: bool
+    states_changed: bool
+
+
+def _call_state_methods_sync(
+    state_methods: list[Callable[..., Any]],
+    stored_states: list[Any] | None,
+) -> StateMethodsResult:
+    """Call state methods synchronously and return a :class:`StateMethodsResult`.
+
+    Each state method receives the previously stored state (or ``NON_EXISTENCE`` on first run)
+    and returns ``(new_state, can_reuse)``.
+
+    *can_reuse* is the conjunction of all per-method ``can_reuse`` flags: if any method says
+    the memo is not reusable, the overall result is not reusable.
+
+    *states_changed* indicates whether any ``new_state`` differs from its stored counterpart
+    (``==`` check). This can be true even when ``can_reuse`` is true (e.g. mtime changed but
+    content hash unchanged).
+
+    If any method returns an ``Awaitable`` the awaitables are resolved:
+    - Running event loop → raise (suggest ``@coco.fn.as_async``).
+    - No loop → ``asyncio.run(asyncio.gather(...))``.
+    """
+    raw_results: list[Any] = [
+        method(stored_states[i] if stored_states is not None else NON_EXISTENCE)
+        for i, method in enumerate(state_methods)
+    ]
+
+    # Resolve awaitables produced by async state methods
+    awaitable_indices: list[int] = []
+    awaitables: list[Awaitable[Any]] = []
+    for i, r in enumerate(raw_results):
+        if isinstance(r, Awaitable):
+            awaitable_indices.append(i)
+            awaitables.append(r)
+
+    if awaitables:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+        else:
+            raise RuntimeError(
+                "Memo state function returned an awaitable from a sync context "
+                "with a running event loop. Use @coco.fn.as_async for the "
+                "decorated function instead."
+            )
+
+        async def _gather() -> list[Any]:
+            return list(await asyncio.gather(*awaitables))
+
+        resolved: list[Any] = asyncio.run(_gather())
+        for idx, val in zip(awaitable_indices, resolved):
+            raw_results[idx] = val
+
+    # Unpack (new_state, can_reuse) tuples
+    new_states: list[Any] = []
+    can_reuse = True
+    states_changed = stored_states is None
+    for i, (new_state, reusable) in enumerate(raw_results):
+        new_states.append(new_state)
+        if not reusable:
+            can_reuse = False
+        if stored_states is not None and new_state != stored_states[i]:
+            states_changed = True
+    return StateMethodsResult(new_states, can_reuse, states_changed)
+
+
+async def _call_state_methods_async(
+    state_methods: list[Callable[..., Any]],
+    stored_states: list[Any] | None,
+) -> StateMethodsResult:
+    """Async variant of :func:`_call_state_methods_sync`.
+
+    Calls each state method, then gathers any awaitables concurrently.
+    Returns a :class:`StateMethodsResult`.
+    """
+    raw_results: list[Any] = [
+        method(stored_states[i] if stored_states is not None else NON_EXISTENCE)
+        for i, method in enumerate(state_methods)
+    ]
+
+    # Resolve awaitables
+    awaitable_indices: list[int] = []
+    awaitables: list[Awaitable[Any]] = []
+    for i, r in enumerate(raw_results):
+        if isinstance(r, Awaitable):
+            awaitable_indices.append(i)
+            awaitables.append(r)
+
+    if awaitables:
+        resolved = await asyncio.gather(*awaitables)
+        for idx, val in zip(awaitable_indices, resolved):
+            raw_results[idx] = val
+
+    # Unpack (new_state, can_reuse) tuples
+    new_states: list[Any] = []
+    can_reuse = True
+    states_changed = stored_states is None
+    for i, (new_state, reusable) in enumerate(raw_results):
+        new_states.append(new_state)
+        if not reusable:
+            can_reuse = False
+        if stored_states is not None and new_state != stored_states[i]:
+            states_changed = True
+    return StateMethodsResult(new_states, can_reuse, states_changed)
+
+
 def _has_self_parameter(fn: Callable[..., Any]) -> bool:
     """Check if function has 'self' as first parameter (i.e., is a method)."""
     sig = inspect.signature(fn)
@@ -162,6 +277,7 @@ def _build_sync_core_processor(
     processor_info: core.ComponentProcessorInfo,
     memo_fp: core.Fingerprint | None = None,
     logic_fp: core.Fingerprint | None = None,
+    state_handler: Callable[..., Coroutine[Any, Any, Any]] | None = None,
 ) -> core.ComponentProcessor[R_co]:
     def _build(comp_ctx: core.ComponentProcessorContext) -> R_co:
         fn_ctx = core.FnCallContext()
@@ -175,7 +291,9 @@ def _build_sync_core_processor(
             _context_var.reset(tok)
             comp_ctx.join_fn_call(fn_ctx)
 
-    return core.ComponentProcessor.new_sync(_build, processor_info, memo_fp)
+    return core.ComponentProcessor.new_sync(
+        _build, processor_info, memo_fp, state_handler
+    )
 
 
 def _strip_docstring(body: list[ast.stmt]) -> None:
@@ -285,21 +403,46 @@ class SyncFunction(Function[P, R_co]):
         fn_ctx: core.FnCallContext | None = None
         try:
             if self._memo:
-                memo_fp = fingerprint_call(self._fn, args, kwargs)
-                r = core.reserve_memoization(parent_ctx._core_processor_ctx, memo_fp)
-                if isinstance(r, core.PendingFnCallMemo):
-                    try:
-                        fn_ctx = core.FnCallContext()
-                        fn_ctx.add_logic_dep(self._logic_fp)
-                        ret = _call_in_context(fn_ctx)
-                        if r.resolve(fn_ctx, ret):
-                            parent_ctx._core_fn_call_ctx.join_child_memo(memo_fp)
-                        return ret
-                    finally:
-                        r.close()
-                else:
-                    parent_ctx._core_fn_call_ctx.join_child_memo(memo_fp)
-                    return cast(R_co, r)
+                state_methods: list[Callable[..., Any]] = []
+                memo_fp = fingerprint_call(
+                    self._fn, args, kwargs, state_methods=state_methods
+                )
+                guard = core.reserve_memoization(
+                    parent_ctx._core_processor_ctx, memo_fp
+                )
+                try:
+                    # Check if cached result is still valid
+                    use_cache = False
+                    memo_states_for_resolve: list[Any] | None = None
+                    if guard.is_cached:
+                        use_cache = True
+                        if state_methods:
+                            state_result = _call_state_methods_sync(
+                                state_methods, guard.cached_memo_states
+                            )
+                            if not state_result.can_reuse:
+                                use_cache = False
+                                memo_states_for_resolve = state_result.new_states
+                            elif state_result.states_changed:
+                                guard.update_memo_states(state_result.new_states)
+
+                    if use_cache:
+                        parent_ctx._core_fn_call_ctx.join_child_memo(memo_fp)
+                        return cast(R_co, guard.cached_value)
+
+                    # Execute (cache miss or stale states)
+                    fn_ctx = core.FnCallContext()
+                    fn_ctx.add_logic_dep(self._logic_fp)
+                    ret = _call_in_context(fn_ctx)
+                    if memo_states_for_resolve is None and state_methods:
+                        memo_states_for_resolve = _call_state_methods_sync(
+                            state_methods, None
+                        ).new_states
+                    if guard.resolve(fn_ctx, ret, memo_states_for_resolve):
+                        parent_ctx._core_fn_call_ctx.join_child_memo(memo_fp)
+                    return ret
+                finally:
+                    guard.close()
             else:
                 fn_ctx = core.FnCallContext()
                 fn_ctx.add_logic_dep(self._logic_fp)
@@ -319,7 +462,23 @@ class SyncFunction(Function[P, R_co]):
         *args: P0.args,
         **kwargs: P0.kwargs,
     ) -> core.ComponentProcessor[R_co]:
-        memo_fp = fingerprint_call(self._fn, args, kwargs) if self._memo else None
+        state_methods: list[Callable[..., Any]] = []
+        memo_fp = (
+            fingerprint_call(self._fn, args, kwargs, state_methods=state_methods)
+            if self._memo
+            else None
+        )
+        state_handler: Callable[..., Coroutine[Any, Any, Any]] | None = None
+        if state_methods:
+            captured = state_methods
+
+            async def _state_handler(
+                stored_states: list[Any] | None,
+            ) -> StateMethodsResult:
+                return await _call_state_methods_async(captured, stored_states)
+
+            state_handler = _state_handler
+
         return _build_sync_core_processor(
             self._fn,
             env,
@@ -329,6 +488,7 @@ class SyncFunction(Function[P, R_co]):
             self._processor_info,
             memo_fp,
             self._logic_fp,
+            state_handler,
         )
 
 
@@ -365,6 +525,7 @@ def _build_async_core_processor(
     processor_info: core.ComponentProcessorInfo,
     memo_fp: core.Fingerprint | None = None,
     logic_fp: core.Fingerprint | None = None,
+    state_handler: Callable[..., Coroutine[Any, Any, Any]] | None = None,
 ) -> core.ComponentProcessor[R_co]:
     async def _build(comp_ctx: core.ComponentProcessorContext) -> R_co:
         fn_ctx = core.FnCallContext()
@@ -378,7 +539,9 @@ def _build_async_core_processor(
             _context_var.reset(tok)
             comp_ctx.join_fn_call(fn_ctx)
 
-    return core.ComponentProcessor.new_async(_build, processor_info, memo_fp)
+    return core.ComponentProcessor.new_async(
+        _build, processor_info, memo_fp, state_handler
+    )
 
 
 # Cache for expensive self objects in subprocess (keyed by pickle bytes).
@@ -541,24 +704,39 @@ class AsyncFunction(Function[P, R_co]):
         """Core implementation."""
 
         parent_ctx = _context_var.get(None)
-        pending_memo: core.PendingFnCallMemo | None = None
+        guard: core.FnCallMemoGuard | None = None
         memo_fp: core.Fingerprint | None = None
         fn_ctx = core.FnCallContext()
         fn_ctx.add_logic_dep(self._logic_fp)
+        state_methods: list[Callable[..., Any]] = []
 
         try:
             # Check memo (when enabled and context available)
+            memo_states_for_resolve: list[Any] | None = None
             if self._memo and parent_ctx is not None:
-                memo_fp = fingerprint_call(self._any_fn, args, kwargs)
-                r = await core.reserve_memoization_async(
+                memo_fp = fingerprint_call(
+                    self._any_fn, args, kwargs, state_methods=state_methods
+                )
+                guard = await core.reserve_memoization_async(
                     parent_ctx._core_processor_ctx, memo_fp
                 )
-                if not isinstance(r, core.PendingFnCallMemo):
-                    parent_ctx._core_fn_call_ctx.join_child_memo(memo_fp)
-                    return cast(R_co, r)
-                pending_memo = r
+                if guard.is_cached:
+                    # Check if cached result is still valid
+                    use_cache = True
+                    if state_methods:
+                        state_result = await _call_state_methods_async(
+                            state_methods, guard.cached_memo_states
+                        )
+                        if not state_result.can_reuse:
+                            use_cache = False
+                            memo_states_for_resolve = state_result.new_states
+                        elif state_result.states_changed:
+                            guard.update_memo_states(state_result.new_states)
+                    if use_cache:
+                        parent_ctx._core_fn_call_ctx.join_child_memo(memo_fp)
+                        return cast(R_co, guard.cached_value)
 
-            # Execute
+            # Execute (no memo, cache miss, or stale states)
             if parent_ctx is None:
                 async_ctx = core.AsyncContext(get_event_loop_or_default())
                 result = await self._execute(async_ctx, *args, **kwargs)
@@ -572,16 +750,20 @@ class AsyncFunction(Function[P, R_co]):
                 finally:
                     _context_var.reset(tok)
 
-            # Resolve memo if pending
-            if pending_memo is not None:
-                if pending_memo.resolve(fn_ctx, result):
+            # Resolve memo if guard is held
+            if guard is not None:
+                if memo_states_for_resolve is None and state_methods:
+                    memo_states_for_resolve = (
+                        await _call_state_methods_async(state_methods, None)
+                    ).new_states
+                if guard.resolve(fn_ctx, result, memo_states_for_resolve):
                     assert parent_ctx is not None and memo_fp is not None
                     parent_ctx._core_fn_call_ctx.join_child_memo(memo_fp)
 
             return result
         finally:
-            if pending_memo is not None:
-                pending_memo.close()
+            if guard is not None:
+                guard.close()
             if fn_ctx is not None and parent_ctx is not None:
                 parent_ctx._core_fn_call_ctx.join_child(fn_ctx)
 
@@ -736,11 +918,29 @@ class AsyncFunction(Function[P, R_co]):
         *args: P.args,
         **kwargs: P.kwargs,
     ) -> core.ComponentProcessor[R_co]:
+        state_methods: list[Callable[..., Any]] = []
         memo_fp = (
-            fingerprint_call(self._any_fn, (path, *args), kwargs)
+            fingerprint_call(
+                self._any_fn,
+                (path, *args),
+                kwargs,
+                state_methods=state_methods,
+            )
             if self._memo
             else None
         )
+
+        state_handler: Callable[..., Coroutine[Any, Any, Any]] | None = None
+        if state_methods:
+            captured = state_methods
+
+            async def _state_handler(
+                stored_states: list[Any] | None,
+            ) -> StateMethodsResult:
+                return await _call_state_methods_async(captured, stored_states)
+
+            state_handler = _state_handler
+
         if self._is_scheduled:
             async_ctx = env.async_context
             return _build_async_core_processor(
@@ -752,6 +952,7 @@ class AsyncFunction(Function[P, R_co]):
                 self._processor_info,
                 memo_fp,
                 self._logic_fp,
+                state_handler,
             )
 
         orig_async_fn = self._orig_async_fn
@@ -765,6 +966,7 @@ class AsyncFunction(Function[P, R_co]):
                 self._processor_info,
                 memo_fp,
                 self._logic_fp,
+                state_handler,
             )
 
         assert self._orig_sync_fn is not None
@@ -777,6 +979,7 @@ class AsyncFunction(Function[P, R_co]):
             self._processor_info,
             memo_fp,
             self._logic_fp,
+            state_handler,
         )
 
 

@@ -50,7 +50,7 @@ def process_chunk(chunk: Chunk) -> Embedding:
     return embed(chunk.text)
 ```
 
-See [Memoization Keys](../advanced_topics/memoization_keys.md) for details on how CocoIndex constructs keys for memoization.
+See [Memoization Keys & States](../advanced_topics/memoization_keys.md) for details on how CocoIndex constructs keys and validates cached results.
 
 :::tip When to memoize
 
