@@ -32,6 +32,8 @@ env = coco.Environment(
 )
 ```
 
+`Settings` also accepts `lmdb_max_dbs` and `lmdb_map_size` for tuning the internal LMDB database. See [Internal Storage](./internal_storage.md#lmdb-tuning) for details.
+
 ## Associating Apps with an Environment
 
 Pass the environment to `AppConfig` when creating an app:

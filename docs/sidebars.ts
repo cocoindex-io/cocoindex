@@ -60,6 +60,7 @@ const sidebars: SidebarsConfig = {
       label: 'Advanced Topics',
       collapsed: false,
       items: [
+        'advanced_topics/internal_storage',
         'advanced_topics/memoization_keys',
         'advanced_topics/multiple_environments',
         'advanced_topics/custom_target_connector',

@@ -143,6 +143,8 @@ app = coco.App("MyPipeline", app_main)
 app.update_blocking()  # Uses COCOINDEX_DB for storage
 ```
 
+For details on what the internal database stores and how to tune its LMDB settings (e.g., increasing the maximum database size beyond 4 GiB), see [Internal Storage](../advanced_topics/internal_storage.md).
+
 ## Lifespan (optional)
 
 A **lifespan function** defines the CocoIndex runtime lifecycle: its setup runs when the runtime starts (automatically before the first `app.update()`), and its cleanup runs when the runtime stops. Use it to configure CocoIndex settings programmatically or to initialize shared resources that processing components can reuse.
