@@ -104,7 +104,9 @@ class FnCallMemoGuard:
     @property
     def cached_memo_states(self) -> list[Any] | None: ...
     def update_memo_states(self, memo_states: list[Any]) -> None: ...
-    def resolve(self, fn_ctx: FnCallContext, ret: Any, memo_states: list[Any] | None = None) -> bool: ...
+    def resolve(
+        self, fn_ctx: FnCallContext, ret: Any, memo_states: list[Any] | None = None
+    ) -> bool: ...
     def close(self) -> None: ...
 
 # --- ComponentMountHandle ---
@@ -139,7 +141,6 @@ class StablePathInfo:
     path: StablePath
     node_type: StablePathNodeType
 
-
 class StablePathInfoAsyncIterator:
     """Async iterator of StablePathInfo; use with async for."""
 
@@ -148,7 +149,9 @@ class StablePathInfoAsyncIterator:
 
 # --- App ---
 class App:
-    def __new__(cls, name: str, env: Environment, max_inflight_components: int | None = None) -> App: ...
+    def __new__(
+        cls, name: str, env: Environment, max_inflight_components: int | None = None
+    ) -> App: ...
     def update(
         self,
         root_processor: ComponentProcessor[T_co],

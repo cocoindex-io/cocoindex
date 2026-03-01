@@ -461,6 +461,8 @@ def test_dataclass_and_pydantic_different_types() -> None:
     assert fingerprint_call(_dummy_fn, (d,), {}) != fingerprint_call(
         _dummy_fn, (p,), {}
     )
+
+
 # ============================================================================
 # "shook" tag and state method collection tests
 # ============================================================================
