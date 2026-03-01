@@ -8,6 +8,7 @@ canonical call key object into a fixed-size fingerprint.
 
 from __future__ import annotations
 
+import dataclasses
 import functools
 import math
 import pickle
@@ -28,6 +29,51 @@ class _MemoFns(typing.NamedTuple):
 
 
 _memo_fns: dict[type, _MemoFns] = {}
+
+
+def _is_dataclass_instance(obj: object) -> bool:
+    """Check if obj is a dataclass instance (not a class)."""
+    return dataclasses.is_dataclass(obj) and not isinstance(obj, type)
+
+
+def _is_pydantic_model(obj: object) -> bool:
+    """Check if obj is a Pydantic v2 model instance."""
+    return hasattr(obj, "__pydantic_fields__") and not isinstance(obj, type)  # type: ignore[attr-defined]
+
+
+def _canonicalize_dataclass(obj: object, _seen: dict[int, int]) -> Fingerprintable:
+    """Canonicalize a dataclass instance.
+
+    Preserves field definition order and includes all fields.
+    Format: ("dataclass", module, qualname, ((field_name, value), ...))
+    """
+    typ = type(obj)
+    fields = dataclasses.fields(obj)  # type: ignore[arg-type]
+    return (
+        "dataclass",
+        typ.__module__,
+        typ.__qualname__,
+        tuple(
+            (field.name, _canonicalize(getattr(obj, field.name), _seen))
+            for field in fields
+        ),
+    )
+
+
+def _canonicalize_pydantic(obj: object, _seen: dict[int, int]) -> Fingerprintable:
+    """Canonicalize a Pydantic v2 model instance.
+
+    Includes all fields (set and unset) to ensure determinism.
+    Format: ("pydantic", module, qualname, ((field_name, value), ...))
+    """
+    typ = type(obj)
+    field_names = obj.__pydantic_fields__.keys()  # type: ignore[attr-defined]
+    return (
+        "pydantic",
+        typ.__module__,
+        typ.__qualname__,
+        tuple((name, _canonicalize(getattr(obj, name), _seen)) for name in field_names),
+    )
 
 
 class NotMemoizable:
@@ -204,7 +250,15 @@ def _canonicalize(
         elts.sort(key=_stable_sort_key)
         return ("set", tuple(elts))
 
-    # 5) Fallback
+    # 5) Dataclass instances
+    if _is_dataclass_instance(obj):
+        return _canonicalize_dataclass(obj, _seen)
+
+    # 6) Pydantic v2 models
+    if _is_pydantic_model(obj):
+        return _canonicalize_pydantic(obj, _seen)
+
+    # 7) Fallback
     try:
         payload = pickle.dumps(obj, protocol=pickle.HIGHEST_PROTOCOL)
         # Tag to avoid colliding with user-provided raw bytes.

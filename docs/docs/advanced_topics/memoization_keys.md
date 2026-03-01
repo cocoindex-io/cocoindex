@@ -22,6 +22,22 @@ The key fragments are combined into a deterministic fingerprint. If the fingerpr
 
 ## Customizing the memoization key
 
+### Override automatic handling
+
+If you need custom behavior, implement `__coco_memo_key__()` - it takes precedence over automatic handling:
+
+```python
+@dataclass
+class Point:
+    x: int
+    y: int
+    transient_data: str  # Don't include in memo key
+
+    def __coco_memo_key__(self) -> object:
+        return (self.x, self.y)  # Only x and y matter for memoization
+```
+
+## Define `__coco_memo_key__` (preferred when you control the type)
 ### Define `__coco_memo_key__` (when you control the type)
 
 Implement a method on your class that returns a stable, deterministic value:
