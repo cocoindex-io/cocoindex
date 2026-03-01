@@ -9,6 +9,7 @@ from cocoindex._internal.memo_key import (
     register_memo_key_function,
     unregister_memo_key_function,
 )
+from cocoindex._internal.typing import MemoStateOutcome
 
 
 class _PickleableZ:
@@ -485,8 +486,8 @@ def test_shook_tag_produces_different_fingerprint_from_hook() -> None:
         def __coco_memo_key__(self) -> object:
             return ("key", self.v)
 
-        def __coco_memo_state__(self, prev_state: object) -> object:
-            return prev_state
+        def __coco_memo_state__(self, prev_state: object) -> MemoStateOutcome:
+            return MemoStateOutcome(state=prev_state, memo_valid=True)
 
     fp_hook = fingerprint_call(_dummy_fn, (HookOnly(42),), {})
     fp_shook = fingerprint_call(_dummy_fn, (HookAndState(42),), {})
@@ -502,8 +503,8 @@ def test_shook_fingerprint_is_deterministic() -> None:
         def __coco_memo_key__(self) -> object:
             return self.v
 
-        def __coco_memo_state__(self, prev_state: object) -> object:
-            return prev_state
+        def __coco_memo_state__(self, prev_state: object) -> MemoStateOutcome:
+            return MemoStateOutcome(state=prev_state, memo_valid=True)
 
     fp1 = fingerprint_call(_dummy_fn, (Stateful(99),), {})
     fp2 = fingerprint_call(_dummy_fn, (Stateful(99),), {})
@@ -518,8 +519,8 @@ def test_state_methods_collected_from_hook() -> None:
         def __coco_memo_key__(self) -> object:
             return self.v
 
-        def __coco_memo_state__(self, prev_state: object) -> object:
-            return prev_state
+        def __coco_memo_state__(self, prev_state: object) -> MemoStateOutcome:
+            return MemoStateOutcome(state=prev_state, memo_valid=True)
 
     methods: list[Any] = []
     fingerprint_call(_dummy_fn, (WithState(1),), {}, state_methods=methods)
@@ -532,8 +533,8 @@ def test_state_methods_collected_from_registry() -> None:
         def __init__(self, v: object) -> None:
             self.v = v
 
-    def _state_fn(obj: Any, prev: Any) -> Any:
-        return prev
+    def _state_fn(obj: Any, prev: Any) -> MemoStateOutcome:
+        return MemoStateOutcome(state=prev, memo_valid=True)
 
     register_memo_key_function(Registered, lambda r: r.v, state_fn=_state_fn)
     try:
@@ -553,8 +554,8 @@ def test_state_methods_not_collected_when_list_is_none() -> None:
         def __coco_memo_key__(self) -> object:
             return self.v
 
-        def __coco_memo_state__(self, prev_state: object) -> object:
-            return prev_state
+        def __coco_memo_state__(self, prev_state: object) -> MemoStateOutcome:
+            return MemoStateOutcome(state=prev_state, memo_valid=True)
 
     # Should not raise — state_methods defaults to None
     fp = fingerprint_call(_dummy_fn, (WithState(1),), {})
@@ -566,22 +567,22 @@ def test_multiple_state_methods_collected_in_order() -> None:
         def __coco_memo_key__(self) -> object:
             return "s1"
 
-        def __coco_memo_state__(self, prev: object) -> object:
-            return "from_s1"
+        def __coco_memo_state__(self, prev: object) -> MemoStateOutcome:
+            return MemoStateOutcome(state="from_s1", memo_valid=True)
 
     class S2:
         def __coco_memo_key__(self) -> object:
             return "s2"
 
-        def __coco_memo_state__(self, prev: object) -> object:
-            return "from_s2"
+        def __coco_memo_state__(self, prev: object) -> MemoStateOutcome:
+            return MemoStateOutcome(state="from_s2", memo_valid=True)
 
     methods: list[Any] = []
     fingerprint_call(_dummy_fn, (S1(), S2()), {}, state_methods=methods)
     assert len(methods) == 2
     # Verify order: S1 first (first arg), S2 second
-    assert methods[0]("x") == "from_s1"
-    assert methods[1]("x") == "from_s2"
+    assert methods[0]("x").state == "from_s1"
+    assert methods[1]("x").state == "from_s2"
 
 
 def test_no_state_methods_for_hook_only_objects() -> None:

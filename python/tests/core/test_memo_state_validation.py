@@ -36,12 +36,12 @@ class Entry:
     def __coco_memo_key__(self) -> object:
         return (self.name, self.version)
 
-    def __coco_memo_state__(self, prev_state: Any) -> tuple[Any, bool]:
+    def __coco_memo_state__(self, prev_state: Any) -> coco.MemoStateOutcome:
         # State changed → not reusable (simple case matching prior behavior)
-        can_reuse = (
+        memo_valid = (
             not coco.is_non_existence(prev_state) and self.state_value == prev_state
         )
-        return (self.state_value, can_reuse)
+        return coco.MemoStateOutcome(state=self.state_value, memo_valid=memo_valid)
 
 
 # ============================================================================
@@ -265,11 +265,11 @@ class MultiEntry:
     def __coco_memo_key__(self) -> object:
         return (self.name, self.version)
 
-    def __coco_memo_state__(self, prev_state: Any) -> tuple[Any, bool]:
-        can_reuse = (
+    def __coco_memo_state__(self, prev_state: Any) -> coco.MemoStateOutcome:
+        memo_valid = (
             not coco.is_non_existence(prev_state) and self.state_value == prev_state
         )
-        return (self.state_value, can_reuse)
+        return coco.MemoStateOutcome(state=self.state_value, memo_valid=memo_valid)
 
 
 _multi_source_data: dict[str, MultiEntry] = {}
@@ -506,16 +506,18 @@ class TwoLevelEntry:
     def __coco_memo_key__(self) -> object:
         return self.name
 
-    def __coco_memo_state__(self, prev_state: Any) -> tuple[Any, bool]:
+    def __coco_memo_state__(self, prev_state: Any) -> coco.MemoStateOutcome:
         new_state = (self.mtime, self.fingerprint)
         if coco.is_non_existence(prev_state):
-            return (new_state, True)
+            return coco.MemoStateOutcome(state=new_state, memo_valid=True)
         prev_mtime, prev_fp = prev_state
         if self.mtime == prev_mtime:
             # mtime unchanged — definitely reusable
-            return (new_state, True)
+            return coco.MemoStateOutcome(state=new_state, memo_valid=True)
         # mtime changed — check content fingerprint
-        return (new_state, self.fingerprint == prev_fp)
+        return coco.MemoStateOutcome(
+            state=new_state, memo_valid=self.fingerprint == prev_fp
+        )
 
 
 _two_level_source: dict[str, TwoLevelEntry] = {}

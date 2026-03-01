@@ -152,10 +152,10 @@ def _call_state_methods_sync(
     """Call state methods synchronously and return a :class:`StateMethodsResult`.
 
     Each state method receives the previously stored state (or ``NON_EXISTENCE`` on first run)
-    and returns ``(new_state, can_reuse)``.
+    and returns a :class:`~cocoindex.MemoStateOutcome`.
 
-    *can_reuse* is the conjunction of all per-method ``can_reuse`` flags: if any method says
-    the memo is not reusable, the overall result is not reusable.
+    *can_reuse* is the conjunction of all per-method ``memo_valid`` flags: if any method says
+    the memo is not valid, the overall result is not reusable.
 
     *states_changed* indicates whether any ``new_state`` differs from its stored counterpart
     (``==`` check). This can be true even when ``can_reuse`` is true (e.g. mtime changed but
@@ -197,15 +197,15 @@ def _call_state_methods_sync(
         for idx, val in zip(awaitable_indices, resolved):
             raw_results[idx] = val
 
-    # Unpack (new_state, can_reuse) tuples
+    # Unpack MemoStateOutcome results
     new_states: list[Any] = []
     can_reuse = True
     states_changed = stored_states is None
-    for i, (new_state, reusable) in enumerate(raw_results):
-        new_states.append(new_state)
-        if not reusable:
+    for i, outcome in enumerate(raw_results):
+        new_states.append(outcome.state)
+        if not outcome.memo_valid:
             can_reuse = False
-        if stored_states is not None and new_state != stored_states[i]:
+        if stored_states is not None and outcome.state != stored_states[i]:
             states_changed = True
     return StateMethodsResult(new_states, can_reuse, states_changed)
 
@@ -237,15 +237,15 @@ async def _call_state_methods_async(
         for idx, val in zip(awaitable_indices, resolved):
             raw_results[idx] = val
 
-    # Unpack (new_state, can_reuse) tuples
+    # Unpack MemoStateOutcome results
     new_states: list[Any] = []
     can_reuse = True
     states_changed = stored_states is None
-    for i, (new_state, reusable) in enumerate(raw_results):
-        new_states.append(new_state)
-        if not reusable:
+    for i, outcome in enumerate(raw_results):
+        new_states.append(outcome.state)
+        if not outcome.memo_valid:
             can_reuse = False
-        if stored_states is not None and new_state != stored_states[i]:
+        if stored_states is not None and outcome.state != stored_states[i]:
             states_changed = True
     return StateMethodsResult(new_states, can_reuse, states_changed)
 
