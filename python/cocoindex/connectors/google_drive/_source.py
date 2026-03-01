@@ -91,35 +91,50 @@ class DriveFile(file.FileLike[str]):
     """Represents a file entry from Google Drive."""
 
     _service: Any
-    _info: DriveFileInfo
-    _file_path: DriveFilePath
+    _mime_type: str
+    _file_id: str
 
     def __init__(self, service: Any, info: DriveFileInfo) -> None:
+        file_path = DriveFilePath(info.name, file_id=info.file_id)
+        metadata = file.FileMetadata(size=info.size, modified_time=info.modified_time)
+        super().__init__(file_path, _metadata=metadata)
         self._service = service
-        self._info = info
-        # Create a DriveFilePath with the file name as the path and file_id as resolution
-        self._file_path = DriveFilePath(
-            info.name,
-            file_id=info.file_id,
-        )
+        self._mime_type = info.mime_type
+        self._file_id = info.file_id
 
-    @property
-    def file_path(self) -> DriveFilePath:
-        """Return the DriveFilePath of this file."""
-        return self._file_path
+    async def _fetch_metadata(self) -> file.FileMetadata:
+        """Fetch metadata from the Google Drive API."""
+
+        def _fetch() -> file.FileMetadata:
+            response = (
+                self._service.files()
+                .get(
+                    fileId=self._file_id,
+                    fields="size, modifiedTime",
+                )
+                .execute()
+            )
+            size_raw = response.get("size")
+            size = int(size_raw) if size_raw is not None else 0
+            return file.FileMetadata(
+                size=size,
+                modified_time=_parse_modified_time(response.get("modifiedTime")),
+            )
+
+        return await asyncio.to_thread(_fetch)
 
     def _read_sync(self, size: int = -1) -> bytes:
         """Synchronously read file content (internal helper)."""
         if size != -1:
             raise ValueError("Partial reads are not supported for Google Drive files.")
 
-        if self._info.mime_type in _EXPORT_MIME_BY_TYPE:
-            export_mime = _EXPORT_MIME_BY_TYPE[self._info.mime_type]
+        if self._mime_type in _EXPORT_MIME_BY_TYPE:
+            export_mime = _EXPORT_MIME_BY_TYPE[self._mime_type]
             request = self._service.files().export_media(
-                fileId=self._info.file_id, mimeType=export_mime
+                fileId=self._file_id, mimeType=export_mime
             )
         else:
-            request = self._service.files().get_media(fileId=self._info.file_id)
+            request = self._service.files().get_media(fileId=self._file_id)
 
         fh = io.BytesIO()
         downloader = MediaIoBaseDownload(fh, request)
@@ -128,19 +143,9 @@ class DriveFile(file.FileLike[str]):
             _, done = downloader.next_chunk()
         return fh.getvalue()
 
-    async def read(self, size: int = -1) -> bytes:
-        """Read and return file content as bytes."""
+    async def _read_impl(self, size: int = -1) -> bytes:
+        """Read file content via Google Drive API in a thread pool."""
         return await asyncio.to_thread(self._read_sync, size)
-
-    @property
-    def size(self) -> int:
-        """Return the file size in bytes (0 for Google Docs exports)."""
-        return self._info.size
-
-    @property
-    def modified_time(self) -> datetime:
-        """Return the last modified time."""
-        return self._info.modified_time
 
 
 @dataclass

@@ -91,7 +91,7 @@ def walk_dir(
 
 ### Iterating files
 
-`walk_dir()` returns a `DirWalker` that supports async iteration, yielding `File` objects (implementing the [`FileLike`](../resource_types.md#filelike) protocol):
+`walk_dir()` returns a `DirWalker` that supports async iteration, yielding `File` objects (implementing the [`FileLike`](../resource_types.md#filelike) base class):
 
 ```python
 async for file in localfs.walk_dir("/path/to/documents", recursive=True):

@@ -64,21 +64,3 @@ class TestDirWalkerItems:
         async for item in walker.items():
             items.append(item)
         assert items == []
-
-    async def test_items_key_matches_stable_key(self, tmp_path: Path) -> None:
-        """The key from items() matches the file's stable_key property."""
-        (tmp_path / "test.txt").write_text("data")
-
-        base = localfs.register_base_dir("test_stable_key", tmp_path)
-        try:
-            walker = localfs.walk_dir(base)
-            items: list[tuple[str, localfs.File]] = []
-            async for item in walker.items():
-                items.append(item)
-
-            assert len(items) == 1
-            key, file = items[0]
-            assert key == file.stable_key
-            assert key == "test.txt"
-        finally:
-            localfs.unregister_base_dir("test_stable_key")

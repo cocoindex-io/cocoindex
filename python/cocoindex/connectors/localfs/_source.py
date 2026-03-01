@@ -12,6 +12,7 @@ import pathlib
 
 from cocoindex.resources import file as _file
 from cocoindex.resources.file import (
+    FileMetadata,
     FilePathMatcher,
     MatchAllFilePathMatcher,
 )
@@ -19,39 +20,33 @@ from cocoindex.resources.file import (
 from ._common import FilePath, to_file_path
 
 
+def _stat_to_metadata(stat: os.stat_result) -> FileMetadata:
+    """Convert an os.stat_result to FileMetadata."""
+    seconds, us = divmod(stat.st_mtime_ns // 1_000, 1_000_000)
+    mtime = datetime.fromtimestamp(seconds).replace(microsecond=us)
+    return FileMetadata(size=stat.st_size, modified_time=mtime)
+
+
 class File(_file.FileLike[pathlib.Path]):
     """Represents a file entry from the directory walk.
 
-    Implements the ``FileLike`` protocol with async read methods.
+    Implements ``FileLike`` with async read methods.
     File I/O is performed in a thread pool to avoid blocking the event loop.
     """
-
-    _file_path: FilePath
-    _stat: os.stat_result
 
     def __init__(
         self,
         file_path: FilePath,
-        stat: os.stat_result,
+        *,
+        _stat: os.stat_result | None = None,
     ) -> None:
-        self._file_path = file_path
-        self._stat = stat
+        metadata = _stat_to_metadata(_stat) if _stat is not None else None
+        super().__init__(file_path, _metadata=metadata)
 
-    @property
-    def file_path(self) -> FilePath:
-        """Return the FilePath of this file."""
-        return self._file_path
-
-    @property
-    def size(self) -> int:
-        """Return the file size in bytes."""
-        return self._stat.st_size
-
-    @property
-    def modified_time(self) -> datetime:
-        """Return the file modification time as a datetime."""
-        seconds, us = divmod(self._stat.st_mtime_ns // 1_000, 1_000_000)
-        return datetime.fromtimestamp(seconds).replace(microsecond=us)
+    async def _fetch_metadata(self) -> FileMetadata:
+        """Fetch metadata via os.stat() in a thread pool."""
+        stat = await asyncio.to_thread(os.stat, self._file_path.resolve())
+        return _stat_to_metadata(stat)
 
     def _read_sync(self, size: int = -1) -> bytes:
         """Synchronously read file content (internal helper)."""
@@ -61,15 +56,8 @@ class File(_file.FileLike[pathlib.Path]):
         with path.open("rb") as f:
             return f.read(size)
 
-    async def read(self, size: int = -1) -> bytes:
-        """Read and return the file content as bytes.
-
-        Args:
-            size: Number of bytes to read. If -1 (default), read the entire file.
-
-        Returns:
-            The file content as bytes.
-        """
+    async def _read_impl(self, size: int = -1) -> bytes:
+        """Read file content in a thread pool."""
         return await asyncio.to_thread(self._read_sync, size)
 
 
@@ -141,10 +129,7 @@ class DirWalker:
                     # Create FilePath for this file by joining root with relative path
                     file_path = self._root_path / relative_path
 
-                    yield File(
-                        file_path=file_path,
-                        stat=stat,
-                    )
+                    yield File(file_path, _stat=stat)
 
             # Add subdirectories in reverse order to maintain consistent traversal
             dirs_to_process.extend(reversed(subdirs))

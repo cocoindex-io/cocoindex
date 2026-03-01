@@ -70,7 +70,7 @@ def list_objects(
 
 ### Iterating files
 
-`list_objects()` returns an `S3Walker` that yields `S3File` objects (implementing the `FileLike` protocol):
+`list_objects()` returns an `S3Walker` that yields `S3File` objects (implementing the [`FileLike`](../resource_types.md#filelike) base class):
 
 ```python
 import aiobotocore.session
