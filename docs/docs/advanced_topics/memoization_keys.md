@@ -18,6 +18,15 @@ For each argument value, CocoIndex derives a "key fragment" with this precedence
 2. Otherwise, if you registered a **memo key function** for the object's type, CocoIndex uses that.
 3. Otherwise, CocoIndex falls back to structural canonicalization for a limited set of primitives/containers.
 
+The following types are handled automatically (no custom key needed):
+
+- **Primitives**: `None`, `bool`, `int`, `float`, `str`, `bytes`, `bytearray`, `memoryview`
+- **Containers**: `list`, `tuple`, `dict`, `set`, `frozenset` (recursively canonicalized)
+- **Dataclass instances**: all fields included in definition order
+- **Pydantic v2 models**: all fields included
+- **Class objects** (`type`): identified by module and qualified name
+- **Other picklable objects**: used as a fallback via `pickle`
+
 The key fragments are combined into a deterministic fingerprint. If the fingerprint matches a cached entry, the cached result is reused — unless **memo states** indicate it's stale (see [Memo state validation](#memo-state-validation) below).
 
 ## Customizing the memoization key
