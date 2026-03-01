@@ -102,16 +102,16 @@ When CocoIndex finds a fingerprint match, it calls each state function with the 
 1. **First run** (no previous state): `prev_state` is `coco.NON_EXISTENCE`. Use `coco.is_non_existence(prev_state)` to detect this.
 2. **Subsequent runs**: `prev_state` is whatever you returned last time.
 
-Your state function returns a **tuple** `(new_state, can_reuse)`:
+Your state function returns a `coco.MemoStateOutcome(state=..., memo_valid=...)`:
 
-- **`new_state`** — the current state value. CocoIndex stores it for the next run.
-- **`can_reuse`** (`bool`) — whether the cached result is still valid.
+- **`state`** — the current state value. CocoIndex stores it for the next run.
+- **`memo_valid`** (`bool`) — whether the cached result is still valid.
 
 This decouples "has the state changed?" from "can we reuse the memo?":
 
-- `(same_state, True)` → nothing changed, cached result reused, no state update needed.
-- `(new_state, True)` → state changed but cached result is still valid (e.g. mtime changed but content hash unchanged). The new state is persisted so the next run uses the updated state.
-- `(new_state, False)` → something changed that invalidates the cache. Function re-executes, new state is stored.
+- `MemoStateOutcome(state=same_state, memo_valid=True)` → nothing changed, cached result reused, no state update needed.
+- `MemoStateOutcome(state=new_state, memo_valid=True)` → state changed but cached result is still valid (e.g. mtime changed but content hash unchanged). The new state is persisted so the next run uses the updated state.
+- `MemoStateOutcome(state=new_state, memo_valid=False)` → something changed that invalidates the cache. Function re-executes, new state is stored.
 
 ### Define `__coco_memo_state__` (when you control the type)
 
@@ -131,21 +131,21 @@ class LocalFile:
         # Identity only — which file is it?
         return str(self.path.resolve())
 
-    def __coco_memo_state__(self, prev_state: object) -> tuple[object, bool]:
+    def __coco_memo_state__(self, prev_state: object) -> coco.MemoStateOutcome:
         st = os.stat(self.path)
         new_mtime = st.st_mtime_ns
         if coco.is_non_existence(prev_state):
             # First run — compute initial state
             content_hash = hashlib.sha256(self.path.read_bytes()).hexdigest()
-            return ((new_mtime, content_hash), True)
+            return coco.MemoStateOutcome(state=(new_mtime, content_hash), memo_valid=True)
 
         prev_mtime, prev_hash = prev_state
         if new_mtime == prev_mtime:
             # mtime unchanged — definitely reusable, no content read needed
-            return (prev_state, True)
+            return coco.MemoStateOutcome(state=prev_state, memo_valid=True)
         # mtime changed — read content and check hash
-        content_hash = hashlib.sha256(self.path.read_bytes()).hexdigest()
-        return ((new_mtime, content_hash), content_hash == prev_hash)
+        content_hash = coco.connectorkits.fingerprint_bytes(self.path.read_bytes())
+        return coco.MemoStateOutcome(state=(new_mtime, content_hash), memo_valid=content_hash == prev_hash)
 ```
 
 :::tip Keys vs states for files
@@ -155,7 +155,7 @@ def __coco_memo_key__(self):
     st = os.stat(self.path)
     return (str(self.path.resolve()), st.st_mtime_ns, st.st_size)
 ```
-This works for simple cases. State validation becomes useful when you need multi-level checks (e.g. check mtime first, then content hash only if it differs), async operations, or stored metadata like ETags. With the `(new_state, can_reuse)` return, you can update the state (e.g. new mtime) without invalidating the cache when the content hasn't actually changed.
+This works for simple cases. State validation becomes useful when you need multi-level checks (e.g. check mtime first, then content hash only if it differs), async operations, or stored metadata like ETags. With the `MemoStateOutcome` return, you can update the state (e.g. new mtime) without invalidating the cache when the content hasn't actually changed.
 :::
 
 ### Register a state function (when you don't control the type)
@@ -169,11 +169,11 @@ from cocoindex import register_memo_key_function
 def path_key(p: Path) -> object:
     return str(p.resolve())
 
-def path_state(p: Path, prev_state: object) -> tuple[object, bool]:
+def path_state(p: Path, prev_state: object) -> coco.MemoStateOutcome:
     st = p.stat()
     new_state = (st.st_mtime_ns, st.st_size)
-    can_reuse = not coco.is_non_existence(prev_state) and new_state == prev_state
-    return (new_state, can_reuse)
+    memo_valid = not coco.is_non_existence(prev_state) and new_state == prev_state
+    return coco.MemoStateOutcome(state=new_state, memo_valid=memo_valid)
 
 register_memo_key_function(Path, path_key, state_fn=path_state)
 ```
@@ -196,10 +196,10 @@ class S3Object:
     def __coco_memo_key__(self) -> object:
         return (self.bucket, self.key)
 
-    async def __coco_memo_state__(self, prev_state: object) -> tuple[object, bool]:
+    async def __coco_memo_state__(self, prev_state: object) -> coco.MemoStateOutcome:
         etag = await self._head_object()
-        can_reuse = not coco.is_non_existence(prev_state) and etag == prev_state
-        return (etag, can_reuse)
+        memo_valid = not coco.is_non_existence(prev_state) and etag == prev_state
+        return coco.MemoStateOutcome(state=etag, memo_valid=memo_valid)
 
     async def _head_object(self) -> str:
         ...  # boto3 / aioboto3 HEAD call
@@ -239,5 +239,5 @@ In either case, attempting to use the type as a memo key raises a clear error.
 - **Keep keys small and deterministic**: use identifiers and versions, not full payloads. No `id(obj)`, pointer addresses, or random values.
 - **Separate identity from freshness**: put stable identifiers (file path, URL, primary key) in the key. Put freshness checks (mtime, ETag, version) in the state.
 - **Use state validation for expensive checks**: if freshness validation is costly (content hashing, network calls), a state function lets you do it only when the fingerprint matches, and only when a cheap pre-check (mtime) fails.
-- **Use `(new_state, True)` for cheap state updates**: when a cheap property changes (mtime) but the expensive check (content hash) confirms nothing meaningful changed, return `True` for `can_reuse` while updating the state. This avoids re-executing the function and avoids re-checking the expensive property next time.
+- **Use `MemoStateOutcome(state=new_state, memo_valid=True)` for cheap state updates**: when a cheap property changes (mtime) but the expensive check (content hash) confirms nothing meaningful changed, return `memo_valid=True` while updating the state. This avoids re-executing the function and avoids re-checking the expensive property next time.
 - **Mark stateful types as `NotMemoizable`**: prevent subtle bugs from incorrect memoization of types with side effects.

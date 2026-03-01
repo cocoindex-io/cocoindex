@@ -71,7 +71,7 @@ from .setting import Settings
 
 from .stable_path import ROOT_PATH, StablePath
 
-from .typing import NonExistenceType, NON_EXISTENCE, is_non_existence
+from .typing import NonExistenceType, NON_EXISTENCE, is_non_existence, MemoStateOutcome
 
 
 # ============================================================================
@@ -464,6 +464,7 @@ __all__ = [
     "NON_EXISTENCE",
     "NonExistenceType",
     "is_non_existence",
+    "MemoStateOutcome",
     # Mount APIs
     "ComponentMountHandle",
     "mount",

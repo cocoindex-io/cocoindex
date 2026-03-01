@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from typing import Any, Mapping, Sequence, TYPE_CHECKING, Union
+from typing import Any, Mapping, NamedTuple, Sequence, TYPE_CHECKING, Union
 from typing_extensions import TypeIs
 
 if TYPE_CHECKING:
@@ -62,3 +62,13 @@ NON_EXISTENCE = NonExistenceType()
 
 def is_non_existence(obj: Any) -> TypeIs[NonExistenceType]:
     return obj is NON_EXISTENCE
+
+
+class MemoStateOutcome(NamedTuple):
+    """Return type for memo state functions (``__coco_memo_state__`` / registered ``state_fn``)."""
+
+    state: Any
+    """The current state value. CocoIndex stores it for the next run."""
+
+    memo_valid: bool
+    """Whether the cached result is still valid."""
