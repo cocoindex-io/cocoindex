@@ -9,23 +9,14 @@ The `cocoindex.resources` package provides common data models and abstractions s
 
 The file module (`cocoindex.resources.file`) defines protocols and utilities for working with file-like objects.
 
-### FileLike / AsyncFileLike
+### FileLike
 
-`FileLike` is a protocol for file objects with synchronous read access. `AsyncFileLike` is its async counterpart with the same properties but async read methods.
+`FileLike` is a protocol for file objects with async read methods.
 
 ```python
 from cocoindex.resources.file import FileLike
 
-def process_file(file: FileLike) -> str:
-    text = file.read_text()
-    ...
-    return text
-```
-
-```python
-from cocoindex.resources.file import AsyncFileLike
-
-async def process_file_async(file: AsyncFileLike) -> str:
+async def process_file(file: FileLike) -> str:
     text = await file.read_text()
     ...
     return text
@@ -39,8 +30,8 @@ async def process_file_async(file: AsyncFileLike) -> str:
 
 **Methods:**
 
-- `read(size=-1)` — Read file content as bytes. Pass `size` to limit bytes read.
-- `read_text(encoding=None, errors="replace")` — Read as text. Auto-detects encoding via BOM if not specified.
+- `async read(size=-1)` — Read file content as bytes. Pass `size` to limit bytes read.
+- `async read_text(encoding=None, errors="replace")` — Read as text. Auto-detects encoding via BOM if not specified.
 
 **Memoization:**
 

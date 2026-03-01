@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 __all__ = [
-    "AsyncFileLike",
     "BaseDir",
     "FileLike",
     "FilePath",
@@ -35,7 +34,7 @@ BaseDir = _connection.KeyedConnection[ResolvedPathT]
 
 
 class FileLike(_Protocol[ResolvedPathT]):
-    """Protocol for file-like objects with path, size, modified time, and read capability.
+    """Protocol for file-like objects with path, size, modified time, and async read capability.
 
     Type Parameters:
         ResolvedPathT: The type of the resolved path (e.g., `pathlib.Path` for local filesystem).
@@ -61,58 +60,8 @@ class FileLike(_Protocol[ResolvedPathT]):
         """Return the file modification time."""
         ...
 
-    def read(self, size: int = -1) -> bytes:
-        """Read and return the file content as bytes.
-
-        Args:
-            size: Number of bytes to read. If -1 (default), read the entire file.
-
-        Returns:
-            The file content as bytes.
-        """
-        ...
-
-    def read_text(self, encoding: str | None = None, errors: str = "replace") -> str:
-        """Read and return the file content as text.
-
-        Args:
-            encoding: The encoding to use. If None, the encoding is detected automatically
-                using BOM detection, falling back to UTF-8.
-            errors: The error handling scheme. Common values: 'strict', 'ignore', 'replace'.
-
-        Returns:
-            The file content as text.
-        """
-        return _decode_bytes(self.read(), encoding, errors)
-
-    def __coco_memo_key__(self) -> object:
-        return (self.file_path.__coco_memo_key__(), self.modified_time)
-
-
-class AsyncFileLike(_Protocol[ResolvedPathT]):
-    """Protocol for async file-like objects with path, size, modified time, and async read.
-
-    Type Parameters:
-        ResolvedPathT: The type of the resolved path (e.g., `pathlib.Path` for local filesystem).
-    """
-
-    @property
-    def file_path(self) -> "FilePath[ResolvedPathT]":
-        """Return the FilePath of this file."""
-        ...
-
-    @property
-    def size(self) -> int:
-        """Return the file size in bytes."""
-        ...
-
-    @property
-    def modified_time(self) -> _datetime:
-        """Return the file modification time."""
-        ...
-
     async def read(self, size: int = -1) -> bytes:
-        """Asynchronously read and return the file content as bytes.
+        """Read and return the file content as bytes.
 
         Args:
             size: Number of bytes to read. If -1 (default), read the entire file.
@@ -125,7 +74,7 @@ class AsyncFileLike(_Protocol[ResolvedPathT]):
     async def read_text(
         self, encoding: str | None = None, errors: str = "replace"
     ) -> str:
-        """Asynchronously read and return the file content as text.
+        """Read and return the file content as text.
 
         Args:
             encoding: The encoding to use. If None, the encoding is detected automatically

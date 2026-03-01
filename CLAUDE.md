@@ -148,8 +148,8 @@ Changes are applied atomically per component. If a source item is deleted (path 
 ```python
 @coco.function(memo=True)
 async def process_file(file: FileLike, target: localfs.DirTarget) -> None:
-    html = _markdown_it.render(file.read_text())
-    outname = "__".join(file.relative_path.parts) + ".html"
+    html = _markdown_it.render(await file.read_text())
+    outname = "__".join(file.file_path.path.parts) + ".html"
     target.declare_file(filename=outname, content=html)
 
 @coco.function
@@ -161,9 +161,7 @@ async def app_main(sourcedir: pathlib.Path, outdir: pathlib.Path) -> None:
     files = localfs.walk_dir(
         sourcedir, path_matcher=PatternFilePathMatcher(included_patterns=["**/*.md"])
     )
-    with coco.component_subpath("process"):
-        for f in files:
-            await coco.mount(coco.component_subpath(str(f.relative_path)), process_file, f, target)
+    await coco.mount_each(process_file, files.items(), target)
 
 
 app = coco.App(

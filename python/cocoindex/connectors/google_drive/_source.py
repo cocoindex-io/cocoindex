@@ -6,11 +6,12 @@ Change notifications will be added later.
 
 from __future__ import annotations
 
+import asyncio
 import io
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import PurePath
-from typing import Any, Iterable, Iterator, Sequence, Self
+from typing import Any, AsyncIterator, Iterator, Sequence, Self
 
 try:
     from google.oauth2.service_account import Credentials  # type: ignore
@@ -107,8 +108,8 @@ class DriveFile(file.FileLike[str]):
         """Return the DriveFilePath of this file."""
         return self._file_path
 
-    def read(self, size: int = -1) -> bytes:
-        """Read and return file content as bytes."""
+    def _read_sync(self, size: int = -1) -> bytes:
+        """Synchronously read file content (internal helper)."""
         if size != -1:
             raise ValueError("Partial reads are not supported for Google Drive files.")
 
@@ -126,6 +127,10 @@ class DriveFile(file.FileLike[str]):
         while not done:
             _, done = downloader.next_chunk()
         return fh.getvalue()
+
+    async def read(self, size: int = -1) -> bytes:
+        """Read and return file content as bytes."""
+        return await asyncio.to_thread(self._read_sync, size)
 
     @property
     def size(self) -> int:
@@ -225,16 +230,20 @@ class GoogleDriveSource:
             mime_types=mime_types,
         )
 
-    def files(self) -> Iterable[DriveFile]:
-        return list_files(self._spec)
+    async def files(self) -> AsyncIterator[DriveFile]:
+        """Async iterate over Google Drive files."""
+        from cocoindex.connectorkits.async_adapters import sync_to_async_iter
 
-    def items(self) -> Iterator[tuple[str, DriveFile]]:
-        """Iterate as (key, file) pairs for use with mount_each().
+        async for f in sync_to_async_iter(lambda: list_files(self._spec)):
+            yield f
+
+    async def items(self) -> AsyncIterator[tuple[str, DriveFile]]:
+        """Async iterate as (key, file) pairs for use with mount_each().
 
         The key is the file's name path.
         """
-        for file in self.files():
-            yield (file.file_path.path.as_posix(), file)
+        async for f in self.files():
+            yield (f.file_path.path.as_posix(), f)
 
 
 __all__ = [

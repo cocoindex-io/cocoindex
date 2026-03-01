@@ -7,19 +7,11 @@ It's common to factor work into helper functions (for parsing, chunking, embeddi
 
 ```python
 @coco.fn
-def process_file(file: FileLike) -> str:
-    return file.read_text()
+async def process_file(file: FileLike) -> str:
+    return await file.read_text()
 
 # Can be called like any normal function
-result = process_file(file)
-```
-
-The function can be sync or async:
-
-```python
-@coco.fn
-async def process_file_async(file: FileLike) -> str:
-    return await file.read_text_async()
+result = await process_file(file)
 ```
 
 `@coco.fn` preserves the sync/async nature of the underlying function. Decorating a sync function yields a sync function; decorating an async function yields an async function.

@@ -57,9 +57,9 @@ def extract_patient(pdf_content: bytes) -> Patient:
 
 
 @coco.fn(memo=True)
-def process_patient_form(file: FileLike, outdir: pathlib.Path) -> None:
+async def process_patient_form(file: FileLike, outdir: pathlib.Path) -> None:
     """Process a patient intake form PDF and extract structured information."""
-    content = file.read()
+    content = await file.read()
     patient_info = extract_patient(content)
     patient_json = patient_info.model_dump_json(indent=2)
     output_filename = file.file_path.path.stem + ".json"

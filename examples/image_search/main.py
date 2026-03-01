@@ -75,11 +75,11 @@ async def coco_lifespan(
 
 
 @coco.fn(memo=True)
-def process_file(
+async def process_file(
     file: FileLike,
     target: qdrant.CollectionTarget,
 ) -> None:
-    content = file.read()
+    content = await file.read()
     embedding = embed_image_bytes(content)
     row_id = _image_id(file.file_path.path)
     point = qdrant.PointStruct(

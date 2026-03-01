@@ -3,7 +3,7 @@
 This module provides a read-only API for listing and reading objects from
 Amazon S3 buckets (and S3-compatible services like MinIO).
 
-The API is async-only: ``S3File`` implements ``AsyncFileLike`` and is the
+The API is async-only: ``S3File`` implements ``FileLike`` and is the
 primary file type.
 """
 
@@ -80,10 +80,10 @@ class S3FilePath(file.FilePath[str]):
         return type(self)(self._base_dir, path, object_key=self._object_key)
 
 
-class S3File(file.AsyncFileLike[str]):
+class S3File(file.FileLike[str]):
     """Represents a file entry from an S3 bucket (async).
 
-    Implements the ``AsyncFileLike`` protocol using native aiobotocore async I/O.
+    Implements the ``FileLike`` protocol using native aiobotocore async I/O.
     """
 
     _client: AioBaseClient
@@ -108,11 +108,6 @@ class S3File(file.AsyncFileLike[str]):
     def file_path(self) -> S3FilePath:
         """Return the S3FilePath of this file."""
         return self._file_path
-
-    @property
-    def stable_key(self) -> str:
-        """Return the stable key for this file."""
-        return self.file_path.path.as_posix()
 
     @property
     def size(self) -> int:

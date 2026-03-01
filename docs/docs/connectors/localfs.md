@@ -87,38 +87,27 @@ def walk_dir(
 - `recursive` — If `True`, recursively walk subdirectories.
 - `path_matcher` — Optional filter for files and directories. See [PatternFilePathMatcher](../resource_types.md#patternfilepathmatcher).
 
-**Returns:** A `DirWalker` that can be used with both `for` and `async for` loops.
+**Returns:** A `DirWalker` that supports async iteration via `async for`.
 
 ### Iterating files
 
-`walk_dir()` returns a `DirWalker` that supports both sync and async iteration:
+`walk_dir()` returns a `DirWalker` that supports async iteration, yielding `File` objects (implementing the [`FileLike`](../resource_types.md#filelike) protocol):
 
 ```python
-# Synchronous iteration - yields File objects (FileLike protocol)
-for file in localfs.walk_dir("/path/to/documents", recursive=True):
-    text = file.read_text()
-    ...
-
-# Asynchronous iteration - yields AsyncFile objects (AsyncFileLike protocol)
 async for file in localfs.walk_dir("/path/to/documents", recursive=True):
     text = await file.read_text()
     ...
 ```
 
-The async variant runs file I/O in a thread pool, keeping the event loop responsive. See [`FileLike` / `AsyncFileLike`](../resource_types.md#filelike--asyncfilelike) for details on the file objects.
+File I/O runs in a thread pool, keeping the event loop responsive.
 
 ### Keyed iteration with `items()`
 
-`DirWalker.items()` returns keyed `(str, file)` pairs, useful for associating each file with a stable string key (its relative path):
+`DirWalker.items()` yields keyed `(str, File)` pairs, useful for associating each file with a stable string key (its relative path):
 
 ```python
-# Asynchronous - yields (str, AsyncFile) pairs
 async for key, file in localfs.walk_dir("/path/to/dir", recursive=True).items():
     content = await file.read()
-
-# Synchronous - yields (str, File) pairs
-for key, file in localfs.walk_dir("/path/to/dir", recursive=True).items():
-    content = file.read()
 ```
 
 ### Filtering files
@@ -135,8 +124,8 @@ matcher = PatternFilePathMatcher(
     excluded_patterns=["**/.*", "**/test_*", "**/__pycache__"],
 )
 
-for file in localfs.walk_dir("/path/to/project", recursive=True, path_matcher=matcher):
-    process(file)
+async for file in localfs.walk_dir("/path/to/project", recursive=True, path_matcher=matcher):
+    await process(file)
 ```
 
 ### Example
@@ -148,21 +137,21 @@ from cocoindex.connectors import localfs
 from cocoindex.resources.file import FileLike, PatternFilePathMatcher
 
 @coco.fn
-def app_main(sourcedir: pathlib.Path) -> None:
+async def app_main(sourcedir: pathlib.Path) -> None:
     # Register base directory for stable memoization
     source = localfs.register_base_dir("source", sourcedir)
     matcher = PatternFilePathMatcher(included_patterns=["**/*.md"])
 
-    for file in localfs.walk_dir(source, recursive=True, path_matcher=matcher):
-        coco.mount(
+    async for file in localfs.walk_dir(source, recursive=True, path_matcher=matcher):
+        await coco.mount(
             coco.component_subpath("file", str(file.file_path.path)),
             process_file,
             file,
         )
 
 @coco.fn(memo=True)
-def process_file(file: FileLike) -> None:
-    text = file.read_text()
+async def process_file(file: FileLike) -> None:
+    text = await file.read_text()
     # ... process the file content ...
 ```
 
@@ -284,18 +273,12 @@ async def app_main(sourcedir: pathlib.Path, outdir: pathlib.Path) -> None:
     target = await localfs.mount_dir_target(output)
 
     # Process files and write outputs
-    for file in localfs.walk_dir(source, recursive=True):
-        await coco.mount(
-            coco.component_subpath("file", str(file.file_path.path)),
-            process_file,
-            file,
-            target,
-        )
+    await coco.mount_each(process_file, localfs.walk_dir(source, recursive=True).items(), target)
 
 @coco.fn(memo=True)
-def process_file(file: FileLike, target: localfs.DirTarget) -> None:
+async def process_file(file: FileLike, target: localfs.DirTarget) -> None:
     # Transform the file
-    content = file.read_text().upper()
+    content = (await file.read_text()).upper()
 
     # Write to output with same relative path
     target.declare_file(

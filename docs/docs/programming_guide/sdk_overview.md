@@ -95,9 +95,8 @@ from cocoindex.connectors import localfs
 from cocoindex.resources.file import FileLike
 
 @coco.fn(memo=True)
-def process_file(file: FileLike, target: localfs.DirTarget) -> None:
-    # Sync leaf function — does the actual work
-    html = render(file.read_text())
+async def process_file(file: FileLike, target: localfs.DirTarget) -> None:
+    html = render(await file.read_text())
     target.declare_file(filename="out.html", content=html)
 
 @coco.fn
@@ -119,10 +118,9 @@ When the main function is itself a leaf — no child components, no async calls 
 
 ```python
 @coco.fn
-def app_main(sourcedir: pathlib.Path, outdir: pathlib.Path) -> None:
-    # Sync — does all the work directly
-    for f in localfs.walk_dir(sourcedir):
-        html = render(f.read_text())
+async def app_main(sourcedir: pathlib.Path, outdir: pathlib.Path) -> None:
+    async for f in localfs.walk_dir(sourcedir):
+        html = render(await f.read_text())
         localfs.declare_file(outdir / f"{f.stem}.html", html)
 
 app = coco.App("SimpleApp", app_main,

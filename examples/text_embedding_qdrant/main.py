@@ -24,7 +24,7 @@ from cocoindex.connectors import localfs, qdrant
 from cocoindex.ops.text import RecursiveSplitter
 from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
 from cocoindex.resources.chunk import Chunk
-from cocoindex.resources.file import AsyncFileLike, PatternFilePathMatcher
+from cocoindex.resources.file import FileLike, PatternFilePathMatcher
 
 
 QDRANT_URL = "http://localhost:6334"
@@ -72,7 +72,7 @@ async def process_chunk(
 
 @coco.fn(memo=True)
 async def process_file(
-    file: AsyncFileLike,
+    file: FileLike,
     target: qdrant.CollectionTarget,
 ) -> None:
     text = await file.read_text()

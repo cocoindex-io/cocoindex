@@ -69,7 +69,7 @@ async def process_file(
     file: google_drive.DriveFile,
     table: postgres.TableTarget[DocEmbedding],
 ) -> None:
-    text = file.read_text()
+    text = await file.read_text()
     chunks = _splitter.split(
         text, chunk_size=2000, chunk_overlap=500, language="markdown"
     )
