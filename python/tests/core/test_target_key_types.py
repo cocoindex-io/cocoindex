@@ -131,7 +131,7 @@ def test_valid_stable_keys() -> None:
         coco.AppConfig(name="test_valid_stable_keys_run", environment=coco_env),
         declare_keys,
     )
-    app.update()
+    app.update_blocking()
 
     stored_data = AnyKeyTarget.store.data
 
@@ -150,7 +150,7 @@ def test_valid_stable_keys() -> None:
     app = coco.App(
         coco.AppConfig(name="test_none_key", environment=coco_env), declare_none_key
     )
-    app.update()
+    app.update_blocking()
     assert AnyKeyTarget.store.data[None].data == "none_val"
 
 
@@ -169,7 +169,7 @@ def test_invalid_keys() -> None:
         declare_invalid_key,
     )
     with pytest.raises(TypeError, match="Unsupported StableKey Python type"):
-        app.update()
+        app.update_blocking()
 
 
 def test_nested_container_keys() -> None:
@@ -184,7 +184,7 @@ def test_nested_container_keys() -> None:
     app = coco.App(
         coco.AppConfig(name="test_nested_keys", environment=coco_env), declare_list_key
     )
-    app.update()
+    app.update_blocking()
 
     assert key_expected in AnyKeyTarget.store.data
     assert AnyKeyTarget.store.data[key_expected].data == "val"

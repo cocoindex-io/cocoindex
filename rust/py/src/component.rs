@@ -40,35 +40,40 @@ pub struct PyComponentProcessor {
     processor_fn: PyCallback,
     memo_key_fingerprint: Option<utils::fingerprint::Fingerprint>,
     processor_info: Arc<ComponentProcessorInfo>,
+    state_handler: Option<PyCallback>,
 }
 
 #[pymethods]
 impl PyComponentProcessor {
     #[staticmethod]
-    #[pyo3(signature = (processor_fn, processor_info, memo_key_fingerprint=None))]
+    #[pyo3(signature = (processor_fn, processor_info, memo_key_fingerprint=None, state_handler=None))]
     pub fn new_sync(
         processor_fn: Py<PyAny>,
         processor_info: PyComponentProcessorInfo,
         memo_key_fingerprint: Option<PyFingerprint>,
+        state_handler: Option<Py<PyAny>>,
     ) -> Self {
         Self {
             processor_fn: PyCallback::Sync(Arc::new(processor_fn)),
             memo_key_fingerprint: memo_key_fingerprint.map(|f| f.0),
             processor_info: processor_info.0,
+            state_handler: state_handler.map(|h| PyCallback::Async(Arc::new(h))),
         }
     }
 
     #[staticmethod]
-    #[pyo3(signature = (processor_fn, processor_info, memo_key_fingerprint=None))]
+    #[pyo3(signature = (processor_fn, processor_info, memo_key_fingerprint=None, state_handler=None))]
     pub fn new_async(
         processor_fn: Py<PyAny>,
         processor_info: PyComponentProcessorInfo,
         memo_key_fingerprint: Option<PyFingerprint>,
+        state_handler: Option<Py<PyAny>>,
     ) -> Self {
         Self {
             processor_fn: PyCallback::Async(Arc::new(processor_fn)),
             memo_key_fingerprint: memo_key_fingerprint.map(|f| f.0),
             processor_info: processor_info.0,
+            state_handler: state_handler.map(|h| PyCallback::Async(Arc::new(h))),
         }
     }
 }
@@ -94,10 +99,63 @@ impl ComponentProcessor<PyEngineProfile> for PyComponentProcessor {
     fn processor_info(&self) -> &ComponentProcessorInfo {
         &self.processor_info
     }
+
+    fn has_memo_state_handler(&self) -> bool {
+        self.state_handler.is_some()
+    }
+
+    fn handle_memo_states(
+        &self,
+        host_runtime_ctx: &PyAsyncContext,
+        stored_states: Option<Vec<crate::value::PyValue>>,
+    ) -> Result<
+        impl Future<Output = Result<(Vec<crate::value::PyValue>, bool, bool)>> + Send + 'static,
+    > {
+        let Some(state_handler) = &self.state_handler else {
+            return Ok(futures::future::Either::Left(async {
+                Ok((vec![], true, false))
+            }));
+        };
+
+        // Convert Option<Vec<PyValue>> → Python (list | None)
+        let py_arg: Py<PyAny> = Python::attach(|py| -> Result<Py<PyAny>> {
+            match stored_states {
+                Some(states) => {
+                    let list = pyo3::types::PyList::new(py, states.iter().map(|s| s.value()))
+                        .from_py_result()?;
+                    Ok(list.unbind().into_any())
+                }
+                None => Ok(py.None()),
+            }
+        })?;
+
+        let fut = state_handler.call(host_runtime_ctx, (py_arg,))?;
+
+        Ok(futures::future::Either::Right(async move {
+            let result = fut.await?;
+            Python::attach(|py| -> PyResult<_> {
+                let result = result.bind(py);
+                let tuple = result.cast::<pyo3::types::PyTuple>()?;
+                let states_list = tuple.get_item(0)?;
+                let can_reuse: bool = tuple.get_item(1)?.extract()?;
+                let states_changed: bool = tuple.get_item(2)?.extract()?;
+
+                let new_states: Vec<crate::value::PyValue> = states_list
+                    .cast::<pyo3::types::PyList>()?
+                    .iter()
+                    .map(|item| crate::value::PyValue::new(item.unbind()))
+                    .collect();
+
+                Ok((new_states, can_reuse, states_changed))
+            })
+            .from_py_result()
+        }))
+    }
 }
 
 #[pyfunction]
 pub fn mount_run(
+    py: Python<'_>,
     processor: PyComponentProcessor,
     stable_path: PyStablePath,
     comp_ctx: PyComponentProcessorContext,
@@ -115,12 +173,17 @@ pub fn mount_run(
             comp_ctx.0.full_reprocess(),
         )
         .into_py_result()?;
-    let handle = component.run(processor, child_ctx).into_py_result()?;
-    Ok(PyComponentMountRunHandle(Some(handle)))
+    py.detach(|| {
+        get_runtime().block_on(async {
+            let handle = component.run(processor, child_ctx).await.into_py_result()?;
+            Ok(PyComponentMountRunHandle(Some(handle)))
+        })
+    })
 }
 
 #[pyfunction]
 pub fn mount(
+    py: Python<'_>,
     processor: PyComponentProcessor,
     stable_path: PyStablePath,
     comp_ctx: PyComponentProcessorContext,
@@ -138,10 +201,70 @@ pub fn mount(
             comp_ctx.0.full_reprocess(),
         )
         .into_py_result()?;
-    let handle = component
-        .run_in_background(processor, child_ctx)
+    py.detach(|| {
+        get_runtime().block_on(async {
+            let handle = component
+                .run_in_background(processor, child_ctx)
+                .await
+                .into_py_result()?;
+            Ok(PyComponentMountHandle(Some(handle)))
+        })
+    })
+}
+
+#[pyfunction]
+pub fn mount_run_async<'py>(
+    py: Python<'py>,
+    processor: PyComponentProcessor,
+    stable_path: PyStablePath,
+    comp_ctx: PyComponentProcessorContext,
+    fn_ctx: &PyFnCallContext,
+) -> PyResult<Bound<'py, PyAny>> {
+    let component = comp_ctx
+        .0
+        .component()
+        .mount_child(&fn_ctx.0, stable_path.0)
         .into_py_result()?;
-    Ok(PyComponentMountHandle(Some(handle)))
+    let child_ctx = component
+        .new_processor_context_for_build(
+            Some(&comp_ctx.0),
+            comp_ctx.0.processing_stats().clone(),
+            comp_ctx.0.full_reprocess(),
+        )
+        .into_py_result()?;
+    future_into_py(py, async move {
+        let handle = component.run(processor, child_ctx).await.into_py_result()?;
+        Ok(PyComponentMountRunHandle(Some(handle)))
+    })
+}
+
+#[pyfunction]
+pub fn mount_async<'py>(
+    py: Python<'py>,
+    processor: PyComponentProcessor,
+    stable_path: PyStablePath,
+    comp_ctx: PyComponentProcessorContext,
+    fn_ctx: &PyFnCallContext,
+) -> PyResult<Bound<'py, PyAny>> {
+    let component = comp_ctx
+        .0
+        .component()
+        .mount_child(&fn_ctx.0, stable_path.0)
+        .into_py_result()?;
+    let child_ctx = component
+        .new_processor_context_for_build(
+            Some(&comp_ctx.0),
+            comp_ctx.0.processing_stats().clone(),
+            comp_ctx.0.full_reprocess(),
+        )
+        .into_py_result()?;
+    future_into_py(py, async move {
+        let handle = component
+            .run_in_background(processor, child_ctx)
+            .await
+            .into_py_result()?;
+        Ok(PyComponentMountHandle(Some(handle)))
+    })
 }
 
 #[pyclass(name = "ComponentMountRunHandle")]

@@ -18,7 +18,7 @@ import tempfile
 
 import pytest
 
-import cocoindex.asyncio as coco_aio
+import cocoindex as coco
 
 
 @pytest.mark.asyncio
@@ -37,16 +37,14 @@ async def test_async_app_with_fresh_event_loop_first() -> None:
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=ignore_cleanup) as tmpdir:
         db_path = pathlib.Path(tmpdir) / "test.db"
 
-        env = coco_aio.Environment(
-            coco_aio.Settings(db_path=db_path), name="test_env_1"
-        )
+        env = coco.Environment(coco.Settings(db_path=db_path), name="test_env_1")
 
-        @coco_aio.function
+        @coco.fn
         async def main() -> str:
             return "test_success_1"
 
-        app = coco_aio.App(
-            coco_aio.AppConfig(name="test1", environment=env),
+        app = coco.App(
+            coco.AppConfig(name="test1", environment=env),
             main,
         )
 
@@ -68,16 +66,14 @@ async def test_async_app_with_fresh_event_loop_second() -> None:
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=ignore_cleanup) as tmpdir:
         db_path = pathlib.Path(tmpdir) / "test.db"
 
-        env = coco_aio.Environment(
-            coco_aio.Settings(db_path=db_path), name="test_env_2"
-        )
+        env = coco.Environment(coco.Settings(db_path=db_path), name="test_env_2")
 
-        @coco_aio.function
+        @coco.fn
         async def main() -> str:
             return "test_success_2"
 
-        app = coco_aio.App(
-            coco_aio.AppConfig(name="test2", environment=env),
+        app = coco.App(
+            coco.AppConfig(name="test2", environment=env),
             main,
         )
 
@@ -95,16 +91,14 @@ async def test_async_app_with_fresh_event_loop_third() -> None:
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=ignore_cleanup) as tmpdir:
         db_path = pathlib.Path(tmpdir) / "test.db"
 
-        env = coco_aio.Environment(
-            coco_aio.Settings(db_path=db_path), name="test_env_3"
-        )
+        env = coco.Environment(coco.Settings(db_path=db_path), name="test_env_3")
 
-        @coco_aio.function
+        @coco.fn
         async def main() -> str:
             return "test_success_3"
 
-        app = coco_aio.App(
-            coco_aio.AppConfig(name="test3", environment=env),
+        app = coco.App(
+            coco.AppConfig(name="test3", environment=env),
             main,
         )
 
@@ -125,18 +119,18 @@ async def test_multiple_sequential_app_updates() -> None:
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=ignore_cleanup) as tmpdir:
         db_path = pathlib.Path(tmpdir) / "test.db"
 
-        env = coco_aio.Environment(coco_aio.Settings(db_path=db_path), name="seq_env")
+        env = coco.Environment(coco.Settings(db_path=db_path), name="seq_env")
 
         results = []
 
         for i in range(3):
 
-            @coco_aio.function
+            @coco.fn
             async def main(iteration: int = i) -> str:
                 return f"iteration_{iteration}"
 
-            app = coco_aio.App(
-                coco_aio.AppConfig(name=f"seq_test_{i}", environment=env),
+            app = coco.App(
+                coco.AppConfig(name=f"seq_test_{i}", environment=env),
                 main,
             )
             result = await app.update()

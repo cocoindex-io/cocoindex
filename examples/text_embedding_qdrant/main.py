@@ -20,12 +20,11 @@ from qdrant_client import QdrantClient
 from qdrant_client.http import models as qdrant_models
 
 import cocoindex as coco
-import cocoindex.asyncio as coco_aio
 from cocoindex.connectors import localfs, qdrant
 from cocoindex.ops.text import RecursiveSplitter
 from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
 from cocoindex.resources.chunk import Chunk
-from cocoindex.resources.file import FileLike, PatternFilePathMatcher
+from cocoindex.resources.file import AsyncFileLike, PatternFilePathMatcher
 
 
 QDRANT_URL = "http://localhost:6334"
@@ -39,9 +38,9 @@ _embedder = SentenceTransformerEmbedder("sentence-transformers/all-MiniLM-L6-v2"
 _splitter = RecursiveSplitter()
 
 
-@coco_aio.lifespan
+@coco.lifespan
 async def coco_lifespan(
-    builder: coco_aio.EnvironmentBuilder,
+    builder: coco.EnvironmentBuilder,
 ) -> AsyncIterator[None]:
     # Provide resources needed across the CocoIndex environment
     client = qdrant.create_client(QDRANT_URL, prefer_grpc=True)
@@ -49,7 +48,7 @@ async def coco_lifespan(
     yield
 
 
-@coco.function
+@coco.fn
 async def process_chunk(
     chunk: Chunk,
     filename: pathlib.PurePath,
@@ -71,20 +70,20 @@ async def process_chunk(
     target.declare_point(point)
 
 
-@coco.function(memo=True)
+@coco.fn(memo=True)
 async def process_file(
-    file: FileLike,
+    file: AsyncFileLike,
     target: qdrant.CollectionTarget,
 ) -> None:
-    text = file.read_text()
+    text = await file.read_text()
     chunks = _splitter.split(
         text, chunk_size=2000, chunk_overlap=500, language="markdown"
     )
     id_gen = IdGenerator()
-    await coco_aio.map(process_chunk, chunks, file.file_path.path, id_gen, target)
+    await coco.map(process_chunk, chunks, file.file_path.path, id_gen, target)
 
 
-@coco.function
+@coco.fn
 async def app_main(sourcedir: pathlib.Path) -> None:
     target_db = coco.use_context(QDRANT_DB)
     target_collection = await target_db.mount_collection_target(
@@ -98,11 +97,11 @@ async def app_main(sourcedir: pathlib.Path) -> None:
         recursive=True,
         path_matcher=PatternFilePathMatcher(included_patterns=["**/*.md"]),
     )
-    await coco_aio.mount_each(process_file, files.items(), target_collection)
+    await coco.mount_each(process_file, files.items(), target_collection)
 
 
-app = coco_aio.App(
-    coco_aio.AppConfig(name="TextEmbeddingQdrantV1"),
+app = coco.App(
+    coco.AppConfig(name="TextEmbeddingQdrantV1"),
     app_main,
     sourcedir=pathlib.Path("./markdown_files"),
 )

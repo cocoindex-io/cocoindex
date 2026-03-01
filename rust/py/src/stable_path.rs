@@ -4,6 +4,7 @@ use pyo3::IntoPyObject;
 use pyo3::conversion::IntoPyObjectExt;
 use pyo3::exceptions::PyTypeError;
 use pyo3::types::{PyBool, PyBytes, PyInt, PyList, PyString, PyTuple};
+use pyo3::{Py, PyAny, Python};
 
 use cocoindex_core::state::stable_path::{StableKey, StablePath};
 
@@ -140,5 +141,17 @@ impl PyStablePath {
 
     pub fn __coco_memo_key__(&self) -> String {
         self.0.to_string()
+    }
+
+    pub fn parts(&self, py: Python<'_>) -> PyResult<Vec<Py<PyAny>>> {
+        self.0
+            .as_ref()
+            .iter()
+            .map(|key| {
+                PyStableKey(key.clone())
+                    .into_pyobject(py)
+                    .map(|b| b.unbind())
+            })
+            .collect()
     }
 }

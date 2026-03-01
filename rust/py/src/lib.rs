@@ -6,6 +6,7 @@ mod environment;
 mod fingerprint;
 mod function;
 mod inspect;
+mod logic_registry;
 mod memo_key;
 mod ops;
 mod prelude;
@@ -17,7 +18,7 @@ mod target_state;
 mod value;
 
 #[pyo3::pymodule]
-#[pyo3(name = "core")]
+#[pyo3(name = "core", gil_used = false)]
 fn core_module(m: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()> {
     use pyo3::prelude::*;
 
@@ -33,6 +34,8 @@ fn core_module(m: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()>
     m.add_class::<component::PyComponentMountRunHandle>()?;
     m.add_function(wrap_pyfunction!(component::mount, m)?)?;
     m.add_function(wrap_pyfunction!(component::mount_run, m)?)?;
+    m.add_function(wrap_pyfunction!(component::mount_async, m)?)?;
+    m.add_function(wrap_pyfunction!(component::mount_run_async, m)?)?;
 
     m.add_class::<context::PyComponentProcessorContext>()?;
     m.add_class::<context::PyFnCallContext>()?;
@@ -53,7 +56,12 @@ fn core_module(m: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()>
     m.add_class::<environment::PyEnvironment>()?;
 
     m.add_function(wrap_pyfunction!(inspect::list_stable_paths, m)?)?;
+    m.add_function(wrap_pyfunction!(inspect::iter_stable_paths, m)?)?;
     m.add_function(wrap_pyfunction!(inspect::list_app_names, m)?)?;
+
+    m.add_class::<inspect::PyStablePathNodeType>()?;
+    m.add_class::<inspect::PyStablePathInfo>()?;
+    m.add_class::<inspect::PyStablePathInfoAsyncIterator>()?;
 
     m.add_class::<runtime::PyAsyncContext>()?;
 
@@ -64,7 +72,7 @@ fn core_module(m: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()>
     m.add_class::<fingerprint::PyFingerprint>()?;
 
     // Function memoization
-    m.add_class::<function::PyPendingFnCallMemo>()?;
+    m.add_class::<function::PyFnCallMemoGuard>()?;
     m.add_function(wrap_pyfunction!(function::reserve_memoization, m)?)?;
     m.add_function(wrap_pyfunction!(function::reserve_memoization_async, m)?)?;
 
@@ -72,6 +80,16 @@ fn core_module(m: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()>
     m.add_function(wrap_pyfunction!(memo_key::fingerprint_simple_object, m)?)?;
     m.add_function(wrap_pyfunction!(memo_key::fingerprint_bytes, m)?)?;
     m.add_function(wrap_pyfunction!(memo_key::fingerprint_str, m)?)?;
+
+    // Logic change detection
+    m.add_function(wrap_pyfunction!(
+        logic_registry::register_logic_fingerprint,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        logic_registry::unregister_logic_fingerprint,
+        m
+    )?)?;
 
     // Text processing operations
     m.add_class::<ops::PyChunk>()?;

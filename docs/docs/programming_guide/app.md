@@ -17,26 +17,10 @@ To create an App, provide:
 3. **Arguments** — any additional arguments to pass to the main function
 
 ```python
-import cocoindex.asyncio as coco_aio
-
-@coco_aio.function
-def app_main(sourcedir: pathlib.Path) -> None:
-    # ... your pipeline logic ...
-
-app = coco_aio.App(
-    coco_aio.AppConfig(name="MyPipeline"),
-    app_main,
-    sourcedir=pathlib.Path("./data"),
-)
-```
-
-The corresponding sync API:
-
-```python
 import cocoindex as coco
 
-@coco.function
-def app_main(sourcedir: pathlib.Path) -> None:
+@coco.fn
+async def app_main(sourcedir: pathlib.Path) -> None:
     # ... your pipeline logic ...
 
 app = coco.App(
@@ -53,7 +37,7 @@ app = coco.App("MyPipeline", app_main, sourcedir=pathlib.Path("./data"))
 ```
 
 :::tip
-The main function can be sync or async regardless of whether you use `coco.App` or `coco_aio.App`. See [Mixing Sync and Async](./sdk_overview.md#mixing-sync-and-async) for details.
+The main function can be sync or async. See [How Sync and Async Work Together](./sdk_overview.md#how-sync-and-async-work-together) for details.
 :::
 
 ## Updating an app
@@ -66,8 +50,8 @@ await app.update(report_to_stdout=True, full_reprocess=False)
 ```
 
 ```python
-# Sync API
-app.update(report_to_stdout=True, full_reprocess=False)
+# Sync (blocking) API
+app.update_blocking(report_to_stdout=True, full_reprocess=False)
 ```
 
 **Parameters:**
@@ -106,6 +90,36 @@ For example, an app that processes files might mount one component per file:
 
 See [Processing Component](./processing_component.md) for how mounting and component paths define these boundaries.
 
+## Concurrency control
+
+By default, CocoIndex limits the number of concurrently executing processing components to **1024** per app. When components perform resource-intensive work (e.g., calling external APIs, running ML models), you may want to lower this limit.
+
+Set `max_inflight_components` in `AppConfig` to control the limit:
+
+```python
+app = coco.App(
+    coco.AppConfig(name="MyPipeline", max_inflight_components=4),
+    app_main,
+    sourcedir=pathlib.Path("./data"),
+)
+```
+
+With `max_inflight_components=4`, at most 4 processing components execute at the same time. When a component finishes, the next pending one starts.
+
+Setting `max_inflight_components=1` serializes all components — only one runs at a time.
+
+You can also set the limit via the `COCOINDEX_MAX_INFLIGHT_COMPONENTS` environment variable:
+
+```bash
+export COCOINDEX_MAX_INFLIGHT_COMPONENTS=4
+```
+
+**Precedence:** `AppConfig` value > environment variable > default (1024).
+
+:::info[Deadlock Prevention]
+When a parent component mounts a child, the parent releases its concurrency slot so the child can make progress. This prevents deadlocks in nested mount scenarios — even with `max_inflight_components=1`, a parent mounting a child will not block forever.
+:::
+
 ## Database path
 
 CocoIndex needs a database path (`db_path`) to store its internal state. This database tracks target states and memoized results from previous runs, enabling CocoIndex to compute what changed and apply only the necessary updates.
@@ -121,12 +135,12 @@ With `COCOINDEX_DB` set, you can create and run apps without any additional conf
 ```python
 import cocoindex as coco
 
-@coco.function
+@coco.fn
 def app_main() -> None:
     # ... your pipeline logic ...
 
 app = coco.App("MyPipeline", app_main)
-app.update()  # Uses COCOINDEX_DB for storage
+app.update_blocking()  # Uses COCOINDEX_DB for storage
 ```
 
 ## Lifespan (optional)
@@ -142,10 +156,10 @@ If you only need to set the database path, using the `COCOINDEX_DB` environment 
 Use the `@lifespan` decorator to register a lifespan function. By default, all apps share the same lifespan (unless you explicitly specify an app in a different [*Environment*](../advanced_topics/multiple_environments.md)). The function receives an `EnvironmentBuilder` for configuration and uses `yield` to separate setup from cleanup:
 
 ```python
-import cocoindex.asyncio as coco_aio
+import cocoindex as coco
 
-@coco_aio.lifespan
-async def coco_lifespan(builder: coco_aio.EnvironmentBuilder) -> AsyncIterator[None]:
+@coco.lifespan
+async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]:
     # Configure CocoIndex's internal database location (overrides COCOINDEX_DB if set)
     builder.settings.db_path = pathlib.Path("./cocoindex.db")
     # Setup: initialize resources here
@@ -176,30 +190,30 @@ If you need more explicit control — for example, to know when startup complete
 
 ```python
 # Async API
-await coco_aio.start()   # Run lifespan setup
+await coco.start()   # Run lifespan setup
 # ... run apps or other operations ...
-await coco_aio.stop()    # Run lifespan cleanup
+await coco.stop()    # Run lifespan cleanup
 ```
 
 ```python
-# Sync API
-coco.start()   # Run lifespan setup
+# Sync (blocking) API
+coco.start_blocking()   # Run lifespan setup
 # ... run apps or other operations ...
-coco.stop()    # Run lifespan cleanup
+coco.stop_blocking()    # Run lifespan cleanup
 ```
 
-Or use the `runtime()` context manager:
+Or use the `runtime()` context manager, which supports both sync and async usage:
 
 ```python
-# Async API
-async with coco_aio.runtime():
+# Async
+async with coco.runtime():
     await app.update()
 ```
 
 ```python
-# Sync API
+# Sync (blocking)
 with coco.runtime():
-    app.update()
+    app.update_blocking()
 ```
 
 ## Managing apps with CLI

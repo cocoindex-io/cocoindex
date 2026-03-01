@@ -683,3 +683,129 @@ class TestDropQuiet:
         result = run_cli("drop", "./single_app.py", "-f", "--quiet")
         assert "Preparing to drop" not in result.stdout
         assert "Dropped app" not in result.stdout
+
+
+# =============================================================================
+# Test: Show command with --tree flag
+# =============================================================================
+
+
+class TestShowTree:
+    """Tests for the show command with --tree flag."""
+
+    def test_show_tree_displays_tree_structure(self) -> None:
+        """show --tree should display stable paths as a tree."""
+        # First, run an app to create stable paths
+        run_cli("update", "./single_app.py")
+
+        # Run show with --tree flag
+        result = run_cli("show", "./single_app.py", "--tree")
+
+        # Should contain tree structure (indented bullet list)
+        assert "Stable paths" in result.stdout
+        assert "/" in result.stdout
+        assert "- " in result.stdout, "Should use bullet list format"
+
+    def test_show_tree_annotates_components(self) -> None:
+        """show --tree should annotate component nodes with [component]."""
+        # First, run an app to create stable paths
+        run_cli("update", "./single_app.py")
+
+        # Run show with --tree flag
+        result = run_cli("show", "./single_app.py", "--tree")
+
+        # Should contain component annotations
+        assert "[component]" in result.stdout
+
+    def test_show_tree_with_nested_structure(self) -> None:
+        """show --tree should correctly display nested tree structures with proper annotations."""
+        # First, run an app that creates a nested tree structure
+        run_cli("update", "./tree_test_app.py")
+
+        # Run show with --tree flag
+        result = run_cli("show", "./tree_test_app.py", "--tree")
+
+        # Should contain tree structure (streaming header: "Stable paths:")
+        assert "Stable paths" in result.stdout
+        assert "/" in result.stdout
+
+        # Parse the output to verify structure
+        lines = result.stdout.split("\n")
+        output_text = result.stdout
+
+        # Find the root line - should be annotated as component (- / or /)
+        root_line = next(
+            (
+                l
+                for l in lines
+                if l.strip() == "/"
+                or l.strip().startswith("/ [component]")
+                or l.strip() == "- /"
+                or (l.strip().startswith("- /") and "[component]" in l)
+            ),
+            None,
+        )
+        assert root_line is not None, "Root path should be present"
+        assert "[component]" in root_line, "Root should be annotated as [component]"
+
+        # Should have "files" node as an intermediate node (NOT a component)
+        assert "files" in output_text, "Should have 'files' node in output"
+        files_line = next(
+            (l for l in lines if "files" in l and l.strip().endswith("files")), None
+        )
+        if files_line is None:
+            files_line = next((l for l in lines if "files" in l), None)
+        assert files_line is not None, "Should have 'files' intermediate node line"
+        assert "[component]" not in files_line, (
+            f"'files' should NOT be annotated as [component] (it's an intermediate node). "
+            f"Line: {files_line}"
+        )
+
+        # Should have "file1.txt" and "file2.txt" as components under "files"
+        assert "file1.txt" in output_text, "Should have 'file1.txt' node"
+        assert "file2.txt" in output_text, "Should have 'file2.txt' node"
+        # Both should be annotated as components
+        file1_line = next((l for l in lines if "file1.txt" in l), None)
+        file2_line = next((l for l in lines if "file2.txt" in l), None)
+        assert file1_line is not None, "Should have 'file1.txt' line"
+        assert file2_line is not None, "Should have 'file2.txt' line"
+        assert "[component]" in file1_line, (
+            "file1.txt should be annotated as [component]"
+        )
+        assert "[component]" in file2_line, (
+            "file2.txt should be annotated as [component]"
+        )
+
+        # Should have "direct" as a component (direct child of root)
+        assert "direct" in output_text, "Should have 'direct' node"
+        direct_line = next((l for l in lines if "direct" in l), None)
+        assert direct_line is not None, "Should have 'direct' line"
+        assert "[component]" in direct_line, "direct should be annotated as [component]"
+
+        # Should have "setup" as a component
+        assert "setup" in output_text, "Should have 'setup' node"
+        setup_line = next((l for l in lines if "setup" in l), None)
+        assert setup_line is not None, "Should have 'setup' line"
+        assert "[component]" in setup_line, "setup should be annotated as [component]"
+
+        # Verify tree structure: file1.txt and file2.txt should be nested under files
+        files_idx = next(
+            (i for i, l in enumerate(lines) if "files" in l and "[component]" not in l),
+            None,
+        )
+        file1_idx = next(
+            (i for i, l in enumerate(lines) if "file1.txt" in l),
+            None,
+        )
+
+        assert file1_idx is not None, "Should find 'file1.txt' line"
+        assert file1_idx is not None and files_idx is not None
+        assert file1_idx > files_idx, (
+            "file1.txt should appear after files in nested structure"
+        )
+        # file1.txt line should have more indentation than files (child in bullet list)
+        files_indent = len(lines[files_idx]) - len(lines[files_idx].lstrip())
+        file1_indent = len(lines[file1_idx]) - len(lines[file1_idx].lstrip())
+        assert file1_indent > files_indent, (
+            "file1.txt should be indented as child of files"
+        )

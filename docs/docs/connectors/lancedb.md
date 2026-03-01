@@ -94,7 +94,7 @@ def LanceDatabase.declare_table_target(
 - `table_schema` — Schema definition including columns and primary key (see [Table Schema](#table-schema-from-python-class)).
 - `managed_by` — Whether CocoIndex manages the table lifecycle (`"system"`) or assumes it exists (`"user"`).
 
-**Returns:** A pending `TableTarget`. Use `mount_run(...).result()` to wait for resolution.
+**Returns:** A pending `TableTarget`. Use the convenience wrapper `await db.mount_table_target(table_name=..., table_schema=...)` to resolve.
 
 #### Rows (child states)
 
@@ -242,7 +242,6 @@ schema = lancedb.TableSchema(
 
 ```python
 import cocoindex as coco
-import cocoindex.asyncio as coco_aio
 from cocoindex.connectors import lancedb
 
 LANCEDB_URI = "./lancedb_data"
@@ -256,26 +255,24 @@ class OutputDocument:
     content: str
     embedding: Annotated[NDArray, embedder]
 
-@coco_aio.lifespan
-async def coco_lifespan(builder: coco_aio.EnvironmentBuilder) -> AsyncIterator[None]:
+@coco.lifespan
+async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]:
     conn = await lancedb.connect_async(LANCEDB_URI)
     builder.provide(LANCE_DB, lancedb.register_db("main_db", conn))
     yield
 
-@coco.function
+@coco.fn
 async def app_main() -> None:
     db = coco.use_context(LANCE_DB)
 
     # Declare table target state
-    table = await coco_aio.mount_run(
-        coco.component_subpath("setup", "table"),
-        db.declare_table_target,
+    table = await db.mount_table_target(
         table_name="documents",
         table_schema=await lancedb.TableSchema.from_class(
             OutputDocument,
             primary_key=["doc_id"],
         ),
-    ).result()
+    )
 
     # Declare rows
     for doc in documents:

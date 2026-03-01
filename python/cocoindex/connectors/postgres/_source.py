@@ -22,7 +22,7 @@ from typing_extensions import TypeVar
 
 from cocoindex._internal.datatype import RecordType, is_record_type
 from cocoindex._internal.stable_path import StableKey
-from cocoindex.connectorkits.async_adpaters import async_to_sync_iter
+from cocoindex.connectorkits.async_adapters import async_to_sync_iter
 
 try:
     import asyncpg  # type: ignore

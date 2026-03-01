@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import Collection, Generic, Literal, NamedTuple, Sequence, cast
 
 import cocoindex as coco
-from cocoindex._internal.api_async import mount_target as _mount_target
+from cocoindex._internal.api import mount_target as _mount_target
 from cocoindex.connectorkits.fingerprint import fingerprint_bytes
 from cocoindex._internal.datatype import TypeChecker
 
@@ -354,7 +354,7 @@ class DirTarget(Generic[coco.MaybePendingS], coco.ResolvesTo["DirTarget"]):
         return self._provider.memo_key
 
 
-@coco.function
+@coco.fn
 def declare_dir_target(
     path: FilePath | pathlib.Path,
     *,
@@ -397,7 +397,7 @@ def dir_target(
     """
     Create a TargetState for a local directory target.
 
-    Use with ``coco_aio.mount_target()`` to mount and get a child provider,
+    Use with ``coco.mount_target()`` to mount and get a child provider,
     or with ``mount_dir_target()`` for a convenience wrapper.
 
     Args:
@@ -429,7 +429,7 @@ async def mount_dir_target(
     """
     Mount a directory target and return a ready-to-use DirTarget.
 
-    Sugar over ``dir_target()`` + ``coco_aio.mount_target()`` + wrapping.
+    Sugar over ``dir_target()`` + ``coco.mount_target()`` + wrapping.
 
     Args:
         path: The filesystem path for the directory. Can be a FilePath (with stable
@@ -446,7 +446,7 @@ async def mount_dir_target(
     return DirTarget(provider)
 
 
-@coco.function
+@coco.fn
 def declare_file(
     path: FilePath | pathlib.Path,
     content: bytes | str,

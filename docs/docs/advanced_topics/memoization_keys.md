@@ -1,51 +1,26 @@
-# Function Memoization Keys
+---
+title: Memoization Keys & States
+description: Customize how CocoIndex identifies and validates memoized function inputs using keys and state validation.
+---
 
-CocoIndex memoizes (caches) results using a **stable, deterministic key** derived from CocoIndex function call’s inputs.
+# Memoization Keys & States
 
-## How CocoIndex derives keys
+When a CocoIndex function has `memo=True`, the engine caches results and skips re-execution when the inputs haven't changed. This page explains how to customize two aspects of that process:
 
-For each argument value, CocoIndex derives a “key fragment” with this precedence:
+- **Memoization keys** — how CocoIndex fingerprints your inputs to find a cached result.
+- **Memo states** — how CocoIndex validates that a cached result is still fresh, *after* a fingerprint match.
+
+## How memoization works
+
+For each argument value, CocoIndex derives a "key fragment" with this precedence:
 
 1. If the object implements **`__coco_memo_key__()`**, CocoIndex uses its return value.
-2. Otherwise, if you registered a **memo key function for the object’s type**, CocoIndex uses that.
+2. Otherwise, if you registered a **memo key function** for the object's type, CocoIndex uses that.
 3. Otherwise, CocoIndex falls back to structural canonicalization for a limited set of primitives/containers.
 
-The final memoization key is a deterministic fingerprint of the full call key.
+The key fragments are combined into a deterministic fingerprint. If the fingerprint matches a cached entry, the cached result is reused — unless **memo states** indicate it's stale (see [Memo state validation](#memo-state-validation) below).
 
-## Automatic support for dataclasses and Pydantic models
-
-CocoIndex automatically supports Python dataclasses and Pydantic v2 models without requiring `__coco_memo_key__()`:
-
-**Dataclasses**: All fields are included in definition order.
-
-```python
-from dataclasses import dataclass
-
-@dataclass
-class Point:
-    x: int
-    y: int
-
-# Works automatically - no __coco_memo_key__ needed
-@coco.function(memo=True)
-def process_point(p: Point) -> str:
-    return f"Point({p.x}, {p.y})"
-```
-
-**Pydantic v2 models**: All fields are included (set and unset), preserving field definition order.
-
-```python
-from pydantic import BaseModel
-
-class Config(BaseModel):
-    name: str
-    value: int = 42
-
-# Works automatically - no __coco_memo_key__ needed
-@coco.function(memo=True)
-def process_config(cfg: Config) -> str:
-    return f"Config {cfg.name} = {cfg.value}"
-```
+## Customizing the memoization key
 
 ### Override automatic handling
 
@@ -63,43 +38,23 @@ class Point:
 ```
 
 ## Define `__coco_memo_key__` (preferred when you control the type)
+### Define `__coco_memo_key__` (when you control the type)
 
-Implement a method on your class:
+Implement a method on your class that returns a stable, deterministic value:
 
 ```python
 class MyType:
     def __coco_memo_key__(self) -> object:
-        # Must return a stable, deterministic value across processes.
-        # Prefer small primitives / tuples.
+        # Return small primitives / tuples.
         return (...)
 ```
 
-### What should you return?
-
-Return something that uniquely identifies the **semantic content** your function depends on.
+Return something that uniquely identifies the **semantic content** your function depends on:
 
 - **Good**: small tuples of primitives, e.g. `(stable_id, version)`
-- **Bad**: memory addresses, unstable UUIDs, open file handles, timestamps “now”, or large raw payloads
+- **Bad**: memory addresses, unstable UUIDs, open file handles, `datetime.now()`, or large raw payloads
 
-### Examples
-
-**File-like resource (include freshness):**
-
-```python
-import os
-from pathlib import Path
-
-class LocalFile:
-    def __init__(self, path: Path) -> None:
-        self.path = path
-
-    def __coco_memo_key__(self) -> object:
-        p = self.path.resolve()
-        st = os.stat(p)
-        return (str(p), st.st_mtime_ns, st.st_size)
-```
-
-**DB row (include row version / updated_at):**
+**Example — DB row:**
 
 ```python
 class UserRow:
@@ -111,27 +66,146 @@ class UserRow:
         return ("users", self.user_id, self.updated_at)
 ```
 
-## Register a key function for a type (when you don’t control the type)
+### Register a key function (when you don't control the type)
 
-If you can’t add `__coco_memo_key__` (stdlib / third-party types), register a handler:
+If you can't add `__coco_memo_key__` (stdlib / third-party types), register a handler:
 
 ```python
+from pathlib import Path
 from cocoindex import register_memo_key_function
 
-def path_key(p) -> object:
+def path_key(p: Path) -> object:
     p = p.resolve()
     st = p.stat()
     return (str(p), st.st_mtime_ns, st.st_size)
 
-register_memo_key_function(__import__("pathlib").Path, path_key)
+register_memo_key_function(Path, path_key)
 ```
-
-Notes:
 
 - Registration is **MRO-aware**: if you register both a base class and a subclass, the **most specific** match wins.
 - Your key function must return the same kinds of stable objects as `__coco_memo_key__` (small primitives/tuples).
 
-## Prevent memoization for stateful types
+## Memo state validation
+
+Sometimes fingerprint matching alone isn't enough to decide whether a cached result is valid. For example:
+
+- **Multi-level validation**: for files, check the modified time first (cheap), and only read the file for a content fingerprint when the time doesn't match.
+- **Async validation**: for an S3 object, send a HEAD request to check freshness — an inherently async operation.
+- **Stateful validation**: for HTTP resources, store the last fetch time and use `If-Modified-Since` on the next run.
+
+Memo state validation addresses these by letting you attach a **state function** to your objects. It runs *after* a fingerprint match, giving you a chance to check freshness before the cached result is reused.
+
+### How it works
+
+When CocoIndex finds a fingerprint match, it calls each state function with the stored state from the previous run:
+
+1. **First run** (no previous state): `prev_state` is `coco.NON_EXISTENCE`. Use `coco.is_non_existence(prev_state)` to detect this.
+2. **Subsequent runs**: `prev_state` is whatever you returned last time.
+
+Your state function returns a **tuple** `(new_state, can_reuse)`:
+
+- **`new_state`** — the current state value. CocoIndex stores it for the next run.
+- **`can_reuse`** (`bool`) — whether the cached result is still valid.
+
+This decouples "has the state changed?" from "can we reuse the memo?":
+
+- `(same_state, True)` → nothing changed, cached result reused, no state update needed.
+- `(new_state, True)` → state changed but cached result is still valid (e.g. mtime changed but content hash unchanged). The new state is persisted so the next run uses the updated state.
+- `(new_state, False)` → something changed that invalidates the cache. Function re-executes, new state is stored.
+
+### Define `__coco_memo_state__` (when you control the type)
+
+Add a `__coco_memo_state__` method alongside `__coco_memo_key__`:
+
+```python
+import os
+import hashlib
+from pathlib import Path
+import cocoindex as coco
+
+class LocalFile:
+    def __init__(self, path: Path) -> None:
+        self.path = path
+
+    def __coco_memo_key__(self) -> object:
+        # Identity only — which file is it?
+        return str(self.path.resolve())
+
+    def __coco_memo_state__(self, prev_state: object) -> tuple[object, bool]:
+        st = os.stat(self.path)
+        new_mtime = st.st_mtime_ns
+        if coco.is_non_existence(prev_state):
+            # First run — compute initial state
+            content_hash = hashlib.sha256(self.path.read_bytes()).hexdigest()
+            return ((new_mtime, content_hash), True)
+
+        prev_mtime, prev_hash = prev_state
+        if new_mtime == prev_mtime:
+            # mtime unchanged — definitely reusable, no content read needed
+            return (prev_state, True)
+        # mtime changed — read content and check hash
+        content_hash = hashlib.sha256(self.path.read_bytes()).hexdigest()
+        return ((new_mtime, content_hash), content_hash == prev_hash)
+```
+
+:::tip Keys vs states for files
+Without state validation, you'd include `mtime` and `size` directly in the memo key:
+```python
+def __coco_memo_key__(self):
+    st = os.stat(self.path)
+    return (str(self.path.resolve()), st.st_mtime_ns, st.st_size)
+```
+This works for simple cases. State validation becomes useful when you need multi-level checks (e.g. check mtime first, then content hash only if it differs), async operations, or stored metadata like ETags. With the `(new_state, can_reuse)` return, you can update the state (e.g. new mtime) without invalidating the cache when the content hasn't actually changed.
+:::
+
+### Register a state function (when you don't control the type)
+
+Pass a `state_fn` keyword argument to `register_memo_key_function`. The state function receives the object as its first argument and `prev_state` as its second:
+
+```python
+from pathlib import Path
+from cocoindex import register_memo_key_function
+
+def path_key(p: Path) -> object:
+    return str(p.resolve())
+
+def path_state(p: Path, prev_state: object) -> tuple[object, bool]:
+    st = p.stat()
+    new_state = (st.st_mtime_ns, st.st_size)
+    can_reuse = not coco.is_non_existence(prev_state) and new_state == prev_state
+    return (new_state, can_reuse)
+
+register_memo_key_function(Path, path_key, state_fn=path_state)
+```
+
+### Async state methods
+
+A state method can return an `Awaitable`. CocoIndex handles this automatically:
+
+- **In an async CocoIndex function**: awaitables from all state methods are gathered concurrently.
+- **In a sync CocoIndex function**: if no event loop is running, CocoIndex uses `asyncio.run()`. If a loop is already running, it raises an error — switch to an async function or use `@coco.fn.as_async`.
+
+```python
+import cocoindex as coco
+
+class S3Object:
+    def __init__(self, bucket: str, key: str) -> None:
+        self.bucket = bucket
+        self.key = key
+
+    def __coco_memo_key__(self) -> object:
+        return (self.bucket, self.key)
+
+    async def __coco_memo_state__(self, prev_state: object) -> tuple[object, bool]:
+        etag = await self._head_object()
+        can_reuse = not coco.is_non_existence(prev_state) and etag == prev_state
+        return (etag, can_reuse)
+
+    async def _head_object(self) -> str:
+        ...  # boto3 / aioboto3 HEAD call
+```
+
+## Preventing memoization
 
 Some types maintain internal state that makes memoization semantically incorrect. For example, a generator that tracks call counts would produce wrong results if memoized.
 
@@ -151,8 +225,6 @@ class MyStatefulGenerator(coco.NotMemoizable):
 
 ### Register as not memoizable (when you don't control the type)
 
-For third-party types you can't modify:
-
 ```python
 import cocoindex as coco
 from some_library import StatefulGenerator
@@ -164,7 +236,8 @@ In either case, attempting to use the type as a memo key raises a clear error.
 
 ## Best practices
 
-- **Always include freshness for external resources**: e.g. file `(path, mtime_ns, size)`, HTTP `(url, etag)`, DB `(pk, updated_at)`.
-- **Keep keys small**: use identifiers + versions, not full payloads.
-- **Keys must be deterministic across processes**: no `id(obj)`, no pointer addresses, no random values.
-- **Mark stateful types as `NotMemoizable`**: prevent subtle bugs from incorrect memoization.
+- **Keep keys small and deterministic**: use identifiers and versions, not full payloads. No `id(obj)`, pointer addresses, or random values.
+- **Separate identity from freshness**: put stable identifiers (file path, URL, primary key) in the key. Put freshness checks (mtime, ETag, version) in the state.
+- **Use state validation for expensive checks**: if freshness validation is costly (content hashing, network calls), a state function lets you do it only when the fingerprint matches, and only when a cheap pre-check (mtime) fails.
+- **Use `(new_state, True)` for cheap state updates**: when a cheap property changes (mtime) but the expensive check (content hash) confirms nothing meaningful changed, return `True` for `can_reuse` while updating the state. This avoids re-executing the function and avoids re-checking the expensive property next time.
+- **Mark stateful types as `NotMemoizable`**: prevent subtle bugs from incorrect memoization of types with side effects.

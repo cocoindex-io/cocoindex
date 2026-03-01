@@ -1,9 +1,8 @@
-"""Tests for App.drop() and App.drop_async() methods."""
+"""Tests for App.drop() method."""
 
 import pytest
 
 import cocoindex as coco
-import cocoindex.asyncio as coco_aio
 import cocoindex.inspect as coco_inspect
 
 from typing import Any
@@ -16,11 +15,11 @@ coco_env = common.create_test_env(__file__)
 _source_data: dict[str, dict[str, Any]] = {}
 
 
-def _declare_dicts() -> None:
+async def _declare_dicts() -> None:
     """Create dict target states for testing."""
     with coco.component_subpath("dict"):
         for name, data in _source_data.items():
-            single_dict_provider = coco.use_mount(
+            single_dict_provider = await coco.use_mount(
                 coco.component_subpath(name),
                 DictsTarget.declare_dict_target,
                 name,
@@ -29,137 +28,42 @@ def _declare_dicts() -> None:
                 coco.declare_target_state(single_dict_provider.target_state(key, value))
 
 
-# === Sync Drop Tests ===
+def test_drop_blocking() -> None:
+    """Test that drop_blocking() reverts target states and clears the database."""
+    DictsTarget.store.clear()
+    _source_data.clear()
+
+    app = coco.App(
+        coco.AppConfig(name="test_drop_blocking", environment=coco_env),
+        _declare_dicts,
+    )
+
+    # Run app to create target states
+    _source_data["D1"] = {"a": 1, "b": 2}
+    app.update_blocking()
+    assert DictsTarget.store.data == {
+        "D1": {
+            "a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
+            "b": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
+        },
+    }
+
+    # Drop the app
+    app.drop_blocking()
+
+    # Verify target states were reverted and database is cleared
+    assert DictsTarget.store.data == {}
+    assert coco_inspect.list_stable_paths_sync(app) == []
 
 
-def test_drop_reverts_target_states() -> None:
+@pytest.mark.asyncio
+async def test_drop_reverts_target_states() -> None:
     """Test that drop() reverts all target states created by the app."""
     DictsTarget.store.clear()
     _source_data.clear()
 
     app = coco.App(
         coco.AppConfig(name="test_drop_reverts_target_states", environment=coco_env),
-        _declare_dicts,
-    )
-
-    # Run app to create target states
-    _source_data["D1"] = {"a": 1, "b": 2}
-    _source_data["D2"] = {"c": 3}
-    app.update()
-
-    # Verify target states were created
-    assert DictsTarget.store.data == {
-        "D1": {
-            "a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
-            "b": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
-        },
-        "D2": {
-            "c": DictDataWithPrev(data=3, prev=[], prev_may_be_missing=True),
-        },
-    }
-    assert coco_inspect.list_stable_paths_sync(app) == [
-        coco.ROOT_PATH,
-        coco.ROOT_PATH / "dict",
-        coco.ROOT_PATH / "dict" / "D1",
-        coco.ROOT_PATH / "dict" / "D2",
-    ]
-
-    # Drop the app
-    app.drop()
-
-    # Verify target states were reverted (dicts deleted)
-    assert DictsTarget.store.data == {}
-
-    # Verify database is cleared (no stable paths)
-    assert coco_inspect.list_stable_paths_sync(app) == []
-
-
-def test_drop_clears_database() -> None:
-    """Test that drop() clears the app's database."""
-    DictsTarget.store.clear()
-    _source_data.clear()
-
-    app = coco.App(
-        coco.AppConfig(name="test_drop_clears_database", environment=coco_env),
-        _declare_dicts,
-    )
-
-    # Run app
-    _source_data["D1"] = {"a": 1}
-    app.update()
-
-    # Verify app has state
-    paths_before = coco_inspect.list_stable_paths_sync(app)
-    assert len(paths_before) > 0
-
-    # Drop the app
-    app.drop()
-
-    # Verify database is cleared
-    paths_after = coco_inspect.list_stable_paths_sync(app)
-    assert paths_after == []
-
-
-def test_drop_allows_rerun() -> None:
-    """Test that an app can be run again after being dropped."""
-    DictsTarget.store.clear()
-    _source_data.clear()
-
-    app = coco.App(
-        coco.AppConfig(name="test_drop_allows_rerun", environment=coco_env),
-        _declare_dicts,
-    )
-
-    # First run
-    _source_data["D1"] = {"a": 1}
-    app.update()
-    assert DictsTarget.store.data == {
-        "D1": {"a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True)},
-    }
-
-    # Drop
-    app.drop()
-    assert DictsTarget.store.data == {}
-
-    # Run again with different data
-    _source_data.clear()
-    _source_data["D2"] = {"b": 2}
-    app.update()
-    assert DictsTarget.store.data == {
-        "D2": {"b": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True)},
-    }
-
-
-def test_drop_empty_app() -> None:
-    """Test that drop() works on an app that hasn't been run yet."""
-    DictsTarget.store.clear()
-    _source_data.clear()
-
-    app = coco.App(
-        coco.AppConfig(name="test_drop_empty_app", environment=coco_env),
-        _declare_dicts,
-    )
-
-    # Drop without running - should not error
-    app.drop()
-
-    # Verify no paths exist
-    assert coco_inspect.list_stable_paths_sync(app) == []
-
-
-# === Async Drop Tests ===
-
-
-@pytest.mark.asyncio
-async def test_drop_async_reverts_target_states() -> None:
-    """Test that drop_async() reverts all target states created by the app."""
-    DictsTarget.store.clear()
-    _source_data.clear()
-
-    app = coco_aio.App(
-        coco.AppConfig(
-            name="test_drop_async_reverts_target_states", environment=coco_env
-        ),
         _declare_dicts,
     )
 
@@ -190,13 +94,40 @@ async def test_drop_async_reverts_target_states() -> None:
 
 
 @pytest.mark.asyncio
-async def test_drop_async_allows_rerun() -> None:
-    """Test that an async app can be run again after being dropped."""
+async def test_drop_clears_database() -> None:
+    """Test that drop() clears the app's database."""
     DictsTarget.store.clear()
     _source_data.clear()
 
-    app = coco_aio.App(
-        coco.AppConfig(name="test_drop_async_allows_rerun", environment=coco_env),
+    app = coco.App(
+        coco.AppConfig(name="test_drop_clears_database", environment=coco_env),
+        _declare_dicts,
+    )
+
+    # Run app
+    _source_data["D1"] = {"a": 1}
+    await app.update()
+
+    # Verify app has state
+    paths_before = await coco_inspect.list_stable_paths(app)
+    assert len(paths_before) > 0
+
+    # Drop the app
+    await app.drop()
+
+    # Verify database is cleared
+    paths_after = await coco_inspect.list_stable_paths(app)
+    assert paths_after == []
+
+
+@pytest.mark.asyncio
+async def test_drop_allows_rerun() -> None:
+    """Test that an app can be run again after being dropped."""
+    DictsTarget.store.clear()
+    _source_data.clear()
+
+    app = coco.App(
+        coco.AppConfig(name="test_drop_allows_rerun", environment=coco_env),
         _declare_dicts,
     )
 
@@ -221,13 +152,13 @@ async def test_drop_async_allows_rerun() -> None:
 
 
 @pytest.mark.asyncio
-async def test_drop_async_empty_app() -> None:
-    """Test that drop_async() works on an app that hasn't been run yet."""
+async def test_drop_empty_app() -> None:
+    """Test that drop() works on an app that hasn't been run yet."""
     DictsTarget.store.clear()
     _source_data.clear()
 
-    app = coco_aio.App(
-        coco.AppConfig(name="test_drop_async_empty_app", environment=coco_env),
+    app = coco.App(
+        coco.AppConfig(name="test_drop_empty_app", environment=coco_env),
         _declare_dicts,
     )
 

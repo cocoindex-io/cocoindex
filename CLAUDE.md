@@ -47,11 +47,8 @@ cocoindex/
 │   ├── cocoindex/              # Python package
 │   │   ├── __init__.py         # Package entry point
 │   │   ├── cli.py              # CLI commands
-│   │   ├── asyncio.py          # Async App and APIs (import cocoindex.asyncio as coco_aio)
 │   │   ├── _internal/          # Internal implementation for the core engine
-│   │   │   ├── api.py          # Shared API definitions
-│   │   │   ├── api_sync.py     # Sync APIs: App, mount, mount_run
-│   │   │   ├── api_async.py    # Async APIs: App, mount, mount_run
+│   │   │   ├── api.py          # Public API: mount, use_mount, mount_each, map, mount_target, App, fn, start/stop
 │   │   │   ├── app.py          # App base implementation
 │   │   │   ├── context_keys.py # ContextKey and ContextProvider
 │   │   │   ├── environment.py  # Environment and lifespan handling
@@ -86,7 +83,7 @@ Think of it like:
 
 **App** — The top-level runnable unit. Bundles a main function with its arguments. When you call `app.update()`, the main function runs as the root processing component.
 
-**Processing Component** — The unit of execution that owns a set of target states. Created by `mount()` or `mount_run()` at a specific component path. When a component finishes, its target states sync atomically to external systems.
+**Processing Component** — The unit of execution that owns a set of target states. Created by `mount()` or `use_mount()` at a specific component path. When a component finishes, its target states sync atomically to external systems.
 
 **Component Path** — Stable identifier for a processing component across runs. Created via `coco.component_subpath("process", filename)`. CocoIndex uses component paths to:
 
@@ -105,8 +102,8 @@ Think of it like:
 
 ```python
 # Mounting processing components (subpath first, then function)
-coco.mount(coco.component_subpath("name"), fn, *args, **kw)      # child runs independently
-coco.mount_run(coco.component_subpath("name"), fn, *args, **kw)  # returns value, creates dependency
+await coco.mount(coco.component_subpath("name"), fn, *args, **kw)      # child runs independently
+result = await coco.use_mount(coco.component_subpath("name"), fn, *args, **kw)  # returns value directly
 
 # Component subpath composition
 subpath = coco.component_subpath("process", filename)  # multiple parts
@@ -115,7 +112,7 @@ subpath = coco.component_subpath("a") / "b" / "c"      # chaining with /
 # Using component_subpath as context manager (applies to all nested mount calls)
 with coco.component_subpath("process"):
     for f in files:
-        coco.mount(coco.component_subpath(str(f.relative_path)), process_file, f, target)
+        await coco.mount(coco.component_subpath(str(f.relative_path)), process_file, f, target)
 
 # Declaring target states (typically via Target methods)
 dir_target.declare_file(filename=name, content=data)
@@ -133,8 +130,8 @@ with ctx.attach():
 
 **Mount handles:**
 
-* `mount()` → `ComponentMountHandle`: call `wait_until_ready()` to block until target states are synced
-* `mount_run()` → `ComponentMountRunHandle[T]`: call `result()` to get return value (implicitly waits)
+* `mount()` → `ComponentMountHandle`: call `await handle.ready()` to wait until target states are synced
+* `use_mount()` → returns the result value directly (awaitable)
 
 ### How syncing works
 
@@ -150,23 +147,23 @@ Changes are applied atomically per component. If a source item is deleted (path 
 
 ```python
 @coco.function(memo=True)
-def process_file(file: FileLike, target: localfs.DirTarget) -> None:
+async def process_file(file: FileLike, target: localfs.DirTarget) -> None:
     html = _markdown_it.render(file.read_text())
     outname = "__".join(file.relative_path.parts) + ".html"
     target.declare_file(filename=outname, content=html)
 
 @coco.function
-def app_main(sourcedir: pathlib.Path, outdir: pathlib.Path) -> None:
-    target = coco.mount_run(
+async def app_main(sourcedir: pathlib.Path, outdir: pathlib.Path) -> None:
+    target = await coco.use_mount(
         coco.component_subpath("setup"), localfs.declare_dir_target, outdir
-    ).result()
+    )
 
     files = localfs.walk_dir(
         sourcedir, path_matcher=PatternFilePathMatcher(included_patterns=["**/*.md"])
     )
     with coco.component_subpath("process"):
         for f in files:
-            coco.mount(coco.component_subpath(str(f.relative_path)), process_file, f, target)
+            await coco.mount(coco.component_subpath(str(f.relative_path)), process_file, f, target)
 
 
 app = coco.App(
@@ -175,14 +172,14 @@ app = coco.App(
     sourcedir=pathlib.Path("./docs"),
     outdir=pathlib.Path("./out"),
 )
-app.update(report_to_stdout=True)
+app.update_blocking(report_to_stdout=True)
 ```
 
 ## Code Conventions
 
 ### Internal vs External Modules
 
-We distinguish between **internal modules** (under packages with `_` prefix, e.g. `_internal.*`) and **external modules** (which users can directly import).
+We distinguish between **internal modules** (under packages with `_` prefix, e.g. `_internal.*` or `connectors.*._source`) and **external modules** (which users can directly import).
 
 **External modules** (user-facing, e.g. `cocoindex/ops/sentence_transformers.py`):
 
@@ -200,6 +197,14 @@ We distinguish between **internal modules** (under packages with `_` prefix, e.g
 * Standard library and internal imports don't need underscore prefix
 * Only prefix symbols that are truly private to the module itself (e.g. `_context_var` for a module-private ContextVar)
 
+### Type Annotations
+
+Avoid `Any` whenever feasible. Use specific types — including concrete types from third-party libraries. Only use `Any` when the type is truly generic and no downstream code needs to downcast it.
+
+### Multi-Value Returns
+
+For functions returning multiple values, use `NamedTuple` instead of plain tuples. At call sites, access fields by name (`result.can_reuse`) rather than positional unpacking — this prevents misreading fields in the wrong order.
+
 ### Testing Guidelines
 
 We prefer end-to-end tests on user-facing APIs, over unit tests on smaller internal functions. With this said, there're cases where unit tests are necessary, e.g. for internal logic with various situations and edge cases, in which case it's usually easier to cover various scenarios with unit tests.
@@ -210,10 +215,9 @@ The Rust core (`rust/core`, `rust/utils`) uses **async-first** design with Tokio
 
 * Rust core exposes async functions
 * `rust/py` provides sync wrappers that use `block_on()` to call async Rust from sync Python
-* Python gets both `cocoindex` (sync) and `cocoindex.asyncio` (async) APIs
+* Python's `cocoindex` API is **async-first**: mount APIs (`mount`, `use_mount`, `mount_each`, `map`) are all `async def`; `App.update()`/`App.drop()` are async; sync entry points (`App.update_blocking()`, `App.drop_blocking()`, `start_blocking()`, `stop_blocking()`) are available for CLI and blocking contexts
 
 When adding new functionality that involves I/O or concurrency:
 
 * Implement async in Rust
 * Bridge to Python via `rust/py`, providing both sync and async variants if needed
-* Avoid `asyncio.run()` in Python when Rust can handle the sync/async bridging

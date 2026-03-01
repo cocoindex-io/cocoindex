@@ -1,10 +1,12 @@
 use crate::engine::runtime::get_runtime;
 use crate::prelude::*;
+use std::collections::HashSet;
 
 use crate::engine::context::FnCallContext;
 use crate::engine::context::{AppContext, ComponentProcessingMode, ComponentProcessorContext};
 use crate::engine::execution::{
-    cleanup_tombstone, post_submit_for_build, submit, use_or_invalidate_component_memoization,
+    cleanup_tombstone, post_submit_for_build, submit, update_component_memo_states,
+    use_or_invalidate_component_memoization,
 };
 use crate::engine::profile::EngineProfile;
 use crate::engine::stats::ProcessingStats;
@@ -43,6 +45,27 @@ pub trait ComponentProcessor<Prof: EngineProfile>: Send + Sync + 'static {
     fn memo_key_fingerprint(&self) -> Option<Fingerprint>;
 
     fn processor_info(&self) -> &ComponentProcessorInfo;
+
+    /// Whether this processor has a memo state handler for post-fingerprint validation.
+    fn has_memo_state_handler(&self) -> bool {
+        false
+    }
+
+    /// Validate or collect memo states after a fingerprint match.
+    /// `stored_states`: `Some(states)` on cache hit, `None` on cache miss (collect initial states).
+    /// Returns `(new_states, can_reuse, states_changed)`:
+    /// - `can_reuse`: when true, the cached value is valid and can be returned without re-execution.
+    /// - `states_changed`: when true, the new states differ from stored states and must be persisted.
+    ///   This can be true even when `can_reuse` is true (e.g. mtime changed but content hash unchanged).
+    fn handle_memo_states(
+        &self,
+        host_runtime_ctx: &Prof::HostRuntimeCtx,
+        stored_states: Option<Vec<Prof::FunctionData>>,
+    ) -> Result<impl Future<Output = Result<(Vec<Prof::FunctionData>, bool, bool)>> + Send + 'static>
+    {
+        let _ = (host_runtime_ctx, stored_states);
+        Ok(async { Ok((vec![], true, false)) })
+    }
 }
 
 struct ComponentInner<Prof: EngineProfile> {
@@ -98,11 +121,20 @@ impl ComponentBgChildReadinessState {
 #[derive(Debug, Default, Clone)]
 struct ComponentRunOutcome {
     has_exception: bool,
+    logic_deps: HashSet<Fingerprint>,
 }
 
 impl ComponentRunOutcome {
+    fn exception() -> Self {
+        Self {
+            has_exception: true,
+            ..Default::default()
+        }
+    }
+
     fn merge(&mut self, other: Self) {
         self.has_exception |= other.has_exception;
+        self.logic_deps.extend(other.logic_deps);
     }
 }
 
@@ -256,11 +288,7 @@ impl<Prof: EngineProfile> Component<Prof> {
     }
 
     pub fn mount_child(&self, fn_ctx: &FnCallContext, stable_path: StablePath) -> Result<Self> {
-        let relative_path: StablePath = stable_path
-            .as_ref()
-            .strip_parent(self.stable_path().as_ref())?
-            .into();
-        fn_ctx.update(|inner| inner.child_components.push(relative_path));
+        fn_ctx.update(|inner| inner.has_child_components = true);
         Ok(self.get_child(stable_path))
     }
 
@@ -290,11 +318,28 @@ impl<Prof: EngineProfile> Component<Prof> {
         }
     }
 
-    pub fn run(
+    pub async fn run(
         self,
         processor: Prof::ComponentProc,
         context: ComponentProcessorContext<Prof>,
     ) -> Result<ComponentMountRunHandle<Prof>> {
+        // Release parent's inflight permit (deadlock prevention).
+        // On a component's first child mount, the parent gives up its slot
+        // so children can make progress.
+        if let Some(parent_ctx) = context.parent_context() {
+            parent_ctx.release_inflight_permit();
+        }
+
+        // Acquire inflight permit (waits if quota exhausted).
+        if let Some(sem) = self.app_ctx().inflight_semaphore() {
+            let permit = sem
+                .clone()
+                .acquire_owned()
+                .await
+                .map_err(|_| internal_error!("Inflight semaphore closed"))?;
+            context.set_inflight_permit(permit);
+        }
+
         let relative_path = self.relative_path(&context)?;
         let child_readiness_guard = context
             .parent_context()
@@ -305,12 +350,7 @@ impl<Prof: EngineProfile> Component<Prof> {
                 let result = self.execute_once(&context, Some(&processor)).await;
                 let (outcome, output) = match result {
                     Ok((outcome, output)) => (outcome, Ok(output)),
-                    Err(err) => (
-                        ComponentRunOutcome {
-                            has_exception: true,
-                        },
-                        Err(err),
-                    ),
+                    Err(err) => (ComponentRunOutcome::exception(), Err(err)),
                 };
                 child_readiness_guard.map(|guard| guard.resolve(outcome));
                 output?
@@ -321,12 +361,27 @@ impl<Prof: EngineProfile> Component<Prof> {
         Ok(ComponentMountRunHandle { join_handle })
     }
 
-    pub fn run_in_background(
+    pub async fn run_in_background(
         self,
         processor: Prof::ComponentProc,
         context: ComponentProcessorContext<Prof>,
     ) -> Result<ComponentExecutionHandle> {
         // TODO: Skip building and reuse cached result if the component is already built and up to date.
+
+        // Release parent's inflight permit (deadlock prevention).
+        if let Some(parent_ctx) = context.parent_context() {
+            parent_ctx.release_inflight_permit();
+        }
+
+        // Acquire inflight permit (waits if quota exhausted).
+        if let Some(sem) = self.app_ctx().inflight_semaphore() {
+            let permit = sem
+                .clone()
+                .acquire_owned()
+                .await
+                .map_err(|_| internal_error!("Inflight semaphore closed"))?;
+            context.set_inflight_permit(permit);
+        }
 
         let child_readiness_guard = context
             .parent_context()
@@ -338,11 +393,11 @@ impl<Prof: EngineProfile> Component<Prof> {
                 error!("component build failed:\n{err:?}");
             }
             child_readiness_guard.map(|guard| {
-                guard.resolve(result.map(|(outcome, _)| outcome).unwrap_or_else(|_| {
-                    ComponentRunOutcome {
-                        has_exception: true,
-                    }
-                }))
+                guard.resolve(
+                    result
+                        .map(|(outcome, _)| outcome)
+                        .unwrap_or_else(|_| ComponentRunOutcome::exception()),
+                )
             });
             Ok(())
         });
@@ -363,9 +418,7 @@ impl<Prof: EngineProfile> Component<Prof> {
                 Ok((outcome, _)) => outcome.clone(),
                 Err(err) => {
                     error!("component delete failed:\n{err}");
-                    ComponentRunOutcome {
-                        has_exception: true,
-                    }
+                    ComponentRunOutcome::exception()
                 }
             };
             if let Some(guard) = child_readiness_guard {
@@ -383,6 +436,9 @@ impl<Prof: EngineProfile> Component<Prof> {
     ) -> Result<(ComponentRunOutcome, Option<ComponentBuildOutput<Prof>>)> {
         let mut reported_processor_name: Option<Cow<'_, str>> = None;
         let mut memo_fp_to_store: Option<Fingerprint> = None;
+        // Memo states collected from state validation (on cache hit with invalid states)
+        // or to be collected after execution (on cache miss).
+        let mut memo_states_for_store: Option<Vec<Prof::FunctionData>> = None;
         let processing_stats = processor_context.processing_stats();
 
         if let Some(processor) = processor {
@@ -393,18 +449,47 @@ impl<Prof: EngineProfile> Component<Prof> {
             // If it hits, we can immediately return without processing/submitting/waiting.
 
             match use_or_invalidate_component_memoization(processor_context, memo_fp_to_store) {
-                Ok(Some(ret)) => {
-                    processing_stats.update(processor_name.as_ref(), |stats| {
-                        stats.num_execution_starts += 1;
-                        stats.num_unchanged += 1;
-                    });
-                    return Ok((
-                        ComponentRunOutcome::default(),
-                        Some(ComponentBuildOutput {
-                            ret,
-                            built_target_states_providers: Default::default(),
-                        }),
-                    ));
+                Ok(Some((ret, memo_states))) => {
+                    // If processor has state handler and there are stored states, validate them.
+                    if processor.has_memo_state_handler() && !memo_states.is_empty() {
+                        let fut = processor.handle_memo_states(
+                            processor_context.app_ctx().env().host_runtime_ctx(),
+                            Some(memo_states),
+                        )?;
+                        let (new_states, can_reuse, states_changed) = fut.await?;
+                        if can_reuse {
+                            // Memo is reusable — update stored states if they changed
+                            if states_changed {
+                                update_component_memo_states(processor_context, &new_states)?;
+                            }
+                            processing_stats.update(processor_name.as_ref(), |stats| {
+                                stats.num_execution_starts += 1;
+                                stats.num_unchanged += 1;
+                            });
+                            return Ok((
+                                ComponentRunOutcome::default(),
+                                Some(ComponentBuildOutput {
+                                    ret,
+                                    built_target_states_providers: Default::default(),
+                                }),
+                            ));
+                        }
+                        // Not reusable — fall through to re-execution
+                        memo_states_for_store = Some(new_states);
+                    } else {
+                        // No state handler or no states — use cached result directly
+                        processing_stats.update(processor_name.as_ref(), |stats| {
+                            stats.num_execution_starts += 1;
+                            stats.num_unchanged += 1;
+                        });
+                        return Ok((
+                            ComponentRunOutcome::default(),
+                            Some(ComponentBuildOutput {
+                                ret,
+                                built_target_states_providers: Default::default(),
+                            }),
+                        ));
+                    }
                 }
                 Err(err) => {
                     error!("component memoization restore failed: {err:?}");
@@ -463,17 +548,41 @@ impl<Prof: EngineProfile> Component<Prof> {
                 // Wait until children components ready.
                 let components_readiness = processor_context.components_readiness();
                 components_readiness.set_build_done();
-                let children_outcome = components_readiness
+                let mut children_outcome = components_readiness
                     .readiness()
                     .wait()
                     .await
                     .clone()
                     .into_result()?;
 
+                // Merge children's logic deps into this component's context.
+                processor_context
+                    .merge_logic_deps(std::mem::take(&mut children_outcome.logic_deps));
+
                 let (ret, submit_output) = ret_n_submit_output?;
                 let build_output = match ret {
                     Some(ret) => {
                         if !children_outcome.has_exception {
+                            // Collect initial memo states on cache miss if processor has a state handler.
+                            let memo_states = if let Some(processor) = processor
+                                && processor.has_memo_state_handler()
+                            {
+                                if let Some(states) = memo_states_for_store.take() {
+                                    // From invalid cache hit path
+                                    states
+                                } else {
+                                    // Cache miss — collect initial states
+                                    let fut = processor.handle_memo_states(
+                                        processor_context.app_ctx().env().host_runtime_ctx(),
+                                        None,
+                                    )?;
+                                    let (initial_states, _, _) = fut.await?;
+                                    initial_states
+                                }
+                            } else {
+                                vec![]
+                            };
+
                             let comp_memo = if let Some(fp) = memo_fp_to_store
                                 && let last_memo_fp = processor_context
                                     .component()
@@ -483,16 +592,11 @@ impl<Prof: EngineProfile> Component<Prof> {
                                     .unwrap()
                                 && *last_memo_fp == memo_fp_to_store
                             {
-                                Some((fp, &ret))
+                                Some((fp, &ret, memo_states.as_slice()))
                             } else {
                                 None
                             };
-                            post_submit_for_build(
-                                processor_context,
-                                comp_memo,
-                                submit_output.memos_with_mounts_to_store,
-                            )
-                            .await?;
+                            post_submit_for_build(processor_context, comp_memo).await?;
                         }
                         Some(ComponentBuildOutput {
                             ret,

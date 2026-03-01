@@ -1,16 +1,20 @@
 from __future__ import annotations
 
+import ast
 import asyncio
 import functools
+import hashlib
 import importlib
 import inspect
 import pickle
+import textwrap
 import threading
 from typing import (
     Callable,
     Any,
     Concatenate,
     Generic,
+    NamedTuple,
     TypeVar,
     ParamSpec,
     Coroutine,
@@ -34,6 +38,7 @@ from .component_ctx import (
     get_context_from_ctx,
 )
 from .memo_key import fingerprint_call
+from .typing import NON_EXISTENCE
 
 
 P = ParamSpec("P")
@@ -86,9 +91,9 @@ if TYPE_CHECKING:
         def __call__(self, fn: Any) -> Any: ...
 
     class _BatchedDecorator(Protocol):
-        """Protocol for batched function decorator used by @cocoindex.asyncio.function.
+        """Protocol for batched function decorator used by @coco.fn.as_async.
 
-        Accepts both sync and async underlying functions, since @cocoindex.asyncio.function
+        Accepts both sync and async underlying functions, since @coco.fn.as_async
         always ensures the result is async.
 
         Transforms:
@@ -132,6 +137,119 @@ class Function(Protocol[P, R_co]):
     ) -> core.ComponentProcessor[R_co]: ...
 
 
+class StateMethodsResult(NamedTuple):
+    """Result of calling memo state methods."""
+
+    new_states: list[Any]
+    can_reuse: bool
+    states_changed: bool
+
+
+def _call_state_methods_sync(
+    state_methods: list[Callable[..., Any]],
+    stored_states: list[Any] | None,
+) -> StateMethodsResult:
+    """Call state methods synchronously and return a :class:`StateMethodsResult`.
+
+    Each state method receives the previously stored state (or ``NON_EXISTENCE`` on first run)
+    and returns ``(new_state, can_reuse)``.
+
+    *can_reuse* is the conjunction of all per-method ``can_reuse`` flags: if any method says
+    the memo is not reusable, the overall result is not reusable.
+
+    *states_changed* indicates whether any ``new_state`` differs from its stored counterpart
+    (``==`` check). This can be true even when ``can_reuse`` is true (e.g. mtime changed but
+    content hash unchanged).
+
+    If any method returns an ``Awaitable`` the awaitables are resolved:
+    - Running event loop → raise (suggest ``@coco.fn.as_async``).
+    - No loop → ``asyncio.run(asyncio.gather(...))``.
+    """
+    raw_results: list[Any] = [
+        method(stored_states[i] if stored_states is not None else NON_EXISTENCE)
+        for i, method in enumerate(state_methods)
+    ]
+
+    # Resolve awaitables produced by async state methods
+    awaitable_indices: list[int] = []
+    awaitables: list[Awaitable[Any]] = []
+    for i, r in enumerate(raw_results):
+        if isinstance(r, Awaitable):
+            awaitable_indices.append(i)
+            awaitables.append(r)
+
+    if awaitables:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+        else:
+            raise RuntimeError(
+                "Memo state function returned an awaitable from a sync context "
+                "with a running event loop. Use @coco.fn.as_async for the "
+                "decorated function instead."
+            )
+
+        async def _gather() -> list[Any]:
+            return list(await asyncio.gather(*awaitables))
+
+        resolved: list[Any] = asyncio.run(_gather())
+        for idx, val in zip(awaitable_indices, resolved):
+            raw_results[idx] = val
+
+    # Unpack (new_state, can_reuse) tuples
+    new_states: list[Any] = []
+    can_reuse = True
+    states_changed = stored_states is None
+    for i, (new_state, reusable) in enumerate(raw_results):
+        new_states.append(new_state)
+        if not reusable:
+            can_reuse = False
+        if stored_states is not None and new_state != stored_states[i]:
+            states_changed = True
+    return StateMethodsResult(new_states, can_reuse, states_changed)
+
+
+async def _call_state_methods_async(
+    state_methods: list[Callable[..., Any]],
+    stored_states: list[Any] | None,
+) -> StateMethodsResult:
+    """Async variant of :func:`_call_state_methods_sync`.
+
+    Calls each state method, then gathers any awaitables concurrently.
+    Returns a :class:`StateMethodsResult`.
+    """
+    raw_results: list[Any] = [
+        method(stored_states[i] if stored_states is not None else NON_EXISTENCE)
+        for i, method in enumerate(state_methods)
+    ]
+
+    # Resolve awaitables
+    awaitable_indices: list[int] = []
+    awaitables: list[Awaitable[Any]] = []
+    for i, r in enumerate(raw_results):
+        if isinstance(r, Awaitable):
+            awaitable_indices.append(i)
+            awaitables.append(r)
+
+    if awaitables:
+        resolved = await asyncio.gather(*awaitables)
+        for idx, val in zip(awaitable_indices, resolved):
+            raw_results[idx] = val
+
+    # Unpack (new_state, can_reuse) tuples
+    new_states: list[Any] = []
+    can_reuse = True
+    states_changed = stored_states is None
+    for i, (new_state, reusable) in enumerate(raw_results):
+        new_states.append(new_state)
+        if not reusable:
+            can_reuse = False
+        if stored_states is not None and new_state != stored_states[i]:
+            states_changed = True
+    return StateMethodsResult(new_states, can_reuse, states_changed)
+
+
 def _has_self_parameter(fn: Callable[..., Any]) -> bool:
     """Check if function has 'self' as first parameter (i.e., is a method)."""
     sig = inspect.signature(fn)
@@ -158,9 +276,13 @@ def _build_sync_core_processor(
     kwargs: dict[str, Any],
     processor_info: core.ComponentProcessorInfo,
     memo_fp: core.Fingerprint | None = None,
+    logic_fp: core.Fingerprint | None = None,
+    state_handler: Callable[..., Coroutine[Any, Any, Any]] | None = None,
 ) -> core.ComponentProcessor[R_co]:
     def _build(comp_ctx: core.ComponentProcessorContext) -> R_co:
         fn_ctx = core.FnCallContext()
+        if logic_fp is not None:
+            fn_ctx.add_logic_dep(logic_fp)
         context = ComponentContext(env, path, comp_ctx, fn_ctx)
         tok = _context_var.set(context)
         try:
@@ -169,26 +291,81 @@ def _build_sync_core_processor(
             _context_var.reset(tok)
             comp_ctx.join_fn_call(fn_ctx)
 
-    return core.ComponentProcessor.new_sync(_build, processor_info, memo_fp)
+    return core.ComponentProcessor.new_sync(
+        _build, processor_info, memo_fp, state_handler
+    )
+
+
+def _strip_docstring(body: list[ast.stmt]) -> None:
+    """Remove leading docstring from a function/class body in-place."""
+    if (
+        body
+        and isinstance(body[0], ast.Expr)
+        and isinstance(body[0].value, ast.Constant)
+        and isinstance(body[0].value.value, str)
+    ):
+        body.pop(0)
+
+
+def _compute_logic_fingerprint(
+    fn: Callable[..., Any], *, version: int | None = None
+) -> core.Fingerprint:
+    """Compute a fingerprint from the function's canonical AST.
+
+    Uses AST instead of raw source text so that comment, whitespace,
+    formatting, and docstring changes do not cause false cache invalidations.
+    Falls back to bytecode hashing when source is unavailable.
+
+    When *version* is provided, it is used as the canonical representation
+    instead of the AST — bumping version forces re-execution.
+
+    The fully-qualified module + qualname is always included so that
+    identical function bodies in different modules don't collide.
+    """
+    if version is not None:
+        canonical = f"<version>({version})"
+    else:
+        try:
+            source = textwrap.dedent(inspect.getsource(fn))
+            tree = ast.parse(source)
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    node.decorator_list = []
+                    _strip_docstring(node.body)
+            canonical = ast.dump(tree, include_attributes=False, annotate_fields=True)
+        except (OSError, SyntaxError):
+            canonical = f"<bytecode>{hashlib.sha256(fn.__code__.co_code).hexdigest()}"
+    payload = f"{fn.__module__}.{fn.__qualname__}\n{canonical}"
+    return core.fingerprint_str(payload)
 
 
 class SyncFunction(Function[P, R_co]):
     """Sync function with optional memoization.
 
     Does not support batching or runner — those require an async interface
-    and produce AsyncFunction (via @cocoindex.asyncio.function).
+    and produce AsyncFunction (via @coco.fn.as_async).
     """
 
-    __slots__ = ("_fn", "_memo", "_processor_info")
+    __slots__ = ("_fn", "_memo", "_processor_info", "_logic_fp")
 
     _fn: Callable[P, R_co]
     _memo: bool
     _processor_info: core.ComponentProcessorInfo
+    _logic_fp: core.Fingerprint
 
-    def __init__(self, fn: Callable[P, R_co], *, memo: bool):
+    def __init__(
+        self, fn: Callable[P, R_co], *, memo: bool, version: int | None = None
+    ):
         self._fn = fn
         self._memo = memo
         self._processor_info = core.ComponentProcessorInfo(fn.__qualname__)
+        self._logic_fp = _compute_logic_fingerprint(fn, version=version)
+        core.register_logic_fingerprint(self._logic_fp)
+
+    def __del__(self) -> None:
+        fp = getattr(self, "_logic_fp", None)
+        if fp is not None:
+            core.unregister_logic_fingerprint(fp)
 
     @overload
     def __get__(self, instance: None, owner: type) -> SyncFunction[P, R_co]: ...
@@ -226,26 +403,57 @@ class SyncFunction(Function[P, R_co]):
         fn_ctx: core.FnCallContext | None = None
         try:
             if self._memo:
-                memo_fp = fingerprint_call(self._fn, args, kwargs)
-                r = core.reserve_memoization(parent_ctx._core_processor_ctx, memo_fp)
-                if isinstance(r, core.PendingFnCallMemo):
-                    try:
-                        fn_ctx = core.FnCallContext()
-                        ret = _call_in_context(fn_ctx)
-                        if r.resolve(fn_ctx, ret):
-                            parent_ctx._core_fn_call_ctx.join_child_memo(memo_fp)
-                        return ret
-                    finally:
-                        r.close()
-                else:
-                    parent_ctx._core_fn_call_ctx.join_child_memo(memo_fp)
-                    return cast(R_co, r)
+                state_methods: list[Callable[..., Any]] = []
+                memo_fp = fingerprint_call(
+                    self._fn, args, kwargs, state_methods=state_methods
+                )
+                guard = core.reserve_memoization(
+                    parent_ctx._core_processor_ctx, memo_fp
+                )
+                try:
+                    # Check if cached result is still valid
+                    use_cache = False
+                    memo_states_for_resolve: list[Any] | None = None
+                    if guard.is_cached:
+                        use_cache = True
+                        if state_methods:
+                            state_result = _call_state_methods_sync(
+                                state_methods, guard.cached_memo_states
+                            )
+                            if not state_result.can_reuse:
+                                use_cache = False
+                                memo_states_for_resolve = state_result.new_states
+                            elif state_result.states_changed:
+                                guard.update_memo_states(state_result.new_states)
+
+                    if use_cache:
+                        parent_ctx._core_fn_call_ctx.join_child_memo(memo_fp)
+                        return cast(R_co, guard.cached_value)
+
+                    # Execute (cache miss or stale states)
+                    fn_ctx = core.FnCallContext()
+                    fn_ctx.add_logic_dep(self._logic_fp)
+                    ret = _call_in_context(fn_ctx)
+                    if memo_states_for_resolve is None and state_methods:
+                        memo_states_for_resolve = _call_state_methods_sync(
+                            state_methods, None
+                        ).new_states
+                    if guard.resolve(fn_ctx, ret, memo_states_for_resolve):
+                        parent_ctx._core_fn_call_ctx.join_child_memo(memo_fp)
+                    return ret
+                finally:
+                    guard.close()
             else:
                 fn_ctx = core.FnCallContext()
+                fn_ctx.add_logic_dep(self._logic_fp)
                 return _call_in_context(fn_ctx)
         finally:
             if fn_ctx is not None:
                 parent_ctx._core_fn_call_ctx.join_child(fn_ctx)
+
+    async def as_async(self, *args: P.args, **kwargs: P.kwargs) -> R_co:
+        """Call this sync function wrapped in async (runs via asyncio.to_thread)."""
+        return await asyncio.to_thread(self, *args, **kwargs)
 
     def _core_processor(
         self: SyncFunction[P0, R_co],
@@ -254,9 +462,33 @@ class SyncFunction(Function[P, R_co]):
         *args: P0.args,
         **kwargs: P0.kwargs,
     ) -> core.ComponentProcessor[R_co]:
-        memo_fp = fingerprint_call(self._fn, args, kwargs) if self._memo else None
+        state_methods: list[Callable[..., Any]] = []
+        memo_fp = (
+            fingerprint_call(self._fn, args, kwargs, state_methods=state_methods)
+            if self._memo
+            else None
+        )
+        state_handler: Callable[..., Coroutine[Any, Any, Any]] | None = None
+        if state_methods:
+            captured = state_methods
+
+            async def _state_handler(
+                stored_states: list[Any] | None,
+            ) -> StateMethodsResult:
+                return await _call_state_methods_async(captured, stored_states)
+
+            state_handler = _state_handler
+
         return _build_sync_core_processor(
-            self._fn, env, path, args, kwargs, self._processor_info, memo_fp
+            self._fn,
+            env,
+            path,
+            args,
+            kwargs,
+            self._processor_info,
+            memo_fp,
+            self._logic_fp,
+            state_handler,
         )
 
 
@@ -274,6 +506,10 @@ class _BoundSyncMethod(Generic[SelfT]):
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         return self._func(self._instance, *args, **kwargs)
 
+    async def as_async(self, *args: Any, **kwargs: Any) -> Any:
+        """Call this bound sync method wrapped in async (runs via asyncio.to_thread)."""
+        return await asyncio.to_thread(self, *args, **kwargs)
+
 
 # ============================================================================
 # Async Function
@@ -288,9 +524,13 @@ def _build_async_core_processor(
     kwargs: dict[str, Any],
     processor_info: core.ComponentProcessorInfo,
     memo_fp: core.Fingerprint | None = None,
+    logic_fp: core.Fingerprint | None = None,
+    state_handler: Callable[..., Coroutine[Any, Any, Any]] | None = None,
 ) -> core.ComponentProcessor[R_co]:
     async def _build(comp_ctx: core.ComponentProcessorContext) -> R_co:
         fn_ctx = core.FnCallContext()
+        if logic_fp is not None:
+            fn_ctx.add_logic_dep(logic_fp)
         context = ComponentContext(env, path, comp_ctx, fn_ctx)
         tok = _context_var.set(context)
         try:
@@ -299,7 +539,9 @@ def _build_async_core_processor(
             _context_var.reset(tok)
             comp_ctx.join_fn_call(fn_ctx)
 
-    return core.ComponentProcessor.new_async(_build, processor_info, memo_fp)
+    return core.ComponentProcessor.new_async(
+        _build, processor_info, memo_fp, state_handler
+    )
 
 
 # Cache for expensive self objects in subprocess (keyed by pickle bytes).
@@ -329,6 +571,10 @@ class _BoundAsyncMethod(Generic[SelfT]):
     async def __call__(self, *args: Any, **kwargs: Any) -> Any:
         return await self._func(self._instance, *args, **kwargs)
 
+    async def as_async(self, *args: Any, **kwargs: Any) -> Any:
+        """Call this bound async method (same as __call__)."""
+        return await self(*args, **kwargs)
+
     async def _execute_orig_async_fn(self, *args: Any, **kwargs: Any) -> Any:
         return await self._func._execute_orig_async_fn(self._instance, *args, **kwargs)
 
@@ -356,6 +602,7 @@ class AsyncFunction(Function[P, R_co]):
         "_fn_is_async",
         "_memo",
         "_processor_info",
+        "_logic_fp",
         "_batching",
         "_max_batch_size",
         "_runner",
@@ -387,6 +634,7 @@ class AsyncFunction(Function[P, R_co]):
         batching: bool = False,
         max_batch_size: int | None = None,
         runner: Runner | None = None,
+        version: int | None = None,
     ) -> None:
         fn = async_fn or sync_fn
         if fn is None:
@@ -395,6 +643,8 @@ class AsyncFunction(Function[P, R_co]):
         self._orig_sync_fn = sync_fn
         self._memo = memo
         self._processor_info = core.ComponentProcessorInfo(fn.__qualname__)
+        self._logic_fp = _compute_logic_fingerprint(fn, version=version)
+        core.register_logic_fingerprint(self._logic_fp)
         self._batching = batching
         self._max_batch_size = max_batch_size
         self._runner = runner
@@ -402,6 +652,11 @@ class AsyncFunction(Function[P, R_co]):
         self._queues = {}
         self._batchers = {}
         self._batchers_lock = threading.Lock()
+
+    def __del__(self) -> None:
+        fp = getattr(self, "_logic_fp", None)
+        if fp is not None:
+            core.unregister_logic_fingerprint(fp)
 
     @property
     def _any_fn(self) -> AnyCallable[P, R_co]:
@@ -441,27 +696,47 @@ class AsyncFunction(Function[P, R_co]):
             return self
         return _BoundAsyncMethod(self, instance)  # type: ignore[arg-type]
 
+    async def as_async(self, *args: P.args, **kwargs: P.kwargs) -> R_co:
+        """Call this async function (same as __call__)."""
+        return await self(*args, **kwargs)
+
     async def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R_co:
         """Core implementation."""
 
         parent_ctx = _context_var.get(None)
-        pending_memo: core.PendingFnCallMemo | None = None
+        guard: core.FnCallMemoGuard | None = None
         memo_fp: core.Fingerprint | None = None
         fn_ctx = core.FnCallContext()
+        fn_ctx.add_logic_dep(self._logic_fp)
+        state_methods: list[Callable[..., Any]] = []
 
         try:
             # Check memo (when enabled and context available)
+            memo_states_for_resolve: list[Any] | None = None
             if self._memo and parent_ctx is not None:
-                memo_fp = fingerprint_call(self._any_fn, args, kwargs)
-                r = await core.reserve_memoization_async(
+                memo_fp = fingerprint_call(
+                    self._any_fn, args, kwargs, state_methods=state_methods
+                )
+                guard = await core.reserve_memoization_async(
                     parent_ctx._core_processor_ctx, memo_fp
                 )
-                if not isinstance(r, core.PendingFnCallMemo):
-                    parent_ctx._core_fn_call_ctx.join_child_memo(memo_fp)
-                    return cast(R_co, r)
-                pending_memo = r
+                if guard.is_cached:
+                    # Check if cached result is still valid
+                    use_cache = True
+                    if state_methods:
+                        state_result = await _call_state_methods_async(
+                            state_methods, guard.cached_memo_states
+                        )
+                        if not state_result.can_reuse:
+                            use_cache = False
+                            memo_states_for_resolve = state_result.new_states
+                        elif state_result.states_changed:
+                            guard.update_memo_states(state_result.new_states)
+                    if use_cache:
+                        parent_ctx._core_fn_call_ctx.join_child_memo(memo_fp)
+                        return cast(R_co, guard.cached_value)
 
-            # Execute
+            # Execute (no memo, cache miss, or stale states)
             if parent_ctx is None:
                 async_ctx = core.AsyncContext(get_event_loop_or_default())
                 result = await self._execute(async_ctx, *args, **kwargs)
@@ -475,16 +750,20 @@ class AsyncFunction(Function[P, R_co]):
                 finally:
                     _context_var.reset(tok)
 
-            # Resolve memo if pending
-            if pending_memo is not None:
-                if pending_memo.resolve(fn_ctx, result):
+            # Resolve memo if guard is held
+            if guard is not None:
+                if memo_states_for_resolve is None and state_methods:
+                    memo_states_for_resolve = (
+                        await _call_state_methods_async(state_methods, None)
+                    ).new_states
+                if guard.resolve(fn_ctx, result, memo_states_for_resolve):
                     assert parent_ctx is not None and memo_fp is not None
                     parent_ctx._core_fn_call_ctx.join_child_memo(memo_fp)
 
             return result
         finally:
-            if pending_memo is not None:
-                pending_memo.close()
+            if guard is not None:
+                guard.close()
             if fn_ctx is not None and parent_ctx is not None:
                 parent_ctx._core_fn_call_ctx.join_child(fn_ctx)
 
@@ -543,7 +822,6 @@ class AsyncFunction(Function[P, R_co]):
         Handles both sync and async underlying functions.
         """
         if self._runner is not None:
-            # Use picklable callable for subprocess execution
             # Choose appropriate callable and runner method based on underlying fn type
             bound_fn_obj = self.__get__(self_obj)
             batch_callable, runner_run = (
@@ -640,11 +918,29 @@ class AsyncFunction(Function[P, R_co]):
         *args: P.args,
         **kwargs: P.kwargs,
     ) -> core.ComponentProcessor[R_co]:
+        state_methods: list[Callable[..., Any]] = []
         memo_fp = (
-            fingerprint_call(self._any_fn, (path, *args), kwargs)
+            fingerprint_call(
+                self._any_fn,
+                (path, *args),
+                kwargs,
+                state_methods=state_methods,
+            )
             if self._memo
             else None
         )
+
+        state_handler: Callable[..., Coroutine[Any, Any, Any]] | None = None
+        if state_methods:
+            captured = state_methods
+
+            async def _state_handler(
+                stored_states: list[Any] | None,
+            ) -> StateMethodsResult:
+                return await _call_state_methods_async(captured, stored_states)
+
+            state_handler = _state_handler
+
         if self._is_scheduled:
             async_ctx = env.async_context
             return _build_async_core_processor(
@@ -655,17 +951,35 @@ class AsyncFunction(Function[P, R_co]):
                 kwargs,
                 self._processor_info,
                 memo_fp,
+                self._logic_fp,
+                state_handler,
             )
 
         orig_async_fn = self._orig_async_fn
         if orig_async_fn is not None:
             return _build_async_core_processor(
-                orig_async_fn, env, path, args, kwargs, self._processor_info, memo_fp
+                orig_async_fn,
+                env,
+                path,
+                args,
+                kwargs,
+                self._processor_info,
+                memo_fp,
+                self._logic_fp,
+                state_handler,
             )
 
         assert self._orig_sync_fn is not None
         return _build_sync_core_processor(
-            self._orig_sync_fn, env, path, args, kwargs, self._processor_info, memo_fp
+            self._orig_sync_fn,
+            env,
+            path,
+            args,
+            kwargs,
+            self._processor_info,
+            memo_fp,
+            self._logic_fp,
+            state_handler,
         )
 
 
@@ -682,19 +996,21 @@ class _GenericFunctionBuilder:
         batching: bool = False,
         max_batch_size: int | None = None,
         runner: Runner | None = None,
+        version: int | None = None,
     ) -> None:
         self._memo = memo
         self._batching = batching
         self._max_batch_size = max_batch_size
         self._runner = runner
+        self._version = version
 
     def _build_sync(self, fn: Callable[P, R_co]) -> SyncFunction[P, R_co]:
         if self._batching or self._runner is not None:
             raise ValueError(
                 "Batching and runner require the function to be async. "
-                "Use @cocoindex.asyncio.function instead, or rewrite the function to be async."
+                "Use @coco.fn.as_async instead, or rewrite the function to be async."
             )
-        wrapper = SyncFunction(fn, memo=self._memo)
+        wrapper = SyncFunction(fn, memo=self._memo, version=self._version)
         functools.update_wrapper(wrapper, fn)
         return wrapper
 
@@ -712,6 +1028,7 @@ class _GenericFunctionBuilder:
             batching=self._batching,
             max_batch_size=self._max_batch_size,
             runner=self._runner,
+            version=self._version,
         )
         functools.update_wrapper(wrapper, fn)
         return wrapper
@@ -722,16 +1039,17 @@ class _SyncFunctionBuilder(_GenericFunctionBuilder):
     def __call__(self, fn: Callable[P, R_co]) -> SyncFunction[P, R_co]:
         if inspect.iscoroutinefunction(fn):
             raise ValueError(
-                "Async functions are not supported by @cocoindex.function decorator. "
-                "Please use @cocoindex.asyncio.function instead."
+                "Async functions are not supported by @coco.fn decorator "
+                "when batching or runner is specified. "
+                "Please use @coco.fn.as_async instead."
             )
         return self._build_sync(fn)
 
 
 # Supports sync function -> sync function and async function -> async function
 class _AutoFunctionBuilder(_GenericFunctionBuilder):
-    def __init__(self, *, memo: bool = False) -> None:
-        super().__init__(memo=memo)
+    def __init__(self, *, memo: bool = False, version: int | None = None) -> None:
+        super().__init__(memo=memo, version=version)
 
     @overload
     def __call__(  # type: ignore[overload-overlap]
@@ -766,150 +1084,183 @@ class _AsyncFunctionBuilder(_GenericFunctionBuilder):
         return self._build_async(fn)
 
 
-# Without batching / runner, supports both sync and async functions
-@overload
-def function(
-    *,
-    memo: bool = False,
-) -> _AutoFunctionBuilder: ...
-# Overload for batching=True
-@overload
-def function(
-    *,
-    memo: bool = False,
-    batching: Literal[True],
-    max_batch_size: int | None = None,
-    runner: Runner | None = None,
-) -> _AsyncBatchedDecorator: ...
-# With batching / runner, only supports sync functions
-@overload
-def function(
-    *,
-    memo: bool = False,
-    batching: Literal[False] = False,
-    max_batch_size: int | None = None,
-    runner: Runner | None = None,
-) -> _SyncFunctionBuilder: ...
-# Overloads for direct function decoration
-@overload
-def function(  # type: ignore[overload-overlap]
-    fn: AsyncCallable[P, R_co], /
-) -> AsyncFunction[P, R_co]: ...
-@overload
-def function(fn: Callable[P, R_co], /) -> SyncFunction[P, R_co]: ...
-def function(
-    fn: Callable[P, R_co] | None = None,
-    /,
-    *,
-    memo: bool = False,
-    batching: bool = False,
-    max_batch_size: int | None = None,
-    runner: Runner | None = None,
-) -> Any:
-    """Decorator for CocoIndex functions (exposed as @cocoindex.function).
+class _FunctionDecorator:
+    """Namespace for @coco.fn and @coco.fn.as_async decorators."""
 
-    Preserves the sync/async nature of the underlying function:
-    - Sync function -> SyncFunction (sync)
-    - Async function -> AsyncFunction (async)
+    # --- @coco.fn(...) / @coco.fn ---
 
-    Args:
-        fn: The function to decorate (optional, for use without parentheses)
-        memo: Enable memoization (skip execution when inputs unchanged)
-        batching: Enable batching (function receives list[T], returns list[R])
-        max_batch_size: Maximum batch size (only with batching=True)
-        runner: Runner to execute the function (e.g., GPU for subprocess)
+    # Without batching / runner, supports both sync and async functions
+    @overload
+    def __call__(
+        self,
+        *,
+        memo: bool = False,
+        version: int | None = None,
+    ) -> _AutoFunctionBuilder: ...
+    # Overload for batching=True
+    @overload
+    def __call__(
+        self,
+        *,
+        memo: bool = False,
+        batching: Literal[True],
+        max_batch_size: int | None = None,
+        runner: Runner | None = None,
+        version: int | None = None,
+    ) -> _AsyncBatchedDecorator: ...
+    # With batching / runner, only supports sync functions
+    @overload
+    def __call__(
+        self,
+        *,
+        memo: bool = False,
+        batching: Literal[False] = False,
+        max_batch_size: int | None = None,
+        runner: Runner | None = None,
+        version: int | None = None,
+    ) -> _SyncFunctionBuilder: ...
+    # Overloads for direct function decoration
+    @overload
+    def __call__(  # type: ignore[overload-overlap]
+        self, fn: AsyncCallable[P, R_co], /
+    ) -> AsyncFunction[P, R_co]: ...
+    @overload
+    def __call__(self, fn: Callable[P, R_co], /) -> SyncFunction[P, R_co]: ...
+    def __call__(  # type: ignore[misc]
+        self,
+        fn: Callable[P, R_co] | None = None,
+        /,
+        *,
+        memo: bool = False,
+        batching: bool = False,
+        max_batch_size: int | None = None,
+        runner: Runner | None = None,
+        version: int | None = None,
+    ) -> Any:
+        """Decorator for CocoIndex functions (exposed as @coco.fn).
 
-    Batching and runner require an async interface. With this decorator, only sync
-    underlying functions are accepted when batching/runner is specified. Use
-    @cocoindex.asyncio.function for sync underlying functions that need batching/runner.
+        Preserves the sync/async nature of the underlying function:
+        - Sync function -> SyncFunction (sync)
+        - Async function -> AsyncFunction (async)
 
-    Memoization works with all modes:
-        - Without batching/runner: requires ComponentContext
-        - With batching/runner: ComponentContext optional, memo checked when available
-    """
-    builder = (
-        _SyncFunctionBuilder(
-            memo=memo, batching=batching, max_batch_size=max_batch_size, runner=runner
+        Args:
+            fn: The function to decorate (optional, for use without parentheses)
+            memo: Enable memoization (skip execution when inputs unchanged)
+            batching: Enable batching (function receives list[T], returns list[R])
+            max_batch_size: Maximum batch size (only with batching=True)
+            runner: Runner to execute the function (e.g., GPU for subprocess)
+            version: Explicit version number for change tracking. When specified,
+                the version is used as the logic fingerprint instead of the AST.
+                Bump this to force re-execution even when code looks the same.
+
+        Batching and runner require an async interface. With this decorator, only
+        async underlying functions are accepted when batching/runner is specified.
+        Use @coco.fn.as_async for sync underlying functions that need
+        batching/runner.
+
+        Memoization works with all modes:
+            - Without batching/runner: requires ComponentContext
+            - With batching/runner: ComponentContext optional, memo checked when available
+        """
+        builder = (
+            _SyncFunctionBuilder(
+                memo=memo,
+                batching=batching,
+                max_batch_size=max_batch_size,
+                runner=runner,
+                version=version,
+            )
+            if batching or runner or max_batch_size is not None
+            else _AutoFunctionBuilder(memo=memo, version=version)
         )
-        if batching or runner or max_batch_size is not None
-        else _AutoFunctionBuilder(memo=memo)
-    )
-    if fn is not None:
-        return builder(fn)
-    else:
-        return builder
+        if fn is not None:
+            return builder(fn)
+        else:
+            return builder
+
+    # --- @coco.fn.as_async(...) / @coco.fn.as_async ---
+
+    # Overload for batching=True
+    @overload
+    def as_async(
+        self,
+        *,
+        memo: bool = False,
+        batching: Literal[True],
+        max_batch_size: int | None = None,
+        runner: Runner | None = None,
+        version: int | None = None,
+    ) -> _BatchedDecorator: ...
+    # Overload for keyword-only args without batching
+    @overload
+    def as_async(
+        self,
+        *,
+        memo: bool = False,
+        batching: Literal[False] = False,
+        max_batch_size: int | None = None,
+        runner: Runner | None = None,
+        version: int | None = None,
+    ) -> _AsyncFunctionBuilder: ...
+    # Overloads for direct function decoration
+    @overload
+    def as_async(
+        self,
+        fn: AsyncCallable[P, R_co],
+        /,
+    ) -> AsyncFunction[P, R_co]: ...
+    @overload
+    def as_async(
+        self,
+        fn: Callable[P, R_co],
+        /,
+    ) -> AsyncFunction[P, R_co]: ...
+    def as_async(  # type: ignore[misc]
+        self,
+        fn: Any = None,
+        /,
+        *,
+        memo: bool = False,
+        batching: bool = False,
+        max_batch_size: int | None = None,
+        runner: Runner | None = None,
+        version: int | None = None,
+    ) -> Any:
+        """Decorator for CocoIndex functions (exposed as @coco.fn.as_async).
+
+        Always yields an async function, equivalent to @coco.fn plus ensuring
+        the result is async. Accepts both sync and async underlying functions.
+
+        Args:
+            fn: The function to decorate (optional, for use without parentheses)
+            memo: Enable memoization (skip execution when inputs unchanged)
+            batching: Enable batching (function receives list[T], returns list[R])
+            max_batch_size: Maximum batch size (only with batching=True)
+            runner: Runner to execute the function (e.g., GPU for subprocess)
+            version: Explicit version number for change tracking. When specified,
+                the version is used as the logic fingerprint instead of the AST.
+                Bump this to force re-execution even when code looks the same.
+
+        Batching and runner are fully supported since the result is always async.
+
+        Memoization works with all modes:
+            - Without batching/runner: requires ComponentContext
+            - With batching/runner: ComponentContext optional, memo checked when available
+        """
+        builder = _AsyncFunctionBuilder(
+            memo=memo,
+            batching=batching,
+            max_batch_size=max_batch_size,
+            runner=runner,
+            version=version,
+        )
+        if fn is not None:
+            return builder(fn)
+        else:
+            return builder
 
 
-# Overload for batching=True
-@overload
-def async_function(
-    *,
-    memo: bool = False,
-    batching: Literal[True],
-    max_batch_size: int | None = None,
-    runner: Runner | None = None,
-) -> _BatchedDecorator: ...
-
-
-# Overload for keyword-only args without batching
-@overload
-def async_function(
-    *,
-    memo: bool = False,
-    batching: Literal[False] = False,
-    max_batch_size: int | None = None,
-    runner: Runner | None = None,
-) -> _AsyncFunctionBuilder: ...
-
-
-# Overloads for direct function decoration
-@overload
-def async_function(
-    fn: AsyncCallable[P, R_co],
-    /,
-) -> AsyncFunction[P, R_co]: ...
-@overload
-def async_function(
-    fn: Callable[P, R_co],
-    /,
-) -> AsyncFunction[P, R_co]: ...
-def async_function(
-    fn: Any = None,
-    /,
-    *,
-    memo: bool = False,
-    batching: bool = False,
-    max_batch_size: int | None = None,
-    runner: Runner | None = None,
-) -> Any:
-    """Decorator for CocoIndex functions (exposed as @cocoindex.asyncio.function).
-
-    Always yields an async function, equivalent to @cocoindex.function plus ensuring
-    the result is async. Accepts both sync and async underlying functions.
-
-    Args:
-        fn: The function to decorate (optional, for use without parentheses)
-        memo: Enable memoization (skip execution when inputs unchanged)
-        batching: Enable batching (function receives list[T], returns list[R])
-        max_batch_size: Maximum batch size (only with batching=True)
-        runner: Runner to execute the function (e.g., GPU for subprocess)
-
-    Batching and runner are fully supported since the result is always async.
-
-    Memoization works with all modes:
-        - Without batching/runner: requires ComponentContext
-        - With batching/runner: ComponentContext optional, memo checked when available
-    """
-    builder = _AsyncFunctionBuilder(
-        memo=memo,
-        batching=batching,
-        max_batch_size=max_batch_size,
-        runner=runner,
-    )
-    if fn is not None:
-        return builder(fn)
-    else:
-        return builder
+fn = _FunctionDecorator()
 
 
 def create_core_component_processor(

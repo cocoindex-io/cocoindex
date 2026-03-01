@@ -175,6 +175,10 @@ pub struct ComponentMemoizationInfo<'a> {
     pub processor_fp: Fingerprint,
     #[serde(rename = "R", borrow)]
     pub return_value: MemoizedValue<'a>,
+    #[serde(rename = "L", default, skip_serializing_if = "Vec::is_empty")]
+    pub logic_deps: Vec<Fingerprint>,
+    #[serde(rename = "S", default, skip_serializing_if = "Vec::is_empty", borrow)]
+    pub memo_states: Vec<MemoizedValue<'a>>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -182,17 +186,21 @@ pub struct FunctionMemoizationEntry<'a> {
     /// Memoization info is stored in the component metadata
     #[serde(rename = "R", borrow)]
     pub return_value: MemoizedValue<'a>,
+    #[serde(rename = "L", default, skip_serializing_if = "Vec::is_empty")]
+    pub logic_deps: Vec<Fingerprint>,
 
-    /// Relative paths to the parent components.
-    #[serde(rename = "C")]
+    /// Relative paths to the parent components (legacy field, no longer written).
+    #[serde(rename = "C", default, skip_serializing_if = "Vec::is_empty")]
     pub child_components: Vec<StablePath>,
     /// Target states that are declared by the function.
-    #[serde(rename = "E")]
+    #[serde(rename = "E", default, skip_serializing_if = "Vec::is_empty")]
     pub target_state_paths: Vec<TargetStatePath>,
     /// Dependency entries that are declared by the function.
     /// Only needs to keep dependencies with side effects other than return value (child components / target states / dependency entries with side effects).
-    #[serde(rename = "D")]
+    #[serde(rename = "D", default, skip_serializing_if = "Vec::is_empty")]
     pub dependency_memo_entries: Vec<Fingerprint>,
+    #[serde(rename = "S", default, skip_serializing_if = "Vec::is_empty", borrow)]
+    pub memo_states: Vec<MemoizedValue<'a>>,
 }
 
 #[serde_as]
@@ -227,7 +235,7 @@ pub struct EffectInfoItem<'a> {
     #[serde_as(as = "Bytes")]
     #[serde(rename = "P", borrow)]
     pub key: Cow<'a, [u8]>,
-    #[serde(rename = "S", borrow)]
+    #[serde(rename = "S", borrow, default, skip_serializing_if = "Vec::is_empty")]
     pub states: Vec<(/*version*/ u64, EffectInfoItemState<'a>)>,
 }
 
@@ -257,7 +265,7 @@ impl<'a> StablePathEntryTrackingInfo<'a> {
     }
 }
 
-#[derive(Serialize, Deserialize, PartialEq, Eq, Clone, Copy)]
+#[derive(Serialize, Deserialize, PartialEq, Eq, Clone, Copy, Debug)]
 pub enum StablePathNodeType {
     #[serde(rename = "D")]
     Directory,

@@ -12,6 +12,7 @@ use crate::engine::context::{
     FnCallMemo,
 };
 use crate::engine::context::{FnCallContext, FnCallMemoEntry};
+use crate::engine::logic_registry;
 use crate::engine::profile::{EngineProfile, Persist};
 use crate::engine::target_state::{
     TargetActionSink, TargetHandler, TargetStateProvider, TargetStateProviderRegistry,
@@ -25,7 +26,7 @@ use cocoindex_utils::fingerprint::Fingerprint;
 pub(crate) fn use_or_invalidate_component_memoization<Prof: EngineProfile>(
     comp_ctx: &ComponentProcessorContext<Prof>,
     processor_fp: Option<Fingerprint>,
-) -> Result<Option<Prof::FunctionData>> {
+) -> Result<Option<(Prof::FunctionData, Vec<Prof::FunctionData>)>> {
     // Short-circuit to miss under full_reprocess
     if comp_ctx.full_reprocess() {
         return Ok(None);
@@ -46,13 +47,27 @@ pub(crate) fn use_or_invalidate_component_memoization<Prof: EngineProfile>(
         };
         if let Some(processor_fp) = processor_fp {
             let memo_info: db_schema::ComponentMemoizationInfo<'_> = from_msgpack_slice(&data)?;
-            if memo_info.processor_fp == processor_fp {
+            if memo_info.processor_fp == processor_fp
+                && logic_registry::all_contained(&memo_info.logic_deps)
+            {
                 let bytes = match memo_info.return_value {
                     db_schema::MemoizedValue::Inlined(b) => b,
                 };
                 let ret = Prof::FunctionData::from_bytes(bytes.as_ref());
                 match ret {
-                    Ok(ret) => return Ok(Some(ret)),
+                    Ok(ret) => {
+                        let memo_states = memo_info
+                            .memo_states
+                            .iter()
+                            .map(|s| {
+                                let bytes = match s {
+                                    db_schema::MemoizedValue::Inlined(b) => b,
+                                };
+                                Prof::FunctionData::from_bytes(bytes.as_ref())
+                            })
+                            .collect::<Result<Vec<_>>>()?;
+                        return Ok(Some((ret, memo_states)));
+                    }
                     Err(e) => {
                         warn!(
                             "Skip memoized return value because it failed in deserialization: {:?}",
@@ -88,12 +103,65 @@ fn delete_component_memoization<Prof: EngineProfile>(
     Ok(())
 }
 
+/// Update only the memo states of an existing component memoization entry.
+///
+/// Used when memo state validation indicates `can_reuse=true` but states have changed
+/// (e.g. mtime changed but content fingerprint is unchanged). Reads the existing entry,
+/// replaces the `memo_states` field, and writes it back — preserving `processor_fp`,
+/// `return_value`, and `logic_deps`.
+pub(crate) fn update_component_memo_states<Prof: EngineProfile>(
+    comp_ctx: &ComponentProcessorContext<Prof>,
+    new_states: &[Prof::FunctionData],
+) -> Result<()> {
+    let key = db_schema::DbEntryKey::StablePath(
+        comp_ctx.stable_path().clone(),
+        db_schema::StablePathEntryKey::ComponentMemoization,
+    )
+    .encode()?;
+
+    let db_env = comp_ctx.app_ctx().env().db_env();
+    let db = comp_ctx.app_ctx().db();
+
+    // Read existing entry
+    let data = {
+        let rtxn = db_env.read_txn()?;
+        db.get(&rtxn, key.as_slice())?.map(|d| d.to_vec())
+    };
+    let Some(data) = data else {
+        return Ok(());
+    };
+    let existing: db_schema::ComponentMemoizationInfo<'_> = from_msgpack_slice(&data)?;
+
+    // Serialize new states
+    let memo_states_serialized: Vec<db_schema::MemoizedValue<'_>> = new_states
+        .iter()
+        .map(|s| {
+            let bytes = s.to_bytes()?;
+            Ok(db_schema::MemoizedValue::Inlined(Cow::Owned(bytes.into())))
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    // Write back with updated states, preserving everything else
+    let memo_info = db_schema::ComponentMemoizationInfo {
+        processor_fp: existing.processor_fp,
+        return_value: existing.return_value,
+        logic_deps: existing.logic_deps,
+        memo_states: memo_states_serialized,
+    };
+    let encoded = rmp_serde::to_vec_named(&memo_info)?;
+    let mut wtxn = db_env.write_txn()?;
+    db.put(&mut wtxn, key.as_slice(), encoded.as_slice())?;
+    wtxn.commit()?;
+    Ok(())
+}
+
 fn write_component_memoization<Prof: EngineProfile>(
     wtxn: &mut RwTxn<'_>,
     db: &db_schema::Database,
     comp_ctx: &ComponentProcessorContext<Prof>,
     processor_fp: Fingerprint,
     return_value: &Prof::FunctionData,
+    memo_states: &[Prof::FunctionData],
 ) -> Result<()> {
     let key = db_schema::DbEntryKey::StablePath(
         comp_ctx.stable_path().clone(),
@@ -102,9 +170,18 @@ fn write_component_memoization<Prof: EngineProfile>(
     .encode()?;
 
     let bytes = return_value.to_bytes()?;
+    let memo_states_serialized: Vec<db_schema::MemoizedValue<'_>> = memo_states
+        .iter()
+        .map(|s| {
+            let bytes = s.to_bytes()?;
+            Ok(db_schema::MemoizedValue::Inlined(Cow::Owned(bytes.into())))
+        })
+        .collect::<Result<Vec<_>>>()?;
     let memo_info = db_schema::ComponentMemoizationInfo {
         processor_fp,
         return_value: db_schema::MemoizedValue::Inlined(Cow::Borrowed(bytes.as_ref())),
+        logic_deps: comp_ctx.take_logic_deps(),
+        memo_states: memo_states_serialized,
     };
     let encoded = rmp_serde::to_vec_named(&memo_info)?;
     db.put(wtxn, key.as_slice(), encoded.as_slice())?;
@@ -124,11 +201,21 @@ fn write_fn_call_memo<Prof: EngineProfile>(
     )
     .encode()?;
     let ret_bytes = memo.ret.to_bytes()?;
+    let memo_states_serialized: Vec<db_schema::MemoizedValue<'_>> = memo
+        .memo_states
+        .iter()
+        .map(|s| {
+            let bytes = s.to_bytes()?;
+            Ok(db_schema::MemoizedValue::Inlined(Cow::Owned(bytes.into())))
+        })
+        .collect::<Result<Vec<_>>>()?;
     let fn_call_memo = db_schema::FunctionMemoizationEntry {
         return_value: db_schema::MemoizedValue::Inlined(Cow::Borrowed(ret_bytes.as_ref())),
-        child_components: memo.child_components,
+        child_components: vec![],
         target_state_paths: memo.target_state_paths,
         dependency_memo_entries: memo.dependency_memo_entries.into_iter().collect(),
+        logic_deps: memo.logic_deps.into_iter().collect(),
+        memo_states: memo_states_serialized,
     };
     let encoded = rmp_serde::to_vec_named(&fn_call_memo)?;
     db.put(wtxn, key.as_slice(), encoded.as_slice())?;
@@ -152,15 +239,34 @@ fn read_fn_call_memo_with_txn<Prof: EngineProfile>(
         return Ok(None);
     };
     let fn_call_memo: db_schema::FunctionMemoizationEntry<'_> = from_msgpack_slice(&data)?;
+    if !logic_registry::all_contained(&fn_call_memo.logic_deps) {
+        return Ok(None);
+    }
+    if !fn_call_memo.child_components.is_empty() {
+        // Legacy entry stored child component paths. Invalidate it so the function re-runs,
+        // detects the child components, logs a warning, and the entry is cleaned up.
+        return Ok(None);
+    }
     let return_value_bytes = match fn_call_memo.return_value {
         db_schema::MemoizedValue::Inlined(b) => b,
     };
     let ret = Prof::FunctionData::from_bytes(return_value_bytes.as_ref())?;
+    let memo_states = fn_call_memo
+        .memo_states
+        .iter()
+        .map(|s| {
+            let bytes = match s {
+                db_schema::MemoizedValue::Inlined(b) => b,
+            };
+            Prof::FunctionData::from_bytes(bytes.as_ref())
+        })
+        .collect::<Result<Vec<_>>>()?;
     Ok(Some(FnCallMemo {
         ret,
-        child_components: fn_call_memo.child_components,
         target_state_paths: fn_call_memo.target_state_paths,
         dependency_memo_entries: fn_call_memo.dependency_memo_entries.into_iter().collect(),
+        logic_deps: fn_call_memo.logic_deps.into_iter().collect(),
+        memo_states,
         already_stored: true,
     }))
 }
@@ -668,7 +774,6 @@ impl<Prof: EngineProfile> SinkInput<Prof> {
 
 pub(crate) struct SubmitOutput<Prof: EngineProfile> {
     pub built_target_states_providers: Option<TargetStateProviderRegistry<Prof>>,
-    pub memos_with_mounts_to_store: Vec<(Fingerprint, FnCallMemo<Prof>)>,
     pub touched_previous_states: bool,
 }
 
@@ -681,7 +786,6 @@ pub(crate) async fn submit<Prof: EngineProfile>(
     let processor_name = processor.map(|p| p.processor_info().name.as_str());
 
     let mut built_target_states_providers: Option<TargetStateProviderRegistry<Prof>> = None;
-    let mut memos_with_mounts_to_store: Vec<(Fingerprint, FnCallMemo<Prof>)> = Vec::new();
     let (target_states_providers, declared_effects, child_path_set, finalized_fn_call_memos) =
         match comp_ctx.processing_state() {
             ComponentProcessingAction::Build(build_ctx) => {
@@ -693,13 +797,9 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                     );
                 };
 
-                let mut child_path_set = building_state.child_path_set;
-                let finalized_fn_call_memos = finalize_fn_call_memoization(
-                    comp_ctx,
-                    building_state.fn_call_memos,
-                    &mut memos_with_mounts_to_store,
-                    &mut child_path_set,
-                )?;
+                let child_path_set = building_state.child_path_set;
+                let finalized_fn_call_memos =
+                    finalize_fn_call_memoization(comp_ctx, building_state.fn_call_memos)?;
                 (
                     &built_target_states_providers
                         .get_or_insert(building_state.target_states.provider_registry)
@@ -753,7 +853,6 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                         Some(db_schema::StablePathNodeType::Component) => {
                             return Ok(SubmitOutput {
                                 built_target_states_providers: None,
-                                memos_with_mounts_to_store,
                                 touched_previous_states: false,
                             });
                         }
@@ -975,7 +1074,6 @@ pub(crate) async fn submit<Prof: EngineProfile>(
 
     Ok(SubmitOutput {
         built_target_states_providers,
-        memos_with_mounts_to_store,
         touched_previous_states,
     })
 }
@@ -983,21 +1081,21 @@ pub(crate) async fn submit<Prof: EngineProfile>(
 #[instrument(name = "post_submit_after_ready", skip_all)]
 pub(crate) async fn post_submit_for_build<Prof: EngineProfile>(
     comp_ctx: &ComponentProcessorContext<Prof>,
-    comp_memo: Option<(Fingerprint, &'_ Prof::FunctionData)>,
-    memos_with_mounts_to_store: Vec<(Fingerprint, FnCallMemo<Prof>)>,
+    comp_memo: Option<(
+        Fingerprint,
+        &'_ Prof::FunctionData,
+        &'_ [Prof::FunctionData],
+    )>,
 ) -> Result<()> {
-    if comp_memo.is_none() && memos_with_mounts_to_store.is_empty() {
+    if comp_memo.is_none() {
         return Ok(());
     }
     let db_env = comp_ctx.app_ctx().env().db_env();
     let mut wtxn = db_env.write_txn()?;
     let db = comp_ctx.app_ctx().db();
 
-    if let Some((fp, ret)) = comp_memo {
-        write_component_memoization(&mut wtxn, db, comp_ctx, fp, &ret)?;
-    }
-    for (fp, memo) in memos_with_mounts_to_store {
-        write_fn_call_memo(&mut wtxn, db, comp_ctx, fp, memo)?;
+    if let Some((fp, ret, memo_states)) = comp_memo {
+        write_component_memoization(&mut wtxn, db, comp_ctx, fp, &ret, memo_states)?;
     }
     wtxn.commit()?;
     Ok(())
@@ -1113,8 +1211,6 @@ struct FinalizedFnCallMemoization<Prof: EngineProfile> {
 fn finalize_fn_call_memoization<Prof: EngineProfile>(
     comp_ctx: &ComponentProcessorContext<Prof>,
     fn_call_memos: HashMap<Fingerprint, Arc<tokio::sync::RwLock<FnCallMemoEntry<Prof>>>>,
-    memos_with_mounts_to_store: &mut Vec<(Fingerprint, FnCallMemo<Prof>)>,
-    stable_path_set: &mut ChildStablePathSet,
 ) -> Result<FinalizedFnCallMemoization<Prof>> {
     let mut result = FinalizedFnCallMemoization::default();
 
@@ -1132,17 +1228,12 @@ fn finalize_fn_call_memoization<Prof: EngineProfile>(
         result.all_memos_fps.insert(*fp);
 
         if memo.already_stored {
-            for child_component in &memo.child_components {
-                stable_path_set.add_child(child_component.as_ref(), StablePathSet::Component)?;
-            }
             result
                 .contained_target_state_paths
                 .extend(memo.target_state_paths.into_iter());
             deps_to_process.extend(memo.dependency_memo_entries.into_iter());
-        } else if memo.child_components.is_empty() {
-            result.memos_without_mounts_to_store.push((*fp, memo));
         } else {
-            memos_with_mounts_to_store.push((*fp, memo));
+            result.memos_without_mounts_to_store.push((*fp, memo));
         }
         // For non-stored memos, their dependencies were already resolved in this run,
         // so they exist in `fn_call_memos` and will be visited by the outer loop.
@@ -1162,9 +1253,6 @@ fn finalize_fn_call_memoization<Prof: EngineProfile>(
             let Some(memo) = read_fn_call_memo_with_txn(&rtxn, db, comp_ctx, fp)? else {
                 continue;
             };
-            for child_component in &memo.child_components {
-                stable_path_set.add_child(child_component.as_ref(), StablePathSet::Component)?;
-            }
             result
                 .contained_target_state_paths
                 .extend(memo.target_state_paths.into_iter());

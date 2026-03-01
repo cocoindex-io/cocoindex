@@ -63,12 +63,11 @@ Create a new file `main.py`:
 import pathlib
 
 import cocoindex as coco
-import cocoindex.asyncio as coco_aio
 from cocoindex.connectors import localfs
 from cocoindex.resources.file import PatternFilePathMatcher
 from docling.document_converter import DocumentConverter
 
-app = coco_aio.App(
+app = coco.App(
     "PdfToMarkdown",
     app_main,
     sourcedir=pathlib.Path("./pdf_files"),
@@ -84,14 +83,14 @@ This defines a CocoIndex App — the top-level runnable unit in CocoIndex.
 ![Processing components](/img/quickstart/components.svg)
 
 ```python title="main.py"
-@coco.function
+@coco.fn
 async def app_main(sourcedir: pathlib.Path, outdir: pathlib.Path) -> None:
     files = localfs.walk_dir(
         sourcedir,
         recursive=True,
         path_matcher=PatternFilePathMatcher(included_patterns=["**/*.pdf"]),
     )
-    await coco_aio.mount_each(process_file, files.items(), outdir)
+    await coco.mount_each(process_file, files.items(), outdir)
 ```
 
 `mount_each()` mounts one processing component per file. Each item from `files.items()` is a `(key, file)` pair — the key (the file's relative path) becomes the component subpath automatically.
@@ -109,7 +108,7 @@ This function converts a single PDF to Markdown:
 ```python title="main.py"
 _converter = DocumentConverter()
 
-@coco.function(memo=True)
+@coco.fn(memo=True)
 def process_file(
     file: localfs.File,
     outdir: pathlib.Path,

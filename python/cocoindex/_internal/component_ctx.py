@@ -212,7 +212,7 @@ def use_context(key: ContextKey[T]) -> T:
     Example:
         PG_DB = coco.ContextKey[postgres.PgDatabase]("pg_db")
 
-        @coco.function
+        @coco.fn
         def app_main() -> None:
             db = coco.use_context(PG_DB)
             ...

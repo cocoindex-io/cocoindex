@@ -8,6 +8,7 @@ This module provides a two-level target state system for PostgreSQL:
 
 from __future__ import annotations
 
+import asyncio
 import datetime
 import decimal
 import ipaddress
@@ -50,7 +51,7 @@ from cocoindex._internal.datatype import (
     analyze_type_info,
     is_record_type,
 )
-from cocoindex._internal.api_async import mount_target as _mount_target
+from cocoindex._internal.api import mount_target as _mount_target
 from cocoindex.resources.schema import VectorSchemaProvider
 
 # Type aliases
@@ -60,8 +61,8 @@ _RowValue = dict[str, Any]  # Column name -> value
 _RowFingerprint = bytes
 ValueEncoder = Callable[[Any], Any]
 
-# Postgres protocol parameter limit (also used in the Rust implementation).
-_BIND_LIMIT: int = 65535
+# asyncpg enforces a protocol limit of 32767 bind parameters per query.
+_BIND_LIMIT: int = 32767
 
 
 def _qualified_table_name(table_name: str, pg_schema_name: str | None) -> str:
@@ -399,33 +400,28 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
             else:
                 upserts.append(action)
 
-        async with self._pool.acquire() as conn:
-            async with conn.transaction():
-                # Process upserts
-                if upserts:
-                    await self._execute_upserts(conn, upserts)
+        async with asyncio.TaskGroup() as tg:
+            self._schedule_upserts(tg, upserts)
+            self._schedule_deletes(tg, deletes)
 
-                # Process deletes
-                if deletes:
-                    await self._execute_deletes(conn, deletes)
-
-    async def _execute_upserts(
+    def _schedule_upserts(
         self,
-        conn: asyncpg.pool.PoolConnectionProxy[asyncpg.Record],
+        tg: asyncio.TaskGroup,
         upserts: list[_RowAction],
     ) -> None:
-        """Execute upsert operations."""
+        """Schedule upsert chunks as parallel tasks."""
+        if not upserts:
+            return
+
         table_name = _qualified_table_name(self._table_name, self._schema_name)
         columns = self._table_schema.columns
         pk_cols = self._table_schema.primary_key
         all_col_names = list(columns.keys())
         non_pk_cols = [c for c in all_col_names if c not in pk_cols]
 
-        # Build column lists
         col_list = ", ".join(f'"{c}"' for c in all_col_names)
         pk_list = ", ".join(f'"{c}"' for c in pk_cols)
 
-        # Build ON CONFLICT clause
         if non_pk_cols:
             update_list = ", ".join(f'"{c}" = EXCLUDED."{c}"' for c in non_pk_cols)
             conflict_clause = f"ON CONFLICT ({pk_list}) DO UPDATE SET {update_list}"
@@ -436,43 +432,88 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
         if num_parameters == 0:
             return
 
-        # Batch multiple rows into one INSERT, respecting Postgres' bind parameter limit.
         chunk_size = max(1, _BIND_LIMIT // num_parameters)
-        for upsert_chunk in (
-            upserts[i : i + chunk_size] for i in range(0, len(upserts), chunk_size)
-        ):
-            values_sql_parts: list[str] = []
-            params: list[Any] = []
-            for row_idx, action in enumerate(upsert_chunk):
-                assert action.value is not None
-                base = row_idx * num_parameters
-                placeholders = ", ".join(
-                    f"${base + j + 1}" for j in range(num_parameters)
+        for i in range(0, len(upserts), chunk_size):
+            chunk = upserts[i : i + chunk_size]
+            tg.create_task(
+                self._execute_upsert_chunk(
+                    table_name,
+                    col_list,
+                    conflict_clause,
+                    all_col_names,
+                    num_parameters,
+                    chunk,
                 )
-                values_sql_parts.append(f"({placeholders})")
-                # Values are encoded by TableTarget before being stored as target state values.
-                params.extend(action.value.get(col_name) for col_name in all_col_names)
+            )
 
-            values_sql = ", ".join(values_sql_parts)
-            sql = f"INSERT INTO {table_name} ({col_list}) VALUES {values_sql} {conflict_clause}"
+    async def _execute_upsert_chunk(
+        self,
+        table_name: str,
+        col_list: str,
+        conflict_clause: str,
+        all_col_names: list[str],
+        num_parameters: int,
+        chunk: list[_RowAction],
+    ) -> None:
+        """Execute a single upsert chunk."""
+        values_sql_parts: list[str] = []
+        params: list[Any] = []
+        for row_idx, action in enumerate(chunk):
+            assert action.value is not None
+            base = row_idx * num_parameters
+            placeholders = ", ".join(f"${base + j + 1}" for j in range(num_parameters))
+            values_sql_parts.append(f"({placeholders})")
+            params.extend(action.value.get(col_name) for col_name in all_col_names)
+
+        values_sql = ", ".join(values_sql_parts)
+        sql = f"INSERT INTO {table_name} ({col_list}) VALUES {values_sql} {conflict_clause}"
+        async with self._pool.acquire() as conn:
             await conn.execute(sql, *params)
 
-    async def _execute_deletes(
+    def _schedule_deletes(
         self,
-        conn: asyncpg.pool.PoolConnectionProxy[asyncpg.Record],
+        tg: asyncio.TaskGroup,
         deletes: list[_RowAction],
     ) -> None:
-        """Execute delete operations."""
+        """Schedule delete chunks as parallel tasks."""
+        if not deletes:
+            return
+
         table_name = _qualified_table_name(self._table_name, self._schema_name)
         pk_cols = self._table_schema.primary_key
+        num_pk = len(pk_cols)
 
-        # Build WHERE clause for primary key
-        where_parts = [f'"{c}" = ${i + 1}' for i, c in enumerate(pk_cols)]
-        where_clause = " AND ".join(where_parts)
-        sql = f"DELETE FROM {table_name} WHERE {where_clause}"
+        chunk_size = max(1, _BIND_LIMIT // num_pk)
+        for i in range(0, len(deletes), chunk_size):
+            chunk = deletes[i : i + chunk_size]
+            tg.create_task(
+                self._execute_delete_chunk(table_name, pk_cols, num_pk, chunk)
+            )
 
-        for action in deletes:
-            await conn.execute(sql, *action.key)
+    async def _execute_delete_chunk(
+        self,
+        table_name: str,
+        pk_cols: list[str],
+        num_pk: int,
+        chunk: list[_RowAction],
+    ) -> None:
+        """Execute a single batched delete chunk."""
+        params: list[Any] = []
+        if num_pk == 1:
+            placeholders = ", ".join(f"${i + 1}" for i in range(len(chunk)))
+            sql = f'DELETE FROM {table_name} WHERE "{pk_cols[0]}" IN ({placeholders})'
+            params.extend(action.key[0] for action in chunk)
+        else:
+            or_parts: list[str] = []
+            for row_idx, action in enumerate(chunk):
+                base = row_idx * num_pk
+                and_parts = [f'"{pk_cols[j]}" = ${base + j + 1}' for j in range(num_pk)]
+                or_parts.append(f"({' AND '.join(and_parts)})")
+                params.extend(action.key)
+            sql = f"DELETE FROM {table_name} WHERE {' OR '.join(or_parts)}"
+
+        async with self._pool.acquire() as conn:
+            await conn.execute(sql, *params)
 
     def reconcile(
         self,
@@ -982,7 +1023,7 @@ class PgDatabase(connection.KeyedConnection[asyncpg.Pool]):
         """
         Create a TargetState for a PostgreSQL table target.
 
-        Use with ``coco_aio.mount_target()`` to mount and get a child provider,
+        Use with ``coco.mount_target()`` to mount and get a child provider,
         or with ``mount_table_target()`` for a convenience wrapper.
 
         Args:
@@ -1016,7 +1057,7 @@ class PgDatabase(connection.KeyedConnection[asyncpg.Pool]):
         """
         Mount a table target and return a ready-to-use TableTarget.
 
-        Sugar over ``table_target()`` + ``coco_aio.mount_target()`` + wrapping.
+        Sugar over ``table_target()`` + ``coco.mount_target()`` + wrapping.
 
         Args:
             table_name: Name of the table.

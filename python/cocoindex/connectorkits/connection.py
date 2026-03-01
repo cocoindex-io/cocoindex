@@ -10,6 +10,7 @@ from __future__ import annotations
 __all__ = [
     "ConnectionRegistry",
     "KeyedConnection",
+    "keyed_value",
 ]
 
 import threading as _threading
@@ -92,6 +93,16 @@ class KeyedConnection(_Generic[ConnectionT]):
 
     def __coco_memo_key__(self) -> _core.Fingerprint:
         return self._memo_key
+
+
+def keyed_value(registry_name: str, key: str) -> KeyedConnection[str]:
+    """Create a ``KeyedConnection`` where the key is also the value.
+
+    Useful for connectors (e.g. S3 buckets, Drive folders) where the
+    identifier string serves as both the stable memo key and the
+    connection value.
+    """
+    return KeyedConnection[str](registry_name, key, key)
 
 
 class ConnectionRegistry(_Generic[ConnectionT]):

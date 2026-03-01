@@ -4,8 +4,9 @@ Environment module.
 
 from __future__ import annotations
 
-from inspect import isasyncgenfunction
 import asyncio
+import atexit
+from inspect import isasyncgenfunction
 import threading
 import warnings
 import weakref
@@ -29,7 +30,7 @@ from ..engine_object import dump_engine_object
 from .context_keys import ContextKey, ContextProvider
 
 if TYPE_CHECKING:
-    from cocoindex._internal.app import AppBase
+    from cocoindex._internal.app import App
 
 T = TypeVar("T")
 
@@ -130,7 +131,7 @@ class EnvironmentInfo:
     __slots__ = ("_env_ref", "_app_registry", "_app_registry_lock")
 
     _env_ref: weakref.ReferenceType[Environment | LazyEnvironment]
-    _app_registry: weakref.WeakValueDictionary[str, AppBase[Any, Any]]
+    _app_registry: weakref.WeakValueDictionary[str, App[Any, Any]]
     _app_registry_lock: threading.Lock
 
     def __init__(self, env: Environment | LazyEnvironment) -> None:
@@ -140,7 +141,7 @@ class EnvironmentInfo:
         with _environment_info_lock:
             _environment_infos.append(self)
 
-    def register_app(self, name: str, app: AppBase[Any, Any]) -> None:
+    def register_app(self, name: str, app: App[Any, Any]) -> None:
         """Register an app with this environment."""
         with self._app_registry_lock:
             if name in self._app_registry:
@@ -149,7 +150,7 @@ class EnvironmentInfo:
                 )
             self._app_registry[name] = app
 
-    def get_apps(self) -> list[AppBase[Any, Any]]:
+    def get_apps(self) -> list[App[Any, Any]]:
         """Get all registered apps for this environment."""
         with self._app_registry_lock:
             return list(self._app_registry.values())
@@ -481,6 +482,41 @@ def default_env_loop() -> asyncio.AbstractEventLoop:
 
         _bg_loop_runner = _LoopRunner.create_new_running()
         return _bg_loop_runner.loop
+
+
+def _shutdown_background_loop_at_exit() -> None:
+    """
+    Atexit hook: stop and close the default env background loop if it was started.
+
+    Prevents the background loop thread from outliving the interpreter, which can
+    cause SIGSEGV or GIL errors during finalization (e.g. on Ubuntu CI). Safe to
+    call even if the loop was never started (no-op).
+    """
+    global _bg_loop_runner  # pylint: disable=global-statement
+
+    with _bg_loop_lock:
+        runner = _bg_loop_runner
+        _bg_loop_runner = None
+
+    if runner is None:
+        return
+
+    loop = runner.loop
+    if loop.is_closed():
+        return
+
+    try:
+        thread = runner.thread
+        if thread is not None and thread.is_alive():
+            loop.call_soon_threadsafe(loop.stop)
+            thread.join(timeout=1.0)
+        if thread is None or not thread.is_alive():
+            loop.close()
+    except Exception:
+        pass
+
+
+atexit.register(_shutdown_background_loop_at_exit)
 
 
 def start_sync() -> Environment:

@@ -20,11 +20,10 @@ from typing import AsyncIterator, Annotated
 from numpy.typing import NDArray
 
 import cocoindex as coco
-import cocoindex.asyncio as coco_aio
 from cocoindex.connectors import localfs, lancedb
 from cocoindex.ops.text import RecursiveSplitter, detect_code_language
 from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
-from cocoindex.resources.file import FileLike, PatternFilePathMatcher
+from cocoindex.resources.file import AsyncFileLike, PatternFilePathMatcher
 from cocoindex.resources.chunk import Chunk
 from cocoindex.resources.id import IdGenerator
 
@@ -50,9 +49,9 @@ class CodeEmbedding:
     end_line: int
 
 
-@coco_aio.lifespan
+@coco.lifespan
 async def coco_lifespan(
-    builder: coco_aio.EnvironmentBuilder,
+    builder: coco.EnvironmentBuilder,
 ) -> AsyncIterator[None]:
     # Provide resources needed across the CocoIndex environment
     conn = await lancedb.connect_async(LANCEDB_URI)
@@ -60,7 +59,7 @@ async def coco_lifespan(
     yield
 
 
-@coco.function
+@coco.fn
 async def process_chunk(
     chunk: Chunk,
     filename: pathlib.PurePath,
@@ -79,12 +78,12 @@ async def process_chunk(
     )
 
 
-@coco.function(memo=True)
+@coco.fn(memo=True)
 async def process_file(
-    file: FileLike,
+    file: AsyncFileLike,
     table: lancedb.TableTarget[CodeEmbedding],
 ) -> None:
-    text = file.read_text()
+    text = await file.read_text()
     # Detect programming language from filename
     language = detect_code_language(filename=str(file.file_path.path.name))
 
@@ -97,10 +96,10 @@ async def process_file(
         language=language,
     )
     id_gen = IdGenerator()
-    await coco_aio.map(process_chunk, chunks, file.file_path.path, id_gen, table)
+    await coco.map(process_chunk, chunks, file.file_path.path, id_gen, table)
 
 
-@coco.function
+@coco.fn
 async def app_main(sourcedir: pathlib.Path) -> None:
     target_db = coco.use_context(LANCE_DB)
     target_table = await target_db.mount_table_target(
@@ -125,11 +124,11 @@ async def app_main(sourcedir: pathlib.Path) -> None:
             excluded_patterns=["**/.*", "**/target", "**/node_modules"],
         ),
     )
-    await coco_aio.mount_each(process_file, files.items(), target_table)
+    await coco.mount_each(process_file, files.items(), target_table)
 
 
-app = coco_aio.App(
-    coco_aio.AppConfig(name="CodeEmbeddingLanceDBV1"),
+app = coco.App(
+    coco.AppConfig(name="CodeEmbeddingLanceDBV1"),
     app_main,
     sourcedir=pathlib.Path(__file__).parent / ".." / "..",  # Index from repository root
 )
