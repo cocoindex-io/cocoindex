@@ -58,6 +58,8 @@ class Settings:
 
     db_path: os.PathLike[str] | None = None
     global_execution_options: GlobalExecutionOptions | None = None
+    lmdb_max_dbs: int = 1024
+    lmdb_map_size: int = 0x1_0000_0000  # 4 GiB
 
     @classmethod
     def from_env(cls, db_path: os.PathLike[str] | None = None) -> Self:
@@ -78,9 +80,24 @@ class Settings:
         )
         global_execution_options = GlobalExecutionOptions(**exec_kwargs)
 
+        lmdb_kwargs: dict[str, Any] = dict()
+        _load_field(
+            lmdb_kwargs,
+            "lmdb_max_dbs",
+            "COCOINDEX_LMDB_MAX_DBS",
+            parse=int,
+        )
+        _load_field(
+            lmdb_kwargs,
+            "lmdb_map_size",
+            "COCOINDEX_LMDB_MAP_SIZE",
+            parse=int,
+        )
+
         return cls(
             db_path=db_path,
             global_execution_options=global_execution_options,
+            **lmdb_kwargs,
         )
 
 
