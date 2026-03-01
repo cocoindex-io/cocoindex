@@ -190,16 +190,10 @@ class TestS3File:
         assert await f.read_text() == "hello"
 
     async def test_size(self, s3_client: tuple[Any, str]) -> None:
-        """size returns the correct file size."""
+        """size() returns the correct file size."""
         client, bucket_name = s3_client
         f = await amazon_s3.get_object(client, bucket_name, "file1.txt")
-        assert f.size == 5
-
-    async def test_modified_time(self, s3_client: tuple[Any, str]) -> None:
-        """modified_time returns a datetime."""
-        client, bucket_name = s3_client
-        f = await amazon_s3.get_object(client, bucket_name, "file1.txt")
-        assert isinstance(f.modified_time, datetime)
+        assert await f.size() == 5
 
     async def test_file_path_properties(self, s3_client: tuple[Any, str]) -> None:
         """S3FilePath has correct name, suffix, etc."""
@@ -258,38 +252,40 @@ class TestGetObject:
 
 
 @pytest.mark.asyncio
-class TestMemoKey:
-    """Tests for memoization key behavior."""
+class TestMemoization:
+    """Tests for memoization key and state behavior."""
 
-    async def test_memo_key_includes_modified_time(self) -> None:
-        """Memo key changes when modified_time changes."""
+    async def test_memo_key_is_path_only(self) -> None:
+        """Memo key is based only on file path identity, not metadata."""
         async with mock_aws():
             sync_client = boto3.client("s3", region_name="us-east-1")
-            sync_client.create_bucket(Bucket="memo-time-test")
-            sync_client.put_object(Bucket="memo-time-test", Key="f.txt", Body=b"v1")
+            sync_client.create_bucket(Bucket="memo-test")
+            sync_client.put_object(Bucket="memo-test", Key="f.txt", Body=b"v1")
 
             session = aiobotocore.session.get_session()
             async with session.create_client("s3", region_name="us-east-1") as client:
-                f1 = await amazon_s3.get_object(client, "memo-time-test", "f.txt")
+                f1 = await amazon_s3.get_object(client, "memo-test", "f.txt")
                 key1 = f1.__coco_memo_key__()
 
-                # Verify the structure: memo key is (path_memo_key, modified_time)
-                assert isinstance(key1, tuple)
-                assert len(key1) == 2
-                assert isinstance(key1[1], datetime)
+                # Same file path with different metadata → same memo key
+                from cocoindex.resources.file import FileMetadata
 
-                # A different modified_time produces a different memo key
+                assert isinstance(f1.file_path, amazon_s3.S3FilePath)
                 f2 = amazon_s3.S3File(
                     client=client,
                     file_path=f1.file_path,
-                    size=2,
-                    modified_time=datetime(2099, 1, 1, tzinfo=timezone.utc),
+                    _metadata=FileMetadata(
+                        size=99,
+                        modified_time=datetime(2099, 1, 1, tzinfo=timezone.utc),
+                    ),
                 )
-                key2 = f2.__coco_memo_key__()
-                assert key1 != key2
+                assert f1.__coco_memo_key__() == f2.__coco_memo_key__()
 
-    async def test_memo_key_same_for_same_state(self) -> None:
-        """Memo key is deterministic for same file state."""
+                # Memo key equals the file_path's memo key
+                assert key1 == f1.file_path.__coco_memo_key__()
+
+    async def test_memo_key_deterministic(self) -> None:
+        """Memo key is deterministic for the same file."""
         async with mock_aws():
             sync_client = boto3.client("s3", region_name="us-east-1")
             sync_client.create_bucket(Bucket="memo-test")
@@ -299,6 +295,48 @@ class TestMemoKey:
             async with session.create_client("s3", region_name="us-east-1") as client:
                 f = await amazon_s3.get_object(client, "memo-test", "f.txt")
                 assert f.__coco_memo_key__() == f.__coco_memo_key__()
+
+    async def test_memo_state_first_run(self) -> None:
+        """__coco_memo_state__ computes initial state on first run."""
+        import cocoindex
+
+        async with mock_aws():
+            sync_client = boto3.client("s3", region_name="us-east-1")
+            sync_client.create_bucket(Bucket="memo-state-test")
+            sync_client.put_object(Bucket="memo-state-test", Key="f.txt", Body=b"hello")
+
+            session = aiobotocore.session.get_session()
+            async with session.create_client("s3", region_name="us-east-1") as client:
+                f = await amazon_s3.get_object(client, "memo-state-test", "f.txt")
+                outcome = await f.__coco_memo_state__(cocoindex.NON_EXISTENCE)
+
+                assert isinstance(outcome, cocoindex.MemoStateOutcome)
+                assert outcome.memo_valid is True
+                assert isinstance(outcome.state, tuple)
+                assert len(outcome.state) == 2
+
+    async def test_memo_state_unchanged(self) -> None:
+        """__coco_memo_state__ returns valid when mtime matches."""
+        import cocoindex
+
+        async with mock_aws():
+            sync_client = boto3.client("s3", region_name="us-east-1")
+            sync_client.create_bucket(Bucket="memo-state-test2")
+            sync_client.put_object(
+                Bucket="memo-state-test2", Key="f.txt", Body=b"hello"
+            )
+
+            session = aiobotocore.session.get_session()
+            async with session.create_client("s3", region_name="us-east-1") as client:
+                f = await amazon_s3.get_object(client, "memo-state-test2", "f.txt")
+
+                # Get initial state
+                outcome1 = await f.__coco_memo_state__(cocoindex.NON_EXISTENCE)
+
+                # Same file, same state → valid
+                f2 = await amazon_s3.get_object(client, "memo-state-test2", "f.txt")
+                outcome2 = await f2.__coco_memo_state__(outcome1.state)
+                assert outcome2.memo_valid is True
 
     async def test_file_path_memo_key(self, s3_client: tuple[Any, str]) -> None:
         """S3FilePath.__coco_memo_key__() incorporates bucket and path."""

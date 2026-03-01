@@ -3,7 +3,7 @@
 This module provides a read-only API for listing and reading objects from
 Amazon S3 buckets (and S3-compatible services like MinIO).
 
-The API is async-only: ``S3File`` implements ``AsyncFileLike`` and is the
+The API is async-only: ``S3File`` implements ``FileLike`` and is the
 primary file type.
 """
 
@@ -18,7 +18,6 @@ __all__ = [
     "read",
 ]
 
-from datetime import datetime
 from pathlib import PurePath
 from typing import AsyncIterator, overload
 
@@ -80,56 +79,37 @@ class S3FilePath(file.FilePath[str]):
         return type(self)(self._base_dir, path, object_key=self._object_key)
 
 
-class S3File(file.AsyncFileLike[str]):
+class S3File(file.FileLike[str]):
     """Represents a file entry from an S3 bucket (async).
 
-    Implements the ``AsyncFileLike`` protocol using native aiobotocore async I/O.
+    Implements ``FileLike`` using native aiobotocore async I/O.
     """
 
     _client: AioBaseClient
-    _file_path: S3FilePath
-    _size: int
-    _modified_time: datetime
 
     def __init__(
         self,
         client: AioBaseClient,
         file_path: S3FilePath,
         *,
-        size: int,
-        modified_time: datetime,
+        _metadata: file.FileMetadata | None = None,
     ) -> None:
+        super().__init__(file_path, _metadata=_metadata)
         self._client = client
-        self._file_path = file_path
-        self._size = size
-        self._modified_time = modified_time
 
-    @property
-    def file_path(self) -> S3FilePath:
-        """Return the S3FilePath of this file."""
-        return self._file_path
+    async def _fetch_metadata(self) -> file.FileMetadata:
+        """Fetch metadata via head_object."""
+        bucket_name: str = self._file_path.base_dir.value
+        object_key: str = self._file_path.resolve()
+        head = await self._client.head_object(Bucket=bucket_name, Key=object_key)
+        return file.FileMetadata(
+            size=int(head["ContentLength"]),
+            modified_time=head["LastModified"],
+            content_fingerprint=head.get("ETag"),
+        )
 
-    @property
-    def stable_key(self) -> str:
-        """Return the stable key for this file."""
-        return self.file_path.path.as_posix()
-
-    @property
-    def size(self) -> int:
-        """Return the file size in bytes."""
-        return self._size
-
-    @property
-    def modified_time(self) -> datetime:
-        """Return the last modified time."""
-        return self._modified_time
-
-    async def read(self, size: int = -1) -> bytes:
-        """Asynchronously read and return file content as bytes.
-
-        Args:
-            size: Number of bytes to read. If -1 (default), read the entire file.
-        """
+    async def _read_impl(self, size: int = -1) -> bytes:
+        """Asynchronously read file content from S3."""
         bucket_name: str = self._file_path.base_dir.value
         object_key: str = self._file_path.resolve()
         if size >= 0:
@@ -155,17 +135,17 @@ async def _s3file_from_head(
 ) -> S3File:
     """Create an S3File by fetching object metadata via head_object."""
     head = await client.head_object(Bucket=bucket_name, Key=object_key)
-    file_path = S3FilePath(
+    fp = S3FilePath(
         base_dir,
         object_key,
         object_key=object_key,
     )
-    return S3File(
-        client=client,
-        file_path=file_path,
+    metadata = file.FileMetadata(
         size=int(head["ContentLength"]),
         modified_time=head["LastModified"],
+        content_fingerprint=head.get("ETag"),
     )
+    return S3File(client=client, file_path=fp, _metadata=metadata)
 
 
 @overload
@@ -321,13 +301,11 @@ class S3Walker:
                 if not self._path_matcher.is_file_included(relative_path):
                     continue
 
-                size: int = obj["Size"]
+                obj_size: int = obj["Size"]
 
                 # Apply max_file_size filter
-                if self._max_file_size is not None and size > self._max_file_size:
+                if self._max_file_size is not None and obj_size > self._max_file_size:
                     continue
-
-                modified_time: datetime = obj["LastModified"]
 
                 file_path = S3FilePath(
                     self._base_dir,
@@ -335,11 +313,16 @@ class S3Walker:
                     object_key=key,
                 )
 
+                metadata = file.FileMetadata(
+                    size=obj_size,
+                    modified_time=obj["LastModified"],
+                    content_fingerprint=obj.get("ETag"),
+                )
+
                 yield S3File(
                     client=self._client,
                     file_path=file_path,
-                    size=size,
-                    modified_time=modified_time,
+                    _metadata=metadata,
                 )
 
     async def __aiter__(self) -> AsyncIterator[S3File]:

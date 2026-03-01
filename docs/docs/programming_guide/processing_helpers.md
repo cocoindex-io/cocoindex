@@ -12,7 +12,7 @@ CocoIndex provides helper APIs for common patterns you use inside a [processing 
 ```python
 @coco.fn(memo=True)
 async def process_file(file: FileLike, table: postgres.TableTarget[DocEmbedding]) -> None:
-    chunks = splitter.split(file.read_text())
+    chunks = splitter.split(await file.read_text())
     id_gen = IdGenerator()
     await coco.map(process_chunk, chunks, file.file_path.path, id_gen, table)
 ```

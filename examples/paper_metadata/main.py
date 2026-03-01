@@ -31,7 +31,7 @@ import cocoindex as coco
 from cocoindex.connectors import localfs, postgres
 from cocoindex.ops.text import CustomLanguageConfig, RecursiveSplitter
 from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
-from cocoindex.resources.file import AsyncFileLike, PatternFilePathMatcher
+from cocoindex.resources.file import FileLike, PatternFilePathMatcher
 
 from models import AuthorModel, PaperMetadataModel
 
@@ -171,7 +171,7 @@ async def coco_lifespan(
 
 @coco.fn(memo=True)
 async def process_file(
-    file: AsyncFileLike,
+    file: FileLike,
     metadata_table: postgres.TableTarget[PaperMetadataRow],
     author_table: postgres.TableTarget[AuthorPaperRow],
     embedding_table: postgres.TableTarget[MetadataEmbeddingRow],

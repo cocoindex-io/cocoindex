@@ -28,7 +28,7 @@ import cocoindex as coco
 from cocoindex.connectors import localfs, postgres
 from cocoindex.ops.text import RecursiveSplitter
 from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
-from cocoindex.resources.file import AsyncFileLike, PatternFilePathMatcher
+from cocoindex.resources.file import FileLike, PatternFilePathMatcher
 from cocoindex.resources.id import IdGenerator
 
 from models import ChunkInput, SessionInfo, TranscriptChunk
@@ -97,7 +97,7 @@ class SessionMetadataRow:
 # ---------------------------------------------------------------------------
 
 
-def extract_session_info(file: AsyncFileLike) -> SessionInfo:
+def extract_session_info(file: FileLike) -> SessionInfo:
     """Extract checkpoint_id and session_index from file path.
 
     Entire layout: <checkpoint_id[:2]>/<checkpoint_id[2:]>/<session_idx>/<filename>
@@ -174,7 +174,7 @@ async def process_chunk(
 
 @coco.fn(memo=True)
 async def process_file(
-    file: AsyncFileLike,
+    file: FileLike,
     emb_table: postgres.TableTarget[SessionEmbeddingRow],
     meta_table: postgres.TableTarget[SessionMetadataRow],
 ) -> None:

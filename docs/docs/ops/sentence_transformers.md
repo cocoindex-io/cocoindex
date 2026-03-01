@@ -149,7 +149,7 @@ async def process_file(
     file: FileLike,
     table: postgres.TableTarget[DocEmbedding],
 ) -> None:
-    text = file.read_text()
+    text = await file.read_text()
     chunks = _splitter.split(
         text, chunk_size=2000, chunk_overlap=500, language="markdown"
     )
@@ -175,14 +175,7 @@ async def app_main(sourcedir: pathlib.Path) -> None:
         recursive=True,
         path_matcher=PatternFilePathMatcher(included_patterns=["**/*.md"]),
     )
-    with coco.component_subpath("file"):
-        for f in files:
-            await coco.mount(
-                coco.component_subpath(str(f.file_path.path)),
-                process_file,
-                f,
-                target_table,
-            )
+    await coco.mount_each(process_file, files.items(), target_table)
 ```
 
 ## Configuration options

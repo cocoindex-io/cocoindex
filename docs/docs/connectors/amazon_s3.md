@@ -70,7 +70,7 @@ def list_objects(
 
 ### Iterating files
 
-`list_objects()` returns an `S3Walker` that yields `S3File` objects (implementing the `AsyncFileLike` protocol):
+`list_objects()` returns an `S3Walker` that yields `S3File` objects (implementing the [`FileLike`](../resource_types.md#filelike) base class):
 
 ```python
 import aiobotocore.session
@@ -83,7 +83,7 @@ async with session.create_client("s3") as client:
         ...
 ```
 
-See [`AsyncFileLike`](../resource_types.md#filelike--asyncfilelike) for details on the file objects.
+See [`FileLike`](../resource_types.md#filelike) for details on the file objects.
 
 ### Keyed iteration with `items()`
 
@@ -136,7 +136,7 @@ async def get_object(
 - `bucket_name_or_uri` — Either a full S3 URI (`s3://bucket/key`) or the bucket name when `key` is supplied separately.
 - `key` — The full S3 object key. Required when `bucket_name_or_uri` is a bucket name; must be omitted when a URI is given.
 
-**Returns:** An `S3File` (AsyncFileLike) for the specified object.
+**Returns:** An `S3File` (FileLike) for the specified object.
 
 **Example:**
 
@@ -199,7 +199,7 @@ For example, with `prefix="data/"` and an object key `"data/docs/readme.md"`:
 import aiobotocore.session
 import cocoindex as coco
 from cocoindex.connectors import amazon_s3
-from cocoindex.resources.file import AsyncFileLike, PatternFilePathMatcher
+from cocoindex.resources.file import FileLike, PatternFilePathMatcher
 
 @coco.fn
 async def app_main(bucket: str) -> None:
@@ -220,7 +220,7 @@ async def app_main(bucket: str) -> None:
                 )
 
 @coco.fn(memo=True)
-async def process_file(file: AsyncFileLike[str]) -> None:
+async def process_file(file: FileLike[str]) -> None:
     text = await file.read_text()
     # ... process the file content ...
 ```

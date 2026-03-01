@@ -35,7 +35,7 @@ _instructor_client = instructor.from_litellm(acompletion, mode=instructor.Mode.J
 @coco.fn(memo=True)
 async def extract_file_info(file: FileLike) -> CodebaseInfo:
     """Extract structured information from a single Python file using LLM."""
-    content = file.read_text()
+    content = await file.read_text()
     file_path = str(file.file_path.path)
 
     prompt = f"""Analyze the following Python file and extract structured information.
@@ -225,8 +225,9 @@ async def app_main(
         project_name = entry.name
 
         # Walk Python files in this project, excluding .venv directories
-        files = list(
-            localfs.walk_dir(
+        files = [
+            f
+            async for f in localfs.walk_dir(
                 entry,
                 recursive=True,
                 path_matcher=PatternFilePathMatcher(
@@ -234,7 +235,7 @@ async def app_main(
                     excluded_patterns=["**/.*", "**/__pycache__"],
                 ),
             )
-        )
+        ]
 
         if files:
             # Mount a component to process this project

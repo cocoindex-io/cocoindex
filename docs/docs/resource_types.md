@@ -7,25 +7,16 @@ The `cocoindex.resources` package provides common data models and abstractions s
 
 ## File
 
-The file module (`cocoindex.resources.file`) defines protocols and utilities for working with file-like objects.
+The file module (`cocoindex.resources.file`) defines base classes and utilities for working with file-like objects.
 
-### FileLike / AsyncFileLike
+### FileLike
 
-`FileLike` is a protocol for file objects with synchronous read access. `AsyncFileLike` is its async counterpart with the same properties but async read methods.
+`FileLike` is a base class for file objects with async read methods.
 
 ```python
 from cocoindex.resources.file import FileLike
 
-def process_file(file: FileLike) -> str:
-    text = file.read_text()
-    ...
-    return text
-```
-
-```python
-from cocoindex.resources.file import AsyncFileLike
-
-async def process_file_async(file: AsyncFileLike) -> str:
+async def process_file(file: FileLike) -> str:
     text = await file.read_text()
     ...
     return text
@@ -34,17 +25,16 @@ async def process_file_async(file: AsyncFileLike) -> str:
 **Properties:**
 
 - `file_path` — A `FilePath` object representing the file's path. Access the relative path via `file_path.path` (`PurePath`).
-- `size` — File size in bytes
-- `modified_time` — File modification time (`datetime`)
 
 **Methods:**
 
-- `read(size=-1)` — Read file content as bytes. Pass `size` to limit bytes read.
-- `read_text(encoding=None, errors="replace")` — Read as text. Auto-detects encoding via BOM if not specified.
+- `async size()` — Return the file size in bytes.
+- `async read(size=-1)` — Read file content as bytes. Pass `size` to limit bytes read.
+- `async read_text(encoding=None, errors="replace")` — Read as text. Auto-detects encoding via BOM if not specified.
 
 **Memoization:**
 
-`FileLike` objects provide a memoization key based on `file_path` and `modified_time`. When used as arguments to a [memoized function](./programming_guide/function.md#memoization), CocoIndex can detect when a file has changed and skip recomputation for unchanged files.
+`FileLike` objects provide a memoization key based on `file_path` (file identity). When used as arguments to a [memoized function](./programming_guide/function.md#memoization), CocoIndex uses a two-level validation: it checks the modification time first (cheap), then computes a content fingerprint only if the modification time has changed. This means touching a file or moving it won't cause unnecessary recomputation if the content is unchanged.
 
 ### FilePath
 

@@ -25,7 +25,7 @@ from cocoindex.connectors import localfs, postgres
 from cocoindex.ops.text import RecursiveSplitter
 from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
 from cocoindex.resources.chunk import Chunk
-from cocoindex.resources.file import AsyncFileLike, PatternFilePathMatcher
+from cocoindex.resources.file import FileLike, PatternFilePathMatcher
 from cocoindex.resources.id import IdGenerator
 
 
@@ -84,7 +84,7 @@ async def process_chunk(
 
 @coco.fn(memo=True)
 async def process_file(
-    file: AsyncFileLike,
+    file: FileLike,
     table: postgres.TableTarget[DocEmbedding],
 ) -> None:
     text = await file.read_text()

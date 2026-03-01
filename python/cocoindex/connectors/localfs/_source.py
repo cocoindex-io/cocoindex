@@ -1,4 +1,4 @@
-"""Local filesystem source utilities with sync and async support."""
+"""Local filesystem source utilities with async file reading."""
 
 from __future__ import annotations
 
@@ -10,10 +10,9 @@ from typing import AsyncIterator, Iterator
 
 import pathlib
 
-from cocoindex.connectorkits.async_adapters import KeyedDualModeIter
+from cocoindex.resources import file as _file
 from cocoindex.resources.file import (
-    AsyncFileLike,
-    FileLike,
+    FileMetadata,
     FilePathMatcher,
     MatchAllFilePathMatcher,
 )
@@ -21,113 +20,52 @@ from cocoindex.resources.file import (
 from ._common import FilePath, to_file_path
 
 
-class File(FileLike[pathlib.Path]):
-    """Represents a file entry from the directory walk."""
+def _stat_to_metadata(stat: os.stat_result) -> FileMetadata:
+    """Convert an os.stat_result to FileMetadata."""
+    seconds, us = divmod(stat.st_mtime_ns // 1_000, 1_000_000)
+    mtime = datetime.fromtimestamp(seconds).replace(microsecond=us)
+    return FileMetadata(size=stat.st_size, modified_time=mtime)
 
-    _file_path: FilePath
-    _stat: os.stat_result
+
+class File(_file.FileLike[pathlib.Path]):
+    """Represents a file entry from the directory walk.
+
+    Implements ``FileLike`` with async read methods.
+    File I/O is performed in a thread pool to avoid blocking the event loop.
+    """
 
     def __init__(
         self,
         file_path: FilePath,
-        stat: os.stat_result,
+        *,
+        _stat: os.stat_result | None = None,
     ) -> None:
-        self._file_path = file_path
-        self._stat = stat
+        metadata = _stat_to_metadata(_stat) if _stat is not None else None
+        super().__init__(file_path, _metadata=metadata)
 
-    @property
-    def file_path(self) -> FilePath:
-        """Return the FilePath of this file."""
-        return self._file_path
+    async def _fetch_metadata(self) -> FileMetadata:
+        """Fetch metadata via os.stat() in a thread pool."""
+        stat = await asyncio.to_thread(os.stat, self._file_path.resolve())
+        return _stat_to_metadata(stat)
 
-    @property
-    def size(self) -> int:
-        """Return the file size in bytes."""
-        return self._stat.st_size
-
-    @property
-    def modified_time(self) -> datetime:
-        """Return the file modification time as a datetime."""
-        seconds, us = divmod(self._stat.st_mtime_ns // 1_000, 1_000_000)
-        return datetime.fromtimestamp(seconds).replace(microsecond=us)
-
-    def read(self, size: int = -1) -> bytes:
-        """Read and return the file content as bytes.
-
-        Args:
-            size: Number of bytes to read. If -1 (default), read the entire file.
-
-        Returns:
-            The file content as bytes.
-        """
+    def _read_sync(self, size: int = -1) -> bytes:
+        """Synchronously read file content (internal helper)."""
         path = self._file_path.resolve()
         if size < 0:
             return path.read_bytes()
         with path.open("rb") as f:
             return f.read(size)
 
-
-class AsyncFile(AsyncFileLike[pathlib.Path]):
-    """Async wrapper around a File that provides async read methods.
-
-    Implements the AsyncFileLike protocol.
-    """
-
-    _file: File
-
-    def __init__(self, file: File) -> None:
-        self._file = file
-
-    @property
-    def file_path(self) -> FilePath:
-        """Return the FilePath of this file."""
-        return self._file.file_path
-
-    @property
-    def size(self) -> int:
-        """Return the file size in bytes."""
-        return self._file.size
-
-    @property
-    def modified_time(self) -> datetime:
-        """Return the file modification time as a datetime."""
-        return self._file.modified_time
-
-    async def read(self, size: int = -1) -> bytes:
-        """Asynchronously read and return the file content as bytes.
-
-        Args:
-            size: Number of bytes to read. If -1 (default), read the entire file.
-
-        Returns:
-            The file content as bytes.
-        """
-        return await asyncio.to_thread(self._file.read, size)
-
-    async def read_text(
-        self, encoding: str | None = None, errors: str = "replace"
-    ) -> str:
-        """Asynchronously read and return the file content as text.
-
-        Args:
-            encoding: The encoding to use. If None, the encoding is detected automatically
-                using BOM detection, falling back to UTF-8.
-            errors: The error handling scheme. Common values: 'strict', 'ignore', 'replace'.
-
-        Returns:
-            The file content as text.
-        """
-        return await asyncio.to_thread(self._file.read_text, encoding, errors)
+    async def _read_impl(self, size: int = -1) -> bytes:
+        """Read file content in a thread pool."""
+        return await asyncio.to_thread(self._read_sync, size)
 
 
 class DirWalker:
-    """A directory walker that supports both sync and async iteration.
+    """An async directory walker.
 
-    Use as a sync iterator to get `File` objects:
-        for file in walk_dir(path):
-            content = file.read()
+    Use as an async iterator to get `File` objects::
 
-    Use as an async iterator to get `AsyncFile` objects:
         async for file in walk_dir(path):
             content = await file.read()
     """
@@ -147,8 +85,8 @@ class DirWalker:
         self._recursive = recursive
         self._path_matcher = path_matcher or MatchAllFilePathMatcher()
 
-    def __iter__(self) -> Iterator[File]:
-        """Synchronously iterate over files, yielding File objects."""
+    def _walk_sync(self) -> Iterator[File]:
+        """Synchronously walk the directory and yield File objects (internal helper)."""
         root_resolved = self._root_path.resolve()
 
         if not root_resolved.is_dir():
@@ -191,37 +129,30 @@ class DirWalker:
                     # Create FilePath for this file by joining root with relative path
                     file_path = self._root_path / relative_path
 
-                    yield File(
-                        file_path=file_path,
-                        stat=stat,
-                    )
+                    yield File(file_path, _stat=stat)
 
             # Add subdirectories in reverse order to maintain consistent traversal
             dirs_to_process.extend(reversed(subdirs))
 
-    def items(self) -> KeyedDualModeIter[str, AsyncFile, File]:
-        """Return a dual-mode iterator of (key, file) pairs for use with mount_each().
+    async def items(self) -> AsyncIterator[tuple[str, File]]:
+        """Async iterate over (key, file) pairs for use with mount_each().
 
         The key is the file's relative path within the walked directory.
 
-        Supports both async and sync iteration::
+        Example::
 
-            # Async
             async for key, file in walker.items():
                 content = await file.read()
-
-            # Sync
-            for key, file in walker.items():
-                content = file.read()
         """
-        return KeyedDualModeIter(self, lambda f: f.file_path.path.as_posix())
+        async for file in self:
+            yield (file.file_path.path.as_posix(), file)
 
-    async def __aiter__(self) -> AsyncIterator[AsyncFile]:
-        """Asynchronously iterate over files, yielding AsyncFile objects."""
+    async def __aiter__(self) -> AsyncIterator[File]:
+        """Asynchronously iterate over files, yielding File objects."""
         from cocoindex.connectorkits.async_adapters import sync_to_async_iter
 
-        async for file in sync_to_async_iter(lambda: iter(self)):
-            yield AsyncFile(file)
+        async for file in sync_to_async_iter(lambda: self._walk_sync()):
+            yield file
 
 
 def walk_dir(
@@ -233,9 +164,8 @@ def walk_dir(
     """
     Walk through a directory and yield file entries.
 
-    Returns a DirWalker that supports both sync and async iteration:
-    - Sync iteration yields `File` objects
-    - Async iteration yields `AsyncFile` objects with async read methods
+    Returns a DirWalker that supports async iteration, yielding `File` objects
+    with async read methods.
 
     Args:
         path: The root directory path to walk through. Can be a FilePath (with stable
@@ -246,24 +176,22 @@ def walk_dir(
             If not provided, all files and directories are included.
 
     Returns:
-        A DirWalker that can be used with both `for` and `async for` loops.
+        A DirWalker that can be used with ``async for`` loops.
 
     Examples:
-        Sync iteration:
-            for file in walk_dir("/path/to/dir"):
-                content = file.read()
+        Async iteration::
 
-        Async iteration:
             async for file in walk_dir("/path/to/dir"):
                 content = await file.read()
 
-        With stable base directory:
+        With stable base directory::
+
             source_dir = register_base_dir("source", Path("./data"))
-            for file in walk_dir(source_dir):
+            async for file in walk_dir(source_dir):
                 # file.file_path has stable memo key based on "source" key
-                content = file.read()
+                content = await file.read()
     """
     return DirWalker(path, recursive=recursive, path_matcher=path_matcher)
 
 
-__all__ = ["walk_dir", "File", "AsyncFile", "DirWalker"]
+__all__ = ["walk_dir", "File", "DirWalker"]

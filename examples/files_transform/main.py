@@ -9,8 +9,8 @@ _markdown_it = MarkdownIt("gfm-like")
 
 
 @coco.fn(memo=True)
-def process_file(file: FileLike, outdir: pathlib.Path) -> None:
-    html = _markdown_it.render(file.read_text())
+async def process_file(file: FileLike, outdir: pathlib.Path) -> None:
+    html = _markdown_it.render(await file.read_text())
     outname = "__".join(file.file_path.path.parts) + ".html"
     localfs.declare_file(outdir / outname, html, create_parent_dirs=True)
 
