@@ -257,15 +257,10 @@ class _Connector:
 
                     rows_to_upsert.append(row)
 
-            # Execute upserts
-            if rows_to_upsert:
+            # Execute upserts and deletes atomically in a single write call
+            if rows_to_upsert or ids_to_delete:
                 context.namespace.write(
-                    upsert_rows=rows_to_upsert,
+                    upsert_rows=rows_to_upsert if rows_to_upsert else None,
+                    deletes=ids_to_delete if ids_to_delete else None,
                     distance_metric=context.distance_metric,
-                )
-
-            # Execute deletes
-            if ids_to_delete:
-                context.namespace.write(
-                    deletes=ids_to_delete,
                 )
