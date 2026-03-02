@@ -420,24 +420,24 @@ impl<'a, Prof: EngineProfile> Committer<'a, Prof> {
     fn commit(
         &mut self,
         child_path_set: Option<ChildStablePathSet>,
-        effect_info_key: &db_schema::DbEntryKey,
+        target_state_info_key: &db_schema::DbEntryKey,
         all_memo_fps: &HashSet<Fingerprint>,
         memos_without_mounts_to_store: Vec<(Fingerprint, FnCallMemo<Prof>)>,
         curr_version: Option<u64>,
     ) -> Result<()> {
-        let encoded_effect_info_key = effect_info_key.encode()?;
+        let encoded_target_state_info_key = target_state_info_key.encode()?;
         let db_env = self.component_ctx.app_ctx().env().db_env();
         {
             let mut wtxn = db_env.write_txn()?;
             if self.component_ctx.mode() == ComponentProcessingMode::Delete {
                 self.db
-                    .delete(&mut wtxn, encoded_effect_info_key.as_ref())?;
+                    .delete(&mut wtxn, encoded_target_state_info_key.as_ref())?;
             } else {
                 let curr_version = curr_version
                     .ok_or_else(|| internal_error!("curr_version is required for Build mode"))?;
                 let mut tracking_info: db_schema::StablePathEntryTrackingInfo = self
                     .db
-                    .get(&wtxn, encoded_effect_info_key.as_ref())?
+                    .get(&wtxn, encoded_target_state_info_key.as_ref())?
                     .map(|data| from_msgpack_slice(&data))
                     .transpose()?
                     .ok_or_else(|| internal_error!("tracking info not found for commit"))?;
@@ -467,7 +467,7 @@ impl<'a, Prof: EngineProfile> Committer<'a, Prof> {
                 let data_bytes = rmp_serde::to_vec_named(&tracking_info)?;
                 self.db.put(
                     &mut wtxn,
-                    encoded_effect_info_key.as_ref(),
+                    encoded_target_state_info_key.as_ref(),
                     data_bytes.as_slice(),
                 )?;
             }
@@ -820,7 +820,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
     let db_env = comp_ctx.app_ctx().env().db_env();
     let db = comp_ctx.app_ctx().db();
 
-    let effect_info_key = db_schema::DbEntryKey::StablePath(
+    let target_state_info_key = db_schema::DbEntryKey::StablePath(
         comp_ctx.stable_path().clone(),
         db_schema::StablePathEntryKey::TrackingInfo,
     );
@@ -866,7 +866,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
         }
 
         let mut tracking_info: Option<db_schema::StablePathEntryTrackingInfo> = db
-            .get(&wtxn, effect_info_key.encode()?.as_ref())?
+            .get(&wtxn, target_state_info_key.encode()?.as_ref())?
             .map(|data| from_msgpack_slice(&data))
             .transpose()?;
         let previously_exists = tracking_info.is_some();
@@ -962,9 +962,9 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                             .transpose()?
                         {
                             Some(s) => {
-                                db_schema::EffectInfoItemState::Existing(Cow::Owned(s.into()))
+                                db_schema::TargetStateInfoItemState::Existing(Cow::Owned(s.into()))
                             }
-                            None => db_schema::EffectInfoItemState::Deleted,
+                            None => db_schema::TargetStateInfoItemState::Deleted,
                         },
                     ));
                 } else {
@@ -1008,13 +1008,13 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                 else {
                     continue;
                 };
-                let item = db_schema::EffectInfoItem {
+                let item = db_schema::TargetStateInfoItem {
                     key: Cow::Owned(effect_key_bytes.into()),
                     states: vec![
-                        (0, db_schema::EffectInfoItemState::Deleted),
+                        (0, db_schema::TargetStateInfoItemState::Deleted),
                         (
                             curr_version,
-                            db_schema::EffectInfoItemState::Existing(new_state),
+                            db_schema::TargetStateInfoItemState::Existing(new_state),
                         ),
                     ],
                 };
@@ -1024,7 +1024,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
             let data_bytes = rmp_serde::to_vec_named(&tracking_info)?;
             db.put(
                 &mut wtxn,
-                effect_info_key.encode()?.as_ref(),
+                target_state_info_key.encode()?.as_ref(),
                 data_bytes.as_slice(),
             )?;
             Some(curr_version)
@@ -1066,7 +1066,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
     let mut committer = Committer::new(comp_ctx, &target_states_providers, demote_component_only)?;
     committer.commit(
         child_path_set,
-        &effect_info_key,
+        &target_state_info_key,
         &finalized_fn_call_memos.all_memos_fps,
         finalized_fn_call_memos.memos_without_mounts_to_store,
         curr_version,
