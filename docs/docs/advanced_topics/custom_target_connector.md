@@ -149,7 +149,10 @@ class TargetReconcileOutput(NamedTuple):
     action: ActionT                           # What to do
     sink: TargetActionSink[ActionT, ...]      # How to execute it
     tracking_record: TrackingRecordT | NonExistenceType  # What to remember
+    child_invalidation: Literal["destructive", "lossy"] | None = None  # For container targets
 ```
+
+The `child_invalidation` field is only relevant for **container targets** (those with children). See [Child invalidation](#child-invalidation) for details.
 
 ### TargetStatesProvider *(CocoIndex provides)*
 
@@ -324,6 +327,36 @@ For root targets, you call `register_root_target_states_provider()` and immediat
 3. **Usage**: The child provider can now create child target states, which follow the same reconciliation → execution → tracking flow as root targets.
 
 The child handler often needs context from the parent's action execution. For example, a file handler needs to know the directory path that was created. By returning the handler from the parent's sink, the handler has access to this runtime context.
+
+### Child invalidation
+
+When a container target undergoes certain changes, the child target states may be affected. The `child_invalidation` field in `TargetReconcileOutput` lets you signal this to CocoIndex:
+
+- **`"destructive"`** — The container change destroys all existing children (e.g., a primary key change that requires dropping and recreating a table). CocoIndex will ignore all previous tracking records for children under this container and treat them as new.
+
+- **`"lossy"`** — The container change may cause data loss for existing children (e.g., a schema change that removes columns). CocoIndex will force an upsert for all children by setting `prev_may_be_missing=True`, even if their data appears unchanged.
+
+- **`None`** (default) — No impact on children. Normal change detection applies.
+
+Set `child_invalidation` in the **parent handler's** `reconcile()` method when you detect that the container itself has changed in a way that affects its children:
+
+```python
+class _DirHandler(coco.TargetHandler[_DirKey, _DirSpec, _DirTrackingRecord]):
+    def reconcile(self, key, desired_state, prev_possible_states, prev_may_be_missing, /):
+        # Detect if the container change is destructive or lossy
+        invalidation = None
+        if self._is_destructive_change(desired_state, prev_possible_states):
+            invalidation = "destructive"
+        elif self._is_lossy_change(desired_state, prev_possible_states):
+            invalidation = "lossy"
+
+        return coco.TargetReconcileOutput(
+            action=_DirAction(...),
+            sink=self._sink,
+            tracking_record=_DirTrackingRecord(...),
+            child_invalidation=invalidation,
+        )
+```
 
 ### Step 1: Define parent and child handlers
 

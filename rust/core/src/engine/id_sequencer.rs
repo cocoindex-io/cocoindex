@@ -101,42 +101,95 @@ impl IdSequencerManager {
 
         if state.needs_refill() {
             let batch_size = state.next_batch_size;
-            let start_id = Self::reserve_batch(db_env, db, key, batch_size).await?;
+            let mut wtxn = db_env.write_txn()?;
+            let start_id = Self::reserve_ids_in_txn(&mut wtxn, db, key, batch_size)?;
+            wtxn.commit()?;
             state.refill(start_id, batch_size);
         }
 
         Ok(state.take_id())
     }
 
-    /// Reserve a batch of IDs from the database.
-    async fn reserve_batch(
-        db_env: &heed::Env,
+    /// Reserve `count` consecutive IDs in the given transaction, returning the first ID.
+    fn reserve_ids_in_txn(
+        wtxn: &mut heed::RwTxn<'_>,
         db: &db_schema::Database,
         key: &StableKey,
-        batch_size: u64,
+        count: u64,
     ) -> Result<u64> {
         let db_key = db_schema::DbEntryKey::IdSequencer(key.clone()).encode()?;
 
-        let mut wtxn = db_env.write_txn()?;
-
         // Read current value (IDs start from 1, 0 is reserved)
-        let current_next_id = if let Some(data) = db.get(&wtxn, db_key.as_slice())? {
+        let current_next_id = if let Some(data) = db.get(wtxn, db_key.as_slice())? {
             let info: db_schema::IdSequencerInfo = from_msgpack_slice(&data)?;
             info.next_id
         } else {
             1
         };
 
-        // Write new value
-        let new_next_id = current_next_id + batch_size;
+        // Write updated value
         let info = db_schema::IdSequencerInfo {
-            next_id: new_next_id,
+            next_id: current_next_id + count,
         };
         let encoded = rmp_serde::to_vec_named(&info)?;
-        db.put(&mut wtxn, db_key.as_slice(), encoded.as_slice())?;
-
-        wtxn.commit()?;
+        db.put(wtxn, db_key.as_slice(), encoded.as_slice())?;
 
         Ok(current_next_id)
+    }
+}
+
+/// Deferred ID allocation that reads via `RoTxn` and commits writes later.
+///
+/// This splits the read and write phases of ID allocation so that the read
+/// (via `&RoTxn`) doesn't conflict with other immutable borrows of the transaction.
+/// Writes are applied in [`commit()`](IdReservation::commit).
+///
+/// Each reservation is scoped to a single key. At most one reservation per key
+/// should be live at a time, which is naturally enforced by LMDB's single-writer
+/// constraint.
+pub struct IdReservation {
+    key: &'static StableKey,
+    /// Next ID to hand out (initialized from DB on first `next_id` call).
+    next_id_state: Option<u64>,
+}
+
+impl IdReservation {
+    pub fn new(key: &'static StableKey) -> Self {
+        Self {
+            key,
+            next_id_state: None,
+        }
+    }
+
+    /// Allocate the next ID. Reads from DB on first call, then tracks locally.
+    /// Only needs `&RoTxn` (no mutable borrow).
+    pub fn next_id(&mut self, rtxn: &heed::RoTxn<'_>, db: &db_schema::Database) -> Result<u64> {
+        let next_id = match &mut self.next_id_state {
+            Some(n) => n,
+            slot @ None => {
+                let db_key = db_schema::DbEntryKey::IdSequencer(self.key.clone()).encode()?;
+                let current = if let Some(data) = db.get(rtxn, db_key.as_slice())? {
+                    let info: db_schema::IdSequencerInfo = from_msgpack_slice(&data)?;
+                    info.next_id
+                } else {
+                    1
+                };
+                slot.insert(current)
+            }
+        };
+        let id = *next_id;
+        *next_id += 1;
+        Ok(id)
+    }
+
+    /// Write the reserved ID range back to DB. Call once at end of transaction.
+    pub fn commit(self, wtxn: &mut heed::RwTxn<'_>, db: &db_schema::Database) -> Result<()> {
+        if let Some(next_id) = self.next_id_state {
+            let db_key = db_schema::DbEntryKey::IdSequencer(self.key.clone()).encode()?;
+            let info = db_schema::IdSequencerInfo { next_id };
+            let encoded = rmp_serde::to_vec_named(&info)?;
+            db.put(wtxn, db_key.as_slice(), encoded.as_slice())?;
+        }
+        Ok(())
     }
 }

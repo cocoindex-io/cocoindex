@@ -52,6 +52,25 @@ For targets nested inside another target (e.g., files inside a directory):
 2. Call `declare_target_state_with_child(parent_ts)` to get an unresolved child provider
 3. CocoIndex resolves the child provider when parent's sink executes
 
+### Child Invalidation
+
+For container targets, set `child_invalidation` in `TargetReconcileOutput` when a container change affects its children:
+
+| Value | When to Use | Effect on Children |
+| ----- | ----------- | ------------------ |
+| `None` (default) | No impact on children | Normal change detection |
+| `"destructive"` | Container rebuilt (e.g., primary key change drops and recreates table) | All previous tracking records ignored; children treated as new |
+| `"lossy"` | Data loss possible (e.g., schema change removes columns) | All children get `prev_may_be_missing=True`, forcing upsert even if data appears unchanged |
+
+```python
+return coco.TargetReconcileOutput(
+    action=_TableAction(...),
+    sink=self._sink,
+    tracking_record=_TableTrackingRecord(...),
+    child_invalidation="destructive",  # or "lossy" or None
+)
+```
+
 ## TargetHandler Protocol
 
 ```python
@@ -76,8 +95,10 @@ class TargetHandler(Protocol[KeyT, ValueT, TrackingRecordT, OptChildHandlerT]):
 
 **Returns:**
 
-- `TargetReconcileOutput(action, sink, tracking_record)` if an action is needed
+- `TargetReconcileOutput(action, sink, tracking_record, child_invalidation=None)` if an action is needed
 - `None` if no changes are required
+
+The optional `child_invalidation` field is only relevant for container targets — see [Child Invalidation](#child-invalidation).
 
 **Important:** The `reconcile()` method must be non-blocking. It should only compare states and return an action — actual I/O happens in the sink.
 

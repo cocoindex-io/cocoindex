@@ -2,10 +2,9 @@ use std::hash::{Hash, Hasher};
 use std::sync::{LazyLock, Mutex};
 
 use cocoindex_core::engine::target_state::{
-    ChildTargetDef, TargetActionSink, TargetHandler, TargetReconcileOutput, TargetStateProvider,
-    TargetStateProviderRegistry,
+    ChildInvalidation, ChildTargetDef, TargetActionSink, TargetHandler, TargetReconcileOutput,
+    TargetStateProvider, TargetStateProviderRegistry,
 };
-use cocoindex_core::state::target_state_path::TargetStatePath;
 use pyo3::types::{PyList, PySequence, PyTuple};
 
 use crate::context::{PyComponentProcessorContext, PyFnCallContext};
@@ -124,8 +123,22 @@ impl TargetHandler<PyEngineProfile> for PyTargetHandler {
             let output = if py_output.is_none(py) {
                 None
             } else {
-                let (action, sink, state) =
-                    py_output.extract::<(Py<PyAny>, Py<PyAny>, Py<PyAny>)>(py)?;
+                let (action, sink, state, py_child_invalidation) =
+                    py_output.extract::<(Py<PyAny>, Py<PyAny>, Py<PyAny>, Py<PyAny>)>(py)?;
+                let child_invalidation = if py_child_invalidation.is_none(py) {
+                    None
+                } else {
+                    let s = py_child_invalidation.extract::<String>(py)?;
+                    match s.as_str() {
+                        "destructive" => Some(ChildInvalidation::Destructive),
+                        "lossy" => Some(ChildInvalidation::Lossy),
+                        other => {
+                            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                                "Invalid child_invalidation value: {other:?}"
+                            )));
+                        }
+                    }
+                };
                 Some(TargetReconcileOutput {
                     action,
                     sink: get_core_field(py, sink)?.extract::<PyTargetActionSink>(py)?,
@@ -134,6 +147,7 @@ impl TargetHandler<PyEngineProfile> for PyTargetHandler {
                     } else {
                         Some(PyValue::new(state))
                     },
+                    child_invalidation,
                 })
             };
             Ok(output)

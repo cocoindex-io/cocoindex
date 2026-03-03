@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import (
     Collection,
     Generic,
-    Hashable,
+    Literal,
     NamedTuple,
     Protocol,
     Any,
@@ -141,6 +141,7 @@ class TargetReconcileOutput(
     action: ActionT
     sink: TargetActionSink[ActionT, OptChildHandlerT_co]
     tracking_record: TrackingRecordT_co | NonExistenceType
+    child_invalidation: Literal["destructive", "lossy"] | None = None
 
 
 class TargetHandler(Protocol[ValueT_contra, TrackingRecordT, OptChildHandlerT_co]):
