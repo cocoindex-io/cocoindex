@@ -38,9 +38,10 @@ PG_SCHEMA_NAME = "coco_examples"
 TOP_K = 5
 
 
+EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 PG_DB = coco.ContextKey[postgres.PgDatabase]("pg_db")
+EMBEDDER = coco.ContextKey[SentenceTransformerEmbedder]("embedder")
 
-_embedder = SentenceTransformerEmbedder("sentence-transformers/all-MiniLM-L6-v2")
 _splitter = RecursiveSplitter()
 
 
@@ -49,7 +50,7 @@ class CodeEmbedding:
     id: int
     filename: str
     code: str
-    embedding: Annotated[NDArray, _embedder]
+    embedding: Annotated[NDArray, EMBEDDER]
     start_line: int
     end_line: int
 
@@ -61,6 +62,7 @@ async def coco_lifespan(
     # Provide resources needed across the CocoIndex environment
     async with await postgres.create_pool(DATABASE_URL) as pool:
         builder.provide(PG_DB, postgres.register_db("code_embedding_db", pool))
+        builder.provide(EMBEDDER, SentenceTransformerEmbedder(EMBED_MODEL))
         yield
 
 
@@ -71,7 +73,7 @@ async def process_chunk(
     id_gen: IdGenerator,
     table: postgres.TableTarget[CodeEmbedding],
 ) -> None:
-    embedding = await _embedder.embed(chunk.text)
+    embedding = await coco.use_context(EMBEDDER).embed(chunk.text)
     table.declare_row(
         row=CodeEmbedding(
             id=await id_gen.next_id(chunk.text),
@@ -147,8 +149,14 @@ app = coco.App(
 # ============================================================================
 
 
-async def query_once(pool: asyncpg.Pool, query: str, *, top_k: int = TOP_K) -> None:
-    query_vec = await _embedder.embed(query)
+async def query_once(
+    pool: asyncpg.Pool,
+    embedder: SentenceTransformerEmbedder,
+    query: str,
+    *,
+    top_k: int = TOP_K,
+) -> None:
+    query_vec = await embedder.embed(query)
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             f"""
@@ -174,17 +182,18 @@ async def query_once(pool: asyncpg.Pool, query: str, *, top_k: int = TOP_K) -> N
 
 
 async def query() -> None:
+    embedder = SentenceTransformerEmbedder(EMBED_MODEL)
     async with await postgres.create_pool(DATABASE_URL) as pool:
         if len(sys.argv) > 2:
             q = " ".join(sys.argv[2:])
-            await query_once(pool, q)
+            await query_once(pool, embedder, q)
             return
 
         while True:
             q = input("Enter search query (or Enter to quit): ").strip()
             if not q:
                 break
-            await query_once(pool, q)
+            await query_once(pool, embedder, q)
 
 
 async def update_index() -> None:

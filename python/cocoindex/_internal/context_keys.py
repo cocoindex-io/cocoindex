@@ -6,9 +6,10 @@ _lock = threading.Lock()
 _used_keys = set[str]()
 
 T = TypeVar("T")
+T_co = TypeVar("T_co", covariant=True)
 
 
-class ContextKey(Generic[T]):
+class ContextKey(Generic[T_co]):
     __slots__ = ("_key",)
     _key: str
 

@@ -174,9 +174,40 @@ A protocol for objects that can provide vector schema information. The primary u
 
 Any object that implements the `__coco_vector_schema__()` method satisfies this protocol. The built-in [`SentenceTransformerEmbedder`](./ops/sentence_transformers.md) implements it.
 
+There are three ways to specify vector schema in annotations:
+
+#### Using a `ContextKey` (recommended)
+
+Define a [`ContextKey`](./programming_guide/context.md) for the embedder and use it as the annotation. The connector resolves the key at schema creation time. This is the recommended approach because the embedder is configured once in the lifespan and shared across all functions via context.
+
 ```python
-from typing import Annotated
-from numpy.typing import NDArray
+import cocoindex as coco
+from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
+
+EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+EMBEDDER = coco.ContextKey[SentenceTransformerEmbedder]("embedder")
+
+@dataclass
+class DocEmbedding:
+    id: int
+    text: str
+    embedding: Annotated[NDArray, EMBEDDER]  # dimension resolved from context
+
+# In lifespan, provide the embedder:
+@coco.lifespan
+async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]:
+    builder.provide(EMBEDDER, SentenceTransformerEmbedder(EMBED_MODEL))
+    yield
+
+# In coco functions, access the embedder:
+embedding = await coco.use_context(EMBEDDER).embed(text)
+```
+
+#### Using a `VectorSchemaProvider` instance
+
+Pass an embedder instance directly as the annotation. Simpler for scripts where the embedder is a module-level constant.
+
+```python
 from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
 
 embedder = SentenceTransformerEmbedder("sentence-transformers/all-MiniLM-L6-v2")
@@ -185,21 +216,23 @@ embedder = SentenceTransformerEmbedder("sentence-transformers/all-MiniLM-L6-v2")
 class DocEmbedding:
     id: int
     text: str
-    embedding: Annotated[NDArray, embedder]  # embedder provides vector schema
+    embedding: Annotated[NDArray, embedder]  # dimension inferred from model (384)
 ```
 
-When a connector's `TableSchema.from_class()` encounters an `Annotated[NDArray, provider]` field where `provider` is a `VectorSchemaProvider`, it calls `__coco_vector_schema__()` to determine the column's dimension and dtype.
+#### Using a `VectorSchema`
 
-`VectorSchema` itself also implements `VectorSchemaProvider` (returning itself), so you can use a `VectorSchema` directly as an annotation:
+Specify dimension and dtype explicitly. Useful when using a custom embedding model that doesn't implement `VectorSchemaProvider`.
 
 ```python
-schema = VectorSchema(dtype=np.dtype(np.float32), size=768)
+from cocoindex.resources.schema import VectorSchema
 
 @dataclass
 class ImageEmbedding:
     id: int
-    embedding: Annotated[NDArray, schema]
+    embedding: Annotated[NDArray, VectorSchema(dtype=np.dtype(np.float32), size=768)]
 ```
+
+When a connector's `TableSchema.from_class()` encounters an `Annotated[NDArray, annotation]` field, it resolves the annotation — unwrapping `ContextKey` if needed — and calls `__coco_vector_schema__()` to determine the column's dimension and dtype.
 
 ### MultiVectorSchema / MultiVectorSchemaProvider
 

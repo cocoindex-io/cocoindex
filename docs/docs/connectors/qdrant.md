@@ -211,35 +211,7 @@ point = qdrant.PointStruct(
 
 #### VectorSchemaProvider
 
-Vector dimensions are typically determined by the embedding model. By using a `VectorSchemaProvider`, the dimension is derived automatically from the source configuration.
-
-A `VectorSchemaProvider` can be:
-
-- **An embedding model** (e.g., [`SentenceTransformerEmbedder`](../ops/sentence_transformers.md)) — dimension is inferred from the model
-- **A `VectorSchema`** — for explicit size and dtype when not using an embedder
-
-```python
-from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
-
-embedder = SentenceTransformerEmbedder("sentence-transformers/all-MiniLM-L6-v2")
-
-schema = await qdrant.CollectionSchema.create(
-    vectors=qdrant.QdrantVectorDef(schema=embedder)  # dimension inferred (384)
-)
-```
-
-Or with explicit configuration:
-
-```python
-from cocoindex.resources.schema import VectorSchema
-import numpy as np
-
-schema = await qdrant.CollectionSchema.create(
-    vectors=qdrant.QdrantVectorDef(
-        schema=VectorSchema(dtype=np.float32, size=384)
-    )
-)
-```
+The `schema` field of `QdrantVectorDef` accepts a [`VectorSchemaProvider`](../resource_types.md#vectorschemaprovider), a `ContextKey`, or an explicit `VectorSchema` to specify the vector dimension and dtype. See [Vector Schema](../resource_types.md#vectorschemaprovider) for details.
 
 #### Multi-vector support
 

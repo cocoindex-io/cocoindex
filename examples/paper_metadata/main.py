@@ -44,9 +44,9 @@ LLM_MODEL = "gpt-4o"
 TOP_K = 5
 
 
+EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 PG_DB = coco.ContextKey[postgres.PgDatabase]("pg_db")
-
-_embedder = SentenceTransformerEmbedder("sentence-transformers/all-MiniLM-L6-v2")
+EMBEDDER = coco.ContextKey[SentenceTransformerEmbedder]("embedder")
 
 _abstract_splitter = RecursiveSplitter(
     custom_languages=[
@@ -95,7 +95,7 @@ class MetadataEmbeddingRow:
     filename: str
     location: str
     text: str
-    embedding: Annotated[NDArray, _embedder]
+    embedding: Annotated[NDArray, EMBEDDER]
 
 
 # =========================================================================
@@ -166,6 +166,7 @@ async def coco_lifespan(
 
     async with await postgres.create_pool(database_url) as pool:
         builder.provide(PG_DB, postgres.register_db("paper_metadata_db", pool))
+        builder.provide(EMBEDDER, SentenceTransformerEmbedder(EMBED_MODEL))
         yield
 
 
@@ -203,7 +204,7 @@ async def process_file(
                 ),
             )
 
-    title_embedding = await _embedder.embed(metadata.title)
+    title_embedding = await coco.use_context(EMBEDDER).embed(metadata.title)
     embedding_table.declare_row(
         row=MetadataEmbeddingRow(
             id=uuid.uuid4(),
@@ -228,7 +229,7 @@ async def process_file(
                 filename=str(file.file_path.path),
                 location="abstract",
                 text=chunk.text,
-                embedding=await _embedder.embed(chunk.text),
+                embedding=await coco.use_context(EMBEDDER).embed(chunk.text),
             ),
         )
 
@@ -283,8 +284,14 @@ app = coco.App(
 # =========================================================================
 
 
-async def query_once(pool: asyncpg.Pool, query: str, *, top_k: int = TOP_K) -> None:
-    query_vec = await _embedder.embed(query)
+async def query_once(
+    pool: asyncpg.Pool,
+    embedder: SentenceTransformerEmbedder,
+    query: str,
+    *,
+    top_k: int = TOP_K,
+) -> None:
+    query_vec = await embedder.embed(query)
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             f"""
@@ -313,17 +320,18 @@ async def query() -> None:
     if not database_url:
         raise ValueError("POSTGRES_URL is not set")
 
+    embedder = SentenceTransformerEmbedder(EMBED_MODEL)
     async with await postgres.create_pool(database_url) as pool:
         if len(sys.argv) > 2:
             q = " ".join(sys.argv[2:])
-            await query_once(pool, q)
+            await query_once(pool, embedder, q)
             return
 
         while True:
             q = input("Enter search query (or Enter to quit): ").strip()
             if not q:
                 break
-            await query_once(pool, q)
+            await query_once(pool, embedder, q)
 
 
 load_dotenv()

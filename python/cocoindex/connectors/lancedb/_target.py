@@ -50,7 +50,7 @@ from cocoindex._internal.datatype import (
     is_record_type,
 )
 from cocoindex._internal.api import mount_target as _mount_target
-from cocoindex.resources.schema import VectorSchemaProvider
+from cocoindex.resources import schema as res_schema
 
 # Type aliases
 _RowKey = tuple[Any, ...]  # Primary key values as tuple
@@ -132,7 +132,7 @@ _JSON_MAPPING = _TypeMapping(pa.string(), _json_encoder)
 
 
 async def _get_type_mapping(
-    python_type: Any, *, vector_schema_provider: VectorSchemaProvider | None = None
+    python_type: Any, *, vector_schema: res_schema.VectorSchema | None = None
 ) -> _TypeMapping:
     """
     Get the PyArrow type mapping for a Python type.
@@ -155,9 +155,8 @@ async def _get_type_mapping(
 
     # NumPy ndarray: map to fixed-size list; dimension is handled at the schema layer
     if base_type is np.ndarray:
-        if vector_schema_provider is None:
+        if vector_schema is None:
             raise ValueError("VectorSchemaProvider is required for NumPy ndarray type.")
-        vector_schema = await vector_schema_provider.__coco_vector_schema__()
 
         if vector_schema.size <= 0:
             raise ValueError(f"Invalid vector dimension: {vector_schema.size}")
@@ -171,7 +170,7 @@ async def _get_type_mapping(
         # Create fixed-size list type for vector
         return _TypeMapping(pa.list_(pa_elem, list_size=vector_schema.size))
 
-    elif vector_schema_provider is not None:
+    elif vector_schema is not None:
         raise ValueError(
             f"VectorSchemaProvider is only supported for NumPy ndarray type. Got type: {python_type}"
         )
@@ -243,7 +242,8 @@ class TableSchema(Generic[RowT]):
         record_type: type[RowT],
         primary_key: list[str],
         *,
-        column_specs: dict[str, LanceType | VectorSchemaProvider] | None = None,
+        column_specs: dict[str, LanceType | res_schema.VectorSchemaProvider]
+        | None = None,
     ) -> "TableSchema[RowT]":
         """
         Create a TableSchema from a record type (dataclass, NamedTuple, or Pydantic model).
@@ -267,7 +267,7 @@ class TableSchema(Generic[RowT]):
     @staticmethod
     async def _columns_from_record_type(
         record_type: type,
-        column_specs: dict[str, LanceType | VectorSchemaProvider] | None,
+        column_specs: dict[str, LanceType | res_schema.VectorSchemaProvider] | None,
     ) -> dict[str, ColumnDef]:
         """Convert a record type to a dict of column name -> ColumnDef."""
         record_info = RecordType(record_type)
@@ -277,20 +277,23 @@ class TableSchema(Generic[RowT]):
             spec = column_specs.get(field.name) if column_specs else None
             type_info = analyze_type_info(field.type_hint)
 
-            # Extract LanceType and VectorSchemaProvider from annotations
-            lance_type_annotation: LanceType | None = None
-            vector_schema_provider: VectorSchemaProvider | None = None
-            for annotation in type_info.annotations:
-                if isinstance(annotation, LanceType):
-                    lance_type_annotation = annotation
-                elif isinstance(annotation, VectorSchemaProvider):
-                    vector_schema_provider = annotation
+            all_annotations = []
+            if spec is not None:
+                all_annotations.append(spec)
+            all_annotations.extend(type_info.annotations)
 
-            # Override takes precedence over annotation
-            if isinstance(spec, LanceType):
-                lance_type_annotation = spec
-            elif isinstance(spec, VectorSchemaProvider):
-                vector_schema_provider = spec
+            # Extract LanceType and VectorSchema from annotations
+            lance_type_annotation = next(
+                (t for t in all_annotations if isinstance(t, LanceType)), None
+            )
+            vector_schema = await anext(
+                (
+                    s
+                    for annot in all_annotations
+                    if (s := await res_schema.get_vector_schema(annot)) is not None
+                ),
+                None,
+            )
 
             # Determine type mapping
             if lance_type_annotation is not None:
@@ -299,7 +302,7 @@ class TableSchema(Generic[RowT]):
                 )
             else:
                 type_mapping = await _get_type_mapping(
-                    field.type_hint, vector_schema_provider=vector_schema_provider
+                    field.type_hint, vector_schema=vector_schema
                 )
 
             columns[field.name] = ColumnDef(

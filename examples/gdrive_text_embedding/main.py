@@ -41,8 +41,10 @@ class _GlobalState:
     db: postgres.PgDatabase | None = None
 
 
+EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+EMBEDDER = coco.ContextKey[SentenceTransformerEmbedder]("embedder")
+
 _state = _GlobalState()
-_embedder = SentenceTransformerEmbedder("sentence-transformers/all-MiniLM-L6-v2")
 _splitter = RecursiveSplitter()
 
 
@@ -53,6 +55,7 @@ async def coco_lifespan(
     async with await postgres.create_pool(DATABASE_URL) as pool:
         _state.pool = pool
         _state.db = postgres.register_db("gdrive_text_embedding_db", pool)
+        builder.provide(EMBEDDER, SentenceTransformerEmbedder(EMBED_MODEL))
         yield
 
 
@@ -61,7 +64,7 @@ class DocEmbedding:
     id: int
     filename: str
     text: str
-    embedding: Annotated[NDArray, _embedder]
+    embedding: Annotated[NDArray, EMBEDDER]
 
 
 @coco.fn(memo=True)
@@ -89,7 +92,7 @@ async def _emit_chunk(
             id=await id_gen.next_id(chunk.text),
             filename=filename,
             text=chunk.text,
-            embedding=await _embedder.embed(chunk.text),
+            embedding=await coco.use_context(EMBEDDER).embed(chunk.text),
         ),
     )
 
@@ -128,8 +131,10 @@ app = coco.App(
 )
 
 
-async def query_once(query: str, *, top_k: int = TOP_K) -> None:
-    query_vec = await _embedder.embed(query)
+async def query_once(
+    embedder: SentenceTransformerEmbedder, query: str, *, top_k: int = TOP_K
+) -> None:
+    query_vec = await embedder.embed(query)
     pool = _state.pool
     assert pool is not None
 
@@ -156,17 +161,18 @@ async def query_once(query: str, *, top_k: int = TOP_K) -> None:
 
 
 async def query() -> None:
+    embedder = SentenceTransformerEmbedder(EMBED_MODEL)
     async with coco.runtime():
         if len(sys.argv) > 2:
             q = " ".join(sys.argv[2:])
-            await query_once(q)
+            await query_once(embedder, q)
             return
 
         while True:
             q = input("Enter search query (or Enter to quit): ").strip()
             if not q:
                 break
-            await query_once(q)
+            await query_once(embedder, q)
 
 
 if __name__ == "__main__":

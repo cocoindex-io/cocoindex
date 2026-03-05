@@ -36,7 +36,7 @@ from cocoindex.connectorkits import connection, statediff
 from cocoindex.connectorkits.fingerprint import fingerprint_object
 from cocoindex._internal.api import mount_target as _mount_target
 from cocoindex._internal.datatype import TypeChecker
-from cocoindex.resources import schema
+from cocoindex.resources import schema as res_schema
 
 # Public alias for Qdrant point model
 PointStruct = qdrant_models.PointStruct
@@ -57,7 +57,13 @@ class QdrantVectorDef(NamedTuple):
                                 is MultiVectorSchemaProvider)
     """
 
-    schema: schema.VectorSchemaProvider | schema.MultiVectorSchemaProvider
+    schema: (
+        res_schema.VectorSchemaProvider
+        | res_schema.MultiVectorSchemaProvider
+        | coco.ContextKey[
+            res_schema.VectorSchemaProvider | res_schema.MultiVectorSchemaProvider
+        ]
+    )
     distance: Literal["cosine", "dot", "euclid"] = "cosine"
     multivector_comparator: Literal["max_sim"] = "max_sim"
 
@@ -74,19 +80,22 @@ class _ResolvedQdrantVectorDef(NamedTuple):
         multivector_comparator: Comparator to use for multivector
     """
 
-    schema: schema.VectorSchema | schema.MultiVectorSchema
+    schema: res_schema.VectorSchema | res_schema.MultiVectorSchema
     distance: Literal["cosine", "dot", "euclid"]
     multivector_comparator: Literal["max_sim"]
 
 
 async def _resolve_vector_def(vector_def: QdrantVectorDef) -> _ResolvedQdrantVectorDef:
-    resolved_schema: schema.VectorSchema | schema.MultiVectorSchema
-    if isinstance(vector_def.schema, schema.VectorSchemaProvider):
-        resolved_schema = await vector_def.schema.__coco_vector_schema__()
-    elif isinstance(vector_def.schema, schema.MultiVectorSchemaProvider):
-        resolved_schema = await vector_def.schema.__coco_multi_vector_schema__()
+    resolved_schema: res_schema.VectorSchema | res_schema.MultiVectorSchema
+    vs = await res_schema.get_vector_schema(vector_def.schema)
+    if vs is not None:
+        resolved_schema = vs
     else:
-        raise ValueError(f"Invalid vector definition: {vector_def}")
+        mvs = await res_schema.get_multi_vector_schema(vector_def.schema)
+        if mvs is not None:
+            resolved_schema = mvs
+        else:
+            raise ValueError(f"Invalid vector definition: {vector_def}")
     return _ResolvedQdrantVectorDef(
         schema=resolved_schema,
         distance=vector_def.distance,
@@ -644,9 +653,9 @@ def _vector_params_from_def(
     resolved_schema = vector_def.schema
     multivector_config = None
 
-    if isinstance(resolved_schema, schema.VectorSchema):
+    if isinstance(resolved_schema, res_schema.VectorSchema):
         dim = resolved_schema.size
-    elif isinstance(resolved_schema, schema.MultiVectorSchema):
+    elif isinstance(resolved_schema, res_schema.MultiVectorSchema):
         dim = resolved_schema.vector_schema.size
         # For multivector, use the specified comparator
         multivector_config = qdrant_models.MultiVectorConfig(

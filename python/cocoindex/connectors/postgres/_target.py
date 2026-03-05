@@ -52,7 +52,7 @@ from cocoindex._internal.datatype import (
     is_record_type,
 )
 from cocoindex._internal.api import mount_target as _mount_target
-from cocoindex.resources.schema import VectorSchemaProvider
+from cocoindex.resources import schema as res_schema
 
 # Type aliases
 _RowKey = tuple[Any, ...]  # Primary key values as tuple
@@ -178,7 +178,7 @@ _JSONB_MAPPING = _TypeMapping("jsonb", _json_encoder)
 
 
 async def _get_type_mapping(
-    python_type: Any, *, vector_schema_provider: VectorSchemaProvider | None = None
+    python_type: Any, *, vector_schema: res_schema.VectorSchema | None = None
 ) -> _TypeMapping:
     """
     Get the PostgreSQL type mapping for a Python type.
@@ -204,10 +204,8 @@ async def _get_type_mapping(
 
     # NumPy ndarray: map to pgvector type bases; dimension is handled at the schema layer.
     if base_type is np.ndarray:
-        if vector_schema_provider is None:
+        if vector_schema is None:
             raise ValueError("VectorSpecProvider is required for NumPy ndarray type.")
-        vector_schema = await vector_schema_provider.__coco_vector_schema__()
-
         if vector_schema.size <= 0:
             raise ValueError(f"Invalid pgvector dimension: {vector_schema.size}")
 
@@ -215,7 +213,7 @@ async def _get_type_mapping(
         base = "halfvec" if vector_schema.dtype in (np.half, np.float16) else "vector"
         return _TypeMapping(pg_type=f"{base}({vector_schema.size})")
 
-    elif vector_schema_provider is not None:
+    elif vector_schema is not None:
         raise ValueError(
             f"VectorSpecProvider is only supported for NumPy ndarray type. Got type: {python_type}"
         )
@@ -287,7 +285,8 @@ class TableSchema(Generic[RowT]):
         record_type: type[RowT],
         primary_key: list[str],
         *,
-        column_overrides: dict[str, PgType | VectorSchemaProvider] | None = None,
+        column_overrides: dict[str, PgType | res_schema.VectorSchemaProvider]
+        | None = None,
     ) -> "TableSchema[RowT]":
         """
         Create a TableSchema from a record type (dataclass, NamedTuple, or Pydantic model).
@@ -312,30 +311,34 @@ class TableSchema(Generic[RowT]):
     @staticmethod
     async def _columns_from_record_type(
         record_type: type,
-        column_overrides: dict[str, PgType | VectorSchemaProvider] | None,
+        column_overrides: dict[str, PgType | res_schema.VectorSchemaProvider] | None,
     ) -> dict[str, ColumnDef]:
         """Convert a record type to a dict of column name -> ColumnDef."""
         record_info = RecordType(record_type)
         columns: dict[str, ColumnDef] = {}
 
         for field in record_info.fields:
-            override = column_overrides.get(field.name) if column_overrides else None
             type_info = analyze_type_info(field.type_hint)
 
-            # Extract PgType and VectorSchemaProvider from annotations
-            pg_type_annotation: PgType | None = None
-            vector_schema_provider: VectorSchemaProvider | None = None
-            for annotation in type_info.annotations:
-                if isinstance(annotation, PgType):
-                    pg_type_annotation = annotation
-                elif isinstance(annotation, VectorSchemaProvider):
-                    vector_schema_provider = annotation
+            all_annotations = []
+            if (
+                override := column_overrides and column_overrides.get(field.name)
+            ) is not None:
+                all_annotations.append(override)
+            all_annotations.extend(type_info.annotations)
 
-            # Override takes precedence over annotation
-            if isinstance(override, PgType):
-                pg_type_annotation = override
-            elif isinstance(override, VectorSchemaProvider):
-                vector_schema_provider = override
+            # Extract PgType and VectorSchemaProvider from annotations
+            pg_type_annotation = next(
+                (t for t in all_annotations if isinstance(t, PgType)), None
+            )
+            vector_schema = await anext(
+                (
+                    s
+                    for annot in all_annotations
+                    if (s := await res_schema.get_vector_schema(annot)) is not None
+                ),
+                None,
+            )
 
             # Determine type mapping
             if pg_type_annotation is not None:
@@ -344,7 +347,7 @@ class TableSchema(Generic[RowT]):
                 )
             else:
                 type_mapping = await _get_type_mapping(
-                    field.type_hint, vector_schema_provider=vector_schema_provider
+                    field.type_hint, vector_schema=vector_schema
                 )
 
             columns[field.name] = ColumnDef(
