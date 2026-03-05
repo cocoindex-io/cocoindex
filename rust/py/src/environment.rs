@@ -1,3 +1,4 @@
+use crate::fingerprint::PyFingerprint;
 use crate::{prelude::*, target_state::root_target_states_provider_registry};
 
 use crate::runtime::PyAsyncContext;
@@ -22,5 +23,9 @@ impl PyEnvironment {
         )
         .into_py_result()?;
         Ok(Self(environment))
+    }
+
+    pub fn register_logic(&self, fp: PyFingerprint) {
+        self.0.register_logic(fp.0);
     }
 }

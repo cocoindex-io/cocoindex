@@ -33,8 +33,8 @@ TOP_K = 5
 
 
 EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
-PG_DB = coco.ContextKey[postgres.PgDatabase]("pg_db")
-SOURCE_POOL = coco.ContextKey[asyncpg.Pool]("source_pool")
+PG_DB = coco.ContextKey[postgres.PgDatabase]("pg_db", tracked=False)
+SOURCE_POOL = coco.ContextKey[asyncpg.Pool]("source_pool", tracked=False)
 EMBEDDER = coco.ContextKey[SentenceTransformerEmbedder]("embedder")
 
 

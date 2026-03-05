@@ -231,6 +231,7 @@ class Environment:
         self._core_env = core.Environment(
             dump_engine_object(settings), self._async_context
         )
+        self._context_provider.set_core_env(self._core_env)
         self._info = info or EnvironmentInfo(self)
 
     @property

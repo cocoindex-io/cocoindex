@@ -33,7 +33,7 @@ TOP_K = 5
 
 
 EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
-QDRANT_DB = coco.ContextKey[qdrant.QdrantDatabase]("qdrant_db")
+QDRANT_DB = coco.ContextKey[qdrant.QdrantDatabase]("qdrant_db", tracked=False)
 EMBEDDER = coco.ContextKey[SentenceTransformerEmbedder]("embedder")
 
 _splitter = RecursiveSplitter()
