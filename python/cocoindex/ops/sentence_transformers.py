@@ -121,7 +121,7 @@ class SentenceTransformerEmbedder(_schema.VectorSchemaProvider):
                     )
         return self._model
 
-    @coco.fn(memo=True, version=1)
+    @coco.fn(memo=True, version=1, logic_tracking="self")
     async def embed(
         self,
         text: str,

@@ -57,8 +57,9 @@ pub struct PyFnCallContext(pub FnCallContext);
 #[pymethods]
 impl PyFnCallContext {
     #[new]
-    pub fn new() -> Self {
-        Self(FnCallContext::default())
+    #[pyo3(signature = (*, propagate_children_fn_logic=true))]
+    pub fn new(propagate_children_fn_logic: bool) -> Self {
+        Self(FnCallContext::new(propagate_children_fn_logic))
     }
 
     pub fn join_child(&self, child_fn_ctx: &PyFnCallContext) -> PyResult<()> {
@@ -73,8 +74,13 @@ impl PyFnCallContext {
         Ok(())
     }
 
-    pub fn add_logic_dep(&self, fp: PyFingerprint) -> PyResult<()> {
-        self.0.add_logic_dep(fp.0);
+    pub fn add_fn_logic_dep(&self, fp: PyFingerprint) -> PyResult<()> {
+        self.0.add_fn_logic_dep(fp.0);
+        Ok(())
+    }
+
+    pub fn add_context_tracked_dep(&self, fp: PyFingerprint) -> PyResult<()> {
+        self.0.add_context_tracked_dep(fp.0);
         Ok(())
     }
 }

@@ -13,6 +13,7 @@ import cocoindex as coco
 from cocoindex._internal import core
 
 from tests import common
+from tests.common.environment import get_env_db_path
 from tests.common.target_states import GlobalDictTarget, Metrics
 from tests.common.module_utils import load_module_as
 
@@ -24,6 +25,14 @@ _V1_PATH = str(_TEST_DIR / "mod_logic_v1.py")
 _V2_PATH = str(_TEST_DIR / "mod_logic_v2.py")
 _VER1_PATH = str(_TEST_DIR / "mod_logic_ver1.py")
 _VER2_PATH = str(_TEST_DIR / "mod_logic_ver2.py")
+_SELF_V1_PATH = str(_TEST_DIR / "mod_logic_self_v1.py")
+_SELF_V2_PATH = str(_TEST_DIR / "mod_logic_self_v2.py")
+_SELF_V3_PATH = str(_TEST_DIR / "mod_logic_self_v3.py")
+_NONE_V1_PATH = str(_TEST_DIR / "mod_logic_none_v1.py")
+_NONE_V2_PATH = str(_TEST_DIR / "mod_logic_none_v2.py")
+_CHAIN_V1_PATH = str(_TEST_DIR / "mod_logic_chain_v1.py")
+_CHAIN_V2_PATH = str(_TEST_DIR / "mod_logic_chain_v2.py")
+_CHAIN_V3_PATH = str(_TEST_DIR / "mod_logic_chain_v3.py")
 _FAKE_MODULE = "tests.core._dynamic_logic_change_module"
 
 
@@ -427,3 +436,273 @@ def test_fn_memo_invalidated_on_version_bump() -> None:
     # version=2: second run — memo hit again
     app.update_blocking()
     assert metrics.collect() == {}
+
+
+# ============================================================================
+# J1: "self" memoized function — NOT invalidated when child changes,
+#     IS invalidated when own code changes
+# ============================================================================
+
+
+def test_self_mode_not_invalidated_when_child_changes() -> None:
+    """A logic_tracking='self' memo fn is NOT invalidated when its child function changes."""
+    GlobalDictTarget.store.clear()
+    metrics = Metrics()
+    current_module: list[Any] = []
+
+    @coco.fn
+    def app_main() -> None:
+        mod = current_module[0]
+        result = mod.foo_self("A", "value1")
+        coco.declare_target_state(GlobalDictTarget.target_state("A", result))
+
+    app = coco.App(
+        coco.AppConfig(
+            name="test_self_mode_not_invalidated_when_child_changes",
+            environment=coco_env,
+        ),
+        app_main,
+    )
+
+    # v1: first run — foo_self and bar execute
+    mod = _load_module(_SELF_V1_PATH, metrics, current_module)
+    app.update_blocking()
+    assert metrics.collect() == {"foo_self": 1, "bar": 1}
+    assert GlobalDictTarget.store.data["A"].data == "bar_v1: value1"
+
+    # v1: second run — memo hit
+    app.update_blocking()
+    assert metrics.collect() == {}
+
+    # v2: bar changed but foo_self unchanged — memo NOT invalidated (self mode)
+    mod = _load_module(_SELF_V2_PATH, metrics, current_module, old_module=mod)
+    app.update_blocking()
+    assert metrics.collect() == {}
+    # Still has v1 output since memo was reused
+    assert GlobalDictTarget.store.data["A"].data == "bar_v1: value1"
+
+
+def test_self_mode_invalidated_when_own_code_changes() -> None:
+    """A logic_tracking='self' memo fn IS invalidated when its own code changes."""
+    GlobalDictTarget.store.clear()
+    metrics = Metrics()
+    current_module: list[Any] = []
+
+    @coco.fn
+    def app_main() -> None:
+        mod = current_module[0]
+        result = mod.foo_self("A", "value1")
+        coco.declare_target_state(GlobalDictTarget.target_state("A", result))
+
+    app = coco.App(
+        coco.AppConfig(
+            name="test_self_mode_invalidated_when_own_code_changes",
+            environment=coco_env,
+        ),
+        app_main,
+    )
+
+    # v1: first run — foo_self and bar execute
+    mod = _load_module(_SELF_V1_PATH, metrics, current_module)
+    app.update_blocking()
+    assert metrics.collect() == {"foo_self": 1, "bar": 1}
+    assert GlobalDictTarget.store.data["A"].data == "bar_v1: value1"
+
+    # v1: second run — memo hit
+    app.update_blocking()
+    assert metrics.collect() == {}
+
+    # v3: foo_self itself changed — memo invalidated
+    mod = _load_module(_SELF_V3_PATH, metrics, current_module, old_module=mod)
+    app.update_blocking()
+    assert metrics.collect() == {"foo_self": 1, "bar": 1}
+    assert GlobalDictTarget.store.data["A"].data == "bar_v1: value1"
+
+    # v3: second run — memo hit again
+    app.update_blocking()
+    assert metrics.collect() == {}
+
+
+# ============================================================================
+# J2: None memoized function — NOT invalidated on any function logic change
+# ============================================================================
+
+
+def test_none_mode_not_invalidated_on_any_logic_change() -> None:
+    """A logic_tracking=None memo fn is NOT invalidated when any function code changes."""
+    GlobalDictTarget.store.clear()
+    metrics = Metrics()
+    current_module: list[Any] = []
+
+    @coco.fn
+    def app_main() -> None:
+        mod = current_module[0]
+        result = mod.foo_none("A", "value1")
+        coco.declare_target_state(GlobalDictTarget.target_state("A", result))
+
+    app = coco.App(
+        coco.AppConfig(
+            name="test_none_mode_not_invalidated_on_any_logic_change",
+            environment=coco_env,
+        ),
+        app_main,
+    )
+
+    # v1: first run — foo_none and bar execute
+    mod = _load_module(_NONE_V1_PATH, metrics, current_module)
+    app.update_blocking()
+    assert metrics.collect() == {"foo_none": 1, "bar": 1}
+    assert GlobalDictTarget.store.data["A"].data == "bar_v1: value1"
+
+    # v1: second run — memo hit
+    app.update_blocking()
+    assert metrics.collect() == {}
+
+    # v2: both foo_none and bar changed — memo NOT invalidated (None mode)
+    mod = _load_module(_NONE_V2_PATH, metrics, current_module, old_module=mod)
+    app.update_blocking()
+    assert metrics.collect() == {}
+    # Still has v1 output since memo was reused
+    assert GlobalDictTarget.store.data["A"].data == "bar_v1: value1"
+
+
+# ============================================================================
+# J3: None function still tracks context key deps
+# ============================================================================
+
+_TRACKED_KEY_J3 = coco.ContextKey[str]("_test_logic_tracking_none_ctx_j3")
+
+
+def _create_env_with_ctx(db_name: str, value: str) -> coco.Environment:
+    """Create an Environment with a tracked context value."""
+    ctx = coco.ContextProvider()
+    ctx.provide(_TRACKED_KEY_J3, value)
+    settings = coco.Settings.from_env(db_path=get_env_db_path(db_name))
+    return coco.Environment(settings, context_provider=ctx)
+
+
+def test_none_mode_still_tracks_context_key_deps() -> None:
+    """A logic_tracking=None memo fn is still invalidated when a tracked context value changes."""
+    GlobalDictTarget.store.clear()
+    metrics = Metrics()
+
+    db_name = "test_none_mode_ctx_deps"
+
+    @coco.fn(memo=True, logic_tracking=None)
+    def process(name: str, content: str) -> None:
+        val = coco.use_context(_TRACKED_KEY_J3)
+        metrics.increment("process")
+        coco.declare_target_state(
+            GlobalDictTarget.target_state(name, f"{val}:{content}")
+        )
+
+    @coco.fn
+    async def app_main() -> None:
+        await coco.mount(coco.component_subpath("A"), process, "A", "data")
+
+    # Phase 1: value="v1" — executes then memo hit
+    env1 = _create_env_with_ctx(db_name, "v1")
+    app1 = coco.App(coco.AppConfig(name=db_name, environment=env1), app_main)
+    app1.update_blocking()
+    assert metrics.collect() == {"process": 1}
+    assert GlobalDictTarget.store.data["A"].data == "v1:data"
+    app1.update_blocking()
+    assert metrics.collect() == {}
+
+    del app1, env1
+    gc.collect()
+
+    # Phase 2: value="v2" — tracked key changed, memo invalidated despite None mode
+    env2 = _create_env_with_ctx(db_name, "v2")
+    app2 = coco.App(coco.AppConfig(name=db_name, environment=env2), app_main)
+    app2.update_blocking()
+    assert metrics.collect() == {"process": 1}
+    assert GlobalDictTarget.store.data["A"].data == "v2:data"
+    app2.update_blocking()
+    assert metrics.collect() == {}
+
+
+# ============================================================================
+# J4: Transitive — foo("full") → bar("self") → baz
+#     foo invalidated when bar changes, NOT when baz changes
+# ============================================================================
+
+
+def test_transitive_full_self_plain_bar_changes() -> None:
+    """foo(full) → bar(self) → baz. bar changes → foo invalidated."""
+    GlobalDictTarget.store.clear()
+    metrics = Metrics()
+    current_module: list[Any] = []
+
+    @coco.fn
+    def app_main() -> None:
+        mod = current_module[0]
+        result = mod.foo_full("A", "value1")
+        coco.declare_target_state(GlobalDictTarget.target_state("A", result))
+
+    app = coco.App(
+        coco.AppConfig(
+            name="test_transitive_full_self_plain_bar_changes",
+            environment=coco_env,
+        ),
+        app_main,
+    )
+
+    # v1: first run — all three execute
+    mod = _load_module(_CHAIN_V1_PATH, metrics, current_module)
+    app.update_blocking()
+    assert metrics.collect() == {"foo_full": 1, "bar_self": 1, "baz": 1}
+    assert GlobalDictTarget.store.data["A"].data == "baz_v1: value1"
+
+    # v1: second run — foo memo hit (bar memo also hit inside)
+    app.update_blocking()
+    assert metrics.collect() == {}
+
+    # v2: bar_self changed — foo invalidated (full propagates bar's fp)
+    mod = _load_module(_CHAIN_V2_PATH, metrics, current_module, old_module=mod)
+    app.update_blocking()
+    assert metrics.collect() == {"foo_full": 1, "bar_self": 1, "baz": 1}
+    assert GlobalDictTarget.store.data["A"].data == "baz_v1: value1"
+
+    # v2: second run — memo hit again
+    app.update_blocking()
+    assert metrics.collect() == {}
+
+
+def test_transitive_full_self_plain_baz_changes() -> None:
+    """foo(full) → bar(self) → baz. baz changes → foo NOT invalidated."""
+    GlobalDictTarget.store.clear()
+    metrics = Metrics()
+    current_module: list[Any] = []
+
+    @coco.fn
+    def app_main() -> None:
+        mod = current_module[0]
+        result = mod.foo_full("A", "value1")
+        coco.declare_target_state(GlobalDictTarget.target_state("A", result))
+
+    app = coco.App(
+        coco.AppConfig(
+            name="test_transitive_full_self_plain_baz_changes",
+            environment=coco_env,
+        ),
+        app_main,
+    )
+
+    # v1: first run — all three execute
+    mod = _load_module(_CHAIN_V1_PATH, metrics, current_module)
+    app.update_blocking()
+    assert metrics.collect() == {"foo_full": 1, "bar_self": 1, "baz": 1}
+    assert GlobalDictTarget.store.data["A"].data == "baz_v1: value1"
+
+    # v1: second run — foo memo hit
+    app.update_blocking()
+    assert metrics.collect() == {}
+
+    # v3: baz changed but bar_self is "self" mode — baz's fp not propagated past bar
+    # foo NOT invalidated
+    mod = _load_module(_CHAIN_V3_PATH, metrics, current_module, old_module=mod)
+    app.update_blocking()
+    assert metrics.collect() == {}
+    # Still has v1 output since foo memo was reused
+    assert GlobalDictTarget.store.data["A"].data == "baz_v1: value1"

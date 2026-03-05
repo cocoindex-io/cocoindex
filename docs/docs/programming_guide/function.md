@@ -64,18 +64,67 @@ See [Memoization Keys & States](../advanced_topics/memoization_keys.md) for deta
 
 ### Change tracking
 
-The logic of a function decorated with `@coco.fn` is tracked based on the content of the function. When a function's implementation changes, CocoIndex detects this and re-executes the places where it's called.
+Every `@coco.fn` function has its code fingerprinted. These fingerprints propagate up the call chain: when a function's code changes, all memoized callers and components that transitively depend on it are invalidated. Two parameters let you customize this:
 
-In addition to code changes, [tracked context values](./context.md#tracked-context-keys) consumed via `coco.use_context()` are also tracked. When a tracked context value changes between runs, functions that used it are re-executed — even if the function code and inputs are unchanged.
+- **`logic_tracking`** — controls the *scope* of automatic code change tracking
+- **`version`** — provides explicit manual control over when dependent memos are invalidated
 
-You can also explicitly control the behavior version with a `version` option:
+#### `logic_tracking`
+
+The `logic_tracking` parameter controls whether and how function code changes are detected:
+
+- **`"full"` (default):** Track this function's code AND all transitively called `@coco.fn` functions' code. A change anywhere in the call chain invalidates dependent memos.
+- **`"self"`:** Track only this function's own code. Changes in called functions do not propagate through this function.
+- **`None`:** Don't track this function's code at all. Code changes to this function are invisible to the change tracking system.
+
+#### `version`
+
+The `version` parameter lets you explicitly invalidate dependent memos by bumping an integer:
 
 ```python
-@coco.fn(memo=True, version=2)
+@coco.fn(version=2)
 def process_chunk(chunk: Chunk) -> Embedding:
-    # Bumping version forces re-execution even if code looks the same
+    # Bumping version invalidates all memoized callers, even if code looks the same
     return embed(chunk.text)
 ```
+
+#### Common patterns
+
+These parameters can be set on any `@coco.fn` function — not just memoized ones. A non-memoized function's fingerprint still propagates to its memoized callers and components.
+
+**Fully automatic (default)** — use `logic_tracking="full"` (or omit it) without setting `version`. Any code change in the function or its callees invalidates dependent memos. This always just works.
+
+```python
+@coco.fn
+async def process_file(file: FileLike) -> list[Chunk]:
+    # Any change here or in called @coco.fn functions invalidates dependent memos
+    text = await file.read_text()
+    return split_and_embed(text)
+```
+
+**Manual, precise control** — use `logic_tracking="self"` with `version`. You decide what counts as a behavior change by bumping `version`, without being affected by implementation detail changes (performance optimizations, logging tweaks, refactoring, etc.).
+
+```python
+@coco.fn(logic_tracking="self", version=3)
+async def process(data: str) -> str:
+    # Bump version when behavior changes (e.g., new output format).
+    # Internal refactors or logging changes won't trigger reprocessing.
+    return await transform(data)
+```
+
+**Opt out of tracking** — use `logic_tracking=None` for functions with a stable contract (where code changes don't affect output), or functions whose changes don't affect behavior (e.g., logging, performance hints). This prevents unnecessary reprocessing when only internals change.
+
+```python
+@coco.fn(logic_tracking=None)
+def embed(text: str) -> list[float]:
+    # Contract is stable: same input always produces the same embedding.
+    # Internal changes (e.g., switching backends) are handled by version bumps.
+    return model.encode(text)
+```
+
+:::note
+[Tracked context values](./context.md#tracked-context-keys) consumed via `coco.use_context()` are always tracked regardless of the `logic_tracking` setting. Even with `logic_tracking=None`, a change in a tracked context value still invalidates dependent memos.
+:::
 
 ### Async adapter
 

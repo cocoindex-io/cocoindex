@@ -221,7 +221,7 @@ def use_context(key: ContextKey[T]) -> T:
     value = ctx._env.context_provider.use(key)
     if key.tracked:
         fp = ctx._env.context_provider.get_tracked_fingerprint(key)
-        ctx._core_fn_call_ctx.add_logic_dep(fp)
+        ctx._core_fn_call_ctx.add_context_tracked_dep(fp)
     return value
 
 

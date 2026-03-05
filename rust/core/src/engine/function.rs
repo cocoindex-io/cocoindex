@@ -14,11 +14,13 @@ fn build_fn_call_memo<Prof: EngineProfile>(
     memo_states: Vec<Prof::FunctionData>,
 ) -> Option<FnCallMemo<Prof>> {
     fn_ctx.update(|inner| {
+        let mut logic_deps = inner.fn_logic_deps.clone();
+        logic_deps.extend(inner.context_tracked_deps.iter().cloned());
         Some(FnCallMemo {
             ret,
-            target_state_paths: std::mem::take(&mut inner.target_state_paths),
-            dependency_memo_entries: std::mem::take(&mut inner.dependency_memo_entries),
-            logic_deps: inner.logic_deps.clone(),
+            target_state_paths: inner.target_state_paths.clone(),
+            dependency_memo_entries: inner.dependency_memo_entries.clone(),
+            logic_deps,
             memo_states,
             already_stored: false,
         })

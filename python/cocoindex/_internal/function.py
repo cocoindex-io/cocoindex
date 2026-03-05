@@ -55,6 +55,8 @@ SelfT = TypeVar("SelfT")  # For method's self parameter
 AsyncCallable: TypeAlias = Callable[P, Coroutine[Any, Any, R_co]]
 AnyCallable: TypeAlias = Callable[P, R_co] | AsyncCallable[P, R_co]
 
+LogicTracking: TypeAlias = Literal["full", "self"] | None
+
 
 # ============================================================================
 # Type protocols for batched function decorators
@@ -278,11 +280,14 @@ def _build_sync_core_processor(
     memo_fp: core.Fingerprint | None = None,
     logic_fp: core.Fingerprint | None = None,
     state_handler: Callable[..., Coroutine[Any, Any, Any]] | None = None,
+    propagate_children_fn_logic: bool = True,
 ) -> core.ComponentProcessor[R_co]:
     def _build(comp_ctx: core.ComponentProcessorContext) -> R_co:
-        fn_ctx = core.FnCallContext()
+        fn_ctx = core.FnCallContext(
+            propagate_children_fn_logic=propagate_children_fn_logic
+        )
         if logic_fp is not None:
-            fn_ctx.add_logic_dep(logic_fp)
+            fn_ctx.add_fn_logic_dep(logic_fp)
         context = ComponentContext(env, path, comp_ctx, fn_ctx)
         tok = _context_var.set(context)
         try:
@@ -346,21 +351,31 @@ class SyncFunction(Function[P, R_co]):
     and produce AsyncFunction (via @coco.fn.as_async).
     """
 
-    __slots__ = ("_fn", "_memo", "_processor_info", "_logic_fp")
+    __slots__ = ("_fn", "_memo", "_processor_info", "_logic_fp", "_logic_tracking")
 
     _fn: Callable[P, R_co]
     _memo: bool
     _processor_info: core.ComponentProcessorInfo
-    _logic_fp: core.Fingerprint
+    _logic_fp: core.Fingerprint | None
+    _logic_tracking: LogicTracking
 
     def __init__(
-        self, fn: Callable[P, R_co], *, memo: bool, version: int | None = None
+        self,
+        fn: Callable[P, R_co],
+        *,
+        memo: bool,
+        version: int | None = None,
+        logic_tracking: LogicTracking = "full",
     ):
         self._fn = fn
         self._memo = memo
         self._processor_info = core.ComponentProcessorInfo(fn.__qualname__)
-        self._logic_fp = _compute_logic_fingerprint(fn, version=version)
-        core.register_logic_fingerprint(self._logic_fp)
+        self._logic_tracking = logic_tracking
+        if logic_tracking is not None:
+            self._logic_fp = _compute_logic_fingerprint(fn, version=version)
+            core.register_logic_fingerprint(self._logic_fp)
+        else:
+            self._logic_fp = None
 
     def __del__(self) -> None:
         fp = getattr(self, "_logic_fp", None)
@@ -400,6 +415,7 @@ class SyncFunction(Function[P, R_co]):
             finally:
                 _context_var.reset(tok)
 
+        propagate = self._logic_tracking == "full"
         fn_ctx: core.FnCallContext | None = None
         try:
             if self._memo:
@@ -431,8 +447,9 @@ class SyncFunction(Function[P, R_co]):
                         return cast(R_co, guard.cached_value)
 
                     # Execute (cache miss or stale states)
-                    fn_ctx = core.FnCallContext()
-                    fn_ctx.add_logic_dep(self._logic_fp)
+                    fn_ctx = core.FnCallContext(propagate_children_fn_logic=propagate)
+                    if self._logic_fp is not None:
+                        fn_ctx.add_fn_logic_dep(self._logic_fp)
                     ret = _call_in_context(fn_ctx)
                     if memo_states_for_resolve is None and state_methods:
                         memo_states_for_resolve = _call_state_methods_sync(
@@ -444,8 +461,9 @@ class SyncFunction(Function[P, R_co]):
                 finally:
                     guard.close()
             else:
-                fn_ctx = core.FnCallContext()
-                fn_ctx.add_logic_dep(self._logic_fp)
+                fn_ctx = core.FnCallContext(propagate_children_fn_logic=propagate)
+                if self._logic_fp is not None:
+                    fn_ctx.add_fn_logic_dep(self._logic_fp)
                 return _call_in_context(fn_ctx)
         finally:
             if fn_ctx is not None:
@@ -489,6 +507,7 @@ class SyncFunction(Function[P, R_co]):
             memo_fp,
             self._logic_fp,
             state_handler,
+            propagate_children_fn_logic=self._logic_tracking == "full",
         )
 
 
@@ -526,11 +545,14 @@ def _build_async_core_processor(
     memo_fp: core.Fingerprint | None = None,
     logic_fp: core.Fingerprint | None = None,
     state_handler: Callable[..., Coroutine[Any, Any, Any]] | None = None,
+    propagate_children_fn_logic: bool = True,
 ) -> core.ComponentProcessor[R_co]:
     async def _build(comp_ctx: core.ComponentProcessorContext) -> R_co:
-        fn_ctx = core.FnCallContext()
+        fn_ctx = core.FnCallContext(
+            propagate_children_fn_logic=propagate_children_fn_logic
+        )
         if logic_fp is not None:
-            fn_ctx.add_logic_dep(logic_fp)
+            fn_ctx.add_fn_logic_dep(logic_fp)
         context = ComponentContext(env, path, comp_ctx, fn_ctx)
         tok = _context_var.set(context)
         try:
@@ -603,6 +625,7 @@ class AsyncFunction(Function[P, R_co]):
         "_memo",
         "_processor_info",
         "_logic_fp",
+        "_logic_tracking",
         "_batching",
         "_max_batch_size",
         "_runner",
@@ -616,6 +639,8 @@ class AsyncFunction(Function[P, R_co]):
     _orig_sync_fn: Callable[..., Any] | None
     _memo: bool
     _processor_info: core.ComponentProcessorInfo
+    _logic_fp: core.Fingerprint | None
+    _logic_tracking: LogicTracking
     _batching: bool
     _max_batch_size: int | None
     _runner: Runner | None
@@ -635,6 +660,7 @@ class AsyncFunction(Function[P, R_co]):
         max_batch_size: int | None = None,
         runner: Runner | None = None,
         version: int | None = None,
+        logic_tracking: LogicTracking = "full",
     ) -> None:
         fn = async_fn or sync_fn
         if fn is None:
@@ -643,8 +669,12 @@ class AsyncFunction(Function[P, R_co]):
         self._orig_sync_fn = sync_fn
         self._memo = memo
         self._processor_info = core.ComponentProcessorInfo(fn.__qualname__)
-        self._logic_fp = _compute_logic_fingerprint(fn, version=version)
-        core.register_logic_fingerprint(self._logic_fp)
+        self._logic_tracking = logic_tracking
+        if logic_tracking is not None:
+            self._logic_fp = _compute_logic_fingerprint(fn, version=version)
+            core.register_logic_fingerprint(self._logic_fp)
+        else:
+            self._logic_fp = None
         self._batching = batching
         self._max_batch_size = max_batch_size
         self._runner = runner
@@ -706,8 +736,10 @@ class AsyncFunction(Function[P, R_co]):
         parent_ctx = _context_var.get(None)
         guard: core.FnCallMemoGuard | None = None
         memo_fp: core.Fingerprint | None = None
-        fn_ctx = core.FnCallContext()
-        fn_ctx.add_logic_dep(self._logic_fp)
+        propagate = self._logic_tracking == "full"
+        fn_ctx = core.FnCallContext(propagate_children_fn_logic=propagate)
+        if self._logic_fp is not None:
+            fn_ctx.add_fn_logic_dep(self._logic_fp)
         state_methods: list[Callable[..., Any]] = []
 
         try:
@@ -941,6 +973,7 @@ class AsyncFunction(Function[P, R_co]):
 
             state_handler = _state_handler
 
+        propagate = self._logic_tracking == "full"
         if self._is_scheduled:
             async_ctx = env.async_context
             return _build_async_core_processor(
@@ -953,6 +986,7 @@ class AsyncFunction(Function[P, R_co]):
                 memo_fp,
                 self._logic_fp,
                 state_handler,
+                propagate_children_fn_logic=propagate,
             )
 
         orig_async_fn = self._orig_async_fn
@@ -967,6 +1001,7 @@ class AsyncFunction(Function[P, R_co]):
                 memo_fp,
                 self._logic_fp,
                 state_handler,
+                propagate_children_fn_logic=propagate,
             )
 
         assert self._orig_sync_fn is not None
@@ -980,6 +1015,7 @@ class AsyncFunction(Function[P, R_co]):
             memo_fp,
             self._logic_fp,
             state_handler,
+            propagate_children_fn_logic=propagate,
         )
 
 
@@ -997,12 +1033,14 @@ class _GenericFunctionBuilder:
         max_batch_size: int | None = None,
         runner: Runner | None = None,
         version: int | None = None,
+        logic_tracking: LogicTracking = "full",
     ) -> None:
         self._memo = memo
         self._batching = batching
         self._max_batch_size = max_batch_size
         self._runner = runner
         self._version = version
+        self._logic_tracking = logic_tracking
 
     def _build_sync(self, fn: Callable[P, R_co]) -> SyncFunction[P, R_co]:
         if self._batching or self._runner is not None:
@@ -1010,7 +1048,12 @@ class _GenericFunctionBuilder:
                 "Batching and runner require the function to be async. "
                 "Use @coco.fn.as_async instead, or rewrite the function to be async."
             )
-        wrapper = SyncFunction(fn, memo=self._memo, version=self._version)
+        wrapper = SyncFunction(
+            fn,
+            memo=self._memo,
+            version=self._version,
+            logic_tracking=self._logic_tracking,
+        )
         functools.update_wrapper(wrapper, fn)
         return wrapper
 
@@ -1029,6 +1072,7 @@ class _GenericFunctionBuilder:
             max_batch_size=self._max_batch_size,
             runner=self._runner,
             version=self._version,
+            logic_tracking=self._logic_tracking,
         )
         functools.update_wrapper(wrapper, fn)
         return wrapper
@@ -1048,8 +1092,14 @@ class _SyncFunctionBuilder(_GenericFunctionBuilder):
 
 # Supports sync function -> sync function and async function -> async function
 class _AutoFunctionBuilder(_GenericFunctionBuilder):
-    def __init__(self, *, memo: bool = False, version: int | None = None) -> None:
-        super().__init__(memo=memo, version=version)
+    def __init__(
+        self,
+        *,
+        memo: bool = False,
+        version: int | None = None,
+        logic_tracking: LogicTracking = "full",
+    ) -> None:
+        super().__init__(memo=memo, version=version, logic_tracking=logic_tracking)
 
     @overload
     def __call__(  # type: ignore[overload-overlap]
@@ -1096,6 +1146,7 @@ class _FunctionDecorator:
         *,
         memo: bool = False,
         version: int | None = None,
+        logic_tracking: LogicTracking = "full",
     ) -> _AutoFunctionBuilder: ...
     # Overload for batching=True
     @overload
@@ -1107,6 +1158,7 @@ class _FunctionDecorator:
         max_batch_size: int | None = None,
         runner: Runner | None = None,
         version: int | None = None,
+        logic_tracking: LogicTracking = "full",
     ) -> _AsyncBatchedDecorator: ...
     # With batching / runner, only supports sync functions
     @overload
@@ -1118,6 +1170,7 @@ class _FunctionDecorator:
         max_batch_size: int | None = None,
         runner: Runner | None = None,
         version: int | None = None,
+        logic_tracking: LogicTracking = "full",
     ) -> _SyncFunctionBuilder: ...
     # Overloads for direct function decoration
     @overload
@@ -1136,6 +1189,7 @@ class _FunctionDecorator:
         max_batch_size: int | None = None,
         runner: Runner | None = None,
         version: int | None = None,
+        logic_tracking: LogicTracking = "full",
     ) -> Any:
         """Decorator for CocoIndex functions (exposed as @coco.fn).
 
@@ -1152,6 +1206,10 @@ class _FunctionDecorator:
             version: Explicit version number for change tracking. When specified,
                 the version is used as the logic fingerprint instead of the AST.
                 Bump this to force re-execution even when code looks the same.
+            logic_tracking: Controls logic change tracking granularity.
+                "full" (default): Track own code + transitive children.
+                "self": Track own code only, not children.
+                None: No function logic tracking.
 
         Batching and runner require an async interface. With this decorator, only
         async underlying functions are accepted when batching/runner is specified.
@@ -1169,9 +1227,12 @@ class _FunctionDecorator:
                 max_batch_size=max_batch_size,
                 runner=runner,
                 version=version,
+                logic_tracking=logic_tracking,
             )
             if batching or runner or max_batch_size is not None
-            else _AutoFunctionBuilder(memo=memo, version=version)
+            else _AutoFunctionBuilder(
+                memo=memo, version=version, logic_tracking=logic_tracking
+            )
         )
         if fn is not None:
             return builder(fn)
@@ -1190,6 +1251,7 @@ class _FunctionDecorator:
         max_batch_size: int | None = None,
         runner: Runner | None = None,
         version: int | None = None,
+        logic_tracking: LogicTracking = "full",
     ) -> _BatchedDecorator: ...
     # Overload for keyword-only args without batching
     @overload
@@ -1201,6 +1263,7 @@ class _FunctionDecorator:
         max_batch_size: int | None = None,
         runner: Runner | None = None,
         version: int | None = None,
+        logic_tracking: LogicTracking = "full",
     ) -> _AsyncFunctionBuilder: ...
     # Overloads for direct function decoration
     @overload
@@ -1225,6 +1288,7 @@ class _FunctionDecorator:
         max_batch_size: int | None = None,
         runner: Runner | None = None,
         version: int | None = None,
+        logic_tracking: LogicTracking = "full",
     ) -> Any:
         """Decorator for CocoIndex functions (exposed as @coco.fn.as_async).
 
@@ -1240,6 +1304,10 @@ class _FunctionDecorator:
             version: Explicit version number for change tracking. When specified,
                 the version is used as the logic fingerprint instead of the AST.
                 Bump this to force re-execution even when code looks the same.
+            logic_tracking: Controls logic change tracking granularity.
+                "full" (default): Track own code + transitive children.
+                "self": Track own code only, not children.
+                None: No function logic tracking.
 
         Batching and runner are fully supported since the result is always async.
 
@@ -1253,6 +1321,7 @@ class _FunctionDecorator:
             max_batch_size=max_batch_size,
             runner=runner,
             version=version,
+            logic_tracking=logic_tracking,
         )
         if fn is not None:
             return builder(fn)
