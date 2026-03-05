@@ -49,7 +49,7 @@ from cocoindex._internal.datatype import (
     is_record_type,
 )
 from cocoindex._internal.api import mount_target as _mount_target
-from cocoindex.resources.schema import VectorSchemaProvider
+from cocoindex.resources import schema as res_schema
 
 # Type aliases
 _RowKey = tuple[Any, ...]  # Primary key values as tuple
@@ -209,7 +209,7 @@ _JSON_MAPPING = _TypeMapping("TEXT", lambda v: json.dumps(v, default=str))
 
 
 async def _get_type_mapping(
-    python_type: Any, *, vector_schema_provider: VectorSchemaProvider | None = None
+    python_type: Any, *, vector_schema: res_schema.VectorSchema | None = None
 ) -> _TypeMapping:
     """
     Get the SQLite type mapping for a Python type.
@@ -237,9 +237,8 @@ async def _get_type_mapping(
 
     # NumPy ndarray: serialize to sqlite-vec compatible format
     if base_type is np.ndarray:
-        if vector_schema_provider is None:
+        if vector_schema is None:
             raise ValueError("VectorSchemaProvider is required for NumPy ndarray type.")
-        vector_schema = await vector_schema_provider.__coco_vector_schema__()
 
         if vector_schema.size <= 0:
             raise ValueError(f"Invalid vector dimension: {vector_schema.size}")
@@ -251,7 +250,7 @@ async def _get_type_mapping(
             f"float[{vector_schema.size}]", sqlite_vec.serialize_float32
         )
 
-    elif vector_schema_provider is not None:
+    elif vector_schema is not None:
         raise ValueError(
             f"VectorSchemaProvider is only supported for NumPy ndarray type. Got type: {python_type}"
         )
@@ -324,7 +323,8 @@ class TableSchema(Generic[RowT]):
         record_type: type[RowT],
         primary_key: list[str],
         *,
-        column_overrides: dict[str, SqliteType | VectorSchemaProvider] | None = None,
+        column_overrides: dict[str, SqliteType | res_schema.VectorSchemaProvider]
+        | None = None,
     ) -> "TableSchema[RowT]":
         """
         Create a TableSchema from a record type (dataclass, NamedTuple, or Pydantic model).
@@ -348,7 +348,8 @@ class TableSchema(Generic[RowT]):
     @staticmethod
     async def _columns_from_record_type(
         record_type: type,
-        column_overrides: dict[str, SqliteType | VectorSchemaProvider] | None,
+        column_overrides: dict[str, SqliteType | res_schema.VectorSchemaProvider]
+        | None,
     ) -> dict[str, ColumnDef]:
         """Convert a record type to a dict of column name -> ColumnDef."""
         record_info = RecordType(record_type)
@@ -358,20 +359,23 @@ class TableSchema(Generic[RowT]):
             override = column_overrides.get(field.name) if column_overrides else None
             type_info = analyze_type_info(field.type_hint)
 
-            # Extract SqliteType and VectorSchemaProvider from annotations
-            sqlite_type_annotation: SqliteType | None = None
-            vector_schema_provider: VectorSchemaProvider | None = None
-            for annotation in type_info.annotations:
-                if isinstance(annotation, SqliteType):
-                    sqlite_type_annotation = annotation
-                elif isinstance(annotation, VectorSchemaProvider):
-                    vector_schema_provider = annotation
+            all_annotations = []
+            if override is not None:
+                all_annotations.append(override)
+            all_annotations.extend(type_info.annotations)
 
-            # Override takes precedence over annotation
-            if isinstance(override, SqliteType):
-                sqlite_type_annotation = override
-            elif isinstance(override, VectorSchemaProvider):
-                vector_schema_provider = override
+            # Extract SqliteType and VectorSchema from annotations
+            sqlite_type_annotation = next(
+                (t for t in all_annotations if isinstance(t, SqliteType)), None
+            )
+            vector_schema = await anext(
+                (
+                    s
+                    for annot in all_annotations
+                    if (s := await res_schema.get_vector_schema(annot)) is not None
+                ),
+                None,
+            )
 
             # Determine type mapping
             if sqlite_type_annotation is not None:
@@ -380,14 +384,14 @@ class TableSchema(Generic[RowT]):
                 )
             else:
                 type_mapping = await _get_type_mapping(
-                    field.type_hint, vector_schema_provider=vector_schema_provider
+                    field.type_hint, vector_schema=vector_schema
                 )
 
             columns[field.name] = ColumnDef(
                 type=type_mapping.sqlite_type.strip(),
                 nullable=type_info.nullable,
                 encoder=type_mapping.encoder,
-                is_vector=(vector_schema_provider is not None),
+                is_vector=(vector_schema is not None),
             )
 
         return columns

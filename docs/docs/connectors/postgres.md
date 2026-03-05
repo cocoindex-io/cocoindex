@@ -320,36 +320,7 @@ schema = postgres.TableSchema(
 
 #### VectorSchemaProvider
 
-For `NDArray` fields, a `VectorSchemaProvider` specifies the vector dimension and dtype. Vector dimensions are typically determined by the embedding model—hardcoding them is error-prone and creates maintenance burden when switching models. By using a `VectorSchemaProvider`, the dimension is derived automatically from the source configuration.
-
-The connector has built-in pgvector support and automatically creates the extension when needed.
-
-A `VectorSchemaProvider` can be:
-
-- **An embedding model** (e.g., [`SentenceTransformerEmbedder`](../ops/sentence_transformers.md)) — dimension is inferred from the model
-- **A `VectorSchema`** — for explicit size and dtype when not using an embedder
-
-```python
-from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
-
-embedder = SentenceTransformerEmbedder("sentence-transformers/all-MiniLM-L6-v2")
-
-@dataclass
-class Document:
-    id: str
-    content: str
-    embedding: Annotated[NDArray, embedder]  # dimension inferred from model (384)
-```
-
-```python
-from cocoindex.resources.schema import VectorSchema
-
-@dataclass
-class Document:
-    id: str
-    content: str
-    embedding: Annotated[NDArray, VectorSchema(dtype=np.float32, size=384)]
-```
+For `NDArray` fields, a [`VectorSchemaProvider`](../resource_types.md#vectorschemaprovider) annotation specifies the vector dimension and dtype. The connector has built-in pgvector support and automatically creates the extension when needed. See [Vector Schema](../resource_types.md#vectorschemaprovider) for the full list of annotation options (`ContextKey`, embedder instance, or explicit `VectorSchema`).
 
 ### Table schema: explicit column definitions
 

@@ -59,7 +59,7 @@ from cocoindex._internal.datatype import (
     is_record_type,
 )
 from cocoindex._internal.api import mount_target as _mount_target
-from cocoindex.resources.schema import VectorSchemaProvider
+from cocoindex.resources import schema as res_schema
 
 if TYPE_CHECKING:
     import aiohttp  # type: ignore[import-not-found]
@@ -285,7 +285,7 @@ class DorisType(NamedTuple):
 
 
 async def _get_type_mapping(
-    python_type: Any, *, vector_schema_provider: VectorSchemaProvider | None = None
+    python_type: Any, *, vector_schema: res_schema.VectorSchema | None = None
 ) -> _TypeMapping:
     type_info = analyze_type_info(python_type)
 
@@ -299,16 +299,15 @@ async def _get_type_mapping(
         return _LEAF_TYPE_MAPPINGS[base_type]
 
     if base_type is np.ndarray:
-        if vector_schema_provider is None:
+        if vector_schema is None:
             raise ValueError("VectorSchemaProvider is required for NumPy ndarray type.")
-        schema = await vector_schema_provider.__coco_vector_schema__()
-        if schema.size <= 0:
-            raise ValueError(f"Invalid vector dimension: {schema.size}")
+        if vector_schema.size <= 0:
+            raise ValueError(f"Invalid vector dimension: {vector_schema.size}")
         return _TypeMapping(
             "ARRAY<FLOAT>",
             lambda v: v.tolist() if hasattr(v, "tolist") else list(v),
         )
-    elif vector_schema_provider is not None:
+    elif vector_schema is not None:
         raise ValueError(
             f"VectorSchemaProvider only supported for ndarray. Got: {python_type}"
         )
@@ -362,7 +361,8 @@ class TableSchema(Generic[RowT]):
         record_type: type[RowT],
         primary_key: list[str],
         *,
-        column_overrides: dict[str, DorisType | VectorSchemaProvider] | None = None,
+        column_overrides: dict[str, DorisType | res_schema.VectorSchemaProvider]
+        | None = None,
     ) -> "TableSchema[RowT]":
         if not is_record_type(record_type):
             raise TypeError(
@@ -374,7 +374,7 @@ class TableSchema(Generic[RowT]):
     @staticmethod
     async def _columns_from_record_type(
         record_type: type,
-        column_overrides: dict[str, DorisType | VectorSchemaProvider] | None,
+        column_overrides: dict[str, DorisType | res_schema.VectorSchemaProvider] | None,
     ) -> dict[str, ColumnDef]:
         record_info = RecordType(record_type)
         columns: dict[str, ColumnDef] = {}
@@ -383,18 +383,23 @@ class TableSchema(Generic[RowT]):
             override = column_overrides.get(f.name) if column_overrides else None
             type_info = analyze_type_info(f.type_hint)
 
-            doris_type_annotation: DorisType | None = None
-            vector_schema_provider: VectorSchemaProvider | None = None
-            for ann in type_info.annotations:
-                if isinstance(ann, DorisType):
-                    doris_type_annotation = ann
-                elif isinstance(ann, VectorSchemaProvider):
-                    vector_schema_provider = ann
+            all_annotations = []
+            if override is not None:
+                all_annotations.append(override)
+            all_annotations.extend(type_info.annotations)
 
-            if isinstance(override, DorisType):
-                doris_type_annotation = override
-            elif isinstance(override, VectorSchemaProvider):
-                vector_schema_provider = override
+            # Extract DorisType and VectorSchema from annotations
+            doris_type_annotation = next(
+                (t for t in all_annotations if isinstance(t, DorisType)), None
+            )
+            vector_schema = await anext(
+                (
+                    s
+                    for annot in all_annotations
+                    if (s := await res_schema.get_vector_schema(annot)) is not None
+                ),
+                None,
+            )
 
             if doris_type_annotation is not None:
                 mapping = _TypeMapping(
@@ -402,20 +407,17 @@ class TableSchema(Generic[RowT]):
                 )
             else:
                 mapping = await _get_type_mapping(
-                    f.type_hint, vector_schema_provider=vector_schema_provider
+                    f.type_hint, vector_schema=vector_schema
                 )
-
-            dim: int | None = None
-            if vector_schema_provider is not None:
-                schema = await vector_schema_provider.__coco_vector_schema__()
-                dim = schema.size
 
             columns[f.name] = ColumnDef(
                 type=mapping.doris_type.strip(),
                 nullable=type_info.nullable,
                 encoder=mapping.encoder,
-                is_vector=(vector_schema_provider is not None),
-                vector_dimension=dim,
+                is_vector=(vector_schema is not None),
+                vector_dimension=vector_schema.size
+                if vector_schema is not None
+                else None,
             )
 
         return columns

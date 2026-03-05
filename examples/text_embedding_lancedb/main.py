@@ -32,9 +32,10 @@ TABLE_NAME = "doc_embeddings"
 TOP_K = 5
 
 
+EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 LANCE_DB = coco.ContextKey[lancedb.LanceDatabase]("lance_db")
+EMBEDDER = coco.ContextKey[SentenceTransformerEmbedder]("embedder")
 
-_embedder = SentenceTransformerEmbedder("sentence-transformers/all-MiniLM-L6-v2")
 _splitter = RecursiveSplitter()
 
 
@@ -45,7 +46,7 @@ class DocEmbedding:
     chunk_start: int
     chunk_end: int
     text: str
-    embedding: Annotated[NDArray, _embedder]
+    embedding: Annotated[NDArray, EMBEDDER]
 
 
 @coco.lifespan
@@ -55,6 +56,7 @@ async def coco_lifespan(
     # Provide resources needed across the CocoIndex environment
     conn = await lancedb.connect_async(LANCEDB_URI)
     builder.provide(LANCE_DB, lancedb.register_db("text_embedding_db", conn))
+    builder.provide(EMBEDDER, SentenceTransformerEmbedder(EMBED_MODEL))
     yield
 
 
@@ -72,7 +74,7 @@ async def process_chunk(
             chunk_start=chunk.start.char_offset,
             chunk_end=chunk.end.char_offset,
             text=chunk.text,
-            embedding=await _embedder.embed(chunk.text),
+            embedding=await coco.use_context(EMBEDDER).embed(chunk.text),
         ),
     )
 
@@ -121,9 +123,13 @@ app = coco.App(
 
 
 async def query_once(
-    conn: lancedb.LanceAsyncConnection, query_text: str, *, top_k: int = TOP_K
+    conn: lancedb.LanceAsyncConnection,
+    embedder: SentenceTransformerEmbedder,
+    query_text: str,
+    *,
+    top_k: int = TOP_K,
 ) -> None:
-    query_vec = await _embedder.embed(query_text)
+    query_vec = await embedder.embed(query_text)
 
     table = await conn.open_table(TABLE_NAME)
 
@@ -138,18 +144,19 @@ async def query_once(
 
 
 async def query() -> None:
+    embedder = SentenceTransformerEmbedder(EMBED_MODEL)
     conn = await lancedb.connect_async(LANCEDB_URI)
 
     if len(sys.argv) > 1:
         q = " ".join(sys.argv[1:])
-        await query_once(conn, q)
+        await query_once(conn, embedder, q)
         return
 
     while True:
         q = input("Enter search query (or Enter to quit): ").strip()
         if not q:
             break
-        await query_once(conn, q)
+        await query_once(conn, embedder, q)
 
 
 if __name__ == "__main__":
