@@ -25,6 +25,7 @@ from .component_ctx import (
 from .stable_path import StableKey
 from .function import (
     AnyCallable,
+    LogicTracking,
     create_core_component_processor,
     fn,
 )
@@ -417,6 +418,7 @@ __all__ = [
     "AppConfig",
     # .function
     "fn",
+    "LogicTracking",
     # .context_keys
     "ContextKey",
     "ContextProvider",

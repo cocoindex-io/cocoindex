@@ -103,7 +103,7 @@ class LiteLLMEmbedder(_schema.VectorSchemaProvider):
             self._dim = len(embedding)
             return self._dim
 
-    @coco.fn(memo=True, version=1)
+    @coco.fn(memo=True, version=1, logic_tracking="self")
     async def embed(
         self,
         text: str,
