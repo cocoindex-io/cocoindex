@@ -48,7 +48,10 @@ pub(crate) fn use_or_invalidate_component_memoization<Prof: EngineProfile>(
         if let Some(processor_fp) = processor_fp {
             let memo_info: db_schema::ComponentMemoizationInfo<'_> = from_msgpack_slice(&data)?;
             if memo_info.processor_fp == processor_fp
-                && logic_registry::all_contained(&memo_info.logic_deps)
+                && logic_registry::all_contained_with_env(
+                    &memo_info.logic_deps,
+                    comp_ctx.app_ctx().env(),
+                )
             {
                 let bytes = match memo_info.return_value {
                     db_schema::MemoizedValue::Inlined(b) => b,
@@ -239,7 +242,7 @@ fn read_fn_call_memo_with_txn<Prof: EngineProfile>(
         return Ok(None);
     };
     let fn_call_memo: db_schema::FunctionMemoizationEntry<'_> = from_msgpack_slice(&data)?;
-    if !logic_registry::all_contained(&fn_call_memo.logic_deps) {
+    if !logic_registry::all_contained_with_env(&fn_call_memo.logic_deps, comp_ctx.app_ctx().env()) {
         return Ok(None);
     }
     if !fn_call_memo.child_components.is_empty() {

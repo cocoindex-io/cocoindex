@@ -66,6 +66,8 @@ See [Memoization Keys & States](../advanced_topics/memoization_keys.md) for deta
 
 The logic of a function decorated with `@coco.fn` is tracked based on the content of the function. When a function's implementation changes, CocoIndex detects this and re-executes the places where it's called.
 
+In addition to code changes, [tracked context values](./context.md#tracked-context-keys) consumed via `coco.use_context()` are also tracked. When a tracked context value changes between runs, functions that used it are re-executed — even if the function code and inputs are unchanged.
+
 You can also explicitly control the behavior version with a `version` option:
 
 ```python

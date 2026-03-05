@@ -35,7 +35,7 @@ LLM_MODEL = "gemini/gemini-2.5-flash"
 THREAD_LEVEL_MENTION_SCORE = 5
 COMMENT_LEVEL_MENTION_SCORE = 1
 
-PG_DB = coco.ContextKey[postgres.PgDatabase]("pg_db")
+PG_DB = coco.ContextKey[postgres.PgDatabase]("pg_db", tracked=False)
 
 
 # ============================================================================

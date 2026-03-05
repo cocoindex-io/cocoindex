@@ -3,6 +3,9 @@ use std::sync::{LazyLock, RwLock};
 
 use cocoindex_utils::fingerprint::Fingerprint;
 
+use super::environment::Environment;
+use super::profile::EngineProfile;
+
 static CURRENT_LOGIC_SET: LazyLock<RwLock<HashSet<Fingerprint>>> =
     LazyLock::new(|| RwLock::new(HashSet::new()));
 
@@ -20,6 +23,16 @@ pub fn contains(fp: &Fingerprint) -> bool {
 pub fn all_contained(fps: &[Fingerprint]) -> bool {
     let set = CURRENT_LOGIC_SET.read().unwrap();
     fps.iter().all(|fp| set.contains(fp))
+}
+
+/// Check if all fingerprints are in the global logic set or the environment's logic set.
+pub fn all_contained_with_env<Prof: EngineProfile>(
+    fps: &[Fingerprint],
+    env: &Environment<Prof>,
+) -> bool {
+    let global_set = CURRENT_LOGIC_SET.read().unwrap();
+    fps.iter()
+        .all(|fp| global_set.contains(fp) || env.logic_set_contains(fp))
 }
 
 /// Remove a logic fingerprint from the current logic set.

@@ -34,7 +34,7 @@ TOP_K = 5
 
 
 EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
-LANCE_DB = coco.ContextKey[lancedb.LanceDatabase]("lance_db")
+LANCE_DB = coco.ContextKey[lancedb.LanceDatabase]("lance_db", tracked=False)
 EMBEDDER = coco.ContextKey[SentenceTransformerEmbedder]("embedder")
 
 _splitter = RecursiveSplitter()

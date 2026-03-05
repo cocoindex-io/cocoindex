@@ -2,8 +2,11 @@ use crate::{
     engine::profile::EngineProfile, engine::target_state::TargetStateProviderRegistry, prelude::*,
 };
 
+use cocoindex_utils::fingerprint::Fingerprint;
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeSet, path::PathBuf};
+use std::collections::{BTreeSet, HashSet};
+use std::path::PathBuf;
+use std::sync::RwLock;
 
 const DEFAULT_MAX_DBS: u32 = 1024;
 const DEFAULT_LMDB_MAP_SIZE: usize = 0x1_0000_0000; // 4GiB
@@ -29,6 +32,7 @@ struct EnvironmentInner<Prof: EngineProfile> {
     app_names: Mutex<BTreeSet<String>>,
     target_states_providers: Arc<Mutex<TargetStateProviderRegistry<Prof>>>,
     host_runtime_ctx: Prof::HostRuntimeCtx,
+    logic_set: RwLock<HashSet<Fingerprint>>,
 }
 
 #[derive(Clone)]
@@ -69,6 +73,7 @@ impl<Prof: EngineProfile> Environment<Prof> {
             app_names: Mutex::new(BTreeSet::new()),
             target_states_providers,
             host_runtime_ctx,
+            logic_set: RwLock::new(HashSet::new()),
         });
         Ok(Self { inner: state })
     }
@@ -106,6 +111,14 @@ impl<Prof: EngineProfile> Environment<Prof> {
 
     pub fn host_runtime_ctx(&self) -> &Prof::HostRuntimeCtx {
         &self.inner.host_runtime_ctx
+    }
+
+    pub fn register_logic(&self, fp: Fingerprint) {
+        self.inner.logic_set.write().unwrap().insert(fp);
+    }
+
+    pub fn logic_set_contains(&self, fp: &Fingerprint) -> bool {
+        self.inner.logic_set.read().unwrap().contains(fp)
     }
 }
 
