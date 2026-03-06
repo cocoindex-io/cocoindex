@@ -511,8 +511,10 @@ def _shutdown_background_loop_at_exit() -> None:
         if thread is not None and thread.is_alive():
             loop.call_soon_threadsafe(loop.stop)
             thread.join(timeout=1.0)
-        if thread is None or not thread.is_alive():
+        if not loop.is_closed():
             loop.close()
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=1.0)
     except Exception:
         pass
 
