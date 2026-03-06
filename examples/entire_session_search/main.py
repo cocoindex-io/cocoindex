@@ -47,7 +47,7 @@ PG_SCHEMA_NAME = os.getenv("PG_SCHEMA_NAME", "entire")
 TOP_K = 5
 
 EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
-PG_DB = coco.ContextKey[postgres.PgDatabase]("pg_db")
+PG_DB = coco.ContextKey[postgres.PgDatabase]("pg_db", tracked=False)
 EMBEDDER = coco.ContextKey[SentenceTransformerEmbedder]("embedder")
 
 _splitter = RecursiveSplitter()

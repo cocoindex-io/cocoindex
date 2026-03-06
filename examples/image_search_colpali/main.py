@@ -40,8 +40,8 @@ COLPALI_MODEL_NAME = os.getenv("COLPALI_MODEL", "vidore/colpali-v1.2")
 TOP_K = 5
 
 
-QDRANT_DB = coco.ContextKey[qdrant.QdrantDatabase]("qdrant_db")
-QDRANT_CLIENT = coco.ContextKey[QdrantClient]("qdrant_client")
+QDRANT_DB = coco.ContextKey[qdrant.QdrantDatabase]("qdrant_db", tracked=False)
+QDRANT_CLIENT = coco.ContextKey[QdrantClient]("qdrant_client", tracked=False)
 
 
 @functools.cache

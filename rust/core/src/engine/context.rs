@@ -250,8 +250,15 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
     }
 
     pub fn join_fn_call(&self, fn_ctx: &FnCallContext) {
-        let fn_logic_deps = fn_ctx.update(|inner| inner.logic_deps.clone());
-        self.inner.logic_deps.lock().unwrap().extend(fn_logic_deps);
+        let (fn_logic_deps, context_tracked_deps) = fn_ctx.update(|inner| {
+            (
+                inner.fn_logic_deps.clone(),
+                inner.context_tracked_deps.clone(),
+            )
+        });
+        let mut deps = self.inner.logic_deps.lock().unwrap();
+        deps.extend(fn_logic_deps);
+        deps.extend(context_tracked_deps);
     }
 
     /// Merge additional logic deps (e.g. from child components) into this component's set.
@@ -299,16 +306,36 @@ pub struct FnCallContextInner {
     /// If true, function-level memoization is disabled for this call.
     pub has_child_components: bool,
 
-    /// Logic fingerprints encountered transitively during this function call.
-    pub logic_deps: HashSet<Fingerprint>,
+    /// Function logic fingerprints (mode-controlled propagation via `propagate_children_fn_logic`).
+    pub fn_logic_deps: HashSet<Fingerprint>,
+    /// Context key fingerprints (always propagate regardless of logic_tracking mode).
+    pub context_tracked_deps: HashSet<Fingerprint>,
 }
 
-#[derive(Default)]
 pub struct FnCallContext {
     pub(crate) inner: Mutex<FnCallContextInner>,
+    /// Whether to merge children's `fn_logic_deps` into this context.
+    /// `true` for "full" mode, `false` for "self" or `None` mode.
+    propagate_children_fn_logic: bool,
+}
+
+impl Default for FnCallContext {
+    fn default() -> Self {
+        Self {
+            inner: Mutex::new(FnCallContextInner::default()),
+            propagate_children_fn_logic: true,
+        }
+    }
 }
 
 impl FnCallContext {
+    pub fn new(propagate_children_fn_logic: bool) -> Self {
+        Self {
+            inner: Mutex::new(FnCallContextInner::default()),
+            propagate_children_fn_logic,
+        }
+    }
+
     pub fn join_child(&self, child_fn_ctx: &FnCallContext) {
         // Take the child's inner first to keep lock scope small (and avoid deadlock).
         let child_inner = child_fn_ctx.update(std::mem::take);
@@ -320,13 +347,26 @@ impl FnCallContext {
                 .dependency_memo_entries
                 .extend(child_inner.dependency_memo_entries);
             inner.has_child_components |= child_inner.has_child_components;
-            inner.logic_deps.extend(child_inner.logic_deps);
+            // Context tracked deps always propagate.
+            inner
+                .context_tracked_deps
+                .extend(child_inner.context_tracked_deps);
+            // Function logic deps conditionally propagate.
+            if self.propagate_children_fn_logic {
+                inner.fn_logic_deps.extend(child_inner.fn_logic_deps);
+            }
         });
     }
 
-    pub fn add_logic_dep(&self, fp: Fingerprint) {
+    pub fn add_fn_logic_dep(&self, fp: Fingerprint) {
         self.update(|inner| {
-            inner.logic_deps.insert(fp);
+            inner.fn_logic_deps.insert(fp);
+        });
+    }
+
+    pub fn add_context_tracked_dep(&self, fp: Fingerprint) {
+        self.update(|inner| {
+            inner.context_tracked_deps.insert(fp);
         });
     }
 
