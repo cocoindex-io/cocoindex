@@ -392,13 +392,15 @@ impl<Prof: EngineProfile> Component<Prof> {
             if let Err(err) = &result {
                 error!("component build failed:\n{err:?}");
             }
-            child_readiness_guard.map(|guard| {
-                guard.resolve(
-                    result
-                        .map(|(outcome, _)| outcome)
-                        .unwrap_or_else(|_| ComponentRunOutcome::exception()),
-                )
-            });
+            let outcome = result
+                .map(|(outcome, _)| outcome)
+                .unwrap_or_else(|_| ComponentRunOutcome::exception());
+            drop(processor);
+            drop(context);
+            drop(self);
+            if let Some(guard) = child_readiness_guard {
+                guard.resolve(outcome);
+            }
             Ok(())
         });
         Ok(ComponentExecutionHandle { join_handle })
@@ -421,10 +423,15 @@ impl<Prof: EngineProfile> Component<Prof> {
                     ComponentRunOutcome::exception()
                 }
             };
+            let task_result = result.map(|_| ()).map_err(Into::into);
+            // Drop profile-specific objects BEFORE resolving child readiness.
+            // See run_in_background for the rationale (PyGILState finalization fix).
+            drop(context);
+            drop(self);
             if let Some(guard) = child_readiness_guard {
                 guard.resolve(outcome);
             }
-            result.map(|_| ()).map_err(Into::into)
+            task_result
         });
         Ok(ComponentExecutionHandle { join_handle })
     }
