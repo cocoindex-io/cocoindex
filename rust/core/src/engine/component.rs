@@ -352,6 +352,9 @@ impl<Prof: EngineProfile> Component<Prof> {
                     Ok((outcome, output)) => (outcome, Ok(output)),
                     Err(err) => (ComponentRunOutcome::exception(), Err(err)),
                 };
+                drop(processor);
+                drop(context);
+                drop(self);
                 child_readiness_guard.map(|guard| guard.resolve(outcome));
                 output?
                     .ok_or_else(|| internal_error!("component deletion can only run in background"))
