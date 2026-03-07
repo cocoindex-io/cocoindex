@@ -1150,6 +1150,17 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
                 if action is not None:
                     column_actions[sub_key] = action
 
+        # Determine child invalidation for row-level targets.
+        child_invalidation: Literal["destructive", "lossy"] | None = None
+        if main_action == "replace":
+            # Table is dropped and recreated — all rows are destroyed.
+            child_invalidation = "destructive"
+        elif main_action is None and any(
+            a != "insert" for a in column_actions.values()
+        ):
+            # Column schema changes (other than adding new columns) may lose data.
+            child_invalidation = "lossy"
+
         return coco.TargetReconcileOutput(
             action=_TableAction(
                 key=key,
@@ -1159,6 +1170,7 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
             ),
             sink=_table_action_sink,
             tracking_record=tracking_record,
+            child_invalidation=child_invalidation,
         )
 
 
