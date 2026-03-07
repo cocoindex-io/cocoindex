@@ -58,16 +58,35 @@ For container targets, set `child_invalidation` in `TargetReconcileOutput` when 
 
 | Value | When to Use | Effect on Children |
 | ----- | ----------- | ------------------ |
-| `None` (default) | No impact on children | Normal change detection |
-| `"destructive"` | Container rebuilt (e.g., primary key change drops and recreates table) | All previous tracking records ignored; children treated as new |
-| `"lossy"` | Data loss possible (e.g., schema change removes columns) | All children get `prev_may_be_missing=True`, forcing upsert even if data appears unchanged |
+| `None` (default) | No impact on children (e.g., only new columns added) | Normal change detection |
+| `"destructive"` | Container rebuilt from scratch (e.g., table dropped and recreated due to primary key change or table type switch) | All previous tracking records ignored; children treated as new and re-declared |
+| `"lossy"` | Data loss possible but container not fully rebuilt (e.g., column removed or type changed) | All children get `prev_may_be_missing=True`, forcing upsert even if content appears unchanged |
+
+**Pattern for two-level (table/row) connectors using `statediff.diff_composite`:**
 
 ```python
+# After computing main_action and column_actions via statediff.diff_composite:
+child_invalidation: Literal["destructive", "lossy"] | None = None
+if main_action == "replace":
+    # Table dropped and recreated — all rows are destroyed.
+    child_invalidation = "destructive"
+elif main_action is None and any(a != "insert" for a in column_actions.values()):
+    # Column changes other than adding new columns may lose existing row data.
+    child_invalidation = "lossy"
+
 return coco.TargetReconcileOutput(
     action=_TableAction(...),
     sink=self._sink,
     tracking_record=_TableTrackingRecord(...),
-    child_invalidation="destructive",  # or "lossy" or None
+    child_invalidation=child_invalidation,
+)
+```
+
+For connectors without column-level diffs (e.g., a collection that is either intact or fully replaced), only `"destructive"` applies:
+
+```python
+child_invalidation: Literal["destructive"] | None = (
+    "destructive" if main_action == "replace" else None
 )
 ```
 

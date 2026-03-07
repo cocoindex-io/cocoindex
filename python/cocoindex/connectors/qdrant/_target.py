@@ -448,6 +448,11 @@ class _CollectionHandler(
         resolved = statediff.resolve_system_transition(transition)
         main_action = statediff.diff(resolved)
 
+        # Collection replacement destroys all points.
+        child_invalidation: Literal["destructive"] | None = (
+            "destructive" if main_action == "replace" else None
+        )
+
         return coco.TargetReconcileOutput(
             action=_CollectionAction(
                 key=key,
@@ -456,6 +461,7 @@ class _CollectionHandler(
             ),
             sink=self._sink,
             tracking_record=tracking_record,
+            child_invalidation=child_invalidation,
         )
 
 
