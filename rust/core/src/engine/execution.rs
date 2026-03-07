@@ -457,7 +457,6 @@ impl<'a, Prof: EngineProfile> Committer<'a, Prof> {
                 tracking_info
                     .effect_items
                     .retain(|_, item| !item.states.is_empty());
-                // D4: Update provider_schema_version on items after commit
                 for (path_with_pid, item) in tracking_info.effect_items.iter_mut() {
                     if let Some(parent_provider) = self
                         .target_states_providers
@@ -986,7 +985,6 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                     })?
                     .reconcile(effect_key, declared_decl, &prev_states, prev_may_be_missing)?;
                 if let Some(recon_output) = recon_output {
-                    // D1: Compute provider generation for container items
                     if let Some(child_provider) = &child_provider {
                         let existing = item.provider_generation.clone().unwrap_or_default();
                         let new_gen = match recon_output.child_invalidation {
@@ -1054,7 +1052,6 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                     continue;
                 };
 
-                // D1: Compute provider generation for new container items
                 let provider_generation = if let Some(child_provider) = &target_state.child_provider
                 {
                     let new_id = id_reservation.next_id(&wtxn, db)?;
@@ -1081,7 +1078,6 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                     continue;
                 };
 
-                // D3: Construct TargetStatePathWithProviderId with parent's provider_id
                 let parent_provider_id = target_states_providers
                     .get(target_state_path.provider_path())
                     .and_then(|p| p.provider_generation())

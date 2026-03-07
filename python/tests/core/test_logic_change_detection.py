@@ -73,7 +73,7 @@ def _cleanup_dynamic_module() -> Iterator[None]:
 
 
 # ============================================================================
-# E2: Memoized function cache invalidated on logic change
+# Memoized function cache invalidated on logic change
 # ============================================================================
 
 
@@ -118,7 +118,7 @@ def test_fn_memo_invalidated_on_logic_change() -> None:
 
 
 # ============================================================================
-# E3: Component memo invalidated on logic change
+# Component memo invalidated on logic change
 # ============================================================================
 
 
@@ -164,7 +164,7 @@ def test_component_memo_invalidated_on_logic_change() -> None:
 
 
 # ============================================================================
-# E4: Transitive — foo (memoized fn) calls bar, bar changes
+# Transitive — foo (memoized fn) calls bar, bar changes
 # ============================================================================
 
 
@@ -249,7 +249,7 @@ def test_transitive_fn_memo_bar_plain_changes() -> None:
 
 
 # ============================================================================
-# E5: Transitive — foo (component) calls/mounts bar, bar changes
+# Transitive — foo (component) calls/mounts bar, bar changes
 # ============================================================================
 
 
@@ -394,7 +394,7 @@ def test_transitive_component_mounts_bar_comp_memo() -> None:
 
 
 # ============================================================================
-# E8: Explicit version bump invalidates memo (identical function body)
+# Explicit version bump invalidates memo (identical function body)
 # ============================================================================
 
 
@@ -439,7 +439,7 @@ def test_fn_memo_invalidated_on_version_bump() -> None:
 
 
 # ============================================================================
-# J1: "self" memoized function — NOT invalidated when child changes,
+# "self" memoized function — NOT invalidated when child changes,
 #     IS invalidated when own code changes
 # ============================================================================
 
@@ -524,7 +524,7 @@ def test_self_mode_invalidated_when_own_code_changes() -> None:
 
 
 # ============================================================================
-# J2: None memoized function — NOT invalidated on any function logic change
+# None memoized function — NOT invalidated on any function logic change
 # ============================================================================
 
 
@@ -567,7 +567,7 @@ def test_none_mode_not_invalidated_on_any_logic_change() -> None:
 
 
 # ============================================================================
-# J3: None function still tracks context key deps
+# None function still tracks context key deps
 # ============================================================================
 
 _TRACKED_KEY_J3 = coco.ContextKey[str]("_test_logic_tracking_none_ctx_j3")
@@ -623,7 +623,7 @@ def test_none_mode_still_tracks_context_key_deps() -> None:
 
 
 # ============================================================================
-# J4: Transitive — foo("full") → bar("self") → baz
+# Transitive — foo("full") → bar("self") → baz
 #     foo invalidated when bar changes, NOT when baz changes
 # ============================================================================
 
