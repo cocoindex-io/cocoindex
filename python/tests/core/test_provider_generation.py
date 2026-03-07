@@ -5,6 +5,34 @@ import cocoindex as coco
 from tests import common
 from tests.common.target_states import DictsTarget, DictDataWithPrev
 
+_inner_exec_count: int = 0
+
+
+@coco.fn(memo=True)
+async def _insert_rows_memo(provider: Any, data: dict[str, Any]) -> None:
+    global _inner_exec_count
+    _inner_exec_count += 1
+    for key, value in data.items():
+        coco.declare_target_state(provider.target_state(key, value))
+
+
+async def _declare_dicts_with_memo() -> None:
+    with coco.component_subpath("dict"):
+        for name, data in _source_data.items():
+            with coco.component_subpath(name):
+                single_dict_provider = await coco.use_mount(
+                    coco.component_subpath("setup"),
+                    DictsTarget.declare_dict_target,
+                    name,
+                )
+                await coco.use_mount(  # type: ignore[call-overload]
+                    coco.component_subpath("rows"),
+                    _insert_rows_memo,
+                    single_dict_provider,
+                    data,
+                )
+
+
 coco_env = common.create_test_env(__file__)
 
 _source_data: dict[str, dict[str, Any]] = {}
@@ -185,3 +213,82 @@ def test_destructive_change_with_data_change() -> None:
     # already cleaned up the external state (recreated the container).
     assert child_metrics.get("upsert", 0) == 2
     assert child_metrics.get("delete", 0) == 0
+
+
+def _new_memo_app(name: str) -> coco.App[[], None]:
+    global _inner_exec_count
+    DictsTarget.store.clear()
+    _source_data.clear()
+    DictsTarget.store.child_invalidation = None
+    _inner_exec_count = 0
+    return coco.App(
+        coco.AppConfig(name=name, environment=coco_env),
+        _declare_dicts_with_memo,
+    )
+
+
+def test_destructive_change_invalidates_memo() -> None:
+    global _inner_exec_count
+    app = _new_memo_app("test_destructive_change_invalidates_memo")
+    _source_data["D1"] = {"a": 1}
+
+    # Run 1: Initial insert — inner function executes
+    app.update_blocking()
+    assert _inner_exec_count == 1
+    assert DictsTarget.store.collect_child_metrics() == {"sink": 1, "upsert": 1}
+
+    # Run 2: Same data, no invalidation — inner function skipped (memo hit)
+    _inner_exec_count = 0
+    app.update_blocking()
+    assert _inner_exec_count == 0
+    assert DictsTarget.store.collect_child_metrics() == {}
+
+    # Run 3: Destructive change — provider_id changes, memo key changes, inner re-executes
+    DictsTarget.store.child_invalidation = "destructive"
+    _inner_exec_count = 0
+    try:
+        app.update_blocking()
+    finally:
+        DictsTarget.store.child_invalidation = None
+    assert _inner_exec_count == 1
+    assert DictsTarget.store.collect_child_metrics() == {"sink": 1, "upsert": 1}
+
+    # Run 4: Same data, no invalidation — memo hit again (new provider_id is stable)
+    _inner_exec_count = 0
+    app.update_blocking()
+    assert _inner_exec_count == 0
+    assert DictsTarget.store.collect_child_metrics() == {}
+
+
+def test_lossy_change_invalidates_memo() -> None:
+    global _inner_exec_count
+    app = _new_memo_app("test_lossy_change_invalidates_memo")
+    _source_data["D1"] = {"a": 1}
+
+    # Run 1: Initial insert — inner function executes
+    app.update_blocking()
+    assert _inner_exec_count == 1
+    assert DictsTarget.store.collect_child_metrics() == {"sink": 1, "upsert": 1}
+
+    # Run 2: Same data, no invalidation — inner function skipped (memo hit)
+    _inner_exec_count = 0
+    app.update_blocking()
+    assert _inner_exec_count == 0
+    assert DictsTarget.store.collect_child_metrics() == {}
+
+    # Run 3: Lossy change — schema_version changes, memo key changes, inner re-executes
+    DictsTarget.store.child_invalidation = "lossy"
+    _inner_exec_count = 0
+    try:
+        app.update_blocking()
+    finally:
+        DictsTarget.store.child_invalidation = None
+    assert _inner_exec_count == 1
+    # Lossy forces upsert (prev_may_be_missing=True) for child rows
+    assert DictsTarget.store.collect_child_metrics() == {"sink": 1, "upsert": 1}
+
+    # Run 4: Same data, no invalidation — memo hit again (schema_version is stable)
+    _inner_exec_count = 0
+    app.update_blocking()
+    assert _inner_exec_count == 0
+    assert DictsTarget.store.collect_child_metrics() == {}

@@ -162,7 +162,11 @@ pub struct PyTargetStateProvider(TargetStateProvider<PyEngineProfile>);
 #[pymethods]
 impl PyTargetStateProvider {
     pub fn coco_memo_key(&self) -> String {
-        self.0.target_state_path().to_string()
+        let path = self.0.target_state_path().to_string();
+        match self.0.provider_generation() {
+            Some(g) => format!("{}[{},{}]", path, g.provider_id, g.provider_schema_version),
+            None => path,
+        }
     }
 
     pub fn stable_key_chain<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
