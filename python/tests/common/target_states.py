@@ -152,6 +152,7 @@ class _DictTargetStateStoreAction(NamedTuple):
     name: str
     exists: bool
     action: Literal["insert", "upsert", "delete"] | None
+    destructive: bool = False
 
 
 class DictsTargetStateStore:
@@ -160,6 +161,7 @@ class DictsTargetStateStore:
     _lock: threading.Lock
     _use_async: bool
     sink_exception: bool = False
+    child_invalidation: Literal["destructive", "lossy"] | None = None
 
     def __init__(self, use_async: bool = False) -> None:
         self._stores = {}
@@ -174,13 +176,13 @@ class DictsTargetStateStore:
         if self.sink_exception:
             raise ValueError("injected sink exception")
         with self._lock:
-            for name, exists, action in actions:
+            for name, exists, action, destructive in actions:
                 if action == "insert":
                     if name in self._stores:
                         raise ValueError(f"store {name} already exists")
                     self._stores[name] = DictTargetStateStore(use_async=self._use_async)
                 elif action == "upsert":
-                    if name not in self._stores:
+                    if destructive or name not in self._stores:
                         self._stores[name] = DictTargetStateStore(
                             use_async=self._use_async
                         )
@@ -231,8 +233,9 @@ class DictsTargetStateStore:
                 ),
                 sink=sink,
                 tracking_record=coco.NON_EXISTENCE,
+                child_invalidation=self.child_invalidation,
             )
-        if not prev_may_be_missing:
+        if not prev_may_be_missing and self.child_invalidation is None:
             assert len(prev_possible_states) > 0
             return coco.TargetReconcileOutput(
                 action=_DictTargetStateStoreAction(name=key, exists=True, action=None),
@@ -240,19 +243,23 @@ class DictsTargetStateStore:
                 tracking_record=desired_state,
             )
 
+        is_destructive = self.child_invalidation == "destructive"
         return coco.TargetReconcileOutput(
             action=_DictTargetStateStoreAction(
                 name=key,
                 exists=True,
                 action="insert" if len(prev_possible_states) == 0 else "upsert",
+                destructive=is_destructive,
             ),
             sink=sink,
             tracking_record=desired_state,
+            child_invalidation=self.child_invalidation,
         )
 
     def clear(self) -> None:
         self._stores.clear()
         self.metrics.clear()
+        self.child_invalidation = None
 
     def collect_child_metrics(self) -> dict[str, int]:
         return sum(

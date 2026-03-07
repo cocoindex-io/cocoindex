@@ -9,17 +9,21 @@ use heed::{RoTxn, RwTxn};
 
 use crate::engine::context::{
     ComponentProcessingAction, ComponentProcessingMode, ComponentProcessorContext, DeclaredEffect,
-    FnCallMemo,
+    FnCallMemo, TARGET_ID_KEY,
 };
 use crate::engine::context::{FnCallContext, FnCallMemoEntry};
+use crate::engine::id_sequencer::IdReservation;
 use crate::engine::logic_registry;
 use crate::engine::profile::{EngineProfile, Persist};
 use crate::engine::target_state::{
-    TargetActionSink, TargetHandler, TargetStateProvider, TargetStateProviderRegistry,
+    ChildInvalidation, TargetActionSink, TargetHandler, TargetStateProvider,
+    TargetStateProviderRegistry,
 };
 use crate::state::stable_path::{StableKey, StablePath, StablePathRef};
 use crate::state::stable_path_set::{ChildStablePathSet, StablePathSet};
-use crate::state::target_state_path::TargetStatePath;
+use crate::state::target_state_path::{
+    TargetStatePath, TargetStatePathWithProviderId, TargetStateProviderGeneration,
+};
 use cocoindex_utils::deser::from_msgpack_slice;
 use cocoindex_utils::fingerprint::Fingerprint;
 
@@ -453,6 +457,18 @@ impl<'a, Prof: EngineProfile> Committer<'a, Prof> {
                 tracking_info
                     .effect_items
                     .retain(|_, item| !item.states.is_empty());
+                // D4: Update provider_schema_version on items after commit
+                for (path_with_pid, item) in tracking_info.effect_items.iter_mut() {
+                    if let Some(parent_provider) = self
+                        .target_states_providers
+                        .get(path_with_pid.target_state_path.provider_path())
+                    {
+                        if let Some(pg) = parent_provider.provider_generation() {
+                            item.provider_schema_version = pg.provider_schema_version;
+                        }
+                    }
+                }
+
                 let is_version_converged = tracking_info.effect_items.iter().all(|(_, item)| {
                     item.states
                         .iter()
@@ -868,9 +884,10 @@ pub(crate) async fn submit<Prof: EngineProfile>(
             }
         }
 
+        let mut id_reservation = IdReservation::new(&TARGET_ID_KEY);
         let mut tracking_info: Option<db_schema::StablePathEntryTrackingInfo> = db
             .get(&wtxn, target_state_info_key.encode()?.as_ref())?
-            .map(|data| from_msgpack_slice(&data))
+            .map(|data| from_msgpack_slice(data))
             .transpose()?;
         let previously_exists = tracking_info.is_some();
         if let Some(tracking_info) = &mut tracking_info {
@@ -892,8 +909,24 @@ pub(crate) async fn submit<Prof: EngineProfile>(
             let full_reprocess = comp_ctx.full_reprocess();
 
             // Deal with existing target states
-            for (target_state_path, item) in tracking_info.effect_items.iter_mut() {
-                let prev_may_be_missing = if full_reprocess {
+            for (target_state_path_with_pid, item) in tracking_info.effect_items.iter_mut() {
+                // Check if this child entry is stale (provider_id doesn't match parent's current generation).
+                // Stale entries arise from a parent's destructive change, which already cleaned up
+                // the external state. Skip them — commit() will prune them via version retention.
+                let parent_provider_gen = target_states_providers
+                    .get(target_state_path_with_pid.target_state_path.provider_path())
+                    .and_then(|p| p.provider_generation());
+                if target_state_path_with_pid.provider_id.unwrap_or(0)
+                    != parent_provider_gen.map(|pg| pg.provider_id).unwrap_or(0)
+                {
+                    continue;
+                }
+
+                let schema_version_mismatch = match parent_provider_gen {
+                    Some(pg) => item.provider_schema_version != pg.provider_schema_version,
+                    None => false,
+                };
+                let prev_may_be_missing = if full_reprocess || schema_version_mismatch {
                     true
                 } else {
                     item.states.iter().any(|(_, s)| s.is_deleted())
@@ -905,10 +938,10 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                     .map(|s_bytes| Prof::TargetStateTrackingRecord::from_bytes(s_bytes))
                     .collect::<Result<Vec<_>>>()?;
 
-                let declared_target_state =
-                    declared_target_states_to_process.remove(target_state_path);
                 let (target_states_provider, effect_key, declared_decl, child_provider) =
-                    match declared_target_state {
+                    match declared_target_states_to_process
+                        .remove(&target_state_path_with_pid.target_state_path)
+                    {
                         Some(declared_effect) => (
                             Cow::Owned(declared_effect.provider),
                             declared_effect.item_key,
@@ -918,19 +951,19 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                         None => {
                             if finalized_fn_call_memos
                                 .contained_target_state_paths
-                                .contains(target_state_path)
+                                .contains(&target_state_path_with_pid.target_state_path)
                             {
                                 for (version, _) in item.states.iter_mut() {
                                     *version = curr_version;
                                 }
                                 continue;
                             }
-                            let Some(target_states_provider) =
-                                target_states_providers.get(target_state_path.provider_path())
+                            let Some(target_states_provider) = target_states_providers
+                                .get(target_state_path_with_pid.target_state_path.provider_path())
                             else {
                                 // TODO: Verify the parent is gone.
                                 trace!(
-                                    "skip deleting target states with path {target_state_path} in {} because target states provider not found",
+                                    "skip deleting target states with path {target_state_path_with_pid} in {} because target states provider not found",
                                     comp_ctx.stable_path()
                                 );
                                 continue;
@@ -953,6 +986,27 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                     })?
                     .reconcile(effect_key, declared_decl, &prev_states, prev_may_be_missing)?;
                 if let Some(recon_output) = recon_output {
+                    // D1: Compute provider generation for container items
+                    if let Some(child_provider) = &child_provider {
+                        let existing = item.provider_generation.clone().unwrap_or_default();
+                        let new_gen = match recon_output.child_invalidation {
+                            Some(ChildInvalidation::Destructive) => {
+                                let new_id = id_reservation.next_id(&wtxn, db)?;
+                                TargetStateProviderGeneration {
+                                    provider_id: new_id,
+                                    provider_schema_version: 0,
+                                }
+                            }
+                            Some(ChildInvalidation::Lossy) => TargetStateProviderGeneration {
+                                provider_id: existing.provider_id,
+                                provider_schema_version: existing.provider_schema_version + 1,
+                            },
+                            None => existing,
+                        };
+                        item.provider_generation = Some(new_gen.clone());
+                        child_provider.set_provider_generation(new_gen)?;
+                    }
+
                     actions_by_sinks
                         .entry(recon_output.sink)
                         .or_default()
@@ -999,6 +1053,21 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                 else {
                     continue;
                 };
+
+                // D1: Compute provider generation for new container items
+                let provider_generation = if let Some(child_provider) = &target_state.child_provider
+                {
+                    let new_id = id_reservation.next_id(&wtxn, db)?;
+                    let pg = TargetStateProviderGeneration {
+                        provider_id: new_id,
+                        provider_schema_version: 0,
+                    };
+                    child_provider.set_provider_generation(pg.clone())?;
+                    Some(pg)
+                } else {
+                    None
+                };
+
                 actions_by_sinks
                     .entry(recon_output.sink)
                     .or_default()
@@ -1011,6 +1080,17 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                 else {
                     continue;
                 };
+
+                // D3: Construct TargetStatePathWithProviderId with parent's provider_id
+                let parent_provider_id = target_states_providers
+                    .get(target_state_path.provider_path())
+                    .and_then(|p| p.provider_generation())
+                    .map(|g| g.provider_id);
+                let path_with_pid = TargetStatePathWithProviderId {
+                    target_state_path,
+                    provider_id: parent_provider_id,
+                };
+
                 let item = db_schema::TargetStateInfoItem {
                     key: Cow::Owned(effect_key_bytes.into()),
                     states: vec![
@@ -1020,11 +1100,14 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                             db_schema::TargetStateInfoItemState::Existing(new_state),
                         ),
                     ],
+                    provider_schema_version: 0,
+                    provider_generation,
                 };
-                tracking_info.effect_items.insert(target_state_path, item);
+                tracking_info.effect_items.insert(path_with_pid, item);
             }
 
             let data_bytes = rmp_serde::to_vec_named(&tracking_info)?;
+            drop(tracking_info); // Release borrow on wtxn before mutable operations.
             db.put(
                 &mut wtxn,
                 target_state_info_key.encode()?.as_ref(),
@@ -1035,6 +1118,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
             None
         };
 
+        id_reservation.commit(&mut wtxn, db)?;
         wtxn.commit()?;
         (curr_version, previously_exists)
     };
