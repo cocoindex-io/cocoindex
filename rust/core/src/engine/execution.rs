@@ -129,11 +129,10 @@ pub(crate) fn update_component_memo_states<Prof: EngineProfile>(
     let db_env = comp_ctx.app_ctx().env().db_env();
     let db = comp_ctx.app_ctx().db();
 
+    let mut wtxn = db_env.write_txn()?;
+
     // Read existing entry
-    let data = {
-        let rtxn = db_env.read_txn()?;
-        db.get(&rtxn, key.as_slice())?.map(|d| d.to_vec())
-    };
+    let data = db.get(&wtxn, key.as_slice())?.map(|d| d.to_vec());
     let Some(data) = data else {
         return Ok(());
     };
@@ -156,7 +155,6 @@ pub(crate) fn update_component_memo_states<Prof: EngineProfile>(
         memo_states: memo_states_serialized,
     };
     let encoded = rmp_serde::to_vec_named(&memo_info)?;
-    let mut wtxn = db_env.write_txn()?;
     db.put(&mut wtxn, key.as_slice(), encoded.as_slice())?;
     wtxn.commit()?;
     Ok(())
@@ -287,8 +285,10 @@ pub(crate) fn read_fn_call_memo<Prof: EngineProfile>(
         return Ok(None);
     }
     let db_env = comp_ctx.app_ctx().env().db_env();
-    let rtxn = db_env.read_txn()?;
-    read_fn_call_memo_with_txn(&rtxn, comp_ctx.app_ctx().db(), comp_ctx, memo_fp)
+    {
+        let rtxn = db_env.read_txn()?;
+        read_fn_call_memo_with_txn(&rtxn, comp_ctx.app_ctx().db(), comp_ctx, memo_fp)
+    }
 }
 
 pub fn declare_target_state<Prof: EngineProfile>(
