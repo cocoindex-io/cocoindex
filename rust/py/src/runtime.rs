@@ -38,7 +38,7 @@ impl PythonObjects {
     }
 }
 
-static PY_OBJECTS: OnceLock<PythonObjects> = OnceLock::new();
+static PY_OBJECTS: OnceLock<std::mem::ManuallyDrop<PythonObjects>> = OnceLock::new();
 
 #[pyfunction]
 pub fn init_runtime(
@@ -53,18 +53,19 @@ pub fn init_runtime(
         ));
     }
     PY_OBJECTS
-        .set(PythonObjects {
+        .set(std::mem::ManuallyDrop::new(PythonObjects {
             serialize_fn,
             deserialize_fn,
             non_existence,
             not_set,
-        })
+        }))
         .map_err(|_| PyException::new_err("Failed to set Python objects: already initialized"))?;
     Ok(())
 }
 
 pub fn python_objects() -> &'static PythonObjects {
-    PY_OBJECTS.get().expect("Python objects not initialized")
+    // ManuallyDrop<T> implements Deref<Target = T>, so &**x coerces to &T.
+    &**PY_OBJECTS.get().expect("Python objects not initialized")
 }
 
 #[pyclass(name = "AsyncContext")]
