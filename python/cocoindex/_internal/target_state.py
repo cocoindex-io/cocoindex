@@ -159,13 +159,15 @@ class TargetStateProvider(
     Generic[ValueT, OptChildHandlerT, MaybePendingS],
     ResolvesTo["TargetStateProvider[ValueT, OptChildHandlerT]"],
 ):
-    __slots__ = ("_core", "memo_key")
+    __slots__ = ("_core",)
     _core: core.TargetStateProvider
-    memo_key: str
 
     def __init__(self, core_provider: core.TargetStateProvider):
         self._core = core_provider
-        self.memo_key = core_provider.coco_memo_key()
+
+    @property
+    def memo_key(self) -> str:
+        return self._core.coco_memo_key()
 
     def target_state(
         self: TargetStateProvider[ValueT, OptChildHandlerT],
@@ -175,7 +177,7 @@ class TargetStateProvider(
         return TargetState(self, key, value)
 
     def __coco_memo_key__(self) -> str:
-        return self.memo_key
+        return self._core.coco_memo_key()
 
 
 PendingTargetStateProvider: TypeAlias = TargetStateProvider[
