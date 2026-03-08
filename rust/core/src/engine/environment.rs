@@ -1,5 +1,6 @@
 use crate::{
-    engine::profile::EngineProfile, engine::target_state::TargetStateProviderRegistry, prelude::*,
+    engine::profile::EngineProfile, engine::target_state::TargetStateProviderRegistry,
+    engine::txn_batcher::TxnBatcher, prelude::*,
 };
 
 use cocoindex_utils::fingerprint::Fingerprint;
@@ -29,6 +30,7 @@ pub struct EnvironmentSettings {
 
 struct EnvironmentInner<Prof: EngineProfile> {
     db_env: heed::Env,
+    txn_batcher: TxnBatcher,
     app_names: Mutex<BTreeSet<String>>,
     target_states_providers: Arc<Mutex<TargetStateProviderRegistry<Prof>>>,
     host_runtime_ctx: Prof::HostRuntimeCtx,
@@ -68,8 +70,10 @@ impl<Prof: EngineProfile> Environment<Prof> {
             info!("Cleared {cleared_count} stale readers");
         }
 
+        let txn_batcher = TxnBatcher::new(db_env.clone());
         let state = Arc::new(EnvironmentInner {
             db_env,
+            txn_batcher,
             app_names: Mutex::new(BTreeSet::new()),
             target_states_providers,
             host_runtime_ctx,
@@ -103,6 +107,10 @@ impl<Prof: EngineProfile> Environment<Prof> {
 
     pub fn db_env(&self) -> &heed::Env {
         &self.inner.db_env
+    }
+
+    pub fn txn_batcher(&self) -> &TxnBatcher {
+        &self.inner.txn_batcher
     }
 
     pub fn target_states_providers(&self) -> &Arc<Mutex<TargetStateProviderRegistry<Prof>>> {

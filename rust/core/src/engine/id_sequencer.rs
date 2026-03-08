@@ -8,6 +8,7 @@
 
 use std::collections::HashMap;
 
+use crate::engine::txn_batcher::TxnBatcher;
 use crate::prelude::*;
 use crate::state::db_schema;
 use crate::state::stable_path::StableKey;
@@ -83,7 +84,7 @@ impl IdSequencerManager {
     /// are serialized.
     pub async fn next_id(
         &self,
-        db_env: &heed::Env,
+        txn_batcher: &TxnBatcher,
         db: &db_schema::Database,
         key: &StableKey,
     ) -> Result<u64> {
@@ -101,9 +102,11 @@ impl IdSequencerManager {
 
         if state.needs_refill() {
             let batch_size = state.next_batch_size;
-            let mut wtxn = db_env.write_txn()?;
-            let start_id = Self::reserve_ids_in_txn(&mut wtxn, db, key, batch_size)?;
-            wtxn.commit()?;
+            let db = db.clone();
+            let key = key.clone();
+            let start_id = txn_batcher
+                .run(move |wtxn| Self::reserve_ids_in_txn(wtxn, &db, &key, batch_size))
+                .await?;
             state.refill(start_id, batch_size);
         }
 
