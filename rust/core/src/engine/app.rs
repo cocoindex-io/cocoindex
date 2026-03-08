@@ -35,6 +35,7 @@ impl<Prof: EngineProfile> App<Prof> {
     ) -> Result<Self> {
         let app_reg = AppRegistration::new(name, &env)?;
 
+        // TODO: This database initialization logic should happen lazily on first call to `update()`.
         let db = {
             let mut wtxn = env.db_env().write_txn()?;
             let db = env.db_env().create_database(&mut wtxn, Some(name))?;
@@ -111,10 +112,12 @@ impl<Prof: EngineProfile> App<Prof> {
             handle.ready().await?;
 
             // Clear the database
-            let db_env = self.app_ctx().env().db_env();
-            let mut wtxn = db_env.write_txn()?;
-            self.app_ctx().db().clear(&mut wtxn)?;
-            wtxn.commit()?;
+            let db = self.app_ctx().db().clone();
+            self.app_ctx()
+                .env()
+                .txn_batcher()
+                .run(move |wtxn| Ok(db.clear(wtxn)?))
+                .await?;
 
             info!("App dropped successfully");
             Ok(())

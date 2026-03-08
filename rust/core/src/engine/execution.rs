@@ -3,7 +3,7 @@ use crate::prelude::*;
 
 use std::borrow::Cow;
 use std::cmp::{Ord, Ordering};
-use std::collections::{HashMap, HashSet, VecDeque, btree_map};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque, btree_map};
 
 use heed::{RoTxn, RwTxn};
 
@@ -27,7 +27,7 @@ use crate::state::target_state_path::{
 use cocoindex_utils::deser::from_msgpack_slice;
 use cocoindex_utils::fingerprint::Fingerprint;
 
-pub(crate) fn use_or_invalidate_component_memoization<Prof: EngineProfile>(
+pub(crate) async fn use_or_invalidate_component_memoization<Prof: EngineProfile>(
     comp_ctx: &ComponentProcessorContext<Prof>,
     processor_fp: Option<Fingerprint>,
 ) -> Result<Option<(Prof::FunctionData, Vec<Prof::FunctionData>)>> {
@@ -88,26 +88,19 @@ pub(crate) fn use_or_invalidate_component_memoization<Prof: EngineProfile>(
 
     // Invalidate the memoization.
     {
-        let mut wtxn = db_env.write_txn()?;
-        db.delete(&mut wtxn, key.as_slice())?;
-        wtxn.commit()?;
+        let db = comp_ctx.app_ctx().db().clone();
+        comp_ctx
+            .app_ctx()
+            .env()
+            .txn_batcher()
+            .run(move |wtxn| {
+                db.delete(wtxn, key.as_slice())?;
+                Ok(())
+            })
+            .await?;
     }
 
     Ok(None)
-}
-
-fn delete_component_memoization<Prof: EngineProfile>(
-    comp_ctx: &ComponentProcessorContext<Prof>,
-    wtxn: &mut RwTxn<'_>,
-) -> Result<()> {
-    let db = comp_ctx.app_ctx().db();
-    let key = db_schema::DbEntryKey::StablePath(
-        comp_ctx.stable_path().clone(),
-        db_schema::StablePathEntryKey::ComponentMemoization,
-    )
-    .encode()?;
-    db.delete(wtxn, key.as_slice())?;
-    Ok(())
 }
 
 /// Update only the memo states of an existing component memoization entry.
@@ -116,7 +109,7 @@ fn delete_component_memoization<Prof: EngineProfile>(
 /// (e.g. mtime changed but content fingerprint is unchanged). Reads the existing entry,
 /// replaces the `memo_states` field, and writes it back — preserving `processor_fp`,
 /// `return_value`, and `logic_deps`.
-pub(crate) fn update_component_memo_states<Prof: EngineProfile>(
+pub(crate) async fn update_component_memo_states<Prof: EngineProfile>(
     comp_ctx: &ComponentProcessorContext<Prof>,
     new_states: &[Prof::FunctionData],
 ) -> Result<()> {
@@ -127,7 +120,7 @@ pub(crate) fn update_component_memo_states<Prof: EngineProfile>(
     .encode()?;
 
     let db_env = comp_ctx.app_ctx().env().db_env();
-    let db = comp_ctx.app_ctx().db();
+    let db = comp_ctx.app_ctx().db().clone();
 
     // Read existing entry
     let data = {
@@ -156,42 +149,15 @@ pub(crate) fn update_component_memo_states<Prof: EngineProfile>(
         memo_states: memo_states_serialized,
     };
     let encoded = rmp_serde::to_vec_named(&memo_info)?;
-    let mut wtxn = db_env.write_txn()?;
-    db.put(&mut wtxn, key.as_slice(), encoded.as_slice())?;
-    wtxn.commit()?;
-    Ok(())
-}
-
-fn write_component_memoization<Prof: EngineProfile>(
-    wtxn: &mut RwTxn<'_>,
-    db: &db_schema::Database,
-    comp_ctx: &ComponentProcessorContext<Prof>,
-    processor_fp: Fingerprint,
-    return_value: &Prof::FunctionData,
-    memo_states: &[Prof::FunctionData],
-) -> Result<()> {
-    let key = db_schema::DbEntryKey::StablePath(
-        comp_ctx.stable_path().clone(),
-        db_schema::StablePathEntryKey::ComponentMemoization,
-    )
-    .encode()?;
-
-    let bytes = return_value.to_bytes()?;
-    let memo_states_serialized: Vec<db_schema::MemoizedValue<'_>> = memo_states
-        .iter()
-        .map(|s| {
-            let bytes = s.to_bytes()?;
-            Ok(db_schema::MemoizedValue::Inlined(Cow::Owned(bytes.into())))
+    comp_ctx
+        .app_ctx()
+        .env()
+        .txn_batcher()
+        .run(move |wtxn| {
+            db.put(wtxn, key.as_slice(), encoded.as_slice())?;
+            Ok(())
         })
-        .collect::<Result<Vec<_>>>()?;
-    let memo_info = db_schema::ComponentMemoizationInfo {
-        processor_fp,
-        return_value: db_schema::MemoizedValue::Inlined(Cow::Borrowed(bytes.as_ref())),
-        logic_deps: comp_ctx.take_logic_deps(),
-        memo_states: memo_states_serialized,
-    };
-    let encoded = rmp_serde::to_vec_named(&memo_info)?;
-    db.put(wtxn, key.as_slice(), encoded.as_slice())?;
+        .await?;
     Ok(())
 }
 
@@ -382,12 +348,12 @@ struct ChildPathInfo {
     path_set: StablePathSet,
 }
 
-struct Committer<'a, Prof: EngineProfile> {
-    component_ctx: &'a ComponentProcessorContext<Prof>,
-    db: &'a db_schema::Database,
-    target_states_providers: &'a rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
+struct Committer<Prof: EngineProfile> {
+    component_ctx: ComponentProcessorContext<Prof>,
+    db: db_schema::Database,
+    target_states_providers: rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
 
-    component_path: &'a StablePath,
+    component_path: StablePath,
 
     encoded_tombstone_key_prefix: Vec<u8>,
 
@@ -397,25 +363,22 @@ struct Committer<'a, Prof: EngineProfile> {
     demote_component_only: bool,
 }
 
-impl<'a, Prof: EngineProfile> Committer<'a, Prof> {
+impl<Prof: EngineProfile> Committer<Prof> {
     fn new(
-        component_ctx: &'a ComponentProcessorContext<Prof>,
-        target_states_providers: &'a rpds::HashTrieMapSync<
-            TargetStatePath,
-            TargetStateProvider<Prof>,
-        >,
+        component_ctx: &ComponentProcessorContext<Prof>,
+        target_states_providers: &rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
         demote_component_only: bool,
     ) -> Result<Self> {
-        let component_path = component_ctx.stable_path();
+        let component_path = component_ctx.stable_path().clone();
         let tombstone_key_prefix = db_schema::DbEntryKey::StablePath(
             component_path.clone(),
             db_schema::StablePathEntryKey::ChildComponentTombstonePrefix,
         );
         let encoded_tombstone_key_prefix = tombstone_key_prefix.encode()?;
         Ok(Self {
-            component_ctx,
-            db: component_ctx.app_ctx().db(),
-            target_states_providers,
+            component_ctx: component_ctx.clone(),
+            db: component_ctx.app_ctx().db().clone(),
+            target_states_providers: target_states_providers.clone(),
             component_path,
             encoded_tombstone_key_prefix,
             existence_processing_queue: VecDeque::new(),
@@ -424,27 +387,27 @@ impl<'a, Prof: EngineProfile> Committer<'a, Prof> {
         })
     }
 
-    fn commit(
-        &mut self,
+    /// Run all DB write operations inside a provided write transaction.
+    /// Returns `self` so the caller can use it for post-commit work (e.g. GC).
+    fn commit_in_txn(
+        mut self,
+        wtxn: &mut RwTxn<'_>,
         child_path_set: Option<ChildStablePathSet>,
-        target_state_info_key: &db_schema::DbEntryKey,
+        encoded_target_state_info_key: &[u8],
         all_memo_fps: &HashSet<Fingerprint>,
         memos_without_mounts_to_store: Vec<(Fingerprint, FnCallMemo<Prof>)>,
         curr_version: Option<u64>,
-    ) -> Result<()> {
-        let encoded_target_state_info_key = target_state_info_key.encode()?;
-        let db_env = self.component_ctx.app_ctx().env().db_env();
+    ) -> Result<Self> {
         {
-            let mut wtxn = db_env.write_txn()?;
             if self.component_ctx.mode() == ComponentProcessingMode::Delete {
                 self.db
-                    .delete(&mut wtxn, encoded_target_state_info_key.as_ref())?;
+                    .delete(&mut *wtxn, encoded_target_state_info_key.as_ref())?;
             } else {
                 let curr_version = curr_version
                     .ok_or_else(|| internal_error!("curr_version is required for Build mode"))?;
                 let mut tracking_info: db_schema::StablePathEntryTrackingInfo = self
                     .db
-                    .get(&wtxn, encoded_target_state_info_key.as_ref())?
+                    .get(&*wtxn, encoded_target_state_info_key.as_ref())?
                     .map(|data| from_msgpack_slice(&data))
                     .transpose()?
                     .ok_or_else(|| internal_error!("tracking info not found for commit"))?;
@@ -484,7 +447,7 @@ impl<'a, Prof: EngineProfile> Committer<'a, Prof> {
 
                 let data_bytes = rmp_serde::to_vec_named(&tracking_info)?;
                 self.db.put(
-                    &mut wtxn,
+                    &mut *wtxn,
                     encoded_target_state_info_key.as_ref(),
                     data_bytes.as_slice(),
                 )?;
@@ -492,7 +455,7 @@ impl<'a, Prof: EngineProfile> Committer<'a, Prof> {
 
             // Write memos.
             for (fp, memo) in memos_without_mounts_to_store {
-                write_fn_call_memo(&mut wtxn, self.db, self.component_ctx, fp, memo)?;
+                write_fn_call_memo(&mut *wtxn, &self.db, &self.component_ctx, fp, memo)?;
             }
 
             // Delete all function memo entries that are not in the all_memo_fps.
@@ -504,7 +467,7 @@ impl<'a, Prof: EngineProfile> Committer<'a, Prof> {
                 let encoded_fn_memo_key_prefix = fn_memo_key_prefix.encode()?;
                 let mut fn_memo_key_prefix_iter = self
                     .db
-                    .prefix_iter_mut(&mut wtxn, encoded_fn_memo_key_prefix.as_ref())?;
+                    .prefix_iter_mut(&mut *wtxn, encoded_fn_memo_key_prefix.as_ref())?;
                 while let Some((key, _)) = fn_memo_key_prefix_iter.next().transpose()? {
                     // Decode key
                     let decoded_fp: Fingerprint =
@@ -519,17 +482,41 @@ impl<'a, Prof: EngineProfile> Committer<'a, Prof> {
             }
 
             if !self.demote_component_only {
-                self.update_existence(&mut wtxn, child_path_set)?;
+                self.update_existence(&mut *wtxn, child_path_set)?;
             }
-            wtxn.commit()?;
         }
 
-        {
-            let rtxn = db_env.read_txn()?;
-            self.launch_child_component_gc(&rtxn)?;
-        }
+        Ok(self)
+    }
 
-        Ok(())
+    async fn commit(
+        self,
+        child_path_set: Option<ChildStablePathSet>,
+        target_state_info_key: db_schema::DbEntryKey<'_>,
+        all_memo_fps: HashSet<Fingerprint>,
+        memos_without_mounts_to_store: Vec<(Fingerprint, FnCallMemo<Prof>)>,
+        curr_version: Option<u64>,
+    ) -> Result<()> {
+        let encoded_target_state_info_key = target_state_info_key.encode()?;
+        // Single cheap Arc clone so we can call txn_batcher() / db_env() after self moves into the closure.
+        let app_ctx = self.component_ctx.app_ctx().clone();
+        let committer = app_ctx
+            .env()
+            .txn_batcher()
+            .run(move |wtxn| {
+                self.commit_in_txn(
+                    wtxn,
+                    child_path_set,
+                    &encoded_target_state_info_key,
+                    &all_memo_fps,
+                    memos_without_mounts_to_store,
+                    curr_version,
+                )
+            })
+            .await?;
+        // Transaction committed — open a read txn so GC sees the committed tombstones.
+        let rtxn = app_ctx.env().db_env().read_txn()?;
+        committer.launch_child_component_gc(&rtxn)
     }
 
     fn update_existence(
@@ -790,6 +777,294 @@ impl<Prof: EngineProfile> SinkInput<Prof> {
     }
 }
 
+struct PreCommitOutput<Prof: EngineProfile> {
+    curr_version: Option<u64>,
+    previously_exists: bool,
+    demote_component_only: bool,
+    actions_by_sinks: HashMap<Prof::TargetActionSink, SinkInput<Prof>>,
+    /// Name of the processor to be deleted; caller passes it to `collect_processor_name_name_for_del`.
+    processor_name_for_del: Option<String>,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn pre_commit<Prof: EngineProfile>(
+    wtxn: &mut heed::RwTxn<'_>,
+    db: &db_schema::Database,
+    comp_mode: ComponentProcessingMode,
+    stable_path: &StablePath,
+    full_reprocess: bool,
+    processor_name: Option<&str>,
+    encoded_target_state_info_key: &[u8],
+    memo_del_key: &[u8],
+    contained_target_state_paths: &HashSet<TargetStatePath>,
+    target_states_providers: &rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
+    declared_effects: BTreeMap<TargetStatePath, DeclaredEffect<Prof>>,
+) -> Result<Option<PreCommitOutput<Prof>>> {
+    let mut actions_by_sinks = HashMap::<Prof::TargetActionSink, SinkInput<Prof>>::new();
+    let mut demote_component_only = false;
+    let mut processor_name_for_del: Option<String> = None;
+
+    if comp_mode == ComponentProcessingMode::Delete {
+        db.delete(wtxn, memo_del_key)?;
+    }
+
+    if let Some((parent_path, key)) = stable_path.as_ref().split_parent() {
+        match comp_mode {
+            ComponentProcessingMode::Build => {
+                ensure_path_node_type(
+                    db,
+                    wtxn,
+                    parent_path,
+                    key,
+                    db_schema::StablePathNodeType::Component,
+                )?;
+            }
+            ComponentProcessingMode::Delete => {
+                let node_type = get_path_node_type(db, wtxn, parent_path, key)?;
+                match node_type {
+                    Some(db_schema::StablePathNodeType::Component) => {
+                        return Ok(None);
+                    }
+                    Some(db_schema::StablePathNodeType::Directory) => {
+                        demote_component_only = true;
+                    }
+                    None => {}
+                }
+            }
+        }
+    }
+
+    let mut id_reservation = IdReservation::new(&TARGET_ID_KEY);
+    let mut tracking_info: Option<db_schema::StablePathEntryTrackingInfo> = db
+        .get(wtxn, encoded_target_state_info_key)?
+        .map(|data| from_msgpack_slice(data))
+        .transpose()?;
+    let previously_exists = tracking_info.is_some();
+    if let Some(tracking_info) = &mut tracking_info {
+        if let Some(processor_name) = processor_name {
+            tracking_info.processor_name = Cow::Borrowed(processor_name);
+        } else {
+            processor_name_for_del = Some(tracking_info.processor_name.as_ref().to_owned());
+        }
+    } else if let Some(processor_name) = processor_name {
+        tracking_info = Some(db_schema::StablePathEntryTrackingInfo::new(Cow::Borrowed(
+            processor_name,
+        )));
+    }
+    let curr_version = if let Some(mut tracking_info) = tracking_info {
+        let curr_version = tracking_info.version + 1;
+        tracking_info.version = curr_version;
+        let mut declared_target_states_to_process = declared_effects;
+
+        // Deal with existing target states
+        for (target_state_path_with_pid, item) in tracking_info.effect_items.iter_mut() {
+            // Check if this child entry is stale (provider_id doesn't match parent's current generation).
+            // Stale entries arise from a parent's destructive change, which already cleaned up
+            // the external state. Skip them — commit() will prune them via version retention.
+            let parent_provider_gen = target_states_providers
+                .get(target_state_path_with_pid.target_state_path.provider_path())
+                .and_then(|p| p.provider_generation());
+            if target_state_path_with_pid.provider_id.unwrap_or(0)
+                != parent_provider_gen.map(|pg| pg.provider_id).unwrap_or(0)
+            {
+                continue;
+            }
+
+            let schema_version_mismatch = match parent_provider_gen {
+                Some(pg) => item.provider_schema_version != pg.provider_schema_version,
+                None => false,
+            };
+            let prev_may_be_missing = if full_reprocess || schema_version_mismatch {
+                true
+            } else {
+                item.states.iter().any(|(_, s)| s.is_deleted())
+            };
+            let prev_states = item
+                .states
+                .iter()
+                .filter_map(|(_, s)| s.as_ref())
+                .map(|s_bytes| Prof::TargetStateTrackingRecord::from_bytes(s_bytes))
+                .collect::<Result<Vec<_>>>()?;
+
+            let (target_states_provider, effect_key, declared_decl, child_provider) =
+                match declared_target_states_to_process
+                    .remove(&target_state_path_with_pid.target_state_path)
+                {
+                    Some(declared_effect) => (
+                        Cow::Owned(declared_effect.provider),
+                        declared_effect.item_key,
+                        Some(declared_effect.value),
+                        declared_effect.child_provider,
+                    ),
+                    None => {
+                        if contained_target_state_paths
+                            .contains(&target_state_path_with_pid.target_state_path)
+                        {
+                            for (version, _) in item.states.iter_mut() {
+                                *version = curr_version;
+                            }
+                            continue;
+                        }
+                        let Some(target_states_provider) = target_states_providers
+                            .get(target_state_path_with_pid.target_state_path.provider_path())
+                        else {
+                            // TODO: Verify the parent is gone.
+                            trace!(
+                                "skip deleting target states with path {target_state_path_with_pid} in {} because target states provider not found",
+                                stable_path
+                            );
+                            continue;
+                        };
+                        let effect_key: StableKey = storekey::decode(item.key.as_ref())?;
+                        (
+                            Cow::Borrowed(target_states_provider),
+                            effect_key,
+                            None,
+                            None,
+                        )
+                    }
+                };
+            let recon_output = target_states_provider
+                .handler()
+                .ok_or_else(|| {
+                    internal_error!("provider not ready for target state with key {effect_key:?}")
+                })?
+                .reconcile(effect_key, declared_decl, &prev_states, prev_may_be_missing)?;
+            if let Some(recon_output) = recon_output {
+                if let Some(child_provider) = &child_provider {
+                    let existing = item.provider_generation.clone().unwrap_or_default();
+                    let new_gen = match recon_output.child_invalidation {
+                        Some(ChildInvalidation::Destructive) => {
+                            let new_id = id_reservation.next_id(wtxn, db)?;
+                            TargetStateProviderGeneration {
+                                provider_id: new_id,
+                                provider_schema_version: 0,
+                            }
+                        }
+                        Some(ChildInvalidation::Lossy) => TargetStateProviderGeneration {
+                            provider_id: existing.provider_id,
+                            provider_schema_version: existing.provider_schema_version + 1,
+                        },
+                        None => existing,
+                    };
+                    item.provider_generation = Some(new_gen.clone());
+                    child_provider.set_provider_generation(new_gen)?;
+                }
+
+                actions_by_sinks
+                    .entry(recon_output.sink)
+                    .or_default()
+                    .add_action(recon_output.action, child_provider);
+                item.states.push((
+                    curr_version,
+                    match recon_output
+                        .tracking_record
+                        .map(|s| s.to_bytes())
+                        .transpose()?
+                    {
+                        Some(s) => {
+                            db_schema::TargetStateInfoItemState::Existing(Cow::Owned(s.into()))
+                        }
+                        None => db_schema::TargetStateInfoItemState::Deleted,
+                    },
+                ));
+            } else {
+                for (version, _) in item.states.iter_mut() {
+                    *version = curr_version;
+                }
+            }
+        }
+
+        // Deal with new target states
+        for (target_state_path, target_state) in declared_target_states_to_process {
+            let effect_key_bytes = storekey::encode_vec(&target_state.item_key)
+                .map_err(|e| internal_error!("Failed to encode StableKey: {e}"))?;
+            let Some(recon_output) = target_state
+                .provider
+                .handler()
+                .ok_or_else(|| {
+                    internal_error!(
+                        "provider not ready for target state with key {:?}",
+                        target_state.item_key
+                    )
+                })?
+                .reconcile(
+                    target_state.item_key,
+                    Some(target_state.value),
+                    /*&prev_states=*/ &[],
+                    /*prev_may_be_missing=*/ true,
+                )?
+            else {
+                continue;
+            };
+
+            let provider_generation = if let Some(child_provider) = &target_state.child_provider {
+                let new_id = id_reservation.next_id(wtxn, db)?;
+                let pg = TargetStateProviderGeneration {
+                    provider_id: new_id,
+                    provider_schema_version: 0,
+                };
+                child_provider.set_provider_generation(pg.clone())?;
+                Some(pg)
+            } else {
+                None
+            };
+
+            actions_by_sinks
+                .entry(recon_output.sink)
+                .or_default()
+                .add_action(recon_output.action, target_state.child_provider);
+            let Some(new_state) = recon_output
+                .tracking_record
+                .map(|s| s.to_bytes())
+                .transpose()?
+                .map(|s| Cow::Owned(s.into()))
+            else {
+                continue;
+            };
+
+            let parent_provider_id = target_states_providers
+                .get(target_state_path.provider_path())
+                .and_then(|p| p.provider_generation())
+                .map(|g| g.provider_id);
+            let path_with_pid = TargetStatePathWithProviderId {
+                target_state_path,
+                provider_id: parent_provider_id,
+            };
+
+            let item = db_schema::TargetStateInfoItem {
+                key: Cow::Owned(effect_key_bytes.into()),
+                states: vec![
+                    (0, db_schema::TargetStateInfoItemState::Deleted),
+                    (
+                        curr_version,
+                        db_schema::TargetStateInfoItemState::Existing(new_state),
+                    ),
+                ],
+                provider_schema_version: 0,
+                provider_generation,
+            };
+            tracking_info.effect_items.insert(path_with_pid, item);
+        }
+
+        let data_bytes = rmp_serde::to_vec_named(&tracking_info)?;
+        drop(tracking_info); // Release borrow before mutable operations.
+        db.put(wtxn, encoded_target_state_info_key, data_bytes.as_slice())?;
+        Some(curr_version)
+    } else {
+        None
+    };
+
+    id_reservation.commit(wtxn, db)?;
+    Ok(Some(PreCommitOutput {
+        curr_version,
+        previously_exists,
+        demote_component_only,
+        actions_by_sinks,
+        processor_name_for_del,
+    }))
+}
+
 pub(crate) struct SubmitOutput<Prof: EngineProfile> {
     pub built_target_states_providers: Option<TargetStateProviderRegistry<Prof>>,
     pub touched_previous_states: bool,
@@ -804,7 +1079,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
     let processor_name = processor.map(|p| p.processor_info().name.as_str());
 
     let mut built_target_states_providers: Option<TargetStateProviderRegistry<Prof>> = None;
-    let (target_states_providers, declared_effects, child_path_set, finalized_fn_call_memos) =
+    let (target_states_providers, declared_effects, child_path_set, mut finalized_fn_call_memos) =
         match comp_ctx.processing_state() {
             ComponentProcessingAction::Build(build_ctx) => {
                 let mut building_state = build_ctx.state.lock().unwrap();
@@ -835,289 +1110,61 @@ pub(crate) async fn submit<Prof: EngineProfile>(
             ),
         };
 
-    let db_env = comp_ctx.app_ctx().env().db_env();
-    let db = comp_ctx.app_ctx().db();
+    let db = comp_ctx.app_ctx().db().clone();
+    let comp_mode = comp_ctx.mode();
+    let stable_path = comp_ctx.stable_path().clone();
+    let full_reprocess = comp_ctx.full_reprocess();
+    let processor_name_owned: Option<String> = processor_name.map(|s| s.to_owned());
 
     let target_state_info_key = db_schema::DbEntryKey::StablePath(
-        comp_ctx.stable_path().clone(),
+        stable_path.clone(),
         db_schema::StablePathEntryKey::TrackingInfo,
     );
-
-    let mut actions_by_sinks = HashMap::<Prof::TargetActionSink, SinkInput<Prof>>::new();
-    let mut demote_component_only = false;
+    let encoded_target_state_info_key = target_state_info_key.encode()?;
+    let memo_del_key = db_schema::DbEntryKey::StablePath(
+        stable_path.clone(),
+        db_schema::StablePathEntryKey::ComponentMemoization,
+    )
+    .encode()?;
+    let contained_target_state_paths =
+        std::mem::take(&mut finalized_fn_call_memos.contained_target_state_paths);
+    let target_states_providers_owned = target_states_providers.clone();
 
     // Reconcile and pre-commit target states
-    let (curr_version, touched_previous_states) = {
-        let mut wtxn = db_env.write_txn()?;
+    let pre_commit_out = comp_ctx
+        .app_ctx()
+        .env()
+        .txn_batcher()
+        .run(move |wtxn| {
+            pre_commit(
+                wtxn,
+                &db,
+                comp_mode,
+                &stable_path,
+                full_reprocess,
+                processor_name_owned.as_deref(),
+                &encoded_target_state_info_key,
+                &memo_del_key,
+                &contained_target_state_paths,
+                &target_states_providers_owned,
+                declared_effects,
+            )
+        })
+        .await?;
 
-        if comp_ctx.mode() == ComponentProcessingMode::Delete {
-            delete_component_memoization(comp_ctx, &mut wtxn)?;
-        }
-
-        if let Some((parent_path, key)) = comp_ctx.stable_path().as_ref().split_parent() {
-            match comp_ctx.mode() {
-                ComponentProcessingMode::Build => {
-                    ensure_path_node_type(
-                        db,
-                        &mut wtxn,
-                        parent_path,
-                        key,
-                        db_schema::StablePathNodeType::Component,
-                    )?;
-                }
-                ComponentProcessingMode::Delete => {
-                    let node_type = get_path_node_type(db, &wtxn, parent_path, key)?;
-                    match node_type {
-                        Some(db_schema::StablePathNodeType::Component) => {
-                            return Ok(SubmitOutput {
-                                built_target_states_providers: None,
-                                touched_previous_states: false,
-                            });
-                        }
-                        Some(db_schema::StablePathNodeType::Directory) => {
-                            demote_component_only = true;
-                        }
-                        None => {}
-                    }
-                }
-            }
-        }
-
-        let mut id_reservation = IdReservation::new(&TARGET_ID_KEY);
-        let mut tracking_info: Option<db_schema::StablePathEntryTrackingInfo> = db
-            .get(&wtxn, target_state_info_key.encode()?.as_ref())?
-            .map(|data| from_msgpack_slice(data))
-            .transpose()?;
-        let previously_exists = tracking_info.is_some();
-        if let Some(tracking_info) = &mut tracking_info {
-            if let Some(processor_name) = processor_name {
-                tracking_info.processor_name = Cow::Borrowed(processor_name);
-            } else {
-                collect_processor_name_name_for_del(tracking_info.processor_name.as_ref());
-            }
-        } else if let Some(processor_name) = processor_name {
-            tracking_info = Some(db_schema::StablePathEntryTrackingInfo::new(Cow::Borrowed(
-                processor_name,
-            )));
-        }
-        let curr_version = if let Some(mut tracking_info) = tracking_info {
-            let curr_version = tracking_info.version + 1;
-            tracking_info.version = curr_version;
-            let mut declared_target_states_to_process = declared_effects;
-
-            let full_reprocess = comp_ctx.full_reprocess();
-
-            // Deal with existing target states
-            for (target_state_path_with_pid, item) in tracking_info.effect_items.iter_mut() {
-                // Check if this child entry is stale (provider_id doesn't match parent's current generation).
-                // Stale entries arise from a parent's destructive change, which already cleaned up
-                // the external state. Skip them — commit() will prune them via version retention.
-                let parent_provider_gen = target_states_providers
-                    .get(target_state_path_with_pid.target_state_path.provider_path())
-                    .and_then(|p| p.provider_generation());
-                if target_state_path_with_pid.provider_id.unwrap_or(0)
-                    != parent_provider_gen.map(|pg| pg.provider_id).unwrap_or(0)
-                {
-                    continue;
-                }
-
-                let schema_version_mismatch = match parent_provider_gen {
-                    Some(pg) => item.provider_schema_version != pg.provider_schema_version,
-                    None => false,
-                };
-                let prev_may_be_missing = if full_reprocess || schema_version_mismatch {
-                    true
-                } else {
-                    item.states.iter().any(|(_, s)| s.is_deleted())
-                };
-                let prev_states = item
-                    .states
-                    .iter()
-                    .filter_map(|(_, s)| s.as_ref())
-                    .map(|s_bytes| Prof::TargetStateTrackingRecord::from_bytes(s_bytes))
-                    .collect::<Result<Vec<_>>>()?;
-
-                let (target_states_provider, effect_key, declared_decl, child_provider) =
-                    match declared_target_states_to_process
-                        .remove(&target_state_path_with_pid.target_state_path)
-                    {
-                        Some(declared_effect) => (
-                            Cow::Owned(declared_effect.provider),
-                            declared_effect.item_key,
-                            Some(declared_effect.value),
-                            declared_effect.child_provider,
-                        ),
-                        None => {
-                            if finalized_fn_call_memos
-                                .contained_target_state_paths
-                                .contains(&target_state_path_with_pid.target_state_path)
-                            {
-                                for (version, _) in item.states.iter_mut() {
-                                    *version = curr_version;
-                                }
-                                continue;
-                            }
-                            let Some(target_states_provider) = target_states_providers
-                                .get(target_state_path_with_pid.target_state_path.provider_path())
-                            else {
-                                // TODO: Verify the parent is gone.
-                                trace!(
-                                    "skip deleting target states with path {target_state_path_with_pid} in {} because target states provider not found",
-                                    comp_ctx.stable_path()
-                                );
-                                continue;
-                            };
-                            let effect_key: StableKey = storekey::decode(item.key.as_ref())?;
-                            (
-                                Cow::Borrowed(target_states_provider),
-                                effect_key,
-                                None,
-                                None,
-                            )
-                        }
-                    };
-                let recon_output = target_states_provider
-                    .handler()
-                    .ok_or_else(|| {
-                        internal_error!(
-                            "provider not ready for target state with key {effect_key:?}"
-                        )
-                    })?
-                    .reconcile(effect_key, declared_decl, &prev_states, prev_may_be_missing)?;
-                if let Some(recon_output) = recon_output {
-                    if let Some(child_provider) = &child_provider {
-                        let existing = item.provider_generation.clone().unwrap_or_default();
-                        let new_gen = match recon_output.child_invalidation {
-                            Some(ChildInvalidation::Destructive) => {
-                                let new_id = id_reservation.next_id(&wtxn, db)?;
-                                TargetStateProviderGeneration {
-                                    provider_id: new_id,
-                                    provider_schema_version: 0,
-                                }
-                            }
-                            Some(ChildInvalidation::Lossy) => TargetStateProviderGeneration {
-                                provider_id: existing.provider_id,
-                                provider_schema_version: existing.provider_schema_version + 1,
-                            },
-                            None => existing,
-                        };
-                        item.provider_generation = Some(new_gen.clone());
-                        child_provider.set_provider_generation(new_gen)?;
-                    }
-
-                    actions_by_sinks
-                        .entry(recon_output.sink)
-                        .or_default()
-                        .add_action(recon_output.action, child_provider);
-                    item.states.push((
-                        curr_version,
-                        match recon_output
-                            .tracking_record
-                            .map(|s| s.to_bytes())
-                            .transpose()?
-                        {
-                            Some(s) => {
-                                db_schema::TargetStateInfoItemState::Existing(Cow::Owned(s.into()))
-                            }
-                            None => db_schema::TargetStateInfoItemState::Deleted,
-                        },
-                    ));
-                } else {
-                    for (version, _) in item.states.iter_mut() {
-                        *version = curr_version;
-                    }
-                }
-            }
-
-            // Deal with new target states
-            for (target_state_path, target_state) in declared_target_states_to_process {
-                let effect_key_bytes = storekey::encode_vec(&target_state.item_key)
-                    .map_err(|e| internal_error!("Failed to encode StableKey: {e}"))?;
-                let Some(recon_output) = target_state
-                    .provider
-                    .handler()
-                    .ok_or_else(|| {
-                        internal_error!(
-                            "provider not ready for target state with key {:?}",
-                            target_state.item_key
-                        )
-                    })?
-                    .reconcile(
-                        target_state.item_key,
-                        Some(target_state.value),
-                        /*&prev_states=*/ &[],
-                        /*prev_may_be_missing=*/ true,
-                    )?
-                else {
-                    continue;
-                };
-
-                let provider_generation = if let Some(child_provider) = &target_state.child_provider
-                {
-                    let new_id = id_reservation.next_id(&wtxn, db)?;
-                    let pg = TargetStateProviderGeneration {
-                        provider_id: new_id,
-                        provider_schema_version: 0,
-                    };
-                    child_provider.set_provider_generation(pg.clone())?;
-                    Some(pg)
-                } else {
-                    None
-                };
-
-                actions_by_sinks
-                    .entry(recon_output.sink)
-                    .or_default()
-                    .add_action(recon_output.action, target_state.child_provider);
-                let Some(new_state) = recon_output
-                    .tracking_record
-                    .map(|s| s.to_bytes())
-                    .transpose()?
-                    .map(|s| Cow::Owned(s.into()))
-                else {
-                    continue;
-                };
-
-                let parent_provider_id = target_states_providers
-                    .get(target_state_path.provider_path())
-                    .and_then(|p| p.provider_generation())
-                    .map(|g| g.provider_id);
-                let path_with_pid = TargetStatePathWithProviderId {
-                    target_state_path,
-                    provider_id: parent_provider_id,
-                };
-
-                let item = db_schema::TargetStateInfoItem {
-                    key: Cow::Owned(effect_key_bytes.into()),
-                    states: vec![
-                        (0, db_schema::TargetStateInfoItemState::Deleted),
-                        (
-                            curr_version,
-                            db_schema::TargetStateInfoItemState::Existing(new_state),
-                        ),
-                    ],
-                    provider_schema_version: 0,
-                    provider_generation,
-                };
-                tracking_info.effect_items.insert(path_with_pid, item);
-            }
-
-            let data_bytes = rmp_serde::to_vec_named(&tracking_info)?;
-            drop(tracking_info); // Release borrow on wtxn before mutable operations.
-            db.put(
-                &mut wtxn,
-                target_state_info_key.encode()?.as_ref(),
-                data_bytes.as_slice(),
-            )?;
-            Some(curr_version)
-        } else {
-            None
-        };
-
-        id_reservation.commit(&mut wtxn, db)?;
-        wtxn.commit()?;
-        (curr_version, previously_exists)
+    let Some(pre_commit_out) = pre_commit_out else {
+        return Ok(SubmitOutput {
+            built_target_states_providers: None,
+            touched_previous_states: false,
+        });
     };
+    if let Some(ref name) = pre_commit_out.processor_name_for_del {
+        collect_processor_name_name_for_del(name);
+    }
+    let curr_version = pre_commit_out.curr_version;
+    let touched_previous_states = pre_commit_out.previously_exists;
+    let demote_component_only = pre_commit_out.demote_component_only;
+    let actions_by_sinks = pre_commit_out.actions_by_sinks;
 
     // Apply actions
     let host_runtime_ctx = comp_ctx.app_ctx().env().host_runtime_ctx();
@@ -1146,14 +1193,16 @@ pub(crate) async fn submit<Prof: EngineProfile>(
         }
     }
 
-    let mut committer = Committer::new(comp_ctx, &target_states_providers, demote_component_only)?;
-    committer.commit(
-        child_path_set,
-        &target_state_info_key,
-        &finalized_fn_call_memos.all_memos_fps,
-        finalized_fn_call_memos.memos_without_mounts_to_store,
-        curr_version,
-    )?;
+    let committer = Committer::new(comp_ctx, &target_states_providers, demote_component_only)?;
+    committer
+        .commit(
+            child_path_set,
+            target_state_info_key,
+            finalized_fn_call_memos.all_memos_fps,
+            finalized_fn_call_memos.memos_without_mounts_to_store,
+            curr_version,
+        )
+        .await?;
 
     Ok(SubmitOutput {
         built_target_states_providers,
@@ -1170,21 +1219,45 @@ pub(crate) async fn post_submit_for_build<Prof: EngineProfile>(
         &'_ [Prof::FunctionData],
     )>,
 ) -> Result<()> {
-    if comp_memo.is_none() {
+    let Some((fp, ret, memo_states)) = comp_memo else {
         return Ok(());
-    }
-    let db_env = comp_ctx.app_ctx().env().db_env();
-    let mut wtxn = db_env.write_txn()?;
-    let db = comp_ctx.app_ctx().db();
+    };
 
-    if let Some((fp, ret, memo_states)) = comp_memo {
-        write_component_memoization(&mut wtxn, db, comp_ctx, fp, &ret, memo_states)?;
-    }
-    wtxn.commit()?;
-    Ok(())
+    // Serialize outside the closure (no transaction needed for serialization).
+    let key = db_schema::DbEntryKey::StablePath(
+        comp_ctx.stable_path().clone(),
+        db_schema::StablePathEntryKey::ComponentMemoization,
+    )
+    .encode()?;
+    let ret_bytes = ret.to_bytes()?;
+    let memo_states_serialized: Vec<db_schema::MemoizedValue<'_>> = memo_states
+        .iter()
+        .map(|s| {
+            let bytes = s.to_bytes()?;
+            Ok(db_schema::MemoizedValue::Inlined(Cow::Owned(bytes.into())))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let memo_info = db_schema::ComponentMemoizationInfo {
+        processor_fp: fp,
+        return_value: db_schema::MemoizedValue::Inlined(Cow::Borrowed(ret_bytes.as_ref())),
+        logic_deps: comp_ctx.take_logic_deps(),
+        memo_states: memo_states_serialized,
+    };
+    let encoded = rmp_serde::to_vec_named(&memo_info)?;
+
+    let db = comp_ctx.app_ctx().db().clone();
+    comp_ctx
+        .app_ctx()
+        .env()
+        .txn_batcher()
+        .run(move |wtxn| {
+            db.put(wtxn, key.as_slice(), encoded.as_slice())?;
+            Ok(())
+        })
+        .await
 }
 
-pub(crate) fn cleanup_tombstone<Prof: EngineProfile>(
+pub(crate) async fn cleanup_tombstone<Prof: EngineProfile>(
     comp_ctx: &ComponentProcessorContext<Prof>,
 ) -> Result<()> {
     let Some(parent_ctx) = comp_ctx.parent_context() else {
@@ -1201,14 +1274,16 @@ pub(crate) fn cleanup_tombstone<Prof: EngineProfile>(
     );
     let encoded_tombstone_key = tombstone_key.encode()?;
 
-    let db_env = comp_ctx.app_ctx().env().db_env();
-    let db = comp_ctx.app_ctx().db();
-    {
-        let mut wtxn = db_env.write_txn()?;
-        db.delete(&mut wtxn, encoded_tombstone_key.as_ref())?;
-        wtxn.commit()?;
-    }
-    Ok(())
+    let db = comp_ctx.app_ctx().db().clone();
+    comp_ctx
+        .app_ctx()
+        .env()
+        .txn_batcher()
+        .run(move |wtxn| {
+            db.delete(wtxn, encoded_tombstone_key.as_ref())?;
+            Ok(())
+        })
+        .await
 }
 
 fn ensure_path_node_type(

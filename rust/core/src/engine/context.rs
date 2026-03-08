@@ -77,7 +77,7 @@ impl<Prof: EngineProfile> AppContext<Prof> {
         let key = key.unwrap_or(&default_key);
         self.inner
             .id_sequencer_manager
-            .next_id(self.inner.env.db_env(), &self.inner.db, key)
+            .next_id(self.inner.env.txn_batcher(), &self.inner.db, key)
             .await
     }
 }
