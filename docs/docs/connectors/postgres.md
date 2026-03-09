@@ -231,6 +231,79 @@ def TableTarget.declare_row(
 
 - `row` — A row object (dict, dataclass, NamedTuple, or Pydantic model). Must include all primary key columns.
 
+#### Vector indexes (attachment)
+
+Declare a pgvector index on a vector column of the table. CocoIndex tracks the index spec and automatically creates, recreates, or drops the index as needed.
+
+```python
+def TableTarget.declare_vector_index(
+    self,
+    *,
+    name: str | None = None,
+    column: str,
+    metric: Literal["cosine", "l2", "ip"] = "cosine",
+    method: Literal["ivfflat", "hnsw"] = "ivfflat",
+    lists: int | None = None,
+    m: int | None = None,
+    ef_construction: int | None = None,
+) -> None
+```
+
+The actual PostgreSQL index is named `{table_name}__vector__{name}`.
+
+**Parameters:**
+
+- `name` — Logical index name (defaults to `column`).
+- `column` — Column to index (must be a vector column).
+- `metric` — Distance metric: `"cosine"`, `"l2"`, or `"ip"` (inner product).
+- `method` — Index method: `"ivfflat"` or `"hnsw"`.
+- `lists` — Number of lists (ivfflat only).
+- `m` — Maximum number of connections per layer (hnsw only).
+- `ef_construction` — Size of the dynamic candidate list for construction (hnsw only).
+
+**Example:**
+
+```python
+# Creates a PostgreSQL index named "products__vector__embedding"
+table.declare_vector_index(
+    column="embedding",
+    metric="cosine",
+    method="hnsw",
+    m=16,
+    ef_construction=64,
+)
+```
+
+#### SQL command attachments
+
+Declare an arbitrary SQL command that CocoIndex manages alongside the table. The setup SQL runs when the attachment is created or changed; the optional teardown SQL runs when the attachment is removed or before re-running setup on change.
+
+```python
+def TableTarget.declare_sql_command_attachment(
+    self,
+    *,
+    name: str,
+    setup_sql: str,
+    teardown_sql: str | None = None,
+) -> None
+```
+
+**Parameters:**
+
+- `name` — Stable identifier for the attachment.
+- `setup_sql` — SQL to execute on creation or change.
+- `teardown_sql` — SQL to execute on removal or before re-running setup (optional). If omitted, no cleanup is performed when the attachment is removed.
+
+**Example:**
+
+```python
+table.declare_sql_command_attachment(
+    name="content_fts_idx",
+    setup_sql='CREATE INDEX "content_fts" ON "products" USING gin (to_tsvector(\'english\', "description"))',
+    teardown_sql='DROP INDEX IF EXISTS "content_fts"',
+)
+```
+
 ### Table schema: from Python class
 
 Define the table structure using a Python class (dataclass, NamedTuple, or Pydantic model):
@@ -387,4 +460,11 @@ async def app_main() -> None:
     # Declare rows
     for product in products:
         table.declare_row(row=product)
+
+    # Declare a vector index on the embedding column
+    table.declare_vector_index(
+        column="embedding",
+        metric="cosine",
+        method="hnsw",
+    )
 ```

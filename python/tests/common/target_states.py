@@ -303,3 +303,186 @@ class AsyncDictsTarget:
         return coco.declare_target_state_with_child(
             AsyncDictsTarget._provider.target_state(name, None)
         )
+
+
+class _AttachmentChildHandler:
+    """Child handler that supports attachment types, returning DictTargetStateStore handlers."""
+
+    _attachment_stores: dict[str, DictTargetStateStore]
+    _supported_types: frozenset[str]
+
+    def __init__(self, supported_types: frozenset[str]) -> None:
+        self._attachment_stores = {}
+        self._supported_types = supported_types
+
+    def attachment(self, att_type: str) -> DictTargetStateStore | None:
+        if att_type not in self._supported_types:
+            return None
+        if att_type not in self._attachment_stores:
+            self._attachment_stores[att_type] = DictTargetStateStore()
+        return self._attachment_stores[att_type]
+
+    def reconcile(
+        self,
+        key: coco.StableKey,
+        desired_state: Any | coco.NonExistenceType,
+        prev_possible_states: Collection[Any],
+        prev_may_be_missing: bool,
+    ) -> None:
+        return None
+
+
+class AttachmentDictsTargetStateStore:
+    """Like DictsTargetStateStore but child handlers support attachment types."""
+
+    _handlers: dict[str, _AttachmentChildHandler]
+    metrics: Metrics
+    _lock: threading.Lock
+    _supported_attachment_types: frozenset[str]
+
+    child_invalidation: Literal["destructive", "lossy"] | None = None
+
+    def __init__(
+        self,
+        supported_attachment_types: frozenset[str] | None = None,
+    ) -> None:
+        self._handlers = {}
+        self.metrics = Metrics()
+        self._lock = threading.Lock()
+        self._supported_attachment_types = supported_attachment_types or frozenset(
+            {"items"}
+        )
+
+    def _sink(
+        self, actions: Collection[_DictTargetStateStoreAction]
+    ) -> list[coco.ChildTargetDef[_AttachmentChildHandler] | None]:
+        child_state_defs: list[coco.ChildTargetDef[_AttachmentChildHandler] | None] = []
+        with self._lock:
+            for name, exists, action, destructive in actions:
+                if action == "insert":
+                    if name in self._handlers:
+                        raise ValueError(f"handler {name} already exists")
+                    self._handlers[name] = _AttachmentChildHandler(
+                        self._supported_attachment_types
+                    )
+                elif action == "upsert":
+                    if destructive or name not in self._handlers:
+                        self._handlers[name] = _AttachmentChildHandler(
+                            self._supported_attachment_types
+                        )
+                elif action == "delete":
+                    del self._handlers[name]
+
+                if action is not None:
+                    self.metrics.increment(action)
+
+                if exists:
+                    child_state_defs.append(coco.ChildTargetDef(self._handlers[name]))
+                else:
+                    child_state_defs.append(None)
+
+            self.metrics.increment("sink")
+        return child_state_defs
+
+    def reconcile(
+        self,
+        key: coco.StableKey,
+        desired_state: None | coco.NonExistenceType,
+        prev_possible_states: Collection[None],
+        prev_may_be_missing: bool,
+    ) -> (
+        coco.TargetReconcileOutput[
+            _DictTargetStateStoreAction, None, _AttachmentChildHandler
+        ]
+        | None
+    ):
+        assert isinstance(key, str)
+        sink: coco.TargetActionSink[
+            _DictTargetStateStoreAction, _AttachmentChildHandler
+        ] = coco.TargetActionSink.from_fn(self._sink)
+        if coco.is_non_existence(desired_state):
+            return coco.TargetReconcileOutput(
+                action=_DictTargetStateStoreAction(
+                    name=key, exists=False, action="delete"
+                ),
+                sink=sink,
+                tracking_record=coco.NON_EXISTENCE,
+                child_invalidation=self.child_invalidation,
+            )
+        if not prev_may_be_missing and self.child_invalidation is None:
+            assert len(prev_possible_states) > 0
+            return coco.TargetReconcileOutput(
+                action=_DictTargetStateStoreAction(name=key, exists=True, action=None),
+                sink=sink,
+                tracking_record=desired_state,
+            )
+
+        is_destructive = self.child_invalidation == "destructive"
+        return coco.TargetReconcileOutput(
+            action=_DictTargetStateStoreAction(
+                name=key,
+                exists=True,
+                action="insert" if len(prev_possible_states) == 0 else "upsert",
+                destructive=is_destructive,
+            ),
+            sink=sink,
+            tracking_record=desired_state,
+            child_invalidation=self.child_invalidation,
+        )
+
+    def clear(self) -> None:
+        self._handlers.clear()
+        self.metrics.clear()
+        self.child_invalidation = None
+
+    def collect_attachment_metrics(self, att_type: str) -> dict[str, int]:
+        return sum(
+            (
+                Metrics(handler._attachment_stores[att_type].metrics.collect())
+                for handler in self._handlers.values()
+                if att_type in handler._attachment_stores
+            ),
+            Metrics(),
+        ).data
+
+    @property
+    def attachment_data(
+        self,
+    ) -> dict[str, dict[str, dict[str, DictDataWithPrev]]]:
+        return {
+            name: {
+                att_type: store.data
+                for att_type, store in handler._attachment_stores.items()
+            }
+            for name, handler in self._handlers.items()
+        }
+
+
+class AttachmentDictsTarget:
+    store = AttachmentDictsTargetStateStore()
+    _provider = coco.register_root_target_states_provider(
+        "test_target_state/attachment_dicts", store
+    )
+
+    @staticmethod
+    @coco.fn
+    def declare_dict_target(name: str) -> coco.PendingTargetStateProvider[str, None]:
+        return coco.declare_target_state_with_child(
+            AttachmentDictsTarget._provider.target_state(name, None)
+        )
+
+
+class MultiAttachmentDictsTarget:
+    store = AttachmentDictsTargetStateStore(
+        supported_attachment_types=frozenset({"items", "tags"})
+    )
+    _provider = coco.register_root_target_states_provider(
+        "test_target_state/multi_attachment_dicts", store
+    )
+
+    @staticmethod
+    @coco.fn
+    def declare_dict_target(name: str) -> coco.PendingTargetStateProvider[str, None]:
+        return coco.declare_target_state_with_child(
+            MultiAttachmentDictsTarget._provider.target_state(name, None)
+        )

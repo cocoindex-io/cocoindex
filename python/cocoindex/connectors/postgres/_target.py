@@ -366,6 +366,205 @@ class _RowAction(NamedTuple):
     value: _RowValue | None  # None means delete
 
 
+# --- Vector Index Attachment ---
+
+_METRIC_OP_CLASS: dict[str, str] = {
+    "cosine": "vector_cosine_ops",
+    "l2": "vector_l2_ops",
+    "ip": "vector_ip_ops",
+}
+
+
+class _VectorIndexSpec(NamedTuple):
+    column: str
+    metric: str
+    method: str
+    lists: int | None
+    m: int | None
+    ef_construction: int | None
+
+
+_VectorIndexFingerprint = bytes
+
+
+class _VectorIndexAction(NamedTuple):
+    name: str
+    spec: _VectorIndexSpec | None  # None means delete
+
+
+class _VectorIndexHandler:
+    """Handler for vector index attachment states."""
+
+    _pool: asyncpg.Pool
+    _table_name: str
+    _schema_name: str | None
+    _sink: coco.TargetActionSink[_VectorIndexAction]
+
+    def __init__(
+        self,
+        pool: asyncpg.Pool,
+        table_name: str,
+        pg_schema_name: str | None,
+    ) -> None:
+        self._pool = pool
+        self._table_name = table_name
+        self._schema_name = pg_schema_name
+        self._sink = coco.TargetActionSink.from_async_fn(self._apply_actions)
+
+    async def _apply_actions(self, actions: Sequence[_VectorIndexAction]) -> None:
+        async with self._pool.acquire() as conn:
+            for action in actions:
+                index_name = f'"{self._table_name}__vector__{action.name}"'
+                if action.spec is None:
+                    await conn.execute(f"DROP INDEX IF EXISTS {index_name}")
+                else:
+                    # Drop + recreate
+                    await conn.execute(f"DROP INDEX IF EXISTS {index_name}")
+                    table_name = _qualified_table_name(
+                        self._table_name, self._schema_name
+                    )
+                    op_class = _METRIC_OP_CLASS[action.spec.metric]
+                    with_params: list[str] = []
+                    if action.spec.method == "ivfflat":
+                        if action.spec.lists is not None:
+                            with_params.append(f"lists = {action.spec.lists}")
+                    elif action.spec.method == "hnsw":
+                        if action.spec.m is not None:
+                            with_params.append(f"m = {action.spec.m}")
+                        if action.spec.ef_construction is not None:
+                            with_params.append(
+                                f"ef_construction = {action.spec.ef_construction}"
+                            )
+                    with_clause = (
+                        f" WITH ({', '.join(with_params)})" if with_params else ""
+                    )
+                    sql = (
+                        f"CREATE INDEX {index_name} ON {table_name} "
+                        f'USING {action.spec.method} ("{action.spec.column}" {op_class})'
+                        f"{with_clause}"
+                    )
+                    await conn.execute(sql)
+
+    def reconcile(
+        self,
+        key: coco.StableKey,
+        desired_state: _VectorIndexSpec | coco.NonExistenceType,
+        prev_possible_states: Collection[_VectorIndexFingerprint],
+        prev_may_be_missing: bool,
+        /,
+    ) -> coco.TargetReconcileOutput[_VectorIndexAction, _VectorIndexFingerprint] | None:
+        assert isinstance(key, str)
+        if coco.is_non_existence(desired_state):
+            if not prev_possible_states and not prev_may_be_missing:
+                return None
+            return coco.TargetReconcileOutput(
+                action=_VectorIndexAction(name=key, spec=None),
+                sink=self._sink,
+                tracking_record=coco.NON_EXISTENCE,
+            )
+
+        target_fp = fingerprint_object(desired_state)
+        if not prev_may_be_missing and all(
+            prev == target_fp for prev in prev_possible_states
+        ):
+            return None
+
+        return coco.TargetReconcileOutput(
+            action=_VectorIndexAction(name=key, spec=desired_state),
+            sink=self._sink,
+            tracking_record=target_fp,
+        )
+
+
+# --- SQL Command Attachment ---
+
+
+class _SqlCommandSpec(NamedTuple):
+    setup_sql: str
+    teardown_sql: str | None
+
+
+class _SqlCommandAction(NamedTuple):
+    name: str
+    spec: _SqlCommandSpec | None  # None means delete
+    prev_teardown_sql: str | None
+
+
+def _collect_teardown_sql(
+    prev_possible_states: Collection[_SqlCommandSpec],
+) -> str | None:
+    """Extract the first non-None teardown_sql from previous states."""
+    for prev in prev_possible_states:
+        if prev.teardown_sql is not None:
+            return prev.teardown_sql
+    return None
+
+
+class _SqlCommandHandler:
+    """Handler for SQL command attachment states."""
+
+    _pool: asyncpg.Pool
+    _table_name: str
+    _schema_name: str | None
+    _sink: coco.TargetActionSink[_SqlCommandAction]
+
+    def __init__(
+        self,
+        pool: asyncpg.Pool,
+        table_name: str,
+        pg_schema_name: str | None,
+    ) -> None:
+        self._pool = pool
+        self._table_name = table_name
+        self._schema_name = pg_schema_name
+        self._sink = coco.TargetActionSink.from_async_fn(self._apply_actions)
+
+    async def _apply_actions(self, actions: Sequence[_SqlCommandAction]) -> None:
+        async with self._pool.acquire() as conn:
+            for action in actions:
+                # Run teardown of previous state if applicable
+                if action.prev_teardown_sql is not None:
+                    await conn.execute(action.prev_teardown_sql)
+                # Run setup of new state if applicable
+                if action.spec is not None:
+                    await conn.execute(action.spec.setup_sql)
+
+    def reconcile(
+        self,
+        key: coco.StableKey,
+        desired_state: _SqlCommandSpec | coco.NonExistenceType,
+        prev_possible_states: Collection[_SqlCommandSpec],
+        prev_may_be_missing: bool,
+        /,
+    ) -> coco.TargetReconcileOutput[_SqlCommandAction, _SqlCommandSpec] | None:
+        assert isinstance(key, str)
+        if coco.is_non_existence(desired_state):
+            if not prev_possible_states and not prev_may_be_missing:
+                return None
+            prev_teardown = _collect_teardown_sql(prev_possible_states)
+            return coco.TargetReconcileOutput(
+                action=_SqlCommandAction(
+                    name=key, spec=None, prev_teardown_sql=prev_teardown
+                ),
+                sink=self._sink,
+                tracking_record=coco.NON_EXISTENCE,
+            )
+
+        if not prev_may_be_missing and all(
+            prev == desired_state for prev in prev_possible_states
+        ):
+            return None
+
+        prev_teardown = _collect_teardown_sql(prev_possible_states)
+        return coco.TargetReconcileOutput(
+            action=_SqlCommandAction(
+                name=key, spec=desired_state, prev_teardown_sql=prev_teardown
+            ),
+            sink=self._sink,
+            tracking_record=desired_state,
+        )
+
+
 class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
     """Handler for row-level target states within a table."""
 
@@ -517,6 +716,15 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
 
         async with self._pool.acquire() as conn:
             await conn.execute(sql, *params)
+
+    def attachment(
+        self, att_type: str
+    ) -> _VectorIndexHandler | _SqlCommandHandler | None:
+        if att_type == "vector_index":
+            return _VectorIndexHandler(self._pool, self._table_name, self._schema_name)
+        if att_type == "sql_command_attachment":
+            return _SqlCommandHandler(self._pool, self._table_name, self._schema_name)
+        return None
 
     def reconcile(
         self,
@@ -971,6 +1179,70 @@ class TableTarget(
                 value = col.encoder(value)
             out[col_name] = value
         return out
+
+    def declare_vector_index(
+        self: "TableTarget[RowT]",
+        *,
+        name: str | None = None,
+        column: str,
+        metric: Literal["cosine", "l2", "ip"] = "cosine",
+        method: Literal["ivfflat", "hnsw"] = "ivfflat",
+        lists: int | None = None,
+        m: int | None = None,
+        ef_construction: int | None = None,
+    ) -> None:
+        """
+        Declare a pgvector index on a column of this table.
+
+        The actual Postgres index will be named ``{table_name}__vector__{name}``.
+
+        Args:
+            name: Logical index name (defaults to ``column``).
+            column: Column to index.
+            metric: Distance metric ("cosine", "l2", or "ip").
+            method: Index method ("ivfflat" or "hnsw").
+            lists: Number of lists (ivfflat only).
+            m: Maximum number of connections per layer (hnsw only).
+            ef_construction: Size of the dynamic candidate list (hnsw only).
+        """
+        if name is None:
+            name = column
+        spec = _VectorIndexSpec(
+            column=column,
+            metric=metric,
+            method=method,
+            lists=lists,
+            m=m,
+            ef_construction=ef_construction,
+        )
+        att_provider = self._provider.attachment("vector_index")
+        coco.declare_target_state(att_provider.target_state(name, spec))
+
+    def declare_sql_command_attachment(
+        self: "TableTarget[RowT]",
+        *,
+        name: str,
+        setup_sql: str,
+        teardown_sql: str | None = None,
+    ) -> None:
+        """
+        Declare a SQL command attachment on this table.
+
+        The setup SQL is executed when the attachment is created or changed.
+        The teardown SQL (if provided) is executed when the attachment is removed
+        or before re-running setup on change.
+
+        Args:
+            name: Attachment name (stable identifier).
+            setup_sql: SQL to execute on creation/change.
+            teardown_sql: SQL to execute on removal/before change (optional).
+        """
+        spec = _SqlCommandSpec(
+            setup_sql=setup_sql,
+            teardown_sql=teardown_sql,
+        )
+        att_provider = self._provider.attachment("sql_command_attachment")
+        coco.declare_target_state(att_provider.target_state(name, spec))
 
     def __coco_memo_key__(self) -> str:
         return self._provider.memo_key
