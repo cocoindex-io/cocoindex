@@ -13,7 +13,10 @@ import asyncio
 import os
 import uuid
 from dataclasses import dataclass
-from typing import Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any
+
+if TYPE_CHECKING:
+    import asyncpg
 
 import numpy as np
 import pytest
@@ -31,7 +34,7 @@ coco_env = common.create_test_env(__file__)
 # =============================================================================
 
 try:
-    import asyncpg  # type: ignore[import-untyped]
+    from cocoindex.connectors import postgres
 
     DEPS_AVAILABLE = True
 except ImportError:
@@ -41,13 +44,11 @@ PG_DSN = os.getenv("POSTGRES_DSN")
 PG_CONFIGURED = bool(PG_DSN)
 
 pytestmark = [
-    pytest.mark.skipif(not DEPS_AVAILABLE, reason="asyncpg not installed"),
+    pytest.mark.skipif(
+        not DEPS_AVAILABLE, reason="postgres dependencies not installed"
+    ),
     pytest.mark.skipif(not PG_CONFIGURED, reason="POSTGRES_DSN not set"),
 ]
-
-# Lazy import — only when tests actually run
-if DEPS_AVAILABLE:
-    from cocoindex.connectors import postgres
 
 
 # =============================================================================

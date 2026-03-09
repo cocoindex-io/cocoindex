@@ -340,6 +340,8 @@ class AttachmentDictsTargetStateStore:
     _lock: threading.Lock
     _supported_attachment_types: frozenset[str]
 
+    child_invalidation: Literal["destructive", "lossy"] | None = None
+
     def __init__(
         self,
         supported_attachment_types: frozenset[str] | None = None,
@@ -405,27 +407,33 @@ class AttachmentDictsTargetStateStore:
                 ),
                 sink=sink,
                 tracking_record=coco.NON_EXISTENCE,
+                child_invalidation=self.child_invalidation,
             )
-        if not prev_may_be_missing:
+        if not prev_may_be_missing and self.child_invalidation is None:
             assert len(prev_possible_states) > 0
             return coco.TargetReconcileOutput(
                 action=_DictTargetStateStoreAction(name=key, exists=True, action=None),
                 sink=sink,
                 tracking_record=desired_state,
             )
+
+        is_destructive = self.child_invalidation == "destructive"
         return coco.TargetReconcileOutput(
             action=_DictTargetStateStoreAction(
                 name=key,
                 exists=True,
                 action="insert" if len(prev_possible_states) == 0 else "upsert",
+                destructive=is_destructive,
             ),
             sink=sink,
             tracking_record=desired_state,
+            child_invalidation=self.child_invalidation,
         )
 
     def clear(self) -> None:
         self._handlers.clear()
         self.metrics.clear()
+        self.child_invalidation = None
 
     def collect_attachment_metrics(self, att_type: str) -> dict[str, int]:
         return sum(

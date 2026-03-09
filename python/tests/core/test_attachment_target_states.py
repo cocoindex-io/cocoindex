@@ -197,3 +197,130 @@ def test_attachment_no_support_returns_none() -> None:
     )
     with pytest.raises(Exception, match="does not support attachment type"):
         app.update_blocking()
+
+
+_memo_exec_count: int = 0
+
+
+@coco.fn(memo=True)
+async def _insert_attachment_rows_memo(
+    dict_provider: Any, data: dict[str, Any]
+) -> None:
+    global _memo_exec_count
+    _memo_exec_count += 1
+    att_provider = dict_provider.attachment("items")
+    for key, value in data.items():
+        coco.declare_target_state(att_provider.target_state(key, value))
+
+
+_memo_source_data: dict[str, dict[str, Any]] = {}
+
+
+async def _declare_with_attachments_memo() -> None:
+    with coco.component_subpath("dict"):
+        for name, data in _memo_source_data.items():
+            with coco.component_subpath(name):
+                dict_provider = await coco.use_mount(
+                    coco.component_subpath("setup"),
+                    AttachmentDictsTarget.declare_dict_target,
+                    name,
+                )
+                await coco.use_mount(  # type: ignore[call-overload]
+                    coco.component_subpath("rows"),
+                    _insert_attachment_rows_memo,
+                    dict_provider,
+                    data,
+                )
+
+
+def test_attachment_destructive_change_invalidates_memo() -> None:
+    """Verifies that destructive child_invalidation on the parent propagates
+    provider_generation to the attachment provider, causing memo invalidation."""
+    global _memo_exec_count
+    AttachmentDictsTarget.store.clear()
+    _memo_source_data.clear()
+    _memo_exec_count = 0
+
+    app = coco.App(
+        coco.AppConfig(
+            name="test_attachment_destructive_change_invalidates_memo",
+            environment=coco_env,
+        ),
+        _declare_with_attachments_memo,
+    )
+
+    # Run 1: Initial insert — inner function executes
+    _memo_source_data["D1"] = {"a": 1}
+    app.update_blocking()
+    assert _memo_exec_count == 1
+    assert AttachmentDictsTarget.store.collect_attachment_metrics("items") == {
+        "sink": 1,
+        "upsert": 1,
+    }
+
+    # Run 2: Same data, no invalidation — inner function skipped (memo hit)
+    _memo_exec_count = 0
+    app.update_blocking()
+    assert _memo_exec_count == 0
+    assert AttachmentDictsTarget.store.collect_attachment_metrics("items") == {}
+
+    # Run 3: Destructive change — provider_generation changes, memo key changes,
+    # inner re-executes
+    AttachmentDictsTarget.store.child_invalidation = "destructive"
+    _memo_exec_count = 0
+    try:
+        app.update_blocking()
+    finally:
+        AttachmentDictsTarget.store.child_invalidation = None
+    assert _memo_exec_count == 1
+    assert AttachmentDictsTarget.store.collect_attachment_metrics("items") == {
+        "sink": 1,
+        "upsert": 1,
+    }
+
+    # Run 4: Same data, no invalidation — memo hit again (new provider_id is stable)
+    _memo_exec_count = 0
+    app.update_blocking()
+    assert _memo_exec_count == 0
+    assert AttachmentDictsTarget.store.collect_attachment_metrics("items") == {}
+
+
+def test_attachment_lossy_change_invalidates_memo() -> None:
+    """Verifies that lossy child_invalidation on the parent propagates
+    provider_generation to the attachment provider, causing memo invalidation."""
+    global _memo_exec_count
+    AttachmentDictsTarget.store.clear()
+    _memo_source_data.clear()
+    _memo_exec_count = 0
+
+    app = coco.App(
+        coco.AppConfig(
+            name="test_attachment_lossy_change_invalidates_memo",
+            environment=coco_env,
+        ),
+        _declare_with_attachments_memo,
+    )
+
+    # Run 1: Initial insert
+    _memo_source_data["D1"] = {"a": 1}
+    app.update_blocking()
+    assert _memo_exec_count == 1
+
+    # Run 2: Same data — memo hit
+    _memo_exec_count = 0
+    app.update_blocking()
+    assert _memo_exec_count == 0
+
+    # Run 3: Lossy change — schema_version changes, memo key changes, re-executes
+    AttachmentDictsTarget.store.child_invalidation = "lossy"
+    _memo_exec_count = 0
+    try:
+        app.update_blocking()
+    finally:
+        AttachmentDictsTarget.store.child_invalidation = None
+    assert _memo_exec_count == 1
+
+    # Run 4: Same data — memo hit again
+    _memo_exec_count = 0
+    app.update_blocking()
+    assert _memo_exec_count == 0

@@ -133,6 +133,15 @@ impl<Prof: EngineProfile> TargetStateProvider<Prof> {
         let symbol_key = StableKey::Symbol(att_type.into());
         let target_state_path = self.target_state_path().concat(&symbol_key);
 
+        let provider_generation = self
+            .provider_generation()
+            .ok_or_else(|| {
+                internal_error!(
+                    "Parent provider generation must be set before registering attachment"
+                )
+            })?
+            .clone();
+
         let provider = TargetStateProvider {
             inner: Arc::new(TargetStateProviderInner {
                 parent_provider: Some(self.clone()),
@@ -140,7 +149,7 @@ impl<Prof: EngineProfile> TargetStateProvider<Prof> {
                 target_state_path: target_state_path.clone(),
                 handler: OnceLock::from(handler),
                 orphaned: OnceLock::new(),
-                provider_generation: OnceLock::new(),
+                provider_generation: OnceLock::from(provider_generation),
                 attachments: Mutex::new(HashMap::new()),
             }),
         };
