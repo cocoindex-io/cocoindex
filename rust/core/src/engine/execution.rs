@@ -119,18 +119,7 @@ pub(crate) async fn update_component_memo_states<Prof: EngineProfile>(
     )
     .encode()?;
 
-    let db_env = comp_ctx.app_ctx().env().db_env();
     let db = comp_ctx.app_ctx().db().clone();
-
-    // Read existing entry
-    let data = {
-        let rtxn = db_env.read_txn()?;
-        db.get(&rtxn, key.as_slice())?.map(|d| d.to_vec())
-    };
-    let Some(data) = data else {
-        return Ok(());
-    };
-    let existing: db_schema::ComponentMemoizationInfo<'_> = from_msgpack_slice(&data)?;
 
     // Serialize new states
     let memo_states_serialized: Vec<db_schema::MemoizedValue<'_>> = new_states
@@ -141,19 +130,23 @@ pub(crate) async fn update_component_memo_states<Prof: EngineProfile>(
         })
         .collect::<Result<Vec<_>>>()?;
 
-    // Write back with updated states, preserving everything else
-    let memo_info = db_schema::ComponentMemoizationInfo {
-        processor_fp: existing.processor_fp,
-        return_value: existing.return_value,
-        logic_deps: existing.logic_deps,
-        memo_states: memo_states_serialized,
-    };
-    let encoded = rmp_serde::to_vec_named(&memo_info)?;
+    // Read existing entry and write back with updated states in one transaction
     comp_ctx
         .app_ctx()
         .env()
         .txn_batcher()
         .run(move |wtxn| {
+            let Some(data) = db.get(wtxn, key.as_slice())? else {
+                return Ok(());
+            };
+            let existing: db_schema::ComponentMemoizationInfo<'_> = from_msgpack_slice(data)?;
+            let memo_info = db_schema::ComponentMemoizationInfo {
+                processor_fp: existing.processor_fp,
+                return_value: existing.return_value,
+                logic_deps: existing.logic_deps,
+                memo_states: memo_states_serialized,
+            };
+            let encoded = rmp_serde::to_vec_named(&memo_info)?;
             db.put(wtxn, key.as_slice(), encoded.as_slice())?;
             Ok(())
         })
@@ -253,8 +246,10 @@ pub(crate) fn read_fn_call_memo<Prof: EngineProfile>(
         return Ok(None);
     }
     let db_env = comp_ctx.app_ctx().env().db_env();
-    let rtxn = db_env.read_txn()?;
-    read_fn_call_memo_with_txn(&rtxn, comp_ctx.app_ctx().db(), comp_ctx, memo_fp)
+    {
+        let rtxn = db_env.read_txn()?;
+        read_fn_call_memo_with_txn(&rtxn, comp_ctx.app_ctx().db(), comp_ctx, memo_fp)
+    }
 }
 
 pub fn declare_target_state<Prof: EngineProfile>(
