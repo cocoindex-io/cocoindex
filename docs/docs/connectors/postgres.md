@@ -239,7 +239,7 @@ Declare a pgvector index on a vector column of the table. CocoIndex tracks the i
 def TableTarget.declare_vector_index(
     self,
     *,
-    name: str,
+    name: str | None = None,
     column: str,
     metric: Literal["cosine", "l2", "ip"] = "cosine",
     method: Literal["ivfflat", "hnsw"] = "ivfflat",
@@ -249,9 +249,11 @@ def TableTarget.declare_vector_index(
 ) -> None
 ```
 
+The actual PostgreSQL index is named `{table_name}__vector__{name}`.
+
 **Parameters:**
 
-- `name` — Index name.
+- `name` — Logical index name (defaults to `column`).
 - `column` — Column to index (must be a vector column).
 - `metric` — Distance metric: `"cosine"`, `"l2"`, or `"ip"` (inner product).
 - `method` — Index method: `"ivfflat"` or `"hnsw"`.
@@ -262,8 +264,8 @@ def TableTarget.declare_vector_index(
 **Example:**
 
 ```python
+# Creates a PostgreSQL index named "products__vector__embedding"
 table.declare_vector_index(
-    name="products_embedding_idx",
     column="embedding",
     metric="cosine",
     method="hnsw",
@@ -461,7 +463,6 @@ async def app_main() -> None:
 
     # Declare a vector index on the embedding column
     table.declare_vector_index(
-        name="products_embedding_idx",
         column="embedding",
         metric="cosine",
         method="hnsw",

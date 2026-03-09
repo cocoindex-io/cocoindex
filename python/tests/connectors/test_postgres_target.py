@@ -147,7 +147,8 @@ def test_postgres_declare_vector_index(pg_env: Any) -> None:
     """Vector index lifecycle: create with ivfflat → change to hnsw → remove table."""
     pool, loop = pg_env
     table_name = _unique_name("test_vec_idx")
-    index_name = f"{table_name}_idx1"
+    logical_name = "idx1"
+    pg_index_name = f"{table_name}__vector__{logical_name}"
     tables_to_clean = [table_name]
 
     source_rows: list[VectorRow] = []
@@ -171,7 +172,7 @@ def test_postgres_declare_vector_index(pg_env: Any) -> None:
                 for row in source_rows:
                     table.declare_row(row=row)
                 table.declare_vector_index(
-                    name=index_name,
+                    name=logical_name,
                     column="embedding",
                     metric="cosine",
                     method=index_method,
@@ -192,16 +193,16 @@ def test_postgres_declare_vector_index(pg_env: Any) -> None:
             ]
             app.update_blocking()
 
-            info = _run(loop, _index_info(pool, index_name))
-            assert info is not None, f"Index {index_name} should exist"
+            info = _run(loop, _index_info(pool, pg_index_name))
+            assert info is not None, f"Index {pg_index_name} should exist"
             assert info["amname"] == "ivfflat"
 
             # Run 2: Change to hnsw
             index_method = "hnsw"
             app.update_blocking()
 
-            info = _run(loop, _index_info(pool, index_name))
-            assert info is not None, f"Index {index_name} should still exist"
+            info = _run(loop, _index_info(pool, pg_index_name))
+            assert info is not None, f"Index {pg_index_name} should still exist"
             assert info["amname"] == "hnsw"
 
             # Run 3: Remove table entirely
@@ -221,7 +222,8 @@ def test_postgres_declare_vector_index_fingerprint_no_change(pg_env: Any) -> Non
     """Identical vector index spec across runs should not recreate the index."""
     pool, loop = pg_env
     table_name = _unique_name("test_vec_fp")
-    index_name = f"{table_name}_idx1"
+    logical_name = "idx1"
+    pg_index_name = f"{table_name}__vector__{logical_name}"
 
     source_rows: list[VectorRow] = [
         VectorRow(
@@ -246,7 +248,7 @@ def test_postgres_declare_vector_index_fingerprint_no_change(pg_env: Any) -> Non
                 for row in source_rows:
                     table.declare_row(row=row)
                 table.declare_vector_index(
-                    name=index_name,
+                    name=logical_name,
                     column="embedding",
                     metric="cosine",
                     method="ivfflat",
@@ -259,12 +261,12 @@ def test_postgres_declare_vector_index_fingerprint_no_change(pg_env: Any) -> Non
 
             # Run 1: Create
             app.update_blocking()
-            info1 = _run(loop, _index_info(pool, index_name))
+            info1 = _run(loop, _index_info(pool, pg_index_name))
             assert info1 is not None
 
             # Run 2: Identical spec — should be a no-op
             app.update_blocking()
-            info2 = _run(loop, _index_info(pool, index_name))
+            info2 = _run(loop, _index_info(pool, pg_index_name))
             assert info2 is not None
             assert info2["amname"] == "ivfflat"
 
@@ -406,7 +408,8 @@ def test_postgres_mixed_rows_and_attachments(pg_env: Any) -> None:
     """Rows and vector index coexist correctly under the same table."""
     pool, loop = pg_env
     table_name = _unique_name("test_mixed")
-    index_name = f"{table_name}_idx1"
+    logical_name = "idx1"
+    pg_index_name = f"{table_name}__vector__{logical_name}"
 
     source_rows: list[VectorRow] = []
     index_method: str = "ivfflat"
@@ -429,7 +432,7 @@ def test_postgres_mixed_rows_and_attachments(pg_env: Any) -> None:
                 for row in source_rows:
                     table.declare_row(row=row)
                 table.declare_vector_index(
-                    name=index_name,
+                    name=logical_name,
                     column="embedding",
                     metric="cosine",
                     method=index_method,
@@ -456,7 +459,7 @@ def test_postgres_mixed_rows_and_attachments(pg_env: Any) -> None:
             app.update_blocking()
 
             assert _run(loop, _row_count(pool, table_name)) == 2
-            info = _run(loop, _index_info(pool, index_name))
+            info = _run(loop, _index_info(pool, pg_index_name))
             assert info is not None
             assert info["amname"] == "ivfflat"
 
@@ -476,7 +479,7 @@ def test_postgres_mixed_rows_and_attachments(pg_env: Any) -> None:
             app.update_blocking()
 
             assert _run(loop, _row_count(pool, table_name)) == 2
-            info = _run(loop, _index_info(pool, index_name))
+            info = _run(loop, _index_info(pool, pg_index_name))
             assert info is not None
             assert info["amname"] == "ivfflat"  # unchanged
 
@@ -485,7 +488,7 @@ def test_postgres_mixed_rows_and_attachments(pg_env: Any) -> None:
             app.update_blocking()
 
             assert _run(loop, _row_count(pool, table_name)) == 2
-            info = _run(loop, _index_info(pool, index_name))
+            info = _run(loop, _index_info(pool, pg_index_name))
             assert info is not None
             assert info["amname"] == "hnsw"  # changed
 

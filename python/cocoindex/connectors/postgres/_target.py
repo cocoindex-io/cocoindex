@@ -414,7 +414,7 @@ class _VectorIndexHandler:
     async def _apply_actions(self, actions: Sequence[_VectorIndexAction]) -> None:
         async with self._pool.acquire() as conn:
             for action in actions:
-                index_name = f'"{action.name}"'
+                index_name = f'"{self._table_name}__vector__{action.name}"'
                 if action.spec is None:
                     await conn.execute(f"DROP INDEX IF EXISTS {index_name}")
                 else:
@@ -1183,7 +1183,7 @@ class TableTarget(
     def declare_vector_index(
         self: "TableTarget[RowT]",
         *,
-        name: str,
+        name: str | None = None,
         column: str,
         metric: Literal["cosine", "l2", "ip"] = "cosine",
         method: Literal["ivfflat", "hnsw"] = "ivfflat",
@@ -1194,8 +1194,10 @@ class TableTarget(
         """
         Declare a pgvector index on a column of this table.
 
+        The actual Postgres index will be named ``{table_name}__vector__{name}``.
+
         Args:
-            name: Index name.
+            name: Logical index name (defaults to ``column``).
             column: Column to index.
             metric: Distance metric ("cosine", "l2", or "ip").
             method: Index method ("ivfflat" or "hnsw").
@@ -1203,6 +1205,8 @@ class TableTarget(
             m: Maximum number of connections per layer (hnsw only).
             ef_construction: Size of the dynamic candidate list (hnsw only).
         """
+        if name is None:
+            name = column
         spec = _VectorIndexSpec(
             column=column,
             metric=metric,

@@ -108,6 +108,7 @@ async def app_main(sourcedir: pathlib.Path) -> None:
         ),
         pg_schema_name=PG_SCHEMA_NAME,
     )
+    target_table.declare_vector_index(column="embedding")
 
     files = localfs.walk_dir(
         sourcedir,
