@@ -27,7 +27,7 @@ This section introduces the key data types. Each is marked as either **you imple
 
 ### TargetHandler *(you implement)*
 
-A `TargetHandler` implements the reconciliation logic. It's a protocol with a single method:
+A `TargetHandler` implements the reconciliation logic. It's a protocol with one required method and one optional method:
 
 ```python
 class TargetHandler(Protocol[KeyT, ValueT, TrackingRecordT, OptChildHandlerT]):
@@ -40,6 +40,10 @@ class TargetHandler(Protocol[KeyT, ValueT, TrackingRecordT, OptChildHandlerT]):
         /,
     ) -> TargetReconcileOutput[ActionT, TrackingRecordT, OptChildHandlerT] | None:
         ...
+
+    # Optional: override to support attachment types (see "Implementing attachment providers")
+    def attachment(self, att_type: str) -> TargetHandler | None:
+        return None  # Default: no attachments
 ```
 
 **Type Parameters:**
@@ -164,6 +168,9 @@ provider = coco.register_root_target_states_provider("my.target", handler)
 
 # Or from declaring a parent target state
 child_provider = coco.declare_target_state_with_child(parent_target_state)
+
+# Or from an attachment on a resolved child provider (see "Implementing attachment providers")
+att_provider = child_provider.attachment("vector_index")
 ```
 
 ### TargetState *(CocoIndex provides)*
@@ -431,6 +438,120 @@ def declare_dir_target(path: pathlib.Path) -> DirTarget:
     child_provider = coco.declare_target_state_with_child(parent_ts)
     return DirTarget(child_provider)
 ```
+
+## Implementing attachment providers
+
+Attachment providers let a child handler expose **auxiliary target states** alongside its regular children. For example, a PostgreSQL table handler manages rows as regular children, but can also manage vector indexes and SQL command attachments as separate attachment types — each tracked independently.
+
+### When to use attachments
+
+Use attachments when a target has auxiliary state beyond its primary children — indexes, triggers, materialized views, or any side-resource that should be managed alongside the main data. Attachments use **symbol keys** as namespace separators so they never conflict with regular child keys.
+
+### Target state path hierarchy
+
+Attachments create additional levels in the target state path using symbol keys (denoted with `@` prefix in documentation):
+
+```
+@my_connector/table                    [level 1 — root provider]
+  (db_key, schema, table_name)         [level 2 — table state]
+    @vector_index                      [level 3 — attachment namespace (symbol key)]
+      index_name_1                     [level 4 — attachment instance]
+      index_name_2                     [level 4]
+    @sql_command_attachment             [level 3 — another attachment namespace]
+      cmd_name_1                       [level 4]
+    row_pk_1                           [level 3 — regular child (row)]
+    row_pk_2                           [level 3]
+```
+
+The symbol keys (`@vector_index`, `@sql_command_attachment`) are path namespaces — not target states themselves. They separate attachment instances from regular children at the same level.
+
+### How it works
+
+1. **Handler implements `attachment()`**: The child handler (e.g., row handler) returns a handler for each supported attachment type.
+2. **User code calls `provider.attachment()`**: On a resolved child provider, this creates (or retrieves a cached) attachment sub-provider.
+3. **Target states declared under the attachment provider** are tracked independently from regular children.
+4. **Idempotent**: Calling `.attachment("x")` multiple times returns the same cached provider.
+
+### Step 1: Implement the attachment handler
+
+An attachment handler is just a regular `TargetHandler` — it implements `reconcile()` and has an action sink:
+
+```python
+class _VectorIndexSpec(NamedTuple):
+    column: str
+    metric: str
+    method: str
+
+class _VectorIndexAction(NamedTuple):
+    name: str
+    spec: _VectorIndexSpec | None  # None means delete
+
+class _VectorIndexHandler:
+    def __init__(self, pool, table_name):
+        self._pool = pool
+        self._table_name = table_name
+        self._sink = coco.TargetActionSink.from_async_fn(self._apply_actions)
+
+    async def _apply_actions(self, actions: Sequence[_VectorIndexAction]) -> None:
+        async with self._pool.acquire() as conn:
+            for action in actions:
+                if action.spec is None:
+                    await conn.execute(f'DROP INDEX IF EXISTS "{action.name}"')
+                else:
+                    await conn.execute(f'CREATE INDEX "{action.name}" ...')
+
+    def reconcile(self, key, desired_state, prev_possible_states, prev_may_be_missing, /):
+        # Standard reconcile pattern — compare fingerprints, return action or None
+        ...
+```
+
+### Step 2: Add `attachment()` to the parent handler
+
+The parent handler (which manages regular children) returns attachment handlers by type:
+
+```python
+class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
+    def __init__(self, pool, table_name, schema_name, table_schema):
+        self._pool = pool
+        self._table_name = table_name
+        self._schema_name = schema_name
+        # ...
+
+    def attachment(self, att_type: str) -> _VectorIndexHandler | _SqlCommandHandler | None:
+        if att_type == "vector_index":
+            return _VectorIndexHandler(self._pool, self._table_name, self._schema_name)
+        if att_type == "sql_command_attachment":
+            return _SqlCommandHandler(self._pool, self._table_name, self._schema_name)
+        return None
+
+    def reconcile(self, ...):
+        # Regular row reconciliation
+        ...
+```
+
+### Step 3: Expose attachment APIs on the user-facing target
+
+The user-facing target class calls `provider.attachment()` to get the attachment sub-provider, then declares target states on it:
+
+```python
+class TableTarget:
+    def __init__(self, provider, table_schema):
+        self._provider = provider
+        self._table_schema = table_schema
+
+    def declare_row(self, *, row):
+        # Regular child target state
+        coco.declare_target_state(self._provider.target_state(pk_values, row_dict))
+
+    def declare_vector_index(self, *, name, column, metric="cosine", method="ivfflat"):
+        spec = _VectorIndexSpec(column=column, metric=metric, method=method)
+        att_provider = self._provider.attachment("vector_index")
+        coco.declare_target_state(att_provider.target_state(name, spec))
+```
+
+:::tip Tracking records for teardown
+When an attachment has a teardown step (like `DROP INDEX`), store the full spec as the tracking record instead of a fingerprint. This lets you recover the teardown information from `prev_possible_states` when the attachment is deleted or changed. See the `_SqlCommandHandler` in the PostgreSQL connector for an example.
+:::
 
 ## Best practices
 

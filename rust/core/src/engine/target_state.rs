@@ -1,7 +1,7 @@
 use crate::prelude::*;
 
 use crate::{
-    engine::profile::EngineProfile,
+    engine::{context::ComponentProcessorContext, profile::EngineProfile},
     state::{
         stable_path::StableKey,
         target_state_path::{TargetStatePath, TargetStateProviderGeneration},
@@ -49,6 +49,10 @@ pub trait TargetHandler<Prof: EngineProfile>: Send + Sync + Sized + 'static {
         prev_possible_states: &[Prof::TargetStateTrackingRecord],
         prev_may_be_missing: bool,
     ) -> Result<Option<TargetReconcileOutput<Prof>>>;
+
+    fn attachment(&self, _att_type: &str) -> Result<Option<Prof::TargetHdl>> {
+        Ok(None)
+    }
 }
 
 pub(crate) struct TargetStateProviderInner<Prof: EngineProfile> {
@@ -58,6 +62,7 @@ pub(crate) struct TargetStateProviderInner<Prof: EngineProfile> {
     handler: OnceLock<Prof::TargetHdl>,
     orphaned: OnceLock<()>,
     provider_generation: OnceLock<TargetStateProviderGeneration>,
+    attachments: Mutex<HashMap<Arc<str>, TargetStateProvider<Prof>>>,
 }
 
 #[derive(Clone)]
@@ -105,6 +110,50 @@ impl<Prof: EngineProfile> TargetStateProvider<Prof> {
             .provider_generation
             .set(generation)
             .map_err(|_| internal_error!("Provider generation already set"))
+    }
+
+    pub fn register_attachment_provider(
+        &self,
+        comp_ctx: &ComponentProcessorContext<Prof>,
+        att_type: &str,
+    ) -> Result<TargetStateProvider<Prof>> {
+        let mut attachments = self.inner.attachments.lock().unwrap();
+        if let Some(existing) = attachments.get(att_type) {
+            return Ok(existing.clone());
+        }
+
+        let handler = self
+            .handler()
+            .ok_or_else(|| client_error!("Cannot register attachment on unfulfilled provider"))?
+            .attachment(att_type)?
+            .ok_or_else(|| {
+                client_error!("Handler does not support attachment type: {att_type:?}")
+            })?;
+
+        let symbol_key = StableKey::Symbol(att_type.into());
+        let target_state_path = self.target_state_path().concat(&symbol_key);
+
+        let provider = TargetStateProvider {
+            inner: Arc::new(TargetStateProviderInner {
+                parent_provider: Some(self.clone()),
+                stable_key: symbol_key,
+                target_state_path: target_state_path.clone(),
+                handler: OnceLock::from(handler),
+                orphaned: OnceLock::new(),
+                provider_generation: OnceLock::new(),
+                attachments: Mutex::new(HashMap::new()),
+            }),
+        };
+
+        comp_ctx.update_building_state(|building_state| {
+            building_state
+                .target_states
+                .provider_registry
+                .add(target_state_path, provider.clone())
+        })?;
+
+        attachments.insert(att_type.into(), provider.clone());
+        Ok(provider)
     }
 }
 
@@ -155,6 +204,7 @@ impl<Prof: EngineProfile> TargetStateProviderRegistry<Prof> {
                 handler: OnceLock::from(handler),
                 orphaned: OnceLock::new(),
                 provider_generation: OnceLock::new(),
+                attachments: Mutex::new(HashMap::new()),
             }),
         };
         self.add(target_state_path, provider.clone())?;
@@ -175,6 +225,7 @@ impl<Prof: EngineProfile> TargetStateProviderRegistry<Prof> {
                 handler: OnceLock::new(),
                 orphaned: OnceLock::new(),
                 provider_generation: OnceLock::new(),
+                attachments: Mutex::new(HashMap::new()),
             }),
         };
         self.add(target_state_path, provider.clone())?;

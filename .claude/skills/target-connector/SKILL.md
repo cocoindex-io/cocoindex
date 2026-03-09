@@ -19,7 +19,7 @@ Use this skill when creating a new target connector for any external system (dat
 
 | Type | Purpose |
 | ---- | ------- |
-| `TargetHandler` | Implements `reconcile()` — compares desired state with previous tracking records |
+| `TargetHandler` | Implements `reconcile()` — compares desired state with previous tracking records. Optionally implements `attachment(att_type)` for auxiliary child states. |
 | `TargetActionSink` | Executes actions against the external system |
 | Tracking Record | Persisted state for change detection (typically a frozen dataclass) |
 | Action | Describes what operation to perform on the external system |
@@ -103,6 +103,10 @@ class TargetHandler(Protocol[KeyT, ValueT, TrackingRecordT, OptChildHandlerT]):
         /,
     ) -> TargetReconcileOutput[ActionT, TrackingRecordT, OptChildHandlerT] | None:
         ...
+
+    # Optional: override to support attachment types
+    def attachment(self, att_type: str) -> TargetHandler | None:
+        return None
 ```
 
 **Parameters:**
@@ -309,6 +313,10 @@ def test_vector_support(connector_with_vec: tuple[Connection, Path]) -> None:
 
 - `python/tests/connectors/test_sqlite_target.py` - SQLite tests with vector support
 
+## Attachment Providers
+
+For targets with auxiliary child states (e.g., indexes on a database table), see [attachments.md](attachments.md) for the full reference on implementing attachment providers.
+
 ## Resources
 
 For complete implementation details and examples, see:
@@ -316,4 +324,4 @@ For complete implementation details and examples, see:
 - `docs/docs/advanced_topics/custom_target_connector.md` - Full documentation
 - `python/cocoindex/connectors/localfs/_target.py` - File system target connector (sync API, nested directory targets)
 - `python/cocoindex/connectors/sqlite/_target.py` - SQLite target connector (sync API, two-level table/row targets, vector support)
-- `python/cocoindex/connectors/postgres/_target.py` - PostgreSQL target connector (async API, two-level table/row targets, vector support)
+- `python/cocoindex/connectors/postgres/_target.py` - PostgreSQL target connector (async API, two-level table/row targets, vector support, attachment providers)

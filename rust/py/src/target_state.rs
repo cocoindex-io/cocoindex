@@ -154,6 +154,21 @@ impl TargetHandler<PyEngineProfile> for PyTargetHandler {
         })
         .from_py_result()
     }
+
+    fn attachment(&self, att_type: &str) -> Result<Option<PyTargetHandler>> {
+        Python::attach(|py| -> PyResult<_> {
+            let obj = self.0.bind(py);
+            if !obj.hasattr("attachment")? {
+                return Ok(None);
+            }
+            let result = obj.call_method1("attachment", (att_type,))?;
+            if result.is_none() {
+                return Ok(None);
+            }
+            Ok(Some(PyTargetHandler(result.unbind())))
+        })
+        .from_py_result()
+    }
 }
 
 #[pyclass(name = "TargetStateProvider")]
@@ -176,6 +191,18 @@ impl PyTargetStateProvider {
             .map(|k| PyStableKey(k).into_pyobject(py))
             .collect::<Result<_, _>>()?;
         PyTuple::new(py, py_keys)
+    }
+
+    pub fn register_attachment_provider(
+        &self,
+        comp_ctx: &PyComponentProcessorContext,
+        att_type: &str,
+    ) -> PyResult<PyTargetStateProvider> {
+        let provider = self
+            .0
+            .register_attachment_provider(&comp_ctx.0, att_type)
+            .into_py_result()?;
+        Ok(PyTargetStateProvider(provider))
     }
 }
 

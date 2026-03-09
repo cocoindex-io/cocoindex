@@ -176,6 +176,16 @@ class TargetStateProvider(
     ) -> "TargetState[OptChildHandlerT]":
         return TargetState(self, key, value)
 
+    def attachment(
+        self: TargetStateProvider[ValueT, OptChildHandlerT],
+        att_type: str,
+    ) -> "TargetStateProvider":
+        ctx = get_context_from_ctx()
+        provider = self._core.register_attachment_provider(
+            ctx._core_processor_ctx, att_type
+        )
+        return TargetStateProvider(provider)
+
     def __coco_memo_key__(self) -> str:
         return self._core.coco_memo_key()
 
