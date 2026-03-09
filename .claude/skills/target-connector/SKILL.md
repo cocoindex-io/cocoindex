@@ -19,7 +19,7 @@ Use this skill when creating a new target connector for any external system (dat
 
 | Type | Purpose |
 | ---- | ------- |
-| `TargetHandler` | Implements `reconcile()` — compares desired state with previous tracking records |
+| `TargetHandler` | Implements `reconcile()` — compares desired state with previous tracking records. Optionally implements `attachment(att_type)` for auxiliary child states. |
 | `TargetActionSink` | Executes actions against the external system |
 | Tracking Record | Persisted state for change detection (typically a frozen dataclass) |
 | Action | Describes what operation to perform on the external system |
@@ -52,6 +52,44 @@ For targets nested inside another target (e.g., files inside a directory):
 2. Call `declare_target_state_with_child(parent_ts)` to get an unresolved child provider
 3. CocoIndex resolves the child provider when parent's sink executes
 
+### Child Invalidation
+
+For container targets, set `child_invalidation` in `TargetReconcileOutput` when a container change affects its children:
+
+| Value | When to Use | Effect on Children |
+| ----- | ----------- | ------------------ |
+| `None` (default) | No impact on children (e.g., only new columns added) | Normal change detection |
+| `"destructive"` | Container rebuilt from scratch (e.g., table dropped and recreated due to primary key change or table type switch) | All previous tracking records ignored; children treated as new and re-declared |
+| `"lossy"` | Data loss possible but container not fully rebuilt (e.g., column removed or type changed) | All children get `prev_may_be_missing=True`, forcing upsert even if content appears unchanged |
+
+**Pattern for two-level (table/row) connectors using `statediff.diff_composite`:**
+
+```python
+# After computing main_action and column_actions via statediff.diff_composite:
+child_invalidation: Literal["destructive", "lossy"] | None = None
+if main_action == "replace":
+    # Table dropped and recreated — all rows are destroyed.
+    child_invalidation = "destructive"
+elif main_action is None and any(a != "insert" for a in column_actions.values()):
+    # Column changes other than adding new columns may lose existing row data.
+    child_invalidation = "lossy"
+
+return coco.TargetReconcileOutput(
+    action=_TableAction(...),
+    sink=self._sink,
+    tracking_record=_TableTrackingRecord(...),
+    child_invalidation=child_invalidation,
+)
+```
+
+For connectors without column-level diffs (e.g., a collection that is either intact or fully replaced), only `"destructive"` applies:
+
+```python
+child_invalidation: Literal["destructive"] | None = (
+    "destructive" if main_action == "replace" else None
+)
+```
+
 ## TargetHandler Protocol
 
 ```python
@@ -65,6 +103,10 @@ class TargetHandler(Protocol[KeyT, ValueT, TrackingRecordT, OptChildHandlerT]):
         /,
     ) -> TargetReconcileOutput[ActionT, TrackingRecordT, OptChildHandlerT] | None:
         ...
+
+    # Optional: override to support attachment types
+    def attachment(self, att_type: str) -> TargetHandler | None:
+        return None
 ```
 
 **Parameters:**
@@ -76,8 +118,10 @@ class TargetHandler(Protocol[KeyT, ValueT, TrackingRecordT, OptChildHandlerT]):
 
 **Returns:**
 
-- `TargetReconcileOutput(action, sink, tracking_record)` if an action is needed
+- `TargetReconcileOutput(action, sink, tracking_record, child_invalidation=None)` if an action is needed
 - `None` if no changes are required
+
+The optional `child_invalidation` field is only relevant for container targets — see [Child Invalidation](#child-invalidation).
 
 **Important:** The `reconcile()` method must be non-blocking. It should only compare states and return an action — actual I/O happens in the sink.
 
@@ -269,6 +313,10 @@ def test_vector_support(connector_with_vec: tuple[Connection, Path]) -> None:
 
 - `python/tests/connectors/test_sqlite_target.py` - SQLite tests with vector support
 
+## Attachment Providers
+
+For targets with auxiliary child states (e.g., indexes on a database table), see [attachments.md](attachments.md) for the full reference on implementing attachment providers.
+
 ## Resources
 
 For complete implementation details and examples, see:
@@ -276,4 +324,4 @@ For complete implementation details and examples, see:
 - `docs/docs/advanced_topics/custom_target_connector.md` - Full documentation
 - `python/cocoindex/connectors/localfs/_target.py` - File system target connector (sync API, nested directory targets)
 - `python/cocoindex/connectors/sqlite/_target.py` - SQLite target connector (sync API, two-level table/row targets, vector support)
-- `python/cocoindex/connectors/postgres/_target.py` - PostgreSQL target connector (async API, two-level table/row targets, vector support)
+- `python/cocoindex/connectors/postgres/_target.py` - PostgreSQL target connector (async API, two-level table/row targets, vector support, attachment providers)

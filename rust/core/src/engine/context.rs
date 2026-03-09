@@ -10,6 +10,9 @@ use crate::engine::target_state::{TargetStateProvider, TargetStateProviderRegist
 use crate::prelude::*;
 
 use crate::state::stable_path::StableKey;
+
+pub(crate) static TARGET_ID_KEY: LazyLock<StableKey> =
+    LazyLock::new(|| StableKey::Symbol("cocoindex/_internal/target_id".into()));
 use crate::state::stable_path_set::ChildStablePathSet;
 use crate::state::target_state_path::TargetStatePath;
 use crate::{
@@ -74,7 +77,7 @@ impl<Prof: EngineProfile> AppContext<Prof> {
         let key = key.unwrap_or(&default_key);
         self.inner
             .id_sequencer_manager
-            .next_id(self.inner.env.db_env(), &self.inner.db, key)
+            .next_id(self.inner.env.txn_batcher(), &self.inner.db, key)
             .await
     }
 }

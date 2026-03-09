@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import (
     Collection,
     Generic,
-    Hashable,
+    Literal,
     NamedTuple,
     Protocol,
     Any,
@@ -141,6 +141,7 @@ class TargetReconcileOutput(
     action: ActionT
     sink: TargetActionSink[ActionT, OptChildHandlerT_co]
     tracking_record: TrackingRecordT_co | NonExistenceType
+    child_invalidation: Literal["destructive", "lossy"] | None = None
 
 
 class TargetHandler(Protocol[ValueT_contra, TrackingRecordT, OptChildHandlerT_co]):
@@ -158,13 +159,15 @@ class TargetStateProvider(
     Generic[ValueT, OptChildHandlerT, MaybePendingS],
     ResolvesTo["TargetStateProvider[ValueT, OptChildHandlerT]"],
 ):
-    __slots__ = ("_core", "memo_key")
+    __slots__ = ("_core",)
     _core: core.TargetStateProvider
-    memo_key: str
 
     def __init__(self, core_provider: core.TargetStateProvider):
         self._core = core_provider
-        self.memo_key = core_provider.coco_memo_key()
+
+    @property
+    def memo_key(self) -> str:
+        return self._core.coco_memo_key()
 
     def target_state(
         self: TargetStateProvider[ValueT, OptChildHandlerT],
@@ -173,8 +176,18 @@ class TargetStateProvider(
     ) -> "TargetState[OptChildHandlerT]":
         return TargetState(self, key, value)
 
+    def attachment(
+        self: TargetStateProvider[ValueT, OptChildHandlerT],
+        att_type: str,
+    ) -> "TargetStateProvider":
+        ctx = get_context_from_ctx()
+        provider = self._core.register_attachment_provider(
+            ctx._core_processor_ctx, att_type
+        )
+        return TargetStateProvider(provider)
+
     def __coco_memo_key__(self) -> str:
-        return self.memo_key
+        return self._core.coco_memo_key()
 
 
 PendingTargetStateProvider: TypeAlias = TargetStateProvider[

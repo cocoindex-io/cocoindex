@@ -458,7 +458,8 @@ impl<Prof: EngineProfile> Component<Prof> {
             // Fast-path: component memoization check does not require acquiring the build permit.
             // If it hits, we can immediately return without processing/submitting/waiting.
 
-            match use_or_invalidate_component_memoization(processor_context, memo_fp_to_store) {
+            match use_or_invalidate_component_memoization(processor_context, memo_fp_to_store).await
+            {
                 Ok(Some((ret, memo_states))) => {
                     // If processor has state handler and there are stored states, validate them.
                     if processor.has_memo_state_handler() && !memo_states.is_empty() {
@@ -470,7 +471,8 @@ impl<Prof: EngineProfile> Component<Prof> {
                         if can_reuse {
                             // Memo is reusable — update stored states if they changed
                             if states_changed {
-                                update_component_memo_states(processor_context, &new_states)?;
+                                update_component_memo_states(processor_context, &new_states)
+                                    .await?;
                             }
                             processing_stats.update(processor_name.as_ref(), |stats| {
                                 stats.num_execution_starts += 1;
@@ -618,7 +620,7 @@ impl<Prof: EngineProfile> Component<Prof> {
                         })
                     }
                     None => {
-                        cleanup_tombstone(&processor_context)?;
+                        cleanup_tombstone(&processor_context).await?;
                         None
                     }
                 };

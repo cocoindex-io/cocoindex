@@ -219,3 +219,7 @@ When adding new functionality that involves I/O or concurrency:
 
 * Implement async in Rust
 * Bridge to Python via `rust/py`, providing both sync and async variants if needed
+
+## Versioning
+
+The current codebase is for CocoIndex v1, which is a fundamental redesign from CocoIndex v0. Currently the `v1` branch is the main branch for CocoIndex v1 code.

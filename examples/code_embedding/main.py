@@ -118,6 +118,7 @@ async def app_main(sourcedir: pathlib.Path) -> None:
         ),
         pg_schema_name=PG_SCHEMA_NAME,
     )
+    target_table.declare_vector_index(column="embedding")
 
     # Process multiple file types across the repository
     files = localfs.walk_dir(

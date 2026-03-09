@@ -1222,11 +1222,9 @@ def test_regular_table_vs_vec0_switch(
             assert "VIRTUAL TABLE" in sql
             assert "USING vec0" in sql
 
-        # Currently, switching table types (regular <-> virtual) triggers DROP+CREATE,
-        # which does not preserve data. In the future, a "schema version" mechanism
-        # will allow preserving row data across such changes.
-        # TODO: Once schema versioning is implemented, change this assertion to:
-        #   assert len(data) == 1
-        #   assert data[0]["id"] == 1
+        # Switching table types (regular <-> virtual) triggers DROP+CREATE, which
+        # marks child targets as destructively invalidated. The engine therefore
+        # re-declares all rows, so the data is preserved after re-processing.
         data = read_table_data(managed_conn, "switchable")
-        assert len(data) == 0  # Data is not preserved during table type change
+        assert len(data) == 1
+        assert data[0]["id"] == 1

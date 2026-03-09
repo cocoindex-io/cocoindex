@@ -2,10 +2,9 @@ use std::hash::{Hash, Hasher};
 use std::sync::{LazyLock, Mutex};
 
 use cocoindex_core::engine::target_state::{
-    ChildTargetDef, TargetActionSink, TargetHandler, TargetReconcileOutput, TargetStateProvider,
-    TargetStateProviderRegistry,
+    ChildInvalidation, ChildTargetDef, TargetActionSink, TargetHandler, TargetReconcileOutput,
+    TargetStateProvider, TargetStateProviderRegistry,
 };
-use cocoindex_core::state::target_state_path::TargetStatePath;
 use pyo3::types::{PyList, PySequence, PyTuple};
 
 use crate::context::{PyComponentProcessorContext, PyFnCallContext};
@@ -124,8 +123,22 @@ impl TargetHandler<PyEngineProfile> for PyTargetHandler {
             let output = if py_output.is_none(py) {
                 None
             } else {
-                let (action, sink, state) =
-                    py_output.extract::<(Py<PyAny>, Py<PyAny>, Py<PyAny>)>(py)?;
+                let (action, sink, state, py_child_invalidation) =
+                    py_output.extract::<(Py<PyAny>, Py<PyAny>, Py<PyAny>, Py<PyAny>)>(py)?;
+                let child_invalidation = if py_child_invalidation.is_none(py) {
+                    None
+                } else {
+                    let s = py_child_invalidation.extract::<String>(py)?;
+                    match s.as_str() {
+                        "destructive" => Some(ChildInvalidation::Destructive),
+                        "lossy" => Some(ChildInvalidation::Lossy),
+                        other => {
+                            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                                "Invalid child_invalidation value: {other:?}"
+                            )));
+                        }
+                    }
+                };
                 Some(TargetReconcileOutput {
                     action,
                     sink: get_core_field(py, sink)?.extract::<PyTargetActionSink>(py)?,
@@ -134,9 +147,25 @@ impl TargetHandler<PyEngineProfile> for PyTargetHandler {
                     } else {
                         Some(PyValue::new(state))
                     },
+                    child_invalidation,
                 })
             };
             Ok(output)
+        })
+        .from_py_result()
+    }
+
+    fn attachment(&self, att_type: &str) -> Result<Option<PyTargetHandler>> {
+        Python::attach(|py| -> PyResult<_> {
+            let obj = self.0.bind(py);
+            if !obj.hasattr("attachment")? {
+                return Ok(None);
+            }
+            let result = obj.call_method1("attachment", (att_type,))?;
+            if result.is_none() {
+                return Ok(None);
+            }
+            Ok(Some(PyTargetHandler(result.unbind())))
         })
         .from_py_result()
     }
@@ -148,7 +177,11 @@ pub struct PyTargetStateProvider(TargetStateProvider<PyEngineProfile>);
 #[pymethods]
 impl PyTargetStateProvider {
     pub fn coco_memo_key(&self) -> String {
-        self.0.target_state_path().to_string()
+        let path = self.0.target_state_path().to_string();
+        match self.0.provider_generation() {
+            Some(g) => format!("{}[{},{}]", path, g.provider_id, g.provider_schema_version),
+            None => path,
+        }
     }
 
     pub fn stable_key_chain<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
@@ -158,6 +191,18 @@ impl PyTargetStateProvider {
             .map(|k| PyStableKey(k).into_pyobject(py))
             .collect::<Result<_, _>>()?;
         PyTuple::new(py, py_keys)
+    }
+
+    pub fn register_attachment_provider(
+        &self,
+        comp_ctx: &PyComponentProcessorContext,
+        att_type: &str,
+    ) -> PyResult<PyTargetStateProvider> {
+        let provider = self
+            .0
+            .register_attachment_provider(&comp_ctx.0, att_type)
+            .into_py_result()?;
+        Ok(PyTargetStateProvider(provider))
     }
 }
 
