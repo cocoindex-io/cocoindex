@@ -1,3 +1,4 @@
+use std::mem::ManuallyDrop;
 use std::sync::LazyLock;
 
 use tokio::runtime::Runtime;
@@ -14,8 +15,9 @@ fn init_runtime() -> Runtime {
     Runtime::new().unwrap()
 }
 
-static TOKIO_RUNTIME: LazyLock<Runtime> = LazyLock::new(init_runtime);
+static TOKIO_RUNTIME: LazyLock<ManuallyDrop<Runtime>> =
+    LazyLock::new(|| ManuallyDrop::new(init_runtime()));
 
 pub fn get_runtime() -> &'static Runtime {
-    &TOKIO_RUNTIME
+    &**TOKIO_RUNTIME
 }
