@@ -9,17 +9,17 @@ Environment variables:
 
 from __future__ import annotations
 
-import asyncio
 import os
 import uuid
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any, AsyncIterator
 
 if TYPE_CHECKING:
     import asyncpg
 
 import numpy as np
 import pytest
+import pytest_asyncio
 from numpy.typing import NDArray
 
 import cocoindex as coco
@@ -58,10 +58,6 @@ pytestmark = [
 
 def _unique_name(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:8]}"
-
-
-def _run(loop: asyncio.AbstractEventLoop, coro: Any) -> Any:
-    return loop.run_until_complete(coro)
 
 
 async def _index_info(pool: "asyncpg.Pool", index_name: str) -> dict[str, Any] | None:
@@ -109,14 +105,12 @@ async def _drop_index(pool: "asyncpg.Pool", index_name: str) -> None:
 # =============================================================================
 
 
-@pytest.fixture
-def pg_env() -> Any:
-    """Create an asyncpg pool and event loop for tests."""
-    loop = asyncio.new_event_loop()
-    pool = loop.run_until_complete(postgres.create_pool(PG_DSN))
-    yield pool, loop
-    loop.run_until_complete(pool.close())
-    loop.close()
+@pytest_asyncio.fixture
+async def pg_env() -> AsyncIterator[Any]:
+    """Create an asyncpg pool for tests."""
+    pool = await postgres.create_pool(PG_DSN)
+    yield pool
+    await pool.close()
 
 
 # =============================================================================
@@ -144,9 +138,10 @@ class TextRow:
 # =============================================================================
 
 
-def test_postgres_declare_vector_index(pg_env: Any) -> None:
+@pytest.mark.asyncio
+async def test_postgres_declare_vector_index(pg_env: Any) -> None:
     """Vector index lifecycle: create with ivfflat → change to hnsw → remove table."""
-    pool, loop = pg_env
+    pool = pg_env
     table_name = _unique_name("test_vec_idx")
     logical_name = "idx1"
     pg_index_name = f"{table_name}__vector__{logical_name}"
@@ -192,36 +187,35 @@ def test_postgres_declare_vector_index(pg_env: Any) -> None:
                     embedding=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
                 ),
             ]
-            app.update_blocking()
+            await app.update()
 
-            info = _run(loop, _index_info(pool, pg_index_name))
+            info = await _index_info(pool, pg_index_name)
             assert info is not None, f"Index {pg_index_name} should exist"
             assert info["amname"] == "ivfflat"
 
             # Run 2: Change to hnsw
             index_method = "hnsw"
-            app.update_blocking()
+            await app.update()
 
-            info = _run(loop, _index_info(pool, pg_index_name))
+            info = await _index_info(pool, pg_index_name)
             assert info is not None, f"Index {pg_index_name} should still exist"
             assert info["amname"] == "hnsw"
 
             # Run 3: Remove table entirely
             declare_table = False
-            app.update_blocking()
+            await app.update()
 
-            assert not _run(loop, _table_exists(pool, table_name)), (
-                "Table should be dropped"
-            )
+            assert not await _table_exists(pool, table_name), "Table should be dropped"
 
     finally:
         for t in tables_to_clean:
-            _run(loop, _drop_table(pool, t))
+            await _drop_table(pool, t)
 
 
-def test_postgres_declare_vector_index_fingerprint_no_change(pg_env: Any) -> None:
+@pytest.mark.asyncio
+async def test_postgres_declare_vector_index_fingerprint_no_change(pg_env: Any) -> None:
     """Identical vector index spec across runs should not recreate the index."""
-    pool, loop = pg_env
+    pool = pg_env
     table_name = _unique_name("test_vec_fp")
     logical_name = "idx1"
     pg_index_name = f"{table_name}__vector__{logical_name}"
@@ -261,23 +255,24 @@ def test_postgres_declare_vector_index_fingerprint_no_change(pg_env: Any) -> Non
             )
 
             # Run 1: Create
-            app.update_blocking()
-            info1 = _run(loop, _index_info(pool, pg_index_name))
+            await app.update()
+            info1 = await _index_info(pool, pg_index_name)
             assert info1 is not None
 
             # Run 2: Identical spec — should be a no-op
-            app.update_blocking()
-            info2 = _run(loop, _index_info(pool, pg_index_name))
+            await app.update()
+            info2 = await _index_info(pool, pg_index_name)
             assert info2 is not None
             assert info2["amname"] == "ivfflat"
 
     finally:
-        _run(loop, _drop_table(pool, table_name))
+        await _drop_table(pool, table_name)
 
 
-def test_postgres_declare_sql_command_attachment(pg_env: Any) -> None:
+@pytest.mark.asyncio
+async def test_postgres_declare_sql_command_attachment(pg_env: Any) -> None:
     """SQL command attachment lifecycle: create index → change → remove (with teardown)."""
-    pool, loop = pg_env
+    pool = pg_env
     table_name = _unique_name("test_sql_cmd")
     idx_name_v1 = f"{table_name}_fts_v1"
     idx_name_v2 = f"{table_name}_fts_v2"
@@ -319,43 +314,44 @@ def test_postgres_declare_sql_command_attachment(pg_env: Any) -> None:
                 f'CREATE INDEX "{idx_name_v1}" ON "{table_name}" ("content")'
             )
             current_teardown_sql = f'DROP INDEX IF EXISTS "{idx_name_v1}"'
-            app.update_blocking()
+            await app.update()
 
-            info = _run(loop, _index_info(pool, idx_name_v1))
+            info = await _index_info(pool, idx_name_v1)
             assert info is not None, f"Index {idx_name_v1} should exist"
 
             # Run 2: Change setup_sql — teardown of v1 should run first
             current_setup_sql = f'CREATE INDEX "{idx_name_v2}" ON "{table_name}" ("id")'
             current_teardown_sql = f'DROP INDEX IF EXISTS "{idx_name_v2}"'
-            app.update_blocking()
+            await app.update()
 
             # Old index should be torn down
-            assert _run(loop, _index_info(pool, idx_name_v1)) is None, (
+            assert await _index_info(pool, idx_name_v1) is None, (
                 f"Index {idx_name_v1} should have been torn down"
             )
             # New index should exist
-            info_v2 = _run(loop, _index_info(pool, idx_name_v2))
+            info_v2 = await _index_info(pool, idx_name_v2)
             assert info_v2 is not None, f"Index {idx_name_v2} should exist"
 
             # Run 3: Remove attachment — teardown of v2 should run
             current_setup_sql = None
             current_teardown_sql = None
-            app.update_blocking()
+            await app.update()
 
             # Teardown of v2 should have run
-            assert _run(loop, _index_info(pool, idx_name_v2)) is None, (
+            assert await _index_info(pool, idx_name_v2) is None, (
                 f"Index {idx_name_v2} should have been torn down"
             )
             # Table should still exist (only attachment removed)
-            assert _run(loop, _table_exists(pool, table_name))
+            assert await _table_exists(pool, table_name)
 
     finally:
-        _run(loop, _drop_table(pool, table_name))
+        await _drop_table(pool, table_name)
 
 
-def test_postgres_sql_command_attachment_no_teardown(pg_env: Any) -> None:
+@pytest.mark.asyncio
+async def test_postgres_sql_command_attachment_no_teardown(pg_env: Any) -> None:
     """Declare SQL command with teardown_sql=None, then remove. Should not error."""
-    pool, loop = pg_env
+    pool = pg_env
     table_name = _unique_name("test_sql_notd")
     idx_name = f"{table_name}_idx"
 
@@ -389,25 +385,26 @@ def test_postgres_sql_command_attachment_no_teardown(pg_env: Any) -> None:
             )
 
             # Run 1: Create
-            app.update_blocking()
-            assert _run(loop, _index_info(pool, idx_name)) is not None
+            await app.update()
+            assert await _index_info(pool, idx_name) is not None
 
             # Run 2: Remove attachment — no teardown, should not error
             declare_attachment = False
-            app.update_blocking()
+            await app.update()
 
             # Table should still exist
-            assert _run(loop, _table_exists(pool, table_name))
+            assert await _table_exists(pool, table_name)
             # Index persists since no teardown SQL was provided
-            assert _run(loop, _index_info(pool, idx_name)) is not None
+            assert await _index_info(pool, idx_name) is not None
 
     finally:
-        _run(loop, _drop_table(pool, table_name))
+        await _drop_table(pool, table_name)
 
 
-def test_postgres_mixed_rows_and_attachments(pg_env: Any) -> None:
+@pytest.mark.asyncio
+async def test_postgres_mixed_rows_and_attachments(pg_env: Any) -> None:
     """Rows and vector index coexist correctly under the same table."""
-    pool, loop = pg_env
+    pool = pg_env
     table_name = _unique_name("test_mixed")
     logical_name = "idx1"
     pg_index_name = f"{table_name}__vector__{logical_name}"
@@ -457,10 +454,10 @@ def test_postgres_mixed_rows_and_attachments(pg_env: Any) -> None:
                     embedding=np.array([0.0, 1.0, 0.0, 0.0], dtype=np.float32),
                 ),
             ]
-            app.update_blocking()
+            await app.update()
 
-            assert _run(loop, _row_count(pool, table_name)) == 2
-            info = _run(loop, _index_info(pool, pg_index_name))
+            assert await _row_count(pool, table_name) == 2
+            info = await _index_info(pool, pg_index_name)
             assert info is not None
             assert info["amname"] == "ivfflat"
 
@@ -477,21 +474,21 @@ def test_postgres_mixed_rows_and_attachments(pg_env: Any) -> None:
                     embedding=np.array([0.0, 0.0, 1.0, 0.0], dtype=np.float32),
                 ),
             ]
-            app.update_blocking()
+            await app.update()
 
-            assert _run(loop, _row_count(pool, table_name)) == 2
-            info = _run(loop, _index_info(pool, pg_index_name))
+            assert await _row_count(pool, table_name) == 2
+            info = await _index_info(pool, pg_index_name)
             assert info is not None
             assert info["amname"] == "ivfflat"  # unchanged
 
             # Run 3: Change index only, keep rows same
             index_method = "hnsw"
-            app.update_blocking()
+            await app.update()
 
-            assert _run(loop, _row_count(pool, table_name)) == 2
-            info = _run(loop, _index_info(pool, pg_index_name))
+            assert await _row_count(pool, table_name) == 2
+            info = await _index_info(pool, pg_index_name)
             assert info is not None
             assert info["amname"] == "hnsw"  # changed
 
     finally:
-        _run(loop, _drop_table(pool, table_name))
+        await _drop_table(pool, table_name)

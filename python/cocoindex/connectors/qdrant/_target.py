@@ -34,7 +34,6 @@ except ImportError as e:
 import cocoindex as coco
 from cocoindex.connectorkits import connection, statediff
 from cocoindex.connectorkits.fingerprint import fingerprint_object
-from cocoindex._internal.api import mount_target as _mount_target
 from cocoindex._internal.datatype import TypeChecker
 from cocoindex.resources import schema as res_schema
 
@@ -616,7 +615,7 @@ class QdrantDatabase(connection.KeyedConnection[QdrantClient]):
         Returns:
             A CollectionTarget for declaring points.
         """
-        provider = await _mount_target(
+        provider = await coco.mount_target(
             self.collection_target(collection_name, schema, managed_by=managed_by)
         )
         return CollectionTarget(provider)

@@ -43,6 +43,7 @@ const sidebars: SidebarsConfig = {
         'connectors/postgres',
         'connectors/qdrant',
         'connectors/sqlite',
+        'connectors/surrealdb',
       ],
     },
     {
