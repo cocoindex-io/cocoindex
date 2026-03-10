@@ -14,10 +14,6 @@ import pytest_asyncio
 from numpy.typing import NDArray
 
 import cocoindex as coco
-from cocoindex.connectors.surrealdb._target import (
-    _format_record_id,
-    _validate_identifier,
-)
 from cocoindex.resources.schema import VectorSchema
 
 from tests import common
@@ -47,6 +43,10 @@ requires_surrealdb = pytest.mark.skipif(
 # The module itself always imports (guarded import is inside _target.py).
 if HAS_SURREALDB:
     from cocoindex.connectors import surrealdb  # type: ignore[attr-defined]
+    from cocoindex.connectors.surrealdb._target import (  # type: ignore[import-untyped]
+        _format_record_id,
+        _validate_identifier,
+    )
 
 
 # =============================================================================
@@ -68,6 +68,7 @@ _SURREALDB_CREDENTIALS: dict[str, str] | None = (
 # =============================================================================
 
 
+@requires_surrealdb
 class TestValidateIdentifier:
     """Tests for _validate_identifier()."""
 
@@ -84,6 +85,7 @@ class TestValidateIdentifier:
             _validate_identifier(name, "test")
 
 
+@requires_surrealdb
 class TestFormatRecordId:
     """Tests for _format_record_id()."""
 
