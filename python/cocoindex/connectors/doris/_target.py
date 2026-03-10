@@ -58,7 +58,6 @@ from cocoindex._internal.datatype import (
     analyze_type_info,
     is_record_type,
 )
-from cocoindex._internal.api import mount_target as _mount_target
 from cocoindex.resources import schema as res_schema
 
 if TYPE_CHECKING:
@@ -1234,7 +1233,7 @@ class DorisDatabase(connection.KeyedConnection[ManagedConnection]):
         vector_indexes: list[VectorIndexDef] | None = None,
         inverted_indexes: list[InvertedIndexDef] | None = None,
     ) -> "DorisTableTarget[RowT]":
-        provider = await _mount_target(
+        provider = await coco.mount_target(
             self.table_target(
                 table_name,
                 table_schema,

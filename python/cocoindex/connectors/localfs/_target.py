@@ -9,7 +9,6 @@ from dataclasses import dataclass
 from typing import Collection, Generic, Literal, NamedTuple, Sequence, cast
 
 import cocoindex as coco
-from cocoindex._internal.api import mount_target as _mount_target
 from cocoindex.connectorkits.fingerprint import fingerprint_bytes
 from cocoindex._internal.datatype import TypeChecker
 
@@ -440,7 +439,7 @@ async def mount_dir_target(
     Returns:
         A DirTarget that can be used to declare files and subdirectories.
     """
-    provider = await _mount_target(
+    provider = await coco.mount_target(
         dir_target(path, create_parent_dirs=create_parent_dirs)
     )
     return DirTarget(provider)

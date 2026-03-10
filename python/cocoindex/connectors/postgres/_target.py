@@ -51,7 +51,6 @@ from cocoindex._internal.datatype import (
     analyze_type_info,
     is_record_type,
 )
-from cocoindex._internal.api import mount_target as _mount_target
 from cocoindex.resources import schema as res_schema
 
 # Type aliases
@@ -1355,7 +1354,7 @@ class PgDatabase(connection.KeyedConnection[asyncpg.Pool]):
         Returns:
             A TableTarget that can be used to declare rows.
         """
-        provider = await _mount_target(
+        provider = await coco.mount_target(
             self.table_target(
                 table_name,
                 table_schema,

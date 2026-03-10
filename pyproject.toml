@@ -75,6 +75,7 @@ lancedb = ["lancedb>=0.25.0", "pyarrow>=19.0.0"]
 postgres = ["asyncpg>=0.31.0", "pgvector>=0.4.2"]
 qdrant = ["qdrant-client>=1.6.0"]
 sqlite = ["sqlite-vec>=0.1.6"]
+surrealdb = ["surrealdb>=1.0.0"]
 google_drive = ["google-api-python-client>=2.0.0", "google-auth>=2.0.0"]
 amazon_s3 = ["aiobotocore>=2.0.0"]
 doris = ["aiohttp>=3.9.0", "pymysql>=1.1.0", "aiomysql>=0.2.0"]
@@ -89,6 +90,7 @@ all = [
     "pgvector>=0.4.2",
     "qdrant-client>=1.6.0",
     "sqlite-vec>=0.1.6",
+    "surrealdb>=1.0.0",
     "google-api-python-client>=2.0.0",
     "google-auth>=2.0.0",
     "aiobotocore>=2.0.0",
@@ -163,6 +165,8 @@ module = [
     "qdrant_client.*",
     "sqlite_vec",
     "sqlite_vec.*",
+    "surrealdb",
+    "surrealdb.*",
     "googleapiclient",
     "googleapiclient.*",
     "google.oauth2",
