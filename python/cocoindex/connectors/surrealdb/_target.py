@@ -14,6 +14,7 @@ from __future__ import annotations
 import datetime
 import decimal
 import json
+import re
 import uuid
 from dataclasses import dataclass
 from typing import (
@@ -56,6 +57,39 @@ from cocoindex._internal.datatype import (
     is_record_type,
 )
 from cocoindex.resources import schema as res_schema
+
+# ---------------------------------------------------------------------------
+# Identifier validation & record ID formatting
+# ---------------------------------------------------------------------------
+
+_IDENTIFIER_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+
+
+def _validate_identifier(name: str, kind: str) -> None:
+    """Validate that *name* is a safe SurrealQL identifier.
+
+    Raises :class:`ValueError` if the name contains characters that are not
+    alphanumeric or underscore, or starts with a digit.
+    """
+    if not _IDENTIFIER_RE.match(name):
+        raise ValueError(
+            f"Invalid SurrealDB {kind}: {name!r}. Must match [a-zA-Z_][a-zA-Z0-9_]*."
+        )
+
+
+def _format_record_id(value: Any) -> str:
+    """Format a record ID for inline use in SurrealQL, preserving type.
+
+    * ``int`` / ``float`` → bare numeric literal (``123``, ``3.14``)
+    * ``str`` (and everything else) → backtick-quoted with ``\\`` and
+      backtick escaping (`` `alice` ``, `` `has\\`tick` ``)
+    """
+    if isinstance(value, (int, float)):
+        return str(value)
+    s = str(value)
+    s = s.replace("\\", "\\\\").replace("`", "\\`")
+    return f"`{s}`"
+
 
 # ---------------------------------------------------------------------------
 # Type aliases
@@ -267,6 +301,8 @@ class TableSchema(Generic[RowT]):
             columns: A dict mapping field names to ColumnDef.
             row_type: Optional original record type.
         """
+        for col_name in columns:
+            _validate_identifier(col_name, "column name")
         self.columns = columns
         self.row_type = row_type
 
@@ -431,9 +467,7 @@ class _SharedRecordApplier:
             for action in upsert_normal:
                 assert action.value is not None
                 content = {k: v for k, v in action.value.items() if k != "id"}
-                surql = (
-                    f"UPSERT {action.table_name}:`{action.record_id}` CONTENT $content"
-                )
+                surql = f"UPSERT {action.table_name}:{_format_record_id(action.record_id)} CONTENT $content"
                 await self._conn.query(surql, {"content": content})
 
             for action in upsert_relation:
@@ -444,12 +478,12 @@ class _SharedRecordApplier:
                 # in/out as part of identity, so changing endpoints requires
                 # removing the old record first.
                 await self._conn.query(
-                    f"DELETE {action.table_name}:`{action.record_id}`"
+                    f"DELETE {action.table_name}:{_format_record_id(action.record_id)}"
                 )
                 content = {k: v for k, v in action.value.items() if k != "id"}
                 surql = (
                     f"RELATE {action.from_record}"
-                    f"->{action.table_name}:`{action.record_id}`"
+                    f"->{action.table_name}:{_format_record_id(action.record_id)}"
                     f"->{action.to_record}"
                     f" CONTENT $content"
                 )
@@ -457,12 +491,12 @@ class _SharedRecordApplier:
 
             for action in delete_relation:
                 await self._conn.query(
-                    f"DELETE {action.table_name}:`{action.record_id}`"
+                    f"DELETE {action.table_name}:{_format_record_id(action.record_id)}"
                 )
 
             for action in delete_normal:
                 await self._conn.query(
-                    f"DELETE {action.table_name}:`{action.record_id}`"
+                    f"DELETE {action.table_name}:{_format_record_id(action.record_id)}"
                 )
 
             await self._conn.query("COMMIT TRANSACTION")
@@ -1065,8 +1099,10 @@ class TableTarget(
         vector_type: Literal["f32", "f64", "i16", "i32", "i64"] = "f32",
     ) -> None:
         """Declare a vector index on this table."""
+        _validate_identifier(field, "vector index field")
         if name is None:
             name = f"idx_{self._table_name}__{field}"
+        _validate_identifier(name, "vector index name")
         if dimension is None:
             raise ValueError("dimension is required for declare_vector_index()")
         spec = _VectorIndexSpec(
@@ -1191,8 +1227,8 @@ class RelationTarget(
 
         # Wrap in _RelationRowValue
         row_value: _RowValue = _RelationRowValue(
-            from_record=f"{from_table_name}:`{from_id}`",
-            to_record=f"{to_table_name}:`{to_id}`",
+            from_record=f"{from_table_name}:{_format_record_id(from_id)}",
+            to_record=f"{to_table_name}:{_format_record_id(to_id)}",
             fields=row_dict,
         )
 
@@ -1219,6 +1255,7 @@ class SurrealDatabase(connection.KeyedConnection[_ConnParams]):
         managed_by: Literal["system", "user"] = "system",
     ) -> coco.TargetState[_RecordHandler]:
         """Create a TargetState for a SurrealDB table."""
+        _validate_identifier(table_name, "table name")
         key = _TableKey(db_key=self.key, table_name=table_name)
         spec = _TableSpec(
             table_schema=table_schema,
@@ -1273,8 +1310,13 @@ class SurrealDatabase(connection.KeyedConnection[_ConnParams]):
         managed_by: Literal["system", "user"] = "system",
     ) -> coco.TargetState[_RecordHandler]:
         """Create a TargetState for a SurrealDB relation table."""
+        _validate_identifier(table_name, "relation table name")
         from_names = self._normalize_table_names(from_table)
         to_names = self._normalize_table_names(to_table)
+        for n in from_names:
+            _validate_identifier(n, "from table name")
+        for n in to_names:
+            _validate_identifier(n, "to table name")
         key = _TableKey(db_key=self.key, table_name=table_name)
         spec = _TableSpec(
             table_schema=table_schema,
