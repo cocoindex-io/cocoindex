@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Simple example for cocoindex: build embedding index and export to Pinecone."
 requires-python = ">=3.11"
 dependencies = [
-	"cocoindex[embeddings,pinecone]>=0.3.26,<1",
+	"cocoindex[embeddings,pinecone]>=0.3.34,<1",
 	"python-dotenv>=1.0.1",
 	"pinecone>=3.0.0"
 ]
