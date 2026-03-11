@@ -5,7 +5,6 @@
 //! - Recursive syntax-aware chunking
 
 mod by_separators;
-mod output_positions;
 mod recursive;
 
 pub use by_separators::{KeepSeparator, SeparatorSplitConfig, SeparatorSplitter};
