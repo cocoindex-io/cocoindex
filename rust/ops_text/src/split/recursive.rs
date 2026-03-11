@@ -5,8 +5,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, LazyLock};
 use unicase::UniCase;
 
-use super::output_positions::{Position, set_output_positions};
 use super::{Chunk, TextRange};
+use crate::output_positions::{Position, set_output_positions};
 use crate::prog_langs::{self, TreeSitterLanguageInfo};
 
 const SYNTAX_LEVEL_GAP_COST: usize = 512;
