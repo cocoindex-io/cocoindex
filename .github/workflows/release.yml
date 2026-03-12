@@ -129,16 +129,7 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
-          args: --release --out dist
-          sccache: 'true'
-          manylinux: auto
-          container: ${{ matrix.platform.container }}
-      - name: Build wheels (free-threaded)
-        if: matrix.platform.free-threaded
-        uses: PyO3/maturin-action@v1
-        with:
-          target: ${{ matrix.platform.target }}
-          args: --release --out dist --no-default-features
+          args: --release --out dist ${{ matrix.platform.maturin-args }}
           sccache: 'true'
           manylinux: auto
           container: ${{ matrix.platform.container }}
