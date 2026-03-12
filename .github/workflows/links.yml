@@ -41,9 +41,9 @@ jobs:
 
       - name: Run link checker
         id: lychee
-        uses: lycheeverse/lychee-action@a8c4c7cb88f0c7386610c35eb25108e448569cb0 # v2
+        uses: lycheeverse/lychee-action@8646ba30535128ac92d33dfc9133794bfdd9b411 # v2
         with:
-          args: --accept 200,203,301..=304,403,429 --cache --max-cache-age 1d --verbose --no-progress 'docs/**/*.md' 'docs/**/*.mdx'
+          args: --accept 200,203,301..=304,403,429 --cache --max-cache-age 1d --verbose --no-progress --root-dir './docs' 'docs/**/*.md' 'docs/**/*.mdx'
           fail: true
           format: markdown
           jobSummary: true
