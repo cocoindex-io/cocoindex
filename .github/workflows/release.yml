@@ -53,32 +53,32 @@ jobs:
             python-version: "3.13"
             free-threaded: false
             container: "ghcr.io/rust-cross/manylinux_2_28-cross:x86_64"
-            maturin-args: ""
+            maturin-args: "--interpreter 3.13"
           - os: linux
             runner: ubuntu-24.04-arm
             target: aarch64
             python-version: "3.13"
             free-threaded: false
             container: "ghcr.io/rust-cross/manylinux_2_28-cross:aarch64"
-            maturin-args: ""
+            maturin-args: "--interpreter 3.13"
           - os: macos
             runner: macos-latest
             target: aarch64
             python-version: "3.13"
             free-threaded: false
-            maturin-args: ""
+            maturin-args: "--interpreter 3.13"
           - os: macos
             runner: macos-15-intel
             target: x86_64
             python-version: "3.13"
             free-threaded: false
-            maturin-args: ""
+            maturin-args: "--interpreter 3.13"
           - os: windows
             runner: windows-latest
             target: x64
             python-version: "3.13"
             free-threaded: false
-            maturin-args: ""
+            maturin-args: "--interpreter 3.13"
           # Free-threaded builds (Python 3.14t) - use container with explicit interpreter
           - os: linux
             runner: ubuntu-latest
