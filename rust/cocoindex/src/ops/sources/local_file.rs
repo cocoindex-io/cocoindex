@@ -38,6 +38,24 @@ async fn ensure_metadata<'a>(
     Ok(metadata.as_ref().unwrap())
 }
 
+async fn try_ensure_metadata<'a>(
+    path: &Path,
+    metadata: &'a mut Option<Metadata>,
+) -> Option<&'a Metadata> {
+    if metadata.is_none() {
+        // Follow symlinks.
+        match tokio::fs::metadata(path).await {
+            Ok(m) => {
+                *metadata = Some(m);
+            }
+            Err(e) => {
+                warn!("Failed to get metadata for {}: {e}", path.display());
+            }
+        }
+    }
+    metadata.as_ref()
+}
+
 #[async_trait]
 impl SourceExecutor for Executor {
     async fn list(
@@ -65,21 +83,21 @@ impl SourceExecutor for Executor {
                     let mut metadata: Option<Metadata> = None;
 
                     // For symlinks, if the target doesn't exist, log and skip.
-                    let file_type = entry.file_type().await?;
-                    if file_type.is_symlink() {
-                        if let Err(e) = ensure_metadata(&path, &mut metadata).await {
-                            if e.kind() == std::io::ErrorKind::NotFound {
-                                warn!("Skipped broken symlink: {}", path.display());
-                                continue;
-                            }
-                            Err(e)?;
+                    let file_type = match entry.file_type().await {
+                        Ok(ft) => ft,
+                        Err(e) => {
+                            warn!("Failed to get file type for {}: {e}", path.display());
+                            continue;
                         }
-                    }
+                    };
                     let is_dir = if file_type.is_dir() {
                         true
                     } else if file_type.is_symlink() {
                         // Follow symlinks to classify the target.
-                        ensure_metadata(&path, &mut metadata).await?.is_dir()
+                        let Some(m) = try_ensure_metadata(&path, &mut metadata).await else {
+                            continue;
+                        };
+                        m.is_dir()
                     } else {
                         false
                     };
@@ -90,13 +108,17 @@ impl SourceExecutor for Executor {
                     } else if self.pattern_matcher.is_file_included(relative_path) {
                         // Check file size limit
                         if let Some(max_size) = self.max_file_size
-                            && let Ok(metadata) = ensure_metadata(&path, &mut metadata).await
-                            && metadata.len() > max_size as u64
+                            && try_ensure_metadata(&path, &mut metadata)
+                                .await
+                                .map_or(true, |m| m.len() > max_size as u64)
                         {
                             continue;
                         }
                         let ordinal: Option<Ordinal> = if options.include_ordinal {
-                            let metadata = ensure_metadata(&path, &mut metadata).await?;
+                            let Some(metadata) = try_ensure_metadata(&path, &mut metadata).await
+                            else {
+                                continue;
+                            };
                             Some(metadata.modified()?.try_into()?)
                         } else {
                             None
