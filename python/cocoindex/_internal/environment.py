@@ -31,6 +31,7 @@ from .context_keys import ContextKey, ContextProvider
 
 if TYPE_CHECKING:
     from cocoindex._internal.app import App
+    from .component_ctx import ExceptionHandler
 
 T = TypeVar("T")
 
@@ -88,10 +89,12 @@ class EnvironmentBuilder:
 
     _settings: setting.Settings
     _context_provider: ContextProvider
+    _exception_handler: "ExceptionHandler | None"
 
     def __init__(self, settings: setting.Settings | None = None):
         self._settings = settings or setting.Settings.from_env()
         self._context_provider = ContextProvider()
+        self._exception_handler = None
 
     @property
     def settings(self) -> setting.Settings:
@@ -107,6 +110,9 @@ class EnvironmentBuilder:
         self, key: ContextKey[Any], cm: AsyncContextManager[Any]
     ) -> Any:
         return await self._context_provider.provide_async_with(key, cm)
+
+    def set_exception_handler(self, handler: "ExceptionHandler") -> None:
+        self._exception_handler = handler
 
 
 LifespanFn = (
@@ -189,6 +195,7 @@ class Environment:
         "_context_provider",
         "_loop_runner",
         "_async_context",
+        "_exception_handler",
         "_info",
         "__weakref__",
     )
@@ -199,6 +206,7 @@ class Environment:
     _context_provider: ContextProvider
     _loop_runner: _LoopRunner
     _async_context: core.AsyncContext
+    _exception_handler: "ExceptionHandler | None"
     _info: EnvironmentInfo
 
     def __init__(
@@ -208,6 +216,7 @@ class Environment:
         name: str | None = None,
         context_provider: ContextProvider | None = None,
         event_loop: asyncio.AbstractEventLoop | None = None,
+        exception_handler: "ExceptionHandler | None" = None,
         info: EnvironmentInfo | None = None,
     ):
         if not settings.db_path:
@@ -232,6 +241,7 @@ class Environment:
             dump_engine_object(settings), self._async_context
         )
         self._context_provider.set_core_env(self._core_env)
+        self._exception_handler = exception_handler
         self._info = info or EnvironmentInfo(self)
 
     @property
@@ -254,6 +264,10 @@ class Environment:
     def async_context(self) -> core.AsyncContext:
         """Get the AsyncContext for this environment's event loop."""
         return self._async_context
+
+    @property
+    def exception_handler(self) -> "ExceptionHandler | None":
+        return self._exception_handler
 
     def get_context(self, key: ContextKey[T]) -> T:
         """Get a context value provided during this environment's lifespan.
@@ -392,6 +406,7 @@ class LazyEnvironment:
                     name=self._name,
                     context_provider=context_provider,
                     event_loop=loop,
+                    exception_handler=env_builder._exception_handler,
                     info=self._info,
                 )
                 self._env = env

@@ -204,7 +204,7 @@ pub fn mount(
     py.detach(|| {
         get_runtime().block_on(async {
             let handle = component
-                .run_in_background(processor, child_ctx)
+                .run_in_background(processor, child_ctx, None)
                 .await
                 .into_py_result()?;
             Ok(PyComponentMountHandle(Some(handle)))
@@ -260,7 +260,65 @@ pub fn mount_async<'py>(
         .into_py_result()?;
     future_into_py(py, async move {
         let handle = component
-            .run_in_background(processor, child_ctx)
+            .run_in_background(processor, child_ctx, None)
+            .await
+            .into_py_result()?;
+        Ok(PyComponentMountHandle(Some(handle)))
+    })
+}
+
+#[pyfunction]
+pub fn mount_async_with_handler<'py>(
+    py: Python<'py>,
+    processor: PyComponentProcessor,
+    stable_path: PyStablePath,
+    comp_ctx: PyComponentProcessorContext,
+    fn_ctx: &PyFnCallContext,
+    handler_callback: Py<PyAny>,
+) -> PyResult<Bound<'py, PyAny>> {
+    let component = comp_ctx
+        .0
+        .component()
+        .mount_child(&fn_ctx.0, stable_path.0)
+        .into_py_result()?;
+    let child_ctx = component
+        .new_processor_context_for_build(
+            Some(&comp_ctx.0),
+            comp_ctx.0.processing_stats().clone(),
+            comp_ctx.0.full_reprocess(),
+        )
+        .into_py_result()?;
+
+    // Capture host runtime context so we can run an async Python callback.
+    let host_runtime_ctx = comp_ctx.0.app_ctx().env().host_runtime_ctx().clone();
+    let cb = PyCallback::Async(Arc::new(handler_callback));
+
+    let on_error: Arc<
+        dyn Fn(Error) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>>
+            + Send
+            + Sync
+            + 'static,
+    > = Arc::new(move |err: Error| {
+        let cb = cb.clone();
+        let host_runtime_ctx = host_runtime_ctx.clone();
+        Box::pin(async move {
+            let err_str = format!("{err:?}");
+            let fut = match cb.call(&host_runtime_ctx, (err_str,)) {
+                Ok(fut) => fut,
+                Err(e) => {
+                    error!("exception handler dispatch failed:\n{e:?}");
+                    return;
+                }
+            };
+            if let Err(e) = fut.await {
+                error!("exception handler failed:\n{e:?}");
+            };
+        })
+    });
+
+    future_into_py(py, async move {
+        let handle = component
+            .run_in_background(processor, child_ctx, Some(on_error))
             .await
             .into_py_result()?;
         Ok(PyComponentMountHandle(Some(handle)))
