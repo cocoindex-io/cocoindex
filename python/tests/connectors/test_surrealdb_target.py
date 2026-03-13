@@ -43,6 +43,10 @@ requires_surrealdb = pytest.mark.skipif(
 # The module itself always imports (guarded import is inside _target.py).
 if HAS_SURREALDB:
     from cocoindex.connectors import surrealdb  # type: ignore[attr-defined]
+    from cocoindex.connectors.surrealdb._target import (  # type: ignore[import-untyped]
+        _format_record_id,
+        _validate_identifier,
+    )
 
 
 # =============================================================================
@@ -57,6 +61,76 @@ _SURREALDB_CREDENTIALS: dict[str, str] | None = (
     if _SURREALDB_USER
     else None
 )
+
+
+# =============================================================================
+# Unit tests — identifier validation & record ID formatting (no DB needed)
+# =============================================================================
+
+
+@requires_surrealdb
+class TestValidateIdentifier:
+    """Tests for _validate_identifier()."""
+
+    @pytest.mark.parametrize("name", ["users", "_private", "T1", "a_b_c", "X"])
+    def test_valid_identifiers(self, name: str) -> None:
+        _validate_identifier(name, "test")  # should not raise
+
+    @pytest.mark.parametrize(
+        "name",
+        ["my-table", "123abc", "", "has space", "ba`ck", "semi;colon", "a.b"],
+    )
+    def test_invalid_identifiers(self, name: str) -> None:
+        with pytest.raises(ValueError, match="Invalid SurrealDB"):
+            _validate_identifier(name, "test")
+
+
+@requires_surrealdb
+class TestFormatRecordId:
+    """Tests for _format_record_id()."""
+
+    def test_string_simple(self) -> None:
+        assert _format_record_id("alice") == "`alice`"
+
+    def test_string_with_backtick(self) -> None:
+        assert _format_record_id("has`tick") == r"`has\`tick`"
+
+    def test_string_with_backslash(self) -> None:
+        assert _format_record_id(r"back\slash") == r"`back\\slash`"
+
+    def test_int(self) -> None:
+        assert _format_record_id(42) == "42"
+
+    def test_float(self) -> None:
+        assert _format_record_id(3.14) == "3.14"
+
+    def test_string_numeric_stays_quoted(self) -> None:
+        # string "123" must remain distinct from int 123
+        assert _format_record_id("123") == "`123`"
+
+    def test_string_empty(self) -> None:
+        assert _format_record_id("") == "``"
+
+
+@requires_surrealdb
+class TestValidateIdentifierAtApiEntryPoints:
+    """Ensure validation fires at public API entry points."""
+
+    def test_table_schema_invalid_column(self) -> None:
+        with pytest.raises(ValueError, match="column name"):
+            surrealdb.TableSchema(
+                columns={"bad-name": surrealdb.ColumnDef(type="string")}
+            )
+
+    def test_table_target_invalid_name(self) -> None:
+        with _register_db("test_val", "ns", "db") as db:
+            with pytest.raises(ValueError, match="table name"):
+                db.table_target("bad-table")
+
+    def test_relation_target_invalid_name(self) -> None:
+        with _register_db("test_val2", "ns", "db") as db:
+            with pytest.raises(ValueError, match="relation table name"):
+                db.relation_target("bad-rel", [], [])
 
 
 # =============================================================================

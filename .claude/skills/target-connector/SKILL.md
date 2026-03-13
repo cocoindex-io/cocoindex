@@ -178,6 +178,10 @@ Create module-level shared sinks when all handler instances use the same action 
 _shared_sink = coco.TargetActionSink.from_fn(_apply_actions)
 ```
 
+### Input Safety
+
+When building queries from user-provided names (table, column, index) or values (record IDs, keys), you must guard against injection and ensure correctness. See [input_safety.md](input_safety.md) for patterns on identifier validation, parameterized queries, and value escaping.
+
 ## Completion Checklist
 
 After implementing the connector code, complete these additional steps:
