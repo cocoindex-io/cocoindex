@@ -23,17 +23,17 @@ if _typing.TYPE_CHECKING:
 
 
 class _EmbedderInstance:
-    """Inner batched embedder for a specific (normalize_embeddings, query_prompt_name) combo."""
+    """Inner batched embedder for a specific (normalize_embeddings, prompt_name) combo."""
 
     def __init__(
         self,
         embedder: SentenceTransformerEmbedder,
         normalize_embeddings: bool,
-        query_prompt_name: str | None,
+        prompt_name: str | None,
     ) -> None:
         self._embedder = embedder
         self._normalize_embeddings = normalize_embeddings
-        self._query_prompt_name = query_prompt_name
+        self._prompt_name = prompt_name
 
     @coco.fn.as_async(batching=True, runner=coco.GPU, max_batch_size=64)
     def embed(self, texts: list[str]) -> list[_NDArray[_np.float32]]:
@@ -41,7 +41,7 @@ class _EmbedderInstance:
         model = self._embedder._get_model()
         embeddings: _NDArray[_np.float32] = model.encode(
             texts,
-            prompt_name=self._query_prompt_name,
+            prompt_name=self._prompt_name,
             convert_to_numpy=True,
             normalize_embeddings=self._normalize_embeddings,
             show_progress_bar=False,
@@ -125,8 +125,9 @@ class SentenceTransformerEmbedder(_schema.VectorSchemaProvider):
     async def embed(
         self,
         text: str,
+        prompt_name: str | None = None,
+        *,
         normalize_embeddings: bool = True,
-        query_prompt_name: str | None = None,
     ) -> _NDArray[_np.float32]:
         """Embed text to an embedding vector.
 
@@ -134,16 +135,16 @@ class SentenceTransformerEmbedder(_schema.VectorSchemaProvider):
             text: Text string to embed.
             normalize_embeddings: Whether to normalize the embedding to unit length.
                 Defaults to True for compatibility with cosine similarity.
-            query_prompt_name: Prompt name for instruction-following models that
+            prompt_name: Prompt name for instruction-following models that
                 use different prompts for queries vs. documents.
 
         Returns:
             Numpy array of shape (dim,) containing the embedding vector.
         """
-        key = (normalize_embeddings, query_prompt_name)
+        key = (normalize_embeddings, prompt_name)
         if key not in self._instances:
             self._instances[key] = _EmbedderInstance(
-                self, normalize_embeddings, query_prompt_name
+                self, normalize_embeddings, prompt_name
             )
         return await self._instances[key].embed(text)  # type: ignore[no-any-return]
 
