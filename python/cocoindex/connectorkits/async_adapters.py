@@ -5,6 +5,7 @@ from __future__ import annotations
 __all__ = ["async_to_sync_iter", "sync_to_async_iter"]
 
 import asyncio as _asyncio
+import contextvars as _contextvars
 import queue as _queue
 import threading as _threading
 from typing import (
@@ -69,8 +70,9 @@ async def sync_to_async_iter(
         finally:
             q.put((True, StopIteration()))
 
+    _ctx = _contextvars.copy_context()
     loop = _asyncio.get_running_loop()
-    thread = _threading.Thread(target=producer, daemon=True)
+    thread = _threading.Thread(target=lambda: _ctx.run(producer), daemon=True)
     thread.start()
 
     try:
@@ -153,7 +155,8 @@ def async_to_sync_iter(
 
         _asyncio.run(run_async())
 
-    thread = _threading.Thread(target=producer, daemon=True)
+    _ctx = _contextvars.copy_context()
+    thread = _threading.Thread(target=lambda: _ctx.run(producer), daemon=True)
     thread.start()
 
     try:
