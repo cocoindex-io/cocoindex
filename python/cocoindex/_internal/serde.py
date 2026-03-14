@@ -61,6 +61,11 @@ def _register_builtin_types() -> None:
         import numpy as np
 
         _UNPICKLE_SAFE_GLOBALS[("numpy", "dtype")] = np.dtype
+        _UNPICKLE_SAFE_GLOBALS[("numpy", "ndarray")] = np.ndarray
+        for _dtype_sub in _all_subclasses(np.dtype):
+            _UNPICKLE_SAFE_GLOBALS[(_dtype_sub.__module__, _dtype_sub.__qualname__)] = (
+                _dtype_sub
+            )
         _core_numeric = getattr(np, "_core", None)
         if _core_numeric is not None:
             _frombuffer = getattr(_core_numeric.numeric, "_frombuffer", None)
@@ -107,11 +112,53 @@ class _RestrictedUnpickler(pickle.Unpickler):
 
 
 # ---------------------------------------------------------------------------
+# Strict serialization (opt-in, for use in tests)
+# ---------------------------------------------------------------------------
+
+_strict_serialize: bool = False
+
+
+def enable_strict_serialize() -> None:
+    """Enable strict serialization type checking (call once in test setup)."""
+    global _strict_serialize
+    _strict_serialize = True
+
+
+class _StrictPickler(pickle.Pickler):
+    """Pickler that validates every object's type is in the unpickle allow-list."""
+
+    def reducer_override(self, obj: object) -> object:
+        # When obj is a class being pickled as a global reference, check it directly.
+        if isinstance(obj, type):
+            if obj.__module__ != "builtins":
+                key = (obj.__module__, obj.__qualname__)
+                if key not in _UNPICKLE_SAFE_GLOBALS:
+                    raise pickle.PicklingError(
+                        f"Type not registered for safe unpickling: {obj.__module__}.{obj.__qualname__}"
+                    )
+            return NotImplemented
+        # For instances, check their type.
+        t = type(obj)
+        if t.__module__ == "builtins":
+            return NotImplemented
+        key = (t.__module__, t.__qualname__)
+        if key not in _UNPICKLE_SAFE_GLOBALS:
+            raise pickle.PicklingError(
+                f"Type not registered for safe unpickling: {t.__module__}.{t.__qualname__}"
+            )
+        return NotImplemented
+
+
+# ---------------------------------------------------------------------------
 # Serialize / Deserialize
 # ---------------------------------------------------------------------------
 
 
 def serialize(value: Any) -> bytes:
+    if _strict_serialize:
+        buf = io.BytesIO()
+        _StrictPickler(buf, 5).dump(value)
+        return buf.getvalue()
     return pickle.dumps(value, 5)
 
 

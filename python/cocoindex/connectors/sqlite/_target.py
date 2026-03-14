@@ -117,6 +117,7 @@ class ManagedConnection:
         self._conn.close()
 
 
+@unpickle_safe
 @dataclass
 class Vec0TableDef:
     """

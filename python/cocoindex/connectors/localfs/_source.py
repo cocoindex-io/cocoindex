@@ -17,6 +17,8 @@ from cocoindex.resources.file import (
     MatchAllFilePathMatcher,
 )
 
+from cocoindex._internal.context_keys import ContextKey
+
 from ._common import FilePath, to_file_path
 
 
@@ -76,7 +78,7 @@ class DirWalker:
 
     def __init__(
         self,
-        path: FilePath | Path,
+        path: FilePath | Path | ContextKey[Path],
         *,
         recursive: bool = False,
         path_matcher: FilePathMatcher | None = None,
@@ -157,7 +159,7 @@ class DirWalker:
 
 
 def walk_dir(
-    path: FilePath | Path,
+    path: FilePath | Path | ContextKey[Path],
     *,
     recursive: bool = False,
     path_matcher: FilePathMatcher | None = None,

@@ -13,7 +13,7 @@ from cocoindex.connectorkits.fingerprint import fingerprint_bytes
 from cocoindex._internal.datatype import TypeChecker
 
 from cocoindex._internal.serde import unpickle_safe
-from cocoindex._internal.context_keys import ContextProvider
+from cocoindex._internal.context_keys import ContextKey, ContextProvider
 
 from ._common import FilePath, to_file_path
 
@@ -355,7 +355,7 @@ class DirTarget(Generic[coco.MaybePendingS], coco.ResolvesTo["DirTarget"]):
 
 @coco.fn
 def declare_dir_target(
-    path: FilePath | pathlib.Path,
+    path: FilePath | pathlib.Path | ContextKey[pathlib.Path],
     *,
     create_parent_dirs: bool = True,
 ) -> DirTarget[coco.PendingS]:
@@ -363,8 +363,9 @@ def declare_dir_target(
     Declare a directory target for writing files.
 
     Args:
-        path: The filesystem path for the directory. Can be a FilePath (with stable
-            base directory key) or a pathlib.Path (uses CWD as base directory).
+        path: The filesystem path for the directory. Can be a FilePath, a
+            pathlib.Path (uses CWD as base directory), or a ContextKey[Path]
+            (equivalent to FilePath(base_dir=path)).
         create_parent_dirs: If True, create parent directories if they don't exist.
             Defaults to True.
 
@@ -389,7 +390,7 @@ def declare_dir_target(
 
 
 def dir_target(
-    path: FilePath | pathlib.Path,
+    path: FilePath | pathlib.Path | ContextKey[pathlib.Path],
     *,
     create_parent_dirs: bool = True,
 ) -> coco.TargetState[_EntryHandler]:
@@ -400,8 +401,9 @@ def dir_target(
     or with ``mount_dir_target()`` for a convenience wrapper.
 
     Args:
-        path: The filesystem path for the directory. Can be a FilePath (with stable
-            base directory key) or a pathlib.Path (uses CWD as base directory).
+        path: The filesystem path for the directory. Can be a FilePath, a
+            pathlib.Path (uses CWD as base directory), or a ContextKey[Path]
+            (equivalent to FilePath(base_dir=path)).
         create_parent_dirs: If True, create parent directories if they don't exist.
             Defaults to True.
 
@@ -421,7 +423,7 @@ def dir_target(
 
 
 async def mount_dir_target(
-    path: FilePath | pathlib.Path,
+    path: FilePath | pathlib.Path | ContextKey[pathlib.Path],
     *,
     create_parent_dirs: bool = True,
 ) -> DirTarget[coco.ResolvedS]:
@@ -431,8 +433,9 @@ async def mount_dir_target(
     Sugar over ``dir_target()`` + ``coco.mount_target()`` + wrapping.
 
     Args:
-        path: The filesystem path for the directory. Can be a FilePath (with stable
-            base directory key) or a pathlib.Path (uses CWD as base directory).
+        path: The filesystem path for the directory. Can be a FilePath, a
+            pathlib.Path (uses CWD as base directory), or a ContextKey[Path]
+            (equivalent to FilePath(base_dir=path)).
         create_parent_dirs: If True, create parent directories if they don't exist.
             Defaults to True.
 
@@ -447,7 +450,7 @@ async def mount_dir_target(
 
 @coco.fn
 def declare_file(
-    path: FilePath | pathlib.Path,
+    path: FilePath | pathlib.Path | ContextKey[pathlib.Path],
     content: bytes | str,
     *,
     create_parent_dirs: bool = False,
@@ -459,8 +462,9 @@ def declare_file(
     first creating a directory target.
 
     Args:
-        path: The filesystem path for the file. Can be a FilePath (with stable
-            base directory key) or a pathlib.Path (uses CWD as base directory).
+        path: The filesystem path for the file. Can be a FilePath, a
+            pathlib.Path (uses CWD as base directory), or a ContextKey[Path]
+            (equivalent to FilePath(base_dir=path)).
         content: The content of the file (bytes or str).
         create_parent_dirs: If True, create parent directories if they don't exist.
             Defaults to False.
