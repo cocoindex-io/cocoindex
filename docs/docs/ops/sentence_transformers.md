@@ -83,9 +83,10 @@ table_schema = await postgres.TableSchema.from_class(
     CodeEmbedding,
     primary_key=["id"],
 )
-target_table = await target_db.mount_table_target(
-    table_name="code_embeddings",
-    table_schema=table_schema,
+target_table = await postgres.mount_table_target(
+    PG_DB,
+    "code_embeddings",
+    table_schema,
     pg_schema_name="my_schema",
 )
 ```
@@ -102,6 +103,7 @@ import pathlib
 from dataclasses import dataclass
 from typing import Annotated, AsyncIterator
 
+import asyncpg
 from numpy.typing import NDArray
 
 import cocoindex as coco
@@ -112,7 +114,7 @@ from cocoindex.resources.chunk import Chunk
 from cocoindex.resources.file import FileLike, PatternFilePathMatcher
 from cocoindex.resources.id import IdGenerator
 
-PG_DB = coco.ContextKey[postgres.PgDatabase]("pg_db")
+PG_DB = coco.ContextKey[asyncpg.Pool]("pg_db", tracked=False)
 
 _embedder = SentenceTransformerEmbedder("sentence-transformers/all-MiniLM-L6-v2")
 _splitter = RecursiveSplitter()
@@ -160,10 +162,10 @@ async def process_file(
 
 @coco.fn
 async def app_main(sourcedir: pathlib.Path) -> None:
-    target_db = coco.use_context(PG_DB)
-    target_table = await target_db.mount_table_target(
-        table_name="doc_embeddings",
-        table_schema=await postgres.TableSchema.from_class(
+    target_table = await postgres.mount_table_target(
+        PG_DB,
+        "doc_embeddings",
+        await postgres.TableSchema.from_class(
             DocEmbedding,
             primary_key=["id"],
         ),

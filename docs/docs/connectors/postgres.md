@@ -166,29 +166,21 @@ The `postgres` connector provides target state APIs for writing rows to tables. 
 
 ### Declaring target states
 
-#### Database registration
+#### Setting up a connection
 
-Before declaring target states, register the connection pool with a stable key that identifies the logical database. This key allows CocoIndex to recognize the same database even when connection details change (e.g., username, password, or host address).
-
-```python
-def register_db(key: str, pool: asyncpg.Pool) -> PgDatabase
-```
-
-**Parameters:**
-
-- `key` — A stable identifier for this database (e.g., `"main_db"`). Must be unique.
-- `pool` — An asyncpg connection pool.
-
-**Returns:** A `PgDatabase` handle for declaring target states.
-
-The `PgDatabase` can be used as a context manager to automatically unregister on exit:
+Create a `ContextKey[asyncpg.Pool]` (with `tracked=False`) to identify your connection pool, then provide the pool directly in your lifespan:
 
 ```python
-async with await postgres.create_pool(DATABASE_URL) as pool:
-    with postgres.register_db("my_db", pool) as db:
-        # Use db to declare target states
-        ...
-    # db is automatically unregistered here
+import asyncpg
+import cocoindex as coco
+
+PG_DB = coco.ContextKey[asyncpg.Pool]("my_db", tracked=False)
+
+@coco.lifespan
+async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]:
+    async with await postgres.create_pool(DATABASE_URL) as pool:
+        builder.provide(PG_DB, pool)
+        yield
 ```
 
 #### Tables (parent state)
@@ -196,8 +188,8 @@ async with await postgres.create_pool(DATABASE_URL) as pool:
 Declares a table as a target state. Returns a `TableTarget` for declaring rows.
 
 ```python
-def PgDatabase.declare_table_target(
-    self,
+def declare_table_target(
+    db: ContextKey[asyncpg.Pool],
     table_name: str,
     table_schema: TableSchema[RowT],
     *,
@@ -208,12 +200,13 @@ def PgDatabase.declare_table_target(
 
 **Parameters:**
 
+- `db` — A `ContextKey[asyncpg.Pool]` identifying the connection pool to use.
 - `table_name` — Name of the table.
 - `table_schema` — Schema definition including columns and primary key (see [Table Schema](#table-schema-from-python-class)).
 - `pg_schema_name` — Optional PostgreSQL schema name (defaults to `"public"`).
 - `managed_by` — Whether CocoIndex manages the table lifecycle (`"system"`) or assumes it exists (`"user"`).
 
-**Returns:** A pending `TableTarget`. Use the convenience wrapper `await db.mount_table_target(table_name=..., table_schema=...)` to resolve.
+**Returns:** A pending `TableTarget`. Use the convenience wrapper `await postgres.mount_table_target(PG_DB, table_name, table_schema)` to resolve.
 
 #### Rows (child states)
 
@@ -424,12 +417,13 @@ schema = postgres.TableSchema(
 ### Example
 
 ```python
+import asyncpg
 import cocoindex as coco
 from cocoindex.connectors import postgres
 
 DATABASE_URL = "postgresql://localhost/mydb"
 
-PG_DB = coco.ContextKey[postgres.PgDatabase]("pg_db")
+PG_DB = coco.ContextKey[asyncpg.Pool]("main_db", tracked=False)
 
 @dataclass
 class OutputProduct:
@@ -441,17 +435,16 @@ class OutputProduct:
 @coco.lifespan
 async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]:
     async with await postgres.create_pool(DATABASE_URL) as pool:
-        builder.provide(PG_DB, postgres.register_db("main_db", pool))
+        builder.provide(PG_DB, pool)
         yield
 
 @coco.fn
 async def app_main() -> None:
-    db = coco.use_context(PG_DB)
-
     # Declare table target state
-    table = await db.mount_table_target(
-        table_name="products",
-        table_schema=await postgres.TableSchema.from_class(
+    table = await postgres.mount_table_target(
+        PG_DB,
+        "products",
+        await postgres.TableSchema.from_class(
             OutputProduct,
             primary_key=["category", "name"],
         ),
