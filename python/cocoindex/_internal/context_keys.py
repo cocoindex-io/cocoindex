@@ -29,6 +29,10 @@ class ContextKey(Generic[T_co]):
     def tracked(self) -> bool:
         return self._tracked
 
+    @property
+    def key(self) -> str:
+        return self._key
+
 
 class ContextProvider:
     __slots__ = ("_values", "_exit_stack", "_tracked_fingerprints", "_core_env")

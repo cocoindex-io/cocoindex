@@ -57,6 +57,7 @@ from cocoindex._internal.datatype import (
     is_record_type,
 )
 from cocoindex.resources import schema as res_schema
+from cocoindex._internal.serde import unpickle_safe
 
 # ---------------------------------------------------------------------------
 # Identifier validation & record ID formatting
@@ -730,6 +731,7 @@ class _TableSpec:
     managed_by: Literal["system", "user"] = "system"
 
 
+@unpickle_safe
 @dataclass(frozen=True, slots=True)
 class _TableMainRecord:
     """Main tracking record for table-level properties requiring DROP+CREATE if changed."""
@@ -741,6 +743,7 @@ class _TableMainRecord:
     to_tables: tuple[str, ...] | None
 
 
+@unpickle_safe
 @dataclass(frozen=True, slots=True)
 class _FieldTrackingRecord:
     """Per-field tracking record for incremental DEFINE FIELD / REMOVE FIELD."""

@@ -12,6 +12,7 @@ import cocoindex as coco
 from cocoindex.connectorkits.fingerprint import fingerprint_bytes
 from cocoindex._internal.datatype import TypeChecker
 
+from cocoindex._internal.serde import unpickle_safe
 from ._common import FilePath, CWD_BASE_DIR, path_registry, to_file_path
 
 # =============================================================================
@@ -171,6 +172,7 @@ def _reconcile_entry(
 # =============================================================================
 
 
+@unpickle_safe
 @dataclass(frozen=True, slots=True)
 class _EntryTrackingRecord:
     """Tracking record for an entry. If fingerprint is None, it's a directory."""

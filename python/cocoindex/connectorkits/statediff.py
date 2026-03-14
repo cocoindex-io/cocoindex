@@ -41,6 +41,7 @@ from typing import (
 from typing_extensions import TypeVar as _TypeVar
 
 import cocoindex as _coco
+from cocoindex._internal.serde import unpickle_safe as _unpickle_safe
 
 _TrackingRecordT = _TypeVar("_TrackingRecordT")
 _MainTrackingRecordT = _TypeVar("_MainTrackingRecordT")
@@ -50,6 +51,7 @@ _SubTrackingRecordT = _TypeVar("_SubTrackingRecordT")
 DiffAction = _Literal["insert", "upsert", "replace", "delete"]
 
 
+@_unpickle_safe
 class CompositeTrackingRecord(
     _Generic[_MainTrackingRecordT, _SubKeyT, _SubTrackingRecordT], _NamedTuple
 ):
@@ -93,6 +95,7 @@ class TrackingRecordTransition(_Generic[_TrackingRecordT], _NamedTuple):
 ManagedBy = _Literal["system", "user"]
 
 
+@_unpickle_safe
 class MutualTrackingRecord(_Generic[_TrackingRecordT], _NamedTuple):
     """A tracking record tagged with ownership/management information.
 

@@ -50,6 +50,7 @@ from cocoindex._internal.datatype import (
     is_record_type,
 )
 from cocoindex.resources import schema as res_schema
+from cocoindex._internal.serde import unpickle_safe
 
 # Type aliases
 _RowKey = tuple[Any, ...]  # Primary key values as tuple
@@ -489,6 +490,7 @@ class _TableSpec:
     managed_by: Literal["system", "user"] = "system"
 
 
+@unpickle_safe
 class _ColumnState(NamedTuple):
     """Per-column state used for table-level state tracking."""
 

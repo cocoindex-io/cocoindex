@@ -59,6 +59,7 @@ from cocoindex._internal.datatype import (
     is_record_type,
 )
 from cocoindex.resources import schema as res_schema
+from cocoindex._internal.serde import unpickle_safe
 
 if TYPE_CHECKING:
     import aiohttp  # type: ignore[import-not-found]
@@ -943,17 +944,20 @@ class _TableSpec:
     inverted_indexes: list[InvertedIndexDef] | None = None
 
 
+@unpickle_safe
 class _PkColumnInfo(NamedTuple):
     name: str
     type: str
 
 
+@unpickle_safe
 class _TablePrimaryTrackingRecord(NamedTuple):
     primary_key_columns: tuple[_PkColumnInfo, ...]
     vector_indexes: tuple[str, ...] | None = None
     inverted_indexes: tuple[str, ...] | None = None
 
 
+@unpickle_safe
 class _NonPkColumnTrackingRecord(NamedTuple):
     type: str
     nullable: bool

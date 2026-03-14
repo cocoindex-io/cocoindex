@@ -38,6 +38,7 @@ import cocoindex as coco
 from cocoindex.connectorkits import connection, statediff
 from cocoindex.connectorkits.fingerprint import fingerprint_object
 from cocoindex._internal.rwlock import RWLock
+from cocoindex._internal.serde import unpickle_safe
 from cocoindex._internal.datatype import (
     AnyType,
     MappingType,
@@ -586,6 +587,7 @@ class _TableSpec:
     virtual_table_def: Vec0TableDef | None = None
 
 
+@unpickle_safe
 class _PkColumnInfo(NamedTuple):
     """Information for a single primary key column."""
 
@@ -593,6 +595,7 @@ class _PkColumnInfo(NamedTuple):
     type: str
 
 
+@unpickle_safe
 class _TablePrimaryTrackingRecord(NamedTuple):
     """Primary tracking information for a table (PK columns + virtual table config)."""
 
@@ -600,6 +603,7 @@ class _TablePrimaryTrackingRecord(NamedTuple):
     virtual_table_def: Vec0TableDef | None = None
 
 
+@unpickle_safe
 class _NonPkColumnTrackingRecord(NamedTuple):
     """Per-non-PK column tracking record used for incremental ALTER TABLE operations."""
 
