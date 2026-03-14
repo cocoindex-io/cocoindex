@@ -35,6 +35,7 @@ import cocoindex as coco
 from cocoindex.connectorkits import connection, statediff
 from cocoindex.connectorkits.fingerprint import fingerprint_object
 from cocoindex._internal.datatype import TypeChecker
+from cocoindex._internal.serde import unpickle_safe
 from cocoindex.resources import schema as res_schema
 
 # Public alias for Qdrant point model
@@ -272,6 +273,7 @@ class _CollectionSpec:
     managed_by: Literal["system", "user"] = "system"
 
 
+@unpickle_safe
 class _CollectionTrackingRecordCore(NamedTuple):
     vectors: _ResolvedQdrantVectorDef | Mapping[str, _ResolvedQdrantVectorDef]
 

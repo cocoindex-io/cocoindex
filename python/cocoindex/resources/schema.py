@@ -11,6 +11,7 @@ import typing as _typing
 import dataclasses as _dataclasses
 import cocoindex as coco
 from cocoindex._internal.context_keys import ContextKey
+from cocoindex._internal.serde import unpickle_safe as _unpickle_safe
 
 if _typing.TYPE_CHECKING:
     import numpy as _np
@@ -23,6 +24,7 @@ class VectorSchemaProvider(_typing.Protocol):
     def __coco_vector_schema__(self) -> _typing.Awaitable[VectorSchema]: ...
 
 
+@_unpickle_safe
 @_dataclasses.dataclass(slots=True, frozen=True)
 class VectorSchema:
     """Additional information for a vector column."""
@@ -50,6 +52,7 @@ class MultiVectorSchemaProvider(_typing.Protocol):
     def __coco_multi_vector_schema__(self) -> _typing.Awaitable[MultiVectorSchema]: ...
 
 
+@_unpickle_safe
 @_dataclasses.dataclass(slots=True, frozen=True)
 class MultiVectorSchema:
     """Additional information for a vector column."""

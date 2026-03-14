@@ -59,6 +59,8 @@ from .runner import GPU, Runner
 
 from .memo_key import register_memo_key_function, NotMemoizable
 
+from .serde import unpickle_safe, add_unpickle_safe_global
+
 from .pending_marker import PendingS, ResolvedS, MaybePendingS
 
 from .component_ctx import (
@@ -441,6 +443,9 @@ __all__ = [
     # .runner
     "GPU",
     "Runner",
+    # .serde
+    "unpickle_safe",
+    "add_unpickle_safe_global",
     # .memo_key
     "register_memo_key_function",
     "NotMemoizable",

@@ -52,6 +52,7 @@ from cocoindex._internal.datatype import (
     is_record_type,
 )
 from cocoindex.resources import schema as res_schema
+from cocoindex._internal.serde import unpickle_safe
 
 # Type aliases
 _RowKey = tuple[Any, ...]  # Primary key values as tuple
@@ -778,6 +779,7 @@ class _TableSpec:
     managed_by: Literal["system", "user"] = "system"
 
 
+@unpickle_safe
 class _PkColumnTrackingRecord(NamedTuple):
     """Primary-key column signature used for table-level main tracking record."""
 
@@ -785,6 +787,7 @@ class _PkColumnTrackingRecord(NamedTuple):
     type: str
 
 
+@unpickle_safe
 class _NonPkColumnTrackingRecord(NamedTuple):
     """Per-non-PK column tracking record used for incremental ALTER TABLE operations."""
 

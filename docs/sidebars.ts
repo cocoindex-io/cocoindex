@@ -65,6 +65,7 @@ const sidebars: SidebarsConfig = {
         'advanced_topics/memoization_keys',
         'advanced_topics/multiple_environments',
         'advanced_topics/custom_target_connector',
+        'advanced_topics/unpickle_safety',
       ],
     },
     {
