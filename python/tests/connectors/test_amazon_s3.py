@@ -349,3 +349,48 @@ class TestMemoization:
         # All file paths should have distinct memo keys
         memo_keys = {f.file_path.__coco_memo_key__() for f in files}
         assert len(memo_keys) == len(files)
+
+
+# ---------------------------------------------------------------------------
+# S3FilePath unit tests
+# ---------------------------------------------------------------------------
+
+
+class TestS3FilePathUnit:
+    """Unit tests for S3FilePath bucket_name and memo key."""
+
+    def test_bucket_name_property(self) -> None:
+        """S3FilePath.bucket_name returns the bucket name passed at construction."""
+        fp = amazon_s3.S3FilePath(
+            bucket_name="my-bucket",
+            path="folder/file.txt",
+            object_key="folder/file.txt",
+        )
+        assert fp.bucket_name == "my-bucket"
+
+    def test_memo_key_includes_bucket(self) -> None:
+        """S3FilePath.__coco_memo_key__() includes the bucket name."""
+        from pathlib import PurePath
+
+        fp = amazon_s3.S3FilePath(
+            bucket_name="my-bucket",
+            path="folder/file.txt",
+            object_key="folder/file.txt",
+        )
+        memo_key = fp.__coco_memo_key__()
+        # Memo key is a tuple of (bucket_name, path)
+        assert memo_key == ("my-bucket", PurePath("folder/file.txt"))
+
+    def test_memo_key_differs_across_buckets(self) -> None:
+        """S3FilePaths in different buckets with same path have different memo keys."""
+        fp1 = amazon_s3.S3FilePath(
+            bucket_name="bucket-a",
+            path="file.txt",
+            object_key="file.txt",
+        )
+        fp2 = amazon_s3.S3FilePath(
+            bucket_name="bucket-b",
+            path="file.txt",
+            object_key="file.txt",
+        )
+        assert fp1.__coco_memo_key__() != fp2.__coco_memo_key__()

@@ -261,7 +261,7 @@ class Environment:
         Use this to access context values outside of CocoIndex processing components,
         e.g., to share a database connection pool between indexing and query/serving logic.
         """
-        return self._context_provider.use(key)
+        return self._context_provider.get(key)
 
     async def _get_env(self) -> "Environment":
         return self

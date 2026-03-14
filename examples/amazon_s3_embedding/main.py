@@ -42,7 +42,7 @@ S3_BUCKET = os.environ["S3_BUCKET"]
 S3_PREFIX = os.getenv("S3_PREFIX", "")
 
 EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
-PG_DB = coco.ContextKey[postgres.PgDatabase]("pg_db", tracked=False)
+PG_DB = coco.ContextKey[asyncpg.Pool]("s3_embedding_db", tracked=False)
 S3_CLIENT = coco.ContextKey[AioBaseClient]("s3_client", tracked=False)
 EMBEDDER = coco.ContextKey[SentenceTransformerEmbedder]("embedder")
 
@@ -54,7 +54,7 @@ async def coco_lifespan(
     builder: coco.EnvironmentBuilder,
 ) -> AsyncIterator[None]:
     async with await postgres.create_pool(DATABASE_URL) as pool:
-        builder.provide(PG_DB, postgres.register_db("s3_embedding_db", pool))
+        builder.provide(PG_DB, pool)
         builder.provide(EMBEDDER, SentenceTransformerEmbedder(EMBED_MODEL))
 
         # Create aiobotocore S3 client.
@@ -109,8 +109,8 @@ async def process_file(
 
 @coco.fn
 async def app_main() -> None:
-    target_db = coco.use_context(PG_DB)
-    target_table = await target_db.mount_table_target(
+    target_table = await postgres.mount_table_target(
+        PG_DB,
         table_name=TABLE_NAME,
         table_schema=await postgres.TableSchema.from_class(
             DocEmbedding,

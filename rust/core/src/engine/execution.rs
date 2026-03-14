@@ -678,6 +678,7 @@ impl<Prof: EngineProfile> Committer<Prof> {
                 self.target_states_providers.clone(),
                 Some(&self.component_ctx),
                 self.component_ctx.processing_stats().clone(),
+                self.component_ctx.host_ctx().clone(),
             );
             let _ = component.delete(delete_ctx)?;
         }
@@ -1164,7 +1165,13 @@ pub(crate) async fn submit<Prof: EngineProfile>(
     // Apply actions
     let host_runtime_ctx = comp_ctx.app_ctx().env().host_runtime_ctx();
     for (sink, input) in actions_by_sinks {
-        let handlers = sink.apply(host_runtime_ctx, input.actions).await?;
+        let handlers = sink
+            .apply(
+                host_runtime_ctx,
+                Arc::clone(comp_ctx.host_ctx()),
+                input.actions,
+            )
+            .await?;
         if let Some(child_providers) = input.child_providers {
             let Some(handlers) = handlers else {
                 client_bail!("expect child providers returned by Sink");

@@ -24,6 +24,7 @@ pub trait TargetActionSink<Prof: EngineProfile>: Send + Sync + Eq + Hash + 'stat
     async fn apply(
         &self,
         host_runtime_ctx: &Prof::HostRuntimeCtx,
+        host_ctx: Arc<Prof::HostCtx>,
         actions: Vec<Prof::TargetAction>,
     ) -> Result<Option<Vec<Option<ChildTargetDef<Prof>>>>>;
 }

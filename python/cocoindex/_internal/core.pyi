@@ -161,15 +161,17 @@ class App:
         root_processor: ComponentProcessor[T_co],
         report_to_stdout: bool,
         full_reprocess: bool,
+        host_ctx: Any,
     ) -> T_co: ...
     async def update_async(
         self,
         root_processor: ComponentProcessor[T_co],
         report_to_stdout: bool,
         full_reprocess: bool,
+        host_ctx: Any,
     ) -> T_co: ...
-    def drop(self, report_to_stdout: bool) -> None: ...
-    def drop_async(self, report_to_stdout: bool) -> Coroutine[Any, Any, None]: ...
+    def drop(self, report_to_stdout: bool, host_ctx: Any) -> None: ...
+    def drop_async(self, report_to_stdout: bool, host_ctx: Any) -> Coroutine[Any, Any, None]: ...
 
 # --- TargetActionSink ---
 class TargetActionSink:

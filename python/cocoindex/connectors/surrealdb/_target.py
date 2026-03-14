@@ -44,7 +44,7 @@ _SurrealConn = Any
 import numpy as np
 
 import cocoindex as coco
-from cocoindex.connectorkits import connection, statediff
+from cocoindex.connectorkits import statediff
 from cocoindex.connectorkits.fingerprint import fingerprint_object
 from cocoindex._internal.datatype import (
     AnyType,
@@ -58,6 +58,7 @@ from cocoindex._internal.datatype import (
 )
 from cocoindex.resources import schema as res_schema
 from cocoindex._internal.serde import unpickle_safe
+from cocoindex._internal.context_keys import ContextKey, ContextProvider
 
 # ---------------------------------------------------------------------------
 # Identifier validation & record ID formatting
@@ -410,11 +411,6 @@ async def _create_conn_from_params(params: _ConnParams) -> _SurrealConn:
     return conn
 
 
-_db_registry: connection.ConnectionRegistry[_ConnParams] = (
-    connection.ConnectionRegistry("cocoindex/surrealdb")
-)
-
-
 # ---------------------------------------------------------------------------
 # _RecordAction + _SharedRecordApplier
 # ---------------------------------------------------------------------------
@@ -441,7 +437,9 @@ class _SharedRecordApplier:
         self._conn = conn
         self.sink = coco.TargetActionSink.from_async_fn(self._apply_actions)
 
-    async def _apply_actions(self, actions: Sequence[_RecordAction]) -> None:
+    async def _apply_actions(
+        self, context_provider: ContextProvider, actions: Sequence[_RecordAction]
+    ) -> None:
         if not actions:
             return
 
@@ -544,7 +542,9 @@ class _VectorIndexHandler:
         self._table_name = table_name
         self._sink = coco.TargetActionSink.from_async_fn(self._apply_actions)
 
-    async def _apply_actions(self, actions: Sequence[_VectorIndexAction]) -> None:
+    async def _apply_actions(
+        self, context_provider: ContextProvider, actions: Sequence[_VectorIndexAction]
+    ) -> None:
         for action in actions:
             if action.spec is None:
                 await self._conn.query(
@@ -890,7 +890,7 @@ class _TableHandler(
         )
 
     async def _apply_actions(
-        self, actions: Sequence[_TableAction]
+        self, context_provider: ContextProvider, actions: Sequence[_TableAction]
     ) -> list[coco.ChildTargetDef[_RecordHandler] | None]:
         actions_list = list(actions)
         outputs: list[coco.ChildTargetDef[_RecordHandler] | None] = [None] * len(
@@ -903,7 +903,7 @@ class _TableHandler(
             by_db.setdefault(action.key.db_key, []).append(i)
 
         for db_key, idxs in by_db.items():
-            params = _db_registry.get(db_key)
+            params = context_provider.get(db_key, _ConnParams)
             conn = await _create_conn_from_params(params)
             shared_applier = _SharedRecordApplier(conn)
 
@@ -1243,138 +1243,142 @@ class RelationTarget(
 
 
 # ---------------------------------------------------------------------------
-# SurrealDatabase
+# Module-level target functions
 # ---------------------------------------------------------------------------
 
 
-class SurrealDatabase(connection.KeyedConnection[_ConnParams]):
-    """Handle for a registered SurrealDB database."""
+def _normalize_table_names(
+    tables: TableTarget[Any] | Collection[TableTarget[Any]],
+) -> list[str]:
+    if isinstance(tables, TableTarget):
+        return [tables.table_name]
+    return [t.table_name for t in tables]
 
-    def table_target(
-        self,
-        table_name: str,
-        table_schema: TableSchema[RowT] | None = None,
-        *,
-        managed_by: Literal["system", "user"] = "system",
-    ) -> coco.TargetState[_RecordHandler]:
-        """Create a TargetState for a SurrealDB table."""
-        _validate_identifier(table_name, "table name")
-        key = _TableKey(db_key=self.key, table_name=table_name)
-        spec = _TableSpec(
-            table_schema=table_schema,
-            is_relation=False,
-            from_tables=None,
-            to_tables=None,
+
+def table_target(
+    db: ContextKey[_ConnParams],
+    table_name: str,
+    table_schema: TableSchema[RowT] | None = None,
+    *,
+    managed_by: Literal["system", "user"] = "system",
+) -> coco.TargetState[_RecordHandler]:
+    """Create a TargetState for a SurrealDB table."""
+    _validate_identifier(table_name, "table name")
+    key = _TableKey(db_key=db.key, table_name=table_name)
+    spec = _TableSpec(
+        table_schema=table_schema,
+        is_relation=False,
+        from_tables=None,
+        to_tables=None,
+        managed_by=managed_by,
+    )
+    return _table_provider.target_state(key, spec)
+
+
+def declare_table_target(
+    db: ContextKey[_ConnParams],
+    table_name: str,
+    table_schema: TableSchema[RowT] | None = None,
+    *,
+    managed_by: Literal["system", "user"] = "system",
+) -> TableTarget[RowT, coco.PendingS]:
+    """Declare a table target and return a pending TableTarget."""
+    provider = coco.declare_target_state_with_child(
+        table_target(db, table_name, table_schema, managed_by=managed_by)
+    )
+    return TableTarget(provider, table_schema, table_name)
+
+
+async def mount_table_target(
+    db: ContextKey[_ConnParams],
+    table_name: str,
+    table_schema: TableSchema[RowT] | None = None,
+    *,
+    managed_by: Literal["system", "user"] = "system",
+) -> TableTarget[RowT]:
+    """Mount a table target and return a ready-to-use TableTarget."""
+    provider = await coco.mount_target(
+        table_target(db, table_name, table_schema, managed_by=managed_by)
+    )
+    return TableTarget(provider, table_schema, table_name)
+
+
+def relation_target(
+    db: ContextKey[_ConnParams],
+    table_name: str,
+    from_table: TableTarget[Any] | Collection[TableTarget[Any]],
+    to_table: TableTarget[Any] | Collection[TableTarget[Any]],
+    table_schema: TableSchema[RowT] | None = None,
+    *,
+    managed_by: Literal["system", "user"] = "system",
+) -> coco.TargetState[_RecordHandler]:
+    """Create a TargetState for a SurrealDB relation table."""
+    _validate_identifier(table_name, "relation table name")
+    from_names = _normalize_table_names(from_table)
+    to_names = _normalize_table_names(to_table)
+    for n in from_names:
+        _validate_identifier(n, "from table name")
+    for n in to_names:
+        _validate_identifier(n, "to table name")
+    key = _TableKey(db_key=db.key, table_name=table_name)
+    spec = _TableSpec(
+        table_schema=table_schema,
+        is_relation=True,
+        from_tables=tuple(sorted(from_names)),
+        to_tables=tuple(sorted(to_names)),
+        managed_by=managed_by,
+    )
+    return _table_provider.target_state(key, spec)
+
+
+def declare_relation_target(
+    db: ContextKey[_ConnParams],
+    table_name: str,
+    from_table: TableTarget[Any] | Collection[TableTarget[Any]],
+    to_table: TableTarget[Any] | Collection[TableTarget[Any]],
+    table_schema: TableSchema[RowT] | None = None,
+    *,
+    managed_by: Literal["system", "user"] = "system",
+) -> RelationTarget[RowT, coco.PendingS]:
+    """Declare a relation target and return a pending RelationTarget."""
+    from_names = _normalize_table_names(from_table)
+    to_names = _normalize_table_names(to_table)
+    provider = coco.declare_target_state_with_child(
+        relation_target(
+            db,
+            table_name,
+            from_table,
+            to_table,
+            table_schema,
             managed_by=managed_by,
         )
-        return _table_provider.target_state(key, spec)
+    )
+    return RelationTarget(provider, table_name, table_schema, from_names, to_names)
 
-    def declare_table_target(
-        self,
-        table_name: str,
-        table_schema: TableSchema[RowT] | None = None,
-        *,
-        managed_by: Literal["system", "user"] = "system",
-    ) -> TableTarget[RowT, coco.PendingS]:
-        """Declare a table target and return a pending TableTarget."""
-        provider = coco.declare_target_state_with_child(
-            self.table_target(table_name, table_schema, managed_by=managed_by)
-        )
-        return TableTarget(provider, table_schema, table_name)
 
-    async def mount_table_target(
-        self,
-        table_name: str,
-        table_schema: TableSchema[RowT] | None = None,
-        *,
-        managed_by: Literal["system", "user"] = "system",
-    ) -> TableTarget[RowT]:
-        """Mount a table target and return a ready-to-use TableTarget."""
-        provider = await coco.mount_target(
-            self.table_target(table_name, table_schema, managed_by=managed_by)
-        )
-        return TableTarget(provider, table_schema, table_name)
-
-    def _normalize_table_names(
-        self,
-        tables: TableTarget[Any] | Collection[TableTarget[Any]],
-    ) -> list[str]:
-        if isinstance(tables, TableTarget):
-            return [tables.table_name]
-        return [t.table_name for t in tables]
-
-    def relation_target(
-        self,
-        table_name: str,
-        from_table: TableTarget[Any] | Collection[TableTarget[Any]],
-        to_table: TableTarget[Any] | Collection[TableTarget[Any]],
-        table_schema: TableSchema[RowT] | None = None,
-        *,
-        managed_by: Literal["system", "user"] = "system",
-    ) -> coco.TargetState[_RecordHandler]:
-        """Create a TargetState for a SurrealDB relation table."""
-        _validate_identifier(table_name, "relation table name")
-        from_names = self._normalize_table_names(from_table)
-        to_names = self._normalize_table_names(to_table)
-        for n in from_names:
-            _validate_identifier(n, "from table name")
-        for n in to_names:
-            _validate_identifier(n, "to table name")
-        key = _TableKey(db_key=self.key, table_name=table_name)
-        spec = _TableSpec(
-            table_schema=table_schema,
-            is_relation=True,
-            from_tables=tuple(sorted(from_names)),
-            to_tables=tuple(sorted(to_names)),
+async def mount_relation_target(
+    db: ContextKey[_ConnParams],
+    table_name: str,
+    from_table: TableTarget[Any] | Collection[TableTarget[Any]],
+    to_table: TableTarget[Any] | Collection[TableTarget[Any]],
+    table_schema: TableSchema[RowT] | None = None,
+    *,
+    managed_by: Literal["system", "user"] = "system",
+) -> RelationTarget[RowT]:
+    """Mount a relation target and return a ready-to-use RelationTarget."""
+    from_names = _normalize_table_names(from_table)
+    to_names = _normalize_table_names(to_table)
+    provider = await coco.mount_target(
+        relation_target(
+            db,
+            table_name,
+            from_table,
+            to_table,
+            table_schema,
             managed_by=managed_by,
         )
-        return _table_provider.target_state(key, spec)
-
-    def declare_relation_target(
-        self,
-        table_name: str,
-        from_table: TableTarget[Any] | Collection[TableTarget[Any]],
-        to_table: TableTarget[Any] | Collection[TableTarget[Any]],
-        table_schema: TableSchema[RowT] | None = None,
-        *,
-        managed_by: Literal["system", "user"] = "system",
-    ) -> RelationTarget[RowT, coco.PendingS]:
-        """Declare a relation target and return a pending RelationTarget."""
-        from_names = self._normalize_table_names(from_table)
-        to_names = self._normalize_table_names(to_table)
-        provider = coco.declare_target_state_with_child(
-            self.relation_target(
-                table_name,
-                from_table,
-                to_table,
-                table_schema,
-                managed_by=managed_by,
-            )
-        )
-        return RelationTarget(provider, table_name, table_schema, from_names, to_names)
-
-    async def mount_relation_target(
-        self,
-        table_name: str,
-        from_table: TableTarget[Any] | Collection[TableTarget[Any]],
-        to_table: TableTarget[Any] | Collection[TableTarget[Any]],
-        table_schema: TableSchema[RowT] | None = None,
-        *,
-        managed_by: Literal["system", "user"] = "system",
-    ) -> RelationTarget[RowT]:
-        """Mount a relation target and return a ready-to-use RelationTarget."""
-        from_names = self._normalize_table_names(from_table)
-        to_names = self._normalize_table_names(to_table)
-        provider = await coco.mount_target(
-            self.relation_target(
-                table_name,
-                from_table,
-                to_table,
-                table_schema,
-                managed_by=managed_by,
-            )
-        )
-        return RelationTarget(provider, table_name, table_schema, from_names, to_names)
+    )
+    return RelationTarget(provider, table_name, table_schema, from_names, to_names)
 
 
 # ---------------------------------------------------------------------------
@@ -1382,25 +1386,25 @@ class SurrealDatabase(connection.KeyedConnection[_ConnParams]):
 # ---------------------------------------------------------------------------
 
 
-def register_db(
-    key: str,
+def make_conn_params(
     *,
     url: str,
     namespace: str,
     database: str,
     credentials: dict[str, str] | None = None,
-) -> SurrealDatabase:
+) -> _ConnParams:
     """
-    Register a SurrealDB database with a stable key.
+    Create a _ConnParams for use as a ContextKey value.
 
-    Connections are created on-demand on the engine's event loop.
-    Can be used as a context manager to automatically unregister on exit.
+    Args:
+        url: WebSocket URL (e.g. "ws://localhost:8000/rpc").
+        namespace: SurrealDB namespace.
+        database: SurrealDB database name.
+        credentials: Optional dict with signin credentials.
     """
-    params = _ConnParams(
+    return _ConnParams(
         url=url, namespace=namespace, database=database, credentials=credentials
     )
-    _db_registry.register(key, params)
-    return SurrealDatabase(_db_registry.name, key, params, _db_registry)
 
 
 async def create_connection(
@@ -1433,11 +1437,16 @@ async def create_connection(
 __all__ = [
     "ColumnDef",
     "RelationTarget",
-    "SurrealDatabase",
     "SurrealType",
     "TableSchema",
     "TableTarget",
     "ValueEncoder",
     "create_connection",
-    "register_db",
+    "declare_relation_target",
+    "declare_table_target",
+    "make_conn_params",
+    "mount_relation_target",
+    "mount_table_target",
+    "relation_target",
+    "table_target",
 ]

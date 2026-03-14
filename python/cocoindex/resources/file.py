@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 __all__ = [
-    "BaseDir",
     "FileMetadata",
     "FileLike",
     "FilePath",
@@ -25,19 +24,16 @@ from typing import (
 )
 
 from cocoindex._internal import core as _core
+from cocoindex._internal.context_keys import ContextKey as _ContextKey
 from cocoindex._internal.typing import (
     MemoStateOutcome as _MemoStateOutcome,
     is_non_existence as _is_non_existence,
 )
 from cocoindex import StableKey as _StableKey
-from cocoindex.connectorkits import connection as _connection
 from cocoindex.connectorkits.fingerprint import fingerprint_bytes as _fingerprint_bytes
 
 # Type variable for the resolved path type (e.g., pathlib.Path for local filesystem)
 ResolvedPathT = _TypeVar("ResolvedPathT")
-
-# Type alias for base directory - a KeyedConnection holding the resolved base path
-BaseDir = _connection.KeyedConnection[ResolvedPathT]
 
 
 class FileMetadata(_NamedTuple):
@@ -325,19 +321,19 @@ class FilePath(_Generic[ResolvedPathT]):
 
     __slots__ = ("_base_dir", "_path")
 
-    _base_dir: _connection.KeyedConnection[ResolvedPathT]
+    _base_dir: _ContextKey[ResolvedPathT] | None
     _path: _PurePath
 
     def __init__(
         self,
-        base_dir: _connection.KeyedConnection[ResolvedPathT],
+        base_dir: _ContextKey[ResolvedPathT] | None,
         path: _PurePath,
     ) -> None:
         self._base_dir = base_dir
         self._path = path
 
     @property
-    def base_dir(self) -> _connection.KeyedConnection[ResolvedPathT]:
+    def base_dir(self) -> _ContextKey[ResolvedPathT] | None:
         """The base directory for this path."""
         return self._base_dir
 
@@ -445,9 +441,9 @@ class FilePath(_Generic[ResolvedPathT]):
         return str(self._path)
 
     def __repr__(self) -> str:
-        return (
-            f"{type(self).__name__}({self._path!r}, base_dir_key={self.base_dir.key!r})"
-        )
+        if self._base_dir is not None:
+            return f"{type(self).__name__}({self._path!r}, base_dir_key={self._base_dir.key!r})"
+        return f"{type(self).__name__}({self._path!r})"
 
     def __fspath__(self) -> str:
         """Return the file system path as a string for os.fspath() compatibility."""
@@ -455,19 +451,30 @@ class FilePath(_Generic[ResolvedPathT]):
 
     # Comparison and hashing
 
+    def _base_dir_key(self) -> str | None:
+        return self._base_dir.key if self._base_dir is not None else None
+
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, FilePath):
             return NotImplemented
-        return self.base_dir.key == other.base_dir.key and self._path == other._path
+        return (
+            self._base_dir_key() == other._base_dir_key() and self._path == other._path
+        )
 
     def __hash__(self) -> int:
-        return hash((self.base_dir.key, self._path))
+        return hash((self._base_dir_key(), self._path))
 
     def __lt__(self, other: _Self) -> bool:
         if not isinstance(other, FilePath):
             return NotImplemented
-        if self.base_dir.key != other.base_dir.key:
-            return self.base_dir.key < other.base_dir.key
+        sk_self = self._base_dir_key()
+        sk_other = other._base_dir_key()
+        if sk_self != sk_other:
+            if sk_self is None:
+                return True
+            if sk_other is None:
+                return False
+            return sk_self < sk_other
         return self._path < other._path
 
     def __le__(self, other: _Self) -> bool:
@@ -484,4 +491,6 @@ class FilePath(_Generic[ResolvedPathT]):
     # Memoization support
 
     def __coco_memo_key__(self) -> object:
-        return (self.base_dir.__coco_memo_key__(), self._path)
+        if self._base_dir is not None:
+            return (self._base_dir.key, self._path)
+        return self._path

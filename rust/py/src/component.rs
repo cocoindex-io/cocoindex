@@ -171,6 +171,7 @@ pub fn mount_run(
             Some(&comp_ctx.0),
             comp_ctx.0.processing_stats().clone(),
             comp_ctx.0.full_reprocess(),
+            comp_ctx.0.host_ctx().clone(),
         )
         .into_py_result()?;
     py.detach(|| {
@@ -199,6 +200,7 @@ pub fn mount(
             Some(&comp_ctx.0),
             comp_ctx.0.processing_stats().clone(),
             comp_ctx.0.full_reprocess(),
+            comp_ctx.0.host_ctx().clone(),
         )
         .into_py_result()?;
     py.detach(|| {
@@ -230,6 +232,7 @@ pub fn mount_run_async<'py>(
             Some(&comp_ctx.0),
             comp_ctx.0.processing_stats().clone(),
             comp_ctx.0.full_reprocess(),
+            comp_ctx.0.host_ctx().clone(),
         )
         .into_py_result()?;
     future_into_py(py, async move {
@@ -256,6 +259,7 @@ pub fn mount_async<'py>(
             Some(&comp_ctx.0),
             comp_ctx.0.processing_stats().clone(),
             comp_ctx.0.full_reprocess(),
+            comp_ctx.0.host_ctx().clone(),
         )
         .into_py_result()?;
     future_into_py(py, async move {

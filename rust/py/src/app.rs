@@ -30,14 +30,19 @@ impl PyApp {
         root_processor: PyComponentProcessor,
         report_to_stdout: bool,
         full_reprocess: bool,
+        host_ctx: Py<PyAny>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let app = self.0.clone();
         let options = AppUpdateOptions {
             report_to_stdout,
             full_reprocess,
         };
+        let host_ctx = Arc::new(host_ctx);
         let fut = future_into_py(py, async move {
-            let ret = app.update(root_processor, options).await.into_py_result()?;
+            let ret = app
+                .update(root_processor, options, host_ctx)
+                .await
+                .into_py_result()?;
             Ok(ret.into_inner())
         })?;
         Ok(fut)
@@ -49,15 +54,20 @@ impl PyApp {
         root_processor: PyComponentProcessor,
         report_to_stdout: bool,
         full_reprocess: bool,
+        host_ctx: Py<PyAny>,
     ) -> PyResult<Py<PyAny>> {
         let app = self.0.clone();
         let options = AppUpdateOptions {
             report_to_stdout,
             full_reprocess,
         };
+        let host_ctx = Arc::new(host_ctx);
         py.detach(|| {
             get_runtime().block_on(async move {
-                let ret = app.update(root_processor, options).await.into_py_result()?;
+                let ret = app
+                    .update(root_processor, options, host_ctx)
+                    .await
+                    .into_py_result()?;
                 Ok(ret.into_inner())
             })
         })
@@ -67,21 +77,30 @@ impl PyApp {
         &self,
         py: Python<'py>,
         report_to_stdout: bool,
+        host_ctx: Py<PyAny>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let app = self.0.clone();
         let options = AppDropOptions { report_to_stdout };
+        let host_ctx = Arc::new(host_ctx);
         let fut = future_into_py(py, async move {
-            app.drop_app(options).await.into_py_result()?;
+            app.drop_app(options, host_ctx).await.into_py_result()?;
             Ok(())
         })?;
         Ok(fut)
     }
 
-    pub fn drop<'py>(&self, py: Python<'py>, report_to_stdout: bool) -> PyResult<()> {
+    pub fn drop<'py>(
+        &self,
+        py: Python<'py>,
+        report_to_stdout: bool,
+        host_ctx: Py<PyAny>,
+    ) -> PyResult<()> {
         let app = self.0.clone();
         let options = AppDropOptions { report_to_stdout };
+        let host_ctx = Arc::new(host_ctx);
         py.detach(|| {
-            get_runtime().block_on(async move { app.drop_app(options).await.into_py_result() })
+            get_runtime()
+                .block_on(async move { app.drop_app(options, host_ctx).await.into_py_result() })
         })
     }
 }

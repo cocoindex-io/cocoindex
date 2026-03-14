@@ -39,7 +39,7 @@ TOP_K = 5
 
 
 EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
-PG_DB = coco.ContextKey[postgres.PgDatabase]("pg_db", tracked=False)
+PG_DB = coco.ContextKey[asyncpg.Pool]("code_embedding_db", tracked=False)
 EMBEDDER = coco.ContextKey[SentenceTransformerEmbedder]("embedder")
 
 _splitter = RecursiveSplitter()
@@ -61,7 +61,7 @@ async def coco_lifespan(
 ) -> AsyncIterator[None]:
     # Provide resources needed across the CocoIndex environment
     async with await postgres.create_pool(DATABASE_URL) as pool:
-        builder.provide(PG_DB, postgres.register_db("code_embedding_db", pool))
+        builder.provide(PG_DB, pool)
         builder.provide(EMBEDDER, SentenceTransformerEmbedder(EMBED_MODEL))
         yield
 
@@ -109,8 +109,8 @@ async def process_file(
 
 @coco.fn
 async def app_main(sourcedir: pathlib.Path) -> None:
-    target_db = coco.use_context(PG_DB)
-    target_table = await target_db.mount_table_target(
+    target_table = await postgres.mount_table_target(
+        PG_DB,
         table_name=TABLE_NAME,
         table_schema=await postgres.TableSchema.from_class(
             CodeEmbedding,

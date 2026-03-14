@@ -55,12 +55,14 @@ impl<Prof: EngineProfile> App<Prof> {
         &self,
         root_processor: Prof::ComponentProc,
         options: AppUpdateOptions,
+        host_ctx: Arc<Prof::HostCtx>,
     ) -> Result<Prof::FunctionData> {
         let processing_stats = ProcessingStats::default();
         let context = self.root_component.new_processor_context_for_build(
             None,
             processing_stats.clone(),
             options.full_reprocess,
+            host_ctx,
         )?;
 
         let run_fut = async {
@@ -87,7 +89,11 @@ impl<Prof: EngineProfile> App<Prof> {
     /// 2. Waits for deletion to complete
     /// 3. Clears the app's database
     #[instrument(name = "app.drop", skip_all, fields(app_name = %self.app_ctx().app_reg().name()))]
-    pub async fn drop_app(&self, options: AppDropOptions) -> Result<()> {
+    pub async fn drop_app(
+        &self,
+        options: AppDropOptions,
+        host_ctx: Arc<Prof::HostCtx>,
+    ) -> Result<()> {
         let processing_stats = ProcessingStats::default();
         let providers = self
             .app_ctx()
@@ -102,6 +108,7 @@ impl<Prof: EngineProfile> App<Prof> {
             providers,
             None,
             processing_stats.clone(),
+            host_ctx,
         );
 
         let drop_fut = async {

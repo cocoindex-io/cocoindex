@@ -1,6 +1,16 @@
+from __future__ import annotations
+
 from contextlib import AsyncExitStack
 import threading
-from typing import Any, AsyncContextManager, ContextManager, Generic, TypeVar, cast
+from typing import (
+    Any,
+    AsyncContextManager,
+    ContextManager,
+    Generic,
+    TypeVar,
+    cast,
+    overload,
+)
 
 from . import core
 from .memo_key import _canonicalize
@@ -33,11 +43,19 @@ class ContextKey(Generic[T_co]):
     def key(self) -> str:
         return self._key
 
+    def __coco_memo_key__(self) -> str:
+        return self._key
+
 
 class ContextProvider:
-    __slots__ = ("_values", "_exit_stack", "_tracked_fingerprints", "_core_env")
+    __slots__ = (
+        "_values",
+        "_exit_stack",
+        "_tracked_fingerprints",
+        "_core_env",
+    )
 
-    _values: dict[ContextKey[Any], Any]
+    _values: dict[str, Any]
     _exit_stack: AsyncExitStack
     _tracked_fingerprints: dict[ContextKey[Any], core.Fingerprint]
     _core_env: core.Environment | None
@@ -55,7 +73,7 @@ class ContextProvider:
             core_env.register_logic(fp)
 
     def provide(self, key: ContextKey[T], value: T) -> T:
-        self._values[key] = value
+        self._values[key._key] = value
         if key.tracked:
             canonical = _canonicalize(("context_key", key._key, value), _seen=None)
             fp = core.fingerprint_simple_object(canonical)
@@ -78,8 +96,28 @@ class ContextProvider:
         value = await self._exit_stack.enter_async_context(cm)
         return self.provide(key, value)
 
-    def use(self, key: ContextKey[T]) -> T:
-        return cast(T, self._values[key])
+    @overload
+    def get(self, key: ContextKey[T]) -> T: ...
+    @overload
+    def get(self, key: str) -> Any: ...
+    @overload
+    def get(self, key: str, t: type[T]) -> T: ...
+    def get(self, key: ContextKey[T] | str, t: type[T] | None = None) -> Any:
+        """Get a value from the context. Raises KeyError if not found.
+
+        Overloads:
+          get(key: ContextKey[T]) -> T
+          get(key: str) -> Any
+          get(key: str, t: type[T]) -> T  — also verifies the type at runtime
+        """
+        if isinstance(key, str):
+            value = self._values[key]
+            if t is not None and not isinstance(value, t):
+                raise TypeError(
+                    f"Context key '{key}': expected {t.__name__}, got {type(value).__name__}"
+                )
+            return value
+        return cast(T, self._values[key._key])
 
     async def aclose(self) -> None:
         await self._exit_stack.aclose()

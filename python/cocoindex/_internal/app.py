@@ -141,7 +141,10 @@ class App(Generic[P, R]):
             self._main_fn, env, root_path, self._app_args, self._app_kwargs
         )
         return await core_app.update_async(
-            processor, report_to_stdout=report_to_stdout, full_reprocess=full_reprocess
+            processor,
+            report_to_stdout=report_to_stdout,
+            full_reprocess=full_reprocess,
+            host_ctx=env._context_provider,
         )
 
     def update_blocking(
@@ -163,7 +166,10 @@ class App(Generic[P, R]):
             self._main_fn, env, root_path, self._app_args, self._app_kwargs
         )
         return core_app.update(
-            processor, report_to_stdout=report_to_stdout, full_reprocess=full_reprocess
+            processor,
+            report_to_stdout=report_to_stdout,
+            full_reprocess=full_reprocess,
+            host_ctx=env._context_provider,
         )
 
     async def drop(self, *, report_to_stdout: bool = False) -> None:
@@ -177,8 +183,10 @@ class App(Generic[P, R]):
         Args:
             report_to_stdout: If True, periodically report processing stats to stdout.
         """
-        _env, core_app = await self._get_core_env_app()
-        await core_app.drop_async(report_to_stdout=report_to_stdout)
+        env, core_app = await self._get_core_env_app()
+        await core_app.drop_async(
+            report_to_stdout=report_to_stdout, host_ctx=env._context_provider
+        )
 
     def drop_blocking(self, *, report_to_stdout: bool = False) -> None:
         """
@@ -191,5 +199,5 @@ class App(Generic[P, R]):
         Args:
             report_to_stdout: If True, periodically report processing stats to stdout.
         """
-        _env, core_app = self._get_core_env_app_sync()
-        core_app.drop(report_to_stdout=report_to_stdout)
+        env, core_app = self._get_core_env_app_sync()
+        core_app.drop(report_to_stdout=report_to_stdout, host_ctx=env._context_provider)

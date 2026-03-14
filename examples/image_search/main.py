@@ -35,7 +35,7 @@ CLIP_MODEL_NAME = "openai/clip-vit-large-patch14"
 TOP_K = 5
 
 
-QDRANT_DB = coco.ContextKey[qdrant.QdrantDatabase]("qdrant_db", tracked=False)
+QDRANT_DB = coco.ContextKey[QdrantClient]("image_search_qdrant", tracked=False)
 QDRANT_CLIENT = coco.ContextKey[QdrantClient]("qdrant_client", tracked=False)
 
 
@@ -69,7 +69,7 @@ async def coco_lifespan(
 ) -> AsyncIterator[None]:
     # Provide resources needed across the CocoIndex environment
     client = qdrant.create_client(QDRANT_URL, prefer_grpc=True)
-    builder.provide(QDRANT_DB, qdrant.register_db("image_search_qdrant", client))
+    builder.provide(QDRANT_DB, client)
     builder.provide(QDRANT_CLIENT, client)
     yield
 
@@ -95,8 +95,8 @@ async def app_main(sourcedir: pathlib.Path) -> None:
     model, _ = get_clip_model()
     dim = int(model.config.projection_dim)
 
-    target_db = coco.use_context(QDRANT_DB)
-    target_collection = await target_db.mount_collection_target(
+    target_collection = await qdrant.mount_collection_target(
+        QDRANT_DB,
         collection_name=QDRANT_COLLECTION,
         schema=await qdrant.CollectionSchema.create(
             vectors=qdrant.QdrantVectorDef(
