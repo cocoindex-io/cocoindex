@@ -2,7 +2,7 @@ use std::sync::OnceLock;
 
 use crate::prelude::*;
 
-use cocoindex_core::engine::runtime::get_runtime;
+use cocoindex_core::engine::runtime::{get_runtime, shutdown_runtime};
 use cocoindex_py_utils::from_py_future;
 use futures::FutureExt;
 use pyo3::{call::PyCallArgs, exceptions::PyException};
@@ -61,6 +61,11 @@ pub fn init_runtime(
         }))
         .map_err(|_| PyException::new_err("Failed to set Python objects: already initialized"))?;
     Ok(())
+}
+
+#[pyfunction]
+pub fn shutdown_tokio_runtime() {
+    shutdown_runtime();
 }
 
 pub fn python_objects() -> &'static PythonObjects {

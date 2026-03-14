@@ -39,6 +39,9 @@ impl Drop for CancelOnDropPy {
         if self.done.load(Ordering::SeqCst) {
             return;
         }
+        if unsafe { pyo3::ffi::Py_IsInitialized() == 0 } {
+            return;
+        }
         let task = self.task_ref.lock().unwrap().take();
         if let Some(task) = task {
             Python::attach(|py| {

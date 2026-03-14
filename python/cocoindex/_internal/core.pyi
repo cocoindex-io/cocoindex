@@ -202,6 +202,7 @@ def init_runtime(
     non_existence: Any,
     not_set: Any,
 ) -> None: ...
+def shutdown_tokio_runtime() -> None: ...
 def mount(
     processor: ComponentProcessor[T_co],
     stable_path: StablePath,

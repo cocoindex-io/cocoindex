@@ -519,7 +519,29 @@ def _shutdown_background_loop_at_exit() -> None:
         pass
 
 
+def _shutdown_tokio_runtime_at_exit() -> None:
+    """
+    Atexit hook: shut down the Tokio runtime and join all its threads before
+    Python finalizes.
+
+    With ManuallyDrop<Runtime>, Tokio threads stay alive indefinitely after the
+    main work completes. On Python < 3.13, `_PyGILState_Fini` (called during
+    `Py_Finalize()`) deletes `autoTSSkey`; if any idle Tokio thread then calls
+    `PyGILState_Release`, it reads a deleted TLS key and triggers the fatal error:
+    "PyGILState_Release: thread state X must be current when releasing".
+
+    Registered AFTER _shutdown_background_loop_at_exit so that (LIFO order) it
+    runs BEFORE the background loop is stopped, ensuring no asyncio callbacks
+    can race with the runtime shutdown.
+    """
+    try:
+        core.shutdown_tokio_runtime()
+    except Exception:
+        pass
+
+
 atexit.register(_shutdown_background_loop_at_exit)
+atexit.register(_shutdown_tokio_runtime_at_exit)
 
 
 def start_sync() -> Environment:
