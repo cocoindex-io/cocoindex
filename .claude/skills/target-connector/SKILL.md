@@ -40,7 +40,7 @@ Use this skill when creating a new target connector for any external system (dat
 
 1. **Define types**: Key, Spec, TrackingRecord, Action
 2. **Implement TargetHandler**: The `reconcile()` method must be non-blocking
-3. **Create TargetActionSink**: Use `TargetActionSink.from_fn()` or `from_async_fn()`
+3. **Create TargetActionSink**: Use `TargetActionSink.from_fn()` or `from_async_fn()`. The callback receives `context_provider: ContextProvider` as its first positional argument, followed by `actions`
 4. **Register provider**: Call `register_root_target_states_provider(name, handler)`
 5. **Create user-facing API**: Wrap the provider in a user-friendly class
 
@@ -172,9 +172,16 @@ fp = fingerprint_object(obj)
 
 ### Shared Action Sinks
 
-Create module-level shared sinks when all handler instances use the same action logic:
+Create module-level shared sinks when all handler instances use the same action logic. The callback must accept `context_provider: ContextProvider` as its first positional argument:
 
 ```python
+def _apply_actions(
+    context_provider: ContextProvider, actions: Sequence[MyAction]
+) -> list[coco.ChildTargetDef[MyChildHandler] | None] | None:
+    for action in actions:
+        conn = context_provider.get(action.key.db_key, ConnType)
+        ...
+
 _shared_sink = coco.TargetActionSink.from_fn(_apply_actions)
 ```
 
@@ -272,36 +279,39 @@ coco_env = common.create_test_env(__file__)
 **Test pattern:**
 
 ```python
+DB_KEY = coco.ContextKey[connector.ConnectionType]("test_db", tracked=False)
+
 def test_insert_and_update(connector_fixture: tuple[Connection, Path]) -> None:
     conn, _ = connector_fixture
     source_rows: list[RowType] = []
 
-    with connector.register_db("test_db", conn) as db:
+    coco_env.context_provider.provide(DB_KEY, conn)
 
-        async def declare_target() -> None:
-            table = await coco_aio.use_mount(
-                coco.component_subpath("setup", "table"),
-                db.declare_table_target,
-                "test_table",
-                await connector.TableSchema.from_class(RowType, primary_key=["id"]),
-            )
-            for row in source_rows:
-                table.declare_row(row=row)
-
-        app = coco.App(
-            coco.AppConfig(name="test_insert", environment=coco_env),
-            declare_target,
+    async def declare_target() -> None:
+        table = await coco.use_mount(
+            coco.component_subpath("setup", "table"),
+            connector.declare_table_target,
+            DB_KEY,
+            "test_table",
+            await connector.TableSchema.from_class(RowType, primary_key=["id"]),
         )
+        for row in source_rows:
+            table.declare_row(row=row)
 
-        # Insert
-        source_rows.append(RowType(id="1", name="Alice"))
-        app.update()
-        assert read_data(conn, "test_table") == [{"id": "1", "name": "Alice"}]
+    app = coco.App(
+        coco.AppConfig(name="test_insert", environment=coco_env),
+        declare_target,
+    )
 
-        # Update
-        source_rows[0] = RowType(id="1", name="Alice Updated")
-        app.update()
-        assert read_data(conn, "test_table") == [{"id": "1", "name": "Alice Updated"}]
+    # Insert
+    source_rows.append(RowType(id="1", name="Alice"))
+    app.update()
+    assert read_data(conn, "test_table") == [{"id": "1", "name": "Alice"}]
+
+    # Update
+    source_rows[0] = RowType(id="1", name="Alice Updated")
+    app.update()
+    assert read_data(conn, "test_table") == [{"id": "1", "name": "Alice Updated"}]
 ```
 
 **Optional feature tests:**

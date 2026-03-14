@@ -65,7 +65,9 @@ class DictTargetStateStore:
 
     def _sink(
         self,
+        context_provider: coco.ContextProvider,
         actions: Collection[tuple[str, DictDataWithPrev | coco.NonExistenceType]],
+        /,
     ) -> None:
         if self.sink_exception:
             raise ValueError("injected sink exception")
@@ -81,9 +83,11 @@ class DictTargetStateStore:
 
     async def _async_sink(
         self,
+        context_provider: coco.ContextProvider,
         actions: Collection[tuple[str, DictDataWithPrev | coco.NonExistenceType]],
+        /,
     ) -> None:
-        self._sink(actions)
+        self._sink(context_provider, actions)
 
     def reconcile(
         self,
@@ -170,7 +174,10 @@ class DictsTargetStateStore:
         self._use_async = use_async
 
     def _sink(
-        self, actions: Collection[_DictTargetStateStoreAction]
+        self,
+        context_provider: coco.ContextProvider,
+        actions: Collection[_DictTargetStateStoreAction],
+        /,
     ) -> list[coco.ChildTargetDef[DictTargetStateStore] | None]:
         child_state_defs: list[coco.ChildTargetDef[DictTargetStateStore] | None] = []
         if self.sink_exception:
@@ -202,9 +209,11 @@ class DictsTargetStateStore:
 
     async def _async_sink(
         self,
+        context_provider: coco.ContextProvider,
         actions: Collection[_DictTargetStateStoreAction],
+        /,
     ) -> list[coco.ChildTargetDef[DictTargetStateStore] | None]:
-        return self._sink(actions)
+        return self._sink(context_provider, actions)
 
     def reconcile(
         self,
@@ -354,7 +363,10 @@ class AttachmentDictsTargetStateStore:
         )
 
     def _sink(
-        self, actions: Collection[_DictTargetStateStoreAction]
+        self,
+        context_provider: coco.ContextProvider,
+        actions: Collection[_DictTargetStateStoreAction],
+        /,
     ) -> list[coco.ChildTargetDef[_AttachmentChildHandler] | None]:
         child_state_defs: list[coco.ChildTargetDef[_AttachmentChildHandler] | None] = []
         with self._lock:

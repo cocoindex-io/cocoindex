@@ -25,7 +25,9 @@ class AnyKeyDictTargetStateStore:
 
     def _sink(
         self,
+        context_provider: coco.ContextProvider,
         actions: Collection[tuple[Any, DictDataWithPrev | coco.NonExistenceType]],
+        /,
     ) -> None:
         if self.sink_exception:
             raise ValueError("injected sink exception")
@@ -41,9 +43,11 @@ class AnyKeyDictTargetStateStore:
 
     async def _async_sink(
         self,
+        context_provider: coco.ContextProvider,
         actions: Collection[tuple[Any, DictDataWithPrev | coco.NonExistenceType]],
+        /,
     ) -> None:
-        self._sink(actions)
+        self._sink(context_provider, actions)
 
     def reconcile(
         self,

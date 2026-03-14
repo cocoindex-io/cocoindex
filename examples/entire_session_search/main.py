@@ -47,7 +47,7 @@ PG_SCHEMA_NAME = os.getenv("PG_SCHEMA_NAME", "entire")
 TOP_K = 5
 
 EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
-PG_DB = coco.ContextKey[postgres.PgDatabase]("pg_db", tracked=False)
+PG_DB = coco.ContextKey[asyncpg.Pool]("entire_session_db", tracked=False)
 EMBEDDER = coco.ContextKey[SentenceTransformerEmbedder]("embedder")
 
 _splitter = RecursiveSplitter()
@@ -63,7 +63,7 @@ async def coco_lifespan(
     builder: coco.EnvironmentBuilder,
 ) -> AsyncIterator[None]:
     async with await postgres.create_pool(DATABASE_URL) as pool:
-        builder.provide(PG_DB, postgres.register_db("entire_session_db", pool))
+        builder.provide(PG_DB, pool)
         builder.provide(EMBEDDER, SentenceTransformerEmbedder(EMBED_MODEL))
         yield
 
@@ -276,9 +276,8 @@ async def process_file(
 
 @coco.fn
 async def app_main(checkpoints_dir: pathlib.Path) -> None:
-    target_db = coco.use_context(PG_DB)
-
-    emb_table = await target_db.mount_table_target(
+    emb_table = await postgres.mount_table_target(
+        PG_DB,
         table_name=TABLE_EMBEDDINGS,
         table_schema=await postgres.TableSchema.from_class(
             SessionEmbeddingRow,
@@ -287,7 +286,8 @@ async def app_main(checkpoints_dir: pathlib.Path) -> None:
         pg_schema_name=PG_SCHEMA_NAME,
     )
 
-    meta_table = await target_db.mount_table_target(
+    meta_table = await postgres.mount_table_target(
+        PG_DB,
         table_name=TABLE_METADATA,
         table_schema=await postgres.TableSchema.from_class(
             SessionMetadataRow,

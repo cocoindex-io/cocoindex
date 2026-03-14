@@ -45,7 +45,7 @@ TOP_K = 5
 
 
 EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
-PG_DB = coco.ContextKey[postgres.PgDatabase]("pg_db", tracked=False)
+PG_DB = coco.ContextKey[asyncpg.Pool]("paper_metadata_db", tracked=False)
 EMBEDDER = coco.ContextKey[SentenceTransformerEmbedder]("embedder")
 
 _abstract_splitter = RecursiveSplitter(
@@ -165,7 +165,7 @@ async def coco_lifespan(
         raise ValueError("POSTGRES_URL is not set")
 
     async with await postgres.create_pool(database_url) as pool:
-        builder.provide(PG_DB, postgres.register_db("paper_metadata_db", pool))
+        builder.provide(PG_DB, pool)
         builder.provide(EMBEDDER, SentenceTransformerEmbedder(EMBED_MODEL))
         yield
 
@@ -236,8 +236,8 @@ async def process_file(
 
 @coco.fn
 async def app_main(sourcedir: pathlib.Path) -> None:
-    target_db = coco.use_context(PG_DB)
-    metadata_table = await target_db.mount_table_target(
+    metadata_table = await postgres.mount_table_target(
+        PG_DB,
         table_name=TABLE_METADATA,
         table_schema=await postgres.TableSchema.from_class(
             PaperMetadataRow,
@@ -245,7 +245,8 @@ async def app_main(sourcedir: pathlib.Path) -> None:
         ),
         pg_schema_name=PG_SCHEMA_NAME,
     )
-    author_table = await target_db.mount_table_target(
+    author_table = await postgres.mount_table_target(
+        PG_DB,
         table_name=TABLE_AUTHOR_PAPERS,
         table_schema=await postgres.TableSchema.from_class(
             AuthorPaperRow,
@@ -253,7 +254,8 @@ async def app_main(sourcedir: pathlib.Path) -> None:
         ),
         pg_schema_name=PG_SCHEMA_NAME,
     )
-    embedding_table = await target_db.mount_table_target(
+    embedding_table = await postgres.mount_table_target(
+        PG_DB,
         table_name=TABLE_EMBEDDINGS,
         table_schema=await postgres.TableSchema.from_class(
             MetadataEmbeddingRow,

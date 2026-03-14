@@ -9,7 +9,6 @@ Vector support is provided via the sqlite-vec extension.
 """
 
 from __future__ import annotations
-import cocoindex as coco
 
 import datetime
 import decimal
@@ -35,10 +34,11 @@ from typing_extensions import TypeVar
 import numpy as np
 
 import cocoindex as coco
-from cocoindex.connectorkits import connection, statediff
+from cocoindex.connectorkits import statediff
 from cocoindex.connectorkits.fingerprint import fingerprint_object
 from cocoindex._internal.rwlock import RWLock
 from cocoindex._internal.serde import unpickle_safe
+from cocoindex._internal.context_keys import ContextKey, ContextProvider
 from cocoindex._internal.datatype import (
     AnyType,
     MappingType,
@@ -428,7 +428,9 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
             self._apply_actions
         )
 
-    def _apply_actions(self, actions: Sequence[_RowAction]) -> None:
+    def _apply_actions(
+        self, context_provider: ContextProvider, actions: Sequence[_RowAction]
+    ) -> None:
         """Apply row actions (upserts and deletes) to the database."""
 
         if not actions:
@@ -661,12 +663,6 @@ class _TableAction(NamedTuple):
     column_actions: dict[str, statediff.DiffAction]
 
 
-# Database registry: maps stable keys to managed connections
-_db_registry: connection.ConnectionRegistry[ManagedConnection] = (
-    connection.ConnectionRegistry("cocoindex/sqlite")
-)
-
-
 # =============================================================================
 # Table DDL helper functions
 # =============================================================================
@@ -850,6 +846,7 @@ def _apply_column_actions(
 
 
 def _apply_table_actions(
+    context_provider: ContextProvider,
     actions: Sequence[_TableAction],
 ) -> list[coco.ChildTargetDef["_RowHandler"] | None]:
     """Apply table actions (DDL) and return child row handlers."""
@@ -862,7 +859,7 @@ def _apply_table_actions(
         by_key.setdefault(action.key, []).append(i)
 
     for key, idxs in by_key.items():
-        managed_conn = _db_registry.get(key.db_key)
+        managed_conn = context_provider.get(key.db_key, ManagedConnection)
         has_vec = _VEC_EXTENSION in managed_conn.loaded_extensions
 
         with managed_conn.transaction() as conn:
@@ -1072,207 +1069,162 @@ class TableTarget(
         return self._provider.memo_key
 
 
-class SqliteDatabase(connection.KeyedConnection[ManagedConnection]):
-    """
-    Handle for a registered SQLite database.
-
-    Use `register_db()` to create an instance. Can be used as a context manager
-    to automatically unregister on exit.
-
-    Example:
-        ```python
-        # Without context manager (manual lifecycle)
-        db = register_db("my_db", conn)
-        # ... use db ...
-
-        # With context manager (auto-unregister on exit)
-        with register_db("my_db", conn) as db:
-            # ... use db ...
-        # db is automatically unregistered here
-        ```
-    """
-
-    def declare_table_target(
-        self,
-        table_name: str,
-        table_schema: TableSchema[RowT],
-        *,
-        managed_by: Literal["system", "user"] = "system",
-        virtual_table_def: Vec0TableDef | None = None,
-    ) -> TableTarget[RowT, coco.PendingS]:
-        """
-        Create a TableTarget for writing rows to a SQLite table (regular or virtual).
-
-        Args:
-            table_name: Name of the table.
-            table_schema: Schema definition including columns and primary key.
-            managed_by: Whether the table is managed by "system" (CocoIndex creates/drops it)
-                        or "user" (table must exist, CocoIndex only manages rows).
-            virtual_table_def: Optional virtual table configuration.
-                - None (default): Create a regular table
-                - Vec0TableDef: Create a vec0 virtual table (requires sqlite-vec extension)
-
-        Returns:
-            A TableTarget that can be used to declare rows.
-
-        Raises:
-            RuntimeError: If vec0 virtual table is requested but sqlite-vec extension is not loaded.
-            ValueError: If vec0 table configuration is invalid (e.g., no vector columns,
-                       invalid partition/auxiliary columns).
-
-        Note:
-            Virtual tables cannot be altered with ALTER TABLE. Schema changes
-            automatically trigger DROP + CREATE operations.
-        """
-        provider = coco.declare_target_state_with_child(
-            self.table_target(
-                table_name,
-                table_schema,
-                managed_by=managed_by,
-                virtual_table_def=virtual_table_def,
-            )
+def _validate_vec0_config(
+    table_schema: TableSchema[Any],
+    virtual_table_def: Vec0TableDef,
+    managed_conn: ManagedConnection,
+) -> None:
+    """Validate vec0 virtual table configuration."""
+    if _VEC_EXTENSION not in managed_conn.loaded_extensions:
+        raise RuntimeError(
+            "sqlite-vec extension must be loaded for vec0 virtual tables. "
+            "Use connect(..., load_vec=True)"
         )
-        return TableTarget(provider, table_schema)
+    has_vector_col = any(
+        col_def.type.startswith("float[") for col_def in table_schema.columns.values()
+    )
+    if not has_vector_col:
+        raise ValueError(
+            "vec0 virtual tables require at least one float[N] vector column"
+        )
+    all_cols = set(table_schema.columns.keys())
+    invalid_partition = set(virtual_table_def.partition_key_columns) - all_cols
+    if invalid_partition:
+        raise ValueError(f"Partition key columns not in schema: {invalid_partition}")
+    invalid_aux = set(virtual_table_def.auxiliary_columns) - all_cols
+    if invalid_aux:
+        raise ValueError(f"Auxiliary columns not in schema: {invalid_aux}")
+    if len(table_schema.primary_key) != 1:
+        raise ValueError(
+            f"vec0 virtual tables require exactly one primary key column, "
+            f"got {len(table_schema.primary_key)}: {table_schema.primary_key}"
+        )
+    pk_col_name = table_schema.primary_key[0]
+    pk_col_type = table_schema.columns[pk_col_name].type
+    if pk_col_type != "INTEGER":
+        raise ValueError(
+            f"vec0 virtual tables require INTEGER primary key, "
+            f"got {pk_col_type} for column '{pk_col_name}'"
+        )
 
-    def table_target(
-        self,
-        table_name: str,
-        table_schema: TableSchema[RowT],
-        *,
-        managed_by: Literal["system", "user"] = "system",
-        virtual_table_def: Vec0TableDef | None = None,
-    ) -> coco.TargetState[_RowHandler]:
-        """
-        Create a TargetState for a SQLite table target.
 
-        Use with ``coco.mount_target()`` to mount and get a child provider,
-        or with ``mount_table_target()`` for a convenience wrapper.
+def table_target(
+    db: ContextKey[ManagedConnection],
+    table_name: str,
+    table_schema: TableSchema[RowT],
+    *,
+    managed_by: Literal["system", "user"] = "system",
+    virtual_table_def: Vec0TableDef | None = None,
+) -> "coco.TargetState[_RowHandler]":
+    """
+    Create a TargetState for a SQLite table target.
 
-        Args:
-            table_name: Name of the table.
-            table_schema: Schema definition including columns and primary key.
-            managed_by: Whether the table is managed by "system" or "user".
-            virtual_table_def: Optional virtual table configuration.
+    Use with ``coco.mount_target()`` to mount and get a child provider,
+    or with ``declare_table_target()`` / ``mount_table_target()`` for convenience wrappers.
 
-        Returns:
-            A TargetState that can be passed to ``mount_target()``.
-        """
-        # Validate vec0 virtual table configuration (same as declare_table_target)
-        if isinstance(virtual_table_def, Vec0TableDef):
-            if _VEC_EXTENSION not in self._value.loaded_extensions:
-                raise RuntimeError(
-                    "sqlite-vec extension must be loaded for vec0 virtual tables. "
-                    "Use connect(..., load_vec=True)"
-                )
-            has_vector_col = any(
-                col_def.type.startswith("float[")
-                for col_def in table_schema.columns.values()
-            )
-            if not has_vector_col:
-                raise ValueError(
-                    "vec0 virtual tables require at least one float[N] vector column"
-                )
-            all_cols = set(table_schema.columns.keys())
-            invalid_partition = set(virtual_table_def.partition_key_columns) - all_cols
-            if invalid_partition:
-                raise ValueError(
-                    f"Partition key columns not in schema: {invalid_partition}"
-                )
-            invalid_aux = set(virtual_table_def.auxiliary_columns) - all_cols
-            if invalid_aux:
-                raise ValueError(f"Auxiliary columns not in schema: {invalid_aux}")
-            if len(table_schema.primary_key) != 1:
-                raise ValueError(
-                    f"vec0 virtual tables require exactly one primary key column, "
-                    f"got {len(table_schema.primary_key)}: {table_schema.primary_key}"
-                )
-            pk_col_name = table_schema.primary_key[0]
-            pk_col_type = table_schema.columns[pk_col_name].type
-            if pk_col_type != "INTEGER":
-                raise ValueError(
-                    f"vec0 virtual tables require INTEGER primary key, "
-                    f"got {pk_col_type} for column '{pk_col_name}'"
-                )
+    Args:
+        db: A ContextKey for the ManagedConnection (provided via lifespan).
+        table_name: Name of the table.
+        table_schema: Schema definition including columns and primary key.
+        managed_by: Whether the table is managed by "system" or "user".
+        virtual_table_def: Optional virtual table configuration.
 
-        key = _TableKey(db_key=self.key, table_name=table_name)
-        spec = _TableSpec(
-            table_schema=table_schema,
+    Returns:
+        A TargetState that can be passed to ``mount_target()``.
+    """
+    if isinstance(virtual_table_def, Vec0TableDef):
+        managed_conn = coco.use_context(db)
+        _validate_vec0_config(table_schema, virtual_table_def, managed_conn)
+
+    key = _TableKey(db_key=db.key, table_name=table_name)
+    spec = _TableSpec(
+        table_schema=table_schema,
+        managed_by=managed_by,
+        virtual_table_def=virtual_table_def,
+    )
+    return _table_provider.target_state(key, spec)
+
+
+def declare_table_target(
+    db: ContextKey[ManagedConnection],
+    table_name: str,
+    table_schema: TableSchema[RowT],
+    *,
+    managed_by: Literal["system", "user"] = "system",
+    virtual_table_def: Vec0TableDef | None = None,
+) -> "TableTarget[RowT, coco.PendingS]":
+    """
+    Create a TableTarget for writing rows to a SQLite table (regular or virtual).
+
+    Declares the table target state and returns a TableTarget to declare rows.
+
+    Args:
+        db: A ContextKey for the ManagedConnection (provided via lifespan).
+        table_name: Name of the table.
+        table_schema: Schema definition including columns and primary key.
+        managed_by: Whether the table is managed by "system" (CocoIndex creates/drops it)
+                    or "user" (table must exist, CocoIndex only manages rows).
+        virtual_table_def: Optional virtual table configuration.
+            - None (default): Create a regular table
+            - Vec0TableDef: Create a vec0 virtual table (requires sqlite-vec extension)
+
+    Returns:
+        A TableTarget that can be used to declare rows.
+
+    Raises:
+        RuntimeError: If vec0 virtual table is requested but sqlite-vec extension is not loaded.
+        ValueError: If vec0 table configuration is invalid (e.g., no vector columns,
+                   invalid partition/auxiliary columns).
+
+    Note:
+        Virtual tables cannot be altered with ALTER TABLE. Schema changes
+        automatically trigger DROP + CREATE operations.
+    """
+    provider = coco.declare_target_state_with_child(
+        table_target(
+            db,
+            table_name,
+            table_schema,
             managed_by=managed_by,
             virtual_table_def=virtual_table_def,
         )
-        return _table_provider.target_state(key, spec)
-
-    async def mount_table_target(
-        self,
-        table_name: str,
-        table_schema: TableSchema[RowT],
-        *,
-        managed_by: Literal["system", "user"] = "system",
-        virtual_table_def: Vec0TableDef | None = None,
-    ) -> TableTarget[RowT]:
-        """
-        Mount a table target and return a ready-to-use TableTarget.
-
-        Sugar over ``table_target()`` + ``coco.mount_target()`` + wrapping.
-
-        Args:
-            table_name: Name of the table.
-            table_schema: Schema definition including columns and primary key.
-            managed_by: Whether the table is managed by "system" or "user".
-            virtual_table_def: Optional virtual table configuration.
-
-        Returns:
-            A TableTarget that can be used to declare rows.
-        """
-        provider = await coco.mount_target(
-            self.table_target(
-                table_name,
-                table_schema,
-                managed_by=managed_by,
-                virtual_table_def=virtual_table_def,
-            )
-        )
-        return TableTarget(provider, table_schema)
+    )
+    return TableTarget(provider, table_schema)
 
 
-def register_db(key: str, managed_conn: ManagedConnection) -> SqliteDatabase:
+async def mount_table_target(
+    db: ContextKey[ManagedConnection],
+    table_name: str,
+    table_schema: TableSchema[RowT],
+    *,
+    managed_by: Literal["system", "user"] = "system",
+    virtual_table_def: Vec0TableDef | None = None,
+) -> "TableTarget[RowT]":
     """
-    Register a SQLite database connection with a stable key.
+    Mount a table target and return a ready-to-use TableTarget.
 
-    The key should be stable across runs - it identifies the logical database.
-    The connection can be recreated with different parameters as long as the
-    same key is used.
-
-    Can be used as a context manager to automatically unregister on exit.
+    Sugar over ``table_target()`` + ``coco.mount_target()`` + wrapping.
 
     Args:
-        key: A stable identifier for this database (e.g., "main_db", "analytics").
-             Must be unique - raises ValueError if a database with this key
-             is already registered.
-        managed_conn: A ManagedConnection object from connect().
+        db: A ContextKey for the ManagedConnection (provided via lifespan).
+        table_name: Name of the table.
+        table_schema: Schema definition including columns and primary key.
+        managed_by: Whether the table is managed by "system" or "user".
+        virtual_table_def: Optional virtual table configuration.
 
     Returns:
-        A SqliteDatabase handle that can be used to create table targets.
-
-    Raises:
-        ValueError: If a database with the given key is already registered.
-
-    Example:
-        ```python
-        def setup():
-            managed_conn = connect("mydb.sqlite")
-
-            # Option 1: Manual lifecycle
-            db = register_db("my_db", managed_conn)
-
-            # Option 2: Context manager (auto-unregister on exit)
-            with register_db("my_db", managed_conn) as db:
-                table = db.declare_table_target("my_table", schema)
-            # db is automatically unregistered here
-        ```
+        A TableTarget that can be used to declare rows.
     """
-    _db_registry.register(key, managed_conn)
-    return SqliteDatabase(_db_registry.name, key, managed_conn, _db_registry)
+    provider = await coco.mount_target(
+        table_target(
+            db,
+            table_name,
+            table_schema,
+            managed_by=managed_by,
+            virtual_table_def=virtual_table_def,
+        )
+    )
+    return TableTarget(provider, table_schema)
 
 
 def connect(
@@ -1329,6 +1281,44 @@ def connect(
     return managed_conn
 
 
+@contextmanager
+def managed_connection(
+    database: str | Path,
+    *,
+    timeout: float = 5.0,
+    load_vec: bool | Literal["auto"] = "auto",
+    **kwargs: Any,
+) -> Iterator[ManagedConnection]:
+    """
+    Create a SQLite ManagedConnection as a context manager.
+
+    Yields a ManagedConnection and automatically closes it on exit.
+    Suitable for use with ``builder.provide_with()`` in a lifespan function.
+
+    Args:
+        database: Path to the database file, or ":memory:" for in-memory database.
+        timeout: How long to wait for locks (default 5.0 seconds).
+        load_vec: Whether to load the sqlite-vec extension for vector support.
+            - "auto" (default): Try to load, silently ignore if unavailable.
+            - True: Load and raise an error if unavailable.
+            - False: Don't attempt to load.
+        **kwargs: Additional arguments passed to sqlite3.connect().
+
+    Example:
+        ```python
+        @coco.lifespan
+        async def _lifespan(builder: EnvironmentBuilder) -> None:
+            builder.provide_with(SQLITE_DB, managed_connection("mydb.sqlite"))
+            yield
+        ```
+    """
+    managed_conn = connect(database, timeout=timeout, load_vec=load_vec, **kwargs)
+    try:
+        yield managed_conn
+    finally:
+        managed_conn.close()
+
+
 def _load_sqlite_vec(
     managed_conn: ManagedConnection, *, ignore_error: bool = False
 ) -> None:
@@ -1358,11 +1348,13 @@ __all__ = [
     "ColumnDef",
     "ManagedConnection",
     "ValueEncoder",
-    "SqliteDatabase",
     "SqliteType",
     "TableSchema",
     "TableTarget",
     "Vec0TableDef",
     "connect",
-    "register_db",
+    "managed_connection",
+    "table_target",
+    "declare_table_target",
+    "mount_table_target",
 ]

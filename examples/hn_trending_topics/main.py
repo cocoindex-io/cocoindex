@@ -35,7 +35,7 @@ LLM_MODEL = "gemini/gemini-2.5-flash"
 THREAD_LEVEL_MENTION_SCORE = 5
 COMMENT_LEVEL_MENTION_SCORE = 1
 
-PG_DB = coco.ContextKey[postgres.PgDatabase]("pg_db", tracked=False)
+PG_DB = coco.ContextKey[asyncpg.Pool]("hn_db", tracked=False)
 
 
 # ============================================================================
@@ -191,7 +191,7 @@ async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]
     builder.settings.db_path = pathlib.Path("./cocoindex.db")
     # Provide resources needed across the CocoIndex environment
     async with await asyncpg.create_pool(DATABASE_URL) as pool:
-        builder.provide(PG_DB, postgres.register_db("hn_db", pool))
+        builder.provide(PG_DB, pool)
         yield
 
 
@@ -274,15 +274,16 @@ async def app_main() -> None:
     print()
 
     # Set up table targets
-    target_db = coco.use_context(PG_DB)
-    messages_table = await target_db.mount_table_target(
+    messages_table = await postgres.mount_table_target(
+        PG_DB,
         table_name="hn_messages",
         table_schema=await postgres.TableSchema.from_class(
             HnMessage, primary_key=["id"]
         ),
         pg_schema_name="coco_examples",
     )
-    topics_table = await target_db.mount_table_target(
+    topics_table = await postgres.mount_table_target(
+        PG_DB,
         table_name="hn_topics",
         table_schema=await postgres.TableSchema.from_class(
             HnTopic, primary_key=["topic", "message_id"]

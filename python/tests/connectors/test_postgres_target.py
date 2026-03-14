@@ -40,6 +40,8 @@ try:
 except ImportError:
     DEPS_AVAILABLE = False
 
+_PG_DB_KEY: coco.ContextKey[Any] = coco.ContextKey("test_postgres_target_pg_db")
+
 PG_DSN = os.getenv("POSTGRES_DSN")
 PG_CONFIGURED = bool(PG_DSN)
 
@@ -151,61 +153,61 @@ async def test_postgres_declare_vector_index(pg_env: Any) -> None:
     declare_table: bool = True
     index_method: str = "ivfflat"
 
+    coco_env.context_provider.provide(_PG_DB_KEY, pool)
+
     try:
-        with postgres.register_db(f"db_{table_name}", pool) as db:
 
-            async def declare_fn() -> None:
-                if not declare_table:
-                    return
-                table = await coco.use_mount(
-                    coco.component_subpath("setup", "table"),
-                    db.declare_table_target,
-                    table_name,
-                    await postgres.TableSchema.from_class(
-                        VectorRow, primary_key=["id"]
-                    ),
-                )
-                for row in source_rows:
-                    table.declare_row(row=row)
-                table.declare_vector_index(
-                    name=logical_name,
-                    column="embedding",
-                    metric="cosine",
-                    method=index_method,
-                )
-
-            app = coco.App(
-                coco.AppConfig(name=f"test_vec_idx_{table_name}", environment=coco_env),
-                declare_fn,
+        async def declare_fn() -> None:
+            if not declare_table:
+                return
+            table = await coco.use_mount(
+                coco.component_subpath("setup", "table"),
+                postgres.declare_table_target,
+                _PG_DB_KEY,
+                table_name,
+                await postgres.TableSchema.from_class(VectorRow, primary_key=["id"]),
+            )
+            for row in source_rows:
+                table.declare_row(row=row)
+            table.declare_vector_index(
+                name=logical_name,
+                column="embedding",
+                metric="cosine",
+                method=index_method,
             )
 
-            # Run 1: Create table + ivfflat index
-            source_rows = [
-                VectorRow(
-                    id="1",
-                    content="hello",
-                    embedding=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
-                ),
-            ]
-            await app.update()
+        app = coco.App(
+            coco.AppConfig(name=f"test_vec_idx_{table_name}", environment=coco_env),
+            declare_fn,
+        )
 
-            info = await _index_info(pool, pg_index_name)
-            assert info is not None, f"Index {pg_index_name} should exist"
-            assert info["amname"] == "ivfflat"
+        # Run 1: Create table + ivfflat index
+        source_rows = [
+            VectorRow(
+                id="1",
+                content="hello",
+                embedding=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+            ),
+        ]
+        await app.update()
 
-            # Run 2: Change to hnsw
-            index_method = "hnsw"
-            await app.update()
+        info = await _index_info(pool, pg_index_name)
+        assert info is not None, f"Index {pg_index_name} should exist"
+        assert info["amname"] == "ivfflat"
 
-            info = await _index_info(pool, pg_index_name)
-            assert info is not None, f"Index {pg_index_name} should still exist"
-            assert info["amname"] == "hnsw"
+        # Run 2: Change to hnsw
+        index_method = "hnsw"
+        await app.update()
 
-            # Run 3: Remove table entirely
-            declare_table = False
-            await app.update()
+        info = await _index_info(pool, pg_index_name)
+        assert info is not None, f"Index {pg_index_name} should still exist"
+        assert info["amname"] == "hnsw"
 
-            assert not await _table_exists(pool, table_name), "Table should be dropped"
+        # Run 3: Remove table entirely
+        declare_table = False
+        await app.update()
+
+        assert not await _table_exists(pool, table_name), "Table should be dropped"
 
     finally:
         for t in tables_to_clean:
@@ -228,42 +230,42 @@ async def test_postgres_declare_vector_index_fingerprint_no_change(pg_env: Any) 
         ),
     ]
 
+    coco_env.context_provider.provide(_PG_DB_KEY, pool)
+
     try:
-        with postgres.register_db(f"db_{table_name}", pool) as db:
 
-            async def declare_fn() -> None:
-                table = await coco.use_mount(
-                    coco.component_subpath("setup", "table"),
-                    db.declare_table_target,
-                    table_name,
-                    await postgres.TableSchema.from_class(
-                        VectorRow, primary_key=["id"]
-                    ),
-                )
-                for row in source_rows:
-                    table.declare_row(row=row)
-                table.declare_vector_index(
-                    name=logical_name,
-                    column="embedding",
-                    metric="cosine",
-                    method="ivfflat",
-                )
-
-            app = coco.App(
-                coco.AppConfig(name=f"test_vec_fp_{table_name}", environment=coco_env),
-                declare_fn,
+        async def declare_fn() -> None:
+            table = await coco.use_mount(
+                coco.component_subpath("setup", "table"),
+                postgres.declare_table_target,
+                _PG_DB_KEY,
+                table_name,
+                await postgres.TableSchema.from_class(VectorRow, primary_key=["id"]),
+            )
+            for row in source_rows:
+                table.declare_row(row=row)
+            table.declare_vector_index(
+                name=logical_name,
+                column="embedding",
+                metric="cosine",
+                method="ivfflat",
             )
 
-            # Run 1: Create
-            await app.update()
-            info1 = await _index_info(pool, pg_index_name)
-            assert info1 is not None
+        app = coco.App(
+            coco.AppConfig(name=f"test_vec_fp_{table_name}", environment=coco_env),
+            declare_fn,
+        )
 
-            # Run 2: Identical spec — should be a no-op
-            await app.update()
-            info2 = await _index_info(pool, pg_index_name)
-            assert info2 is not None
-            assert info2["amname"] == "ivfflat"
+        # Run 1: Create
+        await app.update()
+        info1 = await _index_info(pool, pg_index_name)
+        assert info1 is not None
+
+        # Run 2: Identical spec — should be a no-op
+        await app.update()
+        info2 = await _index_info(pool, pg_index_name)
+        assert info2 is not None
+        assert info2["amname"] == "ivfflat"
 
     finally:
         await _drop_table(pool, table_name)
@@ -282,67 +284,69 @@ async def test_postgres_declare_sql_command_attachment(pg_env: Any) -> None:
     current_setup_sql: str | None = None
     current_teardown_sql: str | None = None
 
+    coco_env.context_provider.provide(_PG_DB_KEY, pool)
+
     try:
-        with postgres.register_db(f"db_{table_name}", pool) as db:
 
-            async def declare_fn() -> None:
-                if not declare_table:
-                    return
-                table = await coco.use_mount(
-                    coco.component_subpath("setup", "table"),
-                    db.declare_table_target,
-                    table_name,
-                    await postgres.TableSchema.from_class(TextRow, primary_key=["id"]),
+        async def declare_fn() -> None:
+            if not declare_table:
+                return
+            table = await coco.use_mount(
+                coco.component_subpath("setup", "table"),
+                postgres.declare_table_target,
+                _PG_DB_KEY,
+                table_name,
+                await postgres.TableSchema.from_class(TextRow, primary_key=["id"]),
+            )
+            for row in source_rows:
+                table.declare_row(row=row)
+            if current_setup_sql is not None:
+                table.declare_sql_command_attachment(
+                    name="custom_idx",
+                    setup_sql=current_setup_sql,
+                    teardown_sql=current_teardown_sql,
                 )
-                for row in source_rows:
-                    table.declare_row(row=row)
-                if current_setup_sql is not None:
-                    table.declare_sql_command_attachment(
-                        name="custom_idx",
-                        setup_sql=current_setup_sql,
-                        teardown_sql=current_teardown_sql,
-                    )
 
-            app = coco.App(
-                coco.AppConfig(name=f"test_sql_cmd_{table_name}", environment=coco_env),
-                declare_fn,
-            )
+        app = coco.App(
+            coco.AppConfig(name=f"test_sql_cmd_{table_name}", environment=coco_env),
+            declare_fn,
+        )
 
-            # Run 1: Create table + btree index via SQL command
-            source_rows = [TextRow(id="1", content="hello world")]
-            current_setup_sql = (
-                f'CREATE INDEX "{idx_name_v1}" ON "{table_name}" ("content")'
-            )
-            current_teardown_sql = f'DROP INDEX IF EXISTS "{idx_name_v1}"'
-            await app.update()
+        # Run 1: Create table + btree index via SQL command
+        source_rows = [TextRow(id="1", content="hello world")]
+        current_setup_sql = (
+            f'CREATE INDEX "{idx_name_v1}" ON "{table_name}" ("content")'
+        )
+        current_teardown_sql = f'DROP INDEX IF EXISTS "{idx_name_v1}"'
+        await app.update()
 
-            info = await _index_info(pool, idx_name_v1)
-            assert info is not None, f"Index {idx_name_v1} should exist"
+        info = await _index_info(pool, idx_name_v1)
+        assert info is not None, f"Index {idx_name_v1} should exist"
 
-            # Run 2: Change setup_sql — teardown of v1 should run first
-            current_setup_sql = f'CREATE INDEX "{idx_name_v2}" ON "{table_name}" ("id")'
-            current_teardown_sql = f'DROP INDEX IF EXISTS "{idx_name_v2}"'
-            await app.update()
+        # Run 2: Change setup_sql — teardown of v1 should run first
+        current_setup_sql = f'CREATE INDEX "{idx_name_v2}" ON "{table_name}" ("id")'
+        current_teardown_sql = f'DROP INDEX IF EXISTS "{idx_name_v2}"'
+        await app.update()
 
-            # Old index should be torn down
-            assert await _index_info(pool, idx_name_v1) is None, (
-                f"Index {idx_name_v1} should have been torn down"
-            )
-            # New index should exist
-            info_v2 = await _index_info(pool, idx_name_v2)
-            assert info_v2 is not None, f"Index {idx_name_v2} should exist"
+        # Old index should be torn down
+        assert await _index_info(pool, idx_name_v1) is None, (
+            f"Index {idx_name_v1} should have been torn down"
+        )
+        # New index should exist
+        info_v2 = await _index_info(pool, idx_name_v2)
+        assert info_v2 is not None, f"Index {idx_name_v2} should exist"
 
-            # Run 3: Remove attachment — teardown of v2 should run
-            current_setup_sql = None
-            current_teardown_sql = None
-            await app.update()
+        # Run 3: Remove attachment — teardown of v2 should run
+        current_setup_sql = None
+        current_teardown_sql = None
+        await app.update()
 
-            # Teardown of v2 should have run
-            assert await _index_info(pool, idx_name_v2) is None, (
-                f"Index {idx_name_v2} should have been torn down"
-            )
-            # Table should still exist (only attachment removed)
-            assert await _table_exists(pool, table_name)
+        # Teardown of v2 should have run
+        assert await _index_info(pool, idx_name_v2) is None, (
+            f"Index {idx_name_v2} should have been torn down"
+        )
+        # Table should still exist (only attachment removed)
+        assert await _table_exists(pool, table_name)
 
     finally:
         await _drop_table(pool, table_name)
@@ -358,44 +362,44 @@ async def test_postgres_sql_command_attachment_no_teardown(pg_env: Any) -> None:
     source_rows: list[TextRow] = [TextRow(id="1", content="hello")]
     declare_attachment: bool = True
 
+    coco_env.context_provider.provide(_PG_DB_KEY, pool)
+
     try:
-        with postgres.register_db(f"db_{table_name}", pool) as db:
 
-            async def declare_fn() -> None:
-                table = await coco.use_mount(
-                    coco.component_subpath("setup", "table"),
-                    db.declare_table_target,
-                    table_name,
-                    await postgres.TableSchema.from_class(TextRow, primary_key=["id"]),
-                )
-                for row in source_rows:
-                    table.declare_row(row=row)
-                if declare_attachment:
-                    table.declare_sql_command_attachment(
-                        name="temp_idx",
-                        setup_sql=f'CREATE INDEX "{idx_name}" ON "{table_name}" ("content")',
-                        teardown_sql=None,
-                    )
-
-            app = coco.App(
-                coco.AppConfig(
-                    name=f"test_sql_notd_{table_name}", environment=coco_env
-                ),
-                declare_fn,
+        async def declare_fn() -> None:
+            table = await coco.use_mount(
+                coco.component_subpath("setup", "table"),
+                postgres.declare_table_target,
+                _PG_DB_KEY,
+                table_name,
+                await postgres.TableSchema.from_class(TextRow, primary_key=["id"]),
             )
+            for row in source_rows:
+                table.declare_row(row=row)
+            if declare_attachment:
+                table.declare_sql_command_attachment(
+                    name="temp_idx",
+                    setup_sql=f'CREATE INDEX "{idx_name}" ON "{table_name}" ("content")',
+                    teardown_sql=None,
+                )
 
-            # Run 1: Create
-            await app.update()
-            assert await _index_info(pool, idx_name) is not None
+        app = coco.App(
+            coco.AppConfig(name=f"test_sql_notd_{table_name}", environment=coco_env),
+            declare_fn,
+        )
 
-            # Run 2: Remove attachment — no teardown, should not error
-            declare_attachment = False
-            await app.update()
+        # Run 1: Create
+        await app.update()
+        assert await _index_info(pool, idx_name) is not None
 
-            # Table should still exist
-            assert await _table_exists(pool, table_name)
-            # Index persists since no teardown SQL was provided
-            assert await _index_info(pool, idx_name) is not None
+        # Run 2: Remove attachment — no teardown, should not error
+        declare_attachment = False
+        await app.update()
+
+        # Table should still exist
+        assert await _table_exists(pool, table_name)
+        # Index persists since no teardown SQL was provided
+        assert await _index_info(pool, idx_name) is not None
 
     finally:
         await _drop_table(pool, table_name)
@@ -413,82 +417,82 @@ async def test_postgres_mixed_rows_and_attachments(pg_env: Any) -> None:
     index_method: str = "ivfflat"
     declare_table: bool = True
 
+    coco_env.context_provider.provide(_PG_DB_KEY, pool)
+
     try:
-        with postgres.register_db(f"db_{table_name}", pool) as db:
 
-            async def declare_fn() -> None:
-                if not declare_table:
-                    return
-                table = await coco.use_mount(
-                    coco.component_subpath("setup", "table"),
-                    db.declare_table_target,
-                    table_name,
-                    await postgres.TableSchema.from_class(
-                        VectorRow, primary_key=["id"]
-                    ),
-                )
-                for row in source_rows:
-                    table.declare_row(row=row)
-                table.declare_vector_index(
-                    name=logical_name,
-                    column="embedding",
-                    metric="cosine",
-                    method=index_method,
-                )
-
-            app = coco.App(
-                coco.AppConfig(name=f"test_mixed_{table_name}", environment=coco_env),
-                declare_fn,
+        async def declare_fn() -> None:
+            if not declare_table:
+                return
+            table = await coco.use_mount(
+                coco.component_subpath("setup", "table"),
+                postgres.declare_table_target,
+                _PG_DB_KEY,
+                table_name,
+                await postgres.TableSchema.from_class(VectorRow, primary_key=["id"]),
+            )
+            for row in source_rows:
+                table.declare_row(row=row)
+            table.declare_vector_index(
+                name=logical_name,
+                column="embedding",
+                metric="cosine",
+                method=index_method,
             )
 
-            # Run 1: Declare rows + vector index
-            source_rows = [
-                VectorRow(
-                    id="1",
-                    content="alpha",
-                    embedding=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
-                ),
-                VectorRow(
-                    id="2",
-                    content="beta",
-                    embedding=np.array([0.0, 1.0, 0.0, 0.0], dtype=np.float32),
-                ),
-            ]
-            await app.update()
+        app = coco.App(
+            coco.AppConfig(name=f"test_mixed_{table_name}", environment=coco_env),
+            declare_fn,
+        )
 
-            assert await _row_count(pool, table_name) == 2
-            info = await _index_info(pool, pg_index_name)
-            assert info is not None
-            assert info["amname"] == "ivfflat"
+        # Run 1: Declare rows + vector index
+        source_rows = [
+            VectorRow(
+                id="1",
+                content="alpha",
+                embedding=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+            ),
+            VectorRow(
+                id="2",
+                content="beta",
+                embedding=np.array([0.0, 1.0, 0.0, 0.0], dtype=np.float32),
+            ),
+        ]
+        await app.update()
 
-            # Run 2: Change rows only, keep index same
-            source_rows = [
-                VectorRow(
-                    id="1",
-                    content="alpha updated",
-                    embedding=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
-                ),
-                VectorRow(
-                    id="3",
-                    content="gamma",
-                    embedding=np.array([0.0, 0.0, 1.0, 0.0], dtype=np.float32),
-                ),
-            ]
-            await app.update()
+        assert await _row_count(pool, table_name) == 2
+        info = await _index_info(pool, pg_index_name)
+        assert info is not None
+        assert info["amname"] == "ivfflat"
 
-            assert await _row_count(pool, table_name) == 2
-            info = await _index_info(pool, pg_index_name)
-            assert info is not None
-            assert info["amname"] == "ivfflat"  # unchanged
+        # Run 2: Change rows only, keep index same
+        source_rows = [
+            VectorRow(
+                id="1",
+                content="alpha updated",
+                embedding=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+            ),
+            VectorRow(
+                id="3",
+                content="gamma",
+                embedding=np.array([0.0, 0.0, 1.0, 0.0], dtype=np.float32),
+            ),
+        ]
+        await app.update()
 
-            # Run 3: Change index only, keep rows same
-            index_method = "hnsw"
-            await app.update()
+        assert await _row_count(pool, table_name) == 2
+        info = await _index_info(pool, pg_index_name)
+        assert info is not None
+        assert info["amname"] == "ivfflat"  # unchanged
 
-            assert await _row_count(pool, table_name) == 2
-            info = await _index_info(pool, pg_index_name)
-            assert info is not None
-            assert info["amname"] == "hnsw"  # changed
+        # Run 3: Change index only, keep rows same
+        index_method = "hnsw"
+        await app.update()
+
+        assert await _row_count(pool, table_name) == 2
+        info = await _index_info(pool, pg_index_name)
+        assert info is not None
+        assert info["amname"] == "hnsw"  # changed
 
     finally:
         await _drop_table(pool, table_name)

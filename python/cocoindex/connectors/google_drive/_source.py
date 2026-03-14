@@ -23,13 +23,7 @@ except ImportError as e:
         "Please install cocoindex[google_drive]."
     ) from e
 
-from cocoindex.connectorkits import connection
 from cocoindex.resources import file
-
-
-# Default base dir for unregistered Google Drive access (not registered)
-# The value is an empty string since Google Drive doesn't need a resolved base path
-_DEFAULT_DRIVE_BASE_DIR = connection.keyed_value("cocoindex/google_drive", "")
 
 
 class DriveFilePath(file.FilePath[str]):
@@ -48,10 +42,9 @@ class DriveFilePath(file.FilePath[str]):
         path: str | PurePath,
         *,
         file_id: str,
-        _base_dir: connection.KeyedConnection[str] | None = None,
     ) -> None:
         super().__init__(
-            _base_dir if _base_dir is not None else _DEFAULT_DRIVE_BASE_DIR,
+            None,
             PurePath(path),
         )
         self._file_id = file_id
@@ -62,7 +55,7 @@ class DriveFilePath(file.FilePath[str]):
 
     def _with_path(self, path: PurePath) -> Self:
         """Create a new DriveFilePath with the given path."""
-        return type(self)(path, file_id=self._file_id, _base_dir=self._base_dir)  # type: ignore[return-value]
+        return type(self)(path, file_id=self._file_id)  # type: ignore[return-value]
 
 
 _DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.readonly"

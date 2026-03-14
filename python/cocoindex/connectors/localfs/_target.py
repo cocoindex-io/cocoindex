@@ -13,7 +13,9 @@ from cocoindex.connectorkits.fingerprint import fingerprint_bytes
 from cocoindex._internal.datatype import TypeChecker
 
 from cocoindex._internal.serde import unpickle_safe
-from ._common import FilePath, CWD_BASE_DIR, path_registry, to_file_path
+from cocoindex._internal.context_keys import ContextProvider
+
+from ._common import FilePath, to_file_path
 
 # =============================================================================
 # Shared types and helpers
@@ -28,7 +30,10 @@ _FileFingerprint = bytes
 class _EntryAction(NamedTuple):
     """Action to perform on a file or directory entry."""
 
-    path: pathlib.Path  # Absolute path to the entry
+    base_dir_key: (
+        str | None
+    )  # Context key for base dir; None means path is already absolute
+    path: str  # Absolute path string if base_dir_key is None; relative path otherwise
     entry_type: Literal["file", "dir"]
     content: _FileContent | None  # For files; None means delete
     create_parents: bool  # Whether to create parent directories
@@ -49,14 +54,14 @@ class _EntrySpec:
     create_parent_dirs: bool
 
 
-def _execute_entry_action(action: _EntryAction) -> pathlib.Path | None:
+def _execute_entry_action(
+    path: pathlib.Path, action: _EntryAction
+) -> pathlib.Path | None:
     """
     Execute a single entry action.
 
     Returns the path for directories (to create child handler), None otherwise.
     """
-    path = action.path
-
     if action.content is None:
         # Delete
         if action.entry_type == "file":
@@ -82,12 +87,19 @@ def _execute_entry_action(action: _EntryAction) -> pathlib.Path | None:
 
 
 def _apply_actions_with_child(
+    context_provider: ContextProvider,
     actions: Sequence[_EntryAction],
+    /,
 ) -> list[coco.ChildTargetDef["_EntryHandler"] | None]:
     """Apply actions and return child handlers for directories."""
     outputs: list[coco.ChildTargetDef[_EntryHandler] | None] = []
     for action in actions:
-        result_path = _execute_entry_action(action)
+        if action.base_dir_key is not None:
+            base = context_provider.get(action.base_dir_key, pathlib.Path)
+            path = (base / action.path).resolve()
+        else:
+            path = pathlib.Path(action.path)  # already absolute
+        result_path = _execute_entry_action(path, action)
         if result_path is not None:
             outputs.append(coco.ChildTargetDef(handler=_EntryHandler(result_path)))
         else:
@@ -102,7 +114,8 @@ _action_sink_with_child = coco.TargetActionSink[
 
 
 def _reconcile_entry(
-    path: pathlib.Path,
+    base_dir_key: str | None,
+    path_str: str,
     desired_state: _EntrySpec | coco.NonExistenceType,
     prev_possible_states: Collection[_EntryTrackingRecord],
     prev_may_be_missing: bool,
@@ -120,12 +133,7 @@ def _reconcile_entry(
                 break
 
         return coco.TargetReconcileOutput(
-            action=_EntryAction(
-                path=path,
-                entry_type=entry_type,
-                content=None,
-                create_parents=False,
-            ),
+            action=_EntryAction(base_dir_key, path_str, entry_type, None, False),
             sink=_action_sink_with_child,
             tracking_record=coco.NON_EXISTENCE,
         )
@@ -136,12 +144,7 @@ def _reconcile_entry(
     if isinstance(entry_spec, _DirSpec):
         # Directory entry (fingerprint=None means directory)
         return coco.TargetReconcileOutput(
-            action=_EntryAction(
-                path=path,
-                entry_type="dir",
-                content=b"",  # Non-None to indicate creation
-                create_parents=create_parents,
-            ),
+            action=_EntryAction(base_dir_key, path_str, "dir", b"", create_parents),
             sink=_action_sink_with_child,
             tracking_record=_EntryTrackingRecord(fingerprint=None),
         )
@@ -156,12 +159,7 @@ def _reconcile_entry(
         return None
 
     return coco.TargetReconcileOutput(
-        action=_EntryAction(
-            path=path,
-            entry_type="file",
-            content=entry_spec,
-            create_parents=create_parents,
-        ),
+        action=_EntryAction(base_dir_key, path_str, "file", entry_spec, create_parents),
         sink=_action_sink_with_child,
         tracking_record=_EntryTrackingRecord(fingerprint=target_fp),
     )
@@ -206,7 +204,11 @@ class _EntryHandler(
         key = _ENTRY_NAME_CHECKER.check(key)
         path = self._base_path / key
         return _reconcile_entry(
-            path, desired_state, prev_possible_states, prev_may_be_missing
+            None,
+            str(path),
+            desired_state,
+            prev_possible_states,
+            prev_may_be_missing,
         )
 
 
@@ -226,24 +228,14 @@ _ROOT_KEY_CHECKER = TypeChecker(tuple[str | None, str])
 
 
 def _get_base_dir_key(file_path: FilePath) -> str | None:
-    """Get the base directory key, returning None for CWD (empty string)."""
-    key = file_path.base_dir.key
-    return key if key else None
+    """Get the base directory key, returning None for CWD."""
+    base_dir = file_path.base_dir
+    return base_dir.key if base_dir is not None else None
 
 
 # =============================================================================
 # Root handler (for root-level files and directories)
 # =============================================================================
-
-
-def _resolve_root_path(key: _RootKey) -> pathlib.Path:
-    """Resolve a root key to an absolute path using the current base directory."""
-    if key.base_dir_key is None:
-        # CWD
-        base_path = CWD_BASE_DIR.value
-    else:
-        base_path = path_registry.get(key.base_dir_key)
-    return (base_path / key.path).resolve()
 
 
 class _RootHandler(coco.TargetHandler[_EntrySpec, _EntryTrackingRecord, _EntryHandler]):
@@ -260,11 +252,17 @@ class _RootHandler(coco.TargetHandler[_EntrySpec, _EntryTrackingRecord, _EntryHa
         coco.TargetReconcileOutput[_EntryAction, _EntryTrackingRecord, _EntryHandler]
         | None
     ):
-        key = _RootKey(*_ROOT_KEY_CHECKER.check(key))
-
-        path = _resolve_root_path(key)
+        root_key = _RootKey(*_ROOT_KEY_CHECKER.check(key))
+        if root_key.base_dir_key is None:
+            path_str = str((pathlib.Path.cwd() / root_key.path).resolve())
+        else:
+            path_str = root_key.path
         return _reconcile_entry(
-            path, desired_state, prev_possible_states, prev_may_be_missing
+            root_key.base_dir_key,
+            path_str,
+            desired_state,
+            prev_possible_states,
+            prev_may_be_missing,
         )
 
 

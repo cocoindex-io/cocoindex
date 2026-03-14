@@ -199,6 +199,12 @@ We distinguish between **internal modules** (under packages with `_` prefix, e.g
 
 Avoid `Any` whenever feasible. Use specific types — including concrete types from third-party libraries. Only use `Any` when the type is truly generic and no downstream code needs to downcast it.
 
+### Prefer stronger types; validate and exchange early
+
+Prefer strongly-typed values over weakly-typed representations (strings, `Any`, raw identifiers). When a value enters the system in a weaker form, validate and convert it to the stronger type at the earliest point where the conversion is possible — don't propagate the weak form further than necessary.
+
+Example: connector handlers receive a `ContextKey` string as part of a target-state key. Rather than storing `_db_key: str` and re-resolving it via `context_provider.get(key_str, ConnType)` on every `_apply_actions` call, the parent handler resolves the key once (when constructing the child handler) and passes the typed connection directly. The child stores `_pool: asyncpg.Pool`, not `_db_key: str`.
+
 ### Multi-Value Returns
 
 For functions returning multiple values, use `NamedTuple` instead of plain tuples. At call sites, access fields by name (`result.can_reuse`) rather than positional unpacking — this prevents misreading fields in the wrong order.

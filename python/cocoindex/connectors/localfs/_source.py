@@ -144,8 +144,9 @@ class DirWalker:
             async for key, file in walker.items():
                 content = await file.read()
         """
+        root_path = self._root_path.path
         async for file in self:
-            yield (file.file_path.path.as_posix(), file)
+            yield (file.file_path.path.relative_to(root_path).as_posix(), file)
 
     async def __aiter__(self) -> AsyncIterator[File]:
         """Asynchronously iterate over files, yielding File objects."""
