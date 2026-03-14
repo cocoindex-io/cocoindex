@@ -82,29 +82,20 @@ The `sqlite` connector provides target state APIs for writing rows to tables. Wi
 
 ### Declaring Target States
 
-#### Database Registration
+#### Setting up a connection
 
-Before declaring target states, register the connection with a stable key that identifies the logical database. This key allows CocoIndex to recognize the same database even when the file path changes.
-
-```python
-def register_db(key: str, managed_conn: ManagedConnection) -> SqliteDatabase
-```
-
-**Parameters:**
-
-- `key` — A stable identifier for this database (e.g., `"main_db"`). Must be unique.
-- `managed_conn` — A `ManagedConnection` from `connect()`.
-
-**Returns:** A `SqliteDatabase` handle for declaring target states.
-
-The `SqliteDatabase` can be used as a context manager to automatically unregister on exit:
+Create a `ContextKey[sqlite.ManagedConnection]` (with `tracked=False`) to identify your SQLite connection, then provide it in your lifespan using `sqlite.managed_connection()`:
 
 ```python
-managed_conn = sqlite.connect("mydb.sqlite")
-with sqlite.register_db("my_db", managed_conn) as db:
-    # Use db to declare target states
-    ...
-# db is automatically unregistered here
+import cocoindex as coco
+
+SQLITE_DB = coco.ContextKey[sqlite.ManagedConnection]("main_db", tracked=False)
+
+@coco.lifespan
+def coco_lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
+    with sqlite.managed_connection("mydb.sqlite") as conn:
+        builder.provide(SQLITE_DB, conn)
+        yield
 ```
 
 #### Tables (Parent State)
@@ -112,22 +103,25 @@ with sqlite.register_db("my_db", managed_conn) as db:
 Declares a table as a target state. Returns a `TableTarget` for declaring rows.
 
 ```python
-def SqliteDatabase.declare_table_target(
-    self,
+def declare_table_target(
+    db: ContextKey[ManagedConnection],
     table_name: str,
     table_schema: TableSchema[RowT],
     *,
     managed_by: Literal["system", "user"] = "system",
+    virtual_table_def: Vec0TableDef | None = None,
 ) -> TableTarget[RowT, coco.PendingS]
 ```
 
 **Parameters:**
 
+- `db` — A `ContextKey[ManagedConnection]` identifying the connection to use.
 - `table_name` — Name of the table.
 - `table_schema` — Schema definition including columns and primary key (see [Table Schema](#table-schema-from-python-class)).
 - `managed_by` — Whether CocoIndex manages the table lifecycle (`"system"`) or assumes it exists (`"user"`).
+- `virtual_table_def` — Optional `Vec0TableDef` to create a vec0 virtual table instead of a regular table.
 
-**Returns:** A pending `TableTarget`. Use the convenience wrapper `await db.mount_table_target(table_name=..., table_schema=...)` to resolve.
+**Returns:** A pending `TableTarget`. Use the convenience wrapper `await sqlite.mount_table_target(SQLITE_DB, table_name, table_schema)` to resolve.
 
 #### Rows (Child States)
 
@@ -312,9 +306,10 @@ class VectorDocument:
     metadata: str
 
 # Create vec0 virtual table with partition key and auxiliary column
-table = await db.mount_table_target(
-    table_name="documents",
-    table_schema=await sqlite.TableSchema.from_class(
+table = await sqlite.mount_table_target(
+    SQLITE_DB,
+    "documents",
+    await sqlite.TableSchema.from_class(
         VectorDocument,
         primary_key=["id"],
     ),
@@ -342,7 +337,7 @@ from cocoindex.connectors import sqlite
 
 DATABASE_PATH = "mydb.sqlite"
 
-SQLITE_DB = coco.ContextKey[sqlite.SqliteDatabase]("sqlite_db")
+SQLITE_DB = coco.ContextKey[sqlite.ManagedConnection]("main_db", tracked=False)
 
 @dataclass
 class OutputProduct:
@@ -353,20 +348,17 @@ class OutputProduct:
 
 @coco.lifespan
 def coco_lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
-    managed_conn = sqlite.connect(DATABASE_PATH, load_vec=True)  # Enable vector support
-    with sqlite.register_db("main_db", managed_conn) as db:
-        builder.provide(SQLITE_DB, db)
+    with sqlite.managed_connection(DATABASE_PATH, load_vec=True) as conn:  # Enable vector support
+        builder.provide(SQLITE_DB, conn)
         yield
-    managed_conn.close()
 
 @coco.fn
 async def app_main() -> None:
-    db = coco.use_context(SQLITE_DB)
-
     # Declare table target state
-    table = await db.mount_table_target(
-        table_name="products",
-        table_schema=await sqlite.TableSchema.from_class(
+    table = await sqlite.mount_table_target(
+        SQLITE_DB,
+        "products",
+        await sqlite.TableSchema.from_class(
             OutputProduct,
             primary_key=["category", "name"],
         ),
@@ -388,7 +380,7 @@ from typing import Annotated
 from numpy.typing import NDArray
 
 DATABASE_PATH = "vectors.sqlite"
-SQLITE_DB = coco.ContextKey[sqlite.SqliteDatabase]("sqlite_db")
+SQLITE_DB = coco.ContextKey[sqlite.ManagedConnection]("vec_db", tracked=False)
 
 embedder = SentenceTransformerEmbedder("sentence-transformers/all-MiniLM-L6-v2")
 
@@ -403,20 +395,17 @@ class VectorDocument:
 
 @coco.lifespan
 def coco_lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
-    managed_conn = sqlite.connect(DATABASE_PATH, load_vec=True)
-    with sqlite.register_db("vec_db", managed_conn) as db:
-        builder.provide(SQLITE_DB, db)
+    with sqlite.managed_connection(DATABASE_PATH, load_vec=True) as conn:
+        builder.provide(SQLITE_DB, conn)
         yield
-    managed_conn.close()
 
 @coco.fn
 async def app_main() -> None:
-    db = coco.use_context(SQLITE_DB)
-
     # Create vec0 virtual table with partition key and auxiliary column
-    table = await db.mount_table_target(
-        table_name="documents",
-        table_schema=await sqlite.TableSchema.from_class(
+    table = await sqlite.mount_table_target(
+        SQLITE_DB,
+        "documents",
+        await sqlite.TableSchema.from_class(
             VectorDocument,
             primary_key=["id"],
         ),

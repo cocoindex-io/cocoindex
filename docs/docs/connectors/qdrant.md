@@ -52,26 +52,21 @@ The `qdrant` connector provides target state APIs for writing points to collecti
 
 ### Declaring target states
 
-#### Database registration
+#### Setting up a connection
 
-Before declaring target states, register the Qdrant client with a stable key that identifies the logical database. This key allows CocoIndex to recognize the same database even when connection details change.
-
-```python
-def register_db(key: str, client: QdrantClient) -> QdrantDatabase
-```
-
-**Parameters:**
-
-- `key` — A stable identifier for this database (e.g., `"vector_db"`). Must be unique.
-- `client` — A Qdrant client instance.
-
-**Returns:** A `QdrantDatabase` handle for declaring target states.
-
-**Example:**
+Create a `ContextKey[QdrantClient]` (with `tracked=False`) to identify your Qdrant client, then provide it in your lifespan:
 
 ```python
-client = qdrant.create_client("http://localhost:6333")
-db = qdrant.register_db("my_vectors", client)
+from qdrant_client import QdrantClient
+import cocoindex as coco
+
+QDRANT_DB = coco.ContextKey[QdrantClient]("my_vectors", tracked=False)
+
+@coco.lifespan
+async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]:
+    client = qdrant.create_client(QDRANT_URL)
+    builder.provide(QDRANT_DB, client)
+    yield
 ```
 
 #### Collections (parent state)
@@ -79,8 +74,8 @@ db = qdrant.register_db("my_vectors", client)
 Declares a collection as a target state. Returns a `CollectionTarget` for declaring points.
 
 ```python
-def QdrantDatabase.declare_collection_target(
-    self,
+def declare_collection_target(
+    db: ContextKey[QdrantClient],
     collection_name: str,
     schema: CollectionSchema,
     *,
@@ -90,11 +85,12 @@ def QdrantDatabase.declare_collection_target(
 
 **Parameters:**
 
+- `db` — A `ContextKey[QdrantClient]` identifying the Qdrant client to use.
 - `collection_name` — Name of the collection.
 - `schema` — Schema definition specifying vector configurations (see [Collection Schema](#collection-schema)).
 - `managed_by` — Whether CocoIndex manages the collection lifecycle (`"system"`) or assumes it exists (`"user"`).
 
-**Returns:** A pending `CollectionTarget`. Use the convenience wrapper `await db.mount_collection_target(collection_name=..., schema=...)` to resolve.
+**Returns:** A pending `CollectionTarget`. Use the convenience wrapper `await qdrant.mount_collection_target(QDRANT_DB, collection_name, schema)` to resolve.
 
 #### Points (child states)
 
@@ -242,20 +238,21 @@ The `distance` parameter in `QdrantVectorDef` specifies the similarity metric:
 ### Example: single vector
 
 ```python
+from qdrant_client import QdrantClient
 import cocoindex as coco
 from cocoindex.connectors import qdrant
 from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
 from typing import AsyncIterator
 
 QDRANT_URL = "http://localhost:6333"
-QDRANT_DB = coco.ContextKey[qdrant.QdrantDatabase]("qdrant_db")
+QDRANT_DB = coco.ContextKey[QdrantClient]("main_vectors", tracked=False)
 
 embedder = SentenceTransformerEmbedder("sentence-transformers/all-MiniLM-L6-v2")
 
 @coco.lifespan
 async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]:
     client = qdrant.create_client(QDRANT_URL)
-    builder.provide(QDRANT_DB, qdrant.register_db("main_vectors", client))
+    builder.provide(QDRANT_DB, client)
     yield
 
 @coco.fn
@@ -275,12 +272,11 @@ async def process_document(
 
 @coco.fn
 async def app_main() -> None:
-    db = coco.use_context(QDRANT_DB)
-
     # Declare collection target state
-    collection = await db.mount_collection_target(
-        collection_name="documents",
-        schema=await qdrant.CollectionSchema.create(
+    collection = await qdrant.mount_collection_target(
+        QDRANT_DB,
+        "documents",
+        await qdrant.CollectionSchema.create(
             vectors=qdrant.QdrantVectorDef(schema=embedder)
         ),
     )
@@ -304,11 +300,10 @@ import numpy as np
 
 @coco.fn
 async def app_main() -> None:
-    db = coco.use_context(QDRANT_DB)
-
-    collection = await db.mount_collection_target(
-        collection_name="multimodal_docs",
-        schema=await qdrant.CollectionSchema.create(
+    collection = await qdrant.mount_collection_target(
+        QDRANT_DB,
+        "multimodal_docs",
+        await qdrant.CollectionSchema.create(
             vectors={
                 "text": qdrant.QdrantVectorDef(
                     schema=text_embedder,
