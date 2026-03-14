@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from pathlib import PurePath
 
-import pytest
-
 from cocoindex.resources.file import FilePath
 from cocoindex.connectors.localfs import FilePath as LocalfsFilePath
 
@@ -50,7 +48,7 @@ def test_localfs_filepath_with_base_dir_memo_key() -> None:
     import pathlib
 
     key = ContextKey[pathlib.Path]("test_localfs_source_dir_unique_17", tracked=False)
-    fp = LocalfsFilePath("file.txt", _base_dir=key)
+    fp = LocalfsFilePath("file.txt", base_dir=key)
     assert fp.__coco_memo_key__() == (
         "test_localfs_source_dir_unique_17",
         PurePath("file.txt"),

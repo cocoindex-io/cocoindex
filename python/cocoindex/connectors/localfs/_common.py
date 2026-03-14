@@ -27,7 +27,7 @@ class FilePath(file.FilePath[pathlib.Path]):
 
         # Using a context key for a named base directory
         SOURCE_DIR = coco.ContextKey[pathlib.Path]("source_dir", tracked=False)
-        path = FilePath("docs/readme.md", _base_dir=SOURCE_DIR)
+        path = FilePath("docs/readme.md", base_dir=SOURCE_DIR)
         ```
     """
 
@@ -37,18 +37,18 @@ class FilePath(file.FilePath[pathlib.Path]):
         self,
         path: str | pathlib.PurePath = ".",
         *,
-        _base_dir: ContextKey[pathlib.Path] | None = None,
+        base_dir: ContextKey[pathlib.Path] | None = None,
     ) -> None:
         """
         Create a FilePath.
 
         Args:
             path: The path (relative to the base directory, or absolute).
-            _base_dir: Optional context key for the base directory. If None, resolves
-                       relative to the current working directory.
+            base_dir: Optional context key for the base directory. If None, resolves
+                      relative to the current working directory.
         """
         super().__init__(
-            _base_dir,
+            base_dir,
             pathlib.PurePath(path),
         )
 
@@ -63,13 +63,15 @@ class FilePath(file.FilePath[pathlib.Path]):
 
     def _with_path(self, path: pathlib.PurePath) -> Self:
         """Create a new FilePath with the given relative path, keeping the same base directory."""
-        return type(self)(path, _base_dir=self._base_dir)  # type: ignore[return-value]
+        return type(self)(path, base_dir=self._base_dir)  # type: ignore[return-value]
 
 
-def to_file_path(path: FilePath | pathlib.Path) -> FilePath:
-    """Convert a Path or FilePath to a FilePath."""
+def to_file_path(path: FilePath | pathlib.Path | ContextKey[pathlib.Path]) -> FilePath:
+    """Convert a Path, FilePath, or ContextKey to a FilePath."""
     if isinstance(path, FilePath):
         return path
+    if isinstance(path, ContextKey):
+        return FilePath(base_dir=path)
     return FilePath(path)
 
 

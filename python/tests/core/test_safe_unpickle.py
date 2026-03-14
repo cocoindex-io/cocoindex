@@ -108,7 +108,9 @@ class TestRegisteredTypes:
 
 class TestRejection:
     def test_unregistered_type_rejected(self) -> None:
-        data = serialize(_Unregistered(42))
+        # Use pickle.dumps directly to bypass strict-serialize checking,
+        # so we can test that deserialize rejects the unregistered type.
+        data = pickle.dumps(_Unregistered(42))
         with pytest.raises(pickle.UnpicklingError, match="Forbidden global"):
             deserialize(data)
 
