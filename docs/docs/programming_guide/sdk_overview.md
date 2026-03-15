@@ -70,7 +70,7 @@ APIs for starting and running your pipeline have both async and sync variants. S
 | `await coco.stop()` | `coco.stop_blocking()` |
 | `async with coco.runtime():` | `with coco.runtime():` |
 
-Use the async variants when you're already in an async context. Use the `_blocking` variants for scripts and CLI usage. See [App](./app.md) for details.
+`app.update()` returns an `UpdateHandle` that is also awaitable — `await app.update()` returns the result directly, or you can use the handle for [progress monitoring](./app.md#monitoring-progress). Use the `_blocking` variants for scripts and CLI usage. See [App](./app.md) for details.
 
 ### Processing functions (your choice)
 

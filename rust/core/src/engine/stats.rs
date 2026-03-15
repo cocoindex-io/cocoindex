@@ -4,9 +4,13 @@ use std::time::Duration;
 
 use crate::prelude::*;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use tokio::sync::watch;
 
 const BAR_WIDTH: u64 = 40;
 const PROGRESS_REPORT_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Sentinel version indicating the processing task has terminated.
+pub const TERMINATED_VERSION: u64 = u64::MAX;
 
 #[derive(Default, Clone)]
 pub struct ProcessingStatsGroup {
@@ -93,31 +97,71 @@ impl std::fmt::Display for ProcessingStatsGroup {
     }
 }
 
+/// A versioned snapshot of processing stats, combining the stats map with a version counter.
 #[derive(Default, Clone)]
+pub struct VersionedProcessingStats {
+    pub stats: IndexMap<String, ProcessingStatsGroup>,
+    pub version: u64,
+}
+
+/// Thread-safe container for processing stats with version tracking and change notification.
+#[derive(Clone)]
 pub struct ProcessingStats {
-    pub stats: Arc<Mutex<IndexMap<String, ProcessingStatsGroup>>>,
+    inner: Arc<Mutex<VersionedProcessingStats>>,
+    version_tx: watch::Sender<u64>,
+    version_rx: watch::Receiver<u64>,
+}
+
+impl Default for ProcessingStats {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ProcessingStats {
+    pub fn new() -> Self {
+        let (version_tx, version_rx) = watch::channel(0u64);
+        Self {
+            inner: Arc::new(Mutex::new(VersionedProcessingStats::default())),
+            version_tx,
+            version_rx,
+        }
+    }
+
     pub fn update(&self, operation_name: &str, mutator: impl FnOnce(&mut ProcessingStatsGroup)) {
-        let mut stats = self.stats.lock().unwrap();
-        if let Some(group) = stats.get_mut(operation_name) {
+        let mut guard = self.inner.lock().unwrap();
+        if let Some(group) = guard.stats.get_mut(operation_name) {
             mutator(group);
         } else {
             let mut group = ProcessingStatsGroup::default();
             mutator(&mut group);
-            stats.insert(operation_name.to_string(), group);
+            guard.stats.insert(operation_name.to_string(), group);
         }
+        guard.version += 1;
+        let version = guard.version;
+        drop(guard);
+        let _ = self.version_tx.send(version);
     }
 
-    pub fn snapshot(&self) -> IndexMap<String, ProcessingStatsGroup> {
-        self.stats.lock().unwrap().clone()
+    /// Returns an atomic snapshot of (version, stats).
+    pub fn snapshot(&self) -> VersionedProcessingStats {
+        self.inner.lock().unwrap().clone()
+    }
+
+    /// Signal that the processing task has terminated.
+    pub fn notify_terminated(&self) {
+        let _ = self.version_tx.send(TERMINATED_VERSION);
+    }
+
+    /// Subscribe to version change notifications.
+    pub fn subscribe(&self) -> watch::Receiver<u64> {
+        self.version_rx.clone()
     }
 
     pub fn format_stats(&self, start_time: Option<std::time::Instant>) -> String {
-        let stats = self.stats.lock().unwrap();
+        let guard = self.inner.lock().unwrap();
         let mut result = String::new();
-        for (name, group) in stats.iter() {
+        for (name, group) in guard.stats.iter() {
             if !result.is_empty() {
                 result.push('\n');
             }
@@ -203,10 +247,10 @@ impl ProgressReporter {
     }
 
     fn update_progress_bars(&self) {
-        let stats_snapshot = self.stats.snapshot();
+        let versioned = self.stats.snapshot();
         let mut progress_bars = self.progress_bars.lock().unwrap();
 
-        for (name, group) in stats_snapshot.iter() {
+        for (name, group) in versioned.stats.iter() {
             // Check if this processor is complete (all started items have finished)
             let is_complete = group.num_execution_starts > 0 && group.num_in_progress() == 0;
 
@@ -247,7 +291,7 @@ impl ProgressReporter {
     }
 
     fn print_final_stats(&self) {
-        let stats_snapshot = self.stats.snapshot();
+        let versioned = self.stats.snapshot();
         let progress_bars = self.progress_bars.lock().unwrap();
 
         // Clear all progress bars
@@ -258,11 +302,91 @@ impl ProgressReporter {
 
         // Print final stats
         self.multi_progress.suspend(|| {
-            for (name, group) in stats_snapshot.iter() {
+            for (name, group) in versioned.stats.iter() {
                 let icon = if group.has_errors() { "⚠️" } else { "✅" };
                 println!("{icon} {name}: {group}");
             }
             println!("{}", self.format_elapsed_message());
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_version_increments_on_update() {
+        let stats = ProcessingStats::new();
+        assert_eq!(stats.snapshot().version, 0);
+
+        stats.update("proc_a", |g| g.num_adds += 1);
+        assert_eq!(stats.snapshot().version, 1);
+
+        stats.update("proc_a", |g| g.num_adds += 1);
+        stats.update("proc_b", |g| g.num_unchanged += 1);
+        let snap = stats.snapshot();
+        assert_eq!(snap.version, 3);
+        assert_eq!(snap.stats["proc_a"].num_adds, 2);
+        assert_eq!(snap.stats["proc_b"].num_unchanged, 1);
+    }
+
+    #[test]
+    fn test_snapshot_version_and_stats_consistent() {
+        let stats = ProcessingStats::new();
+        stats.update("a", |g| g.num_adds += 1);
+        let snap1 = stats.snapshot();
+        assert_eq!(snap1.version, 1);
+        assert_eq!(snap1.stats.len(), 1);
+
+        stats.update("b", |g| g.num_deletes += 1);
+        let snap2 = stats.snapshot();
+        assert_eq!(snap2.version, 2);
+        assert_eq!(snap2.stats.len(), 2);
+
+        // snap1 is still the old snapshot
+        assert_eq!(snap1.version, 1);
+        assert_eq!(snap1.stats.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_watch_receives_version_notifications() {
+        let stats = ProcessingStats::new();
+        let mut rx = stats.subscribe();
+
+        stats.update("proc", |g| g.num_adds += 1);
+        rx.changed().await.unwrap();
+        assert_eq!(*rx.borrow(), 1);
+
+        stats.update("proc", |g| g.num_adds += 1);
+        rx.changed().await.unwrap();
+        assert_eq!(*rx.borrow(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_notify_terminated_sends_max_version() {
+        let stats = ProcessingStats::new();
+        let mut rx = stats.subscribe();
+
+        stats.update("proc", |g| g.num_adds += 1);
+        rx.changed().await.unwrap();
+
+        stats.notify_terminated();
+        rx.changed().await.unwrap();
+        assert_eq!(*rx.borrow(), TERMINATED_VERSION);
+    }
+
+    #[tokio::test]
+    async fn test_subscribe_multiple_receivers() {
+        let stats = ProcessingStats::new();
+        let mut rx1 = stats.subscribe();
+        let mut rx2 = stats.subscribe();
+
+        stats.update("proc", |g| g.num_adds += 1);
+
+        rx1.changed().await.unwrap();
+        rx2.changed().await.unwrap();
+        assert_eq!(*rx1.borrow(), 1);
+        assert_eq!(*rx2.borrow(), 1);
     }
 }

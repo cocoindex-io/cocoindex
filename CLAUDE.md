@@ -209,6 +209,10 @@ Example: connector handlers receive a `ContextKey` string as part of a target-st
 
 For functions returning multiple values, use `NamedTuple` instead of plain tuples. At call sites, access fields by name (`result.can_reuse`) rather than positional unpacking — this prevents misreading fields in the wrong order.
 
+### Exceptions are for exceptional situations
+
+Reserve exceptions (Python) and errors (Rust) for truly unexpected failures — not for normal control flow like signaling completion, end-of-iteration, or expected state transitions. When a condition is part of the normal, expected operation of the system, represent it with an explicit return value (e.g., a sentinel value, an enum variant, or `None`) rather than raising/throwing. This keeps exception handling clean and makes it easy to distinguish real errors from routine signals.
+
 ### Testing Guidelines
 
 We prefer end-to-end tests on user-facing APIs, over unit tests on smaller internal functions. With this said, there're cases where unit tests are necessary, e.g. for internal logic with various situations and edge cases, in which case it's usually easier to cover various scenarios with unit tests.

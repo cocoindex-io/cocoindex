@@ -15,7 +15,8 @@ from typing import (
 )
 
 from . import core, environment
-from .app import App, AppConfig
+from .app import App, AppConfig, UpdateHandle
+from .update_stats import ProcessorStats, UpdateSnapshot, UpdateStats, UpdateStatus
 from .pending_marker import ResolvesTo
 from .component_ctx import (
     ComponentSubpath,
@@ -418,6 +419,12 @@ __all__ = [
     # .app
     "App",
     "AppConfig",
+    "UpdateHandle",
+    # .update_stats
+    "ProcessorStats",
+    "UpdateSnapshot",
+    "UpdateStats",
+    "UpdateStatus",
     # .function
     "fn",
     "LogicTracking",

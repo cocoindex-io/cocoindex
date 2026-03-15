@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import threading
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import (
     Any,
@@ -15,13 +16,108 @@ from typing import (
 from . import core
 from .environment import Environment, LazyEnvironment, _default_env
 from .function import AnyCallable, AsyncCallable, create_core_component_processor
+from .update_stats import (
+    ProcessorStats,
+    UpdateSnapshot,
+    UpdateStats,
+    UpdateStatus,
+)
 
 
 P = ParamSpec("P")
 R = TypeVar("R")
 
+_TERMINATED_VERSION = 2**64 - 1  # u64::MAX
+
 _ENV_MAX_INFLIGHT_COMPONENTS = "COCOINDEX_MAX_INFLIGHT_COMPONENTS"
 _DEFAULT_MAX_INFLIGHT_COMPONENTS = 1024
+
+
+class UpdateHandle(Generic[R]):
+    """Handle for a running or completed update, providing access to stats and results.
+
+    The handle is also ``Awaitable[R]``, so ``result = await app.update()`` works
+    for backward compatibility.
+    """
+
+    def __init__(
+        self,
+        init_coro: Any,  # Coroutine that returns core.UpdateHandle[R]
+    ) -> None:
+        self._init_coro = init_coro
+        self._core_handle: core.UpdateHandle[R] | None = None
+
+    async def _ensure_started(self) -> core.UpdateHandle[R]:
+        if self._core_handle is None:
+            self._core_handle = await self._init_coro
+            self._init_coro = None
+        return self._core_handle
+
+    @staticmethod
+    def _make_update_stats(raw: dict[str, dict[str, int]]) -> UpdateStats:
+        by_processor = {name: ProcessorStats(**group) for name, group in raw.items()}
+        return UpdateStats(by_processor=by_processor)
+
+    def _snapshot_from_handle(
+        self,
+        handle: core.UpdateHandle[R],
+    ) -> tuple[int, UpdateStats | None]:
+        """Returns (version, stats). Stats is None if empty."""
+        version, raw = handle.stats_snapshot()
+        if not raw:
+            return version, None
+        return version, self._make_update_stats(raw)
+
+    def stats(self) -> UpdateStats | None:
+        """Returns a snapshot of the latest stats, or None if not yet started."""
+        if self._core_handle is None:
+            return None
+        _, stats = self._snapshot_from_handle(self._core_handle)
+        return stats
+
+    async def watch(self) -> AsyncIterator[UpdateSnapshot[R]]:
+        """Async iterator that yields progress snapshots.
+
+        Yields UpdateSnapshot with status RUNNING while the update is in progress,
+        then a final DONE snapshot with the result. On error, raises the exception
+        directly from the iterator.
+        """
+        handle = await self._ensure_started()
+        last_version = 0
+        while True:
+            version = await handle.changed()
+
+            # Check termination before dedup — notify_terminated() sends
+            # TERMINATED_VERSION on the watch channel without updating the
+            # stats version, so the dedup check would skip it.
+            if version >= _TERMINATED_VERSION:
+                snap_version, stats = self._snapshot_from_handle(handle)
+                result: R = await handle.result()
+                if stats is not None:
+                    yield UpdateSnapshot(
+                        stats=stats, status=UpdateStatus.DONE, result=result
+                    )
+                return
+
+            # Snapshot the actual stats (version may differ from notification)
+            snap_version, stats = self._snapshot_from_handle(handle)
+
+            if snap_version == last_version:
+                continue  # no actual change since last yield
+            last_version = snap_version
+
+            if stats is not None:
+                yield UpdateSnapshot(
+                    stats=stats, status=UpdateStatus.RUNNING, result=None
+                )
+
+    async def result(self) -> R:
+        """Await the update result. Raises on error."""
+        handle = await self._ensure_started()
+        return await handle.result()
+
+    def __await__(self) -> Any:
+        return self.result().__await__()
 
 
 @dataclass(frozen=True)
@@ -122,30 +218,37 @@ class App(Generic[P, R]):
                 )
             return self._core_env_app
 
-    async def update(
+    def update(
         self, *, report_to_stdout: bool = False, full_reprocess: bool = False
-    ) -> R:
+    ) -> UpdateHandle[R]:
         """
-        Update the app asynchronously (run the app once to process all pending changes).
+        Start an update and return a handle for tracking progress and awaiting the result.
+
+        The handle is ``Awaitable[R]``, so ``result = await app.update()`` works
+        for backward compatibility.
 
         Args:
             report_to_stdout: If True, periodically report processing stats to stdout.
             full_reprocess: If True, reprocess everything and invalidate existing caches.
 
         Returns:
-            The result of the main function.
+            An UpdateHandle that provides access to stats(), watch(), and result().
         """
-        env, core_app = await self._get_core_env_app()
-        root_path = core.StablePath()
-        processor = create_core_component_processor(
-            self._main_fn, env, root_path, self._app_args, self._app_kwargs
-        )
-        return await core_app.update_async(
-            processor,
-            report_to_stdout=report_to_stdout,
-            full_reprocess=full_reprocess,
-            host_ctx=env._context_provider,
-        )
+
+        async def _init() -> core.UpdateHandle[R]:
+            env, core_app = await self._get_core_env_app()
+            root_path = core.StablePath()
+            processor = create_core_component_processor(
+                self._main_fn, env, root_path, self._app_args, self._app_kwargs
+            )
+            return core_app.update_async(
+                processor,
+                report_to_stdout=report_to_stdout,
+                full_reprocess=full_reprocess,
+                host_ctx=env._context_provider,
+            )
+
+        return UpdateHandle(_init())
 
     def update_blocking(
         self, *, report_to_stdout: bool = False, full_reprocess: bool = False

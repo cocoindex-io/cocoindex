@@ -140,7 +140,7 @@ def test_my_pipeline():
         coco.AppConfig(name="TestApp", environment=env),
         my_main_fn,
     )
-    app.update()
+    app.update_blocking()
     # ... assertions ...
 ```
 
