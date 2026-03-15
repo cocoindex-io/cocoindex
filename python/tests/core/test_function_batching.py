@@ -845,6 +845,33 @@ async def test_gpu_runner_lazy_env_var(
     assert coco.GPU._should_use_subprocess() is True  # still cached
 
 
+@coco.fn.as_async(batching=True)  # type: ignore[arg-type]
+def batched_with_extra_arg(inputs: list[str], prefix: str) -> list[str]:
+    return [f"{prefix}:{x}" for x in inputs]
+
+
+@pytest.mark.asyncio
+async def test_batching_extra_arg_grouping() -> None:
+    r1: str
+    r2: str
+    r1, r2 = await asyncio.gather(
+        batched_with_extra_arg("a", "X"),  # type: ignore[call-arg]
+        batched_with_extra_arg("break", "X"),  # type: ignore[call-arg]
+    )
+    assert r1 == "X:a" and r2 == "X:break"
+
+
+@pytest.mark.asyncio
+async def test_batching_extra_arg_separates_batchers() -> None:
+    r1: str
+    r2: str
+    r1, r2 = await asyncio.gather(
+        batched_with_extra_arg("a", "X"),  # type: ignore[call-arg]
+        batched_with_extra_arg("a", "Y"),  # type: ignore[call-arg]
+    )
+    assert r1 == "X:a" and r2 == "Y:a"
+
+
 # Note: With always-async design, functions with batching/runner are always async.
 # The underlying implementation can be sync - it gets wrapped appropriately.
 # Both in-process and subprocess execution work for sync underlying functions.
