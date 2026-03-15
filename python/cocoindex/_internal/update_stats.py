@@ -6,7 +6,7 @@ from typing import Generic, NamedTuple, TypeVar
 R = TypeVar("R")
 
 
-class UpdateStatus(_enum.Enum):
+class UpdateStatus(_enum.StrEnum):
     RUNNING = "running"
     DONE = "done"
 
