@@ -1,12 +1,84 @@
 use crate::prelude::*;
 
 use cocoindex_core::engine::{
-    app::{App, AppDropOptions, AppUpdateOptions},
+    app::{App, AppDropOptions, AppUpdateOptions, UpdateHandle},
     runtime::get_runtime,
+    stats::{ProcessingStats, VersionedProcessingStats},
 };
+use pyo3::exceptions::PyRuntimeError;
+use pyo3::types::PyDict;
 use pyo3_async_runtimes::tokio::future_into_py;
+use tokio::sync::watch;
 
 use crate::{component::PyComponentProcessor, environment::PyEnvironment};
+
+fn snapshot_to_py<'py>(
+    py: Python<'py>,
+    versioned: &VersionedProcessingStats,
+) -> PyResult<Bound<'py, PyDict>> {
+    let dict = PyDict::new(py);
+    for (name, group) in &versioned.stats {
+        let group_dict = PyDict::new(py);
+        group_dict.set_item("num_execution_starts", group.num_execution_starts)?;
+        group_dict.set_item("num_unchanged", group.num_unchanged)?;
+        group_dict.set_item("num_adds", group.num_adds)?;
+        group_dict.set_item("num_deletes", group.num_deletes)?;
+        group_dict.set_item("num_reprocesses", group.num_reprocesses)?;
+        group_dict.set_item("num_errors", group.num_errors)?;
+        dict.set_item(name, group_dict)?;
+    }
+    Ok(dict)
+}
+
+#[pyclass(name = "UpdateHandle")]
+pub struct PyUpdateHandle {
+    handle: Mutex<Option<UpdateHandle<PyEngineProfile>>>,
+    stats: ProcessingStats,
+    /// Persistent receiver shared across `changed()` calls via Arc<tokio::Mutex>.
+    /// Using tokio::Mutex so it can be held across .await points.
+    version_rx: Arc<tokio::sync::Mutex<watch::Receiver<u64>>>,
+}
+
+#[pymethods]
+impl PyUpdateHandle {
+    /// Returns (version, {processor_name: {field: value}}) — atomic snapshot.
+    pub fn stats_snapshot<'py>(&self, py: Python<'py>) -> PyResult<(u64, Bound<'py, PyDict>)> {
+        let snapshot = self.stats.snapshot();
+        let dict = snapshot_to_py(py, &snapshot)?;
+        Ok((snapshot.version, dict))
+    }
+
+    /// Awaits a version change notification. Returns the new version.
+    /// Returns u64::MAX when the task terminates.
+    ///
+    /// Uses a persistent receiver: each call waits for the next change
+    /// relative to what previous calls already saw.
+    pub fn changed<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let rx = self.version_rx.clone();
+        future_into_py(py, async move {
+            let mut guard = rx.lock().await;
+            guard
+                .changed()
+                .await
+                .map_err(|_| PyRuntimeError::new_err("update task dropped"))?;
+            Ok(*guard.borrow())
+        })
+    }
+
+    /// Awaits the task completion and returns the result. Consumes the handle.
+    pub fn result<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let handle = self
+            .handle
+            .lock()
+            .unwrap()
+            .take()
+            .ok_or_else(|| PyRuntimeError::new_err("result already consumed"))?;
+        future_into_py(py, async move {
+            let ret = handle.result().await.into_py_result()?;
+            Ok(ret.into_inner())
+        })
+    }
+}
 
 #[pyclass(name = "App")]
 pub struct PyApp(pub Arc<App<PyEngineProfile>>);
@@ -24,28 +96,29 @@ impl PyApp {
         Ok(Self(Arc::new(app)))
     }
 
-    pub fn update_async<'py>(
+    pub fn update_async(
         &self,
-        py: Python<'py>,
         root_processor: PyComponentProcessor,
         report_to_stdout: bool,
         full_reprocess: bool,
         host_ctx: Py<PyAny>,
-    ) -> PyResult<Bound<'py, PyAny>> {
+    ) -> PyResult<PyUpdateHandle> {
         let app = self.0.clone();
         let options = AppUpdateOptions {
             report_to_stdout,
             full_reprocess,
         };
         let host_ctx = Arc::new(host_ctx);
-        let fut = future_into_py(py, async move {
-            let ret = app
-                .update(root_processor, options, host_ctx)
-                .await
-                .into_py_result()?;
-            Ok(ret.into_inner())
-        })?;
-        Ok(fut)
+        let handle = app
+            .update(root_processor, options, host_ctx)
+            .into_py_result()?;
+        let stats = handle.stats().clone();
+        let version_rx = Arc::new(tokio::sync::Mutex::new(stats.subscribe()));
+        Ok(PyUpdateHandle {
+            handle: Mutex::new(Some(handle)),
+            stats,
+            version_rx,
+        })
     }
 
     pub fn update<'py>(
@@ -64,10 +137,10 @@ impl PyApp {
         let host_ctx = Arc::new(host_ctx);
         py.detach(|| {
             get_runtime().block_on(async move {
-                let ret = app
+                let handle = app
                     .update(root_processor, options, host_ctx)
-                    .await
                     .into_py_result()?;
+                let ret = handle.result().await.into_py_result()?;
                 Ok(ret.into_inner())
             })
         })
