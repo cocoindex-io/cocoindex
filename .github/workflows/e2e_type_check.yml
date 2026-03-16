@@ -42,7 +42,7 @@ jobs:
         run: uv sync --no-dev --group ci
 
       - name: Run mypy-check hook
-        uses: j178/prek-action@v1
+        uses: j178/prek-action@v2
         with:
           extra-args: 'mypy-check --all-files'
         env:
