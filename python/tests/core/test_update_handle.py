@@ -57,7 +57,7 @@ async def test_handle_stats_after_completion() -> None:
 
     stats = handle.stats()
     assert stats is not None
-    assert len(stats.by_processor) > 0
+    assert len(stats.by_component) > 0
     total = stats.total
     assert total.num_finished == total.num_processed + total.num_errors
     assert total.num_in_progress == 0

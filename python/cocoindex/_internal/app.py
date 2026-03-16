@@ -17,7 +17,7 @@ from . import core
 from .environment import Environment, LazyEnvironment, _default_env
 from .function import AnyCallable, AsyncCallable, create_core_component_processor
 from .update_stats import (
-    ProcessorStats,
+    ComponentStats,
     UpdateSnapshot,
     UpdateStats,
     UpdateStatus,
@@ -55,8 +55,8 @@ class UpdateHandle(Generic[R]):
 
     @staticmethod
     def _make_update_stats(raw: dict[str, dict[str, int]]) -> UpdateStats:
-        by_processor = {name: ProcessorStats(**group) for name, group in raw.items()}
-        return UpdateStats(by_processor=by_processor)
+        by_component = {name: ComponentStats(**group) for name, group in raw.items()}
+        return UpdateStats(by_component=by_component)
 
     def _snapshot_from_handle(
         self,

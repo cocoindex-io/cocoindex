@@ -11,7 +11,7 @@ class UpdateStatus(_enum.StrEnum):
     DONE = "done"
 
 
-class ProcessorStats(NamedTuple):
+class ComponentStats(NamedTuple):
     """Per-processor stats group, mirroring Rust's ProcessingStatsGroup."""
 
     num_execution_starts: int
@@ -39,20 +39,20 @@ class ProcessorStats(NamedTuple):
 class UpdateStats(NamedTuple):
     """Mirrors Rust's ProcessingStats snapshot."""
 
-    by_processor: dict[str, ProcessorStats]
+    by_component: dict[str, ComponentStats]
 
     @property
-    def total(self) -> ProcessorStats:
+    def total(self) -> ComponentStats:
         """Aggregate stats across all processors."""
-        return ProcessorStats(
+        return ComponentStats(
             num_execution_starts=sum(
-                s.num_execution_starts for s in self.by_processor.values()
+                s.num_execution_starts for s in self.by_component.values()
             ),
-            num_unchanged=sum(s.num_unchanged for s in self.by_processor.values()),
-            num_adds=sum(s.num_adds for s in self.by_processor.values()),
-            num_deletes=sum(s.num_deletes for s in self.by_processor.values()),
-            num_reprocesses=sum(s.num_reprocesses for s in self.by_processor.values()),
-            num_errors=sum(s.num_errors for s in self.by_processor.values()),
+            num_unchanged=sum(s.num_unchanged for s in self.by_component.values()),
+            num_adds=sum(s.num_adds for s in self.by_component.values()),
+            num_deletes=sum(s.num_deletes for s in self.by_component.values()),
+            num_reprocesses=sum(s.num_reprocesses for s in self.by_component.values()),
+            num_errors=sum(s.num_errors for s in self.by_component.values()),
         )
 
 
