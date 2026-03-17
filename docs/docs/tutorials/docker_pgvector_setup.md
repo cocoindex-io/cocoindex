@@ -212,6 +212,17 @@ If you see examples using `cocoindex.main_fn()`, that API was removed in v0.3.36
 cocoindex update main.py
 ```
 
+## Using with Claude Code
+
+If you're using [Claude Code](https://claude.com/claude-code), install the CocoIndex skill for up-to-date API knowledge and workflow support:
+
+```
+/plugin marketplace add cocoindex-io/cocoindex-claude
+/plugin install cocoindex-skills@cocoindex
+```
+
+This helps Claude Code generate correct CocoIndex pipeline code and avoid deprecated APIs.
+
 ## Next steps
 
 - Explore [Query Support](../query.mdx) for CocoIndex's built-in query handlers
