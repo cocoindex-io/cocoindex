@@ -1,0 +1,219 @@
+---
+title: Docker + pgvector Setup
+description: Set up CocoIndex with Docker and pgvector from scratch, with semantic search queries
+---
+
+# Docker + pgvector Setup Guide
+
+This tutorial walks through setting up CocoIndex with Docker-based PostgreSQL and pgvector, building a text embedding pipeline, and querying it with semantic search. It covers common gotchas and is written to be easy for both humans and AI coding assistants to follow.
+
+## Prerequisites
+
+- Python 3.11+
+- Docker
+
+## Step 1: Start PostgreSQL with pgvector
+
+CocoIndex requires the `vector` PostgreSQL extension for embedding storage and HNSW indexes. You must use a pgvector-enabled image, not plain `postgres`.
+
+Using the project's docker compose config:
+
+```bash
+docker compose -f <(curl -L https://raw.githubusercontent.com/cocoindex-io/cocoindex/refs/heads/main/dev/postgres.yaml) up -d
+```
+
+Or manually:
+
+```bash
+docker run -d --name cocoindex-postgres \
+  -e POSTGRES_USER=cocoindex \
+  -e POSTGRES_PASSWORD=cocoindex \
+  -e POSTGRES_DB=cocoindex \
+  -p 5432:5432 \
+  pgvector/pgvector:pg17
+```
+
+:::warning Use pgvector image
+Using plain `postgres:16` or `postgres:17` will fail with `extension "vector" is not available` when CocoIndex tries to create the vector index.
+:::
+
+**Port conflict tip:** If you get unexpected "password authentication failed" errors, check that no other process (such as an SSH tunnel) is listening on your chosen port:
+
+```bash
+lsof -i :5432
+```
+
+You should only see Docker's process. If another process is listed, choose a different port (e.g., `-p 5450:5432`).
+
+### Running alongside other PostgreSQL instances
+
+If port 5432 is already in use, map to a different host port:
+
+```bash
+docker run -d --name cocoindex-postgres \
+  -e POSTGRES_USER=cocoindex \
+  -e POSTGRES_PASSWORD=cocoindex \
+  -e POSTGRES_DB=cocoindex \
+  -p 5450:5432 \
+  pgvector/pgvector:pg17
+```
+
+Then adjust the port in your database URL accordingly.
+
+## Step 2: Create a Python environment
+
+```bash
+mkdir cocoindex-quickstart && cd cocoindex-quickstart
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -U 'cocoindex[embeddings]'
+```
+
+The `[embeddings]` extra installs sentence-transformers for local embedding generation (no API key required).
+
+## Step 3: Configure the database connection
+
+Create a `.env` file in your project directory. CocoIndex loads it automatically:
+
+```bash
+COCOINDEX_DATABASE_URL=postgresql://cocoindex:cocoindex@localhost:5432/cocoindex
+```
+
+:::info
+CocoIndex uses [python-dotenv](https://pypi.org/project/python-dotenv/) and loads `.env` from the current directory. The `.env` value takes precedence over shell environment variables.
+:::
+
+## Step 4: Define the pipeline
+
+Create `main.py`:
+
+```python title="main.py"
+import cocoindex
+
+@cocoindex.flow_def(name="TextEmbedding")
+def text_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope):
+    data_scope["documents"] = flow_builder.add_source(
+        cocoindex.sources.LocalFile(path="markdown_files"))
+
+    doc_embeddings = data_scope.add_collector()
+
+    with data_scope["documents"].row() as doc:
+        doc["chunks"] = doc["content"].transform(
+            cocoindex.functions.SplitRecursively(),
+            language="markdown", chunk_size=2000, chunk_overlap=500)
+
+        with doc["chunks"].row() as chunk:
+            chunk["embedding"] = chunk["text"].transform(
+                cocoindex.functions.SentenceTransformerEmbed(
+                    model="sentence-transformers/all-MiniLM-L6-v2"
+                )
+            )
+            doc_embeddings.collect(
+                filename=doc["filename"],
+                location=chunk["location"],
+                text=chunk["text"],
+                embedding=chunk["embedding"],
+            )
+
+    doc_embeddings.export(
+        "doc_embeddings",
+        cocoindex.storages.Postgres(),
+        primary_key_fields=["filename", "location"],
+        vector_indexes=[
+            cocoindex.VectorIndexDef(
+                field_name="embedding",
+                metric=cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY,
+            )
+        ],
+    )
+```
+
+## Step 5: Add source files and run
+
+Create a `markdown_files/` directory with some markdown content, then build the index:
+
+```bash
+mkdir markdown_files
+# Add your .md files to markdown_files/
+
+cocoindex update main.py
+```
+
+CocoIndex will show the tables it needs to create and ask for confirmation. Type `yes` to proceed.
+
+## Step 6: Query with semantic search
+
+Install psycopg2 for direct database queries:
+
+```bash
+pip install psycopg2-binary
+```
+
+Create `query.py`:
+
+```python title="query.py"
+import sys
+from sentence_transformers import SentenceTransformer
+import psycopg2
+
+DB_URL = "postgresql://cocoindex:cocoindex@localhost:5432/cocoindex"
+
+def search(query: str, top_k: int = 3):
+    model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+    embedding = model.encode(query)
+    vec_str = "[" + ",".join(str(x) for x in embedding) + "]"
+
+    conn = psycopg2.connect(DB_URL)
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT filename, left(text, 200),
+               1 - (embedding <=> %s::vector) as similarity
+        FROM textembedding__doc_embeddings
+        ORDER BY embedding <=> %s::vector
+        LIMIT %s
+    """, (vec_str, vec_str, top_k))
+
+    results = cur.fetchall()
+    cur.close()
+    conn.close()
+    return results
+
+if __name__ == "__main__":
+    query = " ".join(sys.argv[1:]) or "What is CocoIndex?"
+    print(f"\nQuery: {query}\n")
+    for filename, text, score in search(query):
+        print(f"Score: {score:.4f} | {filename}")
+        print(f"  {text.strip()[:150]}...\n")
+```
+
+```bash
+python query.py "how do vector embeddings work?"
+```
+
+## Common issues
+
+### Table naming
+
+CocoIndex lowercases flow names when creating tables. A flow named `TextEmbedding` with an export named `doc_embeddings` creates the table `textembedding__doc_embeddings`.
+
+### Docker volume persistence
+
+If you change Postgres environment variables (user, password) but reuse the same container volume, the old credentials persist. Remove the volume when recreating:
+
+```bash
+docker rm -v cocoindex-postgres
+```
+
+### Deprecated APIs
+
+If you see examples using `cocoindex.main_fn()`, that API was removed in v0.3.36+. Use the `cocoindex` CLI directly instead:
+
+```bash
+cocoindex update main.py
+```
+
+## Next steps
+
+- Explore [Query Support](../query.mdx) for CocoIndex's built-in query handlers
+- Try other [targets](../targets/index.mdx) like Qdrant, Pinecone, or LanceDB
+- Set up [Live Updates](./live_updates.md) for continuous indexing
