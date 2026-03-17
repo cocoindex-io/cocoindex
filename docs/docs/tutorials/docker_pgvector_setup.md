@@ -226,5 +226,5 @@ This helps Claude Code generate correct CocoIndex pipeline code and avoid deprec
 ## Next steps
 
 - Explore [Query Support](../query.mdx) for CocoIndex's built-in query handlers
-- Try other [targets](../targets/index.mdx) like Qdrant, Pinecone, or LanceDB
+- Try other [targets](../targets/index.md) like Qdrant, Pinecone, or LanceDB
 - Set up [Live Updates](./live_updates.md) for continuous indexing
