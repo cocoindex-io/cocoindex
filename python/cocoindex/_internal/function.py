@@ -53,7 +53,7 @@ SelfT = TypeVar("SelfT")  # For method's self parameter
 
 
 AsyncCallable: TypeAlias = Callable[P, Coroutine[Any, Any, R_co]]
-AnyCallable: TypeAlias = Callable[P, R_co] | AsyncCallable[P, R_co]
+AnyCallable: TypeAlias = AsyncCallable[P, R_co] | Callable[P, R_co]
 
 LogicTracking: TypeAlias = Literal["full", "self"] | None
 

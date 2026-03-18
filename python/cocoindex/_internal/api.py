@@ -7,8 +7,6 @@ from typing import (
     Concatenate,
     Callable,
     Iterable,
-    Mapping,
-    Sequence,
     ParamSpec,
     TypeVar,
     overload,
@@ -26,6 +24,7 @@ from .component_ctx import (
 from .stable_path import StableKey
 from .function import (
     AnyCallable,
+    AsyncCallable,
     LogicTracking,
     create_core_component_processor,
     fn,
@@ -118,28 +117,28 @@ class ComponentMountHandle:
 @overload
 async def use_mount(
     subpath: ComponentSubpath,
-    processor_fn: AnyCallable[P, ResolvesTo[ReturnT]],
+    processor_fn: AsyncCallable[P, ResolvesTo[ReturnT]],
     *args: P.args,
     **kwargs: P.kwargs,
 ) -> ReturnT: ...
 @overload
 async def use_mount(
     subpath: ComponentSubpath,
-    processor_fn: AnyCallable[P, Sequence[ResolvesTo[ReturnT]]],
+    processor_fn: Callable[P, ResolvesTo[ReturnT]],
     *args: P.args,
     **kwargs: P.kwargs,
-) -> Sequence[ReturnT]: ...
+) -> ReturnT: ...
 @overload
 async def use_mount(
     subpath: ComponentSubpath,
-    processor_fn: AnyCallable[P, Mapping[K, ResolvesTo[ReturnT]]],
+    processor_fn: AsyncCallable[P, ReturnT],
     *args: P.args,
     **kwargs: P.kwargs,
-) -> Mapping[K, ReturnT]: ...
+) -> ReturnT: ...
 @overload
 async def use_mount(
     subpath: ComponentSubpath,
-    processor_fn: AnyCallable[P, ReturnT],
+    processor_fn: Callable[P, ReturnT],
     *args: P.args,
     **kwargs: P.kwargs,
 ) -> ReturnT: ...
