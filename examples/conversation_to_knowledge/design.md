@@ -155,7 +155,7 @@ input .txt files
 #### Step 1: Fetch Transcript
 
 ```python
-@coco.function(memo=True)
+@coco.fn(memo=True)
 async def fetch_transcript(youtube_id: str) -> SessionTranscript:
     """Download audio via yt-dlp, transcribe with speaker diarization via OpenAI."""
     # 1. yt-dlp: download audio to temp file + fetch metadata (title, upload_date)
@@ -172,7 +172,7 @@ async def fetch_transcript(youtube_id: str) -> SessionTranscript:
 #### Step 2: LLM Extraction (single call per session)
 
 ```python
-@coco.function(memo=True)
+@coco.fn(memo=True)
 async def extract_session(transcript: SessionTranscript) -> SessionExtraction:
     """Give LLM the full transcript + metadata, extract everything at once."""
     client = instructor.from_litellm(litellm.acompletion)
@@ -199,7 +199,7 @@ The prompt instructs the LLM to:
 #### Steps 3-5: Declare + Return
 
 ```python
-@coco.function
+@coco.fn
 async def process_session(
     youtube_id: str,
     session_table: surrealdb.TableTarget,
@@ -279,7 +279,7 @@ For each entity type (Person, Tech, Org) independently:
 ```python
 import faiss
 
-@coco.function(memo=True)
+@coco.fn(memo=True)
 async def compute_entity_embedding(name: str) -> NDArray:
     embedder = coco.use_context(EMBEDDER)
     return await embedder.embed(name)
@@ -315,7 +315,7 @@ async def resolve_entities(all_raw_entities: set[str]) -> dict[str, str | None]:
 
     return dedup
 
-@coco.function(memo=True)
+@coco.fn(memo=True)
 async def resolve_entity_pair(entity: str, candidates: list[str]) -> str | None:
     """LLM decides if entity matches any candidate; returns canonical or None."""
     client = instructor.from_litellm(litellm.acompletion)
@@ -327,7 +327,7 @@ async def resolve_entity_pair(entity: str, candidates: list[str]) -> str | None:
 With the deduplication dicts resolved, declare all remaining nodes and edges:
 
 ```python
-@coco.function
+@coco.fn
 async def create_knowledge_base(
     all_session_raw: list[SessionRawEntities],
     person_dedup: dict[str, str | None],
@@ -384,7 +384,7 @@ def resolve_canonical(name: str, dedup: dict[str, str | None]) -> str:
 ## App Structure
 
 ```python
-@coco.function
+@coco.fn
 async def app_main(input_dir: pathlib.Path) -> None:
     # --- Setup targets ---
     session_table = await surrealdb.mount_table_target(DB, "session", session_schema)
