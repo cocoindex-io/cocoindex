@@ -99,6 +99,12 @@ Download from [surrealdb.com/surrealist](https://surrealdb.com/surrealist) for a
 
 ### Example queries
 
+See all relationships:
+
+```surql
+SELECT * FROM statement_involves, session_statement, person_session;
+```
+
 Browse all sessions and their statements:
 
 ```surql
@@ -133,6 +139,22 @@ SELECT
   ->statement_involves->tech.name AS techs,
   ->statement_involves->org.name AS orgs
 FROM statement;
+```
+
+Top N techs mentioned by the most people:
+
+```surql
+SELECT
+  name,
+  array::distinct(
+    <-statement_involves<-statement<-person_statement<-person.name
+  ) AS persons,
+  array::len(array::distinct(
+    <-statement_involves<-statement<-person_statement<-person.id
+  )) AS person_count
+FROM tech
+ORDER BY person_count DESC
+LIMIT 10;
 ```
 
 ## Schema

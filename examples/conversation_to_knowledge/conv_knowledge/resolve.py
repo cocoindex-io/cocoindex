@@ -40,6 +40,7 @@ Format your response as:
 """
 
 
+@coco.unpickle_safe
 class EntityResolution(pydantic.BaseModel):
     """LLM output for entity resolution."""
 
@@ -84,7 +85,7 @@ async def resolve_entities(
 
     Returns dict mapping entity name -> canonical name (None if self is canonical).
     """
-    dim = 384  # all-MiniLM-L6-v2 dimension
+    dim = await coco.use_context(EMBEDDER).dimension()
     index = faiss.IndexFlatIP(dim)
     index_names: list[str] = []
     dedup: dict[str, str | None] = {}

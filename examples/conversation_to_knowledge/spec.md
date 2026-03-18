@@ -15,7 +15,9 @@ We want to convert a bunch of podcast sessions to knowledge base.
 - *Statement*: a statement about persons, techs and orgs
   - property: id, statement
 
-Note: Properties listed above are what matters for our business logic. An auto-generated key field can be added for those entities without an simple key field, which makes it's easier to identify these entities for most database. (e.g. `id` for SurrealDB)
+Note: Properties listed above are what matters for our business logic. An key field can be added for those entities without an simple key field, which makes it's easier to identify these entities for most database. (e.g. `id` for SurrealDB)
+- For Person, Tech and Org, we can use their name as key.
+- For Session and Statement, we can auto generate an ID.
 
 All names should be clear enough without ambiguity for common audience. In general, they're good Wikiepdia entry names. Examples:
 
@@ -47,15 +49,34 @@ For things that need cross-session entity resolutions, it returns them (i.e. we 
 
 #### Get Session
 
-For each video, we fetch and convert it to a Session entity.
+For each video, we fetch the audio transcript (with speaker diarization labels) and all available YouTube metadata (channel name, video title, description, upload date). These are carried forward for extraction.
 
-#### Extract raw Person, raw Tech, raw Org, Statements
+#### Reformat transcript
 
-We extract Persons attended in the Session.
+We use a shared `reformat_transcript(transcript, speaker_map)` utility to replace raw diarization labels (e.g. "Speaker A") with real names when known, or keep them as `(Speaker A)` when not. Both extraction steps use this function — Step 1 passes an empty dict (no names known yet), Step 2 passes the mapping from Step 1.
 
-We extract Statements from the Session. A statement contains the following entities:
-  - The Persons who made the statement
-  - The Persons, Techs and Orgs that the statement involves
+#### Step 1: Extract metadata and identify speakers
+
+Using the reformatted transcript (with `(Speaker A)`, `(Speaker B)` labels since no names are known yet) together with all available metadata (YouTube channel name, video title, description, upload date), we ask the LLM to:
+
+- Extract session metadata: name, description, date.
+- Identify each speaker label to a real person. The LLM should use the metadata and conversation content to figure out who each speaker is. Speaker names must follow the same naming convention as all other entities — clear, unambiguous, Wikipedia-style canonical names (e.g. "Lex Fridman", "Sam Altman", not "Lex" or "Sam"). For any speaker the LLM cannot confidently identify, leave them out (do not guess).
+
+The output of this step gives us the `speaker_label -> Person name` mapping (e.g. `{"A": "Lex Fridman", "B": "Sam Altman"}`), plus the session metadata.
+
+This mapping is also used for the *person_session* relationship — only identified speakers are linked to the session.
+
+#### Step 2: Extract statements and involved entities
+
+We reformat the transcript again, this time with the speaker mapping from Step 1 — recognized speakers get their real names, unrecognized ones stay as `(Speaker A)`.
+
+We then ask the LLM to extract statements and involved entities from the reformatted transcript. For each statement:
+  - The Persons who made the statement (by name)
+  - The Persons, Techs and Orgs that the statement is about — do NOT include the speaker(s) themselves here unless the statement is specifically about them (e.g. their background, credentials, or personal experience)
+
+**Important constraints for extraction quality:**
+- All extracted entity names must be **self-contained** — no anaphoric references (pronouns like "he/she/they", labels like "Speaker A", "the host", "the guest", or any reference that requires external context to resolve). Every name must be a clear, unambiguous identifier that stands on its own.
+- Statements from unrecognized speakers are still extracted (with their involved entities), but are **not attributed to any person** — i.e. no *person_statement* relationship is created for unrecognized speakers.
 
 #### Declare target states for Sessions and Statements
 

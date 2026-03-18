@@ -18,19 +18,19 @@ import cocoindex as coco
 from cocoindex.connectors import localfs, surrealdb
 from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
 from cocoindex.resources.file import PatternFilePathMatcher
+from cocoindex.resources.id import IdGenerator
 
-from .extract import extract_session
+from .extract import extract_metadata, extract_statements, format_transcript
 from .fetch import fetch_transcript
 from .models import (
     LLM_MODEL,
+    IdentifiedStatement,
     Org,
     Person,
-    RawStatement,
     Session,
     SessionRawEntities,
     Statement,
     Tech,
-    make_id,
     resolve_canonical,
 )
 from .resolve import EMBEDDER, resolve_entities
@@ -101,34 +101,49 @@ async def process_session(
     statement_table: surrealdb.TableTarget[Any],
     session_statement_rel: surrealdb.RelationTarget[Any],
 ) -> SessionRawEntities:
-    """Process a single session: fetch, extract, declare session + statements."""
+    """Process a single session: fetch, extract (2-step), declare session + statements."""
     transcript = await fetch_transcript(youtube_id)
-    extraction = await extract_session(transcript)
 
-    # Declare session node
+    # Step 1: format with empty map (no names known yet), then extract metadata
+    step1_text = format_transcript(transcript.utterances, {})
+    metadata = await extract_metadata(step1_text, transcript)
+
+    # Step 2: format with real names, then extract statements
+    speaker_map = {s.label: s.name for s in metadata.speakers}
+    step2_text = format_transcript(transcript.utterances, speaker_map)
+    stmt_extraction = await extract_statements(step2_text)
+
+    id_gen = IdGenerator(youtube_id)
+
+    # Declare session node (store the fully-resolved transcript)
+    session_id = await id_gen.next_id()
     session = Session(
-        id=youtube_id,
-        name=extraction.name or transcript.yt_title,
-        description=extraction.description,
-        transcript=transcript.transcript,
-        date=extraction.date or transcript.yt_upload_date,
+        id=session_id,
+        youtube_id=youtube_id,
+        name=metadata.name or transcript.yt_title,
+        description=metadata.description,
+        transcript=step2_text,
+        date=metadata.date or transcript.yt_upload_date,
     )
     session_table.declare_record(row=session)
 
     # Declare statements + session_statement edges
-    raw_statements: list[RawStatement] = []
-    for stmt in extraction.statements:
-        stmt_id = make_id(youtube_id, stmt.statement)
+    identified_stmts: list[IdentifiedStatement] = []
+    for stmt in stmt_extraction.statements:
+        stmt_id = await id_gen.next_id(stmt.statement)
         statement_table.declare_record(
             row=Statement(id=stmt_id, statement=stmt.statement)
         )
-        session_statement_rel.declare_relation(from_id=youtube_id, to_id=stmt_id)
-        raw_statements.append(stmt)
+        session_statement_rel.declare_relation(from_id=session_id, to_id=stmt_id)
+        identified_stmts.append(IdentifiedStatement(id=stmt_id, raw=stmt))
+
+    # Only identified speakers (all in metadata.speakers) form person_session
+    identified_persons = [s.name for s in metadata.speakers]
 
     return SessionRawEntities(
-        session_id=youtube_id,
-        persons=list(extraction.persons_attending),
-        statements=raw_statements,
+        session_id=session_id,
+        persons=identified_persons,
+        statements=identified_stmts,
     )
 
 
@@ -151,18 +166,18 @@ async def create_knowledge_base(
     statement_involves_rel: surrealdb.RelationTarget[Any],
 ) -> None:
     """Declare canonical entity nodes and all relationships."""
-    # Declare canonical person nodes
+    # Declare canonical person nodes (name is the ID)
     for name, upstream in person_dedup.items():
         if upstream is None:
-            person_table.declare_record(row=Person(id=make_id(name), name=name))
+            person_table.declare_record(row=Person(id=name, name=name))
     # Declare canonical tech nodes
     for name, upstream in tech_dedup.items():
         if upstream is None:
-            tech_table.declare_record(row=Tech(id=make_id(name), name=name))
+            tech_table.declare_record(row=Tech(id=name, name=name))
     # Declare canonical org nodes
     for name, upstream in org_dedup.items():
         if upstream is None:
-            org_table.declare_record(row=Org(id=make_id(name), name=name))
+            org_table.declare_record(row=Org(id=name, name=name))
 
     # Declare relationships
     for session_raw in all_session_raw:
@@ -170,56 +185,48 @@ async def create_knowledge_base(
         for person_name in session_raw.persons:
             canonical = resolve_canonical(person_name, person_dedup)
             person_session_rel.declare_relation(
-                from_id=make_id(canonical),
+                from_id=canonical,
                 to_id=session_raw.session_id,
             )
 
         # person_statement + statement_involves
-        for stmt in session_raw.statements:
-            stmt_id = make_id(session_raw.session_id, stmt.statement)
+        for identified in session_raw.statements:
+            stmt = identified.raw
+            stmt_id = identified.id
             # person_statement: person made the statement
             seen_speakers: set[str] = set()
             for speaker in stmt.speakers:
                 canonical = resolve_canonical(speaker, person_dedup)
-                cid = make_id(canonical)
-                if cid not in seen_speakers:
-                    seen_speakers.add(cid)
-                    person_statement_rel.declare_relation(from_id=cid, to_id=stmt_id)
+                if canonical not in seen_speakers:
+                    seen_speakers.add(canonical)
+                    person_statement_rel.declare_relation(
+                        from_id=canonical, to_id=stmt_id
+                    )
             # statement_involves: deduplicate after resolution
-            seen_involves: set[str] = set()
-            for p in stmt.involved_persons:
-                canonical = resolve_canonical(p, person_dedup)
-                cid = make_id(canonical)
-                key = f"person:{cid}"
-                if key not in seen_involves:
-                    seen_involves.add(key)
-                    statement_involves_rel.declare_relation(
-                        from_id=stmt_id,
-                        to_id=cid,
-                        to_table=person_table,
-                    )
-            for t in stmt.involved_techs:
-                canonical = resolve_canonical(t, tech_dedup)
-                cid = make_id(canonical)
-                key = f"tech:{cid}"
-                if key not in seen_involves:
-                    seen_involves.add(key)
-                    statement_involves_rel.declare_relation(
-                        from_id=stmt_id,
-                        to_id=cid,
-                        to_table=tech_table,
-                    )
-            for o in stmt.involved_orgs:
-                canonical = resolve_canonical(o, org_dedup)
-                cid = make_id(canonical)
-                key = f"org:{cid}"
-                if key not in seen_involves:
-                    seen_involves.add(key)
-                    statement_involves_rel.declare_relation(
-                        from_id=stmt_id,
-                        to_id=cid,
-                        to_table=org_table,
-                    )
+            for canonical in {
+                resolve_canonical(p, person_dedup) for p in stmt.involved_persons
+            }:
+                statement_involves_rel.declare_relation(
+                    from_id=stmt_id,
+                    to_id=canonical,
+                    to_table=person_table,
+                )
+            for canonical in {
+                resolve_canonical(t, tech_dedup) for t in stmt.involved_techs
+            }:
+                statement_involves_rel.declare_relation(
+                    from_id=stmt_id,
+                    to_id=canonical,
+                    to_table=tech_table,
+                )
+            for canonical in {
+                resolve_canonical(o, org_dedup) for o in stmt.involved_orgs
+            }:
+                statement_involves_rel.declare_relation(
+                    from_id=stmt_id,
+                    to_id=canonical,
+                    to_table=org_table,
+                )
 
 
 # ---------------------------------------------------------------------------
@@ -236,15 +243,15 @@ def _collect_all_raw(
     for session_raw in all_session_raw:
         if entity_type == "persons":
             result.update(session_raw.persons)
-            for stmt in session_raw.statements:
-                result.update(stmt.speakers)
-                result.update(stmt.involved_persons)
+            for identified in session_raw.statements:
+                result.update(identified.raw.speakers)
+                result.update(identified.raw.involved_persons)
         elif entity_type == "techs":
-            for stmt in session_raw.statements:
-                result.update(stmt.involved_techs)
+            for identified in session_raw.statements:
+                result.update(identified.raw.involved_techs)
         elif entity_type == "orgs":
-            for stmt in session_raw.statements:
-                result.update(stmt.involved_orgs)
+            for identified in session_raw.statements:
+                result.update(identified.raw.involved_orgs)
     return result
 
 

@@ -9,10 +9,10 @@ from typing import Any
 import assemblyai as aai
 import cocoindex as coco
 
-from .models import SessionTranscript
+from .models import SessionTranscript, Utterance
 
 
-@coco.fn
+@coco.fn(memo=True)
 async def fetch_transcript(youtube_id: str) -> SessionTranscript:
     """Download audio via yt-dlp, transcribe with speaker diarization via AssemblyAI."""
     import yt_dlp
@@ -38,7 +38,9 @@ async def fetch_transcript(youtube_id: str) -> SessionTranscript:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
 
+        yt_channel = info.get("channel", info.get("uploader", "")) if info else ""
         yt_title = info.get("title", youtube_id) if info else youtube_id
+        yt_description = info.get("description") if info else None
         yt_upload_date = info.get("upload_date") if info else None
         # yt-dlp upload_date is YYYYMMDD; convert to ISO
         if yt_upload_date and len(yt_upload_date) == 8:
@@ -70,21 +72,23 @@ async def fetch_transcript(youtube_id: str) -> SessionTranscript:
         if transcript.status == aai.TranscriptStatus.error:
             raise RuntimeError(f"AssemblyAI transcription failed: {transcript.error}")
 
-    # 3. Format transcript with speaker labels
-    transcript_text = _format_diarized_transcript(transcript)
+    # 3. Build structured utterances
+    utterances = _extract_utterances(transcript)
 
     return SessionTranscript(
-        transcript=transcript_text,
+        utterances=utterances,
+        yt_channel=yt_channel,
         yt_title=yt_title,
+        yt_description=yt_description,
         yt_upload_date=yt_upload_date,
     )
 
 
-def _format_diarized_transcript(transcript: aai.Transcript) -> str:
-    """Format AssemblyAI transcript with speaker-labeled utterances."""
+def _extract_utterances(transcript: aai.Transcript) -> list[Utterance]:
+    """Extract structured utterances from AssemblyAI transcript."""
     if transcript.utterances:
-        return "\n".join(
-            f"Speaker {u.speaker}: {u.text}" for u in transcript.utterances
-        )
-    # Fallback: no diarization info
-    return transcript.text or ""
+        return [
+            Utterance(speaker=u.speaker, text=u.text) for u in transcript.utterances
+        ]
+    # Fallback: no diarization info — single utterance with unknown speaker
+    return [Utterance(speaker="A", text=transcript.text or "")]
