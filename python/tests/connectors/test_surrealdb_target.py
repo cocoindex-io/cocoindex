@@ -32,9 +32,6 @@ try:
 except ImportError:
     HAS_SURREALDB = False
 
-# Type alias for untyped surrealdb library
-_SurrealConn = Any
-
 requires_surrealdb = pytest.mark.skipif(
     not HAS_SURREALDB, reason="surrealdb is not installed"
 )
@@ -56,14 +53,10 @@ if HAS_SURREALDB:
 _SURREALDB_URL = os.environ.get("SURREALDB_URL", "ws://localhost:8000/rpc")
 _SURREALDB_USER = os.environ.get("SURREALDB_USER", "")
 _SURREALDB_PASS = os.environ.get("SURREALDB_PASS", "")
-_SURREALDB_CREDENTIALS: dict[str, str] | None = (
-    {"username": _SURREALDB_USER, "password": _SURREALDB_PASS}
-    if _SURREALDB_USER
-    else None
-)
-
 if HAS_SURREALDB:
-    SURREAL_DB_KEY: coco.ContextKey[Any] = coco.ContextKey("test_surrealdb_target_db")
+    SURREAL_DB_KEY: coco.ContextKey[Any] = coco.ContextKey(
+        "test_surrealdb_target_db", tracked=False
+    )
 
 
 # =============================================================================
@@ -139,7 +132,7 @@ class TestValidateIdentifierAtApiEntryPoints:
 # =============================================================================
 
 
-async def _create_conn(ns: str, db: str) -> _SurrealConn:
+async def _create_conn(ns: str, db: str) -> Any:
     """Create and configure a SurrealDB connection for testing."""
     conn = AsyncSurreal(_SURREALDB_URL)
     await conn.connect()  # type: ignore[call-arg]
@@ -149,12 +142,12 @@ async def _create_conn(ns: str, db: str) -> _SurrealConn:
     return conn
 
 
-async def _query(conn: _SurrealConn, sql: str) -> Any:
+async def _query(conn: Any, sql: str) -> Any:
     """Execute a SurrealQL query and return the result."""
     return await conn.query(sql)
 
 
-async def _query_table(conn: _SurrealConn, table_name: str) -> list[dict[str, Any]]:
+async def _query_table(conn: Any, table_name: str) -> list[dict[str, Any]]:
     """Read all records from a table."""
     result = await conn.query(f"SELECT * FROM {table_name}")
     if isinstance(result, list):
@@ -162,7 +155,7 @@ async def _query_table(conn: _SurrealConn, table_name: str) -> list[dict[str, An
     return []
 
 
-async def _table_exists(conn: _SurrealConn, table_name: str) -> bool:
+async def _table_exists(conn: Any, table_name: str) -> bool:
     """Check whether a table exists via INFO FOR DB."""
     result = await conn.query("INFO FOR DB")
     if isinstance(result, dict):
@@ -172,7 +165,7 @@ async def _table_exists(conn: _SurrealConn, table_name: str) -> bool:
     return False
 
 
-async def _cleanup_conn(conn: _SurrealConn, ns: str, db: str) -> None:
+async def _cleanup_conn(conn: Any, ns: str, db: str) -> None:
     """Drop the test database and close the connection."""
     try:
         await conn.query(f"REMOVE DATABASE {db}")
@@ -194,7 +187,7 @@ async def _cleanup_conn(conn: _SurrealConn, ns: str, db: str) -> None:
 
 
 @pytest_asyncio.fixture
-async def surreal_conn() -> AsyncIterator[tuple[_SurrealConn, str, str]]:
+async def surreal_conn() -> AsyncIterator[tuple[Any, str, str]]:
     """Create a SurrealDB connection with a unique test namespace/database."""
     tag = uuid_mod.uuid4().hex[:8]
     ns = f"test_ns_{tag}"
@@ -363,7 +356,7 @@ async def declare_nothing() -> None:
 @requires_surrealdb
 @pytest.mark.asyncio
 async def test_create_table_schemafull_and_insert(
-    surreal_conn: tuple[_SurrealConn, str, str],
+    surreal_conn: tuple[Any, str, str],
 ) -> None:
     """Test creating a SCHEMAFULL table and inserting records."""
     conn, ns, db = surreal_conn
@@ -377,11 +370,13 @@ async def test_create_table_schemafull_and_insert(
 
     coco_env.context_provider.provide(
         SURREAL_DB_KEY,
-        surrealdb.make_conn_params(
+        surrealdb.ConnectionFactory(
             url=_SURREALDB_URL,
             namespace=ns,
             database=db,
-            credentials=_SURREALDB_CREDENTIALS,
+            credentials={"username": _SURREALDB_USER, "password": _SURREALDB_PASS}
+            if _SURREALDB_USER
+            else None,
         ),
     )
     app = coco.App(
@@ -412,7 +407,7 @@ async def test_create_table_schemafull_and_insert(
 @requires_surrealdb
 @pytest.mark.asyncio
 async def test_create_table_schemaless_and_insert(
-    surreal_conn: tuple[_SurrealConn, str, str],
+    surreal_conn: tuple[Any, str, str],
 ) -> None:
     """Test creating a SCHEMALESS table and inserting dict records."""
     conn, ns, db = surreal_conn
@@ -424,11 +419,13 @@ async def test_create_table_schemaless_and_insert(
 
     coco_env.context_provider.provide(
         SURREAL_DB_KEY,
-        surrealdb.make_conn_params(
+        surrealdb.ConnectionFactory(
             url=_SURREALDB_URL,
             namespace=ns,
             database=db,
-            credentials=_SURREALDB_CREDENTIALS,
+            credentials={"username": _SURREALDB_USER, "password": _SURREALDB_PASS}
+            if _SURREALDB_USER
+            else None,
         ),
     )
     app = coco.App(
@@ -454,7 +451,7 @@ async def test_create_table_schemaless_and_insert(
 @requires_surrealdb
 @pytest.mark.asyncio
 async def test_update_record(
-    surreal_conn: tuple[_SurrealConn, str, str],
+    surreal_conn: tuple[Any, str, str],
 ) -> None:
     """Test updating an existing record."""
     conn, ns, db = surreal_conn
@@ -468,11 +465,13 @@ async def test_update_record(
 
     coco_env.context_provider.provide(
         SURREAL_DB_KEY,
-        surrealdb.make_conn_params(
+        surrealdb.ConnectionFactory(
             url=_SURREALDB_URL,
             namespace=ns,
             database=db,
-            credentials=_SURREALDB_CREDENTIALS,
+            credentials={"username": _SURREALDB_USER, "password": _SURREALDB_PASS}
+            if _SURREALDB_USER
+            else None,
         ),
     )
 
@@ -497,7 +496,7 @@ async def test_update_record(
 @requires_surrealdb
 @pytest.mark.asyncio
 async def test_delete_record(
-    surreal_conn: tuple[_SurrealConn, str, str],
+    surreal_conn: tuple[Any, str, str],
 ) -> None:
     """Test deleting a record when it's no longer declared."""
     conn, ns, db = surreal_conn
@@ -511,11 +510,13 @@ async def test_delete_record(
 
     coco_env.context_provider.provide(
         SURREAL_DB_KEY,
-        surrealdb.make_conn_params(
+        surrealdb.ConnectionFactory(
             url=_SURREALDB_URL,
             namespace=ns,
             database=db,
-            credentials=_SURREALDB_CREDENTIALS,
+            credentials={"username": _SURREALDB_USER, "password": _SURREALDB_PASS}
+            if _SURREALDB_USER
+            else None,
         ),
     )
 
@@ -542,7 +543,7 @@ async def test_delete_record(
 @requires_surrealdb
 @pytest.mark.asyncio
 async def test_no_op_when_unchanged(
-    surreal_conn: tuple[_SurrealConn, str, str],
+    surreal_conn: tuple[Any, str, str],
 ) -> None:
     """Test that no errors occur when data is unchanged."""
     conn, ns, db = surreal_conn
@@ -556,11 +557,13 @@ async def test_no_op_when_unchanged(
 
     coco_env.context_provider.provide(
         SURREAL_DB_KEY,
-        surrealdb.make_conn_params(
+        surrealdb.ConnectionFactory(
             url=_SURREALDB_URL,
             namespace=ns,
             database=db,
-            credentials=_SURREALDB_CREDENTIALS,
+            credentials={"username": _SURREALDB_USER, "password": _SURREALDB_PASS}
+            if _SURREALDB_USER
+            else None,
         ),
     )
 
@@ -583,7 +586,7 @@ async def test_no_op_when_unchanged(
 @requires_surrealdb
 @pytest.mark.asyncio
 async def test_drop_table_on_removal(
-    surreal_conn: tuple[_SurrealConn, str, str],
+    surreal_conn: tuple[Any, str, str],
 ) -> None:
     """Test that a table is removed when no longer declared."""
     conn, ns, db = surreal_conn
@@ -597,11 +600,13 @@ async def test_drop_table_on_removal(
 
     coco_env.context_provider.provide(
         SURREAL_DB_KEY,
-        surrealdb.make_conn_params(
+        surrealdb.ConnectionFactory(
             url=_SURREALDB_URL,
             namespace=ns,
             database=db,
-            credentials=_SURREALDB_CREDENTIALS,
+            credentials={"username": _SURREALDB_USER, "password": _SURREALDB_PASS}
+            if _SURREALDB_USER
+            else None,
         ),
     )
 
@@ -629,7 +634,7 @@ async def test_drop_table_on_removal(
 @requires_surrealdb
 @pytest.mark.asyncio
 async def test_schema_evolution_add_field(
-    surreal_conn: tuple[_SurrealConn, str, str],
+    surreal_conn: tuple[Any, str, str],
 ) -> None:
     """Test adding a new field to an existing table."""
     conn, ns, db = surreal_conn
@@ -641,11 +646,13 @@ async def test_schema_evolution_add_field(
 
     coco_env.context_provider.provide(
         SURREAL_DB_KEY,
-        surrealdb.make_conn_params(
+        surrealdb.ConnectionFactory(
             url=_SURREALDB_URL,
             namespace=ns,
             database=db,
-            credentials=_SURREALDB_CREDENTIALS,
+            credentials={"username": _SURREALDB_USER, "password": _SURREALDB_PASS}
+            if _SURREALDB_USER
+            else None,
         ),
     )
 
@@ -672,7 +679,7 @@ async def test_schema_evolution_add_field(
 @requires_surrealdb
 @pytest.mark.asyncio
 async def test_schema_evolution_remove_field(
-    surreal_conn: tuple[_SurrealConn, str, str],
+    surreal_conn: tuple[Any, str, str],
 ) -> None:
     """Test removing a field from an existing table."""
     conn, ns, db = surreal_conn
@@ -684,11 +691,13 @@ async def test_schema_evolution_remove_field(
 
     coco_env.context_provider.provide(
         SURREAL_DB_KEY,
-        surrealdb.make_conn_params(
+        surrealdb.ConnectionFactory(
             url=_SURREALDB_URL,
             namespace=ns,
             database=db,
-            credentials=_SURREALDB_CREDENTIALS,
+            credentials={"username": _SURREALDB_USER, "password": _SURREALDB_PASS}
+            if _SURREALDB_USER
+            else None,
         ),
     )
 
@@ -715,7 +724,7 @@ async def test_schema_evolution_remove_field(
 @requires_surrealdb
 @pytest.mark.asyncio
 async def test_schema_evolution_change_id_type(
-    surreal_conn: tuple[_SurrealConn, str, str],
+    surreal_conn: tuple[Any, str, str],
 ) -> None:
     """Test changing id type triggers destructive table recreation."""
     conn, ns, db = surreal_conn
@@ -727,11 +736,13 @@ async def test_schema_evolution_change_id_type(
 
     coco_env.context_provider.provide(
         SURREAL_DB_KEY,
-        surrealdb.make_conn_params(
+        surrealdb.ConnectionFactory(
             url=_SURREALDB_URL,
             namespace=ns,
             database=db,
-            credentials=_SURREALDB_CREDENTIALS,
+            credentials={"username": _SURREALDB_USER, "password": _SURREALDB_PASS}
+            if _SURREALDB_USER
+            else None,
         ),
     )
 
@@ -763,18 +774,20 @@ async def test_schema_evolution_change_id_type(
 @requires_surrealdb
 @pytest.mark.asyncio
 async def test_relation_basic(
-    surreal_conn: tuple[_SurrealConn, str, str],
+    surreal_conn: tuple[Any, str, str],
 ) -> None:
     """Test basic relation table creation and record insertion."""
     conn, ns, db = surreal_conn
 
     coco_env.context_provider.provide(
         SURREAL_DB_KEY,
-        surrealdb.make_conn_params(
+        surrealdb.ConnectionFactory(
             url=_SURREALDB_URL,
             namespace=ns,
             database=db,
-            credentials=_SURREALDB_CREDENTIALS,
+            credentials={"username": _SURREALDB_USER, "password": _SURREALDB_PASS}
+            if _SURREALDB_USER
+            else None,
         ),
     )
     person_rows: list[Person] = []
@@ -840,18 +853,20 @@ async def test_relation_basic(
 @requires_surrealdb
 @pytest.mark.asyncio
 async def test_relation_delete(
-    surreal_conn: tuple[_SurrealConn, str, str],
+    surreal_conn: tuple[Any, str, str],
 ) -> None:
     """Test deleting relation records."""
     conn, ns, db = surreal_conn
 
     coco_env.context_provider.provide(
         SURREAL_DB_KEY,
-        surrealdb.make_conn_params(
+        surrealdb.ConnectionFactory(
             url=_SURREALDB_URL,
             namespace=ns,
             database=db,
-            credentials=_SURREALDB_CREDENTIALS,
+            credentials={"username": _SURREALDB_USER, "password": _SURREALDB_PASS}
+            if _SURREALDB_USER
+            else None,
         ),
     )
     person_rows: list[Person] = []
@@ -926,18 +941,20 @@ async def test_relation_delete(
 @requires_surrealdb
 @pytest.mark.asyncio
 async def test_relation_without_schema(
-    surreal_conn: tuple[_SurrealConn, str, str],
+    surreal_conn: tuple[Any, str, str],
 ) -> None:
     """Test schemaless relation table."""
     conn, ns, db = surreal_conn
 
     coco_env.context_provider.provide(
         SURREAL_DB_KEY,
-        surrealdb.make_conn_params(
+        surrealdb.ConnectionFactory(
             url=_SURREALDB_URL,
             namespace=ns,
             database=db,
-            credentials=_SURREALDB_CREDENTIALS,
+            credentials={"username": _SURREALDB_USER, "password": _SURREALDB_PASS}
+            if _SURREALDB_USER
+            else None,
         ),
     )
     person_rows: list[Person] = []
@@ -1008,18 +1025,20 @@ async def test_relation_without_schema(
 @requires_surrealdb
 @pytest.mark.asyncio
 async def test_relation_polymorphic(
-    surreal_conn: tuple[_SurrealConn, str, str],
+    surreal_conn: tuple[Any, str, str],
 ) -> None:
     """Test polymorphic relation with multiple from_table types."""
     conn, ns, db = surreal_conn
 
     coco_env.context_provider.provide(
         SURREAL_DB_KEY,
-        surrealdb.make_conn_params(
+        surrealdb.ConnectionFactory(
             url=_SURREALDB_URL,
             namespace=ns,
             database=db,
-            credentials=_SURREALDB_CREDENTIALS,
+            credentials={"username": _SURREALDB_USER, "password": _SURREALDB_PASS}
+            if _SURREALDB_USER
+            else None,
         ),
     )
     person_rows: list[Person] = []
@@ -1114,18 +1133,20 @@ async def test_relation_polymorphic(
 @requires_surrealdb
 @pytest.mark.asyncio
 async def test_relation_auto_id_with_update(
-    surreal_conn: tuple[_SurrealConn, str, str],
+    surreal_conn: tuple[Any, str, str],
 ) -> None:
     """Test that changing from_id with auto-derived id correctly deletes old + creates new."""
     conn, ns, db = surreal_conn
 
     coco_env.context_provider.provide(
         SURREAL_DB_KEY,
-        surrealdb.make_conn_params(
+        surrealdb.ConnectionFactory(
             url=_SURREALDB_URL,
             namespace=ns,
             database=db,
-            credentials=_SURREALDB_CREDENTIALS,
+            credentials={"username": _SURREALDB_USER, "password": _SURREALDB_PASS}
+            if _SURREALDB_USER
+            else None,
         ),
     )
     person_rows: list[Person] = []
@@ -1197,18 +1218,20 @@ async def test_relation_auto_id_with_update(
 @requires_surrealdb
 @pytest.mark.asyncio
 async def test_relation_schema_without_id(
-    surreal_conn: tuple[_SurrealConn, str, str],
+    surreal_conn: tuple[Any, str, str],
 ) -> None:
     """Test SCHEMAFULL relation where the schema class has no id field."""
     conn, ns, db = surreal_conn
 
     coco_env.context_provider.provide(
         SURREAL_DB_KEY,
-        surrealdb.make_conn_params(
+        surrealdb.ConnectionFactory(
             url=_SURREALDB_URL,
             namespace=ns,
             database=db,
-            credentials=_SURREALDB_CREDENTIALS,
+            credentials={"username": _SURREALDB_USER, "password": _SURREALDB_PASS}
+            if _SURREALDB_USER
+            else None,
         ),
     )
     person_rows: list[Person] = []
@@ -1281,18 +1304,20 @@ async def test_relation_schema_without_id(
 @requires_surrealdb
 @pytest.mark.asyncio
 async def test_transaction_ordering(
-    surreal_conn: tuple[_SurrealConn, str, str],
+    surreal_conn: tuple[Any, str, str],
 ) -> None:
     """Test that record operations happen in correct order within a transaction."""
     conn, ns, db = surreal_conn
 
     coco_env.context_provider.provide(
         SURREAL_DB_KEY,
-        surrealdb.make_conn_params(
+        surrealdb.ConnectionFactory(
             url=_SURREALDB_URL,
             namespace=ns,
             database=db,
-            credentials=_SURREALDB_CREDENTIALS,
+            credentials={"username": _SURREALDB_USER, "password": _SURREALDB_PASS}
+            if _SURREALDB_USER
+            else None,
         ),
     )
     person_rows: list[Person] = []
@@ -1362,18 +1387,20 @@ async def test_transaction_ordering(
 @requires_surrealdb
 @pytest.mark.asyncio
 async def test_table_level_ordering(
-    surreal_conn: tuple[_SurrealConn, str, str],
+    surreal_conn: tuple[Any, str, str],
 ) -> None:
     """Test DDL ordering: create tables before relations, remove relations before tables."""
     conn, ns, db = surreal_conn
 
     coco_env.context_provider.provide(
         SURREAL_DB_KEY,
-        surrealdb.make_conn_params(
+        surrealdb.ConnectionFactory(
             url=_SURREALDB_URL,
             namespace=ns,
             database=db,
-            credentials=_SURREALDB_CREDENTIALS,
+            credentials={"username": _SURREALDB_USER, "password": _SURREALDB_PASS}
+            if _SURREALDB_USER
+            else None,
         ),
     )
 
@@ -1418,18 +1445,20 @@ async def test_table_level_ordering(
 @requires_surrealdb
 @pytest.mark.asyncio
 async def test_multiple_tables_shared_sink(
-    surreal_conn: tuple[_SurrealConn, str, str],
+    surreal_conn: tuple[Any, str, str],
 ) -> None:
     """Test multiple tables and relations sharing the same sink."""
     conn, ns, db = surreal_conn
 
     coco_env.context_provider.provide(
         SURREAL_DB_KEY,
-        surrealdb.make_conn_params(
+        surrealdb.ConnectionFactory(
             url=_SURREALDB_URL,
             namespace=ns,
             database=db,
-            credentials=_SURREALDB_CREDENTIALS,
+            credentials={"username": _SURREALDB_USER, "password": _SURREALDB_PASS}
+            if _SURREALDB_USER
+            else None,
         ),
     )
     person_rows: list[Person] = []
@@ -1529,18 +1558,20 @@ async def test_multiple_tables_shared_sink(
 @requires_surrealdb
 @pytest.mark.asyncio
 async def test_vector_index_mtree(
-    surreal_conn: tuple[_SurrealConn, str, str],
+    surreal_conn: tuple[Any, str, str],
 ) -> None:
     """Test HNSW vector index with cosine metric."""
     conn, ns, db = surreal_conn
 
     coco_env.context_provider.provide(
         SURREAL_DB_KEY,
-        surrealdb.make_conn_params(
+        surrealdb.ConnectionFactory(
             url=_SURREALDB_URL,
             namespace=ns,
             database=db,
-            credentials=_SURREALDB_CREDENTIALS,
+            credentials={"username": _SURREALDB_USER, "password": _SURREALDB_PASS}
+            if _SURREALDB_USER
+            else None,
         ),
     )
     rows: list[VecRow] = []
@@ -1591,18 +1622,20 @@ async def test_vector_index_mtree(
 @requires_surrealdb
 @pytest.mark.asyncio
 async def test_vector_index_hnsw(
-    surreal_conn: tuple[_SurrealConn, str, str],
+    surreal_conn: tuple[Any, str, str],
 ) -> None:
     """Test HNSW vector index."""
     conn, ns, db = surreal_conn
 
     coco_env.context_provider.provide(
         SURREAL_DB_KEY,
-        surrealdb.make_conn_params(
+        surrealdb.ConnectionFactory(
             url=_SURREALDB_URL,
             namespace=ns,
             database=db,
-            credentials=_SURREALDB_CREDENTIALS,
+            credentials={"username": _SURREALDB_USER, "password": _SURREALDB_PASS}
+            if _SURREALDB_USER
+            else None,
         ),
     )
     rows: list[VecRow] = []
@@ -1649,18 +1682,20 @@ async def test_vector_index_hnsw(
 @requires_surrealdb
 @pytest.mark.asyncio
 async def test_vector_index_update(
-    surreal_conn: tuple[_SurrealConn, str, str],
+    surreal_conn: tuple[Any, str, str],
 ) -> None:
     """Test updating vector index spec (metric change)."""
     conn, ns, db = surreal_conn
 
     coco_env.context_provider.provide(
         SURREAL_DB_KEY,
-        surrealdb.make_conn_params(
+        surrealdb.ConnectionFactory(
             url=_SURREALDB_URL,
             namespace=ns,
             database=db,
-            credentials=_SURREALDB_CREDENTIALS,
+            credentials={"username": _SURREALDB_USER, "password": _SURREALDB_PASS}
+            if _SURREALDB_USER
+            else None,
         ),
     )
     rows: list[VecRow] = []
@@ -1718,7 +1753,7 @@ async def test_vector_index_update(
 @requires_surrealdb
 @pytest.mark.asyncio
 async def test_user_managed_table(
-    surreal_conn: tuple[_SurrealConn, str, str],
+    surreal_conn: tuple[Any, str, str],
 ) -> None:
     """Test managed_by='user' — CocoIndex manages rows but not the table DDL."""
     conn, ns, db = surreal_conn
@@ -1734,11 +1769,13 @@ async def test_user_managed_table(
 
     coco_env.context_provider.provide(
         SURREAL_DB_KEY,
-        surrealdb.make_conn_params(
+        surrealdb.ConnectionFactory(
             url=_SURREALDB_URL,
             namespace=ns,
             database=db,
-            credentials=_SURREALDB_CREDENTIALS,
+            credentials={"username": _SURREALDB_USER, "password": _SURREALDB_PASS}
+            if _SURREALDB_USER
+            else None,
         ),
     )
 
@@ -1767,18 +1804,20 @@ async def test_user_managed_table(
 @requires_surrealdb
 @pytest.mark.asyncio
 async def test_declare_row_alias(
-    surreal_conn: tuple[_SurrealConn, str, str],
+    surreal_conn: tuple[Any, str, str],
 ) -> None:
     """Test that declare_row works as alias for declare_record."""
     conn, ns, db = surreal_conn
 
     coco_env.context_provider.provide(
         SURREAL_DB_KEY,
-        surrealdb.make_conn_params(
+        surrealdb.ConnectionFactory(
             url=_SURREALDB_URL,
             namespace=ns,
             database=db,
-            credentials=_SURREALDB_CREDENTIALS,
+            credentials={"username": _SURREALDB_USER, "password": _SURREALDB_PASS}
+            if _SURREALDB_USER
+            else None,
         ),
     )
 
@@ -1808,18 +1847,20 @@ async def test_declare_row_alias(
 @requires_surrealdb
 @pytest.mark.asyncio
 async def test_schemaless_struct_input(
-    surreal_conn: tuple[_SurrealConn, str, str],
+    surreal_conn: tuple[Any, str, str],
 ) -> None:
     """Test SCHEMALESS table accepts dataclass instances."""
     conn, ns, db = surreal_conn
 
     coco_env.context_provider.provide(
         SURREAL_DB_KEY,
-        surrealdb.make_conn_params(
+        surrealdb.ConnectionFactory(
             url=_SURREALDB_URL,
             namespace=ns,
             database=db,
-            credentials=_SURREALDB_CREDENTIALS,
+            credentials={"username": _SURREALDB_USER, "password": _SURREALDB_PASS}
+            if _SURREALDB_USER
+            else None,
         ),
     )
 
@@ -1848,18 +1889,20 @@ async def test_schemaless_struct_input(
 @requires_surrealdb
 @pytest.mark.asyncio
 async def test_type_mapping(
-    surreal_conn: tuple[_SurrealConn, str, str],
+    surreal_conn: tuple[Any, str, str],
 ) -> None:
     """Test Python-to-SurrealDB type mapping with various types."""
     conn, ns, db = surreal_conn
 
     coco_env.context_provider.provide(
         SURREAL_DB_KEY,
-        surrealdb.make_conn_params(
+        surrealdb.ConnectionFactory(
             url=_SURREALDB_URL,
             namespace=ns,
             database=db,
-            credentials=_SURREALDB_CREDENTIALS,
+            credentials={"username": _SURREALDB_USER, "password": _SURREALDB_PASS}
+            if _SURREALDB_USER
+            else None,
         ),
     )
 

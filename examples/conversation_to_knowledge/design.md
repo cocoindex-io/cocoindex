@@ -9,7 +9,7 @@ Convert podcast sessions (from YouTube) into a structured knowledge graph stored
 | Concern | Choice | Rationale |
 |---------|--------|-----------|
 | Audio download | `yt-dlp` | Standard, reliable YouTube downloader |
-| Transcription + diarization | OpenAI `gpt-4o-transcribe-diarize` | Single API call gives speaker-labeled transcript. $0.006/min. No GPU, no extra deps beyond `openai` |
+| Transcription + diarization | AssemblyAI | Single API call gives speaker-labeled transcript with utterances. No file size / duration limits. No GPU needed |
 | LLM (extraction + resolution) | `instructor` + `litellm` → **`gpt-5.4-mini`** (configurable via `LLM_MODEL` in `.env`) | Good balance of cost ($0.75/$4.50 per 1M tokens) and capability for structured extraction |
 | Embedding (entity resolution) | `sentence-transformers/all-MiniLM-L6-v2` | Fast, good for short entity name similarity |
 | In-memory vector search | `faiss-cpu` (`IndexFlatIP`) | SIMD-optimized exact search with incremental `add()`; no GPU needed |
@@ -155,14 +155,14 @@ input .txt files
 #### Step 1: Fetch Transcript
 
 ```python
-@coco.fn(memo=True)
+@coco.fn
 async def fetch_transcript(youtube_id: str) -> SessionTranscript:
-    """Download audio via yt-dlp, transcribe with speaker diarization via OpenAI."""
+    """Download audio via yt-dlp, transcribe with speaker diarization via AssemblyAI."""
     # 1. yt-dlp: download audio to temp file + fetch metadata (title, upload_date)
-    # 2. OpenAI gpt-4o-transcribe-diarize: transcribe with speaker labels
-    #    - Use chunking_strategy="auto" for audio > 30s
-    #    - Response format: "diarized_json" → segments with speaker labels
-    # 3. Format transcript as "Speaker 0: ...\nSpeaker 1: ..." text
+    # 2. AssemblyAI: transcribe with speaker_labels=True
+    #    - Uploads file, returns utterances with speaker labels
+    #    - No file size or duration limits
+    # 3. Format transcript as "Speaker A: ...\nSpeaker B: ..." text
     # 4. Return SessionTranscript(transcript=..., yt_metadata=...)
     ...
 ```
@@ -172,7 +172,7 @@ async def fetch_transcript(youtube_id: str) -> SessionTranscript:
 #### Step 2: LLM Extraction (single call per session)
 
 ```python
-@coco.fn(memo=True)
+@coco.fn
 async def extract_session(transcript: SessionTranscript) -> SessionExtraction:
     """Give LLM the full transcript + metadata, extract everything at once."""
     client = instructor.from_litellm(litellm.acompletion)
@@ -206,14 +206,8 @@ async def process_session(
     statement_table: surrealdb.TableTarget,
     session_statement_rel: surrealdb.RelationTarget,
 ) -> SessionRawEntities:
-    transcript = await coco.use_mount(
-        coco.component_subpath("fetch"),
-        fetch_transcript, youtube_id,
-    )
-    extraction = await coco.use_mount(
-        coco.component_subpath("extract"),
-        extract_session, transcript,
-    )
+    transcript = await fetch_transcript(youtube_id)
+    extraction = await extract_session(transcript)
 
     # Declare session node (use LLM-extracted metadata, fallback to yt-dlp)
     session = Session(
@@ -456,19 +450,19 @@ app = coco.App(
 ## Lifespan & Context
 
 ```python
-SURREAL_DB = coco.ContextKey[surrealdb.ConnParams]("surreal_db", tracked=False)
+SURREAL_DB = coco.ContextKey[surrealdb.ConnectionFactory]("surreal_db", tracked=False)
 EMBEDDER = coco.ContextKey[SentenceTransformerEmbedder]("embedder")
 
 @coco.lifespan
 async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]:
-    builder.provide(SURREAL_DB, surrealdb.make_conn_params(
+    builder.provide(SURREAL_DB, surrealdb.ConnectionFactory(
         url=os.environ["SURREALDB_URL"],
         namespace="cocoindex",
         database="knowledge",
-        credentials=surrealdb.Credentials(
-            username=os.environ.get("SURREALDB_USER", "root"),
-            password=os.environ.get("SURREALDB_PASS", "root"),
-        ),
+        credentials={
+            "username": os.environ.get("SURREALDB_USER", "root"),
+            "password": os.environ.get("SURREALDB_PASS", "root"),
+        },
     ))
     builder.provide(EMBEDDER, SentenceTransformerEmbedder(
         "sentence-transformers/all-MiniLM-L6-v2"))
@@ -507,11 +501,13 @@ Relation IDs are auto-derived from `from_id + to_id` by the SurrealDB connector.
 examples/conversation_to_knowledge/
 ├── spec.md              # Requirements (existing)
 ├── design.md            # This file
-├── main.py              # App entry point, lifespan, app_main
-├── models.py            # Pydantic + dataclass models
-├── fetch.py             # YouTube download + OpenAI diarized transcription
-├── extract.py           # LLM entity/metadata extraction (instructor + litellm)
-├── resolve.py           # Entity resolution (embedding + LLM)
+├── conv_knowledge/      # Python package
+│   ├── __init__.py
+│   ├── app.py           # App entry point, lifespan, app_main
+│   ├── models.py        # Pydantic + dataclass models
+│   ├── fetch.py         # YouTube download + OpenAI diarized transcription
+│   ├── extract.py       # LLM entity/metadata extraction (instructor + litellm)
+│   └── resolve.py       # Entity resolution (embedding + LLM)
 ├── pyproject.toml       # Dependencies
 └── input/               # Sample input files
     └── sample.txt
