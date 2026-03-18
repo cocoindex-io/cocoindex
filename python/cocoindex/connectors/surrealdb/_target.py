@@ -18,6 +18,7 @@ import re
 import uuid
 from dataclasses import dataclass
 from typing import (
+    TYPE_CHECKING,
     Any,
     Callable,
     Collection,
@@ -30,16 +31,18 @@ from typing import (
 from typing_extensions import TypeVar
 
 try:
-    from surrealdb import AsyncSurreal  # type: ignore[import-untyped]
+    import surrealdb as _surrealdb  # type: ignore[import-untyped]
 except ImportError as e:
     raise ImportError(
         "surrealdb is required to use the SurrealDB connector. "
         "Please install cocoindex[surrealdb]."
     ) from e
 
-# Type alias for connection instances — surrealdb is untyped, so use Any
-# to avoid mypy errors on attribute access (.query, .connect, etc.)
-_SurrealConn = Any
+if TYPE_CHECKING:
+    # surrealdb is untyped; use Any so mypy doesn't complain about attribute access.
+    AsyncSurreal = Any
+else:
+    AsyncSurreal = _surrealdb.AsyncSurreal
 
 import numpy as np
 
@@ -91,6 +94,51 @@ def _format_record_id(value: Any) -> str:
     s = str(value)
     s = s.replace("\\", "\\\\").replace("`", "\\`")
     return f"`{s}`"
+
+
+# ---------------------------------------------------------------------------
+# Connection factory
+# ---------------------------------------------------------------------------
+
+
+class ConnectionFactory:
+    """
+    Connection factory for SurrealDB.
+
+    Holds connection parameters and creates authenticated connections on demand.
+
+    Example::
+
+        factory = surrealdb.ConnectionFactory(
+            url="ws://localhost:8000/rpc",
+            namespace="test",
+            database="test",
+            credentials={"username": "root", "password": "root"},
+        )
+        builder.provide(SURREAL_DB, factory)
+    """
+
+    def __init__(
+        self,
+        url: str,
+        *,
+        namespace: str,
+        database: str,
+        credentials: dict[str, str] | None = None,
+    ) -> None:
+        self._url = url
+        self._namespace = namespace
+        self._database = database
+        self._credentials = credentials
+
+    async def acquire(self) -> AsyncSurreal:
+        """Create a new authenticated connection on the current event loop."""
+        conn = AsyncSurreal(self._url)
+        await conn.connect()  # type: ignore[call-arg]
+        if self._credentials:
+            await conn.signin(self._credentials)  # type: ignore[arg-type]
+        await conn.use(self._namespace, self._database)
+        return conn
 
 
 # ---------------------------------------------------------------------------
@@ -388,30 +436,6 @@ class TableSchema(Generic[RowT]):
 
 
 # ---------------------------------------------------------------------------
-# Database registry
-# ---------------------------------------------------------------------------
-
-
-class _ConnParams(NamedTuple):
-    """Parameters for creating a SurrealDB connection."""
-
-    url: str
-    namespace: str
-    database: str
-    credentials: dict[str, str] | None
-
-
-async def _create_conn_from_params(params: _ConnParams) -> _SurrealConn:
-    """Create and authenticate a SurrealDB connection from stored parameters."""
-    conn = AsyncSurreal(params.url)
-    await conn.connect()  # type: ignore[call-arg]
-    if params.credentials:
-        await conn.signin(params.credentials)  # type: ignore[arg-type]
-    await conn.use(params.namespace, params.database)
-    return conn
-
-
-# ---------------------------------------------------------------------------
 # _RecordAction + _SharedRecordApplier
 # ---------------------------------------------------------------------------
 
@@ -430,10 +454,10 @@ class _RecordAction(NamedTuple):
 class _SharedRecordApplier:
     """Owns a TargetActionSink shared by all record handlers for one database."""
 
-    _conn: _SurrealConn
+    _conn: AsyncSurreal
     sink: coco.TargetActionSink[_RecordAction, None]
 
-    def __init__(self, conn: _SurrealConn) -> None:
+    def __init__(self, conn: AsyncSurreal) -> None:
         self._conn = conn
         self.sink = coco.TargetActionSink.from_async_fn(self._apply_actions)
 
@@ -533,11 +557,11 @@ class _VectorIndexAction(NamedTuple):
 class _VectorIndexHandler:
     """Attachment handler for vector indexes on a SurrealDB table."""
 
-    _conn: _SurrealConn
+    _conn: AsyncSurreal
     _table_name: str
     _sink: coco.TargetActionSink[_VectorIndexAction, None]
 
-    def __init__(self, conn: _SurrealConn, table_name: str) -> None:
+    def __init__(self, conn: AsyncSurreal, table_name: str) -> None:
         self._conn = conn
         self._table_name = table_name
         self._sink = coco.TargetActionSink.from_async_fn(self._apply_actions)
@@ -614,7 +638,7 @@ class _RecordHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
     _table_name: str
     _is_relation: bool
     _table_schema: TableSchema[Any] | None
-    _conn: _SurrealConn
+    _conn: AsyncSurreal
     _sink: coco.TargetActionSink[_RecordAction, None]
 
     def __init__(
@@ -622,7 +646,7 @@ class _RecordHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
         table_name: str,
         is_relation: bool,
         table_schema: TableSchema[Any] | None,
-        conn: _SurrealConn,
+        conn: AsyncSurreal,
         sink: coco.TargetActionSink[_RecordAction, None],
     ) -> None:
         self._table_name = table_name
@@ -903,8 +927,8 @@ class _TableHandler(
             by_db.setdefault(action.key.db_key, []).append(i)
 
         for db_key, idxs in by_db.items():
-            params = context_provider.get(db_key, _ConnParams)
-            conn = await _create_conn_from_params(params)
+            factory: ConnectionFactory = context_provider.get(db_key)  # type: ignore[assignment]
+            conn = await factory.acquire()
             shared_applier = _SharedRecordApplier(conn)
 
             # Sort into DDL ordering
@@ -961,7 +985,7 @@ class _TableHandler(
 
     @staticmethod
     async def _create_table(
-        conn: _SurrealConn, key: _TableKey, spec: _TableSpec
+        conn: AsyncSurreal, key: _TableKey, spec: _TableSpec
     ) -> None:
         """Create a table with DEFINE TABLE + DEFINE FIELD statements."""
         schema = spec.table_schema
@@ -992,7 +1016,7 @@ class _TableHandler(
 
     @staticmethod
     async def _apply_column_actions(
-        conn: _SurrealConn,
+        conn: AsyncSurreal,
         key: _TableKey,
         spec: _TableSpec,
         column_actions: dict[str, statediff.DiffAction],
@@ -1256,7 +1280,7 @@ def _normalize_table_names(
 
 
 def table_target(
-    db: ContextKey[_ConnParams],
+    db: ContextKey[ConnectionFactory],
     table_name: str,
     table_schema: TableSchema[RowT] | None = None,
     *,
@@ -1276,7 +1300,7 @@ def table_target(
 
 
 def declare_table_target(
-    db: ContextKey[_ConnParams],
+    db: ContextKey[ConnectionFactory],
     table_name: str,
     table_schema: TableSchema[RowT] | None = None,
     *,
@@ -1290,7 +1314,7 @@ def declare_table_target(
 
 
 async def mount_table_target(
-    db: ContextKey[_ConnParams],
+    db: ContextKey[ConnectionFactory],
     table_name: str,
     table_schema: TableSchema[RowT] | None = None,
     *,
@@ -1304,7 +1328,7 @@ async def mount_table_target(
 
 
 def relation_target(
-    db: ContextKey[_ConnParams],
+    db: ContextKey[ConnectionFactory],
     table_name: str,
     from_table: TableTarget[Any] | Collection[TableTarget[Any]],
     to_table: TableTarget[Any] | Collection[TableTarget[Any]],
@@ -1332,7 +1356,7 @@ def relation_target(
 
 
 def declare_relation_target(
-    db: ContextKey[_ConnParams],
+    db: ContextKey[ConnectionFactory],
     table_name: str,
     from_table: TableTarget[Any] | Collection[TableTarget[Any]],
     to_table: TableTarget[Any] | Collection[TableTarget[Any]],
@@ -1357,7 +1381,7 @@ def declare_relation_target(
 
 
 async def mount_relation_target(
-    db: ContextKey[_ConnParams],
+    db: ContextKey[ConnectionFactory],
     table_name: str,
     from_table: TableTarget[Any] | Collection[TableTarget[Any]],
     to_table: TableTarget[Any] | Collection[TableTarget[Any]],
@@ -1382,69 +1406,19 @@ async def mount_relation_target(
 
 
 # ---------------------------------------------------------------------------
-# Registration and connection helpers
-# ---------------------------------------------------------------------------
-
-
-def make_conn_params(
-    *,
-    url: str,
-    namespace: str,
-    database: str,
-    credentials: dict[str, str] | None = None,
-) -> _ConnParams:
-    """
-    Create a _ConnParams for use as a ContextKey value.
-
-    Args:
-        url: WebSocket URL (e.g. "ws://localhost:8000/rpc").
-        namespace: SurrealDB namespace.
-        database: SurrealDB database name.
-        credentials: Optional dict with signin credentials.
-    """
-    return _ConnParams(
-        url=url, namespace=namespace, database=database, credentials=credentials
-    )
-
-
-async def create_connection(
-    url: str,
-    *,
-    namespace: str,
-    database: str,
-    credentials: dict[str, str] | None = None,
-) -> _SurrealConn:
-    """
-    Create and authenticate a SurrealDB connection.
-
-    Args:
-        url: WebSocket URL (e.g. "ws://localhost:8000/rpc").
-        namespace: SurrealDB namespace.
-        database: SurrealDB database name.
-        credentials: Optional dict with signin credentials (e.g. {"username": ..., "password": ...}).
-    """
-    return await _create_conn_from_params(
-        _ConnParams(
-            url=url, namespace=namespace, database=database, credentials=credentials
-        )
-    )
-
-
-# ---------------------------------------------------------------------------
 # Public exports
 # ---------------------------------------------------------------------------
 
 __all__ = [
     "ColumnDef",
+    "ConnectionFactory",
     "RelationTarget",
     "SurrealType",
     "TableSchema",
     "TableTarget",
     "ValueEncoder",
-    "create_connection",
     "declare_relation_target",
     "declare_table_target",
-    "make_conn_params",
     "mount_relation_target",
     "mount_table_target",
     "relation_target",

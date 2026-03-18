@@ -28,7 +28,7 @@ from cocoindex.connectors import localfs
 # Define a stable key (the string "source_dir" is the stable memo identifier)
 SOURCE_DIR = coco.ContextKey[pathlib.Path]("source_dir", tracked=False)
 
-@coco.function
+@coco.fn
 async def app_main() -> None:
     async for file in localfs.walk_dir(SOURCE_DIR, recursive=True):
         # file.file_path has a stable memo key based on "source_dir"

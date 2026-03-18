@@ -23,41 +23,19 @@ pip install cocoindex[surrealdb]
 
 ## Connection setup
 
-### make_conn_params
-
-Create a connection parameter object that identifies a SurrealDB database. Connections are created on-demand on the engine's event loop via WebSocket when target states are applied.
+Create a `ConnectionFactory` and provide it via a `ContextKey`. It holds connection parameters and creates authenticated connections on demand.
 
 ```python
-def make_conn_params(
-    *,
-    url: str,
-    namespace: str,
-    database: str,
-    credentials: dict[str, str] | None = None,
-) -> ConnParams
-```
-
-**Parameters:**
-
-- `url` — WebSocket URL (e.g., `"ws://localhost:8000/rpc"`).
-- `namespace` — SurrealDB namespace.
-- `database` — SurrealDB database name.
-- `credentials` — Optional dict with signin credentials (e.g., `{"username": "root", "password": "root"}`).
-
-**Returns:** A `ConnParams` object to be provided via `ContextKey`.
-
-**Example:**
-
-```python
+from cocoindex.connectors import surrealdb
 import cocoindex as coco
 
-SURREAL_DB = coco.ContextKey("main_db", tracked=False)
+SURREAL_DB: coco.ContextKey[surrealdb.ConnectionFactory] = coco.ContextKey("main_db", tracked=False)
 
 @coco.lifespan
 def coco_lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
     builder.provide(
         SURREAL_DB,
-        surrealdb.make_conn_params(
+        surrealdb.ConnectionFactory(
             url="ws://localhost:8000/rpc",
             namespace="test",
             database="test",
@@ -67,20 +45,6 @@ def coco_lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
     yield
 ```
 
-### create_connection
-
-Create and authenticate a standalone SurrealDB connection. This is a convenience helper for use outside the target state system (e.g., for querying).
-
-```python
-async def create_connection(
-    url: str,
-    *,
-    namespace: str,
-    database: str,
-    credentials: dict[str, str] | None = None,
-) -> AsyncSurreal
-```
-
 ## As target
 
 The `surrealdb` connector provides target state APIs for writing records to normal tables and relation tables. CocoIndex tracks what records should exist and automatically handles upserts and deletions.
@@ -88,10 +52,6 @@ The `surrealdb` connector provides target state APIs for writing records to norm
 All tables within the same database share a single transaction sink, so changes across related tables and relations are applied atomically.
 
 ### Declaring target states
-
-#### Setting up a connection
-
-See [make_conn_params](#make_conn_params) above.
 
 #### Normal tables (parent state)
 
@@ -109,7 +69,7 @@ def declare_table_target(
 
 **Parameters:**
 
-- `db` — A `ContextKey` holding the `ConnParams` for the SurrealDB connection.
+- `db` — A `ContextKey[surrealdb.ConnectionFactory]` for the SurrealDB connection.
 - `table_name` — Name of the table.
 - `table_schema` — Optional schema definition (see [Table Schema](#table-schema-from-python-class)). When provided, the table is `SCHEMAFULL`; when omitted, the table is `SCHEMALESS`.
 - `managed_by` — Whether CocoIndex manages the table lifecycle (`"system"`) or assumes it exists (`"user"`).
@@ -152,7 +112,7 @@ def declare_relation_target(
 
 **Parameters:**
 
-- `db` — A `ContextKey` holding the `ConnParams` for the SurrealDB connection.
+- `db` — A `ContextKey[surrealdb.ConnectionFactory]` for the SurrealDB connection.
 - `table_name` — Name of the relation table.
 - `from_table` — Source table(s). Pass a single `TableTarget` or a collection for polymorphic relations.
 - `to_table` — Target table(s). Same rules as `from_table`.
@@ -318,7 +278,7 @@ schema = surrealdb.TableSchema(
 import cocoindex as coco
 from cocoindex.connectors import surrealdb
 
-SURREAL_DB = coco.ContextKey("main_db", tracked=False)
+SURREAL_DB: coco.ContextKey[surrealdb.ConnectionFactory] = coco.ContextKey("main_db", tracked=False)
 
 @dataclass
 class Product:
@@ -331,7 +291,7 @@ class Product:
 def coco_lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
     builder.provide(
         SURREAL_DB,
-        surrealdb.make_conn_params(
+        surrealdb.ConnectionFactory(
             url="ws://localhost:8000/rpc",
             namespace="test",
             database="test",

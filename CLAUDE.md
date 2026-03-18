@@ -52,7 +52,7 @@ cocoindex/
 │   │   │   ├── app.py          # App base implementation
 │   │   │   ├── context_keys.py # ContextKey and ContextProvider
 │   │   │   ├── environment.py  # Environment and lifespan handling
-│   │   │   ├── function.py     # @coco.function decorator implementation
+│   │   │   ├── function.py     # @coco.fn decorator implementation
 │   │   │   ├── component_ctx.py # ComponentContext and component_subpath
 │   │   │   ├── target_state.py # Target state implementation
 │   │   │   └── core.pyi        # Type stubs for the Rust extension module (update when PyO3 APIs change)
@@ -94,7 +94,7 @@ Think of it like:
 
 **Target** — The API object used to declare target states (e.g., `DirTarget`, `TableTarget`). Targets can be nested: a container target state (directory/table) provides a Target for declaring child target states (files/rows).
 
-**Function** — A Python function decorated with `@coco.function`. Use `memo=True` to enable memoization (skip execution when inputs and code are unchanged).
+**Function** — A Python function decorated with `@coco.fn`. Use `memo=True` to enable memoization (skip execution when inputs and code are unchanged).
 
 **Context** — React-style provider mechanism for sharing resources. Define keys with `ContextKey[T]`, provide values in lifespan via `builder.provide()`, use in functions via `coco.use_context(key)`.
 
@@ -146,13 +146,13 @@ Changes are applied atomically per component. If a source item is deleted (path 
 ### Example
 
 ```python
-@coco.function(memo=True)
+@coco.fn(memo=True)
 async def process_file(file: FileLike, target: localfs.DirTarget) -> None:
     html = _markdown_it.render(await file.read_text())
     outname = "__".join(file.file_path.path.parts) + ".html"
     target.declare_file(filename=outname, content=html)
 
-@coco.function
+@coco.fn
 async def app_main(sourcedir: pathlib.Path, outdir: pathlib.Path) -> None:
     target = await coco.use_mount(
         coco.component_subpath("setup"), localfs.declare_dir_target, outdir

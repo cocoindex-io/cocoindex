@@ -148,12 +148,24 @@ class SentenceTransformerEmbedder(_schema.VectorSchemaProvider):
             )
         return await self._instances[key].embed(text)  # type: ignore[no-any-return]
 
-    @coco.fn.as_async(runner=coco.GPU, memo=True)
-    def __coco_vector_schema__(self) -> _schema.VectorSchema:
+    async def __coco_vector_schema__(self) -> _schema.VectorSchema:
         """Return vector schema information for this model.
 
         Returns:
             VectorSchema with the embedding dimension and dtype.
+
+        Raises:
+            RuntimeError: If the model's embedding dimension cannot be determined.
+        """
+        dim = await self.dimension()
+        return _schema.VectorSchema(dtype=_np.dtype(_np.float32), size=dim)
+
+    @coco.fn.as_async(runner=coco.GPU, memo=True)
+    def dimension(self) -> int:
+        """Return the embedding dimension for this model.
+
+        Returns:
+            The embedding dimension as an integer.
 
         Raises:
             RuntimeError: If the model's embedding dimension cannot be determined.
@@ -164,7 +176,7 @@ class SentenceTransformerEmbedder(_schema.VectorSchemaProvider):
             raise RuntimeError(
                 f"Embedding dimension is unknown for model {self._model_name_or_path}."
             )
-        return _schema.VectorSchema(dtype=_np.dtype(_np.float32), size=dim)
+        return int(dim)
 
     def __coco_memo_key__(self) -> object:
         return (self._model_name_or_path, self._device, self._trust_remote_code)
