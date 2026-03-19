@@ -16,6 +16,7 @@ from .models import (
     SessionTranscript,
     StatementExtraction,
     Utterance,
+    is_speaker_label,
 )
 
 # ---------------------------------------------------------------------------
@@ -57,7 +58,7 @@ Given the transcript (with speaker labels like "(Speaker A)") and YouTube metada
 and channel name as hints but make it informative.
 2. **description**: A brief 1-2 sentence description of the session's main topics.
 3. **date**: The date of the session in ISO format (YYYY-MM-DD) if mentioned in the \
-conversation. Otherwise use the upload date provided.
+conversation. Otherwise use the upload date provid)ed.
 4. **speakers**: For each speaker label (A, B, ...) in the transcript, identify who \
 they are. Use the channel name, video title, description, and conversation content as \
 clues. Return their full, canonical, Wikipedia-style name (e.g. "Lex Fridman", \
@@ -126,7 +127,9 @@ speaker labels ("Speaker A"), or contextual references ("the host", "the guest",
 "the interviewer"). Every name must be a clear, unambiguous identifier that stands \
 on its own.
 - Use canonical, Wikipedia-style names for all entities:
-  - People: "Franklin D. Roosevelt", "Yann LeCun"
+  - People: "Franklin D. Roosevelt", "Yann LeCun". Only include people you can confidently \
+    identify with their full name — omit anyone you cannot identify, or only know part of their name.
+    Do not guess.
   - Tech: "Python (programming language)", "Large language model", "ChatGPT"
   - Orgs: "Apple Inc.", "OpenAI", "US Department of Education"
 - Statements from unrecognized speakers (shown as "(Speaker X)") should still be \
@@ -154,4 +157,11 @@ async def extract_statements(
         ],
     )
     # Re-validate to restore class identity for pickling.
-    return StatementExtraction.model_validate(result.model_dump())
+    extraction = StatementExtraction.model_validate(result.model_dump())
+    # Post-filter: strip speaker labels that leaked through from the LLM
+    for stmt in extraction.statements:
+        stmt.speakers = [s for s in stmt.speakers if not is_speaker_label(s)]
+        stmt.involved_persons = [
+            p for p in stmt.involved_persons if not is_speaker_label(p)
+        ]
+    return extraction

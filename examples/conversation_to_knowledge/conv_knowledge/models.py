@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re as _re
 from dataclasses import dataclass
 
 import cocoindex as coco
@@ -149,3 +150,11 @@ def resolve_canonical(name: str, dedup: dict[str, str | None]) -> str:
     while dedup.get(name) is not None:
         name = dedup[name]  # type: ignore[assignment]
     return name
+
+
+_SPEAKER_LABEL_RE = _re.compile(r"^\(?speaker\s+[a-z]\)?$", _re.IGNORECASE)
+
+
+def is_speaker_label(name: str) -> bool:
+    """Check if a name is a speaker diarization label (e.g. 'Speaker A', '(Speaker B)')."""
+    return _SPEAKER_LABEL_RE.match(name.strip()) is not None
