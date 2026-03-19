@@ -352,6 +352,7 @@ impl<Prof: EngineProfile> Component<Prof> {
                     Ok((outcome, output)) => (outcome, Ok(output)),
                     Err(err) => (ComponentRunOutcome::exception(), Err(err)),
                 };
+                context.release_inflight_permit();
                 drop(processor);
                 drop(context);
                 drop(self);
@@ -398,6 +399,7 @@ impl<Prof: EngineProfile> Component<Prof> {
             let outcome = result
                 .map(|(outcome, _)| outcome)
                 .unwrap_or_else(|_| ComponentRunOutcome::exception());
+            context.release_inflight_permit();
             drop(processor);
             drop(context);
             drop(self);

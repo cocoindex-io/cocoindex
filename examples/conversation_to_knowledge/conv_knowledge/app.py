@@ -302,7 +302,7 @@ async def app_main() -> None:
         path_matcher=PatternFilePathMatcher(included_patterns=["**/*.txt"]),
     )
 
-    all_session_raw: list[SessionRawEntities] = []
+    session_coros = []
     async for _key, file in files.items():
         text = await file.read_text()
         for line in text.strip().splitlines():
@@ -310,15 +310,17 @@ async def app_main() -> None:
             if not line or line.startswith("#"):
                 continue
             youtube_id = extract_video_id(line)
-            raw = await coco.use_mount(
-                coco.component_subpath("session", youtube_id),
-                process_session,
-                youtube_id,
-                session_table,
-                statement_table,
-                session_statement_rel,
+            session_coros.append(
+                coco.use_mount(
+                    coco.component_subpath("session", youtube_id),
+                    process_session,
+                    youtube_id,
+                    session_table,
+                    statement_table,
+                    session_statement_rel,
+                )
             )
-            all_session_raw.append(raw)
+    all_session_raw = list(await asyncio.gather(*session_coros))
 
     # --- Phase 2: Entity resolution ---
     all_raw_persons = _collect_all_raw(all_session_raw, "persons")
