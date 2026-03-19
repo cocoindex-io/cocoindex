@@ -89,7 +89,7 @@ class EnvironmentBuilder:
 
     _settings: setting.Settings
     _context_provider: ContextProvider
-    _exception_handler: "ExceptionHandler | None"
+    _exception_handler: ExceptionHandler | None
 
     def __init__(self, settings: setting.Settings | None = None):
         self._settings = settings or setting.Settings.from_env()
@@ -111,7 +111,7 @@ class EnvironmentBuilder:
     ) -> Any:
         return await self._context_provider.provide_async_with(key, cm)
 
-    def set_exception_handler(self, handler: "ExceptionHandler") -> None:
+    def set_exception_handler(self, handler: ExceptionHandler) -> None:
         self._exception_handler = handler
 
 
@@ -206,7 +206,7 @@ class Environment:
     _context_provider: ContextProvider
     _loop_runner: _LoopRunner
     _async_context: core.AsyncContext
-    _exception_handler: "ExceptionHandler | None"
+    _exception_handler: ExceptionHandler | None
     _info: EnvironmentInfo
 
     def __init__(
@@ -216,7 +216,7 @@ class Environment:
         name: str | None = None,
         context_provider: ContextProvider | None = None,
         event_loop: asyncio.AbstractEventLoop | None = None,
-        exception_handler: "ExceptionHandler | None" = None,
+        exception_handler: ExceptionHandler | None = None,
         info: EnvironmentInfo | None = None,
     ):
         if not settings.db_path:
@@ -266,7 +266,7 @@ class Environment:
         return self._async_context
 
     @property
-    def exception_handler(self) -> "ExceptionHandler | None":
+    def exception_handler(self) -> ExceptionHandler | None:
         return self._exception_handler
 
     def get_context(self, key: ContextKey[T]) -> T:

@@ -25,6 +25,7 @@ from .component_ctx import (
     ComponentSubpath,
     ExceptionContext,
     ExceptionHandler,
+    ExceptionHandlerChain,
     MountKind,
     build_child_path,
     get_context_from_ctx,
@@ -35,7 +36,7 @@ _logger = logging.getLogger(__name__)
 
 
 def _resolve_handler(
-    handlers: tuple[ExceptionHandler, ...],
+    handler_chain: ExceptionHandlerChain,
     *,
     env_name: str,
     stable_path: str,
@@ -44,10 +45,10 @@ def _resolve_handler(
     parent_stable_path: str | None,
 ) -> Callable[[str], Awaitable[None]]:
     """
-    Wrap a handler stack into a single async callable invoked by Rust.
+    Wrap a handler chain into a single async callable invoked by Rust.
 
     The returned callable takes a stringified error (from Rust) and runs:
-    - innermost handler first
+    - innermost handler first (head of the chain)
     - if a handler raises, calls the next outer handler with the new exception
     - if all handlers raise, logs the original component error (built-in fallback)
     """
@@ -56,7 +57,8 @@ def _resolve_handler(
         original_exc: BaseException = RuntimeError(err_str)
         current_exc: BaseException = original_exc
         source: Literal["component", "handler"] = "component"
-        for h in reversed(handlers):
+        node: ExceptionHandlerChain | None = handler_chain
+        while node is not None:
             ctx = ExceptionContext(
                 env_name=env_name,
                 stable_path=stable_path,
@@ -68,14 +70,14 @@ def _resolve_handler(
                 original_exception=None if source == "component" else original_exc,
             )
             try:
-                ret = h(current_exc, ctx)
+                ret = node.handler(current_exc, ctx)
                 if inspect.isawaitable(ret):
                     await ret
                 return
             except BaseException as handler_exc:
                 current_exc = handler_exc
                 source = "handler"
-                continue
+                node = node.base
         # All handlers raised — fall back to built-in log, matching the no-handler path.
         _logger.error("component build failed:\n%s", err_str, exc_info=current_exc)
 
@@ -272,29 +274,25 @@ async def mount(
     processor = create_core_component_processor(
         processor_fn, parent_ctx._env, child_path, args, kwargs
     )
-    if parent_ctx._exception_handlers:
-        resolved = _resolve_handler(
-            parent_ctx._exception_handlers,
+    resolved = (
+        _resolve_handler(
+            parent_ctx._exception_handler_chain,
             env_name=parent_ctx._env.name,
             stable_path=child_path.to_string(),
             processor_name=getattr(processor_fn, "__qualname__", None),
             mount_kind="mount",
             parent_stable_path=parent_ctx._core_path.to_string(),
         )
-        core_handle = await core.mount_async_with_handler(
-            processor,
-            child_path,
-            parent_ctx._core_processor_ctx,
-            parent_ctx._core_fn_call_ctx,
-            resolved,
-        )
-    else:
-        core_handle = await core.mount_async(
-            processor,
-            child_path,
-            parent_ctx._core_processor_ctx,
-            parent_ctx._core_fn_call_ctx,
-        )
+        if parent_ctx._exception_handler_chain
+        else None
+    )
+    core_handle = await core.mount_async(
+        processor,
+        child_path,
+        parent_ctx._core_processor_ctx,
+        parent_ctx._core_fn_call_ctx,
+        resolved,
+    )
     return ComponentMountHandle([core_handle])
 
 
@@ -335,29 +333,25 @@ async def mount_each(
         processor = create_core_component_processor(
             fn, parent_ctx._env, child_path, (item, *args), kwargs
         )
-        if parent_ctx._exception_handlers:
-            resolved = _resolve_handler(
-                parent_ctx._exception_handlers,
+        resolved = (
+            _resolve_handler(
+                parent_ctx._exception_handler_chain,
                 env_name=parent_ctx._env.name,
                 stable_path=child_path.to_string(),
                 processor_name=getattr(fn, "__qualname__", None),
                 mount_kind="mount_each",
                 parent_stable_path=parent_ctx._core_path.to_string(),
             )
-            core_handle = await core.mount_async_with_handler(
-                processor,
-                child_path,
-                parent_ctx._core_processor_ctx,
-                parent_ctx._core_fn_call_ctx,
-                resolved,
-            )
-        else:
-            core_handle = await core.mount_async(
-                processor,
-                child_path,
-                parent_ctx._core_processor_ctx,
-                parent_ctx._core_fn_call_ctx,
-            )
+            if parent_ctx._exception_handler_chain
+            else None
+        )
+        core_handle = await core.mount_async(
+            processor,
+            child_path,
+            parent_ctx._core_processor_ctx,
+            parent_ctx._core_fn_call_ctx,
+            resolved,
+        )
         core_handles.append(core_handle)
 
     if isinstance(items, AsyncIterable):

@@ -217,13 +217,7 @@ async def mount_async(
     stable_path: StablePath,
     comp_ctx: ComponentProcessorContext,
     fn_ctx: FnCallContext,
-) -> ComponentMountHandle: ...
-async def mount_async_with_handler(
-    processor: ComponentProcessor[T_co],
-    stable_path: StablePath,
-    comp_ctx: ComponentProcessorContext,
-    fn_ctx: FnCallContext,
-    handler_callback: Any,
+    handler_callback: Any | None = None,
 ) -> ComponentMountHandle: ...
 async def mount_run_async(
     processor: ComponentProcessor[T_co],

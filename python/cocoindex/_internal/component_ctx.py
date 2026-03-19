@@ -9,6 +9,7 @@ from typing import (
     Callable,
     Generator,
     Literal,
+    NamedTuple,
     TypeAlias,
     TypeVar,
 )
@@ -25,6 +26,11 @@ ExceptionHandler: TypeAlias = Callable[
     [BaseException, "ExceptionContext"],
     None | Awaitable[None],
 ]
+
+
+class ExceptionHandlerChain(NamedTuple):
+    handler: ExceptionHandler
+    base: ExceptionHandlerChain | None = None
 
 
 # ContextVar for the current ComponentContext
@@ -61,7 +67,7 @@ class ComponentContext:
     _core_path: core.StablePath
     _core_processor_ctx: core.ComponentProcessorContext
     _core_fn_call_ctx: core.FnCallContext
-    _exception_handlers: tuple[ExceptionHandler, ...]
+    _exception_handler_chain: ExceptionHandlerChain | None
 
     def _with_fn_call_ctx(self, fn_call_ctx: core.FnCallContext) -> ComponentContext:
         return ComponentContext(
@@ -69,7 +75,7 @@ class ComponentContext:
             self._core_path,
             self._core_processor_ctx,
             fn_call_ctx,
-            self._exception_handlers,
+            self._exception_handler_chain,
         )
 
     def _with_extended_path(self, *parts: StableKey) -> ComponentContext:
@@ -82,7 +88,7 @@ class ComponentContext:
             new_path,
             self._core_processor_ctx,
             self._core_fn_call_ctx,
-            self._exception_handlers,
+            self._exception_handler_chain,
         )
 
     def _with_exception_handler(self, handler: ExceptionHandler) -> ComponentContext:
@@ -91,7 +97,7 @@ class ComponentContext:
             self._core_path,
             self._core_processor_ctx,
             self._core_fn_call_ctx,
-            (*self._exception_handlers, handler),
+            ExceptionHandlerChain(handler=handler, base=self._exception_handler_chain),
         )
 
     @contextlib.contextmanager

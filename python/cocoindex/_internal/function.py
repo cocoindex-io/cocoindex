@@ -34,6 +34,7 @@ from .runner import Runner, in_subprocess as _in_subprocess
 
 from .component_ctx import (
     ComponentContext,
+    ExceptionHandlerChain,
     _context_var,
     get_context_from_ctx,
 )
@@ -288,8 +289,12 @@ def _build_sync_core_processor(
         )
         if logic_fp is not None:
             fn_ctx.add_fn_logic_dep(logic_fp)
-        base_handlers = (env.exception_handler,) if env.exception_handler else ()
-        context = ComponentContext(env, path, comp_ctx, fn_ctx, base_handlers)
+        base_chain = (
+            ExceptionHandlerChain(handler=env.exception_handler)
+            if env.exception_handler
+            else None
+        )
+        context = ComponentContext(env, path, comp_ctx, fn_ctx, base_chain)
         tok = _context_var.set(context)
         try:
             return fn(*args, **kwargs)
@@ -554,8 +559,12 @@ def _build_async_core_processor(
         )
         if logic_fp is not None:
             fn_ctx.add_fn_logic_dep(logic_fp)
-        base_handlers = (env.exception_handler,) if env.exception_handler else ()
-        context = ComponentContext(env, path, comp_ctx, fn_ctx, base_handlers)
+        base_chain = (
+            ExceptionHandlerChain(handler=env.exception_handler)
+            if env.exception_handler
+            else None
+        )
+        context = ComponentContext(env, path, comp_ctx, fn_ctx, base_chain)
         tok = _context_var.set(context)
         try:
             return await fn(*args, **kwargs)
