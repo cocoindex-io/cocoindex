@@ -97,29 +97,79 @@ class Statement:
 class SpeakerIdentification(pydantic.BaseModel):
     """Maps a diarization label to a real person name."""
 
-    label: str  # e.g. "A", "B"
-    name: str  # Full canonical name
+    label: str = pydantic.Field(
+        description='The diarization label from the transcript, e.g. "A", "B".'
+    )
+    name: str = pydantic.Field(
+        description=(
+            "Full canonical, Wikipedia-style name of the speaker "
+            '(e.g. "Lex Fridman", "Sam Altman"). '
+            "Only include speakers you can confidently identify — do not guess."
+        )
+    )
 
 
 @coco.unpickle_safe
 class SessionMetadata(pydantic.BaseModel):
     """LLM output from Step 1: session metadata + speaker mapping."""
 
-    name: str
-    description: str | None = None
-    date: str | None = None
-    speakers: list[SpeakerIdentification]
+    name: str = pydantic.Field(
+        description="A clear, descriptive name for this session or episode."
+    )
+    description: str | None = pydantic.Field(
+        default=None,
+        description="A brief 1-2 sentence summary of the session's main topics.",
+    )
+    date: str | None = pydantic.Field(
+        default=None,
+        description=(
+            "Date of the session in ISO format (YYYY-MM-DD). "
+            "Use the date mentioned in the conversation if available; "
+            "otherwise fall back to the upload date."
+        ),
+    )
+    speakers: list[SpeakerIdentification] = pydantic.Field(
+        description=(
+            "Identified speakers: maps each diarization label to the speaker's "
+            "real full name. Omit any speaker you cannot confidently identify."
+        )
+    )
 
 
 @coco.unpickle_safe
 class RawStatement(pydantic.BaseModel):
     """A thematic claim or statement made during the session."""
 
-    statement: str
-    speakers: list[str]  # Names of persons who made the statement
-    mentioned_person: list[str] = []
-    mentioned_tech: list[str] = []
-    mentioned_org: list[str] = []
+    statement: str = pydantic.Field(
+        description=(
+            "The claim or assertion, written as a clear, standalone sentence. "
+            "Do NOT include the speaker's name or attribution "
+            '(avoid "X says...", "X believes...", "According to X...") — '
+            "the speaker is captured separately."
+        )
+    )
+    speakers: list[str] = pydantic.Field(
+        description=(
+            "Full canonical names of the speakers who made this statement, "
+            "exactly as they appear in the transcript."
+        )
+    )
+    mentioned_person: list[str] = pydantic.Field(
+        default=[],
+        description=(
+            "Full canonical names of people this statement is ABOUT. "
+            "Do NOT include the speakers themselves unless the statement is "
+            "specifically about them (e.g. their background or credentials)."
+        ),
+    )
+    mentioned_tech: list[str] = pydantic.Field(
+        default=[],
+        description="Technologies, tools, frameworks, or technical concepts this statement is about.",
+    )
+    mentioned_org: list[str] = pydantic.Field(
+        default=[],
+        description="Organizations or companies this statement is about, using their canonical names.",
+    )
 
 
 @coco.unpickle_safe
