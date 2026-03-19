@@ -123,10 +123,13 @@ sink = coco.TargetActionSink.from_fn(apply_actions)
 sink = coco.TargetActionSink.from_async_fn(apply_actions_async)
 ```
 
-The sink function receives a sequence of actions and applies them. For container targets, it returns child handler definitions:
+The sink function receives `context_provider` as its first argument (for looking up connections from the environment), followed by a sequence of actions. For container targets, it returns child handler definitions:
 
 ```python
+from cocoindex._internal.context_keys import ContextProvider
+
 def apply_actions(
+    context_provider: ContextProvider,
     actions: Sequence[_FileAction],
 ) -> list[coco.ChildTargetDef[_ChildHandler] | None]:
     outputs = []
@@ -246,7 +249,11 @@ class _RowHandler(coco.TargetHandler[_RowKey, _RowSpec, _RowTrackingRecord]):
         self._table = table
         self._sink = coco.TargetActionSink.from_async_fn(self._apply_actions)
 
-    async def _apply_actions(self, actions: Sequence[_RowAction]) -> None:
+    async def _apply_actions(
+        self, context_provider: ContextProvider, actions: Sequence[_RowAction]
+    ) -> None:
+        # Connection was passed in __init__ — context_provider not needed here,
+        # but must be accepted per the sink protocol.
         for action in actions:
             if action.data is None:
                 await self._conn.delete(self._table, action.key)
@@ -393,6 +400,7 @@ The parent's sink creates the container and returns child handlers:
 
 ```python
 def _apply_dir_actions(
+    context_provider: ContextProvider,
     actions: Sequence[_DirAction],
 ) -> list[coco.ChildTargetDef[_EntryHandler] | None]:
     outputs = []
@@ -492,7 +500,9 @@ class _VectorIndexHandler:
         self._table_name = table_name
         self._sink = coco.TargetActionSink.from_async_fn(self._apply_actions)
 
-    async def _apply_actions(self, actions: Sequence[_VectorIndexAction]) -> None:
+    async def _apply_actions(
+        self, context_provider: ContextProvider, actions: Sequence[_VectorIndexAction]
+    ) -> None:
         async with self._pool.acquire() as conn:
             for action in actions:
                 if action.spec is None:
@@ -595,9 +605,16 @@ Choose tracking records that enable efficient change detection without storing f
 
 ### Shared action sinks
 
-If all instances of a handler use the same action logic, create a shared sink:
+If all instances of a handler use the same action logic, create a shared sink. The action function must accept `context_provider` as its first argument:
 
 ```python
+from cocoindex._internal.context_keys import ContextProvider
+
+def _apply_actions(
+    context_provider: ContextProvider, actions: Sequence[_MyAction]
+) -> None:
+    ...
+
 # Module-level shared sink
 _shared_sink = coco.TargetActionSink.from_fn(_apply_actions)
 
@@ -620,6 +637,7 @@ import pathlib
 from dataclasses import dataclass
 from typing import Collection, NamedTuple, Sequence
 import cocoindex as coco
+from cocoindex._internal.context_keys import ContextProvider
 from cocoindex.connectorkits.fingerprint import fingerprint_bytes
 
 
@@ -640,7 +658,7 @@ class _FileTrackingRecord:
 
 
 # Action execution
-def _apply_actions(actions: Sequence[_FileAction]) -> None:
+def _apply_actions(context_provider: ContextProvider, actions: Sequence[_FileAction]) -> None:
     for action in actions:
         if action.content is None:
             action.path.unlink(missing_ok=True)

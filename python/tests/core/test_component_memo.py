@@ -30,6 +30,7 @@ _source_data: dict[str, SourceDataEntry] = {}
 _metrics = Metrics()
 
 
+@coco.unpickle_safe
 @dataclass(frozen=True)
 class SourceDataResult:
     name: str

@@ -46,7 +46,7 @@ import numpy as np
 from typing_extensions import TypeVar
 
 import cocoindex as coco
-from cocoindex.connectorkits import connection, statediff
+from cocoindex.connectorkits import statediff
 from cocoindex.connectorkits.fingerprint import fingerprint_object
 from cocoindex._internal.datatype import (
     AnyType,
@@ -59,6 +59,8 @@ from cocoindex._internal.datatype import (
     is_record_type,
 )
 from cocoindex.resources import schema as res_schema
+from cocoindex._internal.serde import unpickle_safe
+from cocoindex._internal.context_keys import ContextKey, ContextProvider
 
 if TYPE_CHECKING:
     import aiohttp  # type: ignore[import-not-found]
@@ -833,7 +835,9 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
             self._apply_actions
         )
 
-    def _apply_actions(self, actions: Sequence[_RowAction]) -> None:
+    def _apply_actions(
+        self, context_provider: ContextProvider, actions: Sequence[_RowAction]
+    ) -> None:
         """Apply row actions (upserts and deletes) to Doris."""
         if not actions:
             return
@@ -943,17 +947,20 @@ class _TableSpec:
     inverted_indexes: list[InvertedIndexDef] | None = None
 
 
+@unpickle_safe
 class _PkColumnInfo(NamedTuple):
     name: str
     type: str
 
 
+@unpickle_safe
 class _TablePrimaryTrackingRecord(NamedTuple):
     primary_key_columns: tuple[_PkColumnInfo, ...]
     vector_indexes: tuple[str, ...] | None = None
     inverted_indexes: tuple[str, ...] | None = None
 
 
+@unpickle_safe
 class _NonPkColumnTrackingRecord(NamedTuple):
     type: str
     nullable: bool
@@ -1012,12 +1019,8 @@ class _TableAction(NamedTuple):
     column_actions: dict[str, statediff.DiffAction]
 
 
-_db_registry: connection.ConnectionRegistry[ManagedConnection] = (
-    connection.ConnectionRegistry("cocoindex/doris")
-)
-
-
 def _apply_table_actions(
+    context_provider: ContextProvider,
     actions: Sequence[_TableAction],
 ) -> list[coco.ChildTargetDef["_RowHandler"] | None]:
     actions_list = list(actions)
@@ -1028,7 +1031,7 @@ def _apply_table_actions(
         by_key.setdefault(action.key, []).append(i)
 
     for key, idxs in by_key.items():
-        managed_conn = _db_registry.get(key.db_key)
+        managed_conn = context_provider.get(key.db_key, ManagedConnection)
         config = managed_conn.config
 
         for i in idxs:
@@ -1183,66 +1186,67 @@ _table_provider = coco.register_root_target_states_provider(
 # ============================================================
 
 
-class DorisDatabase(connection.KeyedConnection[ManagedConnection]):
-    """Handle for a registered Doris database connection."""
+def table_target(
+    db: ContextKey[ManagedConnection],
+    table_name: str,
+    table_schema: TableSchema[RowT],
+    *,
+    managed_by: Literal["system", "user"] = "system",
+    vector_indexes: list[VectorIndexDef] | None = None,
+    inverted_indexes: list[InvertedIndexDef] | None = None,
+) -> coco.TargetState[_RowHandler]:
+    key = _TableKey(db_key=db.key, table_name=table_name)
+    spec = _TableSpec(
+        table_schema=table_schema,
+        managed_by=managed_by,
+        vector_indexes=vector_indexes,
+        inverted_indexes=inverted_indexes,
+    )
+    return _table_provider.target_state(key, spec)
 
-    def declare_table_target(
-        self,
-        table_name: str,
-        table_schema: TableSchema[RowT],
-        *,
-        managed_by: Literal["system", "user"] = "system",
-        vector_indexes: list[VectorIndexDef] | None = None,
-        inverted_indexes: list[InvertedIndexDef] | None = None,
-    ) -> "DorisTableTarget[RowT, coco.PendingS]":
-        provider = coco.declare_target_state_with_child(
-            self.table_target(
-                table_name,
-                table_schema,
-                managed_by=managed_by,
-                vector_indexes=vector_indexes,
-                inverted_indexes=inverted_indexes,
-            )
-        )
-        return DorisTableTarget(provider, table_schema)
 
-    def table_target(
-        self,
-        table_name: str,
-        table_schema: TableSchema[RowT],
-        *,
-        managed_by: Literal["system", "user"] = "system",
-        vector_indexes: list[VectorIndexDef] | None = None,
-        inverted_indexes: list[InvertedIndexDef] | None = None,
-    ) -> coco.TargetState[_RowHandler]:
-        key = _TableKey(db_key=self.key, table_name=table_name)
-        spec = _TableSpec(
-            table_schema=table_schema,
+def declare_table_target(
+    db: ContextKey[ManagedConnection],
+    table_name: str,
+    table_schema: TableSchema[RowT],
+    *,
+    managed_by: Literal["system", "user"] = "system",
+    vector_indexes: list[VectorIndexDef] | None = None,
+    inverted_indexes: list[InvertedIndexDef] | None = None,
+) -> "DorisTableTarget[RowT, coco.PendingS]":
+    provider = coco.declare_target_state_with_child(
+        table_target(
+            db,
+            table_name,
+            table_schema,
             managed_by=managed_by,
             vector_indexes=vector_indexes,
             inverted_indexes=inverted_indexes,
         )
-        return _table_provider.target_state(key, spec)
+    )
+    return DorisTableTarget(provider, table_schema)
 
-    async def mount_table_target(
-        self,
-        table_name: str,
-        table_schema: TableSchema[RowT],
-        *,
-        managed_by: Literal["system", "user"] = "system",
-        vector_indexes: list[VectorIndexDef] | None = None,
-        inverted_indexes: list[InvertedIndexDef] | None = None,
-    ) -> "DorisTableTarget[RowT]":
-        provider = await coco.mount_target(
-            self.table_target(
-                table_name,
-                table_schema,
-                managed_by=managed_by,
-                vector_indexes=vector_indexes,
-                inverted_indexes=inverted_indexes,
-            )
+
+async def mount_table_target(
+    db: ContextKey[ManagedConnection],
+    table_name: str,
+    table_schema: TableSchema[RowT],
+    *,
+    managed_by: Literal["system", "user"] = "system",
+    vector_indexes: list[VectorIndexDef] | None = None,
+    inverted_indexes: list[InvertedIndexDef] | None = None,
+) -> "DorisTableTarget[RowT]":
+    provider = await coco.mount_target(
+        table_target(
+            db,
+            table_name,
+            table_schema,
+            managed_by=managed_by,
+            vector_indexes=vector_indexes,
+            inverted_indexes=inverted_indexes,
         )
-        return DorisTableTarget(provider, table_schema)
+    )
+    return DorisTableTarget(provider, table_schema)
 
 
 class DorisTableTarget(
@@ -1280,16 +1284,6 @@ class DorisTableTarget(
 
     def __coco_memo_key__(self) -> str:
         return self._provider.memo_key
-
-
-def register_db(key: str, managed_conn: ManagedConnection) -> DorisDatabase:
-    """
-    Register a Doris database connection with a stable key.
-
-    The key identifies the logical database and should be stable across runs.
-    """
-    _db_registry.register(key, managed_conn)
-    return DorisDatabase(_db_registry.name, key, managed_conn, _db_registry)
 
 
 # ============================================================
@@ -1383,15 +1377,16 @@ __all__ = [
     "connect",
     "connect_async",
     "build_vector_search_query",
+    "declare_table_target",
     "DorisConnectionConfig",
-    "DorisDatabase",
     "DorisTableTarget",
     "DorisType",
     "InvertedIndexDef",
     "ManagedConnection",
-    "register_db",
+    "mount_table_target",
     "RetryConfig",
     "TableSchema",
+    "table_target",
     "ValueEncoder",
     "VectorIndexDef",
 ]

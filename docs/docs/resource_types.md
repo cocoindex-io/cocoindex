@@ -48,7 +48,7 @@ Each connector provides its own `FilePath` subclass (e.g., `localfs.FilePath`). 
 
 **Properties:**
 
-- `base_dir` — A `KeyedConnection` object that holds the base directory. The `base_dir.key` is used for stable memoization.
+- `base_dir` — An object that holds the base directory. Its key is used for stable memoization.
 - `path` — The path relative to the base directory (`PurePath`).
 
 **Methods:**
@@ -87,7 +87,7 @@ config_path.as_posix()  # "config/settings.json"
 `FilePath` provides a memoization key based on `(base_dir.key, path)`. This means:
 
 - Two `FilePath` objects with the same base directory key and relative path have the same memo key
-- Moving the entire project directory doesn't invalidate memoization, as long as you re-register with the same key
+- Moving the entire project directory doesn't invalidate memoization, as long as the same base directory key is used
 
 For connector-specific usage (e.g., `register_base_dir`), see the individual connector documentation like [Local File System](./connectors/localfs.md).
 
@@ -160,7 +160,9 @@ from cocoindex.resources.schema import VectorSchema
 schema = VectorSchema(dtype=np.dtype(np.float32), size=768)
 
 # Use it in a Qdrant vector definition
-target_collection = await target_db.mount_collection_target(
+QDRANT_DB = coco.ContextKey[QdrantClient]("my_qdrant_db", tracked=False)
+target_collection = await qdrant.mount_collection_target(
+    QDRANT_DB,
     collection_name="image_search",
     schema=await qdrant.CollectionSchema.create(
         vectors=qdrant.QdrantVectorDef(schema=schema, distance="cosine")

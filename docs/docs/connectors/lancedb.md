@@ -49,29 +49,20 @@ The `lancedb` connector provides target state APIs for writing rows to tables. W
 
 ### Declaring target states
 
-#### Database registration
+#### Setting up a connection
 
-Before declaring target states, register the connection with a stable key that identifies the logical database. This key allows CocoIndex to recognize the same database even when connection details change.
-
-```python
-def register_db(key: str, conn: LanceAsyncConnection) -> LanceDatabase
-```
-
-**Parameters:**
-
-- `key` — A stable identifier for this database (e.g., `"main_db"`). Must be unique.
-- `conn` — An async LanceDB connection (from `connect_async()`).
-
-**Returns:** A `LanceDatabase` handle for declaring target states.
-
-The `LanceDatabase` can be used as a context manager to automatically unregister on exit:
+Create a `ContextKey[lancedb.LanceAsyncConnection]` (with `tracked=False`) to identify your LanceDB connection, then provide it in your lifespan:
 
 ```python
-conn = await lancedb.connect_async("./lancedb_data")
-with lancedb.register_db("my_db", conn) as db:
-    # Use db to declare target states
-    ...
-# db is automatically unregistered here
+import cocoindex as coco
+
+LANCE_DB = coco.ContextKey[lancedb.LanceAsyncConnection]("main_db", tracked=False)
+
+@coco.lifespan
+async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]:
+    conn = await lancedb.connect_async(LANCEDB_URI)
+    builder.provide(LANCE_DB, conn)
+    yield
 ```
 
 #### Tables (parent state)
@@ -79,8 +70,8 @@ with lancedb.register_db("my_db", conn) as db:
 Declares a table as a target state. Returns a `TableTarget` for declaring rows.
 
 ```python
-def LanceDatabase.declare_table_target(
-    self,
+def declare_table_target(
+    db: ContextKey[LanceAsyncConnection],
     table_name: str,
     table_schema: TableSchema[RowT],
     *,
@@ -90,11 +81,12 @@ def LanceDatabase.declare_table_target(
 
 **Parameters:**
 
+- `db` — A `ContextKey[LanceAsyncConnection]` identifying the connection to use.
 - `table_name` — Name of the table.
 - `table_schema` — Schema definition including columns and primary key (see [Table Schema](#table-schema-from-python-class)).
 - `managed_by` — Whether CocoIndex manages the table lifecycle (`"system"`) or assumes it exists (`"user"`).
 
-**Returns:** A pending `TableTarget`. Use the convenience wrapper `await db.mount_table_target(table_name=..., table_schema=...)` to resolve.
+**Returns:** A pending `TableTarget`. Use the convenience wrapper `await lancedb.mount_table_target(LANCE_DB, table_name, table_schema)` to resolve.
 
 #### Rows (child states)
 
@@ -219,7 +211,7 @@ from cocoindex.connectors import lancedb
 
 LANCEDB_URI = "./lancedb_data"
 
-LANCE_DB = coco.ContextKey[lancedb.LanceDatabase]("lance_db")
+LANCE_DB = coco.ContextKey[lancedb.LanceAsyncConnection]("main_db", tracked=False)
 
 @dataclass
 class OutputDocument:
@@ -231,17 +223,16 @@ class OutputDocument:
 @coco.lifespan
 async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]:
     conn = await lancedb.connect_async(LANCEDB_URI)
-    builder.provide(LANCE_DB, lancedb.register_db("main_db", conn))
+    builder.provide(LANCE_DB, conn)
     yield
 
 @coco.fn
 async def app_main() -> None:
-    db = coco.use_context(LANCE_DB)
-
     # Declare table target state
-    table = await db.mount_table_target(
-        table_name="documents",
-        table_schema=await lancedb.TableSchema.from_class(
+    table = await lancedb.mount_table_target(
+        LANCE_DB,
+        "documents",
+        await lancedb.TableSchema.from_class(
             OutputDocument,
             primary_key=["doc_id"],
         ),

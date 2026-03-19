@@ -1,4 +1,5 @@
 use std::hash::{Hash, Hasher};
+use std::mem::ManuallyDrop;
 use std::sync::{LazyLock, Mutex};
 
 use cocoindex_core::engine::target_state::{
@@ -66,9 +67,14 @@ impl TargetActionSink<PyEngineProfile> for PyTargetActionSink {
     async fn apply(
         &self,
         host_runtime_ctx: &PyAsyncContext,
+        host_ctx: Arc<Py<PyAny>>,
         actions: Vec<Py<PyAny>>,
     ) -> Result<Option<Vec<Option<ChildTargetDef<PyEngineProfile>>>>> {
-        let ret = self.callback.call(host_runtime_ctx, (actions,))?.await?;
+        let context_provider = Python::attach(|py| host_ctx.as_ref().clone_ref(py));
+        let ret = self
+            .callback
+            .call(host_runtime_ctx, (context_provider, actions))?
+            .await?;
         Python::attach(|py| -> PyResult<_> {
             if ret.is_none(py) {
                 return Ok(None);
@@ -245,12 +251,12 @@ pub fn declare_target_state_with_child<'py>(
 }
 
 static ROOT_TARGET_STATE_PROVIDER_REGISTRY: LazyLock<
-    Arc<Mutex<TargetStateProviderRegistry<PyEngineProfile>>>,
-> = LazyLock::new(Default::default);
+    ManuallyDrop<Arc<Mutex<TargetStateProviderRegistry<PyEngineProfile>>>>,
+> = LazyLock::new(|| ManuallyDrop::new(Default::default()));
 
 pub fn root_target_states_provider_registry()
 -> &'static Arc<Mutex<TargetStateProviderRegistry<PyEngineProfile>>> {
-    &ROOT_TARGET_STATE_PROVIDER_REGISTRY
+    &**ROOT_TARGET_STATE_PROVIDER_REGISTRY
 }
 
 #[pyfunction]

@@ -35,16 +35,11 @@ PG_SCHEMA_NAME = "coco_examples_v1"
 TOP_K = 5
 
 
-@dataclass
-class _GlobalState:
-    pool: asyncpg.Pool | None = None
-    db: postgres.PgDatabase | None = None
-
-
 EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+PG_DB = coco.ContextKey[asyncpg.Pool]("gdrive_text_embedding_db", tracked=False)
 EMBEDDER = coco.ContextKey[SentenceTransformerEmbedder]("embedder")
 
-_state = _GlobalState()
+_pool: asyncpg.Pool | None = None
 _splitter = RecursiveSplitter()
 
 
@@ -52,9 +47,10 @@ _splitter = RecursiveSplitter()
 async def coco_lifespan(
     builder: coco.EnvironmentBuilder,
 ) -> AsyncIterator[None]:
+    global _pool
     async with await postgres.create_pool(DATABASE_URL) as pool:
-        _state.pool = pool
-        _state.db = postgres.register_db("gdrive_text_embedding_db", pool)
+        _pool = pool
+        builder.provide(PG_DB, pool)
         builder.provide(EMBEDDER, SentenceTransformerEmbedder(EMBED_MODEL))
         yield
 
@@ -99,9 +95,8 @@ async def _emit_chunk(
 
 @coco.fn
 async def app_main() -> None:
-    assert _state.db is not None
-
-    table = await _state.db.mount_table_target(
+    table = await postgres.mount_table_target(
+        PG_DB,
         table_name=TABLE_NAME,
         table_schema=await postgres.TableSchema.from_class(
             DocEmbedding,
@@ -135,7 +130,7 @@ async def query_once(
     embedder: SentenceTransformerEmbedder, query: str, *, top_k: int = TOP_K
 ) -> None:
     query_vec = await embedder.embed(query)
-    pool = _state.pool
+    pool = _pool
     assert pool is not None
 
     async with pool.acquire() as conn:

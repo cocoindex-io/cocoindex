@@ -11,6 +11,7 @@ pub struct PyEngineProfile;
 
 impl EngineProfile for PyEngineProfile {
     type HostRuntimeCtx = crate::runtime::PyAsyncContext;
+    type HostCtx = Py<PyAny>;
 
     type ComponentProc = PyComponentProcessor;
     type FunctionData = crate::value::PyValue;

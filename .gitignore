@@ -31,4 +31,5 @@ examples/**/eval_*
 examples/**/uv.lock
 **/lancedb_data/
 
-.cocoindex_code/
+# CocoIndex Code (ccc)
+/.cocoindex_code/

@@ -39,7 +39,7 @@ except ImportError as e:
 import numpy as np
 
 import cocoindex as coco
-from cocoindex.connectorkits import connection, statediff
+from cocoindex.connectorkits import statediff
 from cocoindex.connectorkits.fingerprint import fingerprint_object
 from cocoindex._internal.datatype import (
     AnyType,
@@ -52,6 +52,8 @@ from cocoindex._internal.datatype import (
     is_record_type,
 )
 from cocoindex.resources import schema as res_schema
+from cocoindex._internal.serde import unpickle_safe
+from cocoindex._internal.context_keys import ContextKey, ContextProvider
 
 # Type aliases
 _RowKey = tuple[Any, ...]  # Primary key values as tuple
@@ -410,7 +412,9 @@ class _VectorIndexHandler:
         self._schema_name = pg_schema_name
         self._sink = coco.TargetActionSink.from_async_fn(self._apply_actions)
 
-    async def _apply_actions(self, actions: Sequence[_VectorIndexAction]) -> None:
+    async def _apply_actions(
+        self, context_provider: ContextProvider, actions: Sequence[_VectorIndexAction]
+    ) -> None:
         async with self._pool.acquire() as conn:
             for action in actions:
                 index_name = f'"{self._table_name}__vector__{action.name}"'
@@ -518,7 +522,9 @@ class _SqlCommandHandler:
         self._schema_name = pg_schema_name
         self._sink = coco.TargetActionSink.from_async_fn(self._apply_actions)
 
-    async def _apply_actions(self, actions: Sequence[_SqlCommandAction]) -> None:
+    async def _apply_actions(
+        self, context_provider: ContextProvider, actions: Sequence[_SqlCommandAction]
+    ) -> None:
         async with self._pool.acquire() as conn:
             for action in actions:
                 # Run teardown of previous state if applicable
@@ -586,7 +592,9 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
         self._table_schema = table_schema
         self._sink = coco.TargetActionSink.from_async_fn(self._apply_actions)
 
-    async def _apply_actions(self, actions: Sequence[_RowAction]) -> None:
+    async def _apply_actions(
+        self, context_provider: ContextProvider, actions: Sequence[_RowAction]
+    ) -> None:
         """Apply row actions (upserts and deletes) to the database."""
 
         if not actions:
@@ -778,6 +786,7 @@ class _TableSpec:
     managed_by: Literal["system", "user"] = "system"
 
 
+@unpickle_safe
 class _PkColumnTrackingRecord(NamedTuple):
     """Primary-key column signature used for table-level main tracking record."""
 
@@ -785,6 +794,7 @@ class _PkColumnTrackingRecord(NamedTuple):
     type: str
 
 
+@unpickle_safe
 class _NonPkColumnTrackingRecord(NamedTuple):
     """Per-non-PK column tracking record used for incremental ALTER TABLE operations."""
 
@@ -846,12 +856,6 @@ class _TableAction(NamedTuple):
     column_actions: dict[str, statediff.DiffAction]
 
 
-# Database registry: maps stable keys to connection pools
-_db_registry: connection.ConnectionRegistry[asyncpg.Pool] = (
-    connection.ConnectionRegistry("cocoindex/postgres")
-)
-
-
 class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHandler]):
     """Handler for table-level target states."""
 
@@ -861,7 +865,7 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
         self._sink = coco.TargetActionSink.from_async_fn(self._apply_actions)
 
     async def _apply_actions(
-        self, actions: Collection[_TableAction]
+        self, context_provider: ContextProvider, actions: Collection[_TableAction]
     ) -> list[coco.ChildTargetDef[_RowHandler] | None]:
         """Apply table actions (DDL) and return child row handlers."""
         actions_list = list(actions)
@@ -876,7 +880,7 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
             by_key.setdefault(action.key, []).append(i)
 
         for key, idxs in by_key.items():
-            pool = _db_registry.get(key.db_key)
+            pool = context_provider.get(key.db_key, asyncpg.Pool)
             async with pool.acquire() as conn:
                 async with conn.transaction():
                     for i in idxs:
@@ -1247,162 +1251,109 @@ class TableTarget(
         return self._provider.memo_key
 
 
-class PgDatabase(connection.KeyedConnection[asyncpg.Pool]):
+def table_target(
+    db: ContextKey[asyncpg.Pool],
+    table_name: str,
+    table_schema: TableSchema[RowT],
+    *,
+    pg_schema_name: str | None = None,
+    managed_by: Literal["system", "user"] = "system",
+) -> coco.TargetState[_RowHandler]:
     """
-    Handle for a registered PostgreSQL database.
+    Create a TargetState for a PostgreSQL table target.
 
-    Use `register_db()` to create an instance. Can be used as a context manager
-    to automatically unregister on exit.
-
-    Example:
-        ```python
-        # Without context manager (manual lifecycle)
-        db = register_db("my_db", pool)
-        # ... use db ...
-
-        # With context manager (auto-unregister on exit)
-        with register_db("my_db", pool) as db:
-            # ... use db ...
-        # db is automatically unregistered here
-        ```
-    """
-
-    def declare_table_target(
-        self,
-        table_name: str,
-        table_schema: TableSchema[RowT],
-        *,
-        pg_schema_name: str | None = None,
-        managed_by: Literal["system", "user"] = "system",
-    ) -> TableTarget[RowT, coco.PendingS]:
-        """
-        Create a TableTarget for writing rows to a PostgreSQL table.
-
-        Args:
-            table_name: Name of the table.
-            table_schema: Schema definition including columns and primary key.
-            pg_schema_name: Optional PostgreSQL schema name (default is "public").
-            managed_by: Whether the table is managed by "system" (CocoIndex creates/drops it)
-                        or "user" (table must exist, CocoIndex only manages rows).
-
-        Returns:
-            A TableTarget that can be used to declare rows.
-        """
-        provider = coco.declare_target_state_with_child(
-            self.table_target(
-                table_name,
-                table_schema,
-                pg_schema_name=pg_schema_name,
-                managed_by=managed_by,
-            )
-        )
-        return TableTarget(provider, table_schema)
-
-    def table_target(
-        self,
-        table_name: str,
-        table_schema: TableSchema[RowT],
-        *,
-        pg_schema_name: str | None = None,
-        managed_by: Literal["system", "user"] = "system",
-    ) -> coco.TargetState[_RowHandler]:
-        """
-        Create a TargetState for a PostgreSQL table target.
-
-        Use with ``coco.mount_target()`` to mount and get a child provider,
-        or with ``mount_table_target()`` for a convenience wrapper.
-
-        Args:
-            table_name: Name of the table.
-            table_schema: Schema definition including columns and primary key.
-            pg_schema_name: Optional PostgreSQL schema name (default is "public").
-            managed_by: Whether the table is managed by "system" or "user".
-
-        Returns:
-            A TargetState that can be passed to ``mount_target()``.
-        """
-        key = _TableKey(
-            db_key=self.key,
-            pg_schema_name=pg_schema_name,
-            table_name=table_name,
-        )
-        spec = _TableSpec(
-            table_schema=table_schema,
-            managed_by=managed_by,
-        )
-        return _table_provider.target_state(key, spec)
-
-    async def mount_table_target(
-        self,
-        table_name: str,
-        table_schema: TableSchema[RowT],
-        *,
-        pg_schema_name: str | None = None,
-        managed_by: Literal["system", "user"] = "system",
-    ) -> TableTarget[RowT]:
-        """
-        Mount a table target and return a ready-to-use TableTarget.
-
-        Sugar over ``table_target()`` + ``coco.mount_target()`` + wrapping.
-
-        Args:
-            table_name: Name of the table.
-            table_schema: Schema definition including columns and primary key.
-            pg_schema_name: Optional PostgreSQL schema name (default is "public").
-            managed_by: Whether the table is managed by "system" or "user".
-
-        Returns:
-            A TableTarget that can be used to declare rows.
-        """
-        provider = await coco.mount_target(
-            self.table_target(
-                table_name,
-                table_schema,
-                pg_schema_name=pg_schema_name,
-                managed_by=managed_by,
-            )
-        )
-        return TableTarget(provider, table_schema)
-
-
-def register_db(key: str, pool: asyncpg.Pool) -> PgDatabase:
-    """
-    Register a PostgreSQL database connection pool with a stable key.
-
-    The key should be stable across runs - it identifies the logical database.
-    The pool can be recreated with different connection parameters (host, password, etc.)
-    as long as the same key is used.
-
-    Can be used as a context manager to automatically unregister on exit.
+    Use with ``coco.mount_target()`` to mount and get a child provider,
+    or with ``mount_table_target()`` for a convenience wrapper.
 
     Args:
-        key: A stable identifier for this database (e.g., "main_db", "analytics").
-             Must be unique - raises ValueError if a database with this key
-             is already registered.
-        pool: An asyncpg connection pool.
+        db: ContextKey for the asyncpg.Pool connection.
+        table_name: Name of the table.
+        table_schema: Schema definition including columns and primary key.
+        pg_schema_name: Optional PostgreSQL schema name (default is "public").
+        managed_by: Whether the table is managed by "system" or "user".
 
     Returns:
-        A PgDatabase handle that can be used to create table targets.
-
-    Raises:
-        ValueError: If a database with the given key is already registered.
-
-    Example:
-        ```python
-        async def setup():
-            pool = await asyncpg.create_pool("postgresql://localhost/mydb")
-
-            # Option 1: Manual lifecycle
-            db = register_db("my_db", pool)
-
-            # Option 2: Context manager (auto-unregister on exit)
-            with register_db("my_db", pool) as db:
-                table = db.table_target(scope, "my_table", schema)
-            # db is automatically unregistered here
-        ```
+        A TargetState that can be passed to ``mount_target()``.
     """
-    _db_registry.register(key, pool)
-    return PgDatabase(_db_registry.name, key, pool, _db_registry)
+    key = _TableKey(
+        db_key=db.key,
+        pg_schema_name=pg_schema_name,
+        table_name=table_name,
+    )
+    spec = _TableSpec(
+        table_schema=table_schema,
+        managed_by=managed_by,
+    )
+    return _table_provider.target_state(key, spec)
+
+
+def declare_table_target(
+    db: ContextKey[asyncpg.Pool],
+    table_name: str,
+    table_schema: TableSchema[RowT],
+    *,
+    pg_schema_name: str | None = None,
+    managed_by: Literal["system", "user"] = "system",
+) -> TableTarget[RowT, coco.PendingS]:
+    """
+    Create a TableTarget for writing rows to a PostgreSQL table.
+
+    Args:
+        db: ContextKey for the asyncpg.Pool connection.
+        table_name: Name of the table.
+        table_schema: Schema definition including columns and primary key.
+        pg_schema_name: Optional PostgreSQL schema name (default is "public").
+        managed_by: Whether the table is managed by "system" (CocoIndex creates/drops it)
+                    or "user" (table must exist, CocoIndex only manages rows).
+
+    Returns:
+        A TableTarget that can be used to declare rows.
+    """
+    provider = coco.declare_target_state_with_child(
+        table_target(
+            db,
+            table_name,
+            table_schema,
+            pg_schema_name=pg_schema_name,
+            managed_by=managed_by,
+        )
+    )
+    return TableTarget(provider, table_schema)
+
+
+async def mount_table_target(
+    db: ContextKey[asyncpg.Pool],
+    table_name: str,
+    table_schema: TableSchema[RowT],
+    *,
+    pg_schema_name: str | None = None,
+    managed_by: Literal["system", "user"] = "system",
+) -> TableTarget[RowT]:
+    """
+    Mount a table target and return a ready-to-use TableTarget.
+
+    Sugar over ``table_target()`` + ``coco.mount_target()`` + wrapping.
+
+    Args:
+        db: ContextKey for the asyncpg.Pool connection.
+        table_name: Name of the table.
+        table_schema: Schema definition including columns and primary key.
+        pg_schema_name: Optional PostgreSQL schema name (default is "public").
+        managed_by: Whether the table is managed by "system" or "user".
+
+    Returns:
+        A TableTarget that can be used to declare rows.
+    """
+    provider = await coco.mount_target(
+        table_target(
+            db,
+            table_name,
+            table_schema,
+            pg_schema_name=pg_schema_name,
+            managed_by=managed_by,
+        )
+    )
+    return TableTarget(provider, table_schema)
 
 
 async def create_pool(
@@ -1442,10 +1393,11 @@ async def create_pool(
 __all__ = [
     "ColumnDef",
     "ValueEncoder",
-    "PgDatabase",
     "PgType",
     "TableSchema",
     "TableTarget",
     "create_pool",
-    "register_db",
+    "declare_table_target",
+    "mount_table_target",
+    "table_target",
 ]

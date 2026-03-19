@@ -14,55 +14,52 @@ from cocoindex.connectors import localfs
 
 ## Stable memoization with FilePath
 
-A key feature of the `localfs` connector is **stable memoization** through `FilePath`. When you move your entire project directory, memoization keys remain stable as long as you use the same registered base directory key.
+A key feature of the `localfs` connector is **stable memoization** through `FilePath`. When you move your entire project directory, memoization keys remain stable as long as you use the same `ContextKey` key string for the base directory.
 
-### register_base_dir
+### Using ContextKey for stable base directories
 
-Register a base directory with a stable key. This enables stable memoization even when the actual filesystem path changes.
-
-```python
-def register_base_dir(key: str, path: Path) -> FilePath
-```
-
-**Parameters:**
-
-- `key` — A stable identifier for this base directory (e.g., `"source"`, `"output"`). Must be unique.
-- `path` — The filesystem path of the base directory.
-
-**Returns:** A `FilePath` representing the base directory itself.
-
-**Example:**
+Define a `ContextKey[pathlib.Path]` with a stable string identifier. Provide the actual path in your app's lifespan, then pass the key directly to `walk_dir()`, `declare_dir_target()`, and related functions.
 
 ```python
-from pathlib import Path
+import pathlib
+import cocoindex as coco
 from cocoindex.connectors import localfs
 
-# Register base directories with stable keys
-source_dir = localfs.register_base_dir("source", Path("./data"))
-output_dir = localfs.register_base_dir("output", Path("./out"))
+# Define a stable key (the string "source_dir" is the stable memo identifier)
+SOURCE_DIR = coco.ContextKey[pathlib.Path]("source_dir", tracked=False)
 
-# Use FilePath for stable memoization
-for file in localfs.walk_dir(source_dir, recursive=True):
-    # file.file_path has stable memo key based on "source" key
-    process(file)
+@coco.fn
+async def app_main() -> None:
+    async for file in localfs.walk_dir(SOURCE_DIR, recursive=True):
+        # file.file_path has a stable memo key based on "source_dir"
+        await process(file)
+
+# In your lifespan, provide the actual path:
+async def lifespan(builder: coco.EnvBuilder) -> None:
+    builder.provide(SOURCE_DIR, pathlib.Path("./data"))
 ```
 
-When you move your project to a different location, just update the paths in `register_base_dir()` — the memoization keys stay the same because they're based on the stable key (`"source"`), not the filesystem path.
+When you move your project to a different location, just update the path in `builder.provide()` — memoization keys remain the same because they're based on the stable key string (`"source_dir"`), not the filesystem path.
 
 ### FilePath
 
-`FilePath` combines a base directory (with a stable key) and a relative path. It supports all `pathlib.PurePath` operations:
+`FilePath` combines an optional base directory key and a relative path. Passing a `ContextKey[Path]` directly to any localfs function is equivalent to constructing `FilePath(base_dir=key)`.
+
+`FilePath` supports all `pathlib.PurePath` operations:
 
 ```python
+SOURCE_DIR = coco.ContextKey[pathlib.Path]("source_dir", tracked=False)
+source = localfs.FilePath(base_dir=SOURCE_DIR)
+
 # Create paths using the / operator
-config_path = source_dir / "config" / "settings.json"
+config_path = source / "config" / "settings.json"
 
 # Access path properties
 print(config_path.name)      # "settings.json"
 print(config_path.suffix)    # ".json"
 print(config_path.parent)    # FilePath pointing to "config/"
 
-# Resolve to absolute path
+# Resolve to absolute path (requires active component context)
 abs_path = config_path.resolve()  # pathlib.Path
 ```
 
@@ -74,7 +71,7 @@ Use `walk_dir()` to iterate over files in a directory. It returns a `DirWalker` 
 
 ```python
 def walk_dir(
-    path: FilePath | Path,
+    path: FilePath | Path | ContextKey[Path],
     *,
     recursive: bool = False,
     path_matcher: FilePathMatcher | None = None,
@@ -83,7 +80,7 @@ def walk_dir(
 
 **Parameters:**
 
-- `path` — The root directory path to walk through. Can be a `FilePath` (with stable memoization) or a `pathlib.Path`.
+- `path` — The root directory path to walk through. Can be a `FilePath`, a `pathlib.Path`, or a `ContextKey[Path]` (equivalent to `FilePath(base_dir=path)`).
 - `recursive` — If `True`, recursively walk subdirectories.
 - `path_matcher` — Optional filter for files and directories. See [PatternFilePathMatcher](../resource_types.md#patternfilepathmatcher).
 
@@ -136,13 +133,13 @@ import cocoindex as coco
 from cocoindex.connectors import localfs
 from cocoindex.resources.file import FileLike, PatternFilePathMatcher
 
+SOURCE_DIR = coco.ContextKey[pathlib.Path]("source_dir", tracked=False)
+
 @coco.fn
-async def app_main(sourcedir: pathlib.Path) -> None:
-    # Register base directory for stable memoization
-    source = localfs.register_base_dir("source", sourcedir)
+async def app_main() -> None:
     matcher = PatternFilePathMatcher(included_patterns=["**/*.md"])
 
-    async for file in localfs.walk_dir(source, recursive=True, path_matcher=matcher):
+    async for file in localfs.walk_dir(SOURCE_DIR, recursive=True, path_matcher=matcher):
         await coco.mount(
             coco.component_subpath("file", str(file.file_path.path)),
             process_file,
@@ -166,7 +163,7 @@ Declare a single file target. This is the simplest way to write a file.
 ```python
 @coco.fn
 def declare_file(
-    path: FilePath | Path,
+    path: FilePath | Path | ContextKey[Path],
     content: bytes | str,
     *,
     create_parent_dirs: bool = False,
@@ -175,21 +172,21 @@ def declare_file(
 
 **Parameters:**
 
-- `path` — The filesystem path for the file. Can be a `FilePath` or `pathlib.Path`.
+- `path` — The filesystem path for the file. Can be a `FilePath`, a `pathlib.Path`, or a `ContextKey[Path]`.
 - `content` — The file content (bytes or str).
 - `create_parent_dirs` — If `True`, create parent directories if they don't exist.
 
 **Example:**
 
 ```python
+OUTPUT_DIR = coco.ContextKey[pathlib.Path]("output_dir", tracked=False)
+
 @coco.fn
 def app_main() -> None:
-    output = localfs.register_base_dir("output", Path("./out"))
-
     coco.mount(
         coco.component_subpath("readme"),
         localfs.declare_file,
-        output / "readme.txt",
+        localfs.FilePath("readme.txt", base_dir=OUTPUT_DIR),
         content="Hello, world!",
         create_parent_dirs=True,
     )
@@ -202,7 +199,7 @@ Declare a directory target for writing multiple files. Returns a `DirTarget` for
 ```python
 @coco.fn
 def declare_dir_target(
-    path: FilePath | Path,
+    path: FilePath | Path | ContextKey[Path],
     *,
     create_parent_dirs: bool = True,
 ) -> DirTarget[coco.PendingS]
@@ -210,7 +207,7 @@ def declare_dir_target(
 
 **Parameters:**
 
-- `path` — The filesystem path for the directory. Can be a `FilePath` or `pathlib.Path`.
+- `path` — The filesystem path for the directory. Can be a `FilePath`, a `pathlib.Path`, or a `ContextKey[Path]`.
 - `create_parent_dirs` — If `True`, create parent directories if they don't exist. Defaults to `True`.
 
 **Returns:** A pending `DirTarget`. Use `await coco.mount_target(...)` or the convenience wrapper `await localfs.mount_dir_target(path)` to resolve.
@@ -263,17 +260,16 @@ import cocoindex as coco
 from cocoindex.connectors import localfs
 from cocoindex.resources.file import FileLike, PatternFilePathMatcher
 
-@coco.fn
-async def app_main(sourcedir: pathlib.Path, outdir: pathlib.Path) -> None:
-    # Register directories for stable memoization
-    source = localfs.register_base_dir("source", sourcedir)
-    output = localfs.register_base_dir("output", outdir)
+SOURCE_DIR = coco.ContextKey[pathlib.Path]("source_dir", tracked=False)
+OUTPUT_DIR = coco.ContextKey[pathlib.Path]("output_dir", tracked=False)
 
-    # Declare output directory target
-    target = await localfs.mount_dir_target(output)
+@coco.fn
+async def app_main() -> None:
+    # Declare output directory target using context key
+    target = await localfs.mount_dir_target(OUTPUT_DIR)
 
     # Process files and write outputs
-    await coco.mount_each(process_file, localfs.walk_dir(source, recursive=True).items(), target)
+    await coco.mount_each(process_file, localfs.walk_dir(SOURCE_DIR, recursive=True).items(), target)
 
 @coco.fn(memo=True)
 async def process_file(file: FileLike, target: localfs.DirTarget) -> None:

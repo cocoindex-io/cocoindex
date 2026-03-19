@@ -353,6 +353,7 @@ impl<Prof: EngineProfile> Component<Prof> {
                     Ok((outcome, output)) => (outcome, Ok(output)),
                     Err(err) => (ComponentRunOutcome::exception(), Err(err)),
                 };
+                context.release_inflight_permit();
                 drop(processor);
                 drop(context);
                 drop(self);
@@ -413,6 +414,7 @@ impl<Prof: EngineProfile> Component<Prof> {
                     ComponentRunOutcome::exception()
                 }
             };
+            context.release_inflight_permit();
             drop(processor);
             drop(context);
             drop(self);
@@ -690,6 +692,7 @@ impl<Prof: EngineProfile> Component<Prof> {
         parent_ctx: Option<&ComponentProcessorContext<Prof>>,
         processing_stats: ProcessingStats,
         full_reprocess: bool,
+        host_ctx: Arc<Prof::HostCtx>,
     ) -> Result<ComponentProcessorContext<Prof>> {
         let providers = if let Some(parent_ctx) = parent_ctx {
             let sub_path = self
@@ -722,6 +725,7 @@ impl<Prof: EngineProfile> Component<Prof> {
             processing_stats,
             ComponentProcessingMode::Build,
             full_reprocess,
+            host_ctx,
         ))
     }
 
@@ -730,6 +734,7 @@ impl<Prof: EngineProfile> Component<Prof> {
         providers: rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
         parent_ctx: Option<&ComponentProcessorContext<Prof>>,
         processing_stats: ProcessingStats,
+        host_ctx: Arc<Prof::HostCtx>,
     ) -> ComponentProcessorContext<Prof> {
         let full_reprocess = parent_ctx.map(|ctx| ctx.full_reprocess()).unwrap_or(false);
         ComponentProcessorContext::new(
@@ -739,6 +744,7 @@ impl<Prof: EngineProfile> Component<Prof> {
             processing_stats,
             ComponentProcessingMode::Delete,
             full_reprocess,
+            host_ctx,
         )
     }
 }

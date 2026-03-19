@@ -153,6 +153,9 @@ struct ComponentProcessorContextInner<Prof: EngineProfile> {
 
     /// Logic fingerprints accumulated from function calls and child components.
     logic_deps: Mutex<HashSet<Fingerprint>>,
+
+    /// Opaque per-operation context (e.g. ContextProvider on the Python side).
+    host_ctx: Arc<Prof::HostCtx>,
 }
 
 #[derive(Clone)]
@@ -168,6 +171,7 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         processing_stats: ProcessingStats,
         mode: ComponentProcessingMode,
         full_reprocess: bool,
+        host_ctx: Arc<Prof::HostCtx>,
     ) -> Self {
         let processing_state = if mode == ComponentProcessingMode::Build {
             ComponentProcessingAction::Build(ComponentBuildContext {
@@ -193,8 +197,13 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
                 processing_stats,
                 inflight_permit: Mutex::new(None),
                 logic_deps: Mutex::new(HashSet::new()),
+                host_ctx,
             }),
         }
+    }
+
+    pub fn host_ctx(&self) -> &Arc<Prof::HostCtx> {
+        &self.inner.host_ctx
     }
 
     pub fn component(&self) -> &Component<Prof> {

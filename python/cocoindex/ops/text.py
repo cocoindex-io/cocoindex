@@ -190,8 +190,7 @@ def _convert_chunk(raw: _core.Chunk, text: str) -> _chunk.Chunk:
     Returns:
         A Chunk with the extracted text content and position information.
     """
-    # Extract chunk text efficiently using byte offsets
-    chunk_text = text[raw.start_byte : raw.end_byte]
+    chunk_text = text[raw.start_char_offset : raw.end_char_offset]
 
     return _chunk.Chunk(
         text=chunk_text,

@@ -23,58 +23,26 @@ pip install cocoindex[surrealdb]
 
 ## Connection setup
 
-### register_db
-
-Register a SurrealDB database with a stable key. Connections are created on-demand on the engine's event loop via WebSocket.
+Create a `ConnectionFactory` and provide it via a `ContextKey`. It holds connection parameters and creates authenticated connections on demand.
 
 ```python
-def register_db(
-    key: str,
-    *,
-    url: str,
-    namespace: str,
-    database: str,
-    credentials: dict[str, str] | None = None,
-) -> SurrealDatabase
-```
+from cocoindex.connectors import surrealdb
+import cocoindex as coco
 
-**Parameters:**
+SURREAL_DB: coco.ContextKey[surrealdb.ConnectionFactory] = coco.ContextKey("main_db", tracked=False)
 
-- `key` — A stable identifier for this database (e.g., `"main_db"`). Must be unique.
-- `url` — WebSocket URL (e.g., `"ws://localhost:8000/rpc"`).
-- `namespace` — SurrealDB namespace.
-- `database` — SurrealDB database name.
-- `credentials` — Optional dict with signin credentials (e.g., `{"username": "root", "password": "root"}`).
-
-**Returns:** A `SurrealDatabase` handle for declaring target states.
-
-The `SurrealDatabase` can be used as a context manager to automatically unregister on exit:
-
-```python
-with surrealdb.register_db(
-    "my_db",
-    url="ws://localhost:8000/rpc",
-    namespace="test",
-    database="test",
-    credentials={"username": "root", "password": "root"},
-) as db:
-    # Use db to declare target states
-    ...
-# db is automatically unregistered here
-```
-
-### create_connection
-
-Create and authenticate a standalone SurrealDB connection. This is a convenience helper for use outside the target state system (e.g., for querying).
-
-```python
-async def create_connection(
-    url: str,
-    *,
-    namespace: str,
-    database: str,
-    credentials: dict[str, str] | None = None,
-) -> AsyncSurreal
+@coco.lifespan
+def coco_lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
+    builder.provide(
+        SURREAL_DB,
+        surrealdb.ConnectionFactory(
+            url="ws://localhost:8000/rpc",
+            namespace="test",
+            database="test",
+            credentials={"username": "root", "password": "root"},
+        ),
+    )
+    yield
 ```
 
 ## As target
@@ -85,17 +53,13 @@ All tables within the same database share a single transaction sink, so changes 
 
 ### Declaring target states
 
-#### Database registration
-
-See [register_db](#register_db) above.
-
 #### Normal tables (parent state)
 
 Declares a table as a target state. Returns a `TableTarget` for declaring records.
 
 ```python
-def SurrealDatabase.declare_table_target(
-    self,
+def declare_table_target(
+    db: ContextKey,
     table_name: str,
     table_schema: TableSchema[RowT] | None = None,
     *,
@@ -105,11 +69,12 @@ def SurrealDatabase.declare_table_target(
 
 **Parameters:**
 
+- `db` — A `ContextKey[surrealdb.ConnectionFactory]` for the SurrealDB connection.
 - `table_name` — Name of the table.
 - `table_schema` — Optional schema definition (see [Table Schema](#table-schema-from-python-class)). When provided, the table is `SCHEMAFULL`; when omitted, the table is `SCHEMALESS`.
 - `managed_by` — Whether CocoIndex manages the table lifecycle (`"system"`) or assumes it exists (`"user"`).
 
-**Returns:** A pending `TableTarget`. Use `await db.mount_table_target(...)` to get a resolved target.
+**Returns:** A pending `TableTarget`. Use `await surrealdb.mount_table_target(SURREAL_DB, ...)` to get a resolved target.
 
 #### Records (child states)
 
@@ -134,8 +99,8 @@ def TableTarget.declare_record(
 Declares a relation (graph edge) table. Returns a `RelationTarget` for declaring relation records.
 
 ```python
-def SurrealDatabase.declare_relation_target(
-    self,
+def declare_relation_target(
+    db: ContextKey,
     table_name: str,
     from_table: TableTarget | Collection[TableTarget],
     to_table: TableTarget | Collection[TableTarget],
@@ -147,13 +112,14 @@ def SurrealDatabase.declare_relation_target(
 
 **Parameters:**
 
+- `db` — A `ContextKey[surrealdb.ConnectionFactory]` for the SurrealDB connection.
 - `table_name` — Name of the relation table.
 - `from_table` — Source table(s). Pass a single `TableTarget` or a collection for polymorphic relations.
 - `to_table` — Target table(s). Same rules as `from_table`.
 - `table_schema` — Optional schema. The schema does **not** require an `id` field (unlike normal tables).
 - `managed_by` — Whether CocoIndex manages the table lifecycle.
 
-**Returns:** A pending `RelationTarget`. Use `await db.mount_relation_target(...)` to get a resolved target.
+**Returns:** A pending `RelationTarget`. Use `await surrealdb.mount_relation_target(SURREAL_DB, ...)` to get a resolved target.
 
 #### Relations (child states)
 
@@ -312,7 +278,7 @@ schema = surrealdb.TableSchema(
 import cocoindex as coco
 from cocoindex.connectors import surrealdb
 
-SURREAL_DB = coco.ContextKey[surrealdb.SurrealDatabase]("surreal_db")
+SURREAL_DB: coco.ContextKey[surrealdb.ConnectionFactory] = coco.ContextKey("main_db", tracked=False)
 
 @dataclass
 class Product:
@@ -323,24 +289,24 @@ class Product:
 
 @coco.lifespan
 def coco_lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
-    with surrealdb.register_db(
-        "main_db",
-        url="ws://localhost:8000/rpc",
-        namespace="test",
-        database="test",
-        credentials={"username": "root", "password": "root"},
-    ) as db:
-        builder.provide(SURREAL_DB, db)
-        yield
+    builder.provide(
+        SURREAL_DB,
+        surrealdb.ConnectionFactory(
+            url="ws://localhost:8000/rpc",
+            namespace="test",
+            database="test",
+            credentials={"username": "root", "password": "root"},
+        ),
+    )
+    yield
 
 @coco.fn
 async def app_main() -> None:
-    db = coco.use_context(SURREAL_DB)
-
     # Declare table target state
-    table = await db.mount_table_target(
-        table_name="products",
-        table_schema=await surrealdb.TableSchema.from_class(Product),
+    table = await surrealdb.mount_table_target(
+        SURREAL_DB,
+        "products",
+        await surrealdb.TableSchema.from_class(Product),
     )
 
     # Declare records
@@ -371,20 +337,19 @@ class Post:
 
 @coco.fn
 async def app_main() -> None:
-    db = coco.use_context(SURREAL_DB)
-
     person_schema = await surrealdb.TableSchema.from_class(Person)
-    person_target = await db.mount_table_target("person", person_schema)
+    person_target = await surrealdb.mount_table_target(SURREAL_DB, "person", person_schema)
     for p in persons:
         person_target.declare_record(row=p)
 
     post_schema = await surrealdb.TableSchema.from_class(Post)
-    post_target = await db.mount_table_target("post", post_schema)
+    post_target = await surrealdb.mount_table_target(SURREAL_DB, "post", post_schema)
     for p in posts:
         post_target.declare_record(row=p)
 
     # Declare a relation table (schemaless, no id needed)
-    likes_target = await db.mount_relation_target(
+    likes_target = await surrealdb.mount_relation_target(
+        SURREAL_DB,
         "likes",
         from_table=person_target,
         to_table=post_target,

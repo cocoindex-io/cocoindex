@@ -11,15 +11,14 @@ from typing import (
     Callable,
     Iterable,
     Literal,
-    Mapping,
-    Sequence,
     ParamSpec,
     TypeVar,
     overload,
 )
 
 from . import core, environment
-from .app import App, AppConfig
+from .app import App, AppConfig, UpdateHandle
+from .update_stats import ComponentStats, UpdateSnapshot, UpdateStats, UpdateStatus
 from .pending_marker import ResolvesTo
 from .component_ctx import (
     ComponentSubpath,
@@ -87,6 +86,7 @@ def _resolve_handler(
 from .stable_path import StableKey
 from .function import (
     AnyCallable,
+    AsyncCallable,
     LogicTracking,
     create_core_component_processor,
     fn,
@@ -120,6 +120,8 @@ from .environment import lifespan
 from .runner import GPU, Runner
 
 from .memo_key import register_memo_key_function, NotMemoizable
+
+from .serde import unpickle_safe, add_unpickle_safe_global
 
 from .pending_marker import PendingS, ResolvedS, MaybePendingS
 
@@ -177,28 +179,28 @@ class ComponentMountHandle:
 @overload
 async def use_mount(
     subpath: ComponentSubpath,
-    processor_fn: AnyCallable[P, ResolvesTo[ReturnT]],
+    processor_fn: AsyncCallable[P, ResolvesTo[ReturnT]],
     *args: P.args,
     **kwargs: P.kwargs,
 ) -> ReturnT: ...
 @overload
 async def use_mount(
     subpath: ComponentSubpath,
-    processor_fn: AnyCallable[P, Sequence[ResolvesTo[ReturnT]]],
+    processor_fn: Callable[P, ResolvesTo[ReturnT]],
     *args: P.args,
     **kwargs: P.kwargs,
-) -> Sequence[ReturnT]: ...
+) -> ReturnT: ...
 @overload
 async def use_mount(
     subpath: ComponentSubpath,
-    processor_fn: AnyCallable[P, Mapping[K, ResolvesTo[ReturnT]]],
+    processor_fn: AsyncCallable[P, ReturnT],
     *args: P.args,
     **kwargs: P.kwargs,
-) -> Mapping[K, ReturnT]: ...
+) -> ReturnT: ...
 @overload
 async def use_mount(
     subpath: ComponentSubpath,
-    processor_fn: AnyCallable[P, ReturnT],
+    processor_fn: Callable[P, ReturnT],
     *args: P.args,
     **kwargs: P.kwargs,
 ) -> ReturnT: ...
@@ -504,6 +506,12 @@ __all__ = [
     # .app
     "App",
     "AppConfig",
+    "UpdateHandle",
+    # .update_stats
+    "ComponentStats",
+    "UpdateSnapshot",
+    "UpdateStats",
+    "UpdateStatus",
     # .function
     "fn",
     "LogicTracking",
@@ -529,6 +537,9 @@ __all__ = [
     # .runner
     "GPU",
     "Runner",
+    # .serde
+    "unpickle_safe",
+    "add_unpickle_safe_global",
     # .memo_key
     "register_memo_key_function",
     "NotMemoizable",

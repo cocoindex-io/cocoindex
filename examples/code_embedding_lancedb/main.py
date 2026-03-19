@@ -34,7 +34,9 @@ TOP_K = 5
 
 
 EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
-LANCE_DB = coco.ContextKey[lancedb.LanceDatabase]("lance_db", tracked=False)
+LANCE_DB = coco.ContextKey[lancedb.LanceAsyncConnection](
+    "code_embedding_db", tracked=False
+)
 EMBEDDER = coco.ContextKey[SentenceTransformerEmbedder]("embedder")
 
 _splitter = RecursiveSplitter()
@@ -56,7 +58,7 @@ async def coco_lifespan(
 ) -> AsyncIterator[None]:
     # Provide resources needed across the CocoIndex environment
     conn = await lancedb.connect_async(LANCEDB_URI)
-    builder.provide(LANCE_DB, lancedb.register_db("code_embedding_db", conn))
+    builder.provide(LANCE_DB, conn)
     builder.provide(EMBEDDER, SentenceTransformerEmbedder(EMBED_MODEL))
     yield
 
@@ -103,8 +105,8 @@ async def process_file(
 
 @coco.fn
 async def app_main(sourcedir: pathlib.Path) -> None:
-    target_db = coco.use_context(LANCE_DB)
-    target_table = await target_db.mount_table_target(
+    target_table = await lancedb.mount_table_target(
+        LANCE_DB,
         table_name=TABLE_NAME,
         table_schema=await lancedb.TableSchema.from_class(
             CodeEmbedding, primary_key=["id"]

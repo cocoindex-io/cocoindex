@@ -1,8 +1,11 @@
+from __future__ import annotations
+
 import cocoindex as coco
 import cocoindex.inspect as coco_inspect
 import pytest
 
-from typing import Any, Collection
+import dataclasses
+from typing import Any, Collection, Generic
 
 from tests import common
 from tests.common.target_states import DictsTarget, DictDataWithPrev, AsyncDictsTarget
@@ -408,11 +411,17 @@ def test_dicts_in_sub_components_delete_entry() -> None:
 ##################################################################################
 
 
+@dataclasses.dataclass
+class _DictContainers(Generic[coco.MaybePendingS], coco.ResolvesTo["_DictContainers"]):
+    providers: dict[str, coco.TargetStateProvider[str, None, coco.MaybePendingS]]
+
+
 def _declare_dict_containers(
     names: Collection[str],
-) -> dict[str, coco.PendingTargetStateProvider[str]]:
-    providers = {name: DictsTarget.declare_dict_target(name) for name in names}
-    return providers
+) -> _DictContainers[coco.PendingS]:
+    return _DictContainers[coco.PendingS](
+        providers={name: DictsTarget.declare_dict_target(name) for name in names}
+    )
 
 
 def _declare_one_dict_data(name: str, provider: coco.TargetStateProvider[str]) -> None:
@@ -421,10 +430,10 @@ def _declare_one_dict_data(name: str, provider: coco.TargetStateProvider[str]) -
 
 
 async def _declare_dict_containers_together() -> None:
-    providers = await coco.use_mount(
+    containers = await coco.use_mount(
         coco.component_subpath("setup"), _declare_dict_containers, _source_data.keys()
     )
-    for name, provider in providers.items():
+    for name, provider in containers.providers.items():
         await coco.mount(
             coco.component_subpath(name), _declare_one_dict_data, name, provider
         )

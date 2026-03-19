@@ -17,6 +17,7 @@ from typing_extensions import TypeVar
 
 from . import core
 from .component_ctx import get_context_from_ctx
+from .context_keys import ContextProvider
 from .pending_marker import PendingS, MaybePendingS, ResolvesTo
 from .typing import NonExistenceType, StableKey
 
@@ -55,6 +56,7 @@ class TargetActionSinkFn(Protocol[ActionT_contra, OptChildHandlerT_co]):
     @overload
     def __call__(
         self: TargetActionSinkFn[ActionT_contra, None],
+        context_provider: ContextProvider,
         actions: Sequence[ActionT_contra],
         /,
     ) -> None: ...
@@ -62,11 +64,12 @@ class TargetActionSinkFn(Protocol[ActionT_contra, OptChildHandlerT_co]):
     @overload
     def __call__(
         self: TargetActionSinkFn[ActionT_contra, HandlerT_co],
+        context_provider: ContextProvider,
         actions: Sequence[ActionT_contra],
         /,
     ) -> Sequence[ChildTargetDef[HandlerT_co] | None] | None: ...
     def __call__(
-        self, actions: Sequence[ActionT_contra], /
+        self, context_provider: ContextProvider, actions: Sequence[ActionT_contra], /
     ) -> Sequence[ChildTargetDef[Any] | None] | None: ...
 
 
@@ -75,6 +78,7 @@ class AsyncTargetActionSinkFn(Protocol[ActionT_contra, OptChildHandlerT_co]):
     @overload
     async def __call__(
         self: AsyncTargetActionSinkFn[ActionT_contra, None],
+        context_provider: ContextProvider,
         actions: Sequence[ActionT_contra],
         /,
     ) -> None: ...
@@ -82,11 +86,12 @@ class AsyncTargetActionSinkFn(Protocol[ActionT_contra, OptChildHandlerT_co]):
     @overload
     async def __call__(
         self: AsyncTargetActionSinkFn[ActionT_contra, HandlerT_co],
+        context_provider: ContextProvider,
         actions: Sequence[ActionT_contra],
         /,
     ) -> Sequence[ChildTargetDef[HandlerT_co] | None] | None: ...
     async def __call__(
-        self, actions: Sequence[ActionT_contra], /
+        self, context_provider: ContextProvider, actions: Sequence[ActionT_contra], /
     ) -> Sequence[ChildTargetDef[Any] | None] | None: ...
 
 

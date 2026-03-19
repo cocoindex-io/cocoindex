@@ -42,22 +42,49 @@ The main function can be sync or async. See [How Sync and Async Work Together](.
 
 ## Updating an app
 
-Call `update()` to execute the pipeline:
+Call `update()` to execute the pipeline. It returns an `UpdateHandle` that is also `Awaitable`, so the simplest usage stays the same:
 
 ```python
-# Async API
-await app.update(report_to_stdout=True, full_reprocess=False)
+# Async — await the result directly (backward-compatible)
+result = await app.update()
 ```
 
 ```python
 # Sync (blocking) API
-app.update_blocking(report_to_stdout=True, full_reprocess=False)
+result = app.update_blocking()
 ```
 
 **Parameters:**
 
 - `report_to_stdout` option prints periodic progress updates during execution.
 - `full_reprocess` option reprocesses everything and invalidates existing caches. This forces all components to re-execute and all target states to be re-applied, even if they haven't changed.
+
+### Monitoring progress
+
+`app.update()` returns an `UpdateHandle` that provides structured access to processing stats while the update is running:
+
+```python
+handle = app.update()
+
+# Poll current stats at any time
+stats = handle.stats()  # returns UpdateStats or None if not yet started
+
+# Await the final result
+result = await handle.result()
+
+# stats() still works after completion
+final_stats = handle.stats()
+```
+
+For streaming progress, use `watch()` which yields `UpdateSnapshot` objects as stats are updated:
+
+```python
+handle = app.update()
+async for snapshot in handle.watch():
+    print(snapshot.stats.total.num_finished, "items processed")
+    # snapshot.status is UpdateStatus.RUNNING or UpdateStatus.DONE
+    # snapshot.result is set when status is DONE
+```
 
 When you update an App, CocoIndex:
 

@@ -52,7 +52,7 @@ cocoindex/
 │   │   │   ├── app.py          # App base implementation
 │   │   │   ├── context_keys.py # ContextKey and ContextProvider
 │   │   │   ├── environment.py  # Environment and lifespan handling
-│   │   │   ├── function.py     # @coco.function decorator implementation
+│   │   │   ├── function.py     # @coco.fn decorator implementation
 │   │   │   ├── component_ctx.py # ComponentContext and component_subpath
 │   │   │   ├── target_state.py # Target state implementation
 │   │   │   └── core.pyi        # Type stubs for the Rust extension module (update when PyO3 APIs change)
@@ -94,7 +94,7 @@ Think of it like:
 
 **Target** — The API object used to declare target states (e.g., `DirTarget`, `TableTarget`). Targets can be nested: a container target state (directory/table) provides a Target for declaring child target states (files/rows).
 
-**Function** — A Python function decorated with `@coco.function`. Use `memo=True` to enable memoization (skip execution when inputs and code are unchanged).
+**Function** — A Python function decorated with `@coco.fn`. Use `memo=True` to enable memoization (skip execution when inputs and code are unchanged).
 
 **Context** — React-style provider mechanism for sharing resources. Define keys with `ContextKey[T]`, provide values in lifespan via `builder.provide()`, use in functions via `coco.use_context(key)`.
 
@@ -146,13 +146,13 @@ Changes are applied atomically per component. If a source item is deleted (path 
 ### Example
 
 ```python
-@coco.function(memo=True)
+@coco.fn(memo=True)
 async def process_file(file: FileLike, target: localfs.DirTarget) -> None:
     html = _markdown_it.render(await file.read_text())
     outname = "__".join(file.file_path.path.parts) + ".html"
     target.declare_file(filename=outname, content=html)
 
-@coco.function
+@coco.fn
 async def app_main(sourcedir: pathlib.Path, outdir: pathlib.Path) -> None:
     target = await coco.use_mount(
         coco.component_subpath("setup"), localfs.declare_dir_target, outdir
@@ -199,9 +199,19 @@ We distinguish between **internal modules** (under packages with `_` prefix, e.g
 
 Avoid `Any` whenever feasible. Use specific types — including concrete types from third-party libraries. Only use `Any` when the type is truly generic and no downstream code needs to downcast it.
 
+### Prefer stronger types; validate and exchange early
+
+Prefer strongly-typed values over weakly-typed representations (strings, `Any`, raw identifiers). When a value enters the system in a weaker form, validate and convert it to the stronger type at the earliest point where the conversion is possible — don't propagate the weak form further than necessary.
+
+Example: connector handlers receive a `ContextKey` string as part of a target-state key. Rather than storing `_db_key: str` and re-resolving it via `context_provider.get(key_str, ConnType)` on every `_apply_actions` call, the parent handler resolves the key once (when constructing the child handler) and passes the typed connection directly. The child stores `_pool: asyncpg.Pool`, not `_db_key: str`.
+
 ### Multi-Value Returns
 
 For functions returning multiple values, use `NamedTuple` instead of plain tuples. At call sites, access fields by name (`result.can_reuse`) rather than positional unpacking — this prevents misreading fields in the wrong order.
+
+### Exceptions are for exceptional situations
+
+Reserve exceptions (Python) and errors (Rust) for truly unexpected failures — not for normal control flow like signaling completion, end-of-iteration, or expected state transitions. When a condition is part of the normal, expected operation of the system, represent it with an explicit return value (e.g., a sentinel value, an enum variant, or `None`) rather than raising/throwing. This keeps exception handling clean and makes it easy to distinguish real errors from routine signals.
 
 ### Testing Guidelines
 

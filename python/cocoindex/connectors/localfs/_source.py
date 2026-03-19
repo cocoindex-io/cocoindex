@@ -17,6 +17,8 @@ from cocoindex.resources.file import (
     MatchAllFilePathMatcher,
 )
 
+from cocoindex._internal.context_keys import ContextKey
+
 from ._common import FilePath, to_file_path
 
 
@@ -76,7 +78,7 @@ class DirWalker:
 
     def __init__(
         self,
-        path: FilePath | Path,
+        path: FilePath | Path | ContextKey[Path],
         *,
         recursive: bool = False,
         path_matcher: FilePathMatcher | None = None,
@@ -144,8 +146,9 @@ class DirWalker:
             async for key, file in walker.items():
                 content = await file.read()
         """
+        root_path = self._root_path.path
         async for file in self:
-            yield (file.file_path.path.as_posix(), file)
+            yield (file.file_path.path.relative_to(root_path).as_posix(), file)
 
     async def __aiter__(self) -> AsyncIterator[File]:
         """Asynchronously iterate over files, yielding File objects."""
@@ -156,7 +159,7 @@ class DirWalker:
 
 
 def walk_dir(
-    path: FilePath | Path,
+    path: FilePath | Path | ContextKey[Path],
     *,
     recursive: bool = False,
     path_matcher: FilePathMatcher | None = None,

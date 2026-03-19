@@ -12,15 +12,15 @@ CocoIndex provides a **context** mechanism for sharing resources across your pip
 A `ContextKey[T]` is a typed key that identifies a resource. Define keys at module level:
 
 ```python
+import asyncpg
 import cocoindex as coco
-from cocoindex.connectors import postgres
 
 # Define typed keys for resources you want to share
-PG_DB = coco.ContextKey[postgres.PgDatabase]("pg_db")
+PG_DB = coco.ContextKey[asyncpg.Pool]("pg_db", tracked=False)
 CONFIG = coco.ContextKey[AppConfig]("config")
 ```
 
-The type parameter (`postgres.PgDatabase`, `AppConfig`) enables type checking — when you retrieve the value, your editor knows its type.
+The type parameter (`asyncpg.Pool`, `AppConfig`) enables type checking — when you retrieve the value, your editor knows its type.
 
 ### Tracked context keys
 
@@ -45,18 +45,19 @@ Tracking is transitive: if function `foo` (memoized) calls function `bar`, and `
 In your [lifespan function](./app.md#defining-a-lifespan), use `builder.provide()` to make resources available:
 
 ```python
+import asyncpg
 import cocoindex as coco
 from cocoindex.connectors import postgres
 
-PG_DB = coco.ContextKey[postgres.PgDatabase]("pg_db")
+PG_DB = coco.ContextKey[asyncpg.Pool]("my_db", tracked=False)
 
 @coco.lifespan
 async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]:
     builder.settings.db_path = pathlib.Path("./cocoindex.db")
 
-    # Create and provide a database connection
+    # Create and provide a database connection pool
     async with await postgres.create_pool(DATABASE_URL) as pool:
-        builder.provide(PG_DB, postgres.register_db("my_db", pool))
+        builder.provide(PG_DB, pool)
         yield
 ```
 
@@ -69,13 +70,10 @@ In processing components, use `coco.use_context()` to retrieve provided resource
 ```python
 @coco.fn
 async def app_main(sourcedir: pathlib.Path) -> None:
-    db = coco.use_context(PG_DB)  # Returns postgres.PgDatabase
-
-    table = await db.mount_table_target(
-        table_name="docs",
-        table_schema=await postgres.TableSchema.from_class(
-            Doc, primary_key=["id"]
-        ),
+    table = await postgres.mount_table_target(
+        PG_DB,
+        "docs",
+        await postgres.TableSchema.from_class(Doc, primary_key=["id"]),
     )
 
     # ... rest of pipeline ...

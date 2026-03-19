@@ -33,7 +33,7 @@ TOP_K = 5
 
 
 EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
-PG_DB = coco.ContextKey[postgres.PgDatabase]("pg_db", tracked=False)
+PG_DB = coco.ContextKey[asyncpg.Pool]("postgres_source_db", tracked=False)
 SOURCE_POOL = coco.ContextKey[asyncpg.Pool]("source_pool", tracked=False)
 EMBEDDER = coco.ContextKey[SentenceTransformerEmbedder]("embedder")
 
@@ -67,7 +67,7 @@ async def coco_lifespan(
         await postgres.create_pool(DATABASE_URL) as target_pool,
         await postgres.create_pool(SOURCE_DATABASE_URL) as source_pool,
     ):
-        builder.provide(PG_DB, postgres.register_db("postgres_source_db", target_pool))
+        builder.provide(PG_DB, target_pool)
         builder.provide(SOURCE_POOL, source_pool)
         builder.provide(EMBEDDER, SentenceTransformerEmbedder(EMBED_MODEL))
         yield
@@ -96,8 +96,8 @@ async def process_product(
 
 @coco.fn
 async def app_main() -> None:
-    target_db = coco.use_context(PG_DB)
-    target_table = await target_db.mount_table_target(
+    target_table = await postgres.mount_table_target(
+        PG_DB,
         table_name=TABLE_NAME,
         table_schema=await postgres.TableSchema.from_class(
             OutputProduct,
