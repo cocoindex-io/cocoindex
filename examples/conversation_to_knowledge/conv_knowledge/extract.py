@@ -11,7 +11,9 @@ import litellm
 litellm.drop_params = True
 
 from .models import (
+    ENTITY_TYPES,
     LLM_MODEL,
+    PERSON_ENTITY_NAME,
     SessionMetadata,
     SessionTranscript,
     StatementExtraction,
@@ -109,15 +111,22 @@ def _is_plausible_person_name(name: str) -> bool:
 # Step 2: Extract statements + involved entities
 # ---------------------------------------------------------------------------
 
-STATEMENTS_PROMPT = """\
+
+def _build_statements_prompt() -> str:
+    entity_lines = "\n".join(
+        f"  - {cfg.name.capitalize()}: {cfg.llm_description} "
+        f"Examples: {', '.join(f'{chr(34)}{e}{chr(34)}' for e in cfg.llm_examples)}."
+        for cfg in ENTITY_TYPES
+    )
+    return f"""\
 You are an expert knowledge extractor. Given a podcast/interview transcript where \
 speakers are identified by name, extract thematic claims and statements.
 
 For each statement:
 - Write the statement as a clear, standalone claim.
 - List the speaker(s) who made it (by their full name as shown in the transcript).
-- List persons, technologies, and organizations the statement is ABOUT. Do NOT include \
-the speaker(s) in involved_persons unless the statement is specifically about them \
+- List entities the statement is ABOUT. Do NOT include the speaker(s) in \
+mentioned_{PERSON_ENTITY_NAME} unless the statement is specifically about them \
 (e.g. their background, credentials, or personal experience). The speaker relationship \
 is already captured separately.
 
@@ -127,16 +136,15 @@ speaker labels ("Speaker A"), or contextual references ("the host", "the guest",
 "the interviewer"). Every name must be a clear, unambiguous identifier that stands \
 on its own.
 - Use canonical, Wikipedia-style names for all entities:
-  - People: "Franklin D. Roosevelt", "Yann LeCun". Only include people you can confidently \
-    identify with their full name — omit anyone you cannot identify, or only know part of their name.
-    Do not guess.
-  - Tech: "Python (programming language)", "Large language model", "ChatGPT"
-  - Orgs: "Apple Inc.", "OpenAI", "US Department of Education"
+{entity_lines}
 - Statements from unrecognized speakers (shown as "(Speaker X)") should still be \
 extracted with their involved entities, but leave the speakers list empty for them.
 - Be thorough but avoid trivial statements. Focus on substantive claims, opinions, \
 and factual assertions.
 """
+
+
+STATEMENTS_PROMPT = _build_statements_prompt()
 
 
 @coco.fn(memo=True)
@@ -161,7 +169,7 @@ async def extract_statements(
     # Post-filter: strip speaker labels that leaked through from the LLM
     for stmt in extraction.statements:
         stmt.speakers = [s for s in stmt.speakers if not is_speaker_label(s)]
-        stmt.involved_persons = [
-            p for p in stmt.involved_persons if not is_speaker_label(p)
+        stmt.mentioned_person = [
+            p for p in stmt.mentioned_person if not is_speaker_label(p)
         ]
     return extraction

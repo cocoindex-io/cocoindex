@@ -16,7 +16,7 @@ from numpy.typing import NDArray
 
 from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
 
-from .models import LLM_MODEL, resolve_canonical
+from .models import RESOLUTION_LLM_MODEL, resolve_canonical
 
 EMBEDDER = coco.ContextKey[SentenceTransformerEmbedder]("embedder")
 
@@ -61,7 +61,7 @@ async def resolve_entity_pair(entity: str, candidates: list[str]) -> EntityResol
     candidate_list = "\n".join(f"{i + 1}. {c}" for i, c in enumerate(candidates))
     client = instructor.from_litellm(litellm.acompletion, mode=instructor.Mode.JSON)
     result = await client.chat.completions.create(
-        model=coco.use_context(LLM_MODEL),
+        model=coco.use_context(RESOLUTION_LLM_MODEL),
         response_model=EntityResolution,
         messages=[
             {"role": "system", "content": RESOLUTION_PROMPT},
