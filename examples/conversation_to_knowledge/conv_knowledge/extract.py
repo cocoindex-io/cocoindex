@@ -123,7 +123,9 @@ You are an expert knowledge extractor. Given a podcast/interview transcript wher
 speakers are identified by name, extract thematic claims and statements.
 
 For each statement:
-- Write the statement as a clear, standalone claim.
+- Write the statement as a clear, standalone claim. Do NOT include the speaker's name \
+or attribution in the statement text (e.g. avoid "X says...", "X believes...") \
+— the speaker is already captured separately.
 - List the speaker(s) who made it (by their full name as shown in the transcript).
 - List entities the statement is ABOUT. Do NOT include the speaker(s) in \
 mentioned_{PERSON_ENTITY_NAME} unless the statement is specifically about them \
