@@ -23,14 +23,15 @@ from cocoindex.resources.id import IdGenerator
 from .extract import extract_metadata, extract_statements, format_transcript
 from .fetch import fetch_transcript
 from .models import (
+    ENTITY_TYPES,
     LLM_MODEL,
+    RESOLUTION_LLM_MODEL,
+    PERSON_ENTITY_NAME,
+    Entity,
     IdentifiedStatement,
-    Org,
-    Person,
     Session,
     SessionRawEntities,
     Statement,
-    Tech,
     resolve_canonical,
 )
 from .resolve import EMBEDDER, resolve_entities
@@ -80,11 +81,15 @@ async def coco_lifespan(
     )
     builder.provide(
         EMBEDDER,
-        SentenceTransformerEmbedder("sentence-transformers/all-MiniLM-L6-v2"),
+        SentenceTransformerEmbedder("Snowflake/snowflake-arctic-embed-xs"),
     )
     builder.provide(
         LLM_MODEL,
-        os.environ.get("LLM_MODEL", "openai/gpt-5.4-mini"),
+        os.environ.get("LLM_MODEL", "openai/gpt-5.4"),
+    )
+    builder.provide(
+        RESOLUTION_LLM_MODEL,
+        os.environ.get("RESOLUTION_LLM_MODEL", "openai/gpt-5-mini"),
     )
     yield
 
@@ -137,12 +142,12 @@ async def process_session(
         session_statement_rel.declare_relation(from_id=session_id, to_id=stmt_id)
         identified_stmts.append(IdentifiedStatement(id=stmt_id, raw=stmt))
 
-    # Only identified speakers (all in metadata.speakers) form person_session
+    # Only identified speakers form the person_session relationship.
     identified_persons = [s.name for s in metadata.speakers]
 
     return SessionRawEntities(
         session_id=session_id,
-        persons=identified_persons,
+        raw_entities={PERSON_ENTITY_NAME: identified_persons},
         statements=identified_stmts,
     )
 
@@ -155,41 +160,34 @@ async def process_session(
 @coco.fn
 async def create_knowledge_base(
     all_session_raw: list[SessionRawEntities],
-    person_dedup: dict[str, str | None],
-    tech_dedup: dict[str, str | None],
-    org_dedup: dict[str, str | None],
-    person_table: surrealdb.TableTarget[Any],
-    tech_table: surrealdb.TableTarget[Any],
-    org_table: surrealdb.TableTarget[Any],
+    entity_dedup: dict[str, dict[str, str | None]],
+    entity_tables: dict[str, surrealdb.TableTarget[Any]],
     person_session_rel: surrealdb.RelationTarget[Any],
     person_statement_rel: surrealdb.RelationTarget[Any],
-    statement_involves_rel: surrealdb.RelationTarget[Any],
+    statement_mentions_rel: surrealdb.RelationTarget[Any],
 ) -> None:
     """Declare canonical entity nodes and all relationships."""
-    # Declare canonical person nodes (name is the ID)
-    for name, upstream in person_dedup.items():
-        if upstream is None:
-            person_table.declare_record(row=Person(id=name, name=name))
-    # Declare canonical tech nodes
-    for name, upstream in tech_dedup.items():
-        if upstream is None:
-            tech_table.declare_record(row=Tech(id=name, name=name))
-    # Declare canonical org nodes
-    for name, upstream in org_dedup.items():
-        if upstream is None:
-            org_table.declare_record(row=Org(id=name, name=name))
+    # Declare canonical nodes for each entity type (name is the ID)
+    for cfg in ENTITY_TYPES:
+        dedup = entity_dedup[cfg.name]
+        table = entity_tables[cfg.name]
+        for name, upstream in dedup.items():
+            if upstream is None:
+                table.declare_record(row=Entity(id=name, name=name))
+
+    person_dedup = entity_dedup[PERSON_ENTITY_NAME]
 
     # Declare relationships
     for session_raw in all_session_raw:
         # person_session: person attended session
-        for person_name in session_raw.persons:
+        for person_name in session_raw.raw_entities.get(PERSON_ENTITY_NAME, []):
             canonical = resolve_canonical(person_name, person_dedup)
             person_session_rel.declare_relation(
                 from_id=canonical,
                 to_id=session_raw.session_id,
             )
 
-        # person_statement + statement_involves
+        # person_statement + statement_mentions
         for identified in session_raw.statements:
             stmt = identified.raw
             stmt_id = identified.id
@@ -202,31 +200,19 @@ async def create_knowledge_base(
                     person_statement_rel.declare_relation(
                         from_id=canonical, to_id=stmt_id
                     )
-            # statement_involves: deduplicate after resolution
-            for canonical in {
-                resolve_canonical(p, person_dedup) for p in stmt.involved_persons
-            }:
-                statement_involves_rel.declare_relation(
-                    from_id=stmt_id,
-                    to_id=canonical,
-                    to_table=person_table,
-                )
-            for canonical in {
-                resolve_canonical(t, tech_dedup) for t in stmt.involved_techs
-            }:
-                statement_involves_rel.declare_relation(
-                    from_id=stmt_id,
-                    to_id=canonical,
-                    to_table=tech_table,
-                )
-            for canonical in {
-                resolve_canonical(o, org_dedup) for o in stmt.involved_orgs
-            }:
-                statement_involves_rel.declare_relation(
-                    from_id=stmt_id,
-                    to_id=canonical,
-                    to_table=org_table,
-                )
+            # statement_mentions: deduplicate after resolution
+            for cfg in ENTITY_TYPES:
+                dedup = entity_dedup[cfg.name]
+                table = entity_tables[cfg.name]
+                for canonical in {
+                    resolve_canonical(e, dedup)
+                    for e in getattr(stmt, f"mentioned_{cfg.name}")
+                }:
+                    statement_mentions_rel.declare_relation(
+                        from_id=stmt_id,
+                        to_id=canonical,
+                        to_table=table,
+                    )
 
 
 # ---------------------------------------------------------------------------
@@ -236,22 +222,17 @@ async def create_knowledge_base(
 
 def _collect_all_raw(
     all_session_raw: list[SessionRawEntities],
-    entity_type: str,
+    cfg_name: str,
 ) -> set[str]:
     """Collect all raw entity names of a given type across sessions."""
     result: set[str] = set()
     for session_raw in all_session_raw:
-        if entity_type == "persons":
-            result.update(session_raw.persons)
-            for identified in session_raw.statements:
-                result.update(identified.raw.speakers)
-                result.update(identified.raw.involved_persons)
-        elif entity_type == "techs":
-            for identified in session_raw.statements:
-                result.update(identified.raw.involved_techs)
-        elif entity_type == "orgs":
-            for identified in session_raw.statements:
-                result.update(identified.raw.involved_orgs)
+        result.update(session_raw.raw_entities.get(cfg_name, []))
+        for identified in session_raw.statements:
+            stmt = identified.raw
+            if cfg_name == PERSON_ENTITY_NAME:
+                result.update(stmt.speakers)
+            result.update(getattr(stmt, f"mentioned_{cfg_name}"))
     return result
 
 
@@ -269,31 +250,30 @@ async def app_main() -> None:
     statement_table = await surrealdb.mount_table_target(
         SURREAL_DB, "statement", await surrealdb.TableSchema.from_class(Statement)
     )
-    person_table = await surrealdb.mount_table_target(
-        SURREAL_DB, "person", await surrealdb.TableSchema.from_class(Person)
-    )
-    tech_table = await surrealdb.mount_table_target(
-        SURREAL_DB, "tech", await surrealdb.TableSchema.from_class(Tech)
-    )
-    org_table = await surrealdb.mount_table_target(
-        SURREAL_DB, "org", await surrealdb.TableSchema.from_class(Org)
-    )
+    entity_schema = await surrealdb.TableSchema.from_class(Entity)
+    entity_tables: dict[str, surrealdb.TableTarget[Any]] = {
+        cfg.name: await surrealdb.mount_table_target(
+            SURREAL_DB, cfg.name, entity_schema
+        )
+        for cfg in ENTITY_TYPES
+    }
 
     # --- Setup relation targets ---
     session_statement_rel = await surrealdb.mount_relation_target(
         SURREAL_DB, "session_statement", session_table, statement_table
     )
+    person_table = entity_tables[PERSON_ENTITY_NAME]
     person_session_rel = await surrealdb.mount_relation_target(
         SURREAL_DB, "person_session", person_table, session_table
     )
     person_statement_rel = await surrealdb.mount_relation_target(
         SURREAL_DB, "person_statement", person_table, statement_table
     )
-    statement_involves_rel = await surrealdb.mount_relation_target(
+    statement_mentions_rel = await surrealdb.mount_relation_target(
         SURREAL_DB,
-        "statement_involves",
+        "statement_mentions",
         statement_table,
-        [person_table, tech_table, org_table],  # polymorphic TO
+        [entity_tables[cfg.name] for cfg in ENTITY_TYPES],  # polymorphic TO
     )
 
     # --- Phase 1: Per-session processing ---
@@ -322,27 +302,21 @@ async def app_main() -> None:
             )
     all_session_raw = list(await asyncio.gather(*session_coros))
 
-    # --- Phase 2: Entity resolution ---
-    all_raw_persons = _collect_all_raw(all_session_raw, "persons")
-    all_raw_techs = _collect_all_raw(all_session_raw, "techs")
-    all_raw_orgs = _collect_all_raw(all_session_raw, "orgs")
-
-    person_dedup, tech_dedup, org_dedup = await asyncio.gather(
-        coco.use_mount(
-            coco.component_subpath("resolve", "person"),
-            resolve_entities,
-            all_raw_persons,
-        ),
-        coco.use_mount(
-            coco.component_subpath("resolve", "tech"),
-            resolve_entities,
-            all_raw_techs,
-        ),
-        coco.use_mount(
-            coco.component_subpath("resolve", "org"),
-            resolve_entities,
-            all_raw_orgs,
-        ),
+    # --- Phase 2: Entity resolution (one mount per entity type) ---
+    entity_dedup: dict[str, dict[str, str | None]] = dict(
+        zip(
+            [cfg.name for cfg in ENTITY_TYPES],
+            await asyncio.gather(
+                *(
+                    coco.use_mount(
+                        coco.component_subpath("resolve", cfg.name),
+                        resolve_entities,
+                        _collect_all_raw(all_session_raw, cfg.name),
+                    )
+                    for cfg in ENTITY_TYPES
+                )
+            ),
+        )
     )
 
     # --- Phase 3: Declare knowledge base ---
@@ -350,15 +324,11 @@ async def app_main() -> None:
         coco.component_subpath("knowledge_base"),
         create_knowledge_base,
         all_session_raw=all_session_raw,
-        person_dedup=person_dedup,
-        tech_dedup=tech_dedup,
-        org_dedup=org_dedup,
-        person_table=person_table,
-        tech_table=tech_table,
-        org_table=org_table,
+        entity_dedup=entity_dedup,
+        entity_tables=entity_tables,
         person_session_rel=person_session_rel,
         person_statement_rel=person_statement_rel,
-        statement_involves_rel=statement_involves_rel,
+        statement_mentions_rel=statement_mentions_rel,
     )
 
 

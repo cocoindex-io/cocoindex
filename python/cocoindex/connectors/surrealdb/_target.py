@@ -485,47 +485,49 @@ class _SharedRecordApplier:
                 else:
                     delete_normal.append(action)
 
-        await self._conn.query("BEGIN TRANSACTION")
-        try:
-            for action in upsert_normal:
-                assert action.value is not None
-                content = {k: v for k, v in action.value.items() if k != "id"}
-                surql = f"UPSERT {action.table_name}:{_format_record_id(action.record_id)} CONTENT $content"
-                await self._conn.query(surql, {"content": content})
+        # Build all statements into a single multi-statement query to avoid
+        # N round-trips (one per record). Content is inlined as JSON literals
+        # since $content variable binding doesn't work across batched statements.
+        statements: list[str] = ["BEGIN TRANSACTION;\n"]
 
-            for action in upsert_relation:
-                assert action.value is not None
-                assert action.from_record is not None
-                assert action.to_record is not None
-                # Delete before RELATE: SurrealDB relation records bind
-                # in/out as part of identity, so changing endpoints requires
-                # removing the old record first.
-                await self._conn.query(
-                    f"DELETE {action.table_name}:{_format_record_id(action.record_id)}"
-                )
-                content = {k: v for k, v in action.value.items() if k != "id"}
-                surql = (
-                    f"RELATE {action.from_record}"
-                    f"->{action.table_name}:{_format_record_id(action.record_id)}"
-                    f"->{action.to_record}"
-                    f" CONTENT $content"
-                )
-                await self._conn.query(surql, {"content": content})
+        for action in upsert_normal:
+            assert action.value is not None
+            content = {k: v for k, v in action.value.items() if k != "id"}
+            statements.append(
+                f"UPSERT {action.table_name}:{_format_record_id(action.record_id)}"
+                f" CONTENT {json.dumps(content, default=str)};\n"
+            )
 
-            for action in delete_relation:
-                await self._conn.query(
-                    f"DELETE {action.table_name}:{_format_record_id(action.record_id)}"
-                )
+        for action in upsert_relation:
+            assert action.value is not None
+            assert action.from_record is not None
+            assert action.to_record is not None
+            # Delete before RELATE: SurrealDB relation records bind
+            # in/out as part of identity, so changing endpoints requires
+            # removing the old record first.
+            statements.append(
+                f"DELETE {action.table_name}:{_format_record_id(action.record_id)};\n"
+            )
+            content = {k: v for k, v in action.value.items() if k != "id"}
+            statements.append(
+                f"RELATE {action.from_record}"
+                f"->{action.table_name}:{_format_record_id(action.record_id)}"
+                f"->{action.to_record}"
+                f" CONTENT {json.dumps(content, default=str)};\n"
+            )
 
-            for action in delete_normal:
-                await self._conn.query(
-                    f"DELETE {action.table_name}:{_format_record_id(action.record_id)}"
-                )
+        for action in delete_relation:
+            statements.append(
+                f"DELETE {action.table_name}:{_format_record_id(action.record_id)};\n"
+            )
 
-            await self._conn.query("COMMIT TRANSACTION")
-        except BaseException:
-            await self._conn.query("CANCEL TRANSACTION")
-            raise
+        for action in delete_normal:
+            statements.append(
+                f"DELETE {action.table_name}:{_format_record_id(action.record_id)};\n"
+            )
+
+        statements.append("COMMIT TRANSACTION;\n")
+        await self._conn.query("".join(statements))
 
 
 # ---------------------------------------------------------------------------

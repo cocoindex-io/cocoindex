@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re as _re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import cocoindex as coco
 import pydantic
@@ -13,6 +13,50 @@ import pydantic
 # ---------------------------------------------------------------------------
 
 LLM_MODEL = coco.ContextKey[str]("llm_model")
+RESOLUTION_LLM_MODEL = coco.ContextKey[str]("resolution_llm_model")
+
+
+# ---------------------------------------------------------------------------
+# Entity type configuration
+# ---------------------------------------------------------------------------
+
+PERSON_ENTITY_NAME = "person"
+
+
+@dataclass
+class EntityTypeConfig:
+    """Configuration for a named entity type (person, tech, org, ...)."""
+
+    name: str
+    llm_description: str  # Injected into the extraction prompt
+    llm_examples: list[str] = field(default_factory=list)  # Canonical name examples
+
+
+ENTITY_TYPES: list[EntityTypeConfig] = [
+    EntityTypeConfig(
+        name=PERSON_ENTITY_NAME,
+        llm_description=(
+            "Real people, using Wikipedia-style full names. "
+            "Only include people you can confidently identify with their full name — "
+            "omit anyone you cannot identify. Do not guess."
+        ),
+        llm_examples=["Lex Fridman", "Sam Altman", "Franklin D. Roosevelt"],
+    ),
+    EntityTypeConfig(
+        name="tech",
+        llm_description="Technologies, tools, frameworks, and concepts.",
+        llm_examples=[
+            "Python (programming language)",
+            "Large language model",
+            "ChatGPT",
+        ],
+    ),
+    EntityTypeConfig(
+        name="org",
+        llm_description="Organizations and companies, using their canonical names.",
+        llm_examples=["OpenAI", "Google DeepMind", "US Department of Education"],
+    ),
+]
 
 
 # ---------------------------------------------------------------------------
@@ -31,20 +75,10 @@ class Session:
 
 
 @dataclass
-class Person:
-    id: str  # Canonical name used directly as ID
-    name: str
+class Entity:
+    """Generic named entity node (person, tech, org). Name is used as ID."""
 
-
-@dataclass
-class Tech:
-    id: str  # Name used directly as ID
-    name: str
-
-
-@dataclass
-class Org:
-    id: str  # Name used directly as ID
+    id: str
     name: str
 
 
@@ -83,9 +117,9 @@ class RawStatement(pydantic.BaseModel):
 
     statement: str
     speakers: list[str]  # Names of persons who made the statement
-    involved_persons: list[str] = []
-    involved_techs: list[str] = []
-    involved_orgs: list[str] = []
+    mentioned_person: list[str] = []
+    mentioned_tech: list[str] = []
+    mentioned_org: list[str] = []
 
 
 @coco.unpickle_safe
@@ -136,7 +170,9 @@ class SessionRawEntities:
     """Raw entities from a single session, for entity resolution."""
 
     session_id: int
-    persons: list[str]
+    # Maps entity type name → session-level participants (e.g. "person" → identified speakers).
+    # Statement-level entities are accessed directly via IdentifiedStatement.raw.
+    raw_entities: dict[str, list[str]]
     statements: list[IdentifiedStatement]
 
 
