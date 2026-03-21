@@ -10,36 +10,35 @@ import pickle
 import textwrap
 import threading
 from typing import (
-    Callable,
+    TYPE_CHECKING,
     Any,
+    Awaitable,
+    Callable,
     Concatenate,
-    Generic,
-    NamedTuple,
-    TypeVar,
-    ParamSpec,
     Coroutine,
+    Generic,
+    Literal,
+    NamedTuple,
+    ParamSpec,
     Protocol,
+    TypeAlias,
+    TypeVar,
     cast,
     overload,
-    TypeAlias,
-    Literal,
-    Awaitable,
-    TYPE_CHECKING,
 )
 
 from cocoindex._internal.environment import Environment, get_event_loop_or_default
 
 from . import core
-from .runner import Runner, in_subprocess as _in_subprocess
-
 from .component_ctx import (
     _context_var,
     _enter_component_context,
     get_context_from_ctx,
 )
 from .memo_key import fingerprint_call
+from .runner import Runner
+from .runner import in_subprocess as _in_subprocess
 from .typing import NON_EXISTENCE
-
 
 P = ParamSpec("P")
 R = TypeVar("R")
@@ -818,17 +817,20 @@ class AsyncFunction(Function[P, R_co]):
 
         # Parse args based on mode
         if self._batching:
-            # Batching mode: single input element, no kwargs
-            if kwargs:
-                raise ValueError("Batched functions do not support keyword arguments")
             if len(actual_args) < 1:
                 raise ValueError("Expected at least one input argument")
             input_val = actual_args[0]
+            extra_args = tuple(actual_args[1:])
+            extra_kwargs = dict(kwargs)
         else:
             # Runner-only mode: wrap (args, kwargs) as single input
             input_val = (actual_args, kwargs)
+            extra_args = ()
+            extra_kwargs = {}
 
-        batcher = self._get_or_create_batcher(async_ctx, self_obj)
+        batcher = self._get_or_create_batcher(
+            async_ctx, self_obj, extra_args, extra_kwargs
+        )
         return await batcher.run(input_val)
 
     async def _execute_orig_async_fn(self, *args: Any, **kwargs: Any) -> Any:
@@ -840,13 +842,19 @@ class AsyncFunction(Function[P, R_co]):
         return self._orig_sync_fn(*args, **kwargs)
 
     def _create_batch_runner_fn(
-        self, self_obj: Any
+        self,
+        self_obj: Any,
+        extra_args: tuple[Any, ...],
+        extra_kwargs: dict[str, Any] | None = None,
     ) -> AnyCallable[[list[Any]], list[R_co]]:
         """Create the batch execution function.
 
         Always returns an async function (or sync for Batcher.new_sync).
         Handles both sync and async underlying functions.
         """
+        if extra_kwargs is None:
+            extra_kwargs = {}
+
         if self._runner is not None:
             # Choose appropriate callable and runner method based on underlying fn type
             bound_fn_obj = self.__get__(self_obj)
@@ -858,7 +866,9 @@ class AsyncFunction(Function[P, R_co]):
             if self._batching:
 
                 async def runner_batch_fn_async(inputs: list[Any]) -> list[R_co]:
-                    return await runner_run(batch_callable, inputs)  # type: ignore
+                    return await runner_run(  # type: ignore[no-any-return]
+                        batch_callable, inputs, *extra_args, **extra_kwargs
+                    )
             else:
 
                 async def runner_batch_fn_async(inputs: list[Any]) -> list[R_co]:
@@ -872,42 +882,69 @@ class AsyncFunction(Function[P, R_co]):
 
         # User function is a batch function: list[T] -> list[R]
         if self_obj is None:
-            return self._any_fn  # type: ignore
+            if not extra_args and not extra_kwargs:
+                return self._any_fn  # type: ignore
+            if (orig_async_fn := self._orig_async_fn) is not None:
 
+                async def batch_fn_async_extra(inputs: list[Any]) -> list[Any]:
+                    return await orig_async_fn(inputs, *extra_args, **extra_kwargs)  # type: ignore
+
+                return batch_fn_async_extra
+            else:
+                orig_sync_fn = self._orig_sync_fn
+                assert orig_sync_fn is not None
+                return lambda inputs: orig_sync_fn(inputs, *extra_args, **extra_kwargs)  # type: ignore
         if (orig_async_fn := self._orig_async_fn) is not None:
 
             async def batch_fn_async_self(inputs: list[Any]) -> list[Any]:
-                return await orig_async_fn(self_obj, inputs)  # type: ignore
+                return await orig_async_fn(  # type: ignore[no-any-return]
+                    self_obj, inputs, *extra_args, **extra_kwargs
+                )
 
             return batch_fn_async_self
         else:
             orig_sync_fn = self._orig_sync_fn
             assert orig_sync_fn is not None
-            return lambda inputs: orig_sync_fn(self_obj, inputs)  # type: ignore
+            return lambda inputs: orig_sync_fn(
+                self_obj, inputs, *extra_args, **extra_kwargs
+            )  # type: ignore
 
     @property
     def _is_scheduled(self) -> bool:
         """Whether this function uses batching or runner."""
         return self._batching or self._runner is not None
 
-    def _get_batcher_key(self, self_obj: Any) -> object:
+    def _get_batcher_key(
+        self,
+        self_obj: Any,
+        extra_args: tuple[Any, ...],
+        extra_kwargs: tuple[tuple[str, Any], ...],
+    ) -> object:
         """Key for batcher lookup (different from queue_id)."""
         if self_obj is not None:
-            return (id(self._any_fn), id(self_obj))
+            return (id(self._any_fn), id(self_obj), extra_args, extra_kwargs)
         else:
-            return id(self._any_fn)
+            return (id(self._any_fn), extra_args, extra_kwargs)
 
     def _get_or_create_batcher(
-        self, async_ctx: core.AsyncContext, self_obj: Any
+        self,
+        async_ctx: core.AsyncContext,
+        self_obj: Any,
+        extra_args: tuple[Any, ...] = (),
+        extra_kwargs: dict[str, Any] | None = None,
     ) -> core.Batcher[Any, R_co]:
         """Get or create batcher for this function/self combination."""
-        batcher_key = self._get_batcher_key(self_obj)
-
+        if extra_kwargs is None:
+            extra_kwargs = {}
+        extra_kwargs_key = tuple(sorted(extra_kwargs.items()))
+        batcher_key = self._get_batcher_key(self_obj, extra_args, extra_kwargs_key)
         with self._batchers_lock:
             if (batcher := self._batchers.get(batcher_key, None)) is not None:
                 return batcher
 
-            batch_runner_fn = self._create_batch_runner_fn(self_obj)
+            batch_runner_fn = self._create_batch_runner_fn(
+                self_obj, extra_args, extra_kwargs
+            )
 
             # Get queue: from runner (if present) or owned by this function
             if self._runner is not None:
