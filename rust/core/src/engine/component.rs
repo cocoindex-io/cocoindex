@@ -60,10 +60,11 @@ pub trait ComponentProcessor<Prof: EngineProfile>: Send + Sync + 'static {
     fn handle_memo_states(
         &self,
         host_runtime_ctx: &Prof::HostRuntimeCtx,
+        comp_ctx: &ComponentProcessorContext<Prof>,
         stored_states: Option<Vec<Prof::FunctionData>>,
     ) -> Result<impl Future<Output = Result<(Vec<Prof::FunctionData>, bool, bool)>> + Send + 'static>
     {
-        let _ = (host_runtime_ctx, stored_states);
+        let _ = (host_runtime_ctx, comp_ctx, stored_states);
         Ok(async { Ok((vec![], true, false)) })
     }
 }
@@ -467,6 +468,7 @@ impl<Prof: EngineProfile> Component<Prof> {
                     if processor.has_memo_state_handler() && !memo_states.is_empty() {
                         let fut = processor.handle_memo_states(
                             processor_context.app_ctx().env().host_runtime_ctx(),
+                            processor_context,
                             Some(memo_states),
                         )?;
                         let (new_states, can_reuse, states_changed) = fut.await?;
@@ -588,6 +590,7 @@ impl<Prof: EngineProfile> Component<Prof> {
                                     // Cache miss — collect initial states
                                     let fut = processor.handle_memo_states(
                                         processor_context.app_ctx().env().host_runtime_ctx(),
+                                        processor_context,
                                         None,
                                     )?;
                                     let (initial_states, _, _) = fut.await?;

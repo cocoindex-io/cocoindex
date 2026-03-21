@@ -33,8 +33,8 @@ from . import core
 from .runner import Runner, in_subprocess as _in_subprocess
 
 from .component_ctx import (
-    ComponentContext,
     _context_var,
+    _enter_component_context,
     get_context_from_ctx,
 )
 from .memo_key import fingerprint_call
@@ -283,18 +283,14 @@ def _build_sync_core_processor(
     propagate_children_fn_logic: bool = True,
 ) -> core.ComponentProcessor[R_co]:
     def _build(comp_ctx: core.ComponentProcessorContext) -> R_co:
-        fn_ctx = core.FnCallContext(
-            propagate_children_fn_logic=propagate_children_fn_logic
-        )
-        if logic_fp is not None:
-            fn_ctx.add_fn_logic_dep(logic_fp)
-        context = ComponentContext(env, path, comp_ctx, fn_ctx)
-        tok = _context_var.set(context)
-        try:
+        with _enter_component_context(
+            env,
+            path,
+            comp_ctx,
+            propagate_children_fn_logic=propagate_children_fn_logic,
+            logic_fp=logic_fp,
+        ):
             return fn(*args, **kwargs)
-        finally:
-            _context_var.reset(tok)
-            comp_ctx.join_fn_call(fn_ctx)
 
     return core.ComponentProcessor.new_sync(
         _build, processor_info, memo_fp, state_handler
@@ -491,9 +487,11 @@ class SyncFunction(Function[P, R_co]):
             captured = state_methods
 
             async def _state_handler(
+                comp_ctx: core.ComponentProcessorContext,
                 stored_states: list[Any] | None,
             ) -> StateMethodsResult:
-                return await _call_state_methods_async(captured, stored_states)
+                with _enter_component_context(env, path, comp_ctx):
+                    return await _call_state_methods_async(captured, stored_states)
 
             state_handler = _state_handler
 
@@ -548,18 +546,14 @@ def _build_async_core_processor(
     propagate_children_fn_logic: bool = True,
 ) -> core.ComponentProcessor[R_co]:
     async def _build(comp_ctx: core.ComponentProcessorContext) -> R_co:
-        fn_ctx = core.FnCallContext(
-            propagate_children_fn_logic=propagate_children_fn_logic
-        )
-        if logic_fp is not None:
-            fn_ctx.add_fn_logic_dep(logic_fp)
-        context = ComponentContext(env, path, comp_ctx, fn_ctx)
-        tok = _context_var.set(context)
-        try:
+        with _enter_component_context(
+            env,
+            path,
+            comp_ctx,
+            propagate_children_fn_logic=propagate_children_fn_logic,
+            logic_fp=logic_fp,
+        ):
             return await fn(*args, **kwargs)
-        finally:
-            _context_var.reset(tok)
-            comp_ctx.join_fn_call(fn_ctx)
 
     return core.ComponentProcessor.new_async(
         _build, processor_info, memo_fp, state_handler
@@ -967,9 +961,11 @@ class AsyncFunction(Function[P, R_co]):
             captured = state_methods
 
             async def _state_handler(
+                comp_ctx: core.ComponentProcessorContext,
                 stored_states: list[Any] | None,
             ) -> StateMethodsResult:
-                return await _call_state_methods_async(captured, stored_states)
+                with _enter_component_context(env, path, comp_ctx):
+                    return await _call_state_methods_async(captured, stored_states)
 
             state_handler = _state_handler
 

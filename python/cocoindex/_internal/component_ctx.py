@@ -172,6 +172,33 @@ def component_subpath(*key_parts: StableKey) -> ComponentSubpath:
     return ComponentSubpath(*key_parts)
 
 
+@contextmanager
+def _enter_component_context(
+    env: Environment,
+    path: core.StablePath,
+    comp_ctx: core.ComponentProcessorContext,
+    /,
+    *,
+    propagate_children_fn_logic: bool = True,
+    logic_fp: core.Fingerprint | None = None,
+) -> Generator[None, None, None]:
+    """Set up ComponentContext in the context var, join fn call on exit.
+
+    Creates a FnCallContext, wraps it in a ComponentContext, sets the context var,
+    yields, then resets the context var and joins the fn call into the processor context.
+    """
+    fn_ctx = core.FnCallContext(propagate_children_fn_logic=propagate_children_fn_logic)
+    if logic_fp is not None:
+        fn_ctx.add_fn_logic_dep(logic_fp)
+    context = ComponentContext(env, path, comp_ctx, fn_ctx)
+    tok = _context_var.set(context)
+    try:
+        yield
+    finally:
+        _context_var.reset(tok)
+        comp_ctx.join_fn_call(fn_ctx)
+
+
 def get_context_from_ctx() -> ComponentContext:
     """Get the current ComponentContext from ContextVar."""
     ctx_var = _context_var.get(None)
