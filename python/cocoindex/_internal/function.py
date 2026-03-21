@@ -890,15 +890,16 @@ class AsyncFunction(Function[P, R_co]):
         if self_obj is None:
             if not extra_args and not extra_kwargs:
                 return self._any_fn  # type: ignore
-            fn = self._any_fn
-            if inspect.iscoroutinefunction(fn):
+            if (orig_async_fn := self._orig_async_fn) is not None:
 
                 async def batch_fn_async_extra(inputs: list[Any]) -> list[Any]:
-                    return await fn(inputs, *extra_args, **extra_kwargs)  # type: ignore
+                    return await orig_async_fn(inputs, *extra_args, **extra_kwargs)  # type: ignore
 
                 return batch_fn_async_extra
             else:
-                return lambda inputs: fn(inputs, *extra_args, **extra_kwargs)  # type: ignore
+                orig_sync_fn = self._orig_sync_fn
+                assert orig_sync_fn is not None
+                return lambda inputs: orig_sync_fn(inputs, *extra_args, **extra_kwargs)  # type: ignore
         if (orig_async_fn := self._orig_async_fn) is not None:
 
             async def batch_fn_async_self(inputs: list[Any]) -> list[Any]:

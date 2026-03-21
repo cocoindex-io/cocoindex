@@ -872,6 +872,68 @@ async def test_batching_extra_arg_separates_batchers() -> None:
     assert r1 == "X:a" and r2 == "Y:a"
 
 
+@coco.fn.as_async(batching=True)  # type: ignore[arg-type]
+def batched_with_extra_kwarg(inputs: list[str], *, suffix: str) -> list[str]:
+    return [f"{x}:{suffix}" for x in inputs]
+
+
+@pytest.mark.asyncio
+async def test_batching_extra_kwarg_grouping() -> None:
+    """Test that calls with the same extra kwarg are batched together."""
+    r1: str
+    r2: str
+    r1, r2 = await asyncio.gather(
+        batched_with_extra_kwarg("a", suffix="!"),  # type: ignore[call-arg]
+        batched_with_extra_kwarg("b", suffix="!"),  # type: ignore[call-arg]
+    )
+    assert r1 == "a:!" and r2 == "b:!"
+
+
+@pytest.mark.asyncio
+async def test_batching_extra_kwarg_separates_batchers() -> None:
+    """Test that calls with different extra kwargs go to different batchers."""
+    r1: str
+    r2: str
+    r1, r2 = await asyncio.gather(
+        batched_with_extra_kwarg("a", suffix="!"),  # type: ignore[call-arg]
+        batched_with_extra_kwarg("a", suffix="?"),  # type: ignore[call-arg]
+    )
+    assert r1 == "a:!" and r2 == "a:?"
+
+
+class BatchedProcessorWithExtraArgs:
+    def __init__(self, base: int) -> None:
+        self.base = base
+
+    @coco.fn.as_async(batching=True)  # type: ignore[arg-type]
+    def process(self, inputs: list[int], multiplier: int, *, offset: int) -> list[int]:
+        return [self.base + x * multiplier + offset for x in inputs]
+
+
+@pytest.mark.asyncio
+async def test_batching_method_extra_args_grouping() -> None:
+    proc = BatchedProcessorWithExtraArgs(base=10)
+    r1: int
+    r2: int
+    r1, r2 = await asyncio.gather(
+        proc.process(1, 2, offset=5),  # type: ignore[call-arg]
+        proc.process(3, 2, offset=5),  # type: ignore[call-arg]
+    )
+    assert r1 == 17 and r2 == 21
+
+
+@pytest.mark.asyncio
+async def test_batching_method_extra_args_separates_batchers() -> None:
+    proc = BatchedProcessorWithExtraArgs(base=10)
+    r1: int
+    r2: int
+    r1, r2 = await asyncio.gather(
+        proc.process(1, 2, offset=5),  # type: ignore[call-arg]
+        proc.process(1, 2, offset=10),  # type: ignore[call-arg]
+    )
+    assert r1 == 17 and r2 == 22
+
+
 # Note: With always-async design, functions with batching/runner are always async.
 # The underlying implementation can be sync - it gets wrapped appropriately.
 # Both in-process and subprocess execution work for sync underlying functions.
