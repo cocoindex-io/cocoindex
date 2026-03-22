@@ -20,6 +20,7 @@ pub enum LlmApiType {
     VertexAi,
     Bedrock,
     AzureOpenAi,
+    Novita,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -125,6 +126,7 @@ mod anthropic;
 mod bedrock;
 mod gemini;
 mod litellm;
+mod novita;
 mod ollama;
 mod openai;
 mod openrouter;
@@ -170,6 +172,8 @@ pub async fn new_llm_generation_client(
         }
         LlmApiType::Vllm => Box::new(vllm::Client::new_vllm(address, api_key).await?)
             as Box<dyn LlmGenerationClient>,
+        LlmApiType::Novita => Box::new(novita::Client::new_novita(address, api_key).await?)
+            as Box<dyn LlmGenerationClient>,
     };
     Ok(client)
 }
@@ -207,6 +211,8 @@ pub async fn new_llm_embedding_client(
         LlmApiType::LiteLlm | LlmApiType::Vllm | LlmApiType::Anthropic | LlmApiType::Bedrock => {
             api_bail!("Embedding is not supported for API type {:?}", api_type)
         }
+        LlmApiType::Novita => Box::new(novita::Client::new_novita(address, api_key).await?)
+            as Box<dyn LlmEmbeddingClient>,
     };
     Ok(client)
 }
