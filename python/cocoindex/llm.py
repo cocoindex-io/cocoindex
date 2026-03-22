@@ -18,6 +18,7 @@ class LlmApiType(Enum):
     VLLM = "Vllm"
     BEDROCK = "Bedrock"
     AZURE_OPENAI = "AzureOpenAi"
+    MINIMAX = "MiniMax"
 
 
 @dataclass
