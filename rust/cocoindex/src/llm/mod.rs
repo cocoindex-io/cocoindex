@@ -20,6 +20,7 @@ pub enum LlmApiType {
     VertexAi,
     Bedrock,
     AzureOpenAi,
+    MiniMax,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -125,6 +126,7 @@ mod anthropic;
 mod bedrock;
 mod gemini;
 mod litellm;
+mod minimax;
 mod ollama;
 mod openai;
 mod openrouter;
@@ -170,6 +172,10 @@ pub async fn new_llm_generation_client(
         }
         LlmApiType::Vllm => Box::new(vllm::Client::new_vllm(address, api_key).await?)
             as Box<dyn LlmGenerationClient>,
+        LlmApiType::MiniMax => {
+            Box::new(minimax::Client::new_minimax(address, api_key).await?)
+                as Box<dyn LlmGenerationClient>
+        }
     };
     Ok(client)
 }
@@ -202,6 +208,10 @@ pub async fn new_llm_embedding_client(
         }
         LlmApiType::AzureOpenAi => {
             Box::new(openai::Client::new_azure(address, api_key, api_config).await?)
+                as Box<dyn LlmEmbeddingClient>
+        }
+        LlmApiType::MiniMax => {
+            Box::new(minimax::MiniMaxEmbeddingClient::new(address, api_key)?)
                 as Box<dyn LlmEmbeddingClient>
         }
         LlmApiType::LiteLlm | LlmApiType::Vllm | LlmApiType::Anthropic | LlmApiType::Bedrock => {

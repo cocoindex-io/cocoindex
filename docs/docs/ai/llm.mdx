@@ -30,6 +30,7 @@ We support the following types of LLM APIs:
 | [OpenRouter](#openrouter) | `LlmApiType.OPEN_ROUTER` | ✅ | ✅ |
 | [vLLM](#vllm) | `LlmApiType.VLLM` | ✅ | ❌ |
 | [Bedrock](#bedrock) | `LlmApiType.BEDROCK` | ✅ | ❌ |
+| [MiniMax](#minimax) | `LlmApiType.MINIMAX` | ✅ | ✅ |
 
 ## LLM Tasks
 
@@ -555,3 +556,46 @@ cocoindex.LlmSpec(
 </Tabs>
 
 You can find the full list of models supported by Bedrock [here](https://docs.aws.amazon.com/bedrock/latest/userguide/model-ids.html).
+
+### MiniMax
+
+[MiniMax](https://www.minimax.io/) is a cloud AI platform offering powerful language models and embedding capabilities through an OpenAI-compatible API.
+
+To use the MiniMax API, you need to set the environment variable `MINIMAX_API_KEY`.
+You can generate the API key from [MiniMax Platform](https://platform.minimax.chat/).
+
+For text generation, a spec for MiniMax looks like this:
+
+<Tabs>
+<TabItem value="python" label="Python" default>
+
+```python
+cocoindex.LlmSpec(
+    api_type=cocoindex.LlmApiType.MINIMAX,
+    model="MiniMax-M2.7",
+)
+```
+
+</TabItem>
+</Tabs>
+
+Available generation models include `MiniMax-M2.7`, `MiniMax-M2.7-highspeed`, `MiniMax-M2.5`, and `MiniMax-M2.5-highspeed`.
+
+For text embedding, MiniMax provides the `embo-01` model (1536 dimensions). A spec for MiniMax embedding looks like this:
+
+<Tabs>
+<TabItem value="python" label="Python" default>
+
+```python
+cocoindex.functions.EmbedText(
+    api_type=cocoindex.LlmApiType.MINIMAX,
+    model="embo-01",
+    # Use "db" for storage or "query" for search queries
+    task_type="db",
+)
+```
+
+</TabItem>
+</Tabs>
+
+MiniMax embedding supports `task_type` with values `"db"` (for storing documents) and `"query"` (for search queries).

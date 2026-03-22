@@ -121,6 +121,9 @@ def manual_extraction_flow(
                 # Replace by this spec below, to use Bedrock API model
                 #   llm_spec=cocoindex.LlmSpec(
                 #       api_type=cocoindex.LlmApiType.BEDROCK, model="us.anthropic.claude-3-5-haiku-20241022-v1:0"),
+                # Replace by this spec below, to use MiniMax API model
+                #   llm_spec=cocoindex.LlmSpec(
+                #       api_type=cocoindex.LlmApiType.MINIMAX, model="MiniMax-M2.7"),
                 output_type=ModuleInfo,
                 instruction="Please extract Python module information from the manual.",
             )
