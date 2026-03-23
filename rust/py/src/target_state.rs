@@ -108,12 +108,12 @@ impl TargetHandler<PyEngineProfile> for PyTargetHandler {
         &self,
         key: cocoindex_core::state::stable_path::StableKey,
         desired_effect: Option<Py<PyAny>>,
-        prev_possible_states: &[PyValue],
+        prev_possible_records: &[PyValue],
         prev_may_be_missing: bool,
     ) -> Result<Option<TargetReconcileOutput<PyEngineProfile>>> {
         Python::attach(|py| -> PyResult<_> {
-            let prev_possible_states =
-                PyList::new(py, prev_possible_states.iter().map(|s| s.value().bind(py)))?;
+            let prev_possible_records =
+                PyList::new(py, prev_possible_records.iter().map(|s| s.value().bind(py)))?;
             let non_existence = &python_objects().non_existence;
             let py_output = self.0.call_method(
                 py,
@@ -121,7 +121,7 @@ impl TargetHandler<PyEngineProfile> for PyTargetHandler {
                 (
                     PyStableKey(key),
                     desired_effect.as_ref().unwrap_or(non_existence).bind(py),
-                    prev_possible_states,
+                    prev_possible_records,
                     prev_may_be_missing,
                 ),
                 None,

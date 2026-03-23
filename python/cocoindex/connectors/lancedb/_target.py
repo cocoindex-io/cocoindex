@@ -444,14 +444,14 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
         self,
         key: coco.StableKey,
         desired_state: _RowValue | coco.NonExistenceType,
-        prev_possible_states: Collection[_RowFingerprint],
+        prev_possible_records: Collection[_RowFingerprint],
         prev_may_be_missing: bool,
         /,
     ) -> coco.TargetReconcileOutput[_RowAction, _RowFingerprint] | None:
         key = _ROW_KEY_CHECKER.check(key)
         if coco.is_non_existence(desired_state):
             # Delete case - only if it might exist
-            if not prev_possible_states and not prev_may_be_missing:
+            if not prev_possible_records and not prev_may_be_missing:
                 return None
             return coco.TargetReconcileOutput(
                 action=_RowAction(key=key, value=None),
@@ -462,7 +462,7 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
         # Upsert case
         target_fp = fingerprint_object(desired_state)
         if not prev_may_be_missing and all(
-            prev == target_fp for prev in prev_possible_states
+            prev == target_fp for prev in prev_possible_records
         ):
             # No change needed
             return None
@@ -667,7 +667,7 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
         self,
         key: coco.StableKey,
         desired_state: _TableSpec | coco.NonExistenceType,
-        prev_possible_states: Collection[_TableTrackingRecord],
+        prev_possible_records: Collection[_TableTrackingRecord],
         prev_may_be_missing: bool,
         /,
     ) -> (
@@ -690,7 +690,7 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
         resolved = statediff.resolve_system_transition(
             statediff.TrackingRecordTransition(
                 tracking_record,
-                prev_possible_states,
+                prev_possible_records,
                 prev_may_be_missing,
             )
         )

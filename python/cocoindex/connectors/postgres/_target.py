@@ -452,13 +452,13 @@ class _VectorIndexHandler:
         self,
         key: coco.StableKey,
         desired_state: _VectorIndexSpec | coco.NonExistenceType,
-        prev_possible_states: Collection[_VectorIndexFingerprint],
+        prev_possible_records: Collection[_VectorIndexFingerprint],
         prev_may_be_missing: bool,
         /,
     ) -> coco.TargetReconcileOutput[_VectorIndexAction, _VectorIndexFingerprint] | None:
         assert isinstance(key, str)
         if coco.is_non_existence(desired_state):
-            if not prev_possible_states and not prev_may_be_missing:
+            if not prev_possible_records and not prev_may_be_missing:
                 return None
             return coco.TargetReconcileOutput(
                 action=_VectorIndexAction(name=key, spec=None),
@@ -468,7 +468,7 @@ class _VectorIndexHandler:
 
         target_fp = fingerprint_object(desired_state)
         if not prev_may_be_missing and all(
-            prev == target_fp for prev in prev_possible_states
+            prev == target_fp for prev in prev_possible_records
         ):
             return None
 
@@ -494,10 +494,10 @@ class _SqlCommandAction(NamedTuple):
 
 
 def _collect_teardown_sql(
-    prev_possible_states: Collection[_SqlCommandSpec],
+    prev_possible_records: Collection[_SqlCommandSpec],
 ) -> str | None:
     """Extract the first non-None teardown_sql from previous states."""
-    for prev in prev_possible_states:
+    for prev in prev_possible_records:
         if prev.teardown_sql is not None:
             return prev.teardown_sql
     return None
@@ -538,15 +538,15 @@ class _SqlCommandHandler:
         self,
         key: coco.StableKey,
         desired_state: _SqlCommandSpec | coco.NonExistenceType,
-        prev_possible_states: Collection[_SqlCommandSpec],
+        prev_possible_records: Collection[_SqlCommandSpec],
         prev_may_be_missing: bool,
         /,
     ) -> coco.TargetReconcileOutput[_SqlCommandAction, _SqlCommandSpec] | None:
         assert isinstance(key, str)
         if coco.is_non_existence(desired_state):
-            if not prev_possible_states and not prev_may_be_missing:
+            if not prev_possible_records and not prev_may_be_missing:
                 return None
-            prev_teardown = _collect_teardown_sql(prev_possible_states)
+            prev_teardown = _collect_teardown_sql(prev_possible_records)
             return coco.TargetReconcileOutput(
                 action=_SqlCommandAction(
                     name=key, spec=None, prev_teardown_sql=prev_teardown
@@ -556,11 +556,11 @@ class _SqlCommandHandler:
             )
 
         if not prev_may_be_missing and all(
-            prev == desired_state for prev in prev_possible_states
+            prev == desired_state for prev in prev_possible_records
         ):
             return None
 
-        prev_teardown = _collect_teardown_sql(prev_possible_states)
+        prev_teardown = _collect_teardown_sql(prev_possible_records)
         return coco.TargetReconcileOutput(
             action=_SqlCommandAction(
                 name=key, spec=desired_state, prev_teardown_sql=prev_teardown
@@ -737,14 +737,14 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
         self,
         key: coco.StableKey,
         desired_state: _RowValue | coco.NonExistenceType,
-        prev_possible_states: Collection[_RowFingerprint],
+        prev_possible_records: Collection[_RowFingerprint],
         prev_may_be_missing: bool,
         /,
     ) -> coco.TargetReconcileOutput[_RowAction, _RowFingerprint] | None:
         key = _ROW_KEY_CHECKER.check(key)
         if coco.is_non_existence(desired_state):
             # Delete case - only if it might exist
-            if not prev_possible_states and not prev_may_be_missing:
+            if not prev_possible_records and not prev_may_be_missing:
                 return None
             return coco.TargetReconcileOutput(
                 action=_RowAction(key=key, value=None),
@@ -755,7 +755,7 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
         # Upsert case
         target_fp = fingerprint_object(desired_state)
         if not prev_may_be_missing and all(
-            prev == target_fp for prev in prev_possible_states
+            prev == target_fp for prev in prev_possible_records
         ):
             # No change needed
             return None
@@ -1063,7 +1063,7 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
         self,
         key: coco.StableKey,
         desired_state: _TableSpec | coco.NonExistenceType,
-        prev_possible_states: Collection[_TableTrackingRecord],
+        prev_possible_records: Collection[_TableTrackingRecord],
         prev_may_be_missing: bool,
         /,
     ) -> (
@@ -1087,7 +1087,7 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
         resolved = statediff.resolve_system_transition(
             statediff.TrackingRecordTransition(
                 tracking_record,
-                prev_possible_states,
+                prev_possible_records,
                 prev_may_be_missing,
             )
         )

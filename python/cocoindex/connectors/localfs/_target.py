@@ -117,7 +117,7 @@ def _reconcile_entry(
     base_dir_key: str | None,
     path_str: str,
     desired_state: _EntrySpec | coco.NonExistenceType,
-    prev_possible_states: Collection[_EntryTrackingRecord],
+    prev_possible_records: Collection[_EntryTrackingRecord],
     prev_may_be_missing: bool,
 ) -> (
     coco.TargetReconcileOutput[_EntryAction, _EntryTrackingRecord, "_EntryHandler"]
@@ -127,7 +127,7 @@ def _reconcile_entry(
     if coco.is_non_existence(desired_state):
         # Determine entry type from previous state (None fingerprint = dir)
         entry_type: Literal["file", "dir"] = "file"
-        for prev in prev_possible_states:
+        for prev in prev_possible_records:
             if prev.fingerprint is None:
                 entry_type = "dir"
                 break
@@ -154,7 +154,7 @@ def _reconcile_entry(
 
     # Check if update needed
     if not prev_may_be_missing and all(
-        prev.fingerprint == target_fp for prev in prev_possible_states
+        prev.fingerprint == target_fp for prev in prev_possible_records
     ):
         return None
 
@@ -194,7 +194,7 @@ class _EntryHandler(
         self,
         key: coco.StableKey,
         desired_state: _EntrySpec | coco.NonExistenceType,
-        prev_possible_states: Collection[_EntryTrackingRecord],
+        prev_possible_records: Collection[_EntryTrackingRecord],
         prev_may_be_missing: bool,
         /,
     ) -> (
@@ -207,7 +207,7 @@ class _EntryHandler(
             None,
             str(path),
             desired_state,
-            prev_possible_states,
+            prev_possible_records,
             prev_may_be_missing,
         )
 
@@ -245,7 +245,7 @@ class _RootHandler(coco.TargetHandler[_EntrySpec, _EntryTrackingRecord, _EntryHa
         self,
         key: coco.StableKey,
         desired_state: _EntrySpec | coco.NonExistenceType,
-        prev_possible_states: Collection[_EntryTrackingRecord],
+        prev_possible_records: Collection[_EntryTrackingRecord],
         prev_may_be_missing: bool,
         /,
     ) -> (
@@ -261,7 +261,7 @@ class _RootHandler(coco.TargetHandler[_EntrySpec, _EntryTrackingRecord, _EntryHa
             root_key.base_dir_key,
             path_str,
             desired_state,
-            prev_possible_states,
+            prev_possible_records,
             prev_may_be_missing,
         )
 

@@ -35,7 +35,7 @@ class TargetHandler(Protocol[KeyT, ValueT, TrackingRecordT, OptChildHandlerT]):
         self,
         key: KeyT,
         desired_state: ValueT | NonExistenceType,
-        prev_possible_states: Collection[TrackingRecordT],
+        prev_possible_records: Collection[TrackingRecordT],
         prev_may_be_missing: bool,
         /,
     ) -> TargetReconcileOutput[ActionT, TrackingRecordT, OptChildHandlerT] | None:
@@ -57,7 +57,7 @@ class TargetHandler(Protocol[KeyT, ValueT, TrackingRecordT, OptChildHandlerT]):
 
 - `key`: Unique identifier for this target state
 - `desired_state`: What the user declared, or `NON_EXISTENCE` if no longer declared
-- `prev_possible_states`: Tracking records from previous runs (may have multiple due to interrupted updates)
+- `prev_possible_records`: Tracking records from previous runs (may have multiple due to interrupted updates)
 - `prev_may_be_missing`: If `True`, the target state might not exist in the external system
 
 **Returns:**
@@ -204,10 +204,10 @@ Understanding what happens at runtime:
 
 4. **Action Execution**: CocoIndex batches actions by their `TargetActionSink` and executes them. The sink applies changes to the external system (database writes, file operations, API calls, etc.).
 
-5. **Tracking Persistence**: After successful execution, CocoIndex persists the new tracking records. On the next run, these become the `prev_possible_states` for change detection.
+5. **Tracking Persistence**: After successful execution, CocoIndex persists the new tracking records. On the next run, these become the `prev_possible_records` for change detection.
 
 :::note Multiple Previous States
-Due to interrupted updates, `prev_possible_states` may contain multiple records. CocoIndex tracks all possible states until a successful update confirms the current state. Your reconciliation logic should handle this by generating actions that work correctly regardless of which previous state is actual.
+Due to interrupted updates, `prev_possible_records` may contain multiple records. CocoIndex tracks all possible states until a successful update confirms the current state. Your reconciliation logic should handle this by generating actions that work correctly regardless of which previous state is actual.
 :::
 
 ### Step 1: Define your types
@@ -268,13 +268,13 @@ class _RowHandler(coco.TargetHandler[_RowKey, _RowSpec, _RowTrackingRecord]):
         self,
         key: _RowKey,
         desired_state: _RowSpec | coco.NonExistenceType,
-        prev_possible_states: Collection[_RowTrackingRecord],
+        prev_possible_records: Collection[_RowTrackingRecord],
         prev_may_be_missing: bool,
         /,
     ) -> coco.TargetReconcileOutput[_RowAction, _RowTrackingRecord] | None:
         # Handle deletion
         if coco.is_non_existence(desired_state):
-            if not prev_possible_states and not prev_may_be_missing:
+            if not prev_possible_records and not prev_may_be_missing:
                 return None  # Nothing to delete
             return coco.TargetReconcileOutput(
                 action=_RowAction(key=key, data=None),
@@ -287,7 +287,7 @@ class _RowHandler(coco.TargetHandler[_RowKey, _RowSpec, _RowTrackingRecord]):
 
         # Skip if unchanged
         if not prev_may_be_missing and all(
-            prev.fingerprint == target_fp for prev in prev_possible_states
+            prev.fingerprint == target_fp for prev in prev_possible_records
         ):
             return None
 
@@ -356,12 +356,12 @@ Set `child_invalidation` in the **parent handler's** `reconcile()` method when y
 
 ```python
 class _DirHandler(coco.TargetHandler[_DirKey, _DirSpec, _DirTrackingRecord]):
-    def reconcile(self, key, desired_state, prev_possible_states, prev_may_be_missing, /):
+    def reconcile(self, key, desired_state, prev_possible_records, prev_may_be_missing, /):
         # Detect if the container change is destructive or lossy
         invalidation = None
-        if self._is_destructive_change(desired_state, prev_possible_states):
+        if self._is_destructive_change(desired_state, prev_possible_records):
             invalidation = "destructive"
-        elif self._is_lossy_change(desired_state, prev_possible_states):
+        elif self._is_lossy_change(desired_state, prev_possible_records):
             invalidation = "lossy"
 
         return coco.TargetReconcileOutput(
@@ -379,7 +379,7 @@ The parent handler reconciles the container itself. The child handler reconciles
 ```python
 # Parent handler for directory
 class _DirHandler(coco.TargetHandler[_DirKey, _DirSpec, _DirTrackingRecord]):
-    def reconcile(self, key, desired_state, prev_possible_states, prev_may_be_missing, /):
+    def reconcile(self, key, desired_state, prev_possible_records, prev_may_be_missing, /):
         # Reconcile the directory itself
         ...
 
@@ -388,7 +388,7 @@ class _EntryHandler(coco.TargetHandler[str, _EntrySpec, _EntryTrackingRecord]):
     def __init__(self, base_path: pathlib.Path):
         self._base_path = base_path
 
-    def reconcile(self, key, desired_state, prev_possible_states, prev_may_be_missing, /):
+    def reconcile(self, key, desired_state, prev_possible_records, prev_may_be_missing, /):
         # Reconcile files/subdirs within the directory
         path = self._base_path / key
         ...
@@ -510,7 +510,7 @@ class _VectorIndexHandler:
                 else:
                     await conn.execute(f'CREATE INDEX "{action.name}" ...')
 
-    def reconcile(self, key, desired_state, prev_possible_states, prev_may_be_missing, /):
+    def reconcile(self, key, desired_state, prev_possible_records, prev_may_be_missing, /):
         # Standard reconcile pattern — compare fingerprints, return action or None
         ...
 ```
@@ -560,7 +560,7 @@ class TableTarget:
 ```
 
 :::tip Tracking records for teardown
-When an attachment has a teardown step (like `DROP INDEX`), store the full spec as the tracking record instead of a fingerprint. This lets you recover the teardown information from `prev_possible_states` when the attachment is deleted or changed. See the `_SqlCommandHandler` in the PostgreSQL connector for an example.
+When an attachment has a teardown step (like `DROP INDEX`), store the full spec as the tracking record instead of a fingerprint. This lets you recover the teardown information from `prev_possible_records` when the attachment is deleted or changed. See the `_SqlCommandHandler` in the PostgreSQL connector for an example.
 :::
 
 ## Best practices
@@ -582,12 +582,12 @@ await conn.execute("INSERT ...")  # Fails on duplicate key
 
 ### Handle multiple previous states
 
-Due to interrupted updates, `prev_possible_states` may contain multiple records. Design your reconciliation logic to handle this:
+Due to interrupted updates, `prev_possible_records` may contain multiple records. Design your reconciliation logic to handle this:
 
 ```python
 # Check if ALL previous states match (conservative approach)
 if not prev_may_be_missing and all(
-    prev.fingerprint == target_fp for prev in prev_possible_states
+    prev.fingerprint == target_fp for prev in prev_possible_records
 ):
     return None  # Safe to skip
 ```
@@ -682,14 +682,14 @@ class _FileHandler(coco.TargetHandler[_FileName, _FileContent, _FileTrackingReco
         self,
         key: _FileName,
         desired_state: _FileContent | coco.NonExistenceType,
-        prev_possible_states: Collection[_FileTrackingRecord],
+        prev_possible_records: Collection[_FileTrackingRecord],
         prev_may_be_missing: bool,
         /,
     ) -> coco.TargetReconcileOutput[_FileAction, _FileTrackingRecord] | None:
         path = self._base_path / key
 
         if coco.is_non_existence(desired_state):
-            if not prev_possible_states and not prev_may_be_missing:
+            if not prev_possible_records and not prev_may_be_missing:
                 return None
             return coco.TargetReconcileOutput(
                 action=_FileAction(path=path, content=None),
@@ -700,7 +700,7 @@ class _FileHandler(coco.TargetHandler[_FileName, _FileContent, _FileTrackingReco
         target_fp = fingerprint_bytes(desired_state)
 
         if not prev_may_be_missing and all(
-            prev.fingerprint == target_fp for prev in prev_possible_states
+            prev.fingerprint == target_fp for prev in prev_possible_records
         ):
             return None
 

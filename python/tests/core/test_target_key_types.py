@@ -53,7 +53,7 @@ class AnyKeyDictTargetStateStore:
         self,
         key: Any,
         desired_state: Any | coco.NonExistenceType,
-        prev_possible_states: Collection[Any],
+        prev_possible_records: Collection[Any],
         prev_may_be_missing: bool,
     ) -> (
         coco.TargetReconcileOutput[
@@ -63,11 +63,11 @@ class AnyKeyDictTargetStateStore:
     ):
         # Short-circuit no-change case
         if coco.is_non_existence(desired_state):
-            if len(prev_possible_states) == 0:
+            if len(prev_possible_records) == 0:
                 return None
         else:
             if not prev_may_be_missing and all(
-                prev == desired_state for prev in prev_possible_states
+                prev == desired_state for prev in prev_possible_records
             ):
                 return None
 
@@ -76,7 +76,7 @@ class AnyKeyDictTargetStateStore:
             if coco.is_non_existence(desired_state)
             else DictDataWithPrev(
                 data=desired_state,
-                prev=prev_possible_states,
+                prev=prev_possible_records,
                 prev_may_be_missing=prev_may_be_missing,
             )
         )

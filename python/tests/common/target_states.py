@@ -93,7 +93,7 @@ class DictTargetStateStore:
         self,
         key: coco.StableKey,
         desired_state: Any | coco.NonExistenceType,
-        prev_possible_states: Collection[Any],
+        prev_possible_records: Collection[Any],
         prev_may_be_missing: bool,
     ) -> (
         coco.TargetReconcileOutput[
@@ -104,11 +104,11 @@ class DictTargetStateStore:
         assert isinstance(key, str)
         # Short-circuit no-change case
         if coco.is_non_existence(desired_state):
-            if len(prev_possible_states) == 0:
+            if len(prev_possible_records) == 0:
                 return None
         else:
             if not prev_may_be_missing and all(
-                prev == desired_state for prev in prev_possible_states
+                prev == desired_state for prev in prev_possible_records
             ):
                 return None
 
@@ -117,7 +117,7 @@ class DictTargetStateStore:
             if coco.is_non_existence(desired_state)
             else DictDataWithPrev(
                 data=desired_state,
-                prev=prev_possible_states,
+                prev=prev_possible_records,
                 prev_may_be_missing=prev_may_be_missing,
             )
         )
@@ -219,7 +219,7 @@ class DictsTargetStateStore:
         self,
         key: coco.StableKey,
         desired_state: None | coco.NonExistenceType,
-        prev_possible_states: Collection[None],
+        prev_possible_records: Collection[None],
         prev_may_be_missing: bool,
     ) -> (
         coco.TargetReconcileOutput[
@@ -245,7 +245,7 @@ class DictsTargetStateStore:
                 child_invalidation=self.child_invalidation,
             )
         if not prev_may_be_missing and self.child_invalidation is None:
-            assert len(prev_possible_states) > 0
+            assert len(prev_possible_records) > 0
             return coco.TargetReconcileOutput(
                 action=_DictTargetStateStoreAction(name=key, exists=True, action=None),
                 sink=sink,
@@ -257,7 +257,7 @@ class DictsTargetStateStore:
             action=_DictTargetStateStoreAction(
                 name=key,
                 exists=True,
-                action="insert" if len(prev_possible_states) == 0 else "upsert",
+                action="insert" if len(prev_possible_records) == 0 else "upsert",
                 destructive=is_destructive,
             ),
             sink=sink,
@@ -335,7 +335,7 @@ class _AttachmentChildHandler:
         self,
         key: coco.StableKey,
         desired_state: Any | coco.NonExistenceType,
-        prev_possible_states: Collection[Any],
+        prev_possible_records: Collection[Any],
         prev_may_be_missing: bool,
     ) -> None:
         return None
@@ -400,7 +400,7 @@ class AttachmentDictsTargetStateStore:
         self,
         key: coco.StableKey,
         desired_state: None | coco.NonExistenceType,
-        prev_possible_states: Collection[None],
+        prev_possible_records: Collection[None],
         prev_may_be_missing: bool,
     ) -> (
         coco.TargetReconcileOutput[
@@ -422,7 +422,7 @@ class AttachmentDictsTargetStateStore:
                 child_invalidation=self.child_invalidation,
             )
         if not prev_may_be_missing and self.child_invalidation is None:
-            assert len(prev_possible_states) > 0
+            assert len(prev_possible_records) > 0
             return coco.TargetReconcileOutput(
                 action=_DictTargetStateStoreAction(name=key, exists=True, action=None),
                 sink=sink,
@@ -434,7 +434,7 @@ class AttachmentDictsTargetStateStore:
             action=_DictTargetStateStoreAction(
                 name=key,
                 exists=True,
-                action="insert" if len(prev_possible_states) == 0 else "upsert",
+                action="insert" if len(prev_possible_records) == 0 else "upsert",
                 destructive=is_destructive,
             ),
             sink=sink,

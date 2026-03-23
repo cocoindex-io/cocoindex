@@ -47,7 +47,7 @@ pub trait TargetHandler<Prof: EngineProfile>: Send + Sync + Sized + 'static {
         &self,
         key: StableKey,
         desired_target_state: Option<Prof::TargetStateValue>,
-        prev_possible_states: &[Prof::TargetStateTrackingRecord],
+        prev_possible_records: &[Prof::TargetStateTrackingRecord],
         prev_may_be_missing: bool,
     ) -> Result<Option<TargetReconcileOutput<Prof>>>;
 
