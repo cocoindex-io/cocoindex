@@ -595,7 +595,7 @@ class _VectorIndexHandler:
         self,
         key: coco.StableKey,
         desired_state: _VectorIndexSpec | coco.NonExistenceType,
-        prev_possible_states: Collection[_VectorIndexFingerprint],
+        prev_possible_records: Collection[_VectorIndexFingerprint],
         prev_may_be_missing: bool,
         /,
     ) -> (
@@ -604,7 +604,7 @@ class _VectorIndexHandler:
     ):
         assert isinstance(key, str)
         if coco.is_non_existence(desired_state):
-            if not prev_possible_states and not prev_may_be_missing:
+            if not prev_possible_records and not prev_may_be_missing:
                 return None
             return coco.TargetReconcileOutput(
                 action=_VectorIndexAction(
@@ -616,7 +616,7 @@ class _VectorIndexHandler:
 
         target_fp = fingerprint_object(desired_state)
         if not prev_may_be_missing and all(
-            prev == target_fp for prev in prev_possible_states
+            prev == target_fp for prev in prev_possible_records
         ):
             return None
 
@@ -679,14 +679,14 @@ class _RecordHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
         self,
         key: coco.StableKey,
         desired_state: _RowValue | coco.NonExistenceType,
-        prev_possible_states: Collection[_RowFingerprint],
+        prev_possible_records: Collection[_RowFingerprint],
         prev_may_be_missing: bool,
         /,
     ) -> coco.TargetReconcileOutput[_RecordAction, _RowFingerprint, None] | None:
         key = _ROW_KEY_CHECKER.check(key)
 
         if coco.is_non_existence(desired_state):
-            if not prev_possible_states and not prev_may_be_missing:
+            if not prev_possible_records and not prev_may_be_missing:
                 return None
             return coco.TargetReconcileOutput(
                 action=_RecordAction(
@@ -703,7 +703,7 @@ class _RecordHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
 
         target_fp = fingerprint_object(desired_state)
         if not prev_may_be_missing and all(
-            prev == target_fp for prev in prev_possible_states
+            prev == target_fp for prev in prev_possible_records
         ):
             return None
 
@@ -849,7 +849,7 @@ class _TableHandler(
         self,
         key: coco.StableKey,
         desired_state: _TableSpec | coco.NonExistenceType,
-        prev_possible_states: Collection[_TableTrackingRecord],
+        prev_possible_records: Collection[_TableTrackingRecord],
         prev_may_be_missing: bool,
         /,
     ) -> (
@@ -874,7 +874,7 @@ class _TableHandler(
 
         resolved = statediff.resolve_system_transition(
             statediff.TrackingRecordTransition(
-                tracking_record, prev_possible_states, prev_may_be_missing
+                tracking_record, prev_possible_records, prev_may_be_missing
             )
         )
         main_action, column_transitions = statediff.diff_composite(resolved)

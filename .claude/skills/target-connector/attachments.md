@@ -68,7 +68,7 @@ class _VectorIndexHandler:
         self,
         key: coco.StableKey,
         desired_state: _VectorIndexSpec | coco.NonExistenceType,
-        prev_possible_states: Collection[_VectorIndexFingerprint],
+        prev_possible_records: Collection[_VectorIndexFingerprint],
         prev_may_be_missing: bool,
         /,
     ) -> coco.TargetReconcileOutput[_VectorIndexAction, _VectorIndexFingerprint] | None:
@@ -122,7 +122,7 @@ Choose the tracking record type based on whether teardown recovery is needed:
 tracking_record = fingerprint_object(desired_state)  # bytes
 ```
 
-**Full spec example** (SQL command): On change or delete, the previous `teardown_sql` must be executed before the new `setup_sql`. The full spec is stored so `prev_possible_states` contains recoverable teardown information.
+**Full spec example** (SQL command): On change or delete, the previous `teardown_sql` must be executed before the new `setup_sql`. The full spec is stored so `prev_possible_records` contains recoverable teardown information.
 
 ```python
 tracking_record = desired_state  # _SqlCommandSpec (the spec itself)

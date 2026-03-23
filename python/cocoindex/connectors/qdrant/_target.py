@@ -233,13 +233,13 @@ class _PointHandler(coco.TargetHandler[qdrant_models.PointStruct, _PointFingerpr
         self,
         key: coco.StableKey,
         desired_state: qdrant_models.PointStruct | coco.NonExistenceType,
-        prev_possible_states: Collection[_PointFingerprint],
+        prev_possible_records: Collection[_PointFingerprint],
         prev_may_be_missing: bool,
         /,
     ) -> coco.TargetReconcileOutput[_PointAction, _PointFingerprint] | None:
         key = _POINT_ID_CHECKER.check(key)
         if coco.is_non_existence(desired_state):
-            if not prev_possible_states and not prev_may_be_missing:
+            if not prev_possible_records and not prev_may_be_missing:
                 return None
             return coco.TargetReconcileOutput(
                 action=_PointAction(point_id=key, point=None),
@@ -249,7 +249,7 @@ class _PointHandler(coco.TargetHandler[qdrant_models.PointStruct, _PointFingerpr
 
         target_fp = fingerprint_object((desired_state.vector, desired_state.payload))
         if not prev_may_be_missing and all(
-            prev == target_fp for prev in prev_possible_states
+            prev == target_fp for prev in prev_possible_records
         ):
             return None
 
@@ -397,7 +397,7 @@ class _CollectionHandler(
         self,
         key: coco.StableKey,
         desired_state: _CollectionSpec | coco.NonExistenceType,
-        prev_possible_states: Collection[_CollectionTrackingRecord],
+        prev_possible_records: Collection[_CollectionTrackingRecord],
         prev_may_be_missing: bool,
         /,
     ) -> (
@@ -421,7 +421,7 @@ class _CollectionHandler(
 
         transition = statediff.TrackingRecordTransition(
             tracking_record,
-            prev_possible_states,
+            prev_possible_records,
             prev_may_be_missing,
         )
         resolved = statediff.resolve_system_transition(transition)

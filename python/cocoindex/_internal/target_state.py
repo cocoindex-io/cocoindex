@@ -154,7 +154,7 @@ class TargetHandler(Protocol[ValueT_contra, TrackingRecordT, OptChildHandlerT_co
         self,
         key: StableKey,
         desired_target_state: ValueT_contra | NonExistenceType,
-        prev_possible_states: Collection[TrackingRecordT],
+        prev_possible_records: Collection[TrackingRecordT],
         prev_may_be_missing: bool,
         /,
     ) -> TargetReconcileOutput[Any, TrackingRecordT, OptChildHandlerT_co] | None: ...

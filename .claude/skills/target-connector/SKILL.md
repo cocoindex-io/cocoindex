@@ -98,7 +98,7 @@ class TargetHandler(Protocol[KeyT, ValueT, TrackingRecordT, OptChildHandlerT]):
         self,
         key: KeyT,
         desired_state: ValueT | NonExistenceType,
-        prev_possible_states: Collection[TrackingRecordT],
+        prev_possible_records: Collection[TrackingRecordT],
         prev_may_be_missing: bool,
         /,
     ) -> TargetReconcileOutput[ActionT, TrackingRecordT, OptChildHandlerT] | None:
@@ -113,7 +113,7 @@ class TargetHandler(Protocol[KeyT, ValueT, TrackingRecordT, OptChildHandlerT]):
 
 - `key`: Unique identifier for the target state
 - `desired_state`: What the user declared, or `NON_EXISTENCE` if no longer declared
-- `prev_possible_states`: Tracking records from previous runs (may have multiple)
+- `prev_possible_records`: Tracking records from previous runs (may have multiple)
 - `prev_may_be_missing`: If `True`, the target state might not exist in the external system
 
 **Returns:**
@@ -144,11 +144,11 @@ await conn.execute("INSERT ...")  # Fails on duplicate key
 
 ### Handle Multiple Previous States
 
-Due to interrupted updates, `prev_possible_states` may contain multiple records:
+Due to interrupted updates, `prev_possible_records` may contain multiple records:
 
 ```python
 if not prev_may_be_missing and all(
-    prev.fingerprint == target_fp for prev in prev_possible_states
+    prev.fingerprint == target_fp for prev in prev_possible_records
 ):
     return None  # Safe to skip
 ```
