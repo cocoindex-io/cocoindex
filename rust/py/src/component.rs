@@ -107,6 +107,7 @@ impl ComponentProcessor<PyEngineProfile> for PyComponentProcessor {
     fn handle_memo_states(
         &self,
         host_runtime_ctx: &PyAsyncContext,
+        comp_ctx: &ComponentProcessorContext<PyEngineProfile>,
         stored_states: Option<Vec<crate::value::PyValue>>,
     ) -> Result<
         impl Future<Output = Result<(Vec<crate::value::PyValue>, bool, bool)>> + Send + 'static,
@@ -118,6 +119,7 @@ impl ComponentProcessor<PyEngineProfile> for PyComponentProcessor {
         };
 
         // Convert Option<Vec<PyValue>> → Python (list | None)
+        let py_comp_ctx = PyComponentProcessorContext(comp_ctx.clone());
         let py_arg: Py<PyAny> = Python::attach(|py| -> Result<Py<PyAny>> {
             match stored_states {
                 Some(states) => {
@@ -129,7 +131,7 @@ impl ComponentProcessor<PyEngineProfile> for PyComponentProcessor {
             }
         })?;
 
-        let fut = state_handler.call(host_runtime_ctx, (py_arg,))?;
+        let fut = state_handler.call(host_runtime_ctx, (py_comp_ctx, py_arg))?;
 
         Ok(futures::future::Either::Right(async move {
             let result = fut.await?;

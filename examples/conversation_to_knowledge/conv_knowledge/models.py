@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re as _re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import cocoindex as coco
 import pydantic
@@ -13,6 +13,50 @@ import pydantic
 # ---------------------------------------------------------------------------
 
 LLM_MODEL = coco.ContextKey[str]("llm_model")
+RESOLUTION_LLM_MODEL = coco.ContextKey[str]("resolution_llm_model")
+
+
+# ---------------------------------------------------------------------------
+# Entity type configuration
+# ---------------------------------------------------------------------------
+
+PERSON_ENTITY_NAME = "person"
+
+
+@dataclass
+class EntityTypeConfig:
+    """Configuration for a named entity type (person, tech, org, ...)."""
+
+    name: str
+    llm_description: str  # Injected into the extraction prompt
+    llm_examples: list[str] = field(default_factory=list)  # Canonical name examples
+
+
+ENTITY_TYPES: list[EntityTypeConfig] = [
+    EntityTypeConfig(
+        name=PERSON_ENTITY_NAME,
+        llm_description=(
+            "Real people, using Wikipedia-style full names. "
+            "Only include people you can confidently identify with their full name — "
+            "omit anyone you cannot identify. Do not guess."
+        ),
+        llm_examples=["Lex Fridman", "Sam Altman", "Franklin D. Roosevelt"],
+    ),
+    EntityTypeConfig(
+        name="tech",
+        llm_description="Technologies, tools, frameworks, and concepts.",
+        llm_examples=[
+            "Python (programming language)",
+            "Large language model",
+            "ChatGPT",
+        ],
+    ),
+    EntityTypeConfig(
+        name="org",
+        llm_description="Organizations and companies, using their canonical names.",
+        llm_examples=["OpenAI", "Google DeepMind", "US Department of Education"],
+    ),
+]
 
 
 # ---------------------------------------------------------------------------
@@ -31,20 +75,10 @@ class Session:
 
 
 @dataclass
-class Person:
-    id: str  # Canonical name used directly as ID
-    name: str
+class Entity:
+    """Generic named entity node (person, tech, org). Name is used as ID."""
 
-
-@dataclass
-class Tech:
-    id: str  # Name used directly as ID
-    name: str
-
-
-@dataclass
-class Org:
-    id: str  # Name used directly as ID
+    id: str
     name: str
 
 
@@ -63,29 +97,79 @@ class Statement:
 class SpeakerIdentification(pydantic.BaseModel):
     """Maps a diarization label to a real person name."""
 
-    label: str  # e.g. "A", "B"
-    name: str  # Full canonical name
+    label: str = pydantic.Field(
+        description='The diarization label from the transcript, e.g. "A", "B".'
+    )
+    name: str = pydantic.Field(
+        description=(
+            "Full canonical, Wikipedia-style name of the speaker "
+            '(e.g. "Lex Fridman", "Sam Altman"). '
+            "Only include speakers you can confidently identify — do not guess."
+        )
+    )
 
 
 @coco.unpickle_safe
 class SessionMetadata(pydantic.BaseModel):
     """LLM output from Step 1: session metadata + speaker mapping."""
 
-    name: str
-    description: str | None = None
-    date: str | None = None
-    speakers: list[SpeakerIdentification]
+    name: str = pydantic.Field(
+        description="A clear, descriptive name for this session or episode."
+    )
+    description: str | None = pydantic.Field(
+        default=None,
+        description="A brief 1-2 sentence summary of the session's main topics.",
+    )
+    date: str | None = pydantic.Field(
+        default=None,
+        description=(
+            "Date of the session in ISO format (YYYY-MM-DD). "
+            "Use the date mentioned in the conversation if available; "
+            "otherwise fall back to the upload date."
+        ),
+    )
+    speakers: list[SpeakerIdentification] = pydantic.Field(
+        description=(
+            "Identified speakers: maps each diarization label to the speaker's "
+            "real full name. Omit any speaker you cannot confidently identify."
+        )
+    )
 
 
 @coco.unpickle_safe
 class RawStatement(pydantic.BaseModel):
     """A thematic claim or statement made during the session."""
 
-    statement: str
-    speakers: list[str]  # Names of persons who made the statement
-    involved_persons: list[str] = []
-    involved_techs: list[str] = []
-    involved_orgs: list[str] = []
+    statement: str = pydantic.Field(
+        description=(
+            "The claim or assertion, written as a clear, standalone sentence. "
+            "Do NOT include the speaker's name or attribution "
+            '(avoid "X says...", "X believes...", "According to X...") — '
+            "the speaker is captured separately."
+        )
+    )
+    speakers: list[str] = pydantic.Field(
+        description=(
+            "Full canonical names of the speakers who made this statement, "
+            "exactly as they appear in the transcript."
+        )
+    )
+    mentioned_person: list[str] = pydantic.Field(
+        default=[],
+        description=(
+            "Full canonical names of people this statement is ABOUT. "
+            "Do NOT include the speakers themselves unless the statement is "
+            "specifically about them (e.g. their background or credentials)."
+        ),
+    )
+    mentioned_tech: list[str] = pydantic.Field(
+        default=[],
+        description="Technologies, tools, frameworks, or technical concepts this statement is about.",
+    )
+    mentioned_org: list[str] = pydantic.Field(
+        default=[],
+        description="Organizations or companies this statement is about, using their canonical names.",
+    )
 
 
 @coco.unpickle_safe
@@ -136,7 +220,9 @@ class SessionRawEntities:
     """Raw entities from a single session, for entity resolution."""
 
     session_id: int
-    persons: list[str]
+    # Maps entity type name → session-level participants (e.g. "person" → identified speakers).
+    # Statement-level entities are accessed directly via IdentifiedStatement.raw.
+    raw_entities: dict[str, list[str]]
     statements: list[IdentifiedStatement]
 
 
