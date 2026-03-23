@@ -1,9 +1,18 @@
 from __future__ import annotations
 
-from contextlib import contextmanager
+import contextlib
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
-from typing import Generator, TypeVar
+from typing import (
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Generator,
+    Literal,
+    NamedTuple,
+    TypeAlias,
+    TypeVar,
+)
 
 from cocoindex._internal.context_keys import ContextKey
 from cocoindex._internal.environment import Environment
@@ -13,9 +22,33 @@ from .stable_path import StableKey
 
 T = TypeVar("T")
 
+ExceptionHandler: TypeAlias = Callable[
+    [BaseException, "ExceptionContext"],
+    None | Awaitable[None],
+]
+
+
+class ExceptionHandlerChain(NamedTuple):
+    handler: ExceptionHandler
+    base: ExceptionHandlerChain | None = None
+
 
 # ContextVar for the current ComponentContext
 _context_var: ContextVar[ComponentContext] = ContextVar("coco_component_context")
+
+MountKind: TypeAlias = Literal["mount", "mount_each", "delete_background"]
+
+
+@dataclass(frozen=True, slots=True)
+class ExceptionContext:
+    env_name: str
+    stable_path: str
+    processor_name: str | None
+    mount_kind: MountKind
+    parent_stable_path: str | None
+    is_background: bool
+    source: Literal["component", "handler"]
+    original_exception: BaseException | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,6 +67,7 @@ class ComponentContext:
     _core_path: core.StablePath
     _core_processor_ctx: core.ComponentProcessorContext
     _core_fn_call_ctx: core.FnCallContext
+    _exception_handler_chain: ExceptionHandlerChain | None
 
     def _with_fn_call_ctx(self, fn_call_ctx: core.FnCallContext) -> ComponentContext:
         return ComponentContext(
@@ -41,6 +75,7 @@ class ComponentContext:
             self._core_path,
             self._core_processor_ctx,
             fn_call_ctx,
+            self._exception_handler_chain,
         )
 
     def _with_extended_path(self, *parts: StableKey) -> ComponentContext:
@@ -53,9 +88,19 @@ class ComponentContext:
             new_path,
             self._core_processor_ctx,
             self._core_fn_call_ctx,
+            self._exception_handler_chain,
         )
 
-    @contextmanager
+    def _with_exception_handler(self, handler: ExceptionHandler) -> ComponentContext:
+        return ComponentContext(
+            self._env,
+            self._core_path,
+            self._core_processor_ctx,
+            self._core_fn_call_ctx,
+            ExceptionHandlerChain(handler=handler, base=self._exception_handler_chain),
+        )
+
+    @contextlib.contextmanager
     def attach(self) -> Generator[None, None, None]:
         """
         Context manager to attach this ComponentContext to the current thread.
@@ -172,7 +217,7 @@ def component_subpath(*key_parts: StableKey) -> ComponentSubpath:
     return ComponentSubpath(*key_parts)
 
 
-@contextmanager
+@contextlib.contextmanager
 def _enter_component_context(
     env: Environment,
     path: core.StablePath,
@@ -190,7 +235,12 @@ def _enter_component_context(
     fn_ctx = core.FnCallContext(propagate_children_fn_logic=propagate_children_fn_logic)
     if logic_fp is not None:
         fn_ctx.add_fn_logic_dep(logic_fp)
-    context = ComponentContext(env, path, comp_ctx, fn_ctx)
+    base_chain = (
+        ExceptionHandlerChain(handler=env.exception_handler)
+        if env.exception_handler
+        else None
+    )
+    context = ComponentContext(env, path, comp_ctx, fn_ctx, base_chain)
     tok = _context_var.set(context)
     try:
         yield
@@ -275,6 +325,20 @@ def get_component_context() -> ComponentContext:
             executor.submit(task)
     """
     return get_context_from_ctx()
+
+
+@contextlib.asynccontextmanager
+async def exception_handler(handler: ExceptionHandler) -> AsyncIterator[None]:
+    """
+    Push an exception handler for background-mounted components within this dynamic scope.
+    """
+    current_ctx = get_context_from_ctx()
+    new_ctx = current_ctx._with_exception_handler(handler)
+    tok = _context_var.set(new_ctx)
+    try:
+        yield
+    finally:
+        _context_var.reset(tok)
 
 
 async def next_id(key: StableKey = None) -> int:
