@@ -60,7 +60,7 @@ from .runner import GPU, Runner
 
 from .memo_key import register_memo_key_function, NotMemoizable
 
-from .serde import unpickle_safe, add_unpickle_safe_global, serialize_by_pickle
+from .serde import unpickle_safe, serialize_by_pickle
 
 from .pending_marker import PendingS, ResolvedS, MaybePendingS
 
@@ -453,7 +453,6 @@ __all__ = [
     "Runner",
     # .serde
     "unpickle_safe",
-    "add_unpickle_safe_global",
     "serialize_by_pickle",
     # .memo_key
     "register_memo_key_function",

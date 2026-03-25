@@ -110,17 +110,13 @@ Most users won't need this. If you previously used `@coco.unpickle_safe` on data
 
 ### Registering third-party types
 
-For types from third-party libraries that need pickle deserialization, use `coco.add_unpickle_safe_global()`:
+For types from third-party libraries that need pickle serialization, use `coco.serialize_by_pickle()` as a regular function call:
 
 ```python
 import cocoindex as coco
 from some_library import SomeType
 
-coco.add_unpickle_safe_global(
-    SomeType.__module__,
-    SomeType.__qualname__,
-    SomeType,
-)
+coco.serialize_by_pickle(SomeType)
 ```
 
 ## Backward compatibility
@@ -159,4 +155,4 @@ If you previously decorated types with `@coco.unpickle_safe`:
 
 - **Dataclasses and NamedTuples**: Remove `@coco.unpickle_safe` — msgspec handles these natively. Old cached data from before the migration is still readable.
 - **Types needing pickle**: Switch to `@coco.serialize_by_pickle` (which also registers for unpickle safety).
-- **Third-party types**: Keep `coco.add_unpickle_safe_global()` calls for types that need pickle deserialization.
+- **Third-party types**: Use `coco.serialize_by_pickle(SomeType)` for types that need pickle serialization.

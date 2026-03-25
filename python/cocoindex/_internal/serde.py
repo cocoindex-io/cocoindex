@@ -127,8 +127,8 @@ def unpickle_safe(cls: type) -> type:
     return cls
 
 
-def add_unpickle_safe_global(module: str, qualname: str, obj: object) -> None:
-    """Register a non-type callable as safe to unpickle."""
+def _add_unpickle_safe_global(module: str, qualname: str, obj: object) -> None:
+    """Register a non-type callable as safe to unpickle (internal use only)."""
     _UNPICKLE_SAFE_GLOBALS[(module, qualname)] = obj
 
 

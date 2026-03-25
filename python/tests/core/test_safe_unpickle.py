@@ -9,7 +9,7 @@ from typing import Any, NamedTuple
 import pytest
 
 from cocoindex._internal.serde import (
-    add_unpickle_safe_global,
+    _add_unpickle_safe_global,
     deserialize,
     serialize,
     serialize_by_pickle,
@@ -155,15 +155,15 @@ class TestRejection:
             deserialize(payload)
 
 
-class TestAddUnpickleSafeGlobal:
+class TestInternalUnpickleSafeGlobal:
     def test_uuid_roundtrip_via_preregistration(self) -> None:
         # uuid.UUID is pre-registered centrally; verify round-trip works with type hint
         u = uuid.UUID("abcdef01-2345-6789-abcd-ef0123456789")
         assert deserialize(serialize(u), uuid.UUID) == u
 
     def test_add_unpickle_safe_global(self) -> None:
-        # Verify the function registers a global that find_class can resolve
-        add_unpickle_safe_global("test_module", "test_name", str)
+        # Verify the internal function registers a global that find_class can resolve
+        _add_unpickle_safe_global("test_module", "test_name", str)
         from cocoindex._internal.serde import _UNPICKLE_SAFE_GLOBALS
 
         assert _UNPICKLE_SAFE_GLOBALS[("test_module", "test_name")] is str
