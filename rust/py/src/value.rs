@@ -3,23 +3,23 @@ use pyo3::types::PyBytes;
 
 use crate::{prelude::*, runtime::python_objects};
 
-struct PyValueData {
+struct PyStoredValueData {
     bytes: Option<bytes::Bytes>,
     object: Option<Py<PyAny>>,
 }
 
 // Invariant: at least one of bytes/object is Some.
 
-#[pyclass(frozen)]
+#[pyclass(frozen, name = "StoredValue")]
 #[derive(Clone)]
-pub struct PyValue {
-    inner: Arc<std::sync::Mutex<PyValueData>>,
+pub struct PyStoredValue {
+    inner: Arc<std::sync::Mutex<PyStoredValueData>>,
 }
 
-impl PyValue {
+impl PyStoredValue {
     pub fn new(data: Py<PyAny>) -> Self {
         Self {
-            inner: Arc::new(std::sync::Mutex::new(PyValueData {
+            inner: Arc::new(std::sync::Mutex::new(PyStoredValueData {
                 bytes: None,
                 object: Some(data),
             })),
@@ -28,7 +28,7 @@ impl PyValue {
 }
 
 #[pymethods]
-impl PyValue {
+impl PyStoredValue {
     /// Get the deserialized Python object, lazily deserializing on first access.
     ///
     /// `deserialize_fn` is a `Callable[[bytes], T]` that converts raw bytes to the
@@ -57,20 +57,20 @@ impl PyValue {
     }
 }
 
-impl std::fmt::Debug for PyValue {
+impl std::fmt::Debug for PyStoredValue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let data = self.inner.lock().unwrap();
         if let Some(ref obj) = data.object {
             debug_py_any(f, obj)
         } else if data.bytes.is_some() {
-            f.write_str("<PyValue: bytes-only>")
+            f.write_str("<PyStoredValue: bytes-only>")
         } else {
-            f.write_str("<PyValue: empty>")
+            f.write_str("<PyStoredValue: empty>")
         }
     }
 }
 
-impl Persist for PyValue {
+impl Persist for PyStoredValue {
     fn to_bytes(&self) -> Result<bytes::Bytes> {
         // Fast path: return cached bytes (mutex only, no GIL)
         {
@@ -107,7 +107,7 @@ impl Persist for PyValue {
 
     fn from_bytes(data: &[u8]) -> Result<Self> {
         Ok(Self {
-            inner: Arc::new(std::sync::Mutex::new(PyValueData {
+            inner: Arc::new(std::sync::Mutex::new(PyStoredValueData {
                 bytes: Some(bytes::Bytes::copy_from_slice(data)),
                 object: None,
             })),

@@ -14,10 +14,10 @@ impl EngineProfile for PyEngineProfile {
     type HostCtx = Py<PyAny>;
 
     type ComponentProc = PyComponentProcessor;
-    type FunctionData = crate::value::PyValue;
+    type FunctionData = crate::value::PyStoredValue;
 
     type TargetHdl = PyTargetHandler;
-    type TargetStateTrackingRecord = crate::value::PyValue;
+    type TargetStateTrackingRecord = crate::value::PyStoredValue;
     type TargetAction = Py<PyAny>;
     type TargetActionSink = PyTargetActionSink;
     type TargetStateValue = Py<PyAny>;

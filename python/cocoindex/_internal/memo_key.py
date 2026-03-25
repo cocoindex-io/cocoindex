@@ -40,7 +40,7 @@ _memo_fns: dict[type, _MemoFns] = {}
 class StateFnEntry(typing.NamedTuple):
     """A state method paired with a deserializer for its ``prev_state`` parameter.
 
-    ``deserialize_prev`` converts a ``PyValue`` (or ``NON_EXISTENCE``) into the
+    ``deserialize_prev`` converts a ``StoredValue`` (or ``NON_EXISTENCE``) into the
     typed Python object expected by the state method.
     ``call`` is the original state method (bound to its instance).
     """
@@ -81,7 +81,7 @@ def _make_state_fn_entry(
     deser = _make_state_deserialize_fn(raw_state_fn)
 
     def _deserialize_prev(prev_state: typing.Any) -> typing.Any:
-        if isinstance(prev_state, core.PyValue):
+        if isinstance(prev_state, core.StoredValue):
             return prev_state.get(deser)
         return prev_state
 

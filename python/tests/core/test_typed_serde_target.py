@@ -191,7 +191,7 @@ def test_tracking_record_serialize_by_pickle() -> None:
 # E2E test verifying _TypedTargetHandlerWrapper deserializes records
 # ============================================================================
 #
-# Since PyValue cannot be constructed from Python, we test this E2E:
+# Since StoredValue cannot be constructed from Python, we test this E2E:
 # a custom handler with typed reconcile, run the app twice, and verify
 # the handler receives properly typed TrackingMeta on the second run.
 

@@ -14,7 +14,7 @@ use crate::prelude::*;
 use crate::stable_path::PyStableKey;
 
 use crate::runtime::{PyAsyncContext, PyCallback, python_objects, wrap_target_handler};
-use crate::value::PyValue;
+use crate::value::PyStoredValue;
 
 #[pyclass(name = "TargetActionSink")]
 #[derive(Clone)]
@@ -109,7 +109,7 @@ impl TargetHandler<PyEngineProfile> for PyTargetHandler {
         &self,
         key: cocoindex_core::state::stable_path::StableKey,
         desired_effect: Option<Py<PyAny>>,
-        prev_possible_records: &[PyValue],
+        prev_possible_records: &[PyStoredValue],
         prev_may_be_missing: bool,
     ) -> Result<Option<TargetReconcileOutput<PyEngineProfile>>> {
         Python::attach(|py| -> PyResult<_> {
@@ -156,7 +156,7 @@ impl TargetHandler<PyEngineProfile> for PyTargetHandler {
                     tracking_record: if non_existence.is(&state) {
                         None
                     } else {
-                        Some(PyValue::new(state))
+                        Some(PyStoredValue::new(state))
                     },
                     child_invalidation,
                 })

@@ -54,7 +54,7 @@ OptChildHandlerT_co = TypeVar(
 
 
 class _TypedTargetHandlerWrapper:
-    """Wraps a TargetHandler to auto-deserialize tracking records (PyValue → typed objects)."""
+    """Wraps a TargetHandler to auto-deserialize tracking records (StoredValue → typed objects)."""
 
     __slots__ = ("_handler", "_deserializer")
 

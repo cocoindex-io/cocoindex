@@ -10,7 +10,7 @@ use pyo3::types::PyDict;
 use pyo3_async_runtimes::tokio::future_into_py;
 use tokio::sync::watch;
 
-use crate::{component::PyComponentProcessor, environment::PyEnvironment, value::PyValue};
+use crate::{component::PyComponentProcessor, environment::PyEnvironment, value::PyStoredValue};
 
 fn snapshot_to_py<'py>(
     py: Python<'py>,
@@ -128,7 +128,7 @@ impl PyApp {
         report_to_stdout: bool,
         full_reprocess: bool,
         host_ctx: Py<PyAny>,
-    ) -> PyResult<PyValue> {
+    ) -> PyResult<PyStoredValue> {
         let app = self.0.clone();
         let options = AppUpdateOptions {
             report_to_stdout,

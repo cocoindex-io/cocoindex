@@ -2,7 +2,7 @@ use crate::{
     prelude::*,
     runtime::{PyAsyncContext, PyCallback},
     stable_path::PyStablePath,
-    value::PyValue,
+    value::PyStoredValue,
 };
 
 use crate::context::{PyComponentProcessorContext, PyFnCallContext};
@@ -84,12 +84,12 @@ impl ComponentProcessor<PyEngineProfile> for PyComponentProcessor {
         &self,
         host_runtime_ctx: &PyAsyncContext,
         comp_ctx: &ComponentProcessorContext<PyEngineProfile>,
-    ) -> Result<impl Future<Output = Result<crate::value::PyValue>> + Send + 'static> {
+    ) -> Result<impl Future<Output = Result<crate::value::PyStoredValue>> + Send + 'static> {
         let py_context = PyComponentProcessorContext(comp_ctx.clone());
         let fut = self.processor_fn.call(host_runtime_ctx, (py_context,))?;
         Ok(async move {
             let value = fut.await?;
-            Ok(crate::value::PyValue::new(value))
+            Ok(crate::value::PyStoredValue::new(value))
         })
     }
 
@@ -109,9 +109,9 @@ impl ComponentProcessor<PyEngineProfile> for PyComponentProcessor {
         &self,
         host_runtime_ctx: &PyAsyncContext,
         comp_ctx: &ComponentProcessorContext<PyEngineProfile>,
-        stored_states: Option<Vec<crate::value::PyValue>>,
+        stored_states: Option<Vec<crate::value::PyStoredValue>>,
     ) -> Result<
-        impl Future<Output = Result<(Vec<crate::value::PyValue>, bool, bool)>> + Send + 'static,
+        impl Future<Output = Result<(Vec<crate::value::PyStoredValue>, bool, bool)>> + Send + 'static,
     > {
         let Some(state_handler) = &self.state_handler else {
             return Ok(futures::future::Either::Left(async {
@@ -119,7 +119,7 @@ impl ComponentProcessor<PyEngineProfile> for PyComponentProcessor {
             }));
         };
 
-        // Convert Option<Vec<PyValue>> → Python (list[PyValue] | None)
+        // Convert Option<Vec<PyStoredValue>> → Python (list[PyStoredValue] | None)
         let py_comp_ctx = PyComponentProcessorContext(comp_ctx.clone());
         let py_arg: Py<PyAny> = Python::attach(|py| -> Result<Py<PyAny>> {
             match stored_states {
@@ -146,10 +146,10 @@ impl ComponentProcessor<PyEngineProfile> for PyComponentProcessor {
                 let can_reuse: bool = tuple.get_item(1)?.extract()?;
                 let states_changed: bool = tuple.get_item(2)?.extract()?;
 
-                let new_states: Vec<crate::value::PyValue> = states_list
+                let new_states: Vec<crate::value::PyStoredValue> = states_list
                     .cast::<pyo3::types::PyList>()?
                     .iter()
-                    .map(|item| crate::value::PyValue::new(item.unbind()))
+                    .map(|item| crate::value::PyStoredValue::new(item.unbind()))
                     .collect();
 
                 Ok((new_states, can_reuse, states_changed))
@@ -305,7 +305,7 @@ impl PyComponentMountRunHandle {
         &mut self,
         py: Python<'_>,
         parent_ctx: PyComponentProcessorContext,
-    ) -> PyResult<PyValue> {
+    ) -> PyResult<PyStoredValue> {
         let handle = self.take_handle()?;
         py.detach(|| {
             get_runtime()
