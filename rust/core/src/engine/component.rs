@@ -1,6 +1,7 @@
 use crate::engine::runtime::get_runtime;
 use crate::prelude::*;
 use std::collections::HashSet;
+use std::pin::Pin;
 
 use crate::engine::context::FnCallContext;
 use crate::engine::context::{AppContext, ComponentProcessingMode, ComponentProcessorContext};
@@ -370,6 +371,14 @@ impl<Prof: EngineProfile> Component<Prof> {
         self,
         processor: Prof::ComponentProc,
         context: ComponentProcessorContext<Prof>,
+        on_error: Option<
+            Arc<
+                dyn Fn(Error) -> Pin<Box<dyn Future<Output = ()> + Send + 'static>>
+                    + Send
+                    + Sync
+                    + 'static,
+            >,
+        >,
     ) -> Result<ComponentExecutionHandle> {
         // TODO: Skip building and reuse cached result if the component is already built and up to date.
 
@@ -393,13 +402,19 @@ impl<Prof: EngineProfile> Component<Prof> {
             .map(|c| c.components_readiness().clone().add_child());
         let join_handle = get_runtime().spawn(async move {
             let result = self.execute_once(&context, Some(&processor)).await;
-            // For background child component, only log the error. Never propagate the error back to the parent.
-            if let Err(err) = &result {
-                error!("component build failed:\n{err:?}");
-            }
-            let outcome = result
-                .map(|(outcome, _)| outcome)
-                .unwrap_or_else(|_| ComponentRunOutcome::exception());
+            // For background child component, never propagate the error back to the parent.
+            // If an error handler is registered, run it; otherwise log.
+            let outcome = match result {
+                Ok((outcome, _)) => outcome,
+                Err(err) => {
+                    if let Some(handler) = &on_error {
+                        handler(err).await;
+                    } else {
+                        error!("component build failed:\n{err:?}");
+                    }
+                    ComponentRunOutcome::exception()
+                }
+            };
             context.release_inflight_permit();
             drop(processor);
             drop(context);
