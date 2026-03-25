@@ -126,6 +126,10 @@ This decouples "has the state changed?" from "can we reuse the memo?":
 
 ### Define `__coco_memo_state__` (when you control the type)
 
+:::info Type annotations
+Annotate the `prev_state` parameter with its expected type (matching what you return in `MemoStateOutcome(state=...)`) so CocoIndex can properly reconstruct stored state values. See [Serialization](./serialization.md) for details on supported types.
+:::
+
 Add a `__coco_memo_state__` method alongside `__coco_memo_key__`:
 
 ```python
@@ -171,7 +175,7 @@ This works for simple cases. State validation becomes useful when you need multi
 
 ### Register a state function (when you don't control the type)
 
-Pass a `state_fn` keyword argument to `register_memo_key_function`. The state function receives the object as its first argument and `prev_state` as its second:
+Pass a `state_fn` keyword argument to `register_memo_key_function`. The state function receives the object as its first argument and `prev_state` as its second. Annotate `prev_state` with the expected type:
 
 ```python
 from pathlib import Path
@@ -180,7 +184,7 @@ from cocoindex import register_memo_key_function
 def path_key(p: Path) -> object:
     return str(p.resolve())
 
-def path_state(p: Path, prev_state: object) -> coco.MemoStateOutcome:
+def path_state(p: Path, prev_state: tuple[int, int] | coco.NonExistenceType) -> coco.MemoStateOutcome:
     st = p.stat()
     new_state = (st.st_mtime_ns, st.st_size)
     memo_valid = not coco.is_non_existence(prev_state) and new_state == prev_state
