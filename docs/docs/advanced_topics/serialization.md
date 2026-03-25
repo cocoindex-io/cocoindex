@@ -13,7 +13,7 @@ CocoIndex serializes Python values in several situations:
 - **Memo states** — stored between runs for freshness validation (see [Memo state validation](./memoization_keys.md#memo-state-validation)).
 - **Tracking records** — stored by target state handlers to detect changes (see [Custom Target Connector](./custom_target_connector.md)).
 
-CocoIndex uses [msgspec](https://jcristharmon.com/msgspec/) (msgpack format) as the default serialization engine. Most Python types — dataclasses, NamedTuples, primitives, collections, and Pydantic models — are handled automatically without any special registration.
+CocoIndex uses [msgspec](https://jcristharif.com/msgspec/) (msgpack format) as the default serialization engine. Most Python types — dataclasses, NamedTuples, primitives, collections, and Pydantic models — are handled automatically without any special registration.
 
 ## Type annotations
 
