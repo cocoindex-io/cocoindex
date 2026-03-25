@@ -13,6 +13,7 @@ from typing import (
 )
 
 from . import core, environment
+from .serde import fn_ret_deserializer
 from .app import App, AppConfig, UpdateHandle
 from .update_stats import ComponentStats, UpdateSnapshot, UpdateStats, UpdateStatus
 from .pending_marker import ResolvesTo
@@ -59,7 +60,7 @@ from .runner import GPU, Runner
 
 from .memo_key import register_memo_key_function, NotMemoizable
 
-from .serde import unpickle_safe, add_unpickle_safe_global
+from .serde import unpickle_safe, serialize_by_pickle
 
 from .pending_marker import PendingS, ResolvedS, MaybePendingS
 
@@ -182,7 +183,8 @@ async def use_mount(
         parent_ctx._core_processor_ctx,
         parent_ctx._core_fn_call_ctx,
     )
-    return await core_handle.result_async(parent_ctx._core_processor_ctx)
+    pyvalue = await core_handle.result_async(parent_ctx._core_processor_ctx)
+    return pyvalue.get(fn_ret_deserializer(processor_fn))
 
 
 async def mount(
@@ -451,7 +453,7 @@ __all__ = [
     "Runner",
     # .serde
     "unpickle_safe",
-    "add_unpickle_safe_global",
+    "serialize_by_pickle",
     # .memo_key
     "register_memo_key_function",
     "NotMemoizable",

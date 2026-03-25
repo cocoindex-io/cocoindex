@@ -40,7 +40,6 @@ Format your response as:
 """
 
 
-@coco.unpickle_safe
 class EntityResolution(pydantic.BaseModel):
     """LLM output for entity resolution."""
 

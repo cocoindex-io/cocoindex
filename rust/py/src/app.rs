@@ -10,7 +10,7 @@ use pyo3::types::PyDict;
 use pyo3_async_runtimes::tokio::future_into_py;
 use tokio::sync::watch;
 
-use crate::{component::PyComponentProcessor, environment::PyEnvironment};
+use crate::{component::PyComponentProcessor, environment::PyEnvironment, value::PyStoredValue};
 
 fn snapshot_to_py<'py>(
     py: Python<'py>,
@@ -75,7 +75,7 @@ impl PyUpdateHandle {
             .ok_or_else(|| PyRuntimeError::new_err("result already consumed"))?;
         future_into_py(py, async move {
             let ret = handle.result().await.into_py_result()?;
-            Ok(ret.into_inner())
+            Ok(ret)
         })
     }
 }
@@ -121,14 +121,14 @@ impl PyApp {
         })
     }
 
-    pub fn update<'py>(
+    pub fn update(
         &self,
-        py: Python<'py>,
+        py: Python<'_>,
         root_processor: PyComponentProcessor,
         report_to_stdout: bool,
         full_reprocess: bool,
         host_ctx: Py<PyAny>,
-    ) -> PyResult<Py<PyAny>> {
+    ) -> PyResult<PyStoredValue> {
         let app = self.0.clone();
         let options = AppUpdateOptions {
             report_to_stdout,
@@ -140,8 +140,7 @@ impl PyApp {
                 let handle = app
                     .update(root_processor, options, host_ctx)
                     .into_py_result()?;
-                let ret = handle.result().await.into_py_result()?;
-                Ok(ret.into_inner())
+                handle.result().await.into_py_result()
             })
         })
     }

@@ -69,13 +69,17 @@ class TargetHandler(Protocol[KeyT, ValueT, TrackingRecordT, OptChildHandlerT]):
 The `reconcile()` method must be **non-blocking**. It should only compare states and return an action — actual I/O operations happen later in the `TargetActionSink`.
 :::
 
+:::info Type annotations
+Annotate the `prev_possible_records` parameter with `Collection[YourTrackingRecord]` so CocoIndex can properly reconstruct stored tracking records during deserialization. See [Serialization](./serialization.md) for details on supported types.
+:::
+
 ### Tracking record *(you define)*
 
 A **tracking record** captures the essential information needed to detect changes. Good tracking records:
 
 - Are **minimal**: Only include what's needed for change detection
 - Are **deterministic**: Same input always produces the same record
-- Are **serializable**: Must be persistable (typically a NamedTuple or dataclass)
+- Are **serializable**: Must be persistable (typically a NamedTuple or dataclass). Dataclasses and NamedTuples are serialized with msgspec automatically. For types requiring pickle, use `@coco.serialize_by_pickle`.
 
 ```python
 # Example: File tracking record

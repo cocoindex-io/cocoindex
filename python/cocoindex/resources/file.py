@@ -27,6 +27,7 @@ from cocoindex._internal import core as _core
 from cocoindex._internal.context_keys import ContextKey as _ContextKey
 from cocoindex._internal.typing import (
     MemoStateOutcome as _MemoStateOutcome,
+    NonExistenceType as _NonExistenceType,
     is_non_existence as _is_non_existence,
 )
 from cocoindex import StableKey as _StableKey
@@ -49,7 +50,7 @@ class FileMetadata(_NamedTuple):
 
     size: int
     modified_time: _datetime
-    content_fingerprint: object | None = None
+    content_fingerprint: bytes | None = None
 
 
 class FileLike(_ABC, _Generic[ResolvedPathT]):
@@ -70,7 +71,7 @@ class FileLike(_ABC, _Generic[ResolvedPathT]):
     _file_path: "FilePath[ResolvedPathT]"
     _metadata: FileMetadata | None
     _cached_content: bytes | None
-    _cached_content_fingerprint: object | None
+    _cached_content_fingerprint: bytes | None
 
     def __init__(
         self,
@@ -156,7 +157,7 @@ class FileLike(_ABC, _Generic[ResolvedPathT]):
 
     # --- Content fingerprinting (cached) ---
 
-    async def _compute_content_fingerprint(self) -> object:
+    async def _compute_content_fingerprint(self) -> bytes:
         """Compute a content fingerprint for this file.
 
         The default checks metadata for a pre-existing fingerprint (e.g., S3 ETag),
@@ -168,7 +169,7 @@ class FileLike(_ABC, _Generic[ResolvedPathT]):
             return metadata.content_fingerprint
         return _fingerprint_bytes(await self.read())
 
-    async def content_fingerprint(self) -> object:
+    async def content_fingerprint(self) -> bytes:
         """Return a cached content fingerprint for this file."""
         if self._cached_content_fingerprint is None:
             self._cached_content_fingerprint = await self._compute_content_fingerprint()
@@ -179,7 +180,9 @@ class FileLike(_ABC, _Generic[ResolvedPathT]):
     def __coco_memo_key__(self) -> object:
         return self._file_path.__coco_memo_key__()
 
-    async def __coco_memo_state__(self, prev_state: object) -> _MemoStateOutcome:
+    async def __coco_memo_state__(
+        self, prev_state: tuple[_datetime, bytes] | _NonExistenceType
+    ) -> _MemoStateOutcome:
         metadata = await self._ensure_metadata()
         current_mtime = metadata.modified_time
 

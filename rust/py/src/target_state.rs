@@ -13,8 +13,8 @@ use crate::prelude::*;
 
 use crate::stable_path::PyStableKey;
 
-use crate::runtime::{PyAsyncContext, PyCallback, python_objects};
-use crate::value::PyValue;
+use crate::runtime::{PyAsyncContext, PyCallback, python_objects, wrap_target_handler};
+use crate::value::PyStoredValue;
 
 #[pyclass(name = "TargetActionSink")]
 #[derive(Clone)]
@@ -87,10 +87,11 @@ impl TargetActionSink<PyEngineProfile> for PyTargetActionSink {
                 if obj.is_none() {
                     results.push(None);
                 } else {
-                    // Extract handler from ChildTargetDef NamedTuple
+                    // Extract handler from ChildTargetDef NamedTuple and wrap for typed deserialization
                     let (handler,) = obj.extract::<(Py<PyAny>,)>()?;
+                    let wrapped = wrap_target_handler(py, &handler)?;
                     results.push(Some(ChildTargetDef {
-                        handler: PyTargetHandler(handler),
+                        handler: PyTargetHandler(wrapped),
                     }));
                 }
             }
@@ -108,12 +109,16 @@ impl TargetHandler<PyEngineProfile> for PyTargetHandler {
         &self,
         key: cocoindex_core::state::stable_path::StableKey,
         desired_effect: Option<Py<PyAny>>,
-        prev_possible_records: &[PyValue],
+        prev_possible_records: &[PyStoredValue],
         prev_may_be_missing: bool,
     ) -> Result<Option<TargetReconcileOutput<PyEngineProfile>>> {
         Python::attach(|py| -> PyResult<_> {
-            let prev_possible_records =
-                PyList::new(py, prev_possible_records.iter().map(|s| s.value().bind(py)))?;
+            let prev_possible_records = PyList::new(
+                py,
+                prev_possible_records
+                    .iter()
+                    .map(|s| Py::new(py, s.clone()).unwrap()),
+            )?;
             let non_existence = &python_objects().non_existence;
             let py_output = self.0.call_method(
                 py,
@@ -151,7 +156,7 @@ impl TargetHandler<PyEngineProfile> for PyTargetHandler {
                     tracking_record: if non_existence.is(&state) {
                         None
                     } else {
-                        Some(PyValue::new(state))
+                        Some(PyStoredValue::new(state))
                     },
                     child_invalidation,
                 })

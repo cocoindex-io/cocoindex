@@ -6,7 +6,7 @@ use pyo3_async_runtimes::tokio::future_into_py;
 use crate::context::{PyComponentProcessorContext, PyFnCallContext};
 use crate::fingerprint::PyFingerprint;
 use crate::prelude::*;
-use crate::value::PyValue;
+use crate::value::PyStoredValue;
 
 /// Python-facing guard for a function-call memo entry.
 ///
@@ -48,7 +48,7 @@ impl PyFnCallMemoGuard {
     ///
     /// Used when the state function says `can_reuse=True` but the state value has changed.
     pub fn update_memo_states(&mut self, memo_states: Vec<Py<PyAny>>) -> PyResult<()> {
-        let states: Vec<PyValue> = memo_states.into_iter().map(PyValue::new).collect();
+        let states: Vec<PyStoredValue> = memo_states.into_iter().map(PyStoredValue::new).collect();
         if let Some(ref mut guard) = self.guard {
             guard.update_memo_states(states);
         }
@@ -62,14 +62,14 @@ impl PyFnCallMemoGuard {
         ret: Py<PyAny>,
         memo_states: Option<Vec<Py<PyAny>>>,
     ) -> PyResult<bool> {
-        let states: Vec<PyValue> = memo_states
+        let states: Vec<PyStoredValue> = memo_states
             .unwrap_or_default()
             .into_iter()
-            .map(PyValue::new)
+            .map(PyStoredValue::new)
             .collect();
         let resolved = if let Some(guard) = self.guard.take() {
             guard
-                .resolve(&fn_ctx.0, || PyValue::new(ret), states)
+                .resolve(&fn_ctx.0, || PyStoredValue::new(ret), states)
                 .into_py_result()?
         } else {
             false
@@ -93,11 +93,12 @@ async fn reserve_memoization_inner(
         cocoindex_core::engine::function::reserve_memoization(&comp_ctx.0, memo_fp.0).await?;
 
     Python::attach(|py| {
-        // Extract cached data (if cache hit) into owned Python objects before moving the guard.
+        // Extract cached data (if cache hit) as PyStoredValue objects (not inner Python objects).
         let (is_cached, cached_value, cached_memo_states) = match guard.cached() {
             Some((ret, states)) => {
-                let value = ret.value().clone_ref(py);
-                let states_list = PyList::new(py, states.iter().map(|s| s.value()))?;
+                let value = Py::new(py, ret.clone())?.into_any();
+                let states_list =
+                    PyList::new(py, states.iter().map(|s| Py::new(py, s.clone()).unwrap()))?;
                 (true, Some(value), Some(states_list.unbind().into_any()))
             }
             None => (false, None, None),

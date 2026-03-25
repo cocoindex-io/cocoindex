@@ -17,6 +17,7 @@ dependencies = [
     "watchfiles>=1.1.0",
     "numpy>=1.23.2",
     "psutil>=7.2.1",
+    "msgspec>=0.19.0",
 ]
 license = "Apache-2.0"
 license-files = ["THIRD_PARTY_NOTICES.html"]
@@ -151,6 +152,8 @@ disable_error_code = ["unused-ignore"]
 # Ignore missing imports for optional dependencies from cocoindex library
 # Use wildcards to cover all submodules (e.g., google.oauth2.service_account)
 module = [
+    "msgspec",
+    "msgspec.*",
     "litellm",
     "litellm.*",
     "sentence_transformers",

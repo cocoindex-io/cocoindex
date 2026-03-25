@@ -6,11 +6,12 @@ from . import core as _core
 from . import serde as _serde
 from . import typing as _typing
 from .memo_key import register_memo_key_function as _register_memo_key_function
+from .target_state import _TypedTargetHandlerWrapper as _TypedTargetHandlerWrapper
 
 
 _core.init_runtime(
     serialize_fn=_serde.serialize,
-    deserialize_fn=_serde.deserialize,
+    handler_wrapper_fn=_TypedTargetHandlerWrapper,
     non_existence=_typing.NON_EXISTENCE,
     not_set=_typing.NOT_SET,
 )

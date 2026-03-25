@@ -93,7 +93,6 @@ class Statement:
 # ---------------------------------------------------------------------------
 
 
-@coco.unpickle_safe
 class SpeakerIdentification(pydantic.BaseModel):
     """Maps a diarization label to a real person name."""
 
@@ -109,7 +108,6 @@ class SpeakerIdentification(pydantic.BaseModel):
     )
 
 
-@coco.unpickle_safe
 class SessionMetadata(pydantic.BaseModel):
     """LLM output from Step 1: session metadata + speaker mapping."""
 
@@ -136,7 +134,6 @@ class SessionMetadata(pydantic.BaseModel):
     )
 
 
-@coco.unpickle_safe
 class RawStatement(pydantic.BaseModel):
     """A thematic claim or statement made during the session."""
 
@@ -172,7 +169,6 @@ class RawStatement(pydantic.BaseModel):
     )
 
 
-@coco.unpickle_safe
 class StatementExtraction(pydantic.BaseModel):
     """LLM output from Step 2: statements with involved entities."""
 
@@ -184,7 +180,6 @@ class StatementExtraction(pydantic.BaseModel):
 # ---------------------------------------------------------------------------
 
 
-@coco.unpickle_safe
 @dataclass
 class Utterance:
     """A single speaker-labeled utterance from diarized transcription."""
@@ -193,7 +188,6 @@ class Utterance:
     text: str
 
 
-@coco.unpickle_safe
 @dataclass
 class SessionTranscript:
     """Carries structured utterances and yt-dlp metadata."""
@@ -205,7 +199,6 @@ class SessionTranscript:
     yt_upload_date: str | None
 
 
-@coco.unpickle_safe
 @dataclass
 class IdentifiedStatement:
     """A statement with its generated ID, for carrying through the pipeline."""
@@ -214,7 +207,6 @@ class IdentifiedStatement:
     raw: RawStatement
 
 
-@coco.unpickle_safe
 @dataclass
 class SessionRawEntities:
     """Raw entities from a single session, for entity resolution."""

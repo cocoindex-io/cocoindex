@@ -16,6 +16,12 @@ import struct
 import typing
 
 from . import core
+from .serde import (
+    get_param_annotation,
+    make_deserialize_fn,
+    qualified_name,
+    strip_non_existence_type,
+)
 from .typing import Fingerprintable
 
 
@@ -29,6 +35,57 @@ class _MemoFns(typing.NamedTuple):
 
 
 _memo_fns: dict[type, _MemoFns] = {}
+
+
+class StateFnEntry(typing.NamedTuple):
+    """A state method paired with a deserializer for its ``prev_state`` parameter.
+
+    ``deserialize_prev`` converts a ``StoredValue`` (or ``NON_EXISTENCE``) into the
+    typed Python object expected by the state method.
+    ``call`` is the original state method (bound to its instance).
+    """
+
+    deserialize_prev: typing.Callable[[typing.Any], typing.Any]
+    call: typing.Callable[[typing.Any], typing.Any]
+
+
+@functools.cache
+def _make_state_deserialize_fn(
+    raw_state_fn: typing.Callable[..., typing.Any],
+) -> typing.Callable[[bytes | memoryview], typing.Any]:
+    """Build a DeserializeFn from a state function's ``prev_state`` parameter type.
+
+    Works for both ``__coco_memo_state__(self, prev_state)`` and registered
+    ``state_fn(obj, prev_state)`` — in both cases the state type is at position 1.
+
+    ``NonExistenceType`` is stripped from union types since it's a sentinel
+    that's never serialized — only the actual state type is deserialized.
+    """
+    fn_label = qualified_name(raw_state_fn)
+    try:
+        ann = get_param_annotation(raw_state_fn, 1)
+        ann = strip_non_existence_type(ann)
+        return make_deserialize_fn(
+            ann,
+            source_label=f"prev_state param of {fn_label}()",
+        )
+    except Exception:
+        return make_deserialize_fn(typing.Any)
+
+
+def _make_state_fn_entry(
+    state_fn: typing.Callable[..., typing.Any],
+    raw_state_fn: typing.Callable[..., typing.Any],
+) -> StateFnEntry:
+    """Build a ``StateFnEntry`` pairing *state_fn* with a typed deserializer."""
+    deser = _make_state_deserialize_fn(raw_state_fn)
+
+    def _deserialize_prev(prev_state: typing.Any) -> typing.Any:
+        if isinstance(prev_state, core.StoredValue):
+            return prev_state.get(deser)
+        return prev_state
+
+    return StateFnEntry(deserialize_prev=_deserialize_prev, call=state_fn)
 
 
 def _is_dataclass_instance(obj: object) -> bool:
@@ -170,7 +227,7 @@ def _stable_sort_key(v: Fingerprintable) -> tuple[typing.Any, ...]:
 def _canonicalize(
     obj: object,
     _seen: dict[int, int] | None,
-    state_methods: list[typing.Callable[..., typing.Any]] | None = None,
+    state_methods: list[StateFnEntry] | None = None,
 ) -> Fingerprintable:
     # 0) Cycle / shared-reference tracking for containers
     if _seen is None:
@@ -195,7 +252,9 @@ def _canonicalize(
         if state_hook is not None and callable(state_hook):
             tag = "shook"
             if state_methods is not None:
-                state_methods.append(state_hook)
+                # raw function for type hint extraction (unbound method on class)
+                raw_fn = getattr(typ, "__coco_memo_state__")
+                state_methods.append(_make_state_fn_entry(state_hook, raw_fn))
         return (
             tag,
             typ.__module__,
@@ -211,7 +270,8 @@ def _canonicalize(
             if memo.state_fn is not None:
                 tag = "shook"
                 if state_methods is not None:
-                    state_methods.append(functools.partial(memo.state_fn, obj))
+                    bound = functools.partial(memo.state_fn, obj)
+                    state_methods.append(_make_state_fn_entry(bound, memo.state_fn))
             return (
                 tag,
                 base.__module__,
@@ -276,7 +336,7 @@ def _make_call_key_obj(
     kwargs: dict[str, object],
     *,
     version: str | int | None = None,
-    state_methods: list[typing.Callable[..., typing.Any]] | None = None,
+    state_methods: list[StateFnEntry] | None = None,
 ) -> Fingerprintable:
     function_identity = (
         getattr(func, "__module__", None),
@@ -308,7 +368,7 @@ def fingerprint_call(
     kwargs: dict[str, object],
     *,
     version: str | int | None = None,
-    state_methods: list[typing.Callable[..., typing.Any]] | None = None,
+    state_methods: list[StateFnEntry] | None = None,
 ) -> core.Fingerprint:
     """Compute the deterministic fingerprint for a function call.
 

@@ -44,6 +44,10 @@ def process_chunk(chunk: Chunk) -> Embedding:
 
 See [Memoization Keys & States](../advanced_topics/memoization_keys.md) for details on how CocoIndex constructs keys and validates cached results.
 
+:::info Type annotations
+Add a **return type annotation** to memoized functions so CocoIndex can properly reconstruct cached values. Without a type annotation, cached values may deserialize as basic Python types (`dict`, `list`, etc.) instead of their original types. See [Serialization](../advanced_topics/serialization.md) for details on supported types.
+:::
+
 :::tip When to memoize
 
 **Cost:** Function return values must be stored for memoization. Larger return values mean higher storage costs.
