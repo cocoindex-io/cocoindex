@@ -1,47 +1,116 @@
 use cocoindex_core::engine::profile::Persist;
+use pyo3::types::PyBytes;
 
 use crate::{prelude::*, runtime::python_objects};
 
+struct PyValueData {
+    bytes: Option<bytes::Bytes>,
+    object: Option<Py<PyAny>>,
+}
+
+// Invariant: at least one of bytes/object is Some.
+
+#[pyclass(frozen)]
+#[derive(Clone)]
 pub struct PyValue {
-    data: Py<PyAny>,
+    inner: Arc<std::sync::Mutex<PyValueData>>,
 }
 
 impl PyValue {
     pub fn new(data: Py<PyAny>) -> Self {
-        Self { data }
+        Self {
+            inner: Arc::new(std::sync::Mutex::new(PyValueData {
+                bytes: None,
+                object: Some(data),
+            })),
+        }
     }
+}
 
-    pub fn value(&self) -> &Py<PyAny> {
-        &self.data
-    }
+#[pymethods]
+impl PyValue {
+    /// Get the deserialized Python object, lazily deserializing on first access.
+    ///
+    /// `deserialize_fn` is a `Callable[[bytes], T]` that converts raw bytes to the
+    /// desired Python object. It is only called on the first access when the value
+    /// has not yet been deserialized (bytes-only). On subsequent calls or when the
+    /// value was created from a Python object, returns the cached object immediately.
+    fn get(&self, py: Python<'_>, deserialize_fn: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+        // 1st acquisition: check cache or extract bytes
+        let py_bytes = {
+            let data = self.inner.lock().unwrap();
+            if let Some(ref obj) = data.object {
+                return Ok(obj.clone_ref(py)); // cache hit — fast path
+            }
+            PyBytes::new(py, data.bytes.as_ref().unwrap()).unbind()
+        }; // mutex released before calling Python
 
-    pub fn into_inner(self) -> Py<PyAny> {
-        self.data
+        // Deserialize (no mutex held — safe even if deserialize_fn releases GIL)
+        let result = deserialize_fn.call1((py_bytes.bind(py),))?;
+
+        // 2nd acquisition: cache result
+        {
+            let mut data = self.inner.lock().unwrap();
+            data.object = Some(result.clone().unbind());
+        }
+        Ok(result.unbind())
     }
 }
 
 impl std::fmt::Debug for PyValue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        debug_py_any(f, &self.data)
+        let data = self.inner.lock().unwrap();
+        if let Some(ref obj) = data.object {
+            debug_py_any(f, obj)
+        } else if data.bytes.is_some() {
+            f.write_str("<PyValue: bytes-only>")
+        } else {
+            f.write_str("<PyValue: empty>")
+        }
     }
 }
 
 impl Persist for PyValue {
     fn to_bytes(&self) -> Result<bytes::Bytes> {
-        let serialized = Python::attach(|py| python_objects().serialize(py, &self.data.bind(py)))?;
-        Ok(serialized)
+        // Fast path: return cached bytes (mutex only, no GIL)
+        {
+            let data = self.inner.lock().unwrap();
+            if let Some(ref b) = data.bytes {
+                return Ok(b.clone());
+            }
+        } // mutex released before acquiring GIL
+
+        // Slow path: acquire GIL, extract object, release mutex, then serialize
+        Python::attach(|py| {
+            // 1st acquisition: double-check and extract object reference
+            let obj = {
+                let data = self.inner.lock().unwrap();
+                if let Some(ref b) = data.bytes {
+                    return Ok(b.clone());
+                }
+                data.object.as_ref().unwrap().clone_ref(py)
+            }; // mutex released before calling Python
+
+            // Serialize (no mutex held — safe if serialize releases GIL)
+            let bytes = python_objects().serialize(py, &obj.bind(py))?;
+
+            // 2nd acquisition: cache result
+            {
+                let mut data = self.inner.lock().unwrap();
+                if data.bytes.is_none() {
+                    data.bytes = Some(bytes.clone());
+                }
+            }
+            Ok(bytes)
+        })
     }
 
     fn from_bytes(data: &[u8]) -> Result<Self> {
-        let value = Python::attach(|py| python_objects().deserialize(py, data))?;
-        Ok(Self { data: value })
-    }
-}
-
-impl Clone for PyValue {
-    fn clone(&self) -> Self {
-        Python::attach(|py| Self {
-            data: self.data.clone_ref(py),
+        Ok(Self {
+            inner: Arc::new(std::sync::Mutex::new(PyValueData {
+                bytes: Some(bytes::Bytes::copy_from_slice(data)),
+                object: None,
+            })),
         })
     }
 }

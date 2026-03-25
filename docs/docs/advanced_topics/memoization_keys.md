@@ -142,7 +142,7 @@ class LocalFile:
         # Identity only — which file is it?
         return str(self.path.resolve())
 
-    def __coco_memo_state__(self, prev_state: object) -> coco.MemoStateOutcome:
+    def __coco_memo_state__(self, prev_state: tuple[int, str] | coco.NonExistenceType) -> coco.MemoStateOutcome:
         st = os.stat(self.path)
         new_mtime = st.st_mtime_ns
         if coco.is_non_existence(prev_state):
@@ -207,7 +207,7 @@ class S3Object:
     def __coco_memo_key__(self) -> object:
         return (self.bucket, self.key)
 
-    async def __coco_memo_state__(self, prev_state: object) -> coco.MemoStateOutcome:
+    async def __coco_memo_state__(self, prev_state: str | coco.NonExistenceType) -> coco.MemoStateOutcome:
         etag = await self._head_object()
         memo_valid = not coco.is_non_existence(prev_state) and etag == prev_state
         return coco.MemoStateOutcome(state=etag, memo_valid=memo_valid)

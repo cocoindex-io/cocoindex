@@ -11,7 +11,7 @@ use tokio_util::task::AbortOnDropHandle;
 
 pub struct PythonObjects {
     pub serialize_fn: Py<PyAny>,
-    pub deserialize_fn: Py<PyAny>,
+    pub handler_wrapper_fn: Py<PyAny>,
     pub non_existence: Py<PyAny>,
     pub not_set: Py<PyAny>,
 }
@@ -30,12 +30,6 @@ impl PythonObjects {
         })()
         .from_py_result()
     }
-
-    pub fn deserialize<'py>(&self, py: Python<'py>, value: &[u8]) -> Result<Py<PyAny>> {
-        self.deserialize_fn
-            .call(py, (value,), None)
-            .from_py_result()
-    }
 }
 
 static PY_OBJECTS: OnceLock<std::mem::ManuallyDrop<PythonObjects>> = OnceLock::new();
@@ -43,7 +37,7 @@ static PY_OBJECTS: OnceLock<std::mem::ManuallyDrop<PythonObjects>> = OnceLock::n
 #[pyfunction]
 pub fn init_runtime(
     serialize_fn: Py<PyAny>,
-    deserialize_fn: Py<PyAny>,
+    handler_wrapper_fn: Py<PyAny>,
     non_existence: Py<PyAny>,
     not_set: Py<PyAny>,
 ) -> PyResult<()> {
@@ -55,7 +49,7 @@ pub fn init_runtime(
     PY_OBJECTS
         .set(std::mem::ManuallyDrop::new(PythonObjects {
             serialize_fn,
-            deserialize_fn,
+            handler_wrapper_fn,
             non_existence,
             not_set,
         }))
@@ -71,6 +65,13 @@ pub fn shutdown_tokio_runtime() {
 pub fn python_objects() -> &'static PythonObjects {
     // ManuallyDrop<T> implements Deref<Target = T>, so &**x coerces to &T.
     &**PY_OBJECTS.get().expect("Python objects not initialized")
+}
+
+/// Wrap a Python target handler with _TypedTargetHandlerWrapper for typed deserialization.
+pub fn wrap_target_handler(py: Python<'_>, handler: &Py<PyAny>) -> PyResult<Py<PyAny>> {
+    python_objects()
+        .handler_wrapper_fn
+        .call(py, (handler,), None)
 }
 
 #[pyclass(name = "AsyncContext")]

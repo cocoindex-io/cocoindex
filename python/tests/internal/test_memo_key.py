@@ -522,13 +522,19 @@ def test_state_methods_collected_from_hook() -> None:
         def __coco_memo_state__(self, prev_state: object) -> MemoStateOutcome:
             return MemoStateOutcome(state=prev_state, memo_valid=True)
 
+    from cocoindex._internal.memo_key import StateFnEntry
+
     methods: list[Any] = []
     fingerprint_call(_dummy_fn, (WithState(1),), {}, state_methods=methods)
     assert len(methods) == 1
-    assert callable(methods[0])
+    assert isinstance(methods[0], StateFnEntry)
+    assert callable(methods[0].call)
+    assert callable(methods[0].deserialize_prev)
 
 
 def test_state_methods_collected_from_registry() -> None:
+    from cocoindex._internal.memo_key import StateFnEntry
+
     class Registered:
         def __init__(self, v: object) -> None:
             self.v = v
@@ -541,7 +547,8 @@ def test_state_methods_collected_from_registry() -> None:
         methods: list[Any] = []
         fingerprint_call(_dummy_fn, (Registered(7),), {}, state_methods=methods)
         assert len(methods) == 1
-        assert callable(methods[0])
+        assert isinstance(methods[0], StateFnEntry)
+        assert callable(methods[0].call)
     finally:
         unregister_memo_key_function(Registered)
 
@@ -581,8 +588,8 @@ def test_multiple_state_methods_collected_in_order() -> None:
     fingerprint_call(_dummy_fn, (S1(), S2()), {}, state_methods=methods)
     assert len(methods) == 2
     # Verify order: S1 first (first arg), S2 second
-    assert methods[0]("x").state == "from_s1"
-    assert methods[1]("x").state == "from_s2"
+    assert methods[0].call("x").state == "from_s1"
+    assert methods[1].call("x").state == "from_s2"
 
 
 def test_no_state_methods_for_hook_only_objects() -> None:

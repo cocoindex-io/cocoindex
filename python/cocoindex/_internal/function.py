@@ -9,6 +9,7 @@ import inspect
 import pickle
 import textwrap
 import threading
+import typing
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -35,9 +36,15 @@ from .component_ctx import (
     _enter_component_context,
     get_context_from_ctx,
 )
-from .memo_key import fingerprint_call
+from .memo_key import StateFnEntry, fingerprint_call
 from .runner import Runner
 from .runner import in_subprocess as _in_subprocess
+from .serde import (
+    DeserializeFn,
+    make_deserialize_fn,
+    qualified_name,
+    unwrap_element_type,
+)
 from .typing import NON_EXISTENCE
 
 P = ParamSpec("P")
@@ -146,38 +153,48 @@ class StateMethodsResult(NamedTuple):
     states_changed: bool
 
 
+class _StateCallResult(NamedTuple):
+    prev: Any
+    outcome: Any  # MemoStateOutcome
+
+
 def _call_state_methods_sync(
-    state_methods: list[Callable[..., Any]],
+    state_entries: list[StateFnEntry],
     stored_states: list[Any] | None,
 ) -> StateMethodsResult:
     """Call state methods synchronously and return a :class:`StateMethodsResult`.
 
-    Each state method receives the previously stored state (or ``NON_EXISTENCE`` on first run)
-    and returns a :class:`~cocoindex.MemoStateOutcome`.
+    Each entry's ``call`` receives the deserialized previous state (or
+    ``NON_EXISTENCE`` on first run) and returns a
+    :class:`~cocoindex.MemoStateOutcome`.
 
-    *can_reuse* is the conjunction of all per-method ``memo_valid`` flags: if any method says
-    the memo is not valid, the overall result is not reusable.
-
-    *states_changed* indicates whether any ``new_state`` differs from its stored counterpart
-    (``==`` check). This can be true even when ``can_reuse`` is true (e.g. mtime changed but
-    content hash unchanged).
+    *can_reuse* is the conjunction of all per-method ``memo_valid`` flags.
+    *states_changed* indicates whether any ``new_state`` differs from its
+    deserialized stored counterpart (``==`` check).
 
     If any method returns an ``Awaitable`` the awaitables are resolved:
     - Running event loop → raise (suggest ``@coco.fn.as_async``).
     - No loop → ``asyncio.run(asyncio.gather(...))``.
     """
-    raw_results: list[Any] = [
-        method(stored_states[i] if stored_states is not None else NON_EXISTENCE)
-        for i, method in enumerate(state_methods)
+    results: list[_StateCallResult] = [
+        _StateCallResult(
+            prev=(
+                prev := entry.deserialize_prev(stored_states[i])
+                if stored_states is not None
+                else NON_EXISTENCE
+            ),
+            outcome=entry.call(prev),
+        )
+        for i, entry in enumerate(state_entries)
     ]
 
     # Resolve awaitables produced by async state methods
     awaitable_indices: list[int] = []
     awaitables: list[Awaitable[Any]] = []
-    for i, r in enumerate(raw_results):
-        if isinstance(r, Awaitable):
+    for i, r in enumerate(results):
+        if isinstance(r.outcome, Awaitable):
             awaitable_indices.append(i)
-            awaitables.append(r)
+            awaitables.append(r.outcome)
 
     if awaitables:
         try:
@@ -196,57 +213,64 @@ def _call_state_methods_sync(
 
         resolved: list[Any] = asyncio.run(_gather())
         for idx, val in zip(awaitable_indices, resolved):
-            raw_results[idx] = val
+            results[idx] = results[idx]._replace(outcome=val)
 
     # Unpack MemoStateOutcome results
     new_states: list[Any] = []
     can_reuse = True
     states_changed = stored_states is None
-    for i, outcome in enumerate(raw_results):
-        new_states.append(outcome.state)
-        if not outcome.memo_valid:
+    for r in results:
+        new_states.append(r.outcome.state)
+        if not r.outcome.memo_valid:
             can_reuse = False
-        if stored_states is not None and outcome.state != stored_states[i]:
+        if stored_states is not None and r.outcome.state != r.prev:
             states_changed = True
     return StateMethodsResult(new_states, can_reuse, states_changed)
 
 
 async def _call_state_methods_async(
-    state_methods: list[Callable[..., Any]],
+    state_entries: list[StateFnEntry],
     stored_states: list[Any] | None,
 ) -> StateMethodsResult:
     """Async variant of :func:`_call_state_methods_sync`.
 
-    Calls each state method, then gathers any awaitables concurrently.
+    Calls each entry's ``call``, then gathers any awaitables concurrently.
     Returns a :class:`StateMethodsResult`.
     """
-    raw_results: list[Any] = [
-        method(stored_states[i] if stored_states is not None else NON_EXISTENCE)
-        for i, method in enumerate(state_methods)
+    results: list[_StateCallResult] = [
+        _StateCallResult(
+            prev=(
+                prev := entry.deserialize_prev(stored_states[i])
+                if stored_states is not None
+                else NON_EXISTENCE
+            ),
+            outcome=entry.call(prev),
+        )
+        for i, entry in enumerate(state_entries)
     ]
 
     # Resolve awaitables
     awaitable_indices: list[int] = []
     awaitables: list[Awaitable[Any]] = []
-    for i, r in enumerate(raw_results):
-        if isinstance(r, Awaitable):
+    for i, r in enumerate(results):
+        if isinstance(r.outcome, Awaitable):
             awaitable_indices.append(i)
-            awaitables.append(r)
+            awaitables.append(r.outcome)
 
     if awaitables:
         resolved = await asyncio.gather(*awaitables)
         for idx, val in zip(awaitable_indices, resolved):
-            raw_results[idx] = val
+            results[idx] = results[idx]._replace(outcome=val)
 
     # Unpack MemoStateOutcome results
     new_states: list[Any] = []
     can_reuse = True
     states_changed = stored_states is None
-    for i, outcome in enumerate(raw_results):
-        new_states.append(outcome.state)
-        if not outcome.memo_valid:
+    for r in results:
+        new_states.append(r.outcome.state)
+        if not r.outcome.memo_valid:
             can_reuse = False
-        if stored_states is not None and outcome.state != stored_states[i]:
+        if stored_states is not None and r.outcome.state != r.prev:
             states_changed = True
     return StateMethodsResult(new_states, can_reuse, states_changed)
 
@@ -346,13 +370,23 @@ class SyncFunction(Function[P, R_co]):
     and produce AsyncFunction (via @coco.fn.as_async).
     """
 
-    __slots__ = ("_fn", "_memo", "_processor_info", "_logic_fp", "_logic_tracking")
+    __slots__ = (
+        "_fn",
+        "_memo",
+        "_processor_info",
+        "_logic_fp",
+        "_logic_tracking",
+        "_return_deserializer",
+        "_return_deserializer_lock",
+    )
 
     _fn: Callable[P, R_co]
     _memo: bool
     _processor_info: core.ComponentProcessorInfo
     _logic_fp: core.Fingerprint | None
     _logic_tracking: LogicTracking
+    _return_deserializer: DeserializeFn | None
+    _return_deserializer_lock: threading.Lock
 
     def __init__(
         self,
@@ -366,11 +400,29 @@ class SyncFunction(Function[P, R_co]):
         self._memo = memo
         self._processor_info = core.ComponentProcessorInfo(fn.__qualname__)
         self._logic_tracking = logic_tracking
+        self._return_deserializer = None
+        self._return_deserializer_lock = threading.Lock()
+
         if logic_tracking is not None:
             self._logic_fp = _compute_logic_fingerprint(fn, version=version)
             core.register_logic_fingerprint(self._logic_fp)
         else:
             self._logic_fp = None
+
+    @property
+    def _resolved_return_deserializer(self) -> DeserializeFn:
+        if self._return_deserializer is None:
+            with self._return_deserializer_lock:
+                if self._return_deserializer is None:
+                    try:
+                        hint = typing.get_type_hints(self._fn).get("return", Any)
+                    except Exception:
+                        hint = Any
+                    self._return_deserializer = make_deserialize_fn(
+                        hint,
+                        source_label=f"return type of {qualified_name(self._fn)}()",
+                    )
+        return self._return_deserializer
 
     def __del__(self) -> None:
         fp = getattr(self, "_logic_fp", None)
@@ -414,7 +466,7 @@ class SyncFunction(Function[P, R_co]):
         fn_ctx: core.FnCallContext | None = None
         try:
             if self._memo:
-                state_methods: list[Callable[..., Any]] = []
+                state_methods: list[StateFnEntry] = []
                 memo_fp = fingerprint_call(
                     self._fn, args, kwargs, state_methods=state_methods
                 )
@@ -439,7 +491,11 @@ class SyncFunction(Function[P, R_co]):
 
                     if use_cache:
                         parent_ctx._core_fn_call_ctx.join_child_memo(memo_fp)
-                        return cast(R_co, guard.cached_value)
+                        assert guard.cached_value is not None
+                        return cast(
+                            R_co,
+                            guard.cached_value.get(self._resolved_return_deserializer),
+                        )
 
                     # Execute (cache miss or stale states)
                     fn_ctx = core.FnCallContext(propagate_children_fn_logic=propagate)
@@ -475,7 +531,7 @@ class SyncFunction(Function[P, R_co]):
         *args: P0.args,
         **kwargs: P0.kwargs,
     ) -> core.ComponentProcessor[R_co]:
-        state_methods: list[Callable[..., Any]] = []
+        state_methods: list[StateFnEntry] = []
         memo_fp = (
             fingerprint_call(self._fn, args, kwargs, state_methods=state_methods)
             if self._memo
@@ -626,6 +682,8 @@ class AsyncFunction(Function[P, R_co]):
         "_queues",
         "_batchers",
         "_batchers_lock",
+        "_return_deserializer",
+        "_return_deserializer_lock",
     )
 
     _orig_async_fn: AsyncCallable[..., Any] | None
@@ -639,6 +697,8 @@ class AsyncFunction(Function[P, R_co]):
     _runner: Runner | None
     _has_self: bool
     _queues: dict[object, core.BatchQueue]
+    _return_deserializer: DeserializeFn | None
+    _return_deserializer_lock: threading.Lock
 
     _batchers: dict[object, core.Batcher[Any, R_co]]
     _batchers_lock: threading.Lock
@@ -663,6 +723,9 @@ class AsyncFunction(Function[P, R_co]):
         self._memo = memo
         self._processor_info = core.ComponentProcessorInfo(fn.__qualname__)
         self._logic_tracking = logic_tracking
+        self._return_deserializer = None
+        self._return_deserializer_lock = threading.Lock()
+
         if logic_tracking is not None:
             self._logic_fp = _compute_logic_fingerprint(fn, version=version)
             core.register_logic_fingerprint(self._logic_fp)
@@ -675,6 +738,27 @@ class AsyncFunction(Function[P, R_co]):
         self._queues = {}
         self._batchers = {}
         self._batchers_lock = threading.Lock()
+
+    @property
+    def _resolved_return_deserializer(self) -> DeserializeFn:
+        if self._return_deserializer is None:
+            with self._return_deserializer_lock:
+                if self._return_deserializer is None:
+                    fn = self._orig_async_fn or self._orig_sync_fn
+                    assert fn is not None
+                    try:
+                        hint = typing.get_type_hints(fn).get("return", Any)
+                    except Exception:
+                        hint = Any
+                    # For batched functions, the return type is list[U] but
+                    # individual memoized values are U. Unwrap the element type.
+                    if self._batching and hint is not Any:
+                        hint = unwrap_element_type(hint)
+                    self._return_deserializer = make_deserialize_fn(
+                        hint,
+                        source_label=f"return type of {qualified_name(fn)}()",
+                    )
+        return self._return_deserializer
 
     def __del__(self) -> None:
         fp = getattr(self, "_logic_fp", None)
@@ -733,7 +817,7 @@ class AsyncFunction(Function[P, R_co]):
         fn_ctx = core.FnCallContext(propagate_children_fn_logic=propagate)
         if self._logic_fp is not None:
             fn_ctx.add_fn_logic_dep(self._logic_fp)
-        state_methods: list[Callable[..., Any]] = []
+        state_methods: list[StateFnEntry] = []
 
         try:
             # Check memo (when enabled and context available)
@@ -759,7 +843,11 @@ class AsyncFunction(Function[P, R_co]):
                             guard.update_memo_states(state_result.new_states)
                     if use_cache:
                         parent_ctx._core_fn_call_ctx.join_child_memo(memo_fp)
-                        return cast(R_co, guard.cached_value)
+                        assert guard.cached_value is not None
+                        return cast(
+                            R_co,
+                            guard.cached_value.get(self._resolved_return_deserializer),
+                        )
 
             # Execute (no memo, cache miss, or stale states)
             if parent_ctx is None:
@@ -981,7 +1069,7 @@ class AsyncFunction(Function[P, R_co]):
         *args: P.args,
         **kwargs: P.kwargs,
     ) -> core.ComponentProcessor[R_co]:
-        state_methods: list[Callable[..., Any]] = []
+        state_methods: list[StateFnEntry] = []
         memo_fp = (
             fingerprint_call(
                 self._any_fn,

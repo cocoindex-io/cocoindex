@@ -93,11 +93,12 @@ async fn reserve_memoization_inner(
         cocoindex_core::engine::function::reserve_memoization(&comp_ctx.0, memo_fp.0).await?;
 
     Python::attach(|py| {
-        // Extract cached data (if cache hit) into owned Python objects before moving the guard.
+        // Extract cached data (if cache hit) as PyValue objects (not inner Python objects).
         let (is_cached, cached_value, cached_memo_states) = match guard.cached() {
             Some((ret, states)) => {
-                let value = ret.value().clone_ref(py);
-                let states_list = PyList::new(py, states.iter().map(|s| s.value()))?;
+                let value = Py::new(py, ret.clone())?.into_any();
+                let states_list =
+                    PyList::new(py, states.iter().map(|s| Py::new(py, s.clone()).unwrap()))?;
                 (true, Some(value), Some(states_list.unbind().into_any()))
             }
             None => (false, None, None),

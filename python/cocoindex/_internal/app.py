@@ -16,6 +16,7 @@ from typing import (
 from . import core
 from .environment import Environment, LazyEnvironment, _default_env
 from .function import AnyCallable, AsyncCallable, create_core_component_processor
+from .serde import fn_ret_deserializer
 from .update_stats import (
     ComponentStats,
     UpdateSnapshot,
@@ -42,12 +43,14 @@ class UpdateHandle(Generic[R]):
 
     def __init__(
         self,
-        init_coro: Any,  # Coroutine that returns core.UpdateHandle[R]
+        init_coro: Any,  # Coroutine that returns core.UpdateHandle
+        main_fn: Any = None,
     ) -> None:
         self._init_coro = init_coro
-        self._core_handle: core.UpdateHandle[R] | None = None
+        self._core_handle: core.UpdateHandle | None = None
+        self._main_fn = main_fn  # used for return type inspection
 
-    async def _ensure_started(self) -> core.UpdateHandle[R]:
+    async def _ensure_started(self) -> core.UpdateHandle:
         if self._core_handle is None:
             self._core_handle = await self._init_coro
             self._init_coro = None
@@ -60,7 +63,7 @@ class UpdateHandle(Generic[R]):
 
     def _snapshot_from_handle(
         self,
-        handle: core.UpdateHandle[R],
+        handle: core.UpdateHandle,
     ) -> tuple[int, UpdateStats | None]:
         """Returns (version, stats). Stats is None if empty."""
         version, raw = handle.stats_snapshot()
@@ -92,7 +95,8 @@ class UpdateHandle(Generic[R]):
             # stats version, so the dedup check would skip it.
             if version >= _TERMINATED_VERSION:
                 snap_version, stats = self._snapshot_from_handle(handle)
-                result: R = await handle.result()
+                pyvalue: Any = await handle.result()
+                result: R = pyvalue.get(fn_ret_deserializer(self._main_fn))
                 if stats is not None:
                     yield UpdateSnapshot(
                         stats=stats, status=UpdateStatus.DONE, result=result
@@ -114,7 +118,8 @@ class UpdateHandle(Generic[R]):
     async def result(self) -> R:
         """Await the update result. Raises on error."""
         handle = await self._ensure_started()
-        return await handle.result()
+        pyvalue: Any = await handle.result()
+        return pyvalue.get(fn_ret_deserializer(self._main_fn))  # type: ignore[no-any-return]
 
     def __await__(self) -> Any:
         return self.result().__await__()
@@ -235,7 +240,7 @@ class App(Generic[P, R]):
             An UpdateHandle that provides access to stats(), watch(), and result().
         """
 
-        async def _init() -> core.UpdateHandle[R]:
+        async def _init() -> core.UpdateHandle:
             env, core_app = await self._get_core_env_app()
             root_path = core.StablePath()
             processor = create_core_component_processor(
@@ -248,7 +253,7 @@ class App(Generic[P, R]):
                 host_ctx=env._context_provider,
             )
 
-        return UpdateHandle(_init())
+        return UpdateHandle(_init(), main_fn=self._main_fn)
 
     def update_blocking(
         self, *, report_to_stdout: bool = False, full_reprocess: bool = False
@@ -268,12 +273,13 @@ class App(Generic[P, R]):
         processor = create_core_component_processor(
             self._main_fn, env, root_path, self._app_args, self._app_kwargs
         )
-        return core_app.update(
+        pyvalue: Any = core_app.update(
             processor,
             report_to_stdout=report_to_stdout,
             full_reprocess=full_reprocess,
             host_ctx=env._context_provider,
         )
+        return pyvalue.get(fn_ret_deserializer(self._main_fn))  # type: ignore[no-any-return]
 
     async def drop(self, *, report_to_stdout: bool = False) -> None:
         """

@@ -2,6 +2,7 @@ use crate::{
     prelude::*,
     runtime::{PyAsyncContext, PyCallback},
     stable_path::PyStablePath,
+    value::PyValue,
 };
 
 use crate::context::{PyComponentProcessorContext, PyFnCallContext};
@@ -118,13 +119,16 @@ impl ComponentProcessor<PyEngineProfile> for PyComponentProcessor {
             }));
         };
 
-        // Convert Option<Vec<PyValue>> → Python (list | None)
+        // Convert Option<Vec<PyValue>> → Python (list[PyValue] | None)
         let py_comp_ctx = PyComponentProcessorContext(comp_ctx.clone());
         let py_arg: Py<PyAny> = Python::attach(|py| -> Result<Py<PyAny>> {
             match stored_states {
                 Some(states) => {
-                    let list = pyo3::types::PyList::new(py, states.iter().map(|s| s.value()))
-                        .from_py_result()?;
+                    let list = pyo3::types::PyList::new(
+                        py,
+                        states.iter().map(|s| pyo3::Py::new(py, s.clone()).unwrap()),
+                    )
+                    .from_py_result()?;
                     Ok(list.unbind().into_any())
                 }
                 None => Ok(py.None()),
@@ -293,22 +297,19 @@ impl PyComponentMountRunHandle {
     ) -> PyResult<Bound<'py, PyAny>> {
         let handle = self.take_handle()?;
         future_into_py(py, async move {
-            let ret = handle.result(Some(&parent_ctx.0)).await.into_py_result()?;
-            Ok(ret.into_inner())
+            handle.result(Some(&parent_ctx.0)).await.into_py_result()
         })
     }
 
-    pub fn result<'py>(
+    pub fn result(
         &mut self,
-        py: Python<'py>,
+        py: Python<'_>,
         parent_ctx: PyComponentProcessorContext,
-    ) -> PyResult<Py<PyAny>> {
+    ) -> PyResult<PyValue> {
         let handle = self.take_handle()?;
         py.detach(|| {
-            get_runtime().block_on(async move {
-                let ret = handle.result(Some(&parent_ctx.0)).await.into_py_result()?;
-                Ok(ret.into_inner())
-            })
+            get_runtime()
+                .block_on(async move { handle.result(Some(&parent_ctx.0)).await.into_py_result() })
         })
     }
 }
