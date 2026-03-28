@@ -82,7 +82,7 @@ impl<Prof: EngineProfile> AppContext<Prof> {
     }
 }
 
-pub(crate) struct DeclaredEffect<Prof: EngineProfile> {
+pub(crate) struct DeclaredTargetState<Prof: EngineProfile> {
     pub provider: TargetStateProvider<Prof>,
     pub item_key: StableKey,
     pub value: Prof::TargetStateValue,
@@ -90,7 +90,7 @@ pub(crate) struct DeclaredEffect<Prof: EngineProfile> {
 }
 
 pub(crate) struct ComponentTargetStatesContext<Prof: EngineProfile> {
-    pub declared_effects: BTreeMap<TargetStatePath, DeclaredEffect<Prof>>,
+    pub declared_target_states: BTreeMap<TargetStatePath, DeclaredTargetState<Prof>>,
     pub provider_registry: TargetStateProviderRegistry<Prof>,
 }
 
@@ -177,7 +177,7 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
             ComponentProcessingAction::Build(ComponentBuildContext {
                 state: Mutex::new(Some(ComponentBuildingState {
                     target_states: ComponentTargetStatesContext {
-                        declared_effects: Default::default(),
+                        declared_target_states: Default::default(),
                         provider_registry: TargetStateProviderRegistry::new(providers),
                     },
                     child_path_set: Default::default(),
