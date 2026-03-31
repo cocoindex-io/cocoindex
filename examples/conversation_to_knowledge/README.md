@@ -1,6 +1,27 @@
-# Conversation to Knowledge
+# Turn Podcasts into a Knowledge Graph with LLM and CocoIndex
 
-Converts YouTube podcast/interview sessions into a structured knowledge graph in SurrealDB.
+<p align="center">
+<img width="3840" height="2174" alt="cocoindex-surrealdb-meetup" src="https://github.com/user-attachments/assets/6b0a4c09-eeaa-4020-ab24-35a997613576" />
+Continously Converts YouTube podcast/interview sessions into a structured knowledge graph in SurrealDB.
+
+</p>
+
+
+<div align="center">
+
+[![Discord](https://img.shields.io/discord/1314801574169673738?logo=discord&color=5B5BD6&logoColor=white)](https://discord.com/invite/zpA9S2DR7s)
+[![GitHub](https://img.shields.io/github/stars/cocoindex-io/cocoindex?color=5B5BD6)](https://github.com/cocoindex-io/cocoindex)
+[![Documentation](https://img.shields.io/badge/Documentation-394e79?logo=readthedocs&logoColor=00B9FF)](https://cocoindex.io/docs/getting_started/quickstart)
+[![License](https://img.shields.io/badge/license-Apache%202.0-5B5BD6?logoColor=white)](https://opensource.org/licenses/Apache-2.0)
+<!--[![PyPI - Downloads](https://img.shields.io/pypi/dm/cocoindex)](https://pypistats.org/packages/cocoindex) -->
+[![PyPI Downloads](https://static.pepy.tech/badge/cocoindex/month)](https://pepy.tech/projects/cocoindex)
+[![CI](https://github.com/cocoindex-io/cocoindex/actions/workflows/CI.yml/badge.svg?event=push&color=5B5BD6)](https://github.com/cocoindex-io/cocoindex/actions/workflows/CI.yml)
+[![release](https://github.com/cocoindex-io/cocoindex/actions/workflows/release.yml/badge.svg?event=push&color=5B5BD6)](https://github.com/cocoindex-io/cocoindex/actions/workflows/release.yml)
+
+
+🌟 Please help star [CocoIndex](https://github.com/cocoindex-io/cocoindex) if you like this project!
+
+</div>
 
 **Pipeline:**
 1. Read YouTube URLs from plain text files
