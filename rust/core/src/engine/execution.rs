@@ -961,7 +961,19 @@ fn pre_commit<Prof: EngineProfile>(
                                 from_msgpack_slice(data)?;
                             let len_before = old_tracking.target_state_items.len();
                             // Look up the entry matching current provider_id.
-                            let prev_item = old_tracking.target_state_items.remove(&lookup_key);
+                            let prev_item = old_tracking
+                                .target_state_items
+                                .remove(&lookup_key)
+                                .map(|mut item| {
+                                    // Reset version numbers so the new component's commit
+                                    // retention prunes them. The old owner's versions are from
+                                    // a different version space and may collide with
+                                    // curr_version.
+                                    for (version, _) in item.states.iter_mut() {
+                                        *version = 0;
+                                    }
+                                    item
+                                });
                             // Also remove any stale entries (different provider_ids)
                             // to prevent them from clobbering inverted tracking on prune.
                             old_tracking
