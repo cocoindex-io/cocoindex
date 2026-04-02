@@ -96,17 +96,20 @@ impl PyApp {
         Ok(Self(Arc::new(app)))
     }
 
+    #[pyo3(signature = (root_processor, report_to_stdout, full_reprocess, host_ctx, live=false))]
     pub fn update_async(
         &self,
         root_processor: PyComponentProcessor,
         report_to_stdout: bool,
         full_reprocess: bool,
         host_ctx: Py<PyAny>,
+        live: bool,
     ) -> PyResult<PyUpdateHandle> {
         let app = self.0.clone();
         let options = AppUpdateOptions {
             report_to_stdout,
             full_reprocess,
+            live,
         };
         let host_ctx = Arc::new(host_ctx);
         let handle = app
@@ -121,6 +124,7 @@ impl PyApp {
         })
     }
 
+    #[pyo3(signature = (root_processor, report_to_stdout, full_reprocess, host_ctx, live=false))]
     pub fn update(
         &self,
         py: Python<'_>,
@@ -128,11 +132,13 @@ impl PyApp {
         report_to_stdout: bool,
         full_reprocess: bool,
         host_ctx: Py<PyAny>,
+        live: bool,
     ) -> PyResult<PyStoredValue> {
         let app = self.0.clone();
         let options = AppUpdateOptions {
             report_to_stdout,
             full_reprocess,
+            live,
         };
         let host_ctx = Arc::new(host_ctx);
         py.detach(|| {

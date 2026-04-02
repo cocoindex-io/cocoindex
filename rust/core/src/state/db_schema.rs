@@ -256,6 +256,14 @@ pub struct TargetStateInfoItem<'a> {
     pub provider_generation: Option<TargetStateProviderGeneration>,
 }
 
+/// Inverted tracking: maps a `TargetStatePath` to the component that owns it.
+/// Stored under `DbEntryKey::TargetState(target_state_path)`.
+#[derive(Serialize, Deserialize, Debug)]
+pub struct TargetStateOwnerInfo {
+    #[serde(rename = "C")]
+    pub component_path: StablePath,
+}
+
 pub const UNKNOWN_PROCESSOR_NAME: &'static str = "<unknown>";
 
 fn unknown_processor_name() -> Cow<'static, str> {
@@ -267,7 +275,7 @@ pub struct StablePathEntryTrackingInfo<'a> {
     #[serde(rename = "V")]
     pub version: u64,
     #[serde(rename = "I", borrow)]
-    pub effect_items: BTreeMap<TargetStatePathWithProviderId, TargetStateInfoItem<'a>>,
+    pub target_state_items: BTreeMap<TargetStatePathWithProviderId, TargetStateInfoItem<'a>>,
     #[serde(rename = "N", borrow, default = "unknown_processor_name")]
     pub processor_name: Cow<'a, str>,
 }
@@ -276,7 +284,7 @@ impl<'a> StablePathEntryTrackingInfo<'a> {
     pub fn new(processor_name: Cow<'a, str>) -> Self {
         Self {
             version: 0,
-            effect_items: BTreeMap::new(),
+            target_state_items: BTreeMap::new(),
             processor_name,
         }
     }

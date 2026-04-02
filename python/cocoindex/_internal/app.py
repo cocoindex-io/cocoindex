@@ -224,7 +224,11 @@ class App(Generic[P, R]):
             return self._core_env_app
 
     def update(
-        self, *, report_to_stdout: bool = False, full_reprocess: bool = False
+        self,
+        *,
+        report_to_stdout: bool = False,
+        full_reprocess: bool = False,
+        live: bool = False,
     ) -> UpdateHandle[R]:
         """
         Start an update and return a handle for tracking progress and awaiting the result.
@@ -235,6 +239,8 @@ class App(Generic[P, R]):
         Args:
             report_to_stdout: If True, periodically report processing stats to stdout.
             full_reprocess: If True, reprocess everything and invalidate existing caches.
+            live: If True, run in live mode (live components continue processing
+                after mark_ready).
 
         Returns:
             An UpdateHandle that provides access to stats(), watch(), and result().
@@ -250,13 +256,18 @@ class App(Generic[P, R]):
                 processor,
                 report_to_stdout=report_to_stdout,
                 full_reprocess=full_reprocess,
+                live=live,
                 host_ctx=env._context_provider,
             )
 
         return UpdateHandle(_init(), main_fn=self._main_fn)
 
     def update_blocking(
-        self, *, report_to_stdout: bool = False, full_reprocess: bool = False
+        self,
+        *,
+        report_to_stdout: bool = False,
+        full_reprocess: bool = False,
+        live: bool = False,
     ) -> R:
         """
         Update the app synchronously (run the app once to process all pending changes).
@@ -264,6 +275,8 @@ class App(Generic[P, R]):
         Args:
             report_to_stdout: If True, periodically report processing stats to stdout.
             full_reprocess: If True, reprocess everything and invalidate existing caches.
+            live: If True, run in live mode (live components continue processing
+                after mark_ready).
 
         Returns:
             The result of the main function.
@@ -277,6 +290,7 @@ class App(Generic[P, R]):
             processor,
             report_to_stdout=report_to_stdout,
             full_reprocess=full_reprocess,
+            live=live,
             host_ctx=env._context_provider,
         )
         return pyvalue.get(fn_ret_deserializer(self._main_fn))  # type: ignore[no-any-return]

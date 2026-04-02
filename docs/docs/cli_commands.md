@@ -129,6 +129,7 @@ cocoindex update [OPTIONS] APP_TARGET
 | `-q, --quiet` | Avoid printing anything to the standard output, e.g. statistics. |
 | `--reset` | Drop existing setup before updating (equivalent to running 'cocoindex drop' first). |
 | `--full-reprocess` | Reprocess everything and invalidate existing caches. |
+| `-L, --live` | Run in live mode (live components continue processing after initial update). |
 | `--help` | Show this message and exit. |
 
 ---

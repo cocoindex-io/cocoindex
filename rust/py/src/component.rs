@@ -177,6 +177,7 @@ pub fn mount_run(
             Some(&comp_ctx.0),
             comp_ctx.0.processing_stats().clone(),
             comp_ctx.0.full_reprocess(),
+            comp_ctx.0.live(),
             comp_ctx.0.host_ctx().clone(),
         )
         .into_py_result()?;
@@ -206,13 +207,14 @@ pub fn mount(
             Some(&comp_ctx.0),
             comp_ctx.0.processing_stats().clone(),
             comp_ctx.0.full_reprocess(),
+            comp_ctx.0.live(),
             comp_ctx.0.host_ctx().clone(),
         )
         .into_py_result()?;
     py.detach(|| {
         get_runtime().block_on(async {
             let handle = component
-                .run_in_background(processor, child_ctx, None)
+                .run_in_background(processor, child_ctx, None, None)
                 .await
                 .into_py_result()?;
             Ok(PyComponentMountHandle(Some(handle)))
@@ -238,6 +240,7 @@ pub fn mount_run_async<'py>(
             Some(&comp_ctx.0),
             comp_ctx.0.processing_stats().clone(),
             comp_ctx.0.full_reprocess(),
+            comp_ctx.0.live(),
             comp_ctx.0.host_ctx().clone(),
         )
         .into_py_result()?;
@@ -267,6 +270,7 @@ pub fn mount_async<'py>(
             Some(&comp_ctx.0),
             comp_ctx.0.processing_stats().clone(),
             comp_ctx.0.full_reprocess(),
+            comp_ctx.0.live(),
             comp_ctx.0.host_ctx().clone(),
         )
         .into_py_result()?;
@@ -306,7 +310,7 @@ pub fn mount_async<'py>(
 
     future_into_py(py, async move {
         let handle = component
-            .run_in_background(processor, child_ctx, on_error)
+            .run_in_background(processor, child_ctx, on_error, None)
             .await
             .into_py_result()?;
         Ok(PyComponentMountHandle(Some(handle)))
@@ -354,6 +358,10 @@ impl PyComponentMountRunHandle {
 pub struct PyComponentMountHandle(Option<ComponentExecutionHandle>);
 
 impl PyComponentMountHandle {
+    pub fn from_handle(handle: ComponentExecutionHandle) -> Self {
+        Self(Some(handle))
+    }
+
     fn take_handle(&mut self) -> PyResult<ComponentExecutionHandle> {
         self.0.take().ok_or_else(|| {
             pyo3::exceptions::PyRuntimeError::new_err("Handle has already been consumed")

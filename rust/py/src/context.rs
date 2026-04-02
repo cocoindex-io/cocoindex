@@ -22,6 +22,11 @@ impl PyComponentProcessorContext {
         PyStablePath(self.0.stable_path().clone())
     }
 
+    #[getter]
+    fn live(&self) -> bool {
+        self.0.live()
+    }
+
     fn join_fn_call(&self, fn_ctx: &PyFnCallContext) -> PyResult<()> {
         self.0.join_fn_call(&fn_ctx.0);
         Ok(())

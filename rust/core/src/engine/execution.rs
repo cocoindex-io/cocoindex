@@ -8,8 +8,8 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque, btree_map};
 use heed::{RoTxn, RwTxn};
 
 use crate::engine::context::{
-    ComponentProcessingAction, ComponentProcessingMode, ComponentProcessorContext, DeclaredEffect,
-    FnCallMemo, TARGET_ID_KEY,
+    ComponentProcessingAction, ComponentProcessingMode, ComponentProcessorContext,
+    DeclaredTargetState, FnCallMemo, TARGET_ID_KEY,
 };
 use crate::engine::context::{FnCallContext, FnCallMemoEntry};
 use crate::engine::id_sequencer::IdReservation;
@@ -260,7 +260,7 @@ pub fn declare_target_state<Prof: EngineProfile>(
     value: Prof::TargetStateValue,
 ) -> Result<()> {
     let target_state_path = provider.target_state_path().concat(&key);
-    let declared_effect = DeclaredEffect {
+    let declared_target_state = DeclaredTargetState {
         provider,
         item_key: key,
         value,
@@ -269,7 +269,7 @@ pub fn declare_target_state<Prof: EngineProfile>(
     comp_ctx.update_building_state(|building_state| {
         match building_state
             .target_states
-            .declared_effects
+            .declared_target_states
             .entry(target_state_path.clone())
         {
             btree_map::Entry::Occupied(entry) => {
@@ -279,7 +279,7 @@ pub fn declare_target_state<Prof: EngineProfile>(
                 );
             }
             btree_map::Entry::Vacant(entry) => {
-                entry.insert(declared_effect);
+                entry.insert(declared_target_state);
             }
         }
         Ok(())
@@ -300,7 +300,7 @@ pub fn declare_target_state_with_child<Prof: EngineProfile>(
             .target_states
             .provider_registry
             .register_lazy(&provider, key.clone())?;
-        let declared_effect = DeclaredEffect {
+        let declared_target_state = DeclaredTargetState {
             provider,
             item_key: key,
             value,
@@ -308,7 +308,7 @@ pub fn declare_target_state_with_child<Prof: EngineProfile>(
         };
         match building_state
             .target_states
-            .declared_effects
+            .declared_target_states
             .entry(child_provider.target_state_path().clone())
         {
             btree_map::Entry::Occupied(entry) => {
@@ -318,7 +318,7 @@ pub fn declare_target_state_with_child<Prof: EngineProfile>(
                 );
             }
             btree_map::Entry::Vacant(entry) => {
-                entry.insert(declared_effect);
+                entry.insert(declared_target_state);
             }
         }
         Ok(child_provider)
@@ -403,19 +403,37 @@ impl<Prof: EngineProfile> Committer<Prof> {
                 let mut tracking_info: db_schema::StablePathEntryTrackingInfo = self
                     .db
                     .get(&*wtxn, encoded_target_state_info_key.as_ref())?
-                    .map(|data| from_msgpack_slice(&data))
+                    .map(|data| from_msgpack_slice(data))
                     .transpose()?
                     .ok_or_else(|| internal_error!("tracking info not found for commit"))?;
 
-                for item in tracking_info.effect_items.values_mut() {
+                for item in tracking_info.target_state_items.values_mut() {
                     item.states.retain(|(version, state)| {
                         *version > curr_version || *version == curr_version && !state.is_deleted()
                     });
                 }
+                // Prune entries with empty states and collect their paths for
+                // inverted tracking cleanup (deferred until tracking_info is dropped).
+                let mut pruned_paths: HashSet<TargetStatePath> = HashSet::new();
                 tracking_info
-                    .effect_items
-                    .retain(|_, item| !item.states.is_empty());
-                for (path_with_pid, item) in tracking_info.effect_items.iter_mut() {
+                    .target_state_items
+                    .retain(|path_with_pid, item| {
+                        if item.states.is_empty() {
+                            pruned_paths.insert(path_with_pid.target_state_path.clone());
+                            false
+                        } else {
+                            true
+                        }
+                    });
+                // Don't delete inverted tracking if a surviving entry shares the same
+                // target_state_path (can happen when provider_id changed — old entry
+                // pruned, new entry survives under different provider_id).
+                if !pruned_paths.is_empty() {
+                    for path_with_pid in tracking_info.target_state_items.keys() {
+                        pruned_paths.remove(&path_with_pid.target_state_path);
+                    }
+                }
+                for (path_with_pid, item) in tracking_info.target_state_items.iter_mut() {
                     if let Some(parent_provider) = self
                         .target_states_providers
                         .get(path_with_pid.target_state_path.provider_path())
@@ -426,14 +444,15 @@ impl<Prof: EngineProfile> Committer<Prof> {
                     }
                 }
 
-                let is_version_converged = tracking_info.effect_items.iter().all(|(_, item)| {
-                    item.states
-                        .iter()
-                        .all(|(version, _)| *version == curr_version)
-                });
+                let is_version_converged =
+                    tracking_info.target_state_items.iter().all(|(_, item)| {
+                        item.states
+                            .iter()
+                            .all(|(version, _)| *version == curr_version)
+                    });
                 if is_version_converged {
                     tracking_info.version = 1;
-                    for item in tracking_info.effect_items.values_mut() {
+                    for item in tracking_info.target_state_items.values_mut() {
                         for (version, _) in item.states.iter_mut() {
                             *version = 1;
                         }
@@ -441,11 +460,17 @@ impl<Prof: EngineProfile> Committer<Prof> {
                 }
 
                 let data_bytes = rmp_serde::to_vec_named(&tracking_info)?;
+                drop(tracking_info); // Release borrow before mutable operations.
                 self.db.put(
                     &mut *wtxn,
                     encoded_target_state_info_key.as_ref(),
                     data_bytes.as_slice(),
                 )?;
+
+                // Clean up inverted tracking for pruned entries.
+                for path in &pruned_paths {
+                    delete_target_state_owner(&mut *wtxn, &self.db, path)?;
+                }
             }
 
             // Write memos.
@@ -680,7 +705,7 @@ impl<Prof: EngineProfile> Committer<Prof> {
                 self.component_ctx.processing_stats().clone(),
                 self.component_ctx.host_ctx().clone(),
             );
-            let _ = component.delete(delete_ctx)?;
+            let _ = component.delete(delete_ctx, None)?;
         }
         Ok(())
     }
@@ -782,6 +807,42 @@ struct PreCommitOutput<Prof: EngineProfile> {
     processor_name_for_del: Option<String>,
 }
 
+// --- Inverted tracking (TargetStatePath → owning component) helpers ---
+
+fn read_target_state_owner(
+    wtxn: &heed::RwTxn<'_>,
+    db: &db_schema::Database,
+    target_state_path: &TargetStatePath,
+) -> Result<Option<db_schema::TargetStateOwnerInfo>> {
+    let key = db_schema::DbEntryKey::TargetState(target_state_path.clone()).encode()?;
+    Ok(db
+        .get(wtxn, key.as_slice())?
+        .map(|data| from_msgpack_slice(data))
+        .transpose()?)
+}
+
+/// Encode an inverted tracking upsert as a deferred write (key, Some(value)).
+fn encode_owner_upsert(
+    target_state_path: &TargetStatePath,
+    component_path: &StablePath,
+) -> Result<(Vec<u8>, Vec<u8>)> {
+    let key = db_schema::DbEntryKey::TargetState(target_state_path.clone()).encode()?;
+    let value = rmp_serde::to_vec_named(&db_schema::TargetStateOwnerInfo {
+        component_path: component_path.clone(),
+    })?;
+    Ok((key, value))
+}
+
+fn delete_target_state_owner(
+    wtxn: &mut heed::RwTxn<'_>,
+    db: &db_schema::Database,
+    target_state_path: &TargetStatePath,
+) -> Result<()> {
+    let key = db_schema::DbEntryKey::TargetState(target_state_path.clone()).encode()?;
+    db.delete(wtxn, key.as_slice())?;
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn pre_commit<Prof: EngineProfile>(
     wtxn: &mut heed::RwTxn<'_>,
@@ -794,7 +855,7 @@ fn pre_commit<Prof: EngineProfile>(
     memo_del_key: &[u8],
     contained_target_state_paths: &HashSet<TargetStatePath>,
     target_states_providers: &rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
-    declared_effects: BTreeMap<TargetStatePath, DeclaredEffect<Prof>>,
+    declared_target_states: BTreeMap<TargetStatePath, DeclaredTargetState<Prof>>,
 ) -> Result<Option<PreCommitOutput<Prof>>> {
     let mut actions_by_sinks = HashMap::<Prof::TargetActionSink, SinkInput<Prof>>::new();
     let mut demote_component_only = false;
@@ -835,6 +896,10 @@ fn pre_commit<Prof: EngineProfile>(
         .get(wtxn, encoded_target_state_info_key)?
         .map(|data| from_msgpack_slice(data))
         .transpose()?;
+    // Deferred DB writes that will be flushed after tracking_info is dropped,
+    // since tracking_info borrows from wtxn and prevents mutable DB operations.
+    // Each entry is (encoded_key, optional_encoded_value); None value means delete.
+    let mut deferred_writes: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
     let previously_exists = tracking_info.is_some();
     if let Some(tracking_info) = &mut tracking_info {
         if let Some(processor_name) = processor_name {
@@ -850,13 +915,194 @@ fn pre_commit<Prof: EngineProfile>(
     let curr_version = if let Some(mut tracking_info) = tracking_info {
         let curr_version = tracking_info.version + 1;
         tracking_info.version = curr_version;
-        let mut declared_target_states_to_process = declared_effects;
 
-        // Deal with existing target states
-        for (target_state_path_with_pid, item) in tracking_info.effect_items.iter_mut() {
-            // Check if this child entry is stale (provider_id doesn't match parent's current generation).
-            // Stale entries arise from a parent's destructive change, which already cleaned up
-            // the external state. Skip them — commit() will prune them via version retention.
+        // Entries to insert/re-insert into target_state_items after both phases.
+        // Collected separately so Phase 2 doesn't see items added by Phase 1.
+        let mut items_to_insert: Vec<(
+            TargetStatePathWithProviderId,
+            db_schema::TargetStateInfoItem,
+        )> = Vec::new();
+
+        // Phase 1: Insert + Update — iterate declared target states.
+        // For each declared target state, find and remove any existing tracked entry,
+        // then reconcile. This unifies the insert and update code paths.
+        for (target_state_path, declared_target_state) in declared_target_states {
+            // Look up existing tracked entry using exact key (provider_id from current providers).
+            let parent_provider_gen = target_states_providers
+                .get(target_state_path.provider_path())
+                .and_then(|p| p.provider_generation());
+            let parent_provider_id = parent_provider_gen.map(|g| g.provider_id);
+            let lookup_key = TargetStatePathWithProviderId {
+                target_state_path: target_state_path.clone(),
+                provider_id: parent_provider_id,
+            };
+            let existing_item = tracking_info.target_state_items.remove(&lookup_key);
+
+            // Whether this target state path is new to this component's forward tracking
+            // (either fresh insert or preempted from another component).
+            // When provider_id changed, the old entry (under old_pid) stays for Phase 2
+            // to skip (stale) and commit to prune.
+            let is_new_to_component = existing_item.is_none();
+
+            // Obtain prev_item: either from this component's existing entry or via preempt.
+            let mut prev_item = if let Some(existing_item) = existing_item {
+                Some(existing_item)
+            } else {
+                // Insert path: check inverted tracking for ownership preempt.
+                match read_target_state_owner(wtxn, db, &target_state_path)? {
+                    Some(owner_info) if owner_info.component_path != *stable_path => {
+                        let old_owner_key = db_schema::DbEntryKey::StablePath(
+                            owner_info.component_path.clone(),
+                            db_schema::StablePathEntryKey::TrackingInfo,
+                        )
+                        .encode()?;
+                        if let Some(data) = db.get(wtxn, old_owner_key.as_slice())? {
+                            let mut old_tracking: db_schema::StablePathEntryTrackingInfo =
+                                from_msgpack_slice(data)?;
+                            let len_before = old_tracking.target_state_items.len();
+                            // Look up the entry matching current provider_id.
+                            let prev_item = old_tracking.target_state_items.remove(&lookup_key);
+                            // Also remove any stale entries (different provider_ids)
+                            // to prevent them from clobbering inverted tracking on prune.
+                            old_tracking
+                                .target_state_items
+                                .retain(|k, _| k.target_state_path != target_state_path);
+                            if old_tracking.target_state_items.len() < len_before {
+                                // Write back old owner's modified tracking info — deferred.
+                                let old_data = rmp_serde::to_vec_named(&old_tracking)?;
+                                deferred_writes.push((old_owner_key, old_data));
+                            }
+                            prev_item
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                }
+            };
+
+            // Compute prev_states and prev_may_be_missing uniformly from prev_item.
+            let (prev_states, prev_may_be_missing) = if let Some(ref prev_item) = prev_item {
+                let schema_version_mismatch = match parent_provider_gen {
+                    Some(pg) => prev_item.provider_schema_version != pg.provider_schema_version,
+                    None => false,
+                };
+                let prev_may_be_missing = full_reprocess
+                    || schema_version_mismatch
+                    || prev_item.states.iter().any(|(_, s)| s.is_deleted());
+                let prev_states = prev_item
+                    .states
+                    .iter()
+                    .filter_map(|(_, s)| s.as_ref())
+                    .map(|s_bytes| Prof::TargetStateTrackingRecord::from_bytes(s_bytes))
+                    .collect::<Result<Vec<_>>>()?;
+                (prev_states, prev_may_be_missing)
+            } else {
+                (vec![], true)
+            };
+
+            let target_state_key_bytes = storekey::encode_vec(&declared_target_state.item_key)
+                .map_err(|e| internal_error!("Failed to encode StableKey: {e}"))?;
+            let recon_output = declared_target_state
+                .provider
+                .handler()
+                .ok_or_else(|| {
+                    internal_error!(
+                        "provider not ready for target state with key {:?}",
+                        declared_target_state.item_key
+                    )
+                })?
+                .reconcile(
+                    declared_target_state.item_key,
+                    Some(declared_target_state.value),
+                    &prev_states,
+                    prev_may_be_missing,
+                )?;
+
+            if let Some(recon_output) = recon_output {
+                let mut provider_generation = prev_item
+                    .as_ref()
+                    .and_then(|item| item.provider_generation.clone());
+
+                if let Some(child_provider) = &declared_target_state.child_provider {
+                    let existing_gen = provider_generation.clone().unwrap_or_default();
+                    let new_gen = match recon_output.child_invalidation {
+                        Some(ChildInvalidation::Destructive) => {
+                            let new_id = id_reservation.next_id(wtxn, db)?;
+                            TargetStateProviderGeneration {
+                                provider_id: new_id,
+                                provider_schema_version: 0,
+                            }
+                        }
+                        Some(ChildInvalidation::Lossy) => TargetStateProviderGeneration {
+                            provider_id: existing_gen.provider_id,
+                            provider_schema_version: existing_gen.provider_schema_version + 1,
+                        },
+                        None => existing_gen,
+                    };
+                    provider_generation = Some(new_gen.clone());
+                    child_provider.set_provider_generation(new_gen)?;
+                }
+
+                actions_by_sinks
+                    .entry(recon_output.sink)
+                    .or_default()
+                    .add_action(recon_output.action, declared_target_state.child_provider);
+
+                let new_state_bytes = recon_output
+                    .tracking_record
+                    .map(|s| s.to_bytes())
+                    .transpose()?;
+
+                if let Some(item) = &mut prev_item {
+                    // Update existing item.
+                    item.provider_generation = provider_generation;
+                    item.states.push((
+                        curr_version,
+                        match new_state_bytes {
+                            Some(s) => {
+                                db_schema::TargetStateInfoItemState::Existing(Cow::Owned(s.into()))
+                            }
+                            None => db_schema::TargetStateInfoItemState::Deleted,
+                        },
+                    ));
+                } else if let Some(new_state) = new_state_bytes {
+                    // Insert new item.
+                    prev_item = Some(db_schema::TargetStateInfoItem {
+                        key: Cow::Owned(target_state_key_bytes.into()),
+                        states: vec![
+                            (0, db_schema::TargetStateInfoItemState::Deleted),
+                            (
+                                curr_version,
+                                db_schema::TargetStateInfoItemState::Existing(Cow::Owned(
+                                    new_state.into(),
+                                )),
+                            ),
+                        ],
+                        provider_schema_version: 0,
+                        provider_generation,
+                    });
+                }
+            } else if let Some(item) = &mut prev_item {
+                // No change — bump version on existing item.
+                for (version, _) in item.states.iter_mut() {
+                    *version = curr_version;
+                }
+            }
+
+            // Collect item for re-insertion after Phase 2.
+            if let Some(item) = prev_item {
+                // Write inverted tracking for entries new to this component — deferred.
+                if is_new_to_component {
+                    deferred_writes.push(encode_owner_upsert(&target_state_path, stable_path)?);
+                }
+                items_to_insert.push((lookup_key, item));
+            }
+        }
+
+        // Phase 2: Delete + Contained — iterate remaining tracked entries not matched above.
+        for (target_state_path_with_pid, item) in tracking_info.target_state_items.iter_mut() {
+            // Skip stale entries — commit() will prune them via version retention.
             let parent_provider_gen = target_states_providers
                 .get(target_state_path_with_pid.target_state_path.provider_path())
                 .and_then(|p| p.provider_generation());
@@ -866,6 +1112,26 @@ fn pre_commit<Prof: EngineProfile>(
                 continue;
             }
 
+            // Contained entries: still referenced by a parent, just bump version.
+            if contained_target_state_paths.contains(&target_state_path_with_pid.target_state_path)
+            {
+                for (version, _) in item.states.iter_mut() {
+                    *version = curr_version;
+                }
+                continue;
+            }
+
+            // Delete: target state is no longer declared.
+            let Some(target_states_provider) = target_states_providers
+                .get(target_state_path_with_pid.target_state_path.provider_path())
+            else {
+                trace!(
+                    "skip deleting target states with path {target_state_path_with_pid} in {} because target states provider not found",
+                    stable_path
+                );
+                continue;
+            };
+            let target_state_key: StableKey = storekey::decode(item.key.as_ref())?;
             let schema_version_mismatch = match parent_provider_gen {
                 Some(pg) => item.provider_schema_version != pg.provider_schema_version,
                 None => false,
@@ -882,75 +1148,19 @@ fn pre_commit<Prof: EngineProfile>(
                 .map(|s_bytes| Prof::TargetStateTrackingRecord::from_bytes(s_bytes))
                 .collect::<Result<Vec<_>>>()?;
 
-            let (target_states_provider, effect_key, declared_decl, child_provider) =
-                match declared_target_states_to_process
-                    .remove(&target_state_path_with_pid.target_state_path)
-                {
-                    Some(declared_effect) => (
-                        Cow::Owned(declared_effect.provider),
-                        declared_effect.item_key,
-                        Some(declared_effect.value),
-                        declared_effect.child_provider,
-                    ),
-                    None => {
-                        if contained_target_state_paths
-                            .contains(&target_state_path_with_pid.target_state_path)
-                        {
-                            for (version, _) in item.states.iter_mut() {
-                                *version = curr_version;
-                            }
-                            continue;
-                        }
-                        let Some(target_states_provider) = target_states_providers
-                            .get(target_state_path_with_pid.target_state_path.provider_path())
-                        else {
-                            // TODO: Verify the parent is gone.
-                            trace!(
-                                "skip deleting target states with path {target_state_path_with_pid} in {} because target states provider not found",
-                                stable_path
-                            );
-                            continue;
-                        };
-                        let effect_key: StableKey = storekey::decode(item.key.as_ref())?;
-                        (
-                            Cow::Borrowed(target_states_provider),
-                            effect_key,
-                            None,
-                            None,
-                        )
-                    }
-                };
             let recon_output = target_states_provider
                 .handler()
                 .ok_or_else(|| {
-                    internal_error!("provider not ready for target state with key {effect_key:?}")
+                    internal_error!(
+                        "provider not ready for target state with key {target_state_key:?}"
+                    )
                 })?
-                .reconcile(effect_key, declared_decl, &prev_states, prev_may_be_missing)?;
+                .reconcile(target_state_key, None, &prev_states, prev_may_be_missing)?;
             if let Some(recon_output) = recon_output {
-                if let Some(child_provider) = &child_provider {
-                    let existing = item.provider_generation.clone().unwrap_or_default();
-                    let new_gen = match recon_output.child_invalidation {
-                        Some(ChildInvalidation::Destructive) => {
-                            let new_id = id_reservation.next_id(wtxn, db)?;
-                            TargetStateProviderGeneration {
-                                provider_id: new_id,
-                                provider_schema_version: 0,
-                            }
-                        }
-                        Some(ChildInvalidation::Lossy) => TargetStateProviderGeneration {
-                            provider_id: existing.provider_id,
-                            provider_schema_version: existing.provider_schema_version + 1,
-                        },
-                        None => existing,
-                    };
-                    item.provider_generation = Some(new_gen.clone());
-                    child_provider.set_provider_generation(new_gen)?;
-                }
-
                 actions_by_sinks
                     .entry(recon_output.sink)
                     .or_default()
-                    .add_action(recon_output.action, child_provider);
+                    .add_action(recon_output.action, None);
                 item.states.push((
                     curr_version,
                     match recon_output
@@ -971,76 +1181,9 @@ fn pre_commit<Prof: EngineProfile>(
             }
         }
 
-        // Deal with new target states
-        for (target_state_path, target_state) in declared_target_states_to_process {
-            let effect_key_bytes = storekey::encode_vec(&target_state.item_key)
-                .map_err(|e| internal_error!("Failed to encode StableKey: {e}"))?;
-            let Some(recon_output) = target_state
-                .provider
-                .handler()
-                .ok_or_else(|| {
-                    internal_error!(
-                        "provider not ready for target state with key {:?}",
-                        target_state.item_key
-                    )
-                })?
-                .reconcile(
-                    target_state.item_key,
-                    Some(target_state.value),
-                    /*&prev_states=*/ &[],
-                    /*prev_may_be_missing=*/ true,
-                )?
-            else {
-                continue;
-            };
-
-            let provider_generation = if let Some(child_provider) = &target_state.child_provider {
-                let new_id = id_reservation.next_id(wtxn, db)?;
-                let pg = TargetStateProviderGeneration {
-                    provider_id: new_id,
-                    provider_schema_version: 0,
-                };
-                child_provider.set_provider_generation(pg.clone())?;
-                Some(pg)
-            } else {
-                None
-            };
-
-            actions_by_sinks
-                .entry(recon_output.sink)
-                .or_default()
-                .add_action(recon_output.action, target_state.child_provider);
-            let Some(new_state) = recon_output
-                .tracking_record
-                .map(|s| s.to_bytes())
-                .transpose()?
-                .map(|s| Cow::Owned(s.into()))
-            else {
-                continue;
-            };
-
-            let parent_provider_id = target_states_providers
-                .get(target_state_path.provider_path())
-                .and_then(|p| p.provider_generation())
-                .map(|g| g.provider_id);
-            let path_with_pid = TargetStatePathWithProviderId {
-                target_state_path,
-                provider_id: parent_provider_id,
-            };
-
-            let item = db_schema::TargetStateInfoItem {
-                key: Cow::Owned(effect_key_bytes.into()),
-                states: vec![
-                    (0, db_schema::TargetStateInfoItemState::Deleted),
-                    (
-                        curr_version,
-                        db_schema::TargetStateInfoItemState::Existing(new_state),
-                    ),
-                ],
-                provider_schema_version: 0,
-                provider_generation,
-            };
-            tracking_info.effect_items.insert(path_with_pid, item);
+        // Insert/re-insert items collected during Phase 1.
+        for (path_with_pid, item) in items_to_insert {
+            tracking_info.target_state_items.insert(path_with_pid, item);
         }
 
         let data_bytes = rmp_serde::to_vec_named(&tracking_info)?;
@@ -1050,6 +1193,11 @@ fn pre_commit<Prof: EngineProfile>(
     } else {
         None
     };
+
+    // Flush deferred writes now that tracking_info is dropped.
+    for (key, value) in &deferred_writes {
+        db.put(wtxn, key.as_slice(), value.as_slice())?;
+    }
 
     id_reservation.commit(wtxn, db)?;
     Ok(Some(PreCommitOutput {
@@ -1075,36 +1223,40 @@ pub(crate) async fn submit<Prof: EngineProfile>(
     let processor_name = processor.map(|p| p.processor_info().name.as_str());
 
     let mut built_target_states_providers: Option<TargetStateProviderRegistry<Prof>> = None;
-    let (target_states_providers, declared_effects, child_path_set, mut finalized_fn_call_memos) =
-        match comp_ctx.processing_state() {
-            ComponentProcessingAction::Build(build_ctx) => {
-                let mut building_state = build_ctx.state.lock().unwrap();
-                let Some(building_state) = building_state.take() else {
-                    internal_bail!(
-                        "Processing for the component at {} is already finished",
-                        comp_ctx.stable_path()
-                    );
-                };
+    let (
+        target_states_providers,
+        declared_target_states,
+        child_path_set,
+        mut finalized_fn_call_memos,
+    ) = match comp_ctx.processing_state() {
+        ComponentProcessingAction::Build(build_ctx) => {
+            let mut building_state = build_ctx.state.lock().unwrap();
+            let Some(building_state) = building_state.take() else {
+                internal_bail!(
+                    "Processing for the component at {} is already finished",
+                    comp_ctx.stable_path()
+                );
+            };
 
-                let child_path_set = building_state.child_path_set;
-                let finalized_fn_call_memos =
-                    finalize_fn_call_memoization(comp_ctx, building_state.fn_call_memos)?;
-                (
-                    &built_target_states_providers
-                        .get_or_insert(building_state.target_states.provider_registry)
-                        .providers,
-                    building_state.target_states.declared_effects,
-                    Some(child_path_set),
-                    finalized_fn_call_memos,
-                )
-            }
-            ComponentProcessingAction::Delete(delete_context) => (
-                &delete_context.providers,
-                Default::default(),
-                None,
-                Default::default(),
-            ),
-        };
+            let child_path_set = building_state.child_path_set;
+            let finalized_fn_call_memos =
+                finalize_fn_call_memoization(comp_ctx, building_state.fn_call_memos)?;
+            (
+                &built_target_states_providers
+                    .get_or_insert(building_state.target_states.provider_registry)
+                    .providers,
+                building_state.target_states.declared_target_states,
+                Some(child_path_set),
+                finalized_fn_call_memos,
+            )
+        }
+        ComponentProcessingAction::Delete(delete_context) => (
+            &delete_context.providers,
+            Default::default(),
+            None,
+            Default::default(),
+        ),
+    };
 
     let db = comp_ctx.app_ctx().db().clone();
     let comp_mode = comp_ctx.mode();
@@ -1143,7 +1295,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                 &memo_del_key,
                 &contained_target_state_paths,
                 &target_states_providers_owned,
-                declared_effects,
+                declared_target_states,
             )
         })
         .await?;
@@ -1183,10 +1335,12 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                     handlers.len(),
                 );
             }
-            for (child_effect_def, child_provider) in std::iter::zip(handlers, child_providers) {
+            for (child_target_state_def, child_provider) in
+                std::iter::zip(handlers, child_providers)
+            {
                 if let Some(child_provider) = child_provider {
-                    if let Some(child_effect_def) = child_effect_def {
-                        child_provider.fulfill_handler(child_effect_def.handler)?;
+                    if let Some(child_target_state_def) = child_target_state_def {
+                        child_provider.fulfill_handler(child_target_state_def.handler)?;
                     } else {
                         client_bail!("expect child provider returned by Sink to be fulfilled");
                     }

@@ -587,8 +587,21 @@ async def _stop_all_environments() -> None:
     default=False,
     help="Reprocess everything and invalidate existing caches.",
 )
+@click.option(
+    "--live",
+    "-L",
+    is_flag=True,
+    show_default=True,
+    default=False,
+    help="Run in live mode (live components continue processing after initial update).",
+)
 def update(
-    app_target: str, force: bool, quiet: bool, reset: bool, full_reprocess: bool
+    app_target: str,
+    force: bool,
+    quiet: bool,
+    reset: bool,
+    full_reprocess: bool,
+    live: bool,
 ) -> None:
     """
     Run a v1 app once (one-time update).
@@ -619,11 +632,30 @@ def update(
                 if app._name in persisted_names:
                     await app.drop(report_to_stdout=not quiet)
 
-            await app.update(report_to_stdout=not quiet, full_reprocess=full_reprocess)
+            handle = app.update(
+                report_to_stdout=not quiet,
+                full_reprocess=full_reprocess,
+                live=live,
+            )
+            await handle.result()
+
+            if live:
+                if not quiet:
+                    print("Live mode active. Press Ctrl+C to stop.")
+                # Block until interrupted — live components continue in background.
+                stop_event = asyncio.Event()
+                try:
+                    await stop_event.wait()
+                except asyncio.CancelledError:
+                    pass
         finally:
             await _stop_all_environments()
 
-    asyncio.run(_do())
+    try:
+        asyncio.run(_do())
+    except KeyboardInterrupt:
+        if not quiet:
+            print("\nStopping...")
 
 
 @cli.command()

@@ -99,6 +99,11 @@ from .target_state import (
     TargetHandler,
     declare_target_state_with_child,
 )
+from .live_component import (
+    LiveComponent,
+    LiveComponentOperator,
+    is_live_component_class,
+)
 
 # ============================================================================
 # Re-exports from internal modules (shared types)
@@ -233,6 +238,12 @@ async def use_mount(
             coco.component_subpath("setup"), declare_table_target, table_name
         )
     """
+    if is_live_component_class(processor_fn):
+        raise TypeError(
+            "LiveComponent classes cannot be used with use_mount(). "
+            "Use mount() instead."
+        )
+
     parent_ctx = get_context_from_ctx()
     child_path = build_child_path(parent_ctx, subpath)
 
@@ -249,6 +260,35 @@ async def use_mount(
     return pyvalue.get(fn_ret_deserializer(processor_fn))
 
 
+async def _mount_live_component(
+    parent_ctx: ComponentContext,
+    child_path: core.StablePath,
+    cls: Any,
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+) -> ComponentMountHandle:
+    """Mount a LiveComponent class."""
+    instance = cls(*args, **kwargs)
+
+    # Create controller via Rust.
+    # mount_live_async returns (LiveComponentController, ComponentMountHandle).
+    controller, readiness_handle = await core.mount_live_async(
+        child_path,
+        parent_ctx._core_processor_ctx,
+        parent_ctx._core_fn_call_ctx,
+        parent_ctx._core_processor_ctx.live,
+    )
+
+    operator = LiveComponentOperator(controller, instance, parent_ctx._env, child_path)
+
+    # Start process_live via Rust (handles cancellation, error handling,
+    # ensure_mark_ready).
+    process_live_coro = instance.process_live(operator)
+    controller.start(process_live_coro)
+
+    return ComponentMountHandle([readiness_handle])
+
+
 async def mount(
     subpath: ComponentSubpath,
     processor_fn: AnyCallable[P, Any],
@@ -261,8 +301,9 @@ async def mount(
     Args:
         subpath: The component subpath (from component_subpath()).
         processor_fn: The function to run as the processing unit processor.
-        *args: Arguments to pass to the function.
-        **kwargs: Keyword arguments to pass to the function.
+            Can also be a LiveComponent class.
+        *args: Arguments to pass to the function (or LiveComponent constructor).
+        **kwargs: Keyword arguments to pass to the function (or LiveComponent constructor).
 
     Returns:
         A handle that can be used to wait until the processing unit is ready.
@@ -274,6 +315,11 @@ async def mount(
     """
     parent_ctx = get_context_from_ctx()
     child_path = build_child_path(parent_ctx, subpath)
+
+    if is_live_component_class(processor_fn):
+        return await _mount_live_component(
+            parent_ctx, child_path, processor_fn, args, kwargs
+        )
 
     processor = create_core_component_processor(
         processor_fn, parent_ctx._env, child_path, args, kwargs
@@ -329,6 +375,12 @@ async def mount_each(
         # for key, item in files.items():
         #     coco.mount(coco.component_subpath(key), process_file, item, target_table)
     """
+    if is_live_component_class(fn):
+        raise TypeError(
+            "LiveComponent classes cannot be used with mount_each(). "
+            "Use mount() instead."
+        )
+
     parent_ctx = get_context_from_ctx()
     core_handles: list[core.ComponentMountHandle] = []
 
@@ -571,6 +623,9 @@ __all__ = [
     "NonExistenceType",
     "is_non_existence",
     "MemoStateOutcome",
+    # .live_component
+    "LiveComponent",
+    "LiveComponentOperator",
     # Mount APIs
     "ComponentMountHandle",
     "mount",

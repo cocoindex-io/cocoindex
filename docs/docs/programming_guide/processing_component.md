@@ -67,6 +67,8 @@ await handle.ready()
 
 You usually only need to call `ready()` when you have logic that depends on the processing component's target states being applied — for example, querying the latest data from a target table after syncing it.
 
+`mount()` also accepts **LiveComponent classes** — components that process continuously and react to changes incrementally instead of rescanning everything. See [Live Components](../advanced_topics/live_component.md) for details.
+
 ### `use_mount()`
 
 Use `use_mount()` when you need the processing component's return value. It mounts the component, waits until it's ready, and returns the value directly:
