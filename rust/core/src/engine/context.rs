@@ -26,6 +26,7 @@ struct AppContextInner<Prof: EngineProfile> {
     app_reg: AppRegistration<Prof>,
     id_sequencer_manager: IdSequencerManager,
     inflight_semaphore: Option<Arc<tokio::sync::Semaphore>>,
+    cancellation_token: tokio_util::sync::CancellationToken,
 }
 
 #[derive(Clone)]
@@ -49,6 +50,7 @@ impl<Prof: EngineProfile> AppContext<Prof> {
                 app_reg,
                 id_sequencer_manager: IdSequencerManager::new(),
                 inflight_semaphore,
+                cancellation_token: tokio_util::sync::CancellationToken::new(),
             }),
         }
     }
@@ -67,6 +69,10 @@ impl<Prof: EngineProfile> AppContext<Prof> {
 
     pub fn inflight_semaphore(&self) -> Option<&Arc<tokio::sync::Semaphore>> {
         self.inner.inflight_semaphore.as_ref()
+    }
+
+    pub fn cancellation_token(&self) -> &tokio_util::sync::CancellationToken {
+        &self.inner.cancellation_token
     }
 
     /// Get the next ID for the given key.
@@ -125,6 +131,7 @@ pub(crate) struct ComponentBuildingState<Prof: EngineProfile> {
 pub(crate) struct ComponentBuildContext<Prof: EngineProfile> {
     pub state: Mutex<Option<ComponentBuildingState<Prof>>>,
     pub full_reprocess: bool,
+    pub live: bool,
 }
 
 pub(crate) struct ComponentDeleteContext<Prof: EngineProfile> {
@@ -171,6 +178,7 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         processing_stats: ProcessingStats,
         mode: ComponentProcessingMode,
         full_reprocess: bool,
+        live: bool,
         host_ctx: Arc<Prof::HostCtx>,
     ) -> Self {
         let processing_state = if mode == ComponentProcessingMode::Build {
@@ -184,6 +192,7 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
                     fn_call_memos: Default::default(),
                 })),
                 full_reprocess,
+                live,
             })
         } else {
             ComponentProcessingAction::Delete(ComponentDeleteContext { providers })
@@ -222,6 +231,9 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         self.inner.parent_context.as_ref()
     }
 
+    /// Access the building state under a single lock acquisition.
+    /// Callers should access all needed fields within `f` rather than wrapping
+    /// this in convenience methods — the caller decides the lock granularity.
     pub(crate) fn update_building_state<T>(
         &self,
         f: impl FnOnce(&mut ComponentBuildingState<Prof>) -> Result<T>,
@@ -250,7 +262,7 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         &self.inner.processing_action
     }
 
-    pub(crate) fn components_readiness(&self) -> &ComponentBgChildReadiness {
+    pub fn components_readiness(&self) -> &ComponentBgChildReadiness {
         &self.inner.components_readiness
     }
 
@@ -302,6 +314,13 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
     pub fn full_reprocess(&self) -> bool {
         match &self.inner.processing_action {
             ComponentProcessingAction::Build(build_ctx) => build_ctx.full_reprocess,
+            ComponentProcessingAction::Delete { .. } => false,
+        }
+    }
+
+    pub fn live(&self) -> bool {
+        match &self.inner.processing_action {
+            ComponentProcessingAction::Build(build_ctx) => build_ctx.live,
             ComponentProcessingAction::Delete { .. } => false,
         }
     }

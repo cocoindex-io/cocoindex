@@ -17,6 +17,8 @@ pub struct AppUpdateOptions {
     pub report_to_stdout: bool,
     /// If true, reprocess everything and invalidate existing caches.
     pub full_reprocess: bool,
+    /// If true, enable live component mode for this update.
+    pub live: bool,
 }
 
 /// Options for dropping an app.
@@ -108,6 +110,7 @@ impl<Prof: EngineProfile> App<Prof> {
             None,
             processing_stats.clone(),
             options.full_reprocess,
+            options.live,
             host_ctx,
         )?;
 
@@ -154,6 +157,8 @@ impl<Prof: EngineProfile> App<Prof> {
         options: AppDropOptions,
         host_ctx: Arc<Prof::HostCtx>,
     ) -> Result<()> {
+        self.app_ctx().cancellation_token().cancel();
+
         let processing_stats = ProcessingStats::default();
         let providers = self
             .app_ctx()
@@ -173,7 +178,7 @@ impl<Prof: EngineProfile> App<Prof> {
 
         let drop_fut = async {
             // Delete the root component
-            let handle = self.root_component.clone().delete(context.clone())?;
+            let handle = self.root_component.clone().delete(context.clone(), None)?;
 
             // Wait for the drop operation to complete
             handle.ready().await?;

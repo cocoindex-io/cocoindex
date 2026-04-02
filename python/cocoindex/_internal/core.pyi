@@ -85,6 +85,8 @@ class ComponentProcessorContext:
     def environment(self) -> "Environment": ...
     @property
     def stable_path(self) -> StablePath: ...
+    @property
+    def live(self) -> bool: ...
     def join_fn_call(self, child_fn_ctx: FnCallContext) -> None: ...
     async def next_id(self, key: StableKey | None = None) -> int: ...
 
@@ -169,19 +171,44 @@ class App:
     def update(
         self,
         root_processor: ComponentProcessor[T_co],
-        report_to_stdout: bool,
-        full_reprocess: bool,
-        host_ctx: Any,
+        report_to_stdout: bool = False,
+        full_reprocess: bool = False,
+        live: bool = False,
+        host_ctx: Any = None,
     ) -> StoredValue: ...
     def update_async(
         self,
         root_processor: ComponentProcessor[T_co],
-        report_to_stdout: bool,
-        full_reprocess: bool,
-        host_ctx: Any,
+        report_to_stdout: bool = False,
+        full_reprocess: bool = False,
+        live: bool = False,
+        host_ctx: Any = None,
     ) -> UpdateHandle: ...
     def drop(self, report_to_stdout: bool, host_ctx: Any) -> None: ...
     def drop_async(self, report_to_stdout: bool, host_ctx: Any) -> Coroutine[Any, Any, None]: ...
+
+# --- LiveComponentController ---
+class LiveComponentController:
+    def update_full_async(
+        self, processor: ComponentProcessor[Any]
+    ) -> Coroutine[Any, Any, None]: ...
+    def update_async(
+        self, stable_path: StablePath, processor: ComponentProcessor[Any]
+    ) -> Coroutine[Any, Any, ComponentMountHandle]: ...
+    def delete_async(
+        self, stable_path: StablePath
+    ) -> Coroutine[Any, Any, ComponentMountHandle]: ...
+    def mark_ready_async(self) -> Coroutine[Any, Any, None]: ...
+    def start(self, process_live_fut: Any) -> None: ...
+    @property
+    def is_live(self) -> bool: ...
+
+def mount_live_async(
+    stable_path: StablePath,
+    comp_ctx: ComponentProcessorContext,
+    fn_ctx: FnCallContext,
+    live: bool,
+) -> Coroutine[Any, Any, tuple[LiveComponentController, ComponentMountHandle]]: ...
 
 # --- TargetActionSink ---
 class TargetActionSink:

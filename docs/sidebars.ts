@@ -61,6 +61,7 @@ const sidebars: SidebarsConfig = {
       label: 'Advanced Topics',
       collapsed: false,
       items: [
+        'advanced_topics/live_component',
         'advanced_topics/exception_handlers',
         'advanced_topics/internal_storage',
         'advanced_topics/memoization_keys',

@@ -1,7 +1,8 @@
 use crate::engine::runtime::get_runtime;
 use crate::prelude::*;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::pin::Pin;
+use std::sync::atomic::AtomicU64;
 
 use crate::engine::context::FnCallContext;
 use crate::engine::context::{AppContext, ComponentProcessingMode, ComponentProcessorContext};
@@ -74,11 +75,18 @@ struct ComponentInner<Prof: EngineProfile> {
     app_ctx: AppContext<Prof>,
     stable_path: StablePath,
 
-    // For check existence / dedup
-    //   live_sub_components: HashMap<StablePath, std::rc::Weak<ComponentInner<Prof>>>,
     /// Semaphore to ensure `process()` and `commit_effects()` calls cannot happen in parallel.
     build_semaphore: tokio::sync::Semaphore,
     last_memo_fp: Mutex<Option<Fingerprint>>,
+
+    /// Latest invocation sequence number for "latest wins" ordering.
+    latest_seq: AtomicU64,
+
+    /// Active child components, keyed by their full StablePath.
+    active_children: Mutex<HashMap<StablePath, Component<Prof>>>,
+
+    /// Shared state for a live component running at this path.
+    live_state: Mutex<Option<Arc<crate::engine::live_component::LiveComponentState>>>,
 }
 
 #[derive(Clone)]
@@ -121,7 +129,7 @@ impl ComponentBgChildReadinessState {
 }
 
 #[derive(Debug, Default, Clone)]
-struct ComponentRunOutcome {
+pub(crate) struct ComponentRunOutcome {
     has_exception: bool,
     logic_deps: HashSet<Fingerprint>,
 }
@@ -146,11 +154,11 @@ struct ComponentBgChildReadinessInner {
 }
 
 #[derive(Clone)]
-pub(crate) struct ComponentBgChildReadiness {
+pub struct ComponentBgChildReadiness {
     inner: Arc<ComponentBgChildReadinessInner>,
 }
 
-struct ComponentBgChildReadinessChildGuard {
+pub struct ComponentBgChildReadinessChildGuard {
     readiness: ComponentBgChildReadiness,
     resolved: bool,
 }
@@ -172,7 +180,7 @@ impl Drop for ComponentBgChildReadinessChildGuard {
 }
 
 impl ComponentBgChildReadinessChildGuard {
-    fn resolve(mut self, outcome: ComponentRunOutcome) {
+    pub(crate) fn resolve(mut self, outcome: ComponentRunOutcome) {
         {
             let mut state = self.readiness.state().lock().unwrap();
             state.remaining_count -= 1;
@@ -207,7 +215,7 @@ impl ComponentBgChildReadiness {
         &self.inner.readiness
     }
 
-    fn add_child(self) -> ComponentBgChildReadinessChildGuard {
+    pub fn add_child(self) -> ComponentBgChildReadinessChildGuard {
         self.state().lock().unwrap().remaining_count += 1;
         ComponentBgChildReadinessChildGuard {
             readiness: self,
@@ -263,12 +271,16 @@ impl<Prof: EngineProfile> ComponentMountRunHandle<Prof> {
 }
 
 pub struct ComponentExecutionHandle {
-    join_handle: tokio::task::JoinHandle<SharedResult<()>>,
+    fut: Pin<Box<dyn Future<Output = SharedResult<()>> + Send + Sync>>,
 }
 
 impl ComponentExecutionHandle {
+    pub fn new(fut: impl Future<Output = SharedResult<()>> + Send + Sync + 'static) -> Self {
+        Self { fut: Box::pin(fut) }
+    }
+
     pub async fn ready(self) -> Result<()> {
-        self.join_handle.await?.into_result()
+        self.fut.await.into_result()
     }
 }
 
@@ -285,6 +297,9 @@ impl<Prof: EngineProfile> Component<Prof> {
                 stable_path,
                 build_semaphore: tokio::sync::Semaphore::const_new(1),
                 last_memo_fp: Mutex::new(None),
+                latest_seq: AtomicU64::new(0),
+                active_children: Mutex::new(HashMap::new()),
+                live_state: Mutex::new(None),
             }),
         }
     }
@@ -295,8 +310,11 @@ impl<Prof: EngineProfile> Component<Prof> {
     }
 
     pub fn get_child(&self, stable_path: StablePath) -> Self {
-        // TODO: Get the child component directly if it already exists.
-        Self::new(self.app_ctx().clone(), stable_path)
+        let mut children = self.inner.active_children.lock().unwrap();
+        children
+            .entry(stable_path.clone())
+            .or_insert_with(|| Self::new(self.app_ctx().clone(), stable_path))
+            .clone()
     }
 
     pub fn app_ctx(&self) -> &AppContext<Prof> {
@@ -305,6 +323,23 @@ impl<Prof: EngineProfile> Component<Prof> {
 
     pub fn stable_path(&self) -> &StablePath {
         &self.inner.stable_path
+    }
+
+    pub fn set_live_state(&self, state: Arc<crate::engine::live_component::LiveComponentState>) {
+        *self.inner.live_state.lock().unwrap() = Some(state);
+    }
+
+    pub fn live_state(&self) -> Option<Arc<crate::engine::live_component::LiveComponentState>> {
+        self.inner.live_state.lock().unwrap().clone()
+    }
+
+    pub fn latest_seq(&self) -> &AtomicU64 {
+        &self.inner.latest_seq
+    }
+
+    /// Remove a child from active_children. Called after a delete task completes.
+    pub fn remove_active_child(&self, path: &StablePath) {
+        self.inner.active_children.lock().unwrap().remove(path);
     }
 
     pub(crate) fn relative_path(
@@ -379,6 +414,7 @@ impl<Prof: EngineProfile> Component<Prof> {
                     + 'static,
             >,
         >,
+        pre_execute_check: Option<Box<dyn FnOnce() -> bool + Send>>,
     ) -> Result<ComponentExecutionHandle> {
         // TODO: Skip building and reuse cached result if the component is already built and up to date.
 
@@ -401,6 +437,20 @@ impl<Prof: EngineProfile> Component<Prof> {
             .parent_context()
             .map(|c| c.components_readiness().clone().add_child());
         let join_handle = get_runtime().spawn(async move {
+            // Check if this task has been superseded before executing.
+            if let Some(check) = pre_execute_check {
+                if !check() {
+                    // Superseded — skip execution, resolve as success.
+                    context.release_inflight_permit();
+                    drop(processor);
+                    drop(context);
+                    drop(self);
+                    if let Some(guard) = child_readiness_guard {
+                        guard.resolve(ComponentRunOutcome::default());
+                    }
+                    return Ok(());
+                }
+            }
             let result = self.execute_once(&context, Some(&processor)).await;
             // For background child component, never propagate the error back to the parent.
             // If an error handler is registered, run it; otherwise log.
@@ -424,37 +474,57 @@ impl<Prof: EngineProfile> Component<Prof> {
             }
             Ok(())
         });
-        Ok(ComponentExecutionHandle { join_handle })
+        Ok(ComponentExecutionHandle::new(async move {
+            join_handle
+                .await
+                .map_err(|e| SharedError::new(internal_error!("task panicked: {e}")))?
+        }))
     }
 
     pub fn delete(
         self,
         context: ComponentProcessorContext<Prof>,
+        pre_execute_check: Option<Box<dyn FnOnce() -> bool + Send>>,
     ) -> Result<ComponentExecutionHandle> {
         let child_readiness_guard = context
             .parent_context()
             .map(|c| c.components_readiness().clone().add_child());
-        let join_handle = get_runtime().spawn(async move {
-            trace!("deleting component at {}", self.stable_path());
-            let result = self.execute_once(&context, None).await;
-            let outcome = match &result {
-                Ok((outcome, _)) => outcome.clone(),
-                Err(err) => {
-                    error!("component delete failed:\n{err}");
-                    ComponentRunOutcome::exception()
+        let join_handle: tokio::task::JoinHandle<SharedResult<()>> =
+            get_runtime().spawn(async move {
+                if let Some(check) = pre_execute_check {
+                    if !check() {
+                        drop(context);
+                        drop(self);
+                        if let Some(guard) = child_readiness_guard {
+                            guard.resolve(ComponentRunOutcome::default());
+                        }
+                        return Ok(());
+                    }
                 }
-            };
-            let task_result = result.map(|_| ()).map_err(Into::into);
-            // Drop profile-specific objects BEFORE resolving child readiness.
-            // See run_in_background for the rationale (PyGILState finalization fix).
-            drop(context);
-            drop(self);
-            if let Some(guard) = child_readiness_guard {
-                guard.resolve(outcome);
-            }
-            task_result
-        });
-        Ok(ComponentExecutionHandle { join_handle })
+                trace!("deleting component at {}", self.stable_path());
+                let result = self.execute_once(&context, None).await;
+                let outcome = match &result {
+                    Ok((outcome, _)) => outcome.clone(),
+                    Err(err) => {
+                        error!("component delete failed:\n{err}");
+                        ComponentRunOutcome::exception()
+                    }
+                };
+                let task_result = result.map(|_| ()).map_err(SharedError::from);
+                // Drop profile-specific objects BEFORE resolving child readiness.
+                // See run_in_background for the rationale (PyGILState finalization fix).
+                drop(context);
+                drop(self);
+                if let Some(guard) = child_readiness_guard {
+                    guard.resolve(outcome);
+                }
+                task_result
+            });
+        Ok(ComponentExecutionHandle::new(async move {
+            join_handle
+                .await
+                .map_err(|e| SharedError::new(internal_error!("task panicked: {e}")))?
+        }))
     }
 
     async fn execute_once(
@@ -695,6 +765,7 @@ impl<Prof: EngineProfile> Component<Prof> {
         parent_ctx: Option<&ComponentProcessorContext<Prof>>,
         processing_stats: ProcessingStats,
         full_reprocess: bool,
+        live: bool,
         host_ctx: Arc<Prof::HostCtx>,
     ) -> Result<ComponentProcessorContext<Prof>> {
         let providers = if let Some(parent_ctx) = parent_ctx {
@@ -728,6 +799,7 @@ impl<Prof: EngineProfile> Component<Prof> {
             processing_stats,
             ComponentProcessingMode::Build,
             full_reprocess,
+            live,
             host_ctx,
         ))
     }
@@ -747,6 +819,7 @@ impl<Prof: EngineProfile> Component<Prof> {
             processing_stats,
             ComponentProcessingMode::Delete,
             full_reprocess,
+            false,
             host_ctx,
         )
     }

@@ -705,7 +705,7 @@ impl<Prof: EngineProfile> Committer<Prof> {
                 self.component_ctx.processing_stats().clone(),
                 self.component_ctx.host_ctx().clone(),
             );
-            let _ = component.delete(delete_ctx)?;
+            let _ = component.delete(delete_ctx, None)?;
         }
         Ok(())
     }

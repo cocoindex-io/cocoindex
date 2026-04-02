@@ -6,6 +6,7 @@ mod environment;
 mod fingerprint;
 mod function;
 mod inspect;
+pub mod live_component;
 mod logic_registry;
 mod memo_key;
 mod ops;
@@ -41,6 +42,9 @@ fn core_module(m: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()>
 
     m.add_class::<context::PyComponentProcessorContext>()?;
     m.add_class::<context::PyFnCallContext>()?;
+
+    m.add_class::<live_component::PyLiveComponentController>()?;
+    m.add_function(wrap_pyfunction!(live_component::mount_live_async, m)?)?;
 
     m.add_class::<target_state::PyTargetActionSink>()?;
     m.add_class::<target_state::PyTargetHandler>()?;
