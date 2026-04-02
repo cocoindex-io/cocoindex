@@ -27,7 +27,7 @@ async def _app_main() -> None:
 
 
 def test_ownership_transfer_basic() -> None:
-    """Target state moves from C1 to C2 with update semantics."""
+    """Target state moves from C1 to C2 — final data is correct."""
     GlobalDictTarget.store.clear()
     _source_data.clear()
 
@@ -39,24 +39,18 @@ def test_ownership_transfer_basic() -> None:
     # Run 1: C1 owns "x"
     _source_data["C1"] = {"x": 1}
     app.update_blocking()
-    assert GlobalDictTarget.store.data == {
-        "x": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
-    }
-    assert GlobalDictTarget.store.metrics.collect() == {"sink": 1, "upsert": 1}
+    assert GlobalDictTarget.store.data["x"].data == 1
+    GlobalDictTarget.store.metrics.collect()
 
     # Run 2: Ownership transfers from C1 to C2
     _source_data.clear()
     _source_data["C2"] = {"x": 2}
     app.update_blocking()
-    assert GlobalDictTarget.store.data == {
-        "x": DictDataWithPrev(data=2, prev=[1], prev_may_be_missing=False),
-    }
-    # Should be 1 upsert (update), NOT a delete + insert
-    assert GlobalDictTarget.store.metrics.collect() == {"sink": 1, "upsert": 1}
+    assert GlobalDictTarget.store.data["x"].data == 2
 
 
 def test_ownership_transfer_same_value() -> None:
-    """Transfer with same value triggers no-change detection."""
+    """Transfer with same value — final data is correct."""
     GlobalDictTarget.store.clear()
     _source_data.clear()
 
@@ -68,20 +62,15 @@ def test_ownership_transfer_same_value() -> None:
     # Run 1: C1 owns "x" with value 1
     _source_data["C1"] = {"x": 1}
     app.update_blocking()
-    assert GlobalDictTarget.store.data == {
-        "x": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
-    }
+    assert GlobalDictTarget.store.data["x"].data == 1
     GlobalDictTarget.store.metrics.collect()
 
     # Run 2: C2 takes over with same value
     _source_data.clear()
     _source_data["C2"] = {"x": 1}
     app.update_blocking()
-    # No-change: prev == desired and prev_may_be_missing=False → reconcile returns None
-    assert GlobalDictTarget.store.data == {
-        "x": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
-    }
-    assert GlobalDictTarget.store.metrics.collect() == {}
+    # Final state must still be 1, regardless of whether preempt or delete+insert happened.
+    assert GlobalDictTarget.store.data["x"].data == 1
 
 
 def test_ownership_transfer_then_delete() -> None:
@@ -194,6 +183,59 @@ def test_ownership_transfer_chain() -> None:
     _source_data["C3"] = {"x": 3}
     app.update_blocking()
     assert GlobalDictTarget.store.data["x"].data == 3
+
+
+@coco.fn
+async def _app_main_await_ready() -> None:
+    """Like _app_main but awaits ready() on all children, guaranteeing
+    children submit before the root (so preempt always happens before GC delete)."""
+    handles = []
+    for name in sorted(_source_data):
+        h = await coco.mount(coco.component_subpath(name), _process_component, name)
+        handles.append(h)
+    for h in handles:
+        await h.ready()
+
+
+def test_ownership_transfer_preempt_strict() -> None:
+    """When children are awaited before root returns, preempt is guaranteed.
+    This validates update semantics: single upsert, correct prev, no delete+insert."""
+    GlobalDictTarget.store.clear()
+    _source_data.clear()
+
+    app = coco.App(
+        coco.AppConfig(
+            name="test_ownership_transfer_preempt_strict", environment=coco_env
+        ),
+        _app_main_await_ready,
+    )
+
+    # Run 1: C1 owns "x"
+    _source_data["C1"] = {"x": 1}
+    app.update_blocking()
+    assert GlobalDictTarget.store.data == {
+        "x": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
+    }
+    assert GlobalDictTarget.store.metrics.collect() == {"sink": 1, "upsert": 1}
+
+    # Run 2: Ownership transfers from C1 to C2
+    _source_data.clear()
+    _source_data["C2"] = {"x": 2}
+    app.update_blocking()
+    assert GlobalDictTarget.store.data == {
+        "x": DictDataWithPrev(data=2, prev=[1], prev_may_be_missing=False),
+    }
+    # Should be 1 upsert (update), NOT a delete + insert
+    assert GlobalDictTarget.store.metrics.collect() == {"sink": 1, "upsert": 1}
+
+    # Run 3: Same value transfer — no action needed
+    _source_data.clear()
+    _source_data["C3"] = {"x": 2}
+    app.update_blocking()
+    assert GlobalDictTarget.store.data == {
+        "x": DictDataWithPrev(data=2, prev=[1], prev_may_be_missing=False),
+    }
+    assert GlobalDictTarget.store.metrics.collect() == {}
 
 
 def test_component_delete_cleans_inverted_tracking() -> None:
