@@ -17,7 +17,6 @@ from typing import (
 )
 
 from . import core, environment
-from .serde import fn_ret_deserializer
 from .app import App, AppConfig, UpdateHandle
 from .update_stats import ComponentStats, UpdateSnapshot, UpdateStats, UpdateStatus
 from .pending_marker import ResolvesTo
@@ -91,6 +90,7 @@ from .function import (
     LogicTracking,
     create_core_component_processor,
     fn,
+    fn_ret_deserializer,
 )
 from .stable_path import Symbol
 from .target_state import (

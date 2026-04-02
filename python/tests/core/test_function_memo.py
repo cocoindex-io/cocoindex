@@ -792,3 +792,53 @@ def test_memo_with_runner_async() -> None:
     # No changes - everything should be memoized
     app.update_blocking()
     assert _metrics.collect() == {}
+
+
+# ============================================================================
+# Bound method memo tests — verifies that @coco.fn(memo=True) on a class method
+# is respected when the bound method is called directly (function-level memo).
+# ============================================================================
+
+
+class _MemoMethodTransformer:
+    @coco.fn(memo=True)
+    def transform(self, entry: SourceDataEntry) -> str:
+        _metrics.increment("call.bound_transform")
+        return f"bound: {entry.content}"
+
+
+_memo_transformer = _MemoMethodTransformer()
+
+
+@coco.fn
+def _process_with_bound_method() -> None:
+    for key, value in _plain_source_data.items():
+        transformed_value = _memo_transformer.transform(value)
+        coco.declare_target_state(GlobalDictTarget.target_state(key, transformed_value))
+
+
+def test_memo_bound_method() -> None:
+    """@coco.fn(memo=True) on a bound method should memoize when called directly."""
+    GlobalDictTarget.store.clear()
+    _plain_source_data.clear()
+    _metrics.clear()
+
+    app = coco.App(
+        coco.AppConfig(name="test_memo_bound_method", environment=coco_env),
+        _process_with_bound_method,
+    )
+
+    _plain_source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA1")
+    _plain_source_data["B"] = SourceDataEntry(name="B", version=1, content="contentB1")
+    app.update_blocking()
+    assert _metrics.collect() == {"call.bound_transform": 2}
+
+    # A unchanged (version=1), B changed (version=2) — A should be memoized.
+    _plain_source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA2")
+    _plain_source_data["B"] = SourceDataEntry(name="B", version=2, content="contentB2")
+    app.update_blocking()
+    assert _metrics.collect() == {"call.bound_transform": 1}  # Only B re-executes
+
+    # No changes - everything should be memoized.
+    app.update_blocking()
+    assert _metrics.collect() == {}
