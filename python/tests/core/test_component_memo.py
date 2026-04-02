@@ -392,3 +392,110 @@ def test_memo_invalidation_on_decorator_change() -> None:
     # Cleanup fake module from sys.modules.
     if fake_module_name in sys.modules:
         del sys.modules[fake_module_name]
+
+
+# ============================================================================
+# Bound method memo tests — verifies that @coco.fn(memo=True) on a class method
+# is respected when the bound method is passed to mount() / use_mount().
+# ============================================================================
+
+
+class _MemoMethodComponent:
+    @coco.fn(memo=True)
+    def declare_entry(self, entry: SourceDataEntry) -> None:
+        _metrics.increment("calls")
+        coco.declare_target_state(
+            GlobalDictTarget.target_state(entry.name, entry.content)
+        )
+
+
+_memo_method_obj = _MemoMethodComponent()
+
+
+@coco.fn
+async def _mount_bound_method() -> None:
+    for entry in _source_data.values():
+        await coco.mount(
+            coco.component_subpath(entry.name), _memo_method_obj.declare_entry, entry
+        )
+
+
+def test_bound_method_memo_with_mount() -> None:
+    """@coco.fn(memo=True) on a bound method should be respected in mount()."""
+    GlobalDictTarget.store.clear()
+    _source_data.clear()
+    _metrics.clear()
+
+    app = coco.App(
+        coco.AppConfig(name="test_bound_method_memo_mount", environment=coco_env),
+        _mount_bound_method,
+    )
+
+    _source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA1")
+    _source_data["B"] = SourceDataEntry(name="B", version=1, content="contentB1")
+    app.update_blocking()
+    assert _metrics.collect() == {"calls": 2}
+
+    # A unchanged (version=1), B changed (version=2) — A should be memoized.
+    _source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA2")
+    _source_data["B"] = SourceDataEntry(name="B", version=2, content="contentB2")
+    app.update_blocking()
+    assert _metrics.collect() == {"calls": 1}  # Only B re-executes
+
+
+class _MemoMethodReturnComponent:
+    @coco.fn(memo=True)
+    def declare_transform_entry(self, entry: SourceDataEntry) -> SourceDataResult:
+        _metrics.increment("calls")
+        coco.declare_target_state(
+            GlobalDictTarget.target_state(entry.name, entry.content)
+        )
+        return SourceDataResult(name=entry.name, content=entry.content)
+
+
+_memo_method_return_obj = _MemoMethodReturnComponent()
+
+
+@coco.fn
+async def _use_mount_bound_method() -> list[SourceDataResult]:
+    results: list[SourceDataResult] = []
+    for name in sorted(_source_data):
+        entry = _source_data[name]
+        result = await coco.use_mount(
+            coco.component_subpath(entry.name),
+            _memo_method_return_obj.declare_transform_entry,
+            entry,
+        )
+        results.append(result)
+    return results
+
+
+def test_bound_method_memo_with_use_mount() -> None:
+    """@coco.fn(memo=True) on a bound method should be respected in use_mount()."""
+    GlobalDictTarget.store.clear()
+    _source_data.clear()
+    _metrics.clear()
+
+    app = coco.App(
+        coco.AppConfig(name="test_bound_method_memo_use_mount", environment=coco_env),
+        _use_mount_bound_method,
+    )
+
+    _source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA1")
+    _source_data["B"] = SourceDataEntry(name="B", version=1, content="contentB1")
+    ret1 = app.update_blocking()
+    assert _metrics.collect() == {"calls": 2}
+    assert ret1 == [
+        SourceDataResult(name="A", content="contentA1"),
+        SourceDataResult(name="B", content="contentB1"),
+    ]
+
+    # A unchanged, B changed — A should return cached result.
+    _source_data["A"] = SourceDataEntry(name="A", version=1, content="contentA2")
+    _source_data["B"] = SourceDataEntry(name="B", version=2, content="contentB2")
+    ret2 = app.update_blocking()
+    assert _metrics.collect() == {"calls": 1}  # Only B re-executes
+    assert ret2 == [
+        SourceDataResult(name="A", content="contentA1"),  # Cached
+        SourceDataResult(name="B", content="contentB2"),
+    ]

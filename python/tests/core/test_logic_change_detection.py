@@ -33,6 +33,8 @@ _NONE_V2_PATH = str(_TEST_DIR / "mod_logic_none_v2.py")
 _CHAIN_V1_PATH = str(_TEST_DIR / "mod_logic_chain_v1.py")
 _CHAIN_V2_PATH = str(_TEST_DIR / "mod_logic_chain_v2.py")
 _CHAIN_V3_PATH = str(_TEST_DIR / "mod_logic_chain_v3.py")
+_METHOD_V1_PATH = str(_TEST_DIR / "mod_logic_method_v1.py")
+_METHOD_V2_PATH = str(_TEST_DIR / "mod_logic_method_v2.py")
 _FAKE_MODULE = "tests.core._dynamic_logic_change_module"
 
 
@@ -43,6 +45,13 @@ def _unload_module_functions(mod: ModuleType) -> None:
         fp = getattr(obj, "_logic_fp", None)
         if fp is not None:
             core.unregister_logic_fingerprint(fp)
+        # Also scan class attributes for @coco.fn decorated methods.
+        if isinstance(obj, type):
+            for cls_attr_name in dir(obj):
+                cls_obj = getattr(obj, cls_attr_name, None)
+                cls_fp = getattr(cls_obj, "_logic_fp", None)
+                if cls_fp is not None:
+                    core.unregister_logic_fingerprint(cls_fp)
 
 
 def _load_module(
@@ -706,3 +715,94 @@ def test_transitive_full_self_plain_baz_changes() -> None:
     assert metrics.collect() == {}
     # Still has v1 output since foo memo was reused
     assert GlobalDictTarget.store.data["A"].data == "baz_v1: value1"
+
+
+# ============================================================================
+# Bound method — fn memo invalidated on logic change
+# ============================================================================
+
+
+def test_bound_method_fn_memo_invalidated_on_logic_change() -> None:
+    """A @coco.fn(memo=True) bound method's cached result is invalidated when code changes."""
+    GlobalDictTarget.store.clear()
+    metrics = Metrics()
+    current_module: list[Any] = []
+
+    @coco.fn
+    def app_main() -> None:
+        mod = current_module[0]
+        result = mod.processor.transform_memo("A", "value1")
+        coco.declare_target_state(GlobalDictTarget.target_state("A", result))
+
+    app = coco.App(
+        coco.AppConfig(
+            name="test_bound_method_fn_memo_logic_change", environment=coco_env
+        ),
+        app_main,
+    )
+
+    # v1: first run — method executes
+    mod = _load_module(_METHOD_V1_PATH, metrics, current_module)
+    app.update_blocking()
+    assert metrics.collect() == {"transform_memo": 1}
+    assert GlobalDictTarget.store.data["A"].data == "v1: value1"
+
+    # v1: second run — memo hit
+    app.update_blocking()
+    assert metrics.collect() == {}
+
+    # v2: logic changed — memo invalidated, method re-executes
+    mod = _load_module(_METHOD_V2_PATH, metrics, current_module, old_module=mod)
+    app.update_blocking()
+    assert metrics.collect() == {"transform_memo": 1}
+    assert GlobalDictTarget.store.data["A"].data == "v2: value1"
+
+    # v2: second run — memo hit again
+    app.update_blocking()
+    assert metrics.collect() == {}
+
+
+# ============================================================================
+# Bound method — component memo invalidated on logic change
+# ============================================================================
+
+
+def test_bound_method_component_memo_invalidated_on_logic_change() -> None:
+    """A @coco.fn(memo=True) bound method's component memo is invalidated when code changes."""
+    GlobalDictTarget.store.clear()
+    metrics = Metrics()
+    current_module: list[Any] = []
+
+    @coco.fn
+    async def app_main() -> None:
+        mod = current_module[0]
+        await coco.mount(
+            coco.component_subpath("A"), mod.processor.declare_entry_memo, "A", "value1"
+        )
+
+    app = coco.App(
+        coco.AppConfig(
+            name="test_bound_method_component_memo_logic_change", environment=coco_env
+        ),
+        app_main,
+    )
+
+    # v1: first run — component executes
+    mod = _load_module(_METHOD_V1_PATH, metrics, current_module)
+    app.update_blocking()
+    assert metrics.collect() == {"declare_entry_memo": 1}
+    assert GlobalDictTarget.store.data["A"].data == "v1: value1"
+
+    # v1: second run — component memo hit
+    app.update_blocking()
+    assert metrics.collect() == {}
+
+    # v2: logic changed — component memo invalidated
+    mod = _load_module(_METHOD_V2_PATH, metrics, current_module, old_module=mod)
+    app.update_blocking()
+    assert metrics.collect() == {"declare_entry_memo": 1}
+    assert GlobalDictTarget.store.data["A"].data == "v2: value1"
+
+    # v2: second run — component memo hit again
+    app.update_blocking()
+    assert metrics.collect() == {}

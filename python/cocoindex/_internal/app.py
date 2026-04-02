@@ -15,8 +15,12 @@ from typing import (
 
 from . import core
 from .environment import Environment, LazyEnvironment, _default_env
-from .function import AnyCallable, AsyncCallable, create_core_component_processor
-from .serde import fn_ret_deserializer
+from .function import (
+    AnyCallable,
+    AsyncCallable,
+    create_core_component_processor,
+    fn_ret_deserializer,
+)
 from .update_stats import (
     ComponentStats,
     UpdateSnapshot,

@@ -578,6 +578,11 @@ class _BoundSyncMethod(Generic[SelfT]):
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         return self._func(self._instance, *args, **kwargs)
 
+    def _core_processor(
+        self, env: Environment, path: core.StablePath, *args: Any, **kwargs: Any
+    ) -> core.ComponentProcessor[Any]:
+        return self._func._core_processor(env, path, self._instance, *args, **kwargs)
+
     async def as_async(self, *args: Any, **kwargs: Any) -> Any:
         """Call this bound sync method wrapped in async (runs via asyncio.to_thread)."""
         return await asyncio.to_thread(self, *args, **kwargs)
@@ -641,6 +646,11 @@ class _BoundAsyncMethod(Generic[SelfT]):
 
     async def __call__(self, *args: Any, **kwargs: Any) -> Any:
         return await self._func(self._instance, *args, **kwargs)
+
+    def _core_processor(
+        self, env: Environment, path: core.StablePath, *args: Any, **kwargs: Any
+    ) -> core.ComponentProcessor[Any]:
+        return self._func._core_processor(env, path, self._instance, *args, **kwargs)
 
     async def as_async(self, *args: Any, **kwargs: Any) -> Any:
         """Call this bound async method (same as __call__)."""
@@ -1478,3 +1488,32 @@ def create_core_component_processor(
             kwargs,
             processor_info,
         )
+
+
+def fn_ret_deserializer(fn: typing.Any) -> DeserializeFn:
+    """Return a ``DeserializeFn`` that deserializes *fn*'s return type.
+
+    Zero upfront cost — all work is deferred to the first call.
+    For ``@coco.fn``-decorated functions the pre-built ``DeserializeFn`` is reused.
+    For plain functions the return-type annotation is inspected at call time.
+    """
+    # Unwrap bound methods to get the underlying Function object.
+    if isinstance(fn, (_BoundSyncMethod, _BoundAsyncMethod)):
+        fn = fn._func
+    fn_label = qualified_name(fn)
+
+    def _deserialize(data: bytes | memoryview) -> typing.Any:
+        cached: DeserializeFn | None = getattr(
+            fn, "_resolved_return_deserializer", None
+        )
+        if cached is not None:
+            return cached(data)
+        try:
+            hint = typing.get_type_hints(fn).get("return", typing.Any)
+        except Exception:
+            hint = typing.Any
+        return make_deserialize_fn(hint, source_label=f"return type of {fn_label}()")(
+            data
+        )
+
+    return _deserialize

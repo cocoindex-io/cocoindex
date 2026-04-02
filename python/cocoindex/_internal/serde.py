@@ -400,32 +400,6 @@ def deserialize(data: bytes, type_hint: Any = Any) -> Any:
     return _get_deserialize_fn(type_hint)(data)
 
 
-def fn_ret_deserializer(fn: Any) -> DeserializeFn:
-    """Return a ``DeserializeFn`` that deserializes *fn*'s return type.
-
-    Zero upfront cost — all work is deferred to the first call.
-    For ``@coco.fn``-decorated functions the pre-built ``DeserializeFn`` is reused.
-    For plain functions the return-type annotation is inspected at call time.
-    """
-    fn_label = qualified_name(fn)
-
-    def _deserialize(data: bytes | memoryview) -> Any:
-        cached: DeserializeFn | None = getattr(
-            fn, "_resolved_return_deserializer", None
-        )
-        if cached is not None:
-            return cached(data)
-        try:
-            hint = typing.get_type_hints(fn).get("return", Any)
-        except Exception:
-            hint = Any
-        return make_deserialize_fn(hint, source_label=f"return type of {fn_label}()")(
-            data
-        )
-
-    return _deserialize
-
-
 # ---------------------------------------------------------------------------
 # Type hint extraction helpers
 # ---------------------------------------------------------------------------
