@@ -73,6 +73,7 @@ Use `walk_dir()` to iterate over files in a directory. It returns a `DirWalker` 
 def walk_dir(
     path: FilePath | Path | ContextKey[Path],
     *,
+    live: bool = False,
     recursive: bool = False,
     path_matcher: FilePathMatcher | None = None,
 ) -> DirWalker
@@ -81,6 +82,7 @@ def walk_dir(
 **Parameters:**
 
 - `path` — The root directory path to walk through. Can be a `FilePath`, a `pathlib.Path`, or a `ContextKey[Path]` (equivalent to `FilePath(base_dir=path)`).
+- `live` — If `True`, `items()` returns a [`LiveItemsView`](../advanced_topics/live_component.md#liveitems-view) that supports live file watching via `mount_each()`.
 - `recursive` — If `True`, recursively walk subdirectories.
 - `path_matcher` — Optional filter for files and directories. See [PatternFilePathMatcher](../resource_types.md#patternfilepathmatcher).
 
@@ -124,6 +126,21 @@ matcher = PatternFilePathMatcher(
 async for file in localfs.walk_dir("/path/to/project", recursive=True, path_matcher=matcher):
     await process(file)
 ```
+
+### Live file watching
+
+When `live=True`, `items()` returns a [`LiveItemsView`](../advanced_topics/live_component.md#liveitems-view) instead of a plain `AsyncIterable`. Combined with [`mount_each()`](../programming_guide/processing_component.md#mount-each), this enables automatic incremental file watching — new, modified, and deleted files are processed without a full rescan:
+
+```python
+files = localfs.walk_dir(
+    sourcedir, recursive=True,
+    path_matcher=PatternFilePathMatcher(included_patterns=["**/*.md"]),
+    live=True,
+)
+await coco.mount_each(process_file, files.items(), target)
+```
+
+See [Live Mode](../programming_guide/live_mode.md) for how this works and how to enable it on the app.
 
 ### Example
 

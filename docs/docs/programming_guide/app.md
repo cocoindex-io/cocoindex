@@ -56,6 +56,7 @@ result = app.update_blocking()
 
 **Parameters:**
 
+- `live` option keeps the app running after the initial scan so live components can continue watching for changes. See [Live Mode](./live_mode.md).
 - `report_to_stdout` option prints periodic progress updates during execution.
 - `full_reprocess` option reprocesses everything and invalidates existing caches. This forces all components to re-execute and all target states to be re-applied, even if they haven't changed.
 
@@ -257,7 +258,7 @@ Run your app once to sync all target states:
 cocoindex update main.py
 ```
 
-This executes your pipeline and applies all declared target states to external systems.
+This executes your pipeline and applies all declared target states to external systems. Add `--live` (or `-L`) to keep the app running and react to source changes continuously — see [Live Mode](./live_mode.md).
 
 ### Drop an app
 

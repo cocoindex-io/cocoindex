@@ -6,6 +6,7 @@ import asyncio
 import os
 from datetime import datetime
 from pathlib import Path
+from collections.abc import AsyncIterable as _AsyncIterable
 from typing import AsyncIterator, Iterator
 
 import pathlib
@@ -18,6 +19,7 @@ from cocoindex.resources.file import (
 )
 
 from cocoindex._internal.context_keys import ContextKey
+from cocoindex._internal.live_component import LiveItemsSubscriber
 
 from ._common import FilePath, to_file_path
 
@@ -66,24 +68,30 @@ class File(_file.FileLike[pathlib.Path]):
 class DirWalker:
     """An async directory walker.
 
-    Use as an async iterator to get `File` objects::
+    Use as an async iterator to get ``File`` objects::
 
         async for file in walk_dir(path):
             content = await file.read()
+
+    When ``live=True``, ``items()`` returns a ``LiveItemsView`` that supports
+    live file watching via ``mount_each()``.
     """
 
     _root_path: FilePath
     _recursive: bool
     _path_matcher: FilePathMatcher
+    _live: bool
 
     def __init__(
         self,
         path: FilePath | Path | ContextKey[Path],
         *,
+        live: bool = False,
         recursive: bool = False,
         path_matcher: FilePathMatcher | None = None,
     ) -> None:
         self._root_path = to_file_path(path)
+        self._live = live
         self._recursive = recursive
         self._path_matcher = path_matcher or MatchAllFilePathMatcher()
 
@@ -136,16 +144,18 @@ class DirWalker:
             # Add subdirectories in reverse order to maintain consistent traversal
             dirs_to_process.extend(reversed(subdirs))
 
-    async def items(self) -> AsyncIterator[tuple[str, File]]:
-        """Async iterate over (key, file) pairs for use with mount_each().
+    def items(self) -> _AsyncIterable[tuple[str, File]]:
+        """Return keyed ``(relative_path, File)`` pairs for use with ``mount_each()``.
 
-        The key is the file's relative path within the walked directory.
-
-        Example::
-
-            async for key, file in walker.items():
-                content = await file.read()
+        When ``live=True``, returns a ``LiveItemsView`` that supports live watching.
+        Otherwise returns a plain ``AsyncIterable``.
         """
+        if self._live:
+            return _LiveDirItems(self)
+        return self._items_iter()
+
+    async def _items_iter(self) -> AsyncIterator[tuple[str, File]]:
+        """Async iterate over (key, file) pairs (non-live path)."""
         root_path = self._root_path.path
         async for file in self:
             yield (file.file_path.path.relative_to(root_path).as_posix(), file)
@@ -158,21 +168,87 @@ class DirWalker:
             yield file
 
 
+class _LiveDirItems:
+    """``LiveItemsView`` returned by ``DirWalker.items()`` when ``live=True``."""
+
+    def __init__(self, walker: DirWalker) -> None:
+        self._walker = walker
+        self._resolved_root = walker._root_path.resolve()
+
+    def __aiter__(self) -> AsyncIterator[tuple[str, File]]:
+        return self._aiter_impl()
+
+    async def _aiter_impl(self) -> AsyncIterator[tuple[str, File]]:
+        async for pair in self._walker._items_iter():
+            yield pair
+
+    async def watch(self, subscriber: LiveItemsSubscriber[str, File]) -> None:
+        import watchfiles
+
+        # Initial full scan and readiness signal
+        await subscriber.update_all()
+        await subscriber.mark_ready()
+
+        # Incremental changes
+        root_resolved = self._resolved_root
+
+        async for changes in watchfiles.awatch(
+            root_resolved,
+            recursive=self._walker._recursive,
+            watch_filter=None,
+        ):
+            for change_type, changed_path_str in changes:
+                changed_path = Path(changed_path_str)
+                try:
+                    relative = changed_path.relative_to(root_resolved)
+                except ValueError:
+                    continue
+
+                key = relative.as_posix()
+
+                if change_type == watchfiles.Change.deleted:
+                    if self._walker._path_matcher.is_file_included(relative):
+                        handle = await subscriber.delete(key)
+                        await handle.ready()
+                    # Directory move: watchfiles may not decompose into
+                    # individual file events, so trigger a full rescan.
+                    elif not changed_path.exists():
+                        await subscriber.update_all()
+                    continue
+
+                if changed_path.is_dir():
+                    continue
+                if not self._walker._path_matcher.is_file_included(relative):
+                    continue
+
+                file_path = self._walker._root_path / relative
+                try:
+                    stat = changed_path.stat()
+                except OSError:
+                    continue
+                file = File(file_path, _stat=stat)
+                handle = await subscriber.update(key, file)
+                await handle.ready()
+
+
 def walk_dir(
     path: FilePath | Path | ContextKey[Path],
     *,
+    live: bool = False,
     recursive: bool = False,
     path_matcher: FilePathMatcher | None = None,
 ) -> DirWalker:
     """
     Walk through a directory and yield file entries.
 
-    Returns a DirWalker that supports async iteration, yielding `File` objects
-    with async read methods.
+    Returns a ``DirWalker`` that supports async iteration, yielding ``File``
+    objects with async read methods.
 
     Args:
         path: The root directory path to walk through. Can be a FilePath (with stable
             base directory key) or a pathlib.Path (uses CWD as base directory).
+        live: If True, ``items()`` returns a ``LiveItemsView`` that supports
+            live file watching via ``mount_each()``.
         recursive: If True, recursively walk subdirectories. If False, only list files
             in the immediate directory.
         path_matcher: Optional file path matcher to filter files and directories.
@@ -180,21 +256,8 @@ def walk_dir(
 
     Returns:
         A DirWalker that can be used with ``async for`` loops.
-
-    Examples:
-        Async iteration::
-
-            async for file in walk_dir("/path/to/dir"):
-                content = await file.read()
-
-        With stable base directory::
-
-            source_dir = register_base_dir("source", Path("./data"))
-            async for file in walk_dir(source_dir):
-                # file.file_path has stable memo key based on "source" key
-                content = await file.read()
     """
-    return DirWalker(path, recursive=recursive, path_matcher=path_matcher)
+    return DirWalker(path, live=live, recursive=recursive, path_matcher=path_matcher)
 
 
 __all__ = ["walk_dir", "File", "DirWalker"]
