@@ -92,16 +92,17 @@ files = localfs.walk_dir(sourcedir, path_matcher=PatternFilePathMatcher(included
 await coco.mount_each(process_file, files.items(), target)
 ```
 
-Each item in the iterable is a `(key, value)` tuple. The key becomes the component subpath, and the value is passed as the first argument to the function. Any additional arguments are passed through.
+Each item in the iterable is a `(key, value)` tuple. The value is passed as the first argument to the function, and any additional arguments are passed through. Items are mounted under an auto-derived subpath (`Symbol(fn.__name__)`), so the component path for each item is `parent / Symbol("process_file") / key`.
 
-This is equivalent to:
+You can provide an explicit subpath as the first argument:
 
 ```python
-for key, file in files.items():
-    await coco.mount(coco.component_subpath(key), process_file, file, target)
+await coco.mount_each(coco.component_subpath("files"), process_file, files.items(), target)
 ```
 
 Source connectors provide an `items()` method that returns `(StableKey, T)` pairs. For example, `localfs.walk_dir(...).items()` yields `(relative_path, File)` tuples.
+
+When a source connector supports live watching, its `items()` returns a `LiveItemsView` instead of a plain iterable. `mount_each()` detects this and automatically handles incremental updates — no changes to `mount_each()` itself are needed. See [Live Mode](./live_mode.md).
 
 ### `mount_target()` {#mount-target}
 

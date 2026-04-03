@@ -24,6 +24,7 @@ const sidebars: SidebarsConfig = {
         'programming_guide/function',
         'programming_guide/processing_helpers',
         'programming_guide/app',
+        'programming_guide/live_mode',
         'programming_guide/context',
       ],
     },

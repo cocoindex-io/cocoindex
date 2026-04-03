@@ -836,14 +836,16 @@ async def test_mount_each_insert() -> None:
     }
     assert DictsTarget.store.metrics.collect() == {"sink": 3, "insert": 1}
     assert DictsTarget.store.collect_child_metrics() == {"sink": 2, "upsert": 2}
+    _me = coco.Symbol("_declare_one_dict")
     assert await coco_inspect.list_stable_paths(app) == [
         coco.ROOT_PATH,
-        coco.ROOT_PATH / "D1",
-        coco.ROOT_PATH / "D1" / "setup",
-        coco.ROOT_PATH / "D2",
-        coco.ROOT_PATH / "D2" / "setup",
-        coco.ROOT_PATH / "D3",
-        coco.ROOT_PATH / "D3" / "setup",
+        coco.ROOT_PATH / _me,
+        coco.ROOT_PATH / _me / "D1",
+        coco.ROOT_PATH / _me / "D1" / "setup",
+        coco.ROOT_PATH / _me / "D2",
+        coco.ROOT_PATH / _me / "D2" / "setup",
+        coco.ROOT_PATH / _me / "D3",
+        coco.ROOT_PATH / _me / "D3" / "setup",
     ]
 
 
@@ -875,12 +877,14 @@ async def test_mount_each_delete() -> None:
         },
     }
     assert DictsTarget.store.metrics.collect() == {"sink": 3, "insert": 1, "delete": 1}
+    _me = coco.Symbol("_declare_one_dict")
     assert await coco_inspect.list_stable_paths(app) == [
         coco.ROOT_PATH,
-        coco.ROOT_PATH / "D2",
-        coco.ROOT_PATH / "D2" / "setup",
-        coco.ROOT_PATH / "D3",
-        coco.ROOT_PATH / "D3" / "setup",
+        coco.ROOT_PATH / _me,
+        coco.ROOT_PATH / _me / "D2",
+        coco.ROOT_PATH / _me / "D2" / "setup",
+        coco.ROOT_PATH / _me / "D3",
+        coco.ROOT_PATH / _me / "D3" / "setup",
     ]
 
     # Re-insert after deletion
@@ -901,12 +905,13 @@ async def test_mount_each_delete() -> None:
     assert DictsTarget.store.metrics.collect() == {"sink": 3, "insert": 1}
     assert await coco_inspect.list_stable_paths(app) == [
         coco.ROOT_PATH,
-        coco.ROOT_PATH / "D1",
-        coco.ROOT_PATH / "D1" / "setup",
-        coco.ROOT_PATH / "D2",
-        coco.ROOT_PATH / "D2" / "setup",
-        coco.ROOT_PATH / "D3",
-        coco.ROOT_PATH / "D3" / "setup",
+        coco.ROOT_PATH / _me,
+        coco.ROOT_PATH / _me / "D1",
+        coco.ROOT_PATH / _me / "D1" / "setup",
+        coco.ROOT_PATH / _me / "D2",
+        coco.ROOT_PATH / _me / "D2" / "setup",
+        coco.ROOT_PATH / _me / "D3",
+        coco.ROOT_PATH / _me / "D3" / "setup",
     ]
 
 

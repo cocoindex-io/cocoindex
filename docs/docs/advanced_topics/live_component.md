@@ -147,38 +147,57 @@ class ProcessAll:
 
 The key difference: the LiveComponent version can later be extended to handle incremental changes in `process_live()` without changing `process()`.
 
-## Live mode
+## LiveItemsView {#liveitems-view}
 
-Live mode controls whether `process_live()` continues running after `mark_ready()`.
+:::tip
+For a user-facing introduction to live mode and when to use it, see [Live Mode](../programming_guide/live_mode.md). This section covers the protocol details for connector authors and advanced use cases.
+:::
 
-### Enabling live mode
+`LiveItemsView` is a protocol for keyed collections that support both iteration and live change watching. When `mount_each()` receives a `LiveItemsView` as its `items` argument, it automatically creates an internal `LiveComponent`.
 
 ```python
-# Programmatic
-app.update_blocking(live=True)
-
-# Or async
-handle = app.update(live=True)
-await handle.result()
+class LiveItemsView(Protocol[K, V]):
+    def __aiter__(self) -> AsyncIterator[tuple[K, V]]: ...
+    async def watch(self, subscriber: LiveItemsSubscriber[K, V]) -> None: ...
 ```
 
-```bash
-# CLI
-cocoindex update --live my_app.py
-# or
-cocoindex update -L my_app.py
+- **`__aiter__`** yields all `(key, value)` pairs — used for full scans (called inside the internal `process()`).
+- **`watch(subscriber)`** is the long-running entry point — analogous to `process_live(operator)`. It controls the full lifecycle: initial scan, readiness, and incremental updates.
+
+### LiveItemsSubscriber
+
+The `subscriber` passed to `watch()` mirrors `LiveComponentOperator`:
+
+| LiveItemsSubscriber | LiveComponentOperator | Description |
+|---|---|---|
+| `await subscriber.update_all()` | `await operator.update_full()` | Full re-scan of all items |
+| `await subscriber.mark_ready()` | `await operator.mark_ready()` | Signal readiness |
+| `await subscriber.update(key, value)` | `await operator.update(subpath, fn, ...)` | Incremental update; returns `ComponentMountHandle` |
+| `await subscriber.delete(key)` | `await operator.delete(subpath)` | Incremental delete; returns `ComponentMountHandle` |
+
+A typical `watch()` implementation:
+
+```python
+async def watch(self, subscriber: LiveItemsSubscriber[K, V]) -> None:
+    await subscriber.update_all()     # initial full scan
+    await subscriber.mark_ready()     # signal readiness
+    # ... watch for changes and call subscriber.update()/delete() ...
 ```
 
-### Propagation
+### Implementing LiveItemsView for a connector
 
-- `coco.mount()` and `operator.update()` inherit `live` from the parent.
-- `coco.use_mount()` always sets children as non-live.
+To add live support to a source connector, make its `items()` method return an object that implements `LiveItemsView` when live mode is requested. See the `localfs` connector's `DirWalker` for a reference implementation — `walk_dir(..., live=True).items()` returns a `LiveItemsView` backed by `watchfiles`.
 
-### Non-live mode behavior
+## Live mode
 
-When `live=False` (the default), `process_live()` is still called, but it terminates as soon as `mark_ready()` is awaited. No code after `await operator.mark_ready()` executes. This means a live component in non-live mode behaves like a traditional component: it does a full update, signals ready, and stops.
+See [Live Mode](../programming_guide/live_mode.md) for enabling live mode and an overview of how it works.
 
-This design lets you use the same LiveComponent class in both modes without code changes.
+In the context of a manual `LiveComponent`, live mode controls whether `process_live()` continues running after `mark_ready()`:
+
+- **Live mode** (`live=True`): `process_live()` continues after `mark_ready()` — the component keeps watching for changes.
+- **Non-live mode** (`live=False`, default): `process_live()` terminates as soon as `mark_ready()` is awaited. No code after `await operator.mark_ready()` executes.
+
+This lets you use the same `LiveComponent` class in both modes without code changes.
 
 ## Restrictions
 
@@ -186,9 +205,13 @@ This design lets you use the same LiveComponent class in both modes without code
 
 `process()` may only call `coco.mount()` (background child mounts). Any setup that requires `use_mount()` — such as declaring target tables — must be done in the **parent** component before mounting the LiveComponent. This keeps the controller's provider set stable across full and incremental updates.
 
-### Not allowed in `use_mount()` or `mount_each()`
+### Not allowed in `use_mount()`
 
-LiveComponent classes can only be used with `coco.mount()` and `operator.update()`. Passing a LiveComponent class to `coco.use_mount()` or `coco.mount_each()` raises a `TypeError`.
+LiveComponent classes can only be used with `coco.mount()` and `operator.update()`. Passing a LiveComponent class to `coco.use_mount()` raises a `TypeError`.
+
+:::tip
+While LiveComponent classes cannot be passed to `mount_each()`, you can get live watching behavior more easily using a [`LiveItemsView`](#liveitems-view) — `mount_each()` automatically creates an internal LiveComponent when it detects one.
+:::
 
 ## Readiness
 

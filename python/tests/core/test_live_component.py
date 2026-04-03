@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator, Awaitable, Callable
+from typing import Any
 
 import pytest
 
@@ -41,7 +43,11 @@ def test_live_component_rejected_in_use_mount() -> None:
 
 def test_live_component_rejected_in_mount_each() -> None:
     async def _main() -> None:
-        await coco.mount_each(_MinimalLiveComponent, [("a",), ("b",)])  # type: ignore[arg-type]
+        await coco.mount_each(  # type: ignore[call-overload]
+            coco.component_subpath("x"),
+            _MinimalLiveComponent,
+            [("a",), ("b",)],
+        )
 
     app = coco.App(
         coco.AppConfig(name="test_rejected_mount_each", environment=coco_env),
@@ -211,6 +217,51 @@ def test_live_component_incremental_update() -> None:
     assert GlobalDictTarget.store.data["new_key"].data == 99
 
 
+class _IncrementalDeleteDirectLiveComponent:
+    """LiveComponent that tests direct deletion via operator.delete().
+
+    process() mounts child components for each key in _source_data.
+    process_live() does a full update, then directly deletes one child.
+    """
+
+    async def process(self) -> None:
+        for key, value in _source_data.items():
+            await coco.mount(coco.component_subpath(key), _declare_item, key, value)
+
+    async def process_live(self, operator: coco.LiveComponentOperator) -> None:
+        await operator.update_full()
+        # Directly delete the child that was mounted by process() for key "b"
+        handle = await operator.delete(coco.component_subpath("b"))
+        await handle.ready()
+        await operator.mark_ready()
+
+
+def test_live_component_incremental_delete_direct() -> None:
+    """operator.delete() removes a child originally created by update_full()."""
+    GlobalDictTarget.store.clear()
+    _source_data.clear()
+
+    _source_data["a"] = 1
+    _source_data["b"] = 2
+
+    async def _main() -> None:
+        await coco.mount(
+            coco.component_subpath("live"), _IncrementalDeleteDirectLiveComponent
+        )
+
+    app = coco.App(
+        coco.AppConfig(
+            name="test_live_incremental_delete_direct", environment=coco_env
+        ),
+        _main,
+    )
+    app.update_blocking(live=True)
+
+    # "a" should remain, "b" should be deleted
+    assert "a" in GlobalDictTarget.store.data
+    assert "b" not in GlobalDictTarget.store.data
+
+
 class _IncrementalDeleteViaGCLiveComponent:
     """LiveComponent that tests deletion via update_full GC.
 
@@ -322,3 +373,192 @@ def test_live_component_update_full_gc() -> None:
     assert "gc_b" in GlobalDictTarget.store.data
     assert "gc_c" not in GlobalDictTarget.store.data
     assert "gc_d" not in GlobalDictTarget.store.data
+
+
+# ============================================================================
+# LiveItemsView + mount_each tests
+# ============================================================================
+
+
+class _TestLiveItemsView:
+    """A simple LiveItemsView for testing.
+
+    Yields (key, key) pairs — the value is the same as the key string.
+    The per-item function receives the value (a str) as first arg.
+    """
+
+    def __init__(self, data: dict[str, int]) -> None:
+        self._data = data
+        self._watch_fn: (
+            Callable[[coco.LiveItemsSubscriber[str, str]], Awaitable[None]] | None
+        ) = None
+
+    def set_watch_fn(
+        self,
+        fn: Callable[[coco.LiveItemsSubscriber[str, str]], Awaitable[None]],
+    ) -> None:
+        self._watch_fn = fn
+
+    def __aiter__(self) -> AsyncIterator[tuple[str, str]]:
+        return self._aiter_impl()
+
+    async def _aiter_impl(self) -> AsyncIterator[tuple[str, str]]:
+        for k in self._data:
+            yield (k, k)
+
+    async def watch(self, subscriber: coco.LiveItemsSubscriber[str, str]) -> None:
+        await subscriber.update_all()
+        if self._watch_fn is not None:
+            await self._watch_fn(subscriber)
+        await subscriber.mark_ready()
+
+
+_live_source: dict[str, int] = {}
+
+
+def _declare_live_item(key: str) -> None:
+    """Per-item function for LiveItemsView tests. Looks up value from _live_source."""
+    value = _live_source[key]
+    coco.declare_target_state(GlobalDictTarget.target_state(key, value))
+
+
+def test_mount_each_live_items_view_basic() -> None:
+    GlobalDictTarget.store.clear()
+    _live_source.clear()
+    _live_source.update({"a": 1, "b": 2, "c": 3})
+
+    items = _TestLiveItemsView(_live_source)
+
+    async def _main() -> None:
+        await coco.mount_each(_declare_live_item, items)  # type: ignore[call-overload]
+
+    app = coco.App(
+        coco.AppConfig(name="test_live_items_basic", environment=coco_env),
+        _main,
+    )
+    app.update_blocking(live=True)
+
+    assert GlobalDictTarget.store.data == {
+        "a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
+        "b": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
+        "c": DictDataWithPrev(data=3, prev=[], prev_may_be_missing=True),
+    }
+
+
+def test_mount_each_live_items_view_non_live_mode() -> None:
+    GlobalDictTarget.store.clear()
+    _live_source.clear()
+    _live_source["x"] = 10
+
+    items = _TestLiveItemsView(_live_source)
+
+    async def _main() -> None:
+        await coco.mount_each(_declare_live_item, items)  # type: ignore[call-overload]
+
+    app = coco.App(
+        coco.AppConfig(name="test_live_items_non_live", environment=coco_env),
+        _main,
+    )
+    # Non-live mode: mark_ready terminates watch(), app completes
+    app.update_blocking()
+
+    assert GlobalDictTarget.store.data == {
+        "x": DictDataWithPrev(data=10, prev=[], prev_may_be_missing=True),
+    }
+
+
+def test_mount_each_live_items_view_incremental_update() -> None:
+    GlobalDictTarget.store.clear()
+    _live_source.clear()
+    _live_source["a"] = 1
+
+    items = _TestLiveItemsView(_live_source)
+
+    async def _after_ready(subscriber: coco.LiveItemsSubscriber[str, str]) -> None:
+        _live_source["new_key"] = 99
+        handle = await subscriber.update("new_key", "new_key")
+        await handle.ready()
+
+    items.set_watch_fn(_after_ready)
+
+    async def _main() -> None:
+        await coco.mount_each(_declare_live_item, items)  # type: ignore[call-overload]
+
+    app = coco.App(
+        coco.AppConfig(name="test_live_items_incr_update", environment=coco_env),
+        _main,
+    )
+    app.update_blocking(live=True)
+
+    assert "a" in GlobalDictTarget.store.data
+    assert "new_key" in GlobalDictTarget.store.data
+    assert GlobalDictTarget.store.data["new_key"].data == 99
+
+
+def test_mount_each_live_items_view_update_all_rescan() -> None:
+    GlobalDictTarget.store.clear()
+    _live_source.clear()
+    _live_source.update({"a": 1, "b": 2, "c": 3})
+
+    items = _TestLiveItemsView(_live_source)
+
+    async def _after_ready(subscriber: coco.LiveItemsSubscriber[str, str]) -> None:
+        # Mutate backing data, then trigger rescan
+        _live_source.clear()
+        _live_source.update({"a": 1, "d": 4})
+        items._data = _live_source
+        await subscriber.update_all()
+
+    items.set_watch_fn(_after_ready)
+
+    async def _main() -> None:
+        await coco.mount_each(_declare_live_item, items)  # type: ignore[call-overload]
+
+    app = coco.App(
+        coco.AppConfig(name="test_live_items_rescan", environment=coco_env),
+        _main,
+    )
+    app.update_blocking(live=True)
+
+    # After rescan: a and d should exist, b and c should be GC'd
+    assert "a" in GlobalDictTarget.store.data
+    assert "d" in GlobalDictTarget.store.data
+    assert "b" not in GlobalDictTarget.store.data
+    assert "c" not in GlobalDictTarget.store.data
+
+
+def test_mount_each_auto_subpath() -> None:
+    GlobalDictTarget.store.clear()
+    _live_source.clear()
+    _live_source["k1"] = 1
+
+    async def _main() -> None:
+        await coco.mount_each(_declare_live_item, [("k1", "k1")])  # type: ignore[call-overload]
+
+    app = coco.App(
+        coco.AppConfig(name="test_mount_each_auto_subpath", environment=coco_env),
+        _main,
+    )
+    app.update_blocking()
+
+    assert "k1" in GlobalDictTarget.store.data
+
+
+def test_mount_each_no_name_raises() -> None:
+    """Callables without __name__ require an explicit ComponentSubpath."""
+
+    class _NoName:
+        def __call__(self, x: Any) -> None:
+            pass
+
+    fn = _NoName()  # callable instance without __name__
+
+    async def _main() -> None:
+        await coco.mount_each(fn, [("a", 1)])  # type: ignore[arg-type]
+
+    app = coco.App(
+        coco.AppConfig(name="test_mount_each_no_name", environment=coco_env),
+        _main,
+    )
+    with pytest.raises(TypeError, match="requires a ComponentSubpath"):
+        app.update_blocking()

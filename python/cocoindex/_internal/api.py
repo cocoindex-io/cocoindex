@@ -102,6 +102,9 @@ from .target_state import (
 from .live_component import (
     LiveComponent,
     LiveComponentOperator,
+    LiveItemsView,
+    LiveItemsSubscriber,
+    _MountEachLiveComponent,
     is_live_component_class,
 )
 
@@ -263,15 +266,9 @@ async def use_mount(
 async def _mount_live_component(
     parent_ctx: ComponentContext,
     child_path: core.StablePath,
-    cls: Any,
-    args: tuple[Any, ...],
-    kwargs: dict[str, Any],
+    instance: Any,
 ) -> ComponentMountHandle:
-    """Mount a LiveComponent class."""
-    instance = cls(*args, **kwargs)
-
-    # Create controller via Rust.
-    # mount_live_async returns (LiveComponentController, ComponentMountHandle).
+    """Mount a pre-constructed LiveComponent instance."""
     controller, readiness_handle = await core.mount_live_async(
         child_path,
         parent_ctx._core_processor_ctx,
@@ -281,8 +278,6 @@ async def _mount_live_component(
 
     operator = LiveComponentOperator(controller, instance, parent_ctx._env, child_path)
 
-    # Start process_live via Rust (handles cancellation, error handling,
-    # ensure_mark_ready).
     process_live_coro = instance.process_live(operator)
     controller.start(process_live_coro)
 
@@ -317,9 +312,8 @@ async def mount(
     child_path = build_child_path(parent_ctx, subpath)
 
     if is_live_component_class(processor_fn):
-        return await _mount_live_component(
-            parent_ctx, child_path, processor_fn, args, kwargs
-        )
+        instance = processor_fn(*args, **kwargs)
+        return await _mount_live_component(parent_ctx, child_path, instance)
 
     processor = create_core_component_processor(
         processor_fn, parent_ctx._env, child_path, args, kwargs
@@ -346,35 +340,69 @@ async def mount(
     return ComponentMountHandle([core_handle])
 
 
+_ItemsType = (
+    Iterable[tuple[StableKey, T]]
+    | AsyncIterable[tuple[StableKey, T]]
+    | LiveItemsView[StableKey, T]
+)
+
+
+@overload
 async def mount_each(
+    subpath: ComponentSubpath,
     fn: AnyCallable[Concatenate[T, P], Any],
-    items: Iterable[tuple[StableKey, T]] | AsyncIterable[tuple[StableKey, T]],
+    items: _ItemsType[T],
     *args: P.args,
     **kwargs: P.kwargs,
-) -> ComponentMountHandle:
+) -> ComponentMountHandle: ...
+
+
+@overload
+async def mount_each(
+    fn: AnyCallable[Concatenate[T, P], Any],
+    items: _ItemsType[T],
+    *args: P.args,
+    **kwargs: P.kwargs,
+) -> ComponentMountHandle: ...
+
+
+async def mount_each(*pos_args: Any, **kwargs: Any) -> ComponentMountHandle:
     """
     Mount one independent component per item in a keyed iterable.
 
-    Sugar over a loop of mount() calls. Each item's key is used as the component subpath.
-    Accepts both sync and async iterables; prefers async iteration when available.
+    Accepts an optional ``ComponentSubpath`` as the first argument. When omitted,
+    the subpath is auto-derived from ``Symbol(fn.__name__)``.
+
+    When *items* is a ``LiveItemsView``, an internal ``LiveComponent`` is created
+    to handle live watching automatically.
 
     Args:
+        subpath: Optional component subpath. Auto-derived from fn.__name__ when omitted.
         fn: The function to run for each item. The item value is passed as the first argument.
-        items: A keyed iterable of (key, value) pairs (sync or async). The key becomes the
-            component subpath.
+        items: A keyed iterable of (key, value) pairs, or a LiveItemsView for live mode.
         *args: Additional arguments passed to fn after the item value.
         **kwargs: Additional keyword arguments passed to fn.
 
     Returns:
         A handle that can be used to wait until all processing units are ready.
-
-    Example:
-        await coco.mount_each(process_file, files.items(), target_table)
-
-        # Equivalent to:
-        # for key, item in files.items():
-        #     coco.mount(coco.component_subpath(key), process_file, item, target_table)
     """
+    if pos_args and isinstance(pos_args[0], ComponentSubpath):
+        subpath = pos_args[0]
+        fn = pos_args[1]
+        items = pos_args[2]
+        extra_args = pos_args[3:]
+    else:
+        fn = pos_args[0]
+        items = pos_args[1]
+        extra_args = pos_args[2:]
+        name = getattr(fn, "__name__", None)
+        if name is None:
+            raise TypeError(
+                "mount_each() requires a ComponentSubpath when the function has no "
+                "__name__. Provide an explicit subpath as the first argument."
+            )
+        subpath = ComponentSubpath(Symbol(name))
+
     if is_live_component_class(fn):
         raise TypeError(
             "LiveComponent classes cannot be used with mount_each(). "
@@ -382,18 +410,24 @@ async def mount_each(
         )
 
     parent_ctx = get_context_from_ctx()
+    child_path = build_child_path(parent_ctx, subpath)
+
+    if isinstance(items, LiveItemsView):
+        instance = _MountEachLiveComponent(items, fn, extra_args, kwargs)
+        return await _mount_live_component(parent_ctx, child_path, instance)
+
     core_handles: list[core.ComponentMountHandle] = []
 
     async def _mount_one(key: StableKey, item: Any) -> None:
-        child_path = build_child_path(parent_ctx, ComponentSubpath(key))
+        item_path = child_path.concat(key)
         processor = create_core_component_processor(
-            fn, parent_ctx._env, child_path, (item, *args), kwargs
+            fn, parent_ctx._env, item_path, (item, *extra_args), kwargs
         )
         resolved = (
             _resolve_handler(
                 parent_ctx._exception_handler_chain,
                 env_name=parent_ctx._env.name,
-                stable_path=child_path.to_string(),
+                stable_path=item_path.to_string(),
                 processor_name=getattr(fn, "__qualname__", None),
                 mount_kind="mount_each",
                 parent_stable_path=parent_ctx._core_path.to_string(),
@@ -403,7 +437,7 @@ async def mount_each(
         )
         core_handle = await core.mount_async(
             processor,
-            child_path,
+            item_path,
             parent_ctx._core_processor_ctx,
             parent_ctx._core_fn_call_ctx,
             resolved,
@@ -626,6 +660,8 @@ __all__ = [
     # .live_component
     "LiveComponent",
     "LiveComponentOperator",
+    "LiveItemsView",
+    "LiveItemsSubscriber",
     # Mount APIs
     "ComponentMountHandle",
     "mount",

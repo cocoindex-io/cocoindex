@@ -9,6 +9,7 @@ use crate::engine::profile::EngineProfile;
 use crate::engine::stats::ProcessingStats;
 use crate::engine::target_state::TargetStateProvider;
 use crate::prelude::*;
+use crate::state::db_schema;
 use crate::state::stable_path::StablePath;
 use crate::state::target_state_path::TargetStatePath;
 use cocoindex_utils::error::SharedError;
@@ -386,6 +387,42 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
         let child = self.component.get_child(subpath.clone());
         let seq = self.state.next_seq.fetch_add(1, Ordering::Relaxed);
         child.latest_seq().store(seq, Ordering::Release);
+
+        // Remove the child existence entry and write a GC tombstone atomically.
+        // The existence removal lets pre_commit proceed with target state cleanup.
+        // The tombstone ensures that if the process crashes between here and GC
+        // completion, the child will be cleaned up on restart.
+        if let Some((parent_ref, child_key)) = subpath.as_ref().split_parent() {
+            let db = self.component.app_ctx().db().clone();
+            let parent_path: StablePath = parent_ref.into();
+            let child_key = child_key.clone();
+            let component_path = self.component.stable_path().clone();
+            let relative_child = subpath.as_ref().strip_parent(component_path.as_ref())?;
+            let relative_child: StablePath = relative_child.into();
+            self.component
+                .app_ctx()
+                .env()
+                .txn_batcher()
+                .run(move |wtxn| {
+                    // Remove child existence entry from parent
+                    let existence_key = db_schema::DbEntryKey::StablePath(
+                        parent_path,
+                        db_schema::StablePathEntryKey::ChildExistence(child_key),
+                    )
+                    .encode()?;
+                    db.delete(wtxn, &existence_key)?;
+
+                    // Write tombstone for GC (relative path from component root)
+                    let tombstone_key = db_schema::DbEntryKey::StablePath(
+                        component_path,
+                        db_schema::StablePathEntryKey::ChildComponentTombstone(relative_child),
+                    )
+                    .encode()?;
+                    db.put(wtxn, &tombstone_key, &[])?;
+                    Ok(())
+                })
+                .await?;
+        }
 
         let context = ComponentProcessorContext::new(
             child.clone(),
