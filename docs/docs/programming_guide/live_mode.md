@@ -96,7 +96,7 @@ app = coco.App(coco.AppConfig(name="FilesTransform"), app_main, sourcedir=..., o
 app.update_blocking(live=True)
 ```
 
-For a complete working example, see [`files_transform`](https://github.com/cocoindex-io/cocoindex/tree/main/examples/files_transform).
+For a complete working example, see [`files_transform`](https://github.com/cocoindex-io/cocoindex/tree/v1/examples/files_transform).
 
 ## Going deeper
 
