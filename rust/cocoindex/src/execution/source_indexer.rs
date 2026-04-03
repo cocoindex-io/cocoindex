@@ -293,7 +293,7 @@ impl SourceIndexingContext {
             while let Some(key_metadata) = key_metadata_stream.next().await {
                 let key_metadata = key_metadata?;
                 let source_pk = value::KeyValue::from_json(
-                    key_metadata.source_key,
+                    key_metadata.source_key.into_inner(),
                     &import_op.primary_key_schema,
                 )?;
                 if let Some(rows_to_retry) = &mut rows_to_retry {

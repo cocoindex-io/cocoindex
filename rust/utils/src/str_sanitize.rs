@@ -1,15 +1,19 @@
 use std::borrow::Cow;
 use std::fmt::Display;
+use std::ops::{Deref, DerefMut};
 
+use base64::Engine;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use serde::ser::{
     SerializeMap, SerializeSeq, SerializeStruct, SerializeStructVariant, SerializeTuple,
     SerializeTupleStruct, SerializeTupleVariant,
 };
 use sqlx::Type;
+use sqlx::decode::Decode;
 use sqlx::encode::{Encode, IsNull};
 use sqlx::error::BoxDynError;
-use sqlx::postgres::{PgArgumentBuffer, Postgres};
+use sqlx::postgres::{PgArgumentBuffer, PgValueRef, Postgres};
 
 pub fn strip_zero_code<'a>(s: Cow<'a, str>) -> Cow<'a, str> {
     if s.contains('\0') {
@@ -22,6 +26,149 @@ pub fn strip_zero_code<'a>(s: Cow<'a, str>) -> Cow<'a, str> {
         Cow::Owned(sanitized)
     } else {
         s
+    }
+}
+
+const ZERO_CODE_ESCAPE_PREFIX: &str = "__cocoindex_zero_code_b64_v1__:";
+const ZERO_CODE_ESCAPE_MAGIC: &[u8] = b"cocoindex-zero-code-v1\0";
+
+fn encode_zero_code_text(s: &str) -> String {
+    let mut payload = Vec::with_capacity(ZERO_CODE_ESCAPE_MAGIC.len() + s.len());
+    payload.extend_from_slice(ZERO_CODE_ESCAPE_MAGIC);
+    payload.extend_from_slice(s.as_bytes());
+    format!(
+        "{ZERO_CODE_ESCAPE_PREFIX}{}",
+        base64::engine::general_purpose::STANDARD.encode(payload)
+    )
+}
+
+fn escape_zero_code_text(s: &str) -> Option<String> {
+    s.contains('\0').then(|| encode_zero_code_text(s))
+}
+
+fn decode_zero_code_text(s: &str) -> Option<String> {
+    let encoded = s.strip_prefix(ZERO_CODE_ESCAPE_PREFIX)?;
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .ok()?;
+    let payload = decoded.strip_prefix(ZERO_CODE_ESCAPE_MAGIC)?;
+    String::from_utf8(payload.to_vec()).ok()
+}
+
+pub fn escape_zero_codes_in_json(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::String(s) => {
+            if let Some(escaped) = escape_zero_code_text(s) {
+                *s = escaped;
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                escape_zero_codes_in_json(value);
+            }
+        }
+        serde_json::Value::Object(values) => {
+            let mut escaped = serde_json::Map::new();
+            for (key, mut value) in std::mem::take(values) {
+                escape_zero_codes_in_json(&mut value);
+                escaped.insert(escape_zero_code_text(&key).unwrap_or(key), value);
+            }
+            *values = escaped;
+        }
+        serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => {}
+    }
+}
+
+pub fn unescape_zero_codes_in_json(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::String(s) => {
+            if let Some(decoded) = decode_zero_code_text(s) {
+                *s = decoded;
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                unescape_zero_codes_in_json(value);
+            }
+        }
+        serde_json::Value::Object(values) => {
+            let mut decoded = serde_json::Map::new();
+            for (key, mut value) in std::mem::take(values) {
+                unescape_zero_codes_in_json(&mut value);
+                decoded.insert(decode_zero_code_text(&key).unwrap_or(key), value);
+            }
+            *values = decoded;
+        }
+        serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => {}
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ZeroCodeEscapedJson<T>(pub T);
+
+impl<T> ZeroCodeEscapedJson<T> {
+    pub fn into_inner(self) -> T {
+        self.0
+    }
+}
+
+impl<T> From<T> for ZeroCodeEscapedJson<T> {
+    fn from(value: T) -> Self {
+        Self(value)
+    }
+}
+
+impl<T> Deref for ZeroCodeEscapedJson<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<T> DerefMut for ZeroCodeEscapedJson<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl<T> Type<Postgres> for ZeroCodeEscapedJson<T> {
+    fn type_info() -> <Postgres as sqlx::Database>::TypeInfo {
+        <sqlx::types::Json<serde_json::Value> as Type<Postgres>>::type_info()
+    }
+
+    fn compatible(ty: &<Postgres as sqlx::Database>::TypeInfo) -> bool {
+        <sqlx::types::Json<serde_json::Value> as Type<Postgres>>::compatible(ty)
+    }
+}
+
+impl<'q, T> Encode<'q, Postgres> for ZeroCodeEscapedJson<T>
+where
+    T: Serialize,
+{
+    fn encode_by_ref(&self, buf: &mut PgArgumentBuffer) -> Result<IsNull, BoxDynError> {
+        let mut value = serde_json::to_value(&self.0)?;
+        escape_zero_codes_in_json(&mut value);
+        <sqlx::types::Json<serde_json::Value> as Encode<'q, Postgres>>::encode_by_ref(
+            &sqlx::types::Json(value),
+            buf,
+        )
+    }
+
+    fn size_hint(&self) -> usize {
+        0
+    }
+}
+
+impl<'r, T> Decode<'r, Postgres> for ZeroCodeEscapedJson<T>
+where
+    T: DeserializeOwned,
+{
+    fn decode(value: PgValueRef<'r>) -> Result<Self, BoxDynError> {
+        let sqlx::types::Json(mut json_value) =
+            <sqlx::types::Json<serde_json::Value> as Decode<'r, Postgres>>::decode(value)?;
+        unescape_zero_codes_in_json(&mut json_value);
+        Ok(Self(serde_json::from_value(json_value)?))
     }
 }
 
@@ -500,7 +647,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde::Serialize;
+    use serde::{Deserialize, Serialize};
     use serde_json::{Value, json};
     use std::borrow::Cow;
     use std::collections::BTreeMap;
@@ -593,5 +740,69 @@ mod tests {
         // Field name remains unchanged due to &'static str constraint of SerializeStructVariant
         assert!(var.contains_key("ke\0y"));
         assert_eq!(var.get("ke\0y").unwrap(), &json!("bar"));
+    }
+
+    fn json_contains_nul(value: &Value) -> bool {
+        match value {
+            Value::String(s) => s.contains('\0'),
+            Value::Array(values) => values.iter().any(json_contains_nul),
+            Value::Object(values) => values
+                .iter()
+                .any(|(key, value)| key.contains('\0') || json_contains_nul(value)),
+            Value::Null | Value::Bool(_) | Value::Number(_) => false,
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    struct EscapedRoundtripFixture {
+        text: String,
+        nested: BTreeMap<String, Value>,
+    }
+
+    #[test]
+    fn escaped_json_roundtrip_preserves_nuls_and_prefix_literals() {
+        let original = EscapedRoundtripFixture {
+            text: format!("{ZERO_CODE_ESCAPE_PREFIX}literal\0value"),
+            nested: BTreeMap::from([
+                (
+                    "k\0ey".to_string(),
+                    json!(["a\0b", ZERO_CODE_ESCAPE_PREFIX, "plain"]),
+                ),
+                (
+                    ZERO_CODE_ESCAPE_PREFIX.to_string(),
+                    json!({
+                        "inner\0key": format!("{ZERO_CODE_ESCAPE_PREFIX}already-prefixed"),
+                    }),
+                ),
+            ]),
+        };
+
+        let mut escaped = serde_json::to_value(&original).unwrap();
+        escape_zero_codes_in_json(&mut escaped);
+
+        assert!(!json_contains_nul(&escaped));
+
+        unescape_zero_codes_in_json(&mut escaped);
+        let roundtrip: EscapedRoundtripFixture = serde_json::from_value(escaped).unwrap();
+        assert_eq!(roundtrip, original);
+    }
+
+    #[test]
+    fn escaping_leaves_prefix_only_literals_unchanged() {
+        let mut value = json!({
+            "literal": format!("{ZERO_CODE_ESCAPE_PREFIX}plain-text"),
+            "nested": [ZERO_CODE_ESCAPE_PREFIX],
+        });
+
+        let original = value.clone();
+        escape_zero_codes_in_json(&mut value);
+
+        assert_eq!(value, original);
+    }
+
+    #[test]
+    fn decode_zero_code_text_ignores_unrelated_prefixed_values() {
+        let literal = format!("{ZERO_CODE_ESCAPE_PREFIX}not-base64");
+        assert_eq!(decode_zero_code_text(&literal), None);
     }
 }

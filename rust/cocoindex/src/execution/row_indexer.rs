@@ -589,7 +589,7 @@ impl<'a> RowIndexer<'a> {
 
         // Collect from existing tracking info.
         if let Some(info) = tracking_info {
-            let sqlx::types::Json(staging_target_keys) = info.staging_target_keys;
+            let staging_target_keys = info.staging_target_keys.into_inner();
             for (target_id, keys_info) in staging_target_keys.into_iter() {
                 let target_info = tracking_info_for_targets.entry(target_id).or_default();
                 for key_info in keys_info.into_iter() {
@@ -604,7 +604,8 @@ impl<'a> RowIndexer<'a> {
                 }
             }
 
-            if let Some(sqlx::types::Json(target_keys)) = info.target_keys {
+            if let Some(target_keys) = info.target_keys.map(|target_keys| target_keys.into_inner())
+            {
                 for (target_id, keys_info) in target_keys.into_iter() {
                     let target_info = tracking_info_for_targets.entry(target_id).or_default();
                     for key_info in keys_info.into_iter() {
@@ -802,7 +803,7 @@ impl<'a> RowIndexer<'a> {
 
         let cleaned_staging_target_keys = tracking_info
             .map(|info| {
-                let sqlx::types::Json(staging_target_keys) = info.staging_target_keys;
+                let staging_target_keys = info.staging_target_keys.into_inner();
                 staging_target_keys
                     .into_iter()
                     .filter_map(|(target_id, target_keys)| {
