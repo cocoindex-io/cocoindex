@@ -28,7 +28,7 @@ Use this skill when creating a new target connector for any external system (dat
 
 | Type | Purpose |
 | ---- | ------- |
-| `TargetStatesProvider` | Factory that creates `TargetState` objects from your handler |
+| `TargetStateProvider` | Factory that creates `TargetState` objects from your handler |
 | `TargetState` | Wrapper that holds the key and spec |
 | `register_root_target_states_provider()` | Registers a root handler and returns a provider |
 | `declare_target_state()` | Declares a leaf target state for reconciliation |
@@ -93,15 +93,15 @@ child_invalidation: Literal["destructive"] | None = (
 ## TargetHandler Protocol
 
 ```python
-class TargetHandler(Protocol[KeyT, ValueT, TrackingRecordT, OptChildHandlerT]):
+class TargetHandler(Protocol[ValueT, TrackingRecordT, OptChildHandlerT]):
     def reconcile(
         self,
-        key: KeyT,
-        desired_state: ValueT | NonExistenceType,
+        key: StableKey,
+        desired_target_state: ValueT | NonExistenceType,
         prev_possible_records: Collection[TrackingRecordT],
         prev_may_be_missing: bool,
         /,
-    ) -> TargetReconcileOutput[ActionT, TrackingRecordT, OptChildHandlerT] | None:
+    ) -> TargetReconcileOutput[Any, TrackingRecordT, OptChildHandlerT] | None:
         ...
 
     # Optional: override to support attachment types
@@ -111,14 +111,14 @@ class TargetHandler(Protocol[KeyT, ValueT, TrackingRecordT, OptChildHandlerT]):
 
 **Parameters:**
 
-- `key`: Unique identifier for the target state
-- `desired_state`: What the user declared, or `NON_EXISTENCE` if no longer declared
+- `key`: `StableKey` — a union of `None | bool | int | str | bytes | uuid.UUID | Symbol | tuple[StableKey, ...]`
+- `desired_target_state`: What the user declared, or `NON_EXISTENCE` if no longer declared
 - `prev_possible_records`: Tracking records from previous runs (may have multiple)
 - `prev_may_be_missing`: If `True`, the target state might not exist in the external system
 
 **Returns:**
 
-- `TargetReconcileOutput(action, sink, tracking_record, child_invalidation=None)` if an action is needed
+- `TargetReconcileOutput(action, sink, tracking_record, child_invalidation=None)` if an action is needed (generic params: `[ActionT, TrackingRecordT, OptChildHandlerT]`)
 - `None` if no changes are required
 
 The optional `child_invalidation` field is only relevant for container targets — see [Child Invalidation](#child-invalidation).
@@ -126,6 +126,34 @@ The optional `child_invalidation` field is only relevant for container targets �
 **Important:** The `reconcile()` method must be non-blocking. It should only compare states and return an action — actual I/O happens in the sink.
 
 ## Best Practices
+
+### Use `ContextKey` for External Resource Identity
+
+When a target connector manages state in an external resource (database, object store, etc.), use a `ContextKey` string as part of the target state key — not connection parameters like host, port, or credentials.
+
+**Why:** Target state keys must be stable across runs for correct reconciliation. CocoIndex uses keys to match current declarations with previously tracked states. If the key is stable, previously tracked states are associated with the current target, so CocoIndex can correctly reconcile — e.g., deleting rows that are no longer declared. If the key changes (because a connection parameter changed), CocoIndex cannot associate previous tracked states with the current target, and treats the target as being in a cleared state — losing the ability to clean up old data.
+
+**Pattern:**
+
+```python
+# User creates a stable logical name for the resource
+db = coco.ContextKey[asyncpg.Pool]("my_pg")
+
+# Target connector uses db.key (the string "my_pg") in the target state key
+class _TableKey(NamedTuple):
+    db_key: str           # Stable — from ContextKey.key
+    schema_name: str | None
+    table_name: str
+
+key = _TableKey(db_key=db.key, ...)
+
+# At action time, resolve the live connection from context_provider
+pool = context_provider.get(key.db_key, asyncpg.Pool)
+```
+
+This decouples target identity from transient connection details — changing a password, switching replicas, or rotating credentials won't invalidate tracked states.
+
+**Reference:** See `_TableKey` in `python/cocoindex/connectors/postgres/_target.py` and `python/cocoindex/connectors/surrealdb/_target.py`.
 
 ### Idempotent Actions
 
@@ -339,3 +367,4 @@ For complete implementation details and examples, see:
 - `python/cocoindex/connectors/localfs/_target.py` - File system target connector (sync API, nested directory targets)
 - `python/cocoindex/connectors/sqlite/_target.py` - SQLite target connector (sync API, two-level table/row targets, vector support)
 - `python/cocoindex/connectors/postgres/_target.py` - PostgreSQL target connector (async API, two-level table/row targets, vector support, attachment providers)
+- `python/cocoindex/connectors/doris/_target.py` - Doris target connector (async API, two-level table/row targets, Stream Load bulk inserts)

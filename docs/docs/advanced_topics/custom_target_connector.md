@@ -30,15 +30,15 @@ This section introduces the key data types. Each is marked as either **you imple
 A `TargetHandler` implements the reconciliation logic. It's a protocol with one required method and one optional method:
 
 ```python
-class TargetHandler(Protocol[KeyT, ValueT, TrackingRecordT, OptChildHandlerT]):
+class TargetHandler(Protocol[ValueT, TrackingRecordT, OptChildHandlerT]):
     def reconcile(
         self,
-        key: KeyT,
-        desired_state: ValueT | NonExistenceType,
+        key: StableKey,
+        desired_target_state: ValueT | NonExistenceType,
         prev_possible_records: Collection[TrackingRecordT],
         prev_may_be_missing: bool,
         /,
-    ) -> TargetReconcileOutput[ActionT, TrackingRecordT, OptChildHandlerT] | None:
+    ) -> TargetReconcileOutput[Any, TrackingRecordT, OptChildHandlerT] | None:
         ...
 
     # Optional: override to support attachment types (see "Implementing attachment providers")
@@ -48,15 +48,14 @@ class TargetHandler(Protocol[KeyT, ValueT, TrackingRecordT, OptChildHandlerT]):
 
 **Type Parameters:**
 
-- `KeyT`: The type used to identify target states (e.g., filename, primary key tuple)
 - `ValueT`: The specification for the target state (e.g., file content, row data)
 - `TrackingRecordT`: What's stored to detect changes on future runs
 - `OptChildHandlerT`: The child handler type, or `None` for leaf targets
 
 **Parameters:**
 
-- `key`: Unique identifier for this target state
-- `desired_state`: What the user declared, or `NON_EXISTENCE` if no longer declared
+- `key`: `StableKey` — a union of `None | bool | int | str | bytes | uuid.UUID | Symbol | tuple[StableKey, ...]`
+- `desired_target_state`: What the user declared, or `NON_EXISTENCE` if no longer declared
 - `prev_possible_records`: Tracking records from previous runs (may have multiple due to interrupted updates)
 - `prev_may_be_missing`: If `True`, the target state might not exist in the external system
 
@@ -156,18 +155,18 @@ def apply_actions(
 `TargetReconcileOutput` bundles what `reconcile()` returns when an action is needed:
 
 ```python
-class TargetReconcileOutput(NamedTuple):
-    action: ActionT                           # What to do
-    sink: TargetActionSink[ActionT, ...]      # How to execute it
+class TargetReconcileOutput(Generic[ActionT, TrackingRecordT, OptChildHandlerT], NamedTuple):
+    action: ActionT                                    # What to do
+    sink: TargetActionSink[ActionT, OptChildHandlerT]  # How to execute it
     tracking_record: TrackingRecordT | NonExistenceType  # What to remember
     child_invalidation: Literal["destructive", "lossy"] | None = None  # For container targets
 ```
 
 The `child_invalidation` field is only relevant for **container targets** (those with children). See [Child invalidation](#child-invalidation) for details.
 
-### TargetStatesProvider *(CocoIndex provides)*
+### TargetStateProvider *(CocoIndex provides)*
 
-A `TargetStatesProvider` is a factory that creates `TargetState` objects. You don't implement this class — CocoIndex gives you one when you register a handler or declare a target state with children.
+A `TargetStateProvider` is a factory that creates `TargetState` objects. You don't implement this class — CocoIndex gives you one when you register a handler or declare a target state with children.
 
 ```python
 # You get a provider from registration
@@ -200,11 +199,11 @@ This section covers root target states — those not nested inside another targe
 
 Understanding what happens at runtime:
 
-1. **Registration**: You define a `TargetHandler` and call `register_root_target_states_provider()`. CocoIndex returns a `TargetStatesProvider` — a factory for creating target states associated with your handler.
+1. **Registration**: You define a `TargetHandler` and call `register_root_target_states_provider()`. CocoIndex returns a `TargetStateProvider` — a factory for creating target states associated with your handler.
 
 2. **Declaration**: During execution, user code calls `provider.target_state(key, spec)` to create `TargetState` objects, then `declare_target_state()` to declare them. CocoIndex collects all declared target states.
 
-3. **Reconciliation**: When the processing unit finishes, CocoIndex calls your handler's `reconcile()` method for each target state. For declared target states, `desired_state` contains the spec; for previously declared but now missing states, `desired_state` is `NON_EXISTENCE` (triggering cleanup). Your `reconcile()` compares the desired state with previous records and returns `TargetReconcileOutput` if an action is needed, or `None` if no changes are required.
+3. **Reconciliation**: When the processing unit finishes, CocoIndex calls your handler's `reconcile()` method for each target state. For declared target states, `desired_target_state` contains the spec; for previously declared but now missing states, `desired_target_state` is `NON_EXISTENCE` (triggering cleanup). Your `reconcile()` compares the desired state with previous records and returns `TargetReconcileOutput` if an action is needed, or `None` if no changes are required.
 
 4. **Action Execution**: CocoIndex batches actions by their `TargetActionSink` and executes them. The sink applies changes to the external system (database writes, file operations, API calls, etc.).
 
@@ -223,8 +222,8 @@ from typing import NamedTuple, Collection
 from dataclasses import dataclass
 import cocoindex as coco
 
-# Key: How to identify a target state
-_RowKey = tuple[str, ...]  # Primary key values
+# Key: StableKey is used to identify target states — it's a union type:
+#   None | bool | int | str | bytes | uuid.UUID | Symbol | tuple[StableKey, ...]
 
 # Value: What the user declares
 @dataclass
@@ -238,14 +237,14 @@ class _RowTrackingRecord:
 
 # Action: What operation to perform
 class _RowAction(NamedTuple):
-    key: _RowKey
+    key: coco.StableKey
     data: dict[str, Any] | None  # None = delete
 ```
 
 ### Step 2: Implement the handler
 
 ```python
-class _RowHandler(coco.TargetHandler[_RowKey, _RowSpec, _RowTrackingRecord]):
+class _RowHandler(coco.TargetHandler[_RowSpec, _RowTrackingRecord]):
     """Handler for database rows."""
 
     def __init__(self, connection: DatabaseConnection, table: str):
@@ -270,14 +269,14 @@ class _RowHandler(coco.TargetHandler[_RowKey, _RowSpec, _RowTrackingRecord]):
 
     def reconcile(
         self,
-        key: _RowKey,
-        desired_state: _RowSpec | coco.NonExistenceType,
+        key: coco.StableKey,
+        desired_target_state: _RowSpec | coco.NonExistenceType,
         prev_possible_records: Collection[_RowTrackingRecord],
         prev_may_be_missing: bool,
         /,
     ) -> coco.TargetReconcileOutput[_RowAction, _RowTrackingRecord] | None:
         # Handle deletion
-        if coco.is_non_existence(desired_state):
+        if coco.is_non_existence(desired_target_state):
             if not prev_possible_records and not prev_may_be_missing:
                 return None  # Nothing to delete
             return coco.TargetReconcileOutput(
@@ -287,7 +286,7 @@ class _RowHandler(coco.TargetHandler[_RowKey, _RowSpec, _RowTrackingRecord]):
             )
 
         # Handle upsert
-        target_fp = self._compute_fingerprint(desired_state.data)
+        target_fp = self._compute_fingerprint(desired_target_state.data)
 
         # Skip if unchanged
         if not prev_may_be_missing and all(
@@ -296,7 +295,7 @@ class _RowHandler(coco.TargetHandler[_RowKey, _RowSpec, _RowTrackingRecord]):
             return None
 
         return coco.TargetReconcileOutput(
-            action=_RowAction(key=key, data=desired_state.data),
+            action=_RowAction(key=key, data=desired_target_state.data),
             sink=self._sink,
             tracking_record=_RowTrackingRecord(fingerprint=target_fp),
         )
@@ -321,7 +320,7 @@ Wrap the provider in a user-friendly API:
 class TableTarget:
     """User-facing API for declaring rows."""
 
-    def __init__(self, provider: coco.TargetStateProvider[_RowKey, _RowSpec, None]):
+    def __init__(self, provider: coco.TargetStateProvider[_RowSpec, None]):
         self._provider = provider
 
     def declare_row(self, *, row: dict[str, Any], key: tuple[str, ...]) -> None:
@@ -359,13 +358,13 @@ When a container target undergoes certain changes, the child target states may b
 Set `child_invalidation` in the **parent handler's** `reconcile()` method when you detect that the container itself has changed in a way that affects its children:
 
 ```python
-class _DirHandler(coco.TargetHandler[_DirKey, _DirSpec, _DirTrackingRecord]):
-    def reconcile(self, key, desired_state, prev_possible_records, prev_may_be_missing, /):
+class _DirHandler(coco.TargetHandler[_DirSpec, _DirTrackingRecord, _EntryHandler]):
+    def reconcile(self, key, desired_target_state, prev_possible_records, prev_may_be_missing, /):
         # Detect if the container change is destructive or lossy
         invalidation = None
-        if self._is_destructive_change(desired_state, prev_possible_records):
+        if self._is_destructive_change(desired_target_state, prev_possible_records):
             invalidation = "destructive"
-        elif self._is_lossy_change(desired_state, prev_possible_records):
+        elif self._is_lossy_change(desired_target_state, prev_possible_records):
             invalidation = "lossy"
 
         return coco.TargetReconcileOutput(
@@ -382,17 +381,17 @@ The parent handler reconciles the container itself. The child handler reconciles
 
 ```python
 # Parent handler for directory
-class _DirHandler(coco.TargetHandler[_DirKey, _DirSpec, _DirTrackingRecord]):
-    def reconcile(self, key, desired_state, prev_possible_records, prev_may_be_missing, /):
+class _DirHandler(coco.TargetHandler[_DirSpec, _DirTrackingRecord, _EntryHandler]):
+    def reconcile(self, key, desired_target_state, prev_possible_records, prev_may_be_missing, /):
         # Reconcile the directory itself
         ...
 
 # Child handler for entries within a directory
-class _EntryHandler(coco.TargetHandler[str, _EntrySpec, _EntryTrackingRecord]):
+class _EntryHandler(coco.TargetHandler[_EntrySpec, _EntryTrackingRecord]):
     def __init__(self, base_path: pathlib.Path):
         self._base_path = base_path
 
-    def reconcile(self, key, desired_state, prev_possible_records, prev_may_be_missing, /):
+    def reconcile(self, key, desired_target_state, prev_possible_records, prev_may_be_missing, /):
         # Reconcile files/subdirs within the directory
         path = self._base_path / key
         ...
@@ -427,7 +426,7 @@ The user-facing API uses `declare_target_state_with_child()` and exposes methods
 class DirTarget:
     """User-facing API for declaring files in a directory."""
 
-    def __init__(self, provider: coco.TargetStatesProvider[str, _EntrySpec, None]):
+    def __init__(self, provider: coco.TargetStateProvider[_EntrySpec, None]):
         self._provider = provider
 
     def declare_file(self, filename: str, content: bytes) -> None:
@@ -443,8 +442,8 @@ class DirTarget:
 def declare_dir_target(path: pathlib.Path) -> DirTarget:
     """Declare a directory target and return an API for declaring files."""
     parent_ts = _root_provider.target_state(
-        key=_DirKey(path=str(path)),
-        spec=_DirSpec(),
+        key=str(path),
+        value=_DirSpec(),
     )
     # Child provider is pending until parent sink runs
     child_provider = coco.declare_target_state_with_child(parent_ts)
@@ -514,7 +513,7 @@ class _VectorIndexHandler:
                 else:
                     await conn.execute(f'CREATE INDEX "{action.name}" ...')
 
-    def reconcile(self, key, desired_state, prev_possible_records, prev_may_be_missing, /):
+    def reconcile(self, key, desired_target_state, prev_possible_records, prev_may_be_missing, /):
         # Standard reconcile pattern — compare fingerprints, return action or None
         ...
 ```
@@ -568,6 +567,34 @@ When an attachment has a teardown step (like `DROP INDEX`), store the full spec 
 :::
 
 ## Best practices
+
+### Use `ContextKey` for external resource identity
+
+When a target connector manages state in an external resource (a database, a search index, an object store, etc.), use a `ContextKey` string as part of the target state key — not connection parameters like host, port, or credentials.
+
+Target state keys must be stable across runs for correct reconciliation. CocoIndex uses keys to match current declarations with previously tracked states. If the key is stable, previously tracked states are associated with the current target, so CocoIndex can correctly reconcile — e.g., deleting rows that are no longer declared. If the key changes (because a connection parameter changed), CocoIndex cannot associate previous tracked states with the current target, and treats the target as being in a cleared state — losing the ability to clean up old data.
+
+`ContextKey` solves this by providing a user-defined stable logical name (e.g., `"my_pg"`) that is decoupled from transient connection details:
+
+```python
+# User creates a stable logical name for the resource
+db = coco.ContextKey[asyncpg.Pool]("my_pg")
+
+# Target connector uses db.key (the string "my_pg") in the target state key
+class _TableKey(NamedTuple):
+    db_key: str            # Stable — from ContextKey.key
+    schema_name: str | None
+    table_name: str
+
+key = _TableKey(db_key=db.key, schema_name=schema_name, table_name=table_name)
+
+# At action time, resolve the live connection from context_provider
+pool = context_provider.get(key.db_key, asyncpg.Pool)
+```
+
+This way, changing a password, switching replicas, or rotating credentials won't invalidate tracked states or break reconciliation.
+
+See `_TableKey` in [`cocoindex/connectors/postgres/_target.py`](https://github.com/cocoindex-io/cocoindex/blob/v1/python/cocoindex/connectors/postgres/_target.py) and [`cocoindex/connectors/surrealdb/_target.py`](https://github.com/cocoindex-io/cocoindex/blob/v1/python/cocoindex/connectors/surrealdb/_target.py) for reference implementations.
 
 ### Idempotent actions
 
@@ -646,7 +673,6 @@ from cocoindex.connectorkits.fingerprint import fingerprint_bytes
 
 
 # Types
-_FileName = str
 _FileContent = bytes
 _FileFingerprint = bytes
 
@@ -675,7 +701,7 @@ _file_sink = coco.TargetActionSink[_FileAction, None].from_fn(_apply_actions)
 
 
 # Handler
-class _FileHandler(coco.TargetHandler[_FileName, _FileContent, _FileTrackingRecord]):
+class _FileHandler(coco.TargetHandler[_FileContent, _FileTrackingRecord]):
     __slots__ = ("_base_path",)
     _base_path: pathlib.Path
 
@@ -684,15 +710,15 @@ class _FileHandler(coco.TargetHandler[_FileName, _FileContent, _FileTrackingReco
 
     def reconcile(
         self,
-        key: _FileName,
-        desired_state: _FileContent | coco.NonExistenceType,
+        key: coco.StableKey,
+        desired_target_state: _FileContent | coco.NonExistenceType,
         prev_possible_records: Collection[_FileTrackingRecord],
         prev_may_be_missing: bool,
         /,
     ) -> coco.TargetReconcileOutput[_FileAction, _FileTrackingRecord] | None:
         path = self._base_path / key
 
-        if coco.is_non_existence(desired_state):
+        if coco.is_non_existence(desired_target_state):
             if not prev_possible_records and not prev_may_be_missing:
                 return None
             return coco.TargetReconcileOutput(
@@ -701,7 +727,7 @@ class _FileHandler(coco.TargetHandler[_FileName, _FileContent, _FileTrackingReco
                 tracking_record=coco.NON_EXISTENCE,
             )
 
-        target_fp = fingerprint_bytes(desired_state)
+        target_fp = fingerprint_bytes(desired_target_state)
 
         if not prev_may_be_missing and all(
             prev.fingerprint == target_fp for prev in prev_possible_records
@@ -709,7 +735,7 @@ class _FileHandler(coco.TargetHandler[_FileName, _FileContent, _FileTrackingReco
             return None
 
         return coco.TargetReconcileOutput(
-            action=_FileAction(path=path, content=desired_state),
+            action=_FileAction(path=path, content=desired_target_state),
             sink=_file_sink,
             tracking_record=_FileTrackingRecord(fingerprint=target_fp),
         )
