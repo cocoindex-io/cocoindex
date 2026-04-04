@@ -189,7 +189,7 @@ We distinguish between **internal modules** (under packages with `_` prefix, e.g
   * Internal package imports: `from cocoindex.resources import schema as _schema`
 * Exception: `TYPE_CHECKING` imports for type hints don't need prefixing
 
-**Internal modules** (e.g. `cocoindex/_internal/component_ctx.py`):
+**Internal modules** (e.g. `cocoindex/_internal/component_ctx.py`, `**/_target.py`):
 
 * Less strict since users shouldn't import these directly
 * Standard library and internal imports don't need underscore prefix
