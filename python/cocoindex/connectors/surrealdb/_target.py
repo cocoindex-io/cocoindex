@@ -754,7 +754,7 @@ class _TableSpec:
     is_relation: bool
     from_tables: tuple[str, ...] | None  # sorted table names for FROM clause
     to_tables: tuple[str, ...] | None  # sorted table names for TO clause
-    managed_by: Literal["system", "user"] = "system"
+    managed_by: statediff.ManagedBy = statediff.ManagedBy.SYSTEM
 
 
 @dataclass(frozen=True, slots=True)
@@ -1284,7 +1284,7 @@ def table_target(
     table_name: str,
     table_schema: TableSchema[RowT] | None = None,
     *,
-    managed_by: Literal["system", "user"] = "system",
+    managed_by: statediff.ManagedBy = statediff.ManagedBy.SYSTEM,
 ) -> coco.TargetState[_RecordHandler]:
     """Create a TargetState for a SurrealDB table."""
     _validate_identifier(table_name, "table name")
@@ -1304,7 +1304,7 @@ def declare_table_target(
     table_name: str,
     table_schema: TableSchema[RowT] | None = None,
     *,
-    managed_by: Literal["system", "user"] = "system",
+    managed_by: statediff.ManagedBy = statediff.ManagedBy.SYSTEM,
 ) -> TableTarget[RowT, coco.PendingS]:
     """Declare a table target and return a pending TableTarget."""
     provider = coco.declare_target_state_with_child(
@@ -1318,7 +1318,7 @@ async def mount_table_target(
     table_name: str,
     table_schema: TableSchema[RowT] | None = None,
     *,
-    managed_by: Literal["system", "user"] = "system",
+    managed_by: statediff.ManagedBy = statediff.ManagedBy.SYSTEM,
 ) -> TableTarget[RowT]:
     """Mount a table target and return a ready-to-use TableTarget."""
     provider = await coco.mount_target(
@@ -1334,7 +1334,7 @@ def relation_target(
     to_table: TableTarget[Any] | Collection[TableTarget[Any]],
     table_schema: TableSchema[RowT] | None = None,
     *,
-    managed_by: Literal["system", "user"] = "system",
+    managed_by: statediff.ManagedBy = statediff.ManagedBy.SYSTEM,
 ) -> coco.TargetState[_RecordHandler]:
     """Create a TargetState for a SurrealDB relation table."""
     _validate_identifier(table_name, "relation table name")
@@ -1362,7 +1362,7 @@ def declare_relation_target(
     to_table: TableTarget[Any] | Collection[TableTarget[Any]],
     table_schema: TableSchema[RowT] | None = None,
     *,
-    managed_by: Literal["system", "user"] = "system",
+    managed_by: statediff.ManagedBy = statediff.ManagedBy.SYSTEM,
 ) -> RelationTarget[RowT, coco.PendingS]:
     """Declare a relation target and return a pending RelationTarget."""
     from_names = _normalize_table_names(from_table)
@@ -1387,7 +1387,7 @@ async def mount_relation_target(
     to_table: TableTarget[Any] | Collection[TableTarget[Any]],
     table_schema: TableSchema[RowT] | None = None,
     *,
-    managed_by: Literal["system", "user"] = "system",
+    managed_by: statediff.ManagedBy = statediff.ManagedBy.SYSTEM,
 ) -> RelationTarget[RowT]:
     """Mount a relation target and return a ready-to-use RelationTarget."""
     from_names = _normalize_table_names(from_table)

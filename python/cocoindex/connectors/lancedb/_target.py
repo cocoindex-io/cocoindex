@@ -489,7 +489,7 @@ class _TableSpec:
     """Specification for a LanceDB table."""
 
     table_schema: TableSchema[Any]
-    managed_by: Literal["system", "user"] = "system"
+    managed_by: statediff.ManagedBy = statediff.ManagedBy.SYSTEM
 
 
 @unpickle_safe
@@ -793,7 +793,7 @@ def table_target(
     table_name: str,
     table_schema: TableSchema[RowT],
     *,
-    managed_by: Literal["system", "user"] = "system",
+    managed_by: statediff.ManagedBy = statediff.ManagedBy.SYSTEM,
 ) -> coco.TargetState[_RowHandler]:
     """
     Create a TargetState for a LanceDB table target.
@@ -823,7 +823,7 @@ def declare_table_target(
     table_name: str,
     table_schema: TableSchema[RowT],
     *,
-    managed_by: Literal["system", "user"] = "system",
+    managed_by: statediff.ManagedBy = statediff.ManagedBy.SYSTEM,
 ) -> TableTarget[RowT, coco.PendingS]:
     """
     Create a TableTarget for writing rows to a LanceDB table.
@@ -849,7 +849,7 @@ async def mount_table_target(
     table_name: str,
     table_schema: TableSchema[RowT],
     *,
-    managed_by: Literal["system", "user"] = "system",
+    managed_by: statediff.ManagedBy = statediff.ManagedBy.SYSTEM,
 ) -> TableTarget[RowT]:
     """
     Mount a table target and return a ready-to-use TableTarget.

@@ -271,7 +271,7 @@ _COLLECTION_KEY_CHECKER = TypeChecker(tuple[str, str])
 @dataclass
 class _CollectionSpec:
     schema: CollectionSchema
-    managed_by: Literal["system", "user"] = "system"
+    managed_by: statediff.ManagedBy = statediff.ManagedBy.SYSTEM
 
 
 @unpickle_safe
@@ -511,7 +511,7 @@ def collection_target(
     collection_name: str,
     schema: CollectionSchema,
     *,
-    managed_by: Literal["system", "user"] = "system",
+    managed_by: statediff.ManagedBy = statediff.ManagedBy.SYSTEM,
 ) -> "coco.TargetState[_PointHandler]":
     """
     Create a TargetState for a Qdrant collection target.
@@ -538,7 +538,7 @@ def declare_collection_target(
     collection_name: str,
     schema: CollectionSchema,
     *,
-    managed_by: Literal["system", "user"] = "system",
+    managed_by: statediff.ManagedBy = statediff.ManagedBy.SYSTEM,
 ) -> "CollectionTarget[coco.PendingS]":
     """Declare a Qdrant collection target.
 
@@ -562,7 +562,7 @@ async def mount_collection_target(
     collection_name: str,
     schema: CollectionSchema,
     *,
-    managed_by: Literal["system", "user"] = "system",
+    managed_by: statediff.ManagedBy = statediff.ManagedBy.SYSTEM,
 ) -> "CollectionTarget[coco.ResolvedS]":
     """
     Mount a collection target and return a ready-to-use CollectionTarget.
