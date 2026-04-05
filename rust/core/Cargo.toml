@@ -12,7 +12,7 @@ anyhow = { workspace = true }
 bytes = { workspace = true }
 env_logger = { workspace = true }
 heed = "0.22.0"
-indicatif = { workspace = true }
+nix = { workspace = true }
 storekey = { workspace = true }
 serde = { workspace = true, features = ["rc", "derive"] }
 tokio = { workspace = true }

@@ -33,7 +33,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # type: ignore[overrid
     async with coco.runtime():
         # Initialize client for API endpoints
         _client = qdrant.create_client(image_search.QDRANT_URL, prefer_grpc=True)
-        await image_search.app.update(report_to_stdout=True)
+        await coco.show_progress(image_search.app.update())
         yield
         _client = None
 

@@ -127,20 +127,20 @@ async def test_watch_with_throttle() -> None:
     assert snapshots[-1].status == coco.UpdateStatus.READY
 
 
-# --- F3: report_to_stdout with watch ---
+# --- F3: show_progress with watch ---
 
 
 @pytest.mark.asyncio
-async def test_report_to_stdout_with_watch() -> None:
+async def test_show_progress_with_watch() -> None:
     GlobalDictTarget.store.clear()
     _source_data.clear()
     _source_data["a"] = 1
 
     app = coco.App(
-        coco.AppConfig(name="test_report_to_stdout_with_watch", environment=coco_env),
+        coco.AppConfig(name="test_show_progress_with_watch", environment=coco_env),
         _process_items,
     )
-    handle = app.update(report_to_stdout=True)
+    handle = app.update()
     snapshots = []
     async for snapshot in handle.watch():
         snapshots.append(snapshot)
