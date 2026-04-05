@@ -199,7 +199,7 @@ async def query() -> None:
 
 async def update_index() -> None:
     async with coco.runtime():
-        await app.update(report_to_stdout=True)
+        await coco.show_progress(app.update())
 
 
 if __name__ == "__main__":

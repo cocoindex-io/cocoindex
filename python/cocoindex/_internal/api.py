@@ -17,7 +17,7 @@ from typing import (
 )
 
 from . import core, environment
-from .app import App, AppConfig, UpdateHandle
+from .app import App, AppConfig, DropHandle, UpdateHandle, show_progress
 from .update_stats import ComponentStats, UpdateSnapshot, UpdateStats, UpdateStatus
 from .pending_marker import ResolvesTo
 from .component_ctx import (
@@ -594,7 +594,9 @@ __all__ = [
     # .app
     "App",
     "AppConfig",
+    "DropHandle",
     "UpdateHandle",
+    "show_progress",
     # .update_stats
     "ComponentStats",
     "UpdateSnapshot",

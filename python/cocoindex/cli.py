@@ -611,6 +611,8 @@ def update(
     app = _load_app(app_target)
 
     async def _do() -> None:
+        from cocoindex._internal.app import show_progress
+
         try:
             env = await app._environment._get_env()
             if not quiet:
@@ -630,24 +632,16 @@ def update(
 
                 persisted_names = _get_persisted_app_names(env)
                 if app._name in persisted_names:
-                    await app.drop(report_to_stdout=not quiet)
+                    await app.drop()
 
             handle = app.update(
-                report_to_stdout=not quiet,
                 full_reprocess=full_reprocess,
                 live=live,
             )
-            await handle.result()
-
-            if live:
-                if not quiet:
-                    print("Live mode active. Press Ctrl+C to stop.")
-                # Block until interrupted — live components continue in background.
-                stop_event = asyncio.Event()
-                try:
-                    await stop_event.wait()
-                except asyncio.CancelledError:
-                    pass
+            if not quiet:
+                await show_progress(handle)
+            else:
+                await handle.result()
         finally:
             await _stop_all_environments()
 
@@ -713,7 +707,7 @@ def drop(app_target: str, force: bool = False, quiet: bool = False) -> None:
                         click.echo("Drop operation aborted.")
                     return
 
-            await app.drop(report_to_stdout=not quiet)
+            await app.drop()
             if not quiet:
                 click.echo(
                     f"Dropped app '{app._name}' from environment '{env.name}' and reverted its target states."

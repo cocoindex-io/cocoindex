@@ -8,6 +8,7 @@ pub mod id_sequencer;
 pub mod live_component;
 pub mod logic_registry;
 pub mod profile;
+pub mod progress_display;
 pub mod runtime;
 pub mod stats;
 pub mod target_state;

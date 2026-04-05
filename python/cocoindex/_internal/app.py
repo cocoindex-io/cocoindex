@@ -140,6 +140,64 @@ class UpdateHandle(Generic[R]):
         return self.result().__await__()
 
 
+class DropHandle:
+    """Handle for a running or completed drop operation."""
+
+    def __init__(self, core_handle: core.DropHandle) -> None:
+        self._core_handle = core_handle
+
+    @staticmethod
+    def _make_update_stats(raw: dict[str, dict[str, int]]) -> UpdateStats:
+        by_component = {name: ComponentStats(**group) for name, group in raw.items()}
+        return UpdateStats(by_component=by_component)
+
+    def stats(self) -> UpdateStats | None:
+        """Returns a snapshot of the latest stats."""
+        version, ready, raw = self._core_handle.stats_snapshot()
+        if not raw:
+            return None
+        return self._make_update_stats(raw)
+
+    async def watch(self) -> AsyncIterator[UpdateSnapshot[None]]:
+        """Async iterator that yields progress snapshots until completion."""
+        last_version = 0
+        while True:
+            version = await self._core_handle.changed()
+
+            if version >= _TERMINATED_VERSION:
+                version, ready, raw = self._core_handle.stats_snapshot()
+                if raw:
+                    stats = self._make_update_stats(raw)
+                    yield UpdateSnapshot(
+                        stats=stats, status=UpdateStatus.READY, result=None
+                    )
+                return
+
+            version, ready, raw = self._core_handle.stats_snapshot()
+            if version == last_version:
+                continue
+            last_version = version
+
+            if raw:
+                stats = self._make_update_stats(raw)
+                status = UpdateStatus.READY if ready else UpdateStatus.RUNNING
+                yield UpdateSnapshot(stats=stats, status=status, result=None)
+
+    async def result(self) -> None:
+        """Await the drop completion. Raises on error."""
+        await self._core_handle.result()
+
+    def __await__(self) -> Any:
+        return self.result().__await__()
+
+
+async def show_progress(handle: UpdateHandle[R]) -> R:
+    """Run the operation with progress display. Consumes the handle."""
+    core_handle = await handle._ensure_started()
+    pyvalue: Any = await core.show_progress(core_handle)
+    return pyvalue.get(fn_ret_deserializer(handle._main_fn))  # type: ignore[no-any-return]
+
+
 @dataclass(frozen=True)
 class AppConfig:
     name: str
@@ -241,7 +299,6 @@ class App(Generic[P, R]):
     def update(
         self,
         *,
-        report_to_stdout: bool = False,
         full_reprocess: bool = False,
         live: bool = False,
     ) -> UpdateHandle[R]:
@@ -252,7 +309,6 @@ class App(Generic[P, R]):
         for backward compatibility.
 
         Args:
-            report_to_stdout: If True, periodically report processing stats to stdout.
             full_reprocess: If True, reprocess everything and invalidate existing caches.
             live: If True, run in live mode (live components continue processing
                 after mark_ready).
@@ -269,7 +325,6 @@ class App(Generic[P, R]):
             )
             return core_app.update_async(
                 processor,
-                report_to_stdout=report_to_stdout,
                 full_reprocess=full_reprocess,
                 live=live,
                 host_ctx=env._context_provider,
@@ -303,28 +358,24 @@ class App(Generic[P, R]):
         )
         pyvalue: Any = core_app.update(
             processor,
-            report_to_stdout=report_to_stdout,
             full_reprocess=full_reprocess,
-            live=live,
             host_ctx=env._context_provider,
+            report_to_stdout=report_to_stdout,
+            live=live,
         )
         return pyvalue.get(fn_ret_deserializer(self._main_fn))  # type: ignore[no-any-return]
 
-    async def drop(self, *, report_to_stdout: bool = False) -> None:
+    async def drop(self) -> None:
         """
         Drop the app asynchronously, reverting all its target states and clearing its database.
 
         This will:
         - Delete all target states created by the app (e.g., drop tables, delete rows)
         - Clear the app's internal state database
-
-        Args:
-            report_to_stdout: If True, periodically report processing stats to stdout.
         """
         env, core_app = await self._get_core_env_app()
-        await core_app.drop_async(
-            report_to_stdout=report_to_stdout, host_ctx=env._context_provider
-        )
+        drop_handle = core_app.drop_async(env._context_provider)
+        await drop_handle.result()
 
     def drop_blocking(self, *, report_to_stdout: bool = False) -> None:
         """
@@ -338,4 +389,4 @@ class App(Generic[P, R]):
             report_to_stdout: If True, periodically report processing stats to stdout.
         """
         env, core_app = self._get_core_env_app_sync()
-        core_app.drop(report_to_stdout=report_to_stdout, host_ctx=env._context_provider)
+        core_app.drop(env._context_provider, report_to_stdout=report_to_stdout)

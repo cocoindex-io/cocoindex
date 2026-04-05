@@ -35,6 +35,7 @@ hashlink = "0.11"
 hex = "0.4.3"
 indexmap = { version = "2.12.1", features = ["serde"] }
 indicatif = "0.17.11"
+nix = { version = "0.30", features = ["fs", "term"] }
 indoc = "2.0.7"
 itertools = "0.14.0"
 log = "0.4.28"

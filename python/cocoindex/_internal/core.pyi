@@ -163,6 +163,14 @@ class UpdateHandle:
     def changed(self) -> Coroutine[Any, Any, int]: ...
     def result(self) -> Coroutine[Any, Any, StoredValue]: ...
 
+# --- DropHandle ---
+class DropHandle:
+    def stats_snapshot(self) -> tuple[int, bool, dict[str, dict[str, int]]]: ...
+    def changed(self) -> Coroutine[Any, Any, int]: ...
+    def result(self) -> Coroutine[Any, Any, None]: ...
+
+def show_progress(handle: UpdateHandle) -> Coroutine[Any, Any, StoredValue]: ...
+
 # --- App ---
 class App:
     def __new__(
@@ -171,21 +179,20 @@ class App:
     def update(
         self,
         root_processor: ComponentProcessor[T_co],
-        report_to_stdout: bool = False,
         full_reprocess: bool = False,
-        live: bool = False,
         host_ctx: Any = None,
+        report_to_stdout: bool = False,
+        live: bool = False,
     ) -> StoredValue: ...
     def update_async(
         self,
         root_processor: ComponentProcessor[T_co],
-        report_to_stdout: bool = False,
         full_reprocess: bool = False,
         live: bool = False,
         host_ctx: Any = None,
     ) -> UpdateHandle: ...
-    def drop(self, report_to_stdout: bool, host_ctx: Any) -> None: ...
-    def drop_async(self, report_to_stdout: bool, host_ctx: Any) -> Coroutine[Any, Any, None]: ...
+    def drop(self, host_ctx: Any = None, report_to_stdout: bool = False) -> None: ...
+    def drop_async(self, host_ctx: Any = None) -> DropHandle: ...
 
 # --- LiveComponentController ---
 class LiveComponentController:
