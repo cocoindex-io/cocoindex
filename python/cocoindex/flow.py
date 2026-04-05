@@ -381,6 +381,20 @@ class DataCollector:
     def collect(self, **kwargs: Any) -> None:
         """
         Collect data into the collector.
+
+        Values can be ``DataSlice`` objects or plain Python values
+        (``str``, ``int``, ``float``, etc.). Plain values are automatically
+        wrapped as constant ``DataSlice`` instances, which is useful for
+        tagging rows with static metadata like source labels.
+
+        Example::
+
+            collector.collect(
+                source="my_label",          # plain str -> constant DataSlice
+                filename=doc["filename"],   # DataSlice from the pipeline
+                text=chunk["text"],         # DataSlice from the pipeline
+                embedding=chunk["embedding"],
+            )
         """
         regular_kwargs = []
         auto_uuid_field = None
