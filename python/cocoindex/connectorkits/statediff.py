@@ -92,7 +92,7 @@ class TrackingRecordTransition(_Generic[_TrackingRecordT], _NamedTuple):
     prev_may_be_missing: bool
 
 
-ManagedBy = _Literal["system", "user"]
+from cocoindex.connectorkits.target import ManagedBy as ManagedBy
 
 
 @_unpickle_safe

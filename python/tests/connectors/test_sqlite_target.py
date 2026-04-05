@@ -15,6 +15,7 @@ from numpy.typing import NDArray
 
 import cocoindex as coco
 from cocoindex._internal.context_keys import ContextProvider
+from cocoindex.connectorkits import target
 from cocoindex.connectors import sqlite
 from cocoindex.resources.schema import VectorSchema
 
@@ -528,13 +529,13 @@ def test_user_managed_table(sqlite_db: tuple[sqlite.ManagedConnection, Path]) ->
     test_env = make_test_env(managed_conn, "test_user_managed_table")
 
     async def declare_user_managed_rows() -> None:
-        table = await coco.use_mount(
+        table: sqlite.TableTarget[SimpleRow] = await coco.use_mount(
             coco.component_subpath("setup", "table"),
             sqlite.declare_table_target,
             SQLITE_DB,
             "user_managed",
             await sqlite.TableSchema.from_class(SimpleRow, primary_key=["id"]),
-            managed_by="user",
+            managed_by=target.ManagedBy.USER,
         )
 
         for row in user_rows:

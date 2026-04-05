@@ -39,7 +39,7 @@ except ImportError as e:
 import numpy as np
 
 import cocoindex as coco
-from cocoindex.connectorkits import statediff
+from cocoindex.connectorkits import statediff, target
 from cocoindex.connectorkits.fingerprint import fingerprint_object
 from cocoindex._internal.datatype import (
     AnyType,
@@ -783,7 +783,7 @@ class _TableSpec:
     """Specification for a PostgreSQL table."""
 
     table_schema: TableSchema[Any]
-    managed_by: Literal["system", "user"] = "system"
+    managed_by: target.ManagedBy = target.ManagedBy.SYSTEM
 
 
 @unpickle_safe
@@ -1257,7 +1257,7 @@ def table_target(
     table_schema: TableSchema[RowT],
     *,
     pg_schema_name: str | None = None,
-    managed_by: Literal["system", "user"] = "system",
+    managed_by: target.ManagedBy = target.ManagedBy.SYSTEM,
 ) -> coco.TargetState[_RowHandler]:
     """
     Create a TargetState for a PostgreSQL table target.
@@ -1293,7 +1293,7 @@ def declare_table_target(
     table_schema: TableSchema[RowT],
     *,
     pg_schema_name: str | None = None,
-    managed_by: Literal["system", "user"] = "system",
+    managed_by: target.ManagedBy = target.ManagedBy.SYSTEM,
 ) -> TableTarget[RowT, coco.PendingS]:
     """
     Create a TableTarget for writing rows to a PostgreSQL table.
@@ -1327,7 +1327,7 @@ async def mount_table_target(
     table_schema: TableSchema[RowT],
     *,
     pg_schema_name: str | None = None,
-    managed_by: Literal["system", "user"] = "system",
+    managed_by: target.ManagedBy = target.ManagedBy.SYSTEM,
 ) -> TableTarget[RowT]:
     """
     Mount a table target and return a ready-to-use TableTarget.

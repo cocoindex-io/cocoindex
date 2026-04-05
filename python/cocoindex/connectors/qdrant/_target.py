@@ -32,7 +32,7 @@ except ImportError as e:
     ) from e
 
 import cocoindex as coco
-from cocoindex.connectorkits import statediff
+from cocoindex.connectorkits import statediff, target
 from cocoindex.connectorkits.fingerprint import fingerprint_object
 from cocoindex._internal.datatype import TypeChecker
 from cocoindex._internal.serde import unpickle_safe
@@ -271,7 +271,7 @@ _COLLECTION_KEY_CHECKER = TypeChecker(tuple[str, str])
 @dataclass
 class _CollectionSpec:
     schema: CollectionSchema
-    managed_by: Literal["system", "user"] = "system"
+    managed_by: target.ManagedBy = target.ManagedBy.SYSTEM
 
 
 @unpickle_safe
@@ -511,7 +511,7 @@ def collection_target(
     collection_name: str,
     schema: CollectionSchema,
     *,
-    managed_by: Literal["system", "user"] = "system",
+    managed_by: target.ManagedBy = target.ManagedBy.SYSTEM,
 ) -> "coco.TargetState[_PointHandler]":
     """
     Create a TargetState for a Qdrant collection target.
@@ -538,7 +538,7 @@ def declare_collection_target(
     collection_name: str,
     schema: CollectionSchema,
     *,
-    managed_by: Literal["system", "user"] = "system",
+    managed_by: target.ManagedBy = target.ManagedBy.SYSTEM,
 ) -> "CollectionTarget[coco.PendingS]":
     """Declare a Qdrant collection target.
 
@@ -562,7 +562,7 @@ async def mount_collection_target(
     collection_name: str,
     schema: CollectionSchema,
     *,
-    managed_by: Literal["system", "user"] = "system",
+    managed_by: target.ManagedBy = target.ManagedBy.SYSTEM,
 ) -> "CollectionTarget[coco.ResolvedS]":
     """
     Mount a collection target and return a ready-to-use CollectionTarget.

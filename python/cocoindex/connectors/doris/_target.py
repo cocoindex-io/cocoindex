@@ -46,7 +46,7 @@ import numpy as np
 from typing_extensions import TypeVar
 
 import cocoindex as coco
-from cocoindex.connectorkits import statediff
+from cocoindex.connectorkits import statediff, target
 from cocoindex.connectorkits.fingerprint import fingerprint_object
 from cocoindex._internal.datatype import (
     AnyType,
@@ -942,7 +942,7 @@ _TABLE_KEY_CHECKER = TypeChecker(tuple[str, str])
 @dataclass
 class _TableSpec:
     table_schema: TableSchema[Any]
-    managed_by: Literal["system", "user"] = "system"
+    managed_by: target.ManagedBy = target.ManagedBy.SYSTEM
     vector_indexes: list[VectorIndexDef] | None = None
     inverted_indexes: list[InvertedIndexDef] | None = None
 
@@ -1191,7 +1191,7 @@ def table_target(
     table_name: str,
     table_schema: TableSchema[RowT],
     *,
-    managed_by: Literal["system", "user"] = "system",
+    managed_by: target.ManagedBy = target.ManagedBy.SYSTEM,
     vector_indexes: list[VectorIndexDef] | None = None,
     inverted_indexes: list[InvertedIndexDef] | None = None,
 ) -> coco.TargetState[_RowHandler]:
@@ -1210,7 +1210,7 @@ def declare_table_target(
     table_name: str,
     table_schema: TableSchema[RowT],
     *,
-    managed_by: Literal["system", "user"] = "system",
+    managed_by: target.ManagedBy = target.ManagedBy.SYSTEM,
     vector_indexes: list[VectorIndexDef] | None = None,
     inverted_indexes: list[InvertedIndexDef] | None = None,
 ) -> "DorisTableTarget[RowT, coco.PendingS]":
@@ -1232,7 +1232,7 @@ async def mount_table_target(
     table_name: str,
     table_schema: TableSchema[RowT],
     *,
-    managed_by: Literal["system", "user"] = "system",
+    managed_by: target.ManagedBy = target.ManagedBy.SYSTEM,
     vector_indexes: list[VectorIndexDef] | None = None,
     inverted_indexes: list[InvertedIndexDef] | None = None,
 ) -> "DorisTableTarget[RowT]":
