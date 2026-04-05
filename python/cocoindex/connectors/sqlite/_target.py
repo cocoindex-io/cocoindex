@@ -34,7 +34,7 @@ from typing_extensions import TypeVar
 import numpy as np
 
 import cocoindex as coco
-from cocoindex.connectorkits import statediff
+from cocoindex.connectorkits import statediff, target
 from cocoindex.connectorkits.fingerprint import fingerprint_object
 from cocoindex._internal.rwlock import RWLock
 from cocoindex._internal.serde import unpickle_safe
@@ -586,7 +586,7 @@ class _TableSpec:
     """Specification for a SQLite table."""
 
     table_schema: TableSchema[Any]
-    managed_by: statediff.ManagedBy = statediff.ManagedBy.SYSTEM
+    managed_by: target.ManagedBy = target.ManagedBy.SYSTEM
     virtual_table_def: Vec0TableDef | None = None
 
 
@@ -1114,7 +1114,7 @@ def table_target(
     table_name: str,
     table_schema: TableSchema[RowT],
     *,
-    managed_by: statediff.ManagedBy = statediff.ManagedBy.SYSTEM,
+    managed_by: target.ManagedBy = target.ManagedBy.SYSTEM,
     virtual_table_def: Vec0TableDef | None = None,
 ) -> "coco.TargetState[_RowHandler]":
     """
@@ -1151,7 +1151,7 @@ def declare_table_target(
     table_name: str,
     table_schema: TableSchema[RowT],
     *,
-    managed_by: statediff.ManagedBy = statediff.ManagedBy.SYSTEM,
+    managed_by: target.ManagedBy = target.ManagedBy.SYSTEM,
     virtual_table_def: Vec0TableDef | None = None,
 ) -> "TableTarget[RowT, coco.PendingS]":
     """
@@ -1198,7 +1198,7 @@ async def mount_table_target(
     table_name: str,
     table_schema: TableSchema[RowT],
     *,
-    managed_by: statediff.ManagedBy = statediff.ManagedBy.SYSTEM,
+    managed_by: target.ManagedBy = target.ManagedBy.SYSTEM,
     virtual_table_def: Vec0TableDef | None = None,
 ) -> "TableTarget[RowT]":
     """

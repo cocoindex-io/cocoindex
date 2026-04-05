@@ -15,7 +15,7 @@ from numpy.typing import NDArray
 
 import cocoindex as coco
 from cocoindex._internal.context_keys import ContextProvider
-from cocoindex.connectorkits import statediff
+from cocoindex.connectorkits import target
 from cocoindex.connectors import sqlite
 from cocoindex.resources.schema import VectorSchema
 
@@ -535,7 +535,7 @@ def test_user_managed_table(sqlite_db: tuple[sqlite.ManagedConnection, Path]) ->
             SQLITE_DB,
             "user_managed",
             await sqlite.TableSchema.from_class(SimpleRow, primary_key=["id"]),
-            managed_by=statediff.ManagedBy.USER,
+            managed_by=target.ManagedBy.USER,
         )
 
         for row in user_rows:
