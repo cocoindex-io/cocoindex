@@ -501,8 +501,13 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
             match result {
                 Ok(()) => state.ensure_mark_ready(),
                 Err(e) => {
-                    if !state.is_ready() {
-                        // Error before mark_ready — drop the guard to signal error.
+                    // Check if this is a cancellation — either the token was
+                    // cancelled (normal shutdown) or the error itself is a
+                    // cancellation (e.g. Python CancelledError, which can race
+                    // ahead of token cancellation on KeyboardInterrupt).
+                    if token.is_cancelled() || e.is_cancelled() {
+                        state.ensure_mark_ready();
+                    } else if !state.is_ready() {
                         state.resolve_ready_with_error(e);
                     } else {
                         error!("process_live failed after mark_ready: {e:?}");
