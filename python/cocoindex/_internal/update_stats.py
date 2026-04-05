@@ -8,7 +8,7 @@ R = TypeVar("R")
 
 class UpdateStatus(_enum.StrEnum):
     RUNNING = "running"
-    DONE = "done"
+    READY = "ready"
 
 
 class ComponentStats(NamedTuple):

@@ -83,8 +83,8 @@ For streaming progress, use `watch()` which yields `UpdateSnapshot` objects as s
 handle = app.update()
 async for snapshot in handle.watch():
     print(snapshot.stats.total.num_finished, "items processed")
-    # snapshot.status is UpdateStatus.RUNNING or UpdateStatus.DONE
-    # snapshot.result is set when status is DONE
+    # snapshot.status is UpdateStatus.RUNNING or UpdateStatus.READY
+    # snapshot.result is set in the final snapshot when the iterator ends
 ```
 
 When you update an App, CocoIndex:

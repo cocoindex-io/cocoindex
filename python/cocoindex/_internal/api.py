@@ -253,7 +253,7 @@ async def use_mount(
     processor = create_core_component_processor(
         processor_fn, parent_ctx._env, child_path, args, kwargs
     )
-    core_handle = await core.mount_run_async(
+    core_handle = await core.use_mount_async(
         processor,
         child_path,
         parent_ctx._core_processor_ctx,

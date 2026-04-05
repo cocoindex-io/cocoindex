@@ -9,7 +9,8 @@ use tokio::sync::watch;
 const BAR_WIDTH: u64 = 40;
 const PROGRESS_REPORT_INTERVAL: Duration = Duration::from_secs(1);
 
-/// Sentinel version indicating the processing task has terminated.
+/// Sentinel version sent on the watch channel when processing is fully terminated
+/// (ready + all descendants done). Consumers check this to exit their watch loop.
 pub const TERMINATED_VERSION: u64 = u64::MAX;
 
 #[derive(Default, Clone)]
@@ -102,6 +103,9 @@ impl std::fmt::Display for ProcessingStatsGroup {
 pub struct VersionedProcessingStats {
     pub stats: IndexMap<String, ProcessingStatsGroup>,
     pub version: u64,
+    /// True once the root processing component is ready (initial processing caught up).
+    /// Stats may continue to update after this (live components).
+    pub ready: bool,
 }
 
 /// Thread-safe container for processing stats with version tracking and change notification.
@@ -148,7 +152,18 @@ impl ProcessingStats {
         self.inner.lock().unwrap().clone()
     }
 
-    /// Signal that the processing task has terminated.
+    /// Signal that the root processing component is ready (initial processing caught up).
+    /// Stats may continue to update after this (live components).
+    pub fn notify_ready(&self) {
+        let mut guard = self.inner.lock().unwrap();
+        guard.ready = true;
+        guard.version += 1;
+        let version = guard.version;
+        drop(guard);
+        let _ = self.version_tx.send(version);
+    }
+
+    /// Signal that the processing task has fully terminated.
     pub fn notify_terminated(&self) {
         let _ = self.version_tx.send(TERMINATED_VERSION);
     }
@@ -364,12 +379,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_notify_terminated_sends_max_version() {
+    async fn test_notify_ready_sets_ready_flag() {
         let stats = ProcessingStats::new();
         let mut rx = stats.subscribe();
 
         stats.update("proc", |g| g.num_adds += 1);
         rx.changed().await.unwrap();
+        assert!(!stats.snapshot().ready);
+
+        stats.notify_ready();
+        rx.changed().await.unwrap();
+        assert!(stats.snapshot().ready);
+        // Version is a normal value, not the sentinel
+        assert_ne!(*rx.borrow(), TERMINATED_VERSION);
+    }
+
+    #[tokio::test]
+    async fn test_notify_terminated_sends_max_version() {
+        let stats = ProcessingStats::new();
+        let mut rx = stats.subscribe();
 
         stats.notify_terminated();
         rx.changed().await.unwrap();

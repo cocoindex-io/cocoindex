@@ -41,11 +41,14 @@ pub struct PyUpdateHandle {
 
 #[pymethods]
 impl PyUpdateHandle {
-    /// Returns (version, {processor_name: {field: value}}) — atomic snapshot.
-    pub fn stats_snapshot<'py>(&self, py: Python<'py>) -> PyResult<(u64, Bound<'py, PyDict>)> {
+    /// Returns (version, ready, {processor_name: {field: value}}) — atomic snapshot.
+    pub fn stats_snapshot<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> PyResult<(u64, bool, Bound<'py, PyDict>)> {
         let snapshot = self.stats.snapshot();
         let dict = snapshot_to_py(py, &snapshot)?;
-        Ok((snapshot.version, dict))
+        Ok((snapshot.version, snapshot.ready, dict))
     }
 
     /// Awaits a version change notification. Returns the new version.

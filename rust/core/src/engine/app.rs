@@ -85,7 +85,7 @@ impl<Prof: EngineProfile> App<Prof> {
         };
 
         let app_ctx = AppContext::new(env, db, app_reg, max_inflight_components);
-        let root_component = Component::new(app_ctx, StablePath::root());
+        let root_component = Component::new(app_ctx, StablePath::root(), None);
         Ok(Self { root_component })
     }
 }
@@ -116,11 +116,13 @@ impl<Prof: EngineProfile> App<Prof> {
 
         let root_component = self.root_component.clone();
         let stats_for_task = processing_stats.clone();
+        let live = options.live;
         let span = Span::current();
         let task = get_runtime().spawn(
             async move {
                 let run_fut = async {
                     root_component
+                        .clone()
                         .run(root_processor, context)
                         .await?
                         .result(None)
@@ -132,6 +134,12 @@ impl<Prof: EngineProfile> App<Prof> {
                 } else {
                     run_fut.await
                 };
+                stats_for_task.notify_ready();
+                if live {
+                    // In live mode, wait for all descendants to finish before signaling termination.
+                    // Poll active_children with exponential backoff.
+                    root_component.wait_until_inactive().await;
+                }
                 stats_for_task.notify_terminated();
                 result
             }

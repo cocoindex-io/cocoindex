@@ -160,92 +160,23 @@ impl ComponentProcessor<PyEngineProfile> for PyComponentProcessor {
 }
 
 #[pyfunction]
-pub fn mount_run(
-    py: Python<'_>,
-    processor: PyComponentProcessor,
-    stable_path: PyStablePath,
-    comp_ctx: PyComponentProcessorContext,
-    fn_ctx: &PyFnCallContext,
-) -> PyResult<PyComponentMountRunHandle> {
-    let component = comp_ctx
-        .0
-        .component()
-        .mount_child(&fn_ctx.0, stable_path.0)
-        .into_py_result()?;
-    let child_ctx = component
-        .new_processor_context_for_build(
-            Some(&comp_ctx.0),
-            comp_ctx.0.processing_stats().clone(),
-            comp_ctx.0.full_reprocess(),
-            comp_ctx.0.live(),
-            comp_ctx.0.host_ctx().clone(),
-        )
-        .into_py_result()?;
-    py.detach(|| {
-        get_runtime().block_on(async {
-            let handle = component.run(processor, child_ctx).await.into_py_result()?;
-            Ok(PyComponentMountRunHandle(Some(handle)))
-        })
-    })
-}
-
-#[pyfunction]
-pub fn mount(
-    py: Python<'_>,
-    processor: PyComponentProcessor,
-    stable_path: PyStablePath,
-    comp_ctx: PyComponentProcessorContext,
-    fn_ctx: &PyFnCallContext,
-) -> PyResult<PyComponentMountHandle> {
-    let component = comp_ctx
-        .0
-        .component()
-        .mount_child(&fn_ctx.0, stable_path.0)
-        .into_py_result()?;
-    let child_ctx = component
-        .new_processor_context_for_build(
-            Some(&comp_ctx.0),
-            comp_ctx.0.processing_stats().clone(),
-            comp_ctx.0.full_reprocess(),
-            comp_ctx.0.live(),
-            comp_ctx.0.host_ctx().clone(),
-        )
-        .into_py_result()?;
-    py.detach(|| {
-        get_runtime().block_on(async {
-            let handle = component
-                .run_in_background(processor, child_ctx, None, None)
-                .await
-                .into_py_result()?;
-            Ok(PyComponentMountHandle(Some(handle)))
-        })
-    })
-}
-
-#[pyfunction]
-pub fn mount_run_async<'py>(
+pub fn use_mount_async<'py>(
     py: Python<'py>,
     processor: PyComponentProcessor,
     stable_path: PyStablePath,
     comp_ctx: PyComponentProcessorContext,
     fn_ctx: &PyFnCallContext,
 ) -> PyResult<Bound<'py, PyAny>> {
-    let component = comp_ctx
+    let child = comp_ctx
         .0
         .component()
         .mount_child(&fn_ctx.0, stable_path.0)
         .into_py_result()?;
-    let child_ctx = component
-        .new_processor_context_for_build(
-            Some(&comp_ctx.0),
-            comp_ctx.0.processing_stats().clone(),
-            comp_ctx.0.full_reprocess(),
-            comp_ctx.0.live(),
-            comp_ctx.0.host_ctx().clone(),
-        )
-        .into_py_result()?;
     future_into_py(py, async move {
-        let handle = component.run(processor, child_ctx).await.into_py_result()?;
+        let handle = child
+            .use_mount(&comp_ctx.0, processor)
+            .await
+            .into_py_result()?;
         Ok(PyComponentMountRunHandle(Some(handle)))
     })
 }
@@ -260,19 +191,10 @@ pub fn mount_async<'py>(
     fn_ctx: &PyFnCallContext,
     handler_callback: Option<Py<PyAny>>,
 ) -> PyResult<Bound<'py, PyAny>> {
-    let component = comp_ctx
+    let child = comp_ctx
         .0
         .component()
         .mount_child(&fn_ctx.0, stable_path.0)
-        .into_py_result()?;
-    let child_ctx = component
-        .new_processor_context_for_build(
-            Some(&comp_ctx.0),
-            comp_ctx.0.processing_stats().clone(),
-            comp_ctx.0.full_reprocess(),
-            comp_ctx.0.live(),
-            comp_ctx.0.host_ctx().clone(),
-        )
         .into_py_result()?;
 
     let on_error = handler_callback.map(|handler_callback| {
@@ -309,8 +231,8 @@ pub fn mount_async<'py>(
     });
 
     future_into_py(py, async move {
-        let handle = component
-            .run_in_background(processor, child_ctx, on_error, None)
+        let handle = child
+            .mount(&comp_ctx.0, processor, on_error, None)
             .await
             .into_py_result()?;
         Ok(PyComponentMountHandle(Some(handle)))

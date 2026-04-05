@@ -159,7 +159,7 @@ class StablePathInfoAsyncIterator:
 
 # --- UpdateHandle ---
 class UpdateHandle:
-    def stats_snapshot(self) -> tuple[int, dict[str, dict[str, int]]]: ...
+    def stats_snapshot(self) -> tuple[int, bool, dict[str, dict[str, int]]]: ...
     def changed(self) -> Coroutine[Any, Any, int]: ...
     def result(self) -> Coroutine[Any, Any, StoredValue]: ...
 
@@ -240,18 +240,6 @@ def init_runtime(
     not_set: Any,
 ) -> None: ...
 def shutdown_tokio_runtime() -> None: ...
-def mount(
-    processor: ComponentProcessor[T_co],
-    stable_path: StablePath,
-    comp_ctx: ComponentProcessorContext,
-    fn_ctx: FnCallContext,
-) -> ComponentMountHandle: ...
-def mount_run(
-    processor: ComponentProcessor[T_co],
-    stable_path: StablePath,
-    comp_ctx: ComponentProcessorContext,
-    fn_ctx: FnCallContext,
-) -> ComponentMountRunHandle: ...
 async def mount_async(
     processor: ComponentProcessor[T_co],
     stable_path: StablePath,
@@ -259,7 +247,7 @@ async def mount_async(
     fn_ctx: FnCallContext,
     handler_callback: Any | None = None,
 ) -> ComponentMountHandle: ...
-async def mount_run_async(
+async def use_mount_async(
     processor: ComponentProcessor[T_co],
     stable_path: StablePath,
     comp_ctx: ComponentProcessorContext,
