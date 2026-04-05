@@ -2,6 +2,7 @@ use crate::engine::runtime::get_runtime;
 use crate::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::pin::Pin;
+use std::sync::Weak;
 use std::sync::atomic::AtomicU64;
 
 use crate::engine::context::FnCallContext;
@@ -75,6 +76,11 @@ struct ComponentInner<Prof: EngineProfile> {
     app_ctx: AppContext<Prof>,
     stable_path: StablePath,
 
+    /// Strong reference to the parent component. Keeps the parent (and its
+    /// ancestors) alive as long as this child is alive. On Drop, removes
+    /// this child's Weak entry from the parent's active_children.
+    parent: Option<Component<Prof>>,
+
     /// Semaphore to ensure `process()` and `commit_effects()` calls cannot happen in parallel.
     build_semaphore: tokio::sync::Semaphore,
     last_memo_fp: Mutex<Option<Fingerprint>>,
@@ -83,10 +89,26 @@ struct ComponentInner<Prof: EngineProfile> {
     latest_seq: AtomicU64,
 
     /// Active child components, keyed by their full StablePath.
-    active_children: Mutex<HashMap<StablePath, Component<Prof>>>,
+    /// Uses Weak references — children are kept alive by their spawned tasks
+    /// and LiveComponentController references, not by this map. When a child's
+    /// last strong reference is dropped, its Drop impl removes the entry here.
+    active_children: Mutex<HashMap<StablePath, Weak<ComponentInner<Prof>>>>,
 
     /// Shared state for a live component running at this path.
     live_state: Mutex<Option<Arc<crate::engine::live_component::LiveComponentState>>>,
+}
+
+impl<Prof: EngineProfile> Drop for ComponentInner<Prof> {
+    fn drop(&mut self) {
+        if let Some(parent) = &self.parent {
+            parent
+                .inner
+                .active_children
+                .lock()
+                .unwrap()
+                .remove(&self.stable_path);
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -290,11 +312,16 @@ struct ComponentBuildOutput<Prof: EngineProfile> {
 }
 
 impl<Prof: EngineProfile> Component<Prof> {
-    pub(crate) fn new(app_ctx: AppContext<Prof>, stable_path: StablePath) -> Self {
+    pub(crate) fn new(
+        app_ctx: AppContext<Prof>,
+        stable_path: StablePath,
+        parent: Option<Component<Prof>>,
+    ) -> Self {
         Self {
             inner: Arc::new(ComponentInner {
                 app_ctx,
                 stable_path,
+                parent,
                 build_semaphore: tokio::sync::Semaphore::const_new(1),
                 last_memo_fp: Mutex::new(None),
                 latest_seq: AtomicU64::new(0),
@@ -309,12 +336,64 @@ impl<Prof: EngineProfile> Component<Prof> {
         Ok(self.get_child(stable_path))
     }
 
+    /// Mount and run a child in the foreground (use_mount path).
+    /// Inherits live from the parent context.
+    pub async fn use_mount(
+        self,
+        parent_ctx: &ComponentProcessorContext<Prof>,
+        processor: Prof::ComponentProc,
+    ) -> Result<ComponentMountRunHandle<Prof>> {
+        let child_ctx = self.new_processor_context_for_build(
+            Some(parent_ctx),
+            parent_ctx.processing_stats().clone(),
+            parent_ctx.full_reprocess(),
+            parent_ctx.live(), // use_mount inherits live from parent
+            parent_ctx.host_ctx().clone(),
+        )?;
+        self.run(processor, child_ctx).await
+    }
+
+    /// Mount and run a child in the background (mount path).
+    /// Inherits live from the parent context.
+    pub async fn mount(
+        self,
+        parent_ctx: &ComponentProcessorContext<Prof>,
+        processor: Prof::ComponentProc,
+        on_error: Option<
+            Arc<
+                dyn Fn(Error) -> Pin<Box<dyn Future<Output = ()> + Send + 'static>>
+                    + Send
+                    + Sync
+                    + 'static,
+            >,
+        >,
+        pre_execute_check: Option<Box<dyn FnOnce() -> bool + Send>>,
+    ) -> Result<ComponentExecutionHandle> {
+        let child_ctx = self.new_processor_context_for_build(
+            Some(parent_ctx),
+            parent_ctx.processing_stats().clone(),
+            parent_ctx.full_reprocess(),
+            parent_ctx.live(), // mount inherits live from parent
+            parent_ctx.host_ctx().clone(),
+        )?;
+        self.run_in_background(processor, child_ctx, on_error, pre_execute_check)
+            .await
+    }
+
     pub fn get_child(&self, stable_path: StablePath) -> Self {
         let mut children = self.inner.active_children.lock().unwrap();
-        children
-            .entry(stable_path.clone())
-            .or_insert_with(|| Self::new(self.app_ctx().clone(), stable_path))
-            .clone()
+        if let Some(weak) = children.get(&stable_path) {
+            if let Some(inner) = weak.upgrade() {
+                return Self { inner };
+            }
+        }
+        let child = Self::new(
+            self.app_ctx().clone(),
+            stable_path.clone(),
+            Some(self.clone()),
+        );
+        children.insert(stable_path, Arc::downgrade(&child.inner));
+        child
     }
 
     pub fn app_ctx(&self) -> &AppContext<Prof> {
@@ -337,9 +416,21 @@ impl<Prof: EngineProfile> Component<Prof> {
         &self.inner.latest_seq
     }
 
-    /// Remove a child from active_children. Called after a delete task completes.
-    pub fn remove_active_child(&self, path: &StablePath) {
-        self.inner.active_children.lock().unwrap().remove(path);
+    /// Returns true if this component has no active children (all Weak refs are dead).
+    pub fn has_active_children(&self) -> bool {
+        let children = self.inner.active_children.lock().unwrap();
+        children.values().any(|w| w.strong_count() > 0)
+    }
+
+    /// Wait until all descendants are inactive (active_children is empty).
+    /// Uses exponential backoff polling: 1ms → 2ms → 4ms → ... → 10s cap.
+    pub async fn wait_until_inactive(&self) {
+        let mut delay = std::time::Duration::from_millis(1);
+        let max_delay = std::time::Duration::from_secs(10);
+        while self.has_active_children() {
+            tokio::time::sleep(delay).await;
+            delay = (delay * 2).min(max_delay);
+        }
     }
 
     pub(crate) fn relative_path(
@@ -355,7 +446,7 @@ impl<Prof: EngineProfile> Component<Prof> {
         }
     }
 
-    pub async fn run(
+    pub(crate) async fn run(
         self,
         processor: Prof::ComponentProc,
         context: ComponentProcessorContext<Prof>,
@@ -402,7 +493,7 @@ impl<Prof: EngineProfile> Component<Prof> {
         Ok(ComponentMountRunHandle { join_handle })
     }
 
-    pub async fn run_in_background(
+    pub(crate) async fn run_in_background(
         self,
         processor: Prof::ComponentProc,
         context: ComponentProcessorContext<Prof>,

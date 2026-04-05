@@ -441,11 +441,11 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
 
         let inner_handle = child.delete(context, Some(pre_execute_check))?;
 
-        // Wrap: decrement inflight + remove from active_children after completion.
-        let component = self.component.clone();
+        // Wrap: decrement inflight counter after completion.
+        // Child cleanup from active_children is automatic via ComponentInner::Drop
+        // when the last strong reference is released.
         Ok(ComponentExecutionHandle::new(async move {
             let result = inner_handle.ready().await;
-            component.remove_active_child(&subpath);
             // Decrement inflight counter.
             if state_for_drain
                 .inflight_counter

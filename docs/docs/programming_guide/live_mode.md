@@ -34,10 +34,7 @@ cocoindex update --live my_app.py
 cocoindex update -L my_app.py
 ```
 
-The `live` flag propagates top-down through the component tree:
-
-- **`coco.mount()`** inherits `live` from the parent — children are live when the app is live.
-- **`coco.use_mount()`** always sets children as non-live. Since the parent waits for the return value, the child must complete and can't keep running independently.
+The `live` flag propagates top-down through the component tree — both `coco.mount()` and `coco.use_mount()` inherit `live` from the parent, so children are live when the app is live.
 
 Without `live=True` on the app, everything completes after the initial scan — even if a source supports live watching.
 

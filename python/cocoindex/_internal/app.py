@@ -8,6 +8,7 @@ from typing import (
     Any,
     Callable,
     Generic,
+    NamedTuple,
     ParamSpec,
     TypeVar,
     overload,
@@ -33,6 +34,13 @@ P = ParamSpec("P")
 R = TypeVar("R")
 
 _TERMINATED_VERSION = 2**64 - 1  # u64::MAX
+
+
+class _StatsSnapshot(NamedTuple):
+    version: int
+    ready: bool
+    stats: UpdateStats | None
+
 
 _ENV_MAX_INFLIGHT_COMPONENTS = "COCOINDEX_MAX_INFLIGHT_COMPONENTS"
 _DEFAULT_MAX_INFLIGHT_COMPONENTS = 1024
@@ -68,26 +76,30 @@ class UpdateHandle(Generic[R]):
     def _snapshot_from_handle(
         self,
         handle: core.UpdateHandle,
-    ) -> tuple[int, UpdateStats | None]:
-        """Returns (version, stats). Stats is None if empty."""
-        version, raw = handle.stats_snapshot()
+    ) -> _StatsSnapshot:
+        version, ready, raw = handle.stats_snapshot()
         if not raw:
-            return version, None
-        return version, self._make_update_stats(raw)
+            return _StatsSnapshot(version, ready, None)
+        return _StatsSnapshot(version, ready, self._make_update_stats(raw))
 
     def stats(self) -> UpdateStats | None:
         """Returns a snapshot of the latest stats, or None if not yet started."""
         if self._core_handle is None:
             return None
-        _, stats = self._snapshot_from_handle(self._core_handle)
-        return stats
+        return self._snapshot_from_handle(self._core_handle).stats
 
     async def watch(self) -> AsyncIterator[UpdateSnapshot[R]]:
         """Async iterator that yields progress snapshots.
 
-        Yields UpdateSnapshot with status RUNNING while the update is in progress,
-        then a final DONE snapshot with the result. On error, raises the exception
-        directly from the iterator.
+        Yields UpdateSnapshot with status:
+        - RUNNING while the update is in progress (not yet ready)
+        - READY when the root component is ready (initial processing caught up)
+
+        In live mode, after the initial READY, continues yielding RUNNING snapshots
+        as stats update from incremental processing. When terminated, yields a final
+        READY snapshot with the result set.
+
+        On error, raises the exception directly from the iterator.
         """
         handle = await self._ensure_started()
         last_version = 0
@@ -98,26 +110,25 @@ class UpdateHandle(Generic[R]):
             # TERMINATED_VERSION on the watch channel without updating the
             # stats version, so the dedup check would skip it.
             if version >= _TERMINATED_VERSION:
-                snap_version, stats = self._snapshot_from_handle(handle)
+                snap = self._snapshot_from_handle(handle)
                 pyvalue: Any = await handle.result()
                 result: R = pyvalue.get(fn_ret_deserializer(self._main_fn))
-                if stats is not None:
+                if snap.stats is not None:
                     yield UpdateSnapshot(
-                        stats=stats, status=UpdateStatus.DONE, result=result
+                        stats=snap.stats, status=UpdateStatus.READY, result=result
                     )
                 return
 
             # Snapshot the actual stats (version may differ from notification)
-            snap_version, stats = self._snapshot_from_handle(handle)
+            snap = self._snapshot_from_handle(handle)
 
-            if snap_version == last_version:
+            if snap.version == last_version:
                 continue  # no actual change since last yield
-            last_version = snap_version
+            last_version = snap.version
 
-            if stats is not None:
-                yield UpdateSnapshot(
-                    stats=stats, status=UpdateStatus.RUNNING, result=None
-                )
+            if snap.stats is not None:
+                status = UpdateStatus.READY if snap.ready else UpdateStatus.RUNNING
+                yield UpdateSnapshot(stats=snap.stats, status=status, result=None)
 
     async def result(self) -> R:
         """Await the update result. Raises on error."""

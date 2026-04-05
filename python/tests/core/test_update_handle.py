@@ -86,7 +86,7 @@ async def test_watch_yields_running_then_done() -> None:
 
     assert len(snapshots) >= 1
     # Last snapshot should be DONE
-    assert snapshots[-1].status == coco.UpdateStatus.DONE
+    assert snapshots[-1].status == coco.UpdateStatus.READY
     assert snapshots[-1].stats is not None
     # All snapshots should have stats
     for snap in snapshots:
@@ -124,7 +124,7 @@ async def test_watch_with_throttle() -> None:
             await asyncio.sleep(0.05)
 
     assert len(snapshots) >= 1
-    assert snapshots[-1].status == coco.UpdateStatus.DONE
+    assert snapshots[-1].status == coco.UpdateStatus.READY
 
 
 # --- F3: report_to_stdout with watch ---
@@ -146,4 +146,4 @@ async def test_report_to_stdout_with_watch() -> None:
         snapshots.append(snapshot)
 
     assert len(snapshots) >= 1
-    assert snapshots[-1].status == coco.UpdateStatus.DONE
+    assert snapshots[-1].status == coco.UpdateStatus.READY
