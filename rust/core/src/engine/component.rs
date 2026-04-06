@@ -6,7 +6,10 @@ use std::sync::Weak;
 use std::sync::atomic::AtomicU64;
 
 use crate::engine::context::FnCallContext;
-use crate::engine::context::{AppContext, ComponentProcessingMode, ComponentProcessorContext};
+use crate::engine::context::{
+    AppContext, ComponentDeleteContext, ComponentProcessingAction, ComponentProcessingMode,
+    ComponentProcessorContext,
+};
 use crate::engine::execution::{
     cleanup_tombstone, post_submit_for_build, submit, update_component_memo_states,
     use_or_invalidate_component_memoization,
@@ -433,14 +436,15 @@ impl<Prof: EngineProfile> Component<Prof> {
         }
     }
 
-    pub(crate) fn relative_path(
-        &self,
-        context: &ComponentProcessorContext<Prof>,
-    ) -> Result<StablePathRef<'_>> {
-        if let Some(parent_ctx) = context.parent_context() {
+    pub fn parent(&self) -> Option<&Component<Prof>> {
+        self.inner.parent.as_ref()
+    }
+
+    pub(crate) fn relative_path(&self) -> Result<StablePathRef<'_>> {
+        if let Some(parent) = self.parent() {
             self.stable_path()
                 .as_ref()
-                .strip_parent(parent_ctx.stable_path().as_ref())
+                .strip_parent(parent.stable_path().as_ref())
         } else {
             Ok(self.stable_path().as_ref())
         }
@@ -468,7 +472,7 @@ impl<Prof: EngineProfile> Component<Prof> {
             context.set_inflight_permit(permit);
         }
 
-        let relative_path = self.relative_path(&context)?;
+        let relative_path = self.relative_path()?;
         let child_readiness_guard = context
             .parent_context()
             .map(|c| c.components_readiness().clone().add_child());
@@ -885,13 +889,10 @@ impl<Prof: EngineProfile> Component<Prof> {
         };
         Ok(ComponentProcessorContext::new(
             self.clone(),
-            providers,
             parent_ctx.cloned(),
             processing_stats,
-            ComponentProcessingMode::Build,
-            full_reprocess,
-            live,
             host_ctx,
+            ComponentProcessingAction::new_build(providers, full_reprocess, live),
         ))
     }
 
@@ -902,16 +903,12 @@ impl<Prof: EngineProfile> Component<Prof> {
         processing_stats: ProcessingStats,
         host_ctx: Arc<Prof::HostCtx>,
     ) -> ComponentProcessorContext<Prof> {
-        let full_reprocess = parent_ctx.map(|ctx| ctx.full_reprocess()).unwrap_or(false);
         ComponentProcessorContext::new(
             self.clone(),
-            providers,
             parent_ctx.cloned(),
             processing_stats,
-            ComponentProcessingMode::Delete,
-            full_reprocess,
-            false,
             host_ctx,
+            ComponentProcessingAction::Delete(ComponentDeleteContext { providers }),
         )
     }
 }

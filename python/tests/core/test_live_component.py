@@ -262,6 +262,64 @@ def test_live_component_incremental_delete_direct() -> None:
     assert "b" not in GlobalDictTarget.store.data
 
 
+class _IncrementalDeleteNoStaleComponent:
+    """LiveComponent for testing that incremental delete doesn't leave stale tombstones.
+
+    First run: process() mounts "a" and "b", process_live() deletes "b".
+    Second run: process() mounts only "a", process_live() does nothing extra.
+    The second run should NOT produce an "<unknown>" deletion for "b".
+    """
+
+    async def process(self) -> None:
+        for key, value in _source_data.items():
+            await coco.mount(coco.component_subpath(key), _declare_item, key, value)
+
+    async def process_live(self, operator: coco.LiveComponentOperator) -> None:
+        await operator.update_full()
+        # Delete "b" only if it's in the current source data
+        if "b" in _source_data:
+            handle = await operator.delete(coco.component_subpath("b"))
+            await handle.ready()
+        await operator.mark_ready()
+
+
+@pytest.mark.asyncio
+async def test_live_component_incremental_delete_no_stale_tombstone() -> None:
+    """After incremental delete, a second run should not produce '<unknown>' deletions."""
+    GlobalDictTarget.store.clear()
+    _source_data.clear()
+
+    _source_data["a"] = 1
+    _source_data["b"] = 2
+
+    async def _main() -> None:
+        await coco.mount(
+            coco.component_subpath("live"), _IncrementalDeleteNoStaleComponent
+        )
+
+    app = coco.App(
+        coco.AppConfig(name="test_live_incr_delete_no_stale", environment=coco_env),
+        _main,
+    )
+
+    # First run: deletes "b" incrementally
+    app.update_blocking(live=True)
+    assert "a" in GlobalDictTarget.store.data
+    assert "b" not in GlobalDictTarget.store.data
+
+    # Second run: "b" no longer in source, should be a clean run
+    _source_data.pop("b", None)
+    handle = app.update(live=True)
+    await handle.result()
+    stats = handle.stats()
+    assert stats is not None
+
+    # There should be no "<unknown>" component in the stats
+    assert "<unknown>" not in stats.by_component, (
+        f"Stale tombstone caused '<unknown>' deletion: {stats.by_component}"
+    )
+
+
 class _IncrementalDeleteViaGCLiveComponent:
     """LiveComponent that tests deletion via update_full GC.
 
