@@ -149,6 +149,27 @@ pub(crate) enum ComponentProcessingAction<Prof: EngineProfile> {
     Delete(ComponentDeleteContext<Prof>),
 }
 
+impl<Prof: EngineProfile> ComponentProcessingAction<Prof> {
+    pub fn new_build(
+        providers: rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
+        full_reprocess: bool,
+        live: bool,
+    ) -> Self {
+        Self::Build(ComponentBuildContext {
+            state: Mutex::new(Some(ComponentBuildingState {
+                target_states: ComponentTargetStatesContext {
+                    declared_target_states: Default::default(),
+                    provider_registry: TargetStateProviderRegistry::new(providers),
+                },
+                child_path_set: Default::default(),
+                fn_call_memos: Default::default(),
+            })),
+            full_reprocess,
+            live,
+        })
+    }
+}
+
 struct ComponentProcessorContextInner<Prof: EngineProfile> {
     component: Component<Prof>,
     parent_context: Option<ComponentProcessorContext<Prof>>,
@@ -173,35 +194,16 @@ pub struct ComponentProcessorContext<Prof: EngineProfile> {
 impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
     pub(crate) fn new(
         component: Component<Prof>,
-        providers: rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
         parent_context: Option<ComponentProcessorContext<Prof>>,
         processing_stats: ProcessingStats,
-        mode: ComponentProcessingMode,
-        full_reprocess: bool,
-        live: bool,
         host_ctx: Arc<Prof::HostCtx>,
+        processing_action: ComponentProcessingAction<Prof>,
     ) -> Self {
-        let processing_state = if mode == ComponentProcessingMode::Build {
-            ComponentProcessingAction::Build(ComponentBuildContext {
-                state: Mutex::new(Some(ComponentBuildingState {
-                    target_states: ComponentTargetStatesContext {
-                        declared_target_states: Default::default(),
-                        provider_registry: TargetStateProviderRegistry::new(providers),
-                    },
-                    child_path_set: Default::default(),
-                    fn_call_memos: Default::default(),
-                })),
-                full_reprocess,
-                live,
-            })
-        } else {
-            ComponentProcessingAction::Delete(ComponentDeleteContext { providers })
-        };
         Self {
             inner: Arc::new(ComponentProcessorContextInner {
                 component,
                 parent_context,
-                processing_action: processing_state,
+                processing_action,
                 components_readiness: Default::default(),
                 processing_stats,
                 inflight_permit: Mutex::new(None),

@@ -1428,16 +1428,16 @@ pub(crate) async fn post_submit_for_build<Prof: EngineProfile>(
 pub(crate) async fn cleanup_tombstone<Prof: EngineProfile>(
     comp_ctx: &ComponentProcessorContext<Prof>,
 ) -> Result<()> {
-    let Some(parent_ctx) = comp_ctx.parent_context() else {
+    let Some(parent) = comp_ctx.component().parent() else {
         return Ok(());
     };
-    let parent_path = parent_ctx.stable_path();
+    let owner_path = parent.stable_path();
     let relative_path = comp_ctx
         .stable_path()
         .as_ref()
-        .strip_parent(parent_path.as_ref())?;
+        .strip_parent(owner_path.as_ref())?;
     let tombstone_key = db_schema::DbEntryKey::StablePath(
-        parent_path.clone(),
+        owner_path.clone(),
         db_schema::StablePathEntryKey::ChildComponentTombstone(relative_path.into()),
     );
     let encoded_tombstone_key = tombstone_key.encode()?;

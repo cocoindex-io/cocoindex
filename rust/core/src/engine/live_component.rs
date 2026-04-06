@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use crate::engine::component::{
     Component, ComponentBgChildReadinessChildGuard, ComponentExecutionHandle,
 };
-use crate::engine::context::{ComponentProcessingMode, ComponentProcessorContext, FnCallContext};
+use crate::engine::context::{ComponentProcessingAction, ComponentProcessorContext, FnCallContext};
 use crate::engine::profile::EngineProfile;
 use crate::engine::stats::ProcessingStats;
 use crate::engine::target_state::TargetStateProvider;
@@ -303,13 +303,14 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
         // Create fresh context with no parent.
         let context = ComponentProcessorContext::new(
             self.component.clone(),
-            self.providers.clone(),
             None,
             self.processing_stats.clone(),
-            ComponentProcessingMode::Build,
-            self.full_reprocess,
-            self.live,
             self.host_ctx.clone(),
+            ComponentProcessingAction::new_build(
+                self.providers.clone(),
+                self.full_reprocess,
+                self.live,
+            ),
         );
 
         // Run via run_in_background (no parent context → no readiness guard to grandparent).
@@ -345,13 +346,14 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
 
         let context = ComponentProcessorContext::new(
             child.clone(),
-            self.providers.clone(),
             None,
             self.processing_stats.clone(),
-            ComponentProcessingMode::Build,
-            self.full_reprocess,
-            self.live,
             self.host_ctx.clone(),
+            ComponentProcessingAction::new_build(
+                self.providers.clone(),
+                self.full_reprocess,
+                self.live,
+            ),
         );
 
         let child_for_check = child.clone();
@@ -424,14 +426,10 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
                 .await?;
         }
 
-        let context = ComponentProcessorContext::new(
-            child.clone(),
+        let context = child.new_processor_context_for_delete(
             self.providers.clone(),
             None,
             self.processing_stats.clone(),
-            ComponentProcessingMode::Delete,
-            false,
-            self.live,
             self.host_ctx.clone(),
         );
 
