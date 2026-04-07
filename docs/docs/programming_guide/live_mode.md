@@ -44,25 +44,17 @@ Enabling live mode keeps the app running, but something in the component tree ne
 
 You rarely need to write a `LiveComponent` manually. The most common pattern is:
 
-### Sources with `LiveItemsView`
+### Sources with `LiveMapView` or `LiveMapFeed`
 
-Some source connectors can provide a [`LiveItemsView`](../advanced_topics/live_component.md#liveitems-view) — a collection that can be iterated for a full scan *and* watched for changes. When `mount_each()` receives a `LiveItemsView`, it automatically creates a `LiveComponent` internally:
+Source connectors can provide live capabilities via two [protocols](../advanced_topics/live_component.md#live-map):
 
-```python
-@coco.fn
-async def app_main(sourcedir: pathlib.Path, outdir: pathlib.Path) -> None:
-    files = localfs.walk_dir(
-        sourcedir, recursive=True,
-        path_matcher=PatternFilePathMatcher(included_patterns=["**/*.md"]),
-        live=True,  # source provides LiveItemsView when live
-    )
-    await coco.mount_each(process_file, files.items(), outdir)  # outdir passed to process_file
-```
+- **`LiveMapView`** — the source has scannable current state (e.g., a directory or database table). It does a full scan first, then watches for changes. Example: [`localfs.walk_dir(live=True).items()`](../connectors/localfs.md#live-file-watching).
+- **`LiveMapFeed`** — the source only streams changes, with no snapshot to scan (e.g., a Kafka consumer). All data arrives via the change stream. Example: [`kafka.topic_as_map()`](../connectors/kafka.md#as-source).
 
-The internally created `LiveComponent`:
+When `mount_each()` receives either, it automatically creates a `LiveComponent` internally that:
 
-1. **Full scan** — iterates all items and mounts a processing component for each
-2. **Signals readiness** — the initial scan is complete, target states are synced
+1. **Scans current state** (if available) — iterates all items and mounts a processing component for each
+2. **Signals readiness** — the initial scan is complete (or the stream has caught up), target states are synced
 3. **Watches for changes** — the source delivers incremental updates:
    - New or modified items → re-mount the affected component
    - Deleted items → remove the component and its target states
@@ -71,13 +63,11 @@ CocoIndex handles change detection, memoization, and target state reconciliation
 
 Without live support on the source, `mount_each()` does a one-time iteration — items are processed in batch and that's it.
 
-**Non-live compatibility:** Live-capable sources work in non-live mode too — they do the initial full scan and exit cleanly, no watching occurs. This means you can write your pipeline once and choose batch or live at run time.
+## Examples
 
-How live mode is activated varies by connector — some use a flag, others may require external configuration (e.g., subscribing to a change notification service). Check each connector's documentation for details.
+### `localfs` — file watching with `LiveMapView`
 
-## Example: `localfs` with live file watching
-
-The [`localfs`](../connectors/localfs.md) connector supports live mode via `walk_dir(..., live=True)`, which watches for file system changes using `watchfiles`. Here's a pipeline that transforms Markdown files to HTML and reacts to file changes:
+The [`localfs`](../connectors/localfs.md) connector supports live mode via `walk_dir(..., live=True)`, which watches for file system changes using `watchfiles`:
 
 ```python
 @coco.fn
@@ -85,7 +75,7 @@ async def app_main(sourcedir: pathlib.Path, outdir: pathlib.Path) -> None:
     files = localfs.walk_dir(
         sourcedir, recursive=True,
         path_matcher=PatternFilePathMatcher(included_patterns=["**/*.md"]),
-        live=True,
+        live=True,  # items() returns a LiveMapView
     )
     await coco.mount_each(process_file, files.items(), outdir)
 
@@ -93,14 +83,38 @@ app = coco.App(coco.AppConfig(name="FilesTransform"), app_main, sourcedir=..., o
 app.update_blocking(live=True)
 ```
 
+**Non-live compatibility:** `LiveMapView` sources also work without `live=True` — they do the initial full scan and exit cleanly. You can write your pipeline once and choose batch or live at run time.
+
 For a complete working example, see [`files_transform`](https://github.com/cocoindex-io/cocoindex/tree/v1/examples/files_transform).
+
+### `kafka` — consuming a topic with `LiveMapFeed`
+
+The [`kafka`](../connectors/kafka.md) connector treats a topic as a live keyed map — each message is an upsert or delete for a key. Since there's no snapshot to scan, it returns a `LiveMapFeed`:
+
+```python
+from confluent_kafka.aio import AIOConsumer
+from cocoindex.connectors import kafka
+
+@coco.fn
+async def app_main() -> None:
+    consumer = AIOConsumer({
+        "bootstrap.servers": "localhost:9092",
+        "group.id": "my-group",
+        "enable.auto.commit": "false",
+    })
+    items = kafka.topic_as_map(consumer, ["my-topic"])
+    await coco.mount_each(process_message, items)
+
+app = coco.App(coco.AppConfig(name="KafkaConsumer"), app_main)
+app.update_blocking(live=True)
+```
 
 ## Going deeper
 
 The abstractions behind live mode, from most general to most specific:
 
 - **[LiveComponent](../advanced_topics/live_component.md)** — the underlying protocol for components that react to changes incrementally. Most flexible — full control over the lifecycle.
-- **[LiveItemsView](../advanced_topics/live_component.md#liveitems-view)** — represents a changing collection of keyed items. `mount_each()` uses it to construct a `LiveComponent` automatically. Connector authors implement this to add live support.
-- **Source connectors** (e.g., `localfs.walk_dir(live=True)`) — provide `LiveItemsView` from their `items()` method. Users just flip a flag.
+- **[LiveMapFeed / LiveMapView](../advanced_topics/live_component.md#live-map)** — represents a changing collection of keyed items. `mount_each()` uses it to construct a `LiveComponent` automatically. Connector authors implement this to add live support.
+- **Source connectors** — provide `LiveMapView` (e.g., [`localfs`](../connectors/localfs.md)) or `LiveMapFeed` (e.g., [`kafka`](../connectors/kafka.md)) from their source APIs. Users just pass the result to `mount_each()`.
 
-For custom change feeds, fine-grained lifecycle control, or implementing `LiveItemsView` on your own connector, see [Live Components](../advanced_topics/live_component.md).
+For custom change feeds, fine-grained lifecycle control, or implementing live map protocols on your own connector, see [Live Components](../advanced_topics/live_component.md).

@@ -434,12 +434,12 @@ def test_live_component_update_full_gc() -> None:
 
 
 # ============================================================================
-# LiveItemsView + mount_each tests
+# LiveMapView + mount_each tests
 # ============================================================================
 
 
-class _TestLiveItemsView:
-    """A simple LiveItemsView for testing.
+class _TestLiveMapView:
+    """A simple LiveMapView for testing.
 
     Yields (key, key) pairs — the value is the same as the key string.
     The per-item function receives the value (a str) as first arg.
@@ -448,12 +448,12 @@ class _TestLiveItemsView:
     def __init__(self, data: dict[str, int]) -> None:
         self._data = data
         self._watch_fn: (
-            Callable[[coco.LiveItemsSubscriber[str, str]], Awaitable[None]] | None
+            Callable[[coco.LiveMapSubscriber[str, str]], Awaitable[None]] | None
         ) = None
 
     def set_watch_fn(
         self,
-        fn: Callable[[coco.LiveItemsSubscriber[str, str]], Awaitable[None]],
+        fn: Callable[[coco.LiveMapSubscriber[str, str]], Awaitable[None]],
     ) -> None:
         self._watch_fn = fn
 
@@ -464,7 +464,7 @@ class _TestLiveItemsView:
         for k in self._data:
             yield (k, k)
 
-    async def watch(self, subscriber: coco.LiveItemsSubscriber[str, str]) -> None:
+    async def watch(self, subscriber: coco.LiveMapSubscriber[str, str]) -> None:
         await subscriber.update_all()
         if self._watch_fn is not None:
             await self._watch_fn(subscriber)
@@ -475,7 +475,7 @@ _live_source: dict[str, int] = {}
 
 
 def _declare_live_item(key: str) -> None:
-    """Per-item function for LiveItemsView tests. Looks up value from _live_source."""
+    """Per-item function for LiveMapView tests. Looks up value from _live_source."""
     value = _live_source[key]
     coco.declare_target_state(GlobalDictTarget.target_state(key, value))
 
@@ -485,7 +485,7 @@ def test_mount_each_live_items_view_basic() -> None:
     _live_source.clear()
     _live_source.update({"a": 1, "b": 2, "c": 3})
 
-    items = _TestLiveItemsView(_live_source)
+    items = _TestLiveMapView(_live_source)
 
     async def _main() -> None:
         await coco.mount_each(_declare_live_item, items)  # type: ignore[call-overload]
@@ -508,7 +508,7 @@ def test_mount_each_live_items_view_non_live_mode() -> None:
     _live_source.clear()
     _live_source["x"] = 10
 
-    items = _TestLiveItemsView(_live_source)
+    items = _TestLiveMapView(_live_source)
 
     async def _main() -> None:
         await coco.mount_each(_declare_live_item, items)  # type: ignore[call-overload]
@@ -530,9 +530,9 @@ def test_mount_each_live_items_view_incremental_update() -> None:
     _live_source.clear()
     _live_source["a"] = 1
 
-    items = _TestLiveItemsView(_live_source)
+    items = _TestLiveMapView(_live_source)
 
-    async def _after_ready(subscriber: coco.LiveItemsSubscriber[str, str]) -> None:
+    async def _after_ready(subscriber: coco.LiveMapSubscriber[str, str]) -> None:
         _live_source["new_key"] = 99
         handle = await subscriber.update("new_key", "new_key")
         await handle.ready()
@@ -558,9 +558,9 @@ def test_mount_each_live_items_view_update_all_rescan() -> None:
     _live_source.clear()
     _live_source.update({"a": 1, "b": 2, "c": 3})
 
-    items = _TestLiveItemsView(_live_source)
+    items = _TestLiveMapView(_live_source)
 
-    async def _after_ready(subscriber: coco.LiveItemsSubscriber[str, str]) -> None:
+    async def _after_ready(subscriber: coco.LiveMapSubscriber[str, str]) -> None:
         # Mutate backing data, then trigger rescan
         _live_source.clear()
         _live_source.update({"a": 1, "d": 4})

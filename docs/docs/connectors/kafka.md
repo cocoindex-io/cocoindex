@@ -1,12 +1,12 @@
 ---
 title: Kafka
 toc_max_heading_level: 4
-description: CocoIndex connector for producing messages to Apache Kafka topics.
+description: CocoIndex connector for consuming and producing messages with Apache Kafka topics.
 ---
 
 # Kafka
 
-The `kafka` connector lets you declare target states backed by Kafka messages. CocoIndex tracks what messages should exist and automatically produces upserts and deletions to the topic.
+The `kafka` connector supports Kafka as both a **source** (consuming messages as a live keyed map) and a **target** (producing messages for declared target states).
 
 ```python
 from cocoindex.connectors import kafka
@@ -20,6 +20,109 @@ pip install cocoindex[kafka]
 ```
 
 :::
+
+## As source
+
+The `kafka` connector can treat a Kafka topic as a live keyed map — each message is an upsert or delete for a key. It returns a [`LiveMapFeed`](../advanced_topics/live_component.md#live-map) for use with `mount_each()`.
+
+### Setting up a consumer
+
+Create an `AIOConsumer` directly — no `ContextKey` needed. The consumer must be **unsubscribed** (the connector handles subscription internally to manage partition rebalance callbacks).
+
+```python
+from confluent_kafka.aio import AIOConsumer
+
+consumer = AIOConsumer({
+    "bootstrap.servers": "localhost:9092",
+    "group.id": "my-group",
+    "enable.auto.commit": "false",
+})
+```
+
+### `topic_as_map()`
+
+```python
+def topic_as_map(
+    consumer: AIOConsumer,
+    topics: list[str],
+    *,
+    is_deletion: IsDeleteFn | None = None,
+) -> LiveMapFeed[bytes | str, Message]:
+```
+
+**Parameters:**
+
+- `consumer` — An unsubscribed `AIOConsumer`. Auto-commit should be disabled.
+- `topics` — Topics to subscribe to.
+- `is_deletion` — Optional predicate `(message: Message) -> bool` for custom deletion detection on non-tombstone messages (see [Deletion handling](#source-deletion-handling)).
+
+**Returns:** A `LiveMapFeed[bytes | str, Message]` where each item is keyed by the message key and the value is the full `confluent_kafka.Message` object.
+
+### Deletion handling {#source-deletion-handling}
+
+Messages with `None` value (Kafka tombstones) are **always** treated as deletions. The optional `is_deletion` predicate provides additional deletion logic for non-tombstone messages:
+
+```python
+# Default: only tombstones are deletions
+items = kafka.topic_as_map(consumer, ["my-topic"])
+
+# Custom: also treat messages with a specific header as deletions
+items = kafka.topic_as_map(
+    consumer, ["my-topic"],
+    is_deletion=lambda msg: msg.value() == b"DELETED",
+)
+```
+
+### Offset management
+
+Offsets are committed automatically with at-least-once semantics. Messages are processed in parallel, but an offset is only committed after all earlier messages in the same partition have been fully processed. Messages with `None` keys are logged as errors and skipped.
+
+### Readiness
+
+The feed signals readiness after catching up to the high watermark offsets that existed when consumption started. After that, it continues consuming indefinitely until the app is stopped.
+
+### Example
+
+```python
+from collections.abc import AsyncIterator
+
+from confluent_kafka import Message
+from confluent_kafka.aio import AIOConsumer
+from cocoindex.connectors import kafka, localfs
+import cocoindex as coco
+
+
+@coco.fn(memo=True)
+async def process_message(msg: Message, target: localfs.DirTarget) -> None:
+    key = msg.key()
+    value = msg.value()
+    if isinstance(key, bytes):
+        key = key.decode()
+    target.declare_file(filename=f"{key}.bin", content=value)
+
+
+@coco.fn
+async def app_main(outdir: pathlib.Path) -> None:
+    target = await coco.use_mount(
+        coco.component_subpath("setup"), localfs.declare_dir_target, outdir
+    )
+
+    consumer = AIOConsumer({
+        "bootstrap.servers": "localhost:9092",
+        "group.id": "my-group",
+        "enable.auto.commit": "false",
+    })
+    items = kafka.topic_as_map(consumer, ["my-topic"])
+    await coco.mount_each(process_message, items, target)
+
+
+app = coco.App(
+    coco.AppConfig(name="KafkaToFiles"),
+    app_main,
+    outdir=pathlib.Path("./out"),
+)
+app.update_blocking(live=True)
+```
 
 ## As target
 

@@ -30,9 +30,7 @@ except ImportError as e:
         "lancedb and pyarrow are required to use the LanceDB connector. Please install cocoindex[lancedb]."
     ) from e
 
-# Type alias for lancedb async connection
-# The actual type is internal to lancedb; we use Any for compatibility
-LanceAsyncConnection = Any
+from lancedb.db import AsyncConnection as LanceAsyncConnection  # type: ignore
 
 import numpy as np
 

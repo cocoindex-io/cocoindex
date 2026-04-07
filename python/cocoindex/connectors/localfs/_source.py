@@ -19,7 +19,7 @@ from cocoindex.resources.file import (
 )
 
 from cocoindex._internal.context_keys import ContextKey
-from cocoindex._internal.live_component import LiveItemsSubscriber
+from cocoindex._internal.live_component import LiveMapSubscriber
 
 from ._common import FilePath, to_file_path
 
@@ -73,7 +73,7 @@ class DirWalker:
         async for file in walk_dir(path):
             content = await file.read()
 
-    When ``live=True``, ``items()`` returns a ``LiveItemsView`` that supports
+    When ``live=True``, ``items()`` returns a ``LiveMapView`` that supports
     live file watching via ``mount_each()``.
     """
 
@@ -147,7 +147,7 @@ class DirWalker:
     def items(self) -> _AsyncIterable[tuple[str, File]]:
         """Return keyed ``(relative_path, File)`` pairs for use with ``mount_each()``.
 
-        When ``live=True``, returns a ``LiveItemsView`` that supports live watching.
+        When ``live=True``, returns a ``LiveMapView`` that supports live watching.
         Otherwise returns a plain ``AsyncIterable``.
         """
         if self._live:
@@ -169,7 +169,7 @@ class DirWalker:
 
 
 class _LiveDirItems:
-    """``LiveItemsView`` returned by ``DirWalker.items()`` when ``live=True``."""
+    """``LiveMapView`` returned by ``DirWalker.items()`` when ``live=True``."""
 
     def __init__(self, walker: DirWalker) -> None:
         self._walker = walker
@@ -182,7 +182,7 @@ class _LiveDirItems:
         async for pair in self._walker._items_iter():
             yield pair
 
-    async def watch(self, subscriber: LiveItemsSubscriber[str, File]) -> None:
+    async def watch(self, subscriber: LiveMapSubscriber[str, File]) -> None:
         import watchfiles
 
         # Initial full scan and readiness signal
@@ -247,7 +247,7 @@ def walk_dir(
     Args:
         path: The root directory path to walk through. Can be a FilePath (with stable
             base directory key) or a pathlib.Path (uses CWD as base directory).
-        live: If True, ``items()`` returns a ``LiveItemsView`` that supports
+        live: If True, ``items()`` returns a ``LiveMapView`` that supports
             live file watching via ``mount_each()``.
         recursive: If True, recursively walk subdirectories. If False, only list files
             in the immediate directory.

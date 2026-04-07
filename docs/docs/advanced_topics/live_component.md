@@ -147,46 +147,56 @@ class ProcessAll:
 
 The key difference: the LiveComponent version can later be extended to handle incremental changes in `process_live()` without changing `process()`.
 
-## LiveItemsView {#liveitems-view}
+## LiveMapFeed and LiveMapView {#live-map}
 
 :::tip
 For a user-facing introduction to live mode and when to use it, see [Live Mode](../programming_guide/live_mode.md). This section covers the protocol details for connector authors and advanced use cases.
 :::
 
-`LiveItemsView` is a protocol for keyed collections that support both iteration and live change watching. When `mount_each()` receives a `LiveItemsView` as its `items` argument, it automatically creates an internal `LiveComponent`.
+Two protocols represent live keyed collections that `mount_each()` can consume. Choose based on whether your source can enumerate its current state:
+
+- **`LiveMapView`** — the source has enumerable current state that can be scanned (e.g., a directory listing, database table). Supports both full scans via `__aiter__()` and incremental changes via `watch()`.
+- **`LiveMapFeed`** — the source only streams changes, with no "current state" to scan (e.g., a Kafka consumer, a webhook event stream). Provides only `watch()`.
 
 ```python
-class LiveItemsView(Protocol[K, V]):
+class LiveMapFeed(Protocol[K, V]):
+    async def watch(self, subscriber: LiveMapSubscriber[K, V]) -> None: ...
+
+class LiveMapView(LiveMapFeed[K, V], Protocol[K, V]):
     def __aiter__(self) -> AsyncIterator[tuple[K, V]]: ...
-    async def watch(self, subscriber: LiveItemsSubscriber[K, V]) -> None: ...
 ```
 
-- **`__aiter__`** yields all `(key, value)` pairs — used for full scans (called inside the internal `process()`).
-- **`watch(subscriber)`** is the long-running entry point — analogous to `process_live(operator)`. It controls the full lifecycle: initial scan, readiness, and incremental updates.
+`LiveMapView` extends `LiveMapFeed` — any `LiveMapView` is also a valid `LiveMapFeed`. When `mount_each()` receives either protocol as its `items` argument, it automatically creates an internal `LiveComponent`:
 
-### LiveItemsSubscriber
+- **`LiveMapView`**: `__aiter__()` yields all `(key, value)` pairs for full scans (called inside the internal `process()`). `watch()` handles the full lifecycle.
+- **`LiveMapFeed`**: `process()` is a no-op (no snapshot to scan). All work happens in `watch()`.
+
+### LiveMapSubscriber
 
 The `subscriber` passed to `watch()` mirrors `LiveComponentOperator`:
 
-| LiveItemsSubscriber | LiveComponentOperator | Description |
+| LiveMapSubscriber | LiveComponentOperator | Description |
 |---|---|---|
 | `await subscriber.update_all()` | `await operator.update_full()` | Full re-scan of all items |
 | `await subscriber.mark_ready()` | `await operator.mark_ready()` | Signal readiness |
 | `await subscriber.update(key, value)` | `await operator.update(subpath, fn, ...)` | Incremental update; returns `ComponentMountHandle` |
 | `await subscriber.delete(key)` | `await operator.delete(subpath)` | Incremental delete; returns `ComponentMountHandle` |
 
-A typical `watch()` implementation:
+A typical `watch()` implementation for a `LiveMapView`:
 
 ```python
-async def watch(self, subscriber: LiveItemsSubscriber[K, V]) -> None:
+async def watch(self, subscriber: LiveMapSubscriber[K, V]) -> None:
     await subscriber.update_all()     # initial full scan
     await subscriber.mark_ready()     # signal readiness
     # ... watch for changes and call subscriber.update()/delete() ...
 ```
 
-### Implementing LiveItemsView for a connector
+### Implementing live support for a connector
 
-To add live support to a source connector, make its `items()` method return an object that implements `LiveItemsView` when live mode is requested. See the `localfs` connector's `DirWalker` for a reference implementation — `walk_dir(..., live=True).items()` returns a `LiveItemsView` backed by `watchfiles`.
+To add live support to a source connector, make your source return an object that implements `LiveMapView` (if the source has scannable state) or `LiveMapFeed` (if it only streams changes):
+
+- **`LiveMapView` example**: The [`localfs`](../connectors/localfs.md) connector's `DirWalker` — `walk_dir(..., live=True).items()` returns a `LiveMapView` backed by `watchfiles`.
+- **`LiveMapFeed` example**: The [`kafka`](../connectors/kafka.md) connector — `topic_as_map()` returns a `LiveMapFeed` that consumes messages from Kafka topics.
 
 ## Live mode
 
@@ -210,7 +220,7 @@ This lets you use the same `LiveComponent` class in both modes without code chan
 LiveComponent classes can only be used with `coco.mount()` and `operator.update()`. Passing a LiveComponent class to `coco.use_mount()` raises a `TypeError`.
 
 :::tip
-While LiveComponent classes cannot be passed to `mount_each()`, you can get live watching behavior more easily using a [`LiveItemsView`](#liveitems-view) — `mount_each()` automatically creates an internal LiveComponent when it detects one.
+While LiveComponent classes cannot be passed to `mount_each()`, you can get live watching behavior more easily using a [`LiveMapFeed` or `LiveMapView`](#live-map) — `mount_each()` automatically creates an internal LiveComponent when it detects one.
 :::
 
 ## Readiness

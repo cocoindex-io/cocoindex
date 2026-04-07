@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterable, AsyncIterator
+from collections.abc import AsyncIterator
 from typing import (
     Any,
     Generic,
@@ -105,18 +105,30 @@ class LiveComponentOperator:
 
 
 @runtime_checkable
-class LiveItemsView(Protocol[_K, _V]):
-    """A keyed items view that can be iterated and watched for live changes.
+class LiveMapFeed(Protocol[_K, _V]):
+    """A feed of changes to a live map. Watch only.
 
-    Returned by sources like ``LiveDirWalker.items()`` and consumed by ``mount_each()``.
+    For sources like Kafka that stream change events but have no scannable snapshot.
+    Consumed by ``mount_each()``.
+    """
+
+    async def watch(self, subscriber: LiveMapSubscriber[_K, _V]) -> None: ...
+
+
+@runtime_checkable
+class LiveMapView(LiveMapFeed[_K, _V], Protocol[_K, _V]):
+    """A live map view: scannable current state + watchable changes.
+
+    Extends ``LiveMapFeed`` by adding async iteration over current items.
+    For sources like localfs that have a scannable current state.
+    Consumed by ``mount_each()``.
     """
 
     def __aiter__(self) -> AsyncIterator[tuple[_K, _V]]: ...
-    async def watch(self, subscriber: LiveItemsSubscriber[_K, _V]) -> None: ...
 
 
-class LiveItemsSubscriber(Generic[_K, _V]):
-    """Callback interface for ``LiveItemsView.watch()`` to deliver changes.
+class LiveMapSubscriber(Generic[_K, _V]):
+    """Callback interface for ``LiveMapFeed.watch()`` to deliver changes.
 
     Wraps a ``LiveComponentOperator`` at a higher level of abstraction — callers
     provide keys and values instead of component subpaths and processor functions.
@@ -160,11 +172,11 @@ class LiveItemsSubscriber(Generic[_K, _V]):
 
 
 class _MountEachLiveComponent:
-    """Internal LiveComponent created by mount_each() for LiveItemsView items."""
+    """Internal LiveComponent created by mount_each() for LiveMapFeed/LiveMapView items."""
 
     def __init__(
         self,
-        items: LiveItemsView[Any, Any],
+        items: LiveMapFeed[Any, Any],
         fn: Any,
         args: tuple[Any, ...],
         kwargs: dict[str, Any],
@@ -175,6 +187,12 @@ class _MountEachLiveComponent:
         self._kwargs = kwargs
 
     async def process(self) -> None:
+        if not isinstance(self._items, LiveMapView):
+            raise TypeError(
+                "LiveMapFeed sources require live mode. "
+                "Pass live=True to app.update() or use a LiveMapView source that "
+                "supports full scans."
+            )
         from .api import mount
 
         async for key, value in self._items:
@@ -183,7 +201,7 @@ class _MountEachLiveComponent:
             )  # type: ignore[arg-type]
 
     async def process_live(self, operator: LiveComponentOperator) -> None:
-        subscriber: LiveItemsSubscriber[Any, Any] = LiveItemsSubscriber(
+        subscriber: LiveMapSubscriber[Any, Any] = LiveMapSubscriber(
             operator, self._fn, self._args, self._kwargs
         )
         await self._items.watch(subscriber)
