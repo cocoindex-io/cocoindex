@@ -458,7 +458,7 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
 
     /// Signal readiness to parent component. Idempotent — subsequent calls are no-ops.
     /// - Live mode: resolves readiness and returns immediately.
-    /// - Non-live mode: resolves readiness, cancels the cancellation_token, then
+    /// - Catch-up mode: resolves readiness, cancels the cancellation_token, then
     ///   suspends indefinitely (Poll::Pending). select! in start() drops the
     ///   process_live future, terminating the Python task via CancelOnDropPy.
     pub async fn mark_ready(&self) {
@@ -475,7 +475,7 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
         self.state.ready_notify.notify_waiters();
 
         if !self.live {
-            // Non-live mode: cancel the token so select! in start() drops process_live.
+            // Catch-up mode: cancel the token so select! in start() drops process_live.
             self.state.cancellation_token.cancel();
             // Suspend forever — select! will drop us via CancelOnDropPy.
             std::future::pending::<()>().await;

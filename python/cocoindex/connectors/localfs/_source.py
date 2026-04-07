@@ -155,7 +155,7 @@ class DirWalker:
         return self._items_iter()
 
     async def _items_iter(self) -> AsyncIterator[tuple[str, File]]:
-        """Async iterate over (key, file) pairs (non-live path)."""
+        """Async iterate over (key, file) pairs (catch-up path)."""
         root_path = self._root_path.path
         async for file in self:
             yield (file.file_path.path.relative_to(root_path).as_posix(), file)

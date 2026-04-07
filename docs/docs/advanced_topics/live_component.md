@@ -5,9 +5,9 @@ description: Build components that process continuously and react to changes inc
 
 # Live Components
 
-By default, a processing component runs a **full scan** each time — it declares all target states and mounts all sub-components from scratch. CocoIndex handles incremental updates by skipping memoized sub-components and reconciling target states at the end. This works well when the dataset is small enough to scan fully each cycle.
+By default, a processing component runs in **catch-up mode** — on each `app.update()`, it declares all target states and mounts all sub-components from scratch. CocoIndex handles incremental updates by skipping memoized sub-components and reconciling target states at the end, then the component exits. This works well when the dataset is small enough to scan fully each cycle.
 
-When the dataset is large or you need to react to changes continuously (e.g., watching a file system), you want the component itself to be incremental. A **live component** does an initial full scan, then reacts to individual changes without rescanning everything.
+When the dataset is large or you need to react to changes continuously (e.g., watching a file system), you want the component itself to stay running and react incrementally. A **live component** does an initial full scan (same as catch-up mode), then keeps running and reacts to individual changes without rescanning everything.
 
 ## The LiveComponent protocol
 
@@ -198,14 +198,14 @@ To add live support to a source connector, make your source return an object tha
 - **`LiveMapView` example**: The [`localfs`](../connectors/localfs.md) connector's `DirWalker` — `walk_dir(..., live=True).items()` returns a `LiveMapView` backed by `watchfiles`.
 - **`LiveMapFeed` example**: The [`kafka`](../connectors/kafka.md) connector — `topic_as_map()` returns a `LiveMapFeed` that consumes messages from Kafka topics.
 
-## Live mode
+## Live mode vs catch-up mode
 
-See [Live Mode](../programming_guide/live_mode.md) for enabling live mode and an overview of how it works.
+See [Live Mode](../programming_guide/live_mode.md) for how the two modes are enabled at the app level and an overview of how they work.
 
-In the context of a manual `LiveComponent`, live mode controls whether `process_live()` continues running after `mark_ready()`:
+For a manual `LiveComponent`, the mode controls whether `process_live()` continues running after `mark_ready()`:
 
 - **Live mode** (`live=True`): `process_live()` continues after `mark_ready()` — the component keeps watching for changes.
-- **Non-live mode** (`live=False`, default): `process_live()` terminates as soon as `mark_ready()` is awaited. No code after `await operator.mark_ready()` executes.
+- **Catch-up mode** (`live=False`, default): `process_live()` terminates as soon as `mark_ready()` is awaited. No code after `await operator.mark_ready()` executes, so the component behaves like a traditional one-shot processor.
 
 This lets you use the same `LiveComponent` class in both modes without code changes.
 

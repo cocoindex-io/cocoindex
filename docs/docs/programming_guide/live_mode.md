@@ -5,11 +5,11 @@ description: Make your app react to source changes continuously, instead of only
 
 # Live Mode
 
-By default, calling `app.update()` runs one processing cycle — it scans all sources, processes what changed since the last run (memoized components are skipped, so unchanged work is not redone), syncs target states, and returns. To pick up further changes, you call `update()` again.
+By default, calling `app.update()` runs in **catch-up mode**: it scans all sources, processes what changed since the last run (memoized components are skipped, so unchanged work is not redone), syncs target states, and returns. Targets are caught up to the moment the run started, and that's it — to pick up further changes, you call `update()` again.
 
-So updates are already incremental — but each call still has to scan sources to discover what changed, and changes are only picked up when you trigger a new run.
+So catch-up mode is already incremental — but each call still has to scan sources to discover what changed, and changes are only picked up when you trigger a new run.
 
-**Live mode** keeps the app running after that initial scan and lets components stream changes continuously from their sources (e.g. a file system watcher or a database change feed), applying them to target states with very low latency. This is useful when:
+**Live mode** keeps the app running after catch-up finishes and lets components stream changes continuously from their sources (e.g. a file system watcher or a database change feed), applying them to target states with very low latency. This is useful when:
 
 - You want near-real-time reactions to source changes, instead of waiting for the next `update()` call
 - Your sources can push changes more efficiently than a full rescan can discover them
@@ -38,7 +38,7 @@ cocoindex update -L my_app.py
 
 The `live` flag propagates top-down through the component tree — both `coco.mount()` and `coco.use_mount()` inherit `live` from the parent, so children are live when the app is live.
 
-Without `live=True` on the app, everything completes after the initial scan — even if a source supports live watching.
+Without `live=True` on the app, the app runs in catch-up mode — everything completes after the initial scan, even if a source supports live watching.
 
 ## Reacting to changes
 
@@ -61,9 +61,9 @@ When `mount_each()` receives either, it automatically creates a `LiveComponent` 
    - New or modified items → re-mount the affected component
    - Deleted items → remove the component and its target states
 
-CocoIndex handles change detection, memoization, and target state reconciliation the same way as in batch mode.
+CocoIndex handles change detection, memoization, and target state reconciliation the same way as in catch-up mode.
 
-Without live support on the source, `mount_each()` does a one-time iteration — items are processed in batch and that's it.
+Without live support on the source, `mount_each()` falls back to catch-up behavior — a one-time iteration over items and that's it.
 
 ## Examples
 
@@ -85,7 +85,7 @@ app = coco.App(coco.AppConfig(name="FilesTransform"), app_main, sourcedir=..., o
 app.update_blocking(live=True)
 ```
 
-**Non-live compatibility:** `LiveMapView` sources also work without `live=True` — they do the initial full scan and exit cleanly. You can write your pipeline once and choose batch or live at run time.
+**Catch-up compatibility:** `LiveMapView` sources also work without `live=True` — they do the initial full scan and exit cleanly. You can write your pipeline once and choose catch-up or live at run time.
 
 For a complete working example, see [`files_transform`](https://github.com/cocoindex-io/cocoindex/tree/v1/examples/files_transform).
 
