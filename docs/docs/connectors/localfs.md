@@ -82,7 +82,7 @@ def walk_dir(
 **Parameters:**
 
 - `path` — The root directory path to walk through. Can be a `FilePath`, a `pathlib.Path`, or a `ContextKey[Path]` (equivalent to `FilePath(base_dir=path)`).
-- `live` — If `True`, `items()` returns a [`LiveItemsView`](../advanced_topics/live_component.md#liveitems-view) that supports live file watching via `mount_each()`.
+- `live` — If `True`, `items()` returns a [`LiveMapView`](../advanced_topics/live_component.md#live-map) that supports live file watching via `mount_each()`.
 - `recursive` — If `True`, recursively walk subdirectories.
 - `path_matcher` — Optional filter for files and directories. See [PatternFilePathMatcher](../resource_types.md#patternfilepathmatcher).
 
@@ -129,7 +129,7 @@ async for file in localfs.walk_dir("/path/to/project", recursive=True, path_matc
 
 ### Live file watching
 
-When `live=True`, `items()` returns a [`LiveItemsView`](../advanced_topics/live_component.md#liveitems-view) instead of a plain `AsyncIterable`. Combined with [`mount_each()`](../programming_guide/processing_component.md#mount-each), this enables automatic incremental file watching — new, modified, and deleted files are processed without a full rescan:
+When `live=True`, `items()` returns a [`LiveMapView`](../advanced_topics/live_component.md#live-map) instead of a plain `AsyncIterable`. Combined with [`mount_each()`](../programming_guide/processing_component.md#mount-each), this enables automatic incremental file watching — new, modified, and deleted files are processed without a full rescan:
 
 ```python
 files = localfs.walk_dir(

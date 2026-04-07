@@ -102,8 +102,9 @@ from .target_state import (
 from .live_component import (
     LiveComponent,
     LiveComponentOperator,
-    LiveItemsView,
-    LiveItemsSubscriber,
+    LiveMapFeed,
+    LiveMapView,
+    LiveMapSubscriber,
     _MountEachLiveComponent,
     is_live_component_class,
 )
@@ -343,7 +344,7 @@ async def mount(
 _ItemsType = (
     Iterable[tuple[StableKey, T]]
     | AsyncIterable[tuple[StableKey, T]]
-    | LiveItemsView[StableKey, T]
+    | LiveMapFeed[StableKey, T]
 )
 
 
@@ -373,13 +374,13 @@ async def mount_each(*pos_args: Any, **kwargs: Any) -> ComponentMountHandle:
     Accepts an optional ``ComponentSubpath`` as the first argument. When omitted,
     the subpath is auto-derived from ``Symbol(fn.__name__)``.
 
-    When *items* is a ``LiveItemsView``, an internal ``LiveComponent`` is created
-    to handle live watching automatically.
+    When *items* is a ``LiveMapFeed`` or ``LiveMapView``, an internal
+    ``LiveComponent`` is created to handle live watching automatically.
 
     Args:
         subpath: Optional component subpath. Auto-derived from fn.__name__ when omitted.
         fn: The function to run for each item. The item value is passed as the first argument.
-        items: A keyed iterable of (key, value) pairs, or a LiveItemsView for live mode.
+        items: A keyed iterable of (key, value) pairs, or a LiveMapFeed/LiveMapView for live mode.
         *args: Additional arguments passed to fn after the item value.
         **kwargs: Additional keyword arguments passed to fn.
 
@@ -412,7 +413,7 @@ async def mount_each(*pos_args: Any, **kwargs: Any) -> ComponentMountHandle:
     parent_ctx = get_context_from_ctx()
     child_path = build_child_path(parent_ctx, subpath)
 
-    if isinstance(items, LiveItemsView):
+    if isinstance(items, LiveMapFeed):
         instance = _MountEachLiveComponent(items, fn, extra_args, kwargs)
         return await _mount_live_component(parent_ctx, child_path, instance)
 
@@ -662,8 +663,9 @@ __all__ = [
     # .live_component
     "LiveComponent",
     "LiveComponentOperator",
-    "LiveItemsView",
-    "LiveItemsSubscriber",
+    "LiveMapFeed",
+    "LiveMapView",
+    "LiveMapSubscriber",
     # Mount APIs
     "ComponentMountHandle",
     "mount",

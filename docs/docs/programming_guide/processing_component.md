@@ -102,7 +102,7 @@ await coco.mount_each(coco.component_subpath("files"), process_file, files.items
 
 Source connectors provide an `items()` method that returns `(StableKey, T)` pairs. For example, `localfs.walk_dir(...).items()` yields `(relative_path, File)` tuples.
 
-When a source connector supports live watching, its `items()` returns a `LiveItemsView` instead of a plain iterable. `mount_each()` detects this and automatically handles incremental updates — no changes to `mount_each()` itself are needed. See [Live Mode](./live_mode.md).
+When a source connector supports live watching, its `items()` returns a `LiveMapView` or `LiveMapFeed` instead of a plain iterable. `mount_each()` detects this and automatically handles incremental updates — no changes to `mount_each()` itself are needed. See [Live Mode](./live_mode.md).
 
 ### `mount_target()` {#mount-target}
 

@@ -63,14 +63,14 @@ class _MessageHandler:
 
     __slots__ = ("_producer", "_topic", "_deletion_value_fn", "_sink")
 
-    _producer: AIOProducer
+    _producer: Any
     _topic: str
     _deletion_value_fn: Callable[[bytes | str], bytes | str] | None
     _sink: coco.TargetActionSink[_MessageAction]
 
     def __init__(
         self,
-        producer: AIOProducer,
+        producer: Any,
         topic: str,
         deletion_value_fn: Callable[[bytes | str], bytes | str] | None,
     ) -> None:

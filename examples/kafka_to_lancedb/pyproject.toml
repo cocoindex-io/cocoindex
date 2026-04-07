@@ -1,0 +1,12 @@
+[project]
+name = "kafka-to-lancedb"
+version = "0.1.0"
+description = "CocoIndex example: consume Kafka messages and dispatch to LanceDB tables."
+requires-python = ">=3.11"
+dependencies = ["cocoindex[kafka,lancedb]>=1.0.0a30"]
+
+[tool.uv]
+prerelease = "explicit"
+
+[tool.setuptools]
+packages = []

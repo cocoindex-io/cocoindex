@@ -195,6 +195,7 @@ impl Drop for ComponentBgChildReadinessChildGuard {
         }
         let mut state = self.readiness.state().lock().unwrap();
         state.remaining_count -= 1;
+        // state.maybe_set_readiness(None, self.readiness.readiness());
         state.maybe_set_readiness(
             Some(Err(SharedError::new(internal_error!(
                 "Child component build cancelled"
