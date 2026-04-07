@@ -100,7 +100,7 @@ class LiveComponentOperator:
         return ComponentMountHandle([core_handle])
 
     async def mark_ready(self) -> None:
-        """Signal readiness. In non-live mode, this never returns (terminates process_live)."""
+        """Signal readiness. In catch-up mode, this never returns (terminates process_live)."""
         await self._controller.mark_ready_async()
 
 
@@ -153,7 +153,7 @@ class LiveMapSubscriber(Generic[_K, _V]):
         await self._operator.update_full()
 
     async def mark_ready(self) -> None:
-        """Signal readiness. In non-live mode, this terminates ``watch()``."""
+        """Signal readiness. In catch-up mode, this terminates ``watch()``."""
         await self._operator.mark_ready()
 
     async def update(self, key: _K, value: _V) -> ComponentMountHandle:

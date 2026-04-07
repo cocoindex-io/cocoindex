@@ -100,8 +100,8 @@ def test_live_component_basic_full_update() -> None:
     }
 
 
-class _NonLiveLiveComponent:
-    """LiveComponent that loops forever after mark_ready (tests non-live termination)."""
+class _CatchUpLiveComponent:
+    """LiveComponent that loops forever after mark_ready (tests catch-up termination)."""
 
     async def process(self) -> None:
         _declare_source_entries()
@@ -109,26 +109,26 @@ class _NonLiveLiveComponent:
     async def process_live(self, operator: coco.LiveComponentOperator) -> None:
         await operator.update_full()
         await operator.mark_ready()
-        # In non-live mode, mark_ready should terminate process_live.
+        # In catch-up mode, mark_ready should terminate process_live.
         # This infinite loop should never execute.
         while True:
             await asyncio.sleep(1)
 
 
-def test_live_component_non_live_mode() -> None:
+def test_live_component_catch_up_mode() -> None:
     GlobalDictTarget.store.clear()
     _source_data.clear()
 
     _source_data["x"] = 10
 
     async def _main() -> None:
-        await coco.mount(coco.component_subpath("live"), _NonLiveLiveComponent)
+        await coco.mount(coco.component_subpath("live"), _CatchUpLiveComponent)
 
     app = coco.App(
-        coco.AppConfig(name="test_live_non_live_mode", environment=coco_env),
+        coco.AppConfig(name="test_live_catch_up_mode", environment=coco_env),
         _main,
     )
-    # Non-live mode (default): should complete without hanging
+    # Catch-up mode (default): should complete without hanging
     app.update_blocking()
 
     assert GlobalDictTarget.store.data == {
@@ -503,7 +503,7 @@ def test_mount_each_live_items_view_basic() -> None:
     }
 
 
-def test_mount_each_live_items_view_non_live_mode() -> None:
+def test_mount_each_live_items_view_catch_up_mode() -> None:
     GlobalDictTarget.store.clear()
     _live_source.clear()
     _live_source["x"] = 10
@@ -514,10 +514,10 @@ def test_mount_each_live_items_view_non_live_mode() -> None:
         await coco.mount_each(_declare_live_item, items)  # type: ignore[call-overload]
 
     app = coco.App(
-        coco.AppConfig(name="test_live_items_non_live", environment=coco_env),
+        coco.AppConfig(name="test_live_items_catch_up", environment=coco_env),
         _main,
     )
-    # Non-live mode: mark_ready terminates watch(), app completes
+    # Catch-up mode: mark_ready terminates watch(), app completes
     app.update_blocking()
 
     assert GlobalDictTarget.store.data == {
