@@ -14,7 +14,7 @@ from cocoindex.resources.file import FileLike, PatternFilePathMatcher
 
 KAFKA_PRODUCER = coco.ContextKey[AIOProducer]("kafka_producer", tracked=False)
 
-KAFKA_TOPIC = os.environ.get("KAFKA_TOPIC", "csv-rows")
+KAFKA_TOPIC = os.environ.get("KAFKA_TOPIC", "cocoindex-csv-rows")
 KAFKA_BOOTSTRAP_SERVERS = os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
 KAFKA_SASL_USERNAME = os.environ.get("KAFKA_SASL_USERNAME", "")
 KAFKA_SASL_PASSWORD = os.environ.get("KAFKA_SASL_PASSWORD", "")
@@ -49,10 +49,11 @@ async def process_csv(file: FileLike, topic_target: kafka.KafkaTopicTarget) -> N
     first_col = headers[0]
 
     for row in reader:
-        key_value = row.get(first_col, "")
-        key = f"{filename}/{key_value}"
-        value = json.dumps(row)
-        topic_target.declare_target_state(key=key, value=value)
+        key_value = row.get(first_col, None)
+        if key_value is not None:
+            key = f"{filename}/{key_value}"
+            value = json.dumps(row)
+            topic_target.declare_target_state(key=key, value=value)
 
 
 @coco.fn
