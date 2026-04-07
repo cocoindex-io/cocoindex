@@ -42,7 +42,6 @@ async def process_csv(file: FileLike, topic_target: kafka.KafkaTopicTarget) -> N
     text = await file.read_text()
     reader = csv.DictReader(io.StringIO(text))
 
-    filename = file.file_path.path.as_posix()
     headers = reader.fieldnames
     if not headers:
         return
@@ -51,9 +50,8 @@ async def process_csv(file: FileLike, topic_target: kafka.KafkaTopicTarget) -> N
     for row in reader:
         key_value = row.get(first_col, None)
         if key_value is not None:
-            key = f"{filename}/{key_value}"
             value = json.dumps(row)
-            topic_target.declare_target_state(key=key, value=value)
+            topic_target.declare_target_state(key=key_value, value=value)
 
 
 @coco.fn

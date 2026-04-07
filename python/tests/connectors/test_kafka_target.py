@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
-from typing import Any
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
@@ -21,9 +21,11 @@ class MockAIOProducer:
     def __init__(self) -> None:
         self.produced_messages: list[tuple[str, Any, Any]] = []
 
-    def produce(self, topic: str, *, key: Any = None, value: Any = None) -> Any:
+    async def produce(
+        self, topic: str, *, key: Any = None, value: Any = None
+    ) -> asyncio.Future[None]:
         self.produced_messages.append((topic, key, value))
-        fut: asyncio.Future[None] = asyncio.get_event_loop().create_future()
+        fut: asyncio.Future[None] = asyncio.get_running_loop().create_future()
         fut.set_result(None)
         return fut
 
@@ -38,6 +40,7 @@ _mock_module.aio = _mock_aio
 sys.modules.setdefault("confluent_kafka", _mock_module)
 sys.modules.setdefault("confluent_kafka.aio", _mock_aio)
 
+from confluent_kafka.aio import AIOProducer  # noqa: E402
 from cocoindex.connectors.kafka._target import (  # noqa: E402
     _MessageAction,
     _MessageHandler,
@@ -61,17 +64,21 @@ def producer() -> MockAIOProducer:
     return MockAIOProducer()
 
 
+def _as_producer(mock: MockAIOProducer) -> AIOProducer:
+    return cast(AIOProducer, mock)
+
+
 @pytest.fixture
 def message_handler(producer: MockAIOProducer) -> _MessageHandler:
     return _MessageHandler(
-        producer=producer, topic="test-topic", deletion_value_fn=None
+        producer=_as_producer(producer), topic="test-topic", deletion_value_fn=None
     )
 
 
 @pytest.fixture
 def message_handler_with_deletion(producer: MockAIOProducer) -> _MessageHandler:
     return _MessageHandler(
-        producer=producer,
+        producer=_as_producer(producer),
         topic="test-topic",
         deletion_value_fn=lambda k: b"deleted:"
         + (k if isinstance(k, bytes) else k.encode()),
@@ -229,7 +236,7 @@ class TestMessageHandlerSink:
     @pytest.mark.asyncio
     async def test_produce_messages(self, producer: MockAIOProducer) -> None:
         handler = _MessageHandler(
-            producer=producer, topic="test-topic", deletion_value_fn=None
+            producer=_as_producer(producer), topic="test-topic", deletion_value_fn=None
         )
 
         action1 = _MessageAction(key=b"k1", value=b"v1")
@@ -245,7 +252,7 @@ class TestMessageHandlerSink:
     @pytest.mark.asyncio
     async def test_produce_tombstone(self, producer: MockAIOProducer) -> None:
         handler = _MessageHandler(
-            producer=producer, topic="test-topic", deletion_value_fn=None
+            producer=_as_producer(producer), topic="test-topic", deletion_value_fn=None
         )
 
         action = _MessageAction(key=b"k1", value=None)
@@ -259,7 +266,7 @@ class TestMessageHandlerSink:
     @pytest.mark.asyncio
     async def test_produce_deletion_value(self, producer: MockAIOProducer) -> None:
         handler = _MessageHandler(
-            producer=producer,
+            producer=_as_producer(producer),
             topic="test-topic",
             deletion_value_fn=lambda k: b"del:"
             + (k if isinstance(k, bytes) else k.encode()),
@@ -275,10 +282,10 @@ class TestMessageHandlerSink:
     @pytest.mark.asyncio
     async def test_multiple_topics(self, producer: MockAIOProducer) -> None:
         handler1 = _MessageHandler(
-            producer=producer, topic="topic-a", deletion_value_fn=None
+            producer=_as_producer(producer), topic="topic-a", deletion_value_fn=None
         )
         handler2 = _MessageHandler(
-            producer=producer, topic="topic-b", deletion_value_fn=None
+            producer=_as_producer(producer), topic="topic-b", deletion_value_fn=None
         )
 
         context_provider = MagicMock(spec=ContextProvider)
