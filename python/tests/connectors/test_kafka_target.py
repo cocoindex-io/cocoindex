@@ -40,7 +40,7 @@ _mock_module.aio = _mock_aio
 sys.modules.setdefault("confluent_kafka", _mock_module)
 sys.modules.setdefault("confluent_kafka.aio", _mock_aio)
 
-from confluent_kafka.aio import AIOProducer  # noqa: E402
+from confluent_kafka.aio import AIOProducer  # type: ignore[import-not-found]  # noqa: E402
 from cocoindex.connectors.kafka._target import (  # noqa: E402
     _MessageAction,
     _MessageHandler,
