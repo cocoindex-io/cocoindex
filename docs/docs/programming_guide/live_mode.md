@@ -5,12 +5,14 @@ description: Make your app react to source changes continuously, instead of only
 
 # Live Mode
 
-By default, calling `app.update()` runs a full processing cycle — it scans all sources, processes everything, syncs target states, and returns. To process again, you call `update()` again.
+By default, calling `app.update()` runs one processing cycle — it scans all sources, processes what changed since the last run (memoized components are skipped, so unchanged work is not redone), syncs target states, and returns. To pick up further changes, you call `update()` again.
 
-**Live mode** keeps the app running after the initial scan, so components can watch for changes and process them incrementally — without rescanning everything. This is useful when:
+So updates are already incremental — but each call still has to scan sources to discover what changed, and changes are only picked up when you trigger a new run.
 
-- You have a large dataset and only a few items change at a time
-- You want near-real-time reactions to source changes (e.g., file system watcher, database change feed)
+**Live mode** keeps the app running after that initial scan and lets components stream changes continuously from their sources (e.g. a file system watcher or a database change feed), applying them to target states with very low latency. This is useful when:
+
+- You want near-real-time reactions to source changes, instead of waiting for the next `update()` call
+- Your sources can push changes more efficiently than a full rescan can discover them
 
 Two things are needed for live mode to work: the app must be **enabled** to stay running, and somewhere in the component tree a component must **react** to changes.
 
