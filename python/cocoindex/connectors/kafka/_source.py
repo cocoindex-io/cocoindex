@@ -312,19 +312,27 @@ class _TopicMapFeed:
                 handle = await subscriber.update(key, msg)
                 part_state.track(offset, handle)
 
+        # AIOConsumer.poll() runs Consumer.poll() in a ThreadPoolExecutor.
+        # Keep the timeout short so the blocked thread returns promptly on
+        # cancellation — the executor waits for threads during shutdown.
+        _POLL_TIMEOUT = 1.0
+
+        active_poll_task: asyncio.Task[Message | None] | None = None
         try:
             # Phase 1: Wait for initial partition assignment.
             # on_assign fires during poll(), which sets watermarks on partition states.
             while not tracker.is_assigned():
-                await _process_message(await self._consumer.poll(timeout=1.0))
+                await _process_message(await self._consumer.poll(timeout=_POLL_TIMEOUT))
 
             # Phase 2: Consume messages, racing poll against the readiness event.
             while True:
                 if not ready_signaled:
-                    poll_task = asyncio.ensure_future(self._consumer.poll(timeout=60.0))
+                    active_poll_task = asyncio.ensure_future(
+                        self._consumer.poll(timeout=_POLL_TIMEOUT)
+                    )
                     ready_task = asyncio.ensure_future(tracker.ready_event.wait())
                     done, _ = await asyncio.wait(
-                        {poll_task, ready_task},
+                        {active_poll_task, ready_task},
                         return_when=asyncio.FIRST_COMPLETED,
                     )
                     if ready_task in done:
@@ -333,11 +341,16 @@ class _TopicMapFeed:
                     else:
                         ready_task.cancel()
                     # Always process the poll result
-                    await _process_message(await poll_task)
+                    await _process_message(await active_poll_task)
+                    active_poll_task = None
                 else:
-                    await _process_message(await self._consumer.poll(timeout=60.0))
+                    await _process_message(
+                        await self._consumer.poll(timeout=_POLL_TIMEOUT)
+                    )
 
         finally:
+            if active_poll_task is not None:
+                active_poll_task.cancel()
             tracker.discard_all()
             await self._consumer.unsubscribe()
 
