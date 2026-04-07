@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from typing import Any, Callable, Collection, Generic, NamedTuple, Sequence
+from typing import Callable, Collection, Generic, NamedTuple, Sequence
 
 try:
     from confluent_kafka.aio import AIOProducer  # type: ignore[import-not-found]
@@ -63,14 +63,14 @@ class _MessageHandler:
 
     __slots__ = ("_producer", "_topic", "_deletion_value_fn", "_sink")
 
-    _producer: Any
+    _producer: AIOProducer
     _topic: str
     _deletion_value_fn: Callable[[bytes | str], bytes | str] | None
     _sink: coco.TargetActionSink[_MessageAction]
 
     def __init__(
         self,
-        producer: Any,
+        producer: AIOProducer,
         topic: str,
         deletion_value_fn: Callable[[bytes | str], bytes | str] | None,
     ) -> None:
@@ -85,14 +85,19 @@ class _MessageHandler:
         actions: Sequence[_MessageAction],
         /,
     ) -> None:
-        futures = []
-        for action in actions:
-            fut = self._producer.produce(
-                self._topic, key=action.key, value=action.value
+        if not actions:
+            return
+        # AIOProducer.produce() is an async method that enqueues the message into
+        # the batch buffer and returns an asyncio.Future resolved by the delivery
+        # report. We must await the produce coroutines to obtain those futures,
+        # then await the futures to ensure messages are actually delivered.
+        delivery_futures = await asyncio.gather(
+            *(
+                self._producer.produce(self._topic, key=action.key, value=action.value)
+                for action in actions
             )
-            futures.append(fut)
-        if futures:
-            await asyncio.gather(*futures)
+        )
+        await asyncio.gather(*delivery_futures)
 
     def reconcile(
         self,
@@ -211,11 +216,15 @@ class KafkaTopicTarget(
     Messages are produced for upserts and deletes of declared target states.
     """
 
-    _provider: coco.TargetStateProvider[Any, None, coco.MaybePendingS]
+    _provider: coco.TargetStateProvider[
+        bytes | str | coco.NonExistenceType, None, coco.MaybePendingS
+    ]
 
     def __init__(
         self,
-        provider: coco.TargetStateProvider[Any, None, coco.MaybePendingS],
+        provider: coco.TargetStateProvider[
+            bytes | str | coco.NonExistenceType, None, coco.MaybePendingS
+        ],
     ) -> None:
         self._provider = provider
 
