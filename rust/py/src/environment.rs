@@ -1,4 +1,5 @@
 use crate::fingerprint::PyFingerprint;
+use crate::value::PyStoredValue;
 use crate::{prelude::*, target_state::root_target_states_provider_registry};
 
 use crate::runtime::PyAsyncContext;
@@ -27,5 +28,24 @@ impl PyEnvironment {
 
     pub fn register_logic(&self, fp: PyFingerprint) {
         self.0.register_logic(fp.0);
+    }
+
+    pub fn unregister_logic(&self, fp: PyFingerprint) {
+        self.0.unregister_logic(&fp.0);
+    }
+
+    /// Register the eager initial memo states for a tracked context value.
+    /// Called from `ContextProvider.provide()` after the value's state
+    /// functions have been evaluated with `NON_EXISTENCE`.
+    pub fn register_context_initial_states(&self, fp: PyFingerprint, states: Vec<Py<PyAny>>) {
+        let wrapped: Vec<PyStoredValue> = states.into_iter().map(PyStoredValue::new).collect();
+        self.0.register_context_initial_states(fp.0, wrapped);
+    }
+
+    /// Remove the initial states for a tracked context fingerprint.
+    /// Called on re-provide (when a context key is provided with a new
+    /// value whose fingerprint differs).
+    pub fn unregister_context_initial_states(&self, fp: PyFingerprint) {
+        self.0.unregister_context_initial_states(&fp.0);
     }
 }

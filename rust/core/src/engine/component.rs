@@ -8,7 +8,7 @@ use std::sync::atomic::AtomicU64;
 use crate::engine::context::FnCallContext;
 use crate::engine::context::{
     AppContext, ComponentDeleteContext, ComponentProcessingAction, ComponentProcessingMode,
-    ComponentProcessorContext,
+    ComponentProcessorContext, MemoStatesPayload,
 };
 use crate::engine::execution::{
     cleanup_tombstone, post_submit_for_build, submit, update_component_memo_states,
@@ -58,20 +58,24 @@ pub trait ComponentProcessor<Prof: EngineProfile>: Send + Sync + 'static {
     }
 
     /// Validate or collect memo states after a fingerprint match.
-    /// `stored_states`: `Some(states)` on cache hit, `None` on cache miss (collect initial states).
+    /// `stored_states`: `Some(payload)` on cache hit, `None` on cache miss (collect initial states).
     /// Returns `(new_states, can_reuse, states_changed)`:
     /// - `can_reuse`: when true, the cached value is valid and can be returned without re-execution.
     /// - `states_changed`: when true, the new states differ from stored states and must be persisted.
     ///   This can be true even when `can_reuse` is true (e.g. mtime changed but content hash unchanged).
+    ///
+    /// The payload carries both positional (argument-borne) and context-borne memo states.
+    /// The core crate treats everything inside as opaque blobs — state functions themselves
+    /// live Python-side in the Python profile.
     fn handle_memo_states(
         &self,
         host_runtime_ctx: &Prof::HostRuntimeCtx,
         comp_ctx: &ComponentProcessorContext<Prof>,
-        stored_states: Option<Vec<Prof::FunctionData>>,
-    ) -> Result<impl Future<Output = Result<(Vec<Prof::FunctionData>, bool, bool)>> + Send + 'static>
+        stored_states: Option<MemoStatesPayload<Prof>>,
+    ) -> Result<impl Future<Output = Result<(MemoStatesPayload<Prof>, bool, bool)>> + Send + 'static>
     {
         let _ = (host_runtime_ctx, comp_ctx, stored_states);
-        Ok(async { Ok((vec![], true, false)) })
+        Ok(async { Ok((MemoStatesPayload::default(), true, false)) })
     }
 }
 
@@ -632,7 +636,7 @@ impl<Prof: EngineProfile> Component<Prof> {
         let mut memo_fp_to_store: Option<Fingerprint> = None;
         // Memo states collected from state validation (on cache hit with invalid states)
         // or to be collected after execution (on cache miss).
-        let mut memo_states_for_store: Option<Vec<Prof::FunctionData>> = None;
+        let mut memo_states_for_store: Option<MemoStatesPayload<Prof>> = None;
         let processing_stats = processor_context.processing_stats();
 
         if let Some(processor) = processor {
@@ -761,7 +765,8 @@ impl<Prof: EngineProfile> Component<Prof> {
                     Some(ret) => {
                         if !children_outcome.has_exception {
                             // Collect initial memo states on cache miss if processor has a state handler.
-                            let memo_states = if let Some(processor) = processor
+                            let memo_states: MemoStatesPayload<Prof> = if let Some(processor) =
+                                processor
                                 && processor.has_memo_state_handler()
                             {
                                 if let Some(states) = memo_states_for_store.take() {
@@ -778,7 +783,7 @@ impl<Prof: EngineProfile> Component<Prof> {
                                     initial_states
                                 }
                             } else {
-                                vec![]
+                                MemoStatesPayload::default()
                             };
 
                             let comp_memo = if let Some(fp) = memo_fp_to_store
@@ -790,7 +795,7 @@ impl<Prof: EngineProfile> Component<Prof> {
                                     .unwrap()
                                 && *last_memo_fp == memo_fp_to_store
                             {
-                                Some((fp, &ret, memo_states.as_slice()))
+                                Some((fp, &ret, &memo_states))
                             } else {
                                 None
                             };

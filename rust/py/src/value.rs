@@ -25,6 +25,22 @@ impl PyStoredValue {
             })),
         }
     }
+
+    /// Return the cached Python object if this value was created from one
+    /// and hasn't been downgraded to bytes-only. Returns `None` if the value
+    /// holds only serialized bytes (and would need a deserializer to convert).
+    ///
+    /// Used to skip re-wrapping when passing eagerly-stored values from the
+    /// Rust-side registry back out through Python-facing APIs that expect
+    /// raw Python objects.
+    pub fn object_ref(&self, py: Python<'_>) -> Option<Py<PyAny>> {
+        self.inner
+            .lock()
+            .unwrap()
+            .object
+            .as_ref()
+            .map(|o| o.clone_ref(py))
+    }
 }
 
 #[pymethods]

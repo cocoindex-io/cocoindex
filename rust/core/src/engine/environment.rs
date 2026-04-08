@@ -5,7 +5,7 @@ use crate::{
 
 use cocoindex_utils::fingerprint::Fingerprint;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::RwLock;
 
@@ -35,6 +35,12 @@ struct EnvironmentInner<Prof: EngineProfile> {
     target_states_providers: Arc<Mutex<TargetStateProviderRegistry<Prof>>>,
     host_runtime_ctx: Prof::HostRuntimeCtx,
     logic_set: RwLock<HashSet<Fingerprint>>,
+    /// Eager initial memo states for tracked context values, keyed by the
+    /// value's fingerprint. Populated at `provide()` time from Python, read
+    /// on cache miss to populate a new memo entry's `context_memo_states`.
+    /// See `specs/memo_validation/plan.md` → "Extension: state validation
+    /// for tracked context values".
+    context_initial_states: RwLock<HashMap<Fingerprint, Vec<Prof::FunctionData>>>,
 }
 
 #[derive(Clone)]
@@ -78,6 +84,7 @@ impl<Prof: EngineProfile> Environment<Prof> {
             target_states_providers,
             host_runtime_ctx,
             logic_set: RwLock::new(HashSet::new()),
+            context_initial_states: RwLock::new(HashMap::new()),
         });
         Ok(Self { inner: state })
     }
@@ -125,8 +132,56 @@ impl<Prof: EngineProfile> Environment<Prof> {
         self.inner.logic_set.write().unwrap().insert(fp);
     }
 
+    pub fn unregister_logic(&self, fp: &Fingerprint) {
+        self.inner.logic_set.write().unwrap().remove(fp);
+    }
+
     pub fn logic_set_contains(&self, fp: &Fingerprint) -> bool {
         self.inner.logic_set.read().unwrap().contains(fp)
+    }
+
+    /// Register the eager initial memo states for a tracked context value.
+    /// Called at `provide()` time (from the Python context provider) after
+    /// the value's canonicalization and state-function collection.
+    pub fn register_context_initial_states(
+        &self,
+        fp: Fingerprint,
+        states: Vec<Prof::FunctionData>,
+    ) {
+        self.inner
+            .context_initial_states
+            .write()
+            .unwrap()
+            .insert(fp, states);
+    }
+
+    /// Remove the initial states for a tracked context fingerprint.
+    /// Called on re-provide (when a context key is provided with a new value
+    /// whose fingerprint differs).
+    pub fn unregister_context_initial_states(&self, fp: &Fingerprint) {
+        self.inner
+            .context_initial_states
+            .write()
+            .unwrap()
+            .remove(fp);
+    }
+
+    /// Collect initial memo states for the given tracked context fingerprints.
+    ///
+    /// Fingerprints with no entry in the registry (i.e. the tracked value
+    /// had no `__coco_memo_state__`) are silently skipped. Returns the list
+    /// of `(fp, states)` pairs for fps that were found.
+    pub fn collect_context_initial_states<'a, I>(
+        &self,
+        fps: I,
+    ) -> Vec<(Fingerprint, Vec<Prof::FunctionData>)>
+    where
+        I: IntoIterator<Item = &'a Fingerprint>,
+    {
+        let map = self.inner.context_initial_states.read().unwrap();
+        fps.into_iter()
+            .filter_map(|fp| map.get(fp).map(|v| (*fp, v.clone())))
+            .collect()
     }
 }
 

@@ -9,7 +9,7 @@ use heed::{RoTxn, RwTxn};
 
 use crate::engine::context::{
     ComponentProcessingAction, ComponentProcessingMode, ComponentProcessorContext,
-    DeclaredTargetState, FnCallMemo, TARGET_ID_KEY,
+    DeclaredTargetState, FnCallMemo, MemoStatesPayload, TARGET_ID_KEY,
 };
 use crate::engine::context::{FnCallContext, FnCallMemoEntry};
 use crate::engine::id_sequencer::IdReservation;
@@ -27,10 +27,60 @@ use crate::state::target_state_path::{
 use cocoindex_utils::deser::from_msgpack_slice;
 use cocoindex_utils::fingerprint::Fingerprint;
 
+/// Deserialize a `Vec<MemoizedValue>` into a `Vec<Prof::FunctionData>`.
+fn deserialize_memo_values<Prof: EngineProfile>(
+    values: &[db_schema::MemoizedValue<'_>],
+) -> Result<Vec<Prof::FunctionData>> {
+    values
+        .iter()
+        .map(|s| {
+            let bytes = match s {
+                db_schema::MemoizedValue::Inlined(b) => b,
+            };
+            Prof::FunctionData::from_bytes(bytes.as_ref())
+        })
+        .collect()
+}
+
+/// Serialize a `&[Prof::FunctionData]` into a `Vec<MemoizedValue<'static>>`.
+/// The returned values own their bytes (`Cow::Owned`), so they're independent of
+/// the input lifetime.
+fn serialize_memo_values<Prof: EngineProfile>(
+    values: &[Prof::FunctionData],
+) -> Result<Vec<db_schema::MemoizedValue<'static>>> {
+    values
+        .iter()
+        .map(|s| {
+            let bytes = s.to_bytes()?;
+            Ok(db_schema::MemoizedValue::Inlined(Cow::Owned(bytes.into())))
+        })
+        .collect()
+}
+
+/// Deserialize the context-borne memo states (fp-tagged list of value blobs).
+fn deserialize_context_memo_states<Prof: EngineProfile>(
+    entries: &[(Fingerprint, Vec<db_schema::MemoizedValue<'_>>)],
+) -> Result<Vec<(Fingerprint, Vec<Prof::FunctionData>)>> {
+    entries
+        .iter()
+        .map(|(fp, values)| Ok((*fp, deserialize_memo_values::<Prof>(values)?)))
+        .collect()
+}
+
+/// Serialize the context-borne memo states into the on-disk representation.
+fn serialize_context_memo_states<Prof: EngineProfile>(
+    entries: &[(Fingerprint, Vec<Prof::FunctionData>)],
+) -> Result<Vec<(Fingerprint, Vec<db_schema::MemoizedValue<'static>>)>> {
+    entries
+        .iter()
+        .map(|(fp, values)| Ok((*fp, serialize_memo_values::<Prof>(values)?)))
+        .collect()
+}
+
 pub(crate) async fn use_or_invalidate_component_memoization<Prof: EngineProfile>(
     comp_ctx: &ComponentProcessorContext<Prof>,
     processor_fp: Option<Fingerprint>,
-) -> Result<Option<(Prof::FunctionData, Vec<Prof::FunctionData>)>> {
+) -> Result<Option<(Prof::FunctionData, MemoStatesPayload<Prof>)>> {
     // Short-circuit to miss under full_reprocess
     if comp_ctx.full_reprocess() {
         return Ok(None);
@@ -63,17 +113,17 @@ pub(crate) async fn use_or_invalidate_component_memoization<Prof: EngineProfile>
                 let ret = Prof::FunctionData::from_bytes(bytes.as_ref());
                 match ret {
                     Ok(ret) => {
-                        let memo_states = memo_info
-                            .memo_states
-                            .iter()
-                            .map(|s| {
-                                let bytes = match s {
-                                    db_schema::MemoizedValue::Inlined(b) => b,
-                                };
-                                Prof::FunctionData::from_bytes(bytes.as_ref())
-                            })
-                            .collect::<Result<Vec<_>>>()?;
-                        return Ok(Some((ret, memo_states)));
+                        let memo_states = deserialize_memo_values::<Prof>(&memo_info.memo_states)?;
+                        let context_memo_states = deserialize_context_memo_states::<Prof>(
+                            &memo_info.context_memo_states,
+                        )?;
+                        return Ok(Some((
+                            ret,
+                            MemoStatesPayload {
+                                positional: memo_states,
+                                by_context_fp: context_memo_states,
+                            },
+                        )));
                     }
                     Err(e) => {
                         warn!(
@@ -107,11 +157,11 @@ pub(crate) async fn use_or_invalidate_component_memoization<Prof: EngineProfile>
 ///
 /// Used when memo state validation indicates `can_reuse=true` but states have changed
 /// (e.g. mtime changed but content fingerprint is unchanged). Reads the existing entry,
-/// replaces the `memo_states` field, and writes it back — preserving `processor_fp`,
-/// `return_value`, and `logic_deps`.
+/// replaces the `memo_states` / `context_memo_states` fields, and writes it back —
+/// preserving `processor_fp`, `return_value`, and `logic_deps`.
 pub(crate) async fn update_component_memo_states<Prof: EngineProfile>(
     comp_ctx: &ComponentProcessorContext<Prof>,
-    new_states: &[Prof::FunctionData],
+    new_states: &MemoStatesPayload<Prof>,
 ) -> Result<()> {
     let key = db_schema::DbEntryKey::StablePath(
         comp_ctx.stable_path().clone(),
@@ -122,13 +172,9 @@ pub(crate) async fn update_component_memo_states<Prof: EngineProfile>(
     let db = comp_ctx.app_ctx().db().clone();
 
     // Serialize new states
-    let memo_states_serialized: Vec<db_schema::MemoizedValue<'_>> = new_states
-        .iter()
-        .map(|s| {
-            let bytes = s.to_bytes()?;
-            Ok(db_schema::MemoizedValue::Inlined(Cow::Owned(bytes.into())))
-        })
-        .collect::<Result<Vec<_>>>()?;
+    let memo_states_serialized = serialize_memo_values::<Prof>(&new_states.positional)?;
+    let context_memo_states_serialized =
+        serialize_context_memo_states::<Prof>(&new_states.by_context_fp)?;
 
     // Read existing entry and write back with updated states in one transaction
     comp_ctx
@@ -145,6 +191,7 @@ pub(crate) async fn update_component_memo_states<Prof: EngineProfile>(
                 return_value: existing.return_value,
                 logic_deps: existing.logic_deps,
                 memo_states: memo_states_serialized,
+                context_memo_states: context_memo_states_serialized,
             };
             let encoded = rmp_serde::to_vec_named(&memo_info)?;
             db.put(wtxn, key.as_slice(), encoded.as_slice())?;
@@ -167,14 +214,9 @@ fn write_fn_call_memo<Prof: EngineProfile>(
     )
     .encode()?;
     let ret_bytes = memo.ret.to_bytes()?;
-    let memo_states_serialized: Vec<db_schema::MemoizedValue<'_>> = memo
-        .memo_states
-        .iter()
-        .map(|s| {
-            let bytes = s.to_bytes()?;
-            Ok(db_schema::MemoizedValue::Inlined(Cow::Owned(bytes.into())))
-        })
-        .collect::<Result<Vec<_>>>()?;
+    let memo_states_serialized = serialize_memo_values::<Prof>(&memo.memo_states)?;
+    let context_memo_states_serialized =
+        serialize_context_memo_states::<Prof>(&memo.context_memo_states)?;
     let fn_call_memo = db_schema::FunctionMemoizationEntry {
         return_value: db_schema::MemoizedValue::Inlined(Cow::Borrowed(ret_bytes.as_ref())),
         child_components: vec![],
@@ -182,6 +224,7 @@ fn write_fn_call_memo<Prof: EngineProfile>(
         dependency_memo_entries: memo.dependency_memo_entries.into_iter().collect(),
         logic_deps: memo.logic_deps.into_iter().collect(),
         memo_states: memo_states_serialized,
+        context_memo_states: context_memo_states_serialized,
     };
     let encoded = rmp_serde::to_vec_named(&fn_call_memo)?;
     db.put(wtxn, key.as_slice(), encoded.as_slice())?;
@@ -217,22 +260,16 @@ fn read_fn_call_memo_with_txn<Prof: EngineProfile>(
         db_schema::MemoizedValue::Inlined(b) => b,
     };
     let ret = Prof::FunctionData::from_bytes(return_value_bytes.as_ref())?;
-    let memo_states = fn_call_memo
-        .memo_states
-        .iter()
-        .map(|s| {
-            let bytes = match s {
-                db_schema::MemoizedValue::Inlined(b) => b,
-            };
-            Prof::FunctionData::from_bytes(bytes.as_ref())
-        })
-        .collect::<Result<Vec<_>>>()?;
+    let memo_states = deserialize_memo_values::<Prof>(&fn_call_memo.memo_states)?;
+    let context_memo_states =
+        deserialize_context_memo_states::<Prof>(&fn_call_memo.context_memo_states)?;
     Ok(Some(FnCallMemo {
         ret,
         target_state_paths: fn_call_memo.target_state_paths,
         dependency_memo_entries: fn_call_memo.dependency_memo_entries.into_iter().collect(),
         logic_deps: fn_call_memo.logic_deps.into_iter().collect(),
         memo_states,
+        context_memo_states,
         already_stored: true,
     }))
 }
@@ -1384,7 +1421,7 @@ pub(crate) async fn post_submit_for_build<Prof: EngineProfile>(
     comp_memo: Option<(
         Fingerprint,
         &'_ Prof::FunctionData,
-        &'_ [Prof::FunctionData],
+        &'_ MemoStatesPayload<Prof>,
     )>,
 ) -> Result<()> {
     let Some((fp, ret, memo_states)) = comp_memo else {
@@ -1398,18 +1435,15 @@ pub(crate) async fn post_submit_for_build<Prof: EngineProfile>(
     )
     .encode()?;
     let ret_bytes = ret.to_bytes()?;
-    let memo_states_serialized: Vec<db_schema::MemoizedValue<'_>> = memo_states
-        .iter()
-        .map(|s| {
-            let bytes = s.to_bytes()?;
-            Ok(db_schema::MemoizedValue::Inlined(Cow::Owned(bytes.into())))
-        })
-        .collect::<Result<Vec<_>>>()?;
+    let memo_states_serialized = serialize_memo_values::<Prof>(&memo_states.positional)?;
+    let context_memo_states_serialized =
+        serialize_context_memo_states::<Prof>(&memo_states.by_context_fp)?;
     let memo_info = db_schema::ComponentMemoizationInfo {
         processor_fp: fp,
         return_value: db_schema::MemoizedValue::Inlined(Cow::Borrowed(ret_bytes.as_ref())),
         logic_deps: comp_ctx.take_logic_deps(),
         memo_states: memo_states_serialized,
+        context_memo_states: context_memo_states_serialized,
     };
     let encoded = rmp_serde::to_vec_named(&memo_info)?;
 

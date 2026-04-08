@@ -182,6 +182,12 @@ pub struct ComponentMemoizationInfo<'a> {
     pub logic_deps: Vec<Fingerprint>,
     #[serde(rename = "S", default, skip_serializing_if = "Vec::is_empty", borrow)]
     pub memo_states: Vec<MemoizedValue<'a>>,
+    /// Context-borne memo states, keyed by the tracked-context value's fingerprint.
+    /// Stored as `Vec<(Fingerprint, _)>` rather than `HashMap` because no one looks up
+    /// by fingerprint inside this container — both Rust and Python iterate it linearly
+    /// at validation time.
+    #[serde(rename = "CS", default, skip_serializing_if = "Vec::is_empty", borrow)]
+    pub context_memo_states: Vec<(Fingerprint, Vec<MemoizedValue<'a>>)>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -204,6 +210,10 @@ pub struct FunctionMemoizationEntry<'a> {
     pub dependency_memo_entries: Vec<Fingerprint>,
     #[serde(rename = "S", default, skip_serializing_if = "Vec::is_empty", borrow)]
     pub memo_states: Vec<MemoizedValue<'a>>,
+    /// Context-borne memo states, keyed by the tracked-context value's fingerprint.
+    /// See `ComponentMemoizationInfo::context_memo_states`.
+    #[serde(rename = "CS", default, skip_serializing_if = "Vec::is_empty", borrow)]
+    pub context_memo_states: Vec<(Fingerprint, Vec<MemoizedValue<'a>>)>,
 }
 
 #[serde_as]
