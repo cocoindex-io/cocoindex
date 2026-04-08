@@ -106,7 +106,36 @@ pub struct FnCallMemo<Prof: EngineProfile> {
     pub(crate) dependency_memo_entries: HashSet<Fingerprint>,
     pub(crate) logic_deps: HashSet<Fingerprint>,
     pub memo_states: Vec<Prof::FunctionData>,
+    /// Context-borne memo states, keyed by tracked-context value fingerprint.
+    /// See `db_schema::FunctionMemoizationEntry::context_memo_states`.
+    pub context_memo_states: Vec<(Fingerprint, Vec<Prof::FunctionData>)>,
     pub(crate) already_stored: bool,
+}
+
+/// Combined payload of positional and context-borne memo states.
+///
+/// Used to thread both halves through the `ComponentProcessor::handle_memo_states`
+/// callback and through function-level memoization APIs. The core crate treats
+/// the context fingerprints and values as opaque data — both come from Python in
+/// the Python profile and are round-tripped through the Python state handler.
+pub struct MemoStatesPayload<Prof: EngineProfile> {
+    pub positional: Vec<Prof::FunctionData>,
+    pub by_context_fp: Vec<(Fingerprint, Vec<Prof::FunctionData>)>,
+}
+
+impl<Prof: EngineProfile> Default for MemoStatesPayload<Prof> {
+    fn default() -> Self {
+        Self {
+            positional: Vec::new(),
+            by_context_fp: Vec::new(),
+        }
+    }
+}
+
+impl<Prof: EngineProfile> MemoStatesPayload<Prof> {
+    pub fn is_empty(&self) -> bool {
+        self.positional.is_empty() && self.by_context_fp.is_empty()
+    }
 }
 
 pub enum FnCallMemoEntry<Prof: EngineProfile> {
@@ -300,6 +329,20 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         v
     }
 
+    /// Collect initial memo states for the tracked-context fingerprints
+    /// observed so far (stored in this component's `logic_deps`), by looking
+    /// them up in the env's eager-initial-states registry.
+    ///
+    /// Used by the Python memoization layer on cache miss to populate a new
+    /// entry's `context_memo_states` in a single Rust call, without
+    /// snapshotting `logic_deps` to Python and doing per-entry lookups there.
+    pub fn collect_context_initial_states(&self) -> Vec<(Fingerprint, Vec<Prof::FunctionData>)> {
+        let deps = self.inner.logic_deps.lock().unwrap();
+        self.app_ctx()
+            .env()
+            .collect_context_initial_states(deps.iter())
+    }
+
     pub(crate) fn set_inflight_permit(&self, permit: tokio::sync::OwnedSemaphorePermit) {
         *self.inner.inflight_permit.lock().unwrap() = Some(permit);
     }
@@ -401,6 +444,20 @@ impl FnCallContext {
         self.update(|inner| {
             inner.context_tracked_deps.insert(fp);
         });
+    }
+
+    /// Collect initial memo states for the tracked-context fingerprints
+    /// observed so far in this function-call context, by looking them up in
+    /// the given env's eager-initial-states registry.
+    ///
+    /// Parallel to `ComponentProcessorContext::collect_context_initial_states`;
+    /// used on cache miss in the function-level memoization path (where we
+    /// only have an `FnCallContext`, not a `ComponentProcessorContext`).
+    pub fn collect_context_initial_states<Prof: EngineProfile>(
+        &self,
+        env: &Environment<Prof>,
+    ) -> Vec<(Fingerprint, Vec<Prof::FunctionData>)> {
+        self.update(|inner| env.collect_context_initial_states(inner.context_tracked_deps.iter()))
     }
 
     pub fn update<T>(&self, f: impl FnOnce(&mut FnCallContextInner) -> T) -> T {

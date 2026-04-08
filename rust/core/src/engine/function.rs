@@ -1,5 +1,5 @@
 use crate::engine::context::{
-    ComponentProcessorContext, FnCallContext, FnCallMemo, FnCallMemoEntry,
+    ComponentProcessorContext, FnCallContext, FnCallMemo, FnCallMemoEntry, MemoStatesPayload,
 };
 use crate::engine::execution::read_fn_call_memo;
 use crate::engine::profile::EngineProfile;
@@ -11,7 +11,7 @@ use cocoindex_utils::fingerprint::Fingerprint;
 fn build_fn_call_memo<Prof: EngineProfile>(
     fn_ctx: &FnCallContext,
     ret: Prof::FunctionData,
-    memo_states: Vec<Prof::FunctionData>,
+    memo_states: MemoStatesPayload<Prof>,
 ) -> Option<FnCallMemo<Prof>> {
     fn_ctx.update(|inner| {
         let mut logic_deps = inner.fn_logic_deps.clone();
@@ -21,7 +21,8 @@ fn build_fn_call_memo<Prof: EngineProfile>(
             target_state_paths: inner.target_state_paths.clone(),
             dependency_memo_entries: inner.dependency_memo_entries.clone(),
             logic_deps,
-            memo_states,
+            memo_states: memo_states.positional,
+            context_memo_states: memo_states.by_context_fp,
             already_stored: false,
         })
     })
@@ -41,12 +42,23 @@ pub struct FnCallMemoGuard<Prof: EngineProfile> {
     guard: tokio::sync::OwnedRwLockWriteGuard<FnCallMemoEntry<Prof>>,
 }
 
+/// Cached memo view returned on a cache hit.
+pub struct CachedFnCallMemo<'a, Prof: EngineProfile> {
+    pub ret: &'a Prof::FunctionData,
+    pub memo_states: &'a [Prof::FunctionData],
+    pub context_memo_states: &'a [(Fingerprint, Vec<Prof::FunctionData>)],
+}
+
 impl<Prof: EngineProfile> FnCallMemoGuard<Prof> {
     /// Returns the cached return value and memo states if this is a cache hit.
     /// Returns `None` on cache miss or if memoization is disabled for this entry.
-    pub fn cached(&self) -> Option<(&Prof::FunctionData, &[Prof::FunctionData])> {
+    pub fn cached(&self) -> Option<CachedFnCallMemo<'_, Prof>> {
         match &*self.guard {
-            FnCallMemoEntry::Ready(Some(memo)) => Some((&memo.ret, &memo.memo_states)),
+            FnCallMemoEntry::Ready(Some(memo)) => Some(CachedFnCallMemo {
+                ret: &memo.ret,
+                memo_states: &memo.memo_states,
+                context_memo_states: &memo.context_memo_states,
+            }),
             _ => None,
         }
     }
@@ -57,9 +69,10 @@ impl<Prof: EngineProfile> FnCallMemoGuard<Prof> {
     /// has changed (e.g. mtime changed but content fingerprint is the same). Sets
     /// `already_stored = false` so the entry gets persisted with updated states at
     /// finalization time.
-    pub fn update_memo_states(&mut self, memo_states: Vec<Prof::FunctionData>) {
+    pub fn update_memo_states(&mut self, memo_states: MemoStatesPayload<Prof>) {
         if let FnCallMemoEntry::Ready(Some(ref mut memo)) = *self.guard {
-            memo.memo_states = memo_states;
+            memo.memo_states = memo_states.positional;
+            memo.context_memo_states = memo_states.by_context_fp;
             memo.already_stored = false;
         }
     }
@@ -73,7 +86,7 @@ impl<Prof: EngineProfile> FnCallMemoGuard<Prof> {
         mut self,
         fn_ctx: &FnCallContext,
         ret: impl FnOnce() -> Prof::FunctionData,
-        memo_states: Vec<Prof::FunctionData>,
+        memo_states: MemoStatesPayload<Prof>,
     ) -> Result<bool> {
         let has_child_components = fn_ctx.update(|inner| inner.has_child_components);
         if has_child_components {

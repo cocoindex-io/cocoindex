@@ -1,4 +1,7 @@
+use std::collections::HashMap;
+
 use crate::{
+    function::{build_memo_states_payload, context_memo_states_to_pydict},
     prelude::*,
     runtime::{PyAsyncContext, PyCallback},
     stable_path::PyStablePath,
@@ -12,7 +15,7 @@ use cocoindex_core::engine::{
         ComponentExecutionHandle, ComponentMountRunHandle, ComponentProcessor,
         ComponentProcessorInfo,
     },
-    context::ComponentProcessorContext,
+    context::{ComponentProcessorContext, MemoStatesPayload},
     runtime::get_runtime,
 };
 use pyo3_async_runtimes::tokio::future_into_py;
@@ -109,50 +112,64 @@ impl ComponentProcessor<PyEngineProfile> for PyComponentProcessor {
         &self,
         host_runtime_ctx: &PyAsyncContext,
         comp_ctx: &ComponentProcessorContext<PyEngineProfile>,
-        stored_states: Option<Vec<crate::value::PyStoredValue>>,
+        stored_states: Option<MemoStatesPayload<PyEngineProfile>>,
     ) -> Result<
-        impl Future<Output = Result<(Vec<crate::value::PyStoredValue>, bool, bool)>> + Send + 'static,
+        impl Future<Output = Result<(MemoStatesPayload<PyEngineProfile>, bool, bool)>> + Send + 'static,
     > {
         let Some(state_handler) = &self.state_handler else {
             return Ok(futures::future::Either::Left(async {
-                Ok((vec![], true, false))
+                Ok((MemoStatesPayload::default(), true, false))
             }));
         };
 
-        // Convert Option<Vec<PyStoredValue>> → Python (list[PyStoredValue] | None)
+        // Marshal the stored payload to Python as two separate args:
+        // `positional_stored: list[PyStoredValue] | None` and
+        // `context_stored: dict[Fingerprint, list[PyStoredValue]] | None`.
+        // Both are `None` on cache miss, both non-None on cache hit.
         let py_comp_ctx = PyComponentProcessorContext(comp_ctx.clone());
-        let py_arg: Py<PyAny> = Python::attach(|py| -> Result<Py<PyAny>> {
-            match stored_states {
-                Some(states) => {
-                    let list = pyo3::types::PyList::new(
-                        py,
-                        states.iter().map(|s| pyo3::Py::new(py, s.clone()).unwrap()),
-                    )
-                    .from_py_result()?;
-                    Ok(list.unbind().into_any())
+        let (py_positional, py_context): (Py<PyAny>, Py<PyAny>) =
+            Python::attach(|py| -> Result<(Py<PyAny>, Py<PyAny>)> {
+                match stored_states {
+                    Some(payload) => {
+                        let positional_list = pyo3::types::PyList::new(
+                            py,
+                            payload
+                                .positional
+                                .iter()
+                                .map(|s| pyo3::Py::new(py, s.clone()).unwrap()),
+                        )
+                        .from_py_result()?;
+                        let context_dict =
+                            context_memo_states_to_pydict(py, &payload.by_context_fp)
+                                .from_py_result()?;
+                        Ok((
+                            positional_list.unbind().into_any(),
+                            context_dict.unbind().into_any(),
+                        ))
+                    }
+                    None => Ok((py.None(), py.None())),
                 }
-                None => Ok(py.None()),
-            }
-        })?;
+            })?;
 
-        let fut = state_handler.call(host_runtime_ctx, (py_comp_ctx, py_arg))?;
+        let fut = state_handler.call(host_runtime_ctx, (py_comp_ctx, py_positional, py_context))?;
 
         Ok(futures::future::Either::Right(async move {
             let result = fut.await?;
             Python::attach(|py| -> PyResult<_> {
+                // Handler returns a flat 4-tuple:
+                // (new_positional, new_context_dict, can_reuse, states_changed).
                 let result = result.bind(py);
                 let tuple = result.cast::<pyo3::types::PyTuple>()?;
-                let states_list = tuple.get_item(0)?;
-                let can_reuse: bool = tuple.get_item(1)?.extract()?;
-                let states_changed: bool = tuple.get_item(2)?.extract()?;
+                let positional: Vec<Py<PyAny>> = tuple.get_item(0)?.extract()?;
+                let context_entries: HashMap<PyFingerprint, Vec<Py<PyAny>>> =
+                    tuple.get_item(1)?.extract()?;
+                let can_reuse: bool = tuple.get_item(2)?.extract()?;
+                let states_changed: bool = tuple.get_item(3)?.extract()?;
 
-                let new_states: Vec<crate::value::PyStoredValue> = states_list
-                    .cast::<pyo3::types::PyList>()?
-                    .iter()
-                    .map(|item| crate::value::PyStoredValue::new(item.unbind()))
-                    .collect();
+                let new_payload =
+                    build_memo_states_payload(Some(positional), Some(context_entries));
 
-                Ok((new_states, can_reuse, states_changed))
+                Ok((new_payload, can_reuse, states_changed))
             })
             .from_py_result()
         }))

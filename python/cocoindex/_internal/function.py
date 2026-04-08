@@ -36,6 +36,7 @@ from .component_ctx import (
     _enter_component_context,
     get_context_from_ctx,
 )
+from .context_keys import resolve_awaitables_sync
 from .memo_key import StateFnEntry, fingerprint_call
 from .runner import Runner
 from .runner import in_subprocess as _in_subprocess
@@ -146,9 +147,17 @@ class Function(Protocol[P, R_co]):
 
 
 class StateMethodsResult(NamedTuple):
-    """Result of calling memo state methods."""
+    """Result of calling memo state methods.
+
+    Both positional (argument-borne) and context-borne (tracked context value)
+    state methods flow through the same result type: their outcomes are
+    aggregated into `can_reuse` / `states_changed`, while the new states are
+    kept in separate slots so they can be persisted alongside the existing
+    storage shape.
+    """
 
     new_states: list[Any]
+    new_context_states: dict[core.Fingerprint, list[Any]]
     can_reuse: bool
     states_changed: bool
 
@@ -158,121 +167,223 @@ class _StateCallResult(NamedTuple):
     outcome: Any  # MemoStateOutcome
 
 
+def _call_entries(
+    entries: list[StateFnEntry], stored: list[Any] | None
+) -> list[_StateCallResult]:
+    """Call each state method once with its stored prev (or NON_EXISTENCE).
+
+    Returns a list of :class:`_StateCallResult` with the same length and
+    order as *entries*. If *stored* is length-mismatched with *entries*
+    (shook-tag invariant violation), it's treated as ``None`` — force
+    initial collection rather than indexing into the wrong cells.
+    """
+    if stored is not None and len(stored) != len(entries):
+        stored = None
+    results: list[_StateCallResult] = []
+    for i, entry in enumerate(entries):
+        prev = (
+            entry.deserialize_prev(stored[i]) if stored is not None else NON_EXISTENCE
+        )
+        results.append(_StateCallResult(prev=prev, outcome=entry.call(prev)))
+    return results
+
+
+def _aggregate_results(
+    results: list[_StateCallResult],
+    stored_present: bool,
+    can_reuse: bool,
+    states_changed: bool,
+) -> tuple[list[Any], bool, bool]:
+    """Fold a list of results into (new_states, can_reuse, states_changed).
+
+    ``can_reuse`` is AND-ed with each outcome's ``memo_valid``.
+    ``states_changed`` is OR-ed with a per-entry equality check — only when
+    a stored prev was present, i.e. not a cache-miss path.
+    """
+    new_states: list[Any] = []
+    for r in results:
+        new_states.append(r.outcome.state)
+        if not r.outcome.memo_valid:
+            can_reuse = False
+        if stored_present and r.outcome.state != r.prev:
+            states_changed = True
+    return new_states, can_reuse, states_changed
+
+
+def _resolve_results_awaitables_sync(
+    results: list[_StateCallResult], running_loop_error_msg: str
+) -> None:
+    """Bridge sync state fns that returned an awaitable in place."""
+    outcomes = [r.outcome for r in results]
+    resolved = resolve_awaitables_sync(
+        outcomes, running_loop_error_msg=running_loop_error_msg
+    )
+    if resolved is outcomes:
+        return
+    for i, val in enumerate(resolved):
+        if val is not outcomes[i]:
+            results[i] = results[i]._replace(outcome=val)
+
+
+async def _resolve_results_awaitables_async(
+    results: list[_StateCallResult],
+) -> None:
+    """Bridge async state fns that returned an awaitable in place."""
+    awaitable_indices = [
+        i for i, r in enumerate(results) if isinstance(r.outcome, Awaitable)
+    ]
+    if not awaitable_indices:
+        return
+    resolved = await asyncio.gather(*(results[i].outcome for i in awaitable_indices))
+    for idx, val in zip(awaitable_indices, resolved):
+        results[idx] = results[idx]._replace(outcome=val)
+
+
 def _call_state_methods_sync(
-    state_entries: list[StateFnEntry],
-    stored_states: list[Any] | None,
+    positional_entries: list[StateFnEntry],
+    positional_stored: list[Any] | None,
+    context_entries: list[tuple[core.Fingerprint, list[StateFnEntry]]] | None = None,
+    context_stored: dict[core.Fingerprint, list[Any]] | None = None,
 ) -> StateMethodsResult:
     """Call state methods synchronously and return a :class:`StateMethodsResult`.
 
-    Each entry's ``call`` receives the deserialized previous state (or
-    ``NON_EXISTENCE`` on first run) and returns a
-    :class:`~cocoindex.MemoStateOutcome`.
-
     *can_reuse* is the conjunction of all per-method ``memo_valid`` flags.
-    *states_changed* indicates whether any ``new_state`` differs from its
-    deserialized stored counterpart (``==`` check).
+    *states_changed* is the disjunction of per-entry equality checks against
+    the stored previous states (for chunks where a stored prev is present).
 
     If any method returns an ``Awaitable`` the awaitables are resolved:
     - Running event loop → raise (suggest ``@coco.fn.as_async``).
     - No loop → ``asyncio.run(asyncio.gather(...))``.
     """
-    results: list[_StateCallResult] = [
-        _StateCallResult(
-            prev=(
-                prev := entry.deserialize_prev(stored_states[i])
-                if stored_states is not None
-                else NON_EXISTENCE
-            ),
-            outcome=entry.call(prev),
-        )
-        for i, entry in enumerate(state_entries)
-    ]
+    # Normalize empty stored-context (`{}` or `None`) to `None` so downstream
+    # `is not None` checks consistently identify "cache-hit with entries."
+    context_stored = context_stored if context_stored else None
+    running_loop_error_msg = (
+        "Memo state function returned an awaitable from a sync context "
+        "with a running event loop. Use @coco.fn.as_async for the "
+        "decorated function instead."
+    )
 
-    # Resolve awaitables produced by async state methods
-    awaitable_indices: list[int] = []
-    awaitables: list[Awaitable[Any]] = []
-    for i, r in enumerate(results):
-        if isinstance(r.outcome, Awaitable):
-            awaitable_indices.append(i)
-            awaitables.append(r.outcome)
+    positional_results = _call_entries(positional_entries, positional_stored)
+    _resolve_results_awaitables_sync(positional_results, running_loop_error_msg)
 
-    if awaitables:
-        try:
-            asyncio.get_running_loop()
-        except RuntimeError:
-            pass
-        else:
-            raise RuntimeError(
-                "Memo state function returned an awaitable from a sync context "
-                "with a running event loop. Use @coco.fn.as_async for the "
-                "decorated function instead."
+    context_results: list[tuple[core.Fingerprint, list[_StateCallResult]]] = []
+    if context_entries:
+        for fp, entries in context_entries:
+            stored_for_fp = (
+                context_stored.get(fp) if context_stored is not None else None
             )
+            fp_results = _call_entries(entries, stored_for_fp)
+            _resolve_results_awaitables_sync(fp_results, running_loop_error_msg)
+            context_results.append((fp, fp_results))
 
-        async def _gather() -> list[Any]:
-            return list(await asyncio.gather(*awaitables))
-
-        resolved: list[Any] = asyncio.run(_gather())
-        for idx, val in zip(awaitable_indices, resolved):
-            results[idx] = results[idx]._replace(outcome=val)
-
-    # Unpack MemoStateOutcome results
-    new_states: list[Any] = []
-    can_reuse = True
-    states_changed = stored_states is None
-    for r in results:
-        new_states.append(r.outcome.state)
-        if not r.outcome.memo_valid:
-            can_reuse = False
-        if stored_states is not None and r.outcome.state != r.prev:
-            states_changed = True
-    return StateMethodsResult(new_states, can_reuse, states_changed)
+    return _aggregate_state_results(
+        positional_results,
+        positional_stored is not None,
+        context_results,
+        context_stored,
+    )
 
 
 async def _call_state_methods_async(
-    state_entries: list[StateFnEntry],
-    stored_states: list[Any] | None,
+    positional_entries: list[StateFnEntry],
+    positional_stored: list[Any] | None,
+    context_entries: list[tuple[core.Fingerprint, list[StateFnEntry]]] | None = None,
+    context_stored: dict[core.Fingerprint, list[Any]] | None = None,
 ) -> StateMethodsResult:
-    """Async variant of :func:`_call_state_methods_sync`.
+    """Async variant of :func:`_call_state_methods_sync`."""
+    context_stored = context_stored if context_stored else None
 
-    Calls each entry's ``call``, then gathers any awaitables concurrently.
-    Returns a :class:`StateMethodsResult`.
+    positional_results = _call_entries(positional_entries, positional_stored)
+    await _resolve_results_awaitables_async(positional_results)
+
+    context_results: list[tuple[core.Fingerprint, list[_StateCallResult]]] = []
+    if context_entries:
+        for fp, entries in context_entries:
+            stored_for_fp = (
+                context_stored.get(fp) if context_stored is not None else None
+            )
+            fp_results = _call_entries(entries, stored_for_fp)
+            await _resolve_results_awaitables_async(fp_results)
+            context_results.append((fp, fp_results))
+
+    return _aggregate_state_results(
+        positional_results,
+        positional_stored is not None,
+        context_results,
+        context_stored,
+    )
+
+
+def _aggregate_state_results(
+    positional_results: list[_StateCallResult],
+    positional_stored_present: bool,
+    context_results: list[tuple[core.Fingerprint, list[_StateCallResult]]],
+    context_stored: dict[core.Fingerprint, list[Any]] | None,
+) -> StateMethodsResult:
+    """Fold positional + context results into a :class:`StateMethodsResult`.
+
+    Note on the fp-set: the current set of context fps always equals the
+    stored set by construction. On cache hit, ``context_entries`` (and
+    therefore ``context_results``) is built from stored fps via
+    :func:`_collect_context_entries_from_stored`. On cache miss,
+    ``context_stored is None`` and per-entry comparison is skipped. No
+    fp-set mismatch check is needed.
     """
-    results: list[_StateCallResult] = [
-        _StateCallResult(
-            prev=(
-                prev := entry.deserialize_prev(stored_states[i])
-                if stored_states is not None
-                else NON_EXISTENCE
-            ),
-            outcome=entry.call(prev),
+    new_positional, can_reuse, states_changed = _aggregate_results(
+        positional_results, positional_stored_present, True, False
+    )
+
+    new_context: dict[core.Fingerprint, list[Any]] = {}
+    for fp, fp_results in context_results:
+        stored_present = (
+            context_stored is not None and context_stored.get(fp) is not None
         )
-        for i, entry in enumerate(state_entries)
-    ]
+        values, can_reuse, states_changed = _aggregate_results(
+            fp_results, stored_present, can_reuse, states_changed
+        )
+        new_context[fp] = values
 
-    # Resolve awaitables
-    awaitable_indices: list[int] = []
-    awaitables: list[Awaitable[Any]] = []
-    for i, r in enumerate(results):
-        if isinstance(r.outcome, Awaitable):
-            awaitable_indices.append(i)
-            awaitables.append(r.outcome)
+    return StateMethodsResult(
+        new_states=new_positional,
+        new_context_states=new_context,
+        can_reuse=can_reuse,
+        states_changed=states_changed,
+    )
 
-    if awaitables:
-        resolved = await asyncio.gather(*awaitables)
-        for idx, val in zip(awaitable_indices, resolved):
-            results[idx] = results[idx]._replace(outcome=val)
 
-    # Unpack MemoStateOutcome results
-    new_states: list[Any] = []
-    can_reuse = True
-    states_changed = stored_states is None
-    for r in results:
-        new_states.append(r.outcome.state)
-        if not r.outcome.memo_valid:
-            can_reuse = False
-        if stored_states is not None and r.outcome.state != r.prev:
-            states_changed = True
-    return StateMethodsResult(new_states, can_reuse, states_changed)
+def _collect_context_entries_from_stored(
+    env: Environment,
+    stored: dict[core.Fingerprint, list[Any]] | None,
+) -> list[tuple[core.Fingerprint, list[StateFnEntry]]]:
+    """Build `(fp, state_fns)` pairs corresponding to a stored context-state dict.
+
+    Used on cache-hit validation: for each stored ``fp → states`` entry we
+    look up the matching state functions in the env registry.
+
+    Under the shook-tag invariant this lookup always succeeds: if the user
+    had removed ``__coco_memo_state__`` from the value's type between runs,
+    the canonicalization would produce a different fingerprint (``hook`` vs
+    ``shook`` tag) and the entry would already have been invalidated by
+    `all_contained_with_env` before we reach this point. If a stored fp has
+    no registered state fns we raise — that indicates registry/state drift
+    or a bug in the shook-tag machinery.
+    """
+    if not stored:
+        return []
+    provider = env.context_provider
+    entries: list[tuple[core.Fingerprint, list[StateFnEntry]]] = []
+    for fp in stored:
+        state_fns = provider.get_context_state_fns(fp)
+        if state_fns is None:
+            raise RuntimeError(
+                f"tracked context fingerprint {fp} is present in a cached memo "
+                "entry but has no registered state functions in the current "
+                "ContextProvider — this should be unreachable under the "
+                "shook-tag canonicalization invariant."
+            )
+        entries.append((fp, state_fns))
+    return entries
 
 
 def _has_self_parameter(fn: Callable[..., Any]) -> bool:
@@ -473,21 +584,42 @@ class SyncFunction(Function[P, R_co]):
                 guard = core.reserve_memoization(
                     parent_ctx._core_processor_ctx, memo_fp
                 )
+                env = parent_ctx._env
                 try:
                     # Check if cached result is still valid
                     use_cache = False
                     memo_states_for_resolve: list[Any] | None = None
+                    context_states_for_resolve: (
+                        dict[core.Fingerprint, list[Any]] | None
+                    ) = None
                     if guard.is_cached:
                         use_cache = True
-                        if state_methods:
+                        stored_context_states = guard.cached_context_memo_states
+                        context_entries = _collect_context_entries_from_stored(
+                            env, stored_context_states
+                        )
+                        if state_methods or context_entries:
                             state_result = _call_state_methods_sync(
-                                state_methods, guard.cached_memo_states
+                                state_methods,
+                                guard.cached_memo_states,
+                                context_entries=context_entries,
+                                context_stored=stored_context_states,
                             )
                             if not state_result.can_reuse:
                                 use_cache = False
+                                # Positional state methods are derived from args
+                                # (same across runs), so the validation result is
+                                # safe to reuse on the re-execution path.
                                 memo_states_for_resolve = state_result.new_states
+                                # Context state is re-collected fresh from fn_ctx
+                                # below — re-execution may observe a different set
+                                # of tracked-context fps than the stored entry,
+                                # and validation only covers the stored set.
                             elif state_result.states_changed:
-                                guard.update_memo_states(state_result.new_states)
+                                guard.update_memo_states(
+                                    state_result.new_states,
+                                    state_result.new_context_states,
+                                )
 
                     if use_cache:
                         parent_ctx._core_fn_call_ctx.join_child_memo(memo_fp)
@@ -502,11 +634,25 @@ class SyncFunction(Function[P, R_co]):
                     if self._logic_fp is not None:
                         fn_ctx.add_fn_logic_dep(self._logic_fp)
                     ret = _call_in_context(fn_ctx)
+                    # Positional: collect only if not already set (cache-miss path).
+                    # Context: look up eager initial states from the Rust
+                    # registry in a single call — no state fn calls on cache
+                    # miss, and Rust iterates `context_tracked_deps` without
+                    # snapshotting it through Python.
                     if memo_states_for_resolve is None and state_methods:
-                        memo_states_for_resolve = _call_state_methods_sync(
-                            state_methods, None
-                        ).new_states
-                    if guard.resolve(fn_ctx, ret, memo_states_for_resolve):
+                        initial = _call_state_methods_sync(state_methods, None)
+                        memo_states_for_resolve = initial.new_states
+                    fresh_context_states = fn_ctx.initial_context_memo_states(
+                        env._core_env
+                    )
+                    if fresh_context_states:
+                        context_states_for_resolve = fresh_context_states
+                    if guard.resolve(
+                        fn_ctx,
+                        ret,
+                        memo_states_for_resolve,
+                        context_states_for_resolve,
+                    ):
                         parent_ctx._core_fn_call_ctx.join_child_memo(memo_fp)
                     return ret
                 finally:
@@ -537,16 +683,75 @@ class SyncFunction(Function[P, R_co]):
             if self._memo
             else None
         )
+        # Attach the component-level state handler only if there's something
+        # for it to do. Two triggers:
+        # 1. Positional state methods collected from argument canonicalization.
+        # 2. The env has at least one tracked context value with registered
+        #    state functions — any of them *might* be observed during the
+        #    function body and need validation at memo-hit time.
+        # If neither is true, we can skip the Rust↔Python round-trip that the
+        # state handler would otherwise incur on every cache miss.
+        #
+        # TODO(future simplification): make this handler cache-hit-only.
+        # The cache-miss branch below is pure data collection (look up eager
+        # initial states for context, call positional state fns with
+        # NON_EXISTENCE). Both could be pre-computed at _core_processor time
+        # and passed into the Rust processor as new fields, letting
+        # execute_once's cache-miss path skip the Rust→Python callback
+        # entirely. Not urgent; see "Future simplification" in
+        # specs/memo_validation/spec.md and specs/core/internal_states.md.
         state_handler: Callable[..., Coroutine[Any, Any, Any]] | None = None
-        if state_methods:
+        if memo_fp is not None and (
+            state_methods or env.context_provider.has_any_context_state_fns()
+        ):
             captured = state_methods
 
             async def _state_handler(
                 comp_ctx: core.ComponentProcessorContext,
-                stored_states: list[Any] | None,
+                positional_stored: list[Any] | None,
+                context_stored: dict[core.Fingerprint, list[Any]] | None,
             ) -> StateMethodsResult:
+                # Note: `_enter_component_context` creates a fresh FnCallContext
+                # and joins it into comp_ctx on exit. If state functions call
+                # `use_context(...)`, their observed fps flow into
+                # comp_ctx.logic_deps — on cache-miss write that's correctly
+                # persisted as part of the new entry's logic_deps.
                 with _enter_component_context(env, path, comp_ctx):
-                    return await _call_state_methods_async(captured, stored_states)
+                    if context_stored is not None:
+                        # Cache hit: validate stored context states by calling
+                        # the registered state functions with their stored prev.
+                        context_entries = _collect_context_entries_from_stored(
+                            env, context_stored
+                        )
+                        return await _call_state_methods_async(
+                            captured,
+                            positional_stored,
+                            context_entries=context_entries,
+                            context_stored=context_stored,
+                        )
+                    # Cache miss: look up the eager initial states for the
+                    # context fps observed during function execution, in a
+                    # single Rust call — no Python-side iteration over the
+                    # logic deps set.
+                    # TODO(future simplification): this branch is pure data
+                    # collection and should be moved out of the handler so
+                    # Rust's execute_once can skip the callback on cache miss.
+                    new_context = comp_ctx.initial_context_memo_states()
+                    if captured:
+                        positional_result = await _call_state_methods_async(
+                            captured, None
+                        )
+                        new_positional = positional_result.new_states
+                    else:
+                        new_positional = []
+                    # can_reuse / states_changed are unread by the core on the
+                    # cache-miss path, so their values are conventional.
+                    return StateMethodsResult(
+                        new_states=new_positional,
+                        new_context_states=new_context,
+                        can_reuse=True,
+                        states_changed=False,
+                    )
 
             state_handler = _state_handler
 
@@ -832,7 +1037,9 @@ class AsyncFunction(Function[P, R_co]):
         try:
             # Check memo (when enabled and context available)
             memo_states_for_resolve: list[Any] | None = None
+            context_states_for_resolve: dict[core.Fingerprint, list[Any]] | None = None
             if self._memo and parent_ctx is not None:
+                env = parent_ctx._env
                 memo_fp = fingerprint_call(
                     self._any_fn, args, kwargs, state_methods=state_methods
                 )
@@ -842,15 +1049,30 @@ class AsyncFunction(Function[P, R_co]):
                 if guard.is_cached:
                     # Check if cached result is still valid
                     use_cache = True
-                    if state_methods:
+                    stored_context_states = guard.cached_context_memo_states
+                    context_entries = _collect_context_entries_from_stored(
+                        env, stored_context_states
+                    )
+                    if state_methods or context_entries:
                         state_result = await _call_state_methods_async(
-                            state_methods, guard.cached_memo_states
+                            state_methods,
+                            guard.cached_memo_states,
+                            context_entries=context_entries,
+                            context_stored=stored_context_states,
                         )
                         if not state_result.can_reuse:
                             use_cache = False
+                            # Positional states are stable across runs (same
+                            # args ⇒ same state method list) — safe to reuse.
                             memo_states_for_resolve = state_result.new_states
+                            # Context states are re-collected fresh from fn_ctx
+                            # below: re-execution may observe a different set
+                            # of tracked-context fps than the stored entry.
                         elif state_result.states_changed:
-                            guard.update_memo_states(state_result.new_states)
+                            guard.update_memo_states(
+                                state_result.new_states,
+                                state_result.new_context_states,
+                            )
                     if use_cache:
                         parent_ctx._core_fn_call_ctx.join_child_memo(memo_fp)
                         assert guard.cached_value is not None
@@ -875,12 +1097,25 @@ class AsyncFunction(Function[P, R_co]):
 
             # Resolve memo if guard is held
             if guard is not None:
+                assert parent_ctx is not None
+                env = parent_ctx._env
+                # Positional: only re-collect if validation didn't already set
+                # it (cache-miss path). Context: look up eager initial states
+                # via a single Rust call — iterates the fn_ctx's tracked deps
+                # and reads the env registry directly.
                 if memo_states_for_resolve is None and state_methods:
-                    memo_states_for_resolve = (
-                        await _call_state_methods_async(state_methods, None)
-                    ).new_states
-                if guard.resolve(fn_ctx, result, memo_states_for_resolve):
-                    assert parent_ctx is not None and memo_fp is not None
+                    initial = await _call_state_methods_async(state_methods, None)
+                    memo_states_for_resolve = initial.new_states
+                fresh_context_states = fn_ctx.initial_context_memo_states(env._core_env)
+                if fresh_context_states:
+                    context_states_for_resolve = fresh_context_states
+                if guard.resolve(
+                    fn_ctx,
+                    result,
+                    memo_states_for_resolve,
+                    context_states_for_resolve,
+                ):
+                    assert memo_fp is not None
                     parent_ctx._core_fn_call_ctx.join_child_memo(memo_fp)
 
             return result
@@ -1091,16 +1326,53 @@ class AsyncFunction(Function[P, R_co]):
             else None
         )
 
+        # See SyncFunction._core_processor for rationale on the attachment
+        # condition — avoids a Python callback round-trip on every cache miss
+        # when neither positional nor context state validation is needed.
+        #
+        # TODO(future simplification): same as SyncFunction — make this
+        # handler cache-hit-only by pre-computing initial states at
+        # _core_processor time. See specs/memo_validation/spec.md.
         state_handler: Callable[..., Coroutine[Any, Any, Any]] | None = None
-        if state_methods:
+        if memo_fp is not None and (
+            state_methods or env.context_provider.has_any_context_state_fns()
+        ):
             captured = state_methods
 
             async def _state_handler(
                 comp_ctx: core.ComponentProcessorContext,
-                stored_states: list[Any] | None,
+                positional_stored: list[Any] | None,
+                context_stored: dict[core.Fingerprint, list[Any]] | None,
             ) -> StateMethodsResult:
+                # See SyncFunction._core_processor for the rationale on the
+                # cache-hit vs cache-miss split.
                 with _enter_component_context(env, path, comp_ctx):
-                    return await _call_state_methods_async(captured, stored_states)
+                    if context_stored is not None:
+                        context_entries = _collect_context_entries_from_stored(
+                            env, context_stored
+                        )
+                        return await _call_state_methods_async(
+                            captured,
+                            positional_stored,
+                            context_entries=context_entries,
+                            context_stored=context_stored,
+                        )
+                    # TODO(future simplification): this branch is pure data
+                    # collection; should move out of the handler.
+                    new_context = comp_ctx.initial_context_memo_states()
+                    if captured:
+                        positional_result = await _call_state_methods_async(
+                            captured, None
+                        )
+                        new_positional = positional_result.new_states
+                    else:
+                        new_positional = []
+                    return StateMethodsResult(
+                        new_states=new_positional,
+                        new_context_states=new_context,
+                        can_reuse=True,
+                        states_changed=False,
+                    )
 
             state_handler = _state_handler
 
