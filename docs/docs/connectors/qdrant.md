@@ -56,6 +56,10 @@ The `qdrant` connector provides target state APIs for writing points to collecti
 
 Create a `ContextKey[QdrantClient]` (with `tracked=False`) to identify your Qdrant client, then provide it in your lifespan:
 
+:::note
+The key name is load-bearing across runs — it's the stable identity CocoIndex uses to track managed collections. See [ContextKey as stable identity](../programming_guide/context.md#contextkey-as-stable-identity) before renaming.
+:::
+
 ```python
 from qdrant_client import QdrantClient
 import cocoindex as coco

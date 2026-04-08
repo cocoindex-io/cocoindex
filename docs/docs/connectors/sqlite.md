@@ -86,6 +86,10 @@ The `sqlite` connector provides target state APIs for writing rows to tables. Wi
 
 Create a `ContextKey[sqlite.ManagedConnection]` (with `tracked=False`) to identify your SQLite connection, then provide it in your lifespan using `sqlite.managed_connection()`:
 
+:::note
+The key name is load-bearing across runs — it's the stable identity CocoIndex uses to track managed rows. See [ContextKey as stable identity](../programming_guide/context.md#contextkey-as-stable-identity) before renaming.
+:::
+
 ```python
 import cocoindex as coco
 
