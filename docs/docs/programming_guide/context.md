@@ -40,6 +40,20 @@ Use `tracked=False` for resources that don't affect computation results — logg
 Tracking is transitive: if function `foo` (memoized) calls function `bar`, and `bar` calls `use_context(key)` on a tracked key, then `foo`'s memo is also invalidated when the context value changes.
 :::
 
+## ContextKey as stable identity
+
+Beyond sharing resources, a `ContextKey` also serves as the **stable identity** of the resource it points to. When you anchor sources or targets to a `ContextKey`, CocoIndex treats *the key itself* — not the underlying value — as the identifier across runs.
+
+This has two consequences:
+
+1. **The underlying value can change without losing tracked state.** Rotating credentials, moving a database, or relocating a directory won't invalidate memoization or managed state, as long as the same `ContextKey` is used.
+
+2. **Renaming a `ContextKey` is a breaking change.** Two different keys are two different resources, even if they point to the same physical backend. Existing tracked state will be treated as orphaned. When migrating code, reuse the previous key name to preserve continuity.
+
+:::tip
+Pick a `ContextKey` name that reflects the *logical* role of the resource (e.g., `"text_embedding_db"`, `"docs_root"`), not its current address. The name is what CocoIndex persists.
+:::
+
 ## Providing values
 
 In your [lifespan function](./app.md#defining-a-lifespan), use `builder.provide()` to make resources available:

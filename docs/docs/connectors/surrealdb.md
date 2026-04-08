@@ -25,6 +25,10 @@ pip install cocoindex[surrealdb]
 
 Create a `ConnectionFactory` and provide it via a `ContextKey`. It holds connection parameters and creates authenticated connections on demand.
 
+:::note
+The key name is load-bearing across runs — it's the stable identity CocoIndex uses to track managed rows. See [ContextKey as stable identity](../programming_guide/context.md#contextkey-as-stable-identity) before renaming.
+:::
+
 ```python
 from cocoindex.connectors import surrealdb
 import cocoindex as coco

@@ -170,6 +170,10 @@ The `postgres` connector provides target state APIs for writing rows to tables. 
 
 Create a `ContextKey[asyncpg.Pool]` (with `tracked=False`) to identify your connection pool, then provide the pool directly in your lifespan:
 
+:::note
+The key name is load-bearing across runs — it's the stable identity CocoIndex uses to track managed rows. See [ContextKey as stable identity](../programming_guide/context.md#contextkey-as-stable-identity) before renaming.
+:::
+
 ```python
 import asyncpg
 import cocoindex as coco

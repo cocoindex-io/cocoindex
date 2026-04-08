@@ -53,6 +53,10 @@ The `lancedb` connector provides target state APIs for writing rows to tables. W
 
 Create a `ContextKey[lancedb.LanceAsyncConnection]` (with `tracked=False`) to identify your LanceDB connection, then provide it in your lifespan:
 
+:::note
+The key name is load-bearing across runs — it's the stable identity CocoIndex uses to track managed tables. See [ContextKey as stable identity](../programming_guide/context.md#contextkey-as-stable-identity) before renaming.
+:::
+
 ```python
 import cocoindex as coco
 

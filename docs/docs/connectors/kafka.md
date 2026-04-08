@@ -132,6 +132,10 @@ The `kafka` connector provides target state APIs for producing messages to Kafka
 
 Create a `ContextKey[AIOProducer]` (with `tracked=False`) to identify your producer, then provide it in your lifespan:
 
+:::note
+The key name is load-bearing across runs — it's the stable identity CocoIndex uses to track target state for topics produced through this key. See [ContextKey as stable identity](../programming_guide/context.md#contextkey-as-stable-identity) before renaming.
+:::
+
 ```python
 from confluent_kafka import AIOProducer
 import cocoindex as coco
