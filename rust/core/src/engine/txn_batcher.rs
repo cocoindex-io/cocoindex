@@ -11,7 +11,7 @@ type TxnBody =
     Box<dyn for<'txn> FnOnce(&mut heed::RwTxn<'txn>) -> Result<Box<dyn Any + Send>> + Send>;
 
 struct TxnRunner {
-    db_env: heed::Env,
+    db_env: heed::Env<heed::WithoutTls>,
 }
 
 #[async_trait]
@@ -48,7 +48,7 @@ pub struct TxnBatcher {
 }
 
 impl TxnBatcher {
-    pub fn new(db_env: heed::Env) -> Self {
+    pub fn new(db_env: heed::Env<heed::WithoutTls>) -> Self {
         let queue = Arc::new(BatchQueue::new());
         Self {
             inner: Batcher::new(TxnRunner { db_env }, queue, BatchingOptions::default()),

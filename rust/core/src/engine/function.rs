@@ -127,7 +127,7 @@ pub async fn reserve_memoization<Prof: EngineProfile>(
     // try loading from the database.
     if let FnCallMemoEntry::Pending = &*guard {
         if !comp_exec_ctx.full_reprocess() {
-            if let Some(fn_call_memo) = read_fn_call_memo(comp_exec_ctx, memo_fp)? {
+            if let Some(fn_call_memo) = read_fn_call_memo(comp_exec_ctx, memo_fp).await? {
                 *guard = FnCallMemoEntry::Ready(Some(fn_call_memo));
             }
         }

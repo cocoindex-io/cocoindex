@@ -92,10 +92,9 @@ pub(crate) async fn use_or_invalidate_component_memoization<Prof: EngineProfile>
     )
     .encode()?;
 
-    let db_env = comp_ctx.app_ctx().env().db_env();
     let db = comp_ctx.app_ctx().db();
     {
-        let rtxn = db_env.read_txn()?;
+        let rtxn = comp_ctx.app_ctx().env().read_txn().await?;
         let Some(data) = db.get(&rtxn, key.as_slice())? else {
             return Ok(None);
         };
@@ -274,7 +273,7 @@ fn read_fn_call_memo_with_txn<Prof: EngineProfile>(
     }))
 }
 
-pub(crate) fn read_fn_call_memo<Prof: EngineProfile>(
+pub(crate) async fn read_fn_call_memo<Prof: EngineProfile>(
     comp_ctx: &ComponentProcessorContext<Prof>,
     memo_fp: Fingerprint,
 ) -> Result<Option<FnCallMemo<Prof>>> {
@@ -282,11 +281,8 @@ pub(crate) fn read_fn_call_memo<Prof: EngineProfile>(
     if comp_ctx.full_reprocess() {
         return Ok(None);
     }
-    let db_env = comp_ctx.app_ctx().env().db_env();
-    {
-        let rtxn = db_env.read_txn()?;
-        read_fn_call_memo_with_txn(&rtxn, comp_ctx.app_ctx().db(), comp_ctx, memo_fp)
-    }
+    let rtxn = comp_ctx.app_ctx().env().read_txn().await?;
+    read_fn_call_memo_with_txn(&rtxn, comp_ctx.app_ctx().db(), comp_ctx, memo_fp)
 }
 
 pub fn declare_target_state<Prof: EngineProfile>(
@@ -572,7 +568,7 @@ impl<Prof: EngineProfile> Committer<Prof> {
             })
             .await?;
         // Transaction committed — open a read txn so GC sees the committed tombstones.
-        let rtxn = app_ctx.env().db_env().read_txn()?;
+        let rtxn = app_ctx.env().read_txn().await?;
         committer.launch_child_component_gc(&rtxn)
     }
 
@@ -1279,17 +1275,21 @@ pub(crate) async fn submit<Prof: EngineProfile>(
         mut finalized_fn_call_memos,
     ) = match comp_ctx.processing_state() {
         ComponentProcessingAction::Build(build_ctx) => {
-            let mut building_state = build_ctx.state.lock().unwrap();
-            let Some(building_state) = building_state.take() else {
-                internal_bail!(
-                    "Processing for the component at {} is already finished",
-                    comp_ctx.stable_path()
-                );
+            // Extract from MutexGuard in a block so the guard is dropped before `.await`.
+            let building_state = {
+                let mut guard = build_ctx.state.lock().unwrap();
+                let Some(state) = guard.take() else {
+                    internal_bail!(
+                        "Processing for the component at {} is already finished",
+                        comp_ctx.stable_path()
+                    );
+                };
+                state
             };
 
             let child_path_set = building_state.child_path_set;
             let finalized_fn_call_memos =
-                finalize_fn_call_memoization(comp_ctx, building_state.fn_call_memos)?;
+                finalize_fn_call_memoization(comp_ctx, building_state.fn_call_memos).await?;
             (
                 &built_target_states_providers
                     .get_or_insert(building_state.target_states.provider_registry)
@@ -1568,7 +1568,7 @@ struct FinalizedFnCallMemoization<Prof: EngineProfile> {
     contained_target_state_paths: HashSet<TargetStatePath>,
 }
 
-fn finalize_fn_call_memoization<Prof: EngineProfile>(
+async fn finalize_fn_call_memoization<Prof: EngineProfile>(
     comp_ctx: &ComponentProcessorContext<Prof>,
     fn_call_memos: HashMap<Fingerprint, Arc<tokio::sync::RwLock<FnCallMemoEntry<Prof>>>>,
 ) -> Result<FinalizedFnCallMemoization<Prof>> {
@@ -1603,8 +1603,7 @@ fn finalize_fn_call_memoization<Prof: EngineProfile>(
     // Collect their target_state_paths so those target states are not GC'd.
     // Use a single read transaction for all DB reads.
     if !deps_to_process.is_empty() {
-        let db_env = comp_ctx.app_ctx().env().db_env();
-        let rtxn = db_env.read_txn()?;
+        let rtxn = comp_ctx.app_ctx().env().read_txn().await?;
         let db = comp_ctx.app_ctx().db();
         while let Some(fp) = deps_to_process.pop_front() {
             if !result.all_memos_fps.insert(fp) {

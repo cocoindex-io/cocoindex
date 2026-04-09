@@ -4,13 +4,29 @@ use crate::{
 };
 
 use cocoindex_utils::fingerprint::Fingerprint;
+use cocoindex_utils::retryable;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::RwLock;
+use std::time::Duration;
 
 const DEFAULT_MAX_DBS: u32 = 1024;
 const DEFAULT_LMDB_MAP_SIZE: usize = 0x1_0000_0000; // 4GiB
+
+/// Phase 1: short timeout to handle transient concurrency.
+static LMDB_READ_TXN_RETRY_PHASE1: retryable::RetryOptions = retryable::RetryOptions {
+    retry_timeout: Some(Duration::from_secs(3)),
+    initial_backoff: Duration::from_millis(10),
+    max_backoff: Duration::from_secs(1),
+};
+
+/// Phase 2: after clearing stale readers, retry indefinitely.
+static LMDB_READ_TXN_RETRY_PHASE2: retryable::RetryOptions = retryable::RetryOptions {
+    retry_timeout: None,
+    initial_backoff: Duration::from_millis(10),
+    max_backoff: Duration::from_secs(1),
+};
 
 fn default_max_dbs() -> u32 {
     DEFAULT_MAX_DBS
@@ -29,7 +45,7 @@ pub struct EnvironmentSettings {
 }
 
 struct EnvironmentInner<Prof: EngineProfile> {
-    db_env: heed::Env,
+    db_env: heed::Env<heed::WithoutTls>,
     txn_batcher: TxnBatcher,
     app_names: Mutex<BTreeSet<String>>,
     target_states_providers: Arc<Mutex<TargetStateProviderRegistry<Prof>>>,
@@ -67,6 +83,7 @@ impl<Prof: EngineProfile> Environment<Prof> {
         }
         let db_env = unsafe {
             heed::EnvOpenOptions::new()
+                .read_txn_without_tls()
                 .max_dbs(settings.lmdb_max_dbs)
                 .map_size(settings.lmdb_map_size)
                 .open(db_path)
@@ -112,8 +129,46 @@ impl<Prof: EngineProfile> Environment<Prof> {
         Ok(())
     }
 
-    pub fn db_env(&self) -> &heed::Env {
+    pub fn db_env(&self) -> &heed::Env<heed::WithoutTls> {
         &self.inner.db_env
+    }
+
+    /// Open an LMDB read transaction with automatic retry on `MDB_READERS_FULL`.
+    ///
+    /// Two-phase strategy:
+    /// 1. Retry with a short timeout — handles transient reader slot contention.
+    /// 2. If phase 1 times out, call `clear_stale_readers()` to reclaim slots
+    ///    from dead processes, then retry indefinitely.
+    pub async fn read_txn(&self) -> Result<heed::RoTxn<'_, heed::WithoutTls>> {
+        let db_env = self.db_env();
+        let try_read_txn = || async {
+            match db_env.read_txn() {
+                Ok(txn) => retryable::Ok(txn),
+                Err(heed::Error::Mdb(heed::MdbError::ReadersFull)) => {
+                    warn!("LMDB readers full, retrying");
+                    Err(retryable::Error::retryable(internal_error!(
+                        "LMDB readers full"
+                    )))
+                }
+                Err(e) => Err(retryable::Error::not_retryable(e)),
+            }
+        };
+
+        // Phase 1: short timeout for transient concurrency.
+        match retryable::run(&try_read_txn, &LMDB_READ_TXN_RETRY_PHASE1).await {
+            Ok(txn) => return Ok(txn),
+            Err(e) if !e.is_retryable => return Err(e.into()),
+            Err(_) => {}
+        }
+
+        // Phase 2: clear stale readers, then retry indefinitely.
+        let cleared = db_env.clear_stale_readers()?;
+        if cleared > 0 {
+            warn!("Cleared {cleared} stale LMDB readers");
+        }
+        retryable::run(&try_read_txn, &LMDB_READ_TXN_RETRY_PHASE2)
+            .await
+            .map_err(Into::into)
     }
 
     pub fn txn_batcher(&self) -> &TxnBatcher {
