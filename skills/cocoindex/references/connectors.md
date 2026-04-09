@@ -1,6 +1,6 @@
-# CocoIndex v1 Connectors Reference
+# CocoIndex Connectors Reference
 
-Comprehensive reference for all CocoIndex v1 connectors.
+Comprehensive reference for all CocoIndex connectors.
 
 ## Common Patterns
 

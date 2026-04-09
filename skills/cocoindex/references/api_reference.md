@@ -1,6 +1,6 @@
-# CocoIndex v1 API Reference
+# CocoIndex API Reference
 
-Quick reference for the most commonly used CocoIndex v1 APIs.
+Quick reference for the most commonly used CocoIndex APIs.
 
 ## Import Convention
 

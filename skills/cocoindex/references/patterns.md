@@ -1,6 +1,6 @@
-# CocoIndex v1 Common Patterns
+# CocoIndex Common Patterns
 
-Common patterns and workflows for building CocoIndex v1 pipelines.
+Common patterns and workflows for building CocoIndex pipelines.
 
 ## Core Pattern: TargetState = Transform(SourceState)
 

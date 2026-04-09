@@ -1,15 +1,15 @@
 ---
-name: cocoindex-v1
-description: This skill should be used when building data processing pipelines with CocoIndex v1, a Python library for incremental data transformation. Use when the task involves processing files/data into databases, creating vector embeddings, building knowledge graphs, ETL workflows, or any data pipeline requiring automatic change detection and incremental updates. CocoIndex v1 is Python-native (supports any Python types), has no DSL, and is currently under pre-release (version 1.0.0a1 or later).
+name: cocoindex
+description: This skill should be used when building data processing pipelines with CocoIndex, a Python library for incremental data transformation. Use when the task involves processing files/data into databases, creating vector embeddings, building knowledge graphs, ETL workflows, or any data pipeline requiring automatic change detection and incremental updates. CocoIndex is Python-native (supports any Python types), has no DSL, and is currently under pre-release (version 1.0.0a1 or later).
 ---
 
-# CocoIndex v1
+# CocoIndex
 
-CocoIndex v1 is a Python library for building incremental data processing pipelines with declarative target states. Think spreadsheets or React for data pipelines: declare what the output should look like based on current input, and CocoIndex automatically handles incremental updates, change detection, and syncing to external systems.
+CocoIndex is a Python library for building incremental data processing pipelines with declarative target states. Think spreadsheets or React for data pipelines: declare what the output should look like based on current input, and CocoIndex automatically handles incremental updates, change detection, and syncing to external systems.
 
 ## Overview
 
-CocoIndex v1 enables building data pipelines that:
+CocoIndex enables building data pipelines that:
 
 - **Automatically handle incremental updates**: Only reprocess changed data
 - **Use declarative target states**: Declare what should exist, not how to update
@@ -485,4 +485,4 @@ Check component paths are stable. Use stable IDs, not object references.
 
 ## Version Note
 
-This skill is for **CocoIndex v1** (pre-release: `>=1.0.0a1`). It uses a completely different API from v0.
+This skill is for CocoIndex `>=1.0.0a1` (v1). It uses a completely different API from v0.

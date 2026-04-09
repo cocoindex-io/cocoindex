@@ -1,6 +1,6 @@
 # Database Setup Guide
 
-Setup instructions for databases used with CocoIndex v1.
+Setup instructions for databases used with CocoIndex.
 
 ## PostgreSQL with pgvector
 

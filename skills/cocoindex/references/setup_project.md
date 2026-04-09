@@ -1,6 +1,6 @@
 # Project Setup Guide
 
-Setting up CocoIndex v1 projects for different use cases.
+Setting up CocoIndex projects for different use cases.
 
 ## Creating a New Project
 
@@ -130,7 +130,7 @@ def coco_lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
 
 ## Pre-release Configuration
 
-**Important**: CocoIndex v1 is currently in pre-release. Always include:
+**Important**: CocoIndex is currently in pre-release. Always include:
 
 ```toml
 [tool.uv]
