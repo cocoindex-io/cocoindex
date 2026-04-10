@@ -1,3 +1,5 @@
+use std::pin::Pin;
+
 use crate::prelude::*;
 
 use crate::engine::environment::Environment;
@@ -49,15 +51,39 @@ pub use db_schema::StablePathNodeType;
 pub fn iter_stable_paths<Prof: EngineProfile>(
     app: &App<Prof>,
 ) -> impl Stream<Item = Result<StablePathInfo>> + Send + 'static {
-    let app_ctx = app.app_ctx().clone();
+    let db = *app.app_ctx().db();
+    let db_env = app.app_ctx().env().db_env().clone();
+    iter_stable_paths_impl(db, db_env)
+}
+
+/// Like [`iter_stable_paths`], but takes an environment and an app name instead of a full `App`.
+/// Opens the app's database read-only; returns an empty stream if the database doesn't exist.
+pub fn iter_stable_paths_by_name<Prof: EngineProfile>(
+    env: &Environment<Prof>,
+    app_name: &str,
+) -> Result<Pin<Box<dyn Stream<Item = Result<StablePathInfo>> + Send + 'static>>> {
+    let db_env = env.db_env().clone();
+    let rtxn = db_env.read_txn()?;
+    let db =
+        db_env.open_database::<heed::types::Bytes, heed::types::Bytes>(&rtxn, Some(app_name))?;
+    drop(rtxn);
+    match db {
+        Some(db) => Ok(Box::pin(iter_stable_paths_impl(db, db_env))),
+        None => Ok(Box::pin(futures::stream::empty())),
+    }
+}
+
+fn iter_stable_paths_impl(
+    db: db_schema::Database,
+    db_env: heed::Env<heed::WithoutTls>,
+) -> impl Stream<Item = Result<StablePathInfo>> + Send + 'static {
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<StablePathInfo>>(128);
 
     std::thread::spawn(move || {
         let result: Result<()> = (|| {
             let encoded_key_prefix =
                 DbEntryKey::StablePathPrefixPrefix(StablePathPrefix::default()).encode()?;
-            let db = app_ctx.db();
-            let txn = app_ctx.env().db_env().read_txn()?;
+            let txn = db_env.read_txn()?;
 
             let mut last_prefix: Option<Vec<u8>> = None;
             for entry in db.prefix_iter(&txn, encoded_key_prefix.as_ref())? {
@@ -79,7 +105,7 @@ pub fn iter_stable_paths<Prof: EngineProfile>(
                 } else {
                     let path_ref: StablePathRef<'_> = path.as_ref();
                     if let Some((parent_ref, key)) = path_ref.split_parent() {
-                        get_path_node_type(db, &txn, parent_ref, key)?
+                        get_path_node_type(&db, &txn, parent_ref, key)?
                             .unwrap_or(db_schema::StablePathNodeType::Directory)
                     } else {
                         db_schema::StablePathNodeType::Component

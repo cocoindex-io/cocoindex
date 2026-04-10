@@ -20,7 +20,7 @@ from cocoindex._internal.environment import (
     get_registered_environment_infos,
 )
 from cocoindex._internal.setting import get_default_db_path
-from cocoindex.inspect import iter_stable_paths
+from cocoindex.inspect import iter_stable_paths, iter_stable_paths_by_name
 from cocoindex._internal.stable_path import StablePath
 
 
@@ -517,35 +517,87 @@ def ls(app_target: str | None, db: str | None) -> None:
 
 
 @cli.command()
-@click.argument("app_target", type=str)
+@click.argument("app_target", type=str, required=False)
+@click.option(
+    "--db",
+    type=str,
+    default=None,
+    help="Path to database (used with --app-name when APP_TARGET is not specified).",
+)
+@click.option(
+    "--app-name",
+    type=str,
+    default=None,
+    help="App name to inspect (used with --db when APP_TARGET is not specified).",
+)
 @click.option(
     "--tree",
     is_flag=True,
     default=False,
     help="Display stable paths as a tree with component annotations.",
 )
-def show(app_target: str, tree: bool) -> None:
+def show(
+    app_target: str | None, db: str | None, app_name: str | None, tree: bool
+) -> None:
     """
     Show the app's stable paths.
 
-    `APP_TARGET`: `path/to/app.py`, `module`, `path/to/app.py:app_name`, or `module:app_name`.
+    \b
+    If `APP_TARGET` is provided, loads the app from the module.
+    Otherwise, `--db` and `--app-name` can be used to inspect an app
+    directly from its database without loading the module.
     """
-    app = _load_app(app_target)
+    if app_target:
+        if db or app_name:
+            click.echo(
+                "Warning: --db/--app-name are ignored when APP_TARGET is specified.",
+                err=True,
+            )
+        asyncio.run(_show_from_app(_load_app(app_target), tree))
+    elif db and app_name:
+        asyncio.run(_show_from_database(db, app_name, tree))
+    elif db or app_name:
+        raise click.ClickException(
+            "Both --db and --app-name are required when APP_TARGET is not specified."
+        )
+    else:
+        raise click.ClickException(
+            "Please specify APP_TARGET, or --db and --app-name.\n"
+            "  cocoindex show ./app.py              # from module\n"
+            "  cocoindex show --db ./my.db --app-name MyApp  # from database"
+        )
 
-    async def _do() -> None:
-        try:
-            if tree:
-                component_node_type = _core.StablePathNodeType.component()
-                await _print_tree_streaming(iter_stable_paths(app), component_node_type)
-            else:
-                click.echo("Stable paths:")
-                async for item in iter_stable_paths(app):
-                    path = StablePath(item.path)
-                    click.echo(f"  {path}")
-        finally:
-            await _stop_all_environments()
 
-    asyncio.run(_do())
+async def _show_from_app(app: App[Any, Any], tree: bool) -> None:
+    try:
+        await _show_stable_paths(iter_stable_paths(app), tree)
+    finally:
+        await _stop_all_environments()
+
+
+async def _show_from_database(db_path: str, app_name: str, tree: bool) -> None:
+    db_path_obj = pathlib.Path(db_path)
+    if not db_path_obj.exists():
+        raise click.ClickException(f"Database path does not exist: {db_path}")
+
+    from cocoindex._internal.setting import Settings
+
+    env = Environment(
+        Settings(db_path=db_path_obj),
+        event_loop=asyncio.get_running_loop(),
+    )
+    await _show_stable_paths(iter_stable_paths_by_name(env, app_name), tree)
+
+
+async def _show_stable_paths(items: AsyncIterator[Any], tree: bool) -> None:
+    if tree:
+        component_node_type = _core.StablePathNodeType.component()
+        await _print_tree_streaming(items, component_node_type)
+    else:
+        click.echo("Stable paths:")
+        async for item in items:
+            path = StablePath(item.path)
+            click.echo(f"  {path}")
 
 
 async def _stop_all_environments() -> None:

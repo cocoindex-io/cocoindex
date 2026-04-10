@@ -107,7 +107,23 @@ impl PyStablePathInfoAsyncIterator {
 pub fn iter_stable_paths<'py>(app: &PyApp, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
     let app_clone = app.0.clone();
     let stream = db_inspect::iter_stable_paths(&app_clone);
+    wrap_stream_as_async_iterator(stream, py)
+}
 
+#[pyfunction]
+pub fn iter_stable_paths_by_name<'py>(
+    env: &PyEnvironment,
+    app_name: &str,
+    py: Python<'py>,
+) -> PyResult<Bound<'py, PyAny>> {
+    let stream = db_inspect::iter_stable_paths_by_name(&env.0, app_name).into_py_result()?;
+    wrap_stream_as_async_iterator(stream, py)
+}
+
+fn wrap_stream_as_async_iterator<'py>(
+    stream: impl Stream<Item = Result<db_inspect::StablePathInfo>> + Send + 'static,
+    py: Python<'py>,
+) -> PyResult<Bound<'py, PyAny>> {
     // Box and pin the stream to store it in the iterator.
     // No forwarder task needed - we poll the stream directly.
     let stream: Pin<Box<dyn Stream<Item = Result<db_inspect::StablePathInfo>> + Send>> =
