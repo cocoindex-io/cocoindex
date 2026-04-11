@@ -257,8 +257,8 @@ async fn show_progress_pty<T: Send + 'static>(
     start_time: Instant,
 ) -> Result<T> {
     use nix::pty::openpty;
-    use std::os::unix::io::IntoRawFd;
-    use tokio::io::AsyncReadExt;
+    use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd};
+    use tokio::io::unix::AsyncFd;
 
     // Open PTY
     let pty = openpty(None, None).map_err(|e| internal_error!("openpty failed: {e}"))?;
@@ -285,10 +285,16 @@ async fn show_progress_pty<T: Send + 'static>(
     // Number of progress lines currently displayed
     let num_lines = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
-    // Wrap master fd directly in tokio File for the reader (reader owns it, closes on exit)
-    let master_file: std::fs::File =
-        unsafe { std::os::unix::io::FromRawFd::from_raw_fd(master_fd) };
-    let mut master_reader = tokio::io::BufReader::new(tokio::fs::File::from_std(master_file));
+    // Set master fd to non-blocking for AsyncFd (kqueue/epoll readiness).
+    // tokio::fs::File uses spawn_blocking, which can hang on macOS when the PTY
+    // slave closes while a blocking read is in progress on the master.
+    unsafe {
+        let flags = nix::libc::fcntl(master_fd, nix::libc::F_GETFL);
+        nix::libc::fcntl(master_fd, nix::libc::F_SETFL, flags | nix::libc::O_NONBLOCK);
+    }
+    let master_file: std::fs::File = unsafe { FromRawFd::from_raw_fd(master_fd) };
+    let async_master = AsyncFd::new(master_file)
+        .map_err(|e| internal_error!("AsyncFd for PTY master failed: {e}"))?;
 
     // Dup saved_stdout for the reader task (guard will close the original)
     let reader_stdout_fd = unsafe { nix::libc::dup(saved_stdout) };
@@ -296,13 +302,33 @@ async fn show_progress_pty<T: Send + 'static>(
     let stats_clone = handle.stats().clone();
     let reader_num_lines = num_lines.clone();
 
-    // Spawn reader task — forwards captured output to real terminal
+    // Spawn reader task — forwards captured output to real terminal.
+    // Uses AsyncFd (kqueue/epoll) for readiness, with non-blocking reads.
     let reader_handle = tokio::spawn(async move {
         let mut buf = [0u8; 4096];
         loop {
-            match master_reader.read(&mut buf).await {
-                Ok(0) => break,
-                Ok(n) => {
+            // Wait for readability via kqueue/epoll
+            let mut ready_guard = match async_master.readable().await {
+                Ok(g) => g,
+                Err(_) => break,
+            };
+
+            // Non-blocking read from PTY master
+            let read_result = ready_guard.try_io(|inner| {
+                let fd = inner.as_raw_fd();
+                let n = unsafe {
+                    nix::libc::read(fd, buf.as_mut_ptr() as *mut nix::libc::c_void, buf.len())
+                };
+                if n < 0 {
+                    Err(std::io::Error::last_os_error())
+                } else {
+                    Ok(n as usize)
+                }
+            });
+
+            match read_result {
+                Ok(Ok(0)) => break,
+                Ok(Ok(n)) => {
                     let captured = &buf[..n];
                     let cur_lines = reader_num_lines.load(Ordering::Relaxed);
 
@@ -339,7 +365,8 @@ async fn show_progress_pty<T: Send + 'static>(
                     reader_num_lines.store(lines.len(), Ordering::Relaxed);
                     write_to_fd(reader_stdout_fd, &output);
                 }
-                Err(_) => break,
+                Ok(Err(_)) => break,           // EIO when slave closes
+                Err(_would_block) => continue, // Spurious readiness, retry
             }
         }
         // Close our dup of saved_stdout
@@ -410,11 +437,11 @@ async fn show_progress_pty<T: Send + 'static>(
     }
 
     // Drop guard first: restores stdout/stderr (closing slave side refs).
-    // With no slave fds remaining, reader's master read() returns EIO → reader exits.
-    // Reader task owns master_fd via its File and closes it on exit.
     drop(_guard);
 
-    // Wait for reader to finish (it exits promptly on EIO after slave closes)
+    // On macOS, kqueue may not report readability when the PTY slave closes,
+    // so the reader could remain blocked in readable().await. Abort it.
+    reader_handle.abort();
     let _ = reader_handle.await;
 
     // Print final stats to restored stdout
