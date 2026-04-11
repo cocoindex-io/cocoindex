@@ -88,20 +88,23 @@ cocoindex ls [OPTIONS] [APP_TARGET]
 
 Show the app's stable paths.
 
-`APP_TARGET`: `path/to/app.py`, `module`, `path/to/app.py:app_name`, or
-`module:app_name`.
+If `APP_TARGET` is provided, loads the app from the module.
+Otherwise, `--db` and `--app-name` can be used to inspect an app
+directly from its database without loading the module.
 
 
 **Usage:**
 
 ```bash
-cocoindex show [OPTIONS] APP_TARGET
+cocoindex show [OPTIONS] [APP_TARGET]
 ```
 
 **Options:**
 
 | Option | Description |
 |--------|-------------|
+| `--db TEXT` | Path to database (used with --app-name when APP_TARGET is not specified). |
+| `--app-name TEXT` | App name to inspect (used with --db when APP_TARGET is not specified). |
 | `--tree` | Display stable paths as a tree with component annotations. |
 | `--help` | Show this message and exit. |
 

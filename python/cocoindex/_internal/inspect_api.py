@@ -3,6 +3,7 @@ from typing import Any, AsyncIterator
 
 from . import core
 from .app import App
+from .environment import Environment
 from .stable_path import StablePath
 
 
@@ -26,6 +27,20 @@ async def iter_stable_paths(
         yield item
 
 
+async def iter_stable_paths_by_name(
+    env: Environment,
+    app_name: str,
+) -> AsyncIterator[core.StablePathInfo]:
+    """
+    Async iterator of stable paths for an app identified by name in a given environment.
+
+    Like :func:`iter_stable_paths`, but does not require a full ``App`` object —
+    only an :class:`Environment` and the app name.
+    """
+    async for item in core.iter_stable_paths_by_name(env._core_env, app_name):
+        yield item
+
+
 def list_stable_paths_sync(app: App[Any, Any]) -> list[StablePath]:
     return asyncio.run(list_stable_paths(app))
 
@@ -44,6 +59,7 @@ def list_stable_paths_info_sync(
 
 __all__ = [
     "iter_stable_paths",
+    "iter_stable_paths_by_name",
     "list_stable_paths",
     "list_stable_paths_info_sync",
     "list_stable_paths_sync",
