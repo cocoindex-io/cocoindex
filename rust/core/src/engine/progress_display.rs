@@ -378,14 +378,24 @@ async fn show_progress_pty<T: Send + 'static>(
     // Display loop
     let mut spinner_idx: usize = 0;
     let mut ready_time: Option<Instant> = None;
+    let mut sleep_fut = std::pin::pin!(tokio::time::sleep(options.refresh_interval));
 
     loop {
-        let version = handle.changed().await?;
-        if version >= TERMINATED_VERSION {
-            break;
+        // Wake on stats change OR refresh interval, whichever comes first.
+        // This ensures the elapsed timer and spinner update regularly even when
+        // no stats changes occur (e.g. slow components with no progress for a while).
+        tokio::select! {
+            result = handle.changed() => {
+                let version = result?;
+                if version >= TERMINATED_VERSION {
+                    break;
+                }
+            }
+            () = &mut sleep_fut => {}
         }
 
-        tokio::time::sleep(options.refresh_interval).await;
+        // Reset the sleep future for the next iteration.
+        sleep_fut.set(tokio::time::sleep(options.refresh_interval));
 
         let snapshot = handle.stats_snapshot();
         if snapshot.ready && ready_time.is_none() {
@@ -459,17 +469,23 @@ async fn show_progress_plain<T: Send + 'static>(
     start_time: Instant,
 ) -> Result<T> {
     let mut ready_time: Option<Instant> = None;
+    let mut sleep_fut = std::pin::pin!(tokio::time::sleep(options.refresh_interval));
 
     loop {
-        let version = match handle.changed().await {
-            Ok(v) => v,
-            Err(_) => break,
-        };
-        if version >= TERMINATED_VERSION {
-            break;
+        tokio::select! {
+            result = handle.changed() => {
+                let version = match result {
+                    Ok(v) => v,
+                    Err(_) => break,
+                };
+                if version >= TERMINATED_VERSION {
+                    break;
+                }
+            }
+            () = &mut sleep_fut => {}
         }
 
-        tokio::time::sleep(options.refresh_interval).await;
+        sleep_fut.set(tokio::time::sleep(options.refresh_interval));
 
         let snapshot = handle.stats_snapshot();
         if snapshot.ready && ready_time.is_none() {
