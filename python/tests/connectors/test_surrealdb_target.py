@@ -55,7 +55,7 @@ _SURREALDB_USER = os.environ.get("SURREALDB_USER", "")
 _SURREALDB_PASS = os.environ.get("SURREALDB_PASS", "")
 if HAS_SURREALDB:
     SURREAL_DB_KEY: coco.ContextKey[Any] = coco.ContextKey(
-        "test_surrealdb_target_db", tracked=False
+        "test_surrealdb_target_db", detect_change=False
     )
 
 

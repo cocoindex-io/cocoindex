@@ -87,7 +87,7 @@ def _compute_initial_context_states(
     outcomes = resolve_awaitables_sync(
         outcomes,
         running_loop_error_msg=(
-            f"Async state function on tracked context key {key_name!r} "
+            f"Async state function on detect_change context key {key_name!r} "
             "cannot be called from a running event loop at provide() time. "
             "Use a sync state function, or provide the value outside of an "
             "async context."
@@ -97,21 +97,21 @@ def _compute_initial_context_states(
 
 
 class ContextKey(Generic[T_co]):
-    __slots__ = ("_key", "_tracked")
+    __slots__ = ("_key", "_detect_change")
     _key: str
-    _tracked: bool
+    _detect_change: bool
 
-    def __init__(self, key: str, *, tracked: bool = True):
+    def __init__(self, key: str, *, detect_change: bool = True):
         with _lock:
             if key in _used_keys:
                 raise ValueError(f"Context key {key} already used")
             _used_keys.add(key)
         self._key = key
-        self._tracked = tracked
+        self._detect_change = detect_change
 
     @property
-    def tracked(self) -> bool:
-        return self._tracked
+    def detect_change(self) -> bool:
+        return self._detect_change
 
     @property
     def key(self) -> str:
@@ -125,7 +125,7 @@ class ContextProvider:
     __slots__ = (
         "_values",
         "_exit_stack",
-        "_tracked_fingerprints",
+        "_change_fingerprints",
         "_context_state_fns",
         "_pending_initial_states",
         "_core_env",
@@ -133,8 +133,8 @@ class ContextProvider:
 
     _values: dict[str, Any]
     _exit_stack: AsyncExitStack
-    _tracked_fingerprints: dict[ContextKey[Any], core.Fingerprint]
-    # State functions per tracked-context fingerprint, used at cache-hit
+    _change_fingerprints: dict[ContextKey[Any], core.Fingerprint]
+    # State functions per change fingerprint, used at cache-hit
     # validation time. Python-only (state functions are closures that can't
     # cross into Rust). The list is in canonicalization order and has 1:1
     # correspondence with the stored `context_memo_states` Vec on each memo
@@ -152,7 +152,7 @@ class ContextProvider:
     def __init__(self) -> None:
         self._values = {}
         self._exit_stack = AsyncExitStack()
-        self._tracked_fingerprints = {}
+        self._change_fingerprints = {}
         self._context_state_fns = {}
         self._pending_initial_states = {}
         self._core_env = None
@@ -168,7 +168,7 @@ class ContextProvider:
         Rust is the single source of truth from here on.
         """
         self._core_env = core_env
-        for fp in self._tracked_fingerprints.values():
+        for fp in self._change_fingerprints.values():
             core_env.register_logic(fp)
         for fp, initial_states in self._pending_initial_states.items():
             core_env.register_context_initial_states(fp, initial_states)
@@ -176,7 +176,7 @@ class ContextProvider:
 
     def provide(self, key: ContextKey[T], value: T) -> T:
         self._values[key._key] = value
-        if key.tracked:
+        if key.detect_change:
             state_fns: list[StateFnEntry] = []
             canonical = _canonicalize(
                 ("context_key", key._key, value),
@@ -187,14 +187,14 @@ class ContextProvider:
             # If this key was previously provided with a different value,
             # unregister the old fp from both sides. Closes a pre-existing
             # re-provide leak.
-            old_fp = self._tracked_fingerprints.get(key)
+            old_fp = self._change_fingerprints.get(key)
             if old_fp is not None and old_fp != fp:
                 if self._core_env is not None:
                     self._core_env.unregister_logic(old_fp)
                     self._core_env.unregister_context_initial_states(old_fp)
                 self._context_state_fns.pop(old_fp, None)
                 self._pending_initial_states.pop(old_fp, None)
-            self._tracked_fingerprints[key] = fp
+            self._change_fingerprints[key] = fp
             if self._core_env is not None:
                 self._core_env.register_logic(fp)
             if state_fns:
@@ -213,9 +213,9 @@ class ContextProvider:
                     self._pending_initial_states[fp] = initial_states
         return value
 
-    def get_tracked_fingerprint(self, key: ContextKey[Any]) -> core.Fingerprint:
-        """Get the tracked fingerprint for a key. Raises KeyError if not tracked."""
-        return self._tracked_fingerprints[key]
+    def get_change_fingerprint(self, key: ContextKey[Any]) -> core.Fingerprint:
+        """Get the change fingerprint for a key. Raises KeyError if not found."""
+        return self._change_fingerprints[key]
 
     def get_context_state_fns(self, fp: core.Fingerprint) -> list[StateFnEntry] | None:
         """Return the ordered state-fn list registered for *fp*, or None.
@@ -226,7 +226,7 @@ class ContextProvider:
         return self._context_state_fns.get(fp)
 
     def has_any_context_state_fns(self) -> bool:
-        """Whether any tracked context value in this provider carries state fns.
+        """Whether any change-detected context value in this provider carries state fns.
 
         Used by the memoization layer to decide whether to attach a
         component-level state handler: if no context value has state fns and

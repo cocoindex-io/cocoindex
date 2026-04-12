@@ -305,15 +305,15 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
     }
 
     pub fn join_fn_call(&self, fn_ctx: &FnCallContext) {
-        let (fn_logic_deps, context_tracked_deps) = fn_ctx.update(|inner| {
+        let (fn_logic_deps, context_change_deps) = fn_ctx.update(|inner| {
             (
                 inner.fn_logic_deps.clone(),
-                inner.context_tracked_deps.clone(),
+                inner.context_change_deps.clone(),
             )
         });
         let mut deps = self.inner.logic_deps.lock().unwrap();
         deps.extend(fn_logic_deps);
-        deps.extend(context_tracked_deps);
+        deps.extend(context_change_deps);
     }
 
     /// Merge additional logic deps (e.g. from child components) into this component's set.
@@ -329,7 +329,7 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         v
     }
 
-    /// Collect initial memo states for the tracked-context fingerprints
+    /// Collect initial memo states for the change-detection context fingerprints
     /// observed so far (stored in this component's `logic_deps`), by looking
     /// them up in the env's eager-initial-states registry.
     ///
@@ -385,7 +385,7 @@ pub struct FnCallContextInner {
     /// Function logic fingerprints (mode-controlled propagation via `propagate_children_fn_logic`).
     pub fn_logic_deps: HashSet<Fingerprint>,
     /// Context key fingerprints (always propagate regardless of logic_tracking mode).
-    pub context_tracked_deps: HashSet<Fingerprint>,
+    pub context_change_deps: HashSet<Fingerprint>,
 }
 
 pub struct FnCallContext {
@@ -423,10 +423,10 @@ impl FnCallContext {
                 .dependency_memo_entries
                 .extend(child_inner.dependency_memo_entries);
             inner.has_child_components |= child_inner.has_child_components;
-            // Context tracked deps always propagate.
+            // Context change deps always propagate.
             inner
-                .context_tracked_deps
-                .extend(child_inner.context_tracked_deps);
+                .context_change_deps
+                .extend(child_inner.context_change_deps);
             // Function logic deps conditionally propagate.
             if self.propagate_children_fn_logic {
                 inner.fn_logic_deps.extend(child_inner.fn_logic_deps);
@@ -440,13 +440,13 @@ impl FnCallContext {
         });
     }
 
-    pub fn add_context_tracked_dep(&self, fp: Fingerprint) {
+    pub fn add_context_change_dep(&self, fp: Fingerprint) {
         self.update(|inner| {
-            inner.context_tracked_deps.insert(fp);
+            inner.context_change_deps.insert(fp);
         });
     }
 
-    /// Collect initial memo states for the tracked-context fingerprints
+    /// Collect initial memo states for the change-detection context fingerprints
     /// observed so far in this function-call context, by looking them up in
     /// the given env's eager-initial-states registry.
     ///
@@ -457,7 +457,7 @@ impl FnCallContext {
         &self,
         env: &Environment<Prof>,
     ) -> Vec<(Fingerprint, Vec<Prof::FunctionData>)> {
-        self.update(|inner| env.collect_context_initial_states(inner.context_tracked_deps.iter()))
+        self.update(|inner| env.collect_context_initial_states(inner.context_change_deps.iter()))
     }
 
     pub fn update<T>(&self, f: impl FnOnce(&mut FnCallContextInner) -> T) -> T {

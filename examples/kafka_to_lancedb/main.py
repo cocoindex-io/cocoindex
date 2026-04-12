@@ -29,7 +29,7 @@ KAFKA_SASL_PASSWORD = os.environ.get("KAFKA_SASL_PASSWORD", "")
 LANCEDB_URI = os.environ.get("LANCEDB_URI", "./lancedb_data")
 
 LANCE_DB = coco.ContextKey[lancedb.LanceAsyncConnection](
-    "kafka_to_lancedb_db", tracked=False
+    "kafka_to_lancedb_db", detect_change=False
 )
 
 # --- Row schemas matching the CSV data ---

@@ -34,7 +34,7 @@ TOP_K = 5
 
 EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 LANCE_DB = coco.ContextKey[lancedb.LanceAsyncConnection](
-    "text_embedding_db", tracked=False
+    "text_embedding_db", detect_change=False
 )
 EMBEDDER = coco.ContextKey[SentenceTransformerEmbedder]("embedder")
 

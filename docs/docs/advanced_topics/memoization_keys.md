@@ -29,7 +29,7 @@ The following types are handled automatically (no custom key needed):
 
 The key fragments are combined into a deterministic fingerprint. If the fingerprint matches a cached entry, the cached result is reused — unless **memo states** indicate it's stale (see [Memo state validation](#memo-state-validation) below).
 
-In addition to input fingerprints, CocoIndex also validates against **function code fingerprints** and **[tracked context value](../programming_guide/context.md#tracked-context-keys) fingerprints**. If the function's code or any tracked context value it consumed has changed, the cached result is invalidated regardless of input matching. You can control the scope of code change tracking with the [`logic_tracking` parameter](../programming_guide/function.md#logic_tracking).
+In addition to input fingerprints, CocoIndex also validates against **function code fingerprints** and **[change-detected context value](../programming_guide/context.md#change-detection) fingerprints**. If the function's code or any change-detected context value it consumed has changed, the cached result is invalidated regardless of input matching. You can control the scope of code change tracking with the [`logic_tracking` parameter](../programming_guide/function.md#logic_tracking).
 
 ## Customizing the memoization key
 

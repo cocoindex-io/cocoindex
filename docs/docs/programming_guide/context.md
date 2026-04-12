@@ -16,28 +16,28 @@ import asyncpg
 import cocoindex as coco
 
 # Define typed keys for resources you want to share
-PG_DB = coco.ContextKey[asyncpg.Pool]("pg_db", tracked=False)
+PG_DB = coco.ContextKey[asyncpg.Pool]("pg_db", detect_change=False)
 CONFIG = coco.ContextKey[AppConfig]("config")
 ```
 
 The type parameter (`asyncpg.Pool`, `AppConfig`) enables type checking — when you retrieve the value, your editor knows its type.
 
-### Tracked context keys
+### Change detection
 
-By default, context keys are **tracked** — if you change the provided value between runs, CocoIndex automatically invalidates memoized functions that consumed it via `use_context()`. This works the same way as [function change tracking](./function.md#change-tracking): the engine detects the change and re-executes affected functions.
+By default, context keys have **change detection enabled** — if you change the provided value between runs, CocoIndex automatically invalidates memoized functions that consumed it via `use_context()`. This works the same way as [function change tracking](./function.md#change-tracking): the engine detects the change and re-executes affected functions.
 
 ```python
-# Tracked (default) — changing the model invalidates memos that used it
+# Change detection enabled (default) — changing the model invalidates memos that used it
 EMBEDDER = coco.ContextKey[SentenceTransformerEmbedder]("embedder")
 
-# Untracked — changing the logger won't invalidate memos
-LOGGER = coco.ContextKey[logging.Logger]("logger", tracked=False)
+# Change detection disabled — changing the logger won't invalidate memos
+LOGGER = coco.ContextKey[logging.Logger]("logger", detect_change=False)
 ```
 
-Use `tracked=False` for resources that don't affect computation results — loggers, debug flags, monitoring clients, etc. This avoids unnecessary reprocessing when those values change.
+Use `detect_change=False` for resources that don't affect computation results — loggers, debug flags, monitoring clients, etc. This avoids unnecessary reprocessing when those values change.
 
 :::tip
-Tracking is transitive: if function `foo` (memoized) calls function `bar`, and `bar` calls `use_context(key)` on a tracked key, then `foo`'s memo is also invalidated when the context value changes.
+Change detection is transitive: if function `foo` (memoized) calls function `bar`, and `bar` calls `use_context(key)` on a change-detected key, then `foo`'s memo is also invalidated when the context value changes.
 :::
 
 ## ContextKey as stable identity
@@ -63,7 +63,7 @@ import asyncpg
 import cocoindex as coco
 from cocoindex.connectors import postgres
 
-PG_DB = coco.ContextKey[asyncpg.Pool]("my_db", tracked=False)
+PG_DB = coco.ContextKey[asyncpg.Pool]("my_db", detect_change=False)
 
 @coco.lifespan
 async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]:

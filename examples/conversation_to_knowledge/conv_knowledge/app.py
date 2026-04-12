@@ -40,7 +40,9 @@ from .resolve import EMBEDDER, resolve_entities
 # Context keys
 # ---------------------------------------------------------------------------
 
-SURREAL_DB = coco.ContextKey[surrealdb.ConnectionFactory]("surreal_db", tracked=False)
+SURREAL_DB = coco.ContextKey[surrealdb.ConnectionFactory](
+    "surreal_db", detect_change=False
+)
 
 # ---------------------------------------------------------------------------
 # YouTube URL parsing

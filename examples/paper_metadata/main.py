@@ -45,7 +45,7 @@ TOP_K = 5
 
 
 EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
-PG_DB = coco.ContextKey[asyncpg.Pool]("paper_metadata_db", tracked=False)
+PG_DB = coco.ContextKey[asyncpg.Pool]("paper_metadata_db", detect_change=False)
 EMBEDDER = coco.ContextKey[SentenceTransformerEmbedder]("embedder")
 
 _abstract_splitter = RecursiveSplitter(

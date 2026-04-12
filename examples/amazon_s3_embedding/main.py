@@ -42,8 +42,8 @@ S3_BUCKET = os.environ["S3_BUCKET"]
 S3_PREFIX = os.getenv("S3_PREFIX", "")
 
 EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
-PG_DB = coco.ContextKey[asyncpg.Pool]("s3_embedding_db", tracked=False)
-S3_CLIENT = coco.ContextKey[AioBaseClient]("s3_client", tracked=False)
+PG_DB = coco.ContextKey[asyncpg.Pool]("s3_embedding_db", detect_change=False)
+S3_CLIENT = coco.ContextKey[AioBaseClient]("s3_client", detect_change=False)
 EMBEDDER = coco.ContextKey[SentenceTransformerEmbedder]("embedder")
 
 _splitter = RecursiveSplitter()

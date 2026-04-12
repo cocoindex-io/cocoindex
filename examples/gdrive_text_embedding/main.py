@@ -36,7 +36,7 @@ TOP_K = 5
 
 
 EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
-PG_DB = coco.ContextKey[asyncpg.Pool]("gdrive_text_embedding_db", tracked=False)
+PG_DB = coco.ContextKey[asyncpg.Pool]("gdrive_text_embedding_db", detect_change=False)
 EMBEDDER = coco.ContextKey[SentenceTransformerEmbedder]("embedder")
 
 _pool: asyncpg.Pool | None = None

@@ -15,7 +15,7 @@ fn build_fn_call_memo<Prof: EngineProfile>(
 ) -> Option<FnCallMemo<Prof>> {
     fn_ctx.update(|inner| {
         let mut logic_deps = inner.fn_logic_deps.clone();
-        logic_deps.extend(inner.context_tracked_deps.iter().cloned());
+        logic_deps.extend(inner.context_change_deps.iter().cloned());
         Some(FnCallMemo {
             ret,
             target_state_paths: inner.target_state_paths.clone(),

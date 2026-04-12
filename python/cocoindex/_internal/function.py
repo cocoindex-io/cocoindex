@@ -149,7 +149,7 @@ class Function(Protocol[P, R_co]):
 class StateMethodsResult(NamedTuple):
     """Result of calling memo state methods.
 
-    Both positional (argument-borne) and context-borne (tracked context value)
+    Both positional (argument-borne) and context-borne (change-detected context value)
     state methods flow through the same result type: their outcomes are
     aggregated into `can_reuse` / `states_changed`, while the new states are
     kept in separate slots so they can be persisted alongside the existing
@@ -377,7 +377,7 @@ def _collect_context_entries_from_stored(
         state_fns = provider.get_context_state_fns(fp)
         if state_fns is None:
             raise RuntimeError(
-                f"tracked context fingerprint {fp} is present in a cached memo "
+                f"change fingerprint {fp} is present in a cached memo "
                 "entry but has no registered state functions in the current "
                 "ContextProvider — this should be unreachable under the "
                 "shook-tag canonicalization invariant."
@@ -613,7 +613,7 @@ class SyncFunction(Function[P, R_co]):
                                 memo_states_for_resolve = state_result.new_states
                                 # Context state is re-collected fresh from fn_ctx
                                 # below — re-execution may observe a different set
-                                # of tracked-context fps than the stored entry,
+                                # of change-detection context fps than the stored entry,
                                 # and validation only covers the stored set.
                             elif state_result.states_changed:
                                 guard.update_memo_states(
@@ -637,7 +637,7 @@ class SyncFunction(Function[P, R_co]):
                     # Positional: collect only if not already set (cache-miss path).
                     # Context: look up eager initial states from the Rust
                     # registry in a single call — no state fn calls on cache
-                    # miss, and Rust iterates `context_tracked_deps` without
+                    # miss, and Rust iterates `context_change_deps` without
                     # snapshotting it through Python.
                     if memo_states_for_resolve is None and state_methods:
                         initial = _call_state_methods_sync(state_methods, None)
@@ -686,7 +686,7 @@ class SyncFunction(Function[P, R_co]):
         # Attach the component-level state handler only if there's something
         # for it to do. Two triggers:
         # 1. Positional state methods collected from argument canonicalization.
-        # 2. The env has at least one tracked context value with registered
+        # 2. The env has at least one change-detected context value with registered
         #    state functions — any of them *might* be observed during the
         #    function body and need validation at memo-hit time.
         # If neither is true, we can skip the Rust↔Python round-trip that the
@@ -1067,7 +1067,7 @@ class AsyncFunction(Function[P, R_co]):
                             memo_states_for_resolve = state_result.new_states
                             # Context states are re-collected fresh from fn_ctx
                             # below: re-execution may observe a different set
-                            # of tracked-context fps than the stored entry.
+                            # of change-detection context fps than the stored entry.
                         elif state_result.states_changed:
                             guard.update_memo_states(
                                 state_result.new_states,
@@ -1101,7 +1101,7 @@ class AsyncFunction(Function[P, R_co]):
                 env = parent_ctx._env
                 # Positional: only re-collect if validation didn't already set
                 # it (cache-miss path). Context: look up eager initial states
-                # via a single Rust call — iterates the fn_ctx's tracked deps
+                # via a single Rust call — iterates the fn_ctx's change deps
                 # and reads the env registry directly.
                 if memo_states_for_resolve is None and state_methods:
                     initial = await _call_state_methods_async(state_methods, None)

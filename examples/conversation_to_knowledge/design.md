@@ -548,7 +548,7 @@ app = coco.App(
 ## Lifespan & Context
 
 ```python
-SURREAL_DB = coco.ContextKey[surrealdb.ConnectionFactory]("surreal_db", tracked=False)
+SURREAL_DB = coco.ContextKey[surrealdb.ConnectionFactory]("surreal_db", detect_change=False)
 EMBEDDER = coco.ContextKey[SentenceTransformerEmbedder]("embedder")
 LLM_MODEL = coco.ContextKey[str]("llm_model")
 RESOLUTION_LLM_MODEL = coco.ContextKey[str]("resolution_llm_model")

@@ -79,7 +79,7 @@ from cocoindex.resources.file import FileLike, PatternFilePathMatcher
 from cocoindex.resources.id import IdGenerator
 
 DATABASE_URL = "postgres://cocoindex:cocoindex@localhost/cocoindex"
-PG_DB = coco.ContextKey[asyncpg.Pool]("pg_db", tracked=False)
+PG_DB = coco.ContextKey[asyncpg.Pool]("pg_db", detect_change=False)
 EMBEDDER = coco.ContextKey[SentenceTransformerEmbedder]("embedder")
 
 _splitter = RecursiveSplitter()
@@ -162,8 +162,8 @@ from cocoindex.connectors import postgres
 SOURCE_DB_URL = "postgres://localhost/source_db"
 TARGET_DB_URL = "postgres://localhost/target_db"
 
-SOURCE_DB = coco.ContextKey[asyncpg.Pool]("source_db", tracked=False)
-TARGET_DB = coco.ContextKey[asyncpg.Pool]("target_db", tracked=False)
+SOURCE_DB = coco.ContextKey[asyncpg.Pool]("source_db", detect_change=False)
+TARGET_DB = coco.ContextKey[asyncpg.Pool]("target_db", detect_change=False)
 
 @dataclass
 class SourceRecord:
@@ -236,7 +236,7 @@ import cocoindex as coco
 from cocoindex.connectors import postgres
 
 DATABASE_URL = "postgres://cocoindex:cocoindex@localhost/cocoindex"
-PG_DB = coco.ContextKey[asyncpg.Pool]("pg_db", tracked=False)
+PG_DB = coco.ContextKey[asyncpg.Pool]("pg_db", detect_change=False)
 
 _instructor_client = instructor.from_litellm(acompletion, mode=instructor.Mode.JSON)
 
@@ -318,7 +318,7 @@ from confluent_kafka.aio import AIOConsumer
 import cocoindex as coco
 from cocoindex.connectors import kafka, lancedb
 
-LANCE_DB = coco.ContextKey[lancedb.LanceAsyncConnection]("lance_db", tracked=False)
+LANCE_DB = coco.ContextKey[lancedb.LanceAsyncConnection]("lance_db", detect_change=False)
 
 @dataclass
 class Product:
@@ -375,7 +375,7 @@ import cocoindex as coco
 from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
 
 EMBEDDER = coco.ContextKey[SentenceTransformerEmbedder]("embedder")
-CONFIG = coco.ContextKey[dict]("config", tracked=False)
+CONFIG = coco.ContextKey[dict]("config", detect_change=False)
 
 @coco.lifespan
 async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]:
@@ -392,8 +392,8 @@ async def process_item(text: str) -> None:
 ```
 
 **Key points:**
-- `tracked=True` (default) -- Invalidates memos when value changes (use for models/config affecting output)
-- `tracked=False` -- For resources not affecting computation (DB connections, loggers)
+- `detect_change=True` (default) -- Invalidates memos when value changes (use for models/config affecting output)
+- `detect_change=False` -- For resources not affecting computation (DB connections, loggers)
 - `ContextKey` name is stable identity -- avoid renaming across runs
 
 ---
@@ -455,10 +455,10 @@ embedder = coco.use_context(EMBEDDER)
 ### Mixing Target State with Side Effects
 
 ```python
-# BAD: Side effects not tracked
+# BAD: Side effects not detected
 @coco.fn
 async def process(data):
-    requests.post("https://api.example.com", json=data)  # Not tracked!
+    requests.post("https://api.example.com", json=data)  # Not detected!
 
 # GOOD: Only declare target states
 table.declare_row(row=result)

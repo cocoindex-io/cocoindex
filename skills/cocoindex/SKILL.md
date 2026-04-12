@@ -251,7 +251,7 @@ from cocoindex.resources.file import FileLike, PatternFilePathMatcher
 from cocoindex.resources.id import IdGenerator
 
 DATABASE_URL = "postgres://cocoindex:cocoindex@localhost/cocoindex"
-PG_DB = coco.ContextKey[asyncpg.Pool]("pg_db", tracked=False)
+PG_DB = coco.ContextKey[asyncpg.Pool]("pg_db", detect_change=False)
 EMBEDDER = coco.ContextKey[SentenceTransformerEmbedder]("embedder")
 
 _splitter = RecursiveSplitter()

@@ -307,7 +307,7 @@ coco_env = common.create_test_env(__file__)
 **Test pattern:**
 
 ```python
-DB_KEY = coco.ContextKey[connector.ConnectionType]("test_db", tracked=False)
+DB_KEY = coco.ContextKey[connector.ConnectionType]("test_db", detect_change=False)
 
 def test_insert_and_update(connector_fixture: tuple[Connection, Path]) -> None:
     conn, _ = connector_fixture
