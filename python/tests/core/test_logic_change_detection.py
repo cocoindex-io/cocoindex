@@ -576,22 +576,22 @@ def test_none_mode_not_invalidated_on_any_logic_change() -> None:
 
 
 # ============================================================================
-# None function still tracks context key deps
+# None function still detects change on context key deps
 # ============================================================================
 
-_TRACKED_KEY_J3 = coco.ContextKey[str]("_test_logic_tracking_none_ctx_j3")
+_CHANGE_DETECTED_KEY_J3 = coco.ContextKey[str]("_test_logic_tracking_none_ctx_j3")
 
 
 def _create_env_with_ctx(db_name: str, value: str) -> coco.Environment:
-    """Create an Environment with a tracked context value."""
+    """Create an Environment with a change-detected context value."""
     ctx = coco.ContextProvider()
-    ctx.provide(_TRACKED_KEY_J3, value)
+    ctx.provide(_CHANGE_DETECTED_KEY_J3, value)
     settings = coco.Settings.from_env(db_path=get_env_db_path(db_name))
     return coco.Environment(settings, context_provider=ctx)
 
 
-def test_none_mode_still_tracks_context_key_deps() -> None:
-    """A logic_tracking=None memo fn is still invalidated when a tracked context value changes."""
+def test_none_mode_still_detects_change_on_context_key_deps() -> None:
+    """A logic_tracking=None memo fn is still invalidated when a change-detected context value changes."""
     GlobalDictTarget.store.clear()
     metrics = Metrics()
 
@@ -599,7 +599,7 @@ def test_none_mode_still_tracks_context_key_deps() -> None:
 
     @coco.fn(memo=True, logic_tracking=None)
     def process(name: str, content: str) -> None:
-        val = coco.use_context(_TRACKED_KEY_J3)
+        val = coco.use_context(_CHANGE_DETECTED_KEY_J3)
         metrics.increment("process")
         coco.declare_target_state(
             GlobalDictTarget.target_state(name, f"{val}:{content}")
@@ -621,7 +621,7 @@ def test_none_mode_still_tracks_context_key_deps() -> None:
     del app1, env1
     gc.collect()
 
-    # Phase 2: value="v2" — tracked key changed, memo invalidated despite None mode
+    # Phase 2: value="v2" — change-detected key changed, memo invalidated despite None mode
     env2 = _create_env_with_ctx(db_name, "v2")
     app2 = coco.App(coco.AppConfig(name=db_name, environment=env2), app_main)
     app2.update_blocking()

@@ -143,12 +143,12 @@ with coco.component_subpath("process"):
 Type-safe key for sharing resources. The `key` string is the stable identity across runs.
 
 ```python
-PG_DB = coco.ContextKey[asyncpg.Pool]("pg_db", tracked=False)
+PG_DB = coco.ContextKey[asyncpg.Pool]("pg_db", detect_change=False)
 EMBEDDER = coco.ContextKey[SentenceTransformerEmbedder]("embedder")
 ```
 
-- `tracked=True` (default) -- Auto-invalidates dependent memos when value changes
-- `tracked=False` -- For resources not affecting computation (DB connections, loggers)
+- `detect_change=True` (default) -- Auto-invalidates dependent memos when value changes
+- `detect_change=False` -- For resources not affecting computation (DB connections, loggers)
 
 ### `builder.provide()`
 

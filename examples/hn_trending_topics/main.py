@@ -35,7 +35,7 @@ LLM_MODEL = "gemini/gemini-2.5-flash"
 THREAD_LEVEL_MENTION_SCORE = 5
 COMMENT_LEVEL_MENTION_SCORE = 1
 
-PG_DB = coco.ContextKey[asyncpg.Pool]("hn_db", tracked=False)
+PG_DB = coco.ContextKey[asyncpg.Pool]("hn_db", detect_change=False)
 
 
 # ============================================================================

@@ -1,4 +1,4 @@
-"""Tests for tracked context key memo invalidation."""
+"""Tests for detect_change context key memo invalidation."""
 
 import gc
 import threading
@@ -12,9 +12,13 @@ from tests.common.target_states import GlobalDictTarget, Metrics
 
 
 # Unique context keys for this test module (globally unique strings required).
-_TRACKED_KEY = coco.ContextKey[str]("_test_ctx_tracked_d3")
-_UNTRACKED_KEY = coco.ContextKey[str]("_test_ctx_untracked_d3", tracked=False)
-_TRACKED_TRANSITIVE_KEY = coco.ContextKey[str]("_test_ctx_tracked_transitive_d3")
+_CHANGE_DETECTED_KEY = coco.ContextKey[str]("_test_ctx_tracked_d3")
+_NO_CHANGE_DETECT_KEY = coco.ContextKey[str](
+    "_test_ctx_untracked_d3", detect_change=False
+)
+_CHANGE_DETECTED_TRANSITIVE_KEY = coco.ContextKey[str](
+    "_test_ctx_tracked_transitive_d3"
+)
 
 
 def _create_env(
@@ -48,20 +52,20 @@ def _run_app(
 
 
 # ============================================================================
-# Test 1: Tracked key invalidates memo
+# Test 1: change-detected key invalidates memo
 # ============================================================================
 
 
-def test_tracked_key_invalidates_memo() -> None:
-    """Memo is invalidated when a tracked context key's value changes."""
+def test_detect_change_key_invalidates_memo() -> None:
+    """Memo is invalidated when a change-detected context key's value changes."""
     GlobalDictTarget.store.clear()
     metrics = Metrics()
 
-    db_name = "test_ctx_tracked_inv"
+    db_name = "test_ctx_cd_inv"
 
     @coco.fn(memo=True)
     def process(name: str, content: str) -> None:
-        val = coco.use_context(_TRACKED_KEY)
+        val = coco.use_context(_CHANGE_DETECTED_KEY)
         metrics.increment("calls")
         coco.declare_target_state(
             GlobalDictTarget.target_state(name, f"{val}:{content}")
@@ -72,34 +76,34 @@ def test_tracked_key_invalidates_memo() -> None:
         await coco.mount(coco.component_subpath("A"), process, "A", "data")
 
     # Phase 1: value="v1" — executes then memo hit
-    m = _run_app(db_name, _TRACKED_KEY, "v1", app_main, metrics)
+    m = _run_app(db_name, _CHANGE_DETECTED_KEY, "v1", app_main, metrics)
     assert m[0] == {"calls": 1}
     assert m[1] == {}
     assert GlobalDictTarget.store.data["A"].data == "v1:data"
     gc.collect()
 
-    # Phase 2: value="v2" — tracked key changed, memo invalidated, then memo hit
-    m = _run_app(db_name, _TRACKED_KEY, "v2", app_main, metrics)
+    # Phase 2: value="v2" — change-detected key changed, memo invalidated, then memo hit
+    m = _run_app(db_name, _CHANGE_DETECTED_KEY, "v2", app_main, metrics)
     assert m[0] == {"calls": 1}
     assert m[1] == {}
     assert GlobalDictTarget.store.data["A"].data == "v2:data"
 
 
 # ============================================================================
-# Test 2: Untracked key does NOT invalidate memo
+# Test 2: no-detect-change key does NOT invalidate memo
 # ============================================================================
 
 
-def test_untracked_key_no_invalidation() -> None:
-    """Memo is NOT invalidated when an untracked context key's value changes."""
+def test_no_detect_change_key_no_invalidation() -> None:
+    """Memo is NOT invalidated when a no-detect-change context key's value changes."""
     GlobalDictTarget.store.clear()
     metrics = Metrics()
 
-    db_name = "test_ctx_untracked_no_inv"
+    db_name = "test_ctx_no_cd_no_inv"
 
     @coco.fn(memo=True)
     def process(name: str, content: str) -> None:
-        val = coco.use_context(_UNTRACKED_KEY)
+        val = coco.use_context(_NO_CHANGE_DETECT_KEY)
         metrics.increment("calls")
         coco.declare_target_state(
             GlobalDictTarget.target_state(name, f"{val}:{content}")
@@ -110,39 +114,39 @@ def test_untracked_key_no_invalidation() -> None:
         await coco.mount(coco.component_subpath("A"), process, "A", "data")
 
     # Phase 1: value="v1" — executes then memo hit
-    m = _run_app(db_name, _UNTRACKED_KEY, "v1", app_main, metrics)
+    m = _run_app(db_name, _NO_CHANGE_DETECT_KEY, "v1", app_main, metrics)
     assert m[0] == {"calls": 1}
     assert m[1] == {}
     assert GlobalDictTarget.store.data["A"].data == "v1:data"
     gc.collect()
 
-    # Phase 2: value="v2" — untracked key changed, memo NOT invalidated
-    m = _run_app(db_name, _UNTRACKED_KEY, "v2", app_main, metrics)
-    assert m[0] == {}  # memo hit — untracked key doesn't affect logic_deps
+    # Phase 2: value="v2" — no-detect-change key changed, memo NOT invalidated
+    m = _run_app(db_name, _NO_CHANGE_DETECT_KEY, "v2", app_main, metrics)
+    assert m[0] == {}  # memo hit — no-detect-change key doesn't affect logic_deps
     assert m[1] == {}
     # Target state still has old value since memo was reused
     assert GlobalDictTarget.store.data["A"].data == "v1:data"
 
 
 # ============================================================================
-# Test 3: Transitive tracking through call chain
+# Test 3: Transitive change detection through call chain
 # ============================================================================
 
 
-def test_tracked_key_transitive_invalidation() -> None:
-    """Tracked key change invalidates memo transitively through call chain.
+def test_detect_change_key_transitive_invalidation() -> None:
+    """Change-detected key change invalidates memo transitively through call chain.
 
-    foo (memoized) calls bar (non-memoized). bar calls use_context(tracked_key).
-    When the tracked key's value changes, foo's memo is invalidated.
+    foo (memoized) calls bar (non-memoized). bar calls use_context(detect_change key).
+    When the change-detected key's value changes, foo's memo is invalidated.
     """
     GlobalDictTarget.store.clear()
     metrics = Metrics()
 
-    db_name = "test_ctx_tracked_transitive"
+    db_name = "test_ctx_cd_transitive"
 
     @coco.fn
     def bar(name: str) -> str:
-        val = coco.use_context(_TRACKED_TRANSITIVE_KEY)
+        val = coco.use_context(_CHANGE_DETECTED_TRANSITIVE_KEY)
         metrics.increment("bar")
         return f"{val}:{name}"
 
@@ -157,26 +161,26 @@ def test_tracked_key_transitive_invalidation() -> None:
         await coco.mount(coco.component_subpath("A"), foo, "A")
 
     # Phase 1: value="v1" — both execute, then memo hit
-    m = _run_app(db_name, _TRACKED_TRANSITIVE_KEY, "v1", app_main, metrics)
+    m = _run_app(db_name, _CHANGE_DETECTED_TRANSITIVE_KEY, "v1", app_main, metrics)
     assert m[0] == {"foo": 1, "bar": 1}
     assert m[1] == {}
     assert GlobalDictTarget.store.data["A"].data == "v1:A"
     gc.collect()
 
-    # Phase 2: value="v2" — tracked key changed, foo's memo invalidated transitively
-    m = _run_app(db_name, _TRACKED_TRANSITIVE_KEY, "v2", app_main, metrics)
+    # Phase 2: value="v2" — change-detected key changed, foo's memo invalidated transitively
+    m = _run_app(db_name, _CHANGE_DETECTED_TRANSITIVE_KEY, "v2", app_main, metrics)
     assert m[0] == {"foo": 1, "bar": 1}
     assert m[1] == {}
     assert GlobalDictTarget.store.data["A"].data == "v2:A"
 
 
 # ============================================================================
-# Test 4: TypeError on unfingerprintable value for tracked key
+# Test 4: TypeError on unfingerprintable value for change-detected key
 # ============================================================================
 
 
-def test_tracked_key_unfingerprintable_value_raises() -> None:
-    """Providing an unfingerprintable value for a tracked key raises TypeError."""
+def test_detect_change_key_unfingerprintable_value_raises() -> None:
+    """Providing an unfingerprintable value for a change-detected key raises TypeError."""
     key = coco.ContextKey[object]("_test_ctx_unfingerprintable_d3")
     ctx = coco.ContextProvider()
 

@@ -51,7 +51,7 @@ The `lancedb` connector provides target state APIs for writing rows to tables. W
 
 #### Setting up a connection
 
-Create a `ContextKey[lancedb.LanceAsyncConnection]` (with `tracked=False`) to identify your LanceDB connection, then provide it in your lifespan:
+Create a `ContextKey[lancedb.LanceAsyncConnection]` (with `detect_change=False`) to identify your LanceDB connection, then provide it in your lifespan:
 
 :::note
 The key name is load-bearing across runs — it's the stable identity CocoIndex uses to track managed tables. See [ContextKey as stable identity](../programming_guide/context.md#contextkey-as-stable-identity) before renaming.
@@ -60,7 +60,7 @@ The key name is load-bearing across runs — it's the stable identity CocoIndex 
 ```python
 import cocoindex as coco
 
-LANCE_DB = coco.ContextKey[lancedb.LanceAsyncConnection]("main_db", tracked=False)
+LANCE_DB = coco.ContextKey[lancedb.LanceAsyncConnection]("main_db", detect_change=False)
 
 @coco.lifespan
 async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]:
@@ -215,7 +215,7 @@ from cocoindex.connectors import lancedb
 
 LANCEDB_URI = "./lancedb_data"
 
-LANCE_DB = coco.ContextKey[lancedb.LanceAsyncConnection]("main_db", tracked=False)
+LANCE_DB = coco.ContextKey[lancedb.LanceAsyncConnection]("main_db", detect_change=False)
 
 @dataclass
 class OutputDocument:

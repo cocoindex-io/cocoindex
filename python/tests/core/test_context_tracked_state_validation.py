@@ -1,10 +1,10 @@
-"""End-to-end tests for tracked context value state validation.
+"""End-to-end tests for change-detected context value state validation.
 
 Tests the interaction between:
-- `context_tracked_key` (tracked=True context keys that participate in memoization)
+- `context_detect_change_key` (detect_change=True context keys that participate in memoization)
 - `memo_validation` (`__coco_memo_state__` state functions that decide memo reuse)
 
-When a tracked context value (or an object reachable inside its canonical form)
+When a change-detected context value (or an object reachable inside its canonical form)
 exposes `__coco_memo_state__`, it should behave like an argument-borne state
 function — on memo hit, the state function is called with the previously stored
 state to decide whether the cached result is still valid.
@@ -16,7 +16,7 @@ captured states in the Rust core as an opaque blob
 Python layer pairs with the env registry to validate.
 
 Each test creates one :class:`coco.Environment` and simulates cross-run state
-changes by re-providing the tracked key on the same provider before calling
+changes by re-providing the change-detected key on the same provider before calling
 ``app.update_blocking()`` again. Creating fresh environments back-to-back at
 the same ``db_path`` is not supported by LMDB (it refuses to reopen while the
 previous env is still live), so the single-env-with-reprovide pattern is the
@@ -41,7 +41,7 @@ from tests.common.target_states import GlobalDictTarget, Metrics
 
 @dataclass
 class StatefulEmbedder:
-    """Stand-in for an embedder whose validity is tracked via a state value.
+    """Stand-in for an embedder whose validity is change-detected via a state value.
 
     Fingerprint (memo key) is based on `name` only — two embedders with the
     same name but different `state_value` hash the same.  The state function
@@ -62,7 +62,7 @@ class StatefulEmbedder:
 
 
 # One context key reused by multiple tests. Each test uses its own env to keep
-# the registry state isolated.
+# the registry state isolated. detect_change=True by default.
 EMBEDDER_KEY = coco.ContextKey[StatefulEmbedder]("_test_ctx_tracked_embedder")
 
 
@@ -74,7 +74,7 @@ def _make_env(db_name: str, embedder: StatefulEmbedder) -> coco.Environment:
 
 
 # ============================================================================
-# Test 1: function-level memo — tracked context value state drives invalidation
+# Test 1: function-level memo — change-detected context value state drives invalidation
 # ============================================================================
 
 _metrics_fn = Metrics()
@@ -95,8 +95,8 @@ def _run_embed() -> None:
         coco.declare_target_state(GlobalDictTarget.target_state(key, result))
 
 
-def test_tracked_context_state_validation_function_level() -> None:
-    """Memoized function consuming a tracked context value with state function.
+def test_detect_change_context_state_validation_function_level() -> None:
+    """Memoized function consuming a change-detected context value with state function.
 
     Scenarios (same env, re-provide between runs):
     1. Cache miss → function executes; initial state collected.
@@ -185,7 +185,7 @@ def _run_embed_two_level() -> None:
     _embed_two_level("k1")
 
 
-def test_tracked_context_state_valid_with_updated_state() -> None:
+def test_detect_change_context_state_valid_with_updated_state() -> None:
     """memo_valid=True with state changes → cached result reused, state refreshed."""
     GlobalDictTarget.store.clear()
     _metrics_two_level.clear()
@@ -239,7 +239,7 @@ def test_tracked_context_state_valid_with_updated_state() -> None:
 
 
 # ============================================================================
-# Test 3: tracked context value replaced with different canonical form
+# Test 3: change-detected context value replaced with different canonical form
 # ============================================================================
 
 REPLACE_KEY = coco.ContextKey[StatefulEmbedder]("_test_ctx_tracked_replace_key")
@@ -259,8 +259,8 @@ def _run_embed_replace() -> None:
     _embed_replace("k1")
 
 
-def test_tracked_context_value_replaced() -> None:
-    """Replacing the tracked value with a different canonical form invalidates."""
+def test_detect_change_context_value_replaced() -> None:
+    """Replacing the change-detected value with a different canonical form invalidates."""
     GlobalDictTarget.store.clear()
     _metrics_replace.clear()
 
@@ -290,7 +290,7 @@ def test_tracked_context_value_replaced() -> None:
 
 
 # ============================================================================
-# Test 4: composite tracked value (tuple) with nested state-bearing object
+# Test 4: composite change-detected value (tuple) with nested state-bearing object
 # ============================================================================
 
 
@@ -326,8 +326,8 @@ def _run_embed_composite() -> None:
     _embed_composite("k1")
 
 
-def test_tracked_context_composite_state() -> None:
-    """A composite tracked value (tuple) whose element has state function.
+def test_detect_change_context_composite_state() -> None:
+    """A composite change-detected value (tuple) whose element has state function.
 
     Verifies state fns are discovered via canonicalization walking the composite,
     not only by looking at the top-level value.
@@ -388,7 +388,7 @@ async def _mount_embed() -> None:
         await coco.mount(coco.component_subpath(item), _embed_component, item)
 
 
-def test_tracked_context_state_validation_component_level() -> None:
+def test_detect_change_context_state_validation_component_level() -> None:
     """Same invariants, but the memoized unit is mounted as a component."""
     GlobalDictTarget.store.clear()
     _source_comp.clear()
@@ -424,13 +424,13 @@ def test_tracked_context_state_validation_component_level() -> None:
 # ============================================================================
 #
 # Regression test: when a memoized function's state fn says "invalidate", the
-# re-execution may observe a different set of tracked-context fps than was in
+# re-execution may observe a different set of change-detected context fps than was in
 # the cached entry. The engine must persist context states derived from the
 # fresh fn_ctx, not the stale set from cache-hit validation — otherwise, a new
 # fp's state change won't be detected on subsequent runs.
 #
 # We exercise this with a function whose body branches on a module-level flag
-# (invisible to the memo key) and conditionally consumes a second tracked
+# (invisible to the memo key) and conditionally consumes a second change-detected
 # context value.
 
 KEY_A = coco.ContextKey[StatefulEmbedder]("_test_ctx_tracked_branching_a")
@@ -457,7 +457,7 @@ def _run_branching() -> None:
 
 
 def test_cache_hit_not_reusable_refreshes_context_fps() -> None:
-    """Re-execution must capture newly-observed tracked-context fps.
+    """Re-execution must capture newly-observed change-detected context fps.
 
     - Run 1: flag off. Cache miss, persist only fp_A.
     - Run 2: flag on, bump A's state so validation invalidates the memo.

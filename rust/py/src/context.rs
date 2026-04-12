@@ -34,7 +34,7 @@ impl PyComponentProcessorContext {
         Ok(())
     }
 
-    /// Collect eager initial memo states for the tracked-context fingerprints
+    /// Collect eager initial memo states for the change-detection context fingerprints
     /// observed so far on this component (from `logic_deps`). Returns a
     /// `dict[Fingerprint, list[Any]]` directly — fingerprints with no
     /// registered state functions are skipped. Values are the *raw* Python
@@ -100,12 +100,12 @@ impl PyFnCallContext {
         Ok(())
     }
 
-    pub fn add_context_tracked_dep(&self, fp: PyFingerprint) -> PyResult<()> {
-        self.0.add_context_tracked_dep(fp.0);
+    pub fn add_context_change_dep(&self, fp: PyFingerprint) -> PyResult<()> {
+        self.0.add_context_change_dep(fp.0);
         Ok(())
     }
 
-    /// Collect eager initial memo states for the tracked-context fingerprints
+    /// Collect eager initial memo states for the change-detection context fingerprints
     /// captured in this fn call context, by looking them up in the given
     /// environment's registry. Returns a `dict[Fingerprint, list[Any]]`
     /// directly — fingerprints with no registered state functions are

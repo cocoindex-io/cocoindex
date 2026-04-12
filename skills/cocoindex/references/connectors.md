@@ -41,7 +41,7 @@ import asyncpg
 import cocoindex as coco
 from cocoindex.connectors import postgres
 
-PG_DB = coco.ContextKey[asyncpg.Pool]("pg_db", tracked=False)
+PG_DB = coco.ContextKey[asyncpg.Pool]("pg_db", detect_change=False)
 
 @coco.lifespan
 async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]:
@@ -138,7 +138,7 @@ target_table.declare_sql_command_attachment(
 ```python
 from cocoindex.connectors import sqlite
 
-SQLITE_DB = coco.ContextKey[sqlite.ManagedConnection]("sqlite_db", tracked=False)
+SQLITE_DB = coco.ContextKey[sqlite.ManagedConnection]("sqlite_db", detect_change=False)
 
 @coco.lifespan
 def coco_lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
@@ -186,7 +186,7 @@ target_table.declare_row(row=Embedding(id=1, text="hello", vector=vec))
 ```python
 from cocoindex.connectors import lancedb
 
-LANCE_DB = coco.ContextKey[lancedb.LanceAsyncConnection]("lance_db", tracked=False)
+LANCE_DB = coco.ContextKey[lancedb.LanceAsyncConnection]("lance_db", detect_change=False)
 
 @coco.lifespan
 async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]:
@@ -233,7 +233,7 @@ target_table.declare_row(row=Embedding(id=1, text="hello", vector=vec))
 from cocoindex.connectors import qdrant
 
 from qdrant_client import QdrantClient
-QDRANT_DB = coco.ContextKey[QdrantClient]("qdrant_db", tracked=False)
+QDRANT_DB = coco.ContextKey[QdrantClient]("qdrant_db", detect_change=False)
 
 @coco.lifespan
 def coco_lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
@@ -297,7 +297,7 @@ collection.declare_point(point=qdrant.PointStruct(
 ```python
 from cocoindex.connectors import surrealdb
 
-SURREAL_DB = coco.ContextKey[surrealdb.ConnectionFactory]("surreal_db", tracked=False)
+SURREAL_DB = coco.ContextKey[surrealdb.ConnectionFactory]("surreal_db", detect_change=False)
 
 @coco.lifespan
 async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]:
@@ -404,7 +404,7 @@ files = localfs.walk_dir(localfs.FilePath(path="./data"), ...)
 import aiobotocore.session
 from aiobotocore.client import AioBaseClient
 
-S3_CLIENT = coco.ContextKey[AioBaseClient]("s3_client", tracked=False)
+S3_CLIENT = coco.ContextKey[AioBaseClient]("s3_client", detect_change=False)
 
 @coco.lifespan
 async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]:
@@ -468,7 +468,7 @@ await coco.mount_each(process_message, items, target_table)
 ```python
 from confluent_kafka.aio import AIOProducer
 
-KAFKA_PRODUCER = coco.ContextKey[AIOProducer]("kafka_producer", tracked=False)
+KAFKA_PRODUCER = coco.ContextKey[AIOProducer]("kafka_producer", detect_change=False)
 
 topic_target = await kafka.mount_kafka_topic_target(KAFKA_PRODUCER, "my-topic")
 topic_target.declare_target_state(key="msg-key", value=json.dumps(data))
@@ -487,7 +487,7 @@ topic_target.declare_target_state(key="msg-key", value=json.dumps(data))
 ```python
 from cocoindex.connectors import doris
 
-DORIS_DB = coco.ContextKey[doris.ManagedConnection]("doris_db", tracked=False)
+DORIS_DB = coco.ContextKey[doris.ManagedConnection]("doris_db", detect_change=False)
 
 @coco.lifespan
 def coco_lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:

@@ -130,7 +130,7 @@ The `kafka` connector provides target state APIs for producing messages to Kafka
 
 ### Setting up a producer
 
-Create a `ContextKey[AIOProducer]` (with `tracked=False`) to identify your producer, then provide it in your lifespan:
+Create a `ContextKey[AIOProducer]` (with `detect_change=False`) to identify your producer, then provide it in your lifespan:
 
 :::note
 The key name is load-bearing across runs — it's the stable identity CocoIndex uses to track target state for topics produced through this key. See [ContextKey as stable identity](../programming_guide/context.md#contextkey-as-stable-identity) before renaming.
@@ -140,7 +140,7 @@ The key name is load-bearing across runs — it's the stable identity CocoIndex 
 from confluent_kafka import AIOProducer
 import cocoindex as coco
 
-KAFKA_PRODUCER = coco.ContextKey[AIOProducer]("my_kafka_producer", tracked=False)
+KAFKA_PRODUCER = coco.ContextKey[AIOProducer]("my_kafka_producer", detect_change=False)
 
 @coco.lifespan
 async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]:
@@ -227,7 +227,7 @@ from confluent_kafka import AIOProducer
 from cocoindex.connectors import kafka, localfs
 import cocoindex as coco
 
-KAFKA_PRODUCER = coco.ContextKey[AIOProducer]("my_kafka_producer", tracked=False)
+KAFKA_PRODUCER = coco.ContextKey[AIOProducer]("my_kafka_producer", detect_change=False)
 
 
 @coco.lifespan

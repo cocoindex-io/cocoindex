@@ -35,8 +35,8 @@ CLIP_MODEL_NAME = "openai/clip-vit-large-patch14"
 TOP_K = 5
 
 
-QDRANT_DB = coco.ContextKey[QdrantClient]("image_search_qdrant", tracked=False)
-QDRANT_CLIENT = coco.ContextKey[QdrantClient]("qdrant_client", tracked=False)
+QDRANT_DB = coco.ContextKey[QdrantClient]("image_search_qdrant", detect_change=False)
+QDRANT_CLIENT = coco.ContextKey[QdrantClient]("qdrant_client", detect_change=False)
 
 
 @functools.cache

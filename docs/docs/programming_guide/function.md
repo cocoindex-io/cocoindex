@@ -127,7 +127,7 @@ def embed(text: str) -> list[float]:
 ```
 
 :::note
-[Tracked context values](./context.md#tracked-context-keys) consumed via `coco.use_context()` are always tracked regardless of the `logic_tracking` setting. Even with `logic_tracking=None`, a change in a tracked context value still invalidates dependent memos.
+[Change-detected context values](./context.md#change-detection) consumed via `coco.use_context()` always participate in change detection regardless of the `logic_tracking` setting. Even with `logic_tracking=None`, a change in a change-detected context value still invalidates dependent memos.
 :::
 
 ### Async adapter
