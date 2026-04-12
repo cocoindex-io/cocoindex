@@ -5,7 +5,7 @@ Library level functions and states.
 from . import core as _core
 from . import serde as _serde
 from . import typing as _typing
-from .memo_key import register_memo_key_function as _register_memo_key_function
+from .memo_fingerprint import register_memo_key_function as _register_memo_key_function
 from .target_state import _TypedTargetHandlerWrapper as _TypedTargetHandlerWrapper
 
 

@@ -37,7 +37,7 @@ from .component_ctx import (
     get_context_from_ctx,
 )
 from .context_keys import resolve_awaitables_sync
-from .memo_key import StateFnEntry, fingerprint_call
+from .memo_fingerprint import StateFnEntry, fingerprint_call
 from .runner import Runner
 from .runner import in_subprocess as _in_subprocess
 from .serde import (

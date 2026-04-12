@@ -4,7 +4,7 @@ from typing import Any
 
 import pytest
 
-from cocoindex._internal.memo_key import (
+from cocoindex._internal.memo_fingerprint import (
     fingerprint_call,
     register_memo_key_function,
     unregister_memo_key_function,
@@ -522,7 +522,7 @@ def test_state_methods_collected_from_hook() -> None:
         def __coco_memo_state__(self, prev_state: object) -> MemoStateOutcome:
             return MemoStateOutcome(state=prev_state, memo_valid=True)
 
-    from cocoindex._internal.memo_key import StateFnEntry
+    from cocoindex._internal.memo_fingerprint import StateFnEntry
 
     methods: list[Any] = []
     fingerprint_call(_dummy_fn, (WithState(1),), {}, state_methods=methods)
@@ -533,7 +533,7 @@ def test_state_methods_collected_from_hook() -> None:
 
 
 def test_state_methods_collected_from_registry() -> None:
-    from cocoindex._internal.memo_key import StateFnEntry
+    from cocoindex._internal.memo_fingerprint import StateFnEntry
 
     class Registered:
         def __init__(self, v: object) -> None:

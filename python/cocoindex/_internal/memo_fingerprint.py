@@ -3,7 +3,7 @@ Persistent memoization fingerprinting (implementation).
 
 This module implements the Python-side canonicalization described in
 `docs/docs/dev/memo_key.md`, and relies on a single Rust call to hash the final
-canonical call key object into a fixed-size fingerprint.
+canonical form into a fixed-size fingerprint.
 """
 
 from __future__ import annotations
@@ -330,7 +330,7 @@ def _canonicalize(
         ) from None
 
 
-def _make_call_key_obj(
+def _make_call_canonical(
     func: typing.Callable[..., object],
     args: tuple[object, ...],
     kwargs: dict[str, object],
@@ -358,7 +358,7 @@ def _make_call_key_obj(
     )
 
 
-def memo_key(obj: object) -> core.Fingerprint:
+def memo_fingerprint(obj: object) -> core.Fingerprint:
     return core.fingerprint_simple_object(_canonicalize(obj, _seen=None))
 
 
@@ -380,7 +380,7 @@ def fingerprint_call(
     state validation).
     """
 
-    call_key_obj = _make_call_key_obj(
+    call_key_obj = _make_call_canonical(
         func,
         args,
         kwargs,

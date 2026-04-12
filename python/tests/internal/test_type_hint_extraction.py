@@ -9,7 +9,7 @@ from cocoindex._internal.serde import (
     serialize,
     unwrap_element_type,
 )
-from cocoindex._internal.memo_key import _make_state_deserialize_fn
+from cocoindex._internal.memo_fingerprint import _make_state_deserialize_fn
 from cocoindex._internal.typing import MemoStateOutcome
 
 

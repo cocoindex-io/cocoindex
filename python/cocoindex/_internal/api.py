@@ -129,7 +129,7 @@ from .environment import lifespan
 
 from .runner import GPU, Runner
 
-from .memo_key import register_memo_key_function, NotMemoizable
+from .memo_fingerprint import register_memo_key_function, NotMemoizable
 
 from .serde import unpickle_safe, serialize_by_pickle
 
@@ -631,7 +631,7 @@ __all__ = [
     # .serde
     "unpickle_safe",
     "serialize_by_pickle",
-    # .memo_key
+    # .memo_fingerprint
     "register_memo_key_function",
     "NotMemoizable",
     # .pending_marker

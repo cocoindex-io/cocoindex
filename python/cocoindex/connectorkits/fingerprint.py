@@ -5,7 +5,7 @@ This module provides functions for computing deterministic fingerprints
 of values, useful for change detection in target state tracking.
 """
 
-from cocoindex._internal.memo_key import memo_key as _memo_key
+from cocoindex._internal.memo_fingerprint import memo_fingerprint as _memo_fingerprint
 from cocoindex._internal.core import Fingerprint as Fingerprint
 from cocoindex._internal.core import fingerprint_bytes as _fingerprint_bytes
 from cocoindex._internal.core import fingerprint_str as _fingerprint_str
@@ -33,9 +33,9 @@ def fingerprint_str(s: str) -> bytes:
 def fingerprint_object(obj: object) -> bytes:
     """Compute a fingerprint for an object to identify its identity across runs and return it as bytes.
 
-    This uses memo key mechanism to compute the fingerprint.
+    This uses the memo fingerprint mechanism to compute the fingerprint.
     """
-    return _memo_key(obj).as_bytes()
+    return _memo_fingerprint(obj).as_bytes()
 
 
 __all__ = [

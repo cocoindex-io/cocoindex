@@ -8,7 +8,7 @@ mod function;
 mod inspect;
 pub mod live_component;
 mod logic_registry;
-mod memo_key;
+mod memo_fingerprint;
 mod ops;
 mod prelude;
 mod profile;
@@ -84,9 +84,12 @@ fn core_module(m: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()>
     m.add_function(wrap_pyfunction!(function::reserve_memoization_async, m)?)?;
 
     // Memoization fingerprinting (deterministic)
-    m.add_function(wrap_pyfunction!(memo_key::fingerprint_simple_object, m)?)?;
-    m.add_function(wrap_pyfunction!(memo_key::fingerprint_bytes, m)?)?;
-    m.add_function(wrap_pyfunction!(memo_key::fingerprint_str, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        memo_fingerprint::fingerprint_simple_object,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(memo_fingerprint::fingerprint_bytes, m)?)?;
+    m.add_function(wrap_pyfunction!(memo_fingerprint::fingerprint_str, m)?)?;
 
     // Logic change detection
     m.add_function(wrap_pyfunction!(
