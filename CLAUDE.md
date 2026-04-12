@@ -101,9 +101,13 @@ Think of it like:
 ### Key APIs
 
 ```python
-# Mounting processing components (subpath first, then function)
-await coco.mount(coco.component_subpath("name"), fn, *args, **kw)      # child runs independently
-result = await coco.use_mount(coco.component_subpath("name"), fn, *args, **kw)  # returns value directly
+# Mounting processing components (subpath auto-derived from fn.__name__)
+await coco.mount(fn, *args, **kw)                                       # child runs independently
+result = await coco.use_mount(fn, *args, **kw)                          # returns value directly
+
+# Explicit subpath (for multi-part paths or multiple mounts of same function)
+await coco.mount(coco.component_subpath("process", filename), fn, *args, **kw)
+result = await coco.use_mount(coco.component_subpath("name"), fn, *args, **kw)
 
 # Component subpath composition
 subpath = coco.component_subpath("process", filename)  # multiple parts
@@ -154,9 +158,7 @@ async def process_file(file: FileLike, target: localfs.DirTarget) -> None:
 
 @coco.fn
 async def app_main(sourcedir: pathlib.Path, outdir: pathlib.Path) -> None:
-    target = await coco.use_mount(
-        coco.component_subpath("setup"), localfs.declare_dir_target, outdir
-    )
+    target = await coco.use_mount(localfs.declare_dir_target, outdir)
 
     files = localfs.walk_dir(
         sourcedir, path_matcher=PatternFilePathMatcher(included_patterns=["**/*.md"])

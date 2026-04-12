@@ -109,16 +109,19 @@ A **processing component** groups an item's processing with its target states.
 # One component per item (preferred for lists)
 await coco.mount_each(process_file, files.items(), target_table)
 
-# Single component
-await coco.mount(coco.component_subpath("setup"), setup_fn, arg1)
+# Single component (subpath auto-derived from fn.__name__)
+await coco.mount(setup_fn, arg1)
 
 # Dependent component (blocks until result returned)
-result = await coco.use_mount(coco.component_subpath("init"), init_fn)
+result = await coco.use_mount(init_fn)
+
+# Explicit subpath (when you need a specific path, e.g. in loops)
+await coco.mount(coco.component_subpath("item", item_id), process_item, item)
 ```
 
 **Key points:**
 - All mount APIs are `async`
-- `mount_each()` auto-derives subpath from `fn.__name__`; optional explicit subpath as first arg
+- `mount()`, `use_mount()`, and `mount_each()` auto-derive subpath from `fn.__name__`; optional explicit subpath as first arg
 - Use `use_mount()` when you need the return value
 - Use stable component paths for proper memoization and cleanup
 

@@ -201,7 +201,6 @@ OUTPUT_DIR = coco.ContextKey[pathlib.Path]("output_dir")
 @coco.fn
 def app_main() -> None:
     coco.mount(
-        coco.component_subpath("readme"),
         localfs.declare_file,
         localfs.FilePath("readme.txt", base_dir=OUTPUT_DIR),
         content="Hello, world!",

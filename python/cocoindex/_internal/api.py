@@ -214,12 +214,31 @@ async def use_mount(
     *args: P.args,
     **kwargs: P.kwargs,
 ) -> ReturnT: ...
+@overload
 async def use_mount(
-    subpath: ComponentSubpath,
-    processor_fn: AnyCallable[P, Any],
+    processor_fn: AsyncCallable[P, ResolvesTo[ReturnT]],
     *args: P.args,
     **kwargs: P.kwargs,
-) -> Any:
+) -> ReturnT: ...
+@overload
+async def use_mount(
+    processor_fn: Callable[P, ResolvesTo[ReturnT]],
+    *args: P.args,
+    **kwargs: P.kwargs,
+) -> ReturnT: ...
+@overload
+async def use_mount(
+    processor_fn: AsyncCallable[P, ReturnT],
+    *args: P.args,
+    **kwargs: P.kwargs,
+) -> ReturnT: ...
+@overload
+async def use_mount(
+    processor_fn: Callable[P, ReturnT],
+    *args: P.args,
+    **kwargs: P.kwargs,
+) -> ReturnT: ...
+async def use_mount(*pos_args: Any, **kwargs: Any) -> Any:
     """
     Mount a dependent processing component and return its result.
 
@@ -228,8 +247,11 @@ async def use_mount(
     ``use_context()``) signals that the caller creates a dependency on the
     child's result.
 
+    Accepts an optional ``ComponentSubpath`` as the first argument. When omitted,
+    the subpath is auto-derived from ``Symbol(fn.__name__)``.
+
     Args:
-        subpath: The component subpath (from component_subpath()).
+        subpath: Optional component subpath. Auto-derived from fn.__name__ when omitted.
         processor_fn: The function to run as the processing unit processor.
         *args: Arguments to pass to the function.
         **kwargs: Keyword arguments to pass to the function.
@@ -238,10 +260,28 @@ async def use_mount(
         The return value of processor_fn.
 
     Example:
+        target = await coco.use_mount(declare_table_target, table_name)
+
+        # With explicit subpath:
         target = await coco.use_mount(
             coco.component_subpath("setup"), declare_table_target, table_name
         )
     """
+    if pos_args and isinstance(pos_args[0], ComponentSubpath):
+        subpath = pos_args[0]
+        processor_fn = pos_args[1]
+        args = pos_args[2:]
+    else:
+        processor_fn = pos_args[0]
+        args = pos_args[1:]
+        name = getattr(processor_fn, "__name__", None)
+        if name is None:
+            raise TypeError(
+                "use_mount() requires a ComponentSubpath when the function has no "
+                "__name__. Provide an explicit subpath as the first argument."
+            )
+        subpath = ComponentSubpath(Symbol(name))
+
     if is_live_component_class(processor_fn):
         raise TypeError(
             "LiveComponent classes cannot be used with use_mount(). "
@@ -285,17 +325,32 @@ async def _mount_live_component(
     return ComponentMountHandle([readiness_handle])
 
 
+@overload
 async def mount(
     subpath: ComponentSubpath,
     processor_fn: AnyCallable[P, Any],
     *args: P.args,
     **kwargs: P.kwargs,
-) -> ComponentMountHandle:
+) -> ComponentMountHandle: ...
+
+
+@overload
+async def mount(
+    processor_fn: AnyCallable[P, Any],
+    *args: P.args,
+    **kwargs: P.kwargs,
+) -> ComponentMountHandle: ...
+
+
+async def mount(*pos_args: Any, **kwargs: Any) -> ComponentMountHandle:
     """
     Mount a processing unit in the background and return a handle to wait until ready.
 
+    Accepts an optional ``ComponentSubpath`` as the first argument. When omitted,
+    the subpath is auto-derived from ``Symbol(fn.__name__)``.
+
     Args:
-        subpath: The component subpath (from component_subpath()).
+        subpath: Optional component subpath. Auto-derived from fn.__name__ when omitted.
         processor_fn: The function to run as the processing unit processor.
             Can also be a LiveComponent class.
         *args: Arguments to pass to the function (or LiveComponent constructor).
@@ -305,10 +360,26 @@ async def mount(
         A handle that can be used to wait until the processing unit is ready.
 
     Example:
-        with coco.component_subpath("process"):
-            for f in files:
-                await coco.mount(coco.component_subpath(str(f.relative_path)), process_file, f, target)
+        await coco.mount(process_file, file, target)
+
+        # With explicit subpath:
+        await coco.mount(coco.component_subpath("process", filename), process_file, file, target)
     """
+    if pos_args and isinstance(pos_args[0], ComponentSubpath):
+        subpath = pos_args[0]
+        processor_fn = pos_args[1]
+        args = pos_args[2:]
+    else:
+        processor_fn = pos_args[0]
+        args = pos_args[1:]
+        name = getattr(processor_fn, "__name__", None)
+        if name is None:
+            raise TypeError(
+                "mount() requires a ComponentSubpath when the function has no "
+                "__name__. Provide an explicit subpath as the first argument."
+            )
+        subpath = ComponentSubpath(Symbol(name))
+
     parent_ctx = get_context_from_ctx()
     child_path = build_child_path(parent_ctx, subpath)
 
