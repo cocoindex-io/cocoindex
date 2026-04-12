@@ -14,7 +14,7 @@ from tests.common.environment import get_env_db_path
 from tests.common.target_states import GlobalDictTarget, Metrics
 
 
-_TEST_CTX_KEY = coco.ContextKey[str]("_test_memo_state_ctx_key")
+_TEST_CTX_KEY = coco.ContextKey[str]("_test_memo_state_ctx_key", detect_change=True)
 
 
 def _create_env(db_name: str, ctx_value: str) -> coco.Environment:

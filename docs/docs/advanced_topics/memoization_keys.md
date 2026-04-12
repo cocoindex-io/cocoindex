@@ -5,14 +5,16 @@ description: Customize how CocoIndex identifies and validates memoized function 
 
 # Memoization Keys & States
 
-When a CocoIndex function has `memo=True`, the engine caches results and skips re-execution when the inputs haven't changed. This page explains how to customize two aspects of that process:
+As described in [Function — Change detection](../programming_guide/function.md#change-detection), CocoIndex fingerprints both **data** (function arguments and context values) and **code** to decide whether a memo can be reused. By default, most types are fingerprinted automatically. This page covers how to customize the **data** side — how objects are fingerprinted and validated:
 
-- **Memoization keys** — how CocoIndex fingerprints your inputs to find a cached result.
-- **Memo states** — how CocoIndex validates that a cached result is still fresh, *after* a fingerprint match.
+- **Memoization keys** — how to control what CocoIndex uses as the fingerprint for your objects.
+- **Memo states** — how to add post-fingerprint validation to check freshness beyond simple equality.
 
-## How memoization works
+Both mechanisms apply equally to function arguments and [context values](../programming_guide/context.md#change-detection) — they go through the same pipeline.
 
-For each argument value, CocoIndex derives a "key fragment" with this precedence:
+## How data fingerprinting works
+
+For each data value (argument or context value), CocoIndex derives a canonical form with this precedence:
 
 1. If the object implements **`__coco_memo_key__()`**, CocoIndex uses its return value.
 2. Otherwise, if you registered a **memo key function** for the object's type, CocoIndex uses that.
@@ -27,9 +29,7 @@ The following types are handled automatically (no custom key needed):
 - **Class objects** (`type`): identified by module and qualified name
 - **Other picklable objects**: used as a fallback via `pickle`
 
-The key fragments are combined into a deterministic fingerprint. If the fingerprint matches a cached entry, the cached result is reused — unless **memo states** indicate it's stale (see [Memo state validation](#memo-state-validation) below).
-
-In addition to input fingerprints, CocoIndex also validates against **function code fingerprints** and **[change-detected context value](../programming_guide/context.md#change-detection) fingerprints**. If the function's code or any change-detected context value it consumed has changed, the cached result is invalidated regardless of input matching. You can control the scope of code change tracking with the [`logic_tracking` parameter](../programming_guide/function.md#logic_tracking).
+The canonical forms are combined into a deterministic fingerprint. If the fingerprint matches a cached entry, the cached result is reused — unless **memo states** indicate it's stale (see [Memo state validation](#memo-state-validation) below).
 
 ## Customizing the memoization key
 

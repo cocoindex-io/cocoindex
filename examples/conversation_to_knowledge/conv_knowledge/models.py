@@ -12,8 +12,8 @@ import pydantic
 # Context keys (shared across modules)
 # ---------------------------------------------------------------------------
 
-LLM_MODEL = coco.ContextKey[str]("llm_model")
-RESOLUTION_LLM_MODEL = coco.ContextKey[str]("resolution_llm_model")
+LLM_MODEL = coco.ContextKey[str]("llm_model", detect_change=True)
+RESOLUTION_LLM_MODEL = coco.ContextKey[str]("resolution_llm_model", detect_change=True)
 
 
 # ---------------------------------------------------------------------------

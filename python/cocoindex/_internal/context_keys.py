@@ -101,7 +101,7 @@ class ContextKey(Generic[T_co]):
     _key: str
     _detect_change: bool
 
-    def __init__(self, key: str, *, detect_change: bool = True):
+    def __init__(self, key: str, *, detect_change: bool = False):
         with _lock:
             if key in _used_keys:
                 raise ValueError(f"Context key {key} already used")

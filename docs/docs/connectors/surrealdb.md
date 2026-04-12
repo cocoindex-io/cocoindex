@@ -33,7 +33,7 @@ The key name is load-bearing across runs — it's the stable identity CocoIndex 
 from cocoindex.connectors import surrealdb
 import cocoindex as coco
 
-SURREAL_DB: coco.ContextKey[surrealdb.ConnectionFactory] = coco.ContextKey("main_db", detect_change=False)
+SURREAL_DB: coco.ContextKey[surrealdb.ConnectionFactory] = coco.ContextKey("main_db")
 
 @coco.lifespan
 def coco_lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
@@ -282,7 +282,7 @@ schema = surrealdb.TableSchema(
 import cocoindex as coco
 from cocoindex.connectors import surrealdb
 
-SURREAL_DB: coco.ContextKey[surrealdb.ConnectionFactory] = coco.ContextKey("main_db", detect_change=False)
+SURREAL_DB: coco.ContextKey[surrealdb.ConnectionFactory] = coco.ContextKey("main_db")
 
 @dataclass
 class Product:

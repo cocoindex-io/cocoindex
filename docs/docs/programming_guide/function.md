@@ -20,29 +20,39 @@ result = await process_file(file)
 
 Decorating a function tells CocoIndex that calls to it are part of the incremental update engine. You still write normal Python, but CocoIndex can now:
 
-- Skip work when it can safely reuse a previous result (memoization)
-- Re-run work when the implementation changes (change tracking)
+- Detect when inputs or code have changed (change detection)
+- Skip work when nothing has changed (memoization)
 
 This is what lets CocoIndex avoid rerunning expensive steps on every `app.update()`. See [Processing Component](./processing_component.md) for how decorated functions are mounted at component paths.
 
 If you don't need any of the above for a helper, keep it as a plain Python function.
 
-## Capabilities
+## Incremental updates: change detection and memoization
 
-The `@coco.fn` decorator provides the following additional capabilities.
+Every `@coco.fn` function participates in CocoIndex's change detection system. With `memo=True`, the function's results are cached and reused when nothing has changed. These two mechanisms — detecting changes and acting on them — work together to enable incremental updates.
+
+### Change detection
+
+CocoIndex detects two kinds of changes:
+
+**Data changes** — function arguments and [context values](./context.md) (with [`detect_change=True`](./context.md#change-detection), opt-in) are fingerprinted through the same pipeline. When you call a function with different arguments, or provide a different value for a context key, the fingerprints change.
+
+**Code changes** — the function's implementation is automatically fingerprinted. When you edit a `@coco.fn` function's code, its fingerprint changes.
+
+Both kinds of fingerprints **propagate transitively** up the call chain. This is important: even a function that isn't memoized itself still contributes its fingerprints to memoized callers. If `foo` (memoized) calls `bar` (not memoized), and you change `bar`'s code, `foo`'s memo is invalidated.
+
+This is why `@coco.fn` matters for **any** function in the call chain, not just memoized ones.
 
 ### Memoization
 
-With `memo=True`, the function is memoized. When input data and code haven't changed, CocoIndex skips recomputation of that function body entirely — it carries over target states declared during the function's previous invocation, and returns its previous return value.
+With `memo=True`, the function's result is cached. On subsequent calls, if no data or code fingerprints have changed, the cached result is reused without executing the function body — it carries over target states declared during the function's previous invocation and returns its previous return value.
 
 ```python
 @coco.fn(memo=True)
 def process_chunk(chunk: Chunk) -> Embedding:
-    # This computation is skipped if chunk and code are unchanged
+    # This computation is skipped if chunk, context values, and code are unchanged
     return embed(chunk.text)
 ```
-
-See [Memoization Keys & States](../advanced_topics/memoization_keys.md) for details on how CocoIndex constructs keys and validates cached results.
 
 :::info Type annotations
 Add a **return type annotation** to memoized functions so CocoIndex can properly reconstruct cached values. Without a type annotation, cached values may deserialize as basic Python types (`dict`, `list`, etc.) instead of their original types. See [Serialization](../advanced_topics/serialization.md) for details on supported types.
@@ -66,12 +76,14 @@ Add a **return type annotation** to memoized functions so CocoIndex can properly
 
 :::
 
-### Change tracking
+### Controlling change detection scope
 
-Every `@coco.fn` function has its code fingerprinted. These fingerprints propagate up the call chain: when a function's code changes, all memoized callers and components that transitively depend on it are invalidated. Two parameters let you customize this:
+Two parameters on `@coco.fn` let you customize how code changes are detected:
 
-- **`logic_tracking`** — controls the *scope* of automatic code change tracking
+- **`logic_tracking`** — controls the *scope* of automatic code change detection
 - **`version`** — provides explicit manual control over when dependent memos are invalidated
+
+These parameters control the **code** side of change detection. The **data** side is controlled by [`detect_change`](./context.md#change-detection) on context keys, and by the fingerprinting behavior of the objects themselves (see [Memoization Keys & States](../advanced_topics/memoization_keys.md)).
 
 #### `logic_tracking`
 
@@ -79,7 +91,7 @@ The `logic_tracking` parameter controls whether and how function code changes ar
 
 - **`"full"` (default):** Track this function's code AND all transitively called `@coco.fn` functions' code. A change anywhere in the call chain invalidates dependent memos.
 - **`"self"`:** Track only this function's own code. Changes in called functions do not propagate through this function.
-- **`None`:** Don't track this function's code at all. Code changes to this function are invisible to the change tracking system.
+- **`None`:** Don't track this function's code at all. Code changes to this function are invisible to the change detection system.
 
 #### `version`
 
@@ -127,8 +139,16 @@ def embed(text: str) -> list[float]:
 ```
 
 :::note
-[Change-detected context values](./context.md#change-detection) consumed via `coco.use_context()` always participate in change detection regardless of the `logic_tracking` setting. Even with `logic_tracking=None`, a change in a change-detected context value still invalidates dependent memos.
+[Change-detected context values](./context.md#change-detection) consumed via `coco.use_context()` always participate in change detection regardless of the `logic_tracking` setting. Even with `logic_tracking=None`, a change in a change-detected context value still invalidates dependent memos. The `logic_tracking` parameter controls only **code** fingerprinting.
 :::
+
+### Customizing data fingerprinting
+
+By default, CocoIndex fingerprints function arguments and context values automatically for most types — primitives, containers, dataclasses, Pydantic models, and picklable objects. For custom types, or when you need multi-level validation (e.g., check mtime first, then content hash), see [Memoization Keys & States](../advanced_topics/memoization_keys.md).
+
+## Execution capabilities
+
+The following capabilities control *how* the function executes, independent of change detection and memoization.
 
 ### Async adapter
 

@@ -579,7 +579,9 @@ def test_none_mode_not_invalidated_on_any_logic_change() -> None:
 # None function still detects change on context key deps
 # ============================================================================
 
-_CHANGE_DETECTED_KEY_J3 = coco.ContextKey[str]("_test_logic_tracking_none_ctx_j3")
+_CHANGE_DETECTED_KEY_J3 = coco.ContextKey[str](
+    "_test_logic_tracking_none_ctx_j3", detect_change=True
+)
 
 
 def _create_env_with_ctx(db_name: str, value: str) -> coco.Environment:

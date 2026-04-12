@@ -62,8 +62,10 @@ class StatefulEmbedder:
 
 
 # One context key reused by multiple tests. Each test uses its own env to keep
-# the registry state isolated. detect_change=True by default.
-EMBEDDER_KEY = coco.ContextKey[StatefulEmbedder]("_test_ctx_tracked_embedder")
+# the registry state isolated.
+EMBEDDER_KEY = coco.ContextKey[StatefulEmbedder](
+    "_test_ctx_tracked_embedder", detect_change=True
+)
 
 
 def _make_env(db_name: str, embedder: StatefulEmbedder) -> coco.Environment:
@@ -167,7 +169,7 @@ class TwoLevelStatefulEmbedder:
 
 
 TWO_LEVEL_KEY = coco.ContextKey[TwoLevelStatefulEmbedder](
-    "_test_ctx_tracked_two_level_embedder"
+    "_test_ctx_tracked_two_level_embedder", detect_change=True
 )
 
 _metrics_two_level = Metrics()
@@ -242,7 +244,9 @@ def test_detect_change_context_state_valid_with_updated_state() -> None:
 # Test 3: change-detected context value replaced with different canonical form
 # ============================================================================
 
-REPLACE_KEY = coco.ContextKey[StatefulEmbedder]("_test_ctx_tracked_replace_key")
+REPLACE_KEY = coco.ContextKey[StatefulEmbedder](
+    "_test_ctx_tracked_replace_key", detect_change=True
+)
 
 _metrics_replace = Metrics()
 
@@ -309,7 +313,9 @@ class _Inner:
         return coco.MemoStateOutcome(state=self.state_value, memo_valid=memo_valid)
 
 
-COMPOSITE_KEY = coco.ContextKey[tuple[str, _Inner]]("_test_ctx_tracked_composite")
+COMPOSITE_KEY = coco.ContextKey[tuple[str, _Inner]](
+    "_test_ctx_tracked_composite", detect_change=True
+)
 
 _metrics_composite = Metrics()
 
@@ -367,7 +373,9 @@ def test_detect_change_context_composite_state() -> None:
 # Test 5: component-level memoization (mounted processor)
 # ============================================================================
 
-COMP_KEY = coco.ContextKey[StatefulEmbedder]("_test_ctx_tracked_component_key")
+COMP_KEY = coco.ContextKey[StatefulEmbedder](
+    "_test_ctx_tracked_component_key", detect_change=True
+)
 
 _metrics_comp = Metrics()
 _source_comp: dict[str, str] = {}
@@ -433,8 +441,12 @@ def test_detect_change_context_state_validation_component_level() -> None:
 # (invisible to the memo key) and conditionally consumes a second change-detected
 # context value.
 
-KEY_A = coco.ContextKey[StatefulEmbedder]("_test_ctx_tracked_branching_a")
-KEY_B = coco.ContextKey[StatefulEmbedder]("_test_ctx_tracked_branching_b")
+KEY_A = coco.ContextKey[StatefulEmbedder](
+    "_test_ctx_tracked_branching_a", detect_change=True
+)
+KEY_B = coco.ContextKey[StatefulEmbedder](
+    "_test_ctx_tracked_branching_b", detect_change=True
+)
 
 _use_both_keys = False
 _metrics_branch = Metrics()

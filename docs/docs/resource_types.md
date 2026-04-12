@@ -160,7 +160,7 @@ from cocoindex.resources.schema import VectorSchema
 schema = VectorSchema(dtype=np.dtype(np.float32), size=768)
 
 # Use it in a Qdrant vector definition
-QDRANT_DB = coco.ContextKey[QdrantClient]("my_qdrant_db", detect_change=False)
+QDRANT_DB = coco.ContextKey[QdrantClient]("my_qdrant_db")
 target_collection = await qdrant.mount_collection_target(
     QDRANT_DB,
     collection_name="image_search",
