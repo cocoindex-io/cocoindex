@@ -46,9 +46,32 @@ And two sugar APIs that simplify common patterns:
 
 See also [Processing Helpers](./processing_helpers.md) for utility APIs like `map()` that operate within a component without creating new ones.
 
+### Automatic subpath derivation {#auto-subpath}
+
+`mount()`, `use_mount()`, and `mount_each()` all accept an optional `ComponentSubpath` as their first argument. When omitted, the subpath is **auto-derived** from the function name using `Symbol(fn.__name__)`.
+
+```python
+# These are equivalent:
+await coco.mount(process_file, file, target)
+await coco.mount(coco.component_subpath(coco.Symbol("process_file")), process_file, file, target)
+```
+
+This means the component path for a `process_file` function is `parent / Symbol("process_file")`. The function must have a `__name__` attribute; if it doesn't (e.g., a lambda), provide an explicit subpath.
+
+Since sibling component paths must not collide, you need an explicit subpath when:
+- **The same function is mounted more than once** — auto-derived paths would be identical, so each call needs a distinct path (e.g., `coco.component_subpath("session", youtube_id)`)
+- **Different functions happen to share a `__name__`** — rare, but possible with wrappers or closures
+- **You want a specific path name** — different from the function name
+
 ### `mount()`
 
 Use `mount()` when you don't need a return value from the processing component. It schedules the processing component to run and returns a handle:
+
+```python
+handle = await coco.mount(process_file, file, target)
+```
+
+With an explicit subpath, for example when mounting multiple components of the same function:
 
 ```python
 handle = await coco.mount(
@@ -74,6 +97,12 @@ You usually only need to call `ready()` when you have logic that depends on the 
 Use `use_mount()` when you need the processing component's return value. It mounts the component, waits until it's ready, and returns the value directly:
 
 ```python
+table = await coco.use_mount(setup_table, table_name="docs")
+```
+
+With an explicit subpath:
+
+```python
 table = await coco.use_mount(
     coco.component_subpath("setup"),
     setup_table,
@@ -92,7 +121,7 @@ files = localfs.walk_dir(sourcedir, path_matcher=PatternFilePathMatcher(included
 await coco.mount_each(process_file, files.items(), target)
 ```
 
-Each item in the iterable is a `(key, value)` tuple. The value is passed as the first argument to the function, and any additional arguments are passed through. Items are mounted under an auto-derived subpath (`Symbol(fn.__name__)`), so the component path for each item is `parent / Symbol("process_file") / key`.
+Each item in the iterable is a `(key, value)` tuple. The value is passed as the first argument to the function, and any additional arguments are passed through. Items are mounted under an [auto-derived subpath](#auto-subpath) (`Symbol(fn.__name__)`), so the component path for each item is `parent / Symbol("process_file") / key`.
 
 You can provide an explicit subpath as the first argument:
 

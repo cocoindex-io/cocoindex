@@ -102,9 +102,7 @@ async def process_file(file: FileLike, target: localfs.DirTarget) -> None:
 @coco.fn
 async def app_main(sourcedir: pathlib.Path, outdir: pathlib.Path) -> None:
     # Async — orchestrates the pipeline
-    target = await coco.use_mount(
-        coco.component_subpath("setup"), localfs.declare_dir_target, outdir
-    )
+    target = await coco.use_mount(localfs.declare_dir_target, outdir)
     files = localfs.walk_dir(sourcedir)
     await coco.mount_each(process_file, files.items(), target)
 

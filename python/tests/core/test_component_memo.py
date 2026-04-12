@@ -347,7 +347,7 @@ def test_memo_invalidation_on_decorator_change() -> None:
     @coco.fn
     async def app_main() -> None:
         mod = current_module[0]
-        await coco.mount(coco.component_subpath("A"), mod.process_entry, "A", "value1")  # type: ignore[attr-defined]
+        await coco.mount(coco.component_subpath("A"), mod.process_entry, "A", "value1")  # type: ignore[attr-defined, call-overload]
 
     app = coco.App(
         coco.AppConfig(

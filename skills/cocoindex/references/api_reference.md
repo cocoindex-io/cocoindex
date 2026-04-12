@@ -40,18 +40,26 @@ def batch_embed(texts: list[str]) -> list[NDArray]: ...
 
 ## Mount APIs (all async)
 
+All mount APIs accept an optional `ComponentSubpath` as their first argument. When omitted, the subpath is auto-derived from `Symbol(fn.__name__)`. Provide an explicit subpath when mounting the same function multiple times, using multi-part paths, or needing a specific path name.
+
 ### `coco.mount()`
 
 Mount a processing component in the background.
 
 ```python
-handle = await coco.mount(
-    coco.component_subpath("name"),
-    processor_fn,
-    *args, **kwargs,
-)
+# Subpath auto-derived from fn.__name__
+handle = await coco.mount(processor_fn, *args, **kwargs)
+
+# Explicit subpath
+handle = await coco.mount(coco.component_subpath("name"), processor_fn, *args, **kwargs)
+
 await handle.ready()  # Optional: wait until component finishes
 ```
+
+**Parameters:**
+- `subpath` (optional) -- Component subpath. Auto-derived from `fn.__name__` when omitted.
+- `processor_fn` -- Function (or LiveComponent class) to run.
+- `*args, **kwargs` -- Arguments passed to the function.
 
 **Returns:** `ComponentMountHandle`
 
@@ -60,12 +68,17 @@ await handle.ready()  # Optional: wait until component finishes
 Mount a dependent component and return its result. Parent depends on the child.
 
 ```python
-result = await coco.use_mount(
-    coco.component_subpath("setup"),
-    init_fn,
-    *args, **kwargs,
-)
+# Subpath auto-derived from fn.__name__
+result = await coco.use_mount(init_fn, *args, **kwargs)
+
+# Explicit subpath
+result = await coco.use_mount(coco.component_subpath("setup"), init_fn, *args, **kwargs)
 ```
+
+**Parameters:**
+- `subpath` (optional) -- Component subpath. Auto-derived from `fn.__name__` when omitted.
+- `processor_fn` -- Function to run.
+- `*args, **kwargs` -- Arguments passed to the function.
 
 **Returns:** The return value of `processor_fn`.
 

@@ -93,7 +93,7 @@ async def process_file(
 @coco.fn
 async def app_main(sourcedir: pathlib.Path) -> None:
     model, _ = get_clip_model()
-    dim = int(model.config.projection_dim)
+    dim: int = model.config.projection_dim  # type: ignore[assignment]
 
     target_collection = await qdrant.mount_collection_target(
         QDRANT_DB,
