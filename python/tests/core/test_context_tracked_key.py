@@ -12,12 +12,10 @@ from tests.common.target_states import GlobalDictTarget, Metrics
 
 
 # Unique context keys for this test module (globally unique strings required).
-_CHANGE_DETECTED_KEY = coco.ContextKey[str]("_test_ctx_tracked_d3")
-_NO_CHANGE_DETECT_KEY = coco.ContextKey[str](
-    "_test_ctx_untracked_d3", detect_change=False
-)
+_CHANGE_DETECTED_KEY = coco.ContextKey[str]("_test_ctx_tracked_d3", detect_change=True)
+_NO_CHANGE_DETECT_KEY = coco.ContextKey[str]("_test_ctx_untracked_d3")
 _CHANGE_DETECTED_TRANSITIVE_KEY = coco.ContextKey[str](
-    "_test_ctx_tracked_transitive_d3"
+    "_test_ctx_tracked_transitive_d3", detect_change=True
 )
 
 
@@ -181,7 +179,7 @@ def test_detect_change_key_transitive_invalidation() -> None:
 
 def test_detect_change_key_unfingerprintable_value_raises() -> None:
     """Providing an unfingerprintable value for a change-detected key raises TypeError."""
-    key = coco.ContextKey[object]("_test_ctx_unfingerprintable_d3")
+    key = coco.ContextKey[object]("_test_ctx_unfingerprintable_d3", detect_change=True)
     ctx = coco.ContextProvider()
 
     # threading.Lock is not picklable, so it can't be fingerprinted

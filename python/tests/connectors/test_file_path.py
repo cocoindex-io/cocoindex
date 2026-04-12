@@ -28,7 +28,7 @@ def test_filepath_with_base_dir_memo_key() -> None:
     """FilePath with a ContextKey base_dir has a tuple memo key."""
     from cocoindex._internal.context_keys import ContextKey
 
-    key = ContextKey[str]("test_filepath_source_dir_unique_13", detect_change=False)
+    key = ContextKey[str]("test_filepath_source_dir_unique_13")
     fp = _ConcreteFilePath(key, PurePath("file.txt"))
     assert fp.__coco_memo_key__() == (
         "test_filepath_source_dir_unique_13",
@@ -47,9 +47,7 @@ def test_localfs_filepath_with_base_dir_memo_key() -> None:
     from cocoindex._internal.context_keys import ContextKey
     import pathlib
 
-    key = ContextKey[pathlib.Path](
-        "test_localfs_source_dir_unique_17", detect_change=False
-    )
+    key = ContextKey[pathlib.Path]("test_localfs_source_dir_unique_17")
     fp = LocalfsFilePath("file.txt", base_dir=key)
     assert fp.__coco_memo_key__() == (
         "test_localfs_source_dir_unique_17",

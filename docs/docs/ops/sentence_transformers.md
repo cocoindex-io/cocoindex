@@ -114,7 +114,7 @@ from cocoindex.resources.chunk import Chunk
 from cocoindex.resources.file import FileLike, PatternFilePathMatcher
 from cocoindex.resources.id import IdGenerator
 
-PG_DB = coco.ContextKey[asyncpg.Pool]("pg_db", detect_change=False)
+PG_DB = coco.ContextKey[asyncpg.Pool]("pg_db")
 
 _embedder = SentenceTransformerEmbedder("sentence-transformers/all-MiniLM-L6-v2")
 _splitter = RecursiveSplitter()

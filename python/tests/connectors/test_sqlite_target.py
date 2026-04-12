@@ -21,9 +21,7 @@ from cocoindex.resources.schema import VectorSchema
 
 from tests import common
 
-SQLITE_DB = coco.ContextKey[sqlite.ManagedConnection](
-    "sqlite_test_db", detect_change=False
-)
+SQLITE_DB = coco.ContextKey[sqlite.ManagedConnection]("sqlite_test_db")
 
 
 # =============================================================================

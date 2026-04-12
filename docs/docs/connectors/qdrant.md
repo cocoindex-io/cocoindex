@@ -54,7 +54,7 @@ The `qdrant` connector provides target state APIs for writing points to collecti
 
 #### Setting up a connection
 
-Create a `ContextKey[QdrantClient]` (with `detect_change=False`) to identify your Qdrant client, then provide it in your lifespan:
+Create a `ContextKey[QdrantClient]` to identify your Qdrant client, then provide it in your lifespan:
 
 :::note
 The key name is load-bearing across runs — it's the stable identity CocoIndex uses to track managed collections. See [ContextKey as stable identity](../programming_guide/context.md#contextkey-as-stable-identity) before renaming.
@@ -64,7 +64,7 @@ The key name is load-bearing across runs — it's the stable identity CocoIndex 
 from qdrant_client import QdrantClient
 import cocoindex as coco
 
-QDRANT_DB = coco.ContextKey[QdrantClient]("my_vectors", detect_change=False)
+QDRANT_DB = coco.ContextKey[QdrantClient]("my_vectors")
 
 @coco.lifespan
 async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]:
@@ -249,7 +249,7 @@ from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
 from typing import AsyncIterator
 
 QDRANT_URL = "http://localhost:6333"
-QDRANT_DB = coco.ContextKey[QdrantClient]("main_vectors", detect_change=False)
+QDRANT_DB = coco.ContextKey[QdrantClient]("main_vectors")
 
 embedder = SentenceTransformerEmbedder("sentence-transformers/all-MiniLM-L6-v2")
 

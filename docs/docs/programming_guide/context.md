@@ -16,25 +16,25 @@ import asyncpg
 import cocoindex as coco
 
 # Define typed keys for resources you want to share
-PG_DB = coco.ContextKey[asyncpg.Pool]("pg_db", detect_change=False)
-CONFIG = coco.ContextKey[AppConfig]("config")
+PG_DB = coco.ContextKey[asyncpg.Pool]("pg_db")
+CONFIG = coco.ContextKey[AppConfig]("config", detect_change=True)
 ```
 
 The type parameter (`asyncpg.Pool`, `AppConfig`) enables type checking — when you retrieve the value, your editor knows its type.
 
 ### Change detection
 
-By default, context keys have **change detection enabled** — if you change the provided value between runs, CocoIndex automatically invalidates memoized functions that consumed it via `use_context()`. This works the same way as [function change tracking](./function.md#change-tracking): the engine detects the change and re-executes affected functions.
+By default, context keys have **change detection disabled** — changing the provided value between runs does not automatically invalidate memoized functions that consumed it via `use_context()`. To opt in to change detection, pass `detect_change=True`. When enabled, context values are fingerprinted through the same pipeline as function arguments — both are **data** inputs to the [change detection system](./function.md#change-detection). When a fingerprint changes, dependent memos are invalidated and affected functions re-execute.
 
 ```python
-# Change detection enabled (default) — changing the model invalidates memos that used it
-EMBEDDER = coco.ContextKey[SentenceTransformerEmbedder]("embedder")
+# Change detection enabled — changing the model invalidates memos that used it
+EMBEDDER = coco.ContextKey[SentenceTransformerEmbedder]("embedder", detect_change=True)
 
-# Change detection disabled — changing the logger won't invalidate memos
-LOGGER = coco.ContextKey[logging.Logger]("logger", detect_change=False)
+# Change detection disabled (default) — changing the logger won't invalidate memos
+LOGGER = coco.ContextKey[logging.Logger]("logger")
 ```
 
-Use `detect_change=False` for resources that don't affect computation results — loggers, debug flags, monitoring clients, etc. This avoids unnecessary reprocessing when those values change.
+Use `detect_change=True` for resources that affect computation results — models, configuration objects, etc. This ensures memoized functions re-execute when those values change. Resources that don't affect computation results — database connections, loggers, debug flags, monitoring clients — can use the default (`detect_change=False`).
 
 :::tip
 Change detection is transitive: if function `foo` (memoized) calls function `bar`, and `bar` calls `use_context(key)` on a change-detected key, then `foo`'s memo is also invalidated when the context value changes.
@@ -63,7 +63,7 @@ import asyncpg
 import cocoindex as coco
 from cocoindex.connectors import postgres
 
-PG_DB = coco.ContextKey[asyncpg.Pool]("my_db", detect_change=False)
+PG_DB = coco.ContextKey[asyncpg.Pool]("my_db")
 
 @coco.lifespan
 async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]:

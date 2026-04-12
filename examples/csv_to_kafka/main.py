@@ -12,7 +12,7 @@ import cocoindex as coco
 from cocoindex.connectors import kafka, localfs
 from cocoindex.resources.file import FileLike, PatternFilePathMatcher
 
-KAFKA_PRODUCER = coco.ContextKey[AIOProducer]("kafka_producer", detect_change=False)
+KAFKA_PRODUCER = coco.ContextKey[AIOProducer]("kafka_producer")
 
 KAFKA_TOPIC = os.environ.get("KAFKA_TOPIC", "cocoindex-csv-rows")
 KAFKA_BOOTSTRAP_SERVERS = os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")

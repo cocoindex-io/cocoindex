@@ -26,7 +26,7 @@ import cocoindex as coco
 from cocoindex.connectors import localfs
 
 # Define a stable key (the string "source_dir" is the stable memo identifier)
-SOURCE_DIR = coco.ContextKey[pathlib.Path]("source_dir", detect_change=False)
+SOURCE_DIR = coco.ContextKey[pathlib.Path]("source_dir")
 
 @coco.fn
 async def app_main() -> None:
@@ -48,7 +48,7 @@ When you move your project to a different location, just update the path in `bui
 `FilePath` supports all `pathlib.PurePath` operations:
 
 ```python
-SOURCE_DIR = coco.ContextKey[pathlib.Path]("source_dir", detect_change=False)
+SOURCE_DIR = coco.ContextKey[pathlib.Path]("source_dir")
 source = localfs.FilePath(base_dir=SOURCE_DIR)
 
 # Create paths using the / operator
@@ -150,7 +150,7 @@ import cocoindex as coco
 from cocoindex.connectors import localfs
 from cocoindex.resources.file import FileLike, PatternFilePathMatcher
 
-SOURCE_DIR = coco.ContextKey[pathlib.Path]("source_dir", detect_change=False)
+SOURCE_DIR = coco.ContextKey[pathlib.Path]("source_dir")
 
 @coco.fn
 async def app_main() -> None:
@@ -196,7 +196,7 @@ def declare_file(
 **Example:**
 
 ```python
-OUTPUT_DIR = coco.ContextKey[pathlib.Path]("output_dir", detect_change=False)
+OUTPUT_DIR = coco.ContextKey[pathlib.Path]("output_dir")
 
 @coco.fn
 def app_main() -> None:
@@ -277,8 +277,8 @@ import cocoindex as coco
 from cocoindex.connectors import localfs
 from cocoindex.resources.file import FileLike, PatternFilePathMatcher
 
-SOURCE_DIR = coco.ContextKey[pathlib.Path]("source_dir", detect_change=False)
-OUTPUT_DIR = coco.ContextKey[pathlib.Path]("output_dir", detect_change=False)
+SOURCE_DIR = coco.ContextKey[pathlib.Path]("source_dir")
+OUTPUT_DIR = coco.ContextKey[pathlib.Path]("output_dir")
 
 @coco.fn
 async def app_main() -> None:

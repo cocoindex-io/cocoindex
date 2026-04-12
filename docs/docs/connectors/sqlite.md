@@ -84,7 +84,7 @@ The `sqlite` connector provides target state APIs for writing rows to tables. Wi
 
 #### Setting up a connection
 
-Create a `ContextKey[sqlite.ManagedConnection]` (with `detect_change=False`) to identify your SQLite connection, then provide it in your lifespan using `sqlite.managed_connection()`:
+Create a `ContextKey[sqlite.ManagedConnection]` to identify your SQLite connection, then provide it in your lifespan using `sqlite.managed_connection()`:
 
 :::note
 The key name is load-bearing across runs — it's the stable identity CocoIndex uses to track managed rows. See [ContextKey as stable identity](../programming_guide/context.md#contextkey-as-stable-identity) before renaming.
@@ -93,7 +93,7 @@ The key name is load-bearing across runs — it's the stable identity CocoIndex 
 ```python
 import cocoindex as coco
 
-SQLITE_DB = coco.ContextKey[sqlite.ManagedConnection]("main_db", detect_change=False)
+SQLITE_DB = coco.ContextKey[sqlite.ManagedConnection]("main_db")
 
 @coco.lifespan
 def coco_lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
@@ -341,7 +341,7 @@ from cocoindex.connectors import sqlite
 
 DATABASE_PATH = "mydb.sqlite"
 
-SQLITE_DB = coco.ContextKey[sqlite.ManagedConnection]("main_db", detect_change=False)
+SQLITE_DB = coco.ContextKey[sqlite.ManagedConnection]("main_db")
 
 @dataclass
 class OutputProduct:
@@ -384,7 +384,7 @@ from typing import Annotated
 from numpy.typing import NDArray
 
 DATABASE_PATH = "vectors.sqlite"
-SQLITE_DB = coco.ContextKey[sqlite.ManagedConnection]("vec_db", detect_change=False)
+SQLITE_DB = coco.ContextKey[sqlite.ManagedConnection]("vec_db")
 
 embedder = SentenceTransformerEmbedder("sentence-transformers/all-MiniLM-L6-v2")
 

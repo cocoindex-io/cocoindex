@@ -18,7 +18,7 @@ from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
 
 from .models import RESOLUTION_LLM_MODEL, resolve_canonical
 
-EMBEDDER = coco.ContextKey[SentenceTransformerEmbedder]("embedder")
+EMBEDDER = coco.ContextKey[SentenceTransformerEmbedder]("embedder", detect_change=True)
 
 MAX_DISTANCE = 0.3  # cosine distance threshold (similarity > 0.7)
 TOP_N = 5  # max candidates to consider

@@ -168,7 +168,7 @@ The `postgres` connector provides target state APIs for writing rows to tables. 
 
 #### Setting up a connection
 
-Create a `ContextKey[asyncpg.Pool]` (with `detect_change=False`) to identify your connection pool, then provide the pool directly in your lifespan:
+Create a `ContextKey[asyncpg.Pool]` to identify your connection pool, then provide the pool directly in your lifespan:
 
 :::note
 The key name is load-bearing across runs — it's the stable identity CocoIndex uses to track managed rows. See [ContextKey as stable identity](../programming_guide/context.md#contextkey-as-stable-identity) before renaming.
@@ -178,7 +178,7 @@ The key name is load-bearing across runs — it's the stable identity CocoIndex 
 import asyncpg
 import cocoindex as coco
 
-PG_DB = coco.ContextKey[asyncpg.Pool]("my_db", detect_change=False)
+PG_DB = coco.ContextKey[asyncpg.Pool]("my_db")
 
 @coco.lifespan
 async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]:
@@ -427,7 +427,7 @@ from cocoindex.connectors import postgres
 
 DATABASE_URL = "postgresql://localhost/mydb"
 
-PG_DB = coco.ContextKey[asyncpg.Pool]("main_db", detect_change=False)
+PG_DB = coco.ContextKey[asyncpg.Pool]("main_db")
 
 @dataclass
 class OutputProduct:

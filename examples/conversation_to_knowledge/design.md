@@ -548,10 +548,10 @@ app = coco.App(
 ## Lifespan & Context
 
 ```python
-SURREAL_DB = coco.ContextKey[surrealdb.ConnectionFactory]("surreal_db", detect_change=False)
-EMBEDDER = coco.ContextKey[SentenceTransformerEmbedder]("embedder")
-LLM_MODEL = coco.ContextKey[str]("llm_model")
-RESOLUTION_LLM_MODEL = coco.ContextKey[str]("resolution_llm_model")
+SURREAL_DB = coco.ContextKey[surrealdb.ConnectionFactory]("surreal_db")
+EMBEDDER = coco.ContextKey[SentenceTransformerEmbedder]("embedder", detect_change=True)
+LLM_MODEL = coco.ContextKey[str]("llm_model", detect_change=True)
+RESOLUTION_LLM_MODEL = coco.ContextKey[str]("resolution_llm_model", detect_change=True)
 
 @coco.lifespan
 async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]:

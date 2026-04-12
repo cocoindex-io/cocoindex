@@ -26,7 +26,7 @@ class FilePath(file.FilePath[pathlib.Path]):
         path = FilePath("docs/readme.md")
 
         # Using a context key for a named base directory
-        SOURCE_DIR = coco.ContextKey[pathlib.Path]("source_dir", detect_change=False)
+        SOURCE_DIR = coco.ContextKey[pathlib.Path]("source_dir")
         path = FilePath("docs/readme.md", base_dir=SOURCE_DIR)
         ```
     """
