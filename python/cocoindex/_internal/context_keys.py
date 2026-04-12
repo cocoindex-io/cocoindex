@@ -15,7 +15,7 @@ from typing import (
 )
 
 from . import core
-from .memo_key import StateFnEntry, _canonicalize
+from .memo_fingerprint import StateFnEntry, _canonicalize
 from .typing import NON_EXISTENCE
 
 _lock = threading.Lock()
@@ -125,7 +125,7 @@ class ContextProvider:
     __slots__ = (
         "_values",
         "_exit_stack",
-        "_change_fingerprints",
+        "_fingerprints",
         "_context_state_fns",
         "_pending_initial_states",
         "_core_env",
@@ -133,8 +133,8 @@ class ContextProvider:
 
     _values: dict[str, Any]
     _exit_stack: AsyncExitStack
-    _change_fingerprints: dict[ContextKey[Any], core.Fingerprint]
-    # State functions per change fingerprint, used at cache-hit
+    _fingerprints: dict[ContextKey[Any], core.Fingerprint]
+    # State functions per context fingerprint, used at cache-hit
     # validation time. Python-only (state functions are closures that can't
     # cross into Rust). The list is in canonicalization order and has 1:1
     # correspondence with the stored `context_memo_states` Vec on each memo
@@ -152,7 +152,7 @@ class ContextProvider:
     def __init__(self) -> None:
         self._values = {}
         self._exit_stack = AsyncExitStack()
-        self._change_fingerprints = {}
+        self._fingerprints = {}
         self._context_state_fns = {}
         self._pending_initial_states = {}
         self._core_env = None
@@ -168,7 +168,7 @@ class ContextProvider:
         Rust is the single source of truth from here on.
         """
         self._core_env = core_env
-        for fp in self._change_fingerprints.values():
+        for fp in self._fingerprints.values():
             core_env.register_logic(fp)
         for fp, initial_states in self._pending_initial_states.items():
             core_env.register_context_initial_states(fp, initial_states)
@@ -187,14 +187,14 @@ class ContextProvider:
             # If this key was previously provided with a different value,
             # unregister the old fp from both sides. Closes a pre-existing
             # re-provide leak.
-            old_fp = self._change_fingerprints.get(key)
+            old_fp = self._fingerprints.get(key)
             if old_fp is not None and old_fp != fp:
                 if self._core_env is not None:
                     self._core_env.unregister_logic(old_fp)
                     self._core_env.unregister_context_initial_states(old_fp)
                 self._context_state_fns.pop(old_fp, None)
                 self._pending_initial_states.pop(old_fp, None)
-            self._change_fingerprints[key] = fp
+            self._fingerprints[key] = fp
             if self._core_env is not None:
                 self._core_env.register_logic(fp)
             if state_fns:
@@ -213,9 +213,9 @@ class ContextProvider:
                     self._pending_initial_states[fp] = initial_states
         return value
 
-    def get_change_fingerprint(self, key: ContextKey[Any]) -> core.Fingerprint:
-        """Get the change fingerprint for a key. Raises KeyError if not found."""
-        return self._change_fingerprints[key]
+    def get_fingerprint(self, key: ContextKey[Any]) -> core.Fingerprint:
+        """Get the memo fingerprint for a key. Raises KeyError if not found."""
+        return self._fingerprints[key]
 
     def get_context_state_fns(self, fp: core.Fingerprint) -> list[StateFnEntry] | None:
         """Return the ordered state-fn list registered for *fp*, or None.

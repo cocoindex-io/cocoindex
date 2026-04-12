@@ -24,7 +24,7 @@ import uuid as _uuid
 
 import cocoindex as _coco
 from cocoindex._internal import component_ctx as _component_ctx
-from cocoindex._internal import memo_key as _memo_key
+from cocoindex._internal import memo_fingerprint as _memo_fingerprint
 
 
 @_coco.fn(memo=True)
@@ -120,7 +120,7 @@ class IdGenerator(_coco.NotMemoizable):
     _ordinals: dict[bytes, int]
 
     def __init__(self, deps: _typing.Any = None) -> None:
-        self._deps_fp = _memo_key.memo_key(deps).as_bytes()
+        self._deps_fp = _memo_fingerprint.memo_fingerprint(deps).as_bytes()
         self._ordinals = {}
 
     async def next_id(self, dep: _typing.Any = None) -> int:
@@ -139,7 +139,7 @@ class IdGenerator(_coco.NotMemoizable):
             A unique integer ID (IDs start from 1; 0 is reserved).
         """
         # Get fingerprint bytes for dep
-        dep_fp = bytes(_memo_key.memo_key(dep))
+        dep_fp = bytes(_memo_fingerprint.memo_fingerprint(dep))
 
         # Get and increment ordinal for this fingerprint
         ordinal = self._ordinals.get(dep_fp, 0)
@@ -184,7 +184,7 @@ class UuidGenerator(_coco.NotMemoizable):
     _ordinals: dict[bytes, int]
 
     def __init__(self, deps: _typing.Any = None) -> None:
-        self._deps_fp = bytes(_memo_key.memo_key(deps))
+        self._deps_fp = bytes(_memo_fingerprint.memo_fingerprint(deps))
         self._ordinals = {}
 
     def next_uuid(self, dep: _typing.Any = None) -> _uuid.UUID:
@@ -203,7 +203,7 @@ class UuidGenerator(_coco.NotMemoizable):
             A unique UUID.
         """
         # Get fingerprint bytes for dep
-        dep_fp = _memo_key.memo_key(dep).as_bytes()
+        dep_fp = _memo_fingerprint.memo_fingerprint(dep).as_bytes()
 
         # Get and increment ordinal for this fingerprint
         ordinal = self._ordinals.get(dep_fp, 0)
