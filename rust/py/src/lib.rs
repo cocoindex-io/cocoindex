@@ -27,6 +27,8 @@ fn core_module(m: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()>
 
     m.add_function(wrap_pyfunction!(runtime::init_runtime, m)?)?;
     m.add_function(wrap_pyfunction!(runtime::shutdown_tokio_runtime, m)?)?;
+    m.add_function(wrap_pyfunction!(runtime::py_cancel_all, m)?)?;
+    m.add_function(wrap_pyfunction!(runtime::py_reset_global_cancellation, m)?)?;
 
     m.add_class::<app::PyApp>()?;
     m.add_class::<app::PyUpdateHandle>()?;

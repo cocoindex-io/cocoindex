@@ -554,10 +554,14 @@ impl<Prof: EngineProfile> Component<Prof> {
             let result = self.execute_once(&context, Some(&processor)).await;
             // For background child component, never propagate the error back to the parent.
             // If an error handler is registered, run it; otherwise log.
+            // During cancellation (e.g. Ctrl+C), suppress error reporting since
+            // failures are expected as coroutines are torn down.
             let outcome = match result {
                 Ok((outcome, _)) => outcome,
                 Err(err) => {
-                    if let Some(handler) = &on_error {
+                    if crate::engine::runtime::is_cancelled() {
+                        trace!("component build cancelled during shutdown");
+                    } else if let Some(handler) = &on_error {
                         handler(err).await;
                     } else {
                         error!("component build failed:\n{err:?}");
