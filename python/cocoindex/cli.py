@@ -1,4 +1,5 @@
 import os
+import signal
 import sys
 from typing import Any, AsyncIterator, NamedTuple
 import pathlib
@@ -22,6 +23,47 @@ from cocoindex._internal.environment import (
 from cocoindex._internal.setting import get_default_db_path
 from cocoindex.inspect import iter_stable_paths, iter_stable_paths_by_name
 from cocoindex._internal.stable_path import StablePath
+
+
+# ---------------------------------------------------------------------------
+# Graceful cancellation helpers
+# ---------------------------------------------------------------------------
+
+
+def _run_async_cmd(coro_fn: Any, *, quiet: bool = False) -> None:
+    """Run an async CLI command with graceful Ctrl+C cancellation.
+
+    On first Ctrl+C: fires the global Rust cancellation token so the engine
+    exits promptly, then lets ``asyncio.run()`` shut down normally.
+    On second Ctrl+C: kills the process immediately (default SIGINT).
+    """
+    cancelled = False
+
+    def _on_sigint(signum: int, frame: Any) -> None:
+        nonlocal cancelled
+        cancelled = True
+        _core.cancel_all()
+        if not quiet:
+            print("\nStopping...")
+        # Restore default handler so a second Ctrl+C kills immediately.
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
+
+    async def _wrapper() -> None:
+        _core.reset_global_cancellation()
+        try:
+            await coro_fn(cancelled=lambda: cancelled)
+        except Exception:
+            if not cancelled:
+                raise
+
+    prev_handler = signal.signal(signal.SIGINT, _on_sigint)
+    try:
+        asyncio.run(_wrapper())
+    except KeyboardInterrupt:
+        if not quiet:
+            print("\nStopping...")
+    finally:
+        signal.signal(signal.SIGINT, prev_handler)
 
 
 # ---------------------------------------------------------------------------
@@ -662,7 +704,7 @@ def update(
     """
     app = _load_app(app_target)
 
-    async def _do() -> None:
+    async def _do(cancelled: Any) -> None:
         from cocoindex._internal.app import show_progress
 
         try:
@@ -697,11 +739,7 @@ def update(
         finally:
             await _stop_all_environments()
 
-    try:
-        asyncio.run(_do())
-    except KeyboardInterrupt:
-        if not quiet:
-            print("\nStopping...")
+    _run_async_cmd(_do, quiet=quiet)
 
 
 @cli.command()
@@ -734,7 +772,7 @@ def drop(app_target: str, force: bool = False, quiet: bool = False) -> None:
     """
     app = _load_app(app_target)
 
-    async def _do() -> None:
+    async def _do(cancelled: Any) -> None:
         try:
             env = await app._environment._get_env()
             persisted_names = _get_persisted_app_names(env)
@@ -767,7 +805,7 @@ def drop(app_target: str, force: bool = False, quiet: bool = False) -> None:
         finally:
             await _stop_all_environments()
 
-    asyncio.run(_do())
+    _run_async_cmd(_do, quiet=quiet)
 
 
 @cli.command()

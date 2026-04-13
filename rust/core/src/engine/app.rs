@@ -6,7 +6,7 @@ use crate::engine::component::Component;
 use crate::engine::context::AppContext;
 
 use crate::engine::environment::{AppRegistration, Environment};
-use crate::engine::runtime::get_runtime;
+use crate::engine::runtime::{get_runtime, global_cancellation_token};
 use crate::state::stable_path::StablePath;
 use tokio::sync::watch;
 
@@ -110,6 +110,7 @@ impl<Prof: EngineProfile> App<Prof> {
 
         let root_component = self.root_component.clone();
         let stats_for_task = processing_stats.clone();
+        let cancel_token = global_cancellation_token();
         let live = options.live;
         let span = Span::current();
         let task = get_runtime().spawn(
@@ -122,9 +123,12 @@ impl<Prof: EngineProfile> App<Prof> {
                         .result(None)
                         .await
                 };
-                let result = run_fut.await;
+                let result = tokio::select! {
+                    result = run_fut => result,
+                    _ = cancel_token.cancelled() => Err(internal_error!("Operation cancelled")),
+                };
                 stats_for_task.notify_ready();
-                if live {
+                if live && result.is_ok() {
                     // In live mode, wait for all descendants to finish before signaling termination.
                     root_component.wait_until_inactive().await;
                 }

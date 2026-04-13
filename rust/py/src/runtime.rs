@@ -2,7 +2,9 @@ use std::sync::OnceLock;
 
 use crate::prelude::*;
 
-use cocoindex_core::engine::runtime::{get_runtime, shutdown_runtime};
+use cocoindex_core::engine::runtime::{
+    cancel_all, get_runtime, reset_global_cancellation, shutdown_runtime,
+};
 use cocoindex_py_utils::from_py_future;
 use futures::FutureExt;
 use pyo3::{call::PyCallArgs, exceptions::PyException};
@@ -60,6 +62,22 @@ pub fn init_runtime(
 #[pyfunction]
 pub fn shutdown_tokio_runtime() {
     shutdown_runtime();
+}
+
+/// Cancel the global cancellation token, causing all in-flight operations to
+/// exit promptly.  Safe to call from signal handlers.
+#[pyfunction]
+#[pyo3(name = "cancel_all")]
+pub fn py_cancel_all() {
+    cancel_all();
+}
+
+/// Replace the cancelled global token with a fresh one so new operations can
+/// proceed.  Called automatically at the start of each CLI command.
+#[pyfunction]
+#[pyo3(name = "reset_global_cancellation")]
+pub fn py_reset_global_cancellation() {
+    reset_global_cancellation();
 }
 
 pub fn python_objects() -> &'static PythonObjects {
