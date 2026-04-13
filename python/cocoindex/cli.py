@@ -39,34 +39,31 @@ def _run_async_cmd(coro_fn: Any, *, quiet: bool = False) -> None:
     """
     cancelled = False
 
-    async def _wrapper() -> None:
+    def _on_sigint(signum: int, frame: Any) -> None:
         nonlocal cancelled
-        loop = asyncio.get_running_loop()
+        cancelled = True
+        _core.cancel_all()
+        if not quiet:
+            print("\nStopping...")
+        # Restore default handler so a second Ctrl+C kills immediately.
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
+
+    async def _wrapper() -> None:
         _core.reset_global_cancellation()
-
-        def _on_sigint() -> None:
-            nonlocal cancelled
-            cancelled = True
-            _core.cancel_all()
-            if not quiet:
-                print("\nStopping...")
-            # Restore default handler so a second Ctrl+C kills immediately.
-            loop.remove_signal_handler(signal.SIGINT)
-
-        loop.add_signal_handler(signal.SIGINT, _on_sigint)
         try:
             await coro_fn(cancelled=lambda: cancelled)
         except Exception:
             if not cancelled:
                 raise
-        finally:
-            loop.remove_signal_handler(signal.SIGINT)
 
+    prev_handler = signal.signal(signal.SIGINT, _on_sigint)
     try:
         asyncio.run(_wrapper())
     except KeyboardInterrupt:
         if not quiet:
             print("\nStopping...")
+    finally:
+        signal.signal(signal.SIGINT, prev_handler)
 
 
 # ---------------------------------------------------------------------------
