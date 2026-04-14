@@ -49,7 +49,7 @@ The spec `coco_lancedb.LanceDB` takes the following fields:
 Additional notes:
 
 * Exactly one primary key field is required for LanceDB targets. We create B-Tree index on this key column.
-* **Full-Text Search (FTS) indexes** are supported via the `fts_indexes` parameter. Note that FTS functionality requires [LanceDB Enterprise](https://lancedb.com/docs/indexing/fts-index/). You can pass any parameters supported by the target's FTS index creation API (e.g., `tokenizer_name` for LanceDB). See [LanceDB FTS documentation](https://lancedb.com/docs/indexing/fts-index/) for full parameter details.
+* **Full-Text Search (FTS) indexes** are supported via the `fts_indexes` parameter. Note that FTS functionality requires [LanceDB Enterprise](https://docs.lancedb.com/indexing/fts-index). You can pass any parameters supported by the target's FTS index creation API (e.g., `tokenizer_name` for LanceDB). See [LanceDB FTS documentation](https://lancedb.com/docs/indexing/fts-index/) for full parameter details.
 
 :::info
 
