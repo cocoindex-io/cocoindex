@@ -133,14 +133,14 @@ def _canonicalize_pydantic(obj: object, _seen: dict[int, int]) -> Fingerprintabl
     )
 
 
-class NotMemoizable:
+class NotMemoKeyable:
     """
     Base class for objects that must not be used as memoization keys.
 
     Inherit from this class when an object maintains internal state that would
     make memoization semantically incorrect (e.g., generators that track call counts).
 
-    Attempting to use a `NotMemoizable` instance as a memo key will raise TypeError.
+    Attempting to use a `NotMemoKeyable` instance as a memo key will raise TypeError.
     """
 
     __slots__ = ()
@@ -166,26 +166,26 @@ def register_memo_key_function(
     _memo_fns[typ] = _MemoFns(key_fn, state_fn)
 
 
-def register_not_memoizable(typ: type) -> None:
-    """Register a type as not memoizable.
+def register_not_memo_keyable(typ: type) -> None:
+    """Register a type as not memo-keyable.
 
     Use this for third-party types that maintain internal state incompatible
-    with memoization, but which you cannot modify to inherit from `NotMemoizable`.
+    with memoization, but which you cannot modify to inherit from `NotMemoKeyable`.
 
     Example:
         import cocoindex as coco
         from some_library import StatefulGenerator
 
-        coco.register_not_memoizable(StatefulGenerator)
+        coco.register_not_memo_keyable(StatefulGenerator)
     """
 
-    def _raise_not_memoizable(obj: object) -> typing.NoReturn:
+    def _raise_not_memo_keyable(obj: object) -> typing.NoReturn:
         raise TypeError(
             f"{type(obj).__name__} cannot be used as a memoization key. "
             "This type maintains internal state that is incompatible with memoization."
         )
 
-    _memo_fns[typ] = _MemoFns(_raise_not_memoizable)
+    _memo_fns[typ] = _MemoFns(_raise_not_memo_keyable)
 
 
 def unregister_memo_key_function(typ: type) -> None:
@@ -399,9 +399,9 @@ register_memo_key_function(
 
 
 __all__ = [
-    "NotMemoizable",
+    "NotMemoKeyable",
     "register_memo_key_function",
-    "register_not_memoizable",
+    "register_not_memo_keyable",
     "unregister_memo_key_function",
     "fingerprint_call",
 ]
