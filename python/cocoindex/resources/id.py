@@ -86,7 +86,7 @@ def generate_uuid(_dep: _typing.Any = None) -> _uuid.UUID:
     return _uuid.uuid4()
 
 
-class IdGenerator(_coco.NotMemoizable):
+class IdGenerator(_coco.NotMemoKeyable):
     """
     Generator for stable unique IDs that produces distinct IDs on each call.
 
@@ -149,7 +149,7 @@ class IdGenerator(_coco.NotMemoizable):
         return await _generate_next_id(self._deps_fp, dep_fp, ordinal)
 
 
-class UuidGenerator(_coco.NotMemoizable):
+class UuidGenerator(_coco.NotMemoKeyable):
     """
     Generator for stable unique UUIDs that produces distinct UUIDs on each call.
 

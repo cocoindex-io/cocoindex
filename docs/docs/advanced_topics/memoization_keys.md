@@ -224,12 +224,12 @@ class S3Object:
 
 Some types maintain internal state that makes memoization semantically incorrect. For example, a generator that tracks call counts would produce wrong results if memoized.
 
-### Inherit from `NotMemoizable` (when you control the type)
+### Inherit from `NotMemoKeyable` (when you control the type)
 
 ```python
 import cocoindex as coco
 
-class MyStatefulGenerator(coco.NotMemoizable):
+class MyStatefulGenerator(coco.NotMemoKeyable):
     def __init__(self) -> None:
         self._counter = 0
 
@@ -238,13 +238,13 @@ class MyStatefulGenerator(coco.NotMemoizable):
         return self._counter
 ```
 
-### Register as not memoizable (when you don't control the type)
+### Register as not memo-keyable (when you don't control the type)
 
 ```python
 import cocoindex as coco
 from some_library import StatefulGenerator
 
-coco.register_not_memoizable(StatefulGenerator)
+coco.register_not_memo_keyable(StatefulGenerator)
 ```
 
 In either case, attempting to use the type as a memo key raises a clear error.
@@ -255,4 +255,4 @@ In either case, attempting to use the type as a memo key raises a clear error.
 - **Separate identity from freshness**: put stable identifiers (file path, URL, primary key) in the key. Put freshness checks (mtime, ETag, version) in the state.
 - **Use state validation for expensive checks**: if freshness validation is costly (content hashing, network calls), a state function lets you do it only when the fingerprint matches, and only when a cheap pre-check (mtime) fails.
 - **Use `MemoStateOutcome(state=new_state, memo_valid=True)` for cheap state updates**: when a cheap property changes (mtime) but the expensive check (content hash) confirms nothing meaningful changed, return `memo_valid=True` while updating the state. This avoids re-executing the function and avoids re-checking the expensive property next time.
-- **Mark stateful types as `NotMemoizable`**: prevent subtle bugs from incorrect memoization of types with side effects.
+- **Mark stateful types as `NotMemoKeyable`**: prevent subtle bugs from incorrect memoization of types with side effects.
