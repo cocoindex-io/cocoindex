@@ -25,6 +25,10 @@ _V1_PATH = str(_TEST_DIR / "mod_logic_v1.py")
 _V2_PATH = str(_TEST_DIR / "mod_logic_v2.py")
 _VER1_PATH = str(_TEST_DIR / "mod_logic_ver1.py")
 _VER2_PATH = str(_TEST_DIR / "mod_logic_ver2.py")
+_DEPS_V1_PATH = str(_TEST_DIR / "mod_logic_deps_v1.py")
+_DEPS_V2_PATH = str(_TEST_DIR / "mod_logic_deps_v2.py")
+_DEPS_CHAIN_V1_PATH = str(_TEST_DIR / "mod_logic_deps_chain_v1.py")
+_DEPS_CHAIN_V2_PATH = str(_TEST_DIR / "mod_logic_deps_chain_v2.py")
 _SELF_V1_PATH = str(_TEST_DIR / "mod_logic_self_v1.py")
 _SELF_V2_PATH = str(_TEST_DIR / "mod_logic_self_v2.py")
 _SELF_V3_PATH = str(_TEST_DIR / "mod_logic_self_v3.py")
@@ -808,3 +812,270 @@ def test_bound_method_component_memo_invalidated_on_logic_change() -> None:
     # v2: second run — component memo hit again
     app.update_blocking()
     assert metrics.collect() == {}
+
+
+# ============================================================================
+# `deps=` parameter — external value declared as a logic dependency
+# ============================================================================
+
+
+def test_fn_memo_invalidated_on_deps_change() -> None:
+    """Changing the value passed to ``deps=`` invalidates the memo even when
+    the function body is identical, mirroring how ``version=`` behaves."""
+    GlobalDictTarget.store.clear()
+    metrics = Metrics()
+    current_module: list[Any] = []
+
+    @coco.fn
+    def app_main() -> None:
+        mod = current_module[0]
+        result = mod.transform_memo_deps("A", "value1")
+        coco.declare_target_state(GlobalDictTarget.target_state("A", result))
+
+    app = coco.App(
+        coco.AppConfig(
+            name="test_fn_memo_invalidated_on_deps_change", environment=coco_env
+        ),
+        app_main,
+    )
+
+    # deps_v1: first run — function executes
+    mod = _load_module(_DEPS_V1_PATH, metrics, current_module)
+    app.update_blocking()
+    assert metrics.collect() == {"transform_memo_deps": 1}
+    assert GlobalDictTarget.store.data["A"].data == "deps: value1"
+
+    # deps_v1: second run — memo hit
+    app.update_blocking()
+    assert metrics.collect() == {}
+
+    # deps_v2: identical body but deps value changed — memo invalidated
+    mod = _load_module(_DEPS_V2_PATH, metrics, current_module, old_module=mod)
+    app.update_blocking()
+    assert metrics.collect() == {"transform_memo_deps": 1}
+    assert GlobalDictTarget.store.data["A"].data == "deps: value1"
+
+    # deps_v2: second run — memo hit again
+    app.update_blocking()
+    assert metrics.collect() == {}
+
+
+def test_transitive_deps_change_propagates_through_full() -> None:
+    """A child function whose only change is its ``deps=`` value should
+    invalidate a memoized ``logic_tracking="full"`` parent the same way a
+    child code change does."""
+    GlobalDictTarget.store.clear()
+    metrics = Metrics()
+    current_module: list[Any] = []
+
+    @coco.fn
+    def app_main() -> None:
+        mod = current_module[0]
+        result = mod.foo_full("A", "value1")
+        coco.declare_target_state(GlobalDictTarget.target_state("A", result))
+
+    app = coco.App(
+        coco.AppConfig(
+            name="test_transitive_deps_change_propagates_through_full",
+            environment=coco_env,
+        ),
+        app_main,
+    )
+
+    # v1: first run — both foo_full and bar execute
+    mod = _load_module(_DEPS_CHAIN_V1_PATH, metrics, current_module)
+    app.update_blocking()
+    assert metrics.collect() == {"foo_full": 1, "bar": 1}
+    assert GlobalDictTarget.store.data["A"].data == "bar: value1"
+
+    # v1: second run — memo hit at foo_full, bar not called
+    app.update_blocking()
+    assert metrics.collect() == {}
+
+    # v2: bar's deps changed (body identical) — full propagation invalidates foo_full
+    mod = _load_module(_DEPS_CHAIN_V2_PATH, metrics, current_module, old_module=mod)
+    app.update_blocking()
+    assert metrics.collect() == {"foo_full": 1, "bar": 1}
+    assert GlobalDictTarget.store.data["A"].data == "bar: value1"
+
+    # v2: second run — memo hit again
+    app.update_blocking()
+    assert metrics.collect() == {}
+
+
+def test_transitive_deps_change_blocked_by_self() -> None:
+    """A ``logic_tracking="self"`` parent should NOT be invalidated when a
+    child function's ``deps=`` changes — ``"self"`` blocks transitive logic
+    propagation, deps changes included."""
+    GlobalDictTarget.store.clear()
+    metrics = Metrics()
+    current_module: list[Any] = []
+
+    @coco.fn
+    def app_main() -> None:
+        mod = current_module[0]
+        result = mod.foo_self("A", "value1")
+        coco.declare_target_state(GlobalDictTarget.target_state("A", result))
+
+    app = coco.App(
+        coco.AppConfig(
+            name="test_transitive_deps_change_blocked_by_self",
+            environment=coco_env,
+        ),
+        app_main,
+    )
+
+    # v1: first run — both foo_self and bar execute
+    mod = _load_module(_DEPS_CHAIN_V1_PATH, metrics, current_module)
+    app.update_blocking()
+    assert metrics.collect() == {"foo_self": 1, "bar": 1}
+    assert GlobalDictTarget.store.data["A"].data == "bar: value1"
+
+    # v1: second run — memo hit at foo_self
+    app.update_blocking()
+    assert metrics.collect() == {}
+
+    # v2: bar's deps changed but foo_self is in "self" mode — memo NOT invalidated.
+    # foo_self keeps returning the cached value, so bar is never called either.
+    mod = _load_module(_DEPS_CHAIN_V2_PATH, metrics, current_module, old_module=mod)
+    app.update_blocking()
+    assert metrics.collect() == {}
+    assert GlobalDictTarget.store.data["A"].data == "bar: value1"
+
+
+def test_deps_fingerprint_contract() -> None:
+    """Focused unit-level checks on the deps fingerprint contract.
+
+    Probes the per-function ``_logic_fp`` directly (bypassing the full
+    end-to-end app path) to verify that equal deps produce equal fingerprints,
+    different deps differ, ``__coco_memo_key__()`` is honored, and ``deps``
+    composes correctly with ``version``.
+    """
+    from cocoindex._internal.function import SyncFunction
+
+    def my_fn(x: str) -> str:
+        return x + " done"
+
+    # Build several SyncFunction wrappers around the same callable so the
+    # only varying input is the deps value.
+    no_deps = SyncFunction(my_fn, memo=True)
+    deps_a1 = SyncFunction(my_fn, memo=True, deps="prompt-A")
+    deps_a2 = SyncFunction(my_fn, memo=True, deps="prompt-A")
+    deps_b = SyncFunction(my_fn, memo=True, deps="prompt-B")
+    deps_explicit_none = SyncFunction(my_fn, memo=True, deps=None)
+
+    try:
+        assert deps_a1._logic_fp == deps_a2._logic_fp, (
+            "equal deps must produce equal logic fingerprints"
+        )
+        assert deps_a1._logic_fp != deps_b._logic_fp, (
+            "different deps must produce different logic fingerprints"
+        )
+        assert no_deps._logic_fp != deps_a1._logic_fp, (
+            "absence of deps must differ from a deps value"
+        )
+        assert no_deps._logic_fp == deps_explicit_none._logic_fp, (
+            "deps=None is equivalent to no deps"
+        )
+
+        # Multi-value deps via dict.
+        deps_dict_1 = SyncFunction(
+            my_fn,
+            memo=True,
+            deps={"prompt": "P", "model": "M"},
+        )
+        deps_dict_2 = SyncFunction(
+            my_fn,
+            memo=True,
+            deps={"model": "M", "prompt": "P"},  # same content, different order
+        )
+        deps_dict_3 = SyncFunction(
+            my_fn,
+            memo=True,
+            deps={"prompt": "P", "model": "M2"},
+        )
+        try:
+            assert deps_dict_1._logic_fp == deps_dict_2._logic_fp, (
+                "dict deps must be order-independent"
+            )
+            assert deps_dict_1._logic_fp != deps_dict_3._logic_fp, (
+                "changing any value in dict deps must invalidate the fingerprint"
+            )
+        finally:
+            del deps_dict_1, deps_dict_2, deps_dict_3
+            gc.collect()
+
+        # __coco_memo_key__ contract: the transient field must not affect the fp.
+        class WithKey:
+            def __init__(self, n: int, transient: str) -> None:
+                self.n = n
+                self.transient = transient
+
+            def __coco_memo_key__(self) -> object:
+                return ("with_key", self.n)
+
+        same_a = SyncFunction(my_fn, memo=True, deps=WithKey(42, "noise-a"))
+        same_b = SyncFunction(my_fn, memo=True, deps=WithKey(42, "noise-b"))
+        diff = SyncFunction(my_fn, memo=True, deps=WithKey(43, "noise-a"))
+        try:
+            assert same_a._logic_fp == same_b._logic_fp, (
+                "__coco_memo_key__ should ignore transient fields"
+            )
+            assert same_a._logic_fp != diff._logic_fp, (
+                "changing the keyed field must invalidate the fingerprint"
+            )
+        finally:
+            del same_a, same_b, diff
+            gc.collect()
+
+        # version= and deps= are independent contributors: both feed into the
+        # same _logic_fp, and changing either should change it while holding
+        # the other fixed.
+        v1_dA = SyncFunction(my_fn, memo=True, version=1, deps="A")
+        v1_dA_b = SyncFunction(my_fn, memo=True, version=1, deps="A")
+        v1_dB = SyncFunction(my_fn, memo=True, version=1, deps="B")
+        v2_dA = SyncFunction(my_fn, memo=True, version=2, deps="A")
+        v2_dB = SyncFunction(my_fn, memo=True, version=2, deps="B")
+        try:
+            assert v1_dA._logic_fp == v1_dA_b._logic_fp, (
+                "same version + same deps must produce the same fingerprint"
+            )
+            assert v1_dA._logic_fp != v1_dB._logic_fp, (
+                "same version + different deps must differ"
+            )
+            assert v1_dA._logic_fp != v2_dA._logic_fp, (
+                "different version + same deps must differ"
+            )
+            assert v1_dA._logic_fp != v2_dB._logic_fp, (
+                "different version + different deps must differ"
+            )
+            # No collisions across the four distinct cells of the 2x2 matrix.
+            assert (
+                len(
+                    {v1_dA._logic_fp, v1_dB._logic_fp, v2_dA._logic_fp, v2_dB._logic_fp}
+                )
+                == 4
+            )
+        finally:
+            del v1_dA, v1_dA_b, v1_dB, v2_dA, v2_dB
+            gc.collect()
+    finally:
+        del no_deps, deps_a1, deps_a2, deps_b, deps_explicit_none
+        gc.collect()
+
+
+def test_deps_rejected_with_logic_tracking_none() -> None:
+    """Passing ``deps=`` with ``logic_tracking=None`` is contradictory — the
+    function opts out of logic tracking entirely, so deps would be silently
+    dropped. Catch it at decoration time instead."""
+    with pytest.raises(ValueError, match="deps="):
+
+        @coco.fn(memo=True, deps="ignored", logic_tracking=None)
+        def _f(x: str) -> str:
+            return x
+
+    with pytest.raises(ValueError, match="deps="):
+
+        @coco.fn.as_async(memo=True, deps="ignored", logic_tracking=None)
+        async def _g(x: str) -> str:
+            return x

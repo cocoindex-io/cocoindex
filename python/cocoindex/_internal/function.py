@@ -37,7 +37,7 @@ from .component_ctx import (
     get_context_from_ctx,
 )
 from .context_keys import resolve_awaitables_sync
-from .memo_fingerprint import StateFnEntry, fingerprint_call
+from .memo_fingerprint import StateFnEntry, fingerprint_call, memo_fingerprint
 from .runner import Runner
 from .runner import in_subprocess as _in_subprocess
 from .serde import (
@@ -443,7 +443,10 @@ def _strip_docstring(body: list[ast.stmt]) -> None:
 
 
 def _compute_logic_fingerprint(
-    fn: Callable[..., Any], *, version: int | None = None
+    fn: Callable[..., Any],
+    *,
+    version: int | None = None,
+    deps: Any = None,
 ) -> core.Fingerprint:
     """Compute a fingerprint from the function's canonical AST.
 
@@ -456,6 +459,10 @@ def _compute_logic_fingerprint(
 
     The fully-qualified module + qualname is always included so that
     identical function bodies in different modules don't collide.
+
+    When *deps* is not ``None``, it is canonicalized via the memoization-key
+    pipeline and its fingerprint is folded into the payload, so changing the
+    value invalidates the result just like a code change does.
     """
     if version is not None:
         canonical = f"<version>({version})"
@@ -471,6 +478,14 @@ def _compute_logic_fingerprint(
         except (OSError, SyntaxError):
             canonical = f"<bytecode>{hashlib.sha256(fn.__code__.co_code).hexdigest()}"
     payload = f"{fn.__module__}.{fn.__qualname__}\n{canonical}"
+    if deps is not None:
+        # Use an explicit stable encoding (hex of the 16-byte digest) rather
+        # than Fingerprint.__str__ — the deps fingerprint ends up embedded in
+        # the logic fingerprint that's persisted in memo entries, and we don't
+        # want any future change to the Fingerprint Display impl to silently
+        # reshape every cached entry that uses deps=. Hex matches the
+        # `<bytecode>` fallback above (`hashlib.sha256(...).hexdigest()`).
+        payload += f"\n<deps>{memo_fingerprint(deps).as_bytes().hex()}"
     return core.fingerprint_str(payload)
 
 
@@ -506,7 +521,14 @@ class SyncFunction(Function[P, R_co]):
         memo: bool,
         version: int | None = None,
         logic_tracking: LogicTracking = "full",
+        deps: Any = None,
     ):
+        if logic_tracking is None and deps is not None:
+            raise ValueError(
+                "deps= requires logic_tracking to be enabled; with "
+                "logic_tracking=None the function's logic is not tracked at "
+                "all, so the deps value would be silently ignored."
+            )
         self._fn = fn
         self._memo = memo
         self._processor_info = core.ComponentProcessorInfo(fn.__qualname__)
@@ -515,7 +537,7 @@ class SyncFunction(Function[P, R_co]):
         self._return_deserializer_lock = threading.Lock()
 
         if logic_tracking is not None:
-            self._logic_fp = _compute_logic_fingerprint(fn, version=version)
+            self._logic_fp = _compute_logic_fingerprint(fn, version=version, deps=deps)
             core.register_logic_fingerprint(self._logic_fp)
         else:
             self._logic_fp = None
@@ -929,10 +951,17 @@ class AsyncFunction(Function[P, R_co]):
         runner: Runner | None = None,
         version: int | None = None,
         logic_tracking: LogicTracking = "full",
+        deps: Any = None,
     ) -> None:
         fn = async_fn or sync_fn
         if fn is None:
             raise ValueError("Either async_fn or sync_fn must be provided")
+        if logic_tracking is None and deps is not None:
+            raise ValueError(
+                "deps= requires logic_tracking to be enabled; with "
+                "logic_tracking=None the function's logic is not tracked at "
+                "all, so the deps value would be silently ignored."
+            )
         self._orig_async_fn = async_fn
         self._orig_sync_fn = sync_fn
         self._memo = memo
@@ -942,7 +971,7 @@ class AsyncFunction(Function[P, R_co]):
         self._return_deserializer_lock = threading.Lock()
 
         if logic_tracking is not None:
-            self._logic_fp = _compute_logic_fingerprint(fn, version=version)
+            self._logic_fp = _compute_logic_fingerprint(fn, version=version, deps=deps)
             core.register_logic_fingerprint(self._logic_fp)
         else:
             self._logic_fp = None
@@ -1437,6 +1466,7 @@ class _GenericFunctionBuilder:
         runner: Runner | None = None,
         version: int | None = None,
         logic_tracking: LogicTracking = "full",
+        deps: Any = None,
     ) -> None:
         self._memo = memo
         self._batching = batching
@@ -1444,6 +1474,7 @@ class _GenericFunctionBuilder:
         self._runner = runner
         self._version = version
         self._logic_tracking = logic_tracking
+        self._deps = deps
 
     def _build_sync(self, fn: Callable[P, R_co]) -> SyncFunction[P, R_co]:
         if self._batching or self._runner is not None:
@@ -1456,6 +1487,7 @@ class _GenericFunctionBuilder:
             memo=self._memo,
             version=self._version,
             logic_tracking=self._logic_tracking,
+            deps=self._deps,
         )
         functools.update_wrapper(wrapper, fn)
         return wrapper
@@ -1476,6 +1508,7 @@ class _GenericFunctionBuilder:
             runner=self._runner,
             version=self._version,
             logic_tracking=self._logic_tracking,
+            deps=self._deps,
         )
         functools.update_wrapper(wrapper, fn)
         return wrapper
@@ -1501,8 +1534,14 @@ class _AutoFunctionBuilder(_GenericFunctionBuilder):
         memo: bool = False,
         version: int | None = None,
         logic_tracking: LogicTracking = "full",
+        deps: Any = None,
     ) -> None:
-        super().__init__(memo=memo, version=version, logic_tracking=logic_tracking)
+        super().__init__(
+            memo=memo,
+            version=version,
+            logic_tracking=logic_tracking,
+            deps=deps,
+        )
 
     @overload
     def __call__(  # type: ignore[overload-overlap]
@@ -1550,6 +1589,7 @@ class _FunctionDecorator:
         memo: bool = False,
         version: int | None = None,
         logic_tracking: LogicTracking = "full",
+        deps: Any = None,
     ) -> _AutoFunctionBuilder: ...
     # Overload for batching=True
     @overload
@@ -1562,6 +1602,7 @@ class _FunctionDecorator:
         runner: Runner | None = None,
         version: int | None = None,
         logic_tracking: LogicTracking = "full",
+        deps: Any = None,
     ) -> _AsyncBatchedDecorator: ...
     # With batching / runner, only supports sync functions
     @overload
@@ -1574,6 +1615,7 @@ class _FunctionDecorator:
         runner: Runner | None = None,
         version: int | None = None,
         logic_tracking: LogicTracking = "full",
+        deps: Any = None,
     ) -> _SyncFunctionBuilder: ...
     # Overloads for direct function decoration
     @overload
@@ -1593,6 +1635,7 @@ class _FunctionDecorator:
         runner: Runner | None = None,
         version: int | None = None,
         logic_tracking: LogicTracking = "full",
+        deps: Any = None,
     ) -> Any:
         """Decorator for CocoIndex functions (exposed as @coco.fn).
 
@@ -1612,7 +1655,29 @@ class _FunctionDecorator:
             logic_tracking: Controls logic change tracking granularity.
                 "full" (default): Track own code + transitive children.
                 "self": Track own code only, not children.
-                None: No function logic tracking.
+                None: No function logic tracking (incompatible with ``deps``).
+            deps: External value(s) the function logic depends on but which
+                aren't visible in its body — for example a module-level prompt
+                string or model identifier. The value is canonicalized via the
+                memoization-key pipeline (see
+                :doc:`/advanced_topics/memoization_keys` for the full contract,
+                including ``__coco_memo_key__()`` and registered key functions)
+                and folded into the function's logic fingerprint; when the
+                canonical form changes, memoized results are invalidated and
+                the change propagates to callers according to ``logic_tracking``
+                (transitively under ``"full"``, only to the function itself
+                under ``"self"``). For multiple dependencies, pass a tuple or
+                dict, e.g. ``deps={"prompt": SYSTEM_PROMPT, "model": MODEL_NAME}``.
+                ``None`` (the default) means no external dependency.
+
+                **Snapshotted once at decoration time** (typically module
+                import), not re-evaluated per call. For per-call or per-instance
+                values — instance attributes in a bound method, request-scoped
+                config, anything that changes at runtime — pass them as regular
+                function arguments instead.
+
+                Requires ``logic_tracking`` to be enabled; raises ``ValueError`` if
+                combined with ``logic_tracking=None``.
 
         Batching and runner require an async interface. With this decorator, only
         async underlying functions are accepted when batching/runner is specified.
@@ -1631,10 +1696,14 @@ class _FunctionDecorator:
                 runner=runner,
                 version=version,
                 logic_tracking=logic_tracking,
+                deps=deps,
             )
             if batching or runner or max_batch_size is not None
             else _AutoFunctionBuilder(
-                memo=memo, version=version, logic_tracking=logic_tracking
+                memo=memo,
+                version=version,
+                logic_tracking=logic_tracking,
+                deps=deps,
             )
         )
         if fn is not None:
@@ -1655,6 +1724,7 @@ class _FunctionDecorator:
         runner: Runner | None = None,
         version: int | None = None,
         logic_tracking: LogicTracking = "full",
+        deps: Any = None,
     ) -> _BatchedDecorator: ...
     # Overload for keyword-only args without batching
     @overload
@@ -1667,6 +1737,7 @@ class _FunctionDecorator:
         runner: Runner | None = None,
         version: int | None = None,
         logic_tracking: LogicTracking = "full",
+        deps: Any = None,
     ) -> _AsyncFunctionBuilder: ...
     # Overloads for direct function decoration
     @overload
@@ -1692,6 +1763,7 @@ class _FunctionDecorator:
         runner: Runner | None = None,
         version: int | None = None,
         logic_tracking: LogicTracking = "full",
+        deps: Any = None,
     ) -> Any:
         """Decorator for CocoIndex functions (exposed as @coco.fn.as_async).
 
@@ -1710,7 +1782,11 @@ class _FunctionDecorator:
             logic_tracking: Controls logic change tracking granularity.
                 "full" (default): Track own code + transitive children.
                 "self": Track own code only, not children.
-                None: No function logic tracking.
+                None: No function logic tracking (incompatible with ``deps``).
+            deps: Additional value(s) the function logic depends on but that
+                aren't visible in its body. See :func:`fn` for the full
+                contract — the value is canonicalized through the memoization
+                key pipeline and folded into the function's logic fingerprint.
 
         Batching and runner are fully supported since the result is always async.
 
@@ -1725,6 +1801,7 @@ class _FunctionDecorator:
             runner=runner,
             version=version,
             logic_tracking=logic_tracking,
+            deps=deps,
         )
         if fn is not None:
             return builder(fn)
