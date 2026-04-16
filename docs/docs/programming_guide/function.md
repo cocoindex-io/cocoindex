@@ -78,10 +78,11 @@ Add a **return type annotation** to memoized functions so CocoIndex can properly
 
 ### Controlling change detection scope
 
-Two parameters on `@coco.fn` let you customize how code changes are detected:
+Three parameters on `@coco.fn` let you customize how code changes are detected:
 
 - **`logic_tracking`** — controls the *scope* of automatic code change detection
 - **`version`** — provides explicit manual control over when dependent memos are invalidated
+- **`deps`** — declares external values (e.g. a module-level prompt string) as part of the function's logic, so changing them invalidates dependent memos
 
 These parameters control the **code** side of change detection. The **data** side is controlled by [`detect_change`](./context.md#change-detection) on context keys, and by the fingerprinting behavior of the objects themselves (see [Memoization Keys & States](../advanced_topics/memoization_keys.md)).
 
@@ -103,6 +104,39 @@ def process_chunk(chunk: Chunk) -> Embedding:
     # Bumping version invalidates all memoized callers, even if code looks the same
     return embed(chunk.text)
 ```
+
+#### `deps`
+
+The `deps` parameter declares external value(s) the function logic depends on but that aren't visible in its body — for example a prompt string or a model identifier defined at module scope. When the value changes, the function's logic fingerprint changes and dependent memos are invalidated, exactly as if the function body had been edited.
+
+```python
+SYSTEM_PROMPT = "You are a helpful assistant. Be concise."
+
+@coco.fn(memo=True, deps=SYSTEM_PROMPT)
+def summarize(text: str) -> str:
+    # Editing SYSTEM_PROMPT invalidates this function's memo
+    # (and propagates to memoized callers) just like a code change would.
+    return call_llm(SYSTEM_PROMPT, text)
+```
+
+For multiple dependencies, pass a tuple or dict:
+
+```python
+SYSTEM_PROMPT = "..."
+MODEL = "claude-haiku-4-5"
+
+@coco.fn(memo=True, deps={"prompt": SYSTEM_PROMPT, "model": MODEL})
+def summarize(text: str) -> str:
+    return call_llm(SYSTEM_PROMPT, text, model=MODEL)
+```
+
+The value is canonicalized through the [memoization-key pipeline](../advanced_topics/memoization_keys.md), which honors `__coco_memo_key__()`, registered memo key functions, and the standard handling for primitives, dataclasses, and Pydantic models.
+
+:::caution Snapshotted at decoration time
+`deps` is evaluated **once** when the decorator is applied (typically at module import), not re-evaluated per call. For per-call or per-instance values — instance attributes in a bound method, request-scoped config, anything that changes at runtime — pass them as regular function arguments instead, so the memoization layer observes each new value.
+:::
+
+`deps` requires `logic_tracking` to be enabled; combining `deps=<value>` with `logic_tracking=None` raises `ValueError`.
 
 #### Common patterns
 
