@@ -404,4 +404,5 @@ __all__ = [
     "register_not_memo_keyable",
     "unregister_memo_key_function",
     "fingerprint_call",
+    "memo_fingerprint",
 ]
