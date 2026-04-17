@@ -53,6 +53,7 @@ const sidebars: SidebarsConfig = {
       label: 'Built-in Operations',
       collapsed: false,
       items: [
+        'ops/entity_resolution',
         'ops/litellm',
         'ops/sentence_transformers',
         'ops/text',

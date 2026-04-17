@@ -78,30 +78,20 @@ class LiteLLMEmbedder(_schema.VectorSchemaProvider):
             self._dim = len(embedding)
             return self._dim
 
-    @coco.fn.as_async(  # type: ignore[arg-type]
-        batching=True,
-        max_batch_size=64,
-        memo=True,
-        version=1,
-        logic_tracking="self",
-    )
-    async def embed(
+    @coco.fn.as_async(batching=True, max_batch_size=64)  # type: ignore[arg-type]
+    async def _embed(
         self,
         texts: list[str],
         input_type: str | None = None,
     ) -> list[_NDArray[_np.float32]]:
-        """Embed texts into float32 vectors.
-
-        Calls with the same ``input_type`` value are automatically batched
-        together.
+        """Batched embedding. Concurrent single-text calls into :meth:`embed`
+        are grouped by the ``@coco.fn.as_async(batching=True)`` decorator;
+        this method is the per-batch body invoked by the decorator.
 
         Args:
             texts: Batch of text strings to embed (handled by the engine).
             input_type: Input type for asymmetric embedding models (e.g.,
                 Cohere's ``"search_query"`` / ``"search_document"``).
-
-        Returns:
-            List of numpy arrays of shape ``(dim,)`` containing embedding vectors.
 
         Note:
             Pass ``input_type`` consistently across calls — mixing explicit
@@ -119,7 +109,29 @@ class LiteLLMEmbedder(_schema.VectorSchemaProvider):
             _np.array(item["embedding"], dtype=_np.float32) for item in response.data
         ]
 
-    @coco.fn.as_async(memo=True)
+    @coco.fn(memo=True, version=1, logic_tracking="self")
+    async def embed(
+        self,
+        text: str,
+        input_type: str | None = None,
+    ) -> _NDArray[_np.float32]:
+        """Embed a single text into a float32 vector.
+
+        Concurrent calls with the same ``input_type`` are automatically
+        batched by the underlying :meth:`_embed` decorator.
+
+        Args:
+            text: Text string to embed.
+            input_type: Input type for asymmetric embedding models (e.g.,
+                Cohere's ``"search_query"`` / ``"search_document"``).
+
+        Returns:
+            Numpy array of shape ``(dim,)`` containing the embedding vector.
+        """
+        result: _NDArray[_np.float32] = await self._embed(text, input_type)  # type: ignore[arg-type]
+        return result
+
+    @coco.fn(memo=True)
     async def __coco_vector_schema__(self) -> _schema.VectorSchema:
         """Return vector schema information for this model.
 

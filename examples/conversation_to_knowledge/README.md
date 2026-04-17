@@ -27,7 +27,7 @@ Converts YouTube podcast/interview sessions into a structured knowledge graph wi
 1. Read YouTube URLs from plain text files
 2. Download audio via `yt-dlp`, transcribe with speaker diarization via AssemblyAI
 3. Extract metadata, speakers, and thematic statements via LLM (`openai/gpt-5.4-mini`)
-4. Resolve duplicate entities (persons, techs, orgs) using embedding similarity (faiss) + LLM confirmation
+4. Resolve duplicate entities (persons, techs, orgs) using CocoIndex's `entity_resolution` utility (embedding similarity via faiss + LLM confirmation via pydantic-ai)
 5. Store the knowledge graph in SurrealDB: sessions, statements, persons, techs, orgs, and their relationships
 
 ## Prerequisites
@@ -71,6 +71,7 @@ export SURREALDB_USER="root"
 export SURREALDB_PASS="root"
 export INPUT_DIR="./input"
 export LLM_MODEL="openai/gpt-5.4-mini"
+export RESOLUTION_LLM_MODEL="openai/gpt-5-mini"
 ```
 
 ### 3. Install dependencies

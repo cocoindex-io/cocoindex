@@ -91,24 +91,16 @@ class SentenceTransformerEmbedder(_schema.VectorSchemaProvider):
                     )
         return self._model
 
-    @coco.fn.as_async(  # type: ignore[arg-type]
-        batching=True,
-        runner=coco.GPU,
-        max_batch_size=64,
-        memo=True,
-        version=1,
-        logic_tracking="self",
-    )
-    def embed(
+    @coco.fn.as_async(batching=True, runner=coco.GPU, max_batch_size=64)
+    def _embed(
         self,
         texts: list[str],
         prompt_name: str | None = None,
         normalize_embeddings: bool = True,
     ) -> list[_NDArray[_np.float32]]:
-        """Embed texts into float32 vectors.
-
-        Calls with the same ``prompt_name`` and ``normalize_embeddings`` values
-        are automatically batched together.
+        """Batched embedding. Concurrent single-text calls into :meth:`embed`
+        are grouped by the ``@coco.fn.as_async(batching=True)`` decorator;
+        this method is the per-batch body invoked by the decorator.
 
         Args:
             texts: Batch of text strings to embed (handled by the engine).
@@ -116,9 +108,6 @@ class SentenceTransformerEmbedder(_schema.VectorSchemaProvider):
                 different prompts for queries vs documents.
             normalize_embeddings: Whether to normalize embeddings to unit length.
                 Defaults to ``True`` for compatibility with cosine similarity.
-
-        Returns:
-            List of numpy arrays of shape ``(dim,)`` containing embedding vectors.
 
         Note:
             Pass ``prompt_name`` and ``normalize_embeddings`` consistently across
@@ -133,6 +122,32 @@ class SentenceTransformerEmbedder(_schema.VectorSchemaProvider):
             show_progress_bar=False,
         )  # type: ignore[assignment]
         return list(embeddings)
+
+    @coco.fn(memo=True, version=1, logic_tracking="self")
+    async def embed(
+        self,
+        text: str,
+        prompt_name: str | None = None,
+        normalize_embeddings: bool = True,
+    ) -> _NDArray[_np.float32]:
+        """Embed a single text into a float32 vector.
+
+        Concurrent calls with the same ``prompt_name`` and ``normalize_embeddings``
+        are automatically batched by the underlying :meth:`_embed` decorator.
+
+        Args:
+            text: Text string to embed.
+            prompt_name: Prompt name for instruction following models that use
+                different prompts for queries vs documents.
+            normalize_embeddings: Whether to normalize embeddings to unit length.
+
+        Returns:
+            Numpy array of shape ``(dim,)`` containing the embedding vector.
+        """
+        result: _NDArray[_np.float32] = await self._embed(  # type: ignore[arg-type]
+            text, prompt_name, normalize_embeddings
+        )
+        return result
 
     async def __coco_vector_schema__(self) -> _schema.VectorSchema:
         """Return vector schema information for this model.
