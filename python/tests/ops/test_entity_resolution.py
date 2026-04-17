@@ -9,7 +9,9 @@ import numpy as np
 import pytest
 from numpy.typing import NDArray
 
-from cocoindex.ops.entity_resolution import (
+pytest.importorskip("faiss", reason="faiss-cpu not installed")
+
+from cocoindex.ops.entity_resolution import (  # noqa: E402
     CanonicalSide,
     ExistingCanonicalPolicy,
     PairDecision,

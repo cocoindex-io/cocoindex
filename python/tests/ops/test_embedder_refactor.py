@@ -13,8 +13,10 @@ from unittest.mock import AsyncMock, patch
 import numpy as np
 import pytest
 
-from cocoindex.ops.litellm import LiteLLMEmbedder
-from cocoindex.resources.embedder import Embedder
+pytest.importorskip("litellm", reason="litellm not installed")
+
+from cocoindex.ops.litellm import LiteLLMEmbedder  # noqa: E402
+from cocoindex.resources.embedder import Embedder  # noqa: E402
 
 
 @pytest.mark.asyncio

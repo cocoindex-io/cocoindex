@@ -10,10 +10,14 @@ import json
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from litellm import ModelResponse
 
-from cocoindex.ops.entity_resolution import CanonicalSide, PairDecision
-from cocoindex.ops.entity_resolution.llm_resolver import LlmPairResolver
+pytest.importorskip("litellm", reason="litellm not installed")
+pytest.importorskip("instructor", reason="instructor not installed")
+
+from litellm import ModelResponse  # noqa: E402
+
+from cocoindex.ops.entity_resolution import CanonicalSide, PairDecision  # noqa: E402
+from cocoindex.ops.entity_resolution.llm_resolver import LlmPairResolver  # noqa: E402
 
 
 def _make_response(matched: str | None, canonical: str = "matched") -> ModelResponse:
