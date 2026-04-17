@@ -16,6 +16,8 @@ from typing import Any
 
 import cocoindex as coco
 from cocoindex.connectors import localfs, surrealdb
+from cocoindex.ops.entity_resolution import resolve_entities as _resolve_entities
+from cocoindex.ops.entity_resolution.llm_resolver import LlmPairResolver
 from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
 from cocoindex.resources.file import PatternFilePathMatcher
 from cocoindex.resources.id import IdGenerator
@@ -34,13 +36,28 @@ from .models import (
     Statement,
     resolve_canonical,
 )
-from .resolve import EMBEDDER, resolve_entities
 
 # ---------------------------------------------------------------------------
 # Context keys
 # ---------------------------------------------------------------------------
 
 SURREAL_DB = coco.ContextKey[surrealdb.ConnectionFactory]("surreal_db")
+EMBEDDER = coco.ContextKey[SentenceTransformerEmbedder]("embedder", detect_change=True)
+
+
+@coco.fn(memo=True)
+async def resolve_entities(
+    all_raw_entities: set[str],
+) -> dict[str, str | None]:
+    result = await _resolve_entities(
+        entities=all_raw_entities,
+        embedder=coco.use_context(EMBEDDER),
+        resolve_pair=LlmPairResolver(
+            model=coco.use_context(RESOLUTION_LLM_MODEL),
+        ),
+    )
+    return result.to_dict()
+
 
 # ---------------------------------------------------------------------------
 # YouTube URL parsing

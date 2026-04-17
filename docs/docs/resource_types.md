@@ -131,6 +131,34 @@ matcher = PatternFilePathMatcher(
 Patterns use [globset](https://docs.rs/globset) semantics: `*.py` matches only in the root directory; use `**/*.py` to match at any depth.
 :::
 
+## Embedder
+
+The embedder module (`cocoindex.resources.embedder`) defines a protocol for single-text async embedding.
+
+### Embedder Protocol
+
+```python
+from cocoindex.resources.embedder import Embedder
+
+class Embedder(Protocol):
+    async def embed(self, text: str) -> NDArray[np.float32]: ...
+```
+
+This is the call-site contract that consumers like [`resolve_entities`](./ops/entity_resolution.md) rely on. Both [`LiteLLMEmbedder`](./ops/litellm.md) and [`SentenceTransformerEmbedder`](./ops/sentence_transformers.md) satisfy this protocol — `await embedder.embed("some text")` returns a single `NDArray[np.float32]`.
+
+The protocol is deliberately narrow: it does not include `dimension()` or `__coco_vector_schema__()`, which are concerns of connectors and table-schema creation, not of embedding consumers.
+
+```python
+# Any embedder works with resolve_entities:
+from cocoindex.ops.entity_resolution import resolve_entities
+
+result = await resolve_entities(
+    entities={"Apple Inc.", "Apple"},
+    embedder=my_embedder,  # LiteLLMEmbedder, SentenceTransformerEmbedder, or your own
+    resolve_pair=my_resolver,
+)
+```
+
 ## Vector Schema
 
 The schema module (`cocoindex.resources.schema`) defines types that describe vector columns. CocoIndex connectors use these to automatically configure the correct column type (e.g., `vector(384)` in Postgres, `fixed_size_list<float32>(384)` in LanceDB).

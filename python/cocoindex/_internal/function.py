@@ -91,12 +91,11 @@ if TYPE_CHECKING:
         def __call__(
             self, fn: Callable[[list[T]], Awaitable[list[U]]]
         ) -> AsyncFunction[[T], U]: ...
-        # Sync standalone functions (single list[T] parameter) - still returns AsyncFunction
-        @overload
-        def __call__(
-            self, fn: Callable[[list[T]], list[U]]
-        ) -> AsyncFunction[[T], U]: ...
         # Methods with self parameter
+        @overload
+        def __call__(  # type: ignore[overload-overlap]
+            self, fn: Callable[[SelfT, list[T]], Awaitable[list[U]]]
+        ) -> AsyncFunction[[SelfT, T], U]: ...
         def __call__(self, fn: Any) -> Any: ...
 
     class _BatchedDecorator(Protocol):
