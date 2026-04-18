@@ -8,13 +8,9 @@ out-of-band information beyond Python type annotations.
 from __future__ import annotations
 
 import typing as _typing
-import dataclasses as _dataclasses
 import cocoindex as coco
-from cocoindex._internal.context_keys import ContextKey
-from cocoindex._internal.serde import unpickle_safe as _unpickle_safe
-
-if _typing.TYPE_CHECKING:
-    import numpy as _np
+import msgspec as _msgspec
+import numpy as _np
 
 
 @_typing.runtime_checkable
@@ -24,9 +20,7 @@ class VectorSchemaProvider(_typing.Protocol):
     def __coco_vector_schema__(self) -> _typing.Awaitable[VectorSchema]: ...
 
 
-@_unpickle_safe
-@_dataclasses.dataclass(slots=True, frozen=True)
-class VectorSchema:
+class VectorSchema(_msgspec.Struct, frozen=True, tag=True):
     """Additional information for a vector column."""
 
     dtype: _np.dtype
@@ -52,9 +46,7 @@ class MultiVectorSchemaProvider(_typing.Protocol):
     def __coco_multi_vector_schema__(self) -> _typing.Awaitable[MultiVectorSchema]: ...
 
 
-@_unpickle_safe
-@_dataclasses.dataclass(slots=True, frozen=True)
-class MultiVectorSchema:
+class MultiVectorSchema(_msgspec.Struct, frozen=True, tag=True):
     """Additional information for a vector column."""
 
     vector_schema: VectorSchema

@@ -59,8 +59,9 @@ from cocoindex._internal.datatype import (
     analyze_type_info,
     is_record_type,
 )
+import msgspec
+
 from cocoindex.resources import schema as res_schema
-from cocoindex._internal.serde import unpickle_safe
 from cocoindex._internal.context_keys import ContextKey, ContextProvider
 
 # ---------------------------------------------------------------------------
@@ -757,8 +758,7 @@ class _TableSpec:
     managed_by: target.ManagedBy = target.ManagedBy.SYSTEM
 
 
-@dataclass(frozen=True, slots=True)
-class _TableMainRecord:
+class _TableMainRecord(msgspec.Struct, frozen=True):
     """Main tracking record for table-level properties requiring DROP+CREATE if changed."""
 
     has_schema: bool
@@ -768,8 +768,7 @@ class _TableMainRecord:
     to_tables: tuple[str, ...] | None
 
 
-@dataclass(frozen=True, slots=True)
-class _FieldTrackingRecord:
+class _FieldTrackingRecord(msgspec.Struct, frozen=True):
     """Per-field tracking record for incremental DEFINE FIELD / REMOVE FIELD."""
 
     surreal_type: str

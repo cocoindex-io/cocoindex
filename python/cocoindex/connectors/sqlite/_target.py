@@ -37,7 +37,8 @@ import cocoindex as coco
 from cocoindex.connectorkits import statediff, target
 from cocoindex.connectorkits.fingerprint import fingerprint_object
 from cocoindex._internal.rwlock import RWLock
-from cocoindex._internal.serde import unpickle_safe
+import msgspec
+
 from cocoindex._internal.context_keys import ContextKey, ContextProvider
 from cocoindex._internal.datatype import (
     AnyType,
@@ -117,9 +118,7 @@ class ManagedConnection:
         self._conn.close()
 
 
-@unpickle_safe
-@dataclass
-class Vec0TableDef:
+class Vec0TableDef(msgspec.Struct, frozen=True):
     """
     Configuration for vec0 virtual tables (sqlite-vec).
 
@@ -133,8 +132,8 @@ class Vec0TableDef:
             Auxiliary columns store additional data but cannot be used in KNN WHERE filters.
     """
 
-    partition_key_columns: list[str] = field(default_factory=list)
-    auxiliary_columns: list[str] = field(default_factory=list)
+    partition_key_columns: list[str] = []
+    auxiliary_columns: list[str] = []
 
     @property
     def module_name(self) -> str:
@@ -590,24 +589,21 @@ class _TableSpec:
     virtual_table_def: Vec0TableDef | None = None
 
 
-@unpickle_safe
-class _PkColumnInfo(NamedTuple):
+class _PkColumnInfo(msgspec.Struct, frozen=True, array_like=True):
     """Information for a single primary key column."""
 
     name: str
     type: str
 
 
-@unpickle_safe
-class _TablePrimaryTrackingRecord(NamedTuple):
+class _TablePrimaryTrackingRecord(msgspec.Struct, frozen=True, array_like=True):
     """Primary tracking information for a table (PK columns + virtual table config)."""
 
     primary_key_columns: tuple[_PkColumnInfo, ...]
     virtual_table_def: Vec0TableDef | None = None
 
 
-@unpickle_safe
-class _NonPkColumnTrackingRecord(NamedTuple):
+class _NonPkColumnTrackingRecord(msgspec.Struct, frozen=True, array_like=True):
     """Per-non-PK column tracking record used for incremental ALTER TABLE operations."""
 
     type: str

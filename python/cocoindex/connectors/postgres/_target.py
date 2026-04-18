@@ -51,8 +51,9 @@ from cocoindex._internal.datatype import (
     analyze_type_info,
     is_record_type,
 )
+import msgspec
+
 from cocoindex.resources import schema as res_schema
-from cocoindex._internal.serde import unpickle_safe
 from cocoindex._internal.context_keys import ContextKey, ContextProvider
 
 # Type aliases
@@ -482,7 +483,7 @@ class _VectorIndexHandler:
 # --- SQL Command Attachment ---
 
 
-class _SqlCommandSpec(NamedTuple):
+class _SqlCommandSpec(msgspec.Struct, frozen=True, array_like=True):
     setup_sql: str
     teardown_sql: str | None
 
@@ -786,16 +787,14 @@ class _TableSpec:
     managed_by: target.ManagedBy = target.ManagedBy.SYSTEM
 
 
-@unpickle_safe
-class _PkColumnTrackingRecord(NamedTuple):
+class _PkColumnTrackingRecord(msgspec.Struct, frozen=True, array_like=True):
     """Primary-key column signature used for table-level main tracking record."""
 
     name: str
     type: str
 
 
-@unpickle_safe
-class _NonPkColumnTrackingRecord(NamedTuple):
+class _NonPkColumnTrackingRecord(msgspec.Struct, frozen=True, array_like=True):
     """Per-non-PK column tracking record used for incremental ALTER TABLE operations."""
 
     type: str

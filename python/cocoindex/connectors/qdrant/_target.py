@@ -10,13 +10,13 @@ from __future__ import annotations
 import cocoindex as coco
 
 import asyncio
+import msgspec
 from dataclasses import dataclass
 from typing import (
     Any,
     Collection,
     Generic,
     Literal,
-    Mapping,
     NamedTuple,
     Sequence,
     cast,
@@ -35,7 +35,6 @@ import cocoindex as coco
 from cocoindex.connectorkits import statediff, target
 from cocoindex.connectorkits.fingerprint import fingerprint_object
 from cocoindex._internal.datatype import TypeChecker
-from cocoindex._internal.serde import unpickle_safe
 from cocoindex.resources import schema as res_schema
 from cocoindex._internal.context_keys import ContextKey, ContextProvider
 
@@ -69,21 +68,22 @@ class QdrantVectorDef(NamedTuple):
     multivector_comparator: Literal["max_sim"] = "max_sim"
 
 
-class _ResolvedQdrantVectorDef(NamedTuple):
-    """Resolved Qdrant vector specification with concrete schema.
+class _ResolvedQdrantVectorDef(msgspec.Struct, frozen=True, tag=True):
+    """Resolved single (unnamed) vector specification.
 
     This is the internal resolved form after calling __coco_vector_schema__()
     or __coco_multi_vector_schema__() on the providers.
-
-    Args:
-        schema: Resolved VectorSchema or MultiVectorSchema
-        distance: Distance metric to use (cosine, dot, or euclid)
-        multivector_comparator: Comparator to use for multivector
     """
 
     schema: res_schema.VectorSchema | res_schema.MultiVectorSchema
     distance: Literal["cosine", "dot", "euclid"]
     multivector_comparator: Literal["max_sim"]
+
+
+class _ResolvedQdrantNamedVectorsDef(msgspec.Struct, frozen=True, tag=True):
+    """Resolved named vectors specification (multiple named vectors per collection)."""
+
+    vectors: dict[str, _ResolvedQdrantVectorDef]
 
 
 async def _resolve_vector_def(vector_def: QdrantVectorDef) -> _ResolvedQdrantVectorDef:
@@ -132,11 +132,11 @@ class CollectionSchema:
         ```
     """
 
-    _vectors: _ResolvedQdrantVectorDef | dict[str, _ResolvedQdrantVectorDef]
+    _vectors: _ResolvedQdrantVectorDef | _ResolvedQdrantNamedVectorsDef
 
     def __init__(
         self,
-        vectors: _ResolvedQdrantVectorDef | dict[str, _ResolvedQdrantVectorDef],
+        vectors: _ResolvedQdrantVectorDef | _ResolvedQdrantNamedVectorsDef,
     ) -> None:
         """
         Create a CollectionSchema from pre-resolved vector definitions.
@@ -158,14 +158,16 @@ class CollectionSchema:
             vectors: Either a single QdrantVectorDef (for unnamed vector) or a dictionary
                      mapping vector field names to QdrantVectorDef.
         """
-        resolved: _ResolvedQdrantVectorDef | dict[str, _ResolvedQdrantVectorDef]
+        resolved: _ResolvedQdrantVectorDef | _ResolvedQdrantNamedVectorsDef
         if isinstance(vectors, QdrantVectorDef):
             resolved = await _resolve_vector_def(vectors)
         elif isinstance(vectors, dict):
-            resolved = {
-                name: await _resolve_vector_def(vector_def)
-                for name, vector_def in vectors.items()
-            }
+            resolved = _ResolvedQdrantNamedVectorsDef(
+                vectors={
+                    name: await _resolve_vector_def(vector_def)
+                    for name, vector_def in vectors.items()
+                }
+            )
         else:
             raise ValueError(f"Invalid vector definition: {vectors}")
         return cls(resolved)
@@ -173,7 +175,7 @@ class CollectionSchema:
     @property
     def vectors(
         self,
-    ) -> _ResolvedQdrantVectorDef | Mapping[str, _ResolvedQdrantVectorDef]:
+    ) -> _ResolvedQdrantVectorDef | _ResolvedQdrantNamedVectorsDef:
         """Get vector definitions (all VectorSchemaProviders resolved)."""
         return self._vectors
 
@@ -274,9 +276,8 @@ class _CollectionSpec:
     managed_by: target.ManagedBy = target.ManagedBy.SYSTEM
 
 
-@unpickle_safe
-class _CollectionTrackingRecordCore(NamedTuple):
-    vectors: _ResolvedQdrantVectorDef | Mapping[str, _ResolvedQdrantVectorDef]
+class _CollectionTrackingRecordCore(msgspec.Struct, frozen=True, array_like=True):
+    vectors: _ResolvedQdrantVectorDef | _ResolvedQdrantNamedVectorsDef
 
 
 _CollectionTrackingRecord = statediff.MutualTrackingRecord[
@@ -377,11 +378,11 @@ class _CollectionHandler(
         vectors_config: (
             dict[str, qdrant_models.VectorParams] | qdrant_models.VectorParams
         )
-        if isinstance(schema.vectors, Mapping):
+        if isinstance(schema.vectors, _ResolvedQdrantNamedVectorsDef):
             # Named vectors: use dict
             vectors_config = {
                 name: _vector_params_from_def(vector_def)
-                for name, vector_def in schema.vectors.items()
+                for name, vector_def in schema.vectors.vectors.items()
             }
         else:
             # Unnamed vector: pass VectorParams directly (not in a dict)

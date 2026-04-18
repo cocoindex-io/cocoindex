@@ -59,7 +59,8 @@ from cocoindex._internal.datatype import (
     is_record_type,
 )
 from cocoindex.resources import schema as res_schema
-from cocoindex._internal.serde import unpickle_safe
+import msgspec
+
 from cocoindex._internal.context_keys import ContextKey, ContextProvider
 
 if TYPE_CHECKING:
@@ -947,21 +948,18 @@ class _TableSpec:
     inverted_indexes: list[InvertedIndexDef] | None = None
 
 
-@unpickle_safe
-class _PkColumnInfo(NamedTuple):
+class _PkColumnInfo(msgspec.Struct, frozen=True, array_like=True):
     name: str
     type: str
 
 
-@unpickle_safe
-class _TablePrimaryTrackingRecord(NamedTuple):
+class _TablePrimaryTrackingRecord(msgspec.Struct, frozen=True, array_like=True):
     primary_key_columns: tuple[_PkColumnInfo, ...]
     vector_indexes: tuple[str, ...] | None = None
     inverted_indexes: tuple[str, ...] | None = None
 
 
-@unpickle_safe
-class _NonPkColumnTrackingRecord(NamedTuple):
+class _NonPkColumnTrackingRecord(msgspec.Struct, frozen=True, array_like=True):
     type: str
     nullable: bool
 
