@@ -1,3 +1,4 @@
+import dataclasses
 import datetime
 import functools
 import inspect
@@ -8,6 +9,7 @@ import threading
 import types
 import typing
 import uuid
+import warnings
 from collections.abc import Callable
 from typing import Any, TypeAlias
 
@@ -34,6 +36,7 @@ _BUILTIN_UNPICKLE_SAFE_TYPES: tuple[type, ...] = (
     set,
     frozenset,
     type(None),
+    type,
 )
 
 
@@ -97,6 +100,7 @@ _SERIALIZE_BY_PICKLE_TYPES: set[type] = set()
 
 def _register_builtin_pickle_types() -> None:
     """Register types that must always use pickle serialization."""
+    _SERIALIZE_BY_PICKLE_TYPES.add(type)
     # complex is not natively supported by msgspec
     _SERIALIZE_BY_PICKLE_TYPES.add(complex)
     # pathlib types
@@ -132,8 +136,29 @@ def _add_unpickle_safe_global(module: str, qualname: str, obj: object) -> None:
     _UNPICKLE_SAFE_GLOBALS[(module, qualname)] = obj
 
 
+def _is_msgspec_native_type(cls: type) -> bool:
+    """Check if a type is natively handled by msgspec (and thus bypasses enc_hook)."""
+    if dataclasses.is_dataclass(cls):
+        return True
+    if isinstance(cls, type) and issubclass(cls, tuple) and hasattr(cls, "_fields"):
+        # NamedTuple
+        return True
+    if isinstance(cls, type) and issubclass(cls, msgspec.Struct):
+        return True
+    return False
+
+
 def serialize_by_pickle(cls: type) -> type:
     """Decorator: serialize this type with pickle. Auto-registers as unpickle-safe."""
+    if _is_msgspec_native_type(cls):
+        warnings.warn(
+            f"@serialize_by_pickle on {cls.__qualname__} (a "
+            f"{'dataclass' if dataclasses.is_dataclass(cls) else 'NamedTuple' if issubclass(cls, tuple) else 'msgspec.Struct'}"
+            f") has no effect when nested inside another msgspec-compatible type, "
+            f"because msgspec encodes these types natively and bypasses the pickle "
+            f"hook. Consider restructuring the type to be fully msgspec-compatible.",
+            stacklevel=2,
+        )
     _SERIALIZE_BY_PICKLE_TYPES.add(cls)
     unpickle_safe(cls)
     return cls
@@ -259,10 +284,19 @@ def _ext_hook(code: int, data: memoryview) -> Any:  # type: ignore[type-arg]
 
 
 def _dec_hook(type_hint: Any, obj: Any) -> Any:
-    """Reconstruct Pydantic models nested inside msgspec payloads."""
+    """Handle custom types during msgspec decoding.
+
+    Called when msgspec encounters a type it doesn't natively support.
+    Only two cases reach here:
+
+    1. Pydantic models — enc_hook serialized via model_dump(mode="json"),
+       so *obj* is a dict that needs model_validate to reconstruct.
+    2. Pickle-quarantined values — ext_hook already reconstructed the
+       correct object; just pass through.
+    """
     if _is_pydantic_model_type(type_hint):
         return type_hint.model_validate(obj)
-    raise TypeError(f"Cannot decode type: {type_hint}")
+    return obj
 
 
 # ---------------------------------------------------------------------------
@@ -300,16 +334,35 @@ def make_deserialize_fn(
     Returns a closure that handles routing-byte dispatch
     (``0x01`` msgspec, ``0x02`` pydantic, ``0x80`` pickle).
 
-    The msgspec Decoder is constructed eagerly; callers are responsible for
-    resolving forward-reference type hints before calling this function.
+    The msgspec Decoder construction is attempted eagerly but is best-effort:
+    if the type hint is not supported by msgspec (e.g. a union containing a
+    custom type alongside non-None types), the error is captured and re-raised
+    only if a ``0x01`` (msgspec) payload is actually encountered during
+    deserialization.  Callers are responsible for resolving forward-reference
+    type hints before calling this function.
     The Pydantic TypeAdapter is still lazy (pydantic is optional).
 
     *source_label* is included in error messages to identify where the type
     hint came from (e.g. ``"return type of process_file()"``).
     """
-    decoder = msgspec.msgpack.Decoder(
-        type=type_hint, ext_hook=_ext_hook, dec_hook=_dec_hook
-    )
+    decoder: msgspec.msgpack.Decoder | None = None  # type: ignore[type-arg]
+    decoder_error: DeserializationError | None = None
+    try:
+        decoder = msgspec.msgpack.Decoder(
+            type=type_hint, ext_hook=_ext_hook, dec_hook=_dec_hook
+        )
+    except Exception as e:
+        hint = ""
+        if isinstance(e, TypeError) and "union" in str(e).lower():
+            hint = (
+                " Hint: msgspec does not support union types mixing custom classes "
+                "with other types (except None). Consider wrapping each variant in "
+                "a tagged msgspec.Struct subclass."
+            )
+        decoder_error = DeserializationError(
+            f"Cannot build msgspec Decoder for {type_hint!r}.{hint}"
+        )
+        decoder_error.__cause__ = e
     pydantic_adapter: Any = None
     pydantic_lock = threading.Lock()
 
@@ -326,6 +379,10 @@ def make_deserialize_fn(
 
         # A: Msgspec (most common)
         if routing_byte == 0x01:
+            if decoder is None:
+                raise DeserializationError(
+                    f"Cannot deserialize msgspec payload ({_error_context()})"
+                ) from decoder_error
             try:
                 return decoder.decode(mv[1:])
             except Exception as e:

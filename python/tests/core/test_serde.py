@@ -4,6 +4,7 @@ import datetime
 import pathlib
 import pickle
 import uuid
+import warnings
 from dataclasses import dataclass
 from typing import Any, NamedTuple
 
@@ -47,11 +48,14 @@ class _MyTuple(NamedTuple):
     z: float
 
 
-@serialize_by_pickle
-@dataclass
-class _PickledDC:
-    a: int
-    b: str
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore", UserWarning)
+
+    @serialize_by_pickle
+    @dataclass
+    class _PickledDC:
+        a: int
+        b: str
 
 
 @unpickle_safe
@@ -76,6 +80,17 @@ class _NotRegistered:
 
     def __init__(self, v: int) -> None:
         self.v = v
+
+
+@serialize_by_pickle
+class _MsgspecUnsupported:
+    """A custom class not supported by msgspec natively, serialized via pickle."""
+
+    def __init__(self, val: int) -> None:
+        self.val = val
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, _MsgspecUnsupported) and self.val == other.val
 
 
 # Module-level pydantic model decorated with @serialize_by_pickle for test 9.
@@ -448,3 +463,44 @@ class TestDeserializeFn:
         result2 = fn(pydantic_data)
         assert isinstance(result2, M)
         assert result2.x == 20
+
+    def test_pickle_type_deserialize_fn(self) -> None:
+        """Test 21: make_deserialize_fn works for a @serialize_by_pickle type
+        that msgspec cannot build a Decoder for natively."""
+        fn: DeserializeFn = make_deserialize_fn(_MsgspecUnsupported)
+        value = _MsgspecUnsupported(val=7)
+        data = serialize(value)
+        assert _routing_byte(data) == 0x80
+        result = fn(data)
+        assert result == value
+
+    def test_union_with_pickle_type_deserialize_fn(self) -> None:
+        """Test 22: make_deserialize_fn works for a union type containing a
+        @serialize_by_pickle class alongside other types (e.g. int).
+
+        msgspec cannot build a Decoder for such unions, but the function should
+        still succeed because the decoder creation is best-effort.  The
+        original decoder error is surfaced only if a 0x01 payload arrives."""
+        from cocoindex._internal.serde import DeserializationError
+
+        fn: DeserializeFn = make_deserialize_fn(_MsgspecUnsupported | int)
+
+        # Pickle path: _MsgspecUnsupported serialized via pickle -- round-trips
+        pickle_val = _MsgspecUnsupported(val=42)
+        pickle_data = serialize(pickle_val)
+        assert _routing_byte(pickle_data) == 0x80
+        assert fn(pickle_data) == pickle_val
+
+        # Msgspec path: int serialized via msgspec -- raises with hint
+        int_data = serialize(99)
+        assert _routing_byte(int_data) == 0x01
+        with pytest.raises(
+            DeserializationError, match="Cannot deserialize"
+        ) as exc_info:
+            fn(int_data)
+        # The cause is a DeserializationError with a hint about union types
+        cause = exc_info.value.__cause__
+        assert isinstance(cause, DeserializationError)
+        assert "union" in str(cause).lower()
+        # The original TypeError from msgspec is chained one level deeper
+        assert isinstance(cause.__cause__, TypeError)

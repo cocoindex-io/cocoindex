@@ -48,7 +48,8 @@ from cocoindex._internal.datatype import (
     is_record_type,
 )
 from cocoindex.resources import schema as res_schema
-from cocoindex._internal.serde import unpickle_safe
+import msgspec
+
 from cocoindex._internal.context_keys import ContextKey, ContextProvider
 
 # Type aliases
@@ -490,8 +491,7 @@ class _TableSpec:
     managed_by: target.ManagedBy = target.ManagedBy.SYSTEM
 
 
-@unpickle_safe
-class _ColumnState(NamedTuple):
+class _ColumnState(msgspec.Struct, frozen=True, array_like=True):
     """Per-column state used for table-level state tracking."""
 
     name: str

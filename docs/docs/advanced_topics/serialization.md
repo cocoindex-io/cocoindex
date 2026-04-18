@@ -7,57 +7,26 @@ description: How CocoIndex serializes and deserializes Python values, and how to
 
 ## Overview
 
-CocoIndex serializes Python values in several situations:
+CocoIndex serializes and caches the return values of [memoized functions](../programming_guide/function.md#memoization) so that unchanged work can be skipped on subsequent runs. Most Python types work automatically — the key thing to get right is the **return type annotation**, which tells CocoIndex how to reconstruct your objects:
 
-- **Memoized function return values** — cached so unchanged functions can skip re-execution.
-- **Memo states** — stored between runs for freshness validation (see [Memo state validation](./memoization_keys.md#memo-state-validation)).
-- **Tracking records** — stored by target state handlers to detect changes (see [Custom Target Connector](./custom_target_connector.md)).
+```python
+@coco.fn(memo=True)
+async def process_chunk(chunk: Chunk) -> Embedding:  # return type annotation
+    return embed(chunk.text)
+```
 
-CocoIndex uses [msgspec](https://jcristharif.com/msgspec/) (msgpack format) as the default serialization engine. Most Python types — dataclasses, NamedTuples, primitives, collections, and Pydantic models — are handled automatically without any special registration.
+Without annotations, values may deserialize as basic Python types (`dict`, `list`, `str`, etc.) instead of their original types.
 
-## Type annotations
+:::info Advanced: other places where serialization and type annotations matter
+Serialization also applies to [memo states](./memoization_keys.md#memo-state-validation) and [tracking records](./custom_target_connector.md#targethandler-you-implement). If you're implementing these, add type annotations to:
 
-CocoIndex uses type annotations to properly reconstruct typed objects during deserialization. Without annotations, values may deserialize as basic Python types (`dict`, `list`, `str`, etc.) instead of their original types.
+- **`__coco_memo_state__` `prev_state` parameter** — annotate with the state type you return in `MemoStateOutcome(state=...)`. See [Memo state validation](./memoization_keys.md#memo-state-validation).
+- **`reconcile()` `prev_possible_records` parameter** — annotate with `Collection[YourTrackingRecord]`. See [Custom Target Connector](./custom_target_connector.md#targethandler-you-implement).
+:::
 
-**Add type annotations in these three places:**
+## Supported types
 
-1. **Memoized function return types** — annotate the return type of `@coco.fn(memo=True)` functions.
-
-   ```python
-   @coco.fn(memo=True)
-   async def process_chunk(chunk: Chunk) -> Embedding:  # return type annotation
-       return embed(chunk.text)
-   ```
-
-   See [Function — Memoization](../programming_guide/function.md#memoization).
-
-2. **`__coco_memo_state__` `prev_state` parameter** — annotate with the state type you return in `MemoStateOutcome(state=...)`.
-
-   ```python
-   def __coco_memo_state__(self, prev_state: tuple[int, str] | coco.NonExistenceType) -> coco.MemoStateOutcome:
-       ...
-   ```
-
-   See [Memoization Keys & States — Memo state validation](./memoization_keys.md#memo-state-validation).
-
-3. **`reconcile()` `prev_possible_records` parameter** — annotate with `Collection[YourTrackingRecord]`.
-
-   ```python
-   def reconcile(
-       self,
-       key: str,
-       desired_state: MyValue | NonExistenceType,
-       prev_possible_records: Collection[MyTrackingRecord],  # tracking record type
-       prev_may_be_missing: bool,
-       /,
-   ) -> ...:
-   ```
-
-   See [Custom Target Connector — TargetHandler](./custom_target_connector.md#targethandler-you-implement).
-
-## What works automatically
-
-You don't need any special registration for the following types — they are serialized with msgspec by default:
+The following types all work out of the box — no registration needed:
 
 | Category | Types |
 |----------|-------|
@@ -66,51 +35,27 @@ You don't need any special registration for the following types — they are ser
 | **Dataclasses** | Any `@dataclass` (including frozen) |
 | **NamedTuples** | Any `NamedTuple` subclass |
 | **Pydantic models** | Any `pydantic.BaseModel` subclass |
+| **msgspec Structs** | Any `msgspec.Struct` subclass |
 | **Date/time** | `datetime.datetime`, `datetime.date`, `datetime.time`, `datetime.timedelta`, `datetime.timezone` |
-| **Other stdlib** | `uuid.UUID` |
-
-These types also work when nested inside collections or other dataclasses.
-
-## Types requiring pickle
-
-Some types can't be serialized with msgspec. These are handled with pickle automatically:
-
-| Category | Types |
-|----------|-------|
-| **Complex numbers** | `complex` |
-| **Paths** | `pathlib.Path`, `pathlib.PurePath`, and all subclasses |
+| **Other stdlib** | `uuid.UUID`, `complex`, `pathlib.Path`, `pathlib.PurePath` |
 | **NumPy** | `numpy.ndarray`, `numpy.dtype` (when numpy is installed) |
 
-### `@coco.serialize_by_pickle`
+More generally, all types [supported by msgspec](https://jcristharif.com/msgspec/supported-types.html) work automatically. These types also work when nested inside collections or other structured types.
 
-For your own types that need pickle serialization, use the `@coco.serialize_by_pickle` decorator:
+## Custom types
+
+If your type isn't in the list above, register it with `@coco.serialize_by_pickle`:
 
 ```python
 import cocoindex as coco
 
 @coco.serialize_by_pickle
 class MySpecialType:
-    """A type with custom __reduce__ that msgspec can't handle."""
     def __init__(self, data):
         self.data = data
-
-    def __reduce__(self):
-        return (MySpecialType, (self.data,))
 ```
 
-This decorator:
-- Routes serialization through pickle instead of msgspec
-- Automatically registers the type as safe to unpickle (equivalent to also applying `@coco.unpickle_safe`)
-
-### `@coco.unpickle_safe` (backward compatibility)
-
-The `@coco.unpickle_safe` decorator only affects deserialization — it adds a type to the restricted unpickle allow-list without changing how the type is serialized. This is kept for backward compatibility with previously cached data.
-
-Most users won't need this. If you previously used `@coco.unpickle_safe` on dataclasses or NamedTuples, you can remove it — msgspec handles these types natively now.
-
-### Registering third-party types
-
-For types from third-party libraries that need pickle serialization, use `coco.serialize_by_pickle()` as a regular function call:
+For third-party types, call it as a regular function:
 
 ```python
 import cocoindex as coco
@@ -119,18 +64,58 @@ from some_library import SomeType
 coco.serialize_by_pickle(SomeType)
 ```
 
-## Backward compatibility
+:::caution Not for dataclasses, NamedTuples, or `msgspec.Struct`
+Don't apply `@coco.serialize_by_pickle` to dataclasses, NamedTuples, or `msgspec.Struct` — these are already supported natively. Applying it only works at the top level; when nested inside another supported type, the native encoding takes precedence and the decorator has no effect.
 
-Old data serialized with pickle (before this change) is readable indefinitely. Pickle-format data starts with byte `0x80`, which CocoIndex recognizes and routes to the restricted unpickler automatically.
+If serialization fails because of a problematic *field* inside a dataclass, register that field's type with `@coco.serialize_by_pickle` instead.
+:::
+
+## Union types
+
+Unions of a custom type with `None` work fine (`MyDataclass | None`). However, unions involving multiple custom types or a custom type with other non-`None` types require tagged `msgspec.Struct` variants.
+
+For example, this **won't work**:
+
+```python
+from dataclasses import dataclass
+
+@dataclass
+class Config:
+    value: int
+
+class Settings(NamedTuple):
+    config: Config | str  # fails at deserialization
+```
+
+**Fix** — wrap each variant in a tagged [`msgspec.Struct`](https://jcristharif.com/msgspec/structs.html#tagged-unions). The `tag=True` parameter embeds a type tag in the serialized data so that the correct variant can be identified during deserialization:
+
+```python
+import msgspec
+
+class ConfigValue(msgspec.Struct, tag=True):
+    value: int
+
+class StringValue(msgspec.Struct, tag=True):
+    value: str
+
+class Settings(NamedTuple):
+    config: ConfigValue | StringValue  # works — variants are distinguished by tag
+```
 
 ## Troubleshooting
 
+### `DeserializationError: Cannot build msgspec Decoder`
+
+This typically means an unsupported union type. The error message includes a hint about the cause.
+
+**Fix**: Restructure the union to use tagged `msgspec.Struct` variants. See [Union types](#union-types) above.
+
 ### `DeserializationError: Failed to deserialize msgspec payload`
 
-This usually means the type annotation doesn't match the serialized data. Common causes:
+The type annotation doesn't match the serialized data. Common causes:
 
 - **Missing return type annotation** on a memoized function — add `-> YourType` to the function signature.
-- **Changed type structure** between runs — if you renamed or restructured a dataclass, the cached data won't match. Run with `full_reprocess=True` to rebuild the cache.
+- **Changed type structure** between runs — if you renamed or restructured a dataclass, the cached data won't match. Rebuild the cache by running [`app.update(full_reprocess=True)`](../programming_guide/app.md#updating-an-app) or [`cocoindex update --full-reprocess`](../cli).
 - **Forward reference not resolved** — if your type annotation uses a string forward reference, ensure the type is defined before the function is first called.
 
 ### `UnpicklingError: Forbidden global during unpickling`
@@ -139,20 +124,14 @@ This usually means the type annotation doesn't match the serialized data. Common
 _pickle.UnpicklingError: Forbidden global during unpickling: myapp.models.Summary
 ```
 
-This means CocoIndex tried to deserialize a type via pickle but it's not in the allow-list. Fix by either:
+CocoIndex restricts which types can be deserialized for security. This error means your type isn't in the allow-list. Fix by either:
 
-1. Using `@coco.serialize_by_pickle` (if you want the type to use pickle going forward)
-2. Using `@coco.unpickle_safe` (if you only need to read old cached data)
-3. Converting to a dataclass or NamedTuple (recommended — msgspec handles these automatically)
+1. **Converting to a dataclass or NamedTuple** (recommended — supported natively, no registration needed)
+2. **Using `@coco.serialize_by_pickle`** to register the type
 
-:::note Existing cached data
-If you see this error after upgrading from an older version, it means previously cached data references types that aren't yet in the allow-list. Adding `@coco.unpickle_safe` to the type and re-running will fix it — the stale cache entry is skipped and recomputed.
+:::note Upgrading from older versions
+If you see this error after upgrading, previously cached data may reference types that aren't yet registered. You have two options:
+
+- Add `@coco.serialize_by_pickle` to the type and re-run.
+- If the type is already a dataclass or NamedTuple, add `@coco.unpickle_safe` to allow reading the old cached data. Once the cache is rebuilt, the decorator can be removed.
 :::
-
-### Migration from `@coco.unpickle_safe`
-
-If you previously decorated types with `@coco.unpickle_safe`:
-
-- **Dataclasses and NamedTuples**: Remove `@coco.unpickle_safe` — msgspec handles these natively. Old cached data from before the migration is still readable.
-- **Types needing pickle**: Switch to `@coco.serialize_by_pickle` (which also registers for unpickle safety).
-- **Third-party types**: Use `coco.serialize_by_pickle(SomeType)` for types that need pickle serialization.

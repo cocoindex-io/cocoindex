@@ -16,7 +16,7 @@ from typing import Any
 
 import cocoindex as coco
 from cocoindex.connectors import localfs, surrealdb
-from cocoindex.ops.entity_resolution import resolve_entities as _resolve_entities
+from cocoindex.ops.entity_resolution import resolve_entities
 from cocoindex.ops.entity_resolution.llm_resolver import LlmPairResolver
 from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
 from cocoindex.resources.file import PatternFilePathMatcher
@@ -46,10 +46,10 @@ EMBEDDER = coco.ContextKey[SentenceTransformerEmbedder]("embedder", detect_chang
 
 
 @coco.fn(memo=True)
-async def resolve_entities(
+async def _resolve_entities(
     all_raw_entities: set[str],
 ) -> dict[str, str | None]:
-    result = await _resolve_entities(
+    result = await resolve_entities(
         entities=all_raw_entities,
         embedder=coco.use_context(EMBEDDER),
         resolve_pair=LlmPairResolver(
@@ -327,7 +327,7 @@ async def app_main() -> None:
                 *(
                     coco.use_mount(
                         coco.component_subpath("resolve", cfg.name),
-                        resolve_entities,
+                        _resolve_entities,
                         _collect_all_raw(all_session_raw, cfg.name),
                     )
                     for cfg in ENTITY_TYPES
