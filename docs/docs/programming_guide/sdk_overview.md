@@ -85,45 +85,44 @@ CocoIndex provides two ways for async code to call into sync functions:
 - **Mounting** — When you mount a processing component, the function is scheduled on CocoIndex's runtime, not called directly. So an async function can mount a sync processing function.
 - **`@coco.fn.as_async`** — Wraps a sync function with an async interface (runs on a thread pool). Useful for compute-intensive leaf functions. See [Function](./function.md) for details.
 
-### Example: multi-level pipeline
+### Example: async orchestration mounting sync leaf functions
 
-A typical pipeline has an async main function orchestrating sync leaf functions:
+A typical pipeline has an async main function that orchestrates the pipeline, while leaf functions that do the actual computation can be sync:
 
 ```python
+import pathlib
+
 import cocoindex as coco
 from cocoindex.connectors import localfs
-from cocoindex.resources.file import FileLike
+from cocoindex.resources.file import PatternFilePathMatcher
+from docling.document_converter import DocumentConverter
+
+_converter = DocumentConverter()
 
 @coco.fn(memo=True)
-async def process_file(file: FileLike, target: localfs.DirTarget) -> None:
-    html = render(await file.read_text())
-    target.declare_file(filename="out.html", content=html)
+def process_file(file: localfs.File, outdir: pathlib.Path) -> None:
+    # Sync leaf function — does the actual computation
+    markdown = _converter.convert(
+        file.file_path.resolve()
+    ).document.export_to_markdown()
+    outname = file.file_path.path.stem + ".md"
+    localfs.declare_file(outdir / outname, markdown, create_parent_dirs=True)
 
 @coco.fn
 async def app_main(sourcedir: pathlib.Path, outdir: pathlib.Path) -> None:
-    # Async — orchestrates the pipeline
-    target = await coco.use_mount(localfs.declare_dir_target, outdir)
-    files = localfs.walk_dir(sourcedir)
-    await coco.mount_each(process_file, files.items(), target)
+    # Async — orchestrates the pipeline, mounts child components
+    files = localfs.walk_dir(
+        sourcedir,
+        recursive=True,
+        path_matcher=PatternFilePathMatcher(included_patterns=["**/*.pdf"]),
+    )
+    await coco.mount_each(process_file, files.items(), outdir)
 
-app = coco.App(coco.AppConfig(name="MyApp"), app_main,
-               sourcedir=pathlib.Path("./data"), outdir=pathlib.Path("./out"))
+app = coco.App("PdfToMarkdown", app_main,
+               sourcedir=pathlib.Path("./pdf_files"), outdir=pathlib.Path("./out"))
 ```
 
-### Example: simple leaf pipeline
-
-When the main function is itself a leaf — no child components, no async calls — it can be sync:
-
-```python
-@coco.fn
-async def app_main(sourcedir: pathlib.Path, outdir: pathlib.Path) -> None:
-    async for f in localfs.walk_dir(sourcedir):
-        html = render(await f.read_text())
-        localfs.declare_file(outdir / f"{f.stem}.html", html)
-
-app = coco.App("SimpleApp", app_main,
-               sourcedir=pathlib.Path("./data"), outdir=pathlib.Path("./out"))
-```
+Here `app_main` is async because it uses mounting APIs (`mount_each`), while `process_file` is sync because it only does computation. The sync `process_file` is mounted as a child component — mounting schedules it on CocoIndex's runtime, so the async parent can mount a sync child without issues.
 
 ## Running an app
 

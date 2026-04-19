@@ -1,22 +1,73 @@
 ---
-title: Exception Handlers
-description: Monitor and handle exceptions from background-mounted components using global and scoped exception handlers.
+title: Error Handling
+description: How CocoIndex handles failures, recovery from interrupted updates, and the exception handler API for observing background component errors.
 ---
 
-# Exception Handlers
+# Error Handling
 
-When `mount()` or `mount_each()` runs a component in the background, any exception it raises is caught and logged by default. This isolation property is intentional — a failure in one child component does not affect siblings.
+This page covers the full picture of failure behavior in CocoIndex — from how components fail in isolation, through what happens during interrupted updates, to the APIs for observing and reacting to errors in production.
 
-Sometimes you want to observe or handle these exceptions yourself — for example, to send alerts, record metrics, or implement custom retry logic. CocoIndex lets you register **exception handlers** at two levels:
+For a quick overview of failure isolation and the two-phase model, see [What happens when a component fails](../programming_guide/processing_component.md#what-happens-when-a-component-fails) in the Processing Component guide.
+
+## Failure isolation recap
+
+- **`use_mount()`** — data dependency: the child's exception propagates to the parent.
+- **`mount()` and `mount_each()`** — background: a failure in one child does **not** affect the parent or siblings. By default the exception is logged at `ERROR` level.
+
+## Processing and submit phases
+
+CocoIndex processes each component in two phases:
+
+1. **Processing** — runs your function, declares target states in memory. This phase is side-effect-free. If it fails (e.g., a parsing error, an API timeout), no writes were attempted.
+2. **Submit** — writes changes to target backends. This phase only runs after processing completes successfully.
+
+This separation means a processing failure never leaves partial data in your targets.
+
+## Interrupted updates and recovery
+
+An update can be interrupted by various events: a process kill (SIGKILL), Ctrl+C (SIGINT), an unhandled exception, or a target backend failure during submit.
+
+**What state is left behind?**
+
+CocoIndex's internal database (LMDB) uses transactions, so its own state is always consistent even after a crash. CocoIndex tracks all possible states a target could be in — if an update is interrupted partway through a commit, both the old and new states are retained as possibilities. This ensures no state is ever lost.
+
+**Recovery is automatic.** On the next `app.update()`, CocoIndex re-processes affected components and re-submits their target states. Because target writes are designed to be **idempotent** (e.g., `INSERT ... ON CONFLICT DO UPDATE`), re-submitting converges to the correct state regardless of whether the previous commit partially succeeded or never ran.
+
+For details on how target handlers deal with multiple possible previous states after an interruption, see [Custom Target Connector — Handle multiple previous states](./custom_target_connector.md#handle-multiple-previous-states).
+
+## Monitoring errors
+
+`app.update()` returns an `UpdateHandle` that exposes processing stats, including error counts:
+
+```python
+handle = app.update()
+
+# Poll stats at any time
+stats = handle.stats()
+if stats is not None:
+    print(f"Errors: {stats.total.num_errored}")
+
+# Stream progress
+async for snapshot in handle.watch():
+    print(f"{snapshot.stats.total.num_errored} errors so far")
+```
+
+See [Monitoring progress](../programming_guide/app.md#monitoring-progress) for the full `UpdateHandle` API.
+
+## Exception handlers
+
+For background-mounted components (`mount()` and `mount_each()`), you can register **exception handlers** to observe or react to failures — for example, to send alerts, record metrics, or implement custom logic.
+
+CocoIndex supports two levels of exception handlers:
 
 - **Global (environment-level)**: registered once in your lifespan function; applies to all background mounts in the environment.
 - **Scoped**: an async context manager that applies to all `mount()` / `mount_each()` calls made within it.
 
 :::note
-This only applies to `mount()` and `mount_each()`. `use_mount()` propagates errors directly to the caller since the parent has an explicit dependency on the result.
+Exception handlers only apply to `mount()` and `mount_each()`. `use_mount()` propagates errors directly to the caller since the parent has an explicit dependency on the result.
 :::
 
-## Global exception handler
+### Global exception handler
 
 Register a handler inside your `@coco.lifespan` function using `builder.set_exception_handler()`:
 
@@ -34,7 +85,7 @@ def lifespan(builder: coco.EnvironmentBuilder):
 
 This replaces the default "log error" behavior for all background mounts in the environment.
 
-## Scoped exception handler
+### Scoped exception handler
 
 Use `coco.exception_handler()` as an async context manager to apply a handler to a specific dynamic scope:
 
@@ -51,7 +102,7 @@ async def process_all(files):
 
 The handler applies to all `mount()` / `mount_each()` calls within the `async with` block, including those in nested functions called from within the block.
 
-## Handler type
+### Handler type
 
 Both sync and async handlers are supported:
 
@@ -76,7 +127,7 @@ ExceptionHandler = Callable[
 ]
 ```
 
-## `ExceptionContext` fields
+### `ExceptionContext` fields
 
 Your handler receives an `ExceptionContext` dataclass with information about the failure:
 
@@ -91,7 +142,7 @@ Your handler receives an `ExceptionContext` dataclass with information about the
 | `source` | `"component" \| "handler"` | `"component"` for the original failure; `"handler"` if a handler itself raised |
 | `original_exception` | `BaseException \| None` | The original component exception, set only when `source == "handler"` |
 
-## Handler stacking and fallback
+### Handler stacking and fallback
 
 Handlers are stacked: the most specific (innermost) handler runs first.
 
@@ -125,6 +176,4 @@ async def _root() -> None:
         await coco.mount(coco.component_subpath("child"), _child)
 ```
 
-## No breaking changes
-
-Users who never register handlers see identical behavior to before — exceptions from background mounts are logged at `ERROR` level and siblings continue unaffected.
+Users who never register handlers see identical behavior to the default — exceptions from background mounts are logged at `ERROR` level and siblings continue unaffected.

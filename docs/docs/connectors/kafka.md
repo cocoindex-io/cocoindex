@@ -103,7 +103,7 @@ async def process_message(msg: Message, target: localfs.DirTarget) -> None:
 
 @coco.fn
 async def app_main(outdir: pathlib.Path) -> None:
-    target = await coco.use_mount(localfs.declare_dir_target, outdir)
+    target = await localfs.mount_dir_target(outdir)
 
     consumer = AIOConsumer({
         "bootstrap.servers": "localhost:9092",

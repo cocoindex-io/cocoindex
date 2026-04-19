@@ -14,25 +14,20 @@ A `ContextKey[T]` is a typed key that identifies a resource. Define keys at modu
 ```python
 import asyncpg
 import cocoindex as coco
+from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
 
-# Define typed keys for resources you want to share
-PG_DB = coco.ContextKey[asyncpg.Pool]("pg_db")
-CONFIG = coco.ContextKey[AppConfig]("config", detect_change=True)
+# Database connection — no change detection (swapping credentials shouldn't reprocess)
+PG_DB = coco.ContextKey[asyncpg.Pool]("text_embedding_db")
+
+# Embedding model — with change detection (switching models should reprocess)
+EMBEDDER = coco.ContextKey[SentenceTransformerEmbedder]("embedder", detect_change=True)
 ```
 
-The type parameter (`asyncpg.Pool`, `AppConfig`) enables type checking — when you retrieve the value, your editor knows its type.
+The type parameter (`asyncpg.Pool`, `SentenceTransformerEmbedder`) enables type checking — when you retrieve the value, your editor knows its type.
 
 ### Change detection
 
 By default, context keys have **change detection disabled** — changing the provided value between runs does not automatically invalidate memoized functions that consumed it via `use_context()`. To opt in to change detection, pass `detect_change=True`. When enabled, context values are fingerprinted through the same pipeline as function arguments — both are **data** inputs to the [change detection system](./function.md#change-detection). When a fingerprint changes, dependent memos are invalidated and affected functions re-execute.
-
-```python
-# Change detection enabled — changing the model invalidates memos that used it
-EMBEDDER = coco.ContextKey[SentenceTransformerEmbedder]("embedder", detect_change=True)
-
-# Change detection disabled (default) — changing the logger won't invalidate memos
-LOGGER = coco.ContextKey[logging.Logger]("logger")
-```
 
 Use `detect_change=True` for resources that affect computation results — models, configuration objects, etc. This ensures memoized functions re-execute when those values change. Resources that don't affect computation results — database connections, loggers, debug flags, monitoring clients — can use the default (`detect_change=False`).
 
@@ -50,8 +45,11 @@ This has two consequences:
 
 2. **Renaming a `ContextKey` is a breaking change.** Two different keys are two different resources, even if they point to the same physical backend. Existing tracked state will be treated as orphaned. When migrating code, reuse the previous key name to preserve continuity.
 
-:::tip
-Pick a `ContextKey` name that reflects the *logical* role of the resource (e.g., `"text_embedding_db"`, `"docs_root"`), not its current address. The name is what CocoIndex persists.
+:::tip Naming convention
+Pick a `ContextKey` name that reflects the *logical* role of the resource, not its current address. The name is what CocoIndex persists.
+
+- **Applications**: use any descriptive name — e.g., `"text_embedding_db"`, `"docs_root"`.
+- **Libraries**: prefix with your package name and a `/` to avoid collisions with application keys or other libraries — e.g., `"my_library/db"`, `"cocoindex.connectors.postgres/pool"`.
 :::
 
 ## Providing values
@@ -59,19 +57,14 @@ Pick a `ContextKey` name that reflects the *logical* role of the resource (e.g.,
 In your [lifespan function](./app.md#defining-a-lifespan), use `builder.provide()` to make resources available:
 
 ```python
-import asyncpg
-import cocoindex as coco
+from typing import AsyncIterator
 from cocoindex.connectors import postgres
-
-PG_DB = coco.ContextKey[asyncpg.Pool]("my_db")
 
 @coco.lifespan
 async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]:
-    builder.settings.db_path = pathlib.Path("./cocoindex.db")
-
-    # Create and provide a database connection pool
     async with await postgres.create_pool(DATABASE_URL) as pool:
         builder.provide(PG_DB, pool)
+        builder.provide(EMBEDDER, SentenceTransformerEmbedder(EMBED_MODEL))
         yield
 ```
 
@@ -83,14 +76,128 @@ In processing components, use `coco.use_context()` to retrieve provided resource
 
 ```python
 @coco.fn
+async def process_chunk(chunk: Chunk, table: postgres.TableTarget[DocEmbedding]) -> None:
+    # Retrieve the embedder from context
+    embedding = await coco.use_context(EMBEDDER).embed(chunk.text)
+    table.declare_row(row=DocEmbedding(text=chunk.text, embedding=embedding, ...))
+```
+
+Some connectors also accept `ContextKey`s directly as a convenience — for example, `postgres.mount_table_target()` takes a `ContextKey[asyncpg.Pool]` and resolves the connection internally:
+
+```python
+@coco.fn
+async def app_main(sourcedir: pathlib.Path) -> None:
+    # PG_DB is resolved internally by the connector
+    table = await postgres.mount_table_target(
+        PG_DB,
+        table_name="doc_embeddings",
+        table_schema=await postgres.TableSchema.from_class(DocEmbedding, primary_key=["id"]),
+    )
+    # ... mount processing components ...
+```
+
+## Complete example
+
+Here's a complete pipeline that uses context to share a database connection and an embedding model across processing components:
+
+```python
+from __future__ import annotations
+
+import pathlib
+from dataclasses import dataclass
+from typing import AsyncIterator, Annotated
+
+import asyncpg
+from numpy.typing import NDArray
+
+import cocoindex as coco
+from cocoindex.connectors import localfs, postgres
+from cocoindex.ops.text import RecursiveSplitter
+from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
+from cocoindex.resources.chunk import Chunk
+from cocoindex.resources.file import FileLike, PatternFilePathMatcher
+from cocoindex.resources.id import IdGenerator
+
+DATABASE_URL = "postgres://cocoindex:cocoindex@localhost/cocoindex"
+EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+
+# 1. Define context keys at module level
+PG_DB = coco.ContextKey[asyncpg.Pool]("text_embedding_db")
+EMBEDDER = coco.ContextKey[SentenceTransformerEmbedder]("embedder", detect_change=True)
+
+_splitter = RecursiveSplitter()
+
+
+# 2. Provide values in the lifespan
+@coco.lifespan
+async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]:
+    async with await postgres.create_pool(DATABASE_URL) as pool:
+        builder.provide(PG_DB, pool)
+        builder.provide(EMBEDDER, SentenceTransformerEmbedder(EMBED_MODEL))
+        yield
+
+
+# 3. Use EMBEDDER in type annotations (for vector column schema)
+@dataclass
+class DocEmbedding:
+    id: int
+    filename: str
+    text: str
+    embedding: Annotated[NDArray, EMBEDDER]  # dimension resolved from context
+
+
+# 4. Retrieve values in processing functions
+@coco.fn
+async def process_chunk(
+    chunk: Chunk,
+    filename: pathlib.PurePath,
+    id_gen: IdGenerator,
+    table: postgres.TableTarget[DocEmbedding],
+) -> None:
+    table.declare_row(
+        row=DocEmbedding(
+            id=await id_gen.next_id(chunk.text),
+            filename=str(filename),
+            text=chunk.text,
+            embedding=await coco.use_context(EMBEDDER).embed(chunk.text),
+        ),
+    )
+
+
+@coco.fn(memo=True)
+async def process_file(
+    file: FileLike,
+    table: postgres.TableTarget[DocEmbedding],
+) -> None:
+    text = await file.read_text()
+    chunks = _splitter.split(text, chunk_size=2000, chunk_overlap=500, language="markdown")
+    id_gen = IdGenerator()
+    await coco.map(process_chunk, chunks, file.file_path.path, id_gen, table)
+
+
+# 5. PG_DB used directly by the connector (resolved internally)
+@coco.fn
 async def app_main(sourcedir: pathlib.Path) -> None:
     table = await postgres.mount_table_target(
         PG_DB,
-        "docs",
-        await postgres.TableSchema.from_class(Doc, primary_key=["id"]),
+        table_name="doc_embeddings",
+        table_schema=await postgres.TableSchema.from_class(
+            DocEmbedding, primary_key=["id"],
+        ),
     )
+    files = localfs.walk_dir(
+        sourcedir,
+        recursive=True,
+        path_matcher=PatternFilePathMatcher(included_patterns=["**/*.md"]),
+    )
+    await coco.mount_each(process_file, files.items(), table)
 
-    # ... rest of pipeline ...
+
+app = coco.App(
+    coco.AppConfig(name="TextEmbedding"),
+    app_main,
+    sourcedir=pathlib.Path("./markdown_files"),
+)
 ```
 
 ## Accessing context outside processing components

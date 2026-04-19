@@ -7,7 +7,7 @@ Most apps process many independent source items — files, rows, or entities. A 
 
 ## Component path
 
-A **component path** is the stable identifier for a processing component across runs (think of it like a path in a tree). CocoIndex uses it to match a component to its previous run, detect what changed for that item, and sync that component's target states atomically when it finishes. This sync happens per component; CocoIndex does not wait for other components in the same app to complete.
+A **component path** is the stable identifier for a processing component across runs (think of it like a path in a tree). CocoIndex uses it to match a component to its previous run, detect what changed for that item, and sync that component's target states as a unit when it finishes. This sync happens per component; CocoIndex does not wait for other components in the same app to complete.
 
 Component paths are hierarchical and form a tree structure. You specify child paths using `coco.component_subpath()` with stable identifiers like string literals, file names, row keys, or entity IDs:
 
@@ -18,12 +18,11 @@ coco.component_subpath("user", user_id)    # e.g., coco.component_subpath("user"
 
 Choose paths that are stable for the "same" item (e.g., file path, primary key). If an item disappears and its path is no longer present, CocoIndex cleans up the target states owned by that path (and its sub-paths).
 
-Here's an example component path tree (from the [Quickstart](../getting_started/quickstart.md)):
+Here's an example component path tree for a pipeline that processes files:
 
 ```text
 (root)                         ← app_main component
-├── "setup"                    ← declare_dir_target component
-└── "process"
+└── process_file
     ├── "hello.pdf"            ← process_file component
     └── "world.pdf"            ← process_file component
 ```
@@ -44,7 +43,7 @@ And two sugar APIs that simplify common patterns:
 - **`mount_each()`** — mounts one component per item in a keyed iterable
 - **`mount_target()`** — mounts a target without an explicit subpath
 
-See also [Processing Helpers](./processing_helpers.md) for utility APIs like `map()` that operate within a component without creating new ones.
+See also [`map()`](#map) for a utility API that operates within a component without creating new ones.
 
 ### Automatic subpath derivation {#auto-subpath}
 
@@ -152,7 +151,8 @@ Connectors also provide convenience methods that wrap `mount_target()`:
 dir_target = await localfs.mount_dir_target(outdir)
 
 # PostgreSQL example
-table = await target_db.mount_table_target(
+table = await postgres.mount_table_target(
+    PG_DB,
     table_name="doc_embeddings",
     table_schema=await postgres.TableSchema.from_class(DocEmbedding, primary_key=["id"]),
 )
@@ -201,9 +201,32 @@ After a processing component finishes, CocoIndex syncs its target states:
 2. **Applies changes** as a unit — creating, updating, or deleting target states as needed
 3. **Recursively cleans up** sub-paths where components are no longer mounted
 
-This provides atomic updates per component. For example, if a source file changes, its component's target states are applied atomically.
+All writes happen strictly after processing completes — you never see partial effects from a processing failure or interrupt. Each target backend applies its batch atomically when supported (e.g., within a database transaction), but changes across different target backends are not transactional with each other.
 
 :::
+
+## What happens when a component fails
+
+CocoIndex processes each component in two phases: **processing** (running your function, declaring target states) and **submit** (writing changes to target backends). Failure behavior depends on how the component was mounted and which phase fails.
+
+### Failure isolation
+
+- **`use_mount()`** — the parent has a data dependency on the child's result, so the child's exception propagates directly to the parent. The parent must handle it or it will fail too.
+- **`mount()` and `mount_each()`** — the child runs in the background. A failure in one child does **not** affect the parent or siblings — by default the exception is logged and other components continue. This isolation is intentional: one bad file shouldn't take down the entire pipeline.
+
+To react to background failures, you can:
+
+- Install [exception handlers](../advanced_topics/exception_handlers.md#exception-handlers) — global or scoped — to send alerts, record metrics, or implement custom logic.
+- [Monitor app progress](./app.md#monitoring-progress) — `UpdateStats` exposes per-component stats including error counts, so you can detect failures programmatically.
+
+For the full picture — including interrupted update recovery and the exception handler API — see [Error Handling](../advanced_topics/exception_handlers.md).
+
+### No rollback, idempotent roll-forward
+
+CocoIndex does not roll back partial writes. The two-phase design makes this safe:
+
+- **Processing** is side-effect-free — it only declares target states in memory. If processing fails (e.g., a parsing error), no writes were attempted, so there's nothing to undo.
+- **Submit** writes changes to target backends. If a submit fails partway through (e.g., a database connection drops), some writes may have been applied. CocoIndex does not attempt to undo them. Instead, target state writes are designed to be **idempotent** — on the next run, CocoIndex will re-submit the same changes, and the target backend will converge to the correct state. This is why built-in connectors use upserts (`INSERT ... ON CONFLICT DO UPDATE`) rather than plain inserts.
 
 ## How big should a processing component be?
 
@@ -218,9 +241,9 @@ For example, if you're processing files:
 In general:
 
 - **Coarse-grained** (fewer, larger components): More target states sync together as a unit, but you only see updates after the larger component finishes.
-- **Fine-grained** (more, smaller components): Each component syncs its target states as soon as it finishes, but target states owned by different components do not sync atomically together.
+- **Fine-grained** (more, smaller components): Each component syncs its target states as soon as it finishes, but target states owned by different components do not sync together as a unit.
 
-For small datasets, a single processing component that owns all target states is simple and ensures all target states sync atomically. As data grows, consider breaking it down into one component per source item (e.g., one per file) to reduce latency: you see each item's target states synced as soon as it's processed, without waiting for the full dataset to complete. This also helps isolate failures to that item.
+For small datasets, a single processing component that owns all target states is simple and ensures all target states sync together. As data grows, consider breaking it down into one component per source item (e.g., one per file) to reduce latency: you see each item's target states synced as soon as it's processed, without waiting for the full dataset to complete. This also helps isolate failures to that item.
 
 ## Explicit context management
 
@@ -247,3 +270,24 @@ def app_main() -> None:
 ```
 
 This pattern ensures that CocoIndex can track component relationships and target state ownership even across thread boundaries.
+
+## Processing helpers
+
+### `map()` {#map}
+
+`map()` applies an async function to each item in a collection, running all calls concurrently within the current processing component. Unlike [`mount()`](#mount) and [`mount_each()`](#mount-each), it does **not** create child processing components — it's purely concurrent execution (similar to `asyncio.gather()`).
+
+```python
+@coco.fn(memo=True)
+async def process_file(file: FileLike, table: postgres.TableTarget[DocEmbedding]) -> None:
+    chunks = splitter.split(await file.read_text())
+    id_gen = IdGenerator()
+    await coco.map(process_chunk, chunks, file.file_path.path, id_gen, table)
+```
+
+The first argument to the function receives each item; additional arguments are passed through to every call. `map()` returns a `list` of the results, in the same order as the input items.
+
+#### When to use `map()` vs `mount_each()`
+
+- Use **`mount_each()`** when each item should be its own processing component — with its own component path, target state ownership, and memoization boundary.
+- Use **`map()`** when you want to process items concurrently *within* the current component, without creating new component boundaries. This is common for sub-item work like processing chunks within a file.
