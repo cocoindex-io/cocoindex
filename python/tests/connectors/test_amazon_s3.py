@@ -311,7 +311,8 @@ class TestMemoization:
                 outcome = await f.__coco_memo_state__(cocoindex.NON_EXISTENCE)
 
                 assert isinstance(outcome, cocoindex.MemoStateOutcome)
-                assert outcome.memo_valid is True
+                # First run: memo_valid defaults to False (no previous cache to reuse)
+                assert outcome.memo_valid is False
                 assert isinstance(outcome.state, tuple)
                 assert len(outcome.state) == 2
 

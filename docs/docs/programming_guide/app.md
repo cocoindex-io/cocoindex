@@ -91,8 +91,7 @@ When you update an App, CocoIndex:
 
 1. Runs the lifespan setup (if not already done)
 2. Executes the main function (the root processing component), which mounts child processing components
-3. Syncs all declared target states to external systems
-4. Compares with the previous run and applies only necessary changes
+3. Compares the declared target states with the previous run and applies only the necessary changes to external systems
 
 Given the same code and inputs, updates are repeatable. When data or code changes, only the affected parts re-execute.
 
@@ -102,7 +101,7 @@ An App is the top-level runner and entry point. A **processing component** is th
 
 - Your app's main function runs as the **root processing component** at the root path.
 - Each call to `mount()` or `use_mount()` declares a **child processing component** at a child path. Sugar APIs like `mount_each()` and `mount_target()` also create child components.
-- Each processing component declares a set of target states, and CocoIndex syncs them atomically when that component finishes.
+- Each processing component declares a set of target states, and CocoIndex syncs them as a unit when that component finishes — all writes happen after processing completes, and each target backend applies its batch atomically when supported.
 
 This is why `app.update()` does not "run everything from scratch": CocoIndex uses the component path tree to decide what can be reused and what must re-run.
 
@@ -186,6 +185,8 @@ If you only need to set the database path, using the `COCOINDEX_DB` environment 
 Use the `@lifespan` decorator to register a lifespan function. By default, all apps share the same lifespan (unless you explicitly specify an app in a different [*Environment*](../advanced_topics/multiple_environments.md)). The function receives an `EnvironmentBuilder` for configuration and uses `yield` to separate setup from cleanup:
 
 ```python
+import pathlib
+from typing import AsyncIterator
 import cocoindex as coco
 
 @coco.lifespan

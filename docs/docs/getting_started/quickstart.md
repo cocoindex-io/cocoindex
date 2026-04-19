@@ -27,10 +27,10 @@ When your source data is updated, or your processing logic is changed (for examp
 
 ## Setup
 
-1. Install CocoIndex and dependencies:
+1. Install CocoIndex (see [Installation](./installation.md) for other package managers) and the Docling dependency:
 
     ```bash
-    pip install 'cocoindex>=1.0.0a1' docling
+    pip install -U --pre cocoindex docling
     ```
 
 2. Create a new directory for your project:
@@ -55,9 +55,13 @@ When your source data is updated, or your processing logic is changed (for examp
 
 ## Define the app
 
-![App definition](/img/quickstart/app-def.svg)
+Create a new file `main.py`. We'll define the processing functions first, then wire them into an App.
 
-Create a new file `main.py`:
+### Define file processing
+
+![File processing](/img/quickstart/file-process.svg)
+
+This function converts a single PDF to Markdown:
 
 ```python title="main.py"
 import pathlib
@@ -67,16 +71,25 @@ from cocoindex.connectors import localfs
 from cocoindex.resources.file import PatternFilePathMatcher
 from docling.document_converter import DocumentConverter
 
-app = coco.App(
-    "PdfToMarkdown",
-    app_main,
-    sourcedir=pathlib.Path("./pdf_files"),
-    outdir=pathlib.Path("./out"),
-)
-```
-This defines a CocoIndex App — the top-level runnable unit in CocoIndex.
+_converter = DocumentConverter()
 
-<DocumentationButton url="/docs-v1/programming_guide/app" text="CocoIndex App" />
+@coco.fn(memo=True)
+def process_file(
+    file: localfs.File,
+    outdir: pathlib.Path,
+) -> None:
+    markdown = _converter.convert(
+        file.file_path.resolve()
+    ).document.export_to_markdown()
+    outname = file.file_path.path.stem + ".md"
+    localfs.declare_file(outdir / outname, markdown, create_parent_dirs=True)
+```
+
+- **`memo=True`** — Caches results; unchanged files are skipped on re-runs
+- **`localfs.declare_file()`** — Declares a file target state; auto-deleted if source is removed
+
+<DocumentationButton url="/docs-v1/programming_guide/function" text="Function" />
+<DocumentationButton url="/docs-v1/programming_guide/target_state" text="Target State" />
 
 ### Define the main function
 
@@ -99,32 +112,21 @@ It's up to you to pick the process granularity — it can be at directory level,
 
 <DocumentationButton url="/docs-v1/programming_guide/processing_component" text="Processing Component" />
 
-### Define file processing
+### Create the App
 
-![File processing](/img/quickstart/file-process.svg)
-
-This function converts a single PDF to Markdown:
+![App definition](/img/quickstart/app-def.svg)
 
 ```python title="main.py"
-_converter = DocumentConverter()
-
-@coco.fn(memo=True)
-def process_file(
-    file: localfs.File,
-    outdir: pathlib.Path,
-) -> None:
-    markdown = _converter.convert(
-        file.file_path.resolve()
-    ).document.export_to_markdown()
-    outname = file.file_path.path.stem + ".md"
-    localfs.declare_file(outdir / outname, markdown, create_parent_dirs=True)
+app = coco.App(
+    "PdfToMarkdown",
+    app_main,
+    sourcedir=pathlib.Path("./pdf_files"),
+    outdir=pathlib.Path("./out"),
+)
 ```
+This defines a CocoIndex App — the top-level runnable unit in CocoIndex. It binds the main function with its arguments.
 
-- **`memo=True`** — Caches results; unchanged files are skipped on re-runs
-- **`localfs.declare_file()`** — Declares a file target state; auto-deleted if source is removed
-
-<DocumentationButton url="/docs-v1/programming_guide/function" text="Function" />
-<DocumentationButton url="/docs-v1/programming_guide/target_state" text="Target State" />
+<DocumentationButton url="/docs-v1/programming_guide/app" text="CocoIndex App" />
 
 ## Run the pipeline
 
@@ -181,7 +183,7 @@ The corresponding Markdown file is automatically removed.
 
 ## Next steps
 
-- Learn more about [Core Concepts](/programming_guide/core_concepts)
-- Explore [Functions](/programming_guide/function) and memoization
-- Understand [Target States](/programming_guide/target_state) and how they sync to external systems
+- Learn more about [Core Concepts](../programming_guide/core_concepts.mdx)
+- Explore [Functions](../programming_guide/function.md) and memoization
+- Understand [Target States](../programming_guide/target_state.md) and how they sync to external systems
 - Browse more [examples](https://github.com/cocoindex-io/cocoindex/tree/v1/examples)

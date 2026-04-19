@@ -8,26 +8,26 @@ import TabItem from '@theme/TabItem';
 
 # CocoIndex CLI
 
-CocoIndex CLI is a standalone tool for easily managing and inspecting your flows and indexes.
+CocoIndex CLI is a standalone tool for easily managing and inspecting your apps.
 
 ## Invoke the CLI
 
-Once CocoIndex is installed, you can invoke the CLI directly using the `cocoindex` command. Most commands require an `APP_TARGET` argument, which tells the CLI where your flow definitions are located.
+Once CocoIndex is installed, you can invoke the CLI directly using the `cocoindex` command. Most commands require an `APP_TARGET` argument, which tells the CLI where your app definitions are located.
 
 ### APP_TARGET Format
 
 The `APP_TARGET` can be:
 
-1. An **Python module name** that contains your flow definitions (e.g., `main`, `my_package.flows`).
+1. A **Python module name** that contains your app definitions (e.g., `main`, `my_package.apps`).
     You can also use `--app-dir <path>` to specify the base directory to load the module from.
 
-2. A **path to a Python file** defining your flows (e.g., `main.py`, `path/to/my_flows.py`).
+2. A **path to a Python file** defining your apps (e.g., `main.py`, `path/to/my_apps.py`).
 
     The file will be loaded as a top-level Python module, e.g. relative imports will not work as its parent package is not defined (similar to how `python main.py` resolves imports).
 
-3. For commands that operate on a *specific flow* (like `show`, `update`, `evaluate`), you can combine the application reference with a flow name:
-    * `my_package.flows:MyFlow`
-    * `path/to/my_flows.py:MyFlow`
+3. For commands that operate on a *specific app* (like `show`, `update`), you can combine the application reference with an app name:
+    * `my_package.apps:MyApp`
+    * `path/to/my_apps.py:MyApp`
 
 ### Environment Variables
 

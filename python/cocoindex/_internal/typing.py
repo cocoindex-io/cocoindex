@@ -70,5 +70,5 @@ class MemoStateOutcome(NamedTuple):
     state: Any
     """The current state value. CocoIndex stores it for the next run."""
 
-    memo_valid: bool
+    memo_valid: bool = False
     """Whether the cached result is still valid."""

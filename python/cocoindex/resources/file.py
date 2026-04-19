@@ -188,7 +188,7 @@ class FileLike(_ABC, _Generic[ResolvedPathT]):
 
         if _is_non_existence(prev_state):
             fp = await self.content_fingerprint()
-            return _MemoStateOutcome(state=(current_mtime, fp), memo_valid=True)
+            return _MemoStateOutcome(state=(current_mtime, fp))
 
         assert isinstance(prev_state, tuple)
         prev_mtime, prev_fp = prev_state

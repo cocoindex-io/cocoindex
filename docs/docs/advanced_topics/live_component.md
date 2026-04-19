@@ -109,7 +109,7 @@ The parent mounts it like any other component:
 @coco.fn
 async def app_main(folder: pathlib.Path, outdir: pathlib.Path) -> None:
     # Set up the target in the parent (use_mount is not allowed inside process()).
-    target = await coco.use_mount(localfs.declare_dir_target, outdir)
+    target = await localfs.mount_dir_target(outdir)
     # Mount the live component.
     await coco.mount(FolderWatcher, folder, target)
 ```

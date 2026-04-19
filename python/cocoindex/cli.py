@@ -698,7 +698,7 @@ def update(
     live: bool,
 ) -> None:
     """
-    Run a v1 app once (one-time update).
+    Run an app in catch-up mode. With --live, run in live mode.
 
     `APP_TARGET`: `path/to/app.py`, `module`, `path/to/app.py:app_name`, or `module:app_name`.
     """

@@ -33,22 +33,6 @@ The canonical forms are combined into a deterministic fingerprint. If the finger
 
 ## Customizing the memoization key
 
-### Override automatic handling
-
-If you need custom behavior, implement `__coco_memo_key__()` - it takes precedence over automatic handling:
-
-```python
-@dataclass
-class Point:
-    x: int
-    y: int
-    transient_data: str  # Don't include in memo key
-
-    def __coco_memo_key__(self) -> object:
-        return (self.x, self.y)  # Only x and y matter for memoization
-```
-
-## Define `__coco_memo_key__` (preferred when you control the type)
 ### Define `__coco_memo_key__` (when you control the type)
 
 Implement a method on your class that returns a stable, deterministic value:
@@ -116,18 +100,18 @@ When CocoIndex finds a fingerprint match, it calls each state function with the 
 Your state function returns a `coco.MemoStateOutcome(state=..., memo_valid=...)`:
 
 - **`state`** — the current state value. CocoIndex stores it for the next run.
-- **`memo_valid`** (`bool`) — whether the cached result is still valid.
+- **`memo_valid`** (`bool`, defaults to `False`) — whether the cached result is still valid.
 
 This decouples "has the state changed?" from "can we reuse the memo?":
 
+- `MemoStateOutcome(state=new_state)` → cache is invalid (default). Function re-executes, new state is stored. On the first run (no previous cache), simply return the initial state without setting `memo_valid`.
 - `MemoStateOutcome(state=same_state, memo_valid=True)` → nothing changed, cached result reused, no state update needed.
 - `MemoStateOutcome(state=new_state, memo_valid=True)` → state changed but cached result is still valid (e.g. mtime changed but content hash unchanged). The new state is persisted so the next run uses the updated state.
-- `MemoStateOutcome(state=new_state, memo_valid=False)` → something changed that invalidates the cache. Function re-executes, new state is stored.
 
 ### Define `__coco_memo_state__` (when you control the type)
 
 :::info Type annotations
-Annotate the `prev_state` parameter with its expected type (matching what you return in `MemoStateOutcome(state=...)`) so CocoIndex can properly reconstruct stored state values. See [Serialization](./serialization.md) for details on supported types.
+Annotate the `prev_state` parameter with its expected type (matching what you return in `MemoStateOutcome(state=...)`) so CocoIndex can properly reconstruct stored state values. See [Serialization](../programming_guide/serialization.md) for details on supported types.
 :::
 
 Add a `__coco_memo_state__` method alongside `__coco_memo_key__`:
@@ -150,9 +134,10 @@ class LocalFile:
         st = os.stat(self.path)
         new_mtime = st.st_mtime_ns
         if coco.is_non_existence(prev_state):
-            # First run — compute initial state
+            # First run — compute initial state (memo_valid defaults to False,
+            # which is fine since there's no previous cache to reuse)
             content_hash = hashlib.sha256(self.path.read_bytes()).hexdigest()
-            return coco.MemoStateOutcome(state=(new_mtime, content_hash), memo_valid=True)
+            return coco.MemoStateOutcome(state=(new_mtime, content_hash))
 
         prev_mtime, prev_hash = prev_state
         if new_mtime == prev_mtime:

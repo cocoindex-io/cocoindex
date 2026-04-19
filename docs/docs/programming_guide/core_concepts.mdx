@@ -75,7 +75,7 @@ For example, if you have many files in a drive and want to process them file by 
 
 <img src={useBaseUrl('/img/concept/component1.svg')} alt="Processing component" />
 
-Taking this further, suppose you want to split each file into chunks and create embedding vectors for indexing. The processing component can still operate at the file level, but each component now produces multiple target states (one per chunk). CocoIndex applies all target state changes (inserts, updates, and deletes rows in the target database) atomically for each file:
+Taking this further, suppose you want to split each file into chunks and create embedding vectors for indexing. The processing component can still operate at the file level, but each component now produces multiple target states (one per chunk). CocoIndex applies all target state changes (inserts, updates, and deletes rows in the target database) as a unit for each file — all writes happen after processing completes, and each target backend applies its batch atomically when supported (e.g., within a database transaction):
 
 <img src={useBaseUrl('/img/concept/component2.svg')} alt="Processing component with chunks" />
 

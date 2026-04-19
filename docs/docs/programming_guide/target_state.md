@@ -7,9 +7,9 @@ description: Understanding target states as what you want to exist in external s
 A **target state** represents what you want to exist in an external system. You *declare* target states in your code; CocoIndex keeps them in sync with your intent — creating, updating, or removing them as needed.
 
 :::note Terminology
-A **target state** is the external thing you want to exist (a file, a row, a table, etc.). A **target** is the object/API you use to declare those target states (like `DirTarget` or `TableTarget`).
+A **target** is the external system you write to — a directory, a database table, a vector store collection, etc. In Python, targets are represented by objects like `DirTarget` and `TableTarget`. A **target state** is what you want to exist *in* that target — a specific file, row, or embedding.
 
-CocoIndex treats your declarations as the source of truth: if you stop declaring a target state, CocoIndex will remove it from the external system.
+CocoIndex treats your declarations as the source of truth: if you stop declaring a target state, CocoIndex will remove it from the target.
 :::
 
 Examples of target states:
@@ -63,11 +63,19 @@ dir_target.declare_file(filename="output.html", content=html)
 
 ### Example: writing a row to PostgreSQL
 
+This example uses a [`ContextKey`](./context.md) to reference the database connection — see [Context](./context.md) for how keys are defined and provided.
+
 ```python
+import asyncpg
+import cocoindex as coco
 from cocoindex.connectors import postgres
 
+# Define a ContextKey for the database connection (provided in lifespan)
+TARGET_DB = coco.ContextKey[asyncpg.Pool]("target_db")
+
 # Mount a table target, get a ready-to-use TableTarget
-table = await target_db.mount_table_target(
+table = await postgres.mount_table_target(
+    TARGET_DB,
     table_name="doc_embeddings",
     table_schema=await postgres.TableSchema.from_class(
         DocEmbedding, primary_key=["id"]
@@ -123,6 +131,12 @@ Under the hood, CocoIndex compares your declared target states with the previous
 </table>
 
 CocoIndex ensures containers exist before their contents are added, and properly cleans up contents when the container changes.
+
+### What happens when a target's schema changes
+
+When you change a container target state's declaration (e.g., add a column to a table schema, change a primary key), CocoIndex detects the change and does its best to alter the target in place. If the change is too large to alter (e.g., changing primary keys), the target is dropped and recreated.
+
+When a target is dropped and recreated, CocoIndex automatically reprocesses all affected components to backfill the data — you don't need to manually trigger `--full-reprocess`. This is handled by the target connector's [child invalidation](../advanced_topics/custom_target_connector.md#child-invalidation) mechanism, which signals to CocoIndex whether the change is destructive (all children lost) or lossy (some data may be lost).
 
 ## Generic target state APIs
 

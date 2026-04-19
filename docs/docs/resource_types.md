@@ -280,6 +280,8 @@ multi_schema = MultiVectorSchema(
 
 The ID module (`cocoindex.resources.id`) provides utilities for generating stable unique IDs and UUIDs that persist across incremental updates.
 
+In an incremental pipeline, using random IDs (like `uuid.uuid4()`) means every reprocessing run generates different IDs for the same data — causing unnecessary churn in your targets (deleting old rows, inserting identical ones with new IDs). CocoIndex's ID utilities produce **stable** IDs: the same inputs produce the same IDs across runs, so unchanged data keeps its identity and targets only see real changes.
+
 ### Choosing the Right API
 
 | API | Same `dep` produces... | Use when... |
