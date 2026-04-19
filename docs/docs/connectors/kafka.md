@@ -237,7 +237,7 @@ async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]
 
 @coco.fn(memo=True)
 async def process_file(
-    file: localfs.FileLike, topic_target: kafka.KafkaTopicTarget
+    file: localfs.File, topic_target: kafka.KafkaTopicTarget
 ) -> None:
     content = await file.read_bytes()
     topic_target.declare_target_state(

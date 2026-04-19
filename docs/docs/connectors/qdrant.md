@@ -211,7 +211,7 @@ point = qdrant.PointStruct(
 
 #### VectorSchemaProvider
 
-The `schema` field of `QdrantVectorDef` accepts a [`VectorSchemaProvider`](../resource_types.md#vectorschemaprovider), a `ContextKey`, or an explicit `VectorSchema` to specify the vector dimension and dtype. See [Vector Schema](../resource_types.md#vectorschemaprovider) for details.
+The `schema` field of `QdrantVectorDef` accepts a [`VectorSchemaProvider`](../common_resources/vector_schema.md#vectorschemaprovider), a `ContextKey`, or an explicit `VectorSchema` to specify the vector dimension and dtype. See [Vector Schema](../common_resources/vector_schema.md#vectorschemaprovider) for details.
 
 #### Multi-vector support
 

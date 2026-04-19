@@ -179,7 +179,7 @@ class MyRow:
 
 #### VectorSchemaProvider
 
-For `NDArray` fields, a [`VectorSchemaProvider`](../resource_types.md#vectorschemaprovider) annotation specifies the vector dimension and dtype. See [Vector Schema](../resource_types.md#vectorschemaprovider) for the full list of annotation options (`ContextKey`, embedder instance, or explicit `VectorSchema`).
+For `NDArray` fields, a [`VectorSchemaProvider`](../common_resources/vector_schema.md#vectorschemaprovider) annotation specifies the vector dimension and dtype. See [Vector Schema](../common_resources/vector_schema.md#vectorschemaprovider) for the full list of annotation options (`ContextKey`, embedder instance, or explicit `VectorSchema`).
 
 ### Table schema: explicit column definitions
 

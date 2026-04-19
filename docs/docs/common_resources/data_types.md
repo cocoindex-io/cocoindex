@@ -1,0 +1,203 @@
+---
+title: Data Types
+description: Common data types shared across CocoIndex connectors and built-in operations — FileLike, FilePath, FilePathMatcher, Chunk, and Embedder.
+---
+
+# Data Types
+
+The `cocoindex.resources` package provides common data models and abstractions shared across connectors and built-in operations. Connectors provide concrete implementations — for example, `localfs.File` implements `FileLike`, and `localfs.FilePath` extends `FilePath`. See individual [connector docs](../connectors/localfs.md) for connector-specific details.
+
+## File
+
+The file module (`cocoindex.resources.file`) defines base classes and utilities for working with file-like objects.
+
+### FileLike
+
+`FileLike` is a base class for file objects with async read methods. Each connector provides its own subclass (e.g., `localfs.File`, `amazon_s3.S3Object`).
+
+```python
+from cocoindex.resources.file import FileLike
+
+async def process_file(file: FileLike) -> str:
+    text = await file.read_text()
+    ...
+    return text
+```
+
+**Properties:**
+
+- `file_path` — A `FilePath` object representing the file's path. Access the relative path via `file_path.path` (`PurePath`).
+
+**Methods:**
+
+- `async size()` — Return the file size in bytes.
+- `async read(size=-1)` — Read file content as bytes. Pass `size` to limit bytes read.
+- `async read_text(encoding=None, errors="replace")` — Read as text. Auto-detects encoding via BOM if not specified.
+
+**Memoization:**
+
+`FileLike` objects provide a memoization key based on `file_path` (file identity). When used as arguments to a [memoized function](../programming_guide/function.md#memoization), CocoIndex uses a two-level validation: it checks the modification time first (cheap), then computes a content fingerprint only if the modification time has changed. This means touching a file or moving it won't cause unnecessary recomputation if the content is unchanged.
+
+### FilePath
+
+`FilePath` is a base class that combines a **base directory** (with a stable key) and a **relative path**. This enables stable memoization even when the entire directory tree is moved to a different location.
+
+```python
+from cocoindex.resources.file import FilePath
+```
+
+Each connector provides its own `FilePath` subclass (e.g., `localfs.FilePath`). The base class defines the common interface.
+
+**Properties:**
+
+- `base_dir` — An object that holds the base directory. Its key is used for stable memoization.
+- `path` — The path relative to the base directory (`PurePath`).
+
+**Methods:**
+
+- `resolve()` — Resolve to the full path (type depends on the connector, e.g., `pathlib.Path` for local filesystem).
+
+**Path Operations:**
+
+`FilePath` supports most `pathlib.PurePath` operations:
+
+```python
+# Join paths with /
+config_path = source_dir / "config" / "settings.json"
+
+# Access path properties
+config_path.name      # "settings.json"
+config_path.stem      # "settings"
+config_path.suffix    # ".json"
+config_path.parts     # ("config", "settings.json")
+config_path.parent    # FilePath pointing to "config/"
+
+# Modify path components
+config_path.with_name("other.json")
+config_path.with_suffix(".yaml")
+config_path.with_stem("config")
+
+# Pattern matching
+config_path.match("*.json")  # True
+
+# Convert to POSIX string
+config_path.as_posix()  # "config/settings.json"
+```
+
+**Memoization:**
+
+`FilePath` provides a memoization key based on `(base_dir.key, path)`. This means:
+
+- Two `FilePath` objects with the same base directory key and relative path have the same memo key
+- Moving the entire project directory doesn't invalidate memoization, as long as the same base directory key is used
+
+For connector-specific usage (e.g., `register_base_dir`), see the individual connector documentation like [Local File System](../connectors/localfs.md).
+
+### FilePathMatcher
+
+`FilePathMatcher` is a protocol for filtering files and directories during traversal.
+
+```python
+from cocoindex.resources.file import FilePathMatcher
+
+class MyMatcher(FilePathMatcher):
+    def is_dir_included(self, path: PurePath) -> bool:
+        """Return True to traverse this directory."""
+        return not path.name.startswith(".")
+
+    def is_file_included(self, path: PurePath) -> bool:
+        """Return True to include this file."""
+        return path.suffix in (".py", ".md")
+```
+
+#### PatternFilePathMatcher
+
+A built-in `FilePathMatcher` implementation using [globset](https://docs.rs/globset/#syntax) patterns:
+
+```python
+from cocoindex.resources.file import PatternFilePathMatcher
+
+# Include only Python and Markdown files, exclude tests and hidden dirs
+matcher = PatternFilePathMatcher(
+    included_patterns=["**/*.py", "**/*.md"],
+    excluded_patterns=["**/test_*", "**/.*"],
+)
+```
+
+**Parameters:**
+
+- `included_patterns` — Glob patterns ([globset](https://docs.rs/globset) syntax) for files to include. Use `**/*.ext` to match at any depth. If `None`, all files are included.
+- `excluded_patterns` — Glob patterns ([globset](https://docs.rs/globset) syntax) for files/directories to exclude. Excluded directories are not traversed.
+
+:::note
+Patterns use [globset](https://docs.rs/globset) semantics: `*.py` matches only in the root directory; use `**/*.py` to match at any depth.
+:::
+
+## Chunk
+
+The chunk module (`cocoindex.resources.chunk`) defines types for representing text chunks produced by [text splitters](../ops/text.md).
+
+### Chunk {#chunk}
+
+A `Chunk` is a frozen dataclass representing a piece of text with its position information in the original document.
+
+```python
+from cocoindex.resources.chunk import Chunk
+```
+
+**Fields:**
+
+- `text` (`str`) — The text content of the chunk.
+- `start` (`TextPosition`) — Start position in the original text.
+- `end` (`TextPosition`) — End position in the original text.
+
+### TextPosition
+
+A frozen dataclass representing a position in text.
+
+**Fields:**
+
+- `byte_offset` (`int`) — Byte offset from the start of the text.
+- `char_offset` (`int`) — Character offset from the start of the text.
+- `line` (`int`) — 1-based line number.
+- `column` (`int`) — 1-based column number.
+
+**Example:**
+
+```python
+from cocoindex.ops.text import RecursiveSplitter
+
+splitter = RecursiveSplitter()
+chunks = splitter.split(text, chunk_size=2000, chunk_overlap=500, language="markdown")
+
+for chunk in chunks:
+    print(f"[{chunk.start.line}:{chunk.start.column}] {chunk.text[:50]}...")
+```
+
+## Embedder
+
+The embedder module (`cocoindex.resources.embedder`) defines a protocol for single-text async embedding.
+
+### Embedder Protocol {#embedder}
+
+```python
+from cocoindex.resources.embedder import Embedder
+
+class Embedder(Protocol):
+    async def embed(self, text: str) -> NDArray[np.float32]: ...
+```
+
+This is the call-site contract that consumers like [`resolve_entities`](../ops/entity_resolution.md) rely on. Both [`LiteLLMEmbedder`](../ops/litellm.md) and [`SentenceTransformerEmbedder`](../ops/sentence_transformers.md) satisfy this protocol — `await embedder.embed("some text")` returns a single `NDArray[np.float32]`.
+
+The protocol is deliberately narrow: it does not include `dimension()` or `__coco_vector_schema__()`, which are concerns of connectors and table-schema creation, not of embedding consumers.
+
+```python
+# Any embedder works with resolve_entities:
+from cocoindex.ops.entity_resolution import resolve_entities
+
+result = await resolve_entities(
+    entities={"Apple Inc.", "Apple"},
+    embedder=my_embedder,  # LiteLLMEmbedder, SentenceTransformerEmbedder, or your own
+    resolve_pair=my_resolver,
+)
+```

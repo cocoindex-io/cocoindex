@@ -7,6 +7,19 @@ description: CocoIndex integration with sentence-transformers for local text emb
 
 The `cocoindex.ops.sentence_transformers` module provides integration with the [sentence-transformers](https://www.sbert.net/) library for text embeddings.
 
+```python
+from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
+```
+
+:::note Dependencies
+This module requires additional dependencies. Install with:
+
+```bash
+pip install cocoindex[sentence_transformers]
+```
+
+:::
+
 ## Overview
 
 The `SentenceTransformerEmbedder` class is a wrapper around SentenceTransformer models that:
@@ -15,20 +28,6 @@ The `SentenceTransformerEmbedder` class is a wrapper around SentenceTransformer 
 - Handles model caching and thread-safe GPU access automatically
 - Provides a simple `embed()` method
 - Returns properly typed numpy arrays
-
-## Installation
-
-To use sentence transformers with CocoIndex, install with the `sentence_transformers` extra:
-
-```bash
-pip install cocoindex[sentence_transformers]
-```
-
-Or with uv:
-
-```bash
-uv pip install cocoindex[sentence_transformers]
-```
 
 ## Basic usage
 
@@ -55,7 +54,7 @@ table.declare_row(row=CodeEmbedding(code="Hello, world!", embedding=embedding))
 
 ### Using as a type annotation
 
-The `SentenceTransformerEmbedder` implements [`VectorSchemaProvider`](../resource_types.md#vectorschemaprovider), which means it can be used directly as metadata in `Annotated` type annotations. This is the recommended way to declare vector columns — CocoIndex connectors automatically extract the vector dimension and dtype from the annotation when creating tables.
+The `SentenceTransformerEmbedder` implements [`VectorSchemaProvider`](../common_resources/vector_schema.md#vectorschemaprovider), which means it can be used directly as metadata in `Annotated` type annotations. This is the recommended way to declare vector columns — CocoIndex connectors automatically extract the vector dimension and dtype from the annotation when creating tables.
 
 ```python
 from dataclasses import dataclass
@@ -98,7 +97,6 @@ The connector automatically creates the appropriate `vector(384)` column. See th
 Here's a complete example of a text embedding pipeline (based on the [text_embedding example](https://github.com/cocoindex-io/cocoindex/tree/main/examples/text_embedding)):
 
 ```python
-import asyncio
 import pathlib
 from dataclasses import dataclass
 from typing import Annotated, AsyncIterator
@@ -130,8 +128,8 @@ class DocEmbedding:
 
 @coco.fn
 async def process_chunk(
-    filename: pathlib.PurePath,
     chunk: Chunk,
+    filename: pathlib.PurePath,
     id_gen: IdGenerator,
     table: postgres.TableTarget[DocEmbedding],
 ) -> None:
@@ -156,9 +154,7 @@ async def process_file(
         text, chunk_size=2000, chunk_overlap=500, language="markdown"
     )
     id_gen = IdGenerator()
-    await asyncio.gather(
-        *(process_chunk(file.file_path.path, chunk, id_gen, table) for chunk in chunks)
-    )
+    await coco.map(process_chunk, chunks, file.file_path.path, id_gen, table)
 
 @coco.fn
 async def app_main(sourcedir: pathlib.Path) -> None:

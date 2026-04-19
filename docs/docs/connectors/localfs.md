@@ -63,7 +63,7 @@ print(config_path.parent)    # FilePath pointing to "config/"
 abs_path = config_path.resolve()  # pathlib.Path
 ```
 
-See [FilePath](../resource_types.md#filepath) in Resource Types for full details.
+See [FilePath](../common_resources/data_types.md#filepath) in Resource Types for full details.
 
 ## As source
 
@@ -84,13 +84,13 @@ def walk_dir(
 - `path` — The root directory path to walk through. Can be a `FilePath`, a `pathlib.Path`, or a `ContextKey[Path]` (equivalent to `FilePath(base_dir=path)`).
 - `live` — If `True`, `items()` returns a [`LiveMapView`](../advanced_topics/live_component.md#live-map) that supports live file watching via `mount_each()`.
 - `recursive` — If `True`, recursively walk subdirectories.
-- `path_matcher` — Optional filter for files and directories. See [PatternFilePathMatcher](../resource_types.md#patternfilepathmatcher).
+- `path_matcher` — Optional filter for files and directories. See [PatternFilePathMatcher](../common_resources/data_types.md#patternfilepathmatcher).
 
 **Returns:** A `DirWalker` that supports async iteration via `async for`.
 
 ### Iterating files
 
-`walk_dir()` returns a `DirWalker` that supports async iteration, yielding `File` objects (implementing the [`FileLike`](../resource_types.md#filelike) base class):
+`walk_dir()` returns a `DirWalker` that supports async iteration, yielding `File` objects (implementing the [`FileLike`](../common_resources/data_types.md#filelike) base class):
 
 ```python
 async for file in localfs.walk_dir("/path/to/documents", recursive=True):

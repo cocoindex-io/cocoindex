@@ -27,7 +27,7 @@ The type parameter (`asyncpg.Pool`, `SentenceTransformerEmbedder`) enables type 
 
 ### Change detection
 
-By default, context keys have **change detection disabled** — changing the provided value between runs does not automatically invalidate memoized functions that consumed it via `use_context()`. To opt in to change detection, pass `detect_change=True`. When enabled, context values are fingerprinted through the same pipeline as function arguments — both are **data** inputs to the [change detection system](./function.md#change-detection). When a fingerprint changes, dependent memos are invalidated and affected functions re-execute.
+By default, context keys have **change detection disabled** — changing the provided value between runs does not automatically invalidate memoized functions that consumed it via `use_context()`. To opt in to change detection, pass `detect_change=True`. When enabled, [context changes](./function.md#change-detection) are their own category — tracked by `use_context()` at the call site, independent of `@coco.fn`. When a fingerprint changes, any memoized function whose execution involved a `use_context()` call on that key is invalidated.
 
 Use `detect_change=True` for resources that affect computation results — models, configuration objects, etc. This ensures memoized functions re-execute when those values change. Resources that don't affect computation results — database connections, loggers, debug flags, monitoring clients — can use the default (`detect_change=False`).
 

@@ -1,6 +1,6 @@
 ---
 title: Core Concepts
-description: Briefly introduces the core concepts of CocoIndex, covering state-driven sync, Target States, Apps, Processing Components, and incremental execution across data and code changes.
+description: Briefly introduces the core concepts of CocoIndex, covering state-driven sync, Target States, Apps, Processing Components, and incremental execution across logic and input changes.
 ---
 
 import Tabs from '@theme/Tabs';
@@ -152,8 +152,17 @@ When the "Split into chunks" logic changes:
 
 - For the 2nd processing component, the new logic produces different chunks (`chunk5` and `chunk6`), so `Embed` must be invoked on them.
 
-As these examples show, memoization can save expensive computations even when code changes — as long as the intermediate results remain the same.
+As these examples show, memoization can save expensive computations even when logic changes — as long as the intermediate results remain the same.
 
 </TabItem>
 </Tabs>
 </BorderBox>
+
+## Next steps
+
+Now that you understand the mental model, dive into the Programming Guide to learn how to use these concepts in code:
+
+- [App](./app.md) — creating and running pipelines
+- [Target State](./target_state.md) — declaring what should exist in external systems
+- [Processing Component](./processing_component.md) — structuring work and mounting components
+- [Function](./function.md) — the `@coco.fn` decorator, memoization, and change detection

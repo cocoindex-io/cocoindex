@@ -20,7 +20,7 @@ The CocoIndex SDK is organized into several modules:
 | Package | Description |
 |---------|-------------|
 | `cocoindex.connectors` | Connectors for data sources and targets |
-| `cocoindex.resources` | Common data models and abstractions shared across connectors and built-in operations |
+| `cocoindex.resources` | [Common resources](../common_resources/data_types.md) — shared data types, vector schema annotations, and ID generation utilities |
 | `cocoindex.ops` | Built-in operations for common data processing tasks (e.g., text splitting, embedding with SentenceTransformers) |
 
 Import connectors and extras by their specific sub-module:

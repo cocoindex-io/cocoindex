@@ -7,6 +7,19 @@ description: CocoIndex integration with LiteLLM for text embeddings, supporting 
 
 The `cocoindex.ops.litellm` module provides integration with the [LiteLLM](https://docs.litellm.ai/) library for text embeddings.
 
+```python
+from cocoindex.ops.litellm import LiteLLMEmbedder
+```
+
+:::note Dependencies
+This module requires additional dependencies. Install with:
+
+```bash
+pip install cocoindex[litellm]
+```
+
+:::
+
 ## Overview
 
 The `LiteLLMEmbedder` class is a wrapper around LiteLLM's embedding API that:
@@ -16,20 +29,6 @@ The `LiteLLMEmbedder` class is a wrapper around LiteLLM's embedding API that:
 - Provides a simple async `embed()` method
 - Passes through all additional arguments to the LiteLLM embedding API
 - Returns properly typed numpy arrays
-
-## Installation
-
-To use LiteLLM with CocoIndex, install with the `litellm` extra:
-
-```bash
-pip install cocoindex[litellm]
-```
-
-Or with uv:
-
-```bash
-uv pip install cocoindex[litellm]
-```
 
 ## Basic usage
 
@@ -66,7 +65,7 @@ table.declare_row(row=DocEmbedding(text="Hello, world!", embedding=embedding))
 
 ### Using as a type annotation
 
-The `LiteLLMEmbedder` implements [`VectorSchemaProvider`](../resource_types.md#vectorschemaprovider), which means it can be used directly as metadata in `Annotated` type annotations. This is the recommended way to declare vector columns — CocoIndex connectors automatically extract the vector dimension and dtype from the annotation when creating tables.
+The `LiteLLMEmbedder` implements [`VectorSchemaProvider`](../common_resources/vector_schema.md#vectorschemaprovider), which means it can be used directly as metadata in `Annotated` type annotations. This is the recommended way to declare vector columns — CocoIndex connectors automatically extract the vector dimension and dtype from the annotation when creating tables.
 
 ```python
 from dataclasses import dataclass
@@ -92,7 +91,8 @@ table_schema = await postgres.TableSchema.from_class(
     DocEmbedding,
     primary_key=["id"],
 )
-target_table = await target_db.mount_table_target(
+target_table = await postgres.mount_table_target(
+    PG_DB,
     table_name="doc_embeddings",
     table_schema=table_schema,
     pg_schema_name="my_schema",

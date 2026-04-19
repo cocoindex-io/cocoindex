@@ -85,8 +85,9 @@ def process_file(
     localfs.declare_file(outdir / outname, markdown, create_parent_dirs=True)
 ```
 
+- **`localfs.File`** — A file object returned by `localfs.walk_dir()`, implementing the [`FileLike`](../common_resources/data_types.md#filelike) base class. See the [localfs connector](../connectors/localfs.md) for full details.
 - **`memo=True`** — Caches results; unchanged files are skipped on re-runs
-- **`localfs.declare_file()`** — Declares a file target state; auto-deleted if source is removed
+- **`localfs.declare_file()`** — Declares a file [target state](../programming_guide/target_state.md); auto-deleted if source is removed. See [localfs as target](../connectors/localfs.md#as-target) for the full API.
 
 <DocumentationButton url="/docs-v1/programming_guide/function" text="Function" />
 <DocumentationButton url="/docs-v1/programming_guide/target_state" text="Target State" />
@@ -183,7 +184,6 @@ The corresponding Markdown file is automatically removed.
 
 ## Next steps
 
-- Learn more about [Core Concepts](../programming_guide/core_concepts.mdx)
-- Explore [Functions](../programming_guide/function.md) and memoization
-- Understand [Target States](../programming_guide/target_state.md) and how they sync to external systems
-- Browse more [examples](https://github.com/cocoindex-io/cocoindex/tree/v1/examples)
+- Read [Core Concepts](../programming_guide/core_concepts.mdx) to understand the mental model — state-driven programming, processing components, and memoization
+- Dive into the [Programming Guide](../programming_guide/app.md), starting with Apps, to learn how to build more complex pipelines
+- Browse more [examples](https://github.com/cocoindex-io/cocoindex/tree/v1/examples) for real-world patterns (text embedding, RAG, knowledge graphs)

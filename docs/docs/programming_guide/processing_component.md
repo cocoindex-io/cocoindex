@@ -221,12 +221,12 @@ To react to background failures, you can:
 
 For the full picture — including interrupted update recovery and the exception handler API — see [Error Handling](../advanced_topics/exception_handlers.md).
 
-### No rollback, idempotent roll-forward
+### No rollback, convergent roll-forward
 
 CocoIndex does not roll back partial writes. The two-phase design makes this safe:
 
 - **Processing** is side-effect-free — it only declares target states in memory. If processing fails (e.g., a parsing error), no writes were attempted, so there's nothing to undo.
-- **Submit** writes changes to target backends. If a submit fails partway through (e.g., a database connection drops), some writes may have been applied. CocoIndex does not attempt to undo them. Instead, target state writes are designed to be **idempotent** — on the next run, CocoIndex will re-submit the same changes, and the target backend will converge to the correct state. This is why built-in connectors use upserts (`INSERT ... ON CONFLICT DO UPDATE`) rather than plain inserts.
+- **Submit** writes changes to target backends. If a submit fails partway through (e.g., a database connection drops), some writes may have been applied. CocoIndex does not attempt to undo them. Instead, on the next run CocoIndex computes the current desired state, and the target connector reconciles against all possible previous states — converging the target to the correct state regardless of what was partially applied. This is why built-in connectors use convergent operations like upserts (`INSERT ... ON CONFLICT DO UPDATE`) rather than plain inserts.
 
 ## How big should a processing component be?
 
@@ -289,5 +289,5 @@ The first argument to the function receives each item; additional arguments are 
 
 #### When to use `map()` vs `mount_each()`
 
-- Use **`mount_each()`** when each item should be its own processing component — with its own component path, target state ownership, and memoization boundary.
+- Use **`mount_each()`** when each item should be its own processing component — with its own component path, target state ownership, and target states sync boundary.
 - Use **`map()`** when you want to process items concurrently *within* the current component, without creating new component boundaries. This is common for sub-item work like processing chunks within a file.
