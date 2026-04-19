@@ -93,7 +93,7 @@ When you update an App, CocoIndex:
 2. Executes the main function (the root processing component), which mounts child processing components
 3. Compares the declared target states with the previous run and applies only the necessary changes to external systems
 
-Given the same code and inputs, updates are repeatable. When data or code changes, only the affected parts re-execute.
+Given the same logic and inputs, updates are repeatable. When logic or inputs change, only the affected parts re-execute.
 
 ## How an app runs
 

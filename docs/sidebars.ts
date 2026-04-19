@@ -23,9 +23,9 @@ const sidebars: SidebarsConfig = {
       collapsed: false,
       items: [
         'programming_guide/app',
-        'programming_guide/function',
-        'programming_guide/processing_component',
         'programming_guide/target_state',
+        'programming_guide/processing_component',
+        'programming_guide/function',
         'programming_guide/context',
         'programming_guide/live_mode',
         'programming_guide/serialization',
@@ -33,9 +33,14 @@ const sidebars: SidebarsConfig = {
       ],
     },
     {
-      type: 'doc',
-      id: 'resource_types',
-      label: 'Common Resource Types',
+      type: 'category',
+      label: 'Common Resources',
+      collapsed: false,
+      items: [
+        'common_resources/data_types',
+        'common_resources/vector_schema',
+        'common_resources/id_generation',
+      ],
     },
     {
       type: 'category',
@@ -43,6 +48,8 @@ const sidebars: SidebarsConfig = {
       collapsed: false,
       items: [
         'connectors/amazon_s3',
+        'connectors/doris',
+        'connectors/google_drive',
         'connectors/kafka',
         'connectors/lancedb',
         'connectors/localfs',
@@ -84,6 +91,11 @@ const sidebars: SidebarsConfig = {
       type: 'doc',
       id: 'cli',
       label: 'CLI Reference',
+    },
+    {
+      type: 'doc',
+      id: 'faq',
+      label: 'FAQ',
     },
     {
       type: 'category',

@@ -22,7 +22,7 @@ pip install cocoindex[sqlite]
 Note: The default SQLite library bundled with macOS does not support extensions. Use Homebrew Python (`brew install python`) or build SQLite with extension support.
 :::
 
-## Connection Setup
+## Connection setup
 
 ### connect
 
@@ -76,11 +76,11 @@ A wrapper around `sqlite3.Connection` that provides thread-safe access and track
 
 - `loaded_extensions` — A read-only `Set[str]` of loaded extension names (e.g., `"sqlite-vec"`).
 
-## As Target
+## As target
 
 The `sqlite` connector provides target state APIs for writing rows to tables. With it, CocoIndex tracks what rows should exist and automatically handles upserts and deletions.
 
-### Declaring Target States
+### Declaring target states
 
 #### Setting up a connection
 
@@ -102,7 +102,7 @@ def coco_lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
         yield
 ```
 
-#### Tables (Parent State)
+#### Tables (parent state)
 
 Declares a table as a target state. Returns a `TableTarget` for declaring rows.
 
@@ -127,7 +127,7 @@ def declare_table_target(
 
 **Returns:** A pending `TableTarget`. Use the convenience wrapper `await sqlite.mount_table_target(SQLITE_DB, table_name, table_schema)` to resolve.
 
-#### Rows (Child States)
+#### Rows (child states)
 
 Once a `TableTarget` is resolved, declare rows to be upserted:
 
@@ -143,7 +143,7 @@ def TableTarget.declare_row(
 
 - `row` — A row object (dict, dataclass, NamedTuple, or Pydantic model). Must include all primary key columns.
 
-### Table Schema: From Python Class
+### Table schema: from Python class
 
 Define the table structure using a Python class (dataclass, NamedTuple, or Pydantic model):
 
@@ -232,9 +232,9 @@ schema = sqlite.TableSchema(
 
 #### VectorSchemaProvider
 
-For `NDArray` fields, a [`VectorSchemaProvider`](../resource_types.md#vectorschemaprovider) annotation specifies the vector dimension and dtype. Vectors are stored as BLOBs in sqlite-vec compatible float32 format. See [Vector Schema](../resource_types.md#vectorschemaprovider) for the full list of annotation options (`ContextKey`, embedder instance, or explicit `VectorSchema`).
+For `NDArray` fields, a [`VectorSchemaProvider`](../common_resources/vector_schema.md#vectorschemaprovider) annotation specifies the vector dimension and dtype. Vectors are stored as BLOBs in sqlite-vec compatible float32 format. See [Vector Schema](../common_resources/vector_schema.md#vectorschemaprovider) for the full list of annotation options (`ContextKey`, embedder instance, or explicit `VectorSchema`).
 
-### Table Schema: Explicit Column Definitions
+### Table schema: explicit column definitions
 
 Define columns directly using `ColumnDef`:
 
@@ -260,11 +260,11 @@ schema = sqlite.TableSchema(
 )
 ```
 
-### Virtual Tables
+### Virtual tables
 
 SQLite virtual tables allow custom storage backends and specialized functionality. The `sqlite` connector supports creating virtual tables through the same `declare_table_target()` API used for regular tables.
 
-#### Vec0 Virtual Tables
+#### Vec0 virtual tables
 
 The `vec0` module from sqlite-vec provides optimized vector storage for similarity search. Use vec0 virtual tables when:
 
@@ -296,7 +296,7 @@ virtual_table_def = Vec0TableDef(
 - `partition_key_columns` — List of column names used to partition the vector index. Queries can filter by partition keys efficiently. Multiple partition keys create a composite partition.
 - `auxiliary_columns` — List of column names to mark as auxiliary (stored but not usable in KNN filters). Useful for metadata that doesn't need to participate in similarity search.
 
-#### Creating Vec0 Virtual Tables
+#### Creating vec0 virtual tables
 
 Pass `virtual_table_def` to `declare_table_target()`:
 

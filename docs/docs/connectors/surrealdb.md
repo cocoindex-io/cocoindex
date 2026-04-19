@@ -249,7 +249,7 @@ schema = await surrealdb.TableSchema.from_class(
 
 #### VectorSchemaProvider
 
-For `NDArray` fields, a [`VectorSchemaProvider`](../resource_types.md#vectorschemaprovider) annotation specifies the vector dimension and dtype. See [Vector Schema](../resource_types.md#vectorschemaprovider) for the full list of annotation options.
+For `NDArray` fields, a [`VectorSchemaProvider`](../common_resources/vector_schema.md#vectorschemaprovider) annotation specifies the vector dimension and dtype. See [Vector Schema](../common_resources/vector_schema.md#vectorschemaprovider) for the full list of annotation options.
 
 ### Table schema: explicit column definitions
 

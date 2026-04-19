@@ -7,7 +7,12 @@ description: Deduplicate entity names using embedding similarity (FAISS) and a p
 
 The `cocoindex.ops.entity_resolution` package resolves a set of raw entity names into a deduplicated canonical map. It finds near-duplicate names via embedding similarity (FAISS), then asks a pair-resolver (typically an LLM) to confirm matches and pick the better canonical name.
 
-## Installation
+```python
+from cocoindex.ops.entity_resolution import resolve_entities
+```
+
+:::note Dependencies
+This module requires additional dependencies. Install with:
 
 ```bash
 # With built-in LLM resolver (recommended)
@@ -16,6 +21,8 @@ pip install cocoindex[entity_resolution_llm]
 # Core only (for custom resolver implementations)
 pip install cocoindex[entity_resolution]
 ```
+
+:::
 
 ## Basic usage
 
@@ -133,7 +140,7 @@ Each event includes:
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `entities` | `Iterable[str]` | *(required)* | Raw entity names. Duplicates collapsed; iterated in sorted order. |
-| `embedder` | [`Embedder`](../resource_types.md#embedder) | *(required)* | Async single-text embedder. `LiteLLMEmbedder` and `SentenceTransformerEmbedder` both work. |
+| `embedder` | [`Embedder`](../common_resources/data_types.md#embedder) | *(required)* | Async single-text embedder. `LiteLLMEmbedder` and `SentenceTransformerEmbedder` both work. |
 | `resolve_pair` | `PairResolver` | *(required)* | Pair-resolution callback. See [`LlmPairResolver`](#llmpairresolver) for the built-in option. |
 | `is_existing_canonical` | `Callable[[str], bool] \| None` | `None` | Sync predicate for existing-canonical detection. |
 | `existing_policy` | `ExistingCanonicalPolicy` | `PINNED` | How to treat existing canonicals. Ignored when `is_existing_canonical` is `None`. |

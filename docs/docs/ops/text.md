@@ -5,7 +5,13 @@ description: CocoIndex text processing operations including code language detect
 
 # Text Processing
 
-The `cocoindex.ops.text` module provides operations for text processing, including:
+The `cocoindex.ops.text` module provides operations for text processing.
+
+```python
+from cocoindex.ops.text import RecursiveSplitter, SeparatorSplitter
+```
+
+Features include:
 
 - Code language detection
 - Text chunking and splitting
@@ -57,13 +63,13 @@ for chunk in chunks:
 
 ### `RecursiveSplitter`
 
-Advanced text chunking with language awareness and syntax-aware splitting for code.
+Advanced text chunking with language awareness and syntax-aware splitting for code. Returns [`Chunk`](../common_resources/data_types.md#chunk) objects with position information.
 
 **Features:**
 - Supports many programming languages
 - Preserves code structure
 - Customizable chunk sizes and overlap
-- Returns chunks with position information
+- Returns [`Chunk`](../common_resources/data_types.md#chunk) objects with start/end positions (line, column, byte/char offsets)
 
 **Usage:**
 

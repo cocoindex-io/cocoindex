@@ -5,16 +5,14 @@ description: Customize how CocoIndex identifies and validates memoized function 
 
 # Memoization Keys & States
 
-As described in [Function — Change detection](../programming_guide/function.md#change-detection), CocoIndex fingerprints both **data** (function arguments and context values) and **code** to decide whether a memo can be reused. By default, most types are fingerprinted automatically. This page covers how to customize the **data** side — how objects are fingerprinted and validated:
+As described in [Function — Change detection](../programming_guide/function.md#change-detection), CocoIndex detects [logic, input, and context changes](../programming_guide/function.md#change-detection) to decide whether a memo can be reused. Function arguments, [`deps`](../programming_guide/function.md#deps) values, and [context values](../programming_guide/context.md#change-detection) with `detect_change=True` are all fingerprinted through the same **data fingerprinting** pipeline. By default, most types are fingerprinted automatically. This page covers how to customize that pipeline — how objects are fingerprinted and validated:
 
 - **Memoization keys** — how to control what CocoIndex uses as the fingerprint for your objects.
 - **Memo states** — how to add post-fingerprint validation to check freshness beyond simple equality.
 
-Both mechanisms apply equally to function arguments and [context values](../programming_guide/context.md#change-detection) — they go through the same pipeline.
-
 ## How data fingerprinting works
 
-For each data value (argument or context value), CocoIndex derives a canonical form with this precedence:
+For each data value (function argument, `deps` value, or context value), CocoIndex derives a canonical form with this precedence:
 
 1. If the object implements **`__coco_memo_key__()`**, CocoIndex uses its return value.
 2. Otherwise, if you registered a **memo key function** for the object's type, CocoIndex uses that.

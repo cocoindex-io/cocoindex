@@ -55,3 +55,8 @@ What incremental processing means:
 - Support multiple mechanisms to capture source changes (CDC, poll-based) out of the box
 
 You write simple batch-style code — no delta logic, no state handling. CocoIndex automatically runs your pipeline incrementally and keeps the output up to date for serving, training, or feature computation.
+
+## Next steps
+
+- [Install CocoIndex](./installation.md) and follow the [Quickstart](./quickstart.md) to build your first pipeline in 5 minutes
+- Read [Core Concepts](../programming_guide/core_concepts.mdx) for the mental model behind CocoIndex

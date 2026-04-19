@@ -27,30 +27,28 @@ This is what lets CocoIndex avoid rerunning expensive steps on every `app.update
 
 If you don't need any of the above for a helper, keep it as a plain Python function.
 
-## Incremental updates: change detection and memoization
+## Change detection and memoization
 
 Every `@coco.fn` function participates in CocoIndex's change detection system. With `memo=True`, the function's results are cached and reused when nothing has changed. These two mechanisms — detecting changes and acting on them — work together to enable incremental updates.
 
 ### Change detection
 
-CocoIndex detects two kinds of changes:
+CocoIndex detects three kinds of changes:
 
-**Data changes** — function arguments and [context values](./context.md) (with [`detect_change=True`](./context.md#change-detection), opt-in) are fingerprinted through the same pipeline. When you call a function with different arguments, or provide a different value for a context key, the fingerprints change.
+**Logic changes** — the function's source code, [`deps`](#deps) values, and explicit [`version`](#version) bumps. Tracked by `@coco.fn`. Logic fingerprints **propagate transitively** up the call chain: if `foo` (memoized) calls `bar` (not memoized), and `bar`'s logic changes, `foo`'s memo is invalidated — because `foo`'s output could be different. This is why `@coco.fn` matters for **any** function in the call chain, not just memoized ones.
 
-**Code changes** — the function's implementation is automatically fingerprinted. When you edit a `@coco.fn` function's code, its fingerprint changes.
+**Input changes** — the function's arguments. Tracked by `@coco.fn`. When you call a function with different arguments, the fingerprints change. Input fingerprints do not propagate transitively.
 
-Both kinds of fingerprints **propagate transitively** up the call chain. This is important: even a function that isn't memoized itself still contributes its fingerprints to memoized callers. If `foo` (memoized) calls `bar` (not memoized), and you change `bar`'s code, `foo`'s memo is invalidated.
-
-This is why `@coco.fn` matters for **any** function in the call chain, not just memoized ones.
+**Context changes** — [context values](./context.md) with [`detect_change=True`](./context.md#change-detection). Tracked by [`use_context()`](./context.md#retrieving-values) at the call site — independent of `@coco.fn`. When a context value changes, any memoized function whose execution involved a `use_context()` call on that key is invalidated.
 
 ### Memoization
 
-With `memo=True`, the function's result is cached. On subsequent calls, if no data or code fingerprints have changed, the cached result is reused without executing the function body — it carries over target states declared during the function's previous invocation and returns its previous return value.
+With `memo=True`, the function's result is cached. On subsequent calls, if no logic or input fingerprints have changed, the cached result is reused without executing the function body — it carries over target states declared during the function's previous invocation and returns its previous return value.
 
 ```python
 @coco.fn(memo=True)
 def process_chunk(chunk: Chunk) -> Embedding:
-    # This computation is skipped if chunk, context values, and code are unchanged
+    # This computation is skipped if chunk, logic, and context are unchanged
     return embed(chunk.text)
 ```
 
@@ -65,7 +63,7 @@ Add a **return type annotation** to memoized functions so CocoIndex can properly
 **Benefit:** Memoization saves more when:
 
 - The computation is expensive
-- The function's caller is reprocessed frequently (due to data or code changes)
+- The function's caller is reprocessed frequently (due to logic or input changes)
 
 **Examples:**
 
@@ -78,21 +76,21 @@ Add a **return type annotation** to memoized functions so CocoIndex can properly
 
 ### Controlling change detection scope
 
-Three parameters on `@coco.fn` let you customize how code changes are detected:
+Three parameters on `@coco.fn` let you customize how logic changes are detected:
 
-- **`logic_tracking`** — controls the *scope* of automatic code change detection
+- **`logic_tracking`** — controls the *scope* of automatic logic change detection
 - **`version`** — provides explicit manual control over when dependent memos are invalidated
 - **`deps`** — declares external values (e.g. a module-level prompt string) as part of the function's logic, so changing them invalidates dependent memos
 
-These parameters control the **code** side of change detection. The **data** side is controlled by [`detect_change`](./context.md#change-detection) on context keys, and by the fingerprinting behavior of the objects themselves (see [Memoization Keys & States](../advanced_topics/memoization_keys.md)).
+These parameters control code fingerprinting for logic changes. Data fingerprinting (for arguments, `deps` values, and context values) is controlled by the objects themselves (see [Memoization Keys & States](../advanced_topics/memoization_keys.md)).
 
 #### `logic_tracking`
 
-The `logic_tracking` parameter controls whether and how function code changes are detected:
+The `logic_tracking` parameter controls whether and how logic changes are detected:
 
-- **`"full"` (default):** Track this function's code AND all transitively called `@coco.fn` functions' code. A change anywhere in the call chain invalidates dependent memos.
-- **`"self"`:** Track only this function's own code. Changes in called functions do not propagate through this function.
-- **`None`:** Don't track this function's code at all. Code changes to this function are invisible to the change detection system.
+- **`"full"` (default):** Track this function's logic AND all transitively called `@coco.fn` functions' logic. A change anywhere in the call chain invalidates dependent memos.
+- **`"self"`:** Track only this function's own logic. Changes in called functions do not propagate through this function.
+- **`None`:** Don't track this function's logic at all. Logic changes to this function are invisible to the change detection system.
 
 #### `version`
 
@@ -115,7 +113,7 @@ SYSTEM_PROMPT = "You are a helpful assistant. Be concise."
 @coco.fn(memo=True, deps=SYSTEM_PROMPT)
 def summarize(text: str) -> str:
     # Editing SYSTEM_PROMPT invalidates this function's memo
-    # (and propagates to memoized callers) just like a code change would.
+    # (and propagates to memoized callers) just like a logic change would.
     return call_llm(SYSTEM_PROMPT, text)
 ```
 
@@ -142,7 +140,7 @@ The value is canonicalized through the [memoization-key pipeline](../advanced_to
 
 These parameters can be set on any `@coco.fn` function — not just memoized ones. A non-memoized function's fingerprint still propagates to its memoized callers and components.
 
-**Fully automatic (default)** — use `logic_tracking="full"` (or omit it) without setting `version`. Any code change in the function or its callees invalidates dependent memos. This always just works.
+**Fully automatic (default)** — use `logic_tracking="full"` (or omit it) without setting `version`. Any logic change in the function or its callees invalidates dependent memos. This always just works.
 
 ```python
 @coco.fn
@@ -162,7 +160,7 @@ async def process(data: str) -> str:
     return await transform(data)
 ```
 
-**Opt out of tracking** — use `logic_tracking=None` for functions with a stable contract (where code changes don't affect output), or functions whose changes don't affect behavior (e.g., logging, performance hints). This prevents unnecessary reprocessing when only internals change.
+**Opt out of tracking** — use `logic_tracking=None` for functions with a stable contract (where logic changes don't affect output), or functions whose changes don't affect behavior (e.g., logging, performance hints). This prevents unnecessary reprocessing when only internals change.
 
 ```python
 @coco.fn(logic_tracking=None)
@@ -173,12 +171,12 @@ def embed(text: str) -> list[float]:
 ```
 
 :::note
-[Change-detected context values](./context.md#change-detection) consumed via `coco.use_context()` always participate in change detection regardless of the `logic_tracking` setting. Even with `logic_tracking=None`, a change in a change-detected context value still invalidates dependent memos. The `logic_tracking` parameter controls only **code** fingerprinting.
+[Context changes](./context.md#change-detection) are independent of `@coco.fn` and `logic_tracking`. Even with `logic_tracking=None`, a change in a change-detected context value still invalidates dependent memos, because context tracking is done by `use_context()`, not by the decorator.
 :::
 
 ### Customizing data fingerprinting
 
-By default, CocoIndex fingerprints function arguments and context values automatically for most types — primitives, containers, dataclasses, Pydantic models, and picklable objects. For custom types, or when you need multi-level validation (e.g., check mtime first, then content hash), see [Memoization Keys & States](../advanced_topics/memoization_keys.md).
+By default, CocoIndex fingerprints function arguments, `deps` values, and context values automatically for most types — primitives, containers, dataclasses, Pydantic models, and picklable objects. For custom types, or when you need multi-level validation (e.g., check mtime first, then content hash), see [Memoization Keys & States](../advanced_topics/memoization_keys.md).
 
 ## Execution capabilities
 

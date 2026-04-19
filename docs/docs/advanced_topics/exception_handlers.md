@@ -31,7 +31,7 @@ An update can be interrupted by various events: a process kill (SIGKILL), Ctrl+C
 
 CocoIndex's internal database (LMDB) uses transactions, so its own state is always consistent even after a crash. CocoIndex tracks all possible states a target could be in — if an update is interrupted partway through a commit, both the old and new states are retained as possibilities. This ensures no state is ever lost.
 
-**Recovery is automatic.** On the next `app.update()`, CocoIndex re-processes affected components and re-submits their target states. Because target writes are designed to be **idempotent** (e.g., `INSERT ... ON CONFLICT DO UPDATE`), re-submitting converges to the correct state regardless of whether the previous commit partially succeeded or never ran.
+**Recovery is automatic.** On the next `app.update()`, CocoIndex computes the current desired state and reconciles against all possible previous states. The target connector converges the target to the correct state regardless of whether the previous commit partially succeeded or never ran.
 
 For details on how target handlers deal with multiple possible previous states after an interruption, see [Custom Target Connector — Handle multiple previous states](./custom_target_connector.md#handle-multiple-previous-states).
 
