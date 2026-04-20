@@ -85,7 +85,7 @@ async def coco_lifespan(
     if not database_url:
         raise ValueError("POSTGRES_URL is not set")
 
-    async with await postgres.create_pool(database_url) as pool:
+    async with await asyncpg.create_pool(database_url) as pool:
         builder.provide(PG_DB, pool)
         builder.provide(EMBEDDER, SentenceTransformerEmbedder(EMBED_MODEL))
         yield
@@ -192,7 +192,7 @@ async def query() -> None:
         raise ValueError("POSTGRES_URL is not set")
 
     embedder = SentenceTransformerEmbedder(EMBED_MODEL)
-    async with await postgres.create_pool(database_url) as pool:
+    async with await asyncpg.create_pool(database_url) as pool:
         if len(sys.argv) > 2:
             q = " ".join(sys.argv[2:])
             await query_once(pool, embedder, q)

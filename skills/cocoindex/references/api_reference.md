@@ -193,7 +193,7 @@ Define environment setup/teardown. Registered to the default environment.
 ```python
 @coco.lifespan
 async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]:
-    async with await postgres.create_pool(DATABASE_URL) as pool:
+    async with await asyncpg.create_pool(DATABASE_URL) as pool:
         builder.provide(PG_DB, pool)
         builder.provide(EMBEDDER, SentenceTransformerEmbedder(MODEL))
         yield

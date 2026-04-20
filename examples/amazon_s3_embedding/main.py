@@ -53,7 +53,7 @@ _splitter = RecursiveSplitter()
 async def coco_lifespan(
     builder: coco.EnvironmentBuilder,
 ) -> AsyncIterator[None]:
-    async with await postgres.create_pool(DATABASE_URL) as pool:
+    async with await asyncpg.create_pool(DATABASE_URL) as pool:
         builder.provide(PG_DB, pool)
         builder.provide(EMBEDDER, SentenceTransformerEmbedder(EMBED_MODEL))
 
@@ -172,7 +172,7 @@ async def query_once(
 
 async def query() -> None:
     embedder = SentenceTransformerEmbedder(EMBED_MODEL)
-    async with await postgres.create_pool(DATABASE_URL) as pool:
+    async with await asyncpg.create_pool(DATABASE_URL) as pool:
         if len(sys.argv) > 2:
             q = " ".join(sys.argv[2:])
             await query_once(pool, embedder, q)

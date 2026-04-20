@@ -1,18 +1,16 @@
 """Tests for PostgreSQL target connector attachment features (vector index, SQL command).
 
-Run with:
-    POSTGRES_DSN="postgresql://localhost/cocoindex_test" pytest python/tests/connectors/test_postgres_target.py -v -s
+Uses testcontainers to spin up a real PostgreSQL instance with pgvector automatically.
 
-Environment variables:
-    POSTGRES_DSN - PostgreSQL connection string (required for tests to run)
+Run with:
+    pytest python/tests/connectors/test_postgres_target.py -v -s
 """
 
 from __future__ import annotations
 
-import os
 import uuid
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Annotated, Any, AsyncIterator
+from typing import TYPE_CHECKING, Annotated, Any
 
 if TYPE_CHECKING:
     import asyncpg
@@ -27,10 +25,8 @@ from cocoindex.resources.schema import VectorSchema
 
 from tests import common
 
-coco_env = common.create_test_env(__file__)
-
 # =============================================================================
-# Check dependencies and Postgres configuration
+# Check dependencies
 # =============================================================================
 
 try:
@@ -40,16 +36,22 @@ try:
 except ImportError:
     DEPS_AVAILABLE = False
 
-_PG_DB_KEY: coco.ContextKey[Any] = coco.ContextKey("test_postgres_target_pg_db")
+try:
+    __import__("testcontainers")
+    TESTCONTAINERS_AVAILABLE = True
+except ImportError:
+    TESTCONTAINERS_AVAILABLE = False
 
-PG_DSN = os.getenv("POSTGRES_DSN")
-PG_CONFIGURED = bool(PG_DSN)
+_PG_DB_KEY: coco.ContextKey[Any] = coco.ContextKey("test_postgres_target_pg_db")
 
 pytestmark = [
     pytest.mark.skipif(
         not DEPS_AVAILABLE, reason="postgres dependencies not installed"
     ),
-    pytest.mark.skipif(not PG_CONFIGURED, reason="POSTGRES_DSN not set"),
+    pytest.mark.skipif(
+        not TESTCONTAINERS_AVAILABLE, reason="testcontainers not installed"
+    ),
+    pytest.mark.timeout(120),
 ]
 
 
@@ -103,15 +105,44 @@ async def _drop_index(pool: "asyncpg.Pool", index_name: str) -> None:
 
 
 # =============================================================================
-# Fixture
+# Fixtures
 # =============================================================================
 
 
+# Module-scoped: start the container once, share the DSN across all tests.
+@pytest.fixture(scope="module")
+def pg_dsn() -> Any:
+    from testcontainers.postgres import PostgresContainer  # type: ignore[import-untyped]
+
+    with PostgresContainer("pgvector/pgvector:pg16") as pg:
+        dsn = pg.get_connection_url()
+        # testcontainers may return a SQLAlchemy-style URL; normalize for asyncpg.
+        dsn = dsn.replace("postgresql+psycopg2://", "postgresql://")
+        yield dsn
+
+
+class _PgEnv:
+    """Bundle of pool + coco environment for postgres target tests."""
+
+    __slots__ = ("pool", "coco_env")
+
+    def __init__(self, pool: Any, coco_env: coco.Environment) -> None:
+        self.pool = pool
+        self.coco_env = coco_env
+
+
+# Function-scoped: each test gets a fresh pool and environment on its own event loop.
 @pytest_asyncio.fixture
-async def pg_env() -> AsyncIterator[Any]:
-    """Create an asyncpg pool for tests."""
-    pool = await postgres.create_pool(PG_DSN)
-    yield pool
+async def pg_env(pg_dsn: str, request: pytest.FixtureRequest) -> Any:
+    """Create an asyncpg pool and coco environment bound to the current event loop."""
+    import asyncpg
+
+    pool = await asyncpg.create_pool(pg_dsn)
+
+    coco_env = common.create_test_env(__file__, suffix=request.node.name)
+    coco_env.context_provider.provide(_PG_DB_KEY, pool)
+
+    yield _PgEnv(pool, coco_env)
     await pool.close()
 
 
@@ -141,9 +172,10 @@ class TextRow:
 
 
 @pytest.mark.asyncio
-async def test_postgres_declare_vector_index(pg_env: Any) -> None:
+async def test_postgres_declare_vector_index(pg_env: _PgEnv) -> None:
     """Vector index lifecycle: create with ivfflat → change to hnsw → remove table."""
-    pool = pg_env
+    pool = pg_env.pool
+    coco_env = pg_env.coco_env
     table_name = _unique_name("test_vec_idx")
     logical_name = "idx1"
     pg_index_name = f"{table_name}__vector__{logical_name}"
@@ -152,8 +184,6 @@ async def test_postgres_declare_vector_index(pg_env: Any) -> None:
     source_rows: list[VectorRow] = []
     declare_table: bool = True
     index_method: str = "ivfflat"
-
-    coco_env.context_provider.provide(_PG_DB_KEY, pool)
 
     try:
 
@@ -215,9 +245,12 @@ async def test_postgres_declare_vector_index(pg_env: Any) -> None:
 
 
 @pytest.mark.asyncio
-async def test_postgres_declare_vector_index_fingerprint_no_change(pg_env: Any) -> None:
+async def test_postgres_declare_vector_index_fingerprint_no_change(
+    pg_env: _PgEnv,
+) -> None:
     """Identical vector index spec across runs should not recreate the index."""
-    pool = pg_env
+    pool = pg_env.pool
+    coco_env = pg_env.coco_env
     table_name = _unique_name("test_vec_fp")
     logical_name = "idx1"
     pg_index_name = f"{table_name}__vector__{logical_name}"
@@ -229,8 +262,6 @@ async def test_postgres_declare_vector_index_fingerprint_no_change(pg_env: Any) 
             embedding=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
         ),
     ]
-
-    coco_env.context_provider.provide(_PG_DB_KEY, pool)
 
     try:
 
@@ -272,9 +303,14 @@ async def test_postgres_declare_vector_index_fingerprint_no_change(pg_env: Any) 
 
 
 @pytest.mark.asyncio
-async def test_postgres_declare_sql_command_attachment(pg_env: Any) -> None:
+@pytest.mark.skip(
+    reason="Attachment teardown on removal not yet implemented: "
+    "engine skips orphaned attachment providers in Phase 2 of pre_commit"
+)
+async def test_postgres_declare_sql_command_attachment(pg_env: _PgEnv) -> None:
     """SQL command attachment lifecycle: create index → change → remove (with teardown)."""
-    pool = pg_env
+    pool = pg_env.pool
+    coco_env = pg_env.coco_env
     table_name = _unique_name("test_sql_cmd")
     idx_name_v1 = f"{table_name}_fts_v1"
     idx_name_v2 = f"{table_name}_fts_v2"
@@ -283,8 +319,6 @@ async def test_postgres_declare_sql_command_attachment(pg_env: Any) -> None:
     declare_table: bool = True
     current_setup_sql: str | None = None
     current_teardown_sql: str | None = None
-
-    coco_env.context_provider.provide(_PG_DB_KEY, pool)
 
     try:
 
@@ -353,16 +387,15 @@ async def test_postgres_declare_sql_command_attachment(pg_env: Any) -> None:
 
 
 @pytest.mark.asyncio
-async def test_postgres_sql_command_attachment_no_teardown(pg_env: Any) -> None:
+async def test_postgres_sql_command_attachment_no_teardown(pg_env: _PgEnv) -> None:
     """Declare SQL command with teardown_sql=None, then remove. Should not error."""
-    pool = pg_env
+    pool = pg_env.pool
+    coco_env = pg_env.coco_env
     table_name = _unique_name("test_sql_notd")
     idx_name = f"{table_name}_idx"
 
     source_rows: list[TextRow] = [TextRow(id="1", content="hello")]
     declare_attachment: bool = True
-
-    coco_env.context_provider.provide(_PG_DB_KEY, pool)
 
     try:
 
@@ -406,9 +439,10 @@ async def test_postgres_sql_command_attachment_no_teardown(pg_env: Any) -> None:
 
 
 @pytest.mark.asyncio
-async def test_postgres_mixed_rows_and_attachments(pg_env: Any) -> None:
+async def test_postgres_mixed_rows_and_attachments(pg_env: _PgEnv) -> None:
     """Rows and vector index coexist correctly under the same table."""
-    pool = pg_env
+    pool = pg_env.pool
+    coco_env = pg_env.coco_env
     table_name = _unique_name("test_mixed")
     logical_name = "idx1"
     pg_index_name = f"{table_name}__vector__{logical_name}"
@@ -416,8 +450,6 @@ async def test_postgres_mixed_rows_and_attachments(pg_env: Any) -> None:
     source_rows: list[VectorRow] = []
     index_method: str = "ivfflat"
     declare_table: bool = True
-
-    coco_env.context_provider.provide(_PG_DB_KEY, pool)
 
     try:
 

@@ -12,7 +12,6 @@ import asyncio
 import datetime
 import decimal
 import ipaddress
-import inspect
 import json
 import uuid
 from dataclasses import dataclass
@@ -30,10 +29,10 @@ from typing_extensions import TypeVar
 
 try:
     import asyncpg  # type: ignore
-    import pgvector.asyncpg  # type: ignore
 except ImportError as e:
     raise ImportError(
-        "asyncpg and pgvector are required to use the PostgreSQL connector. Please install cocoindex[postgres]."
+        "asyncpg is required to use the PostgreSQL connector. "
+        "Please install cocoindex[postgres]."
     ) from e
 
 import numpy as np
@@ -104,6 +103,11 @@ class PgType(NamedTuple):
 def _json_encoder(value: Any) -> str:
     """Encode a value to JSON string for asyncpg."""
     return json.dumps(value, default=str)
+
+
+def _vector_encoder(value: Any) -> str:
+    """Encode a numpy array to pgvector text format, e.g. '[1.0,2.0,3.0]'."""
+    return "[" + ",".join(str(float(x)) for x in value) + "]"
 
 
 _PGVECTOR_TYPE_BASES: frozenset[str] = frozenset({"vector", "halfvec"})
@@ -213,7 +217,9 @@ async def _get_type_mapping(
 
         # Default to `vector` (float32/float64/int64/etc.). Use `halfvec` for float16.
         base = "halfvec" if vector_schema.dtype in (np.half, np.float16) else "vector"
-        return _TypeMapping(pg_type=f"{base}({vector_schema.size})")
+        return _TypeMapping(
+            pg_type=f"{base}({vector_schema.size})", encoder=_vector_encoder
+        )
 
     elif vector_schema is not None:
         raise ValueError(
@@ -1357,36 +1363,13 @@ async def mount_table_target(
 
 async def create_pool(
     dsn: str | None = None,
-    *,
-    init: Callable[[asyncpg.Connection], Any] | None = None,
     **kwargs: Any,
 ) -> asyncpg.Pool:
+    """Deprecated: use ``asyncpg.create_pool()`` directly.
+
+    Kept for backward compatibility.
     """
-    Create an asyncpg connection pool, registering extensions needed by the postgres connector on each connection.
-
-    Args:
-        dsn: Connection string or None.
-        init: Optional connection initialization callback. If provided,
-              it will be called for each connection in the pool.
-        **kwargs: All other arguments are passed to `asyncpg.create_pool()`.
-
-    Returns:
-        An asyncpg connection pool.
-
-    Example:
-        ```python
-        pool = await create_pool("postgresql://localhost/mydb")
-        ```
-    """
-
-    async def _init_with_pgvector(conn: asyncpg.Connection) -> None:
-        await pgvector.asyncpg.register_vector(conn)
-        if init is not None:
-            result = init(conn)
-            if inspect.isawaitable(result):
-                await result
-
-    return await asyncpg.create_pool(dsn, init=_init_with_pgvector, **kwargs)
+    return await asyncpg.create_pool(dsn, **kwargs)
 
 
 __all__ = [

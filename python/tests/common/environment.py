@@ -17,9 +17,13 @@ def get_env_db_path(name: str) -> pathlib.Path:
 _PATH_PREFIX = str(pathlib.Path(__file__).parent.parent) + "/"
 
 
-def create_test_env(test_file_path: str) -> cocoindex.Environment:
+def create_test_env(
+    test_file_path: str, suffix: str | None = None
+) -> cocoindex.Environment:
     base_name = (
         test_file_path.removeprefix(_PATH_PREFIX).removesuffix(".py").replace("/", "__")
     )
+    if suffix is not None:
+        base_name = f"{base_name}__{suffix}"
     settings = cocoindex.Settings.from_env(db_path=get_env_db_path(base_name))
     return cocoindex.Environment(settings)
