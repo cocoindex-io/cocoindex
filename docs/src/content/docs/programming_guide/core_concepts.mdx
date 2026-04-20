@@ -2,6 +2,12 @@
 title: Core Concepts
 description: Briefly introduces the core concepts of CocoIndex, covering state-driven sync, Target States, Apps, Processing Components, and incremental execution across logic and input changes.
 ---
+
+import Tabs from '@theme/Tabs';
+import TabItem from '@theme/TabItem';
+import useBaseUrl from '@docusaurus/useBaseUrl';
+import { BorderBox } from '@site/src/components/BorderBox';
+
 ## Incremental processing
 
 When processing data and storing results in targets (e.g., a database) for knowledge retrieval by AI agents or search systems, both your data and code evolve over time. Reprocessing everything after every change is expensive, slow, and disruptive. Incremental processing solves this by only processing what's changed, and applying those changes to the target.
@@ -55,11 +61,11 @@ An ***app*** is the top-level executable entity in CocoIndex. In an app, you wri
 
 CocoIndex then syncs these target states to external systems (Postgres, vector databases, etc.).
 
-<img src="/docs-v1/img/concept/app.svg" alt="App diagram" />
+<img src={useBaseUrl('/img/concept/app.svg')} alt="App diagram" />
 
 For example, here's an app that reads PDFs from a drive, converts them to markdown, and outputs to a folder:
 
-<img src="/docs-v1/img/concept/app-example.svg" alt="App example" />
+<img src={useBaseUrl('/img/concept/app-example.svg')} alt="App example" />
 
 ## Processing Component
 
@@ -67,15 +73,39 @@ In practice, your source often contains many items — files, rows, or entities 
 
 For example, if you have many files in a drive and want to process them file by file, your processing component would operate at the file level:
 
-<img src="/docs-v1/img/concept/component1.svg" alt="Processing component" />
+<img src={useBaseUrl('/img/concept/component1.svg')} alt="Processing component" />
 
 Taking this further, suppose you want to split each file into chunks and create embedding vectors for indexing. The processing component can still operate at the file level, but each component now produces multiple target states (one per chunk). CocoIndex applies all target state changes (inserts, updates, and deletes rows in the target database) as a unit for each file — all writes happen after processing completes, and each target backend applies its batch atomically when supported (e.g., within a database transaction):
 
-<img src="/docs-v1/img/concept/component2.svg" alt="Processing component with chunks" />
+<img src={useBaseUrl('/img/concept/component2.svg')} alt="Processing component with chunks" />
 
 Let's see what happens when the source state changes in different ways:
 
+<BorderBox>
+<Tabs>
+<TabItem value="new-file" label="On New File Added">
 
+<img src={useBaseUrl('/img/concept/add.svg')} alt="New file added" />
+
+When a new file (`c.md`) is added, a new processing component is created for it. Once execution completes, CocoIndex applies the new target states — inserting `vector5` and `vector6` into the vector store.
+
+</TabItem>
+<TabItem value="file-updated" label="On Existing File Updated">
+
+<img src={useBaseUrl('/img/concept/update.svg')} alt="File updated" />
+
+When file `b.md` is updated — say its content is reduced to just one chunk instead of two — the processing component's target state changes from `vector3` and `vector4` to just `vector5`. CocoIndex deletes `vector3` and `vector4`, then inserts `vector5` into the vector database, all within a single transaction.
+
+</TabItem>
+<TabItem value="file-deleted" label="On Existing File Deleted">
+
+<img src={useBaseUrl('/img/concept/delete.svg')} alt="File deleted" />
+
+When file `b.md` is deleted from the source folder, CocoIndex deletes its associated target states (`vector3` and `vector4`) from the vector database in a single transaction.
+
+</TabItem>
+</Tabs>
+</BorderBox>
 
 ## Function memoization: skip unchanged computations
 
@@ -89,11 +119,44 @@ In CocoIndex, both processing components and transforms are expressed as functio
 
 See [Function Memoization](./function.md#memoization) for more details.
 
-<img src="/docs-v1/img/concept/memo.svg" alt="Memoization" />
+<img src={useBaseUrl('/img/concept/memo.svg')} alt="Memoization" />
 
 Here's how memoization behaves in different scenarios:
 
+<BorderBox>
+<Tabs>
+<TabItem value="data-update" label="On Input Data Change">
 
+<img src={useBaseUrl('/img/concept/memo1.svg')} alt="Input data update" />
+
+When input file `b.md` changes:
+
+- The input state `a.md` is unchanged, so the 1st processing component is entirely reused without reprocessing.
+
+- The input state `b.md` changed, so the 2nd processing component must be reprocessed. After splitting, suppose we get two chunks: `chunk3` (identical to before) and `chunk5` (new).
+
+  - `Embed(chunk3)` was memoized previously, so its cached result is reused.
+
+  - `Embed(chunk5)` is new and must be computed.
+
+</TabItem>
+<TabItem value="code-update" label="On Code Change">
+
+<img src={useBaseUrl('/img/concept/memo2.svg')} alt="Code update" />
+
+When the "Split into chunks" logic changes:
+
+- All processing components must be reprocessed since the logic changed.
+
+- For the 1st processing component, the new logic produces the same chunks as before. The memoized `Embed` results are reused without recomputation.
+
+- For the 2nd processing component, the new logic produces different chunks (`chunk5` and `chunk6`), so `Embed` must be invoked on them.
+
+As these examples show, memoization can save expensive computations even when logic changes — as long as the intermediate results remain the same.
+
+</TabItem>
+</Tabs>
+</BorderBox>
 
 ## Next steps
 
