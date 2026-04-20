@@ -18,21 +18,23 @@
 import { visit } from 'unist-util-visit';
 import { toString } from 'mdast-util-to-string';
 
-// Each admonition kind gets a distinct icon + class so readers can
-// distinguish at a glance. Colors are defined in src/styles/globals.css.
-//   note    — neutral annotation (berry pin, plain cream bg)
-//   info    — important context (coral i, peach-tinted cream)
-//   tip     — helpful suggestion (palm ★, green-tinted cream)
-//   warning — heads up (pink !, pink-tinted cream)
+// Each admonition kind gets a distinct class + default label. The icon
+// glyph itself is drawn in CSS via a per-kind mask-image data URI — that
+// way the icon colour stays in sync with the bubble (currentColor) and we
+// don't need to inject raw SVG through the MDX pipeline.
+//   note    — neutral annotation (document-with-lines, berry bubble)
+//   info    — important context (info-circle, coral bubble)
+//   tip     — helpful suggestion (lightbulb, palm bubble)
+//   warning — heads up (triangle !, pink bubble)
 //   caution — alias for warning
-//   danger  — critical (coral !, deeper pink-tinted cream)
+//   danger  — critical (octagon !, coral bubble, deep pink bg)
 const SPECS = {
-  note:    { defaultLabel: 'Note',    icon: 'i', cls: 'note'    },
-  info:    { defaultLabel: 'Info',    icon: 'i', cls: 'info'    },
-  tip:     { defaultLabel: 'Tip',     icon: '★', cls: 'tip'     },
-  warning: { defaultLabel: 'Warning', icon: '!', cls: 'warn'    },
-  caution: { defaultLabel: 'Caution', icon: '!', cls: 'warn'    },
-  danger:  { defaultLabel: 'Danger',  icon: '!', cls: 'danger'  },
+  note:    { defaultLabel: 'Note',    cls: 'note'   },
+  info:    { defaultLabel: 'Info',    cls: 'info'   },
+  tip:     { defaultLabel: 'Tip',     cls: 'tip'    },
+  warning: { defaultLabel: 'Warning', cls: 'warn'   },
+  caution: { defaultLabel: 'Caution', cls: 'warn'   },
+  danger:  { defaultLabel: 'Danger',  cls: 'danger' },
 };
 
 export default function remarkAdmonitions() {
@@ -60,9 +62,11 @@ export default function remarkAdmonitions() {
 
       node.children = [
         {
+          // Empty by design — `.ico::before` draws the SVG via mask-image
+          // so we can react to variant-specific colours via CSS only.
           type: 'paragraph',
-          data: { hName: 'div', hProperties: { className: ['ico'] } },
-          children: [{ type: 'text', value: spec.icon }],
+          data: { hName: 'div', hProperties: { className: ['ico'], 'aria-hidden': 'true' } },
+          children: [],
         },
         {
           type: 'paragraph',

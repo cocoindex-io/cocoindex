@@ -396,35 +396,52 @@ aside.toc .meta .edited { color: var(--muted); cursor: default; }
   border-color: var(--coral);
   background: color-mix(in oklab, var(--pink) 20%, var(--cream));
 }
+/* The icon bubble. Each variant sets `background` + `color`; the glyph
+   itself is painted in CSS as a mask-image data URI so it inherits the
+   bubble's `color` (=currentColor) and stays in sync with the variant. */
 .prose .callout .ico {
   width: 28px; height: 28px; flex: none;
   border-radius: 50%;
   display: grid; place-items: center;
-  font-family: var(--mono); font-size: 14px; font-weight: 500;
   background: var(--coral); color: var(--cream);
   margin: 0;
 }
-.prose .callout.note .ico   { background: var(--berry); color: var(--cream); }
-.prose .callout.info .ico   { background: var(--coral); color: var(--cream); }
-.prose .callout.tip .ico    { background: var(--palm);  color: var(--maroon-ink); }
-.prose .callout.warn .ico   { background: var(--pink);  color: var(--maroon-ink); }
-.prose .callout.danger .ico { background: var(--coral); color: var(--cream); }
-
-/* Nested code block inside a callout — pick a deep tone that harmonizes
-   with the callout's accent rather than using the default maroon-ink
-   (which looks foreign next to a green or pink wash). All derived from
-   the brand palette (src/styles/globals.css :root tokens). */
-.prose .callout pre {
-  /* Override Shiki's inline background-color via the CSS variable it
-     respects first; fall back with !important for safety. */
-  background: var(--callout-code-bg) !important;
-  border-color: color-mix(in oklab, var(--callout-code-bg) 70%, transparent);
+.prose .callout .ico::before {
+  content: "";
+  display: block;
+  width: 15px; height: 15px;
+  background-color: currentColor;
+  -webkit-mask: var(--ico-mask) center / contain no-repeat;
+          mask: var(--ico-mask) center / contain no-repeat;
 }
-.prose .callout.note   { --callout-code-bg: #2A121B; } /* maroon-ink  */
-.prose .callout.info   { --callout-code-bg: #401E2B; } /* maroon-deep */
-.prose .callout.tip    { --callout-code-bg: #0E2E14; } /* deep palm — brand palm (#27E62B) mixed with maroon-ink */
-.prose .callout.warn   { --callout-code-bg: #6A1E23; } /* berry       */
-.prose .callout.danger { --callout-code-bg: #3B0F14; } /* darker berry for a stronger warning */
+
+/* Per-variant bubble colours + icon mask URIs. SVGs are hand-drawn at
+   16×16 on stroke-width 1.6, fill=transparent, stroke+dots=black so the
+   mask picks up the silhouette cleanly. */
+.prose .callout.note .ico {
+  background: var(--berry); color: var(--cream);
+  --ico-mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'><path d='M4 2h6l3 3v9H4z'/><path d='M10 2v3h3'/><path d='M6 9h4M6 11h4M6 13h3'/></svg>");
+}
+.prose .callout.info .ico {
+  background: var(--coral); color: var(--cream);
+  --ico-mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'><circle cx='8' cy='8' r='6.5'/><path d='M8 7.5v4.2'/><circle cx='8' cy='4.8' r='0.7' fill='black'/></svg>");
+}
+.prose .callout.tip .ico {
+  background: var(--palm); color: var(--maroon-ink);
+  --ico-mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'><path d='M5.2 9.4c-1.3-.9-2.1-2.4-2.1-4A4.9 4.9 0 0 1 8 .5a4.9 4.9 0 0 1 4.9 4.9c0 1.6-.8 3.1-2.1 4'/><path d='M5.8 9.4v2.8h4.4V9.4'/><path d='M6.6 14.2h2.8'/></svg>");
+}
+.prose .callout.warn .ico {
+  background: var(--pink); color: var(--maroon-ink);
+  --ico-mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'><path d='M8 1.5 1.5 14h13z'/><path d='M8 6.2v3.8'/><circle cx='8' cy='12' r='0.75' fill='black'/></svg>");
+}
+.prose .callout.danger .ico {
+  background: var(--coral); color: var(--cream);
+  --ico-mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'><path d='M5.4 1.5h5.2l3.9 3.9v5.2l-3.9 3.9H5.4l-3.9-3.9V5.4z'/><path d='M8 5.2v4.1'/><circle cx='8' cy='11.5' r='0.75' fill='black'/></svg>");
+}
+
+/* Nested code blocks inside a callout use the same maroon-ink chrome as
+   standalone code blocks — a uniform "chocolate" reads cleaner than
+   tinting per variant. The callout bubble + bg already carry the kind. */
 .prose .callout .body { flex: 1; font-size: 14.5px; margin: 0; max-width: none; }
 .prose .callout .body > b {
   font-family: var(--sans); font-weight: 600; font-size: 13px;
