@@ -1,0 +1,333 @@
+---
+title: LLM Support
+description: LLMs integrated with CocoIndex for various built-in functions
+---
+CocoIndex provides built-in functions integrating with various LLM APIs, for various inference tasks:
+*   [Text Generation](#text-generation): use LLM to generate text.
+*   [Text Embedding](#text-embedding): embed text into a vector space.
+
+## LLM API Types
+
+We support integrating with LLM with different types of APIs.
+Each LLM API type is specified by a `cocoindex.LlmApiType` enum.
+
+We support the following types of LLM APIs:
+
+| API Name | `LlmApiType` enum | Text Generation | Text Embedding |
+|----------|---------------------|--------------------|--------------------|
+| [OpenAI](#openai) | `LlmApiType.OPENAI` | ✅ | ✅ |
+| [Azure OpenAI](#azure-openai) | `LlmApiType.AZURE_OPENAI` | ✅ | ✅ |
+| [Ollama](#ollama) | `LlmApiType.OLLAMA` | ✅ | ✅ |
+| [Google Gemini](#google-gemini) | `LlmApiType.GEMINI` | ✅ | ✅ |
+| [Vertex AI](#vertex-ai) | `LlmApiType.VERTEX_AI` | ✅ | ✅ |
+| [Anthropic](#anthropic) | `LlmApiType.ANTHROPIC` | ✅ | ❌ |
+| [Voyage](#voyage) | `LlmApiType.VOYAGE` | ❌ | ✅ |
+| [LiteLLM](#litellm) | `LlmApiType.LITE_LLM` | ✅ | ❌ |
+| [OpenRouter](#openrouter) | `LlmApiType.OPEN_ROUTER` | ✅ | ✅ |
+| [vLLM](#vllm) | `LlmApiType.VLLM` | ✅ | ❌ |
+| [Bedrock](#bedrock) | `LlmApiType.BEDROCK` | ✅ | ❌ |
+
+## LLM Tasks
+
+### Text Generation
+
+Generation is used as a building block for certain CocoIndex functions that process data using LLM generation.
+
+We have one built-in function using LLM generation for now:
+
+*  [`ExtractByLlm`](/docs/ops/functions#extractbyllm): it extracts information from input text.
+
+#### LLM Spec
+
+When calling a CocoIndex function that uses LLM generation, you need to provide a `cocoindex.LlmSpec` dataclass, to configure the LLM you want to use in these functions.
+It has the following fields:
+
+*   `api_type` (type: [`cocoindex.LlmApiType`](/docs/ai/llm#llm-api-types), required): The type of integrated LLM API to use, e.g. `cocoindex.LlmApiType.OPENAI` or `cocoindex.LlmApiType.OLLAMA`.
+    See supported LLM APIs in the [LLM API integrations](#llm-api-integrations) section below.
+*   `model` (type: `str`, required): The name of the LLM model to use.
+*   `address` (type: `str`, optional): The address of the LLM API.
+*   `api_config` (optional): Specific configuration for the LLM API. Only needed for specific LLM APIs (see below).
+
+
+### Text Embedding
+
+Embedding means converting text into a vector space, usually for similarity matching.
+
+We provide a built-in function [`EmbedText`](/docs/ops/functions#embedtext) that converts a given text into a vector space.
+The spec takes the following fields:
+
+*   `api_type` (type: `cocoindex.LlmApiType`, required)
+*   `model` (type: `str`, required)
+*   `address` (type: `str`, optional)
+*   `output_dimension` (type: `int`, optional)
+*   `task_type` (type: `str`, optional)
+
+See documentation for [`EmbedText`](/docs/ops/functions#embedtext) for more details about these fields.
+
+## LLM API Integrations
+
+CocoIndex integrates with various LLM APIs for these functions.
+
+### OpenAI
+
+To use the OpenAI LLM API, you need to set the environment variable `OPENAI_API_KEY`.
+You can generate the API key from [OpenAI Dashboard](https://platform.openai.com/api-keys).
+
+If you want to use a custom address, you can either provide the `address` parameter in `LlmSpec` / `EmbedText`, or set the environment variable `OPENAI_API_BASE`. The `address` parameter takes precedence over the environment variable.
+
+Spec for OpenAI takes additional `api_config` field, in type `cocoindex.llm.OpenAiConfig` with the following fields:
+-   `org_id` (type: `str`, optional): The organization ID of the OpenAI account.
+-   `project_id` (type: `str`, optional): The project ID of the OpenAI account.
+
+You can find the full list of models supported by OpenAI [here](https://platform.openai.com/docs/models).
+
+For text generation, a spec for OpenAI looks like this:
+
+
+
+For text embedding, a spec for OpenAI looks like this:
+
+
+
+### Azure OpenAI
+
+[Azure OpenAI](https://azure.microsoft.com/en-us/products/ai-services/openai-service) is Microsoft's cloud service offering OpenAI models through Azure.
+
+To use the Azure OpenAI API:
+
+1.  Create an Azure account and set up an Azure OpenAI resource in the [Azure Portal](https://portal.azure.com/).
+2.  Deploy a model (e.g., GPT-4, text-embedding-ada-002) to your Azure OpenAI resource.
+3.  Get your API key from the Azure Portal under your Azure OpenAI resource.
+4.  Set the environment variable `AZURE_OPENAI_API_KEY` to your API key.
+
+Spec for Azure OpenAI requires:
+-   `address` (type: `str`, required): The base URL of your Azure OpenAI resource, e.g., `https://your-resource-name.openai.azure.com`.
+-   `api_config` (type: `cocoindex.llm.AzureOpenAiConfig`, required): Configuration with the following fields:
+    -   `deployment_id` (type: `str`, required): The deployment name/ID you created in Azure OpenAI Studio.
+    -   `api_version` (type: `str`, optional): The API version to use. Defaults to `2024-08-01-preview` (required for structured output support). See [API versions](https://learn.microsoft.com/en-us/azure/ai-foundry/openai/api-version-lifecycle).
+
+For text generation, a spec for Azure OpenAI looks like this:
+
+
+
+For text embedding, a spec for Azure OpenAI looks like this:
+
+
+
+:::note
+Azure OpenAI uses deployment names instead of direct model names in API calls. The `deployment_id` in the config should match the deployment you created in Azure OpenAI Studio.
+:::
+
+### Ollama
+
+[Ollama](https://ollama.com/) allows you to run LLM models on your local machine easily. To get started:
+
+*   [Download](https://ollama.com/download) and install Ollama.
+*   Pull your favorite LLM models by the `ollama pull` command, e.g.
+    ```sh
+    ollama pull llama3.2
+    ```
+You can find the [list of models](https://ollama.com/library) supported by Ollama.
+
+A spec for Ollama looks like this:
+
+
+
+For text embedding with Ollama, you'll need to pull an embedding model first:
+
+```sh
+ollama pull nomic-embed-text
+```
+
+Then, a spec for Ollama embedding looks like this:
+
+
+
+### Google Gemini
+
+Google exposes Gemini through Google AI Studio APIs.
+Based on [Gemini API recommendation](https://cloud.google.com/ai/gemini?hl=en), this is recommended for experimenting and prototyping purposes.
+You may use [Vertex AI](#vertex-ai) for production use.
+
+To use Gemini via the Google AI Studio API, you need to set the environment variable `GEMINI_API_KEY`.
+You can generate the API key from [Google AI Studio](https://aistudio.google.com/apikey).
+
+You can find the full list of models supported by Gemini [here](https://ai.google.dev/gemini-api/docs/models).
+
+For text generation, a spec looks like this:
+
+
+
+For text embedding, a spec looks like this:
+
+
+
+All supported embedding models can be found [here](https://ai.google.dev/gemini-api/docs/embeddings#embeddings-models).
+Gemini supports task type (optional), which can be found [here](https://ai.google.dev/gemini-api/docs/embeddings#supported-task-types).
+
+
+### Vertex AI
+
+Google Cloud Vertex AI offers production-level integration with Google Gemini models.
+
+To use the Vertex AI API:
+
+1.  Register / login in *Google Cloud*.
+2.  In [Google Cloud Console](https://console.cloud.google.com/).
+    -   Search for *Vertex AI API*. Enable this API.
+    -   Search for *Billing*. Set the billing account for the current project.
+3.  Setup [application default credentials (ADC)](https://cloud.google.com/docs/authentication/application-default-credentials).
+
+    The easiest way during development is to [install the `gcloud` CLI](https://cloud.google.com/sdk/docs/install-sdk) and run
+
+    ```sh
+    gcloud auth application-default login
+    ```
+
+:::note[API Key Not Supported]
+
+Vertex AI does **not** support the `api_key` parameter. Vertex AI uses Application Default Credentials (ADC) for authentication instead of API keys. If you provide an `api_key` parameter when using `LlmApiType.VERTEX_AI`, an error will be raised.
+
+:::
+
+Spec for Vertex AI takes additional `api_config` field, in type `cocoindex.llm.VertexAiConfig` with the following fields:
+-   `project` (type: `str`, required): The project ID of the Google Cloud project.
+-   `region` (type: `str`, optional): The region of the Google Cloud project. Use `global` if not specified.
+
+You can find the full list of models supported by Vertex AI [here](https://cloud.google.com/vertex-ai/generative-ai/docs/learn/model-versions).
+
+For text generation, a spec for Vertex AI looks like this:
+
+
+
+
+For text embedding, a spec for Vertex AI looks like this:
+
+
+
+Vertex AI API supports task type (optional), which can be found [here](https://cloud.google.com/vertex-ai/generative-ai/docs/model-reference/text-embeddings-api#parameter-list).
+
+### Anthropic
+
+To use the Anthropic LLM API, you need to set the environment variable `ANTHROPIC_API_KEY`.
+You can generate the API key from [Anthropic API](https://console.anthropic.com/settings/keys).
+
+A text generation spec for Anthropic looks like this:
+
+
+
+You can find the full list of models supported by Anthropic [here](https://docs.anthropic.com/en/docs/about-claude/models/all-models).
+
+### Voyage
+
+To use the Voyage LLM API, you need to set the environment variable `VOYAGE_API_KEY`.
+You can generate the API key from [Voyage dashboard](https://dashboard.voyageai.com/organization/api-keys).
+
+A text embedding spec for Voyage looks like this:
+
+
+
+Voyage API supports `document` and `query` as task types (optional, a.k.a. `input_type` in Voyage API, see [Voyage API documentation](https://docs.voyageai.com/reference/embeddings-api) for details).
+
+### LiteLLM
+
+To use the LiteLLM API, you need to set the environment variable `LITELLM_API_KEY`.
+
+#### 1. Install LiteLLM Proxy
+
+```sh
+pip install 'litellm[proxy]'
+```
+
+#### 2. Create a `config.yml` for LiteLLM
+
+**Example for DeepSeek:**
+
+Use this in your `config.yml`:
+
+```yaml
+model_list:
+  - model_name: deepseek-chat
+    litellm_params:
+        model: deepseek/deepseek-chat
+        api_key: os.environ/DEEPSEEK_API_KEY
+```
+
+You need to set the environment variable `DEEPSEEK_API_KEY` to your DeepSeek API key.
+
+**Example for Groq:**
+
+Use this in your `config.yml`:
+
+```yaml
+model_list:
+  - model_name: groq-llama-3.3-70b-versatile
+    litellm_params:
+      model: groq/llama-3.3-70b-versatile
+      api_key: "os.environ/GROQ_API_KEY"
+```
+
+You need to set the environment variable `GROQ_API_KEY` to your Groq API key.
+
+
+#### 3. Run LiteLLM Proxy
+
+```sh
+litellm --config config.yml
+```
+
+#### 4. A Spec for LiteLLM will look like this:
+
+
+
+You can find the full list of models supported by LiteLLM [here](https://docs.litellm.ai/docs/providers).
+
+### OpenRouter
+
+To use the OpenRouter API, you need to set the environment variable `OPENROUTER_API_KEY`.
+You can generate the API key from [here](https://openrouter.ai/settings/keys).
+
+A text generation spec for OpenRouter looks like this:
+
+
+
+OpenRouter also supports some text embedding models. Note that for OpenRouter embedding
+models, you need to explicitly provide the `output_dimension` parameter in the spec.
+Here's how you can define the spec to use an OpenRouter embedding model:
+
+
+
+You can find the full list of models supported by OpenRouter [here](https://openrouter.ai/models).
+
+### vLLM
+
+Install vLLM:
+
+```sh
+pip install vllm
+```
+
+Run vLLM Server
+
+```sh
+vllm serve deepseek-ai/deepseek-coder-1.3b-instruct
+```
+
+
+A spec for vLLM looks like this:
+
+
+
+### Bedrock
+
+To use the Bedrock API, you need to set up AWS credentials. You can do this by setting the following environment variables:
+
+- `AWS_ACCESS_KEY_ID`
+- `AWS_SECRET_ACCESS_KEY`
+- `AWS_SESSION_TOKEN` (optional)
+
+A spec for Bedrock looks like this:
+
+
+
+You can find the full list of models supported by Bedrock [here](https://docs.aws.amazon.com/bedrock/latest/userguide/model-ids.html).

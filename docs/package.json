@@ -1,58 +1,23 @@
 {
   "name": "cocoindex-docs",
+  "type": "module",
   "version": "0.0.0",
   "private": true,
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "scripts": {
-    "docusaurus": "docusaurus",
-    "start": "docusaurus start",
-    "build": "docusaurus build",
-    "swizzle": "docusaurus swizzle",
-    "deploy": "docusaurus deploy",
-    "clear": "docusaurus clear",
-    "serve": "docusaurus serve",
-    "write-translations": "docusaurus write-translations",
-    "write-heading-ids": "docusaurus write-heading-ids",
-    "typecheck": "tsc"
+    "dev": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview",
+    "astro": "astro"
   },
   "dependencies": {
-    "@docusaurus/core": "^3.9.2",
-    "@docusaurus/plugin-client-redirects": "^3.9.2",
-    "@docusaurus/preset-classic": "^3.9.2",
-    "@docusaurus/theme-mermaid": "^3.9.2",
-    "@mdx-js/react": "^3.0.0",
-    "@signalwire/docusaurus-plugin-llms-txt": "^1.2.2",
-    "clsx": "^2.0.0",
-    "mixpanel-browser": "^2.59.0",
-    "posthog-docusaurus": "^2.0.2",
-    "prism-react-renderer": "^2.4.0",
-    "react": "^19.0.0",
-    "react-dom": "^19.0.0",
-    "react-icons": "^5.5.0",
-    "react-player": "^2.16.0"
-  },
-  "devDependencies": {
-    "@docusaurus/module-type-aliases": "3.9.2",
-    "@docusaurus/tsconfig": "3.9.2",
-    "@docusaurus/types": "3.9.2",
-    "typescript": "~5.8.2"
-  },
-  "browserslist": {
-    "production": [
-      ">0.5%",
-      "not dead",
-      "not op_mini all"
-    ],
-    "development": [
-      "last 3 chrome version",
-      "last 3 firefox version",
-      "last 5 safari version"
-    ]
-  },
-  "engines": {
-    "node": ">=18.0"
-  },
-  "packageManager": "yarn@1.22.22+sha512.a6b2f7906b721bba3d67d4aff083df04dad64c399707841b7acf00f6b133b7ac24255f2652fa22ae3534329dc6180534e98d17432037ff6fd140556e2bb3137e",
-  "resolutions": {
-    "minimatch": "^5.1.6"
+    "@astrojs/mdx": "^5.0.3",
+    "@astrojs/sitemap": "^3.7.2",
+    "astro": "^6.1.8",
+    "mdast-util-to-string": "^4.0.0",
+    "remark-directive": "^4.0.0",
+    "unist-util-visit": "^5.0.0"
   }
 }

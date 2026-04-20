@@ -1,0 +1,177 @@
+---
+// Docs 404 — mirrors the 404 on cocoindex-io.github.io (same copy, same
+// typography) so a visitor hitting a broken /docs/ link sees a consistent
+// "coconut rolled off the tree" experience across the two sites.
+import '../styles/globals.css';
+import Topbar from '../components/Topbar.astro';
+import { SITE_MAIN, SITE_BLOG, SITE_EXAMPLES } from '../consts';
+
+const base = import.meta.env.BASE_URL.replace(/\/$/, '') || '/';
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <meta name="theme-color" content="#FBF6E8" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>404 · Page not found · Coconut rolled away</title>
+    <meta name="description" content="That page wandered off. Let's get you back to something that exists." />
+    <link rel="icon" href={`${base}/img/favicon.ico`} />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&family=Source+Serif+4:ital,wght@0,400;1,400&display=swap"
+    />
+  </head>
+  <body>
+    <Topbar />
+    <main class="nf">
+      <section class="nf-hero">
+        <div class="wrap nf-grid">
+          <div class="nf-copy">
+            <div class="nf-eyebrow">
+              <span class="dot" aria-hidden="true"></span>
+              <span>Error · 404 · Page not found</span>
+            </div>
+
+            <h1 class="nf-title">
+              This coconut<br />
+              <em>rolled off the tree.</em>
+            </h1>
+
+            <p class="nf-lead">
+              We looked under every leaf — nothing here. Maybe the URL had a typo,
+              or the page retired to the beach.
+            </p>
+
+            <div class="nf-ctas">
+              <a href={SITE_MAIN} class="btn btn-primary btn-xl">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <path d="M3 11.5 12 4l9 7.5V20a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1v-8.5Z"
+                        stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+                </svg>
+                Back to cocoindex.io
+              </a>
+              <a href={base} class="btn nf-btn-ghost">Read the docs</a>
+              <a href={SITE_BLOG} class="btn nf-btn-ghost">Visit the blog</a>
+              <a href={SITE_EXAMPLES} class="btn nf-btn-ghost">Browse examples</a>
+            </div>
+
+            <div class="nf-tip">
+              <span class="caps">Pro tip</span>
+              <span>Incremental indexing can't find what was never indexed. Try one of the links above.</span>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <style>
+      .nf .nf-hero {
+        padding: clamp(48px, 9vw, 120px) 0 clamp(72px, 10vw, 140px);
+        position: relative;
+        overflow: hidden;
+      }
+      .nf .nf-hero::before {
+        content: "";
+        position: absolute; inset: 0;
+        background:
+          radial-gradient(ellipse 60% 40% at 20% 10%, rgba(229, 154, 99, 0.18), transparent 60%),
+          radial-gradient(ellipse 40% 30% at 90% 80%, rgba(251, 106, 118, 0.14), transparent 60%);
+        pointer-events: none;
+      }
+      .nf .nf-grid {
+        position: relative;
+        z-index: 1;
+        max-width: 880px;
+        margin: 0 auto;
+        padding: 0 32px;
+        text-align: center;
+      }
+      .nf .nf-copy { display: inline-block; text-align: left; }
+
+      .nf .nf-eyebrow {
+        display: inline-flex; align-items: center; gap: 10px;
+        font-family: var(--mono); font-size: 11px;
+        letter-spacing: 0.16em; text-transform: uppercase;
+        color: var(--muted);
+        padding: 8px 14px;
+        border: 1px solid var(--rule-strong);
+        border-radius: 999px;
+        background: color-mix(in oklab, var(--cream) 50%, var(--paper));
+      }
+      .nf .nf-eyebrow .dot {
+        width: 8px; height: 8px; border-radius: 50%;
+        background: var(--coral);
+        box-shadow: 0 0 0 4px rgba(190, 81, 51, 0.18);
+      }
+
+      .nf .nf-title {
+        font-family: var(--serif);
+        font-weight: 400;
+        font-size: clamp(64px, 10vw, 152px);
+        line-height: 0.86;
+        letter-spacing: -0.035em;
+        margin: 24px 0 24px;
+        color: var(--maroon-ink);
+      }
+      .nf .nf-title em {
+        font-style: italic;
+        font-weight: 400;
+        color: var(--coral);
+      }
+
+      .nf .nf-lead {
+        font-size: clamp(16px, 1.3vw, 19px);
+        line-height: 1.55;
+        color: rgba(42, 18, 27, 0.78);
+        max-width: 52ch;
+        margin-bottom: 32px;
+      }
+
+      .nf .nf-ctas {
+        display: flex; flex-wrap: wrap; gap: 12px;
+        margin-bottom: 28px;
+      }
+      .nf .btn {
+        display: inline-flex; align-items: center; gap: 8px;
+        padding: 10px 18px; border-radius: 999px;
+        font-size: 14px; font-weight: 500; text-decoration: none;
+        border: 1px solid var(--maroon); color: var(--maroon); background: transparent;
+        transition: background .15s, color .15s;
+        cursor: pointer;
+      }
+      .nf .btn:hover { background: var(--maroon); color: var(--cream); }
+      .nf .btn-primary { background: var(--maroon); color: var(--cream); }
+      .nf .btn-primary:hover { background: var(--maroon-deep); color: var(--cream); }
+      .nf .btn-xl { padding: 13px 22px; font-size: 15px; }
+      .nf .btn-xl svg { flex: none; }
+      .nf .nf-btn-ghost {
+        background: transparent;
+        border-color: var(--rule-strong);
+        color: var(--maroon-ink);
+      }
+      .nf .nf-btn-ghost:hover {
+        background: var(--maroon);
+        color: var(--cream);
+        border-color: var(--maroon);
+      }
+
+      .nf .nf-tip {
+        display: inline-flex; align-items: center; gap: 12px;
+        padding: 10px 14px;
+        border-left: 2px solid var(--coral);
+        font-size: 14px;
+        color: var(--muted);
+      }
+      .nf .nf-tip .caps {
+        color: var(--coral);
+        font-weight: 600;
+      }
+    </style>
+  </body>
+</html>

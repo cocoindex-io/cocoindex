@@ -1,0 +1,1364 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>CocoIndex — Brand Guidelines</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&family=Source+Serif+4:ital,opsz,wght@0,8..60,200..900;1,8..60,200..900&family=JetBrains+Mono:ital,wght@0,100..800;1,100..800&display=swap" rel="stylesheet">
+
+<template id="__bundler_thumbnail" data-bg-color="#FCF3D8">
+  <svg viewBox="0 0 1200 800" xmlns="http://www.w3.org/2000/svg">
+    <rect width="1200" height="800" fill="#FCF3D8"/>
+    <g transform="translate(600 380)">
+      <ellipse cx="0" cy="20" rx="170" ry="190" fill="#532638"/>
+      <ellipse cx="-55" cy="25" rx="26" ry="18" fill="#E59A63"/>
+      <ellipse cx="55" cy="25" rx="26" ry="18" fill="#E59A63"/>
+      <circle cx="-55" cy="25" r="8" fill="#2A121B"/>
+      <circle cx="55" cy="25" r="8" fill="#2A121B"/>
+      <ellipse cx="-85" cy="65" rx="20" ry="11" fill="#FB6A76" opacity="0.8"/>
+      <ellipse cx="85" cy="65" rx="20" ry="11" fill="#FB6A76" opacity="0.8"/>
+      <path d="M -35 88 Q 0 112 35 88" fill="none" stroke="#2A121B" stroke-width="5" stroke-linecap="round"/>
+      <path d="M -18 -170 Q -28 -230 -85 -240 Q -28 -220 -14 -175 Q -4 -230 38 -240 Q 5 -215 -4 -175 Z" fill="#27E62B"/>
+    </g>
+    <g fill="#532638">
+      <circle cx="380" cy="680" r="22"/>
+      <circle cx="440" cy="680" r="22" fill="#BE5133"/>
+      <circle cx="500" cy="680" r="22" fill="#E59A63"/>
+      <circle cx="560" cy="680" r="22" fill="#FB6A76"/>
+      <circle cx="620" cy="680" r="22" fill="#FCF3D8" stroke="#532638" stroke-width="2"/>
+      <circle cx="680" cy="680" r="22" fill="#27E62B"/>
+    </g>
+    <text x="600" y="730" text-anchor="middle" font-family="Georgia, serif" font-style="italic" font-size="28" fill="#532638">Brand Guidelines</text>
+  </svg>
+</template>
+
+<style>
+  :root{
+    /* brand colors — pulled directly from the mark */
+    --maroon: #532638;
+    --maroon-deep: #401E2B;
+    --maroon-ink: #2A121B;
+    --coral:  #BE5133;
+    --peach:  #E59A63;
+    --cream:  #FCF3D8;
+    --cream-soft: #F6F4E9;
+    --pink:   #FB6A76;
+    --palm:   #27E62B;
+    --palm-soft: rgba(39,230,43,0.75);
+    --berry:  #6A1E23;
+
+    /* neutrals tuned warm */
+    --paper:  #FBF6E8;
+    --ink:    #2A121B;
+    --rule:   rgba(42,18,27,0.14);
+    --rule-strong: rgba(42,18,27,0.35);
+    --muted:  rgba(42,18,27,0.58);
+
+    --serif: "Source Serif 4", ui-serif, Georgia, serif;
+    --sans:  "Inter", -apple-system, BlinkMacSystemFont, "Helvetica Neue", Helvetica, Arial, sans-serif;
+    --mono:  "JetBrains Mono", ui-monospace, Menlo, monospace;
+
+    --gutter: 40px;
+    --col:    72px;
+    --maxw:   1320px;
+
+    --fs-hero: clamp(80px, 12vw, 180px);
+    --fs-section: clamp(44px, 6vw, 84px);
+    --fs-title: clamp(28px, 3.2vw, 46px);
+    --fs-body: 17px;
+    --fs-small: 13px;
+    --fs-micro: 11px;
+  }
+
+  *{ box-sizing: border-box; }
+  html,body{ margin:0; padding:0; background:var(--paper); color:var(--ink); }
+  body{
+    font-family: var(--sans);
+    font-size: var(--fs-body);
+    line-height: 1.55;
+    font-weight: 400;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  .serif{ font-family: var(--sans); font-weight: 400; letter-spacing: -0.01em; }
+  .mono{ font-family: var(--mono); font-weight: 400; letter-spacing: 0; }
+  .caps{ font-family: var(--mono); font-size: var(--fs-micro); letter-spacing: 0.14em; text-transform: uppercase; }
+
+  /* ─── Layout shell ─── */
+  .wrap{
+    max-width: var(--maxw);
+    margin: 0 auto;
+    padding: 0 var(--gutter);
+  }
+  section{
+    padding: clamp(80px, 10vw, 160px) 0;
+    border-top: 1px solid var(--rule);
+    position: relative;
+  }
+  section:first-of-type{ border-top: none; }
+
+  .section-head{
+    display: grid;
+    grid-template-columns: 180px 1fr;
+    gap: 40px;
+    margin-bottom: 72px;
+    align-items: baseline;
+  }
+  .section-head .idx{
+    font-family: var(--mono);
+    font-size: var(--fs-micro);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--muted);
+    padding-top: 14px;
+    border-top: 1px solid var(--rule-strong);
+  }
+  .section-head h2{
+    font-family: var(--sans);
+    font-weight: 600;
+    font-size: clamp(28px, 3.2vw, 44px);
+    line-height: 1.05;
+    letter-spacing: -0.03em;
+    margin: 0;
+    max-width: 22ch;
+  }
+  .section-head h2 em{ font-style: normal; color: var(--coral); }
+  .lead{
+    grid-column: 2;
+    font-family: var(--sans);
+    font-size: clamp(15px, 1.3vw, 18px);
+    font-weight: 400;
+    line-height: 1.55;
+    letter-spacing: -0.005em;
+    color: var(--ink);
+    max-width: 60ch;
+    margin-top: 24px;
+  }
+
+  /* ─── Top nav ─── */
+  .topbar{
+    position: sticky; top:0; z-index: 40;
+    background: color-mix(in oklab, var(--paper) 92%, transparent);
+    backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--rule);
+  }
+  .topbar-inner{
+    max-width: var(--maxw);
+    margin: 0 auto;
+    padding: 14px var(--gutter);
+    display: flex; align-items: center; gap: 24px;
+  }
+  .topbar .brand{
+    display: flex; align-items: center; gap: 10px;
+    font-family: var(--sans); font-size: 16px; font-weight: 600; letter-spacing: -0.02em;
+  }
+  .topbar .brand img{ width: 24px; height: 26px; }
+  .topbar nav{
+    display:flex; gap: 26px; margin-left: auto;
+    font-family: var(--mono); font-size: var(--fs-micro);
+    letter-spacing: 0.14em; text-transform: uppercase;
+  }
+  .topbar nav a{ color: var(--muted); text-decoration:none; }
+  .topbar nav a:hover{ color: var(--ink); }
+  .topbar .ver{
+    font-family: var(--mono); font-size: var(--fs-micro);
+    color: var(--muted); letter-spacing: 0.1em;
+  }
+
+  /* ─── Cover ─── */
+  .cover{
+    padding-top: 72px;
+    padding-bottom: 0;
+    border-top: none;
+  }
+  .cover-grid{
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 56px;
+    align-items: end;
+  }
+  .cover-meta{
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 32px;
+    padding-bottom: 28px;
+    border-bottom: 1px solid var(--rule-strong);
+    margin-bottom: 40px;
+  }
+  .cover-meta .cell .k{ display:block; color: var(--muted); }
+  .cover-meta .cell .v{ display:block; margin-top: 4px; font-size: 14px; }
+  .cover-hero{
+    display:grid;
+    grid-template-columns: 1.1fr 1fr;
+    gap: 40px;
+    align-items: end;
+  }
+  .hero-type{
+    font-family: var(--serif);
+    font-size: var(--fs-hero);
+    line-height: 0.86;
+    letter-spacing: -0.035em;
+    margin: 0;
+    font-weight: 400;
+  }
+  .hero-type em{ font-style: italic; color: var(--coral); }
+  .hero-type .amp{ font-style: italic; color: var(--peach); }
+  .hero-mascot{
+    aspect-ratio: 1/1;
+    background: var(--maroon);
+    border-radius: 4px;
+    display: grid; place-items: center;
+    position: relative;
+    overflow: hidden;
+  }
+  .hero-mascot img{ width: 62%; height: auto; }
+  .hero-mascot .stamp{
+    position: absolute; left: 24px; bottom: 18px;
+    color: var(--cream); opacity: 0.7;
+  }
+  .hero-mascot .stamp.right{ left: auto; right: 24px; }
+
+  .cover-sub{
+    display:grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 32px;
+    padding: 40px 0 100px;
+  }
+  .cover-sub p{
+    font-family: var(--sans);
+    font-size: 20px;
+    line-height: 1.4;
+    margin: 0;
+    color: var(--ink);
+  }
+  .cover-sub p.muted{ color: var(--muted); }
+
+  /* ─── Principle grid ─── */
+  .principles{
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 1px;
+    background: var(--rule-strong);
+    border: 1px solid var(--rule-strong);
+  }
+  .principles > div{
+    background: var(--paper);
+    padding: 40px 32px 48px;
+    min-height: 280px;
+    display:flex; flex-direction: column; justify-content: space-between;
+  }
+  .principles h3{
+    font-family: var(--sans);
+    font-size: 22px; line-height: 1.2; letter-spacing: -0.025em;
+    margin: 0 0 14px; font-weight: 600;
+  }
+  .principles h3 em{ font-style: normal; color: var(--coral); }
+  .principles p{ margin: 0; max-width: 32ch; color: var(--ink); }
+
+  /* ─── Logo section ─── */
+  .logo-stage{
+    background: var(--maroon);
+    color: var(--cream);
+    border-radius: 6px;
+    padding: 64px;
+    display: grid;
+    grid-template-columns: 1.2fr 1fr;
+    gap: 48px;
+    align-items: center;
+    position: relative;
+    overflow: hidden;
+  }
+  .logo-stage .primary-mark{
+    display: grid; place-items: center;
+    aspect-ratio: 1/1;
+    background: var(--cream);
+    border-radius: 4px;
+  }
+  .logo-stage .primary-mark img{ width: 58%; }
+  .logo-stage .anatomy{ position: relative; }
+  .logo-stage .anatomy img{ width: 80%; display:block; margin: 0 auto; }
+  .logo-stage .anatomy .labels{
+    position:absolute; inset: 0;
+    pointer-events:none;
+  }
+  .logo-stage .anatomy .lbl{
+    position:absolute;
+    font-family: var(--mono);
+    font-size: var(--fs-micro);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--cream);
+    opacity: 0.85;
+  }
+  .logo-stage .anatomy .lbl::before{
+    content:""; display:inline-block;
+    width: 28px; height:1px; background: var(--cream);
+    vertical-align: middle; margin-right: 8px; opacity: 0.6;
+  }
+  .logo-stage .anatomy .lbl.r::before{ display:none; }
+  .logo-stage .anatomy .lbl.r::after{
+    content:""; display:inline-block;
+    width: 28px; height:1px; background: var(--cream);
+    vertical-align: middle; margin-left: 8px; opacity: 0.6;
+  }
+
+  .locked-up{
+    display:grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+    margin-top: 40px;
+  }
+  .lockup-card{
+    border: 1px solid var(--rule-strong);
+    border-radius: 4px;
+    aspect-ratio: 4/3;
+    display: grid; place-items: center;
+    position: relative;
+    overflow: hidden;
+  }
+  .lockup-card .tag{
+    position: absolute; top: 14px; left: 14px;
+    font-family: var(--mono); font-size: var(--fs-micro);
+    letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--muted);
+  }
+  .lockup-card.dark{ background: var(--maroon); color: var(--cream); }
+  .lockup-card.dark .tag{ color: rgba(252,243,216,0.7); }
+  .lockup-card.coral{ background: var(--coral); color: var(--cream); }
+  .lockup-card.coral .tag{ color: rgba(252,243,216,0.75); }
+  .lockup-card.cream{ background: var(--cream); }
+  .lockup-card .wordmark{
+    display:flex; align-items:center; gap: 14px;
+  }
+  .lockup-card .wordmark img{ width: 56px; height: auto; }
+  .lockup-card .wordmark .name{
+    font-family: var(--sans); font-weight: 600;
+    font-size: 28px; letter-spacing: -0.03em; line-height: 1;
+  }
+
+  .dosdonts{
+    margin-top: 56px;
+    display:grid;
+    grid-template-columns: repeat(6, 1fr);
+    gap: 16px;
+  }
+  .dont{
+    aspect-ratio: 1/1;
+    border: 1px solid var(--rule-strong);
+    border-radius: 4px;
+    display:grid; place-items:center;
+    position:relative;
+    overflow:hidden;
+  }
+  .dont .label{
+    position: absolute; bottom: 10px; left: 12px; right: 12px;
+    font-family: var(--mono); font-size: var(--fs-micro);
+    letter-spacing: 0.1em; text-transform: uppercase;
+  }
+  .dont .label::before{
+    content: "✕"; color: var(--coral); margin-right: 6px; font-weight: 600;
+  }
+  .dont.ok .label::before{ content: "✓"; color: var(--berry); }
+  .dont img{ width: 62%; }
+
+  /* ─── Color section ─── */
+  .color-grid{
+    display: grid;
+    grid-template-columns: 2fr 1fr 1fr;
+    grid-template-rows: auto auto;
+    gap: 12px;
+  }
+  .swatch{
+    border-radius: 4px;
+    padding: 28px;
+    display:flex; flex-direction: column; justify-content: space-between;
+    min-height: 220px;
+    position: relative;
+    font-family: var(--mono);
+    font-size: var(--fs-small);
+    letter-spacing: 0.02em;
+  }
+  .swatch.big{ min-height: 360px; grid-row: span 2; padding: 36px; }
+  .swatch .nm{
+    font-family: var(--sans); font-size: 22px; letter-spacing: -0.025em;
+    line-height: 1.1; margin-bottom: 8px; font-weight: 600;
+  }
+  .swatch.big .nm{ font-size: 32px; }
+  .swatch .role{ font-family: var(--mono); font-size: var(--fs-micro); letter-spacing: 0.14em; text-transform: uppercase; opacity: 0.75; }
+  .swatch .vals{ display: grid; grid-template-columns: 1fr 1fr; gap: 4px 18px; font-size: 12px; opacity: 0.9; }
+  .swatch .vals span{ display:block; }
+  .sw-maroon{ background: var(--maroon); color: var(--cream); }
+  .sw-coral{ background: var(--coral); color: var(--cream); }
+  .sw-peach{ background: var(--peach); color: var(--maroon-ink); }
+  .sw-cream{ background: var(--cream); color: var(--maroon-ink); border: 1px solid var(--rule); }
+  .sw-pink{ background: var(--pink); color: var(--maroon-ink); }
+  .sw-palm{ background: var(--palm); color: var(--maroon-ink); }
+  .sw-ink{ background: var(--maroon-ink); color: var(--cream); }
+
+  .ratios{
+    margin-top: 56px;
+    display:grid;
+    grid-template-columns: 180px 1fr;
+    gap: 40px;
+    align-items: start;
+  }
+  .ratios h4{
+    font-family: var(--mono); font-size: var(--fs-micro);
+    letter-spacing: 0.14em; text-transform: uppercase; margin: 0;
+    color: var(--muted);
+    padding-top: 14px; border-top: 1px solid var(--rule-strong);
+  }
+  .ratio-bar{
+    display:flex; height: 56px; border-radius: 4px; overflow: hidden;
+  }
+  .ratio-bar > div{
+    display:flex; align-items: flex-end; padding: 10px 14px;
+    font-family: var(--mono); font-size: var(--fs-micro);
+    letter-spacing: 0.1em; text-transform: uppercase;
+  }
+  .ratio-legend{
+    margin-top: 16px;
+    font-family: var(--sans); font-size: 15px; line-height: 1.55;
+    color: var(--ink); max-width: 60ch;
+  }
+
+  /* ─── Type section ─── */
+  .type-spec{
+    display:grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 24px;
+    margin-bottom: 48px;
+  }
+  .spec-card{
+    border: 1px solid var(--rule-strong);
+    border-radius: 4px;
+    padding: 36px;
+    background: var(--paper);
+    position: relative;
+    min-height: 360px;
+    display:flex; flex-direction: column; justify-content: space-between;
+  }
+  .spec-card .bignote{
+    font-size: 160px; line-height: 0.82;
+    font-family: var(--serif); font-weight: 400;
+    letter-spacing: -0.03em;
+    color: var(--ink);
+  }
+  .spec-card .bignote em{ font-style: italic; color: var(--coral); }
+  .spec-card .bignote.sans{ font-family: var(--sans); font-weight: 600; letter-spacing: -0.04em; }
+  .spec-card .bignote.mono{ font-family: var(--mono); font-size: 120px; letter-spacing: -0.02em; }
+  .spec-card .meta{
+    display:grid; grid-template-columns: repeat(3, 1fr); gap: 12px;
+    padding-top: 20px; border-top: 1px solid var(--rule);
+  }
+  .spec-card .meta .k{ color: var(--muted); font-family: var(--mono); font-size: var(--fs-micro); letter-spacing: 0.14em; text-transform: uppercase; }
+  .spec-card .meta .v{ font-size: 14px; margin-top: 4px; }
+  .spec-card .tag{
+    position: absolute; top: 20px; right: 20px;
+    font-family: var(--mono); font-size: var(--fs-micro);
+    letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--muted);
+  }
+
+  .scale{
+    display:grid; grid-template-columns: 140px 1fr 120px; gap: 24px;
+    padding: 18px 0;
+    border-top: 1px solid var(--rule);
+    align-items: baseline;
+  }
+  .scale:last-child{ border-bottom: 1px solid var(--rule); }
+  .scale .role{ font-family: var(--mono); font-size: var(--fs-micro); letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); }
+  .scale .sample{ font-family: var(--sans); letter-spacing: -0.01em; line-height: 1.2; font-weight: 500; }
+  .scale .sample.serif{ font-family: var(--serif); font-weight: 400; }
+  .scale .sample.mono{ font-family: var(--mono); font-weight: 400; }
+  .scale .spec{ text-align: right; font-family: var(--mono); font-size: var(--fs-small); color: var(--muted); }
+
+  /* ─── Voice section ─── */
+  .voice-grid{
+    display:grid; grid-template-columns: 1fr 1fr; gap: 16px;
+  }
+  .voice-card{
+    border: 1px solid var(--rule-strong);
+    border-radius: 4px;
+    padding: 32px 32px 28px;
+    background: var(--paper);
+    position: relative;
+  }
+  .voice-card.no{ background: #FBEFE4; border-color: var(--rule); }
+  .voice-card .pill{
+    display:inline-block;
+    font-family: var(--mono); font-size: var(--fs-micro);
+    letter-spacing: 0.14em; text-transform: uppercase;
+    padding: 4px 10px; border-radius: 999px;
+    background: var(--maroon); color: var(--cream);
+    margin-bottom: 18px;
+  }
+  .voice-card.no .pill{ background: var(--coral); }
+  .voice-card q{
+    font-family: var(--sans); font-weight: 500; font-size: 18px; line-height: 1.45;
+    letter-spacing: -0.015em; quotes: "“" "”";
+    display:block; color: var(--ink);
+  }
+  .voice-card .why{
+    font-family: var(--mono); font-size: var(--fs-small); color: var(--muted);
+    margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--rule);
+  }
+
+  .voice-attr{
+    display:grid; grid-template-columns: repeat(4, 1fr); gap: 16px;
+    margin-top: 56px;
+  }
+  .voice-attr .a{
+    border-top: 1px solid var(--rule-strong);
+    padding-top: 18px;
+  }
+  .voice-attr h5{
+    font-family: var(--sans); font-weight: 600;
+    font-size: 18px; letter-spacing: -0.02em; line-height: 1.25;
+    margin: 0 0 8px;
+  }
+  .voice-attr h5 em{ color: var(--coral); font-style: normal; }
+  .voice-attr p{ margin: 0; font-size: 14px; color: var(--muted); }
+
+  /* ─── Imagery / patterns ─── */
+  .imagery-grid{
+    display:grid; grid-template-columns: repeat(4, 1fr); gap: 12px;
+  }
+  .tile{
+    aspect-ratio: 1/1;
+    border-radius: 4px;
+    position: relative;
+    overflow: hidden;
+  }
+  .tile .cap{
+    position: absolute; left: 14px; bottom: 12px;
+    font-family: var(--mono); font-size: var(--fs-micro);
+    letter-spacing: 0.14em; text-transform: uppercase;
+    z-index: 3;
+  }
+  .tile.maroon{ background: var(--maroon); color: var(--cream); }
+  .tile.coral{ background: var(--coral); color: var(--cream); }
+  .tile.peach{ background: var(--peach); color: var(--maroon-ink); }
+  .tile.cream{ background: var(--cream); color: var(--maroon-ink); border: 1px solid var(--rule); }
+  .tile.big{ grid-column: span 2; aspect-ratio: 2/1; }
+
+  .pattern-dots{
+    background-color: var(--maroon);
+    background-image: radial-gradient(circle, var(--coral) 2px, transparent 2.4px);
+    background-size: 20px 20px;
+  }
+  .pattern-grid{
+    background-color: var(--cream);
+    background-image:
+      linear-gradient(to right, rgba(83,38,56,0.12) 1px, transparent 1px),
+      linear-gradient(to bottom, rgba(83,38,56,0.12) 1px, transparent 1px);
+    background-size: 28px 28px;
+  }
+  .pattern-stripes{
+    background: repeating-linear-gradient(135deg, var(--peach) 0 12px, var(--coral) 12px 24px);
+  }
+  .pattern-topo{
+    background: var(--cream);
+    background-image: radial-gradient(ellipse 80% 40% at 50% 120%, rgba(190,81,51,0.25), transparent 60%),
+                      radial-gradient(ellipse 60% 30% at 50% 140%, rgba(190,81,51,0.4), transparent 60%);
+  }
+
+  .motif-row{
+    display:grid; grid-template-columns: repeat(6, 1fr); gap: 8px;
+    margin-top: 40px;
+  }
+  .motif{
+    aspect-ratio: 1/1;
+    background: var(--cream);
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    display:grid; place-items:center;
+    position: relative;
+  }
+  .motif svg{ width: 52%; height: 52%; }
+  .motif .mlabel{
+    position:absolute; bottom: 8px; left: 0; right: 0;
+    text-align:center;
+    font-family: var(--mono); font-size: 10px;
+    letter-spacing: 0.12em; text-transform: uppercase;
+    color: var(--muted);
+  }
+
+  /* ─── In-use ─── */
+  .inuse-grid{
+    display:grid; grid-template-columns: 1.2fr 1fr 1fr; gap: 16px;
+  }
+  .card-ad{
+    background: var(--maroon); color: var(--cream);
+    border-radius: 6px;
+    padding: 40px;
+    aspect-ratio: 4/5;
+    display:flex; flex-direction: column; justify-content: space-between;
+    position: relative; overflow: hidden;
+  }
+  .card-ad h3{
+    font-family: var(--sans); font-weight: 600;
+    font-size: clamp(22px, 2.4vw, 30px);
+    line-height: 1.15; letter-spacing: -0.025em;
+    margin: 0; max-width: 18ch;
+  }
+  .card-ad h3 em{ color: var(--peach); font-style: normal; }
+  .card-ad .small{ font-family: var(--mono); font-size: var(--fs-micro); letter-spacing: 0.14em; text-transform: uppercase; color: rgba(252,243,216,0.7); }
+  .card-ad img.mark{ width: 54px; }
+  .card-ad.cream{ background: var(--cream); color: var(--maroon-ink); }
+  .card-ad.coral{ background: var(--coral); color: var(--cream); }
+  .card-ad.coral h3 em{ color: var(--cream); }
+  .card-ad.cream .small{ color: var(--muted); }
+
+  .inuse-stickers{
+    display:grid; grid-template-columns: repeat(4, 1fr); gap: 16px;
+    margin-top: 56px;
+  }
+  .sticker{
+    aspect-ratio: 1/1;
+    border-radius: 999px;
+    display:grid; place-items:center;
+    position: relative;
+    padding: 20px;
+    text-align: center;
+    font-family: var(--sans); font-weight: 600; font-size: 15px; line-height: 1.2;
+    letter-spacing: -0.02em;
+  }
+  .sticker .mini{
+    position:absolute; top: 50%; left: 50%;
+    transform: translate(-50%, -50%) rotate(0deg);
+    opacity: 0.1; width: 70%;
+  }
+  .sticker span{ position: relative; z-index: 2; max-width: 12ch; }
+
+  /* Terminal */
+  .terminal{
+    background: var(--maroon-ink); color: var(--cream);
+    border-radius: 6px;
+    font-family: var(--mono); font-size: 13px; line-height: 1.65;
+    padding: 20px 24px 24px;
+  }
+  .terminal .bar{
+    display:flex; gap: 6px; padding-bottom: 14px; margin-bottom: 14px;
+    border-bottom: 1px solid rgba(252,243,216,0.1);
+  }
+  .terminal .bar span{ width: 10px; height: 10px; border-radius: 50%; background: rgba(252,243,216,0.25); }
+  .terminal .bar span:first-child{ background: var(--pink); }
+  .terminal .bar span:nth-child(2){ background: var(--peach); }
+  .terminal .bar span:nth-child(3){ background: var(--palm); }
+  .terminal .kw{ color: var(--peach); }
+  .terminal .str{ color: var(--palm); }
+  .terminal .fn{ color: var(--pink); }
+  .terminal .dim{ opacity: 0.5; }
+  .terminal .prompt::before{ content: "$ "; color: var(--peach); }
+
+  /* ─── Footer ─── */
+  footer{
+    padding: 80px var(--gutter) 40px;
+    border-top: 1px solid var(--rule);
+    display:grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 24px;
+    max-width: var(--maxw); margin: 0 auto;
+  }
+  footer h6{
+    font-family: var(--mono); font-size: var(--fs-micro);
+    letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--muted); margin: 0 0 12px;
+  }
+  footer a{
+    display:block; color: var(--ink); text-decoration:none;
+    font-size: 15px; padding: 4px 0;
+  }
+  footer a:hover{ color: var(--coral); }
+  .colophon{
+    grid-column: 1 / -1;
+    margin-top: 48px; padding-top: 24px;
+    border-top: 1px solid var(--rule);
+    display:flex; justify-content: space-between; align-items: center;
+    font-family: var(--mono); font-size: var(--fs-micro);
+    letter-spacing: 0.1em; text-transform: uppercase;
+    color: var(--muted);
+  }
+
+  /* ─── Tweaks panel ─── */
+  .tweaks-panel{
+    position: fixed; right: 20px; bottom: 20px; z-index: 100;
+    width: 320px;
+    background: var(--paper);
+    border: 1px solid var(--rule-strong);
+    border-radius: 6px;
+    padding: 18px 20px 20px;
+    box-shadow: 0 16px 48px -16px rgba(42,18,27,0.35);
+    display: none;
+    font-family: var(--sans);
+  }
+  .tweaks-panel.on{ display:block; }
+  .tweaks-panel h4{
+    margin: 0 0 14px;
+    font-family: var(--mono); font-size: var(--fs-micro);
+    letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--muted);
+    display:flex; justify-content:space-between; align-items:center;
+  }
+  .tweaks-panel h4 span{ color: var(--coral); }
+  .tw-row{ margin-bottom: 14px; }
+  .tw-row label{ display:block; font-size: 12px; margin-bottom: 6px; color: var(--muted); font-family: var(--mono); letter-spacing: 0.08em; text-transform: uppercase; }
+  .tw-row .opts{ display:flex; gap: 6px; flex-wrap: wrap; }
+  .tw-row .opts button{
+    flex: 1; min-width: 0;
+    padding: 8px 10px; font-size: 12px;
+    background: transparent; border: 1px solid var(--rule-strong);
+    border-radius: 4px; cursor: pointer;
+    font-family: var(--sans); color: var(--ink);
+  }
+  .tw-row .opts button.on{
+    background: var(--maroon); color: var(--cream); border-color: var(--maroon);
+  }
+
+  /* Density tweak */
+  body.density-compact section{ padding: clamp(56px, 7vw, 100px) 0; }
+  body.density-compact .section-head{ margin-bottom: 48px; }
+  body.density-spacious section{ padding: clamp(100px, 14vw, 200px) 0; }
+
+  /* Lead-color tweak — rotates which color anchors */
+  body.lead-coral{ --maroon: #BE5133; --maroon-deep: #8A3A23; }
+  body.lead-peach{ --maroon: #C77446; --maroon-deep: #8F5430; --cream: #FCF3D8; }
+  body.lead-cream{ --paper: #FCF3D8; }
+  body.lead-palm{ --coral: #1FB84D; }
+
+  /* display tweak */
+  body.display-sans h2, body.display-sans .hero-type, body.display-sans .serif{ font-family: var(--sans); letter-spacing: -0.035em; font-weight: 500; }
+  body.display-sans h2 em, body.display-sans .hero-type em, body.display-sans .hero-type .amp, body.display-sans .spec-card .bignote em{ font-style: normal; }
+  body.display-mixed h2{ font-family: var(--sans); font-weight: 500; letter-spacing: -0.03em; }
+
+  /* mascot prominence */
+  body.mascot-hero .hero-mascot{ grid-column: span 2; aspect-ratio: 2/1; }
+  body.mascot-minimal .hero-mascot img{ width: 32%; }
+  body.mascot-minimal .motif img{ opacity: 0.4; }
+
+  @media (max-width: 900px){
+    .section-head{ grid-template-columns: 1fr; }
+    .lead{ grid-column: 1; }
+    .cover-hero{ grid-template-columns: 1fr; }
+    .principles, .color-grid, .type-spec, .voice-grid, .inuse-grid, .locked-up, .dosdonts, .imagery-grid, .motif-row, .inuse-stickers, footer{ grid-template-columns: 1fr 1fr; }
+    .principles > div{ min-height: 220px; }
+    .voice-attr{ grid-template-columns: 1fr 1fr; }
+    .scale{ grid-template-columns: 1fr; gap: 6px; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ─────────── TOP BAR ─────────── -->
+<div class="topbar">
+  <div class="topbar-inner">
+    <div class="brand">
+      <img src="assets/cocoindex-mark.svg" alt="" />
+      <span>CocoIndex</span>
+    </div>
+    <nav>
+      <a href="#foundation">01 Foundation</a>
+      <a href="#logo">02 Logo</a>
+      <a href="#color">03 Color</a>
+      <a href="#type">04 Type</a>
+      <a href="#voice">05 Voice</a>
+      <a href="#imagery">06 Imagery</a>
+      <a href="#inuse">07 In Use</a>
+    </nav>
+    <span class="ver">v 1.0 · 2026</span>
+  </div>
+</div>
+
+<div class="wrap">
+
+<!-- ─────────── COVER ─────────── -->
+<section class="cover">
+  <div class="cover-meta">
+    <div class="cell"><span class="caps k">Document</span><span class="v">Brand Guidelines</span></div>
+    <div class="cell"><span class="caps k">Release</span><span class="v">v 1.0 — April 2026</span></div>
+    <div class="cell"><span class="caps k">Owner</span><span class="v">Brand &amp; Design</span></div>
+    <div class="cell"><span class="caps k">Scope</span><span class="v">External &amp; internal</span></div>
+  </div>
+
+  <div class="cover-hero">
+    <h1 class="hero-type">Coco<em>Index</em>.</h1>
+    <div class="hero-mascot">
+      <img src="assets/cocoindex-mark.svg" alt="CocoIndex mascot" />
+      <span class="stamp caps">Primary mark</span>
+      <span class="stamp caps right">220 × 240</span>
+    </div>
+  </div>
+
+  <div class="cover-sub">
+    <p>A brand system for a framework that turns messy sources into fresh, structured context for AI.</p>
+    <p class="muted">Built around a coconut with character, a warm desert palette, and a voice that's <em style="font-style:italic;color:var(--coral)">technical but never cold.</em></p>
+    <p class="muted">These guidelines are a working document. Read them, then break the rules with intention.</p>
+  </div>
+</section>
+
+<!-- ─────────── 01 FOUNDATION ─────────── -->
+<section id="foundation">
+  <div class="section-head">
+    <span class="idx">01 — Foundation</span>
+    <h2>A framework with a <em>face.</em></h2>
+    <p class="lead">CocoIndex is infrastructure for AI data — incremental, declarative, boring in all the right ways. The brand is the opposite of boring. A coconut does the heavy lifting while the engineering speaks for itself.</p>
+  </div>
+
+  <div class="principles">
+    <div>
+      <h3>Warm, <em>not cute.</em></h3>
+      <p>The mascot is characterful but not childish. We sit closer to a folk illustration than a cartoon sticker.</p>
+    </div>
+    <div>
+      <h3>Declarative <em>on the page.</em></h3>
+      <p>Layouts state what they are. Large type, named sections, visible structure. We write like we code.</p>
+    </div>
+    <div>
+      <h3>Incremental, <em>not loud.</em></h3>
+      <p>Change happens at the edges. Animations nudge. Hierarchy shifts a letter or a line, never the whole page.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ─────────── 02 LOGO ─────────── -->
+<section id="logo">
+  <div class="section-head">
+    <span class="idx">02 — Logo</span>
+    <h2>One coconut, <em>infinite</em> reuse.</h2>
+    <p class="lead">The primary mark is a coconut with a palm-frond flourish. It is the single most recognisable asset. Protect the face, the frond, and the clearance.</p>
+  </div>
+
+  <div class="logo-stage">
+    <div class="primary-mark">
+      <img src="assets/cocoindex-mark.svg" alt="CocoIndex primary mark" />
+    </div>
+    <div class="anatomy">
+      <img src="assets/cocoindex-mark.svg" alt="CocoIndex anatomy" />
+      <div class="labels">
+        <span class="lbl" style="top:4%; left:58%;">Palm frond · growth</span>
+        <span class="lbl" style="top:22%; left:64%;">Highlight dot · spark</span>
+        <span class="lbl r" style="top:44%; left:-4%;">Husk · #FCF3D8</span>
+        <span class="lbl" style="top:60%; left:58%;">Smile · warmth</span>
+        <span class="lbl r" style="top:78%; left:-2%;">Shell · #BE5133</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="locked-up">
+    <div class="lockup-card cream">
+      <span class="tag">Horizontal · primary</span>
+      <div class="wordmark">
+        <img src="assets/cocoindex-mark.svg" alt="" />
+        <span class="name serif">CocoIndex</span>
+      </div>
+    </div>
+    <div class="lockup-card dark">
+      <span class="tag">Reversed · on maroon</span>
+      <div class="wordmark">
+        <img src="assets/cocoindex-mark.svg" alt="" />
+        <span class="name serif">CocoIndex</span>
+      </div>
+    </div>
+    <div class="lockup-card coral">
+      <span class="tag">Accent · on coral</span>
+      <div class="wordmark">
+        <img src="assets/cocoindex-mark.svg" alt="" />
+        <span class="name serif">CocoIndex</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="dosdonts">
+    <div class="dont ok" style="background:var(--cream);">
+      <img src="assets/cocoindex-mark.svg" alt="" />
+      <span class="label">Proper clearance</span>
+    </div>
+    <div class="dont ok" style="background:var(--maroon);">
+      <img src="assets/cocoindex-mark.svg" alt="" style="filter:none;" />
+      <span class="label" style="color:var(--cream);">On brand color</span>
+    </div>
+    <div class="dont" style="background:var(--cream);">
+      <img src="assets/cocoindex-mark.svg" alt="" style="transform: skewX(-18deg);" />
+      <span class="label">Never skew or stretch</span>
+    </div>
+    <div class="dont" style="background:var(--cream);">
+      <img src="assets/cocoindex-mark.svg" alt="" style="filter: grayscale(1) contrast(1.2);" />
+      <span class="label">Don't desaturate</span>
+    </div>
+    <div class="dont" style="background: linear-gradient(135deg, #FF00CC, #3333FF);">
+      <img src="assets/cocoindex-mark.svg" alt="" />
+      <span class="label" style="color:#fff;">Off-brand color</span>
+    </div>
+    <div class="dont" style="background:var(--cream);">
+      <img src="assets/cocoindex-mark.svg" alt="" style="width:26%; filter: drop-shadow(4px 4px 0 #000);" />
+      <span class="label">No effects, no shadows</span>
+    </div>
+  </div>
+</section>
+
+<!-- ─────────── 03 COLOR ─────────── -->
+<section id="color">
+  <div class="section-head">
+    <span class="idx">03 — Color</span>
+    <h2>Desert island, <em>well lit.</em></h2>
+    <p class="lead">Six colors pulled straight from the mark. Maroon grounds everything, coral carries energy, cream is the canvas. Pink, peach and palm are accents — use sparingly, with intention.</p>
+  </div>
+
+  <div class="color-grid">
+    <div class="swatch big sw-maroon">
+      <div>
+        <div class="nm serif">Maroon</div>
+        <div class="role">Primary · Ink</div>
+      </div>
+      <div class="vals">
+        <span>HEX · #532638</span><span>RGB · 83 · 38 · 56</span>
+        <span>CMYK · 38 · 87 · 52 · 50</span><span>OKLCH · 0.31 0.07 10</span>
+        <span>Pantone · 505 C</span><span>Ratio · 55%</span>
+      </div>
+    </div>
+    <div class="swatch sw-coral">
+      <div>
+        <div class="nm serif">Coral</div>
+        <div class="role">Primary Accent</div>
+      </div>
+      <div class="vals">
+        <span>#BE5133</span><span>Ratio · 20%</span>
+      </div>
+    </div>
+    <div class="swatch sw-cream">
+      <div>
+        <div class="nm serif">Cream</div>
+        <div class="role">Canvas</div>
+      </div>
+      <div class="vals">
+        <span>#FCF3D8</span><span>Ratio · 60%*</span>
+      </div>
+    </div>
+    <div class="swatch sw-peach">
+      <div>
+        <div class="nm serif">Peach</div>
+        <div class="role">Support</div>
+      </div>
+      <div class="vals">
+        <span>#E59A63</span><span>Ratio · 10%</span>
+      </div>
+    </div>
+    <div class="swatch sw-pink">
+      <div>
+        <div class="nm serif">Cheek</div>
+        <div class="role">Support · accents only</div>
+      </div>
+      <div class="vals">
+        <span>#FB6A76</span><span>Ratio · 3%</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="color-grid" style="margin-top:12px; grid-template-columns: 1fr 1fr 2fr;">
+    <div class="swatch sw-palm" style="min-height: 160px;">
+      <div>
+        <div class="nm serif">Palm</div>
+        <div class="role">Spark · moments</div>
+      </div>
+      <div class="vals">
+        <span>#27E62B / 75%</span><span>Ratio · &lt; 2%</span>
+      </div>
+    </div>
+    <div class="swatch sw-ink" style="min-height: 160px;">
+      <div>
+        <div class="nm serif">Deep</div>
+        <div class="role">Text on cream</div>
+      </div>
+      <div class="vals">
+        <span>#2A121B</span><span>Ratio · type only</span>
+      </div>
+    </div>
+    <div class="swatch" style="min-height:160px; background: var(--cream); color: var(--maroon-ink); border:1px dashed var(--rule-strong);">
+      <div>
+        <div class="nm serif" style="color:var(--maroon);">Usage note</div>
+        <div class="role">How these fit together</div>
+      </div>
+      <div style="font-family: var(--sans); font-size: 14px; line-height: 1.5; max-width: 44ch;">
+        Palm green is a flavor, not a flag. Use it for a single highlight — a status dot, an underline, one word. Never as a background.
+      </div>
+    </div>
+  </div>
+
+  <div class="ratios">
+    <h4>Usage ratio</h4>
+    <div>
+      <div class="ratio-bar">
+        <div style="background:var(--cream); color:var(--maroon-ink); flex: 60;">Cream · 60</div>
+        <div style="background:var(--maroon); color:var(--cream); flex: 22;">Maroon · 22</div>
+        <div style="background:var(--coral); color:var(--cream); flex: 12;">Coral · 12</div>
+        <div style="background:var(--peach); color:var(--maroon-ink); flex: 4;">Peach · 4</div>
+        <div style="background:var(--pink); color:var(--maroon-ink); flex: 1.5;">Pk</div>
+        <div style="background:var(--palm); color:var(--maroon-ink); flex: 0.5;"></div>
+      </div>
+      <p class="ratio-legend">A healthy page is mostly cream with maroon pulling the weight. Coral carries calls to action and emphasis. Peach, cheek and palm are seasoning — if you taste them, you used too much.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ─────────── 04 TYPE ─────────── -->
+<section id="type">
+  <div class="section-head">
+    <span class="idx">04 — Type</span>
+    <h2>Serif for the hero and blog titles. <em>Sans</em> for everything else.</h2>
+    <p class="lead">A three-family system, used with restraint. Source Serif 4 is reserved for the homepage hero headline and blog post titles — the article H1 on a post page and the post titles on the blog index. Nothing else on the site uses it. Inter carries every other heading, sub, and body. JetBrains Mono handles labels, numerals, and code.</p>
+  </div>
+
+  <div class="type-spec">
+    <div class="spec-card">
+      <span class="tag">Hero + blog titles</span>
+      <div class="bignote">R<em>a</em></div>
+      <div class="meta">
+        <div><span class="k">Family</span><span class="v serif">Source Serif 4</span></div>
+        <div><span class="k">Used for</span><span class="v">Hero-sized titles only: the homepage hero headline, the /blogs landing header, blog post titles (article H1 on a post page), and post titles on the blog index. Do not use elsewhere.</span></div>
+        <div><span class="k">Style</span><span class="v">Regular 400 · italic emphasis in coral</span></div>
+      </div>
+    </div>
+    <div class="spec-card">
+      <span class="tag">UI · body · headings</span>
+      <div class="bignote sans">Rg</div>
+      <div class="meta">
+        <div><span class="k">Family</span><span class="v">Inter (variable)</span></div>
+        <div><span class="k">Used for</span><span class="v">Section h2/h3, body, sub-heroes, UI, everything below the hero.</span></div>
+        <div><span class="k">Weights</span><span class="v">400 body · 500 strong · 600 headings</span></div>
+      </div>
+    </div>
+    <div class="spec-card" style="grid-column: span 2;">
+      <span class="tag">Labels · code · numerals</span>
+      <div class="bignote mono">{ fn }</div>
+      <div class="meta">
+        <div><span class="k">Family</span><span class="v">JetBrains Mono (variable)</span></div>
+        <div><span class="k">Used for</span><span class="v">Caps labels, captions, step numbers, stats, code blocks.</span></div>
+        <div><span class="k">Weights</span><span class="v">400 default · 500 emphasis</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div>
+    <div class="scale">
+      <span class="role">Blog title · serif</span>
+      <span class="sample serif" style="font-size: 96px; letter-spacing:-0.035em; line-height:0.92;">Continuously <em style="color:var(--coral);font-style:italic;">fresh</em>.</span>
+      <span class="spec">Serif · 400 · clamp(48–92) / 0.96 / -3% · blog titles only</span>
+    </div>
+    <div class="scale">
+      <span class="role">Section h2</span>
+      <span class="sample" style="font-size: 36px; letter-spacing:-0.03em; line-height:1.05; font-weight:600;">One coconut, infinite reuse.</span>
+      <span class="spec">Sans · 600 · clamp(28–44) / 1.05 / -3%</span>
+    </div>
+    <div class="scale">
+      <span class="role">Title h3</span>
+      <span class="sample" style="font-size: 20px; letter-spacing:-0.02em; line-height:1.2; font-weight:600;">A framework with a face.</span>
+      <span class="spec">Sans · 600 · 18–22 / 1.2 / -2%</span>
+    </div>
+    <div class="scale">
+      <span class="role">Hero sub / lede</span>
+      <span class="sample" style="font-size: 18px; line-height:1.55; letter-spacing:-0.005em; font-weight:400;">Declare your transformation. We keep the target in sync.</span>
+      <span class="spec">Sans · 400 · clamp(16–20) / 1.55 / -0.5%</span>
+    </div>
+    <div class="scale">
+      <span class="role">Body</span>
+      <span class="sample" style="font-size: 16px; line-height:1.55; font-weight:400;">CocoIndex turns messy sources — PDFs, code, meeting notes, inboxes — into a structured store your agents can trust. It only processes what changed, at any scale.</span>
+      <span class="spec">Sans · 400 · 16 / 1.55</span>
+    </div>
+    <div class="scale">
+      <span class="role">Caption</span>
+      <span class="sample mono" style="font-size: 13px; letter-spacing:0.02em;">@cocoindex/core · v 0.9.4 · MIT</span>
+      <span class="spec">Mono · 13 / 18 / 0</span>
+    </div>
+    <div class="scale">
+      <span class="role">Micro / tag</span>
+      <span class="sample mono" style="font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase;">Incremental · Explainable · Persistent</span>
+      <span class="spec">Mono · 11 / 16 / +140</span>
+    </div>
+  </div>
+</section>
+
+<!-- ─────────── 05 VOICE ─────────── -->
+<section id="voice">
+  <div class="section-head">
+    <span class="idx">05 — Voice</span>
+    <h2>Clear sentences. <em>One</em> coconut joke.</h2>
+    <p class="lead">We write for engineers who are tired. Short sentences. Concrete verbs. Humor where it doesn't slow the reader down. The mascot is charming — the copy doesn't have to be.</p>
+  </div>
+
+  <div class="voice-grid">
+    <div class="voice-card">
+      <span class="pill">Do</span>
+      <q>Declare your transformation. We keep the target in sync — across code changes, data changes, and time.</q>
+      <div class="why mono">Active, specific, technically honest. Tells you what the framework does, not how it feels.</div>
+    </div>
+    <div class="voice-card no">
+      <span class="pill">Don't</span>
+      <q>Unlock the power of your data with our revolutionary AI-native indexing platform!</q>
+      <div class="why mono">Adjective soup. Says nothing. Engineers will close the tab.</div>
+    </div>
+    <div class="voice-card">
+      <span class="pill">Do</span>
+      <q>Only the delta. At any scale. Production-ready on day zero.</q>
+      <div class="why mono">Short. Rhythmic. Earns the claim by being specific enough to verify.</div>
+    </div>
+    <div class="voice-card no">
+      <span class="pill">Don't</span>
+      <q>Go nuts with CocoIndex — we're bananas about your data! 🥥🍌</q>
+      <div class="why mono">One coconut joke is charm. Two is a theme park. Never stack fruit puns.</div>
+    </div>
+  </div>
+
+  <div class="voice-attr">
+    <div class="a">
+      <h5>Direct, <em>not</em> blunt</h5>
+      <p>Say the thing. Leave room for the reader to be smart.</p>
+    </div>
+    <div class="a">
+      <h5>Technical, <em>not</em> cold</h5>
+      <p>A warm sentence can carry a schema. A cold sentence can't.</p>
+    </div>
+    <div class="a">
+      <h5>Concrete, <em>not</em> clever</h5>
+      <p>"PDF in, vector out" beats "unleash the power of knowledge."</p>
+    </div>
+    <div class="a">
+      <h5>Light, <em>not</em> loud</h5>
+      <p>One wink per page. The mascot is already doing the charm work.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ─────────── 06 IMAGERY ─────────── -->
+<section id="imagery">
+  <div class="section-head">
+    <span class="idx">06 — Imagery &amp; motifs</span>
+    <h2>Texture, <em>not</em> decoration.</h2>
+    <p class="lead">Patterns reinforce the system: dots for indexing, grids for structure, stripes for flow, topographies for data landscape. Combine freely; never layer more than two at once.</p>
+  </div>
+
+  <div class="imagery-grid">
+    <div class="tile pattern-dots big">
+      <span class="cap">01 · Dots — index</span>
+    </div>
+    <div class="tile pattern-grid">
+      <span class="cap" style="color:var(--maroon)">02 · Grid — schema</span>
+    </div>
+    <div class="tile pattern-stripes">
+      <span class="cap" style="color:var(--maroon-ink)">03 · Stripes — pipeline</span>
+    </div>
+    <div class="tile maroon">
+      <span class="cap">04 · Solid — ground</span>
+    </div>
+    <div class="tile pattern-topo">
+      <span class="cap" style="color:var(--maroon)">05 · Topo — landscape</span>
+    </div>
+    <div class="tile cream" style="background:
+      linear-gradient(var(--coral), var(--coral)) center/8px 80% no-repeat,
+      linear-gradient(var(--coral), var(--coral)) center/80% 8px no-repeat,
+      var(--cream);">
+      <span class="cap" style="color:var(--maroon)">06 · Crosshair — focus</span>
+    </div>
+    <div class="tile coral">
+      <span class="cap">07 · Flat — accent</span>
+    </div>
+  </div>
+
+  <div class="motif-row">
+    <div class="motif">
+      <svg viewBox="0 0 40 40"><circle cx="20" cy="20" r="6" fill="#BE5133"/></svg>
+      <span class="mlabel">Spark</span>
+    </div>
+    <div class="motif">
+      <svg viewBox="0 0 40 40"><circle cx="12" cy="20" r="3" fill="#532638"/><circle cx="20" cy="20" r="3" fill="#532638"/><circle cx="28" cy="20" r="3" fill="#532638"/></svg>
+      <span class="mlabel">Stream</span>
+    </div>
+    <div class="motif">
+      <svg viewBox="0 0 40 40"><path d="M6 20 L20 8 L34 20 L20 32 Z" fill="none" stroke="#532638" stroke-width="2"/></svg>
+      <span class="mlabel">Node</span>
+    </div>
+    <div class="motif">
+      <svg viewBox="0 0 40 40"><path d="M8 28 Q 20 8 32 28" fill="none" stroke="#BE5133" stroke-width="2"/></svg>
+      <span class="mlabel">Arc</span>
+    </div>
+    <div class="motif">
+      <svg viewBox="0 0 40 40"><rect x="8" y="8" width="10" height="10" fill="#E59A63"/><rect x="22" y="8" width="10" height="10" fill="#FB6A76"/><rect x="8" y="22" width="10" height="10" fill="#BE5133"/><rect x="22" y="22" width="10" height="10" fill="#532638"/></svg>
+      <span class="mlabel">Grid</span>
+    </div>
+    <div class="motif">
+      <svg viewBox="0 0 40 40"><path d="M8 12 L32 12 M8 20 L24 20 M8 28 L30 28" stroke="#532638" stroke-width="2" stroke-linecap="round"/></svg>
+      <span class="mlabel">Record</span>
+    </div>
+  </div>
+</section>
+
+<!-- ─────────── 07 IN USE ─────────── -->
+<section id="inuse">
+  <div class="section-head">
+    <span class="idx">07 — In use</span>
+    <h2>How it <em>feels</em> in the wild.</h2>
+    <p class="lead">A handful of sample artifacts. Use them as starting points — an ad, a sticker, a terminal. The brand should read the same whether it's a GitHub README or a conference booth.</p>
+  </div>
+
+  <div class="inuse-grid">
+    <div class="card-ad">
+      <img class="mark" src="assets/cocoindex-mark.svg" alt="" />
+      <div>
+        <h3>Only the <em>delta.</em> At any scale.</h3>
+        <span class="small" style="display:block; margin-top: 18px;">cocoindex.io / star on github</span>
+      </div>
+    </div>
+    <div class="card-ad cream">
+      <div class="serif" style="font-size: 28px;">Declare.<br>Run.<br><em style="color:var(--coral); font-style: italic;">Forget.</em></div>
+      <div class="terminal" style="margin-top: 20px;">
+        <div class="bar"><span></span><span></span><span></span></div>
+        <div><span class="kw">@cocoindex.flow</span></div>
+        <div><span class="kw">def</span> <span class="fn">index_pdfs</span>(src):</div>
+        <div>  <span class="dim">#</span> <span class="dim">only the delta</span></div>
+        <div>  <span class="kw">return</span> src.map(embed).sink(vector_db)</div>
+      </div>
+      <span class="small">Python · 5 lines · production on day 0</span>
+    </div>
+    <div class="card-ad coral">
+      <img class="mark" src="assets/cocoindex-mark.svg" alt="" />
+      <div>
+        <h3>A framework <em>with a face.</em></h3>
+        <span class="small">Built for reliable, autonomous agents</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="inuse-stickers">
+    <div class="sticker" style="background: var(--maroon); color: var(--cream);">
+      <img class="mini" src="assets/cocoindex-mark.svg" alt=""/>
+      <span>Only <em style="color:var(--peach); font-style: italic;">the delta</em></span>
+    </div>
+    <div class="sticker" style="background: var(--cream); color: var(--maroon); border: 1px solid var(--rule-strong);">
+      <span>Built for tired engineers.</span>
+    </div>
+    <div class="sticker" style="background: var(--coral); color: var(--cream);">
+      <span>PDF in, <em style="color:var(--cream); font-style: italic;">vector out.</em></span>
+    </div>
+    <div class="sticker" style="background: var(--peach); color: var(--maroon-ink);">
+      <span>React, <em style="font-style: italic;">for data.</em></span>
+    </div>
+  </div>
+</section>
+
+</div>
+
+<!-- ─────────── FOOTER ─────────── -->
+<footer>
+  <div>
+    <h6>Assets</h6>
+    <a href="#">Logo pack · SVG · PNG</a>
+    <a href="#">Pattern library</a>
+    <a href="#">Sticker kit</a>
+    <a href="#">Figma library</a>
+  </div>
+  <div>
+    <h6>Writing</h6>
+    <a href="#">Voice &amp; tone</a>
+    <a href="#">Messaging hierarchy</a>
+    <a href="#">Glossary</a>
+  </div>
+  <div>
+    <h6>Product</h6>
+    <a href="https://cocoindex.io/docs/">Documentation</a>
+    <a href="https://cocoindex.io/examples/">Examples</a>
+    <a href="https://github.com/cocoindex-io/cocoindex">GitHub</a>
+  </div>
+  <div>
+    <h6>Contact</h6>
+    <a href="#">brand@cocoindex.io</a>
+    <a href="#">Request review</a>
+    <a href="#">Submit feedback</a>
+  </div>
+  <div class="colophon">
+    <span>© 2026 CocoIndex · Guidelines v 1.0</span>
+    <span>Set in Source Serif 4, Inter &amp; JetBrains Mono</span>
+  </div>
+</footer>
+
+<!-- ─────────── TWEAKS PANEL ─────────── -->
+<div class="tweaks-panel" id="tweaks">
+  <h4>Tweaks <span>⏻</span></h4>
+  <div class="tw-row">
+    <label>Lead color</label>
+    <div class="opts" data-group="lead">
+      <button data-val="maroon">Maroon</button>
+      <button data-val="coral">Coral</button>
+      <button data-val="peach">Peach</button>
+      <button data-val="cream">Cream</button>
+      <button data-val="palm">Palm</button>
+    </div>
+  </div>
+  <div class="tw-row">
+    <label>Display type</label>
+    <div class="opts" data-group="display">
+      <button data-val="serif">Serif</button>
+      <button data-val="mixed">Mixed</button>
+      <button data-val="sans">Sans</button>
+    </div>
+  </div>
+  <div class="tw-row">
+    <label>Mascot prominence</label>
+    <div class="opts" data-group="mascot">
+      <button data-val="minimal">Minimal</button>
+      <button data-val="balanced">Balanced</button>
+      <button data-val="hero">Hero</button>
+    </div>
+  </div>
+  <div class="tw-row">
+    <label>Density</label>
+    <div class="opts" data-group="density">
+      <button data-val="compact">Compact</button>
+      <button data-val="comfortable">Comfortable</button>
+      <button data-val="spacious">Spacious</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  // ─── Tweaks protocol ───
+  const state = { ...TWEAKS };
+  const apply = () => {
+    const b = document.body;
+    b.classList.forEach(c => {
+      if (/^(lead|display|mascot|density)-/.test(c)) b.classList.remove(c);
+    });
+    b.classList.add(`lead-${state.lead}`);
+    b.classList.add(`display-${state.display}`);
+    b.classList.add(`mascot-${state.mascot}`);
+    b.classList.add(`density-${state.density}`);
+    document.querySelectorAll('.tw-row .opts').forEach(grp => {
+      const g = grp.dataset.group;
+      grp.querySelectorAll('button').forEach(btn => {
+        btn.classList.toggle('on', btn.dataset.val === state[g]);
+      });
+    });
+  };
+  apply();
+
+  document.querySelectorAll('.tw-row .opts button').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const g = btn.parentElement.dataset.group;
+      state[g] = btn.dataset.val;
+      apply();
+      try {
+        window.parent.postMessage({ type:'__edit_mode_set_keys', edits: { [g]: state[g] } }, '*');
+      } catch(e){}
+    });
+  });
+
+  // Register listener FIRST, then announce.
+  window.addEventListener('message', (e) => {
+    const d = e.data || {};
+    if (d.type === '__activate_edit_mode')   document.getElementById('tweaks').classList.add('on');
+    if (d.type === '__deactivate_edit_mode') document.getElementById('tweaks').classList.remove('on');
+  });
+  try { window.parent.postMessage({ type: '__edit_mode_available' }, '*'); } catch(e){}
+</script>
+
+</body>
+</html>

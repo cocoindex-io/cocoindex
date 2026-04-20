@@ -1,0 +1,70 @@
+---
+import { sidebar, type SidebarItem } from '../docs-sidebar';
+
+export interface Props {
+  /** Slug of the currently-rendered doc, e.g. `getting_started/quickstart`. */
+  currentSlug: string;
+}
+
+const { currentSlug } = Astro.props;
+const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+
+function href(slug: string): string {
+  return `${base}/${slug}`;
+}
+---
+
+<aside class="side">
+  {sidebar.map((item) => (
+    item.type === 'doc' ? (
+      <div class="side-group">
+        <ul>
+          <li>
+            <a
+              href={href(item.slug)}
+              class={currentSlug === item.slug ? 'on' : ''}
+              data-current={currentSlug === item.slug || null}
+            >
+              {item.label ?? item.slug}
+            </a>
+          </li>
+        </ul>
+      </div>
+    ) : (
+      <div class="side-group">
+        <h5>
+          {item.slug ? (
+            <a href={href(item.slug)} style="color:inherit; text-decoration:none;">{item.label}</a>
+          ) : (
+            <span>{item.label}</span>
+          )}
+        </h5>
+        <ul>
+          {item.items.map((child) => (
+            child.type === 'doc' ? (
+              <li>
+                <a
+                  href={href(child.slug)}
+                  class={currentSlug === child.slug ? 'on' : ''}
+                  data-current={currentSlug === child.slug || null}
+                >
+                  {child.label ?? child.slug}
+                </a>
+              </li>
+            ) : null
+          ))}
+        </ul>
+      </div>
+    )
+  ))}
+</aside>
+
+<script>
+  // On load, scroll the active sidebar entry into view so the user never
+  // lands on a page where the highlighted nav item is off-screen. `nearest`
+  // avoids jumping the whole viewport — it just nudges the sidebar scroller.
+  const current = document.querySelector<HTMLAnchorElement>('aside.side a[data-current]');
+  if (current) {
+    current.scrollIntoView({ block: 'center', inline: 'nearest' });
+  }
+</script>

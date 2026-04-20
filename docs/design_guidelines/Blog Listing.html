@@ -1,0 +1,711 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Blog · CocoIndex</title>
+<link rel="icon" href="assets/cocoindex-mark.svg"/>
+<link rel="stylesheet" href="colors_and_type.css"/>
+<link rel="stylesheet" href="ui_kits/web/shared.css"/>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<style>
+  /* Re-paths because this page lives one level above shared.css */
+  /* shared.css @imports ../../colors_and_type.css — that won't resolve here. */
+  /* We loaded colors_and_type.css directly above, so override the broken import path by re-linking the vars locally. */
+
+  .blog-hero-top{
+    padding: 64px 0 32px;
+    border-bottom: 1px solid var(--rule);
+  }
+  .blog-hero-top .bits{
+    display:flex; align-items:flex-end; justify-content:space-between;
+    gap:32px; flex-wrap:wrap;
+    margin-bottom: 40px;
+  }
+  .blog-hero-top h1{
+    font-family: var(--serif); font-weight:400;
+    font-size: clamp(52px, 6.4vw, 88px); line-height:1.0; letter-spacing:-0.035em;
+    margin: 12px 0 0; max-width: 12ch;
+    padding-bottom: 0.1em;
+  }
+  .blog-hero-top h1 em{font-style:italic; color:var(--coral);}
+  .blog-hero-top .sub{
+    max-width: 38ch; font-size:17px; color: var(--maroon-ink);
+    margin: 0;
+  }
+  .blog-hero-top .count{
+    font-family: var(--mono); font-size:11px; letter-spacing:0.14em; text-transform:uppercase;
+    color:var(--muted);
+    padding-top: 14px; border-top: 1px solid var(--rule-strong);
+    display:flex; gap:18px;
+  }
+  .blog-hero-top .count b{color:var(--maroon); font-weight:500;}
+
+  /* controls bar */
+  .controls{
+    padding: 28px 0;
+    border-bottom: 1px solid var(--rule);
+    background: var(--cream-soft);
+    position: sticky; top: 57px; z-index: 20;
+    backdrop-filter: blur(12px);
+    background: color-mix(in oklab, var(--cream-soft) 92%, transparent);
+  }
+  .controls .row{
+    display:flex; align-items:center; gap:20px; flex-wrap:wrap;
+  }
+  .search{
+    flex: 1 1 340px; max-width: 440px;
+    display:flex; align-items:center; gap:10px;
+    padding: 10px 14px; border-radius: 999px;
+    background: var(--paper);
+    border: 1px solid var(--rule);
+    font-size: 14px;
+  }
+  .search:focus-within{border-color: var(--maroon); background: #fff;}
+  .search input{
+    border:0; outline:0; background: transparent; flex:1;
+    font: inherit; color: var(--maroon-ink);
+  }
+  .search input::placeholder{color: var(--muted);}
+  .search .kb{
+    font-family: var(--mono); font-size:11px; color:var(--muted);
+    padding:2px 8px; background: var(--cream); border:1px solid var(--rule);
+    border-radius:3px;
+  }
+
+  .tags{display:flex; gap:6px; flex-wrap:wrap; align-items:center;}
+  .tag-btn{
+    font-family: var(--mono); font-size:11px; letter-spacing:0.12em; text-transform:uppercase;
+    padding: 7px 14px; border-radius: 999px;
+    border: 1px solid var(--rule); background: var(--paper); color: var(--maroon-ink);
+    cursor: pointer; transition: background .15s, color .15s, border-color .15s;
+    display:inline-flex; align-items:center; gap:6px;
+  }
+  .tag-btn:hover{border-color: var(--maroon); color: var(--maroon);}
+  .tag-btn.on{background: var(--maroon); color: var(--cream); border-color: var(--maroon);}
+  .tag-btn .n{
+    font-family: var(--mono); font-size:10px;
+    background: rgba(42,18,27,0.08); padding:1px 6px; border-radius:99px;
+    color: var(--muted);
+  }
+  .tag-btn.on .n{background: rgba(252,243,216,0.2); color: var(--cream);}
+
+  .view-toggle{
+    display:inline-flex; padding:3px; border-radius: 999px;
+    border: 1px solid var(--rule); background: var(--paper);
+  }
+  .view-toggle button{
+    border:0; background: transparent; cursor:pointer;
+    font: inherit; padding: 6px 12px; border-radius: 999px;
+    font-family: var(--mono); font-size:11px; letter-spacing:0.12em; text-transform:uppercase;
+    color: var(--muted);
+  }
+  .view-toggle button.on{background: var(--coral); color: var(--cream);}
+
+  /* main canvas */
+  main.list{padding: 48px 0 96px;}
+
+  /* featured */
+  .featured{
+    display: grid; grid-template-columns: 1.35fr 1fr;
+    gap: 0; border:1px solid var(--rule-strong); border-radius: 10px;
+    overflow: hidden; background: var(--cream);
+    margin-bottom: 48px;
+    transition: transform .2s, box-shadow .2s;
+    cursor: pointer;
+  }
+  .featured:hover{transform: translateY(-3px); box-shadow: 0 24px 60px -28px rgba(42,18,27,0.3);}
+  .featured .thumb{
+    aspect-ratio: 16/10;
+    position: relative; overflow: hidden;
+  }
+  .featured .thumb .tag{
+    position:absolute; top:18px; left:18px; z-index:3;
+    font-family: var(--mono); font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--cream); padding: 7px 14px 7px 12px;
+    background: var(--maroon); border-radius: 999px;
+    box-shadow: 0 2px 12px rgba(42,18,27,0.35);
+    display:flex; gap:8px; align-items:center;
+    font-weight: 500;
+  }
+  .featured .thumb .tag::before{
+    content:""; width:6px; height:6px; border-radius:50%; background: var(--palm);
+  }
+  .featured .body{
+    padding: 44px 48px 36px;
+    display: flex; flex-direction: column; gap: 16px;
+  }
+  .featured .meta{
+    font-family: var(--mono); font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--muted);
+    display:flex; gap:14px; flex-wrap:wrap;
+  }
+  .featured h2{
+    font-family: var(--sans); font-weight: 600;
+    font-size: clamp(26px, 2.8vw, 36px); line-height: 1.1; letter-spacing: -0.025em;
+    margin: 0; max-width: 20ch;
+  }
+  .featured h2 em{font-style: normal; color: var(--coral);}
+  .featured p{
+    font-size: 17px; line-height: 1.55; color: var(--maroon-ink);
+    margin: 0; max-width: 52ch;
+  }
+  .featured .read{
+    margin-top: auto; padding-top: 20px; border-top: 1px solid var(--rule);
+    font-family: var(--mono); font-size: 12px; letter-spacing: 0.12em; text-transform: uppercase;
+    color: var(--coral);
+    display:flex; justify-content: space-between; align-items:center;
+  }
+
+  /* grid */
+  .grid{
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px;
+  }
+  @media (max-width: 960px){ .grid{grid-template-columns: repeat(2, 1fr);} }
+  @media (max-width: 640px){ .grid{grid-template-columns: 1fr;} }
+
+  article.post{
+    border: 1px solid var(--rule-strong); border-radius: 8px;
+    background: var(--cream); overflow: hidden;
+    display: flex; flex-direction: column;
+    transition: transform .2s, box-shadow .2s;
+    cursor: pointer;
+  }
+  article.post:hover{transform: translateY(-4px); box-shadow: 0 16px 40px -18px rgba(42,18,27,0.25);}
+  article.post .thumb{
+    aspect-ratio: 16/10; position: relative; overflow: hidden;
+    display: grid; place-items: center;
+  }
+  article.post .thumb .tag{
+    position:absolute; top:12px; left:12px; z-index:3;
+    font-family: var(--mono); font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--cream); padding: 5px 11px;
+    background: var(--maroon); border-radius: 999px;
+    box-shadow: 0 2px 10px rgba(42,18,27,0.3);
+    font-weight: 500;
+  }
+  article.post .thumb .glyph{
+    font-family: var(--serif); font-style: italic;
+    color: var(--cream); opacity: 0.9;
+    font-size: 40px; position:relative; z-index:2; text-align:center;
+    padding: 0 20px;
+  }
+  article.post .body{
+    padding: 22px 22px 20px; display: flex; flex-direction: column; gap: 8px; flex: 1;
+  }
+  article.post .date{
+    font-family: var(--mono); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase;
+    color: var(--muted);
+  }
+  article.post h3{
+    font-family: var(--sans); font-weight: 600; font-size: 18px; line-height: 1.25;
+    letter-spacing: -0.015em; margin: 0; color: var(--maroon-ink);
+  }
+  article.post h3 em{font-style: normal; color: var(--coral);}
+  article.post p{
+    margin: 0; font-size: 14px; line-height: 1.5; color: var(--muted);
+    flex: 1; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+  }
+  article.post .foot{
+    margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--rule);
+    font-family: var(--mono); font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase;
+    color: var(--coral);
+    display: flex; justify-content: space-between; align-items: center;
+  }
+
+  /* LIST view (alt) */
+  .list-view{
+    display:flex; flex-direction:column;
+  }
+  .list-view article.post{
+    border:0; border-bottom: 1px solid var(--rule); border-radius: 0;
+    padding: 24px 0; background: transparent;
+    flex-direction: row; gap: 28px; align-items: stretch;
+    transition: background .15s;
+  }
+  .list-view article.post:hover{background: var(--cream); transform: none; box-shadow: none;}
+  .list-view article.post .thumb{
+    width: 220px; flex: none; aspect-ratio: 16/10; border-radius: 6px; overflow: hidden;
+  }
+  .list-view article.post .body{padding: 4px 0; gap: 6px;}
+  .list-view article.post h3{font-size: 22px;}
+  .list-view article.post p{-webkit-line-clamp: 2; font-size: 15px; max-width: 68ch;}
+  .list-view article.post .foot{border-top: 0; padding-top: 0; margin-top: 6px;}
+
+  /* pagination */
+  .pager{
+    display: flex; justify-content: center; align-items: center; gap: 8px;
+    margin-top: 64px; padding-top: 40px; border-top: 1px solid var(--rule);
+  }
+  .pager button, .pager span.p{
+    font-family: var(--mono); font-size: 12px; letter-spacing: 0.1em;
+    min-width: 38px; height: 38px; border-radius: 999px;
+    border: 1px solid var(--rule); background: var(--paper); color: var(--maroon-ink);
+    display: inline-flex; align-items: center; justify-content: center; padding: 0 12px;
+    cursor: pointer;
+  }
+  .pager button:hover{border-color: var(--maroon);}
+  .pager .p.on{background: var(--maroon); color: var(--cream); border-color: var(--maroon);}
+  .pager .dots{border:0; background: transparent; color: var(--muted);}
+
+  /* empty state */
+  .empty{
+    text-align: center; padding: 80px 20px;
+    font-family: var(--mono); font-size: 13px; letter-spacing: 0.1em; text-transform: uppercase;
+    color: var(--muted);
+  }
+  .empty em{font-family: var(--serif); font-style: italic; font-size: 20px; color: var(--coral); text-transform: none; letter-spacing: 0; display:block; margin-top: 8px;}
+
+  /* Tweaks panel */
+  .tweaks{
+    position: fixed; right: 24px; bottom: 24px; z-index: 90;
+    width: 280px;
+    background: var(--paper);
+    border: 1px solid var(--rule-strong);
+    border-radius: 10px;
+    box-shadow: 0 24px 60px -20px rgba(42,18,27,0.35);
+    padding: 18px 20px;
+    font-size: 13px;
+    display: none;
+  }
+  .tweaks.on{display: block;}
+  .tweaks h4{
+    font-family: var(--mono); font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--muted); margin: 0 0 14px;
+    display:flex; justify-content:space-between;
+  }
+  .tweaks .field{margin-bottom: 14px;}
+  .tweaks label{
+    font-family: var(--mono); font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase;
+    color: var(--muted); display: block; margin-bottom: 6px;
+  }
+  .tweaks .seg{display: flex; gap: 4px; padding: 3px; border-radius: 999px; border: 1px solid var(--rule); background: var(--cream);}
+  .tweaks .seg button{
+    flex: 1; border: 0; background: transparent; cursor: pointer;
+    font: inherit; padding: 6px 10px; border-radius: 999px;
+    font-family: var(--mono); font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase;
+    color: var(--maroon-ink);
+  }
+  .tweaks .seg button.on{background: var(--coral); color: var(--cream);}
+
+  /* Tweakable thumbnail styles */
+  .th-dots{
+    background: var(--maroon);
+    background-image: radial-gradient(circle, rgba(252,243,216,0.11) 1.8px, transparent 2.2px);
+    background-size: 18px 18px;
+  }
+  .th-grid{
+    background: var(--maroon);
+    background-image:
+      linear-gradient(to right, rgba(252,243,216,0.08) 1px, transparent 1px),
+      linear-gradient(to bottom, rgba(252,243,216,0.08) 1px, transparent 1px);
+    background-size: 28px 28px;
+  }
+  .th-stripes{
+    background: var(--coral);
+    background-image: repeating-linear-gradient(-45deg, rgba(42,18,27,0.08) 0 12px, transparent 12px 24px);
+  }
+  .th-topo{
+    background: var(--cream);
+    background-image:
+      radial-gradient(ellipse 70% 40% at 30% 60%, rgba(190,81,51,0.18) 0%, transparent 50%),
+      radial-gradient(ellipse 50% 30% at 70% 30%, rgba(229,154,99,0.22) 0%, transparent 50%),
+      radial-gradient(ellipse 60% 40% at 90% 80%, rgba(190,81,51,0.12) 0%, transparent 50%);
+    color: var(--maroon);
+  }
+  .th-topo .glyph, .th-topo .tag{color: var(--maroon) !important;}
+  .th-topo .tag{background: rgba(42,18,27,0.08) !important; color: var(--maroon) !important;}
+</style>
+</head>
+<body>
+
+<div id="root"></div>
+
+<script type="text/babel" src="ui_kits/web/Shared.jsx"></script>
+
+<script type="application/json" id="posts-data">
+[
+  {"d":"April 2, 2026","t":"Turn Podcasts into a Knowledge Graph with LLM and CocoIndex","e":"Build a pipeline that converts YouTube podcasts into a structured knowledge graph — extracting speakers, statements, and entities with LLM, then resolving duplicates with embeddings.","tag":"Examples","g":"podcast → KG"},
+  {"d":"March 27, 2026","t":"From Pickle to Type-Guided Deserialization","e":"How CocoIndex evolved from pickle to a type-guided serialization system that uses Python type hints to automatically choose the right serializer — no decorators or registration needed.","tag":"Insight","g":"type-guided"},
+  {"d":"March 24, 2026","t":"Building an Invisible Daemon: Architecture Patterns for Local Developer Tools","e":"Patterns for building local daemons that start on first use, upgrade transparently, and shut down cleanly — learned from building cocoindex-code's semantic search daemon.","tag":"Best Practices","g":"invisible daemon"},
+  {"d":"March 10, 2026","t":"CocoIndex Changelog 0.3.27 – 0.3.34","e":"Featuring five new target connectors, filesystem-level change detection, Python 3.14 free-threading, and smarter pipeline lifecycle management.","tag":"Changelog","g":"v 0.3.34"},
+  {"d":"February 17, 2026","t":"A Leap Forward in Security: CocoIndex Joins GitHub Secure Open Source Fund","e":"CocoIndex participated in the GitHub Secure Open Source Fund, strengthening our security practices for the AI data infrastructure that developers depend on.","tag":"Announcement","g":"security"},
+  {"d":"February 9, 2026","t":"Building SEC EDGAR Financial Analytics with CocoIndex and Apache Doris","e":"A multi-source pipeline that ingests SEC filings (TXT, JSON, PDF), scrubs PII, extracts topics, and powers hybrid search with CocoIndex + Apache Doris.","tag":"Examples","g":"SEC EDGAR"},
+  {"d":"February 5, 2026","t":"Build a Self-Updating Wiki for Your Codebases with LLM","e":"Automatically generates a wiki page for each project in your codebase, and keeps it fresh with incremental processing.","tag":"Examples","g":"self-updating wiki"},
+  {"d":"January 22, 2026","t":"Slides-to-Speech: Turn your presentations into narrated content","e":"Turn slide decks into a continuously updated, searchable multimodal dataset. CocoIndex watches a Drive folder for new and modified files and keeps LanceDB in sync.","tag":"Examples","g":"slides → speech"},
+  {"d":"January 18, 2026","t":"CocoIndex Changelog 0.3.11 – 0.3.26","e":"Featuring production-ready resilience, a structured error system, expanded integrations, and always-fresh structured context for agents operating in the real world.","tag":"Changelog","g":"v 0.3.26"},
+  {"d":"December 15, 2025","t":"Extracting Structured Data from Patient Intake Forms with DSPy and CocoIndex","e":"Continuously extract clean, typed, Pydantic-validated structured data directly from patient intake forms, using DSPy and CocoIndex.","tag":"Examples","g":"DSPy + intake"},
+  {"d":"December 8, 2025","t":"Building a Knowledge Graph from Meeting Notes that automatically updates","e":"A full walkthrough to turn meeting notes in Google Drive into a live-updating Neo4j knowledge graph using CocoIndex and LLM.","tag":"Examples","g":"meetings → KG"},
+  {"d":"December 2, 2025","t":"Building a Real-Time HackerNews Trending Topics Detector","e":"A deep dive into Custom Sources and AI — building a Real-Time HackerNews Trending Topics Detector with CocoIndex.","tag":"Examples","g":"HN trends"},
+  {"d":"November 25, 2025","t":"CocoIndex Changelog 0.2.21 – 0.3.10","e":"Featuring batching support for CocoIndex functions, execution robustness, schema & type-system improvements, custom source support, and more.","tag":"Changelog","g":"v 0.3.10"},
+  {"d":"November 25, 2025","t":"Extract structured information from HackerNews with a Custom Source","e":"Build a lightweight, incremental pipeline by treating any API as a data component — a custom incremental connector for HackerNews using CocoIndex's Custom Source API.","tag":"Feature","g":"custom source"},
+  {"d":"November 21, 2025","t":"Extracting Intake Forms with BAML and CocoIndex","e":"How to use BAML and CocoIndex to extract structured data from patient intake forms in PDF/Word with LLM continuously for production.","tag":"Examples","g":"BAML + intake"},
+  {"d":"November 10, 2025","t":"Adaptive Batching — 5× throughput on your data pipelines","e":"How CocoIndex delivers automatic batch processing for GPU workloads and ML pipelines. Framework-level batching optimizes performance for text embeddings and other AI operations.","tag":"Feature","g":"adaptive batching"},
+  {"d":"October 29, 2025","t":"AI-Native Data Pipeline — Why We Made It","e":"Why the next wave of AI needs open source, scalable, AI-native data infrastructure — and how CocoIndex is building the foundation for the future of intelligent data pipelines.","tag":"Insight","g":"AI-native"},
+  {"d":"October 27, 2025","t":"Index PDF elements — text, images, mixed embeddings and metadata","e":"Extracts, embeds, and stores multimodal PDF elements — text with SentenceTransformers and images with CLIP — in a vector database for unified semantic search.","tag":"Examples","g":"PDF elements"},
+  {"d":"October 21, 2025","t":"Bring your own data: Index any data with Custom Sources","e":"CocoIndex now officially supports custom sources — giving you the power to read data from any system you want, with robust incremental computing.","tag":"Feature","g":"custom sources"},
+  {"d":"October 19, 2025","t":"CocoIndex Changelog 2025-10-19","e":"Featuring significant optimizations for production-ready infrastructure: durable execution, efficient incremental processing, GPU isolation, and better support for native building blocks.","tag":"Changelog","g":"Oct 19"},
+  {"d":"October 11, 2025","t":"Automated invoice processing with AI, Snowflake and CocoIndex","e":"Rapidly optimize your data indexing strategy with CocoIndex and CocoInsight. Define query handlers, trace search results back to source data, and integrate AI-powered transformations.","tag":"Examples","g":"invoices → Snowflake"},
+  {"d":"October 10, 2025","t":"Thinking in Rust: Ownership, Access, and Memory Safety","e":"A mental framework for Rust's memory safety concepts. Think systematically about ownership, references, Send, Sync, and Rc, Arc, RefCell, Mutex.","tag":"Insight","g":"thinking in Rust"},
+  {"d":"September 21, 2025","t":"Fast iterate your indexing strategy — trace back from query to data","e":"Rapidly optimize your data indexing strategy with CocoIndex and CocoInsight. Learn to define query handlers and trace search results back to source data.","tag":"Examples","g":"trace"},
+  {"d":"September 1, 2025","t":"Incrementally Transform Structured + Unstructured Data from Postgres with AI","e":"A comprehensive walkthrough on unified, incrementally-updated search and analytics across structured and unstructured sources, using Postgres as origin and target.","tag":"Examples","g":"Postgres source"},
+  {"d":"August 20, 2025","t":"Build a Visual Document Index from PDFs, Images, Slides — with ColPali","e":"Build a unified visual document index from multiple file formats — PDFs, images, and slides — using CocoIndex and ColPali. No OCR needed.","tag":"Examples","g":"ColPali"},
+  {"d":"August 18, 2025","t":"CocoIndex Changelog 2025-08-18","e":"Featuring production readiness, scalability, and reliability. More flexibility with customization and native integrations. Extended features for multi-modality pipelines.","tag":"Changelog","g":"Aug 18"},
+  {"d":"August 13, 2025","t":"Control Processing Concurrency in CocoIndex","e":"CocoIndex's layered concurrency control features help you optimize data processing performance, prevent system overload, and ensure stable, efficient pipelines at scale.","tag":"Feature","g":"concurrency"},
+  {"d":"August 12, 2025","t":"Index Images with ColPali: Multi-Modal Context Engineering","e":"CocoIndex now supports native integration with ColPali — enabling multi-vector, patch-level image indexing.","tag":"Feature","g":"ColPali native"},
+  {"d":"August 10, 2025","t":"Multi-Dimensional Vector Support in CocoIndex","e":"CocoIndex natively handles typed multi-dimensional vectors — from simple arrays to multi-vector embeddings, unlocking multimodal AI pipelines at scale.","tag":"Feature","g":"multi-vector"},
+  {"d":"August 3, 2025","t":"Bring your own building blocks: Export anywhere with Custom Targets","e":"CocoIndex now officially supports custom targets — giving you the power to export data to any destination, whether it's a local file, cloud storage, a REST API, or your own bespoke system.","tag":"Feature","g":"custom targets"},
+  {"d":"July 24, 2025","t":"Indexing Faces for Scalable Visual Search — Build your own Google Photo Search","e":"Build a scalable face detection and recognition pipeline using CocoIndex. Extract and embed faces, structure the data for visual search, and export to a vector database.","tag":"Examples","g":"faces"},
+  {"d":"July 9, 2025","t":"Index academic papers and extract metadata for AI agents","e":"How to index academic research papers by extracting metadata (title, authors, abstract) for AI agents and AI workflows using LLMs and CocoIndex.","tag":"Examples","g":"papers"},
+  {"d":"July 7, 2025","t":"CocoIndex Changelog 2025-07-07","e":"CocoIndex updates: in-process API, CLI improvements, EmbedText support, codebase indexing enhancements, and more.","tag":"Changelog","g":"Jul 7"},
+  {"d":"June 24, 2025","t":"Introducing CocoInsight","e":"CocoInsight is a platform for data lineage and data observability — an inspector that lets you click any row in your target and walk it back, transform by transform, to the source.","tag":"Feature","g":"CocoInsight"},
+  {"d":"June 8, 2025","t":"Flow-based schema inference for Qdrant","e":"Automatic schema inference for Qdrant. Define the flow, let CocoIndex figure out the collection shape — and keep it in sync as the pipeline evolves.","tag":"Feature","g":"Qdrant schema"},
+  {"d":"June 3, 2025","t":"CocoIndex + Kuzu: Real-time knowledge graph with Kuzu","e":"Integrate Kuzu with CocoIndex for real-time knowledge graphs backed by an embedded graph database.","tag":"Examples","g":"Kuzu"},
+  {"d":"May 31, 2025","t":"CocoIndex Changelog 2025-05-31","e":"CocoIndex updates: Amazon S3 as a data source, updates on query handling, standalone mode, and more.","tag":"Changelog","g":"May 31"},
+  {"d":"May 29, 2025","t":"Real-time data transformation pipeline with Amazon S3 and CocoIndex","e":"Build a real-time data transformation pipeline with S3, SQS, and CocoIndex — continuously sync and transform blob data as it lands.","tag":"Examples","g":"S3 + SQS"},
+  {"d":"May 20, 2025","t":"Build image search and query with natural language using CLIP","e":"Indexing images with CocoIndex and a vision model in real-time: multi-modal embedding and vector index for efficient retrieval.","tag":"Examples","g":"CLIP"},
+  {"d":"May 19, 2025","t":"How to build an index with text embeddings","e":"Indexing text with CocoIndex and text embeddings, and querying it with natural language — the canonical starter tutorial.","tag":"Examples","g":"text-embed 101"},
+  {"d":"May 8, 2025","t":"Story of CocoIndex, at 1k stars","e":"CocoIndex is the world's first open-source engine that supports both custom transformation logic and incremental processing specialized for data indexing. We just crossed 1k stars — thank you.","tag":"Announcement","g":"1k ★"},
+  {"d":"May 7, 2025","t":"Build a Real-Time Product Recommendation Engine with LLM and Graph Database","e":"Build a real-time product recommendation engine with LLM and a graph database, from the aspect of product category (taxonomy) understanding.","tag":"Examples","g":"recs"},
+  {"d":"April 30, 2025","t":"CocoIndex Changelog 2025-04-30","e":"CocoIndex updates: Knowledge Graphs, Qdrant, Supabase, KTable/LTable, and more LLM providers.","tag":"Changelog","g":"Apr 30"},
+  {"d":"April 29, 2025","t":"Build a Real-Time Knowledge Graph for Documents with LLM","e":"CocoIndex now supports knowledge graphs with incremental processing. Building live knowledge for agents is super easy.","tag":"Examples","g":"docs → KG"},
+  {"d":"April 7, 2025","t":"CocoIndex Changelog 2025-04-07","e":"CocoIndex updates: incremental processing with live update mode, evaluation utilities, date/time types, Google Drive, and core/performance improvements.","tag":"Changelog","g":"Apr 7"},
+  {"d":"April 7, 2025","t":"Continuous update of derived data on source updates, automatically","e":"CocoIndex continuously watches source changes and keeps derived data in sync, with low latency and minimal performance overhead.","tag":"Feature","g":"continuous"},
+  {"d":"April 6, 2025","t":"Incremental Processing with CocoIndex","e":"CocoIndex keeps an index up to date with source changes, super efficiently and with low latency — with the support of incremental processing.","tag":"Feature","g":"incremental"},
+  {"d":"March 26, 2025","t":"Structured Extraction from Patient Intake Form with LLM","e":"Extract structured data from patient intake forms in PDF/Word with LLM by CocoIndex.","tag":"Examples","g":"intake v1"},
+  {"d":"March 23, 2025","t":"Build text embeddings from Google Drive for RAG","e":"Tutorial to create text embeddings from docs in Google Drive, saved in vector stores for semantic search / RAG using CocoIndex.","tag":"Examples","g":"Drive → embed"},
+  {"d":"March 20, 2025","t":"CocoIndex Changelog 2025-03-20","e":"First release of the CocoIndex Changelog: LLM support, codebase indexing, custom functions, and assorted core/performance improvements.","tag":"Changelog","g":"first"},
+  {"d":"March 18, 2025","t":"Build Real-Time Codebase Indexing for AI Code Generation","e":"Indexing a codebase for RAG with CocoIndex and Tree-sitter in real-time: chunking, embedding, semantic search, and vector index for efficient retrieval.","tag":"Examples","g":"code RAG"},
+  {"d":"March 17, 2025","t":"On-premise structured extraction with LLM using Ollama","e":"Use CocoIndex to extract structured data from PDF/Markdown with Ollama's local LLM models. All running on-premise without sending data to external APIs.","tag":"Examples","g":"Ollama"},
+  {"d":"March 3, 2025","t":"We are officially open sourced","e":"CocoIndex is the world's first open-source engine that supports both custom transformation logic and incremental processing specialized for data indexing.","tag":"Announcement","g":"open source"},
+  {"d":"February 20, 2025","t":"Customizable Data Indexing Pipelines","e":"Explaining what customizable data indexing pipelines are through comparisons and examples.","tag":"Insight","g":"custom pipelines"},
+  {"d":"January 30, 2025","t":"What Makes Indexing Pipelines Different?","e":"Understanding the unique characteristics of indexing pipelines compared to other data processing systems. Why indexing requires special handling for incremental processing and persistence.","tag":"Insight","g":"what's different"},
+  {"d":"January 20, 2025","t":"Handling System Updates and CocoIndex Automatic Schema Inference","e":"How CocoIndex handles system updates in indexing flows and our approach to automatic schema inference. The challenges of managing data and logic evolution.","tag":"Best Practices","g":"schema inference"},
+  {"d":"January 10, 2025","t":"Processing Large Files in Data Indexing Systems","e":"Best practices for handling large files in data indexing systems. Processing granularity, fan-in/fan-out scenarios, and strategies for efficient processing of large datasets.","tag":"Best Practices","g":"large files"},
+  {"d":"January 6, 2025","t":"Data Consistency in Indexing Pipelines","e":"The challenges and solutions for maintaining data consistency in indexing pipelines. Concurrent updates, data exposure risks, and best practices for reliable, up-to-date indexes.","tag":"Insight","g":"consistency"},
+  {"d":"January 5, 2025","t":"Data Indexing and Common Challenges","e":"The fundamentals of data indexing pipelines for RAG applications. Key characteristics of effective indexing systems, common challenges in production, and how CocoIndex solves them.","tag":"Insight","g":"common challenges"},
+  {"d":"January 4, 2025","t":"CocoIndex — A Data Indexing Platform for AI Applications","e":"How CocoIndex simplifies data indexing for AI applications. A comprehensive platform that handles data ingestion, processing, and management for RAG, semantic search, and other AI use cases.","tag":"Insight","g":"intro"},
+  {"d":"January 2, 2025","t":"Welcome to CocoIndex","e":"Welcome to the official CocoIndex blog. We're excited to share our journey in building high-performance indexing infrastructure for AI applications.","tag":"Announcement","g":"welcome"}
+]
+</script>
+
+<script type="text/babel">
+const { useState, useMemo, useEffect } = React;
+
+// ── tweakable thumbnail pattern & italic-emphasis logic ───────────
+const TWEAKS = /*EDITMODE-BEGIN*/{
+  "thumb_pattern": "dots",
+  "view": "grid",
+  "per_page": 12
+}/*EDITMODE-END*/;
+
+// tag → class mapping: one of dots/grid/stripes/topo, deterministic
+const TAG_STYLE = {
+  "Examples":       "dots",
+  "Changelog":      "grid",
+  "Feature":        "dots",
+  "Insight":        "topo",
+  "Best Practices": "grid",
+  "Announcement":   "stripes"
+};
+
+const POSTS = JSON.parse(document.getElementById("posts-data").textContent);
+
+// Slug lookup, in exact data order — used to build the real OG thumbnail URL.
+const SLUGS = [
+  "podcast-to-knowledge-graph","type-guided-serde","building-an-invisible-daemon","changelog-0327-0334",
+  "cocoindex-joins-security-github-secure-open-source-fund","sec-edgar-analytics","multi-codebase-summarization",
+  "slides-to-speech","changelog-0311-0326","extraction-dspy","meeting-notes-graph","hackernews-trending-topics",
+  "changelog-0310","custom-source-hackernews","extraction-baml","batching","data-for-ai","pdf-elements",
+  "custom-source","cocoindex-changelog-2025-10-19","etl-to-snowflake","rust-ownership-access","query-support",
+  "postgres-source","multi-format-indexing","cocoindex-changelog-2025-08-18","flow-control","colpali",
+  "multi-vector","custom-targets","face-detection","academic-papers-indexing","cocoindex-changelog-2025-07-07",
+  "cocoinsight","schema-inference-for-qdrant","kuzu-integration","cocoindex-changelog-2025-05-31",
+  "s3-incremental-etl","live-image-search","text-embeddings-101","cocoindex-1k","product-recommendation",
+  "cocoindex-changelog-2025-04-30","knowledge-graph-for-docs","cocoindex-changelog-2025-04-07",
+  "continuous-updates","incremental-processing","patient-intake-form-extraction-with-llm",
+  "text-embedding-from-google-drive","cocoindex-changelog-2025-03-20","index-code-base-for-rag",
+  "cocoindex-ollama-structured-extraction-from-pdf","cocoindex-open-source","data-indexing-custom-logic",
+  "what-makes-indexing-pipelines-different","handle-system-update-for-indexing-flow",
+  "indexing-for-single-large-file","indexing-data-consistency","data-indexing-and-common-challenges",
+  "cocoindex-data-indexing-platform","welcome"
+];
+POSTS.forEach((p, i) => { p.slug = SLUGS[i]; p.img = `https://cocoindex.io/blogs/img/bloglist/${SLUGS[i]}.png`; });
+
+// pre-compute tag counts
+const TAG_COUNTS = POSTS.reduce((a, p) => (a[p.tag] = (a[p.tag] || 0) + 1, a), {});
+const TAG_ORDER = ["Examples", "Changelog", "Insight", "Feature", "Best Practices", "Announcement"];
+
+// emphasize one word in each title with italic-coral
+// (matches the brand: italic coral carries "the zing")
+function emphasize(title){
+  // Pick the most interesting noun-ish word — heuristic: the last word ≥ 5 chars
+  // that isn't Changelog / version-y. Falls back to last word.
+  const words = title.split(/(\s+)/); // keep spaces
+  const tokens = words.filter(w => !/^\s+$/.test(w));
+  const pickable = tokens
+    .map((w, i) => ({ w, i, bare: w.replace(/[^\w]/g, "") }))
+    .filter(o => o.bare.length >= 5 && !/^\d/.test(o.bare))
+    .filter(o => !/CocoIndex|Changelog|Python|LLM|BAML|DSPy|YouTube|Google|HackerNews|Apache|Doris|LanceDB|Neo4j|Postgres|Qdrant|Snowflake|Ollama|ColPali|Kuzu|GitHub|CocoInsight/i.test(o.bare));
+  if (!pickable.length) return [title];
+  const pick = pickable[Math.max(0, pickable.length - 1)];
+  return [
+    tokens.slice(0, pick.i).join(" "),
+    " ",
+    <em key="em">{pick.w}</em>,
+    " ",
+    tokens.slice(pick.i + 1).join(" ")
+  ];
+}
+
+const Thumb = ({ pattern, tag, glyph, src, className = "" }) => {
+  const [failed, setFailed] = useState(false);
+  const patternClass = `th-${pattern}`;
+  return (
+    <div className={`thumb ${patternClass} ${className}`}>
+      {src && !failed && (
+        <img
+          src={src}
+          alt=""
+          loading="lazy"
+          onError={() => setFailed(true)}
+          style={{position:"absolute", inset:0, width:"100%", height:"100%", objectFit:"cover", zIndex:1}}
+        />
+      )}
+      <span className="tag" style={{zIndex:3}}>{tag}</span>
+      {(!src || failed) && <span className="glyph serif" style={{zIndex:2}}>{glyph}</span>}
+    </div>
+  );
+};
+
+const FeaturedCard = ({ p, pattern }) => (
+  <article className="featured" data-screen-label="Featured post">
+    <Thumb pattern={pattern} tag={`Featured · ${p.tag}`} glyph={p.g} src={p.img}/>
+    <div className="body">
+      <div className="meta">
+        <span>{p.d}</span>
+        <span>·</span>
+        <span>8 min read</span>
+      </div>
+      <h2>{emphasize(p.t)}</h2>
+      <p>{p.e}</p>
+      <div className="read">
+        <span>Read the post</span>
+        <span>→</span>
+      </div>
+    </div>
+  </article>
+);
+
+const PostCard = ({ p, pattern }) => (
+  <article className="post">
+    <Thumb pattern={pattern} tag={p.tag} glyph={p.g} src={p.img} className="card-thumb"/>
+    <div className="body">
+      <span className="date">{p.d}</span>
+      <h3>{emphasize(p.t)}</h3>
+      <p>{p.e}</p>
+      <div className="foot">
+        <span>Read</span>
+        <span>→</span>
+      </div>
+    </div>
+  </article>
+);
+
+const Pager = ({ page, total, onGo }) => {
+  const pages = [];
+  const push = (n) => pages.push(n);
+  const last = total;
+  push(1);
+  if (page > 3) push("...");
+  for (let n = Math.max(2, page - 1); n <= Math.min(last - 1, page + 1); n++) push(n);
+  if (page < last - 2) push("...");
+  if (last > 1) push(last);
+  return (
+    <nav className="pager" aria-label="Pagination">
+      <button onClick={() => onGo(Math.max(1, page - 1))} disabled={page === 1}>← Prev</button>
+      {pages.map((n, i) => n === "..."
+        ? <span key={`d${i}`} className="p dots">···</span>
+        : <span key={n} className={`p ${n === page ? "on" : ""}`} onClick={() => onGo(n)}>{n}</span>
+      )}
+      <button onClick={() => onGo(Math.min(last, page + 1))} disabled={page === last}>Next →</button>
+    </nav>
+  );
+};
+
+function Page() {
+  const [q, setQ] = useState("");
+  const [activeTag, setActiveTag] = useState("All");
+  const [page, setPage] = useState(1);
+  const [view, setView] = useState(TWEAKS.view);
+  const [pattern, setPattern] = useState(TWEAKS.thumb_pattern);
+  const [tweaksOpen, setTweaksOpen] = useState(false);
+
+  // persist page, filter
+  useEffect(() => { try { localStorage.setItem("cc_blog_state", JSON.stringify({ page, activeTag, view, pattern })); } catch {} }, [page, activeTag, view, pattern]);
+  useEffect(() => {
+    try {
+      const s = JSON.parse(localStorage.getItem("cc_blog_state") || "{}");
+      if (s.page) setPage(s.page);
+      if (s.activeTag) setActiveTag(s.activeTag);
+      if (s.view) setView(s.view);
+      if (s.pattern) setPattern(s.pattern);
+    } catch {}
+  }, []);
+
+  // Tweaks edit mode hookup
+  useEffect(() => {
+    const onMsg = (e) => {
+      const d = e.data || {};
+      if (d.type === "__activate_edit_mode") setTweaksOpen(true);
+      if (d.type === "__deactivate_edit_mode") setTweaksOpen(false);
+    };
+    window.addEventListener("message", onMsg);
+    window.parent.postMessage({ type: "__edit_mode_available" }, "*");
+    return () => window.removeEventListener("message", onMsg);
+  }, []);
+  const persistTweak = (edits) => {
+    window.parent.postMessage({ type: "__edit_mode_set_keys", edits }, "*");
+  };
+
+  // filter
+  const filtered = useMemo(() => {
+    const Q = q.trim().toLowerCase();
+    return POSTS.filter(p =>
+      (activeTag === "All" || p.tag === activeTag) &&
+      (!Q || p.t.toLowerCase().includes(Q) || p.e.toLowerCase().includes(Q) || p.tag.toLowerCase().includes(Q))
+    );
+  }, [q, activeTag]);
+
+  // Reset to page 1 when filter changes
+  useEffect(() => { setPage(1); }, [q, activeTag]);
+
+  const perPage = TWEAKS.per_page;
+  const total = Math.max(1, Math.ceil(Math.max(filtered.length - 1, 0) / perPage));
+  // First post is featured when unfiltered on page 1
+  const showFeatured = activeTag === "All" && q.trim() === "" && page === 1;
+  const rest = showFeatured ? filtered.slice(1) : filtered;
+  const start = (page - 1) * perPage;
+  const pageSlice = showFeatured && page === 1
+    ? rest.slice(0, perPage - 1)
+    : rest.slice(start - (showFeatured ? 1 : 0), start - (showFeatured ? 1 : 0) + perPage);
+
+  const patternFor = (p) => pattern === "mixed" ? (TAG_STYLE[p.tag] || "dots") : pattern;
+
+  return (
+    <>
+      <NavBar active="blog" />
+
+      <header className="blog-hero-top wrap">
+        <div className="bits">
+          <div>
+            <span className="caps">Writing · from the CocoIndex team</span>
+            <h1>The <em>blog.</em></h1>
+          </div>
+          <p className="sub">
+            Examples, changelogs, and the occasional deep-dive into incremental
+            processing. Written for tired engineers, by the people who index their own inboxes.
+          </p>
+        </div>
+        <div className="count">
+          <span><b>{POSTS.length}</b> posts</span>
+          <span><b>{Object.keys(TAG_COUNTS).length}</b> topics</span>
+          <span>Updated <b>April 2, 2026</b></span>
+          <span>RSS · <a href="#" style={{color:"var(--coral)"}}>/rss.xml</a></span>
+        </div>
+      </header>
+
+      <div className="controls">
+        <div className="wrap">
+          <div className="row">
+            <div className="search">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/>
+              </svg>
+              <input
+                placeholder="Search 61 posts — try 'knowledge graph' or 'custom source'…"
+                value={q}
+                onChange={e => setQ(e.target.value)}
+              />
+              <span className="kb">⌘K</span>
+            </div>
+            <div className="tags">
+              <button className={`tag-btn ${activeTag==="All"?"on":""}`} onClick={()=>setActiveTag("All")}>
+                All <span className="n">{POSTS.length}</span>
+              </button>
+              {TAG_ORDER.map(t => (
+                <button key={t} className={`tag-btn ${activeTag===t?"on":""}`} onClick={()=>setActiveTag(t)}>
+                  {t} <span className="n">{TAG_COUNTS[t] || 0}</span>
+                </button>
+              ))}
+            </div>
+            <div style={{marginLeft:"auto"}} className="view-toggle">
+              <button className={view==="grid"?"on":""} onClick={()=>setView("grid")}>Grid</button>
+              <button className={view==="list"?"on":""} onClick={()=>setView("list")}>List</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <main className="list wrap">
+        {filtered.length === 0 && (
+          <div className="empty">
+            Nothing matches that.
+            <em>Try a broader term, or clear the filter.</em>
+          </div>
+        )}
+
+        {showFeatured && filtered.length > 0 && (
+          <FeaturedCard p={filtered[0]} pattern={patternFor(filtered[0])}/>
+        )}
+
+        {filtered.length > 0 && (
+          <div className={view === "list" ? "list-view" : "grid"}>
+            {pageSlice.map((p, i) => (
+              <PostCard key={`${p.d}-${i}`} p={p} pattern={patternFor(p)}/>
+            ))}
+          </div>
+        )}
+
+        {filtered.length > perPage && (
+          <Pager page={page} total={total} onGo={(n) => { setPage(n); window.scrollTo({top: 0, behavior:"smooth"}); }}/>
+        )}
+      </main>
+
+      <Footer/>
+
+      <div className={`tweaks ${tweaksOpen ? "on" : ""}`}>
+        <h4><span>Tweaks</span><span onClick={()=>setTweaksOpen(false)} style={{cursor:"pointer"}}>✕</span></h4>
+        <div className="field">
+          <label>Thumbnail pattern</label>
+          <div className="seg">
+            {["dots", "grid", "stripes", "topo", "mixed"].map(p => (
+              <button key={p} className={pattern===p?"on":""} onClick={()=>{setPattern(p); persistTweak({thumb_pattern: p});}}>{p}</button>
+            ))}
+          </div>
+        </div>
+        <div className="field">
+          <label>Layout</label>
+          <div className="seg">
+            {["grid", "list"].map(v => (
+              <button key={v} className={view===v?"on":""} onClick={()=>{setView(v); persistTweak({view: v});}}>{v}</button>
+            ))}
+          </div>
+        </div>
+        <p style={{fontFamily:"var(--mono)", fontSize:10, letterSpacing:"0.1em", color:"var(--muted)", textTransform:"uppercase", margin:0, paddingTop:8, borderTop:"1px solid var(--rule)"}}>
+          Patterns persist to disk · mixed = by tag
+        </p>
+      </div>
+    </>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<Page/>);
+</script>
+
+</body>
+</html>
