@@ -77,7 +77,7 @@ jobs:
           run: uv sync --no-dev --group ci --no-install-project
 
         - name: Install prek
-          uses: j178/prek-action@v1
+          uses: j178/prek-action@v2
           with:
             install-only: true
 

@@ -28,7 +28,7 @@ jobs:
         uses: astral-sh/setup-uv@v7
 
       - name: Run fast-check hooks
-        uses: j178/prek-action@v1
+        uses: j178/prek-action@v2
         with:
           extra-args: '--all-files'
         env:
