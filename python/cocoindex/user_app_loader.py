@@ -58,7 +58,11 @@ def load_user_app(app_target: str) -> types.ModuleType:
             raise Error(f"Application file path not found: {app_target}")
         app_path = os.path.abspath(app_target)
         app_dir = os.path.dirname(app_path)
-        module_name = os.path.splitext(os.path.basename(app_path))[0]
+        # Use "__main__" as the module name so that functions defined in the loaded
+        # module have __module__ == "__main__", matching the behavior when running
+        # the script directly (python main.py). This keeps memoization cache keys
+        # consistent between direct execution and CLI-loaded execution.
+        module_name = "__main__"
 
         # If the file lives inside a package (directory has __init__.py),
         # load it as a proper submodule so that relative imports work.

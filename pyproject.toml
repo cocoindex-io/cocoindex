@@ -82,7 +82,11 @@ amazon_s3 = ["aiobotocore>=2.0.0"]
 doris = ["aiohttp>=3.9.0", "pymysql>=1.1.0", "aiomysql>=0.2.0"]
 kafka = ["confluent_kafka>=2.6"]
 entity_resolution = ["faiss-cpu>=1.7"]
-entity_resolution_llm = ["faiss-cpu>=1.7", "instructor>=1.0", "litellm>=1.81.0,<=1.82.6"]
+entity_resolution_llm = [
+    "faiss-cpu>=1.7",
+    "instructor>=1.0",
+    "litellm>=1.81.0,<=1.82.6",
+]
 
 all = [
     "litellm>=1.81.0,<=1.82.6",
@@ -107,11 +111,10 @@ all = [
 ]
 
 
-
 [dependency-groups]
 build-test = [
     "maturin>=1.10.0,<2.0",
-    "pytest",
+    "pytest>=9.0.3",
     "pytest-asyncio",
     "pytest-timeout",
     "mypy",
