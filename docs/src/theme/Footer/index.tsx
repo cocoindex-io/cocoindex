@@ -56,7 +56,7 @@ export default function FooterWrapper(): React.ReactElement {
                                 GitHub
                             </Link>
                             <Link
-                                href="https://discord.gg/zpA9S2DR7s"
+                                href="https://discord.com/invite/zpA9S2DR7s"
                                 className={styles.footerLink}
                             >
                                 <FaDiscord className={styles.footerIcon} />
