@@ -51,8 +51,11 @@ pub trait TargetHandler<Prof: EngineProfile>: Send + Sync + Sized + 'static {
         prev_may_be_missing: bool,
     ) -> Result<Option<TargetReconcileOutput<Prof>>>;
 
-    fn attachment(&self, _att_type: &str) -> Result<Option<Prof::TargetHdl>> {
-        Ok(None)
+    /// Return all attachment types this handler supports, keyed by type name.
+    /// The engine eagerly registers these as providers so that orphaned
+    /// attachments can be cleaned up even when not declared in the current run.
+    fn attachments(&self) -> Result<Vec<(Arc<str>, Prof::TargetHdl)>> {
+        Ok(vec![])
     }
 }
 
@@ -80,11 +83,19 @@ impl<Prof: EngineProfile> TargetStateProvider<Prof> {
         self.inner.handler.get()
     }
 
-    pub fn fulfill_handler(&self, handler: Prof::TargetHdl) -> Result<()> {
+    /// Fulfill the handler and eagerly register all its attachment providers
+    /// into the given registry so that `pre_commit` Phase 2 can clean up
+    /// orphaned attachments.
+    pub fn fulfill_handler(
+        &self,
+        handler: Prof::TargetHdl,
+        registry: &mut TargetStateProviderRegistry<Prof>,
+    ) -> Result<()> {
         self.inner
             .handler
             .set(handler)
-            .map_err(|_| internal_error!("Handler is already fulfilled"))
+            .map_err(|_| internal_error!("Handler is already fulfilled"))?;
+        self.register_all_attachment_providers(registry)
     }
 
     pub fn stable_key_chain(&self) -> Vec<StableKey> {
@@ -113,20 +124,73 @@ impl<Prof: EngineProfile> TargetStateProvider<Prof> {
             .map_err(|_| internal_error!("Provider generation already set"))
     }
 
+    fn register_all_attachment_providers(
+        &self,
+        registry: &mut TargetStateProviderRegistry<Prof>,
+    ) -> Result<()> {
+        let handler = match self.handler() {
+            Some(h) => h,
+            None => return Ok(()),
+        };
+        let att_entries = handler.attachments()?;
+        if att_entries.is_empty() {
+            return Ok(());
+        }
+
+        let mut attachments = self.inner.attachments.lock().unwrap();
+        let provider_generation = self.provider_generation().cloned().unwrap_or_default();
+
+        for (att_type, att_handler) in att_entries {
+            if attachments.contains_key(&*att_type) {
+                continue;
+            }
+            let symbol_key = StableKey::Symbol(att_type.clone());
+            let target_state_path = self.target_state_path().concat(&symbol_key);
+
+            let provider = TargetStateProvider {
+                inner: Arc::new(TargetStateProviderInner {
+                    parent_provider: Some(self.clone()),
+                    stable_key: symbol_key,
+                    target_state_path: target_state_path.clone(),
+                    handler: OnceLock::from(att_handler),
+                    orphaned: OnceLock::new(),
+                    provider_generation: OnceLock::from(provider_generation.clone()),
+                    attachments: Mutex::new(HashMap::new()),
+                }),
+            };
+
+            registry.add(target_state_path, provider.clone())?;
+            attachments.insert(att_type, provider);
+        }
+        Ok(())
+    }
+
+    /// Get or create an attachment provider for the given type.
+    /// Called from Python when an attachment is declared (e.g. `declare_vector_index`).
+    /// Returns the cached provider if already registered (by eager or prior lazy call).
     pub fn register_attachment_provider(
         &self,
         comp_ctx: &ComponentProcessorContext<Prof>,
         att_type: &str,
     ) -> Result<TargetStateProvider<Prof>> {
-        let mut attachments = self.inner.attachments.lock().unwrap();
+        // Fast path: already registered (eagerly or by a previous call).
+        let attachments = self.inner.attachments.lock().unwrap();
         if let Some(existing) = attachments.get(att_type) {
             return Ok(existing.clone());
         }
+        drop(attachments);
 
+        // Slow path: not yet registered. This can happen if the handler doesn't
+        // include this type in attachments(), or during the first run before
+        // eager registration has occurred. Build it from the handler.
         let handler = self
             .handler()
-            .ok_or_else(|| client_error!("Cannot register attachment on unfulfilled provider"))?
-            .attachment(att_type)?
+            .ok_or_else(|| client_error!("Cannot register attachment on unfulfilled provider"))?;
+        let att_entries = handler.attachments()?;
+        let att_handler = att_entries
+            .into_iter()
+            .find(|(k, _)| &**k == att_type)
+            .map(|(_, h)| h)
             .ok_or_else(|| {
                 client_error!("Handler does not support attachment type: {att_type:?}")
             })?;
@@ -148,7 +212,7 @@ impl<Prof: EngineProfile> TargetStateProvider<Prof> {
                 parent_provider: Some(self.clone()),
                 stable_key: symbol_key,
                 target_state_path: target_state_path.clone(),
-                handler: OnceLock::from(handler),
+                handler: OnceLock::from(att_handler),
                 orphaned: OnceLock::new(),
                 provider_generation: OnceLock::from(provider_generation),
                 attachments: Mutex::new(HashMap::new()),
@@ -162,6 +226,7 @@ impl<Prof: EngineProfile> TargetStateProvider<Prof> {
                 .add(target_state_path, provider.clone())
         })?;
 
+        let mut attachments = self.inner.attachments.lock().unwrap();
         attachments.insert(att_type.into(), provider.clone());
         Ok(provider)
     }

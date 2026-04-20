@@ -324,12 +324,13 @@ class _AttachmentChildHandler:
         self._attachment_stores = {}
         self._supported_types = supported_types
 
-    def attachment(self, att_type: str) -> DictTargetStateStore | None:
-        if att_type not in self._supported_types:
-            return None
-        if att_type not in self._attachment_stores:
-            self._attachment_stores[att_type] = DictTargetStateStore()
-        return self._attachment_stores[att_type]
+    def attachments(self) -> dict[str, DictTargetStateStore]:
+        return {
+            att_type: self._attachment_stores.setdefault(
+                att_type, DictTargetStateStore()
+            )
+            for att_type in self._supported_types
+        }
 
     def reconcile(
         self,

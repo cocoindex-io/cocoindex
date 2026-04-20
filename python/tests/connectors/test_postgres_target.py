@@ -303,10 +303,6 @@ async def test_postgres_declare_vector_index_fingerprint_no_change(
 
 
 @pytest.mark.asyncio
-@pytest.mark.skip(
-    reason="Attachment teardown on removal not yet implemented: "
-    "engine skips orphaned attachment providers in Phase 2 of pre_commit"
-)
 async def test_postgres_declare_sql_command_attachment(pg_env: _PgEnv) -> None:
     """SQL command attachment lifecycle: create index → change → remove (with teardown)."""
     pool = pg_env.pool
