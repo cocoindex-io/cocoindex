@@ -72,7 +72,7 @@ embeddings = ["sentence-transformers>=3.3.1"]
 colpali = ["colpali-engine"]
 lancedb = ["lancedb>=0.25.0", "pyarrow>=19.0.0"]
 chromadb = ["chromadb>=0.4.0"]
-doris = ["aiohttp>=3.8.0", "aiomysql>=0.2.0", "pymysql>=1.0.0"]
+doris = ["aiohttp>=3.13.4", "aiomysql>=0.2.0", "pymysql>=1.0.0"]
 turbopuffer = ["turbopuffer>=1.0.0"]
 
 all = [
@@ -81,7 +81,7 @@ all = [
     "lancedb>=0.25.0",
     "pyarrow>=19.0.0",
     "chromadb>=0.4.0",
-    "aiohttp>=3.8.0",
+    "aiohttp>=3.13.4",
     "aiomysql>=0.2.0",
     "pymysql>=1.0.0",
     "turbopuffer>=1.0.0",
@@ -90,7 +90,7 @@ all = [
 [dependency-groups]
 build-test = [
     "maturin>=1.10.0,<2.0",
-    "pytest",
+    "pytest>=9.0.3",
     "pytest-asyncio",
     "pytest-timeout",
     "mypy",
