@@ -166,17 +166,20 @@ impl TargetHandler<PyEngineProfile> for PyTargetHandler {
         .from_py_result()
     }
 
-    fn attachment(&self, att_type: &str) -> Result<Option<PyTargetHandler>> {
+    fn attachments(&self) -> Result<Vec<(Arc<str>, PyTargetHandler)>> {
         Python::attach(|py| -> PyResult<_> {
             let obj = self.0.bind(py);
-            if !obj.hasattr("attachment")? {
-                return Ok(None);
+            if !obj.hasattr("attachments")? {
+                return Ok(vec![]);
             }
-            let result = obj.call_method1("attachment", (att_type,))?;
-            if result.is_none() {
-                return Ok(None);
+            let result = obj.call_method0("attachments")?;
+            let dict = result.cast::<pyo3::types::PyDict>()?;
+            let mut entries = Vec::with_capacity(dict.len());
+            for (key, value) in dict.iter() {
+                let att_type: String = key.extract()?;
+                entries.push((Arc::from(att_type), PyTargetHandler(value.unbind())));
             }
-            Ok(Some(PyTargetHandler(result.unbind())))
+            Ok(entries)
         })
         .from_py_result()
     }

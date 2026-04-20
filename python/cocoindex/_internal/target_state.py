@@ -83,13 +83,13 @@ class _TypedTargetHandlerWrapper:
         records = [r.get(self._deserializer) for r in prev_possible_records]
         return self._handler.reconcile(key, desired, records, prev_may_be_missing)
 
-    def attachment(self, att_type: str) -> Any:
-        if not hasattr(self._handler, "attachment"):
-            return None
-        child = self._handler.attachment(att_type)
-        if child is not None:
-            return _TypedTargetHandlerWrapper(child)
-        return None
+    def attachments(self) -> dict[str, Any]:
+        if not hasattr(self._handler, "attachments"):
+            return {}
+        return {
+            k: _TypedTargetHandlerWrapper(v)
+            for k, v in self._handler.attachments().items()
+        }
 
 
 class ChildTargetDef(Generic[HandlerT_co], NamedTuple):

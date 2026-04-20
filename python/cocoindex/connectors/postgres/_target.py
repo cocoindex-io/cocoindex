@@ -731,14 +731,17 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
         async with self._pool.acquire() as conn:
             await conn.execute(sql, *params)
 
-    def attachment(
-        self, att_type: str
-    ) -> _VectorIndexHandler | _SqlCommandHandler | None:
-        if att_type == "vector_index":
-            return _VectorIndexHandler(self._pool, self._table_name, self._schema_name)
-        if att_type == "sql_command_attachment":
-            return _SqlCommandHandler(self._pool, self._table_name, self._schema_name)
-        return None
+    def attachments(
+        self,
+    ) -> dict[str, _VectorIndexHandler | _SqlCommandHandler]:
+        return {
+            "vector_index": _VectorIndexHandler(
+                self._pool, self._table_name, self._schema_name
+            ),
+            "sql_command_attachment": _SqlCommandHandler(
+                self._pool, self._table_name, self._schema_name
+            ),
+        }
 
     def reconcile(
         self,

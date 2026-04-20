@@ -42,8 +42,8 @@ class TargetHandler(Protocol[ValueT, TrackingRecordT, OptChildHandlerT]):
         ...
 
     # Optional: override to support attachment types (see "Implementing attachment providers")
-    def attachment(self, att_type: str) -> TargetHandler | None:
-        return None  # Default: no attachments
+    def attachments(self) -> dict[str, TargetHandler]:
+        return {}  # Default: no attachments
 ```
 
 **Type Parameters:**
@@ -478,10 +478,10 @@ The symbol keys (`@vector_index`, `@sql_command_attachment`) are path namespaces
 
 ### How it works
 
-1. **Handler implements `attachment()`**: The child handler (e.g., row handler) returns a handler for each supported attachment type.
-2. **User code calls `provider.attachment()`**: On a resolved child provider, this creates (or retrieves a cached) attachment sub-provider.
-3. **Target states declared under the attachment provider** are tracked independently from regular children.
-4. **Idempotent**: Calling `.attachment("x")` multiple times returns the same cached provider.
+1. **Handler implements `attachments()`**: The child handler (e.g., row handler) returns a dict of all supported attachment types and their handlers.
+2. **Engine eagerly registers attachment providers**: When the child handler is fulfilled, the engine calls `attachments()` and registers all returned types. This ensures orphaned attachments can be cleaned up even when not declared in the current run.
+3. **User code calls `provider.attachment()`**: On a resolved child provider, this retrieves the cached attachment sub-provider.
+4. **Target states declared under the attachment provider** are tracked independently from regular children.
 
 ### Step 1: Implement the attachment handler
 
@@ -518,9 +518,9 @@ class _VectorIndexHandler:
         ...
 ```
 
-### Step 2: Add `attachment()` to the parent handler
+### Step 2: Add `attachments()` to the parent handler
 
-The parent handler (which manages regular children) returns attachment handlers by type:
+The parent handler (which manages regular children) returns a dict of all supported attachment types:
 
 ```python
 class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
@@ -530,12 +530,11 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
         self._schema_name = schema_name
         # ...
 
-    def attachment(self, att_type: str) -> _VectorIndexHandler | _SqlCommandHandler | None:
-        if att_type == "vector_index":
-            return _VectorIndexHandler(self._pool, self._table_name, self._schema_name)
-        if att_type == "sql_command_attachment":
-            return _SqlCommandHandler(self._pool, self._table_name, self._schema_name)
-        return None
+    def attachments(self) -> dict[str, _VectorIndexHandler | _SqlCommandHandler]:
+        return {
+            "vector_index": _VectorIndexHandler(self._pool, self._table_name, self._schema_name),
+            "sql_command_attachment": _SqlCommandHandler(self._pool, self._table_name, self._schema_name),
+        }
 
     def reconcile(self, ...):
         # Regular row reconciliation

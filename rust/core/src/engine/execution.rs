@@ -1325,6 +1325,8 @@ pub(crate) async fn submit<Prof: EngineProfile>(
     .encode()?;
     let contained_target_state_paths =
         std::mem::take(&mut finalized_fn_call_memos.contained_target_state_paths);
+
+    let mut pending_fulfillments: Vec<(TargetStateProvider<Prof>, Prof::TargetHdl)> = Vec::new();
     let target_states_providers_owned = target_states_providers.clone();
 
     // Reconcile and pre-commit target states
@@ -1363,7 +1365,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
     let demote_component_only = pre_commit_out.demote_component_only;
     let actions_by_sinks = pre_commit_out.actions_by_sinks;
 
-    // Apply actions
+    // Apply actions and collect child handlers to fulfill.
     let host_runtime_ctx = comp_ctx.app_ctx().env().host_runtime_ctx();
     for (sink, input) in actions_by_sinks {
         let handlers = sink
@@ -1389,7 +1391,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
             {
                 if let Some(child_provider) = child_provider {
                     if let Some(child_target_state_def) = child_target_state_def {
-                        child_provider.fulfill_handler(child_target_state_def.handler)?;
+                        pending_fulfillments.push((child_provider, child_target_state_def.handler));
                     } else {
                         client_bail!("expect child provider returned by Sink to be fulfilled");
                     }
@@ -1408,6 +1410,14 @@ pub(crate) async fn submit<Prof: EngineProfile>(
             curr_version,
         )
         .await?;
+
+    // Fulfill child handlers and register their attachment providers.
+    // Done after commit so the immutable borrow on providers is released.
+    if let Some(ref mut registry) = built_target_states_providers {
+        for (child_provider, handler) in pending_fulfillments {
+            child_provider.fulfill_handler(handler, registry)?;
+        }
+    }
 
     Ok(SubmitOutput {
         built_target_states_providers,
