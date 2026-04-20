@@ -64,8 +64,8 @@ async def coco_lifespan(
 ) -> AsyncIterator[None]:
     # Provide resources needed across the CocoIndex environment
     async with (
-        await postgres.create_pool(DATABASE_URL) as target_pool,
-        await postgres.create_pool(SOURCE_DATABASE_URL) as source_pool,
+        await asyncpg.create_pool(DATABASE_URL) as target_pool,
+        await asyncpg.create_pool(SOURCE_DATABASE_URL) as source_pool,
     ):
         builder.provide(PG_DB, target_pool)
         builder.provide(SOURCE_POOL, source_pool)
@@ -162,7 +162,7 @@ async def query_once(
 
 async def query() -> None:
     embedder = SentenceTransformerEmbedder(EMBED_MODEL)
-    async with await postgres.create_pool(DATABASE_URL) as pool:
+    async with await asyncpg.create_pool(DATABASE_URL) as pool:
         if len(sys.argv) > 2:
             q = " ".join(sys.argv[2:])
             await query_once(pool, embedder, q)

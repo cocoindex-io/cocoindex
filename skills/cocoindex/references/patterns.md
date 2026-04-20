@@ -95,7 +95,7 @@ class DocEmbedding:
 
 @coco.lifespan
 async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]:
-    async with await postgres.create_pool(DATABASE_URL) as pool:
+    async with await asyncpg.create_pool(DATABASE_URL) as pool:
         builder.provide(PG_DB, pool)
         builder.provide(EMBEDDER, SentenceTransformerEmbedder("all-MiniLM-L6-v2"))
         yield
@@ -181,8 +181,8 @@ class TargetRecord:
 @coco.lifespan
 async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]:
     async with (
-        await postgres.create_pool(SOURCE_DB_URL) as source_pool,
-        await postgres.create_pool(TARGET_DB_URL) as target_pool,
+        await asyncpg.create_pool(SOURCE_DB_URL) as source_pool,
+        await asyncpg.create_pool(TARGET_DB_URL) as target_pool,
     ):
         builder.provide(SOURCE_DB, source_pool)
         builder.provide(TARGET_DB, target_pool)

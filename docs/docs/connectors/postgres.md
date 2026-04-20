@@ -23,32 +23,15 @@ pip install cocoindex[postgres]
 
 ## Connection setup
 
-`create_pool()` is a thin wrapper around [`asyncpg.create_pool()`](https://magicstack.github.io/asyncpg/current/api/index.html#asyncpg.pool.create_pool) that registers necessary extensions (e.g., pgvector) on each connection.
+Create an [`asyncpg`](https://magicstack.github.io/asyncpg/current/) connection pool directly:
 
 ```python
-async def create_pool(
-    dsn: str | None = None,
-    *,
-    init: Callable[[asyncpg.Connection], Any] | None = None,
-    **kwargs: Any,
-) -> asyncpg.Pool
+import asyncpg
+
+pool = await asyncpg.create_pool("postgresql://user:pass@localhost/dbname")
 ```
 
-**Parameters:**
-
-- `dsn` — PostgreSQL connection string (e.g., `"postgresql://user:pass@localhost/dbname"`).
-- `init` — Optional callback to initialize each connection (called after extension registration).
-- `**kwargs` — Additional arguments passed directly to `asyncpg.create_pool()`.
-
-**Returns:** An asyncpg connection pool.
-
-**Example:**
-
-```python
-async with await postgres.create_pool("postgresql://localhost/mydb") as pool:
-    # Use pool for source or target operations
-    ...
-```
+The connector handles pgvector extension setup automatically when a table uses vector columns — no special pool initialization is needed.
 
 ## As source
 
@@ -182,7 +165,7 @@ PG_DB = coco.ContextKey[asyncpg.Pool]("my_db")
 
 @coco.lifespan
 async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]:
-    async with await postgres.create_pool(DATABASE_URL) as pool:
+    async with await asyncpg.create_pool(DATABASE_URL) as pool:
         builder.provide(PG_DB, pool)
         yield
 ```
@@ -438,7 +421,7 @@ class OutputProduct:
 
 @coco.lifespan
 async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]:
-    async with await postgres.create_pool(DATABASE_URL) as pool:
+    async with await asyncpg.create_pool(DATABASE_URL) as pool:
         builder.provide(PG_DB, pool)
         yield
 

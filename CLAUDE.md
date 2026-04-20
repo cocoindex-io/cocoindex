@@ -219,6 +219,48 @@ Reserve exceptions (Python) and errors (Rust) for truly unexpected failures — 
 
 We prefer end-to-end tests on user-facing APIs, over unit tests on smaller internal functions. With this said, there're cases where unit tests are necessary, e.g. for internal logic with various situations and edge cases, in which case it's usually easier to cover various scenarios with unit tests.
 
+#### Test Environment Setup
+
+Use `common.create_test_env(__file__)` to create a CocoIndex `Environment` for tests. It derives a unique `db_path` from the test file path and picks up the current event loop automatically.
+
+* **Sync tests** (module-level creation): Call at module level — the Environment creates a background loop for async callbacks.
+
+  ```python
+  coco_env = common.create_test_env(__file__)
+  ```
+
+* **Async tests with async resources** (e.g., asyncpg pools): Call inside an async fixture so the Environment binds to the test's running event loop (same loop the pool is on). Use the `suffix` parameter when each test needs its own Environment:
+
+  ```python
+  @pytest_asyncio.fixture
+  async def pg_env(request: pytest.FixtureRequest) -> Any:
+      pool = await asyncpg.create_pool(dsn)
+      coco_env = common.create_test_env(__file__, suffix=request.node.name)
+      coco_env.context_provider.provide(DB_KEY, pool)
+      yield pool, coco_env
+      await pool.close()
+  ```
+
+  The `suffix` ensures each test gets a unique `db_path`, avoiding "environment already open" errors.
+
+#### Testcontainers for Database Tests
+
+Use `testcontainers[postgres]` (in the `build-test` dependency group) to spin up real database instances automatically — no manual setup or environment variables needed. Use a module-scoped sync fixture for the container and a function-scoped async fixture for per-test resources:
+
+```python
+@pytest.fixture(scope="module")
+def pg_dsn() -> Any:
+    with PostgresContainer("postgres:16-alpine") as pg:
+        dsn = pg.get_connection_url().replace("postgresql+psycopg2://", "postgresql://")
+        yield dsn
+
+@pytest_asyncio.fixture
+async def pool(pg_dsn: str) -> Any:
+    p = await asyncpg.create_pool(pg_dsn)
+    yield p
+    await p.close()
+```
+
 ### Sync vs Async
 
 The Rust core (`rust/core`, `rust/utils`) uses **async-first** design with Tokio. The `rust/py` crate bridges Rust async to Python, offering both sync and async APIs:

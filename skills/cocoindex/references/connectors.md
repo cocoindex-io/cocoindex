@@ -45,7 +45,7 @@ PG_DB = coco.ContextKey[asyncpg.Pool]("pg_db")
 
 @coco.lifespan
 async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]:
-    async with await postgres.create_pool(DATABASE_URL) as pool:
+    async with await asyncpg.create_pool(DATABASE_URL) as pool:
         builder.provide(PG_DB, pool)
         yield
 ```

@@ -107,8 +107,9 @@ class RowFetcher(Generic[RowT]):
         query = f"SELECT {cols_sql} FROM {table_sql}"
 
         async with self._pool.acquire() as conn:
-            async for record in conn.cursor(query):
-                yield self._transform_row(dict(record))
+            async with conn.transaction(isolation="repeatable_read", readonly=True):
+                async for record in conn.cursor(query):
+                    yield self._transform_row(dict(record))
 
     def __iter__(self) -> Iterator[RowT]:
         """Synchronously iterate over rows."""

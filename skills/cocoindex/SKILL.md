@@ -270,7 +270,7 @@ class DocEmbedding:
 
 @coco.lifespan
 async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]:
-    async with await postgres.create_pool(DATABASE_URL) as pool:
+    async with await asyncpg.create_pool(DATABASE_URL) as pool:
         builder.provide(PG_DB, pool)
         builder.provide(EMBEDDER, SentenceTransformerEmbedder("all-MiniLM-L6-v2"))
         yield
@@ -420,7 +420,7 @@ coco.component_subpath("idx", idx)        # Index changes
 ```python
 @coco.lifespan
 async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]:
-    async with await postgres.create_pool(DATABASE_URL) as pool:
+    async with await asyncpg.create_pool(DATABASE_URL) as pool:
         builder.provide(PG_DB, pool)
         yield
 ```
