@@ -130,7 +130,7 @@ dependencies = [
  "derive_builder",
  "eventsource-stream",
  "futures",
- "rand 0.9.2",
+ "rand 0.9.4",
  "reqwest",
  "reqwest-eventsource",
  "secrecy",
@@ -575,7 +575,7 @@ dependencies = [
  "hyper-util",
  "pin-project-lite",
  "rustls 0.21.12",
- "rustls 0.23.35",
+ "rustls 0.23.38",
  "rustls-native-certs 0.8.1",
  "rustls-pki-types",
  "tokio",
@@ -1258,11 +1258,11 @@ dependencies = [
  "pyo3-async-runtimes",
  "pythonize",
  "qdrant-client",
- "rand 0.9.2",
+ "rand 0.9.4",
  "redis 0.31.0",
  "regex",
  "reqwest",
- "rustls 0.23.35",
+ "rustls 0.23.38",
  "schemars 0.8.22",
  "serde",
  "serde_json",
@@ -1353,7 +1353,7 @@ dependencies = [
  "indexmap 2.12.1",
  "itertools 0.14.0",
  "neo4rs",
- "rand 0.9.2",
+ "rand 0.9.4",
  "reqwest",
  "serde",
  "serde_json",
@@ -1534,7 +1534,7 @@ checksum = "6ddc2d09feefeee8bd78101665bd8645637828fa9317f9f292496dbbd8c65ff3"
 dependencies = [
  "crc",
  "digest",
- "rand 0.9.2",
+ "rand 0.9.4",
  "regex",
  "rustversion",
 ]
@@ -2355,7 +2355,7 @@ dependencies = [
  "http 1.3.1",
  "reqwest",
  "rustc_version",
- "rustls 0.23.35",
+ "rustls 0.23.38",
  "rustls-pemfile 2.2.0",
  "serde",
  "serde_json",
@@ -2377,7 +2377,7 @@ dependencies = [
  "google-cloud-wkt",
  "http 1.3.1",
  "pin-project",
- "rand 0.9.2",
+ "rand 0.9.4",
  "serde",
  "serde_json",
  "thiserror 2.0.16",
@@ -2843,7 +2843,7 @@ dependencies = [
  "hyper 1.8.1",
  "hyper-util",
  "log",
- "rustls 0.23.35",
+ "rustls 0.23.38",
  "rustls-native-certs 0.8.1",
  "rustls-pki-types",
  "tokio",
@@ -4206,7 +4206,7 @@ dependencies = [
  "quinn-proto",
  "quinn-udp",
  "rustc-hash",
- "rustls 0.23.35",
+ "rustls 0.23.38",
  "socket2 0.6.0",
  "thiserror 2.0.16",
  "tokio",
@@ -4223,10 +4223,10 @@ dependencies = [
  "bytes",
  "getrandom 0.3.3",
  "lru-slab",
- "rand 0.9.2",
+ "rand 0.9.4",
  "ring",
  "rustc-hash",
- "rustls 0.23.35",
+ "rustls 0.23.38",
  "rustls-pki-types",
  "slab",
  "thiserror 2.0.16",
@@ -4290,9 +4290,9 @@ dependencies = [
 
 [[package]]
 name = "rand"
-version = "0.9.2"
+version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6db2770f06117d490610c7488547d543617b21bfa07796d7a12f6f1bd53850d1"
+checksum = "44c5af06bb1b7d3216d91932aed5265164bf384dc89cd6ba05cf59a35f5f76ea"
 dependencies = [
  "rand_chacha 0.9.0",
  "rand_core 0.9.3",
@@ -4503,7 +4503,7 @@ dependencies = [
  "percent-encoding",
  "pin-project-lite",
  "quinn",
- "rustls 0.23.35",
+ "rustls 0.23.38",
  "rustls-native-certs 0.8.1",
  "rustls-pki-types",
  "serde",
@@ -4663,16 +4663,16 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.35"
+version = "0.23.38"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "533f54bc6a7d4f647e46ad909549eda97bf5afc1585190ef692b4286b198bd8f"
+checksum = "69f9466fb2c14ea04357e91413efb882e2a6d4a406e625449bc0a5d360d53a21"
 dependencies = [
  "aws-lc-rs",
  "log",
  "once_cell",
  "ring",
  "rustls-pki-types",
- "rustls-webpki 0.103.8",
+ "rustls-webpki 0.103.12",
  "subtle",
  "zeroize",
 ]
@@ -4754,9 +4754,9 @@ dependencies = [
 
 [[package]]
 name = "rustls-webpki"
-version = "0.103.8"
+version = "0.103.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2ffdfa2f5286e2247234e03f680868ac2815974dc39e00ea15adc445d0aafe52"
+checksum = "8279bb85272c9f10811ae6a6c547ff594d6a7f3c6c6b02ee9726d1d0dcfcdd06"
 dependencies = [
  "aws-lc-rs",
  "ring",
@@ -5263,7 +5263,7 @@ dependencies = [
  "memchr",
  "once_cell",
  "percent-encoding",
- "rustls 0.23.35",
+ "rustls 0.23.38",
  "serde",
  "serde_json",
  "sha2",
@@ -5691,7 +5691,7 @@ version = "0.26.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8e727b36a1a0e8b74c376ac2211e40c2c8af09fb4013c60d910495810f008e9b"
 dependencies = [
- "rustls 0.23.35",
+ "rustls 0.23.38",
  "tokio",
 ]
 
@@ -6918,7 +6918,7 @@ dependencies = [
  "hyper-util",
  "log",
  "percent-encoding",
- "rustls 0.23.35",
+ "rustls 0.23.38",
  "rustls-pemfile 2.2.0",
  "seahash",
  "serde",
@@ -6943,7 +6943,7 @@ dependencies = [
  "hyper-util",
  "log",
  "percent-encoding",
- "rustls 0.23.35",
+ "rustls 0.23.38",
  "rustls-pemfile 2.2.0",
  "seahash",
  "serde",
