@@ -1,0 +1,18 @@
+---
+// Root of /docs → the quickstart is the canonical landing page, matching
+// the Docusaurus navbar default. If it ever moves, update the sidebar too.
+const target = `${import.meta.env.BASE_URL.replace(/\/$/, '')}/getting_started/quickstart`;
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="refresh" content={`0; url=${target}`} />
+    <link rel="canonical" href={target} />
+    <title>CocoIndex Docs</title>
+  </head>
+  <body>
+    <p>Redirecting to <a href={target}>{target}</a>…</p>
+  </body>
+</html>

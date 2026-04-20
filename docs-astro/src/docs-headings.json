@@ -1,0 +1,273 @@
+{
+  "about/community": {
+    "title": "Join the Coco *community.*",
+    "lede": "Find the Discord, GitHub, and socials where CocoIndex hangs out, and the fastest ways to get help or pitch an idea."
+  },
+  "advanced_topics/custom_target_connector": {
+    "title": "Build a Custom *target connector.*",
+    "lede": "Wire a new external system into CocoIndex's target state model by implementing TargetHandler, tracking records, actions, and a TargetActionSink.",
+    "meta": {
+      "language": "Python 3.11+"
+    }
+  },
+  "advanced_topics/exception_handlers": {
+    "title": "Error Handling and *recovery.*",
+    "lede": "How failure isolation works across mount and use_mount, how interrupted updates recover automatically, and how to register exception handlers.",
+    "meta": {
+      "language": "Python 3.11+"
+    }
+  },
+  "advanced_topics/internal_storage": {
+    "title": "CocoIndex's LMDB internal *storage.*",
+    "lede": "Set the db_path that tracks target states and memoization, and tune lmdb_map_size or lmdb_max_dbs for larger deployments."
+  },
+  "advanced_topics/live_component": {
+    "title": "Author your own *live component.*",
+    "lede": "Implement the LiveComponent protocol with process and process_live to stream incremental updates through a LiveComponentOperator.",
+    "meta": {
+      "language": "Python 3.11+"
+    }
+  },
+  "advanced_topics/memoization_keys": {
+    "title": "Memoization Keys and *states.*",
+    "lede": "Customize how CocoIndex fingerprints arguments, deps, and context values with __coco_memo_key__, register_memo_key_function, and memo state validation.",
+    "meta": {
+      "language": "Python 3.11+"
+    }
+  },
+  "advanced_topics/multiple_environments": {
+    "title": "Isolated CocoIndex *environments.*",
+    "lede": "Create named Environments with their own db_path so libraries, tenants, and tests stay isolated from the default environment."
+  },
+  "cli": {
+    "title": "The cocoindex *CLI.*",
+    "lede": "Invoke the cocoindex command, specify an APP_TARGET, load a .env file, and use global options like --app-dir and --env-file."
+  },
+  "cli_commands": {
+    "title": "CLI subcommands *reference.*",
+    "lede": "All cocoindex subcommands — drop, init, ls, show, update, server — with the options each one accepts."
+  },
+  "faq": {
+    "title": "Frequently Asked *Questions.*",
+    "lede": "Answers on how change detection propagates through @coco.fn, how crashes recover, and whether target state writes are transactional."
+  },
+  "common_resources/data_types": {
+    "title": "Common Resources and *data types.*",
+    "lede": "Shared abstractions every connector speaks — FileLike, FilePath, FilePathMatcher, Chunk — plus how they key stable memoization.",
+    "meta": {
+      "language": "Python 3.11+"
+    }
+  },
+  "common_resources/id_generation": {
+    "title": "Stable IDs across *runs.*",
+    "lede": "Use generate_id, generate_uuid, IdGenerator, and UuidGenerator to produce IDs that stay identical for the same inputs across incremental updates.",
+    "meta": {
+      "language": "Python 3.11+"
+    }
+  },
+  "common_resources/vector_schema": {
+    "title": "Vector schemas in *annotations.*",
+    "lede": "Describe vector columns with VectorSchema and VectorSchemaProvider so connectors can pick the right column type from Annotated hints.",
+    "meta": {
+      "language": "Python 3.11+"
+    }
+  },
+  "connectors/amazon_s3": {
+    "title": "Read objects from *Amazon S3.*",
+    "lede": "List and fetch S3 objects with list_objects, get_object, and read — bring your own aiobotocore client for AWS or MinIO.",
+    "meta": {
+      "language": "Python 3.11+",
+      "requires": "aiobotocore client"
+    }
+  },
+  "connectors/doris": {
+    "title": "Write rows to Apache *Doris.*",
+    "lede": "Stream-load rows into Doris tables with vector and inverted indexes, using DorisConnectionConfig and a ContextKey-backed connection.",
+    "meta": {
+      "language": "Python 3.11+",
+      "requires": "Apache Doris"
+    }
+  },
+  "connectors/google_drive": {
+    "title": "Read files from Google *Drive.*",
+    "lede": "Iterate Drive folders with GoogleDriveSource using a service account, filter by MIME type, and drop files into mount_each.",
+    "meta": {
+      "language": "Python 3.11+",
+      "requires": "Google service account"
+    }
+  },
+  "connectors/kafka": {
+    "title": "Consume and produce with *Kafka.*",
+    "lede": "Use topic_as_map as a LiveMapFeed source, produce messages to target states, and keep a ContextKey name stable to preserve tracking.",
+    "meta": {
+      "language": "Python 3.11+",
+      "requires": "Apache Kafka"
+    }
+  },
+  "connectors/lancedb": {
+    "title": "Write vectors to *LanceDB.*",
+    "lede": "Declare LanceDB tables and rows as target states, with CocoIndex handling upserts and deletions via a ContextKey-managed connection.",
+    "meta": {
+      "language": "Python 3.11+",
+      "requires": "LanceDB"
+    }
+  },
+  "connectors/localfs": {
+    "title": "The local filesystem *connector.*",
+    "lede": "Walk directories, read files, and write file target states — with ContextKey-anchored base dirs so memoization survives a project move.",
+    "meta": {
+      "language": "Python 3.11+"
+    }
+  },
+  "connectors/postgres": {
+    "title": "Read and write *Postgres.*",
+    "lede": "Use PgTableSource for rows and declare table target states that CocoIndex syncs, with pgvector set up automatically when you use vectors.",
+    "meta": {
+      "language": "Python 3.11+",
+      "requires": "Postgres 14+"
+    }
+  },
+  "connectors/qdrant": {
+    "title": "Write points to *Qdrant.*",
+    "lede": "Declare Qdrant collections and points as target states — named vectors, multi-vector configs, and gRPC or HTTP clients all supported.",
+    "meta": {
+      "language": "Python 3.11+",
+      "requires": "Qdrant"
+    }
+  },
+  "connectors/sqlite": {
+    "title": "Write rows to *SQLite.*",
+    "lede": "Declare SQLite tables as target states with optional sqlite-vec vector support, via a managed connection bound to a ContextKey.",
+    "meta": {
+      "language": "Python 3.11+",
+      "requires": "SQLite 3"
+    }
+  },
+  "connectors/surrealdb": {
+    "title": "Write records to *SurrealDB.*",
+    "lede": "Declare normal tables, relation edges, and vector indexes as target states, sharing a single transactional sink via a ConnectionFactory.",
+    "meta": {
+      "language": "Python 3.11+",
+      "requires": "SurrealDB"
+    }
+  },
+  "contributing/guide": {
+    "title": "Contributing to *CocoIndex.*",
+    "lede": "Pick up a good-first-issue, run prek checks, open a PR, and ship your change with the core team's review within one business day."
+  },
+  "contributing/setup_dev_environment": {
+    "title": "Set up a dev *environment.*",
+    "lede": "Install Rust and uv, run maturin develop, enable prek hooks, and get a working local build of the CocoIndex Rust and Python stack.",
+    "meta": {
+      "time": "~15 minutes"
+    }
+  },
+  "getting_started/installation": {
+    "title": "Install *CocoIndex.*",
+    "lede": "Install the v1 preview on Python 3.11 to 3.13 via pip, uv, or Poetry — including the pre-release flag each tool needs.",
+    "meta": {
+      "time": "~3 minutes",
+      "language": "Python 3.11+"
+    }
+  },
+  "getting_started/overview": {
+    "title": "What is *CocoIndex?*",
+    "lede": "A declarative, state-driven framework for incremental AI data pipelines: you describe target states, the Rust engine syncs what changed."
+  },
+  "getting_started/quickstart": {
+    "title": "Write your first *flow.*",
+    "lede": "Build a PDF-to-Markdown pipeline end-to-end — process_file with @coco.fn, a localfs DirTarget, and app.update_blocking to sync it all.",
+    "meta": {
+      "time": "~10 minutes",
+      "language": "Python 3.11+"
+    }
+  },
+  "ops/entity_resolution": {
+    "title": "Dedupe entities with *resolve_entities.*",
+    "lede": "Cluster near-duplicate names using FAISS similarity plus a pluggable LlmPairResolver, with optional pinning for established canonicals.",
+    "meta": {
+      "language": "Python 3.11+"
+    }
+  },
+  "ops/litellm": {
+    "title": "Embed text with *LiteLLM.*",
+    "lede": "Wrap any of LiteLLM's 100+ providers behind LiteLLMEmbedder — async embed, VectorSchemaProvider, and Annotated column typing.",
+    "meta": {
+      "language": "Python 3.11+"
+    }
+  },
+  "ops/sentence_transformers": {
+    "title": "Embed locally with Sentence *Transformers.*",
+    "lede": "SentenceTransformerEmbedder runs local models with cached weights and thread-safe GPU access, feeding dimensions straight into vector columns.",
+    "meta": {
+      "language": "Python 3.11+"
+    }
+  },
+  "ops/text": {
+    "title": "Text splitting and language *detection.*",
+    "lede": "detect_code_language, SeparatorSplitter, and RecursiveSplitter — the built-in text ops for chunking and syntax-aware code splitting.",
+    "meta": {
+      "language": "Python 3.11+"
+    }
+  },
+  "programming_guide/app": {
+    "title": "The App *runtime.*",
+    "lede": "Create a coco.App, call update or update_blocking, monitor progress through UpdateHandle, and wire setup into an @coco.lifespan.",
+    "meta": {
+      "language": "Python 3.11+"
+    }
+  },
+  "programming_guide/context": {
+    "title": "Sharing resources via *context.*",
+    "lede": "Define ContextKey values, provide them in lifespan, and read them with use_context — the key name is the stable identity across runs.",
+    "meta": {
+      "language": "Python 3.11+"
+    }
+  },
+  "programming_guide/core_concepts": {
+    "title": "Core *concepts.*",
+    "lede": "The mental model behind CocoIndex — state-driven declaration, target states, processing components, and incremental sync under code and data changes."
+  },
+  "programming_guide/function": {
+    "title": "The @coco.fn *decorator.*",
+    "lede": "Opt a function into change detection and memoization with @coco.fn — tune deps, version, logic_tracking, batching, and runners per call site.",
+    "meta": {
+      "language": "Python 3.11+"
+    }
+  },
+  "programming_guide/live_mode": {
+    "title": "Keep an app running in *live mode.*",
+    "lede": "Pass live=True so catch-up is followed by continuous reaction, with LiveMapView and LiveMapFeed sources streaming changes into mount_each.",
+    "meta": {
+      "language": "Python 3.11+"
+    }
+  },
+  "programming_guide/processing_component": {
+    "title": "Processing *components.*",
+    "lede": "Components own target states at a component path — mount, use_mount, mount_each, and component_subpath decide ownership, sync, and cleanup.",
+    "meta": {
+      "language": "Python 3.11+"
+    }
+  },
+  "programming_guide/sdk_overview": {
+    "title": "Tour of the CocoIndex *SDK.*",
+    "lede": "Where connectors, resources, and ops live in the package — plus StableKey, async-first orchestration, and the _blocking sync variants.",
+    "meta": {
+      "language": "Python 3.11+"
+    }
+  },
+  "programming_guide/serialization": {
+    "title": "Serialization and type *annotations.*",
+    "lede": "Return-type annotations let CocoIndex rebuild cached memo values; register oddball types with @coco.serialize_by_pickle for seamless roundtrips.",
+    "meta": {
+      "language": "Python 3.11+"
+    }
+  },
+  "programming_guide/target_state": {
+    "title": "Declare your target *states.*",
+    "lede": "Target states are what you want to exist in external systems — declare files, rows, or embeddings and CocoIndex converges targets to match.",
+    "meta": {
+      "language": "Python 3.11+"
+    }
+  }
+}
