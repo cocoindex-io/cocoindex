@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 jobs:
-  test-deploy:
+  test-build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -19,9 +19,10 @@ jobs:
           fetch-depth: 1
       - uses: actions/setup-node@v6
         with:
-          cache: yarn
-          cache-dependency-path: docs/yarn.lock
+          node-version: 22
+          cache: npm
+          cache-dependency-path: docs/package-lock.json
       - name: Install dependencies
-        run: yarn --cwd docs install --frozen-lockfile
-      - name: Test build website
-        run: yarn --cwd docs build
+        run: npm --prefix docs ci
+      - name: Build docs site
+        run: npm --prefix docs run build

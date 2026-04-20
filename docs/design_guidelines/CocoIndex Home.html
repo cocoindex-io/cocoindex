@@ -1,0 +1,1229 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>CocoIndex — Continuously fresh context for AI</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&family=Source+Serif+4:ital,opsz,wght@0,8..60,200..900;1,8..60,200..900&family=JetBrains+Mono:ital,wght@0,100..800;1,100..800&display=swap" rel="stylesheet">
+
+<template id="__bundler_thumbnail" data-bg-color="#FBF6E8">
+  <svg viewBox="0 0 1200 800" xmlns="http://www.w3.org/2000/svg">
+    <rect width="1200" height="800" fill="#FBF6E8"/>
+    <g transform="translate(600 400)">
+      <ellipse cx="0" cy="20" rx="180" ry="200" fill="#532638"/>
+      <ellipse cx="-60" cy="30" rx="28" ry="20" fill="#E59A63"/>
+      <ellipse cx="60" cy="30" rx="28" ry="20" fill="#E59A63"/>
+      <circle cx="-60" cy="30" r="9" fill="#2A121B"/>
+      <circle cx="60" cy="30" r="9" fill="#2A121B"/>
+      <ellipse cx="-90" cy="70" rx="22" ry="12" fill="#FB6A76" opacity="0.75"/>
+      <ellipse cx="90" cy="70" rx="22" ry="12" fill="#FB6A76" opacity="0.75"/>
+      <path d="M -40 95 Q 0 120 40 95" fill="none" stroke="#2A121B" stroke-width="6" stroke-linecap="round"/>
+      <path d="M -20 -180 Q -30 -240 -90 -250 Q -30 -230 -15 -185 Q -5 -240 40 -250 Q 5 -225 -5 -185 Z" fill="#27E62B"/>
+    </g>
+    <text x="600" y="700" text-anchor="middle" font-family="Georgia, serif" font-size="48" fill="#532638">CocoIndex</text>
+  </svg>
+</template>
+
+<script>
+  const TWEAKS = /*EDITMODE-BEGIN*/{
+    "hero_bg": "cream",
+    "mascot_size": "large",
+    "pattern": "dots"
+  }/*EDITMODE-END*/;
+</script>
+
+<style>
+  :root{
+    --maroon: #532638;
+    --maroon-deep: #401E2B;
+    --maroon-ink: #2A121B;
+    --coral:  #BE5133;
+    --peach:  #E59A63;
+    --cream:  #FCF3D8;
+    --cream-soft: #F6F4E9;
+    --pink:   #FB6A76;
+    --palm:   #27E62B;
+    --berry:  #6A1E23;
+    --paper:  #FBF6E8;
+    --rule:   rgba(42,18,27,0.14);
+    --rule-strong: rgba(42,18,27,0.32);
+    --muted:  rgba(42,18,27,0.58);
+
+    --serif: "Source Serif 4", ui-serif, Georgia, serif;
+    --sans:  "Inter", -apple-system, BlinkMacSystemFont, "Helvetica Neue", Helvetica, Arial, sans-serif;
+    --mono:  "JetBrains Mono", ui-monospace, Menlo, monospace;
+
+    --maxw: 1320px;
+    --gutter: 40px;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;background:var(--paper);color:var(--maroon-ink);}
+  body{font-family:var(--sans); font-size:17px; line-height:1.55; -webkit-font-smoothing:antialiased;}
+  a{color:inherit;}
+  .wrap{max-width:var(--maxw); margin:0 auto; padding:0 var(--gutter);}
+  .serif{font-family:var(--sans); font-weight:400; letter-spacing:-0.015em;}
+  .mono{font-family:var(--mono);}
+  .caps{font-family:var(--mono); font-size:11px; letter-spacing:0.14em; text-transform:uppercase; color:var(--muted);}
+
+  /* ───── nav ───── */
+  nav.top{
+    position:sticky; top:0; z-index:50;
+    background: color-mix(in oklab, var(--paper) 92%, transparent);
+    backdrop-filter: blur(12px);
+    border-bottom:1px solid var(--rule);
+  }
+  .nav-in{
+    max-width:var(--maxw); margin:0 auto;
+    padding:14px var(--gutter);
+    display:flex; align-items:center; gap:28px;
+  }
+  .logo{display:flex; align-items:center; gap:10px; text-decoration:none; color:var(--maroon-ink);}
+  .logo img{width:28px; height:30px;}
+  .logo span{font-family:var(--sans); font-size:18px; font-weight:600; letter-spacing:-0.02em;}
+  .nav-links{display:flex; gap:28px; margin-left:24px;}
+  .nav-links a{
+    font-size:14px; color:var(--maroon-ink); text-decoration:none;
+    padding:6px 0; position:relative;
+  }
+  .nav-links a:hover{color:var(--coral);}
+  .nav-cta{margin-left:auto; display:flex; gap:10px; align-items:center;}
+  .btn{
+    display:inline-flex; align-items:center; gap:8px;
+    padding:10px 18px; border-radius:999px;
+    font-size:14px; font-weight:500; text-decoration:none;
+    border:1px solid var(--maroon); color:var(--maroon); background:transparent;
+    transition: background .15s, color .15s;
+  }
+  .btn:hover{background:var(--maroon); color:var(--cream);}
+  .btn-primary{background:var(--maroon); color:var(--cream);}
+  .btn-primary:hover{background:var(--maroon-deep); color:var(--cream);}
+  .btn-coral{background:var(--coral); color:var(--cream); border-color:var(--coral);}
+  .btn-coral:hover{background:var(--maroon); border-color:var(--maroon);}
+  .stars{
+    font-family:var(--mono); font-size:12px;
+    padding:6px 10px; border:1px solid var(--rule-strong);
+    border-radius:999px; display:inline-flex; gap:6px; align-items:center;
+  }
+
+  /* ───── hero ───── */
+  .hero{padding:72px 0 96px; position:relative;}
+  .hero-grid{
+    display:grid; grid-template-columns: 1.25fr 1fr;
+    gap:56px; align-items:center;
+  }
+  .eyebrow{
+    display:inline-flex; gap:10px; align-items:center;
+    font-family:var(--mono); font-size:12px; letter-spacing:0.12em; text-transform:uppercase;
+    color:var(--maroon);
+    padding:6px 14px 6px 8px; border-radius:999px;
+    background:color-mix(in oklab, var(--peach) 30%, var(--cream));
+    border:1px solid var(--rule);
+    margin-bottom:28px;
+  }
+  .eyebrow .dot{width:8px; height:8px; border-radius:50%; background:var(--palm); box-shadow:0 0 0 4px rgba(39,230,43,0.18);}
+  h1.hero-h{
+    font-family:var(--serif); font-weight:400;
+    font-size: clamp(56px, 7.4vw, 112px);
+    line-height:0.92; letter-spacing:-0.035em;
+    margin:0 0 28px;
+    max-width: 14ch;
+  }
+  h1.hero-h em{font-style:italic; color:var(--coral);}
+  .hero-sub{
+    font-family:var(--sans); font-size: clamp(16px, 1.3vw, 19px);
+    font-weight:400; line-height:1.55; letter-spacing:-0.005em;
+    color:var(--maroon-ink); max-width:52ch;
+    margin:0 0 36px;
+  }
+  .hero-cta{display:flex; gap:12px; flex-wrap:wrap; align-items:center;}
+  .hero-meta{
+    display:flex; gap:28px; margin-top:32px;
+    padding-top:24px; border-top:1px solid var(--rule);
+    font-family:var(--mono); font-size:12px; color:var(--muted);
+    letter-spacing:0.08em; text-transform:uppercase;
+  }
+  .hero-meta b{color:var(--maroon); font-weight:500;}
+
+  .hero-visual{
+    position:relative;
+    aspect-ratio: 1/1.05;
+    background:var(--maroon);
+    border-radius:10px;
+    overflow:hidden;
+    display:grid; place-items:center;
+  }
+  .hero-visual .dots-bg{
+    position:absolute; inset:0;
+    background-image: radial-gradient(circle, rgba(252,243,216,0.11) 1.8px, transparent 2.2px);
+    background-size: 18px 18px;
+  }
+  .hero-visual img.mascot{
+    width:64%; position:relative; z-index:2;
+    filter: drop-shadow(0 14px 40px rgba(0,0,0,0.25));
+  }
+  .hero-visual .corner{
+    position:absolute; z-index:3;
+    font-family:var(--mono); font-size:11px; letter-spacing:0.14em; text-transform:uppercase;
+    color:var(--cream); opacity:0.75;
+  }
+  .hero-visual .corner.tl{top:18px; left:20px;}
+  .hero-visual .corner.tr{top:18px; right:20px;}
+  .hero-visual .corner.bl{bottom:18px; left:20px;}
+  .hero-visual .corner.br{bottom:18px; right:20px;}
+  .hero-visual .tick{
+    position:absolute; z-index:3;
+    width:10px; height:10px; background:var(--palm);
+    border-radius:50%;
+  }
+  .hero-visual .tick.a{top:34%; left:14%;}
+  .hero-visual .tick.b{top:22%; right:16%;}
+  .hero-visual .tick.c{bottom:28%; right:12%;}
+
+  /* ───── section scaffold ───── */
+  section.blk{padding:96px 0; border-top:1px solid var(--rule); position:relative;}
+  .sec-head{
+    display:grid; grid-template-columns: 180px 1fr; gap:40px;
+    margin-bottom:56px; align-items:baseline;
+  }
+  .sec-idx{
+    font-family:var(--mono); font-size:11px; letter-spacing:0.14em; text-transform:uppercase;
+    color:var(--muted);
+    padding-top:14px; border-top:1px solid var(--rule-strong);
+  }
+  .sec-head h2{
+    font-family:var(--sans); font-weight:600;
+    font-size: clamp(28px, 3.6vw, 44px); line-height:1.05;
+    letter-spacing:-0.03em; margin:0; max-width:22ch;
+  }
+  .sec-head h2 em{font-style:normal; color:var(--coral);}
+  .sec-lead{
+    grid-column:2;
+    font-family:var(--sans);
+    font-size: clamp(15px, 1.2vw, 17px);
+    font-weight:400; line-height:1.55; color:var(--maroon-ink);
+    max-width:56ch; margin-top:20px;
+  }
+
+  /* ───── examples ───── */
+  .ex-grid{display:grid; grid-template-columns: repeat(3,1fr); gap:16px;}
+  .ex-card{
+    border:1px solid var(--rule-strong); border-radius:8px;
+    overflow:hidden; background:var(--cream);
+    display:flex; flex-direction:column;
+    transition: transform .2s, box-shadow .2s;
+  }
+  .ex-card:hover{transform: translateY(-4px); box-shadow: 0 16px 40px -18px rgba(42,18,27,0.25);}
+  .ex-thumb{
+    aspect-ratio: 16/10; background:var(--maroon);
+    position:relative; overflow:hidden;
+  }
+  .ex-thumb .tag{
+    position:absolute; top:14px; left:14px; z-index:3;
+    font-family:var(--mono); font-size:10px; letter-spacing:0.14em; text-transform:uppercase;
+    color:var(--cream); padding:4px 10px;
+    background:rgba(252,243,216,0.12); border-radius:999px; backdrop-filter: blur(6px);
+  }
+  .ex-body{padding:24px 24px 22px; display:flex; flex-direction:column; gap:10px; flex:1;}
+  .ex-body h3{
+    font-family:var(--sans); font-weight:600; font-size:18px;
+    letter-spacing:-0.015em; line-height:1.25; margin:0;
+  }
+  .ex-body p{margin:0; color:var(--muted); font-size:14px; line-height:1.5; flex:1;}
+  .ex-link{
+    font-family:var(--mono); font-size:12px; letter-spacing:0.1em; text-transform:uppercase;
+    color:var(--coral); text-decoration:none; padding-top:8px;
+    border-top:1px solid var(--rule); margin-top:6px;
+    display:flex; justify-content:space-between; align-items:center;
+  }
+  .all-examples{
+    margin-top:32px; text-align:right;
+  }
+  .all-examples a{
+    font-family:var(--mono); font-size:12px; letter-spacing:0.12em; text-transform:uppercase;
+    color:var(--maroon); text-decoration:none;
+    padding-bottom:2px; border-bottom:1px solid var(--maroon);
+  }
+
+  /* ───── how it works flow ───── */
+  .flow{
+    background:var(--cream); border:1px solid var(--rule);
+    border-radius:10px; padding:40px; position:relative;
+    display:grid; grid-template-columns: 1fr 1.2fr 1fr;
+    gap:28px; align-items:stretch;
+  }
+  .flow-col{
+    display:flex; flex-direction:column; gap:8px;
+    padding:20px; border-radius:8px; background:var(--paper);
+    border:1px solid var(--rule); min-height:420px;
+  }
+  .flow-col h4{
+    font-family:var(--mono); font-size:11px; letter-spacing:0.14em; text-transform:uppercase;
+    color:var(--muted); margin:0 0 12px;
+    padding-bottom:10px; border-bottom:1px solid var(--rule);
+  }
+  .chip{
+    display:flex; align-items:center; gap:10px;
+    padding:10px 14px; border-radius:6px;
+    background:var(--paper);
+    border:1px solid var(--rule);
+    font-size:14px; font-weight:500;
+    transition: background .15s;
+  }
+  .chip:hover{background:var(--cream);}
+  .chip .ico{
+    width:18px; height:18px; flex:none;
+    display:grid; place-items:center;
+  }
+  .chip .ico svg{width:18px; height:18px;}
+
+  .flow-core{
+    background:var(--maroon); color:var(--cream);
+    border-radius:8px; padding:28px 24px;
+    display:flex; flex-direction:column; gap:14px;
+    position:relative; overflow:hidden;
+  }
+  .flow-core::before{
+    content:""; position:absolute; inset:0;
+    background-image: radial-gradient(circle, rgba(252,243,216,0.08) 1.4px, transparent 1.8px);
+    background-size: 16px 16px;
+  }
+  .flow-core > *{position:relative; z-index:2;}
+  .flow-core h4{color:rgba(252,243,216,0.7); border-color:rgba(252,243,216,0.18); margin:0 0 4px;}
+  .flow-core .title{
+    font-family:var(--sans); font-weight:600;
+    font-size:22px; line-height:1.2; letter-spacing:-0.02em;
+  }
+  .flow-core .title em{font-style:normal; color:var(--peach);}
+  .flow-core .code{
+    background:rgba(0,0,0,0.25); border-radius:4px;
+    padding:14px 16px; font-family:var(--mono); font-size:12px;
+    line-height:1.7;
+  }
+  .flow-core .code .kw{color:var(--peach);}
+  .flow-core .code .fn{color:var(--pink);}
+  .flow-core .code .str{color:#8ef09e;}
+  .flow-core .code .dim{opacity:0.5;}
+  .flow-core .stamp{
+    display:flex; gap:8px; flex-wrap:wrap;
+    font-family:var(--mono); font-size:10px; letter-spacing:0.12em; text-transform:uppercase;
+    color:rgba(252,243,216,0.65);
+  }
+  .flow-core .stamp span{padding:4px 10px; border:1px solid rgba(252,243,216,0.2); border-radius:999px;}
+
+  .arrow-row{
+    display:grid; grid-template-columns: 1fr 1.2fr 1fr;
+    gap:28px; margin-top:8px;
+  }
+  .arrow-row svg{width:100%; height:16px; display:block;}
+
+  .flow-plane{
+    margin-top:16px;
+    border:1px solid var(--rule);
+    border-radius:8px; background:var(--paper);
+    padding:18px 22px;
+  }
+  .flow-plane h5{
+    font-family:var(--mono); font-size:11px; letter-spacing:0.14em; text-transform:uppercase;
+    color:var(--muted); margin:0 0 12px; display:flex; justify-content:space-between;
+  }
+  .plane-grid{
+    display:grid; grid-template-columns: repeat(5, 1fr); gap:6px;
+  }
+  .plane-grid .p{
+    font-size:12px; padding:10px 12px;
+    background:var(--cream); border:1px solid var(--rule);
+    border-radius:4px; text-align:center;
+  }
+
+  /* ───── capabilities / agents ───── */
+  .cap-grid{
+    display:grid; grid-template-columns: 1fr 1fr; gap:16px;
+  }
+  .cap-card{
+    border:1px solid var(--rule-strong);
+    border-radius:8px; padding:32px 32px 28px;
+    background:var(--cream); min-height:260px;
+    display:flex; flex-direction:column; gap:10px;
+    position:relative; overflow:hidden;
+  }
+  .cap-card.dark{background:var(--maroon); color:var(--cream); border-color:var(--maroon);}
+  .cap-card .tag{
+    font-family:var(--mono); font-size:10px; letter-spacing:0.14em; text-transform:uppercase;
+    color:var(--muted);
+    display:flex; gap:8px; align-items:center;
+  }
+  .cap-card.dark .tag{color:rgba(252,243,216,0.7);}
+  .cap-card .tag .dt{width:6px; height:6px; border-radius:50%; background:var(--coral);}
+  .cap-card.dark .tag .dt{background:var(--peach);}
+  .cap-card h3{
+    font-family:var(--sans); font-weight:600; font-size:22px;
+    letter-spacing:-0.02em; line-height:1.2; margin:0;
+  }
+  .cap-card h3 em{color:var(--coral); font-style:normal;}
+  .cap-card.dark h3 em{color:var(--peach);}
+  .cap-card p{margin:0; max-width:38ch; color:inherit; opacity:0.85; font-size:15px;}
+  .cap-card .foot{
+    margin-top:auto; padding-top:18px; border-top:1px solid var(--rule);
+    font-family:var(--mono); font-size:11px; letter-spacing:0.12em; text-transform:uppercase;
+    color:var(--muted); display:flex; justify-content:space-between;
+  }
+  .cap-card.dark .foot{border-color:rgba(252,243,216,0.15); color:rgba(252,243,216,0.65);}
+
+  /* ───── react-for-data ───── */
+  .r4d{
+    display:grid; grid-template-columns: 1fr 1.3fr; gap:48px; align-items:center;
+  }
+  .r4d .left h3{
+    font-family:var(--sans); font-weight:600;
+    font-size: clamp(24px, 2.6vw, 34px); line-height:1.15; letter-spacing:-0.025em;
+    margin:0 0 18px;
+  }
+  .r4d .left h3 em{color:var(--coral); font-style:normal;}
+  .r4d .left p{color:var(--maroon-ink); max-width:44ch; margin:0 0 12px;}
+  .r4d .bullets{list-style:none; padding:0; margin:24px 0 0;}
+  .r4d .bullets li{
+    padding:12px 0; border-top:1px solid var(--rule);
+    display:flex; gap:14px; align-items:flex-start;
+    font-size:15px;
+  }
+  .r4d .bullets li::before{
+    content:""; width:10px; height:10px; margin-top:7px; flex:none;
+    background:var(--coral); border-radius:2px;
+  }
+  .r4d .diagram{
+    aspect-ratio: 5/4;
+    border:1px solid var(--rule); border-radius:10px;
+    background:var(--cream);
+    padding:28px; position:relative;
+  }
+
+  /* ───── cocoinsight ───── */
+  .insight{
+    background:var(--maroon); color:var(--cream);
+    border-radius:12px; padding:48px;
+    display:grid; grid-template-columns: 1fr 1.3fr; gap:40px; align-items:center;
+    position:relative; overflow:hidden;
+  }
+  .insight::before{
+    content:""; position:absolute; inset:0;
+    background-image: radial-gradient(circle, rgba(252,243,216,0.07) 1.6px, transparent 2px);
+    background-size: 22px 22px;
+  }
+  .insight > *{position:relative; z-index:2;}
+  .insight h3{
+    font-family:var(--sans); font-weight:600;
+    font-size: clamp(26px, 3vw, 36px); line-height:1.1; letter-spacing:-0.025em;
+    margin:0 0 18px; max-width:18ch;
+  }
+  .insight h3 em{color:var(--peach); font-style:normal;}
+  .insight p{color:rgba(252,243,216,0.85); max-width:40ch; margin:0;}
+  .insight .panel{
+    background: rgba(252,243,216,0.06);
+    border:1px solid rgba(252,243,216,0.14);
+    border-radius:8px;
+    padding:20px;
+    display:flex; flex-direction:column; gap:10px;
+  }
+  .insight .panel .bar{
+    display:flex; justify-content:space-between;
+    font-family:var(--mono); font-size:10px; letter-spacing:0.14em; text-transform:uppercase;
+    color:rgba(252,243,216,0.65);
+    padding-bottom:10px; border-bottom:1px solid rgba(252,243,216,0.1);
+  }
+
+  /* ───── vibing strip ───── */
+  .vibe{
+    display:grid; grid-template-columns: 1fr 1fr; gap:32px; align-items:center;
+    padding:64px; border-radius:12px;
+    background:var(--coral); color:var(--cream);
+    position:relative; overflow:hidden;
+  }
+  .vibe h3{
+    font-family:var(--sans); font-weight:600;
+    font-size: clamp(26px, 3.2vw, 40px); line-height:1.1; letter-spacing:-0.025em;
+    margin:0 0 16px;
+  }
+  .vibe h3 em{color:var(--cream); font-style:normal; text-decoration:underline; text-decoration-thickness:3px; text-underline-offset:6px;}
+  .vibe p{color:rgba(252,243,216,0.9); max-width:34ch; margin:0 0 24px; font-size:18px;}
+  .vibe-demo{
+    background: rgba(0,0,0,0.18); border-radius:10px; padding:24px;
+    display:flex; flex-direction:column; gap:14px;
+    border:1px solid rgba(252,243,216,0.15);
+  }
+  .vibe-demo .row{
+    display:flex; gap:10px; align-items:center;
+    font-family:var(--mono); font-size:13px;
+  }
+  .vibe-demo .row .badge{
+    font-size:10px; letter-spacing:0.12em; text-transform:uppercase;
+    padding:3px 8px; border-radius:4px; background:rgba(252,243,216,0.12);
+  }
+  .vibe-demo .row.user .badge{background:var(--peach); color:var(--maroon-ink);}
+  .vibe-demo .row.ai .badge{background:var(--cream); color:var(--maroon);}
+  .vibe-demo .row .msg{opacity:0.95;}
+  .vibe-demo .bar{
+    height:6px; background:rgba(252,243,216,0.1); border-radius:999px; overflow:hidden; position:relative;
+  }
+  .vibe-demo .bar::after{
+    content:""; position:absolute; inset:0 30% 0 0;
+    background:var(--palm); border-radius:999px;
+  }
+
+  /* ───── testimonial ───── */
+  .quote{
+    display:grid; grid-template-columns: 1fr 1.6fr; gap:48px; align-items:start;
+    padding: 24px 0;
+  }
+  .quote .avatar{
+    aspect-ratio:1/1; border-radius:12px;
+    background:var(--peach);
+    display:grid; place-items:center; overflow:hidden;
+    position:relative;
+    max-width:280px;
+  }
+  .quote .avatar img{width:62%;}
+  .quote blockquote{
+    margin:0;
+    font-family:var(--sans); font-weight:500;
+    font-size: clamp(18px, 1.6vw, 22px); line-height:1.45; letter-spacing:-0.015em;
+    color:var(--maroon-ink);
+    max-width:56ch;
+  }
+  .quote blockquote::before{
+    content:"\201C"; font-family:var(--sans); font-weight:600; font-size:72px; line-height:0.6;
+    color:var(--coral); display:block; margin-bottom:-10px;
+  }
+  .quote .attrib{
+    margin-top:28px; padding-top:16px; border-top:1px solid var(--rule);
+    font-family:var(--mono); font-size:12px; letter-spacing:0.1em; text-transform:uppercase;
+    color:var(--muted);
+  }
+  .quote .attrib b{color:var(--maroon); font-weight:500;}
+
+  /* ───── cta ───── */
+  .cta-end{
+    border-radius:12px;
+    background:var(--cream);
+    border:1px solid var(--rule);
+    padding: 72px 48px;
+    text-align:center;
+    position:relative; overflow:hidden;
+  }
+  .cta-end h3{
+    font-family:var(--sans); font-weight:600;
+    font-size: clamp(28px, 3.8vw, 44px); line-height:1.05; letter-spacing:-0.03em;
+    margin:0 auto 24px; max-width:20ch;
+  }
+  .cta-end h3 em{color:var(--coral); font-style:normal;}
+  .cta-end p{color:var(--muted); max-width:46ch; margin:0 auto 32px; font-size:18px;}
+  .cta-end .btns{display:inline-flex; gap:12px; flex-wrap:wrap; justify-content:center;}
+
+  /* ───── footer ───── */
+  footer{
+    padding:72px var(--gutter) 36px;
+    border-top:1px solid var(--rule);
+    max-width:var(--maxw); margin:0 auto;
+  }
+  .foot-grid{
+    display:grid; grid-template-columns: 2fr 1fr 1fr 1fr; gap:24px;
+    padding-bottom:48px; border-bottom:1px solid var(--rule);
+  }
+  .foot-brand{display:flex; flex-direction:column; gap:16px; max-width:38ch;}
+  .foot-brand .logo{font-family:var(--sans); font-size:18px; font-weight:600; letter-spacing:-0.02em;}
+  .foot-brand p{color:var(--muted); margin:0; font-size:14px;}
+  .foot-col h6{
+    font-family:var(--mono); font-size:11px; letter-spacing:0.14em; text-transform:uppercase;
+    color:var(--muted); margin:0 0 14px;
+  }
+  .foot-col a{
+    display:block; text-decoration:none; color:var(--maroon-ink);
+    padding:5px 0; font-size:14px;
+  }
+  .foot-col a:hover{color:var(--coral);}
+  .colo{
+    padding-top:20px;
+    display:flex; justify-content:space-between; align-items:center;
+    font-family:var(--mono); font-size:11px; letter-spacing:0.1em; text-transform:uppercase;
+    color:var(--muted);
+  }
+
+  /* ───── tweaks ───── */
+  .tweaks-panel{
+    position:fixed; right:20px; bottom:20px; z-index:100;
+    width:300px; display:none;
+    background:var(--paper); border:1px solid var(--rule-strong);
+    border-radius:8px; padding:16px 18px;
+    box-shadow:0 16px 48px -16px rgba(42,18,27,0.35);
+    font-family:var(--sans);
+  }
+  .tweaks-panel.on{display:block;}
+  .tweaks-panel h4{
+    margin:0 0 12px;
+    font-family:var(--mono); font-size:11px; letter-spacing:0.14em; text-transform:uppercase;
+    color:var(--muted); display:flex; justify-content:space-between;
+  }
+  .tw-row{margin-bottom:12px;}
+  .tw-row label{display:block; font-size:11px; font-family:var(--mono); letter-spacing:0.08em; text-transform:uppercase; color:var(--muted); margin-bottom:6px;}
+  .tw-row .opts{display:flex; gap:6px; flex-wrap:wrap;}
+  .tw-row .opts button{
+    flex:1; padding:8px 10px; font-size:12px;
+    background:transparent; border:1px solid var(--rule-strong);
+    border-radius:4px; cursor:pointer; font-family:var(--sans); color:var(--maroon-ink);
+  }
+  .tw-row .opts button.on{background:var(--maroon); color:var(--cream); border-color:var(--maroon);}
+
+  /* tweak variants */
+  body.hero_bg-coral .hero-visual{background:var(--coral);}
+  body.hero_bg-cream .hero-visual{background:var(--cream); border:1px solid var(--rule);}
+  body.hero_bg-cream .hero-visual .dots-bg{background-image: radial-gradient(circle, rgba(83,38,56,0.11) 1.8px, transparent 2.2px);}
+  body.hero_bg-cream .hero-visual .corner{color:var(--maroon);}
+  body.hero_bg-cream .hero-visual img.mascot{filter: drop-shadow(0 14px 30px rgba(83,38,56,0.2));}
+
+  body.mascot_size-small .hero-visual img.mascot{width:50%;}
+  body.mascot_size-large .hero-visual img.mascot{width:64%;}
+  body.mascot_size-xl .hero-visual img.mascot{width:78%;}
+
+  body.pattern-dots .hero-visual .dots-bg{background-image: radial-gradient(circle, rgba(252,243,216,0.11) 1.8px, transparent 2.2px); background-size:18px 18px;}
+  body.pattern-grid .hero-visual .dots-bg{background-image: linear-gradient(to right, rgba(252,243,216,0.1) 1px, transparent 1px), linear-gradient(to bottom, rgba(252,243,216,0.1) 1px, transparent 1px); background-size:24px 24px;}
+  body.pattern-none .hero-visual .dots-bg{display:none;}
+
+  @media(max-width:900px){
+    .nav-links{display:none;}
+    .hero-grid, .r4d, .insight, .vibe, .quote, .foot-grid, .cap-grid, .ex-grid, .flow{grid-template-columns:1fr !important;}
+    .sec-head{grid-template-columns:1fr;}
+    .sec-lead{grid-column:1;}
+    .arrow-row{display:none;}
+  }
+</style>
+</head>
+<body class="hero_bg-cream mascot_size-large pattern-dots">
+
+<!-- NAV -->
+<nav class="top">
+  <div class="nav-in">
+    <a class="logo" href="#">
+      <img src="assets/cocoindex-mark.svg" alt=""/>
+      <span>CocoIndex</span>
+    </a>
+    <div class="nav-links">
+      <a href="#examples">Examples</a>
+      <a href="#docs">Documentation</a>
+      <a href="#blog">Blog</a>
+      <a href="#enterprise">Enterprise</a>
+    </div>
+    <div class="nav-cta">
+      <span class="stars">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
+        4.8k
+      </span>
+      <a class="btn btn-primary" href="#">Star on GitHub →</a>
+    </div>
+  </div>
+</nav>
+
+<div class="wrap">
+
+<!-- HERO -->
+<section class="hero">
+  <div class="hero-grid">
+    <div>
+      <span class="eyebrow"><span class="dot"></span>v 0.9 · production ready · day zero</span>
+      <h1 class="hero-h">Continuously <em>fresh</em> context for AI.</h1>
+      <p class="hero-sub">Turn PDFs, codebases, inboxes &amp; meeting notes into a structured store your agents can trust — in a few lines of Python. We only process the delta.</p>
+      <div class="hero-cta">
+        <a class="btn btn-coral" href="#">Star on GitHub</a>
+        <a class="btn" href="#">Read the docs</a>
+        <span class="caps" style="margin-left:12px;">pip install cocoindex</span>
+      </div>
+      <div class="hero-meta">
+        <span><b>Incremental</b> · only the delta</span>
+        <span><b>Any scale</b> · parallel by default</span>
+        <span><b>Declarative</b> · Python, 5 min</span>
+      </div>
+    </div>
+
+    <div class="hero-visual">
+      <div class="dots-bg"></div>
+      <span class="corner tl">cocoindex.flow</span>
+      <span class="corner tr">v 0.9.4</span>
+      <span class="corner bl">pdf → vector</span>
+      <span class="corner br">delta · only</span>
+      <span class="tick a"></span>
+      <span class="tick b"></span>
+      <span class="tick c"></span>
+      <img class="mascot" src="assets/cocoindex-mark.svg" alt="CocoIndex mascot"/>
+    </div>
+  </div>
+</section>
+
+<!-- EXAMPLES -->
+<section class="blk" id="examples">
+  <div class="sec-head">
+    <span class="sec-idx">01 — Hot examples</span>
+    <h2>Fork <em>&amp;</em> let's go.</h2>
+    <p class="sec-lead">Working starters. Clone, plug your source, ship. Each one is a handful of files and a flow declaration.</p>
+  </div>
+
+  <div class="ex-grid">
+    <!-- Codebase -->
+    <a class="ex-card" href="#">
+      <div class="ex-thumb" style="background:#2A121B;">
+        <span class="tag">Codebase · real-time</span>
+        <svg viewBox="0 0 480 300" preserveAspectRatio="xMidYMid slice" style="width:100%;height:100%;">
+          <defs>
+            <pattern id="grid-code" width="20" height="20" patternUnits="userSpaceOnUse">
+              <path d="M 20 0 L 0 0 0 20" fill="none" stroke="rgba(252,243,216,0.06)" stroke-width="1"/>
+            </pattern>
+          </defs>
+          <rect width="480" height="300" fill="url(#grid-code)"/>
+          <!-- code lines -->
+          <g font-family="JetBrains Mono, monospace" font-size="11" fill="#FCF3D8">
+            <rect x="40" y="40" width="380" height="220" rx="6" fill="rgba(252,243,216,0.06)" stroke="rgba(252,243,216,0.15)"/>
+            <text x="56" y="66" fill="#E59A63">def</text><text x="86" y="66" fill="#FB6A76">index_code</text><text x="170" y="66">(repo):</text>
+            <text x="70" y="86" opacity="0.5"># walk the tree</text>
+            <text x="70" y="106">for file in repo.files:</text>
+            <text x="86" y="126">chunks = <tspan fill="#FB6A76">chunk</tspan>(file)</text>
+            <text x="86" y="146">emb = <tspan fill="#FB6A76">embed</tspan>(chunks)</text>
+            <text x="86" y="166"><tspan fill="#FB6A76">sink</tspan>(emb, <tspan fill="#8ef09e">"qdrant"</tspan>)</text>
+            <text x="56" y="210" fill="#E59A63">@cocoindex.flow</text>
+            <!-- cursor -->
+            <rect x="200" y="154" width="7" height="14" fill="#27E62B"/>
+          </g>
+        </svg>
+      </div>
+      <div class="ex-body">
+        <h3>Real-time codebase indexing</h3>
+        <p>Keep an index of your repo in sync with every commit. Feed code-review and coding agents with structure, not raw text.</p>
+        <span class="ex-link">Use this idea → <span>GitHub</span></span>
+      </div>
+    </a>
+
+    <!-- Meeting Notes -->
+    <a class="ex-card" href="#">
+      <div class="ex-thumb" style="background:#BE5133;">
+        <span class="tag">Meetings · knowledge graph</span>
+        <svg viewBox="0 0 480 300" preserveAspectRatio="xMidYMid slice" style="width:100%;height:100%;">
+          <g stroke="rgba(252,243,216,0.45)" stroke-width="1.2" fill="none">
+            <line x1="240" y1="150" x2="100" y2="80"/>
+            <line x1="240" y1="150" x2="380" y2="90"/>
+            <line x1="240" y1="150" x2="120" y2="220"/>
+            <line x1="240" y1="150" x2="360" y2="230"/>
+            <line x1="100" y1="80" x2="380" y2="90"/>
+            <line x1="120" y1="220" x2="360" y2="230"/>
+          </g>
+          <g fill="#FCF3D8">
+            <circle cx="240" cy="150" r="22"/>
+            <circle cx="100" cy="80" r="12"/>
+            <circle cx="380" cy="90" r="14"/>
+            <circle cx="120" cy="220" r="10"/>
+            <circle cx="360" cy="230" r="16"/>
+          </g>
+          <g font-family="JetBrains Mono, monospace" font-size="9" fill="#FCF3D8" opacity="0.85">
+            <text x="80" y="60">person:nora</text>
+            <text x="355" y="70">topic:q2</text>
+            <text x="100" y="250">action:ship</text>
+            <text x="330" y="260">doc:rfc-14</text>
+            <text x="218" y="195" font-size="10" font-weight="500">meeting</text>
+          </g>
+        </svg>
+      </div>
+      <div class="ex-body">
+        <h3>Meeting notes → knowledge graph</h3>
+        <p>Extract people, topics, decisions and action items from notes into a live graph. Query them with your agent.</p>
+        <span class="ex-link">Use this idea → <span>GitHub</span></span>
+      </div>
+    </a>
+
+    <!-- HN -->
+    <a class="ex-card" href="#">
+      <div class="ex-thumb" style="background:#532638;">
+        <span class="tag">Hacker News · trends</span>
+        <svg viewBox="0 0 480 300" preserveAspectRatio="xMidYMid slice" style="width:100%;height:100%;">
+          <g stroke="#E59A63" stroke-width="2.5" fill="none">
+            <polyline points="30,240 80,220 130,210 180,180 230,170 280,120 330,110 380,60 430,80"/>
+          </g>
+          <g stroke="#FB6A76" stroke-width="2" fill="none" stroke-dasharray="4 4">
+            <polyline points="30,250 80,245 130,230 180,225 230,210 280,190 330,170 380,150 430,130"/>
+          </g>
+          <g fill="#FCF3D8">
+            <circle cx="380" cy="60" r="5"/>
+            <circle cx="280" cy="120" r="4"/>
+            <circle cx="180" cy="180" r="3"/>
+          </g>
+          <g font-family="JetBrains Mono, monospace" font-size="9" fill="#FCF3D8" opacity="0.7">
+            <text x="30" y="270">t-6h</text>
+            <text x="200" y="270">t-3h</text>
+            <text x="400" y="270">now</text>
+            <text x="350" y="45" fill="#E59A63">↑ agents</text>
+            <text x="250" y="105" fill="#E59A63">↑ rust</text>
+          </g>
+        </svg>
+      </div>
+      <div class="ex-body">
+        <h3>HN trending topics detector</h3>
+        <p>Ingest Hacker News incrementally. Detect surfacing topics before they peak. Perfect for weekend hacking.</p>
+        <span class="ex-link">Use this idea → <span>GitHub</span></span>
+      </div>
+    </a>
+  </div>
+  <div class="all-examples"><a href="#">See all examples →</a></div>
+</section>
+
+<!-- HOW IT WORKS -->
+<section class="blk" id="how">
+  <div class="sec-head">
+    <span class="sec-idx">02 — How it works</span>
+    <h2>Declare a few <em>lines.</em> We do the rest.</h2>
+    <p class="sec-lead">Sources stream in. Python transforms them. Targets stay in sync. A persistent control plane handles caching, scheduling, lineage and failure — so you don't have to think about any of it.</p>
+  </div>
+
+  <div class="flow">
+    <div class="flow-col">
+      <h4>Sources</h4>
+      <div class="chip"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="#532638" stroke-width="1.6"><path d="M3 5c0-1.1 4-2 9-2s9 .9 9 2-4 2-9 2-9-.9-9-2z"/><path d="M3 5v14c0 1.1 4 2 9 2s9-.9 9-2V5"/><path d="M3 12c0 1.1 4 2 9 2s9-.9 9-2"/></svg></span>Databases</div>
+      <div class="chip"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="#532638" stroke-width="1.6"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 010 18M12 3a14 14 0 000 18"/></svg></span>Web &amp; APIs</div>
+      <div class="chip"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="#532638" stroke-width="1.6"><path d="M3 6a2 2 0 012-2h5l2 2h7a2 2 0 012 2v10a2 2 0 01-2 2H5a2 2 0 01-2-2V6z"/></svg></span>File systems</div>
+      <div class="chip"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="#532638" stroke-width="1.6"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 9h10M7 13h6"/></svg></span>PDFs &amp; docs</div>
+      <div class="chip"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="#532638" stroke-width="1.6"><path d="M8 6l-5 6 5 6M16 6l5 6-5 6M14 4l-4 16"/></svg></span>Codebases</div>
+      <div class="chip"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="#532638" stroke-width="1.6"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 7l9 6 9-6"/></svg></span>Emails</div>
+      <div class="chip"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="#532638" stroke-width="1.6"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="9" cy="10" r="1.5"/><path d="M21 17l-6-6-8 8"/></svg></span>Images &amp; video</div>
+      <div class="chip"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="#532638" stroke-width="1.6"><path d="M12 3v12M8 11v4M16 9v6M4 13v0M20 13v0"/></svg></span>Voices</div>
+      <div class="chip"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="#532638" stroke-width="1.6"><path d="M4 4h16v10H4zM2 20h20M10 14v6M14 14v6"/></svg></span>Screenshots</div>
+    </div>
+
+    <div class="flow-core">
+      <h4>Transform</h4>
+      <div class="title">Python in. <em>Structure out.</em></div>
+      <div class="code">
+        <span class="kw">@cocoindex</span>.flow<br>
+        <span class="kw">def</span> <span class="fn">pipeline</span>(src, dst):<br>
+        &nbsp;&nbsp;<span class="dim"># only the delta, always</span><br>
+        &nbsp;&nbsp;chunks = src.map(<span class="fn">chunk</span>)<br>
+        &nbsp;&nbsp;emb = chunks.map(<span class="fn">embed</span>,<br>
+        &nbsp;&nbsp;&nbsp;&nbsp;model=<span class="str">"e5-mistral"</span>)<br>
+        &nbsp;&nbsp;dst.<span class="fn">sink</span>(emb)
+      </div>
+      <div class="stamp">
+        <span>Incremental</span>
+        <span>Explainable</span>
+        <span>Parallel</span>
+        <span>Typed</span>
+      </div>
+    </div>
+
+    <div class="flow-col">
+      <h4>Targets</h4>
+      <div class="chip"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="#532638" stroke-width="1.6"><ellipse cx="12" cy="5" rx="9" ry="2"/><path d="M3 5v14c0 1.1 4 2 9 2s9-.9 9-2V5"/><path d="M3 12c0 1.1 4 2 9 2s9-.9 9-2"/></svg></span>Relational DB</div>
+      <div class="chip"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="#532638" stroke-width="1.6"><rect x="3" y="4" width="18" height="6" rx="1"/><rect x="3" y="14" width="18" height="6" rx="1"/><path d="M7 7h0M7 17h0"/></svg></span>Data warehouse</div>
+      <div class="chip"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="#532638" stroke-width="1.6"><circle cx="12" cy="12" r="3"/><circle cx="4" cy="6" r="2"/><circle cx="20" cy="6" r="2"/><circle cx="4" cy="18" r="2"/><circle cx="20" cy="18" r="2"/><path d="M6 7l4 4M18 7l-4 4M6 17l4-4M18 17l-4-4"/></svg></span>Vector DB</div>
+      <div class="chip"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="#532638" stroke-width="1.6"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/><path d="M8 7l8 0M7 8l4 8M17 8l-4 8"/></svg></span>Graph DB</div>
+      <div class="chip"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="#532638" stroke-width="1.6"><rect x="3" y="8" width="18" height="8" rx="2"/><path d="M7 8v8M11 8v8M15 8v8"/></svg></span>Message queue</div>
+      <div class="chip"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="#532638" stroke-width="1.6"><path d="M4 20V6a2 2 0 012-2h8l6 6v10a2 2 0 01-2 2H6a2 2 0 01-2-2z"/><path d="M14 4v6h6"/></svg></span>Feature stores</div>
+    </div>
+  </div>
+
+  <!-- arrows between columns -->
+  <div class="arrow-row">
+    <svg viewBox="0 0 120 16"><line x1="0" y1="8" x2="110" y2="8" stroke="#BE5133" stroke-width="1.6" stroke-dasharray="3 4"/><polygon points="110,2 118,8 110,14" fill="#BE5133"/></svg>
+    <div></div>
+    <svg viewBox="0 0 120 16"><line x1="0" y1="8" x2="110" y2="8" stroke="#BE5133" stroke-width="1.6" stroke-dasharray="3 4"/><polygon points="110,2 118,8 110,14" fill="#BE5133"/></svg>
+  </div>
+
+  <!-- control plane strip -->
+  <div class="flow-plane">
+    <h5><span>Persistent data pipeline control plane</span><span style="color:var(--coral);">always on</span></h5>
+    <div class="plane-grid">
+      <div class="p">Caching</div>
+      <div class="p">Pipeline catalog</div>
+      <div class="p">Version tracking</div>
+      <div class="p">Lineage</div>
+      <div class="p">Task scheduling</div>
+      <div class="p">Metrics</div>
+      <div class="p">Failure mgmt</div>
+      <div class="p">Continuously learning</div>
+      <div class="p">Incremental</div>
+      <div class="p">Explainable</div>
+    </div>
+  </div>
+</section>
+
+<!-- AGENTS -->
+<section class="blk" id="agents">
+  <div class="sec-head">
+    <span class="sec-idx">03 — Built for agents</span>
+    <h2>Reliable. Autonomous. <em>Minimalistic.</em></h2>
+    <p class="sec-lead">Agents break when their data lies. CocoIndex makes the data tell the truth — through every source change, every code change, and every long-running job.</p>
+  </div>
+
+  <div class="cap-grid">
+    <div class="cap-card">
+      <span class="tag"><span class="dt"></span>Data change</span>
+      <h3>The file changed. We noticed. <em>Before you did.</em></h3>
+      <p>Don't think about it. The framework watches the source, computes the delta, and reconciles the target — at any scale, in parallel.</p>
+      <div class="foot"><span>Incremental by default</span><span>→</span></div>
+    </div>
+    <div class="cap-card dark">
+      <span class="tag"><span class="dt"></span>Code change</span>
+      <h3>Schema evolved. <em>No migration meeting.</em></h3>
+      <p>Your target store is already connected to live agents? No worries. Only changed code gets rerun. Schemas evolve automatically.</p>
+      <div class="foot"><span>No index swap · no downtime</span><span>→</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- REACT FOR DATA -->
+<section class="blk" id="r4d">
+  <div class="sec-head">
+    <span class="sec-idx">04 — The mental model</span>
+    <h2>React — <em>for data</em> engineering.</h2>
+    <p class="sec-lead">A persistent-state-driven model. You declare the desired state of your target. The engine keeps it in sync with the latest source data and code, across long time horizons, with low latency and low cost.</p>
+  </div>
+
+  <div class="r4d">
+    <div class="left">
+      <h3>Your code is as simple as the <em>one-off</em> version.</h3>
+      <p>Write the transformation. Declare the sink. That's the job. CocoIndex figures out what to rerun, what to cache, and what's already fresh.</p>
+      <ul class="bullets">
+        <li>Transforms the input data — you write Python, not a DAG configuration.</li>
+        <li>Declares desired state for the target — we compute the minimum work to reach it.</li>
+        <li>Tracks lineage end-to-end — every byte in the target can be traced to a source.</li>
+        <li>Runs incrementally at any scale — only the delta, never the full recompute.</li>
+      </ul>
+    </div>
+
+    <!-- custom execution diagram -->
+    <div class="diagram">
+      <svg viewBox="0 0 500 400" style="width:100%;height:100%;">
+        <defs>
+          <marker id="ah" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+            <path d="M0 0 L10 5 L0 10 z" fill="#BE5133"/>
+          </marker>
+        </defs>
+
+        <!-- source circle -->
+        <g>
+          <circle cx="90" cy="90" r="44" fill="#FCF3D8" stroke="#532638" stroke-width="1.4"/>
+          <text x="90" y="86" text-anchor="middle" font-family="Source Serif 4" font-size="20" fill="#532638">source</text>
+          <text x="90" y="104" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#BE5133" letter-spacing="0.14em">t+Δt</text>
+        </g>
+
+        <!-- transform -->
+        <g>
+          <rect x="180" y="170" width="140" height="60" rx="8" fill="#532638"/>
+          <text x="250" y="197" text-anchor="middle" font-family="Source Serif 4" font-size="22" fill="#FCF3D8">transform</text>
+          <text x="250" y="218" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="rgba(252,243,216,0.65)" letter-spacing="0.12em">f(x) = y</text>
+        </g>
+
+        <!-- target -->
+        <g>
+          <rect x="360" y="300" width="110" height="60" rx="8" fill="#BE5133"/>
+          <text x="415" y="327" text-anchor="middle" font-family="Source Serif 4" font-size="20" fill="#FCF3D8">target</text>
+          <text x="415" y="346" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="rgba(252,243,216,0.8)" letter-spacing="0.12em">desired</text>
+        </g>
+
+        <!-- code -->
+        <g>
+          <rect x="360" y="90" width="110" height="60" rx="8" fill="#E59A63"/>
+          <text x="415" y="118" text-anchor="middle" font-family="Source Serif 4" font-size="20" fill="#2A121B">code</text>
+          <text x="415" y="138" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#532638" letter-spacing="0.12em">v2.0</text>
+        </g>
+
+        <!-- lines -->
+        <path d="M130 115 C 170 130, 170 180, 185 195" stroke="#BE5133" stroke-width="1.6" fill="none" marker-end="url(#ah)"/>
+        <path d="M360 130 C 330 145, 320 170, 320 195" stroke="#BE5133" stroke-width="1.6" fill="none" marker-end="url(#ah)"/>
+        <path d="M320 230 C 360 260, 380 285, 398 298" stroke="#BE5133" stroke-width="1.6" fill="none" marker-end="url(#ah)"/>
+
+        <!-- delta labels -->
+        <g font-family="JetBrains Mono" font-size="10" fill="#6A1E23" letter-spacing="0.1em">
+          <text x="132" y="168">only Δ</text>
+          <text x="340" y="190">only Δ</text>
+          <text x="342" y="275">reconcile</text>
+        </g>
+
+        <!-- sync ring -->
+        <g>
+          <circle cx="90" cy="310" r="44" fill="none" stroke="#27E62B" stroke-width="1.4" stroke-dasharray="3 4"/>
+          <text x="90" y="306" text-anchor="middle" font-family="Source Serif 4" font-size="18" fill="#532638">in sync</text>
+          <text x="90" y="324" text-anchor="middle" font-family="JetBrains Mono" font-size="9" fill="#6A1E23" letter-spacing="0.14em">always</text>
+        </g>
+        <path d="M120 300 C 160 270, 180 250, 200 230" stroke="#27E62B" stroke-width="1.6" fill="none" stroke-dasharray="3 4" marker-end="url(#ah)"/>
+        <path d="M375 330 C 240 400, 160 400, 110 355" stroke="#27E62B" stroke-width="1.6" fill="none" stroke-dasharray="3 4"/>
+
+        <!-- micro labels -->
+        <g font-family="JetBrains Mono" font-size="9" fill="rgba(42,18,27,0.5)" letter-spacing="0.14em">
+          <text x="20" y="30">EXECUTION WORKFLOW</text>
+          <text x="380" y="390" text-anchor="end">cocoindex.engine</text>
+        </g>
+      </svg>
+    </div>
+  </div>
+</section>
+
+<!-- COCOINSIGHT -->
+<section class="blk" id="insight">
+  <div class="sec-head">
+    <span class="sec-idx">05 — CocoInsight</span>
+    <h2>What's going on <em>with my data?</em></h2>
+    <p class="sec-lead">Step-by-step, understand what your pipeline is doing. Think of it as real-time rendering in the browser — for data.</p>
+  </div>
+
+  <div class="insight">
+    <div>
+      <h3>Every step. Every record. <em>Explainable.</em></h3>
+      <p>See the shape of your data at every stage of the flow. Trace a single vector back to the paragraph it came from. Debug with your eyes, not grep.</p>
+    </div>
+
+    <div class="panel">
+      <div class="bar"><span>Flow · pdf_ingest</span><span>live · 24 rec/s</span></div>
+
+      <!-- lineage visualization -->
+      <svg viewBox="0 0 700 340" style="width:100%; height:auto; display:block;">
+        <!-- lanes -->
+        <g font-family="JetBrains Mono" font-size="10" fill="rgba(252,243,216,0.55)" letter-spacing="0.14em">
+          <text x="20" y="40">SOURCE</text>
+          <text x="20" y="110">CHUNK</text>
+          <text x="20" y="180">EMBED</text>
+          <text x="20" y="250">SINK</text>
+        </g>
+
+        <!-- lane separators -->
+        <g stroke="rgba(252,243,216,0.1)" stroke-width="1">
+          <line x1="120" y1="50" x2="680" y2="50"/>
+          <line x1="120" y1="120" x2="680" y2="120"/>
+          <line x1="120" y1="190" x2="680" y2="190"/>
+          <line x1="120" y1="260" x2="680" y2="260"/>
+        </g>
+
+        <!-- source boxes -->
+        <g>
+          <rect x="130" y="20" width="70" height="22" rx="3" fill="#E59A63"/>
+          <text x="165" y="35" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#2A121B">rfc-14.pdf</text>
+          <rect x="220" y="20" width="70" height="22" rx="3" fill="#FB6A76"/>
+          <text x="255" y="35" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#2A121B">readme.md</text>
+          <rect x="310" y="20" width="70" height="22" rx="3" fill="#E59A63"/>
+          <text x="345" y="35" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#2A121B">spec.pdf</text>
+          <rect x="400" y="20" width="70" height="22" rx="3" fill="#FB6A76" opacity="0.5"/>
+          <text x="435" y="35" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="rgba(42,18,27,0.65)">cached</text>
+          <rect x="490" y="20" width="70" height="22" rx="3" fill="#27E62B"/>
+          <text x="525" y="35" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#2A121B">new.pdf</text>
+        </g>
+
+        <!-- chunk boxes -->
+        <g>
+          <rect x="130" y="90" width="36" height="22" rx="3" fill="#FCF3D8"/>
+          <rect x="170" y="90" width="36" height="22" rx="3" fill="#FCF3D8"/>
+          <rect x="220" y="90" width="60" height="22" rx="3" fill="#FCF3D8"/>
+          <rect x="310" y="90" width="50" height="22" rx="3" fill="#FCF3D8"/>
+          <rect x="370" y="90" width="50" height="22" rx="3" fill="#FCF3D8"/>
+          <rect x="490" y="90" width="36" height="22" rx="3" fill="#27E62B"/>
+          <rect x="530" y="90" width="36" height="22" rx="3" fill="#27E62B"/>
+          <rect x="570" y="90" width="36" height="22" rx="3" fill="#27E62B"/>
+        </g>
+
+        <!-- embed bars -->
+        <g>
+          <rect x="130" y="160" width="440" height="22" rx="3" fill="rgba(252,243,216,0.12)"/>
+          <rect x="130" y="160" width="300" height="22" rx="3" fill="#BE5133"/>
+          <text x="140" y="176" font-family="JetBrains Mono" font-size="10" fill="#FCF3D8">e5-mistral · 1024d · 68%</text>
+        </g>
+
+        <!-- sink diamond -->
+        <g>
+          <rect x="260" y="230" width="180" height="22" rx="3" fill="#FCF3D8"/>
+          <text x="350" y="246" text-anchor="middle" font-family="JetBrains Mono" font-size="10" fill="#2A121B">qdrant · collection: docs</text>
+        </g>
+
+        <!-- lines connecting -->
+        <g stroke="rgba(252,243,216,0.25)" stroke-width="1" fill="none">
+          <line x1="165" y1="42" x2="148" y2="90"/>
+          <line x1="255" y1="42" x2="250" y2="90"/>
+          <line x1="345" y1="42" x2="335" y2="90"/>
+          <line x1="525" y1="42" x2="548" y2="90"/>
+          <line x1="148" y1="112" x2="350" y2="160"/>
+          <line x1="250" y1="112" x2="350" y2="160"/>
+          <line x1="335" y1="112" x2="350" y2="160"/>
+          <line x1="548" y1="112" x2="350" y2="160"/>
+          <line x1="350" y1="182" x2="350" y2="230"/>
+        </g>
+
+        <!-- metrics -->
+        <g font-family="JetBrains Mono" font-size="10" fill="rgba(252,243,216,0.55)">
+          <text x="640" y="35" text-anchor="end">5 files · 1 new</text>
+          <text x="640" y="105" text-anchor="end">142 chunks · Δ 8</text>
+          <text x="640" y="175" text-anchor="end">142 vec · Δ 8</text>
+          <text x="640" y="245" text-anchor="end">upserted · 8</text>
+        </g>
+      </svg>
+
+      <div class="bar" style="border-top:1px solid rgba(252,243,216,0.1); border-bottom:none; padding-top:10px;">
+        <span style="color:var(--palm);">● running · reused 94%</span>
+        <span>cocoinsight.local</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- VIBING -->
+<section class="blk" id="vibe">
+  <div class="vibe">
+    <div>
+      <span class="caps" style="color:rgba(252,243,216,0.8); margin-bottom:14px; display:inline-block;">06 — Vibing?</span>
+      <h3>Vibe-coding native. Pipeline ready <em>in 5 min.</em></h3>
+      <p>Describe the flow. Claude writes the cocoindex. You run it. The framework keeps it fresh forever.</p>
+      <a class="btn" style="background:var(--cream); color:var(--maroon); border-color:var(--cream);" href="#">Try the Claude skill →</a>
+    </div>
+    <div class="vibe-demo">
+      <div class="row user"><span class="badge">you</span><span class="msg">index my /docs folder into qdrant.</span></div>
+      <div class="row ai"><span class="badge">claude</span><span class="msg">wiring cocoindex.flow · chunk → embed → sink…</span></div>
+      <div class="bar"></div>
+      <div class="row" style="color:rgba(252,243,216,0.7);"><span class="badge" style="background:rgba(39,230,43,0.2); color:var(--palm);">ok</span><span class="msg">flow.py · 14 lines · running</span></div>
+      <div class="row" style="color:rgba(252,243,216,0.7);"><span class="badge" style="background:rgba(252,243,216,0.12);">log</span><span class="msg" style="font-size:11px; opacity:0.7;">[00:12] 142 chunks · 1024d · 68% cached</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- QUOTE -->
+<section class="blk" id="love">
+  <div class="sec-head">
+    <span class="sec-idx">07 — Loved by builders</span>
+    <h2>Incredible <em>optimizations,</em> out of the box.</h2>
+  </div>
+  <div class="quote">
+    <div class="avatar">
+      <img src="assets/cocoindex-mark.svg" alt=""/>
+    </div>
+    <div>
+      <blockquote>
+        I'm in love with CocoIndex. It's a very mature project — with optimizations like incremental processing, parallel chunking and maximum efficiency built right in. These are hard to design and maintain, yet they just work out of the box.
+      </blockquote>
+      <div class="attrib">
+        <b>Shivansh Subramanian</b> · Startup founder · Community contributor
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- CTA END -->
+<section class="blk" style="border-top:none; padding-bottom:40px;">
+  <div class="cta-end">
+    <h3>Your agents deserve <em>fresh context.</em></h3>
+    <p>Five lines of Python. A persistent control plane. A coconut with a face. Ship your first flow before lunch.</p>
+    <div class="btns">
+      <a class="btn btn-coral" href="#">Star on GitHub</a>
+      <a class="btn btn-primary" href="#">Read the docs</a>
+      <a class="btn" href="#">pip install cocoindex</a>
+    </div>
+  </div>
+</section>
+
+</div>
+
+<!-- FOOTER -->
+<footer>
+  <div class="foot-grid">
+    <div class="foot-brand">
+      <div class="logo" style="gap:12px;">
+        <img src="assets/cocoindex-mark.svg" alt="" style="width:36px; height:auto;"/>
+        <span>CocoIndex</span>
+      </div>
+      <p>The open-source, incremental data framework that keeps your AI agents grounded in fresh, structured context.</p>
+    </div>
+    <div class="foot-col">
+      <h6>Resources</h6>
+      <a href="#">Blog</a>
+      <a href="#">Documentation</a>
+      <a href="#">YouTube</a>
+      <a href="#">Examples</a>
+    </div>
+    <div class="foot-col">
+      <h6>Community</h6>
+      <a href="#">GitHub</a>
+      <a href="#">Discord</a>
+      <a href="#">Twitter</a>
+      <a href="#">LinkedIn</a>
+    </div>
+    <div class="foot-col">
+      <h6>Company</h6>
+      <a href="#">Enterprise</a>
+      <a href="#">Privacy policy</a>
+      <a href="#">Terms of use</a>
+      <a href="#">hello@cocoindex.io</a>
+    </div>
+  </div>
+  <div class="colo">
+    <span>© 2026 CocoIndex · MIT licensed</span>
+    <span>Set in Source Serif 4 · Inter · JetBrains Mono</span>
+  </div>
+</footer>
+
+<!-- TWEAKS -->
+<div class="tweaks-panel" id="tweaks">
+  <h4>Tweaks <span>⏻</span></h4>
+  <div class="tw-row">
+    <label>Hero background</label>
+    <div class="opts" data-group="hero_bg">
+      <button data-val="maroon">Maroon</button>
+      <button data-val="coral">Coral</button>
+      <button data-val="cream">Cream</button>
+    </div>
+  </div>
+  <div class="tw-row">
+    <label>Mascot size</label>
+    <div class="opts" data-group="mascot_size">
+      <button data-val="small">Small</button>
+      <button data-val="large">Large</button>
+      <button data-val="xl">XL</button>
+    </div>
+  </div>
+  <div class="tw-row">
+    <label>Hero pattern</label>
+    <div class="opts" data-group="pattern">
+      <button data-val="dots">Dots</button>
+      <button data-val="grid">Grid</button>
+      <button data-val="none">None</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  const state = { ...TWEAKS };
+  const apply = () => {
+    const b = document.body;
+    [...b.classList].forEach(c => {
+      if (/^(hero_bg|mascot_size|pattern)-/.test(c)) b.classList.remove(c);
+    });
+    b.classList.add(`hero_bg-${state.hero_bg}`);
+    b.classList.add(`mascot_size-${state.mascot_size}`);
+    b.classList.add(`pattern-${state.pattern}`);
+    document.querySelectorAll('.tw-row .opts').forEach(grp => {
+      const g = grp.dataset.group;
+      grp.querySelectorAll('button').forEach(btn => {
+        btn.classList.toggle('on', btn.dataset.val === state[g]);
+      });
+    });
+  };
+  apply();
+
+  document.querySelectorAll('.tw-row .opts button').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const g = btn.parentElement.dataset.group;
+      state[g] = btn.dataset.val;
+      apply();
+      try {
+        window.parent.postMessage({type:'__edit_mode_set_keys', edits: {[g]: state[g]}}, '*');
+      } catch(e){}
+    });
+  });
+
+  window.addEventListener('message', (e) => {
+    const d = e.data || {};
+    if (d.type === '__activate_edit_mode')   document.getElementById('tweaks').classList.add('on');
+    if (d.type === '__deactivate_edit_mode') document.getElementById('tweaks').classList.remove('on');
+  });
+  try { window.parent.postMessage({type:'__edit_mode_available'}, '*'); } catch(e){}
+</script>
+
+</body>
+</html>
