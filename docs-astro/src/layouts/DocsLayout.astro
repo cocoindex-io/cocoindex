@@ -1,0 +1,194 @@
+---
+import '../styles/globals.css';
+import type { MarkdownHeading } from 'astro';
+import Topbar from '../components/Topbar.astro';
+import Banner from '../components/Banner.astro';
+import Sidebar from '../components/Sidebar.astro';
+import Toc from '../components/Toc.astro';
+import { SITE_URL, titleMarkup, DOCS_EDIT_BASE } from '../consts';
+import { flatten, sidebar, type SidebarItem } from '../docs-sidebar';
+import docsMeta from '../docs-meta.json';
+import docsHeadings from '../docs-headings.json';
+
+export interface Props {
+  /** Plain title used for <title>, OG, breadcrumb, and canonical meta. */
+  title: string;
+  /** Optional title string with *asterisks* marking italic-coral segments
+   *  (see src/consts.ts titleMarkup). Falls back to `title` when absent. */
+  titleMarkup?: string;
+  description?: string;
+  slug: string;
+  headings: MarkdownHeading[];
+  sourcePath?: string;
+}
+
+const {
+  title,
+  titleMarkup: titleMarkupRaw,
+  description,
+  slug,
+  headings,
+  sourcePath,
+} = Astro.props;
+const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+
+const renderedTitle = titleMarkup(titleMarkupRaw ?? title);
+const fullTitle = `${title} · CocoIndex Docs`;
+
+// Intro-meta strip: Time / Language / Requires come from the curated
+// headings file (LLM-generated per-page). Version + last-updated come
+// from docs-meta.json, which the port script bakes at build time.
+const curatedMeta = (
+  docsHeadings as Record<string, { meta?: { time?: string; language?: string; requires?: string } }>
+)[slug]?.meta;
+const fileMeta = (
+  docsMeta as { _version?: string | null; files: Record<string, { editTs: number }> }
+);
+const version = fileMeta._version ? `v ${fileMeta._version}` : null;
+const editTs = fileMeta.files?.[slug]?.editTs ?? 0;
+// We label this "Last reviewed" rather than "Last updated": the timestamp
+// comes from the last git commit touching the source doc, which is a
+// reliable proxy for when a human last went over it.
+const lastReviewed = editTs
+  ? new Date(editTs * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+  : null;
+
+const introItems = [
+  { k: 'Time',          v: curatedMeta?.time,     reviewed: false },
+  { k: 'Language',      v: curatedMeta?.language, reviewed: false },
+  { k: 'Requires',      v: curatedMeta?.requires, reviewed: false },
+  { k: 'Version',       v: version,               reviewed: false },
+  { k: 'Last reviewed', v: lastReviewed,          reviewed: true  },
+].filter((m) => m.v);
+const canonical = new URL(`${base}/${slug}`, SITE_URL).toString();
+
+// Breadcrumb: walk the sidebar tree for the current slug so category
+// labels light up correctly even for nested pages.
+function findPath(items: SidebarItem[], acc: Array<{ label: string; href?: string }> = []): Array<{ label: string; href?: string }> | null {
+  for (const item of items) {
+    if (item.type === 'doc' && item.slug === slug) {
+      return [...acc, { label: item.label ?? slug }];
+    }
+    if (item.type === 'category') {
+      const next = [...acc, { label: item.label, href: item.slug ? `${base}/${item.slug}` : undefined }];
+      if (item.slug === slug) return next;
+      const down = findPath(item.items, next);
+      if (down) return down;
+    }
+  }
+  return null;
+}
+const crumbs = findPath(sidebar) ?? [{ label: title }];
+
+// Prev/next pager — drawn from the flat sidebar order.
+const flat = flatten();
+const i = flat.findIndex((e) => e.slug === slug);
+const prev = i > 0 ? flat[i - 1] : null;
+const next = i >= 0 && i < flat.length - 1 ? flat[i + 1] : null;
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <meta name="theme-color" content="#FBF6E8" />
+
+    <title>{fullTitle}</title>
+    {description && <meta name="description" content={description} />}
+    <link rel="canonical" href={canonical} />
+
+    <link rel="icon" href={`${base}/img/favicon.ico`} />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <!-- Trimmed Inter weights: the site uses 400/500/600 only (no 300/700 in CSS).
+         Source Serif 4 is italic-only, used exclusively for the H1 italic-coral
+         accent. JetBrains Mono weights reduced to the two we actually render. -->
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&family=Source+Serif+4:ital,wght@0,400;1,400&display=swap"
+    />
+  </head>
+  <body>
+    <Topbar />
+    <Banner />
+
+    <div class="layout">
+      <Sidebar currentSlug={slug} />
+
+      <main class="content">
+        <nav class="breadcrumb" aria-label="Breadcrumb">
+          <a href={base || '/'}>Docs</a>
+          {crumbs.map((c, idx) => (
+            <>
+              <span class="sep">/</span>
+              {idx === crumbs.length - 1 ? (
+                <span class="now">{c.label}</span>
+              ) : c.href ? (
+                <a href={c.href}>{c.label}</a>
+              ) : (
+                <span>{c.label}</span>
+              )}
+            </>
+          ))}
+        </nav>
+
+        <article class="prose">
+          <h1 set:html={renderedTitle} />
+          {description && <p class="lede">{description}</p>}
+          {introItems.length > 0 && (
+            <dl class="intro-meta">
+              {introItems.map((m) => (
+                <div class={`m${m.reviewed ? ' m-reviewed' : ''}`}>
+                  <dt class="k">{m.k}</dt>
+                  <dd class="v">
+                    {m.reviewed && (
+                      <svg class="check" width="14" height="14" viewBox="0 0 16 16" aria-hidden>
+                        <circle cx="8" cy="8" r="7" fill="var(--palm)" />
+                        <path d="M4.5 8.3l2.3 2.2L11.5 5.8"
+                              fill="none" stroke="var(--maroon-ink)"
+                              stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                      </svg>
+                    )}
+                    <span>{m.v}</span>
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          )}
+          <slot />
+        </article>
+
+        {(prev || next) && (
+          <div class="pager">
+            {prev ? (
+              <a href={`${base}/${prev.slug}`}>
+                <span class="dir">Previous</span>
+                <span class="ttl">{prev.label ?? prev.slug}</span>
+              </a>
+            ) : <span />}
+            {next ? (
+              <a class="next" href={`${base}/${next.slug}`}>
+                <span class="dir">Next</span>
+                <span class="ttl">{next.label ?? next.slug}</span>
+              </a>
+            ) : <span />}
+          </div>
+        )}
+
+        <div class="doc-foot">
+          <span>CocoIndex Docs</span>
+          {sourcePath && (
+            <span style="display:flex; gap:8px;">
+              <a href={`${DOCS_EDIT_BASE}/${sourcePath}`} target="_blank" rel="noopener">Edit this page</a>
+              <a href="https://github.com/cocoindex-io/cocoindex/issues/new" target="_blank" rel="noopener">Report issue</a>
+            </span>
+          )}
+        </div>
+      </main>
+
+      <Toc headings={headings} slug={slug} />
+    </div>
+  </body>
+</html>
