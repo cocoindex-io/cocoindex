@@ -576,6 +576,13 @@ aside.toc .meta .edited { color: var(--muted); cursor: default; }
 }
 .prose .co.warn .ico { background: var(--pink); color: var(--maroon-ink); }
 
+/* Danger — critical / breaking: deeper pink wash, coral icon. */
+.prose .co.danger {
+  border-color: var(--coral);
+  background: color-mix(in oklab, var(--pink) 20%, var(--cream));
+}
+.prose .co.danger .ico { background: var(--coral); color: var(--cream); }
+
 /* Block quotes — plain markdown `> …` surfaces that aren't admonitions. */
 .prose blockquote {
   margin: 20px 0;

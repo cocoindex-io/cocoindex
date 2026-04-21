@@ -19,16 +19,21 @@
 import { visit } from 'unist-util-visit';
 import { toString } from 'mdast-util-to-string';
 
-// Four canonical variants per the design spec. `caution` and `danger` are
-// legacy aliases that collapse to `warn` — the design system explicitly
-// forbids a fifth variant.
+// Each admonition kind gets a distinct icon + class so readers can
+// distinguish at a glance. Colors are defined in src/styles/globals.css.
+//   note    — neutral annotation (berry pin, plain cream bg)
+//   info    — important context (coral i, peach-tinted cream)
+//   tip     — helpful suggestion (palm ✓, green-tinted cream)
+//   warning — heads up (pink !, pink-tinted cream)
+//   caution — alias for warning
+//   danger  — critical (coral !, deeper pink-tinted cream)
 const SPECS = {
-  note:    { defaultLabel: 'Note',         cls: 'note', icon: 'i' },
-  info:    { defaultLabel: 'Prerequisite', cls: 'info', icon: 'i' },
-  tip:     { defaultLabel: 'Tip',          cls: 'tip',  icon: '\u2713' },
-  warning: { defaultLabel: 'Warning',      cls: 'warn', icon: '!' },
-  caution: { defaultLabel: 'Warning',      cls: 'warn', icon: '!' },
-  danger:  { defaultLabel: 'Warning',      cls: 'warn', icon: '!' },
+  note: { defaultLabel: 'Note', cls: 'note', icon: 'i' },
+  info: { defaultLabel: 'Info', cls: 'info', icon: 'i' },
+  tip: { defaultLabel: 'Tip', cls: 'tip', icon: '\u2713' },
+  warning: { defaultLabel: 'Warning', cls: 'warn', icon: '!' },
+  caution: { defaultLabel: 'Caution', cls: 'warn', icon: '!' },
+  danger: { defaultLabel: 'Danger', cls: 'danger', icon: '!' },
 };
 
 export default function remarkAdmonitions() {
