@@ -3,11 +3,13 @@
 // so both sites share the exact same header. The stars island is a plain
 // inline script rather than a React component so we don't need to ship
 // React + a client bundle just to render one number.
-import { SITE_MAIN, SITE_EXAMPLES, SITE_BLOG, GITHUB_REPO } from '../consts';
+import { SITE_MAIN, SITE_BLOG, GITHUB_REPO } from '../consts';
 
 const base = import.meta.env.BASE_URL.replace(/\/$/, '') || '/';
 const CODE = `${SITE_MAIN}/cocoindex-code`;
 const DOCS = base;
+const EXAMPLES_V1 = `${base}/examples`;
+const EXAMPLES_V0 = 'https://cocoindex.io/docs/examples/';
 const ENTERPRISE = `${SITE_MAIN}/enterprise`;
 ---
 
@@ -19,7 +21,24 @@ const ENTERPRISE = `${SITE_MAIN}/enterprise`;
     </a>
     <div class="nav-links">
       <a href={CODE}>CocoIndex Code</a>
-      <a href={SITE_EXAMPLES}>Examples</a>
+      <div class="nav-dd">
+        <a href={EXAMPLES_V1} class="nav-dd-trigger" aria-haspopup="menu">
+          Examples
+          <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden>
+            <path d="m2.5 4.5 3.5 3.5 3.5-3.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </a>
+        <div class="nav-dd-menu" role="menu">
+          <a class="on" href={EXAMPLES_V1} role="menuitem">
+            <span class="ver">v1</span>
+            <span class="tag">preview</span>
+          </a>
+          <a href={EXAMPLES_V0} role="menuitem">
+            <span class="ver">v0</span>
+            <span class="tag legacy">stable</span>
+          </a>
+        </div>
+      </div>
       <div class="nav-dd">
         <a href={DOCS} class="nav-dd-trigger" aria-haspopup="menu">
           Documentation
@@ -90,5 +109,39 @@ const ENTERPRISE = `${SITE_MAIN}/enterprise`;
         try { sessionStorage.setItem(KEY, JSON.stringify({ count: d.stargazers_count, ts: Date.now() })); } catch { /* ignore */ }
       })
       .catch(() => { /* offline / rate-limited — leave the em-dash. */ });
+  })();
+
+  // Copy-to-clipboard for every .code-figure .copy button — one delegated
+  // listener per document. Emitted markup lives in scripts/remark-code-titles.mjs.
+  (() => {
+    document.addEventListener('click', (ev) => {
+      const btn = (ev.target as HTMLElement | null)?.closest('.code-figure .copy') as HTMLButtonElement | null;
+      if (!btn) return;
+      const fig = btn.closest<HTMLElement>('.code-figure');
+      const code = fig?.querySelector<HTMLElement>('pre code, pre');
+      if (!code) return;
+      const text = code.innerText.replace(/\n$/, '');
+      const label = btn.querySelector<HTMLElement>('.copy-lbl');
+      const done = () => {
+        btn.classList.add('copied');
+        if (label) label.textContent = 'Copied';
+        window.setTimeout(() => {
+          btn.classList.remove('copied');
+          if (label) label.textContent = 'Copy';
+        }, 1500);
+      };
+      if (navigator.clipboard?.writeText) {
+        navigator.clipboard.writeText(text).then(done).catch(() => { /* fall through */ });
+      } else {
+        // Legacy fallback — create an offscreen textarea, select, execCommand.
+        const ta = document.createElement('textarea');
+        ta.value = text; ta.setAttribute('readonly', '');
+        ta.style.position = 'fixed'; ta.style.left = '-9999px';
+        document.body.appendChild(ta);
+        ta.select();
+        try { document.execCommand('copy'); done(); } catch { /* ignore */ }
+        ta.remove();
+      }
+    });
   })();
 </script>
