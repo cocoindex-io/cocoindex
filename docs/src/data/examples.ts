@@ -11,11 +11,11 @@
 export type Category = 'search' | 'ingest' | 'llm' | 'agents' | 'image';
 
 export const CATEGORY_META: Record<Category, { label: string; em?: string; lead: string; thumbClass: string }> = {
-  search:  { label: 'Vector ',        em: 'Indexes',         lead: 'Embed your documents, store vectors, answer by meaning.',                                thumbClass: 'search' },
-  ingest:  { label: 'Custom ',        em: 'Building Blocks', lead: 'Bring your own source, target, or parser. Same declarative flow.',                        thumbClass: 'ingest' },
-  llm:     { label: 'Structured ',    em: 'Extraction',      lead: 'Turn loose prose into structured data with LLMs, BAML, DSPy, or Ollama.',                  thumbClass: 'llm' },
-  agents:  { label: 'Knowledge ',     em: 'Graphs',          lead: 'Give agents a persistent, graph-shaped memory from conversations, meetings, products.',    thumbClass: 'agents' },
-  image:   { label: 'Multimodal',                             lead: 'Images, PDFs, slides, faces — same flow, different encoder.',                             thumbClass: 'pink' },
+  search: { label: 'Vector ', em: 'Indexes', lead: 'Embed your documents, store vectors, answer by meaning.', thumbClass: 'search' },
+  ingest: { label: 'Custom ', em: 'Building Blocks', lead: 'Bring your own source, target, or parser. Same declarative flow.', thumbClass: 'ingest' },
+  llm: { label: 'Structured ', em: 'Extraction', lead: 'Turn loose prose into structured data with LLMs, BAML, DSPy, or Ollama.', thumbClass: 'llm' },
+  agents: { label: 'Knowledge ', em: 'Graphs', lead: 'Give agents a persistent, graph-shaped memory from conversations, meetings, products.', thumbClass: 'agents' },
+  image: { label: 'Multimodal', lead: 'Images, PDFs, slides, faces — same flow, different encoder.', thumbClass: 'pink' },
 };
 
 export type ExampleCard = {
@@ -88,8 +88,8 @@ export const findExample = (slug: string): ExampleCard | undefined =>
 // examples land.
 export const SIDEBAR_TARGETS = ['Local FS', 'Postgres'];
 export const SIDEBAR_SOURCES = ['Local FS', 'PDF', 'Multi-repo'];
-export const SIDEBAR_LLMS    = ['OpenAI', 'Gemini', 'Anthropic'];
+export const SIDEBAR_LLMS = ['OpenAI', 'Gemini', 'Anthropic'];
 export const POPULAR: Array<{ slug: string; label: string; count: string }> = [
   { slug: 'multi-codebase-summarization', label: 'Multi-codebase Summarization', count: '★' },
-  { slug: 'pdf-to-markdown',              label: 'PDF → Markdown',               count: '★' },
+  { slug: 'pdf-to-markdown', label: 'PDF → Markdown', count: '★' },
 ];

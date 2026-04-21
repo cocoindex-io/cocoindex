@@ -1,6 +1,9 @@
 ---
-title: Context
-description: Sharing resources across your pipeline and beyond using ContextKey, builder.provide(), use_context(), and get_context().
+title: Sharing resources via *context*
+description: >
+  Use ContextKey, builder.provide(), and use_context() to share connections,
+  models, and config across processing components. Covers change detection on
+  context values and accessing context outside mount boundaries.
 ---
 CocoIndex provides a **context** mechanism for sharing resources across your pipeline. This is useful for database connections, API clients, configuration objects, or any resource that multiple processing components need to access.
 

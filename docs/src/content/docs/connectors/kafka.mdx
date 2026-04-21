@@ -1,7 +1,10 @@
 ---
-title: Kafka
+title: "*Kafka* connector"
 toc_max_heading_level: 4
-description: CocoIndex connector for consuming and producing messages with Apache Kafka topics.
+description: >
+  Consume Kafka topics as live keyed maps (topic_as_map → LiveMapFeed) and
+  produce messages as target states — with automatic offset commits and
+  partition rebalancing at at-least-once semantics.
 ---
 The `kafka` connector supports Kafka as both a **source** (consuming messages as a live keyed map) and a **target** (producing messages for declared target states).
 

@@ -1,6 +1,9 @@
 ---
-title: Function
-description: Understanding the @coco.fn decorator, its capabilities like memoization and change tracking.
+title: Declaring *functions* with @coco.fn
+description: >
+  The @coco.fn decorator makes Python functions participate in CocoIndex's change
+  detection, memoization, and execution pipeline — with async adapters, batching,
+  and GPU-aware runners included.
 ---
 It's common to factor work into helper functions (for parsing, chunking, embedding, formatting, etc.). In CocoIndex, you can decorate any Python function with `@coco.fn` when you want to add incremental capabilities to it. The decorated function is still a normal Python function: its signature stays the same, and you can call it normally.
 
