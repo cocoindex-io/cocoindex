@@ -1,7 +1,9 @@
 ---
-title: Custom Targets
-description: Learn how to create custom targets in CocoIndex to export data to any destination including databases, cloud storage, file systems, and APIs. Build target specs and connectors with setup and data methods for flexible data export operations.
+title: "*Custom targets*"
+description: Implement a target connector — setup change handling plus apply mutations — and CocoIndex will drive insert, update, and delete traffic into your destination.
 toc_max_heading_level: 4
+meta:
+  language: Python 3.11+
 ---
 A custom target allows you to export data to any destination you want, such as databases, cloud storage, file systems, APIs, or other external systems.
 You can either continuously update the destination to keep it in sync with the latest exported data, or simply publish the changes as a changelog to somewhere.

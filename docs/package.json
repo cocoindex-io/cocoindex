@@ -18,6 +18,11 @@
     "astro": "^6.1.8",
     "mdast-util-to-string": "^4.0.0",
     "remark-directive": "^4.0.0",
+    "sharp": "^0.34.5",
     "unist-util-visit": "^5.0.0"
+  },
+  "devDependencies": {
+    "node-addon-api": "^8.7.0",
+    "node-gyp": "^12.2.0"
   }
 }
