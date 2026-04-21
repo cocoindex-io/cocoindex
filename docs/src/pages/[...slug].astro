@@ -2,7 +2,6 @@
 import { getCollection, render, type CollectionEntry } from 'astro:content';
 import DocsLayout from '../layouts/DocsLayout.astro';
 import { docSlug, titleText } from '../consts';
-import headings from '../docs-headings.json';
 
 export async function getStaticPaths() {
   const docs = await getCollection('docs');
@@ -22,17 +21,15 @@ const rel = (doc as unknown as { filePath?: string }).filePath
   .pop();
 const sourcePath = rel ?? `${doc.id}.md`;
 
-// Curated headings override frontmatter. Titles may contain *asterisks*
-// to italicize in coral (see src/consts.ts); plain metadata strips them.
-const curated = (headings as Record<string, { title?: string; lede?: string }>)[slug];
+// Title may contain *asterisks* marking italic-coral segments
+// (see src/consts.ts titleMarkup); plain metadata strips them.
 const rawTitle: string =
-  curated?.title ??
-  (typeof doc.data.title === 'string' && doc.data.title.length > 0 ? doc.data.title : slug);
+  typeof doc.data.title === 'string' && doc.data.title.length > 0 ? doc.data.title : slug;
 const title = rawTitle;
 const metaTitle = titleText(rawTitle);
 const description =
-  curated?.lede ??
-  (typeof doc.data.description === 'string' ? doc.data.description : undefined);
+  typeof doc.data.description === 'string' ? doc.data.description : undefined;
+const introMeta = doc.data.meta;
 ---
 
 <DocsLayout
@@ -42,6 +39,7 @@ const description =
   slug={slug}
   headings={mdHeadings}
   sourcePath={sourcePath}
+  introMeta={introMeta}
 >
   <Content />
 </DocsLayout>

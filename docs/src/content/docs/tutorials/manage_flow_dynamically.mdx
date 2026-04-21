@@ -1,6 +1,9 @@
 ---
-title: Manage Flows Dynamically
-description: "Learn how to dynamically manage multiple flow instances in CocoIndex. Create parameterized data indexing pipelines, handle persistent resources, perform updates, and implement memory-efficient caching for scalable applications."
+title: "*Manage flows* dynamically"
+description: Parameterize a flow definition with open_flow(), drive multiple instances from a config registry, and handle setup, update, and close for each one on the fly.
+meta:
+  time: ~20 minutes
+  language: Python 3.11+
 ---
 You write a function, a.k.a. *flow definition*, to define indexing logic.
 Sometimes you want to reuse the same flow definition for multiple *flow instances* (a.k.a. *flow*), e.g. each takes input from different sources, exports to different targets, and even with slightly different parameters for transformation logic.

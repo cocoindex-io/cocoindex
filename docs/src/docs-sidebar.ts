@@ -46,10 +46,10 @@ export const sidebar: SidebarItem[] = [
     type: 'category',
     label: 'Tutorials',
     items: [
-      { type: 'doc', slug: 'tutorials/control_flow', label: 'Control flow' },
+      { type: 'doc', slug: 'tutorials/control_flow', label: 'Concurrency control' },
       { type: 'doc', slug: 'tutorials/docker_pgvector_setup', label: 'Docker + pgvector setup' },
       { type: 'doc', slug: 'tutorials/live_updates', label: 'Live updates' },
-      { type: 'doc', slug: 'tutorials/manage_flow_dynamically', label: 'Manage flow dynamically' },
+      { type: 'doc', slug: 'tutorials/manage_flow_dynamically', label: 'Manage flows dynamically' },
     ],
   },
   { type: 'doc', slug: 'query', label: 'Query Support' },
@@ -100,7 +100,7 @@ export const sidebar: SidebarItem[] = [
     type: 'category',
     label: 'CocoInsight',
     items: [
-      { type: 'doc', slug: 'cocoinsight_access', label: 'Access' },
+      { type: 'doc', slug: 'cocoinsight_access', label: 'CocoInsight access' },
     ],
   },
   {

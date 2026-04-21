@@ -7,8 +7,19 @@ const docs = defineCollection({
   loader: glob({ pattern: '**/*.{md,mdx}', base: './src/content/docs' }),
   schema: z
     .object({
+      // Title may include *asterisks* to mark italic-coral segments — see
+      // titleMarkup/titleText in src/consts.ts. Plain metadata strips them.
       title: z.string().optional(),
+      // Lede paragraph rendered under the H1 and used as <meta description>.
       description: z.string().optional(),
+      // Intro-meta strip (Time / Language / Requires) shown above the body.
+      meta: z
+        .object({
+          time: z.string().optional(),
+          language: z.string().optional(),
+          requires: z.string().optional(),
+        })
+        .optional(),
       sidebar_label: z.string().optional(),
       sidebar_position: z.number().optional(),
       toc_max_heading_level: z.number().optional(),

@@ -9,7 +9,7 @@ fi
 
 rm -f "$FLAG"
 
-cd "$CLAUDE_PROJECT_DIR/docs" && yarn 2>&1 && yarn build 2>&1
+cd "$CLAUDE_PROJECT_DIR/docs" && npm i 2>&1 && npm run build 2>&1
 BUILD_EXIT=$?
 if [ $BUILD_EXIT -ne 0 ]; then
   echo "docs build failed" >&2
