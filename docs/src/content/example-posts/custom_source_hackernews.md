@@ -1,10 +1,5 @@
 ---
-title: Extract structured information from HackerNews with a Custom Source and keep it in sync with Postgres
-description: 'Build a lightweight, incremental pipeline by treating any API as a data component—custom incremental connector for HackerNews using CocoIndex’s Custom Source API. Export the data to Postgres for semantic search and analytics.'
-slug: custom_source_hackernews
 image: https://cocoindex.io/blobs/docs/img/examples/custom_source_hackernews/cover.png
-tags: [custom-building-blocks]
-last_reviewed: 2026-01-18
 ---
 
 [→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/custom_source_hn)

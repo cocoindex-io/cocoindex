@@ -1,10 +1,5 @@
 ---
-title: Transform Data From Structured Source in PostgreSQL
-description: 'Transform data from PostgreSQL table as source, transform with both AI models and non-AI data mappings, and write them into PostgreSQL/PgVector for semantic + structured search.'
-slug: postgres_source
 image: https://cocoindex.io/blobs/docs/img/examples/postgres_source/cover.png
-tags: [data-mapping, vector-index]
-last_reviewed: 2026-01-18
 ---
 
 <GitHubButton url="https://github.com/cocoindex-io/cocoindex/tree/main/examples/postgres_source" margin="0 0 24px 0" /

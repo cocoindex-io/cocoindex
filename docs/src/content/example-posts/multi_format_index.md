@@ -1,10 +1,5 @@
 ---
-title: Index PDFs, Images, Slides without OCR
-description: 'Build a visual document indexing pipeline using ColPali to index scanned documents, PDFs, academic papers, presentation slides, and standalone images — all mixed together with charts, tables, and figures - into the same vector space.'
-slug: multi_format_index
 image: https://cocoindex.io/blobs/docs/img/examples/multi_format_index/cover.png
-tags: [vector-index, multi-modal]
-last_reviewed: 2026-01-18
 ---
 
 [→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/multi_format_indexing)

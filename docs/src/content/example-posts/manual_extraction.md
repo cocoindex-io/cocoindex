@@ -1,10 +1,5 @@
 ---
-title: Extract Structured Data from Python Manual markdowns with Ollama
-description: 'Extract structured data from markdowns (Python Manual)'
-slug: manual_extraction
 image: https://cocoindex.io/blobs/docs/img/examples/manual_extraction/cover.png
-tags: [structured-data-extraction, data-mapping]
-last_reviewed: 2026-01-18
 ---
 
 [→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/manuals_llm_extraction)

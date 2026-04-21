@@ -1,10 +1,5 @@
 ---
-title: Index PDF Elements - Unified Text & Image Embedding with Metadata
-description: 'Extract, embed, and index both text and images from PDFs for advanced multimodal search. Leverage SentenceTransformers and CLIP for unified vector search, complete with metadata linkage, thumbnails, and full traceability.'
-slug: pdf_elements
 image: https://cocoindex.io/blobs/docs/img/examples/pdf_elements/cover.png
-tags: [vector-index, multi-modal]
-last_reviewed: 2026-01-18
 ---
 
 [→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/pdf_elements_embedding)

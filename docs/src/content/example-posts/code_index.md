@@ -1,10 +1,5 @@
 ---
-title: Real-time Codebase Indexing
-description: 'Build a real-time codebase index for retrieval-augmented generation (RAG) using CocoIndex and Tree-sitter. Chunk, embed, and search code with semantic understanding.'
-slug: code_index
 image: https://cocoindex.io/blobs/docs/img/examples/codebase_index/cover.png
-tags: [vector-index, codebase]
-last_reviewed: 2026-01-18
 ---
 
 [→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/code_embedding)

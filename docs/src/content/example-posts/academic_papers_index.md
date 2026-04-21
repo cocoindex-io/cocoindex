@@ -1,10 +1,5 @@
 ---
-title: Academic Papers Indexing
-description: 'Build a real-time academic papers index. Extract metadata, chunk and embed abstracts, and enable semantic and author-based search over academic PDFs.'
-slug: academic_papers_index
 image: https://cocoindex.io/blobs/docs/img/examples/academic_papers_index/cover.png
-tags: [vector-index, metadata]
-last_reviewed: 2026-01-18
 ---
 
 [→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/paper_metadata)

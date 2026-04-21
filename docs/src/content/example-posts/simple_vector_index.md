@@ -1,10 +1,5 @@
 ---
-title: Simple Vector Index with Text Embedding
-description: 'Indexing text with CocoIndex and text embeddings, and query it with natural language.'
-slug: simple_vector_index
 image: https://cocoindex.io/blobs/docs/img/examples/simple_vector_index/cover.png
-tags: [vector-index]
-last_reviewed: 2026-01-18
 ---
 
 [→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/text_embedding)

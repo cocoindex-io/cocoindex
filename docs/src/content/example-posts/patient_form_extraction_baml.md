@@ -1,10 +1,5 @@
 ---
-title: Extracting Intake Forms with BAML and CocoIndex
-description: 'How to use BAML together with CocoIndex to build a data pipeline that extracts structured patient information from PDF intake forms.'
-slug: patient_form_extraction_baml
 image: https://cocoindex.io/blobs/docs/img/examples/patient_form_extraction_baml/cover.png
-tags: [structured-data-extraction, custom-building-blocks]
-last_reviewed: 2026-01-18
 ---
 
 [→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/patient_intake_extraction_baml)
