@@ -478,8 +478,9 @@ const introItems = [
          anchored on the same palette as the docs prose, without pulling
          in the docs `.prose` container itself — that one's tuned for a
          narrower column and a different heading scale. */
-      body.ex-detail .ex-prose { padding-top: 40px; max-width: 72ch; min-width: 0; font-size: 16px; line-height: 1.65; color: var(--maroon-ink); }
+      body.ex-detail .ex-prose { padding-top: 8px; max-width: 72ch; min-width: 0; font-size: 16px; line-height: 1.65; color: var(--maroon-ink); }
       body.ex-detail .ex-prose > :first-child { margin-top: 0; }
+      body.ex-detail .ex-prose > p:first-child img { margin-top: 0; }
       body.ex-detail .ex-prose h2 { font-family: var(--sans); font-weight: 600; font-size: clamp(26px, 2.6vw, 34px); line-height: 1.1; letter-spacing: -0.025em; margin: 56px 0 18px; scroll-margin-top: 84px; }
       body.ex-detail .ex-prose > h2:first-of-type { border-top: none; padding-top: 0; margin-top: 24px; }
       body.ex-detail .ex-prose h3 { font-family: var(--sans); font-weight: 600; font-size: 20px; line-height: 1.25; letter-spacing: -0.015em; margin: 36px 0 12px; scroll-margin-top: 84px; }
