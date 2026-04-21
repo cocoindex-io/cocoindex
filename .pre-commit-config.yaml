@@ -29,6 +29,13 @@ repos:
         types: [rust]
         pass_filenames: false
 
+      - id: cargo-fmt-rust-sdk
+        name: cargo fmt (rust sdk)
+        entry: cargo fmt --manifest-path rust/sdk/Cargo.toml --all --check
+        language: system
+        files: ^rust/sdk/
+        pass_filenames: false
+
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.12.0
     hooks:
@@ -63,6 +70,20 @@ repos:
           entry: ./dev/run_cargo_test.sh
           language: system
           files: ^(rust/|Cargo\.toml)
+          pass_filenames: false
+
+        - id: cargo-test-rust-sdk
+          name: cargo test (rust sdk)
+          entry: cargo test --manifest-path rust/sdk/Cargo.toml -p cocoindex
+          language: system
+          files: ^rust/sdk/
+          pass_filenames: false
+
+        - id: cargo-test-rust-sdk-example
+          name: cargo test (rust sdk example)
+          entry: cargo test --manifest-path rust/sdk/examples/multi-codebase-summarization/Cargo.toml
+          language: system
+          files: ^rust/sdk/
           pass_filenames: false
 
         - id: pytest
