@@ -277,3 +277,7 @@ When adding new functionality that involves I/O or concurrency:
 ## Versioning
 
 The current codebase is for CocoIndex v1, which is a fundamental redesign from CocoIndex v0. Currently the `v1` branch is the main branch for CocoIndex v1 code.
+
+## Docs diagrams
+
+All diagrams embedded in docs pages are built as inline Astro components under `docs/src/components/diagrams/`, not exported SVG files. See [docs/src/components/diagrams/README.md](docs/src/components/diagrams/README.md) for the palette, primitives, shared CSS classes, animation conventions, and step-by-step authoring guidelines. Follow that guide for any new or updated diagram.

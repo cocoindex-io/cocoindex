@@ -1,0 +1,13 @@
+---
+interface Props {
+  d: string;
+  dashed?: boolean;
+  class?: string;
+}
+const { d, dashed = false, class: extraClass = '' } = Astro.props;
+---
+<path
+  class={`dg-connector ${extraClass}`.trim()}
+  d={d}
+  stroke-dasharray={dashed ? '3 4' : undefined}
+/>

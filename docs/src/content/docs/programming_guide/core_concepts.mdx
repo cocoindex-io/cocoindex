@@ -7,6 +7,11 @@ description: >
 ---
 import Tabs from '../../../components/Tabs.astro';
 
+import AppOverview from '/src/components/diagrams/concepts/AppOverview.astro';
+import AppExample from '/src/components/diagrams/concepts/AppExample.astro';
+import ComponentPerFile from '/src/components/diagrams/concepts/ComponentPerFile.astro';
+import ComponentWithChunks from '/src/components/diagrams/concepts/ComponentWithChunks.astro';
+
 ## Incremental processing
 
 When processing data and storing results in targets (e.g., a database) for knowledge retrieval by AI agents or search systems, both your data and code evolve over time. Reprocessing everything after every change is expensive, slow, and disruptive. Incremental processing solves this by only processing what's changed, and applying those changes to the target.
@@ -60,11 +65,11 @@ An ***app*** is the top-level executable entity in CocoIndex. In an app, you wri
 
 CocoIndex then syncs these target states to external systems (Postgres, vector databases, etc.).
 
-<img src="/docs-v1/img/concept/app.svg" alt="App diagram" />
+<AppOverview />
 
 For example, here's an app that reads PDFs from a drive, converts them to markdown, and outputs to a folder:
 
-<img src="/docs-v1/img/concept/app-example.svg" alt="App example" />
+<AppExample />
 
 ## Processing Component
 
@@ -72,27 +77,59 @@ In practice, your source often contains many items — files, rows, or entities 
 
 For example, if you have many files in a drive and want to process them file by file, your processing component would operate at the file level:
 
-<img src="/docs-v1/img/concept/component1.svg" alt="Processing component" />
+<ComponentPerFile />
 
 Taking this further, suppose you want to split each file into chunks and create embedding vectors for indexing. The processing component can still operate at the file level, but each component now produces multiple target states (one per chunk). CocoIndex applies all target state changes (inserts, updates, and deletes rows in the target database) as a unit for each file — all writes happen after processing completes, and each target backend applies its batch atomically when supported (e.g., within a database transaction):
 
-<img src="/docs-v1/img/concept/component2.svg" alt="Processing component with chunks" />
+<ComponentWithChunks />
 
 Let's see what happens when the source state changes in different ways:
 
 <Tabs labels={["On New File Added", "On Existing File Updated", "On Existing File Deleted"]}>
   <Fragment slot="tab-0">
-    <img src="/docs-v1/img/concept/add.svg" alt="New file added" />
+    <ComponentWithChunks scenario={{ rows: [
+      { file: 'a.md', chunks: [
+        { label: 'chunk1', vectorLabel: 'vector1' },
+        { label: 'chunk2', vectorLabel: 'vector2' },
+      ] },
+      { file: 'b.md', chunks: [
+        { label: 'chunk3', vectorLabel: 'vector3' },
+        { label: 'chunk4', vectorLabel: 'vector4' },
+      ] },
+      { file: 'c.md', fileState: 'new', pcState: 'new', splitState: 'new', chunks: [
+        { label: 'chunk5', vectorLabel: 'vector5', state: 'new' },
+        { label: 'chunk6', vectorLabel: 'vector6', state: 'new' },
+      ] },
+    ]}} />
 
     When a new file (`c.md`) is added, a new processing component is created for it. Once execution completes, CocoIndex applies the new target states — inserting `vector5` and `vector6` into the vector store.
   </Fragment>
   <Fragment slot="tab-1">
-    <img src="/docs-v1/img/concept/update.svg" alt="File updated" />
+    <ComponentWithChunks scenario={{ rows: [
+      { file: 'a.md', chunks: [
+        { label: 'chunk1', vectorLabel: 'vector1' },
+        { label: 'chunk2', vectorLabel: 'vector2' },
+      ] },
+      { file: 'b.md', fileState: 'updated', pcState: 'updated', splitState: 'updated', chunks: [
+        { label: 'chunk3', vectorLabel: 'vector3', state: 'removed' },
+        { label: 'chunk4', vectorLabel: 'vector4', state: 'removed' },
+        { label: 'chunk5', vectorLabel: 'vector5', state: 'new' },
+      ] },
+    ]}} />
 
     When file `b.md` is updated — say its content is reduced to just one chunk instead of two — the processing component's target state changes from `vector3` and `vector4` to just `vector5`. CocoIndex deletes `vector3` and `vector4`, then inserts `vector5` into the vector database, all within a single transaction.
   </Fragment>
   <Fragment slot="tab-2">
-    <img src="/docs-v1/img/concept/delete.svg" alt="File deleted" />
+    <ComponentWithChunks scenario={{ rows: [
+      { file: 'a.md', chunks: [
+        { label: 'chunk1', vectorLabel: 'vector1' },
+        { label: 'chunk2', vectorLabel: 'vector2' },
+      ] },
+      { file: 'b.md', fileState: 'removed', pcState: 'removed', splitState: 'removed', chunks: [
+        { label: 'chunk3', vectorLabel: 'vector3', state: 'removed' },
+        { label: 'chunk4', vectorLabel: 'vector4', state: 'removed' },
+      ] },
+    ]}} />
 
     When file `b.md` is deleted from the source folder, CocoIndex deletes its associated target states (`vector3` and `vector4`) from the vector database in a single transaction.
   </Fragment>
@@ -110,13 +147,23 @@ In CocoIndex, both processing components and transforms are expressed as functio
 
 See [Function Memoization](./function.md#memoization) for more details.
 
-<img src="/docs-v1/img/concept/memo.svg" alt="Memoization" />
+<ComponentWithChunks memoized={true} />
 
 Here's how memoization behaves in different scenarios:
 
 <Tabs labels={["On Input Data Change", "On Code Change"]}>
   <Fragment slot="tab-0">
-    <img src="/docs-v1/img/concept/memo1.svg" alt="Input data update" />
+    <ComponentWithChunks memoized={true} scenario={{ rows: [
+      { file: 'a.md', pcStatus: 'cache-ready', chunks: [
+        { label: 'chunk1', vectorLabel: 'vector1', embedStatus: 'cache-ready' },
+        { label: 'chunk2', vectorLabel: 'vector2', embedStatus: 'cache-ready' },
+      ] },
+      { file: 'b.md', fileState: 'updated', pcStatus: 'refreshing', pcState: 'updated', splitState: 'updated', chunks: [
+        { label: 'chunk3', vectorLabel: 'vector3', embedStatus: 'cache-ready' },
+        { label: 'chunk4', vectorLabel: 'vector4', state: 'removed' },
+        { label: 'chunk5', vectorLabel: 'vector5', state: 'new' },
+      ] },
+    ]}} />
 
     When input file `b.md` changes:
 
@@ -129,7 +176,18 @@ Here's how memoization behaves in different scenarios:
       - `Embed(chunk5)` is new and must be computed.
   </Fragment>
   <Fragment slot="tab-1">
-    <img src="/docs-v1/img/concept/memo2.svg" alt="Code update" />
+    <ComponentWithChunks memoized={true} scenario={{ rows: [
+      { file: 'a.md', pcStatus: 'refreshing', pcState: 'updated', splitState: 'updated', chunks: [
+        { label: 'chunk1', vectorLabel: 'vector1', embedStatus: 'cache-ready' },
+        { label: 'chunk2', vectorLabel: 'vector2', embedStatus: 'cache-ready' },
+      ] },
+      { file: 'b.md', pcStatus: 'refreshing', pcState: 'updated', splitState: 'updated', chunks: [
+        { label: 'chunk3', vectorLabel: 'vector3', state: 'removed' },
+        { label: 'chunk4', vectorLabel: 'vector4', state: 'removed' },
+        { label: 'chunk5', vectorLabel: 'vector5', state: 'new' },
+        { label: 'chunk6', vectorLabel: 'vector6', state: 'new' },
+      ] },
+    ]}} />
 
     When the "Split into chunks" logic changes:
 

@@ -4,13 +4,18 @@ description: >
   Build your first CocoIndex pipeline in 5 minutes: convert PDFs to Markdown
   and watch incremental processing only reprocess files that actually changed.
 ---
+import AppExample from '/src/components/diagrams/concepts/AppExample.astro';
+import FileProcess from '/src/components/diagrams/concepts/FileProcess.astro';
+import ComponentsFanout from '/src/components/diagrams/concepts/ComponentsFanout.astro';
+import AppDef from '/src/components/diagrams/concepts/AppDef.astro';
+
 In this tutorial, we'll build a simple app that converts PDF files to Markdown and saves them to a local directory.
 
 
 
 ## Overview
 
-![App example showing PDF to Markdown conversion](/docs-v1/img/concept/app-example.svg)
+<AppExample />
 
 1. Read PDF files from a local directory
 2. Convert each file to Markdown using Docling
@@ -56,7 +61,7 @@ Create a new file `main.py`. We'll define the processing functions first, then w
 
 ### Define file processing
 
-![File processing](/docs-v1/img/quickstart/file-process.svg)
+<FileProcess />
 
 This function converts a single PDF to Markdown:
 
@@ -91,7 +96,7 @@ def process_file(
 
 ### Define the main function
 
-![Processing components](/docs-v1/img/quickstart/components.svg)
+<ComponentsFanout />
 
 ```python title="main.py"
 @coco.fn
@@ -112,7 +117,7 @@ It's up to you to pick the process granularity — it can be at directory level,
 
 ### Create the App
 
-![App definition](/docs-v1/img/quickstart/app-def.svg)
+<AppDef />
 
 ```python title="main.py"
 app = coco.App(

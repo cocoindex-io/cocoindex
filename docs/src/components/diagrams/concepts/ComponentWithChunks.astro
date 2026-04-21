@@ -1,0 +1,218 @@
+---
+import DiagramFrame from '../primitives/DiagramFrame.astro';
+import AppContainer from '../primitives/AppContainer.astro';
+import ProcessingComponent from '../primitives/ProcessingComponent.astro';
+import LogicBox from '../primitives/LogicBox.astro';
+import DataBox from '../primitives/DataBox.astro';
+import TargetBullet from '../primitives/TargetBullet.astro';
+import FlowArrow from '../primitives/FlowArrow.astro';
+import Connector from '../primitives/Connector.astro';
+
+// ─── Scenario schema ────────────────────────────────
+// The diagram's default (no scenario) shows a stable two-file baseline:
+// a.md → chunk1/chunk2 → vector1/vector2; b.md → chunk3/chunk4 → vector3/vector4.
+// Pass a `scenario` to overlay delta states (added/updated/removed) and
+// cache status (cache-ready / refreshing) for specific elements.
+
+type ElementState = 'idle' | 'new' | 'updated' | 'changed' | 'removed';
+type CacheStatus  = 'cache-ready' | 'refreshing';
+
+export interface ChunkEntry {
+  label: string;        // e.g. "chunk5"
+  vectorLabel: string;  // e.g. "vector5"
+  state?: ElementState;         // applies to chunk, embed, vector
+  embedStatus?: CacheStatus;
+}
+export interface RowEntry {
+  file: string;                 // "a.md"
+  fileState?: ElementState;
+  pcStatus?: CacheStatus;
+  pcState?: ElementState;
+  splitState?: ElementState;
+  chunks: ChunkEntry[];         // ordered top-to-bottom within the PC
+}
+export interface Scenario {
+  rows: RowEntry[];
+}
+
+interface Props {
+  memoized?: boolean;
+  scenario?: Scenario;
+}
+const { memoized = false, scenario } = Astro.props;
+
+const defaultRows: RowEntry[] = [
+  { file: 'a.md', chunks: [
+    { label: 'chunk1', vectorLabel: 'vector1' },
+    { label: 'chunk2', vectorLabel: 'vector2' },
+  ]},
+  { file: 'b.md', chunks: [
+    { label: 'chunk3', vectorLabel: 'vector3' },
+    { label: 'chunk4', vectorLabel: 'vector4' },
+  ]},
+];
+const rows: RowEntry[] = scenario?.rows ?? defaultRows;
+
+// ─── Layout ────────────────────────────────────────
+const APP_PAD = 26;
+const FILE_W = 62, FILE_H = 28;
+const PC_PAD = 24;
+const SPLIT_W = 96, SPLIT_H = 66;
+const CHUNK_W = 64, CHUNK_H = 24;
+const EMBED_W = 80, EMBED_H = 34;
+const VECT_W  = 96, VECT_H  = 26;
+const COL_GAP = 42;
+
+const SPLIT_DX = PC_PAD;
+const CHUNK_DX = SPLIT_DX + SPLIT_W + COL_GAP;
+const EMBED_DX = CHUNK_DX + CHUNK_W + COL_GAP;
+const VECT_DX  = EMBED_DX + EMBED_W + COL_GAP;
+const PC_W     = VECT_DX + VECT_W + PC_PAD;  // derived; right pad == left pad
+
+// Inside the App: a.md (data) → gap → PC. Derive APP_W from content.
+const FILE_TO_PC_GAP = 40;
+const APP_W = APP_PAD + FILE_W + FILE_TO_PC_GAP + PC_W + APP_PAD;
+
+// Each row's PC height scales with its chunk count. Vertical content:
+// top header (28) + top pad + N * CHUNK_H + (N-1) * CHUNK_GAP + bottom pad
+const PC_HEADER_H = 30;
+const PC_SUB_PAD  = 14;
+const CHUNK_GAP   = 20;
+const pcHeightFor = (n: number) =>
+  PC_HEADER_H + PC_SUB_PAD + n * CHUNK_H + (n - 1) * CHUNK_GAP + PC_SUB_PAD;
+
+// Pre-compute per-row layout so rows stack cleanly regardless of their
+// chunk count.
+const ROW_GAP = 24;
+const APP_TOP_GAP = 34;
+const APP_BOT_GAP = 24;
+const rowLayouts = rows.map((r) => ({ h: pcHeightFor(r.chunks.length) }));
+const APP_H =
+  APP_TOP_GAP +
+  rowLayouts.reduce((acc, rl) => acc + rl.h, 0) +
+  (rows.length - 1) * ROW_GAP +
+  APP_BOT_GAP;
+
+// Outer frame: Drive Folder + App + Vector Database, all same height.
+const TOP_Y = 30;
+const TOP_H = APP_H;
+const DRIVE = { x: 20, y: TOP_Y, w: 110, h: TOP_H };
+const APP   = { x: DRIVE.x + DRIVE.w + 30, y: TOP_Y, w: APP_W, h: TOP_H };
+const VDB   = { x: APP.x + APP.w + 20, y: TOP_Y, w: 110, h: TOP_H };
+const VB_W  = VDB.x + VDB.w + 20;
+const VB_H  = TOP_Y + TOP_H + 40;  // leave a little extra for "deleted" overlay text
+
+const FILE_X = APP.x + APP_PAD;
+const PC_X   = FILE_X + FILE_W + FILE_TO_PC_GAP;
+---
+<DiagramFrame
+  viewBox={`0 0 ${VB_W} ${VB_H}`}
+  maxWidth={960}
+  title="Processing component with chunks"
+  desc="Each file is split into chunks; the processing component produces one target state per chunk and syncs them as a unit."
+>
+  <LogicBox x={DRIVE.x} y={DRIVE.y} w={DRIVE.w} h={DRIVE.h} label="Drive Folder" />
+  <AppContainer x={APP.x} y={APP.y} w={APP.w} h={APP.h} />
+  <LogicBox x={VDB.x} y={VDB.y} w={VDB.w} h={VDB.h} label="Vector Database" />
+
+  {rows.map((row, ri) => {
+    const PC_H = rowLayouts[ri].h;
+    const priorH = rowLayouts.slice(0, ri).reduce((acc, rl) => acc + rl.h + ROW_GAP, 0);
+    const pcY = TOP_Y + APP_TOP_GAP + priorH;
+    // Content center: the Split box lives at the center of the sub-area
+    // (below the header). All chunks fan out symmetrically around it.
+    const contentTop = PC_HEADER_H + PC_SUB_PAD;
+    const contentH   = row.chunks.length * CHUNK_H + (row.chunks.length - 1) * CHUNK_GAP;
+    const LOCAL_CY = contentTop + contentH / 2;
+    const rowCY = pcY + LOCAL_CY;
+    const fileY = rowCY - FILE_H / 2;
+
+    // Inherit chunk state from PC if not explicitly set for "removed" cascade.
+    const effectiveChunks = row.chunks.map((c) => ({
+      ...c,
+      state: c.state ?? (row.pcState === 'removed' ? 'removed' : undefined),
+    }));
+
+    return (
+      <g>
+        {/* Drive Folder → file: binding, no arrow */}
+        <Connector
+          d={`M ${DRIVE.x + DRIVE.w} ${rowCY} L ${FILE_X} ${rowCY}`}
+          dashed={true}
+        />
+        <DataBox
+          x={FILE_X} y={fileY} w={FILE_W} h={FILE_H}
+          label={row.file}
+          state={row.fileState}
+        />
+        {/* file → Processing Component */}
+        <FlowArrow d={`M ${FILE_X + FILE_W} ${rowCY} L ${PC_X} ${rowCY}`} />
+
+        <ProcessingComponent
+          x={PC_X} y={pcY} w={PC_W} h={PC_H}
+          memoized={memoized}
+          status={row.pcStatus}
+          state={row.pcState}
+        >
+          <LogicBox
+            x={SPLIT_DX}
+            y={LOCAL_CY - SPLIT_H / 2}
+            w={SPLIT_W}
+            h={SPLIT_H}
+            label="Split into chunks"
+            state={row.splitState}
+          />
+
+          {effectiveChunks.map((c, i) => {
+            const offset = (i - (effectiveChunks.length - 1) / 2) * (CHUNK_H + CHUNK_GAP);
+            const localCY = LOCAL_CY + offset;
+            return (
+              <g>
+                <FlowArrow
+                  d={`M ${SPLIT_DX + SPLIT_W} ${LOCAL_CY} C ${SPLIT_DX + SPLIT_W + 12} ${LOCAL_CY}, ${CHUNK_DX - 12} ${localCY}, ${CHUNK_DX} ${localCY}`}
+                />
+                <DataBox
+                  x={CHUNK_DX}
+                  y={localCY - CHUNK_H / 2}
+                  w={CHUNK_W} h={CHUNK_H}
+                  label={c.label}
+                  state={c.state}
+                />
+                <FlowArrow d={`M ${CHUNK_DX + CHUNK_W} ${localCY} L ${EMBED_DX} ${localCY}`} />
+                <LogicBox
+                  x={EMBED_DX}
+                  y={localCY - EMBED_H / 2}
+                  w={EMBED_W} h={EMBED_H}
+                  label="Embed"
+                  memoized={memoized}
+                  status={c.embedStatus}
+                  state={c.state}
+                />
+                <FlowArrow d={`M ${EMBED_DX + EMBED_W} ${localCY} L ${VECT_DX} ${localCY}`} />
+                <TargetBullet
+                  x={VECT_DX}
+                  y={localCY - VECT_H / 2}
+                  w={VECT_W} h={VECT_H}
+                  label={c.vectorLabel}
+                  state={c.state}
+                />
+              </g>
+            );
+          })}
+        </ProcessingComponent>
+
+        {/* vector → Vector Database (binding) */}
+        {effectiveChunks.map((c, i) => {
+          const offset = (i - (effectiveChunks.length - 1) / 2) * (CHUNK_H + CHUNK_GAP);
+          const absCY = pcY + LOCAL_CY + offset;
+          return (
+            <Connector
+              d={`M ${PC_X + VECT_DX + VECT_W} ${absCY} L ${VDB.x} ${absCY}`}
+              dashed={true}
+            />
+          );
+        })}
+      </g>
+    );
+  })}
+</DiagramFrame>

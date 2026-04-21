@@ -1,0 +1,31 @@
+---
+/** Round-cornered peach-tinted container for a CocoIndex App. Renders
+   a centered top label and hosts children in a slot whose coordinates
+   are RELATIVE to the container's top-left. */
+
+interface Props {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  label?: string;
+  highlight?: boolean;
+  class?: string;
+}
+const {
+  x, y, w, h,
+  label = 'CocoIndex App',
+  highlight = false,
+  class: extraClass = '',
+} = Astro.props;
+const highlightClass = highlight ? 'dg-highlight' : '';
+---
+<g transform={`translate(${x} ${y})`} class={`dg-app ${highlightClass} ${extraClass}`.trim()}>
+  <rect class="dg-box dg-box--app" x="0" y="0" width={w} height={h} rx="16" />
+  {label && (
+    <foreignObject x="0" y="0" width={w} height="28">
+      <div xmlns="http://www.w3.org/1999/xhtml" class="dg-fo-label dg-fo-label--small">{label}</div>
+    </foreignObject>
+  )}
+  <slot />
+</g>
