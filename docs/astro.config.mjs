@@ -6,9 +6,10 @@ import remarkDirective from 'remark-directive';
 import remarkAdmonitions from './scripts/remark-admonitions.mjs';
 import { redirects } from './src/docs-sidebar.ts';
 
-// Shiki theme that matches design_guidelines/CocoIndex Docs.html:
-//   bg #2A121B (maroon-ink), fg cream, coral keywords, pink function names,
-//   palm-green numbers, muted-cream comments, purple types.
+// Shiki theme — canonical token palette from
+// design_guidelines/ui/color.html §04 (.code-showcase .tk-*). Saturated brand
+// accents are softened for ten-line snippets: pink→salmon for fn names,
+// gold→muted-amber for numbers/booleans. Background is maroon-ink.
 const cocoindexCodeTheme = {
   name: 'cocoindex-dark',
   type: 'dark',
@@ -24,16 +25,16 @@ const cocoindexCodeTheme = {
       settings: { foreground: '#E59A63' } },
     { scope: ['entity.name.function', 'meta.function-call', 'support.function',
               'variable.function'],
-      settings: { foreground: '#FB6A76' } },
+      settings: { foreground: '#FF9B8A' } },
     { scope: ['string', 'string.quoted', 'string.template',
               'punctuation.definition.string'],
-      settings: { foreground: '#8ef09e' } },
+      settings: { foreground: '#8EF09E' } },
     { scope: ['constant.numeric', 'constant.language',
               'constant.language.boolean', 'constant.language.null'],
-      settings: { foreground: '#27E62B' } },
+      settings: { foreground: '#D4B86A' } },
     { scope: ['entity.name.type', 'entity.name.class', 'support.type',
               'support.class', 'meta.type.annotation'],
-      settings: { foreground: '#c9a0ff' } },
+      settings: { foreground: '#C9A0FF' } },
     { scope: ['meta.decorator', 'variable.other.decorator', 'entity.name.decorator',
               'punctuation.definition.decorator'],
       settings: { foreground: '#E59A63' } },

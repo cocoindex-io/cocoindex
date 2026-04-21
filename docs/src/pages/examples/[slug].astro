@@ -1,14 +1,13 @@
 ---
-// Per-example detail page at /docs/examples/<slug>. The hero (eyebrow,
-// title, at-a-glance card) is driven by src/data/examples.ts; the body
-// is the MDX entry in the `examplePosts` content collection, ported
-// from github.com/cocoindex-io/examples. Add a new example by dropping a
+// Per-example detail page at /docs/examples/<slug>. Hero metadata is
+// driven by src/data/examples.ts; the body is the MDX entry in the
+// `examplePosts` content collection. Add a new example by dropping a
 // markdown file into src/content/example-posts and a card into
 // examples.ts — the slugs must match.
 import '../../styles/globals.css';
 import Topbar from '../../components/Topbar.astro';
 import Toc from '../../components/Toc.astro';
-import { GITHUB_REPO, SITE_URL, titleMarkup, titleText } from '../../consts';
+import { SITE_URL, titleMarkup, titleText } from '../../consts';
 import { examples, findExample, CATEGORY_META, type Category } from '../../data/examples';
 import { getEntry, render } from 'astro:content';
 
@@ -252,9 +251,6 @@ const introItems = [
       body.ex-detail .ex-side ol li.on a { color: var(--maroon); background: var(--cream); font-weight: 500; }
       body.ex-detail .ex-side ol li.on a .n { color: var(--coral); }
 
-      /* Right-side TOC — rendered via the shared <Toc> component; styles
-         live in globals.css `aside.toc`. No local overrides. */
-
       body.ex-detail .ex-crumb {
         font-family: var(--mono); font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase;
         color: var(--muted); display: flex; gap: 10px; align-items: center;
@@ -291,12 +287,8 @@ const introItems = [
       body.ex-detail .hero .intro-meta .check { flex: none; }
       body.ex-detail .hero-cta { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
 
-      /* Right-rail `<Toc>` visuals come straight from globals.css —
-         no body.ex-detail overrides here (leftover `.toc ol` / `.toc ul`
-         counters were clobbering the shared aside.toc rules and
-         injecting "0.1 / 0.2" prefixes). */
-
-      body.ex-detail .doc .col-main { min-width: 0; }
+      /* Fallback "write-up on the way" section — rendered when an
+         example has no MDX body yet (see `!Content` branch above). */
       body.ex-detail section.blk { padding: 72px 0; border-top: 1px solid var(--rule); position: relative; scroll-margin-top: 84px; }
       body.ex-detail section.blk:first-of-type { border-top: none; padding-top: 24px; }
       body.ex-detail .sec-head { display: grid; grid-template-columns: 1fr; gap: 14px; margin-bottom: 40px; }
@@ -384,7 +376,10 @@ const introItems = [
       body.ex-detail .step-bullets li b { color: var(--maroon); font-weight: 500; }
       body.ex-detail .step-side { grid-column: 2; grid-row: 2; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
 
-      /* Code block — matches cocoindex-dark shiki theme. */
+      /* Code block — canonical palette from design_guidelines/ui/color.html §04
+         (.code-showcase .tk-*). Saturated brand accents are softened for
+         readability inside fenced blocks on maroon-ink: pink→salmon for fn,
+         gold→muted-amber for numbers, lavender tuned warmer. */
       body.ex-detail .code { background: var(--maroon-ink); color: var(--cream); border-radius: 8px; font-family: var(--mono); font-size: 12.5px; line-height: 1.65; padding: 0; overflow: hidden; }
       body.ex-detail .code-bar { display: flex; align-items: center; gap: 10px; padding: 11px 16px; border-bottom: 1px solid rgba(252, 243, 216, 0.1); font-family: var(--mono); font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: rgba(252, 243, 216, 0.65); }
       body.ex-detail .code-bar .dots { display: flex; gap: 6px; }
@@ -395,14 +390,14 @@ const introItems = [
       body.ex-detail .code-bar .name { margin-left: 8px; }
       body.ex-detail .code-bar .lang { margin-left: auto; opacity: 0.65; }
       body.ex-detail .code pre { margin: 0; padding: 16px 18px 20px; overflow-x: auto; white-space: pre; tab-size: 4; color: var(--cream); }
-      body.ex-detail .code .kw { color: var(--peach); }
-      body.ex-detail .code .dec { color: var(--peach); }
-      body.ex-detail .code .fn { color: var(--pink); }
-      body.ex-detail .code .str { color: #8ef09e; }
-      body.ex-detail .code .num { color: var(--gold); }
-      body.ex-detail .code .tp { color: var(--lavender); }
+      body.ex-detail .code .kw { color: #E59A63; }
+      body.ex-detail .code .dec { color: #E59A63; }
+      body.ex-detail .code .fn { color: #FF9B8A; }
+      body.ex-detail .code .str { color: #8EF09E; }
+      body.ex-detail .code .num { color: #D4B86A; }
+      body.ex-detail .code .tp { color: #C9A0FF; }
       body.ex-detail .code .dim { opacity: 0.48; }
-      body.ex-detail .code .comment { color: var(--taupe); font-style: italic; opacity: 0.75; }
+      body.ex-detail .code .comment { color: #978A74; font-style: italic; opacity: 0.75; }
       body.ex-detail .code.terminal .prompt::before { content: "$ "; color: var(--peach); }
 
       body.ex-detail .callout { border: 1px solid var(--rule-strong); border-radius: 8px; padding: 14px 18px; background: var(--cream); display: flex; flex-direction: column; gap: 6px; font-size: 13px; line-height: 1.5; }

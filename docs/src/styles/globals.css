@@ -129,6 +129,7 @@ nav.top {
   display: flex; align-items: center; gap: 28px;
 }
 .logo { display: flex; align-items: center; gap: 10px; text-decoration: none; color: var(--maroon-ink); line-height: 1; }
+.logo:hover, .logo:hover span { text-decoration: none; }
 .logo img { width: 28px; height: 28px; display: block; transform: translateY(-3px); }
 .logo span { font-family: var(--sans); font-size: 18px; font-weight: 600; letter-spacing: -0.02em; line-height: 1; display: inline-block; }
 .nav-links { display: flex; gap: 28px; margin-left: 24px; }
