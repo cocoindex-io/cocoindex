@@ -1,6 +1,9 @@
 ---
-title: Processing Component
-description: Understanding processing components as the sync boundaries for target states, including mounting APIs.
+title: The *processing component*
+description: >
+  Processing components are the units of incremental execution and the sync
+  boundaries for target states. Covers mounting APIs (mount, use_mount,
+  mount_each, mount_target), component paths, and granularity tradeoffs.
 ---
 Most apps process many independent source items — files, rows, or entities. A **Processing Component** is the unit of execution for one: it runs that item's transformation logic and declares the set of **target states** produced for it.
 

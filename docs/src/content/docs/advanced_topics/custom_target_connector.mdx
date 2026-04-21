@@ -1,6 +1,9 @@
 ---
-title: Custom Target Connector
-description: Learn how to create custom target connectors to integrate CocoIndex with external systems.
+title: Building a *custom target connector*
+description: >
+  Connect CocoIndex's declarative target-state system to external systems.
+  Covers TargetHandler, tracking records, actions, sinks, root vs container
+  targets, attachment providers, and idempotency best practices.
 toc_max_heading_level: 4
 ---
 A **custom target connector** is the mechanism that connects CocoIndex's declarative target state system to external systems. When you call methods like `dir_target.declare_file()` or `table_target.declare_row()`, a target connector handles the actual synchronization — determining what changed and applying those changes to the external system.

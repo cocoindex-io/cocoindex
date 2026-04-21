@@ -8,7 +8,12 @@ import Toc from '../components/Toc.astro';
 import { SITE_URL, titleMarkup, DOCS_EDIT_BASE } from '../consts';
 import { flatten, sidebar, type SidebarItem } from '../docs-sidebar';
 import docsMeta from '../docs-meta.json';
-import docsHeadings from '../docs-headings.json';
+
+export interface IntroMeta {
+  time?: string;
+  language?: string;
+  requires?: string;
+}
 
 export interface Props {
   /** Plain title used for <title>, OG, breadcrumb, and canonical meta. */
@@ -20,6 +25,8 @@ export interface Props {
   slug: string;
   headings: MarkdownHeading[];
   sourcePath?: string;
+  /** Per-page intro-meta strip (Time / Language / Requires) from frontmatter. */
+  introMeta?: IntroMeta;
 }
 
 const {
@@ -29,18 +36,14 @@ const {
   slug,
   headings,
   sourcePath,
+  introMeta,
 } = Astro.props;
 const base = import.meta.env.BASE_URL.replace(/\/$/, '');
 
 const renderedTitle = titleMarkup(titleMarkupRaw ?? title);
 const fullTitle = `${title} · CocoIndex Docs`;
 
-// Intro-meta strip: Time / Language / Requires come from the curated
-// headings file (LLM-generated per-page). Version + last-updated come
-// from docs-meta.json, which the port script bakes at build time.
-const curatedMeta = (
-  docsHeadings as Record<string, { meta?: { time?: string; language?: string; requires?: string } }>
-)[slug]?.meta;
+// Version + last-updated come from docs-meta.json, baked at build time.
 const fileMeta = (
   docsMeta as { _version?: string | null; files: Record<string, { editTs: number }> }
 );
@@ -54,11 +57,11 @@ const lastReviewed = editTs
   : null;
 
 const introItems = [
-  { k: 'Time',          v: curatedMeta?.time,     reviewed: false },
-  { k: 'Language',      v: curatedMeta?.language, reviewed: false },
-  { k: 'Requires',      v: curatedMeta?.requires, reviewed: false },
-  { k: 'Version',       v: version,               reviewed: false },
-  { k: 'Last reviewed', v: lastReviewed,          reviewed: true  },
+  { k: 'Time',          v: introMeta?.time,     reviewed: false },
+  { k: 'Language',      v: introMeta?.language, reviewed: false },
+  { k: 'Requires',      v: introMeta?.requires, reviewed: false },
+  { k: 'Version',       v: version,             reviewed: false },
+  { k: 'Last reviewed', v: lastReviewed,        reviewed: true  },
 ].filter((m) => m.v);
 const canonical = new URL(`${base}/${slug}`, SITE_URL).toString();
 

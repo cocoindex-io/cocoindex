@@ -1,6 +1,9 @@
 ---
-title: Error Handling
-description: How CocoIndex handles failures, recovery from interrupted updates, and the exception handler API for observing background component errors.
+title: "*Error handling* & exception handlers"
+description: >
+  How CocoIndex isolates component failures, recovers from interrupted updates
+  via two-phase processing, and lets you register exception handlers globally
+  via lifespan or scoped via context manager to observe background errors.
 ---
 This page covers the full picture of failure behavior in CocoIndex — from how components fail in isolation, through what happens during interrupted updates, to the APIs for observing and reacting to errors in production.
 

@@ -1,6 +1,9 @@
 ---
-title: Data Types
-description: Common data types shared across CocoIndex connectors and built-in operations — FileLike, FilePath, FilePathMatcher, Chunk, and Embedder.
+title: Common *data types*
+description: >
+  Data types shared across connectors and built-in operations — FileLike,
+  FilePath, FilePathMatcher, Chunk with text positions, and the Embedder
+  protocol for single-text async embedding.
 ---
 The `cocoindex.resources` package provides common data models and abstractions shared across connectors and built-in operations. Connectors provide concrete implementations — for example, `localfs.File` implements `FileLike`, and `localfs.FilePath` extends `FilePath`. See individual [connector docs](../connectors/localfs.md) for connector-specific details.
 

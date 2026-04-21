@@ -1,7 +1,10 @@
 ---
-title: Postgres
+title: "*Postgres* connector"
 toc_max_heading_level: 4
-description: CocoIndex connector for reading from and writing to PostgreSQL databases.
+description: >
+  Read Postgres tables via PgTableSource and write with declare_table_target() —
+  automatic schema inference, pgvector index management (ivfflat / hnsw), custom
+  type overrides, and SQL attachments for triggers and indexes.
 ---
 The `postgres` connector provides utilities for reading rows from and writing rows to PostgreSQL databases, with built-in support for pgvector.
 

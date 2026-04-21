@@ -1,6 +1,9 @@
 ---
-title: Memoization Keys & States
-description: Customize how CocoIndex identifies and validates memoized function inputs using keys and state validation.
+title: "*Memoization keys* & states"
+description: >
+  Customize how CocoIndex fingerprints memoized inputs via __coco_memo_key__ or
+  registered functions, and layer state validation (e.g. mtime, then content hash)
+  on top — plus NotMemoKeyable to opt out for stateful types.
 ---
 As described in [Function — Change detection](../programming_guide/function.md#change-detection), CocoIndex detects [logic, input, and context changes](../programming_guide/function.md#change-detection) to decide whether a memo can be reused. Function arguments, [`deps`](../programming_guide/function.md#deps) values, and [context values](../programming_guide/context.md#change-detection) with `detect_change=True` are all fingerprinted through the same **data fingerprinting** pipeline. By default, most types are fingerprinted automatically. This page covers how to customize that pipeline — how objects are fingerprinted and validated:
 

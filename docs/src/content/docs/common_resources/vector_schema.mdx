@@ -1,6 +1,9 @@
 ---
-title: Vector Schema
-description: Types for describing vector columns — VectorSchema, VectorSchemaProvider, and how to annotate dataclass fields for automatic vector column configuration.
+title: "*Vector schema* annotations"
+description: >
+  Describe vector columns with VectorSchema and VectorSchemaProvider. Covers
+  the three annotation patterns (ContextKey, embedder instance, explicit
+  schema) and MultiVectorSchema for models like ColBERT.
 ---
 The schema module (`cocoindex.resources.schema`) defines types that describe vector columns. CocoIndex connectors use these to automatically configure the correct column type (e.g., `vector(384)` in Postgres, `fixed_size_list<float32>(384)` in LanceDB).
 

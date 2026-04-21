@@ -1,6 +1,10 @@
 ---
-title: Live Components
-description: Build components that process continuously and react to changes incrementally, instead of only processing in full sweeps.
+title: Building *live components*
+description: >
+  Implement the LiveComponent protocol with process() for full scans and
+  process_live(operator) for incremental updates — covers LiveComponentOperator
+  (update_full, update, delete, mark_ready) and LiveMapFeed / LiveMapView
+  abstractions over event sources.
 ---
 By default, a processing component runs in **catch-up mode** — on each `app.update()`, it declares all target states and mounts all sub-components from scratch. CocoIndex handles incremental updates by skipping memoized sub-components and reconciling target states at the end, then the component exits. This works well when the dataset is small enough to scan fully each cycle.
 

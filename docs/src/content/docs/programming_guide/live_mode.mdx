@@ -1,6 +1,9 @@
 ---
-title: Live Mode
-description: Make your app react to source changes continuously, instead of only processing in full sweeps.
+title: Running in *live mode*
+description: >
+  Keep an App running after its initial sweep so it reacts to source changes
+  continuously. Covers live=True on apps, watchers, and live-aware connectors
+  like the local filesystem and Kafka.
 ---
 By default, calling `app.update()` runs in **catch-up mode**: it scans all sources, processes what changed since the last run (memoized components are skipped, so unchanged work is not redone), syncs target states, and returns. Targets are caught up to the moment the run started, and that's it — to pick up further changes, you call `update()` again.
 

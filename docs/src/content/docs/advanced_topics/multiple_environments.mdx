@@ -1,6 +1,9 @@
 ---
-title: Multiple Environments
-description: Creating isolated CocoIndex environments for database separation, library development, multi-tenancy, and testing.
+title: "*Multiple environments*"
+description: >
+  Run isolated CocoIndex environments side by side with explicit Environment and
+  Settings objects and separate db_paths — for multi-tenancy, library
+  development, and testing. The CLI targets named environments via @env_name.
 ---
 By default, all CocoIndex apps share the same environment, which manages a shared database and context. For most use cases, this default behavior is sufficient. However, you can create multiple isolated environments when you need:
 

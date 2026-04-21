@@ -1,6 +1,9 @@
 ---
-title: Entity Resolution
-description: Deduplicate entity names using embedding similarity (FAISS) and a pluggable pair-resolver, with optional existing-canonical policies.
+title: "*Entity resolution*"
+description: >
+  Deduplicate entity names via FAISS embedding similarity and a pluggable LLM
+  pair-resolver that confirms matches and chooses canonical forms — with
+  PINNED / PREFERRED policies for existing canonicals and resolution callbacks.
 ---
 The `cocoindex.ops.entity_resolution` package resolves a set of raw entity names into a deduplicated canonical map. It finds near-duplicate names via embedding similarity (FAISS), then asks a pair-resolver (typically an LLM) to confirm matches and pick the better canonical name.
 
