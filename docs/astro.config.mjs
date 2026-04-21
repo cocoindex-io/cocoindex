@@ -48,7 +48,7 @@ const cocoindexCodeTheme = {
 export default defineConfig({
   site: 'https://cocoindex.io',
   base: '/docs',
-  trailingSlash: 'never',
+  trailingSlash: 'ignore',
   build: { format: 'file' },
   integrations: [
     mdx({
