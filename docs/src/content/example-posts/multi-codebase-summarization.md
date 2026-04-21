@@ -4,12 +4,8 @@ description: 'Generate documentation for multiple Python projects using LLM-powe
 slug: multi-codebase-summarization
 image: https://cocoindex.io/blobs/docs-v1/img/examples/multi-codebase-summarization/cover.png
 tags: [llm, structured-data-extraction]
-last_reviewed: 2026-02-04
+last_reviewed: 2026-04-20
 ---
-
-# Multi-Codebase Summarization
-
-[→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/v1/examples/multi_codebase_summarization)
 
 ![Multi-Codebase Summarization](https://cocoindex.io/blobs/docs-v1/img/examples/multi-codebase-summarization/cover.png)
 

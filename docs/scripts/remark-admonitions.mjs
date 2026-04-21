@@ -1,5 +1,5 @@
-// Turn Docusaurus-style admonition blocks into the design mock's `.callout`
-// layout. Shape:
+// Turn Docusaurus-style admonition blocks into the design system's `.co`
+// layout (see design_guidelines/ui/admonitions.html). Shape:
 //
 //   :::info Prerequisite
 //   Make sure your Postgres server is running.
@@ -7,34 +7,28 @@
 //
 // …becomes:
 //
-//   <div class="callout note">
+//   <div class="co info">
 //     <div class="ico">i</div>
 //     <div class="body"><b>Prerequisite</b> Make sure your …</div>
 //   </div>
 //
 // Pair with `remark-directive` (it's what parses the `:::name [label]`
-// block into a containerDirective node). The CSS for `.callout`, `.tip`,
-// `.warn`, `.note` lives in src/styles/globals.css.
+// block into a containerDirective node). The CSS for `.co` + variants
+// lives in src/styles/globals.css and matches
+// design_guidelines/ui/admonitions.html verbatim.
 import { visit } from 'unist-util-visit';
 import { toString } from 'mdast-util-to-string';
 
-// Each admonition kind gets a distinct class + default label. The icon
-// glyph itself is drawn in CSS via a per-kind mask-image data URI — that
-// way the icon colour stays in sync with the bubble (currentColor) and we
-// don't need to inject raw SVG through the MDX pipeline.
-//   note    — neutral annotation (document-with-lines, berry bubble)
-//   info    — important context (info-circle, coral bubble)
-//   tip     — helpful suggestion (lightbulb, palm bubble)
-//   warning — heads up (triangle !, pink bubble)
-//   caution — alias for warning
-//   danger  — critical (octagon !, coral bubble, deep pink bg)
+// Four canonical variants per the design spec. `caution` and `danger` are
+// legacy aliases that collapse to `warn` — the design system explicitly
+// forbids a fifth variant.
 const SPECS = {
-  note:    { defaultLabel: 'Note',    cls: 'note'   },
-  info:    { defaultLabel: 'Info',    cls: 'info'   },
-  tip:     { defaultLabel: 'Tip',     cls: 'tip'    },
-  warning: { defaultLabel: 'Warning', cls: 'warn'   },
-  caution: { defaultLabel: 'Caution', cls: 'warn'   },
-  danger:  { defaultLabel: 'Danger',  cls: 'danger' },
+  note:    { defaultLabel: 'Note',         cls: 'note', icon: 'i' },
+  info:    { defaultLabel: 'Prerequisite', cls: 'info', icon: 'i' },
+  tip:     { defaultLabel: 'Tip',          cls: 'tip',  icon: '\u2713' },
+  warning: { defaultLabel: 'Warning',      cls: 'warn', icon: '!' },
+  caution: { defaultLabel: 'Warning',      cls: 'warn', icon: '!' },
+  danger:  { defaultLabel: 'Warning',      cls: 'warn', icon: '!' },
 };
 
 export default function remarkAdmonitions() {
@@ -58,15 +52,13 @@ export default function remarkAdmonitions() {
       const body = node.children;
       const data = node.data || (node.data = {});
       data.hName = 'div';
-      data.hProperties = { className: ['callout', spec.cls] };
+      data.hProperties = { className: ['co', spec.cls] };
 
       node.children = [
         {
-          // Empty by design — `.ico::before` draws the SVG via mask-image
-          // so we can react to variant-specific colours via CSS only.
           type: 'paragraph',
           data: { hName: 'div', hProperties: { className: ['ico'], 'aria-hidden': 'true' } },
-          children: [],
+          children: [{ type: 'text', value: spec.icon }],
         },
         {
           type: 'paragraph',

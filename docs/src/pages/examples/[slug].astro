@@ -7,6 +7,7 @@
 // examples.ts — the slugs must match.
 import '../../styles/globals.css';
 import Topbar from '../../components/Topbar.astro';
+import Toc from '../../components/Toc.astro';
 import { GITHUB_REPO, SITE_URL, titleMarkup, titleText } from '../../consts';
 import { examples, findExample, CATEGORY_META, type Category } from '../../data/examples';
 import { getEntry, render } from 'astro:content';
@@ -43,8 +44,29 @@ const sourceUrl = `https://github.com/cocoindex-io/cocoindex/tree/main/examples/
 const entry = await getEntry('examplePosts', slug!);
 const rendered = entry ? await render(entry) : null;
 const Content = rendered?.Content;
-// Only h2 headings feed the TOC — h3/h4 add noise at this section count.
-const tocHeadings = (rendered?.headings ?? []).filter((h) => h.depth === 2);
+
+// Intro-meta strip under the hero — mirrors the docs-page layout
+// (DocsLayout.astro), so example pages carry the same typographic rhythm.
+const tagOf = (kind: 'src' | 'tgt' | 'llm' | 'ops') =>
+  ex.tags.find((t) => t.kind === kind)?.label ?? null;
+const lastReviewedRaw = (entry?.data as { last_reviewed?: string | Date })?.last_reviewed;
+// Format YYYY-MM-DD as a local-calendar date — `new Date('2026-04-20')`
+// parses as UTC midnight and drifts a day west of UTC when rendered.
+const formatLocalDate = (raw: string | Date): string => {
+  const iso = raw instanceof Date ? raw.toISOString().slice(0, 10) : String(raw).slice(0, 10);
+  const [y, m, d] = iso.split('-').map((n) => parseInt(n, 10));
+  return new Date(y, m - 1, d).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+};
+const lastReviewed = lastReviewedRaw ? formatLocalDate(lastReviewedRaw) : null;
+const introItems = [
+  { k: 'Time',          v: ex.footMeta.split('·')[0].trim(),                       reviewed: false },
+  { k: 'Source',        v: tagOf('src'),                                           reviewed: false },
+  { k: 'Target',        v: tagOf('tgt'),                                           reviewed: false },
+  { k: 'LLM',           v: tagOf('llm'),                                           reviewed: false },
+  { k: 'Mode',          v: tagOf('ops'),                                           reviewed: false },
+  { k: 'Category',      v: ex.category,                                            reviewed: false },
+  { k: 'Last reviewed', v: lastReviewed,                                           reviewed: true  },
+].filter((m) => m.v);
 ---
 <!doctype html>
 <html lang="en">
@@ -102,43 +124,40 @@ const tocHeadings = (rendered?.headings ?? []).filter((h) => h.depth === 2);
         <span class="cur">{plainTitle}</span>
       </nav>
 
-      <!-- ─────────── HERO ─────────── -->
+      <!-- ─────────── HERO ─────────── Mirrors DocsLayout so example pages
+           carry the same rhythm as the rest of the docs: serif h1 with a
+           coral italic accent, a `.lede` description, then an intro-meta
+           strip under a hairline rule. -->
       <section class="hero">
-        <div class="hero-eyebrow">
-          <span class="num">Example · {ex.index.split(' ')[0]}</span>
-          {ex.tags.map((t) => <span class="tag">{t.label}</span>)}
-          <span class="time">{ex.footMeta}</span>
+        <div class="pill-row">
+          {ex.tags.slice(0, 4).map((t) => <span class="pill"><span class="dot"></span>{t.label}</span>)}
+          <span class="pill dark"><span class="dot"></span>Production ready</span>
         </div>
 
-        <div class="hero-grid">
-          <div>
-            <h1 class="hero-h" set:html={titleMarkup(ex.title + (ex.title.endsWith('.') ? '' : '.'))} />
-            <p class="hero-sub">{ex.description}</p>
-            <div class="hero-cta">
-              <a class="btn btn-coral" href={sourceUrl}>View source
-                <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M2 6h8m-3-3 3 3-3 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
-              </a>
-              {tocHeadings[0] && <a class="btn btn-outline-muted" href={`#${tocHeadings[0].slug}`}>Start reading</a>}
-              <a class="btn btn-outline-muted" href={`${base}/examples`}>All examples</a>
+        <h1 class="hero-h" set:html={titleMarkup(ex.title + (ex.title.endsWith('.') ? '' : '.'))} />
+        <p class="lede">{ex.description}</p>
+        <dl class="intro-meta">
+          {introItems.map((m) => (
+            <div class={`m${m.reviewed ? ' m-reviewed' : ''}`}>
+              <dt class="k">{m.k}</dt>
+              <dd class="v">
+                {m.reviewed && (
+                  <svg class="check" width="14" height="14" viewBox="0 0 16 16" aria-hidden>
+                    <circle cx="8" cy="8" r="7" fill="var(--palm)" />
+                    <path d="M4.5 8.3l2.3 2.2L11.5 5.8"
+                          fill="none" stroke="var(--maroon-ink)"
+                          stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                  </svg>
+                )}
+                <span>{m.v}</span>
+              </dd>
             </div>
-            <div class="pill-row">
-              {ex.tags.slice(0, 4).map((t) => <span class="pill"><span class="dot"></span>{t.label}</span>)}
-              <span class="pill dark"><span class="dot"></span>Production ready</span>
-            </div>
-          </div>
-
-          <aside class="hero-card">
-            <div><div class="tl">At a glance</div></div>
-            <h2 class="big" set:html={titleMarkup('Built to *ship.* Clone and run.')} />
-            <div class="meta">
-              {ex.tags.find((t) => t.kind === 'src') && <div><span>Source</span><b>{ex.tags.find((t) => t.kind === 'src')!.label}</b></div>}
-              {ex.tags.find((t) => t.kind === 'llm') && <div><span>LLM</span><b>{ex.tags.find((t) => t.kind === 'llm')!.label}</b></div>}
-              {ex.tags.find((t) => t.kind === 'tgt') && <div><span>Target</span><b>{ex.tags.find((t) => t.kind === 'tgt')!.label}</b></div>}
-              {ex.tags.find((t) => t.kind === 'ops') && <div><span>Mode</span><b>{ex.tags.find((t) => t.kind === 'ops')!.label}</b></div>}
-              <div><span>Time</span><b>{ex.footMeta.split('·')[0].trim()}</b></div>
-              <div><span>Category</span><b>{ex.category}</b></div>
-            </div>
-          </aside>
+          ))}
+        </dl>
+        <div class="hero-cta">
+          <a class="btn btn-coral" href={sourceUrl}>View source
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M2 6h8m-3-3 3 3-3 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </a>
         </div>
       </section>
 
@@ -164,51 +183,11 @@ const tocHeadings = (rendered?.headings ?? []).filter((h) => h.depth === 2);
       )}
       </main>
 
-      <!-- ─────────── RIGHT: ON THIS PAGE ─────────── -->
-      <aside class="ex-toc toc" aria-label="On this page">
-        <div class="toc-head">
-          <span>On this page</span>
-          <span class="prog" id="tocProg">0 / {tocHeadings.length}</span>
-        </div>
-        <ol id="tocList">
-          {tocHeadings.map((h) => (
-            <li data-target={`#${h.slug}`}>
-              <a href={`#${h.slug}`}>{h.text}</a>
-            </li>
-          ))}
-        </ol>
-        <div class="toc-aside">
-          <a href={sourceUrl}>↗ Source on GitHub</a>
-          <a href={base || '/'}>↗ Full docs</a>
-          <a href={`${base}/examples`}>↗ All examples</a>
-        </div>
-      </aside>
+      <!-- ─────────── RIGHT: ON THIS PAGE ─────────── Reuses the shared
+           Toc component so scroll-spy + visual styling match the regular
+           docs pages (globals.css `aside.toc`). -->
+      <Toc headings={rendered?.headings ?? []} slug={slug!} lastReviewed={lastReviewed} />
     </div>
-
-    <script is:inline>
-      (function(){
-        const tocItems = document.querySelectorAll('#tocList [data-target]');
-        const map = new Map();
-        tocItems.forEach((li) => {
-          const sel = li.getAttribute('data-target');
-          const el = document.querySelector(sel);
-          if (el) map.set(el, li);
-        });
-        const prog = document.getElementById('tocProg');
-        const total = map.size;
-        const active = new Set();
-        const io = new IntersectionObserver((entries) => {
-          entries.forEach((e) => {
-            const li = map.get(e.target);
-            if (!li) return;
-            if (e.isIntersecting) { li.classList.add('active'); active.add(li); }
-            else { li.classList.remove('active'); active.delete(li); }
-          });
-          if (prog) prog.textContent = `${active.size} / ${total}`;
-        }, { rootMargin: '-40% 0px -55% 0px', threshold: 0 });
-        map.forEach((_, el) => io.observe(el));
-      })();
-    </script>
 
     <style is:global>
       /* ═══════════ Detail-page styles ═══════════
@@ -273,14 +252,8 @@ const tocHeadings = (rendered?.headings ?? []).filter((h) => h.depth === 2);
       body.ex-detail .ex-side ol li.on a { color: var(--maroon); background: var(--cream); font-weight: 500; }
       body.ex-detail .ex-side ol li.on a .n { color: var(--coral); }
 
-      body.ex-detail .ex-toc {
-        position: sticky; top: 57px; align-self: start;
-        height: calc(100vh - 57px);
-        overflow-y: auto;
-        padding: 28px 28px 40px 20px;
-        border-left: 1px solid var(--rule);
-        font-family: var(--sans);
-      }
+      /* Right-side TOC — rendered via the shared <Toc> component; styles
+         live in globals.css `aside.toc`. No local overrides. */
 
       body.ex-detail .ex-crumb {
         font-family: var(--mono); font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase;
@@ -292,72 +265,36 @@ const tocHeadings = (rendered?.headings ?? []).filter((h) => h.depth === 2);
       body.ex-detail .ex-crumb .sep { opacity: 0.5; }
       body.ex-detail .ex-crumb .cur { color: var(--maroon); }
 
-      /* Local button styles — scoped rather than leaking into prose/docs. */
-      body.ex-detail .btn {
-        display: inline-flex; align-items: center; justify-content: center; gap: 8px;
-        padding: 10px 18px; border-radius: 999px;
-        font-family: var(--sans); font-size: 14px; font-weight: 500; line-height: 1.2;
-        text-decoration: none; white-space: nowrap;
-        border: 1px solid var(--maroon); color: var(--maroon); background: transparent;
-        transition: background .16s, color .16s, border-color .16s, transform .12s;
-      }
-      body.ex-detail .btn:hover { background: var(--maroon); color: var(--cream); border-color: var(--maroon); }
-      body.ex-detail .btn-primary { background: var(--maroon); color: var(--cream); }
-      body.ex-detail .btn-primary:hover { background: var(--maroon-deep); border-color: var(--maroon-deep); }
-      body.ex-detail .btn-coral { background: var(--coral); color: var(--cream); border-color: var(--coral); }
-      body.ex-detail .btn-coral:hover { background: var(--maroon); border-color: var(--maroon); }
-      body.ex-detail .btn-outline-muted { border-color: var(--rule-strong); color: var(--maroon-ink); }
-      body.ex-detail .btn-outline-muted:hover { background: var(--maroon); color: var(--cream); border-color: var(--maroon); }
+      /* Buttons — see `.btn` + variants in globals.css (ported from
+         design_guidelines/ui/buttons.html). No local overrides here. */
 
-      /* ── HERO ── */
+      /* ── HERO ── Typography mirrors `.prose h1 / .lede / .intro-meta`
+         from globals.css so example pages carry the same rhythm as docs. */
       body.ex-detail .hero { padding: 32px 0 32px; position: relative; }
-      body.ex-detail .hero-eyebrow { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; margin-bottom: 28px; padding-bottom: 24px; border-bottom: 1px solid var(--rule); }
-      body.ex-detail .hero-eyebrow .num { font-family: var(--mono); font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--coral); font-weight: 500; }
-      body.ex-detail .hero-eyebrow .tag { font-family: var(--mono); font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); padding: 5px 12px; border: 1px solid var(--rule-strong); border-radius: 999px; }
-      body.ex-detail .hero-eyebrow .time { margin-left: auto; color: var(--muted); font-family: var(--mono); font-size: 12px; }
-
-      body.ex-detail .hero-grid { display: grid; grid-template-columns: 1.5fr 1fr; gap: 64px; align-items: end; }
-      body.ex-detail h1.hero-h { font-family: var(--serif); font-weight: 400; font-size: clamp(40px, 4.6vw, 60px); line-height: 0.98; letter-spacing: -0.03em; margin: 0 0 24px; max-width: 18ch; }
+      body.ex-detail .hero .pill-row { display: flex; gap: 10px; flex-wrap: wrap; margin: 0 0 20px; }
+      body.ex-detail .hero .pill { display: inline-flex; align-items: center; gap: 8px; font-family: var(--mono); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; padding: 7px 14px; border-radius: 999px; background: var(--cream); border: 1px solid var(--rule); color: var(--maroon); }
+      body.ex-detail .hero .pill .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--coral); flex: none; }
+      body.ex-detail .hero .pill.dark { background: var(--maroon-ink); color: var(--cream); border-color: var(--maroon-ink); }
+      body.ex-detail .hero .pill.dark .dot { background: var(--palm); }
+      body.ex-detail h1.hero-h { font-family: var(--serif); font-weight: 400; font-size: clamp(40px, 4.6vw, 60px); line-height: 1.02; letter-spacing: -0.03em; margin: 0 0 18px; }
       body.ex-detail h1.hero-h em { font-style: italic; color: var(--coral); }
-      body.ex-detail .hero-sub { font-family: var(--sans); font-size: clamp(17px, 1.4vw, 21px); font-weight: 400; line-height: 1.5; letter-spacing: -0.01em; color: var(--maroon-ink); max-width: 56ch; margin: 0 0 32px; }
-      body.ex-detail .hero-sub b { font-weight: 600; color: var(--maroon); }
+      body.ex-detail .hero .lede { font-family: var(--sans); font-size: clamp(17px, 1.4vw, 20px); font-weight: 400; line-height: 1.5; letter-spacing: -0.005em; color: var(--maroon-ink); max-width: 62ch; margin: 0 0 14px; }
+      body.ex-detail .hero .intro-meta {
+        display: flex; flex-wrap: wrap; gap: 22px;
+        margin: 20px 0 28px; padding: 14px 0 18px;
+        border-top: 1px solid var(--rule);
+        border-bottom: 1px solid var(--rule);
+      }
+      body.ex-detail .hero .intro-meta .m { display: flex; flex-direction: column; gap: 2px; margin: 0; }
+      body.ex-detail .hero .intro-meta .k { font-family: var(--mono); font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); margin: 0; }
+      body.ex-detail .hero .intro-meta .v { font-size: 13px; font-weight: 500; margin: 0; display: inline-flex; align-items: center; gap: 6px; }
+      body.ex-detail .hero .intro-meta .check { flex: none; }
       body.ex-detail .hero-cta { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
 
-      body.ex-detail .hero-card { background: var(--maroon); color: var(--cream); border-radius: 10px; padding: 32px; position: relative; overflow: hidden; min-height: 320px; display: flex; flex-direction: column; justify-content: space-between; }
-      body.ex-detail .hero-card::before { content: ""; position: absolute; inset: 0; background-image: radial-gradient(circle, rgba(252, 243, 216, 0.08) 1.6px, transparent 2px); background-size: 20px 20px; }
-      body.ex-detail .hero-card > * { position: relative; z-index: 2; }
-      body.ex-detail .hero-card .tl { font-family: var(--mono); font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: rgba(252, 243, 216, 0.7); }
-      body.ex-detail .hero-card .big { font-family: var(--sans); font-size: clamp(40px, 4.6vw, 58px); font-weight: 600; letter-spacing: -0.035em; line-height: 0.98; margin: 0; color: var(--cream); }
-      body.ex-detail .hero-card .big em { color: var(--peach); font-style: italic; }
-      body.ex-detail .hero-card .meta { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 28px; padding-top: 20px; border-top: 1px solid rgba(252, 243, 216, 0.18); font-family: var(--mono); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: rgba(252, 243, 216, 0.7); }
-      body.ex-detail .hero-card .meta b { display: block; color: var(--cream); font-weight: 400; margin-top: 3px; letter-spacing: 0.02em; text-transform: none; font-size: 13px; }
-
-      body.ex-detail .pill-row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 32px; padding-top: 24px; border-top: 1px solid var(--rule); }
-      body.ex-detail .pill { display: inline-flex; align-items: center; gap: 8px; font-family: var(--mono); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; padding: 7px 14px; border-radius: 999px; background: var(--cream); border: 1px solid var(--rule); color: var(--maroon); }
-      body.ex-detail .pill .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--coral); }
-      body.ex-detail .pill.dark { background: var(--maroon-ink); color: var(--cream); border-color: var(--maroon-ink); }
-      body.ex-detail .pill.dark .dot { background: var(--palm); }
-
-      /* ── DOC LAYOUT ── */
-      /* (doc/toc 2-col rules removed — new .ex-layout handles positioning) */
-      body.ex-detail .toc-head { font-family: var(--mono); font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--muted); padding-bottom: 10px; margin-bottom: 14px; border-bottom: 1px solid var(--rule-strong); display: flex; justify-content: space-between; align-items: baseline; }
-      body.ex-detail .toc-head .prog { color: var(--coral); font-family: var(--mono); }
-      body.ex-detail .toc ol { list-style: none; padding: 0; margin: 0; counter-reset: toc-part; }
-      body.ex-detail .toc > ol > li { counter-increment: toc-part; margin-bottom: 18px; }
-      body.ex-detail .toc > ol > li > a { display: flex; align-items: baseline; gap: 10px; text-decoration: none; color: var(--maroon-ink); font-size: 14px; font-weight: 600; letter-spacing: -0.015em; line-height: 1.3; padding: 6px 0; transition: color .15s; }
-      body.ex-detail .toc > ol > li > a::before { content: counter(toc-part, decimal-leading-zero); font-family: var(--mono); font-weight: 500; font-size: 11px; letter-spacing: 0.06em; color: var(--muted); flex: none; }
-      body.ex-detail .toc > ol > li > a:hover { color: var(--coral); }
-      body.ex-detail .toc > ol > li.active > a { color: var(--coral); }
-      body.ex-detail .toc ul { list-style: none; padding: 0; margin: 6px 0 4px 26px; counter-reset: toc-step; }
-      body.ex-detail .toc ul li { counter-increment: toc-step; }
-      body.ex-detail .toc ul li a { display: flex; align-items: baseline; gap: 8px; text-decoration: none; color: var(--muted); font-size: 13px; font-weight: 400; line-height: 1.4; padding: 4px 0; transition: color .15s; }
-      body.ex-detail .toc ul li a::before { content: counter(toc-part) "." counter(toc-step); font-family: var(--mono); font-size: 10px; color: var(--rule-strong); flex: none; min-width: 22px; }
-      body.ex-detail .toc ul li a:hover { color: var(--coral); }
-      body.ex-detail .toc ul li.active a { color: var(--maroon); }
-      body.ex-detail .toc ul li.active a::before { color: var(--coral); }
-      body.ex-detail .toc .toc-aside { margin-top: 28px; padding-top: 16px; border-top: 1px solid var(--rule); font-family: var(--mono); font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); display: flex; flex-direction: column; gap: 8px; }
-      body.ex-detail .toc .toc-aside a { text-decoration: none; color: var(--maroon-ink); display: flex; align-items: center; gap: 6px; }
-      body.ex-detail .toc .toc-aside a:hover { color: var(--coral); }
+      /* Right-rail `<Toc>` visuals come straight from globals.css —
+         no body.ex-detail overrides here (leftover `.toc ol` / `.toc ul`
+         counters were clobbering the shared aside.toc rules and
+         injecting "0.1 / 0.2" prefixes). */
 
       body.ex-detail .doc .col-main { min-width: 0; }
       body.ex-detail section.blk { padding: 72px 0; border-top: 1px solid var(--rule); position: relative; scroll-margin-top: 84px; }
@@ -462,16 +399,16 @@ const tocHeadings = (rendered?.headings ?? []).filter((h) => h.depth === 2);
       body.ex-detail .code .dec { color: var(--peach); }
       body.ex-detail .code .fn { color: var(--pink); }
       body.ex-detail .code .str { color: #8ef09e; }
-      body.ex-detail .code .num { color: #F5D76E; }
-      body.ex-detail .code .tp { color: #C9B8F5; }
+      body.ex-detail .code .num { color: var(--gold); }
+      body.ex-detail .code .tp { color: var(--lavender); }
       body.ex-detail .code .dim { opacity: 0.48; }
-      body.ex-detail .code .comment { color: #978A74; font-style: italic; opacity: 0.75; }
+      body.ex-detail .code .comment { color: var(--taupe); font-style: italic; opacity: 0.75; }
       body.ex-detail .code.terminal .prompt::before { content: "$ "; color: var(--peach); }
 
       body.ex-detail .callout { border: 1px solid var(--rule-strong); border-radius: 8px; padding: 14px 18px; background: var(--cream); display: flex; flex-direction: column; gap: 6px; font-size: 13px; line-height: 1.5; }
       body.ex-detail .callout .hd { display: flex; align-items: center; gap: 10px; font-family: var(--mono); font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); }
       body.ex-detail .callout .hd .dt { width: 8px; height: 8px; border-radius: 50%; background: var(--coral); }
-      body.ex-detail .callout .hd.tip .dt { background: var(--palm); }
+      body.ex-detail .callout .hd.tip .dt { background: var(--palm-ink); }
       body.ex-detail .callout .hd.note .dt { background: var(--peach); }
       body.ex-detail .callout .hd.warn .dt { background: var(--pink); }
       body.ex-detail .callout p { margin: 0; color: var(--maroon-ink); }
@@ -522,14 +459,10 @@ const tocHeadings = (rendered?.headings ?? []).filter((h) => h.depth === 2);
 
       @media (max-width: 1100px) {
         body.ex-detail .ex-layout { grid-template-columns: 1fr; }
-        body.ex-detail .ex-side,
-        body.ex-detail .ex-toc { position: static; height: auto; border: none; padding: 18px 20px; }
-        body.ex-detail .ex-side { border-bottom: 1px solid var(--rule); }
-        body.ex-detail .ex-toc { border-top: 1px solid var(--rule); }
+        body.ex-detail .ex-side { position: static; height: auto; border: none; border-bottom: 1px solid var(--rule); padding: 18px 20px; }
         body.ex-detail .ex-main { padding: 24px 28px 64px; }
         body.ex-detail .arch { grid-template-columns: 1fr; gap: 12px; padding: 24px; }
         body.ex-detail .arrow { transform: rotate(90deg); align-self: center; margin: 4px 0; }
-        body.ex-detail .hero-grid { grid-template-columns: 1fr; gap: 36px; }
         body.ex-detail .step { grid-template-columns: 56px 1fr; column-gap: 16px; row-gap: 16px; padding: 24px; }
         body.ex-detail .step-head, body.ex-detail .step-side { grid-column: 2; }
         body.ex-detail .tryit { grid-template-columns: 1fr; padding: 32px; }
@@ -547,7 +480,7 @@ const tocHeadings = (rendered?.headings ?? []).filter((h) => h.depth === 2);
          narrower column and a different heading scale. */
       body.ex-detail .ex-prose { padding-top: 40px; max-width: 72ch; min-width: 0; font-size: 16px; line-height: 1.65; color: var(--maroon-ink); }
       body.ex-detail .ex-prose > :first-child { margin-top: 0; }
-      body.ex-detail .ex-prose h2 { font-family: var(--sans); font-weight: 600; font-size: clamp(26px, 2.6vw, 34px); line-height: 1.1; letter-spacing: -0.025em; margin: 56px 0 18px; scroll-margin-top: 84px; padding-top: 28px; border-top: 1px solid var(--rule); }
+      body.ex-detail .ex-prose h2 { font-family: var(--sans); font-weight: 600; font-size: clamp(26px, 2.6vw, 34px); line-height: 1.1; letter-spacing: -0.025em; margin: 56px 0 18px; scroll-margin-top: 84px; }
       body.ex-detail .ex-prose > h2:first-of-type { border-top: none; padding-top: 0; margin-top: 24px; }
       body.ex-detail .ex-prose h3 { font-family: var(--sans); font-weight: 600; font-size: 20px; line-height: 1.25; letter-spacing: -0.015em; margin: 36px 0 12px; scroll-margin-top: 84px; }
       body.ex-detail .ex-prose h4 { font-family: var(--sans); font-weight: 600; font-size: 17px; letter-spacing: -0.01em; margin: 28px 0 10px; }
@@ -559,7 +492,7 @@ const tocHeadings = (rendered?.headings ?? []).filter((h) => h.depth === 2);
       body.ex-detail .ex-prose li > p { margin-bottom: 6px; }
       body.ex-detail .ex-prose strong, body.ex-detail .ex-prose b { color: var(--maroon); font-weight: 600; }
       body.ex-detail .ex-prose em, body.ex-detail .ex-prose i { font-style: italic; }
-      body.ex-detail .ex-prose img { max-width: 100%; height: auto; border-radius: 8px; margin: 20px 0; border: 1px solid var(--rule); }
+      body.ex-detail .ex-prose img { max-width: 100%; height: auto; margin: 20px 0; }
       body.ex-detail .ex-prose blockquote { margin: 20px 0; padding: 10px 18px; border-left: 3px solid var(--coral); background: var(--cream); border-radius: 0 6px 6px 0; color: var(--muted); }
       body.ex-detail .ex-prose blockquote p { margin: 0; }
       body.ex-detail .ex-prose :not(pre) > code { font-family: var(--mono); font-size: 13.5px; background: rgba(190, 81, 51, 0.12); color: var(--berry); padding: 2px 7px; border-radius: 4px; }

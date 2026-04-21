@@ -56,9 +56,9 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, '') || '/';
                 </svg>
                 Back to cocoindex.io
               </a>
-              <a href={base} class="btn nf-btn-ghost">Read the docs</a>
-              <a href={SITE_BLOG} class="btn nf-btn-ghost">Visit the blog</a>
-              <a href={SITE_EXAMPLES} class="btn nf-btn-ghost">Browse examples</a>
+              <a href={base} class="btn btn-outline-muted">Read the docs</a>
+              <a href={SITE_BLOG} class="btn btn-outline-muted">Visit the blog</a>
+              <a href={SITE_EXAMPLES} class="btn btn-outline-muted">Browse examples</a>
             </div>
 
             <div class="nf-tip">
@@ -137,29 +137,8 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, '') || '/';
         display: flex; flex-wrap: wrap; gap: 12px;
         margin-bottom: 28px;
       }
-      .nf .btn {
-        display: inline-flex; align-items: center; gap: 8px;
-        padding: 10px 18px; border-radius: 999px;
-        font-size: 14px; font-weight: 500; text-decoration: none;
-        border: 1px solid var(--maroon); color: var(--maroon); background: transparent;
-        transition: background .15s, color .15s;
-        cursor: pointer;
-      }
-      .nf .btn:hover { background: var(--maroon); color: var(--cream); }
-      .nf .btn-primary { background: var(--maroon); color: var(--cream); }
-      .nf .btn-primary:hover { background: var(--maroon-deep); color: var(--cream); }
-      .nf .btn-xl { padding: 13px 22px; font-size: 15px; }
+      /* Buttons — see `.btn` + variants in globals.css. No local overrides. */
       .nf .btn-xl svg { flex: none; }
-      .nf .nf-btn-ghost {
-        background: transparent;
-        border-color: var(--rule-strong);
-        color: var(--maroon-ink);
-      }
-      .nf .nf-btn-ghost:hover {
-        background: var(--maroon);
-        color: var(--cream);
-        border-color: var(--maroon);
-      }
 
       .nf .nf-tip {
         display: inline-flex; align-items: center; gap: 12px;
