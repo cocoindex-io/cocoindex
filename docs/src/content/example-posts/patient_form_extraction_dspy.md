@@ -462,4 +462,3 @@ This pairing is powerful because neither system tries to be the entire stack: Co
 CocoIndex natively supports Google Drive, Amazon S3, Azure Blob Storage, and more.
 
 [→ Sources](https://cocoindex.io/docs/sources)
-
