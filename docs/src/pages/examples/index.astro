@@ -436,7 +436,7 @@ const canonical = new URL(`${base}/examples`, SITE_URL).toString();
         background: var(--maroon); color: var(--cream);
         min-height: 440px; position: relative;
         text-decoration: none;
-        transition: transform .2s, box-shadow .2s;
+        transition: transform .2s;
       }
       body.ex-listing .feat-eyebrow {
         font-family: var(--mono); font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase;
@@ -587,7 +587,7 @@ const canonical = new URL(`${base}/examples`, SITE_URL).toString();
       body.ex-listing .ex-tags .tag .dt { width: 5px; height: 5px; border-radius: 50%; background: var(--coral); }
       body.ex-listing .ex-tags .tag.src .dt { background: var(--peach); }
       body.ex-listing .ex-tags .tag.tgt .dt { background: var(--pink); }
-      body.ex-listing .ex-tags .tag.llm .dt { background: var(--palm); }
+      body.ex-listing .ex-tags .tag.llm .dt { background: var(--palm-ink); }
       body.ex-listing .ex-tags .tag.ops .dt { background: var(--coral); }
       body.ex-listing .ex-tags .tag.lvl .dt { background: var(--maroon); }
 
@@ -628,20 +628,7 @@ const canonical = new URL(`${base}/examples`, SITE_URL).toString();
       body.ex-listing .cta-end h3 em { color: var(--coral); font-style: normal; }
       body.ex-listing .cta-end p { color: var(--muted); max-width: 48ch; margin: 0 0 24px; font-size: 17px; }
       body.ex-listing .cta-end .btns { display: flex; gap: 12px; flex-wrap: wrap; }
-      body.ex-listing .cta-end .btn {
-        display: inline-flex; align-items: center; gap: 8px;
-        padding: 10px 18px; border-radius: 999px;
-        font-family: var(--sans); font-size: 14px; font-weight: 500; text-decoration: none;
-        border: 1px solid var(--maroon); color: var(--maroon); background: transparent;
-        transition: background .16s, color .16s, border-color .16s;
-      }
-      body.ex-listing .cta-end .btn:hover { background: var(--maroon); color: var(--cream); }
-      body.ex-listing .cta-end .btn.btn-primary { background: var(--maroon); color: var(--cream); }
-      body.ex-listing .cta-end .btn.btn-primary:hover { background: var(--maroon-deep); }
-      body.ex-listing .cta-end .btn.btn-coral { background: var(--coral); color: var(--cream); border-color: var(--coral); }
-      body.ex-listing .cta-end .btn.btn-coral:hover { background: var(--maroon); border-color: var(--maroon); }
-      body.ex-listing .cta-end .btn.btn-outline-muted { border-color: var(--rule-strong); color: var(--maroon-ink); }
-      body.ex-listing .cta-end .btn.btn-outline-muted:hover { background: var(--maroon); color: var(--cream); border-color: var(--maroon); }
+      /* Buttons — see `.btn` + variants in globals.css. No local overrides. */
       body.ex-listing .cta-end .side {
         display: flex; flex-direction: column; gap: 18px;
         padding: 28px 26px; border-radius: 10px;

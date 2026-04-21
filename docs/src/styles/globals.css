@@ -10,12 +10,19 @@
   --cream: #FCF3D8;
   --cream-soft: #F6F4E9;
   --pink: #FB6A76;
-  --palm: #27E62B;
+  --palm: #27E62B;      /* live signal · dark bg only */
+  --palm-ink: #16A534;  /* live signal · light bg (a11y) */
   --berry: #6A1E23;
   --paper: #FBF6E8;
   --rule: rgba(42, 18, 27, 0.14);
   --rule-strong: rgba(42, 18, 27, 0.35);
   --muted: rgba(42, 18, 27, 0.58);
+  /* Code-block exceptions — only valid inside fenced code on maroon-ink.
+     Single source of truth: design_guidelines/ui/color.html § 04 — Code. */
+  --gold:     #F5D76E;  /* numbers + True/False/None */
+  --lavender: #C9B8F5;  /* types + classes */
+  --taupe:    #978A74;  /* comments (italic) */
+  --stone:    #C5B7A0;  /* punctuation */
 
   --serif: "Source Serif 4", ui-serif, Georgia, serif;
   --sans: "Inter", -apple-system, BlinkMacSystemFont, "Helvetica Neue", Helvetica, Arial, sans-serif;
@@ -36,6 +43,73 @@ body {
 
 a { color: var(--coral); text-decoration: none; }
 a:hover { text-decoration: underline; }
+
+/* ─── Buttons ─── Single structural base + composable variants.
+   Ported verbatim from design_guidelines/ui/buttons.html — one `.btn` class
+   carries shape, padding, focus ring; variants colour it; sizes tune it.
+   Keep this block as the sole source of truth — per-page overrides have
+   been removed. */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  padding: 10px 18px; border-radius: 999px;
+  font-family: var(--sans); font-size: 14px; font-weight: 500; line-height: 1.2;
+  text-decoration: none; white-space: nowrap; cursor: pointer;
+  border: 1px solid var(--maroon); color: var(--maroon); background: transparent;
+  transition: background .16s ease, color .16s ease, border-color .16s ease, transform .12s ease;
+}
+.btn:hover { text-decoration: none; }
+.btn:focus-visible, .btn.is-focus { outline: 2px solid var(--coral); outline-offset: 2px; }
+.btn[disabled], .btn.is-disabled { opacity: 0.45; pointer-events: none; }
+
+/* Variants */
+.btn-coral,
+.btn-coral:hover { color: var(--cream); }
+.btn-coral { background: var(--coral); border-color: var(--coral); }
+.btn-coral:hover, .btn-coral.is-hover { background: var(--maroon); border-color: var(--maroon); }
+
+.btn-primary,
+.btn-primary:hover { color: var(--cream); }
+.btn-primary { background: var(--maroon); border-color: var(--maroon); }
+.btn-primary:hover, .btn-primary.is-hover { background: var(--maroon-deep); border-color: var(--maroon-deep); }
+
+.btn-outline { border-color: var(--maroon); color: var(--maroon); background: transparent; }
+.btn-outline:hover, .btn-outline.is-hover { background: var(--maroon); color: var(--cream); border-color: var(--maroon); }
+
+.btn-outline-muted { border-color: var(--rule-strong); color: var(--maroon-ink); background: transparent; }
+.btn-outline-muted:hover, .btn-outline-muted.is-hover { background: var(--maroon); color: var(--cream); border-color: var(--maroon); }
+
+.btn-ghost { border-color: transparent; color: var(--maroon-ink); background: transparent; }
+.btn-ghost:hover, .btn-ghost.is-hover { color: var(--coral); }
+
+.btn-mono {
+  font-family: var(--mono); font-size: 12px; font-weight: 500;
+  letter-spacing: 0.14em; text-transform: uppercase;
+  border-color: var(--rule-strong); color: var(--maroon-ink);
+}
+.btn-mono:hover, .btn-mono.is-hover { border-color: var(--coral); color: var(--coral); }
+
+/* Sizes — default is medium. `btn-xl` is an alias of `btn-lg`. */
+.btn-sm { padding: 6px 12px; font-size: 13px; }
+.btn-lg, .btn-xl { padding: 13px 22px; font-size: 15px; }
+
+/* Shape — pill is default; `btn-rounded` is the rectangular variant. */
+.btn-rounded { border-radius: 8px; }
+
+/* Icon-only — square 36px at default, 28/44 at sm/lg. `btn-icon-circle`
+   keeps the pill radius; otherwise defaults to `btn-rounded`. */
+.btn-icon { padding: 0; width: 36px; height: 36px; border-radius: 8px; }
+.btn-icon.btn-sm { width: 28px; height: 28px; }
+.btn-icon.btn-lg, .btn-icon.btn-xl { width: 44px; height: 44px; }
+.btn-icon-circle { border-radius: 999px; }
+
+/* Social — 32px hairline square, maroon icon at rest, coral on hover.
+   Always compose as `btn btn-social` with an `aria-label`. */
+.btn-social {
+  width: 32px; height: 32px; padding: 0; border-radius: 6px;
+  border-color: var(--rule); color: var(--maroon);
+  background: transparent;
+}
+.btn-social:hover, .btn-social.is-hover { border-color: var(--coral); color: var(--coral); background: transparent; }
 
 .caps { font-family: var(--mono); font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); }
 .mono { font-family: var(--mono); }
@@ -86,7 +160,6 @@ nav.top {
   background: var(--paper);
   border: 1px solid var(--rule-strong);
   border-radius: 10px;
-  box-shadow: 0 10px 32px -12px rgba(42, 18, 27, 0.22);
   opacity: 0;
   visibility: hidden;
   transform: translateY(-4px);
@@ -361,95 +434,63 @@ aside.toc .meta .edited { color: var(--muted); cursor: default; }
 }
 .prose pre code { background: none; color: inherit; padding: 0; font-size: inherit; }
 
-/* Callouts — rendered from Docusaurus admonition blocks (`:::info`,
-   `:::tip`, `:::warning`, …) via scripts/remark-admonitions.mjs. Each
-   variant has its own icon circle color + subtle bg wash so readers can
-   distinguish at a glance. Shell dimensions match the `.tip` example in
-   design_guidelines/CocoIndex Docs.html. */
-.prose .callout {
-  display: flex; gap: 16px;
-  padding: 18px 22px;
-  border: 1px solid var(--rule-strong); border-radius: 8px;
+/* Admonitions — rendered from Docusaurus-style `:::note`, `:::info`,
+   `:::tip`, `:::warning` blocks via scripts/remark-admonitions.mjs.
+   Ported verbatim from design_guidelines/ui/admonitions.html — four
+   semantic variants, single hairline border + cream fill + circular
+   icon badge. Colour carries semantics; the glyph is a single-character
+   mark (i / ✓ / !). */
+.prose .co {
+  display: flex;
+  gap: 14px;
+  padding: 14px 16px;
+  border: 1px solid var(--rule-strong);
+  border-radius: 8px;
   background: var(--cream);
-  margin: 28px 0;
-  max-width: 68ch;
+  font-size: 13.5px;
+  color: var(--maroon-ink);
+  margin: 18px 0;
 }
-/* note — neutral annotation, plain cream, subdued berry icon. */
-.prose .callout.note { background: var(--cream); border-color: var(--rule-strong); }
-/* info — peach-tinted cream, coral icon (matches design `.tip`). */
-.prose .callout.info {
+.prose .co .ico {
+  width: 24px; height: 24px; flex: none;
+  border-radius: 50%;
+  display: grid; place-items: center;
+  font-family: var(--mono); font-size: 12px; font-weight: 500;
+  color: var(--cream);
+  background: var(--coral);
+}
+.prose .co .body { flex: 1; line-height: 1.5; min-width: 0; font-size: inherit; margin: 0; max-width: none; }
+.prose .co .body > b {
+  display: block;
+  font-family: var(--sans); font-weight: 600;
+  font-size: 11px; letter-spacing: 0.05em; text-transform: uppercase;
+  margin-bottom: 2px;
+}
+.prose .co .body > :is(p, ul, ol):first-of-type { margin-top: 0; }
+.prose .co .body > :last-child { margin-bottom: 0; }
+
+/* Note — quietest level: berry disc, no tint. */
+.prose .co.note .ico { background: var(--berry); }
+
+/* Info — prerequisite / setup: peach wash, coral hairline. */
+.prose .co.info {
   border-color: color-mix(in oklab, var(--coral) 45%, transparent);
   background: color-mix(in oklab, var(--peach) 16%, var(--cream));
 }
-/* tip — palm-tinted cream, green icon: a helpful suggestion. */
-.prose .callout.tip {
+
+/* Tip — non-blocking suggestion: palm wash + check glyph. */
+.prose .co.tip {
   border-color: color-mix(in oklab, var(--palm) 50%, var(--rule-strong));
   background: color-mix(in oklab, var(--palm) 7%, var(--cream));
 }
-/* warn / caution — pink-tinted cream (matches design `.warn`). */
-.prose .callout.warn {
+.prose .co.tip .ico { background: var(--palm); color: var(--maroon-ink); }
+
+/* Warn — might break: pink wash + coral border. */
+.prose .co.warn {
   border-color: var(--coral);
   background: color-mix(in oklab, var(--pink) 10%, var(--cream));
 }
-/* danger — deeper pink wash, coral icon. Reserved for breaking things. */
-.prose .callout.danger {
-  border-color: var(--coral);
-  background: color-mix(in oklab, var(--pink) 20%, var(--cream));
-}
-/* The icon bubble. Each variant sets `background` + `color`; the glyph
-   itself is painted in CSS as a mask-image data URI so it inherits the
-   bubble's `color` (=currentColor) and stays in sync with the variant. */
-.prose .callout .ico {
-  width: 28px; height: 28px; flex: none;
-  border-radius: 50%;
-  display: grid; place-items: center;
-  background: var(--coral); color: var(--cream);
-  margin: 0;
-}
-.prose .callout .ico::before {
-  content: "";
-  display: block;
-  width: 15px; height: 15px;
-  background-color: currentColor;
-  -webkit-mask: var(--ico-mask) center / contain no-repeat;
-          mask: var(--ico-mask) center / contain no-repeat;
-}
-
-/* Per-variant bubble colours + icon mask URIs. SVGs are hand-drawn at
-   16×16 on stroke-width 1.6, fill=transparent, stroke+dots=black so the
-   mask picks up the silhouette cleanly. */
-.prose .callout.note .ico {
-  background: var(--berry); color: var(--cream);
-  --ico-mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'><path d='M4 2h6l3 3v9H4z'/><path d='M10 2v3h3'/><path d='M6 9h4M6 11h4M6 13h3'/></svg>");
-}
-.prose .callout.info .ico {
-  background: var(--coral); color: var(--cream);
-  --ico-mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'><circle cx='8' cy='8' r='6.5'/><path d='M8 7.5v4.2'/><circle cx='8' cy='4.8' r='0.7' fill='black'/></svg>");
-}
-.prose .callout.tip .ico {
-  background: var(--palm); color: var(--maroon-ink);
-  --ico-mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'><path d='M5.2 9.4c-1.3-.9-2.1-2.4-2.1-4A4.9 4.9 0 0 1 8 .5a4.9 4.9 0 0 1 4.9 4.9c0 1.6-.8 3.1-2.1 4'/><path d='M5.8 9.4v2.8h4.4V9.4'/><path d='M6.6 14.2h2.8'/></svg>");
-}
-.prose .callout.warn .ico {
-  background: var(--pink); color: var(--maroon-ink);
-  --ico-mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'><path d='M8 1.5 1.5 14h13z'/><path d='M8 6.2v3.8'/><circle cx='8' cy='12' r='0.75' fill='black'/></svg>");
-}
-.prose .callout.danger .ico {
-  background: var(--coral); color: var(--cream);
-  --ico-mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'><path d='M5.4 1.5h5.2l3.9 3.9v5.2l-3.9 3.9H5.4l-3.9-3.9V5.4z'/><path d='M8 5.2v4.1'/><circle cx='8' cy='11.5' r='0.75' fill='black'/></svg>");
-}
-
-/* Nested code blocks inside a callout use the same maroon-ink chrome as
-   standalone code blocks — a uniform "chocolate" reads cleaner than
-   tinting per variant. The callout bubble + bg already carry the kind. */
-.prose .callout .body { flex: 1; font-size: 14.5px; margin: 0; max-width: none; }
-.prose .callout .body > b {
-  font-family: var(--sans); font-weight: 600; font-size: 13px;
-  letter-spacing: 0.01em; text-transform: uppercase;
-  display: block; margin-bottom: 4px;
-}
-.prose .callout .body > :is(p, ul, ol):first-of-type { margin-top: 0; }
-.prose .callout .body > :last-child { margin-bottom: 0; }
+.prose .co.warn .ico { background: var(--pink); color: var(--maroon-ink); }
 
 /* Block quotes — plain markdown `> …` surfaces that aren't admonitions. */
 .prose blockquote {

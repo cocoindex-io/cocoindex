@@ -4,22 +4,17 @@ description: 'Convert PDF files to Markdown with incremental processing'
 slug: pdf-to-markdown
 image: https://cocoindex.io/blobs/docs-v1/img/examples/pdf-to-markdown/cover.png
 tags: [pdf, custom-building-blocks]
-last_reviewed: 2026-02-04
+last_reviewed: 2026-04-20
 ---
 
-# PDF to Markdown
-
-[→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/v1/examples/pdf_to_markdown)
-
 ![PDF to Markdown](https://cocoindex.io/blobs/docs-v1/img/examples/pdf-to-markdown/cover.png)
-
 
 In this tutorial, we'll build a simple app that converts PDF files to Markdown and saves them to a local directory.
 
 
 ## Overview
 
-![App example showing PDF to Markdown conversion](/img/concept/app-example.svg)
+![App example showing PDF to Markdown conversion](https://cocoindex.io/blobs/docs-v1/img/examples/pdf-to-markdown/app-example.svg)
 
 
 1. Read PDF files from a local directory
