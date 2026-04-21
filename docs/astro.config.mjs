@@ -4,6 +4,7 @@ import mdx from '@astrojs/mdx';
 import sitemap from '@astrojs/sitemap';
 import remarkDirective from 'remark-directive';
 import remarkAdmonitions from './scripts/remark-admonitions.mjs';
+import remarkCodeTitles from './scripts/remark-code-titles.mjs';
 import { redirects } from './src/docs-sidebar.ts';
 
 // Shiki theme — canonical token palette from
@@ -55,14 +56,14 @@ export default defineConfig({
   integrations: [
     mdx({
       // MDX's own remark pipeline doesn't inherit `markdown.remarkPlugins`
-      // reliably across Astro versions — wire admonitions explicitly so
-      // .mdx content collection pages get them for sure.
-      remarkPlugins: [remarkDirective, remarkAdmonitions],
+      // reliably across Astro versions — wire admonitions + code titles
+      // explicitly so .mdx content collection pages get them for sure.
+      remarkPlugins: [remarkDirective, remarkAdmonitions, remarkCodeTitles],
     }),
     sitemap(),
   ],
   markdown: {
-    remarkPlugins: [remarkDirective, remarkAdmonitions],
+    remarkPlugins: [remarkDirective, remarkAdmonitions, remarkCodeTitles],
     shikiConfig: { theme: cocoindexCodeTheme, wrap: false },
   },
   redirects,
