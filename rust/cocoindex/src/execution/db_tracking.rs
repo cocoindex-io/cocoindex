@@ -11,6 +11,12 @@ use sqlx::PgPool;
 use std::fmt;
 use utils::{db::WriteAction, fingerprint::Fingerprint};
 
+type EscapedJson<T> = utils::str_sanitize::ZeroCodeEscapedJson<T>;
+
+fn escaped_json<T>(value: T) -> EscapedJson<T> {
+    utils::str_sanitize::ZeroCodeEscapedJson(value)
+}
+
 ////////////////////////////////////////////////////////////
 // Access for the row tracking table
 ////////////////////////////////////////////////////////////
@@ -86,7 +92,7 @@ pub type TrackedTargetKeyForSource = Vec<(i32, Vec<TrackedTargetKeyInfo>)>;
 
 #[derive(sqlx::FromRow, Debug)]
 pub struct SourceTrackingInfoForProcessing {
-    pub memoization_info: Option<sqlx::types::Json<Option<StoredMemoizationInfo>>>,
+    pub memoization_info: Option<EscapedJson<Option<StoredMemoizationInfo>>>,
 
     pub processed_source_ordinal: Option<i64>,
     pub processed_source_fp: Option<Vec<u8>>,
@@ -113,7 +119,7 @@ pub async fn read_source_tracking_info_for_processing(
     );
     let tracking_info = sqlx::query_as(&query_str)
         .bind(source_id)
-        .bind(source_key_json)
+        .bind(escaped_json(source_key_json))
         .fetch_optional(pool)
         .await?;
 
@@ -123,13 +129,13 @@ pub async fn read_source_tracking_info_for_processing(
 #[derive(sqlx::FromRow, Debug)]
 pub struct SourceTrackingInfoForPrecommit {
     pub max_process_ordinal: i64,
-    pub staging_target_keys: sqlx::types::Json<TrackedTargetKeyForSource>,
+    pub staging_target_keys: EscapedJson<TrackedTargetKeyForSource>,
 
     pub processed_source_ordinal: Option<i64>,
     pub processed_source_fp: Option<Vec<u8>>,
     pub process_logic_fingerprint: Option<Vec<u8>>,
     pub process_ordinal: Option<i64>,
-    pub target_keys: Option<sqlx::types::Json<TrackedTargetKeyForSource>>,
+    pub target_keys: Option<EscapedJson<TrackedTargetKeyForSource>>,
 }
 
 pub async fn read_source_tracking_info_for_precommit(
@@ -150,7 +156,7 @@ pub async fn read_source_tracking_info_for_precommit(
     );
     let precommit_tracking_info = sqlx::query_as(&query_str)
         .bind(source_id)
-        .bind(source_key_json)
+        .bind(escaped_json(source_key_json))
         .fetch_optional(db_executor)
         .await?;
 
@@ -181,10 +187,10 @@ pub async fn precommit_source_tracking_info(
     };
     sqlx::query(&query_str)
         .bind(source_id) // $1
-        .bind(source_key_json) // $2
+        .bind(escaped_json(source_key_json)) // $2
         .bind(max_process_ordinal) // $3
-        .bind(sqlx::types::Json(staging_target_keys)) // $4
-        .bind(memoization_info.map(sqlx::types::Json)) // $5
+        .bind(escaped_json(staging_target_keys)) // $4
+        .bind(memoization_info.map(escaped_json)) // $5
         .execute(db_executor)
         .await?;
     Ok(())
@@ -207,9 +213,9 @@ pub async fn touch_max_process_ordinal(
     );
     sqlx::query(&query_str)
         .bind(source_id)
-        .bind(source_key_json)
+        .bind(escaped_json(source_key_json))
         .bind(process_ordinal)
-        .bind(sqlx::types::Json(TrackedTargetKeyForSource::default()))
+        .bind(escaped_json(TrackedTargetKeyForSource::default()))
         .execute(db_executor)
         .await?;
     Ok(())
@@ -217,7 +223,7 @@ pub async fn touch_max_process_ordinal(
 
 #[derive(sqlx::FromRow, Debug)]
 pub struct SourceTrackingInfoForCommit {
-    pub staging_target_keys: sqlx::types::Json<TrackedTargetKeyForSource>,
+    pub staging_target_keys: EscapedJson<TrackedTargetKeyForSource>,
     pub process_ordinal: Option<i64>,
 }
 
@@ -234,7 +240,7 @@ pub async fn read_source_tracking_info_for_commit(
     );
     let commit_tracking_info = sqlx::query_as(&query_str)
         .bind(source_id)
-        .bind(source_key_json)
+        .bind(escaped_json(source_key_json))
         .fetch_optional(db_executor)
         .await?;
     Ok(commit_tracking_info)
@@ -287,13 +293,13 @@ pub async fn commit_source_tracking_info(
     };
     let mut query = sqlx::query(&query_str)
         .bind(source_id) // $1
-        .bind(source_key_json) // $2
-        .bind(sqlx::types::Json(staging_target_keys)) // $3
+        .bind(escaped_json(source_key_json)) // $2
+        .bind(escaped_json(staging_target_keys)) // $3
         .bind(processed_source_ordinal) // $4
         .bind(logic_fingerprint) // $5
         .bind(process_ordinal) // $6
         .bind(process_time_micros) // $7
-        .bind(sqlx::types::Json(target_keys)); // $8
+        .bind(escaped_json(target_keys)); // $8
 
     if db_setup.has_fast_fingerprint_column {
         query = query.bind(processed_source_fp); // $9
@@ -316,7 +322,7 @@ pub async fn delete_source_tracking_info(
     );
     sqlx::query(&query_str)
         .bind(source_id)
-        .bind(source_key_json)
+        .bind(escaped_json(source_key_json))
         .execute(db_executor)
         .await?;
     Ok(())
@@ -344,8 +350,8 @@ pub async fn read_tracking_entries_for_sources(
 
     let rows: Vec<(
         i32,
-        serde_json::Value,
-        Option<sqlx::types::Json<TrackedTargetKeyForSource>>,
+        EscapedJson<serde_json::Value>,
+        Option<EscapedJson<TrackedTargetKeyForSource>>,
     )> = sqlx::query_as(&query_str)
         .bind(source_ids)
         .fetch_all(pool)
@@ -356,8 +362,8 @@ pub async fn read_tracking_entries_for_sources(
         .map(
             |(source_id, source_key, target_keys_json)| SourceTrackingEntryForCleanup {
                 source_id,
-                source_key,
-                target_keys: target_keys_json.map(|j| j.0),
+                source_key: source_key.into_inner(),
+                target_keys: target_keys_json.map(EscapedJson::into_inner),
             },
         )
         .collect())
@@ -378,8 +384,8 @@ pub fn read_tracking_entries_for_sources_stream(
 
         let mut rows = sqlx::query_as::<_, (
             i32,
-            serde_json::Value,
-            Option<sqlx::types::Json<TrackedTargetKeyForSource>>,
+            EscapedJson<serde_json::Value>,
+            Option<EscapedJson<TrackedTargetKeyForSource>>,
         )>(&query_str)
             .bind(&source_ids)
             .fetch(&pool);
@@ -388,8 +394,8 @@ pub fn read_tracking_entries_for_sources_stream(
             let (source_id, source_key, target_keys_json) = row;
             yield SourceTrackingEntryForCleanup {
                 source_id,
-                source_key,
-                target_keys: target_keys_json.map(|j| j.0),
+                source_key: source_key.into_inner(),
+                target_keys: target_keys_json.map(EscapedJson::into_inner),
             };
         }
     }
@@ -412,7 +418,7 @@ pub async fn delete_tracking_entries_for_sources(
 
 #[derive(sqlx::FromRow, Debug)]
 pub struct TrackedSourceKeyMetadata {
-    pub source_key: serde_json::Value,
+    pub source_key: EscapedJson<serde_json::Value>,
     pub processed_source_ordinal: Option<i64>,
     pub processed_source_fp: Option<Vec<u8>>,
     pub process_logic_fingerprint: Option<Vec<u8>>,
@@ -474,7 +480,7 @@ pub async fn read_source_last_processed_info(
     );
     let last_processed_info = sqlx::query_as(&query_str)
         .bind(source_id)
-        .bind(source_key_json)
+        .bind(escaped_json(source_key_json))
         .fetch_optional(pool)
         .await?;
     Ok(last_processed_info)
@@ -494,7 +500,7 @@ pub async fn update_source_tracking_ordinal(
     );
     sqlx::query(&query_str)
         .bind(source_id) // $1
-        .bind(source_key_json) // $2
+        .bind(escaped_json(source_key_json)) // $2
         .bind(processed_source_ordinal) // $3
         .execute(db_executor)
         .await?;
@@ -521,12 +527,12 @@ pub async fn read_source_state(
         "SELECT value FROM {} WHERE source_id = $1 AND key = $2",
         table_name
     );
-    let state: Option<serde_json::Value> = sqlx::query_scalar(&query_str)
+    let state: Option<EscapedJson<serde_json::Value>> = sqlx::query_scalar(&query_str)
         .bind(source_id)
-        .bind(source_key_json)
+        .bind(escaped_json(source_key_json))
         .fetch_optional(db_executor)
         .await?;
-    Ok(state)
+    Ok(state.map(EscapedJson::into_inner))
 }
 
 #[allow(dead_code)]
@@ -549,8 +555,8 @@ pub async fn upsert_source_state(
     );
     sqlx::query(&query_str)
         .bind(source_id)
-        .bind(source_key_json)
-        .bind(sqlx::types::Json(state))
+        .bind(escaped_json(source_key_json))
+        .bind(escaped_json(state))
         .execute(db_executor)
         .await?;
     Ok(())
