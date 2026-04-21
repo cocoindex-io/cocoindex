@@ -1,10 +1,5 @@
 ---
-title: 'Building a Real-Time HackerNews Trending Topics Detector with CocoIndex: A Deep Dive into Custom Sources and AI'
-description: "Build a real-time trending topics detector by indexing HackerNews threads and comments, extracting structured topics using LLM-powered extraction, and querying trending discussions with CocoIndex's Custom Sources and Postgres."
-slug: hackernews-trending-topics
 image: https://cocoindex.io/blobs/docs/img/examples/hackernews-trending-topics/cover.png
-tags: [custom-building-blocks, structured-data-extraction]
-last_reviewed: 2026-01-18
 ---
 
 [→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/hn_trending_topics)

@@ -4,7 +4,7 @@ import mdx from '@astrojs/mdx';
 import sitemap from '@astrojs/sitemap';
 import remarkDirective from 'remark-directive';
 import remarkAdmonitions from './scripts/remark-admonitions.mjs';
-import { redirects } from './src/docs-sidebar.ts';
+import { redirects } from './src/data/docs-sidebar.ts';
 
 // Shiki theme that matches design_guidelines/CocoIndex Docs.html:
 //   bg #2A121B (maroon-ink), fg cream, coral keywords, pink function names,

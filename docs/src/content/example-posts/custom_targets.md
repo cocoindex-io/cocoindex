@@ -1,10 +1,5 @@
 ---
-title: Export markdown files to local Html with Custom Targets
-description: 'Simple example to export Markdown files to local HTML files using Custom Targets.'
-slug: custom_targets
 image: https://cocoindex.io/blobs/docs/img/examples/custom_targets/cover.png
-tags: [custom-building-blocks]
-last_reviewed: 2026-01-18
 ---
 
 [→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/custom_output_files)

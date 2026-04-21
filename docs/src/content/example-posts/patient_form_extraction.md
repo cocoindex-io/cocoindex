@@ -1,10 +1,5 @@
 ---
-title: Extract Nested Structured Data from Patient Form
-description: 'Extract nested structured data from patient form and performs data mapping and field level transformation.'
-slug: patient_form_extraction
 image: https://cocoindex.io/blobs/docs/img/examples/patient_form_extraction/cover.png
-tags: [structured-data-extraction, data-mapping]
-last_reviewed: 2026-01-18
 ---
 
 [→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/patient_intake_extraction)

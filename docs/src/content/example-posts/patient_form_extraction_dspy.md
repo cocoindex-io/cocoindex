@@ -1,10 +1,5 @@
 ---
-title: Extracting Intake Forms with DSPy and CocoIndex
-description: 'How to use DSPy together with CocoIndex to build a data pipeline that extracts structured patient information from PDF intake forms using vision models.'
-slug: patient_form_extraction_dspy
 image: https://cocoindex.io/blobs/docs/img/examples/patient_form_extraction_dspy/cover.png
-tags: [structured-data-extraction, custom-building-blocks, vision-models]
-last_reviewed: 2026-01-18
 ---
 
 [→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/patient_intake_extraction_dspy)

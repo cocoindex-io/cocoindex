@@ -112,7 +112,7 @@ const tocHeadings = (rendered?.headings ?? []).filter((h) => h.depth === 2);
 
         <div class="hero-grid">
           <div>
-            <h1 class="hero-h" set:html={titleMarkup(ex.title + (ex.title.endsWith('.') ? '' : '.'))} />
+            <h1 class="hero-h" set:html={titleMarkup(ex.title)} />
             <p class="hero-sub">{ex.description}</p>
             <div class="hero-cta">
               <a class="btn btn-coral" href={sourceUrl}>View source

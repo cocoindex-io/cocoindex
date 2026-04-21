@@ -1,10 +1,5 @@
 ---
-title: Building a Knowledge Graph from Meeting Notes that automatically updates
-description: 'Turn Google Drive meeting notes into an automatically updating Neo4j knowledge graph using CocoIndex’s incremental processing and LLM extraction.'
-slug: meeting_notes_graph
 image: https://cocoindex.io/blobs/docs/img/examples/meeting_notes_graph/cover.png
-tags: [knowledge-graph, structured-data-extraction]
-last_reviewed: 2026-01-18
 ---
 
 [→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/meeting_notes_graph)

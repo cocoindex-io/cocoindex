@@ -1,10 +1,5 @@
 ---
-title: Real-Time Knowledge Graph for Documents with LLM
-description: 'CocoIndex now supports knowledge graph with incremental processing. Build live knowledge for agents is super easy with CocoIndex.'
-slug: knowledge-graph-for-docs
 image: https://cocoindex.io/blobs/docs/img/examples/docs_to_knowledge_graph/cover.png
-tags: [knowledge-graph, structured-data-extraction]
-last_reviewed: 2026-01-18
 ---
 
 [→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/docs_to_knowledge_graph)

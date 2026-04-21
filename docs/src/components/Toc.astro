@@ -1,11 +1,11 @@
 ---
 import type { MarkdownHeading } from 'astro';
 import { GITHUB_REPO, DISCORD_URL } from '../consts';
-import docsMeta from '../docs-meta.json';
+import docsMeta from '../data/docs-meta.json';
 
 export interface Props {
   headings: MarkdownHeading[];
-  /** Slug of the current doc — keys into src/docs-meta.json for edit time. */
+  /** Slug of the current doc — keys into src/data/docs-meta.json for edit time. */
   slug: string;
 }
 
