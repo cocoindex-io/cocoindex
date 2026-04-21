@@ -110,4 +110,38 @@ const ENTERPRISE = `${SITE_MAIN}/enterprise`;
       })
       .catch(() => { /* offline / rate-limited — leave the em-dash. */ });
   })();
+
+  // Copy-to-clipboard for every .code-figure .copy button — one delegated
+  // listener per document. Emitted markup lives in scripts/remark-code-titles.mjs.
+  (() => {
+    document.addEventListener('click', (ev) => {
+      const btn = (ev.target as HTMLElement | null)?.closest('.code-figure .copy') as HTMLButtonElement | null;
+      if (!btn) return;
+      const fig = btn.closest<HTMLElement>('.code-figure');
+      const code = fig?.querySelector<HTMLElement>('pre code, pre');
+      if (!code) return;
+      const text = code.innerText.replace(/\n$/, '');
+      const label = btn.querySelector<HTMLElement>('.copy-lbl');
+      const done = () => {
+        btn.classList.add('copied');
+        if (label) label.textContent = 'Copied';
+        window.setTimeout(() => {
+          btn.classList.remove('copied');
+          if (label) label.textContent = 'Copy';
+        }, 1500);
+      };
+      if (navigator.clipboard?.writeText) {
+        navigator.clipboard.writeText(text).then(done).catch(() => { /* fall through */ });
+      } else {
+        // Legacy fallback — create an offscreen textarea, select, execCommand.
+        const ta = document.createElement('textarea');
+        ta.value = text; ta.setAttribute('readonly', '');
+        ta.style.position = 'fixed'; ta.style.left = '-9999px';
+        document.body.appendChild(ta);
+        ta.select();
+        try { document.execCommand('copy'); done(); } catch { /* ignore */ }
+        ta.remove();
+      }
+    });
+  })();
 </script>

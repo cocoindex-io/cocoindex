@@ -435,6 +435,89 @@ aside.toc .meta .edited { color: var(--muted); cursor: default; }
 }
 .prose pre code { background: none; color: inherit; padding: 0; font-size: inherit; }
 
+/* Titled code blocks — wrapped by scripts/remark-code-titles.mjs with
+   <figure class="code-figure"><div class="bar">[dots][file]</div><pre>...</pre></figure>.
+   Matches the blog pattern at cocoindex-io.github.io/src/styles/globals.css:3115
+   (.blog-theme article .code-figure) so docs and blog code blocks look identical.
+   The .bar replaces the <pre>'s own top border/radius so the figure is one card. */
+.code-figure {
+  margin: 24px 0;
+  border-radius: 14px; overflow: hidden;
+  background: var(--maroon-ink);
+  border: 1px solid rgba(42, 18, 27, 0.2);
+}
+.code-figure .bar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 16px;
+  border-bottom: 1px solid rgba(252, 243, 216, 0.06);
+  font-family: var(--mono); font-size: 11px; letter-spacing: 0.04em;
+  color: rgba(252, 243, 216, 0.6);
+}
+.code-figure .bar .dots { display: flex; gap: 6px; }
+.code-figure .bar .dots span {
+  width: 9px; height: 9px; border-radius: 50%;
+  background: rgba(252, 243, 216, 0.15);
+}
+.code-figure .bar .right {
+  display: flex; align-items: center; gap: 12px;
+}
+.code-figure .bar .file {
+  font-family: var(--mono); font-size: 11px; letter-spacing: 0.04em;
+  color: rgba(252, 243, 216, 0.72);
+  text-transform: none;
+}
+/* Copy button — hidden at rest, revealed on figure hover or keyboard focus.
+   After a successful copy the .copied class flips icon + label for 1.5s. */
+.code-figure .bar .copy {
+  display: inline-flex; align-items: center; gap: 6px;
+  margin: -3px 0;
+  padding: 3px 9px;
+  font-family: var(--mono); font-size: 10px; letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(252, 243, 216, 0.7);
+  background: transparent;
+  border: 1px solid rgba(252, 243, 216, 0.16);
+  border-radius: 999px;
+  cursor: pointer;
+  opacity: 0; transform: translateY(-1px);
+  transition: opacity .18s ease, transform .18s ease, color .15s ease, border-color .15s ease, background .15s ease;
+}
+.code-figure:hover .bar .copy,
+.code-figure:focus-within .bar .copy,
+.code-figure .bar .copy.copied {
+  opacity: 1; transform: none;
+}
+.code-figure .bar .copy:hover {
+  color: var(--cream);
+  border-color: rgba(252, 243, 216, 0.42);
+  background: rgba(252, 243, 216, 0.06);
+}
+.code-figure .bar .copy:focus-visible {
+  outline: 2px solid var(--coral); outline-offset: 2px;
+}
+.code-figure .bar .copy .copy-ok { display: none; }
+.code-figure .bar .copy.copied {
+  color: #8EF09E; border-color: rgba(142, 240, 158, 0.45);
+}
+.code-figure .bar .copy.copied .copy-i { display: none; }
+.code-figure .bar .copy.copied .copy-ok { display: inline-block; }
+.code-figure .bar .copy .copy-lbl { line-height: 1; }
+@media (prefers-reduced-motion: reduce) {
+  .code-figure .bar .copy { transition: opacity .12s ease; transform: none; }
+}
+.code-figure pre {
+  margin: 0 !important;
+  padding: 18px 22px !important;
+  border: 0 !important; border-radius: 0 !important;
+  background: var(--maroon-ink) !important;
+  font-family: var(--mono); font-size: 13px; line-height: 1.7;
+  overflow-x: auto;
+}
+.code-figure pre code {
+  background: transparent; padding: 0; border: 0; color: inherit;
+  font-family: var(--mono); font-size: 13px;
+}
+
 /* Admonitions — rendered from Docusaurus-style `:::note`, `:::info`,
    `:::tip`, `:::warning` blocks via scripts/remark-admonitions.mjs.
    Ported verbatim from design_guidelines/ui/admonitions.html — four
