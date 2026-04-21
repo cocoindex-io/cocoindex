@@ -1,0 +1,37 @@
+---
+title: "*Concurrency* control"
+description: >
+  Tune how many processing components can run at the same time with
+  `max_inflight_components` or the `COCOINDEX_MAX_INFLIGHT_COMPONENTS`
+  environment variable, and understand how CocoIndex avoids deadlocks in
+  nested mount scenarios.
+---
+CocoIndex executes each [processing component](../programming_guide/processing_component.md) as a unit of concurrent work. By default, up to **1024** processing components can be in flight per app. When components perform resource-intensive work (e.g., calling external APIs, running ML models), you may want a tighter limit.
+
+## Setting the limit
+
+Set `max_inflight_components` in `AppConfig`:
+
+```python
+app = coco.App(
+    coco.AppConfig(name="MyPipeline", max_inflight_components=4),
+    app_main,
+    sourcedir=pathlib.Path("./data"),
+)
+```
+
+With `max_inflight_components=4`, at most 4 processing components execute at the same time. When a component finishes, the next pending one starts.
+
+Setting `max_inflight_components=1` serializes all components — only one runs at a time.
+
+You can also set the limit via the `COCOINDEX_MAX_INFLIGHT_COMPONENTS` environment variable:
+
+```bash
+export COCOINDEX_MAX_INFLIGHT_COMPONENTS=4
+```
+
+**Precedence:** `AppConfig` value > environment variable > default (1024).
+
+## Deadlock prevention
+
+When a parent component mounts a child, the parent releases its concurrency slot so the child can make progress. This prevents deadlocks in nested mount scenarios — even with `max_inflight_components=1`, a parent mounting a child will not block forever.
