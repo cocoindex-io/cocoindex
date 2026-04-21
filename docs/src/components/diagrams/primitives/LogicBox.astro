@@ -1,0 +1,55 @@
+---
+/** Round-cornered rectangle — represents a SUBSYSTEM or logic block
+   (Split, Embed, Drive Folder, Vector Database, or a container with slot).
+   The label is rendered via <foreignObject> so the browser handles
+   auto-wrapping against the box width. */
+import ShapeGroup from './ShapeGroup.astro';
+
+interface Props {
+  x: number;
+  y: number;
+  w?: number;
+  h?: number;
+  label?: string;
+  variant?: 'default' | 'component' | 'app';
+  state?: 'idle' | 'new' | 'updated' | 'changed' | 'removed';
+  memoized?: boolean;
+  status?: 'cache-ready' | 'refreshing';
+  highlight?: boolean;
+  class?: string;
+}
+const {
+  x, y,
+  w = 120,
+  h = 60,
+  label,
+  variant = 'default',
+  state = 'idle',
+  memoized = false,
+  status,
+  highlight = false,
+  class: extraClass = '',
+} = Astro.props;
+
+const variantClass =
+  variant === 'component' ? 'dg-box--component'
+  : variant === 'app' ? 'dg-box--component'
+  : '';
+---
+<ShapeGroup
+  x={x} y={y} w={w}
+  baseClass="dg-logicbox"
+  state={state}
+  highlight={highlight}
+  memoized={memoized}
+  status={status}
+  class={extraClass}
+>
+  <rect class={`dg-box ${variantClass}`.trim()} x="0" y="0" width={w} height={h} rx="8" />
+  {label && (
+    <foreignObject x="0" y="0" width={w} height={h}>
+      <div xmlns="http://www.w3.org/1999/xhtml" class="dg-fo-label">{label}</div>
+    </foreignObject>
+  )}
+  <slot />
+</ShapeGroup>

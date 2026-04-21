@@ -1,0 +1,464 @@
+/* Shared styles for inline SVG diagrams in docs pages.
+   Palette vars come from src/styles/globals.css.
+   Convention: animations are IDLE by default and trigger on hover of .dg-root.
+   Mirrors the cocoindex.github.io homepage style. */
+
+.dg-root {
+  display: block;
+  width: 100%;
+  max-width: 720px;
+  margin: 24px auto;
+  overflow: visible;
+  font-family: var(--sans);
+  color: var(--maroon-ink);
+
+  /* Diagram-local palette extensions (gold for "updated" state,
+     etc.). Kept here so they don't leak outside diagrams. */
+  --dg-gold: #D4A835;
+}
+
+/* ─── Text ─────────────────────────────────────────────────── */
+
+.dg-label {
+  font-family: var(--sans);
+  font-size: 13px;
+  font-weight: 500;
+  fill: var(--maroon-ink);
+  dominant-baseline: middle;
+  text-anchor: middle;
+}
+
+.dg-label--small {
+  font-size: 11px;
+}
+
+.dg-label--caps {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  fill: var(--muted, rgba(42, 18, 27, 0.58));
+}
+
+.dg-label--mono {
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.dg-label--left {
+  text-anchor: start;
+}
+
+.dg-label--right {
+  text-anchor: end;
+}
+
+/* Label rendered inside a <foreignObject> — lets the browser auto-wrap
+   long strings against the bounding box width. Padding keeps text off
+   the rounded corners. */
+.dg-fo-label {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 0 10px;
+  box-sizing: border-box;
+  font-family: var(--sans);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.2;
+  color: var(--maroon-ink);
+  overflow-wrap: break-word;
+  word-break: normal;
+  white-space: pre-line;
+  /* \n in label becomes a line break */
+}
+
+.dg-fo-label--small {
+  font-size: 11px;
+  padding: 0 6px;
+}
+
+.dg-fo-label--mono {
+  font-family: var(--mono);
+  font-weight: 400;
+}
+
+.dg-fo-label--muted {
+  color: var(--muted, rgba(42, 18, 27, 0.58));
+}
+
+/* ─── Boxes ────────────────────────────────────────────────── */
+
+.dg-box {
+  fill: var(--cream);
+  stroke: var(--maroon);
+  stroke-width: 1.4;
+  transition: fill .25s ease, stroke .25s ease;
+}
+
+/* One neutral fill for all non-container boxes — source, target, data,
+   and bullet shapes share the same cream + maroon treatment. Shape
+   (not color) carries the semantic distinction. */
+.dg-box--component {
+  fill: color-mix(in oklab, var(--peach) 16%, var(--cream));
+  stroke: var(--coral);
+}
+
+.dg-box--app {
+  fill: color-mix(in oklab, var(--peach) 10%, var(--cream));
+  stroke: var(--coral);
+  stroke-width: 1.4;
+}
+
+/* Highlight for "the currently discussed element" — thick palm-green
+   border. Applied by setting `highlight` on a primitive; the outer <g>
+   gets .dg-highlight which targets descendant .dg-box. */
+.dg-highlight>.dg-box,
+.dg-highlight>rect.dg-box,
+.dg-highlight>path.dg-box {
+  stroke: var(--palm);
+  stroke-width: 3;
+}
+
+.dg-box--muted {
+  fill: var(--cream-soft, var(--cream));
+  stroke: var(--rule-strong, rgba(42, 18, 27, 0.35));
+  stroke-dasharray: 4 4;
+}
+
+/* ─── Tags / small pills ──────────────────────────────────── */
+
+.dg-tag-rect {
+  fill: color-mix(in oklab, var(--coral) 14%, var(--cream));
+  stroke: color-mix(in oklab, var(--coral) 35%, transparent);
+  stroke-width: 1;
+}
+
+.dg-tag-rect--palm {
+  fill: color-mix(in oklab, var(--palm) 14%, var(--cream));
+  stroke: color-mix(in oklab, var(--palm) 45%, transparent);
+}
+
+.dg-tag-rect--pink {
+  fill: color-mix(in oklab, var(--pink) 16%, var(--cream));
+  stroke: color-mix(in oklab, var(--pink) 45%, transparent);
+}
+
+.dg-tag-rect--muted {
+  fill: var(--cream-soft, var(--cream));
+  stroke: var(--rule-strong, rgba(42, 18, 27, 0.35));
+}
+
+.dg-tag-text {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  fill: var(--coral);
+  dominant-baseline: middle;
+  text-anchor: middle;
+}
+
+.dg-tag-text--palm {
+  fill: var(--palm);
+}
+
+.dg-tag-text--pink {
+  fill: var(--pink);
+}
+
+.dg-tag-text--muted {
+  fill: var(--muted, rgba(42, 18, 27, 0.58));
+}
+
+/* ─── State modifiers ─────────────────────────────────────── */
+
+/* State rules use the DIRECT-CHILD combinator so the state class on a
+   container (e.g. ProcessingComponent with pcState='updated') doesn't
+   cascade into every nested .dg-box (chunks, embeds, vectors) — each
+   primitive owns its own state on its own wrapper <g>. */
+.dg-state-new>.dg-box {
+  stroke: var(--palm);
+  stroke-width: 2.2;
+  fill: color-mix(in oklab, var(--palm) 22%, var(--cream));
+}
+
+.dg-state-updated>.dg-box {
+  stroke: var(--dg-gold);
+  stroke-width: 2.2;
+  fill: color-mix(in oklab, var(--dg-gold) 32%, var(--cream));
+}
+
+.dg-state-removed>.dg-box {
+  stroke: var(--pink);
+  stroke-width: 2.2;
+  fill: color-mix(in oklab, var(--pink) 22%, var(--cream));
+}
+
+/* Removed elements also strike through their label and mute its color
+   so the "no longer there" reading is immediate. The native SVG
+   <title> provides a hover tooltip ("deleted"). These selectors stay
+   as descendant because the label lives inside a <foreignObject>
+   which is itself a child of the same wrapper <g>. */
+.dg-state-removed>.dg-label,
+.dg-state-removed>foreignObject .dg-fo-label {
+  text-decoration: line-through;
+  color: var(--muted, rgba(42, 18, 27, 0.58));
+  fill: var(--muted, rgba(42, 18, 27, 0.58));
+}
+
+/* `changed` is kept as a thin invalidation marker (pink stroke, no fill
+   change) for fingerprint-propagation diagrams — distinct from
+   `removed` which is a full delete. */
+.dg-state-changed>.dg-box {
+  stroke: var(--pink);
+  fill: color-mix(in oklab, var(--pink) 10%, var(--cream));
+}
+
+/* ─── Flow arrows ─────────────────────────────────────────── */
+
+.dg-flow {
+  fill: none;
+  stroke: var(--coral);
+  stroke-width: 1.4;
+  stroke-dasharray: 4 5;
+  stroke-linecap: round;
+  stroke-dashoffset: 0;
+}
+
+.dg-flow--palm {
+  stroke: var(--palm);
+}
+
+.dg-flow--muted {
+  stroke: var(--rule-strong, rgba(42, 18, 27, 0.35));
+}
+
+.dg-root:hover .dg-flow {
+  animation: dg-flow-drift 1.2s linear infinite;
+}
+
+@keyframes dg-flow-drift {
+  from {
+    stroke-dashoffset: 18;
+  }
+
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+.dg-connector {
+  fill: none;
+  stroke: var(--rule-strong, rgba(42, 18, 27, 0.35));
+  stroke-width: 1.2;
+}
+
+/* ─── Pulse ──────────────────────────────────────────────── */
+
+.dg-pulse {
+  transform-origin: center;
+  transform-box: fill-box;
+}
+
+.dg-root:hover .dg-pulse {
+  animation: dg-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes dg-pulse {
+
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+
+  50% {
+    transform: scale(1.6);
+    opacity: 0.55;
+  }
+}
+
+/* ─── Step-through reveal (dg-step-1 … dg-step-6) ──────── */
+
+.dg-step {
+  opacity: 0.35;
+  transition: opacity .4s ease;
+}
+
+.dg-root:hover .dg-step {
+  opacity: 1;
+}
+
+.dg-root:hover .dg-step-1 {
+  transition-delay: 0s;
+}
+
+.dg-root:hover .dg-step-2 {
+  transition-delay: 0.15s;
+}
+
+.dg-root:hover .dg-step-3 {
+  transition-delay: 0.30s;
+}
+
+.dg-root:hover .dg-step-4 {
+  transition-delay: 0.45s;
+}
+
+.dg-root:hover .dg-step-5 {
+  transition-delay: 0.60s;
+}
+
+.dg-root:hover .dg-step-6 {
+  transition-delay: 0.75s;
+}
+
+/* ─── Fingerprint glyph ──────────────────────────────────── */
+
+.dg-fingerprint {
+  fill: none;
+  stroke: var(--coral);
+  stroke-width: 1;
+  stroke-linecap: round;
+}
+
+.dg-fingerprint--stale {
+  stroke: var(--pink);
+}
+
+.dg-fingerprint--fresh {
+  stroke: var(--palm);
+}
+
+/* ─── Status badges (cache-ready, refreshing) ─────────────── */
+
+.dg-status-badge circle.dg-status-bg {
+  stroke-width: 0;
+}
+
+.dg-status-badge--ok circle.dg-status-bg {
+  fill: var(--palm);
+}
+
+.dg-status-badge--ok path.dg-status-mark {
+  fill: none;
+  stroke: var(--cream);
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  /* Default: fully drawn. The hover rule below redraws it from left
+     to right like a handwritten tick. */
+  stroke-dasharray: 100;
+  stroke-dashoffset: 0;
+}
+
+.dg-status-badge--refresh circle.dg-status-bg {
+  fill: var(--coral);
+}
+
+.dg-status-badge--refresh .dg-status-spin {
+  transform-origin: 0 0;
+  /* Animation intentionally idle by default — we only spin on root hover
+     so the static page reads calmly. */
+}
+
+.dg-status-badge--refresh path.dg-status-mark {
+  fill: none;
+  stroke: var(--cream);
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+
+.dg-status-badge--refresh polygon.dg-status-mark {
+  fill: var(--cream);
+  stroke: var(--cream);
+  stroke-width: 0.6;
+  stroke-linejoin: round;
+}
+
+.dg-root:hover .dg-status-badge--refresh .dg-status-spin {
+  animation: dg-spin 1.6s linear infinite;
+}
+
+@keyframes dg-spin {
+  from {
+    transform: rotate(0deg);
+  }
+
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Cache-ready check redraws itself on root hover — stroke "writes in"
+   from left to right, holds, then resets. Reads as "freshly verified"
+   alongside the refreshing badge's spin. */
+.dg-root:hover .dg-status-badge--ok path.dg-status-mark {
+  animation: dg-check-draw 2.3s ease-out infinite;
+}
+
+@keyframes dg-check-draw {
+  0% {
+    stroke-dashoffset: 100;
+  }
+
+  /* invisible — held empty ~0.5s */
+  22% {
+    stroke-dashoffset: 100;
+  }
+
+  /* writes in over ~0.6s */
+  48% {
+    stroke-dashoffset: 0;
+  }
+
+  /* held drawn ~1.2s, then snaps back at cycle wrap */
+  100% {
+    stroke-dashoffset: 0;
+  }
+}
+
+/* Delta-state elements (added, updated, removed) pulse their border
+   width + color on root hover so all three changes read with the
+   same motion vocabulary. */
+.dg-root:hover .dg-state-new>.dg-box,
+.dg-root:hover .dg-state-updated>.dg-box,
+.dg-root:hover .dg-state-removed>.dg-box {
+  animation: dg-delta-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes dg-delta-pulse {
+
+  0%,
+  100% {
+    stroke-width: 2.2;
+    stroke-opacity: 0.85;
+  }
+
+  50% {
+    stroke-width: 4.2;
+    stroke-opacity: 1;
+  }
+}
+
+/* ─── Reduced-motion fallback ────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+
+  .dg-root:hover .dg-flow,
+  .dg-root:hover .dg-pulse,
+  .dg-root:hover .dg-state-new>.dg-box,
+  .dg-root:hover .dg-state-updated>.dg-box,
+  .dg-root:hover .dg-state-removed>.dg-box,
+  .dg-root:hover .dg-status-badge--refresh .dg-status-spin,
+  .dg-root:hover .dg-status-badge--ok path.dg-status-mark {
+    animation: none !important;
+  }
+
+  .dg-step {
+    opacity: 1;
+  }
+}

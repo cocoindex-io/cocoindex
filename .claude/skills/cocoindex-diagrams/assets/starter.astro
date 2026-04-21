@@ -1,0 +1,65 @@
+---
+// ─── starter.astro ─────────────────────────────────────────────────
+// Minimal shape-semantic diagram skeleton. Copy into
+// docs/src/components/diagrams/concepts/MyDiagram.astro and adapt.
+// Demonstrates: config-first layout, a ProcessingComponent with slot
+// children in local coords, horizontal arrows, a binding connector.
+import DiagramFrame from '../primitives/DiagramFrame.astro';
+import ProcessingComponent from '../primitives/ProcessingComponent.astro';
+import LogicBox from '../primitives/LogicBox.astro';
+import DataBox from '../primitives/DataBox.astro';
+import TargetBullet from '../primitives/TargetBullet.astro';
+import FlowArrow from '../primitives/FlowArrow.astro';
+import Connector from '../primitives/Connector.astro';
+
+// ─── Layout ─────────────────────────────────────────────────────────
+// Derive sizes from content so padding stays balanced on all sides.
+const PC_PAD = 24;
+const LEFT_W = 120, LEFT_H = 40;
+const RIGHT_W = 120, RIGHT_H = 40;
+const INNER_GAP = 60;
+const PC_W = LEFT_W + INNER_GAP + RIGHT_W + PC_PAD * 2;  // 348
+const PC_H = 100;
+
+const SRC_W = 110, SRC_H = 60;
+const TGT_W = 110, TGT_H = 40;
+const SRC_TO_PC = 40, PC_TO_TGT = 40;
+
+const VB_W = 20 + SRC_W + SRC_TO_PC + PC_W + PC_TO_TGT + TGT_W + 20;  // 548
+const CY = 110;
+
+const SRC    = { x: 20, y: CY - SRC_H / 2, w: SRC_W, h: SRC_H };
+const PC     = { x: SRC.x + SRC.w + SRC_TO_PC, y: CY - PC_H / 2, w: PC_W, h: PC_H };
+const TARGET = { x: PC.x + PC.w + PC_TO_TGT, y: CY - TGT_H / 2, w: TGT_W, h: TGT_H };
+
+const LEFT_DX  = PC_PAD;
+const RIGHT_DX = PC_PAD + LEFT_W + INNER_GAP;
+---
+<DiagramFrame
+  viewBox={`0 0 ${VB_W} ${VB_H}`}
+  maxWidth={720}
+  title="My diagram"
+  desc="Describe what the diagram conveys."
+>
+  {/* Left data box */}
+  <DataBox x={SRC.x} y={SRC.y + SRC.h / 2 - 14} w={SRC.w} h={28} label="input" />
+
+  {/* Flow into the PC */}
+  <FlowArrow d={`M ${SRC.x + SRC.w} ${SRC.y + SRC.h / 2} L ${PC.x} ${PC.y + PC.h / 2}`} />
+
+  <ProcessingComponent x={PC.x} y={PC.y} w={PC.w} h={PC.h} memoized={true}>
+    {/* coords here are relative to PC's top-left */}
+    <LogicBox x={LEFT_DX} y={PC.h / 2 - 20} w={120} h={40} label="Transform" />
+    <FlowArrow d={`M ${LEFT_DX + 120} ${PC.h / 2} L ${RIGHT_DX} ${PC.h / 2}`} />
+    <LogicBox x={RIGHT_DX} y={PC.h / 2 - 20} w={120} h={40} label="Emit" memoized={true} />
+  </ProcessingComponent>
+
+  {/* Binding to the target — no arrow, dashed */}
+  <Connector
+    d={`M ${PC.x + PC.w} ${PC.y + PC.h / 2} L ${TARGET.x} ${TARGET.y + TARGET.h / 2}`}
+    dashed={true}
+  />
+
+  {/* Target state */}
+  <TargetBullet x={TARGET.x} y={TARGET.y + TARGET.h / 2 - 12} w={TARGET.w} h={24} label="output" />
+</DiagramFrame>

@@ -1,0 +1,59 @@
+---
+/** Shared wrapper for the shape-semantic primitives
+   (DataBox, LogicBox, TargetBullet, ProcessingComponent). Centralizes
+   the concerns that every primitive would otherwise duplicate:
+
+     - The outer <g transform="translate(x y)"> with base class
+     - State + highlight modifier classes
+     - Native <title>deleted</title> tooltip when state='removed'
+     - Optional StatusBadge (top-left) and MemoMark (top-right) badges,
+       both suppressed automatically when state='removed' since a
+       removed thing has no cache status or memo to display.
+
+   Each primitive slots its shape (`<rect>` / `<path>`) and optional
+   label into the default slot; this base takes care of the rest. */
+import MemoMark from './MemoMark.astro';
+import StatusBadge from './StatusBadge.astro';
+
+type State = 'idle' | 'new' | 'updated' | 'changed' | 'removed';
+type Status = 'cache-ready' | 'refreshing';
+
+interface Props {
+  x: number;
+  y: number;
+  /** Container width — required when `memoized=true` so the MemoMark
+      can be positioned at the top-right corner. */
+  w?: number;
+  /** Base class for the wrapper group (e.g. `dg-databox`, `dg-pc`). */
+  baseClass: string;
+  state?: State;
+  highlight?: boolean;
+  memoized?: boolean;
+  status?: Status;
+  class?: string;
+}
+const {
+  x, y, w,
+  baseClass,
+  state = 'idle',
+  highlight = false,
+  memoized = false,
+  status,
+  class: extraClass = '',
+} = Astro.props;
+
+const classNames = [
+  baseClass,
+  state === 'idle' ? '' : `dg-state-${state}`,
+  highlight ? 'dg-highlight' : '',
+  extraClass,
+].filter(Boolean).join(' ');
+
+const suppressBadges = state === 'removed';
+---
+<g transform={`translate(${x} ${y})`} class={classNames}>
+  {state === 'removed' && <title>deleted</title>}
+  <slot />
+  {!suppressBadges && status && <StatusBadge x={0} y={0} status={status} />}
+  {!suppressBadges && memoized && w !== undefined && <MemoMark x={w} y={0} />}
+</g>

@@ -1,0 +1,47 @@
+---
+/** Container that wraps the visuals of a processing component —
+   a cream round-cornered rectangle with a centered header label and
+   optional memo mark (top-right) / status badge (top-left). Children
+   rendered inside the slot use coordinates RELATIVE to the container's
+   top-left. */
+import ShapeGroup from './ShapeGroup.astro';
+
+interface Props {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  label?: string;
+  memoized?: boolean;
+  status?: 'cache-ready' | 'refreshing';
+  state?: 'idle' | 'new' | 'updated' | 'changed' | 'removed';
+  highlight?: boolean;
+  class?: string;
+}
+const {
+  x, y, w, h,
+  label = 'Processing Component',
+  memoized = false,
+  status,
+  state = 'idle',
+  highlight = false,
+  class: extraClass = '',
+} = Astro.props;
+---
+<ShapeGroup
+  x={x} y={y} w={w}
+  baseClass="dg-pc"
+  state={state}
+  highlight={highlight}
+  memoized={memoized}
+  status={status}
+  class={extraClass}
+>
+  <rect class="dg-box" x="0" y="0" width={w} height={h} rx="8" />
+  {label && (
+    <foreignObject x="0" y="0" width={w} height="28">
+      <div xmlns="http://www.w3.org/1999/xhtml" class="dg-fo-label dg-fo-label--small">{label}</div>
+    </foreignObject>
+  )}
+  <slot />
+</ShapeGroup>

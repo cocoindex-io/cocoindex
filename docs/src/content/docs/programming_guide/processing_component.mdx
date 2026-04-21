@@ -29,6 +29,8 @@ Here's an example component path tree for a pipeline that processes files:
     └── "world.pdf"            ← process_file component
 ```
 
+The tree is populated dynamically as the app runs — each `mount()` / `mount_each()` call adds a subpath.
+
 See [StableKey](./sdk_overview.md#stablekey) in the SDK Overview for details on what values can be used in component paths.
 
 ## Mount

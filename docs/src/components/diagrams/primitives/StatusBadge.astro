@@ -1,0 +1,63 @@
+---
+/** Small circular badge placed at the top-LEFT corner of a container
+   (mirror of MemoMark at top-right). Signals the container's cache
+   state during incremental execution:
+     - 'cache-ready': green disc with a cream checkmark (result reused)
+     - 'refreshing': coral disc with a spinning circular arrow (re-run)
+   Pass the container's top-LEFT corner as (x, y); the primitive handles
+   inset and sizing so every badge looks identical. */
+const SIZE = 9;  // radius
+
+type Status = 'cache-ready' | 'refreshing';
+
+interface Props {
+  x: number;
+  y: number;
+  status: Status;
+  class?: string;
+}
+const { x, y, status, class: extraClass = '' } = Astro.props;
+const r = SIZE;
+// Center sits exactly at the container's top-LEFT corner — the disc is
+// bisected by both the top and left edges.
+const cx = x;
+const cy = y;
+
+const variantClass = status === 'cache-ready'
+  ? 'dg-status-badge--ok'
+  : 'dg-status-badge--refresh';
+
+// Checkmark path relative to badge center (box is 2*r square).
+const checkD = `M ${-r * 0.45} 0 L ${-r * 0.1} ${r * 0.35} L ${r * 0.5} ${-r * 0.35}`;
+---
+<g class={`dg-status-badge ${variantClass} ${extraClass}`.trim()} transform={`translate(${cx} ${cy})`}>
+  {status === 'cache-ready' && (
+    <g>
+      <title>cache ready — reused</title>
+      <circle class="dg-status-bg" cx="0" cy="0" r={r} />
+      {/* pathLength=100 normalises the stroke-dasharray math in CSS
+          regardless of the path's intrinsic length. */}
+      <path class="dg-status-mark" d={checkD} pathLength="100" />
+    </g>
+  )}
+  {status === 'refreshing' && (
+    <g>
+      <title>refreshing — re-executing</title>
+      <circle class="dg-status-bg" cx="0" cy="0" r={r} />
+      {/* spinning arrow: a 3/4 circular arc with a triangular arrowhead */}
+      <g class="dg-status-spin">
+        <path
+          class="dg-status-mark"
+          d={`M ${r * 0.55} 0 A ${r * 0.55} ${r * 0.55} 0 1 0 0 ${r * 0.55}`}
+          fill="none"
+          stroke-width="1.6"
+          stroke-linecap="round"
+        />
+        <polygon
+          class="dg-status-mark"
+          points={`${r * 0.82},${r * 0.15} ${r * 0.28},${r * 0.15} ${r * 0.55},${-r * 0.3}`}
+        />
+      </g>
+    </g>
+  )}
+</g>

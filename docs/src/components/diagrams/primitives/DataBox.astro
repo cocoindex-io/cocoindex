@@ -1,0 +1,36 @@
+---
+/** Sharp-cornered rectangle — represents DATA (a file, a chunk, a row). */
+import ShapeGroup from './ShapeGroup.astro';
+
+interface Props {
+  x: number;
+  y: number;
+  w?: number;
+  h?: number;
+  label: string;
+  state?: 'idle' | 'new' | 'updated' | 'changed' | 'removed';
+  highlight?: boolean;
+  class?: string;
+}
+const {
+  x, y,
+  w = 80,
+  h = 28,
+  label,
+  state = 'idle',
+  highlight = false,
+  class: extraClass = '',
+} = Astro.props;
+---
+<ShapeGroup
+  x={x} y={y}
+  baseClass="dg-databox"
+  state={state}
+  highlight={highlight}
+  class={extraClass}
+>
+  <rect class="dg-box" x="0" y="0" width={w} height={h} rx="2" />
+  <foreignObject x="0" y="0" width={w} height={h}>
+    <div xmlns="http://www.w3.org/1999/xhtml" class="dg-fo-label dg-fo-label--small dg-fo-label--mono">{label}</div>
+  </foreignObject>
+</ShapeGroup>
