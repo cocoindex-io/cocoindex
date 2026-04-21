@@ -5,7 +5,7 @@ import sitemap from '@astrojs/sitemap';
 import remarkDirective from 'remark-directive';
 import remarkAdmonitions from './scripts/remark-admonitions.mjs';
 import remarkCodeTitles from './scripts/remark-code-titles.mjs';
-import { redirects } from './src/docs-sidebar.ts';
+import { redirects } from './src/data/docs-sidebar.ts';
 
 // Shiki theme — canonical token palette from
 // design_guidelines/ui/color.html §04 (.code-showcase .tk-*). Saturated brand

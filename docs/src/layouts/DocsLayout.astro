@@ -6,8 +6,8 @@ import Banner from '../components/Banner.astro';
 import Sidebar from '../components/Sidebar.astro';
 import Toc from '../components/Toc.astro';
 import { SITE_URL, titleMarkup, DOCS_EDIT_BASE } from '../consts';
-import { flatten, sidebar, type SidebarItem } from '../docs-sidebar';
-import docsMeta from '../docs-meta.json';
+import { flatten, sidebar, type SidebarItem } from '../data/docs-sidebar';
+import docsMeta from '../data/docs-meta.json';
 
 export interface IntroMeta {
   time?: string;
@@ -43,7 +43,7 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, '');
 const renderedTitle = titleMarkup(titleMarkupRaw ?? title);
 const fullTitle = `${title} · CocoIndex Docs`;
 
-// Version + last-updated come from docs-meta.json, baked at build time.
+// Version + last-updated come from data/docs-meta.json, baked at build time.
 const fileMeta = (
   docsMeta as { _version?: string | null; files: Record<string, { editTs: number }> }
 );

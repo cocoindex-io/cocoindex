@@ -1,18 +1,15 @@
 ---
 import type { MarkdownHeading } from 'astro';
 import { GITHUB_REPO, DISCORD_URL } from '../consts';
+import docsMeta from '../data/docs-meta.json';
 
 export interface Props {
   headings: MarkdownHeading[];
-  /** Slug of the current doc — retained for callers; not used internally. */
+  /** Slug of the current doc — keys into src/data/docs-meta.json for edit time. */
   slug: string;
-  /** Formatted "Last reviewed" date (e.g. "Apr 20, 2026"). When provided,
-   *  renders as a row in the meta block. Pass the absolute date rather
-   *  than a relative "Xd ago" so the rail matches the intro-meta above. */
-  lastReviewed?: string | null;
 }
 
-const { headings, lastReviewed } = Astro.props;
+const { headings, slug } = Astro.props;
 
 // Only H2 and H3 in the right rail — deeper nesting makes noise. H2s get
 // numbered ("1 · Install") to match the design mock.
@@ -22,6 +19,29 @@ const rows = items.map((h) => {
   if (h.depth === 2) h2Count++;
   return { ...h, n: h.depth === 2 ? h2Count : null };
 });
+
+const metaMap = (docsMeta as {
+  _version?: string | null;
+  files: Record<string, { sourcePath: string; editTs: number }>;
+}).files ?? {};
+const meta = metaMap[slug];
+const editTs = meta?.editTs ?? 0;
+
+// "Last reviewed · Xd ago" — coarse relative time suitable for the rail.
+// Timestamp comes from the last git commit touching the source doc, which
+// is the best proxy we have for when a human last reviewed it.
+function relativeReview(ts: number): string | null {
+  if (!ts) return null;
+  const now = Math.floor(Date.now() / 1000);
+  const delta = Math.max(0, now - ts);
+  const pick = (n: number, unit: string) => `${n}${unit} ago`;
+  if (delta < 3600) return pick(Math.max(1, Math.round(delta / 60)), 'm');
+  if (delta < 86400) return pick(Math.round(delta / 3600), 'h');
+  if (delta < 86400 * 30) return pick(Math.round(delta / 86400), 'd');
+  if (delta < 86400 * 365) return pick(Math.round(delta / (86400 * 30)), 'mo');
+  return pick(Math.round(delta / (86400 * 365)), 'y');
+}
+const reviewedAgo = relativeReview(editTs);
 ---
 
 <aside class="toc">
@@ -44,7 +64,7 @@ const rows = items.map((h) => {
       </svg>
       View CocoIndex
     </a>
-    {lastReviewed && (
+    {reviewedAgo && (
       <span class="edited">
         <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden>
           <circle cx="8" cy="8" r="7" fill="var(--palm)" />
@@ -52,7 +72,7 @@ const rows = items.map((h) => {
                 fill="none" stroke="var(--maroon-ink)"
                 stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
         </svg>
-        Last reviewed · {lastReviewed}
+        Last reviewed · {reviewedAgo}
       </span>
     )}
     <a href={DISCORD_URL} target="_blank" rel="noopener">

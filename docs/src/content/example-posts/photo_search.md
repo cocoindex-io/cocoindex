@@ -1,10 +1,5 @@
 ---
-title: Photo Search with Face Detection
-description: 'Covers extracting and embedding faces from images, structuring data for visual search, and exporting to a vector database for face similarity queries.'
-slug: photo_search
 image: https://cocoindex.io/blobs/docs/img/examples/photo_search/cover.png
-tags: [vector-index, multi-modal]
-last_reviewed: 2026-01-18
 ---
 
 [→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/face_recognition)

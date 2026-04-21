@@ -1,10 +1,5 @@
 ---
-title: Bring your own parser as building block with Google Document AI
-description: 'Use Google Document AI to parse document, embed the resulting text, and store it in a vectorized database for semantic search.'
-slug: document_ai
 image: https://cocoindex.io/blobs/docs/img/examples/document_ai/cover.png
-tags: [vector-index, custom-building-blocks]
-last_reviewed: 2026-01-18
 ---
 
 [→ View on GitHub](https://github.com/cocoindex-io/cocoindex-etl-with-document-ai)

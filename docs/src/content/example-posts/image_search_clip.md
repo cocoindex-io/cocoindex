@@ -1,10 +1,5 @@
 ---
-title: Build image search and query with natural language with vision model CLIP
-description: 'Indexing images with CocoIndex and Vision Model CLIP for efficient image search and natural language querying'
-slug: image_search_clip
 image: https://cocoindex.io/blobs/docs/img/examples/image_search_clip/cover.png
-tags: [vector-index, multi-modal]
-last_reviewed: 2026-01-18
 ---
 
 [→ View on GitHub](https://github.com/cocoindex-io/cocoindex/blob/main/examples/image_search/main.py)

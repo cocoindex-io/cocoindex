@@ -133,7 +133,7 @@ const introItems = [
           <span class="pill dark"><span class="dot"></span>Production ready</span>
         </div>
 
-        <h1 class="hero-h" set:html={titleMarkup(ex.title + (ex.title.endsWith('.') ? '' : '.'))} />
+        <h1 class="hero-h" set:html={titleMarkup(ex.title)} />
         <p class="lede">{ex.description}</p>
         <dl class="intro-meta">
           {introItems.map((m) => (

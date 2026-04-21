@@ -1,10 +1,5 @@
 ---
-title: Real-Time Product Recommendation Engine with LLM and Graph Database
-description: 'Build a real-time product recommendation engine with LLM and graph database, from the aspect of product category (taxonomy) understanding.'
-slug: product_recommendation
 image: https://cocoindex.io/blobs/docs/img/examples/product_recommendation/cover.png
-tags: [knowledge-graph]
-last_reviewed: 2026-01-18
 ---
 
 [→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/product_recommendation)
