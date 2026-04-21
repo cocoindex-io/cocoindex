@@ -17,28 +17,44 @@ const cocoindexCodeTheme = {
     'editor.foreground': '#FCF3D8',
   },
   tokenColors: [
-    { scope: ['comment', 'punctuation.definition.comment', 'string.comment'],
-      settings: { foreground: '#978A74', fontStyle: 'italic' } },
-    { scope: ['keyword', 'keyword.control', 'keyword.operator.new',
-              'storage', 'storage.type', 'storage.modifier'],
-      settings: { foreground: '#E59A63' } },
-    { scope: ['entity.name.function', 'meta.function-call', 'support.function',
-              'variable.function'],
-      settings: { foreground: '#FB6A76' } },
-    { scope: ['string', 'string.quoted', 'string.template',
-              'punctuation.definition.string'],
-      settings: { foreground: '#8ef09e' } },
-    { scope: ['constant.numeric', 'constant.language',
-              'constant.language.boolean', 'constant.language.null'],
-      settings: { foreground: '#27E62B' } },
-    { scope: ['entity.name.type', 'entity.name.class', 'support.type',
-              'support.class', 'meta.type.annotation'],
-      settings: { foreground: '#c9a0ff' } },
-    { scope: ['meta.decorator', 'variable.other.decorator', 'entity.name.decorator',
-              'punctuation.definition.decorator'],
-      settings: { foreground: '#E59A63' } },
-    { scope: ['variable', 'variable.other', 'variable.parameter'],
-      settings: { foreground: '#FCF3D8' } },
+    {
+      scope: ['comment', 'punctuation.definition.comment', 'string.comment'],
+      settings: { foreground: '#978A74', fontStyle: 'italic' }
+    },
+    {
+      scope: ['keyword', 'keyword.control', 'keyword.operator.new',
+        'storage', 'storage.type', 'storage.modifier'],
+      settings: { foreground: '#E59A63' }
+    },
+    {
+      scope: ['entity.name.function', 'meta.function-call', 'support.function',
+        'variable.function'],
+      settings: { foreground: '#FB6A76' }
+    },
+    {
+      scope: ['string', 'string.quoted', 'string.template',
+        'punctuation.definition.string'],
+      settings: { foreground: '#8ef09e' }
+    },
+    {
+      scope: ['constant.numeric', 'constant.language',
+        'constant.language.boolean', 'constant.language.null'],
+      settings: { foreground: '#27E62B' }
+    },
+    {
+      scope: ['entity.name.type', 'entity.name.class', 'support.type',
+        'support.class', 'meta.type.annotation'],
+      settings: { foreground: '#c9a0ff' }
+    },
+    {
+      scope: ['meta.decorator', 'variable.other.decorator', 'entity.name.decorator',
+        'punctuation.definition.decorator'],
+      settings: { foreground: '#E59A63' }
+    },
+    {
+      scope: ['variable', 'variable.other', 'variable.parameter'],
+      settings: { foreground: '#FCF3D8' }
+    },
   ],
 };
 
@@ -48,8 +64,6 @@ const cocoindexCodeTheme = {
 export default defineConfig({
   site: 'https://cocoindex.io',
   base: '/docs',
-  trailingSlash: 'ignore',
-  build: { format: 'file' },
   integrations: [
     mdx({
       // MDX's own remark pipeline doesn't inherit `markdown.remarkPlugins`
