@@ -14,6 +14,8 @@ pub mod prelude;
 pub mod bytes_decode;
 #[cfg(feature = "reqwest")]
 pub mod http;
+#[cfg(feature = "reqwest")]
+pub use reqwest;
 #[cfg(feature = "sqlx")]
 pub mod str_sanitize;
 #[cfg(feature = "yaml")]

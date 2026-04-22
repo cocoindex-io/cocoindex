@@ -33,6 +33,15 @@ pub fn get_runtime() -> &'static Runtime {
     &**TOKIO_RUNTIME
 }
 
+/// Returns `true` if the global Tokio runtime has been shut down.
+///
+/// Use this as a guard before `get_runtime().spawn(...)` in background paths
+/// that may be invoked after `shutdown_runtime()` (e.g. telemetry on `drop_app`
+/// called during Python finalization) — spawning on a shut-down runtime panics.
+pub fn is_runtime_shutdown() -> bool {
+    RUNTIME_SHUTDOWN.load(Ordering::SeqCst)
+}
+
 /// Return a clone of the current global cancellation token.
 ///
 /// The returned token stays valid even if the global slot is later replaced

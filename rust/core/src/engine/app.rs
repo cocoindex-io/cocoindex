@@ -80,6 +80,7 @@ impl<Prof: EngineProfile> App<Prof> {
 
         let app_ctx = AppContext::new(env, db, app_reg, max_inflight_components);
         let root_component = Component::new(app_ctx, StablePath::root(), None);
+        crate::telemetry::track("app_create");
         Ok(Self { root_component })
     }
 }
@@ -98,6 +99,7 @@ impl<Prof: EngineProfile> App<Prof> {
         options: AppUpdateOptions,
         host_ctx: Arc<Prof::HostCtx>,
     ) -> Result<AppOpHandle<Prof::FunctionData>> {
+        crate::telemetry::track("app_update");
         let processing_stats = ProcessingStats::new();
         let version_rx = processing_stats.subscribe();
         let context = self.root_component.new_processor_context_for_build(
@@ -152,6 +154,7 @@ impl<Prof: EngineProfile> App<Prof> {
     /// Synchronous setup (cancellation, context construction) happens before the spawn.
     #[instrument(name = "app.drop", skip_all, fields(app_name = %self.app_ctx().app_reg().name()))]
     pub fn drop_app(&self, host_ctx: Arc<Prof::HostCtx>) -> Result<AppOpHandle<()>> {
+        crate::telemetry::track("app_drop");
         self.app_ctx().cancellation_token().cancel();
 
         let processing_stats = ProcessingStats::default();
