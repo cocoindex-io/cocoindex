@@ -2,7 +2,6 @@
 import '../styles/globals.css';
 import type { MarkdownHeading } from 'astro';
 import Topbar from '../components/Topbar.astro';
-import Banner from '../components/Banner.astro';
 import Sidebar from '../components/Sidebar.astro';
 import Toc from '../components/Toc.astro';
 import { SITE_URL, titleMarkup, DOCS_EDIT_BASE } from '../consts';
@@ -115,7 +114,6 @@ const next = i >= 0 && i < flat.length - 1 ? flat[i + 1] : null;
   </head>
   <body>
     <Topbar />
-    <Banner />
 
     <div class="layout">
       <Sidebar currentSlug={slug} />
