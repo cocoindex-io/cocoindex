@@ -10,7 +10,7 @@ permissions:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    environment: docs-release-v1
+    environment: docs-release
     steps:
       - uses: actions/checkout@v6
         with:
@@ -31,7 +31,7 @@ jobs:
         env:
           DEPLOY_USER_EMAIL: ${{ vars.COCOINDEX_DOCS_DEPLOY_USER_EMAIL }}
           DEPLOY_USER_NAME: ${{ vars.COCOINDEX_DOCS_DEPLOY_USER_NAME }}
-          TARGET_REPO: git@github.com:cocoindex-io/docs-v1.git
+          TARGET_REPO: git@github.com:cocoindex-io/docs.git
         run: |
           set -euo pipefail
           git config --global user.email "$DEPLOY_USER_EMAIL"
