@@ -8,6 +8,10 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  # Ephemeral runners don't need ryuk to clean up containers after the process
+  # exits, and disabling it avoids a known testcontainers race where the
+  # ryuk-on-8080 port mapping isn't yet visible when queried.
+  TESTCONTAINERS_RYUK_DISABLED: "true"
 
 jobs:
     build-test:
