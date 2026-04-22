@@ -8,7 +8,6 @@
   },
   "scripts": {
     "dev": "astro dev",
-    "port": "node scripts/port-docs.mjs",
     "build": "astro build",
     "preview": "astro preview",
     "astro": "astro"
