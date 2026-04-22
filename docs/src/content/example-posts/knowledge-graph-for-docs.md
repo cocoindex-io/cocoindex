@@ -29,23 +29,23 @@ and then build a knowledge graph.
 
 ## Setup
 
-* [Install PostgreSQL](https://cocoindex.io/docs/getting_started/installation#-install-postgres). CocoIndex uses PostgreSQL internally for incremental processing.
-- [Install Neo4j](https://cocoindex.io/docs/targets/neo4j#neo4j-dev-instance), a graph database.
+* [Install PostgreSQL](https://cocoindex.io/docs-v0/getting_started/installation#-install-postgres). CocoIndex uses PostgreSQL internally for incremental processing.
+- [Install Neo4j](https://cocoindex.io/docs-v0/targets/neo4j#neo4j-dev-instance), a graph database.
 
-    [→ Neo4j](https://cocoindex.io/docs/targets/neo4j)
-- [Configure your OpenAI API key](https://cocoindex.io/docs/ai/llm#openai).  Alternatively, we have native support for Gemini, Ollama, LiteLLM. You can choose your favorite LLM provider and work completely on-premises.
+    [→ Neo4j](https://cocoindex.io/docs-v0/targets/neo4j)
+- [Configure your OpenAI API key](https://cocoindex.io/docs-v0/ai/llm#openai).  Alternatively, we have native support for Gemini, Ollama, LiteLLM. You can choose your favorite LLM provider and work completely on-premises.
 
-    [→ LLM](https://cocoindex.io/docs/ai/llm)
+    [→ LLM](https://cocoindex.io/docs-v0/ai/llm)
 
 ## Documentation
 
-[→ Property Graph Targets](https://cocoindex.io/docs/targets#property-graph-targets)
+[→ Property Graph Targets](https://cocoindex.io/docs-v0/targets#property-graph-targets)
 
 ## Data flow to build knowledge graph
 
 ### Add documents as source
 
-We will process CocoIndex documentation markdown files (`.md`, `.mdx`) from the `docs/core` directory ([markdown files](https://github.com/cocoindex-io/cocoindex/tree/main/docs/docs/core), [deployed docs](https://cocoindex.io/docs/core/basics)).
+We will process CocoIndex documentation markdown files (`.md`, `.mdx`) from the `docs/core` directory ([markdown files](https://github.com/cocoindex-io/cocoindex/tree/main/docs/docs/core), [deployed docs](https://cocoindex.io/docs-v0/core/basics)).
 
 ```python
 
@@ -56,10 +56,10 @@ def docs_to_kg_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.D
                                     included_patterns=["*.md", "*.mdx"]))
 ```
 
-Here `flow_builder.add_source` creates a [KTable](https://cocoindex.io/docs/core/data_types#KTable).
+Here `flow_builder.add_source` creates a [KTable](https://cocoindex.io/docs-v0/core/data_types#KTable).
 `filename` is the key of the KTable.
 
-[→ Sources](https://cocoindex.io/docs/sources)
+[→ Sources](https://cocoindex.io/docs-v0/sources)
 
 ### Add data collectors
 
@@ -71,9 +71,9 @@ entity_relationship = data_scope.add_collector()
 entity_mention = data_scope.add_collector()
 ```
 
-- `document_node` collects documents. E.g., [`core/basics.mdx`](https://cocoindex.io/docs/core/basics) is a document.
+- `document_node` collects documents. E.g., [`core/basics.mdx`](https://cocoindex.io/docs-v0/core/basics) is a document.
 - `entity_relationship` collects relationships. E.g., "CocoIndex supports Incremental Processing" indicates a relationship between `CocoIndex` and `Incremental Processing`.
-- `entity_mention` collects mentions of entities in a document. E.g., [`core/basics.mdx`](https://cocoindex.io/docs/core/basics) mentions `CocoIndex` and `Incremental Processing`.
+- `entity_mention` collects mentions of entities in a document. E.g., [`core/basics.mdx`](https://cocoindex.io/docs-v0/core/basics) mentions `CocoIndex` and `Incremental Processing`.
 
 ### Process each document and extract summary
 
@@ -86,7 +86,7 @@ class DocumentSummary:
     summary: str
 ```
 
-Within the flow, use [`cocoindex.functions.ExtractByLlm`](https://cocoindex.io/docs/ops/functions#extractbyllm) for structured output.
+Within the flow, use [`cocoindex.functions.ExtractByLlm`](https://cocoindex.io/docs-v0/ops/functions#extractbyllm) for structured output.
 
 ```python
 with data_scope["documents"].row() as doc:
@@ -148,7 +148,7 @@ doc["relationships"] = doc["content"].transform(
 )
 ```
 
-`doc["relationships"]` adds a new field `relationships` to each document. `output_type=list[Relationship]` specifies that the output of the transformation is a [LTable](https://cocoindex.io/docs/core/data_types#LTable).
+`doc["relationships"]` adds a new field `relationships` to each document. `output_type=list[Relationship]` specifies that the output of the transformation is a [LTable](https://cocoindex.io/docs-v0/core/data_types#LTable).
 
 ![Extract Relationships](https://cocoindex.io/blobs/docs/img/examples/docs_to_knowledge_graph/extract_relationship.png)
 
@@ -353,7 +353,7 @@ And then open the url `https://cocoindex.io/cocoinsight`.  It just connects to y
 
 After the knowledge graph is built, you can explore the knowledge graph you built in Neo4j Browser.
 
-[→ Neo4j](https://cocoindex.io/docs/targets/neo4j)
+[→ Neo4j](https://cocoindex.io/docs-v0/targets/neo4j)
 
 For the dev environment, you can connect to Neo4j browser using credentials:
 

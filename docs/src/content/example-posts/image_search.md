@@ -28,7 +28,7 @@ It fundamentally rethinks how documents—especially visually complex or image-r
 4. Export the embeddings (and optional captions) to a Qdrant collection
 
 ## Setup
-- [Install Postgres](https://cocoindex.io/docs/getting_started/installation#-install-postgres) if you don't have one.
+- [Install Postgres](https://cocoindex.io/docs-v0/getting_started/installation#-install-postgres) if you don't have one.
 
 - Make sure Qdrant is running
   ```
@@ -55,14 +55,14 @@ def image_object_embedding_flow(flow_builder, data_scope):
 
 The `add_source` function sets up a table with fields like `filename` and `content`. Images are automatically re-scanned every minute.
 
-[→ LocalFile](https://cocoindex.io/docs/sources/localfile)
+[→ LocalFile](https://cocoindex.io/docs-v0/sources/localfile)
 
 
 ## Process Each Image and Collect the Embedding
 
 We use CocoIndex's built-in `ColPaliEmbedImage` function, which returns a **multi-vector representation** for each image. Each patch receives its own vector, preserving spatial and semantic information.
 
-[→ ColPaliEmbedImage](https://cocoindex.io/docs/ops/functions#colpaliembedimage)
+[→ ColPaliEmbedImage](https://cocoindex.io/docs-v0/ops/functions#colpaliembedimage)
 
 ```python
 img_embeddings = data_scope.add_collector()
@@ -132,7 +132,7 @@ app.mount("/img", StaticFiles(directory="img"), name="img")
 
 We use `ColPaliEmbedQuery` to embed the query text into a multi-vector format.
 
-[→ ColPaliEmbedQuery](https://cocoindex.io/docs/ops/functions#colpaliembedquery)
+[→ ColPaliEmbedQuery](https://cocoindex.io/docs-v0/ops/functions#colpaliembedquery)
 
 ```python
 @cocoindex.transform_flow()
@@ -255,6 +255,6 @@ One of CocoIndex’s core strengths is its ability to connect to your existing d
 - Amazon S3 / SQS
 - Azure Blob Storage
 
-[→ Sources](https://cocoindex.io/docs/sources)
+[→ Sources](https://cocoindex.io/docs-v0/sources)
 
 Once connected, CocoIndex continuously watches for changes — new uploads, updates, or deletions — and applies them to your index in real time.

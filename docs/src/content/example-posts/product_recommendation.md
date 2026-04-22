@@ -18,17 +18,17 @@ Product taxonomy is a way to organize product catalogs in a logical and hierarch
 
 ## Prerequisites
 
-- [Install PostgreSQL](https://cocoindex.io/docs/getting_started/installation#-install-postgres). CocoIndex uses PostgreSQL internally for incremental processing.
-- [Install Neo4j](https://cocoindex.io/docs/targets/neo4j), a graph database.
-- [Configure your OpenAI API key](https://cocoindex.io/docs/ai/llm#openai). Create a `.env` file from `.env.example`, and fill `OPENAI_API_KEY`.
+- [Install PostgreSQL](https://cocoindex.io/docs-v0/getting_started/installation#-install-postgres). CocoIndex uses PostgreSQL internally for incremental processing.
+- [Install Neo4j](https://cocoindex.io/docs-v0/targets/neo4j), a graph database.
+- [Configure your OpenAI API key](https://cocoindex.io/docs-v0/ai/llm#openai). Create a `.env` file from `.env.example`, and fill `OPENAI_API_KEY`.
 
 Alternatively, we have native support for Gemini, Ollama, LiteLLM. You can choose your favorite LLM provider and work completely on-premises.
 
-[→ LLM](https://cocoindex.io/docs/ai/llm)
+[→ LLM](https://cocoindex.io/docs-v0/ai/llm)
 
 ## Documentation
 
-[→ Property Graph Targets](https://cocoindex.io/docs/targets#property-graph-targets)
+[→ Property Graph Targets](https://cocoindex.io/docs-v0/targets#property-graph-targets)
 
 ## Flow Overview
 
@@ -55,7 +55,7 @@ def store_product_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoinde
         refresh_interval=datetime.timedelta(seconds=5))
 ```
 
-Here `flow_builder.add_source` creates a [KTable](https://cocoindex.io/docs/core/data_types#KTable).
+Here `flow_builder.add_source` creates a [KTable](https://cocoindex.io/docs-v0/core/data_types#KTable).
 `filename` is the key of the KTable.
 
 ## Add data collectors
@@ -109,7 +109,7 @@ It performs the following transformations:
 
 1. The first `transform()` parses the JSON file.
 
-    [→ ParseJson](https://cocoindex.io/docs/ops/functions#parsejson)
+    [→ ParseJson](https://cocoindex.io/docs-v0/ops/functions#parsejson)
     ![ParseJson](https://cocoindex.io/blobs/docs/img/examples/product_recommendation/parse_json.png)
 
 2. The second `transform()` performs the defined data mapping.
@@ -172,7 +172,7 @@ taxonomy = data["detail"].transform(cocoindex.functions.ExtractByLlm(
                 output_type=ProductTaxonomyInfo))
 ```
 
-[→ ExtractByLlm](https://cocoindex.io/docs/ops/functions#extractbyllm)
+[→ ExtractByLlm](https://cocoindex.io/docs-v0/ops/functions#extractbyllm)
 
 For example, LLM takes the description of the *gel pen*, and extracts taxonomy to be *gel pen*.
 Meanwhile, it suggests that when people buy *gel pen*, they may also be interested in *notebook* etc as complimentary taxonomy.

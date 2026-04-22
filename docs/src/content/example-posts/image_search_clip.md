@@ -33,7 +33,7 @@ In our project, we use CLIP to:
 3. Save these embeddings into a vector database for efficient search and retrieval
 
 ## Setup
-- [Install Postgres](https://cocoindex.io/docs/getting_started/installation#-install-postgres) if you don't have one.
+- [Install Postgres](https://cocoindex.io/docs-v0/getting_started/installation#-install-postgres) if you don't have one.
 
 - Make sure Qdrant is running
   ```
@@ -57,7 +57,7 @@ def image_object_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope:
 
 `flow_builder.add_source` will create a table with sub fields (`filename`, `content`)
 
-[→ Sources](https://cocoindex.io/docs/sources)
+[→ Sources](https://cocoindex.io/docs-v0/sources)
 
 **interval**
 The `refresh_interval` parameter in `add_source` specifies how frequently CocoIndex will check the source directory (`img`) for new, modified, or deleted images. For example, `datetime.timedelta(minutes=1)` means the system will poll for changes every 1 minute, enabling near-real-time indexing of added or updated files.
@@ -93,7 +93,7 @@ def embed_image(img_bytes: bytes) -> cocoindex.Vector[cocoindex.Float32, Literal
 `embed_image` is a custom function that uses the CLIP model to convert an image into a vector embedding.
 It accepts image data in bytes format and returns a list of floating-point numbers representing the image's embedding.
 
-[→ Custom Function Documentation](https://cocoindex.io/docs/core/custom_function)
+[→ Custom Function Documentation](https://cocoindex.io/docs-v0/core/custom_function)
 
 
 The function supports caching through the `cache` parameter.
@@ -132,17 +132,17 @@ img_embeddings.export(
 )
 ```
 
-[→ Qdrant Connector](https://cocoindex.io/docs/targets/qdrant)
+[→ Qdrant Connector](https://cocoindex.io/docs-v0/targets/qdrant)
 
 ### Alternative Connectors
 
 CocoIndex supports multiple connectors for storing and querying vector data.
 
-[→ Targets](https://cocoindex.io/docs/targets)
+[→ Targets](https://cocoindex.io/docs-v0/targets)
 
 It also supports custom connectors if native connectors don't fit your needs.
 
-[→ Custom Targets](https://cocoindex.io/docs/custom_ops/custom_targets)
+[→ Custom Targets](https://cocoindex.io/docs-v0/custom_ops/custom_targets)
 
 ### Query the index
 
@@ -307,6 +307,6 @@ One of CocoIndex’s core strengths is its ability to connect to your existing d
 - Amazon S3 / SQS
 - Azure Blob Storage
 
-[→ Sources](https://cocoindex.io/docs/sources)
+[→ Sources](https://cocoindex.io/docs-v0/sources)
 
 Once connected, CocoIndex continuously watches for changes — new uploads, updates, or deletions — and applies them to your index in real time.

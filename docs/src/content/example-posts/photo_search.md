@@ -26,7 +26,7 @@ With this, you can build your own photo search app with face detection and searc
     - Filename, rect, embedding for each face.
 
 ## Setup
-- [Install Postgres](https://cocoindex.io/docs/getting_started/installation#-install-postgres) if you don't have one.
+- [Install Postgres](https://cocoindex.io/docs-v0/getting_started/installation#-install-postgres) if you don't have one.
 
 - Install Qdrant
     ```sh
@@ -54,8 +54,8 @@ def face_recognition_flow(flow_builder, data_scope):
 This creates a table with `filename` and `content` fields. 📂
 
 
-You can connect it to your [S3 Buckets](https://cocoindex.io/docs/sources/amazons3) (with SQS integration, [example](https://cocoindex.io/blogs/s3-incremental-etl))
-or [Azure Blob store](https://cocoindex.io/docs/sources/azureblob).
+You can connect it to your [S3 Buckets](https://cocoindex.io/docs-v0/sources/amazons3) (with SQS integration, [example](https://cocoindex.io/blogs/s3-incremental-etl))
+or [Azure Blob store](https://cocoindex.io/docs-v0/sources/azureblob).
 
 ## Detect and Extract Faces
 
@@ -175,7 +175,7 @@ face_embeddings.export(
 Now you can run cosine similarity queries over facial vectors.
 
 CocoIndex supports 1-line switch with other vector databases.
-[→ Postgres](https://cocoindex.io/docs/targets/postgres)
+[→ Postgres](https://cocoindex.io/docs-v0/targets/postgres)
 
 ## Query the Index
 

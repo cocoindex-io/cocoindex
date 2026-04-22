@@ -26,7 +26,7 @@ flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope
 ```
 
 This ingestion creates a table with `filename` and `content` fields.
-[→ Sources](https://cocoindex.io/docs/sources)
+[→ Sources](https://cocoindex.io/docs-v0/sources)
 
 ## Process each file and collect
 
@@ -38,7 +38,7 @@ def markdown_to_html(text: str) -> str:
     return _markdown_it.render(text)
 ```
 
-[→ Custom Function](https://cocoindex.io/docs/custom_ops/custom_functions)
+[→ Custom Function](https://cocoindex.io/docs-v0/custom_ops/custom_functions)
 
 Define data collector and transform each document to html.
 
@@ -55,7 +55,7 @@ with data_scope["documents"].row() as doc:
 
 ### Define the target spec
 
-[→ Target Spec](https://cocoindex.io/docs/custom_ops/custom_targets#target-spec)
+[→ Target Spec](https://cocoindex.io/docs-v0/custom_ops/custom_targets#target-spec)
 
 The target spec contains a directory for output files:
 
@@ -66,7 +66,7 @@ class LocalFileTarget(cocoindex.op.TargetSpec):
 
 ### Implement the connector
 
-[→ Target Connector](https://cocoindex.io/docs/custom_ops/custom_targets#target-connector)
+[→ Target Connector](https://cocoindex.io/docs-v0/custom_ops/custom_targets#target-connector)
 
 `get_persistent_key()` defines the persistent key,
 which uniquely identifies the target for change tracking and incremental updates. Here, we simply use the target directory as the key (e.g., `./data/output`).

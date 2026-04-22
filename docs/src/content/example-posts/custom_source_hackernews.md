@@ -46,7 +46,7 @@ The pipeline consists of three major parts:
 
 ## Prerequisites
 
-- [Install Postgres](https://cocoindex.io/docs/getting_started/installation#-install-postgres) if you don't have one.
+- [Install Postgres](https://cocoindex.io/docs-v0/getting_started/installation#-install-postgres) if you don't have one.
 
 
 ## Defining the Data Model
@@ -125,14 +125,14 @@ Fields:
     - Maximum number of threads to fetch from HackerNews at a time.
     - Helps limit the size of the index for performance or testing.
 
-[→ Source Spec](https://cocoindex.io/docs/custom_ops/custom_sources#source-spec)
+[→ Source Spec](https://cocoindex.io/docs-v0/custom_ops/custom_sources#source-spec)
 
 
 ### Defining the connector
 
 Sets up the connector's configuration so it can fetch HackerNews data efficiently.
 
-[→ Source Connector](https://cocoindex.io/docs/custom_ops/custom_sources#source-connector)
+[→ Source Connector](https://cocoindex.io/docs-v0/custom_ops/custom_sources#source-connector)
 
 ```python
 @source_connector(
@@ -166,7 +166,7 @@ class HackerNewsConnector:
 
 The `list()` method in `HackerNewsConnector` is responsible for **discovering all available HackerNews threads** that match the given criteria (tag, max results) and returning metadata about them. CocoIndex uses this to **know which threads exist** and which may have changed.
 
-[→ list() method](https://cocoindex.io/docs/custom_ops/custom_sources#async-def-listoptions-required)
+[→ list() method](https://cocoindex.io/docs-v0/custom_ops/custom_sources#async-def-listoptions-required)
 
 
 ```python
@@ -382,7 +382,7 @@ With the index flow complete, the next step is to add a query handler.
 This allows you to search and explore your indexed HackerNews data directly in CocoInsight.
 You can implement the query logic using any preferred library or framework.
 
-[→ Query Handler](https://cocoindex.io/docs/query#query-handler)
+[→ Query Handler](https://cocoindex.io/docs-v0/query#query-handler)
 
 
 ```python

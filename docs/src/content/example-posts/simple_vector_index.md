@@ -22,7 +22,7 @@ We try to keep it minimalistic and focus on the gist of the indexing flow.
 
 ## Prerequisites
 
-- [Install Postgres](https://cocoindex.io/docs/getting_started/installation).
+- [Install Postgres](https://cocoindex.io/docs-v0/getting_started/installation).
 CocoIndex uses Postgres to keep track of data lineage for incremental processing.
 
 ## Add Source
@@ -40,7 +40,7 @@ def text_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoind
 ```
 
 `flow_builder.add_source` will create a table with sub fields (`filename`, `content`)
-[→ Source](https://cocoindex.io/docs/sources)
+[→ Source](https://cocoindex.io/docs-v0/sources)
 
 ## Process each file and collect the embeddings
 
@@ -55,7 +55,7 @@ with data_scope["documents"].row() as doc:
 
 ![Chunking](https://cocoindex.io/blobs/docs/img/examples/simple_vector_index/chunk.png)
 
-[→ SplitRecursively](https://cocoindex.io/docs/ops/functions#splitrecursively)
+[→ SplitRecursively](https://cocoindex.io/docs-v0/ops/functions#splitrecursively)
 
 ### Embed each chunk
 
@@ -72,7 +72,7 @@ with doc["chunks"].row() as chunk:
 
 The `MiniLM-L6-v2` model is a good balance of speed and quality for text embeddings, though you can swap in other SentenceTransformer models as needed.
 
-[→ SentenceTransformerEmbed](https://cocoindex.io/docs/ops/functions#sentencetransformerembed)
+[→ SentenceTransformerEmbed](https://cocoindex.io/docs-v0/ops/functions#sentencetransformerembed)
 
 ![Embedding](https://cocoindex.io/blobs/docs/img/examples/simple_vector_index/embed.png)
 
@@ -92,7 +92,7 @@ doc_embeddings.export(
 ```
 
 CocoIndex supports other vector databases as well, with 1-line switch.
-[→ Targets](https://cocoindex.io/docs/targets)
+[→ Targets](https://cocoindex.io/docs-v0/targets)
 
 Need IVFFlat or custom HNSW parameters? Pass a method, for example:
 
@@ -129,7 +129,7 @@ This decorator marks this as a reusable transformation flow that can be called o
 
 CocoIndex doesn't provide additional query interface at the moment. We can write SQL or rely on the query engine by the target storage, if any.
 
-[→ Postgres](https://cocoindex.io/docs/targets/postgres)
+[→ Postgres](https://cocoindex.io/docs-v0/targets/postgres)
 
 ```python
 def search(pool: ConnectionPool, query: str, top_k: int = 5):

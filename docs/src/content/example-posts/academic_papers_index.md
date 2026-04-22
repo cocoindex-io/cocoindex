@@ -33,11 +33,11 @@ to answer questions like "Give me all the papers by Jeff Dean."
 
 ## Setup
 
-- [Install PostgreSQL](https://cocoindex.io/docs/getting_started/installation#-install-postgres).
+- [Install PostgreSQL](https://cocoindex.io/docs-v0/getting_started/installation#-install-postgres).
   CocoIndex uses PostgreSQL internally for incremental processing.
-- [Configure your OpenAI API key](https://cocoindex.io/docs/ai/llm#openai). Alternatively, we have native support for Gemini, Ollama, LiteLLM. You can choose your favorite LLM provider and work completely on-premises.
+- [Configure your OpenAI API key](https://cocoindex.io/docs-v0/ai/llm#openai). Alternatively, we have native support for Gemini, Ollama, LiteLLM. You can choose your favorite LLM provider and work completely on-premises.
 
-  [→ LLM](https://cocoindex.io/docs/ai/llm)
+  [→ LLM](https://cocoindex.io/docs-v0/ai/llm)
 
 ## Import the Papers
 
@@ -53,7 +53,7 @@ def paper_metadata_flow(
 ```
 
 `flow_builder.add_source` will create a table with sub fields (`filename`, `content`).
-[→ Sources](https://cocoindex.io/docs/sources)
+[→ Sources](https://cocoindex.io/docs-v0/sources)
 
 ## Extract and collect metadata
 
@@ -95,7 +95,7 @@ After this step, we should have the basic info of each paper.
 
 ### Parse basic info
 
-We will convert the first page to Markdown using Marker. Alternatively, you can easily plug in any PDF parser, such as Docling using CocoIndex's [custom function](https://cocoindex.io/docs/custom_ops/custom_functions).
+We will convert the first page to Markdown using Marker. Alternatively, you can easily plug in any PDF parser, such as Docling using CocoIndex's [custom function](https://cocoindex.io/docs-v0/custom_ops/custom_functions).
 
 Define a marker converter function and cache it, since its initialization is resource-intensive.
 This ensures that the same converter instance is reused for different input files.
@@ -313,7 +313,7 @@ metadata_embeddings.export(
 
 In this example we use PGVector as embedding store. With CocoIndex, you can do one line switch on other supported Vector databases.
 
-[→ Targets](https://cocoindex.io/docs/targets)
+[→ Targets](https://cocoindex.io/docs-v0/targets)
 
 ## Query the index
 

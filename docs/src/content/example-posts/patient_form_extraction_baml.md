@@ -27,7 +27,7 @@ The flow itself is fairly simple.
 
 ## Setup
 
-1. [Install Postgres](https://cocoindex.io/docs/getting_started/installation#-install-postgres) if you don't have one.
+1. [Install Postgres](https://cocoindex.io/docs-v0/getting_started/installation#-install-postgres) if you don't have one.
 2. Install dependencies
 
     ```
@@ -191,7 +191,7 @@ This will compile the `.baml` definitions into a `baml_client/` Python package i
 ## Alternative - Native ExtractByLLM Component
 If you prefer to define the extraction logic in a native CocoIndex function with native Python class, you could also use the `ExtractByLLM` component.
 
-[→ ExtractByLLM](https://cocoindex.io/docs/ops/functions#extractbyllm)
+[→ ExtractByLLM](https://cocoindex.io/docs-v0/ops/functions#extractbyllm)
 
 You could see an example [here](/examples/patient_form_extraction).
 
@@ -236,7 +236,7 @@ async def extract_patient_info(content: bytes) -> Patient:
 - `@cocoindex.op.function(cache=True, behavior_version=1)` caches results for incremental processing; bump `behavior_version` to refresh cache if logic changes.
 - The function base64-encodes input bytes, creates a BAML `Pdf`, and calls `await b.ExtractPatientInfo(pdf)` to return a `Patient` object.
 
-[→ Custom Function](https://cocoindex.io/docs/custom_ops/custom_functions)
+[→ Custom Function](https://cocoindex.io/docs-v0/custom_ops/custom_functions)
 
 
 #### Process each document
@@ -304,4 +304,4 @@ CocoIndex offers a comprehensive toolkit for building robust LLM pipelines, but 
 
 CocoIndex natively supports Google Drive, Amazon S3, Azure Blob Storage, and more.
 
-[→ Sources](https://cocoindex.io/docs/sources)
+[→ Sources](https://cocoindex.io/docs-v0/sources)
