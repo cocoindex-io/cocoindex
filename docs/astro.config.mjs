@@ -60,13 +60,13 @@ const cocoindexCodeTheme = {
   ],
 };
 
-// V1 docs are served from https://cocoindex.io/docs-v1/, matching the
-// Docusaurus URLs on the v1 branch (`baseUrl: '/docs-v1/'` in
+// V1 docs are served from https://cocoindex.io/docs/, matching the
+// Docusaurus URLs on the v1 branch (`baseUrl: '/docs/'` in
 // docs/docusaurus.config.ts). `base` handles the prefix; `trailingSlash:
-// 'never'` keeps /docs-v1/core/basics shaped exactly like Docusaurus.
+// 'never'` keeps /docs/core/basics shaped exactly like Docusaurus.
 export default defineConfig({
   site: 'https://cocoindex.io',
-  base: '/docs-v1',
+  base: '/docs',
   integrations: [
     mdx({
       // MDX's own remark pipeline doesn't inherit `markdown.remarkPlugins`

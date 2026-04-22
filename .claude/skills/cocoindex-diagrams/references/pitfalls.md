@@ -8,14 +8,14 @@ Each entry: the symptom, the cause, and the fix.
 **Symptom**: Diagrams look like black rectangles in screenshots; text is
 dimly visible but all fills are black.
 
-**Cause**: The docs site uses `base: '/docs-v1'` in `astro.config.mjs`,
-so built HTML references CSS at `/docs-v1/_astro/*.css`. A naïve
+**Cause**: The docs site uses `base: '/docs'` in `astro.config.mjs`,
+so built HTML references CSS at `/docs/_astro/*.css`. A naïve
 `python3 -m http.server` from `dist/` serves CSS at `/_astro/...`
 instead, returning 404. With no stylesheet, `var(--cream)`, `var(--coral)`,
 etc. are undefined; SVG `fill` falls back to black.
 
-**Fix**: Serve from a parent dir containing a `docs-v1/` symlink or
-copy of `dist/`, so `/docs-v1/_astro/...` resolves. The
+**Fix**: Serve from a parent dir containing a `docs/` symlink or
+copy of `dist/`, so `/docs/_astro/...` resolves. The
 `scripts/preview.sh` script handles this automatically.
 
 ## Rows/content faded at 35% opacity

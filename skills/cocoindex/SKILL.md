@@ -483,7 +483,7 @@ Check component paths are stable. Use stable IDs, not object references.
 
 ### External
 
-- [CocoIndex Documentation](https://docs.cocoindex.dev/docs-v1/)
+- [CocoIndex Documentation](https://docs.cocoindex.dev/docs/)
 - [GitHub Examples](https://github.com/cocoindex-io/cocoindex/tree/v1/examples)
 
 ## Version Note
