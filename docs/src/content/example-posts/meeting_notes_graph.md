@@ -41,18 +41,18 @@ Google Drive (Documents - with change tracking)
 
 **Prerequisites**
 
-- Install [Neo4j](https://cocoindex.io/docs/targets/neo4j) and start it locally
+- Install [Neo4j](https://cocoindex.io/docs-v0/targets/neo4j) and start it locally
     - Default local browser: [http://localhost:7474](http://localhost:7474/)
     - Default credentials used in this example: username `neo4j`, password `cocoindex`
-    [→ Neo4j Target](https://cocoindex.io/docs/targets/neo4j)
+    [→ Neo4j Target](https://cocoindex.io/docs-v0/targets/neo4j)
 
-- [Configure your OpenAI API key](https://cocoindex.io/docs/ai/llm#openai)
+- [Configure your OpenAI API key](https://cocoindex.io/docs-v0/ai/llm#openai)
 - Prepare Google Drive:
     - Create a Google Cloud service account and download its JSON credential
     - Share the source folders with the service account email
     - Collect the root folder IDs you want to ingest
-    - See [Setup for Google Drive](https://cocoindex.io/docs/sources/googledrive#setup-for-google-drive) for details
-    [→ GoogleDrive Source Setup](https://cocoindex.io/docs/sources/googledrive)
+    - See [Setup for Google Drive](https://cocoindex.io/docs-v0/sources/googledrive#setup-for-google-drive) for details
+    [→ GoogleDrive Source Setup](https://cocoindex.io/docs-v0/sources/googledrive)
 
 **Environment**
 
@@ -101,7 +101,7 @@ def meeting_notes_graph_flow(
 
 The pipeline starts by connecting to Google Drive using a service account. CocoIndex's built-in source connector handles authentication and provides **incremental change detection**. The **`recent_changes_poll_interval`** parameter means the source checks for new or modified files every 10 seconds, while the **`refresh_interval`** determines when the entire flow re-runs (every minute).
 
-[→ GoogleDrive Source](https://cocoindex.io/docs/sources/googledrive)
+[→ GoogleDrive Source](https://cocoindex.io/docs-v0/sources/googledrive)
 
 ![Ingest documents](https://cocoindex.io/blobs/docs/img/examples/meeting_notes_graph/ingest.png)
 
@@ -116,7 +116,7 @@ The result? In an enterprise with 1% daily churn, only 1% of documents trigger d
 
 Check out How live updates work in CocoIndex:
 
-[→ How live updates work in CocoIndex](https://cocoindex.io/docs/tutorials/live_updates)
+[→ How live updates work in CocoIndex](https://cocoindex.io/docs-v0/tutorials/live_updates)
 
 
 ### Add collector
@@ -128,7 +128,7 @@ decided_tasks_rels = data_scope.add_collector()
 assigned_rels = data_scope.add_collector()
 ```
 
-[→ Collectors](https://cocoindex.io/docs/core/flow_def#data-collector)
+[→ Collectors](https://cocoindex.io/docs-v0/core/flow_def#data-collector)
 
 The pipeline then collects data into specialized collectors for different entity types and relationships:
 
@@ -195,7 +195,7 @@ with document["meetings"].row() as meeting:
 
 Importantly, this step also benefits from incremental processing. Since `ExtractByLlm` is a heavy step, we keep the output in cache, and as long as inputs (input data text, model, output type definition) have no change, we reuse the cached output without re-running the LLM.
 
-[→ ExtractByLlm](https://cocoindex.io/docs/functions/extract_by_llm)
+[→ ExtractByLlm](https://cocoindex.io/docs-v0/functions/extract_by_llm)
 
 ![Extract metadata](https://cocoindex.io/blobs/docs/img/examples/meeting_notes_graph/metadata.png)
 
@@ -259,11 +259,11 @@ This block **collects nodes and relationships** from parsed meeting notes to bui
 We will be creating a property graph with following nodes and relationships:
 ![Graph](https://cocoindex.io/blobs/docs/img/examples/meeting_notes_graph/graph.png)
 
-To learn more about property graph, please refer to CocoIndex's [Property Graph Targets](https://cocoindex.io/docs/targets#property-graph-targets) documentation.
+To learn more about property graph, please refer to CocoIndex's [Property Graph Targets](https://cocoindex.io/docs-v0/targets#property-graph-targets) documentation.
 
-[→ Neo4j Target](https://cocoindex.io/docs/targets/neo4j)
+[→ Neo4j Target](https://cocoindex.io/docs-v0/targets/neo4j)
 
-[→ Property Graph Targets](https://cocoindex.io/docs/targets/#property-graph-targets)
+[→ Property Graph Targets](https://cocoindex.io/docs-v0/targets/#property-graph-targets)
 ### Map Meeting Nodes
 
 ```python
@@ -306,7 +306,7 @@ flow_builder.declare(
 )
 ```
 
-- The `declare(...)` [method](https://cocoindex.io/docs/core/flow_def) on `flow_builder` lets you **pre‐declare** node labels that may appear as source or target nodes in relationships — even if you don’t have an explicit collector exporting them as standalone node rows.
+- The `declare(...)` [method](https://cocoindex.io/docs-v0/core/flow_def) on `flow_builder` lets you **pre‐declare** node labels that may appear as source or target nodes in relationships — even if you don’t have an explicit collector exporting them as standalone node rows.
 - `Neo4jDeclaration` is the specification for such declared nodes: you give it the connection, the node label (type), and the `primary_key_fields` that uniquely identify instances of that node
 
 For example, for the `Person` Declaration,

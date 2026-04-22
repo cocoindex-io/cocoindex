@@ -49,7 +49,7 @@ The flow itself is fairly simple.
 
 ## Setup
 
-1. [Install Postgres](https://cocoindex.io/docs/getting_started/installation#-install-postgres) if you don't have one.
+1. [Install Postgres](https://cocoindex.io/docs-v0/getting_started/installation#-install-postgres) if you don't have one.
 2. Install dependencies
 
     ```
@@ -367,7 +367,7 @@ def patient_intake_extraction_dspy_flow(
 
 ![Ingesting Data](https://cocoindex.io/blobs/docs/img/examples/patient_form_extraction_dspy/ingest.png)
 
-You can connect to various sources, or even custom source with CocoIndex if native connectors are not available. CocoIndex is designed to keep your indexes synchronized with your data sources. This is achieved through a feature called **live updates**, which automatically detects changes in your sources and updates your indexes accordingly. This ensures that your search results and data analysis are always based on the most current information. You can read more here [https://cocoindex.io/docs/tutorials/live_updates](https://cocoindex.io/docs/tutorials/live_updates)
+You can connect to various sources, or even custom source with CocoIndex if native connectors are not available. CocoIndex is designed to keep your indexes synchronized with your data sources. This is achieved through a feature called **live updates**, which automatically detects changes in your sources and updates your indexes accordingly. This ensures that your search results and data analysis are always based on the most current information. You can read more here [https://cocoindex.io/docs-v0/tutorials/live_updates](https://cocoindex.io/docs-v0/tutorials/live_updates)
 
 ### Process documents
 
@@ -456,4 +456,4 @@ This pairing is powerful because neither system tries to be the entire stack: Co
 
 CocoIndex natively supports Google Drive, Amazon S3, Azure Blob Storage, and more.
 
-[→ Sources](https://cocoindex.io/docs/sources)
+[→ Sources](https://cocoindex.io/docs-v0/sources)

@@ -1,4 +1,4 @@
-// Metadata for the /docs/examples listing and per-example pages.
+// Metadata for the /docs-v0/examples listing and per-example pages.
 //
 // Data is mirrored from github.com/cocoindex-io/examples — the markdown
 // bodies live in src/content/example-posts/<slug>.md and are rendered by
@@ -16,7 +16,7 @@ export const CATEGORY_META: Record<Category, { label: string; em?: string; lead:
 };
 
 export type ExampleCard = {
-  slug: string;                      // becomes /docs/examples/<slug>
+  slug: string;                      // becomes /docs-v0/examples/<slug>
   title: string;                     // asterisks → italic-coral, e.g. 'HN Trending *Topics*'
   index: string;                     // e.g. '07 / 20' — shown top-right of thumb
   category: Category;

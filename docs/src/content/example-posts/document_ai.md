@@ -9,7 +9,7 @@ image: https://cocoindex.io/blobs/docs/img/examples/document_ai/cover.png
 CocoIndex is a flexible ETL framework with incremental processing.  We don’t build parser ourselves, and users can bring in any open source or commercial parser that works best for their scenarios.  In this example, we show how to use **Google Document AI to parse document**, embed the resulting text, and store it in a vectorized database for semantic search.
 
 ## Set up
-- [Install Postgres](https://cocoindex.io/docs/getting_started/installation#-install-postgres) if you don't have one.
+- [Install Postgres](https://cocoindex.io/docs-v0/getting_started/installation#-install-postgres) if you don't have one.
 - Configure Project and Processor ID for Document AI API
     - [Official Google document AI API](https://cloud.google.com/document-ai/docs/try-docai) with free live demo.
     - Sign in to [Google Cloud Console](https://console.cloud.google.com/), create or open a project, and enable Document AI API.
@@ -65,9 +65,9 @@ Make sure you configure the `cache` and `behavior_version` parameters for heavy 
 - `behavior_version`: The version of the behavior of the function. When the version is changed, the function will be re-executed even if cache is enabled. It's required to be set if cache is True.
 
 
-[→ Custom Functions](https://cocoindex.io/docs/custom_ops/custom_functions#option-2-by-a-function-spec-and-an-executor)
+[→ Custom Functions](https://cocoindex.io/docs-v0/custom_ops/custom_functions#option-2-by-a-function-spec-and-an-executor)
 
-[→ Parameters for Custom Functions](https://cocoindex.io/docs/custom_ops/custom_functions#parameters-for-custom-functions)
+[→ Parameters for Custom Functions](https://cocoindex.io/docs-v0/custom_ops/custom_functions#parameters-for-custom-functions)
 
 ## Define the flow
 
@@ -87,9 +87,9 @@ data_scope["documents"] = flow_builder.add_source(
 doc_embeddings = data_scope.add_collector()
 ```
 
-[→ Source](https://cocoindex.io/docs/sources)
+[→ Source](https://cocoindex.io/docs-v0/sources)
 
-[→ Collector](https://cocoindex.io/docs/ops/collectors)
+[→ Collector](https://cocoindex.io/docs-v0/ops/collectors)
 
 ### Process each document
 
@@ -143,4 +143,4 @@ For a step-by-step walkthrough of each indexing stage and the query path, check 
 
 CocoIndex natively supports Google Drive, Amazon S3, Azure Blob Storage, and more with native incremental processing out of box - when new or updated files are detected, the pipeline will capture the changes and only process what's changed.
 
-[→ Sources](https://cocoindex.io/docs/sources)
+[→ Sources](https://cocoindex.io/docs-v0/sources)

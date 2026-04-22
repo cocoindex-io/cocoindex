@@ -41,7 +41,7 @@ data_scope["documents"] = flow_builder.add_source(
     cocoindex.sources.LocalFile(path="source_files", binary=True)
 )
 ```
-[→ LocalFile](https://cocoindex.io/docs/sources/localfile)
+[→ LocalFile](https://cocoindex.io/docs-v0/sources/localfile)
 
 
 ## Convert Files to Pages
@@ -116,7 +116,7 @@ with doc["pages"].row() as page:
             )
 ```
 
-[→ ColPaliEmbedImage](https://cocoindex.io/docs/ops/functions#colpaliembedimage)
+[→ ColPaliEmbedImage](https://cocoindex.io/docs-v0/ops/functions#colpaliembedimage)
 
 
 ![Embedding](https://cocoindex.io/blobs/docs/img/examples/multi_format_index/embed.png)
@@ -146,7 +146,7 @@ def query_to_colpali_embedding(
     )
 ```
 
-[→ ColPaliEmbedQuery](https://cocoindex.io/docs/ops/functions#colpaliembedquery)
+[→ ColPaliEmbedQuery](https://cocoindex.io/docs-v0/ops/functions#colpaliembedquery)
 
 We store metadata and embeddings in Qdrant:
 
@@ -191,4 +191,4 @@ Follow the url `https://cocoindex.io/cocoinsight`.  It connects to your local Co
 ## Connect to other sources
 CocoIndex natively supports Google Drive, Amazon S3, Azure Blob Storage, and more.
 
-[→ Sources](https://cocoindex.io/docs/sources)
+[→ Sources](https://cocoindex.io/docs-v0/sources)

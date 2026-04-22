@@ -23,7 +23,7 @@ This example shows how to extract structured data from Python Manuals using Olla
 
 ## Prerequisites
 
-- If you don't have Postgres installed, please refer to the [installation guide](https://cocoindex.io/docs/getting_started/installation).
+- If you don't have Postgres installed, please refer to the [installation guide](https://cocoindex.io/docs-v0/getting_started/installation).
 
 - [Download](https://ollama.com/download) and install Ollama. Pull your favorite LLM models by:
 
@@ -31,11 +31,11 @@ This example shows how to extract structured data from Python Manuals using Olla
     ollama pull llama3.2
     ```
 
-    [→ Ollama](https://cocoindex.io/docs/ai/llm#ollama)
+    [→ Ollama](https://cocoindex.io/docs-v0/ai/llm#ollama)
 
     Alternatively, CocoIndex has native support for Gemini, Ollama, and LiteLLM. You can choose your favorite LLM provider and work completely on-premises.
 
-    [→ LLM](https://cocoindex.io/docs/ai/llm)
+    [→ LLM](https://cocoindex.io/docs-v0/ai/llm)
 
 ## Add Source
 
@@ -61,7 +61,7 @@ def manual_extraction_flow(
 - `filename` (key, type: `str`): the filename of the file, e.g. `dir1/file1.md`
 - `content` (type: `str` if `binary` is `False`, otherwise `bytes`): the content of the file
 
-[→ LocalFile](https://cocoindex.io/docs/sources)
+[→ LocalFile](https://cocoindex.io/docs-v0/sources)
 
 ## Parse Markdown
 
@@ -95,7 +95,7 @@ class PdfToMarkdownExecutor:
 
 You may wonder why we want to define a spec + executor (instead of using a standalone function) here. The main reason is there's some heavy preparation work (initialize the parser) that needs to be done before being ready to process real data.
 
-[→ Custom Function](https://cocoindex.io/docs/custom_ops/custom_functions)
+[→ Custom Function](https://cocoindex.io/docs-v0/custom_ops/custom_functions)
 
 Plug in the function to the flow.
 
@@ -159,7 +159,7 @@ with data_scope["documents"].row() as doc:
             instruction="Please extract Python module information from the manual."))
 ```
 
-[→ ExtractByLlm](https://cocoindex.io/docs/core/functions#extractbyllm)
+[→ ExtractByLlm](https://cocoindex.io/docs-v0/core/functions#extractbyllm)
 
 ![ExtractByLlm](https://cocoindex.io/blobs/docs/img/examples/manual_extraction/extraction.png)
 
@@ -197,7 +197,7 @@ with data_scope["documents"].row() as doc:
     doc["module_summary"] = doc["module_info"].transform(summarize_module)
 ```
 
-[→ Custom Function](https://cocoindex.io/docs/custom_ops/custom_functions)
+[→ Custom Function](https://cocoindex.io/docs-v0/custom_ops/custom_functions)
 
 ![Summarize Module](https://cocoindex.io/blobs/docs/img/examples/manual_extraction/summary.png)
 

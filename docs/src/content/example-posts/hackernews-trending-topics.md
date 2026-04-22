@@ -10,7 +10,7 @@ image: https://cocoindex.io/blobs/docs/img/examples/hackernews-trending-topics/c
 In the age of information overload, understanding what's trending—and why—is crucial for developers, researchers, and data engineers. HackerNews is one of the most influential tech communities, but manually tracking emerging topics across thousands of threads and comments is practically impossible.
 
 What if you could automatically index HackerNews content, extract topics using AI, and query trending discussions in real-time? That's exactly what CocoIndex enables through its [**Custom Sources**](https://cocoindex.io/blogs/custom-source) framework
-combined with [LLM-powered extraction](https://cocoindex.io/docs/ai/llm).
+combined with [LLM-powered extraction](https://cocoindex.io/docs-v0/ai/llm).
 
 In this post, we'll explore the **HackerNews Trending Topics** example, a production-ready pipeline that demonstrates some of the most powerful concepts in CocoIndex: incremental data syncing, LLM-powered information extraction, and queryable indexes.
 
@@ -94,7 +94,7 @@ CocoInsight UI / API Clients
 
 ## Custom Source
 
-[→ Custom Sources](https://cocoindex.io/docs/custom_ops/custom_sources)
+[→ Custom Sources](https://cocoindex.io/docs-v0/custom_ops/custom_sources)
 
 ### Defining the Data Model
 ![HackerNews Data Model](https://cocoindex.io/blobs/docs/img/examples/hackernews-trending-topics/hackernews.png)
@@ -162,7 +162,7 @@ A `SourceSpec` holds config for the source:
 
 When the flow is created, these parameters feed into the connector.
 
-[→ Source Spec](https://cocoindex.io/docs/custom_ops/custom_sources#source-spec)
+[→ Source Spec](https://cocoindex.io/docs-v0/custom_ops/custom_sources#source-spec)
 
 #### Defining the Connector
 
@@ -203,7 +203,7 @@ class HackerNewsConnector:
 
 CocoIndex calls `create` once when building the flow.
 
-[→ Source Connector](https://cocoindex.io/docs/custom_ops/custom_sources#source-connector)
+[→ Source Connector](https://cocoindex.io/docs-v0/custom_ops/custom_sources#source-connector)
 
 #### Listing Available Threads
 
@@ -253,7 +253,7 @@ This enables incremental refresh:
 - CocoIndex remembers ordinals
 - Only fetches full items when ordinals change
 
-[→ list() method](https://cocoindex.io/docs/custom_ops/custom_sources#async-def-listoptions-required)
+[→ list() method](https://cocoindex.io/docs-v0/custom_ops/custom_sources#async-def-listoptions-required)
 
 #### Fetching Full Thread Content
 
@@ -287,7 +287,7 @@ async def get_value(
 - Parses the raw JSON into structured Python objects (`_HackerNewsThread` + `_HackerNewsComment`).
 - Returns a `PartialSourceRowData` containing the full thread.
 
-[→ get_value() method](https://cocoindex.io/docs/custom_ops/custom_sources#async-def-get_valuekey-options-required)
+[→ get_value() method](https://cocoindex.io/docs-v0/custom_ops/custom_sources#async-def-get_valuekey-options-required)
 
 
 #### Ordinal Support
@@ -317,7 +317,7 @@ Sync 2 (30s later):
 
 This is why ordinals (timestamps) matter. Without them, you'd fetch everything every time.
 
-[→ provides_ordinal() method](https://cocoindex.io/docs/custom_ops/custom_sources#def-provides_ordinal-optional)
+[→ provides_ordinal() method](https://cocoindex.io/docs-v0/custom_ops/custom_sources#def-provides_ordinal-optional)
 
 #### Parsing JSON into Structured Data
 
@@ -408,11 +408,11 @@ def hackernews_trending_topics_flow(
 
 This block sets up a CocoIndex flow that fetches HackerNews stories and prepares them for indexing. It registers a flow called **HackerNewsTrendingTopics**, then adds a `HackerNewsSource` that retrieves up to 200 stories and refreshes every 30 seconds, storing the result in `data_scope["threads"]` for downstream steps.
 
-[→ Flow Definition Docs](https://cocoindex.io/docs/core/flow_def)
+[→ Flow Definition Docs](https://cocoindex.io/docs-v0/core/flow_def)
 
 Finally, it creates two collectors—one for storing indexed messages and another for extracted topics—providing the core storage layers the rest of the pipeline will build on.
 
-[→ Data Collector](https://cocoindex.io/docs/core/flow_def#data-collector)
+[→ Data Collector](https://cocoindex.io/docs-v0/core/flow_def#data-collector)
 
 ![Ingesting Data](https://cocoindex.io/blobs/docs/img/examples/hackernews-trending-topics/ingest.png)
 
@@ -496,7 +496,7 @@ This block processes each HackerNews thread as it flows through the pipeline. In
 - We use `message_index` to collect relevant metadata for this thread.
 - We use `topic_index` to collect extracted topics and their relationships with threads.
 
-[→ ExtractByLlm](https://cocoindex.io/docs/ops/functions#extractbyllm)
+[→ ExtractByLlm](https://cocoindex.io/docs-v0/ops/functions#extractbyllm)
 
 ![Extract topic](https://cocoindex.io/blobs/docs/img/examples/hackernews-trending-topics/topic.png)
 
@@ -564,7 +564,7 @@ In short, this block enriches every comment with LLM-derived topics, indexes the
     )
 ```
 
-[→ Postgres Target](https://cocoindex.io/docs/targets/postgres)
+[→ Postgres Target](https://cocoindex.io/docs-v0/targets/postgres)
 
 ## Query Handlers
 
@@ -624,7 +624,7 @@ The `@hackernews_trending_topics_flow.query_handler()` decorator registers `sear
 
 When a topic string is provided, the function determines the actual database table names for the topics and messages collectors, then connects to the database and runs a SQL query that finds all topic records matching the search term (case-insensitive) and joins them with their corresponding message entries.
 
-[→ Query Handler](https://cocoindex.io/docs/query#query-handler)
+[→ Query Handler](https://cocoindex.io/docs-v0/query#query-handler)
 
 ### get_threads_for_topic(topic) → Threads discussing X
 

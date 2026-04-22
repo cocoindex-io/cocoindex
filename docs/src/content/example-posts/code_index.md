@@ -39,7 +39,7 @@ The flow is composed of the following steps:
 
 ## Setup
 
-- Install Postgres, follow [installation guide](https://cocoindex.io/docs/getting_started/installation#-install-postgres).
+- Install Postgres, follow [installation guide](https://cocoindex.io/docs-v0/getting_started/installation#-install-postgres).
 - Install CocoIndex
 
   ```sh
@@ -65,7 +65,7 @@ def code_embedding_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoind
 - Exclude files and directories starting `.`,  `target` in the root and `node_modules` under any directory.
 
 `flow_builder.add_source` will create a table with sub fields (`filename`, `content`).
-[→ Sources](https://cocoindex.io/docs/sources)
+[→ Sources](https://cocoindex.io/docs-v0/sources)
 
 ## Process each file and collect the information
 
@@ -81,7 +81,7 @@ def extract_extension(filename: str) -> str:
     return os.path.splitext(filename)[1]
 ```
 
-[→ Custom Function](https://cocoindex.io/docs/custom_ops/custom_functions)
+[→ Custom Function](https://cocoindex.io/docs-v0/custom_ops/custom_functions)
 
 ### Split the file into chunks
 
@@ -96,7 +96,7 @@ with data_scope["files"].row() as file:
           language=file["extension"], chunk_size=1000, chunk_overlap=300)
 ```
 
-[→ SplitRecursively](https://cocoindex.io/docs/ops/functions#splitrecursively)
+[→ SplitRecursively](https://cocoindex.io/docs-v0/ops/functions#splitrecursively)
 
 ![SplitRecursively](https://cocoindex.io/blobs/docs/img/examples/codebase_index/chunk.png)
 
@@ -112,13 +112,13 @@ def code_to_embedding(text: cocoindex.DataSlice[str]) -> cocoindex.DataSlice[lis
             model="sentence-transformers/all-MiniLM-L6-v2"))
 ```
 
-[→ SentenceTransformerEmbed](https://cocoindex.io/docs/ops/functions#sentencetransformerembed)
+[→ SentenceTransformerEmbed](https://cocoindex.io/docs-v0/ops/functions#sentencetransformerembed)
 
 :::tip
 `@cocoindex.transform_flow()` is needed to share the transformation across indexing and query. When building a vector index and querying against it, the embedding computation must remain consistent between indexing and querying.
 :::
 
-[→ Transform Flow](https://cocoindex.io/docs/query#transform-flow)
+[→ Transform Flow](https://cocoindex.io/docs-v0/query#transform-flow)
 
 Then for each chunk, we will embed it using the `code_to_embedding` function, and collect the embeddings to the `code_embeddings` collector.
 
@@ -234,4 +234,4 @@ Follow the url from the terminal - `https://cocoindex.io/cocoinsight` to access 
 
 SplitRecursively has native support for all major programming languages.
 
-[→ Supported Languages](https://cocoindex.io/docs/ops/functions#supported-languages)
+[→ Supported Languages](https://cocoindex.io/docs-v0/ops/functions#supported-languages)

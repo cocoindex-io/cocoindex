@@ -29,12 +29,12 @@ The flow itself is fairly simple.
 
 ## Setup
 
-- If you don't have Postgres installed, please refer to the [installation guide](https://cocoindex.io/docs/getting_started/installation).
-- [Configure your OpenAI API key](https://cocoindex.io/docs/ai/llm#openai). Create a `.env` file from `.env.example`, and fill `OPENAI_API_KEY`.
+- If you don't have Postgres installed, please refer to the [installation guide](https://cocoindex.io/docs-v0/getting_started/installation).
+- [Configure your OpenAI API key](https://cocoindex.io/docs-v0/ai/llm#openai). Create a `.env` file from `.env.example`, and fill `OPENAI_API_KEY`.
 
 Alternatively, we have native support for Gemini, Ollama, LiteLLM. You can choose your favorite LLM provider and work completely on-premises.
 
-  [→ LLM](https://cocoindex.io/docs/ai/llm)
+  [→ LLM](https://cocoindex.io/docs-v0/ai/llm)
 
 ## Add source
 
@@ -56,7 +56,7 @@ def patient_intake_extraction_flow(
 
 `flow_builder.add_source` will create a table with a few sub fields.
 
-[→ Sources](https://cocoindex.io/docs/sources)
+[→ Sources](https://cocoindex.io/docs-v0/sources)
 
 ## Parse documents with different formats to Markdown
 
@@ -193,7 +193,7 @@ with data_scope["documents"].row() as doc:
     )
 ```
 
-[→ ExtractByLlm](https://cocoindex.io/docs/ops/functions#extractbyllm)
+[→ ExtractByLlm](https://cocoindex.io/docs-v0/ops/functions#extractbyllm)
 
 ![Extracted](https://cocoindex.io/blobs/docs/img/examples/patient_form_extraction/extraction.png)
 
@@ -290,4 +290,4 @@ Click on the `markdown` column for `Patient_Intake_Form_Joe.pdf`, you could see 
 
 CocoIndex natively supports Google Drive, Amazon S3, Azure Blob Storage, and more.
 
-[→ Sources](https://cocoindex.io/docs/sources)
+[→ Sources](https://cocoindex.io/docs-v0/sources)
