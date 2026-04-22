@@ -3,7 +3,8 @@ export const GITHUB_REPO = 'https://github.com/cocoindex-io/cocoindex';
 export const DISCORD_URL = 'https://discord.com/invite/zpA9S2DR7s';
 export const SITE_MAIN = 'https://cocoindex.io';
 export const SITE_BLOG = 'https://cocoindex.io/blogs';
-export const SITE_EXAMPLES = 'https://cocoindex.io/examples';
+// `import.meta.env.BASE_URL` reflects `base` in astro.config.mjs (e.g. `/docs-v0/`).
+export const SITE_EXAMPLES = `${import.meta.env.BASE_URL.replace(/\/$/, '')}/examples`;
 // GitHub web-editor URL prefix for the "Edit this page" link.
 export const DOCS_EDIT_BASE = 'https://github.com/cocoindex-io/cocoindex/edit/main/docs/docs';
 
