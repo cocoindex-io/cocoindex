@@ -15,7 +15,7 @@
 </p>
 
 
-<p align="center">CocoIndex turns codebases, meeting notes, inboxes, Slack, PDFs, and videos into live, continuously fresh context for your AI agents and LLM apps to reason over effectively — with minimal incremental processing.  Get your production AI agent ready in 10 minutes with reliable, continuously fresh data — no stale batches, no context gap 
+<p align="center">CocoIndex turns codebases, meeting notes, inboxes, Slack, PDFs, and videos into live, continuously fresh context for your AI agents and LLM apps to reason over effectively — with minimal incremental processing.  Get your production AI agent ready in 10 minutes with reliable, continuously fresh data — no stale batches, no context gap
 </p>
 <p align="center">
   <b>Incremental</b> · only the delta &nbsp;·&nbsp; <b>Any scale</b> · parallel by default &nbsp;·&nbsp; <b>Declarative</b> · Python, 5 min
