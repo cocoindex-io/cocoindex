@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # preview.sh — build the CocoIndex docs site, serve it at the correct
-# /docs-v1 base path, screenshot a page with headless Chrome, and print
+# /docs base path, screenshot a page with headless Chrome, and print
 # paths to PNG outputs.
 #
 # Usage:
@@ -41,9 +41,9 @@ fi
 echo "▶ building docs site…"
 (cd "${DOCS_DIR}" && npm run build >/dev/null)
 
-echo "▶ mirroring dist → ${PREVIEW_DIR}/docs-v1/ (base path matters)"
-mkdir -p "${PREVIEW_DIR}/docs-v1"
-rsync -a --delete "${DOCS_DIR}/dist/" "${PREVIEW_DIR}/docs-v1/"
+echo "▶ mirroring dist → ${PREVIEW_DIR}/docs/ (base path matters)"
+mkdir -p "${PREVIEW_DIR}/docs"
+rsync -a --delete "${DOCS_DIR}/dist/" "${PREVIEW_DIR}/docs/"
 
 # Pick a free port.
 PORT=8765
@@ -59,9 +59,9 @@ sleep 1.5
 
 # Astro's default output layout is `<slug>/index.html`. The older
 # `build.format: 'file'` output was `<slug>.html`. Support both.
-URL="http://localhost:${PORT}/docs-v1/${SLUG}/"
+URL="http://localhost:${PORT}/docs/${SLUG}/"
 if ! curl -sfI "${URL}" >/dev/null 2>&1; then
-  URL="http://localhost:${PORT}/docs-v1/${SLUG}.html"
+  URL="http://localhost:${PORT}/docs/${SLUG}.html"
 fi
 echo "▶ screenshotting ${URL}"
 

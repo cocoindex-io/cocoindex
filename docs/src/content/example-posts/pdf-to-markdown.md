@@ -76,7 +76,7 @@ app = coco.App(
 )
 ```
 
-[→ CocoIndex App](/docs-v1/programming_guide/app)
+[→ CocoIndex App](/docs/programming_guide/app)
 
 ### Define the main function
 
@@ -107,7 +107,7 @@ For each file, `coco.mount()` mounts a processing component. It's up to you to p
 
 In this example, because we want to independently convert each file to Markdown, it is the most natural to pick it at the file level.
 
-[→ Processing Component](/docs-v1/programming_guide/processing_component)
+[→ Processing Component](/docs/programming_guide/processing_component)
 
 
 ### Define file processing
@@ -133,7 +133,7 @@ def process_file(
 
 We use `@coco.function` with `memo=True` to create a memoized function that processes each file.
 
-[→ Function](/docs-v1/programming_guide/function)
+[→ Function](/docs/programming_guide/function)
 
 ## Run the pipeline
 

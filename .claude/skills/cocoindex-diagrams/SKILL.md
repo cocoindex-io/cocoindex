@@ -1,6 +1,6 @@
 ---
 name: cocoindex-diagrams
-description: This skill should be used when creating, editing, or reviewing inline SVG diagrams for the CocoIndex docs site (anything under docs/src/content/docs/**). It encodes the component-based primitive system under docs/src/components/diagrams/, the palette + shape semantics, the preview-and-verify loop using headless Chrome with the /docs-v1 base path, and the pitfalls that cost iterations to discover. Trigger phrases include "add a diagram to the docs", "edit this diagram", "replace the SVG in core_concepts", "make a diagram for processing_component", "check how the diagram looks".
+description: This skill should be used when creating, editing, or reviewing inline SVG diagrams for the CocoIndex docs site (anything under docs/src/content/docs/**). It encodes the component-based primitive system under docs/src/components/diagrams/, the palette + shape semantics, the preview-and-verify loop using headless Chrome with the /docs base path, and the pitfalls that cost iterations to discover. Trigger phrases include "add a diagram to the docs", "edit this diagram", "replace the SVG in core_concepts", "make a diagram for processing_component", "check how the diagram looks".
 ---
 
 # CocoIndex Docs Diagrams
@@ -17,7 +17,7 @@ Apply this skill when:
 - Adding a new diagram to a docs page (`.mdx` under `docs/src/content/docs/`).
 - Editing or replacing an existing diagram component.
 - Reviewing a rendered diagram for layout or style issues.
-- Reworking a legacy `<img src="/docs-v1/img/...svg">` reference.
+- Reworking a legacy `<img src="/docs/img/...svg">` reference.
 
 Do not apply for:
 
@@ -102,7 +102,7 @@ scripts/preview.sh <docs-slug>
 ```
 
 The script handles: building Astro, mirroring `dist/` into a temp path
-that matches the site's `/docs-v1` base URL (critical — see pitfalls),
+that matches the site's `/docs` base URL (critical — see pitfalls),
 spinning up a local HTTP server on a free port, screenshotting with
 headless Chrome, and printing paths to PNG crops. Read the PNGs with
 the `Read` tool to self-check before reporting the diagram done.
