@@ -6,7 +6,7 @@ rust-version = { workspace = true }
 license = { workspace = true }
 
 [dependencies]
-cocoindex_utils = { path = "../utils" }
+cocoindex_utils = { path = "../utils", features = ["reqwest"] }
 
 anyhow = { workspace = true }
 bytes = { workspace = true }
@@ -32,3 +32,4 @@ async-trait = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
+axum = { workspace = true }

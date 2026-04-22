@@ -1,0 +1,71 @@
+---
+title: Anonymous *usage telemetry*
+description: >
+  What CocoIndex's anonymous usage tracking collects, what it doesn't, and how
+  to opt out.
+---
+
+CocoIndex sends a small number of anonymous events to help us understand how
+the library is used across platforms and runtimes. Tracking is strictly
+anonymous, release-only, and opt-out.
+
+## What we collect
+
+On release builds, CocoIndex POSTs a JSON event to our telemetry endpoint
+(the [Scarf](https://about.scarf.sh/) gateway) at four points in the library's
+lifecycle:
+
+- `init` — once per process, when CocoIndex is imported.
+- `app_create` — when a `cocoindex.App` is constructed.
+- `app_update` — each time `app.update()` is called.
+- `app_drop` — each time `app.drop()` is called.
+
+Each event body contains exactly three fields:
+
+```json
+{ "event": "app_update", "platform": "aarch64-macos", "lang": "python3.11" }
+```
+
+The package identity and version travel in the request URL, for example
+`https://cocoindex.gateway.scarf.sh/python-1.0.0a1`.
+
+## What we don't collect
+
+CocoIndex telemetry never sends:
+
+- Your data, flow definitions, or function code.
+- Source/target connector configuration, credentials, URLs, or database names.
+- App names, component names, file paths, or any user-provided identifiers.
+- Stats about row counts, processing times, or memory usage.
+- A persistent machine or user identifier. Requests are not tagged; the gateway
+  only sees whatever an HTTP request normally carries (IP address, which Scarf
+  uses for coarse geolocation and then discards).
+
+## When telemetry is active
+
+Telemetry runs only in **release builds** of the native extension (the
+wheels published to PyPI). Local development installs via `maturin develop`
+produce a debug build and never send any events — the check is compile-time,
+so the code path doesn't exist in debug binaries.
+
+Delivery is non-blocking: each event is dispatched on a background task with a
+5-second timeout. Failures are logged at INFO level and never affect your app.
+
+## Opting out
+
+Set the `COCOINDEX_DISABLE_USAGE_TRACKING` environment variable to any non-empty
+value other than `0` before starting your program:
+
+```bash
+export COCOINDEX_DISABLE_USAGE_TRACKING=1
+```
+
+When this variable is set, CocoIndex skips all telemetry initialization — no
+events are ever constructed or dispatched.
+
+## Why we collect this
+
+Knowing which platforms and Python versions are in active use helps us prioritize
+wheel builds, platform support, and compatibility testing. If you have feedback
+about what we track, please [open an issue](https://github.com/cocoindex-io/cocoindex/issues)
+or reach out in our [Discord](https://discord.com/invite/zpA9S2DR7s).

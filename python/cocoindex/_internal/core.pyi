@@ -265,6 +265,8 @@ class TargetStateProvider:
 
 def init_runtime(
     *,
+    package_id: str,
+    lang: str,
     serialize_fn: Callable[[Any], bytes],
     handler_wrapper_fn: Callable[[Any], Any],
     non_existence: Any,

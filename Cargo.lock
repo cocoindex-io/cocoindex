@@ -450,6 +450,7 @@ version = "999.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "axum",
  "bytes",
  "cocoindex_utils",
  "env_logger",

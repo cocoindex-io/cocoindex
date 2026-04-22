@@ -38,6 +38,8 @@ static PY_OBJECTS: OnceLock<std::mem::ManuallyDrop<PythonObjects>> = OnceLock::n
 
 #[pyfunction]
 pub fn init_runtime(
+    package_id: String,
+    lang: String,
     serialize_fn: Py<PyAny>,
     handler_wrapper_fn: Py<PyAny>,
     non_existence: Py<PyAny>,
@@ -48,6 +50,7 @@ pub fn init_runtime(
             "Failed to initialize Tokio runtime: already initialized",
         ));
     }
+    cocoindex_core::telemetry::init(package_id, lang);
     PY_OBJECTS
         .set(std::mem::ManuallyDrop::new(PythonObjects {
             serialize_fn,
