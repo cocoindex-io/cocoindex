@@ -72,6 +72,7 @@ class LiteLLMEmbedder(_schema.VectorSchemaProvider):
             response = await litellm.aembedding(
                 model=self._model,
                 input=["hello"],
+                encoding_format="float",
                 **self._kwargs,
             )
             embedding = response.data[0]["embedding"]
@@ -103,6 +104,7 @@ class LiteLLMEmbedder(_schema.VectorSchemaProvider):
         response = await litellm.aembedding(
             model=self._model,
             input=texts,
+            encoding_format="float",
             **kwargs,
         )
         return [
