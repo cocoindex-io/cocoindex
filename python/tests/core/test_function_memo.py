@@ -842,3 +842,225 @@ def test_memo_bound_method() -> None:
     # No changes - everything should be memoized.
     app.update_blocking()
     assert _metrics.collect() == {}
+
+
+# ============================================================================
+# memo_key tests — per-argument memoization key control
+# ============================================================================
+
+_memo_key_source_data: dict[str, SourceDataEntry] = {}
+
+
+# 'content' is excluded from the memo key; only 'name' and 'version' matter.
+@coco.fn(memo=True, memo_key={"entry": lambda e: (e.name, e.version)})
+def _transform_entry_with_memo_key(entry: SourceDataEntry) -> str:
+    _metrics.increment("call.transform_entry_with_memo_key")
+    return f"processed: {entry.content}"
+
+
+@coco.fn
+def _process_with_memo_key() -> None:
+    for key, value in _memo_key_source_data.items():
+        transformed_value = _transform_entry_with_memo_key(value)
+        coco.declare_target_state(GlobalDictTarget.target_state(key, transformed_value))
+
+
+def test_memo_key_callable_controls_invalidation() -> None:
+    """memo_key with callable: only the key fn's output triggers re-execution."""
+    GlobalDictTarget.store.clear()
+    _memo_key_source_data.clear()
+    _metrics.clear()
+
+    app = coco.App(
+        coco.AppConfig(
+            name="test_memo_key_callable_controls_invalidation", environment=coco_env
+        ),
+        _process_with_memo_key,
+    )
+
+    _memo_key_source_data["A"] = SourceDataEntry(
+        name="A", version=1, content="contentA1"
+    )
+    app.update_blocking()
+    assert _metrics.collect() == {"call.transform_entry_with_memo_key": 1}
+    assert GlobalDictTarget.store.data == {
+        "A": DictDataWithPrev(
+            data="processed: contentA1", prev=[], prev_may_be_missing=True
+        ),
+    }
+
+    # Change only 'content' (not covered by memo key) — should NOT re-execute.
+    _memo_key_source_data["A"] = SourceDataEntry(
+        name="A", version=1, content="contentA_NEW"
+    )
+    app.update_blocking()
+    assert _metrics.collect() == {}
+    assert GlobalDictTarget.store.data == {
+        "A": DictDataWithPrev(
+            data="processed: contentA1", prev=[], prev_may_be_missing=True
+        ),
+    }
+
+    # Change 'version' (covered by memo key) — should re-execute.
+    _memo_key_source_data["A"] = SourceDataEntry(
+        name="A", version=2, content="contentA_NEW"
+    )
+    app.update_blocking()
+    assert _metrics.collect() == {"call.transform_entry_with_memo_key": 1}
+    assert GlobalDictTarget.store.data == {
+        "A": DictDataWithPrev(
+            data="processed: contentA_NEW",
+            prev=["processed: contentA1"],
+            prev_may_be_missing=False,
+        ),
+    }
+
+
+_memo_key_none_source_data: dict[str, SourceDataEntry] = {}
+_memo_key_none_extra_data: dict[str, str] = {}
+
+
+# 'extra' is excluded; only 'entry' matters for memoization.
+@coco.fn(memo=True, memo_key={"extra": None})
+def _transform_with_excluded_arg(entry: SourceDataEntry, extra: str) -> str:
+    _metrics.increment("call.transform_with_excluded_arg")
+    return f"processed: {entry.content} [{extra}]"
+
+
+@coco.fn
+def _process_with_excluded_arg() -> None:
+    for key, value in _memo_key_none_source_data.items():
+        extra = _memo_key_none_extra_data.get(key, "default")
+        transformed_value = _transform_with_excluded_arg(value, extra)
+        coco.declare_target_state(GlobalDictTarget.target_state(key, transformed_value))
+
+
+def test_memo_key_none_excludes_arg_from_invalidation() -> None:
+    """memo_key with None: excluded arg never triggers re-execution."""
+    GlobalDictTarget.store.clear()
+    _memo_key_none_source_data.clear()
+    _memo_key_none_extra_data.clear()
+    _metrics.clear()
+
+    app = coco.App(
+        coco.AppConfig(
+            name="test_memo_key_none_excludes_arg_from_invalidation",
+            environment=coco_env,
+        ),
+        _process_with_excluded_arg,
+    )
+
+    _memo_key_none_source_data["A"] = SourceDataEntry(name="A", version=1, content="c1")
+    _memo_key_none_extra_data["A"] = "tag1"
+    app.update_blocking()
+    assert _metrics.collect() == {"call.transform_with_excluded_arg": 1}
+    assert GlobalDictTarget.store.data == {
+        "A": DictDataWithPrev(
+            data="processed: c1 [tag1]", prev=[], prev_may_be_missing=True
+        ),
+    }
+
+    # Change only the excluded 'extra' arg — should NOT re-execute.
+    _memo_key_none_extra_data["A"] = "tag2"
+    app.update_blocking()
+    assert _metrics.collect() == {}
+    assert GlobalDictTarget.store.data == {
+        "A": DictDataWithPrev(
+            data="processed: c1 [tag1]", prev=[], prev_may_be_missing=True
+        ),
+    }
+
+    # Change 'entry' (not excluded) — should re-execute.
+    _memo_key_none_source_data["A"] = SourceDataEntry(name="A", version=2, content="c2")
+    app.update_blocking()
+    assert _metrics.collect() == {"call.transform_with_excluded_arg": 1}
+    assert GlobalDictTarget.store.data == {
+        "A": DictDataWithPrev(
+            data="processed: c2 [tag2]",
+            prev=["processed: c1 [tag1]"],
+            prev_may_be_missing=False,
+        ),
+    }
+
+
+@coco.fn.as_async(memo=True, memo_key={"entry": lambda e: (e.name, e.version)})
+def _transform_entry_with_memo_key_async(entry: SourceDataEntry) -> str:
+    _metrics.increment("call.transform_entry_with_memo_key_async")
+    return f"processed_async: {entry.content}"
+
+
+@coco.fn
+async def _process_with_memo_key_async() -> None:
+    for key, value in _memo_key_source_data.items():
+        transformed_value = await _transform_entry_with_memo_key_async(value)
+        coco.declare_target_state(GlobalDictTarget.target_state(key, transformed_value))
+
+
+def test_memo_key_callable_controls_invalidation_async() -> None:
+    """memo_key with callable should work for @coco.fn.as_async as well."""
+    GlobalDictTarget.store.clear()
+    _memo_key_source_data.clear()
+    _metrics.clear()
+
+    app = coco.App(
+        coco.AppConfig(
+            name="test_memo_key_callable_controls_invalidation_async",
+            environment=coco_env,
+        ),
+        _process_with_memo_key_async,
+    )
+
+    _memo_key_source_data["A"] = SourceDataEntry(
+        name="A", version=1, content="contentA1"
+    )
+    app.update_blocking()
+    assert _metrics.collect() == {"call.transform_entry_with_memo_key_async": 1}
+    assert GlobalDictTarget.store.data == {
+        "A": DictDataWithPrev(
+            data="processed_async: contentA1", prev=[], prev_may_be_missing=True
+        ),
+    }
+
+    # Change only content -> should stay memoized.
+    _memo_key_source_data["A"] = SourceDataEntry(
+        name="A", version=1, content="contentA_NEW"
+    )
+    app.update_blocking()
+    assert _metrics.collect() == {}
+    assert GlobalDictTarget.store.data == {
+        "A": DictDataWithPrev(
+            data="processed_async: contentA1", prev=[], prev_may_be_missing=True
+        ),
+    }
+
+    # Change version -> should re-execute.
+    _memo_key_source_data["A"] = SourceDataEntry(
+        name="A", version=2, content="contentA_NEW"
+    )
+    app.update_blocking()
+    assert _metrics.collect() == {"call.transform_entry_with_memo_key_async": 1}
+    assert GlobalDictTarget.store.data == {
+        "A": DictDataWithPrev(
+            data="processed_async: contentA_NEW",
+            prev=["processed_async: contentA1"],
+            prev_may_be_missing=False,
+        ),
+    }
+
+
+def test_memo_key_validation_rejects_unknown_parameter() -> None:
+    with pytest.raises(ValueError, match="Unknown memo_key parameter"):
+
+        @coco.fn(memo=True, memo_key={"missing": None})
+        def _invalid_unknown(entry: SourceDataEntry) -> str:
+            return entry.content
+
+
+def test_memo_key_validation_rejects_non_callable_value() -> None:
+    from typing import cast
+
+    with pytest.raises(TypeError, match="must be a callable or None"):
+
+        @coco.fn(memo=True, memo_key=cast(Any, {"entry": 123}))
+        def _invalid_non_callable(entry: SourceDataEntry) -> str:
+            return entry.content

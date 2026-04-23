@@ -19,6 +19,7 @@ from typing import (
     Coroutine,
     Generic,
     Literal,
+    Mapping,
     NamedTuple,
     ParamSpec,
     Protocol,
@@ -63,7 +64,9 @@ AsyncCallable: TypeAlias = Callable[P, Coroutine[Any, Any, R_co]]
 AnyCallable: TypeAlias = AsyncCallable[P, R_co] | Callable[P, R_co]
 
 LogicTracking: TypeAlias = Literal["full", "self"] | None
-
+MemoKeyTransform: TypeAlias = Callable[[Any], Any]
+MemoKeySpec: TypeAlias = Mapping[str, MemoKeyTransform | None] | None
+NormalizedMemoKeySpec: TypeAlias = dict[str, MemoKeyTransform | None] | None
 
 # ============================================================================
 # Type protocols for batched function decorators
@@ -398,6 +401,34 @@ def _has_self_parameter(fn: Callable[..., Any]) -> bool:
     )
 
 
+def _normalize_memo_key(
+    fn: Callable[..., Any], memo_key: MemoKeySpec
+) -> NormalizedMemoKeySpec:
+    """Validate and normalize per-parameter memo-key overrides."""
+    if memo_key is None:
+        return None
+
+    normalized = dict(memo_key)
+    if not normalized:
+        return None
+
+    params = inspect.signature(fn).parameters
+    unknown = sorted(name for name in normalized if name not in params)
+    if unknown:
+        raise ValueError(
+            f"Unknown memo_key parameter(s) for {qualified_name(fn)}(): "
+            + ", ".join(unknown)
+        )
+
+    for name, transform in normalized.items():
+        if transform is not None and not callable(transform):
+            raise TypeError(
+                f"memo_key[{name!r}] for {qualified_name(fn)}() must be a callable or None"
+            )
+
+    return normalized
+
+
 # ============================================================================
 # Sync Function
 # ============================================================================
@@ -498,6 +529,7 @@ class SyncFunction(Function[P, R_co]):
     __slots__ = (
         "_fn",
         "_memo",
+        "_memo_key",
         "_processor_info",
         "_logic_fp",
         "_logic_tracking",
@@ -507,6 +539,7 @@ class SyncFunction(Function[P, R_co]):
 
     _fn: Callable[P, R_co]
     _memo: bool
+    _memo_key: NormalizedMemoKeySpec
     _processor_info: core.ComponentProcessorInfo
     _logic_fp: core.Fingerprint | None
     _logic_tracking: LogicTracking
@@ -518,6 +551,7 @@ class SyncFunction(Function[P, R_co]):
         fn: Callable[P, R_co],
         *,
         memo: bool,
+        memo_key: MemoKeySpec = None,
         version: int | None = None,
         logic_tracking: LogicTracking = "full",
         deps: Any = None,
@@ -530,6 +564,7 @@ class SyncFunction(Function[P, R_co]):
             )
         self._fn = fn
         self._memo = memo
+        self._memo_key = _normalize_memo_key(fn, memo_key)
         self._processor_info = core.ComponentProcessorInfo(fn.__qualname__)
         self._logic_tracking = logic_tracking
         self._return_deserializer = None
@@ -600,7 +635,11 @@ class SyncFunction(Function[P, R_co]):
             if self._memo:
                 state_methods: list[StateFnEntry] = []
                 memo_fp = fingerprint_call(
-                    self._fn, args, kwargs, state_methods=state_methods
+                    self._fn,
+                    args,
+                    kwargs,
+                    state_methods=state_methods,
+                    memo_key=self._memo_key,
                 )
                 guard = core.reserve_memoization(
                     parent_ctx._core_processor_ctx, memo_fp
@@ -700,7 +739,13 @@ class SyncFunction(Function[P, R_co]):
     ) -> core.ComponentProcessor[R_co]:
         state_methods: list[StateFnEntry] = []
         memo_fp = (
-            fingerprint_call(self._fn, args, kwargs, state_methods=state_methods)
+            fingerprint_call(
+                self._fn,
+                args,
+                kwargs,
+                state_methods=state_methods,
+                memo_key=self._memo_key,
+            )
             if self._memo
             else None
         )
@@ -908,6 +953,7 @@ class AsyncFunction(Function[P, R_co]):
         "_orig_sync_fn",
         "_fn_is_async",
         "_memo",
+        "_memo_key",
         "_processor_info",
         "_logic_fp",
         "_logic_tracking",
@@ -925,6 +971,7 @@ class AsyncFunction(Function[P, R_co]):
     _orig_async_fn: AsyncCallable[..., Any] | None
     _orig_sync_fn: Callable[..., Any] | None
     _memo: bool
+    _memo_key: NormalizedMemoKeySpec
     _processor_info: core.ComponentProcessorInfo
     _logic_fp: core.Fingerprint | None
     _logic_tracking: LogicTracking
@@ -945,6 +992,7 @@ class AsyncFunction(Function[P, R_co]):
         sync_fn: Callable[..., Any] | None,
         *,
         memo: bool,
+        memo_key: MemoKeySpec = None,
         batching: bool = False,
         max_batch_size: int | None = None,
         runner: Runner | None = None,
@@ -964,6 +1012,7 @@ class AsyncFunction(Function[P, R_co]):
         self._orig_async_fn = async_fn
         self._orig_sync_fn = sync_fn
         self._memo = memo
+        self._memo_key = _normalize_memo_key(fn, memo_key)
         self._processor_info = core.ComponentProcessorInfo(fn.__qualname__)
         self._logic_tracking = logic_tracking
         self._return_deserializer = None
@@ -1069,7 +1118,11 @@ class AsyncFunction(Function[P, R_co]):
             if self._memo and parent_ctx is not None:
                 env = parent_ctx._env
                 memo_fp = fingerprint_call(
-                    self._any_fn, args, kwargs, state_methods=state_methods
+                    self._any_fn,
+                    args,
+                    kwargs,
+                    state_methods=state_methods,
+                    memo_key=self._memo_key,
                 )
                 guard = await core.reserve_memoization_async(
                     parent_ctx._core_processor_ctx, memo_fp
@@ -1346,9 +1399,11 @@ class AsyncFunction(Function[P, R_co]):
         memo_fp = (
             fingerprint_call(
                 self._any_fn,
-                (path, *args),
+                args,
                 kwargs,
                 state_methods=state_methods,
+                memo_key=self._memo_key,
+                prefix_args=(path,),
             )
             if self._memo
             else None
@@ -1460,6 +1515,7 @@ class _GenericFunctionBuilder:
         self,
         *,
         memo: bool = False,
+        memo_key: MemoKeySpec = None,
         batching: bool = False,
         max_batch_size: int | None = None,
         runner: Runner | None = None,
@@ -1468,6 +1524,7 @@ class _GenericFunctionBuilder:
         deps: Any = None,
     ) -> None:
         self._memo = memo
+        self._memo_key = memo_key
         self._batching = batching
         self._max_batch_size = max_batch_size
         self._runner = runner
@@ -1484,6 +1541,7 @@ class _GenericFunctionBuilder:
         wrapper = SyncFunction(
             fn,
             memo=self._memo,
+            memo_key=self._memo_key,
             version=self._version,
             logic_tracking=self._logic_tracking,
             deps=self._deps,
@@ -1502,6 +1560,7 @@ class _GenericFunctionBuilder:
             async_fn,
             sync_fn,
             memo=self._memo,
+            memo_key=self._memo_key,
             batching=self._batching,
             max_batch_size=self._max_batch_size,
             runner=self._runner,
@@ -1531,12 +1590,14 @@ class _AutoFunctionBuilder(_GenericFunctionBuilder):
         self,
         *,
         memo: bool = False,
+        memo_key: MemoKeySpec = None,
         version: int | None = None,
         logic_tracking: LogicTracking = "full",
         deps: Any = None,
     ) -> None:
         super().__init__(
             memo=memo,
+            memo_key=memo_key,
             version=version,
             logic_tracking=logic_tracking,
             deps=deps,
@@ -1586,6 +1647,7 @@ class _FunctionDecorator:
         self,
         *,
         memo: bool = False,
+        memo_key: MemoKeySpec = None,
         version: int | None = None,
         logic_tracking: LogicTracking = "full",
         deps: Any = None,
@@ -1596,6 +1658,7 @@ class _FunctionDecorator:
         self,
         *,
         memo: bool = False,
+        memo_key: MemoKeySpec = None,
         batching: Literal[True],
         max_batch_size: int | None = None,
         runner: Runner | None = None,
@@ -1609,6 +1672,7 @@ class _FunctionDecorator:
         self,
         *,
         memo: bool = False,
+        memo_key: MemoKeySpec = None,
         batching: Literal[False] = False,
         max_batch_size: int | None = None,
         runner: Runner | None = None,
@@ -1629,6 +1693,7 @@ class _FunctionDecorator:
         /,
         *,
         memo: bool = False,
+        memo_key: MemoKeySpec = None,
         batching: bool = False,
         max_batch_size: int | None = None,
         runner: Runner | None = None,
@@ -1645,6 +1710,10 @@ class _FunctionDecorator:
         Args:
             fn: The function to decorate (optional, for use without parentheses)
             memo: Enable memoization (skip execution when inputs unchanged)
+            memo_key: Optional per-parameter memoization key overrides. For a
+                parameter name, ``None`` excludes that argument from the memo
+                key and a callable maps the runtime value to the value that
+                should be fingerprinted for memoization.
             batching: Enable batching (function receives list[T], returns list[R])
             max_batch_size: Maximum batch size (only with batching=True)
             runner: Runner to execute the function (e.g., GPU for subprocess)
@@ -1690,6 +1759,7 @@ class _FunctionDecorator:
         builder = (
             _SyncFunctionBuilder(
                 memo=memo,
+                memo_key=memo_key,
                 batching=batching,
                 max_batch_size=max_batch_size,
                 runner=runner,
@@ -1700,6 +1770,7 @@ class _FunctionDecorator:
             if batching or runner or max_batch_size is not None
             else _AutoFunctionBuilder(
                 memo=memo,
+                memo_key=memo_key,
                 version=version,
                 logic_tracking=logic_tracking,
                 deps=deps,
@@ -1718,6 +1789,7 @@ class _FunctionDecorator:
         self,
         *,
         memo: bool = False,
+        memo_key: MemoKeySpec = None,
         batching: Literal[True],
         max_batch_size: int | None = None,
         runner: Runner | None = None,
@@ -1731,6 +1803,7 @@ class _FunctionDecorator:
         self,
         *,
         memo: bool = False,
+        memo_key: MemoKeySpec = None,
         batching: Literal[False] = False,
         max_batch_size: int | None = None,
         runner: Runner | None = None,
@@ -1757,6 +1830,7 @@ class _FunctionDecorator:
         /,
         *,
         memo: bool = False,
+        memo_key: MemoKeySpec = None,
         batching: bool = False,
         max_batch_size: int | None = None,
         runner: Runner | None = None,
@@ -1795,6 +1869,7 @@ class _FunctionDecorator:
         """
         builder = _AsyncFunctionBuilder(
             memo=memo,
+            memo_key=memo_key,
             batching=batching,
             max_batch_size=max_batch_size,
             runner=runner,

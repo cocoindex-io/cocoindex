@@ -600,3 +600,67 @@ def test_no_state_methods_for_hook_only_objects() -> None:
     methods: list[Any] = []
     fingerprint_call(_dummy_fn, (HookOnly(),), {}, state_methods=methods)
     assert len(methods) == 0
+
+
+def _named_dummy_fn(n: int, s: str, p: Any) -> None:
+    raise RuntimeError("not called")
+
+
+def test_fingerprint_call_memo_key_can_ignore_parameter() -> None:
+    fp_a = fingerprint_call(
+        _named_dummy_fn,
+        (1, "same", {"x": 1}),
+        {},
+        memo_key={"n": None},
+    )
+    fp_b = fingerprint_call(
+        _named_dummy_fn,
+        (2, "same", {"x": 1}),
+        {},
+        memo_key={"n": None},
+    )
+    assert fp_a == fp_b
+
+
+def test_fingerprint_call_memo_key_can_transform_parameter() -> None:
+    @dataclasses.dataclass
+    class Point:
+        x: int
+        y: int
+
+    fp_a = fingerprint_call(
+        _named_dummy_fn,
+        (1, "same", Point(5, 100)),
+        {},
+        memo_key={"p": lambda p: p.x},
+    )
+    fp_b = fingerprint_call(
+        _named_dummy_fn,
+        (1, "same", Point(5, 999)),
+        {},
+        memo_key={"p": lambda p: p.x},
+    )
+    fp_c = fingerprint_call(
+        _named_dummy_fn,
+        (1, "same", Point(6, 100)),
+        {},
+        memo_key={"p": lambda p: p.x},
+    )
+    assert fp_a == fp_b
+    assert fp_a != fp_c
+
+
+def test_fingerprint_call_prefix_args_affect_fingerprint() -> None:
+    fp_a = fingerprint_call(
+        _named_dummy_fn,
+        (1, "same", {"x": 1}),
+        {},
+        prefix_args=("path/a",),
+    )
+    fp_b = fingerprint_call(
+        _named_dummy_fn,
+        (1, "same", {"x": 1}),
+        {},
+        prefix_args=("path/b",),
+    )
+    assert fp_a != fp_b

@@ -9,6 +9,7 @@ canonical form into a fixed-size fingerprint.
 from __future__ import annotations
 
 import dataclasses
+import inspect
 import functools
 import math
 import pickle
@@ -27,6 +28,8 @@ from .typing import Fingerprintable
 
 _KeyFn = typing.Callable[[typing.Any], typing.Any]
 _StateFn = typing.Callable[[typing.Any, typing.Any], typing.Any]
+_MemoKeyTransform = typing.Callable[[typing.Any], typing.Any]
+_MemoKeySpec = dict[str, _MemoKeyTransform | None] | None
 
 
 class _MemoFns(typing.NamedTuple):
@@ -337,25 +340,61 @@ def _make_call_canonical(
     *,
     version: str | int | None = None,
     state_methods: list[StateFnEntry] | None = None,
+    memo_key: _MemoKeySpec = None,
+    prefix_args: tuple[object, ...] = (),
 ) -> Fingerprintable:
     function_identity = (
         getattr(func, "__module__", None),
         getattr(func, "__qualname__", None),
     )
-    canonical_args = tuple(
-        _canonicalize(a, _seen=None, state_methods=state_methods) for a in args
+    if memo_key is None:
+        canonical_args = tuple(
+            _canonicalize(a, _seen=None, state_methods=state_methods)
+            for a in (*prefix_args, *args)
+        )
+        canonical_kwargs = tuple(
+            (k, _canonicalize(v, _seen=None, state_methods=state_methods))
+            for k, v in sorted(kwargs.items())
+        )
+        return (
+            "memo_call_v1",
+            function_identity,
+            version,
+            canonical_args,
+            canonical_kwargs,
+        )
+
+    signature = _get_signature(func)
+    bound = signature.bind_partial(*args, **kwargs)
+    canonical_prefix_args = tuple(
+        _canonicalize(a, _seen=None, state_methods=state_methods) for a in prefix_args
     )
-    canonical_kwargs = tuple(
-        (k, _canonicalize(v, _seen=None, state_methods=state_methods))
-        for k, v in sorted(kwargs.items())
-    )
+    canonical_named_args: list[tuple[str, Fingerprintable]] = []
+    for name in signature.parameters:
+        if name not in bound.arguments:
+            continue
+        value = bound.arguments[name]
+        transform = memo_key.get(name)
+        if transform is None and name in memo_key:
+            continue
+        if transform is not None:
+            value = transform(value)
+        canonical_named_args.append(
+            (name, _canonicalize(value, _seen=None, state_methods=state_methods))
+        )
+
     return (
-        "memo_call_v1",
+        "memo_call_v2",
         function_identity,
         version,
-        canonical_args,
-        canonical_kwargs,
+        canonical_prefix_args,
+        tuple(canonical_named_args),
     )
+
+
+@functools.cache
+def _get_signature(func: typing.Callable[..., object]) -> inspect.Signature:
+    return inspect.signature(func)
 
 
 def memo_fingerprint(obj: object) -> core.Fingerprint:
@@ -369,6 +408,8 @@ def fingerprint_call(
     *,
     version: str | int | None = None,
     state_methods: list[StateFnEntry] | None = None,
+    memo_key: _MemoKeySpec = None,
+    prefix_args: tuple[object, ...] = (),
 ) -> core.Fingerprint:
     """Compute the deterministic fingerprint for a function call.
 
@@ -386,6 +427,8 @@ def fingerprint_call(
         kwargs,
         version=version,
         state_methods=state_methods,
+        memo_key=memo_key,
+        prefix_args=prefix_args,
     )
     # One Python -> Rust call.
     return core.fingerprint_simple_object(call_key_obj)
