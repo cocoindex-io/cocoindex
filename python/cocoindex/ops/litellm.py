@@ -155,17 +155,68 @@ class LiteLLMEmbedder(_schema.VectorSchemaProvider):
 
 
 class LiteLLMTranscriber:
+    """Wrapper for LiteLLM speech-to-text transcription models.
+
+    This class provides an async interface to LiteLLM's transcription API
+    for CocoIndex ``FileLike`` inputs.
+
+    Args:
+        model: LiteLLM transcription model name (e.g., ``"whisper-1"``,
+            ``"elevenlabs/scribe_v1"``).
+        **kwargs: Additional keyword arguments passed through to every
+            ``litellm.transcription`` call (e.g., ``api_key``, ``api_base``,
+            ``language``).
+
+    Example:
+        >>> from cocoindex.ops.litellm import LiteLLMTranscriber
+        >>> transcriber = LiteLLMTranscriber("whisper-1")
+        >>> transcript = await transcriber.transcribe(audio_file)
+        >>> print(transcript)
+    """
+
     def __init__(self, model: str, **kwargs: _Any) -> None:
+        """Initialize the LiteLLM transcriber."""
         self._model = model
         self._kwargs = kwargs
 
     @coco.fn(memo=True, version=1, logic_tracking="self")
     async def transcribe(self, file: _file.FileLike[_Any], **kwargs: _Any) -> str:
+        """Transcribe audio content from a ``FileLike`` object into text.
+
+        ``FileLike`` provides async read methods. The content is read into a
+        binary file-like object before calling LiteLLM.
+
+        Args:
+            file: ``FileLike`` object containing audio data.
+            **kwargs: Additional keyword arguments passed through to this
+                ``litellm.transcription`` call.
+
+        Returns:
+            The transcribed text.
+
+        Note:
+            Per-call keyword arguments override defaults provided when the
+            transcriber was initialized.
+        """
         audio = _io.BytesIO(await file.read())
         audio.name = file.file_path.name
-        return await _asyncio.to_thread(self._transcribe_sync, audio, kwargs)
+        return await _asyncio.to_thread(self._transcribe, audio, kwargs)
 
-    def _transcribe_sync(self, file: _Any, per_call_kwargs: dict[str, _Any]) -> str:
+    def _transcribe(self, file: _Any, per_call_kwargs: dict[str, _Any]) -> str:
+        """Call LiteLLM's synchronous transcription API.
+
+        Args:
+            file: Binary file-like object accepted by ``litellm.transcription``.
+            per_call_kwargs: Keyword arguments passed to this specific
+                transcription call.
+
+        Returns:
+            The transcribed text.
+
+        Note:
+            ``litellm.transcription`` is synchronous, so :meth:`transcribe`
+            calls this method with ``asyncio.to_thread``.
+        """
         call_kwargs = dict(self._kwargs)
         call_kwargs.update(per_call_kwargs)
 
