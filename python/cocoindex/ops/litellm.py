@@ -1,14 +1,20 @@
-"""LiteLLM integration for text embeddings.
+"""LiteLLM integration for text embeddings and speech-to-text.
 
-This module provides a wrapper around the LiteLLM library
-that implements VectorSchemaProvider for easy integration with CocoIndex connectors.
+This module provides thin wrappers around the LiteLLM library: ``LiteLLMEmbedder``
+implements ``VectorSchemaProvider`` for connector vector columns, and
+``LiteLLMTranscriber`` exposes speech-to-text via LiteLLM's transcription API.
 """
 
 from __future__ import annotations
 
-__all__ = ["LiteLLMEmbedder", "litellm"]
+__all__ = [
+    "LiteLLMEmbedder",
+    "LiteLLMTranscriber",
+    "litellm",
+]
 
 import asyncio as _asyncio
+import io as _io
 from typing import Any as _Any
 
 import litellm as litellm
@@ -16,6 +22,7 @@ import numpy as _np
 from numpy.typing import NDArray as _NDArray
 
 import cocoindex as coco
+from cocoindex.resources import file as _file
 from cocoindex.resources import schema as _schema
 
 
@@ -142,6 +149,32 @@ class LiteLLMEmbedder(_schema.VectorSchemaProvider):
         """
         dim = await self._get_dim()
         return _schema.VectorSchema(dtype=_np.dtype(_np.float32), size=dim)
+
+    def __coco_memo_key__(self) -> object:
+        return (self._model, self._kwargs)
+
+
+class LiteLLMTranscriber:
+    def __init__(self, model: str, **kwargs: _Any) -> None:
+        self._model = model
+        self._kwargs = kwargs
+
+    @coco.fn(memo=True, version=1, logic_tracking="self")
+    async def transcribe(self, file: _file.FileLike[_Any], **kwargs: _Any) -> str:
+        audio = _io.BytesIO(await file.read())
+        audio.name = file.file_path.name
+        return await _asyncio.to_thread(self._transcribe_sync, audio, kwargs)
+
+    def _transcribe_sync(self, file: _Any, per_call_kwargs: dict[str, _Any]) -> str:
+        call_kwargs = dict(self._kwargs)
+        call_kwargs.update(per_call_kwargs)
+
+        response = litellm.transcription(
+            model=self._model,
+            file=file,
+            **call_kwargs,
+        )
+        return response.text  # type: ignore[no-any-return]
 
     def __coco_memo_key__(self) -> object:
         return (self._model, self._kwargs)
