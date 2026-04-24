@@ -165,7 +165,7 @@ class LiteLLMTranscriber:
             ``"elevenlabs/scribe_v1"``).
         **kwargs: Additional keyword arguments passed through to every
             ``litellm.transcription`` call (e.g., ``api_key``, ``api_base``,
-            ``language``).
+            ``language``, ``extra_body``).
 
     Example:
         >>> from cocoindex.ops.litellm import LiteLLMTranscriber
