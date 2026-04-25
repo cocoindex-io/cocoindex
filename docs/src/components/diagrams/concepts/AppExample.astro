@@ -1,0 +1,53 @@
+---
+import DiagramFrame from '../primitives/DiagramFrame.astro';
+import AppContainer from '../primitives/AppContainer.astro';
+import LogicBox from '../primitives/LogicBox.astro';
+import DataBox from '../primitives/DataBox.astro';
+import TargetBullet from '../primitives/TargetBullet.astro';
+import FlowArrow from '../primitives/FlowArrow.astro';
+import Connector from '../primitives/Connector.astro';
+
+// Matches the original app-example.svg:
+// Drive Folder → [CocoIndex App: List of PDFs → Convert all files to Markdown → List of Markdown (filename, content)] → Target System
+const APP_PAD_X = 28;
+const LIST_W = 90,  LIST_H = 54;
+const XFM_W  = 120, XFM_H  = 64;
+const OUT_W  = 176, OUT_H  = 54;
+const GAP    = 36;
+const APP_W  = LIST_W + GAP + XFM_W + GAP + OUT_W + APP_PAD_X * 2;
+
+const VB_W = APP_W + 270, VB_H = 200;
+const TOP_Y = 20, TOP_H = 160;
+const CY = TOP_Y + TOP_H / 2;
+
+const DRIVE = { x: 20,          y: TOP_Y, w: 100, h: TOP_H };
+const APP   = { x: 140,         y: TOP_Y, w: APP_W, h: TOP_H };
+const TGT   = { x: APP.x + APP_W + 20, y: TOP_Y, w: 110, h: TOP_H };
+
+const LIST_DX = APP_PAD_X;
+const XFM_DX  = LIST_DX + LIST_W + GAP;
+const OUT_DX  = XFM_DX + XFM_W + GAP;
+const INNER_CY = APP.h / 2;
+---
+<DiagramFrame
+  viewBox={`0 0 ${VB_W} ${VB_H}`}
+  maxWidth={820}
+  title="Example App: PDF → Markdown"
+  desc="An app that reads PDFs from a drive, converts them to markdown, and outputs to a folder."
+>
+  <LogicBox x={DRIVE.x} y={DRIVE.y} w={DRIVE.w} h={DRIVE.h} label="Drive Folder" />
+  <AppContainer x={APP.x} y={APP.y} w={APP.w} h={APP.h}>
+    <DataBox x={LIST_DX} y={INNER_CY - LIST_H / 2} w={LIST_W} h={LIST_H} label="List of PDFs" />
+    <LogicBox x={XFM_DX} y={INNER_CY - XFM_H / 2} w={XFM_W} h={XFM_H} label="Convert all files to Markdown" />
+    <TargetBullet x={OUT_DX} y={INNER_CY - OUT_H / 2} w={OUT_W} h={OUT_H} label="List of Markdown (filename, content)" />
+
+    <FlowArrow d={`M ${LIST_DX + LIST_W} ${INNER_CY} L ${XFM_DX} ${INNER_CY}`} />
+    <FlowArrow d={`M ${XFM_DX + XFM_W} ${INNER_CY} L ${OUT_DX} ${INNER_CY}`} />
+  </AppContainer>
+  <LogicBox x={TGT.x} y={TGT.y} w={TGT.w} h={TGT.h} label="Target System" />
+
+  {/* Drive Folder → List of PDFs (binding) */}
+  <Connector d={`M ${DRIVE.x + DRIVE.w} ${CY} L ${APP.x + LIST_DX} ${CY}`} dashed={true} />
+  {/* Target State → Target System (binding) */}
+  <Connector d={`M ${APP.x + OUT_DX + OUT_W} ${CY} L ${TGT.x} ${CY}`} dashed={true} />
+</DiagramFrame>

@@ -8,6 +8,10 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  # Ephemeral runners don't need ryuk to clean up containers after the process
+  # exits, and disabling it avoids a known testcontainers race where the
+  # ryuk-on-8080 port mapping isn't yet visible when queried.
+  TESTCONTAINERS_RYUK_DISABLED: "true"
 
 jobs:
     build-test:
@@ -74,10 +78,10 @@ jobs:
           run: rm -f .python-version
 
         - name: Sync Python dependencies
-          run: uv sync --no-dev --group ci
+          run: uv sync --no-dev --group ci --no-install-project
 
         - name: Install prek
-          uses: j178/prek-action@v1
+          uses: j178/prek-action@v2
           with:
             install-only: true
 

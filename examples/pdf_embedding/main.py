@@ -1,153 +1,212 @@
-import cocoindex
+"""
+PDF Embedding (v1) - CocoIndex pipeline example.
+
+- Walk local PDF files
+- Convert PDFs to markdown
+- Chunk text (RecursiveSplitter)
+- Embed chunks (SentenceTransformers)
+- Store into Postgres with pgvector column (no vector index)
+- Query demo using pgvector cosine distance (<=>)
+"""
+
+from __future__ import annotations
+
+import asyncio
+import functools
 import os
+import pathlib
+import sys
 import tempfile
+from dataclasses import dataclass
+from typing import AsyncIterator, Annotated
 
 from dotenv import load_dotenv
 from marker.config.parser import ConfigParser
 from marker.converters.pdf import PdfConverter
 from marker.models import create_model_dict
 from marker.output import text_from_rendered
-from psycopg_pool import ConnectionPool
-from jinja2 import Template
-from typing import Any
+from numpy.typing import NDArray
+import asyncpg
+
+import cocoindex as coco
+from cocoindex.connectors import localfs, postgres
+from cocoindex.ops.text import RecursiveSplitter
+from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
+from cocoindex.resources.chunk import Chunk
+from cocoindex.resources.file import FileLike, PatternFilePathMatcher
+from cocoindex.resources.id import IdGenerator
 
 
-class PdfToMarkdown(cocoindex.op.FunctionSpec):
-    """Convert a PDF to markdown."""
+TABLE_NAME = "pdf_embeddings"
+PG_SCHEMA_NAME = "coco_examples"
+TOP_K = 5
 
 
-@cocoindex.op.executor_class(gpu=True, cache=True, behavior_version=1)
-class PdfToMarkdownExecutor:
-    """Executor for PdfToMarkdown."""
+EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+PG_DB = coco.ContextKey[asyncpg.Pool]("pdf_embedding_db")
+EMBEDDER = coco.ContextKey[SentenceTransformerEmbedder]("embedder", detect_change=True)
 
-    spec: PdfToMarkdown
-    _converter: PdfConverter
-
-    def prepare(self) -> None:
-        config_parser = ConfigParser({})
-        self._converter = PdfConverter(
-            create_model_dict(), config=config_parser.generate_config_dict()
-        )
-
-    def __call__(self, content: bytes) -> str:
-        with tempfile.NamedTemporaryFile(delete=True, suffix=".pdf") as temp_file:
-            temp_file.write(content)
-            temp_file.flush()
-            text_any, _, _ = text_from_rendered(self._converter(temp_file.name))
-            return text_any
+_splitter = RecursiveSplitter()
 
 
-@cocoindex.transform_flow()
-def text_to_embedding(
-    text: cocoindex.DataSlice[str],
-) -> cocoindex.DataSlice[list[float]]:
-    """
-    Embed the text using a SentenceTransformer model.
-    This is a shared logic between indexing and querying, so extract it as a function.
-    """
-    return text.transform(
-        cocoindex.functions.SentenceTransformerEmbed(
-            model="sentence-transformers/all-MiniLM-L6-v2"
-        )
+@functools.cache
+def pdf_converter() -> PdfConverter:
+    config_parser = ConfigParser({})
+    return PdfConverter(
+        create_model_dict(), config=config_parser.generate_config_dict()
     )
 
 
-@cocoindex.flow_def(name="PdfEmbedding")
-def pdf_embedding_flow(
-    flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope
+def pdf_to_markdown(content: bytes) -> str:
+    converter = pdf_converter()
+    with tempfile.NamedTemporaryFile(delete=True, suffix=".pdf") as temp_file:
+        temp_file.write(content)
+        temp_file.flush()
+        text_any, _, _ = text_from_rendered(converter(temp_file.name))
+        return text_any
+
+
+@dataclass
+class PdfEmbedding:
+    id: int
+    filename: str
+    chunk_start: int
+    chunk_end: int
+    text: str
+    embedding: Annotated[NDArray, EMBEDDER]
+
+
+@coco.lifespan
+async def coco_lifespan(
+    builder: coco.EnvironmentBuilder,
+) -> AsyncIterator[None]:
+    # Provide resources needed across the CocoIndex environment
+    database_url = os.getenv("POSTGRES_URL")
+    if not database_url:
+        raise ValueError("POSTGRES_URL is not set")
+
+    async with await asyncpg.create_pool(database_url) as pool:
+        builder.provide(PG_DB, pool)
+        builder.provide(EMBEDDER, SentenceTransformerEmbedder(EMBED_MODEL))
+        yield
+
+
+@coco.fn
+async def process_chunk(
+    chunk: Chunk,
+    filename: pathlib.PurePath,
+    id_gen: IdGenerator,
+    table: postgres.TableTarget[PdfEmbedding],
 ) -> None:
-    """
-    Define an example flow that embeds files into a vector database.
-    """
-    data_scope["documents"] = flow_builder.add_source(
-        cocoindex.sources.LocalFile(path="pdf_files", binary=True)
+    table.declare_row(
+        row=PdfEmbedding(
+            id=await id_gen.next_id(chunk.text),
+            filename=str(filename),
+            chunk_start=chunk.start.char_offset,
+            chunk_end=chunk.end.char_offset,
+            text=chunk.text,
+            embedding=await coco.use_context(EMBEDDER).embed(chunk.text),
+        ),
     )
 
-    pdf_embeddings = data_scope.add_collector()
 
-    with data_scope["documents"].row() as doc:
-        doc["markdown"] = doc["content"].transform(PdfToMarkdown())
-        doc["chunks"] = doc["markdown"].transform(
-            cocoindex.functions.SplitRecursively(),
-            language="markdown",
-            chunk_size=2000,
-            chunk_overlap=500,
+@coco.fn(memo=True)
+async def process_file(
+    file: FileLike,
+    table: postgres.TableTarget[PdfEmbedding],
+) -> None:
+    content = await file.read()
+    markdown = pdf_to_markdown(content)
+    chunks = _splitter.split(
+        markdown, chunk_size=2000, chunk_overlap=500, language="markdown"
+    )
+    id_gen = IdGenerator()
+    await coco.map(process_chunk, chunks, file.file_path.path, id_gen, table)
+
+
+@coco.fn
+async def app_main(sourcedir: pathlib.Path) -> None:
+    target_table = await postgres.mount_table_target(
+        PG_DB,
+        table_name=TABLE_NAME,
+        table_schema=await postgres.TableSchema.from_class(
+            PdfEmbedding,
+            primary_key=["id"],
+        ),
+        pg_schema_name=PG_SCHEMA_NAME,
+    )
+
+    files = localfs.walk_dir(
+        sourcedir,
+        recursive=True,
+        path_matcher=PatternFilePathMatcher(included_patterns=["**/*.pdf"]),
+    )
+    await coco.mount_each(process_file, files.items(), target_table)
+
+
+app = coco.App(
+    coco.AppConfig(name="PdfEmbeddingV1"),
+    app_main,
+    sourcedir=pathlib.Path("./pdf_files"),
+)
+
+
+# ============================================================================
+# Query demo (no vector index)
+# ============================================================================
+
+
+async def query_once(
+    pool: asyncpg.Pool,
+    embedder: SentenceTransformerEmbedder,
+    query: str,
+    *,
+    top_k: int = TOP_K,
+) -> None:
+    query_vec = await embedder.embed(query)
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            f"""
+            SELECT
+                filename,
+                text,
+                embedding <=> $1 AS distance
+            FROM "{PG_SCHEMA_NAME}"."{TABLE_NAME}"
+            ORDER BY distance ASC
+            LIMIT $2
+            """,
+            query_vec,
+            top_k,
         )
 
-        with doc["chunks"].row() as chunk:
-            chunk["embedding"] = text_to_embedding(chunk["text"])
-            pdf_embeddings.collect(
-                id=cocoindex.GeneratedField.UUID,
-                filename=doc["filename"],
-                location=chunk["location"],
-                text=chunk["text"],
-                embedding=chunk["embedding"],
-            )
-
-    pdf_embeddings.export(
-        "pdf_embeddings",
-        cocoindex.targets.Postgres(),
-        primary_key_fields=["id"],
-        vector_indexes=[
-            cocoindex.VectorIndexDef(
-                field_name="embedding",
-                metric=cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY,
-            )
-        ],
-    )
+    for r in rows:
+        score = 1.0 - float(r["distance"])
+        print(f"[{score:.3f}] {r['filename']}")
+        print(f"    {r['text']}")
+        print("---")
 
 
-def search(pool: ConnectionPool, query: str, top_k: int = 5) -> list[dict[str, Any]]:
-    # Get the table name, for the export target in the pdf_embedding_flow above.
-    table_name = cocoindex.utils.get_target_default_name(
-        pdf_embedding_flow, "pdf_embeddings"
-    )
-    # Evaluate the transform flow defined above with the input query, to get the embedding.
-    query_vector = text_to_embedding.eval(query)
-    # Run the query and get the results.
-    with pool.connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                f"""
-                SELECT filename, text, embedding <=> %s::vector AS distance
-                FROM {table_name} ORDER BY distance LIMIT %s
-            """,
-                (query_vector, top_k),
-            )
-            return [
-                {"filename": row[0], "text": row[1], "score": 1.0 - row[2]}
-                for row in cur.fetchall()
-            ]
+async def query() -> None:
+    database_url = os.getenv("POSTGRES_URL")
+    if not database_url:
+        raise ValueError("POSTGRES_URL is not set")
+
+    embedder = SentenceTransformerEmbedder(EMBED_MODEL)
+    async with await asyncpg.create_pool(database_url) as pool:
+        if len(sys.argv) > 2:
+            q = " ".join(sys.argv[2:])
+            await query_once(pool, embedder, q)
+            return
+
+        while True:
+            q = input("Enter search query (or Enter to quit): ").strip()
+            if not q:
+                break
+            await query_once(pool, embedder, q)
 
 
-# Define the search results template using Jinja2
-SEARCH_RESULTS_TEMPLATE = Template("""
-Search results:
-{% for result in results %}
-[{{ "%.3f"|format(result.score) }}] {{ result.filename }}
-    {{ result.text }}
----
-{% endfor %}
-""")
-
-
-def _main() -> None:
-    # Initialize the database connection pool.
-    database_url = os.getenv("COCOINDEX_DATABASE_URL")
-    if database_url is None:
-        raise ValueError("COCOINDEX_DATABASE_URL is not set")
-    pool = ConnectionPool(database_url)
-    # Run queries in a loop to demonstrate the query capabilities.
-    while True:
-        query = input("Enter search query (or Enter to quit): ")
-        if query == "":
-            break
-        # Run the query function with the database connection pool and the query.
-        results = search(pool, query)
-        print(SEARCH_RESULTS_TEMPLATE.render(results=results))
-
+load_dotenv()
 
 if __name__ == "__main__":
-    load_dotenv()
-    cocoindex.init()
-    _main()
+    if len(sys.argv) > 1 and sys.argv[1] == "query":
+        asyncio.run(query())

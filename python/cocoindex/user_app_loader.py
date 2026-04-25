@@ -1,6 +1,7 @@
+import importlib
+import importlib.util
 import os
 import sys
-import importlib.util
 import types
 
 
@@ -10,6 +11,39 @@ class Error(Exception):
     """
 
     pass
+
+
+def _find_package_root(directory: str) -> tuple[str, list[str]]:
+    """
+    Walk up from *directory* while each level contains ``__init__.py``.
+
+    Returns ``(root_parent, package_parts)`` where *root_parent* is the
+    directory above the topmost package and *package_parts* is the list of
+    package name segments (outermost first).
+    """
+    parts: list[str] = []
+    current = os.path.abspath(directory)
+    while os.path.isfile(os.path.join(current, "__init__.py")):
+        parts.append(os.path.basename(current))
+        parent = os.path.dirname(current)
+        if parent == current:  # filesystem root
+            break
+        current = parent
+    parts.reverse()
+    return current, parts
+
+
+def _import_as_package_module(
+    root_parent: str, package_parts: list[str], module_name: str
+) -> types.ModuleType:
+    """Import *module_name* as a submodule of the package described by *package_parts*."""
+    full_module_name = ".".join(package_parts + [module_name])
+    if root_parent not in sys.path:
+        sys.path.insert(0, root_parent)
+    try:
+        return importlib.import_module(full_module_name)
+    except ImportError as e:
+        raise Error(f"Failed importing '{full_module_name}' from package: {e}") from e
 
 
 def load_user_app(app_target: str) -> types.ModuleType:
@@ -24,7 +58,17 @@ def load_user_app(app_target: str) -> types.ModuleType:
             raise Error(f"Application file path not found: {app_target}")
         app_path = os.path.abspath(app_target)
         app_dir = os.path.dirname(app_path)
-        module_name = os.path.splitext(os.path.basename(app_path))[0]
+        # Use "__main__" as the module name so that functions defined in the loaded
+        # module have __module__ == "__main__", matching the behavior when running
+        # the script directly (python main.py). This keeps memoization cache keys
+        # consistent between direct execution and CLI-loaded execution.
+        module_name = "__main__"
+
+        # If the file lives inside a package (directory has __init__.py),
+        # load it as a proper submodule so that relative imports work.
+        if os.path.isfile(os.path.join(app_dir, "__init__.py")):
+            root_parent, package_parts = _find_package_root(app_dir)
+            return _import_as_package_module(root_parent, package_parts, module_name)
 
         if app_dir not in sys.path:
             sys.path.insert(0, app_dir)
@@ -43,6 +87,17 @@ def load_user_app(app_target: str) -> types.ModuleType:
         finally:
             if app_dir in sys.path and sys.path[0] == app_dir:
                 sys.path.pop(0)
+
+    # If the target looks like a bare module name (e.g. "main") and a
+    # corresponding file exists in the CWD inside a package, load via the
+    # package-qualified name so relative imports work.
+    candidate_file = os.path.join(os.getcwd(), app_target + ".py")
+    cwd = os.getcwd()
+    if os.path.isfile(candidate_file) and os.path.isfile(
+        os.path.join(cwd, "__init__.py")
+    ):
+        root_parent, package_parts = _find_package_root(cwd)
+        return _import_as_package_module(root_parent, package_parts, app_target)
 
     # Try as module
     try:

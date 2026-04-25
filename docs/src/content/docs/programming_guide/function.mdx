@@ -1,0 +1,306 @@
+---
+title: Declaring *functions* with @coco.fn
+description: >
+  The @coco.fn decorator makes Python functions participate in CocoIndex's change
+  detection, memoization, and execution pipeline — with async adapters, batching,
+  and GPU-aware runners included.
+---
+It's common to factor work into helper functions (for parsing, chunking, embedding, formatting, etc.). In CocoIndex, you can decorate any Python function with `@coco.fn` when you want to add incremental capabilities to it. The decorated function is still a normal Python function: its signature stays the same, and you can call it normally.
+
+```python
+@coco.fn
+async def process_file(file: FileLike) -> str:
+    return await file.read_text()
+
+# Can be called like any normal function
+result = await process_file(file)
+```
+
+`@coco.fn` preserves the sync/async nature of the underlying function. Decorating a sync function yields a sync function; decorating an async function yields an async function.
+
+## How to think about `@coco.fn`
+
+Decorating a function tells CocoIndex that calls to it are part of the incremental update engine. You still write normal Python, but CocoIndex can now:
+
+- Detect when inputs or code have changed (change detection)
+- Skip work when nothing has changed (memoization)
+
+This is what lets CocoIndex avoid rerunning expensive steps on every `app.update()`. See [Processing Component](./processing_component.md) for how decorated functions are mounted at component paths.
+
+If you don't need any of the above for a helper, keep it as a plain Python function.
+
+## Change detection and memoization
+
+Every `@coco.fn` function participates in CocoIndex's change detection system. With `memo=True`, the function's results are cached and reused when nothing has changed. These two mechanisms — detecting changes and acting on them — work together to enable incremental updates.
+
+### Change detection
+
+CocoIndex detects three kinds of changes:
+
+**Logic changes** — the function's source code, [`deps`](#deps) values, and explicit [`version`](#version) bumps. Tracked by `@coco.fn`. Logic fingerprints **propagate transitively** up the call chain: if `foo` (memoized) calls `bar` (not memoized), and `bar`'s logic changes, `foo`'s memo is invalidated — because `foo`'s output could be different. This is why `@coco.fn` matters for **any** function in the call chain, not just memoized ones.
+
+**Input changes** — the function's arguments. Tracked by `@coco.fn`. When you call a function with different arguments, the fingerprints change. Input fingerprints do not propagate transitively.
+
+**Context changes** — [context values](./context.md) with [`detect_change=True`](./context.md#change-detection). Tracked by [`use_context()`](./context.md#retrieving-values) at the call site — independent of `@coco.fn`. When a context value changes, any memoized function whose execution involved a `use_context()` call on that key is invalidated.
+
+### Memoization
+
+With `memo=True`, the function's result is cached. On subsequent calls, if no logic or input fingerprints have changed, the cached result is reused without executing the function body — it carries over target states declared during the function's previous invocation and returns its previous return value.
+
+```python
+@coco.fn(memo=True)
+def process_chunk(chunk: Chunk) -> Embedding:
+    # This computation is skipped if chunk, logic, and context are unchanged
+    return embed(chunk.text)
+```
+
+:::info[Type annotations]
+Add a **return type annotation** to memoized functions so CocoIndex can properly reconstruct cached values. Without a type annotation, cached values may deserialize as basic Python types (`dict`, `list`, etc.) instead of their original types. See [Serialization](./serialization.md) for details on supported types.
+:::
+
+:::tip[When to memoize]
+
+**Cost:** Function return values must be stored for memoization. Larger return values mean higher storage costs.
+
+**Benefit:** Memoization saves more when:
+
+- The computation is expensive
+- The function's caller is reprocessed frequently (due to logic or input changes)
+
+**Examples:**
+
+- ✅ **Embedding functions** — good to memoize. Computation is heavy; return value is fixed-size and not too large.
+- ❌ **Splitting text into fixed-size chunks** — usually not worth memoizing. Computation is light; return value can be large.
+- ✅ **Processing component for files that mostly stable between runs** — very beneficial to memoize, since unchanged files are skipped entirely. We can save the cost of reading file content and processing them when they haven't changed.
+- 🤔 **Chunk embedding when file-level memoization is already enabled** — still beneficial, but less so for stable files. The benefit increases for files that change frequently, or when your code evolves (e.g., adding more features per file triggers file-level reprocessing, but unchanged chunks can still skip embedding).
+
+:::
+
+### Controlling change detection scope
+
+Three parameters on `@coco.fn` let you customize how logic changes are detected:
+
+- **`logic_tracking`** — controls the *scope* of automatic logic change detection
+- **`version`** — provides explicit manual control over when dependent memos are invalidated
+- **`deps`** — declares external values (e.g. a module-level prompt string) as part of the function's logic, so changing them invalidates dependent memos
+
+These parameters control code fingerprinting for logic changes. Data fingerprinting (for arguments, `deps` values, and context values) is controlled by the objects themselves (see [Memoization Keys & States](../advanced_topics/memoization_keys.md)).
+
+#### `logic_tracking`
+
+The `logic_tracking` parameter controls whether and how logic changes are detected:
+
+- **`"full"` (default):** Track this function's logic AND all transitively called `@coco.fn` functions' logic. A change anywhere in the call chain invalidates dependent memos.
+- **`"self"`:** Track only this function's own logic. Changes in called functions do not propagate through this function.
+- **`None`:** Don't track this function's logic at all. Logic changes to this function are invisible to the change detection system.
+
+#### `version`
+
+The `version` parameter lets you explicitly invalidate dependent memos by bumping an integer:
+
+```python
+@coco.fn(version=2)
+def process_chunk(chunk: Chunk) -> Embedding:
+    # Bumping version invalidates all memoized callers, even if code looks the same
+    return embed(chunk.text)
+```
+
+#### `deps`
+
+The `deps` parameter declares external value(s) the function logic depends on but that aren't visible in its body — for example a prompt string or a model identifier defined at module scope. When the value changes, the function's logic fingerprint changes and dependent memos are invalidated, exactly as if the function body had been edited.
+
+```python
+SYSTEM_PROMPT = "You are a helpful assistant. Be concise."
+
+@coco.fn(memo=True, deps=SYSTEM_PROMPT)
+def summarize(text: str) -> str:
+    # Editing SYSTEM_PROMPT invalidates this function's memo
+    # (and propagates to memoized callers) just like a logic change would.
+    return call_llm(SYSTEM_PROMPT, text)
+```
+
+For multiple dependencies, pass a tuple or dict:
+
+```python
+SYSTEM_PROMPT = "..."
+MODEL = "claude-haiku-4-5"
+
+@coco.fn(memo=True, deps={"prompt": SYSTEM_PROMPT, "model": MODEL})
+def summarize(text: str) -> str:
+    return call_llm(SYSTEM_PROMPT, text, model=MODEL)
+```
+
+The value is canonicalized through the [memoization-key pipeline](../advanced_topics/memoization_keys.md), which honors `__coco_memo_key__()`, registered memo key functions, and the standard handling for primitives, dataclasses, and Pydantic models.
+
+:::caution[Snapshotted at decoration time]
+`deps` is evaluated **once** when the decorator is applied (typically at module import), not re-evaluated per call. For per-call or per-instance values — instance attributes in a bound method, request-scoped config, anything that changes at runtime — pass them as regular function arguments instead, so the memoization layer observes each new value.
+:::
+
+`deps` requires `logic_tracking` to be enabled; combining `deps=<value>` with `logic_tracking=None` raises `ValueError`.
+
+#### Common patterns
+
+These parameters can be set on any `@coco.fn` function — not just memoized ones. A non-memoized function's fingerprint still propagates to its memoized callers and components.
+
+**Fully automatic (default)** — use `logic_tracking="full"` (or omit it) without setting `version`. Any logic change in the function or its callees invalidates dependent memos. This always just works.
+
+```python
+@coco.fn
+async def process_file(file: FileLike) -> list[Chunk]:
+    # Any change here or in called @coco.fn functions invalidates dependent memos
+    text = await file.read_text()
+    return split_and_embed(text)
+```
+
+**Manual, precise control** — use `logic_tracking="self"` with `version`. You decide what counts as a behavior change by bumping `version`, without being affected by implementation detail changes (performance optimizations, logging tweaks, refactoring, etc.).
+
+```python
+@coco.fn(logic_tracking="self", version=3)
+async def process(data: str) -> str:
+    # Bump version when behavior changes (e.g., new output format).
+    # Internal refactors or logging changes won't trigger reprocessing.
+    return await transform(data)
+```
+
+**Opt out of tracking** — use `logic_tracking=None` for functions with a stable contract (where logic changes don't affect output), or functions whose changes don't affect behavior (e.g., logging, performance hints). This prevents unnecessary reprocessing when only internals change.
+
+```python
+@coco.fn(logic_tracking=None)
+def embed(text: str) -> list[float]:
+    # Contract is stable: same input always produces the same embedding.
+    # Internal changes (e.g., switching backends) are handled by version bumps.
+    return model.encode(text)
+```
+
+:::note
+[Context changes](./context.md#change-detection) are independent of `@coco.fn` and `logic_tracking`. Even with `logic_tracking=None`, a change in a change-detected context value still invalidates dependent memos, because context tracking is done by `use_context()`, not by the decorator.
+:::
+
+### Customizing data fingerprinting
+
+By default, CocoIndex fingerprints function arguments, `deps` values, and context values automatically for most types — primitives, containers, dataclasses, Pydantic models, and picklable objects. For custom types, or when you need multi-level validation (e.g., check mtime first, then content hash), see [Memoization Keys & States](../advanced_topics/memoization_keys.md).
+
+## Execution capabilities
+
+The following capabilities control *how* the function executes, independent of change detection and memoization.
+
+### Async adapter
+
+Use `@coco.fn.as_async` when you need an **async** interface for a function that has a sync underlying implementation. This is useful for compute-intensive leaf functions, and is required for features like [batching](#batching) and [runner](#runner).
+
+```python
+@coco.fn.as_async
+def embed(text: str) -> list[float]:
+    return model.encode([text])[0]
+
+# External usage: always async, even though the function body is sync
+embedding = await embed("hello world")
+```
+
+`@coco.fn.as_async` is equivalent to wrapping the function in `asyncio.to_thread()` — the sync function runs on a thread pool and doesn't block the event loop.
+
+You can also call any `@coco.fn`-decorated function asynchronously via the `.as_async()` method, without changing its primary signature:
+
+```python
+@coco.fn
+def expensive_fn(data: bytes) -> bytes:
+    return process(data)
+
+# Primary call is sync:
+result = expensive_fn(data)
+
+# Async call via .as_async():
+result = await expensive_fn.as_async(data)
+```
+
+### Batching
+
+With `batching=True`, multiple concurrent calls to the function are automatically batched together. This is useful for operations that are more efficient when processing multiple inputs at once, such as embedding models.
+
+Batching requires an async interface. If the underlying function is sync, use `@coco.fn.as_async(batching=True)`. If the underlying function is already `async def`, `@coco.fn(batching=True)` works directly.
+
+When batching is enabled:
+
+- The function implementation receives a `list[T]` and returns a `list[R]`
+- The external signature becomes `async T -> R` (single input, single output)
+- Concurrent calls are collected and processed together
+
+```python
+@coco.fn.as_async(batching=True, max_batch_size=32)
+def embed(texts: list[str]) -> list[list[float]]:
+    # Called with a batch of texts, returns a batch of embeddings
+    return model.encode(texts)
+
+# External usage: async, single input, single output
+embedding = await embed("hello world")  # Returns list[float]
+
+# Concurrent calls are automatically batched using asyncio.gather
+embeddings = await asyncio.gather(
+    embed("text1"),
+    embed("text2"),
+    embed("text3"),
+)
+```
+
+The `max_batch_size` parameter limits how many inputs can be processed in a single batch.
+
+:::tip[When to use batching]
+
+Batching is beneficial when:
+
+- The underlying operation has significant per-call overhead (e.g., GPU kernel launch)
+- The operation can process multiple inputs more efficiently than one at a time
+- You have concurrent calls from multiple coroutines
+
+Common use cases:
+
+- **Embedding models** — most embedding APIs and models are optimized for batch processing
+- **LLM inference** — batch multiple prompts together for better GPU utilization
+- **Database operations** — batch inserts or lookups
+
+:::
+
+### Runner
+
+The `runner` parameter allows functions to execute in a specific context, such as a dedicated GPU runner that serializes GPU workloads.
+
+Like batching, a runner requires an async interface. If the underlying function is sync, use `@coco.fn.as_async(runner=...)` to make it async. If the underlying function is already `async def`, `@coco.fn(runner=...)` works directly.
+
+```python
+@coco.fn.as_async(runner=coco.GPU)
+def gpu_inference(data: bytes) -> bytes:
+    # Runs with GPU serialization
+    return model.predict(data)
+
+# External usage: async
+result = await gpu_inference(data)
+```
+
+The `coco.GPU` runner:
+
+- By default, runs in-process with all functions sharing a queue for serial execution
+- Sync functions run on a dedicated GPU thread to avoid blocking the event loop
+- Set the environment variable `COCOINDEX_RUN_GPU_IN_SUBPROCESS=1` to run in a subprocess for GPU memory isolation
+
+You can combine batching with a runner:
+
+```python
+@coco.fn.as_async(batching=True, max_batch_size=16, runner=coco.GPU)
+def batch_gpu_embed(texts: list[str]) -> list[list[float]]:
+    # Batched execution with GPU serialization
+    return gpu_model.encode(texts)
+
+# External usage: async
+embedding = await batch_gpu_embed("hello world")
+
+# Concurrent calls
+embeddings = await asyncio.gather(
+    batch_gpu_embed("text1"),
+    batch_gpu_embed("text2"),
+    batch_gpu_embed("text3"),
+)
+```
+
+:::note
+By default, `coco.GPU` runs functions in-process, so no pickling is required. When using subprocess mode (`COCOINDEX_RUN_GPU_IN_SUBPROCESS=1`), the function and all its arguments must be picklable since they are serialized for subprocess execution.
+:::

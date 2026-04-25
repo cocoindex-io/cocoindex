@@ -1,162 +1,208 @@
-from dotenv import load_dotenv
-from psycopg_pool import ConnectionPool
-from pgvector.psycopg import register_vector
-import functools
-import cocoindex
+"""
+Code Embedding (v1) - CocoIndex pipeline example.
+
+- Walk local code files (Python, Rust, TOML, Markdown)
+- Detect programming language
+- Chunk code (RecursiveSplitter with syntax awareness)
+- Embed chunks (SentenceTransformers)
+- Store into Postgres with pgvector column
+- Query demo using pgvector cosine distance (<=>)
+"""
+
+from __future__ import annotations
+
+import asyncio
 import os
+import pathlib
+import sys
+from dataclasses import dataclass
+from typing import AsyncIterator, Annotated
+
+import asyncpg
 from numpy.typing import NDArray
-import numpy as np
+
+import cocoindex as coco
+from cocoindex.connectors import localfs, postgres
+from cocoindex.ops.text import RecursiveSplitter, detect_code_language
+from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
+from cocoindex.resources.chunk import Chunk
+from cocoindex.resources.file import FileLike, PatternFilePathMatcher
+from cocoindex.resources.id import IdGenerator
 
 
-@cocoindex.transform_flow()
-def code_to_embedding(
-    text: cocoindex.DataSlice[str],
-) -> cocoindex.DataSlice[NDArray[np.float32]]:
-    """
-    Embed the text using a SentenceTransformer model.
-    """
-    # You can also switch to Voyage embedding model:
-    # return text.transform(
-    #     cocoindex.functions.EmbedText(
-    #         api_type=cocoindex.LlmApiType.GEMINI,
-    #         model="text-embedding-004",
-    #     )
-    # )
-    return text.transform(
-        cocoindex.functions.SentenceTransformerEmbed(
-            model="sentence-transformers/all-MiniLM-L6-v2"
-        )
-    )
-
-
-@cocoindex.flow_def(name="CodeEmbedding")
-def code_embedding_flow(
-    flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope
-) -> None:
-    """
-    Define an example flow that embeds files into a vector database.
-    """
-    data_scope["files"] = flow_builder.add_source(
-        cocoindex.sources.LocalFile(
-            path=os.path.join("..", ".."),
-            included_patterns=["*.py", "*.rs", "*.toml", "*.md", "*.mdx"],
-            excluded_patterns=["**/.*", "target", "**/node_modules"],
-        )
-    )
-    code_embeddings = data_scope.add_collector()
-
-    with data_scope["files"].row() as file:
-        file["language"] = file["filename"].transform(
-            cocoindex.functions.DetectProgrammingLanguage()
-        )
-        file["chunks"] = file["content"].transform(
-            cocoindex.functions.SplitRecursively(),
-            language=file["language"],
-            chunk_size=1000,
-            min_chunk_size=300,
-            chunk_overlap=300,
-        )
-        with file["chunks"].row() as chunk:
-            chunk["embedding"] = chunk["text"].call(code_to_embedding)
-            code_embeddings.collect(
-                filename=file["filename"],
-                location=chunk["location"],
-                code=chunk["text"],
-                embedding=chunk["embedding"],
-                start=chunk["start"],
-                end=chunk["end"],
-            )
-
-    code_embeddings.export(
-        "code_embeddings",
-        cocoindex.targets.Postgres(),
-        primary_key_fields=["filename", "location"],
-        vector_indexes=[
-            cocoindex.VectorIndexDef(
-                field_name="embedding",
-                metric=cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY,
-            )
-        ],
-    )
-
-
-@functools.cache
-def connection_pool() -> ConnectionPool:
-    """
-    Get a connection pool to the database.
-    """
-    return ConnectionPool(os.environ["COCOINDEX_DATABASE_URL"])
-
-
+DATABASE_URL = os.getenv(
+    "POSTGRES_URL", "postgres://cocoindex:cocoindex@localhost/cocoindex"
+)
+TABLE_NAME = "code_embeddings"
+PG_SCHEMA_NAME = "coco_examples"
 TOP_K = 5
 
 
-# Declaring it as a query handler, so that you can easily run queries in CocoInsight.
-@code_embedding_flow.query_handler(
-    result_fields=cocoindex.QueryHandlerResultFields(
-        embedding=["embedding"], score="score"
+EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+PG_DB = coco.ContextKey[asyncpg.Pool]("code_embedding_db")
+EMBEDDER = coco.ContextKey[SentenceTransformerEmbedder]("embedder", detect_change=True)
+
+_splitter = RecursiveSplitter()
+
+
+@dataclass
+class CodeEmbedding:
+    id: int
+    filename: str
+    code: str
+    embedding: Annotated[NDArray, EMBEDDER]
+    start_line: int
+    end_line: int
+
+
+@coco.lifespan
+async def coco_lifespan(
+    builder: coco.EnvironmentBuilder,
+) -> AsyncIterator[None]:
+    # Provide resources needed across the CocoIndex environment
+    async with await asyncpg.create_pool(DATABASE_URL) as pool:
+        builder.provide(PG_DB, pool)
+        builder.provide(EMBEDDER, SentenceTransformerEmbedder(EMBED_MODEL))
+        yield
+
+
+@coco.fn
+async def process_chunk(
+    chunk: Chunk,
+    filename: pathlib.PurePath,
+    id_gen: IdGenerator,
+    table: postgres.TableTarget[CodeEmbedding],
+) -> None:
+    embedding = await coco.use_context(EMBEDDER).embed(chunk.text)
+    table.declare_row(
+        row=CodeEmbedding(
+            id=await id_gen.next_id(chunk.text),
+            filename=str(filename),
+            code=chunk.text,
+            embedding=embedding,
+            start_line=chunk.start.line,
+            end_line=chunk.end.line,
+        ),
     )
+
+
+@coco.fn(memo=True)
+async def process_file(
+    file: FileLike,
+    table: postgres.TableTarget[CodeEmbedding],
+) -> None:
+    text = await file.read_text()
+    # Detect programming language from filename
+    language = detect_code_language(filename=str(file.file_path.path.name))
+
+    # Split with syntax awareness if language is detected
+    chunks = _splitter.split(
+        text,
+        chunk_size=1000,
+        min_chunk_size=300,
+        chunk_overlap=300,
+        language=language,
+    )
+    id_gen = IdGenerator()
+    await coco.map(process_chunk, chunks, file.file_path.path, id_gen, table)
+
+
+@coco.fn
+async def app_main(sourcedir: pathlib.Path) -> None:
+    target_table = await postgres.mount_table_target(
+        PG_DB,
+        table_name=TABLE_NAME,
+        table_schema=await postgres.TableSchema.from_class(
+            CodeEmbedding,
+            primary_key=["id"],
+        ),
+        pg_schema_name=PG_SCHEMA_NAME,
+    )
+    target_table.declare_vector_index(column="embedding")
+
+    # Process multiple file types across the repository
+    files = localfs.walk_dir(
+        sourcedir,
+        recursive=True,
+        path_matcher=PatternFilePathMatcher(
+            included_patterns=[
+                "**/*.py",
+                "**/*.rs",
+                "**/*.toml",
+                "**/*.md",
+                "**/*.mdx",
+            ],
+            excluded_patterns=["**/.*", "**/target", "**/node_modules"],
+        ),
+    )
+    await coco.mount_each(process_file, files.items(), target_table)
+
+
+app = coco.App(
+    coco.AppConfig(name="CodeEmbeddingV1"),
+    app_main,
+    sourcedir=pathlib.Path(__file__).parent / ".." / "..",  # Index from repository root
 )
-def search(query: str) -> cocoindex.QueryOutput:
-    # Get the table name, for the export target in the code_embedding_flow above.
-    table_name = cocoindex.utils.get_target_default_name(
-        code_embedding_flow, "code_embeddings"
-    )
-    # Evaluate the transform flow defined above with the input query, to get the embedding.
-    query_vector = code_to_embedding.eval(query)
-    # Run the query and get the results.
-    with connection_pool().connection() as conn:
-        register_vector(conn)
-        with conn.cursor() as cur:
-            cur.execute(
-                f"""
-                SELECT filename, code, embedding, embedding <=> %s AS distance, start, "end"
-                FROM {table_name} ORDER BY distance LIMIT %s
+
+
+# ============================================================================
+# Query demo
+# ============================================================================
+
+
+async def query_once(
+    pool: asyncpg.Pool,
+    embedder: SentenceTransformerEmbedder,
+    query: str,
+    *,
+    top_k: int = TOP_K,
+) -> None:
+    query_vec = await embedder.embed(query)
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            f"""
+            SELECT
+                filename,
+                code,
+                embedding <=> $1 AS distance,
+                start_line,
+                end_line
+            FROM "{PG_SCHEMA_NAME}"."{TABLE_NAME}"
+            ORDER BY distance ASC
+            LIMIT $2
             """,
-                (query_vector, TOP_K),
-            )
-            return cocoindex.QueryOutput(
-                query_info=cocoindex.QueryInfo(
-                    embedding=query_vector,
-                    similarity_metric=cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY,
-                ),
-                results=[
-                    {
-                        "filename": row[0],
-                        "code": row[1],
-                        "embedding": row[2],
-                        "score": 1.0 - row[3],
-                        "start": row[4],
-                        "end": row[5],
-                    }
-                    for row in cur.fetchall()
-                ],
-            )
+            query_vec,
+            top_k,
+        )
+
+    for r in rows:
+        score = 1.0 - float(r["distance"])
+        print(f"[{score:.3f}] {r['filename']} (L{r['start_line']}-L{r['end_line']})")
+        print(f"    {r['code']}")
+        print("---")
 
 
-def _main() -> None:
-    # Make sure the flow is built and up-to-date.
-    stats = code_embedding_flow.update()
-    print("Updated index: ", stats)
+async def query() -> None:
+    embedder = SentenceTransformerEmbedder(EMBED_MODEL)
+    async with await asyncpg.create_pool(DATABASE_URL) as pool:
+        if len(sys.argv) > 2:
+            q = " ".join(sys.argv[2:])
+            await query_once(pool, embedder, q)
+            return
 
-    # Run queries in a loop to demonstrate the query capabilities.
-    while True:
-        query = input("Enter search query (or Enter to quit): ")
-        if query == "":
-            break
-        # Run the query function with the database connection pool and the query.
-        query_output = search(query)
-        print("\nSearch results:")
-        for result in query_output.results:
-            print(
-                f"[{result['score']:.3f}] {result['filename']} (L{result['start']['line']}-L{result['end']['line']})"
-            )
-            print(f"    {result['code']}")
-            print("---")
-        print()
+        while True:
+            q = input("Enter search query (or Enter to quit): ").strip()
+            if not q:
+                break
+            await query_once(pool, embedder, q)
+
+
+async def update_index() -> None:
+    async with coco.runtime():
+        await coco.show_progress(app.update())
 
 
 if __name__ == "__main__":
-    load_dotenv()
-    cocoindex.init()
-    _main()
+    if len(sys.argv) > 1 and sys.argv[1] == "query":
+        asyncio.run(query())
+    asyncio.run(update_index())

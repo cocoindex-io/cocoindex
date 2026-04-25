@@ -14,6 +14,7 @@ __pycache__/
 # Distribution / packaging
 .venv*/
 dist/
+uv.lock
 
 .DS_Store
 
@@ -22,11 +23,16 @@ dist/
 /.vscode
 /*.session.sql
 
-# mypy daemon environment
+.mypy_cache
 .dmypy.json
+
+# LMDB files
+*.mdb
 
 # Output of `cocoindex eval`
 examples/**/eval_*
 examples/**/uv.lock
+**/lancedb_data/
 
-.cocoindex_code/
+# CocoIndex Code (ccc)
+/.cocoindex_code/

@@ -5,7 +5,7 @@ set -euo pipefail
 # and adjusts build flags accordingly.
 #
 # Free-threaded Python (3.13+) is incompatible with PyO3's abi3 feature, so we must
-# build with --no-default-features to disable abi3 while keeping legacy-states-v0.
+# build with --no-default-features to disable abi3.
 #
 # Usage: ./run_maturin_develop.sh [extra-args...]
 #   Extra arguments are passed directly to maturin develop.
@@ -23,8 +23,8 @@ IS_FREE_THREADED="${COCOINDEX_FREE_THREADED:-$IS_FREE_THREADED}"
 
 if [ "$IS_FREE_THREADED" = "1" ]; then
     echo "Detected free-threaded Python, building without ABI3"
-    # Disable abi3 (incompatible with free-threading) but keep legacy-states-v0
-    exec uv run maturin develop --no-default-features -F legacy-states-v0 "$@"
+    # Disable abi3 (incompatible with free-threading)
+    exec uv run maturin develop --no-default-features "$@"
 else
     exec uv run maturin develop "$@"
 fi

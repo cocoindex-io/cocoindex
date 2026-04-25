@@ -1,0 +1,504 @@
+---
+// Per-example detail page at /docs/examples/<slug>. Hero metadata is
+// driven by src/data/examples.ts; the body is the MDX entry in the
+// `examplePosts` content collection. Add a new example by dropping a
+// markdown file into src/content/example-posts and a card into
+// examples.ts — the slugs must match.
+import '../../styles/globals.css';
+import Topbar from '../../components/Topbar.astro';
+import Toc from '../../components/Toc.astro';
+import { SITE_URL, titleMarkup, titleText } from '../../consts';
+import { examples, findExample, CATEGORY_META, type Category } from '../../data/examples';
+import { getEntry, render } from 'astro:content';
+
+// Group examples by category for the left sidebar, in the same order as
+// the listing page. Featured examples stay in their home category — we're
+// showing them in a flat nav here, not as a separate "star" bucket.
+const CAT_ORDER: Category[] = ['search', 'ingest', 'llm', 'agents', 'image'];
+const grouped = CAT_ORDER.map((c) => ({
+  cat: c,
+  meta: CATEGORY_META[c],
+  items: examples.filter((e) => e.category === c),
+}));
+
+export async function getStaticPaths() {
+  return examples.map((e) => ({ params: { slug: e.slug } }));
+}
+
+const { slug } = Astro.params;
+const ex = findExample(slug!);
+if (!ex) throw new Error(`Unknown example slug: ${slug}`);
+
+const base = import.meta.env.BASE_URL.replace(/\/$/, '') || '';
+const plainTitle = titleText(ex.title);
+const fullTitle = `${plainTitle} · CocoIndex Examples`;
+const canonical = new URL(`${base}/examples/${slug}`, SITE_URL).toString();
+// The repo directory usually matches the slug; override via sourceSlug when
+// it doesn't (e.g. listing slug `code_index` vs repo dir `code_embedding`).
+const sourceUrl = `https://github.com/cocoindex-io/cocoindex/tree/main/examples/${ex.sourceSlug ?? slug}`;
+
+// Pull the ported markdown body. Every listed example should have a
+// matching entry, but we tolerate a missing one so we can ship the
+// listing + design even before a walkthrough lands.
+const entry = await getEntry('examplePosts', slug!);
+const rendered = entry ? await render(entry) : null;
+const Content = rendered?.Content;
+
+// Intro-meta strip under the hero — mirrors the docs-page layout
+// (DocsLayout.astro), so example pages carry the same typographic rhythm.
+const tagOf = (kind: 'src' | 'tgt' | 'llm' | 'ops') =>
+  ex.tags.find((t) => t.kind === kind)?.label ?? null;
+const lastReviewedRaw = (entry?.data as { last_reviewed?: string | Date })?.last_reviewed;
+// Format YYYY-MM-DD as a local-calendar date — `new Date('2026-04-20')`
+// parses as UTC midnight and drifts a day west of UTC when rendered.
+const formatLocalDate = (raw: string | Date): string => {
+  const iso = raw instanceof Date ? raw.toISOString().slice(0, 10) : String(raw).slice(0, 10);
+  const [y, m, d] = iso.split('-').map((n) => parseInt(n, 10));
+  return new Date(y, m - 1, d).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+};
+const lastReviewed = lastReviewedRaw ? formatLocalDate(lastReviewedRaw) : null;
+const introItems = [
+  { k: 'Time',          v: ex.footMeta.split('·')[0].trim(),                       reviewed: false },
+  { k: 'Source',        v: tagOf('src'),                                           reviewed: false },
+  { k: 'Target',        v: tagOf('tgt'),                                           reviewed: false },
+  { k: 'LLM',           v: tagOf('llm'),                                           reviewed: false },
+  { k: 'Mode',          v: tagOf('ops'),                                           reviewed: false },
+  { k: 'Category',      v: ex.category,                                            reviewed: false },
+  { k: 'Last reviewed', v: lastReviewed,                                           reviewed: true  },
+].filter((m) => m.v);
+---
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <meta name="theme-color" content="#FBF6E8" />
+    <title>{fullTitle}</title>
+    <meta name="description" content={ex.description} />
+    <link rel="canonical" href={canonical} />
+    <link rel="icon" href={`${base}/img/favicon.ico`} />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&family=Source+Serif+4:ital,wght@0,400;1,400&display=swap"
+    />
+  </head>
+  <body class="ex-detail">
+    <Topbar />
+
+    <div class="ex-layout">
+      <!-- ─────────── LEFT: EXAMPLE NAV ─────────── -->
+      <aside class="ex-side" aria-label="All examples">
+        <div class="side-head">
+          <a href={`${base}/examples`}>← All examples</a>
+          <span class="ct">{examples.length}</span>
+        </div>
+        {grouped.map((g) => (
+          <div class="side-group">
+            <h6 data-cat={g.cat}>
+              <span class="cat-dot"></span>
+              {g.meta.label}{g.meta.em ?? ''}
+            </h6>
+            <ol>
+              {g.items.map((it) => (
+                <li class={it.slug === slug ? 'on' : ''}>
+                  <a href={`${base}/examples/${it.slug}`}>
+                    <span class="n">{it.index.split(' ')[0]}</span>
+                    <span class="ttl">{titleText(it.title)}</span>
+                  </a>
+                </li>
+              ))}
+            </ol>
+          </div>
+        ))}
+      </aside>
+
+      <main class="ex-main">
+      <!-- Local breadcrumb sits just below the sticky Topbar. -->
+      <nav class="ex-crumb" aria-label="Breadcrumb">
+        <a href={`${base}/examples`}>Examples</a>
+        <span class="sep">/</span>
+        <span class="cur">{plainTitle}</span>
+      </nav>
+
+      <!-- ─────────── HERO ─────────── Mirrors DocsLayout so example pages
+           carry the same rhythm as the rest of the docs: serif h1 with a
+           coral italic accent, a `.lede` description, then an intro-meta
+           strip under a hairline rule. -->
+      <section class="hero">
+        <div class="pill-row">
+          {ex.tags.slice(0, 4).map((t) => <span class="pill"><span class="dot"></span>{t.label}</span>)}
+          <span class="pill dark"><span class="dot"></span>Production ready</span>
+        </div>
+
+        <h1 class="hero-h" set:html={titleMarkup(ex.title)} />
+        <p class="lede">{ex.description}</p>
+        <dl class="intro-meta">
+          {introItems.map((m) => (
+            <div class={`m${m.reviewed ? ' m-reviewed' : ''}`}>
+              <dt class="k">{m.k}</dt>
+              <dd class="v">
+                {m.reviewed && (
+                  <svg class="check" width="14" height="14" viewBox="0 0 16 16" aria-hidden>
+                    <circle cx="8" cy="8" r="7" fill="var(--palm)" />
+                    <path d="M4.5 8.3l2.3 2.2L11.5 5.8"
+                          fill="none" stroke="var(--maroon-ink)"
+                          stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+                  </svg>
+                )}
+                <span>{m.v}</span>
+              </dd>
+            </div>
+          ))}
+        </dl>
+        <div class="hero-cta">
+          <a class="btn btn-coral" href={sourceUrl}>View source
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M2 6h8m-3-3 3 3-3 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </a>
+        </div>
+      </section>
+
+      <!-- ─────────── CONTENT ─────────── -->
+      {Content ? (
+        <article class="ex-prose">
+          <Content />
+        </article>
+      ) : (
+        <section class="blk">
+          <div class="sec-head">
+            <div class="sec-idx"><span class="n">00</span> · Overview</div>
+            <h2 set:html={titleMarkup('Write-up *on the way.*')} />
+            <p class="sec-lead">
+              The step-by-step walkthrough for this example is still being written. The code itself is live on GitHub — clone it to try it today.
+            </p>
+          </div>
+          <div class="callout" style="max-width:780px;">
+            <div class="hd tip"><span class="dt"></span>What this example shows</div>
+            <p>{ex.description}</p>
+          </div>
+        </section>
+      )}
+      </main>
+
+      <!-- ─────────── RIGHT: ON THIS PAGE ─────────── Reuses the shared
+           Toc component so scroll-spy + visual styling match the regular
+           docs pages (globals.css `aside.toc`). -->
+      <Toc headings={rendered?.headings ?? []} slug={slug!} lastReviewed={lastReviewed} />
+    </div>
+
+    <style is:global>
+      /* ═══════════ Detail-page styles ═══════════
+         Scoped to body.ex-detail. Palette inherited from globals.css. */
+      body.ex-detail { font-size: 17px; line-height: 1.55; }
+      /* ═══════════ 3-col layout (mirrors docs) ═══════════
+         Left: sticky example nav. Middle: breadcrumb + hero + content.
+         Right: sticky TOC. `--ex-side` / `--ex-toc` match the rail widths
+         used by globals.css on regular docs pages. */
+      body.ex-detail { --ex-side: 280px; --ex-toc: 240px; }
+      body.ex-detail .ex-layout {
+        display: grid;
+        grid-template-columns: var(--ex-side) 1fr var(--ex-toc);
+        max-width: 1480px;
+        margin: 0 auto;
+      }
+      body.ex-detail .ex-main { padding: 28px 48px 96px; min-width: 0; }
+
+      body.ex-detail .ex-side {
+        position: sticky; top: 57px; align-self: start;
+        height: calc(100vh - 57px);
+        overflow-y: auto;
+        padding: 28px 20px 40px 28px;
+        border-right: 1px solid var(--rule);
+        font-family: var(--sans);
+      }
+      body.ex-detail .ex-side .side-head {
+        display: flex; justify-content: space-between; align-items: baseline;
+        font-family: var(--mono); font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase;
+        color: var(--muted);
+        padding-bottom: 10px; margin-bottom: 16px;
+        border-bottom: 1px solid var(--rule-strong);
+      }
+      body.ex-detail .ex-side .side-head a { color: var(--maroon-ink); text-decoration: none; }
+      body.ex-detail .ex-side .side-head a:hover { color: var(--coral); }
+      body.ex-detail .ex-side .side-head .ct { color: var(--coral); }
+      body.ex-detail .ex-side .side-group { margin-bottom: 18px; }
+      body.ex-detail .ex-side .side-group h6 {
+        display: flex; align-items: center; gap: 8px;
+        font-family: var(--sans); font-size: 12px; font-weight: 600; letter-spacing: -0.01em;
+        color: var(--maroon-ink); margin: 0 0 6px; padding: 0 6px;
+      }
+      body.ex-detail .ex-side .side-group h6 .cat-dot { width: 8px; height: 8px; border-radius: 2px; flex: none; background: var(--maroon); }
+      body.ex-detail .ex-side .side-group h6[data-cat="search"] .cat-dot { background: var(--maroon); }
+      body.ex-detail .ex-side .side-group h6[data-cat="ingest"] .cat-dot { background: var(--peach); }
+      body.ex-detail .ex-side .side-group h6[data-cat="llm"]    .cat-dot { background: var(--coral); }
+      body.ex-detail .ex-side .side-group h6[data-cat="agents"] .cat-dot { background: var(--maroon-ink); }
+      body.ex-detail .ex-side .side-group h6[data-cat="image"]  .cat-dot { background: var(--pink); }
+
+      body.ex-detail .ex-side ol { list-style: none; margin: 0 0 0 6px; padding: 0; }
+      body.ex-detail .ex-side ol li { margin: 0; }
+      body.ex-detail .ex-side ol li a {
+        display: grid; grid-template-columns: 24px 1fr; gap: 8px; align-items: baseline;
+        text-decoration: none; color: var(--muted);
+        font-size: 13px; line-height: 1.35;
+        padding: 5px 8px; border-radius: 5px;
+        transition: color .12s, background .12s;
+      }
+      body.ex-detail .ex-side ol li a .n { font-family: var(--mono); font-size: 11px; color: var(--rule-strong); }
+      body.ex-detail .ex-side ol li a .ttl { color: inherit; }
+      body.ex-detail .ex-side ol li a:hover { color: var(--coral); background: var(--cream); }
+      body.ex-detail .ex-side ol li.on a { color: var(--maroon); background: var(--cream); font-weight: 500; }
+      body.ex-detail .ex-side ol li.on a .n { color: var(--coral); }
+
+      body.ex-detail .ex-crumb {
+        font-family: var(--mono); font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase;
+        color: var(--muted); display: flex; gap: 10px; align-items: center;
+        padding: 20px 0 8px;
+      }
+      body.ex-detail .ex-crumb a { text-decoration: none; color: var(--muted); }
+      body.ex-detail .ex-crumb a:hover { color: var(--coral); }
+      body.ex-detail .ex-crumb .sep { opacity: 0.5; }
+      body.ex-detail .ex-crumb .cur { color: var(--maroon); }
+
+      /* Buttons — see `.btn` + variants in globals.css (ported from
+         design_guidelines/ui/buttons.html). No local overrides here. */
+
+      /* ── HERO ── Typography mirrors `.prose h1 / .lede / .intro-meta`
+         from globals.css so example pages carry the same rhythm as docs. */
+      body.ex-detail .hero { padding: 32px 0 32px; position: relative; }
+      body.ex-detail .hero .pill-row { display: flex; gap: 10px; flex-wrap: wrap; margin: 0 0 20px; }
+      body.ex-detail .hero .pill { display: inline-flex; align-items: center; gap: 8px; font-family: var(--mono); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; padding: 7px 14px; border-radius: 999px; background: var(--cream); border: 1px solid var(--rule); color: var(--maroon); }
+      body.ex-detail .hero .pill .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--coral); flex: none; }
+      body.ex-detail .hero .pill.dark { background: var(--maroon-ink); color: var(--cream); border-color: var(--maroon-ink); }
+      body.ex-detail .hero .pill.dark .dot { background: var(--palm); }
+      body.ex-detail h1.hero-h { font-family: var(--serif); font-weight: 400; font-size: clamp(40px, 4.6vw, 60px); line-height: 1.02; letter-spacing: -0.03em; margin: 0 0 18px; }
+      body.ex-detail h1.hero-h em { font-style: italic; color: var(--coral); }
+      body.ex-detail .hero .lede { font-family: var(--sans); font-size: clamp(17px, 1.4vw, 20px); font-weight: 400; line-height: 1.5; letter-spacing: -0.005em; color: var(--maroon-ink); max-width: 62ch; margin: 0 0 14px; }
+      body.ex-detail .hero .intro-meta {
+        display: flex; flex-wrap: wrap; gap: 22px;
+        margin: 20px 0 28px; padding: 14px 0 18px;
+        border-top: 1px solid var(--rule);
+        border-bottom: 1px solid var(--rule);
+      }
+      body.ex-detail .hero .intro-meta .m { display: flex; flex-direction: column; gap: 2px; margin: 0; }
+      body.ex-detail .hero .intro-meta .k { font-family: var(--mono); font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); margin: 0; }
+      body.ex-detail .hero .intro-meta .v { font-size: 13px; font-weight: 500; margin: 0; display: inline-flex; align-items: center; gap: 6px; }
+      body.ex-detail .hero .intro-meta .check { flex: none; }
+      body.ex-detail .hero-cta { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+
+      /* Fallback "write-up on the way" section — rendered when an
+         example has no MDX body yet (see `!Content` branch above). */
+      body.ex-detail section.blk { padding: 72px 0; border-top: 1px solid var(--rule); position: relative; scroll-margin-top: 84px; }
+      body.ex-detail section.blk:first-of-type { border-top: none; padding-top: 24px; }
+      body.ex-detail .sec-head { display: grid; grid-template-columns: 1fr; gap: 14px; margin-bottom: 40px; }
+      body.ex-detail .sec-idx { display: inline-flex; gap: 10px; align-items: baseline; font-family: var(--mono); font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); }
+      body.ex-detail .sec-idx .n { color: var(--coral); font-weight: 500; }
+      body.ex-detail .sec-head h2 { font-family: var(--sans); font-weight: 600; font-size: clamp(28px, 3.2vw, 44px); line-height: 1.05; letter-spacing: -0.03em; margin: 0; max-width: 22ch; }
+      body.ex-detail .sec-head h2 em { font-style: normal; color: var(--coral); }
+      body.ex-detail .sec-lead { font-family: var(--sans); font-size: clamp(15px, 1.2vw, 17px); font-weight: 400; line-height: 1.55; color: var(--maroon-ink); max-width: 64ch; margin: 8px 0 0; }
+      body.ex-detail .sec-lead a { color: var(--coral); }
+
+      /* Architecture (HN flow) */
+      body.ex-detail .arch { background: var(--cream); border: 1px solid var(--rule); border-radius: 12px; padding: 36px; display: grid; grid-template-columns: 0.9fr auto 1.2fr auto 1fr; gap: 18px; align-items: stretch; }
+      body.ex-detail .arch-col { display: flex; flex-direction: column; gap: 10px; padding: 20px; border-radius: 8px; background: var(--paper); border: 1px solid var(--rule); min-height: 320px; }
+      body.ex-detail .arch-col h4 { font-family: var(--mono); font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); margin: 0 0 4px; padding-bottom: 10px; border-bottom: 1px solid var(--rule); display: flex; justify-content: space-between; align-items: center; }
+      body.ex-detail .arch-col h4 .n { color: var(--coral); font-weight: 500; }
+      body.ex-detail .chip { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-radius: 6px; background: var(--cream); border: 1px solid var(--rule); font-size: 13px; font-weight: 500; }
+      body.ex-detail .chip .ico { width: 22px; height: 22px; flex: none; display: grid; place-items: center; border-radius: 4px; background: var(--peach); color: var(--maroon); font-family: var(--mono); font-size: 10px; font-weight: 600; }
+      body.ex-detail .chip .ico.hn { background: #FF6600; color: #fff; }
+      body.ex-detail .chip .ico.pg { background: #336791; color: #fff; }
+      body.ex-detail .chip .ico.llm { background: var(--maroon-ink); color: var(--peach); }
+      body.ex-detail .chip .tail { margin-left: auto; font-family: var(--mono); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+
+      body.ex-detail .arch-core { background: var(--maroon); color: var(--cream); border-radius: 8px; padding: 22px; position: relative; overflow: hidden; display: flex; flex-direction: column; gap: 12px; }
+      body.ex-detail .arch-core::before { content: ""; position: absolute; inset: 0; background-image: radial-gradient(circle, rgba(252, 243, 216, 0.08) 1.4px, transparent 1.8px); background-size: 16px 16px; }
+      body.ex-detail .arch-core > * { position: relative; z-index: 2; }
+      body.ex-detail .arch-core h4 { font-family: var(--mono); font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: rgba(252, 243, 216, 0.7); display: flex; justify-content: space-between; padding-bottom: 10px; border-bottom: 1px solid rgba(252, 243, 216, 0.18); margin: 0; }
+      body.ex-detail .arch-core h4 .n { color: var(--peach); }
+      body.ex-detail .arch-core .title { font-family: var(--sans); font-weight: 600; font-size: 21px; line-height: 1.2; letter-spacing: -0.02em; margin: 0; color: var(--cream); }
+      body.ex-detail .arch-core .title em { font-style: normal; color: var(--peach); }
+      body.ex-detail .arch-core .sub { font-family: var(--mono); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: rgba(252, 243, 216, 0.6); }
+      body.ex-detail .arch-core .rows { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+      body.ex-detail .arch-core .rows .r { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 9px 12px; border-radius: 5px; background: rgba(252, 243, 216, 0.06); border: 1px solid rgba(252, 243, 216, 0.1); font-family: var(--mono); font-size: 12px; }
+      body.ex-detail .arch-core .rows .r .k { color: var(--peach); }
+      body.ex-detail .arch-core .rows .r .v { color: rgba(252, 243, 216, 0.9); }
+      body.ex-detail .arch-core .stamp { margin-top: auto; display: flex; gap: 8px; flex-wrap: wrap; font-family: var(--mono); font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: rgba(252, 243, 216, 0.65); }
+      body.ex-detail .arch-core .stamp span { padding: 4px 10px; border: 1px solid rgba(252, 243, 216, 0.2); border-radius: 999px; }
+
+      body.ex-detail .arrow { align-self: center; display: flex; flex-direction: column; align-items: center; gap: 6px; min-width: 48px; }
+      body.ex-detail .arrow svg { width: 48px; height: 18px; }
+      body.ex-detail .arrow .lab { font-family: var(--mono); font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); }
+
+      body.ex-detail .trending-preview { margin-top: 20px; background: var(--paper); border: 1px solid var(--rule); border-radius: 8px; padding: 22px; display: grid; grid-template-columns: 1fr 2fr; gap: 24px; align-items: start; }
+      body.ex-detail .trending-preview h5 { font-family: var(--mono); font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--coral); margin: 0 0 6px; }
+      body.ex-detail .trending-preview p { margin: 0; font-size: 14px; color: var(--muted); line-height: 1.5; }
+      body.ex-detail .trending-preview .inline-code { font-family: var(--mono); font-size: 12px; background: var(--cream); padding: 2px 6px; border-radius: 4px; border: 1px solid var(--rule); color: var(--berry); }
+      body.ex-detail .trending-list { display: flex; flex-direction: column; gap: 4px; }
+      body.ex-detail .trending-row { display: grid; grid-template-columns: 28px 1fr auto auto; gap: 14px; align-items: baseline; padding: 7px 12px; border-radius: 5px; font-family: var(--mono); font-size: 13px; border: 1px solid transparent; }
+      body.ex-detail .trending-row:hover { background: var(--cream); border-color: var(--rule); }
+      body.ex-detail .trending-row .rk { color: var(--muted); font-size: 11px; }
+      body.ex-detail .trending-row .tp { color: var(--maroon); font-weight: 500; }
+      body.ex-detail .trending-row .tp em { color: var(--coral); font-style: normal; }
+      body.ex-detail .trending-row .sc { color: var(--coral); font-weight: 600; }
+      body.ex-detail .trending-row .th { color: var(--muted); font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; }
+
+      /* Part banner */
+      body.ex-detail .part-banner { display: grid; grid-template-columns: 72px 1fr auto; gap: 24px; align-items: center; margin: 0 0 32px; padding: 24px 28px; background: linear-gradient(90deg, var(--cream) 0%, var(--paper) 100%); border: 1px solid var(--rule); border-left: 4px solid var(--coral); border-radius: 8px; position: relative; }
+      body.ex-detail .part-banner .pn { font-family: var(--mono); font-size: 34px; font-weight: 500; letter-spacing: -0.02em; color: var(--coral); line-height: 1; }
+      body.ex-detail .part-banner .pc { display: flex; flex-direction: column; gap: 4px; }
+      body.ex-detail .part-banner .pc .plabel { font-family: var(--mono); font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); }
+      body.ex-detail .part-banner .pc h3 { font-family: var(--sans); font-weight: 600; font-size: 26px; letter-spacing: -0.025em; line-height: 1.15; margin: 0; }
+      body.ex-detail .part-banner .pc h3 em { color: var(--coral); font-style: normal; }
+      body.ex-detail .part-banner .pc p { margin: 4px 0 0; color: var(--muted); font-size: 14px; line-height: 1.5; max-width: 60ch; }
+      body.ex-detail .part-banner .pm { font-family: var(--mono); font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); text-align: right; display: flex; flex-direction: column; gap: 4px; }
+      body.ex-detail .part-banner .pm b { color: var(--maroon); font-weight: 500; }
+
+      /* Steps */
+      body.ex-detail .steps-wrap { display: grid; grid-template-columns: 1fr; gap: 14px; margin-bottom: 48px; }
+      body.ex-detail .step { display: grid; grid-template-columns: 72px 1fr; grid-template-rows: auto auto; column-gap: 24px; row-gap: 20px; align-items: start; border: 1px solid var(--rule); border-radius: 10px; background: var(--paper); padding: 28px 30px; position: relative; scroll-margin-top: 90px; }
+      body.ex-detail .step-num { grid-row: 1 / 3; display: flex; flex-direction: column; align-items: flex-start; gap: 10px; align-self: stretch; }
+      body.ex-detail .step-num .chip-num { width: 46px; height: 46px; border-radius: 50%; display: grid; place-items: center; background: var(--maroon); color: var(--cream); font-family: var(--mono); font-weight: 500; font-size: 14px; letter-spacing: 0; }
+      body.ex-detail .step.coral .step-num .chip-num { background: var(--coral); }
+      body.ex-detail .step-num .rail { width: 2px; flex: 1; background: var(--rule-strong); opacity: 0.4; }
+      body.ex-detail .step-num .tag { font-family: var(--mono); font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); }
+      body.ex-detail .step-head { grid-column: 2; grid-row: 1; max-width: 72ch; }
+      body.ex-detail .step-head h4 { font-family: var(--sans); font-weight: 600; font-size: 22px; letter-spacing: -0.02em; line-height: 1.2; margin: 0 0 10px; }
+      body.ex-detail .step-head h4 em { color: var(--coral); font-style: normal; }
+      body.ex-detail .step-head p { margin: 0 0 14px; color: var(--maroon-ink); max-width: 64ch; font-size: 15px; line-height: 1.55; }
+      body.ex-detail .step-head code,
+      body.ex-detail .step-head p code,
+      body.ex-detail .callout code,
+      body.ex-detail .step-bullets code { font-family: var(--mono); font-size: 13px; background: rgba(190, 81, 51, 0.12); color: var(--berry); padding: 1px 6px; border-radius: 3px; }
+      body.ex-detail .step-bullets { list-style: none; padding: 0; margin: 0 0 6px; display: flex; flex-direction: column; gap: 4px; }
+      body.ex-detail .step-bullets li { display: flex; gap: 10px; align-items: flex-start; font-size: 13.5px; color: var(--muted); padding: 6px 0; border-top: 1px solid var(--rule); }
+      body.ex-detail .step-bullets li::before { content: ""; width: 6px; height: 6px; margin-top: 7px; flex: none; background: var(--coral); border-radius: 50%; }
+      body.ex-detail .step-bullets li b { color: var(--maroon); font-weight: 500; }
+      body.ex-detail .step-side { grid-column: 2; grid-row: 2; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+
+      /* Code block — canonical palette from design_guidelines/ui/color.html §04
+         (.code-showcase .tk-*). Saturated brand accents are softened for
+         readability inside fenced blocks on maroon-ink: pink→salmon for fn,
+         gold→muted-amber for numbers, lavender tuned warmer. */
+      body.ex-detail .code { background: var(--maroon-ink); color: var(--cream); border-radius: 8px; font-family: var(--mono); font-size: 12.5px; line-height: 1.65; padding: 0; overflow: hidden; }
+      body.ex-detail .code-bar { display: flex; align-items: center; gap: 10px; padding: 11px 16px; border-bottom: 1px solid rgba(252, 243, 216, 0.1); font-family: var(--mono); font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: rgba(252, 243, 216, 0.65); }
+      body.ex-detail .code-bar .dots { display: flex; gap: 6px; }
+      body.ex-detail .code-bar .dots span { width: 9px; height: 9px; border-radius: 50%; background: rgba(252, 243, 216, 0.22); }
+      body.ex-detail .code-bar .dots span:first-child { background: var(--pink); }
+      body.ex-detail .code-bar .dots span:nth-child(2) { background: var(--peach); }
+      body.ex-detail .code-bar .dots span:nth-child(3) { background: var(--palm); }
+      body.ex-detail .code-bar .name { margin-left: 8px; }
+      body.ex-detail .code-bar .lang { margin-left: auto; opacity: 0.65; }
+      body.ex-detail .code pre { margin: 0; padding: 16px 18px 20px; overflow-x: auto; white-space: pre; tab-size: 4; color: var(--cream); }
+      body.ex-detail .code .kw { color: #E59A63; }
+      body.ex-detail .code .dec { color: #E59A63; }
+      body.ex-detail .code .fn { color: #FF9B8A; }
+      body.ex-detail .code .str { color: #8EF09E; }
+      body.ex-detail .code .num { color: #D4B86A; }
+      body.ex-detail .code .tp { color: #C9A0FF; }
+      body.ex-detail .code .dim { opacity: 0.48; }
+      body.ex-detail .code .comment { color: #978A74; font-style: italic; opacity: 0.75; }
+      body.ex-detail .code.terminal .prompt::before { content: "$ "; color: var(--peach); }
+
+      body.ex-detail .callout { border: 1px solid var(--rule-strong); border-radius: 8px; padding: 14px 18px; background: var(--cream); display: flex; flex-direction: column; gap: 6px; font-size: 13px; line-height: 1.5; }
+      body.ex-detail .callout .hd { display: flex; align-items: center; gap: 10px; font-family: var(--mono); font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); }
+      body.ex-detail .callout .hd .dt { width: 8px; height: 8px; border-radius: 50%; background: var(--coral); }
+      body.ex-detail .callout .hd.tip .dt { background: var(--palm-ink); }
+      body.ex-detail .callout .hd.note .dt { background: var(--peach); }
+      body.ex-detail .callout .hd.warn .dt { background: var(--pink); }
+      body.ex-detail .callout p { margin: 0; color: var(--maroon-ink); }
+
+      /* Variations */
+      body.ex-detail .var-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+      body.ex-detail .var-card { border: 1px solid var(--rule-strong); border-radius: 8px; padding: 26px 24px 20px; background: var(--paper); display: flex; flex-direction: column; gap: 10px; min-height: 200px; transition: background-image .18s ease; text-decoration: none; color: inherit; position: relative; overflow: hidden; }
+      body.ex-detail .var-card:hover { background-image: radial-gradient(circle, rgba(42, 18, 27, 0.1) 1.2px, transparent 1.6px); background-size: 14px 14px; }
+      body.ex-detail .var-card.dark:hover { background-image: radial-gradient(circle, rgba(252, 243, 216, 0.1) 1.2px, transparent 1.6px); }
+      body.ex-detail .var-card .cap { font-family: var(--mono); font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); display: flex; justify-content: space-between; }
+      body.ex-detail .var-card .cap .num { color: var(--coral); }
+      body.ex-detail .var-card h4 { font-family: var(--sans); font-weight: 600; font-size: 19px; letter-spacing: -0.02em; line-height: 1.2; margin: 0; }
+      body.ex-detail .var-card h4 em { color: var(--coral); font-style: normal; }
+      body.ex-detail .var-card p { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.5; flex: 1; }
+      body.ex-detail .var-card .foot { padding-top: 14px; margin-top: 6px; border-top: 1px solid var(--rule); font-family: var(--mono); font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--coral); display: flex; justify-content: space-between; align-items: center; }
+      body.ex-detail .var-card.dark { background: var(--maroon); color: var(--cream); border-color: var(--maroon); }
+      body.ex-detail .var-card.dark .cap, body.ex-detail .var-card.dark p { color: rgba(252, 243, 216, 0.7); }
+      body.ex-detail .var-card.dark .cap .num { color: var(--peach); }
+      body.ex-detail .var-card.dark .foot { color: var(--peach); border-color: rgba(252, 243, 216, 0.15); }
+      body.ex-detail .var-card.dark h4 em { color: var(--peach); }
+
+      /* Try-it */
+      body.ex-detail .tryit { background: var(--maroon); color: var(--cream); border-radius: 12px; padding: 40px; display: grid; grid-template-columns: 1fr 1.4fr; gap: 40px; align-items: stretch; position: relative; overflow: hidden; }
+      body.ex-detail .tryit::before { content: ""; position: absolute; inset: 0; background-image: radial-gradient(circle, rgba(252, 243, 216, 0.07) 1.4px, transparent 1.8px); background-size: 20px 20px; }
+      body.ex-detail .tryit > * { position: relative; z-index: 2; }
+      body.ex-detail .tryit h3 { font-family: var(--sans); font-weight: 600; font-size: clamp(26px, 2.8vw, 36px); line-height: 1.08; letter-spacing: -0.03em; margin: 0 0 16px; max-width: 14ch; color: var(--cream); }
+      body.ex-detail .tryit h3 em { color: var(--peach); font-style: normal; }
+      body.ex-detail .tryit p { color: rgba(252, 243, 216, 0.85); max-width: 38ch; margin: 0 0 22px; }
+      body.ex-detail .tryit .tags { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
+      body.ex-detail .tryit .tags span { font-family: var(--mono); font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; padding: 5px 12px; border: 1px solid rgba(252, 243, 216, 0.22); border-radius: 999px; color: rgba(252, 243, 216, 0.75); }
+      body.ex-detail .tryit .queries { display: flex; flex-direction: column; gap: 12px; }
+      body.ex-detail .q-card { background: rgba(252, 243, 216, 0.06); border: 1px solid rgba(252, 243, 216, 0.15); border-radius: 8px; padding: 16px 18px; }
+      body.ex-detail .q-card .q { font-family: var(--mono); font-size: 13px; color: var(--cream); padding-bottom: 12px; margin-bottom: 12px; border-bottom: 1px solid rgba(252, 243, 216, 0.12); }
+      body.ex-detail .q-card .q::before { content: "query "; font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--peach); margin-right: 8px; font-weight: 500; }
+      body.ex-detail .q-card .q em { color: var(--palm); font-style: normal; }
+      body.ex-detail .q-card .hits { display: flex; flex-direction: column; gap: 6px; font-family: var(--mono); font-size: 12px; line-height: 1.55; }
+      body.ex-detail .q-card .hit { display: grid; grid-template-columns: 52px 1fr auto; gap: 12px; align-items: baseline; padding: 3px 0; }
+      body.ex-detail .q-card .hit .sc { color: var(--palm); font-weight: 600; }
+      body.ex-detail .q-card .hit .pth { color: rgba(252, 243, 216, 0.9); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      body.ex-detail .q-card .hit .rng { color: rgba(252, 243, 216, 0.6); }
+
+      /* CTA end */
+      body.ex-detail .cta-end { border-radius: 12px; background: var(--cream); border: 1px solid var(--rule); padding: 60px 44px; text-align: center; position: relative; overflow: hidden; }
+      body.ex-detail .cta-end h3 { font-family: var(--sans); font-weight: 600; font-size: clamp(26px, 3vw, 38px); line-height: 1.08; letter-spacing: -0.03em; margin: 0 auto 18px; max-width: 20ch; }
+      body.ex-detail .cta-end h3 em { color: var(--coral); font-style: normal; }
+      body.ex-detail .cta-end p { color: var(--muted); max-width: 46ch; margin: 0 auto 26px; font-size: 17px; }
+      body.ex-detail .cta-end .btns { display: inline-flex; gap: 12px; flex-wrap: wrap; justify-content: center; }
+
+      @media (max-width: 1100px) {
+        body.ex-detail .ex-layout { grid-template-columns: 1fr; }
+        body.ex-detail .ex-side { position: static; height: auto; border: none; border-bottom: 1px solid var(--rule); padding: 18px 20px; }
+        body.ex-detail .ex-main { padding: 24px 28px 64px; }
+        body.ex-detail .arch { grid-template-columns: 1fr; gap: 12px; padding: 24px; }
+        body.ex-detail .arrow { transform: rotate(90deg); align-self: center; margin: 4px 0; }
+        body.ex-detail .step { grid-template-columns: 56px 1fr; column-gap: 16px; row-gap: 16px; padding: 24px; }
+        body.ex-detail .step-head, body.ex-detail .step-side { grid-column: 2; }
+        body.ex-detail .tryit { grid-template-columns: 1fr; padding: 32px; }
+        body.ex-detail .var-grid { grid-template-columns: 1fr 1fr; }
+        body.ex-detail .part-banner { grid-template-columns: 54px 1fr; gap: 18px; padding: 18px 20px; }
+        body.ex-detail .part-banner .pm { grid-column: 1 / -1; text-align: left; }
+        body.ex-detail .trending-preview { grid-template-columns: 1fr; }
+      }
+      @media (max-width: 640px) { body.ex-detail .var-grid { grid-template-columns: 1fr; } }
+
+      /* ═══════════ Prose (rendered MDX body) ═══════════
+         The ported markdown drops into `.ex-prose`. Keep the typography
+         anchored on the same palette as the docs prose, without pulling
+         in the docs `.prose` container itself — that one's tuned for a
+         narrower column and a different heading scale. */
+      body.ex-detail .ex-prose { padding-top: 8px; max-width: 72ch; min-width: 0; font-size: 16px; line-height: 1.65; color: var(--maroon-ink); }
+      body.ex-detail .ex-prose > :first-child { margin-top: 0; }
+      body.ex-detail .ex-prose > p:first-child img { margin-top: 0; }
+      body.ex-detail .ex-prose h2 { font-family: var(--sans); font-weight: 600; font-size: clamp(26px, 2.6vw, 34px); line-height: 1.1; letter-spacing: -0.025em; margin: 56px 0 18px; scroll-margin-top: 84px; }
+      body.ex-detail .ex-prose > h2:first-of-type { border-top: none; padding-top: 0; margin-top: 24px; }
+      body.ex-detail .ex-prose h3 { font-family: var(--sans); font-weight: 600; font-size: 20px; line-height: 1.25; letter-spacing: -0.015em; margin: 36px 0 12px; scroll-margin-top: 84px; }
+      body.ex-detail .ex-prose h4 { font-family: var(--sans); font-weight: 600; font-size: 17px; letter-spacing: -0.01em; margin: 28px 0 10px; }
+      body.ex-detail .ex-prose p { margin: 0 0 18px; }
+      body.ex-detail .ex-prose a { color: var(--coral); text-decoration: none; border-bottom: 1px solid rgba(190, 81, 51, 0.35); transition: border-color .15s, color .15s; }
+      body.ex-detail .ex-prose a:hover { color: var(--maroon); border-color: var(--maroon); }
+      body.ex-detail .ex-prose ul, body.ex-detail .ex-prose ol { margin: 0 0 18px; padding-left: 22px; }
+      body.ex-detail .ex-prose li { margin-bottom: 6px; }
+      body.ex-detail .ex-prose li > p { margin-bottom: 6px; }
+      body.ex-detail .ex-prose strong, body.ex-detail .ex-prose b { color: var(--maroon); font-weight: 600; }
+      body.ex-detail .ex-prose em, body.ex-detail .ex-prose i { font-style: italic; }
+      body.ex-detail .ex-prose img { max-width: 100%; height: auto; margin: 20px 0; }
+      body.ex-detail .ex-prose blockquote { margin: 20px 0; padding: 10px 18px; border-left: 3px solid var(--coral); background: var(--cream); border-radius: 0 6px 6px 0; color: var(--muted); }
+      body.ex-detail .ex-prose blockquote p { margin: 0; }
+      body.ex-detail .ex-prose :not(pre) > code { font-family: var(--mono); font-size: 13.5px; background: rgba(190, 81, 51, 0.12); color: var(--berry); padding: 2px 7px; border-radius: 4px; }
+      body.ex-detail .ex-prose pre { background: var(--maroon-ink); color: var(--cream); border-radius: 8px; padding: 18px 20px; overflow-x: auto; font-family: var(--mono); font-size: 13px; line-height: 1.6; margin: 20px 0; border: none; }
+      body.ex-detail .ex-prose pre code { background: transparent; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+      body.ex-detail .ex-prose hr { border: none; border-top: 1px solid var(--rule); margin: 40px 0; }
+      body.ex-detail .ex-prose table { width: 100%; border-collapse: collapse; margin: 20px 0; font-size: 14px; }
+      body.ex-detail .ex-prose th, body.ex-detail .ex-prose td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--rule); }
+      body.ex-detail .ex-prose th { font-family: var(--mono); font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); border-bottom-color: var(--rule-strong); }
+      body.ex-detail .ex-prose kbd { font-family: var(--mono); font-size: 12px; padding: 2px 6px; border: 1px solid var(--rule-strong); border-radius: 4px; background: var(--cream); }
+    </style>
+  </body>
+</html>

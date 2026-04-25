@@ -1,0 +1,33 @@
+---
+/** Glyph that marks a container (processing component or function) as
+   memoized. Pass the container's top-RIGHT corner; the primitive handles
+   the inset and sizing so every memo mark in the docs looks identical.
+   Styled as a coral-outlined ribbon with a translucent coral fill so it
+   reads over any background. */
+const INSET_X = 7;
+const SIZE = 8;
+
+interface Props {
+  x: number;
+  y: number;
+  class?: string;
+}
+const {
+  x, y,
+  class: extraClass = '',
+} = Astro.props;
+
+const w = SIZE;
+const h = SIZE * 1.6;
+const notch = SIZE * 0.35;
+---
+<g transform={`translate(${x - INSET_X - w} ${y})`} class={`dg-memo ${extraClass}`.trim()}>
+  <title>memoized</title>
+  <path
+    d={`M 0 0 L ${w} 0 L ${w} ${h} L ${w / 2} ${h - notch} L 0 ${h} Z`}
+    fill="color-mix(in oklab, var(--coral) 22%, transparent)"
+    stroke="var(--coral)"
+    stroke-width="1.2"
+    stroke-linejoin="round"
+  />
+</g>

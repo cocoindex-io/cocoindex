@@ -1,79 +1,16 @@
-import datetime
+from __future__ import annotations
+
+import pathlib
 
 import dspy
-from pydantic import BaseModel, Field
+from dotenv import load_dotenv
 import pymupdf
 
-import cocoindex
+import cocoindex as coco
+from cocoindex.connectors import localfs
+from cocoindex.resources.file import FileLike, PatternFilePathMatcher
 
-
-# Pydantic models for DSPy structured outputs
-class Contact(BaseModel):
-    name: str
-    phone: str
-    relationship: str
-
-
-class Address(BaseModel):
-    street: str
-    city: str
-    state: str
-    zip_code: str
-
-
-class Pharmacy(BaseModel):
-    name: str
-    phone: str
-    address: Address
-
-
-class Insurance(BaseModel):
-    provider: str
-    policy_number: str
-    group_number: str | None = None
-    policyholder_name: str
-    relationship_to_patient: str
-
-
-class Condition(BaseModel):
-    name: str
-    diagnosed: bool
-
-
-class Medication(BaseModel):
-    name: str
-    dosage: str
-
-
-class Allergy(BaseModel):
-    name: str
-
-
-class Surgery(BaseModel):
-    name: str
-    date: str
-
-
-class Patient(BaseModel):
-    name: str
-    dob: datetime.date
-    gender: str
-    address: Address
-    phone: str
-    email: str
-    preferred_contact_method: str
-    emergency_contact: Contact
-    insurance: Insurance | None = None
-    reason_for_visit: str
-    symptoms_duration: str
-    past_conditions: list[Condition] = Field(default_factory=list)
-    current_medications: list[Medication] = Field(default_factory=list)
-    allergies: list[Allergy] = Field(default_factory=list)
-    surgeries: list[Surgery] = Field(default_factory=list)
-    occupation: str | None = None
-    pharmacy: Pharmacy | None = None
-    consent_given: bool
-    consent_date: str | None = None
+from models import Patient
 
 
 # DSPy Signature for patient information extraction from images
@@ -101,73 +38,53 @@ class PatientExtractor(dspy.Module):
         return result.patient
 
 
-@cocoindex.op.function(cache=True, behavior_version=1)
+@coco.fn
 def extract_patient(pdf_content: bytes) -> Patient:
     """Extract patient information from PDF content."""
-
-    # Convert PDF pages to DSPy Image objects
     pdf_doc = pymupdf.open(stream=pdf_content, filetype="pdf")
 
     form_images = []
     for page in pdf_doc:
-        # Render page to pixmap (image) at 2x resolution for better quality
         pix = page.get_pixmap(matrix=pymupdf.Matrix(2, 2))
-        # Convert to PNG bytes
         img_bytes = pix.tobytes("png")
-        # Create DSPy Image from bytes
         form_images.append(dspy.Image(img_bytes))
 
     pdf_doc.close()
 
-    # Extract patient information using DSPy with vision
     extractor = PatientExtractor()
     patient = extractor(form_images=form_images)
-
     return patient
 
 
-@cocoindex.flow_def(name="PatientIntakeExtractionDSPy")
-def patient_intake_extraction_dspy_flow(
-    flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope
-) -> None:
-    """
-    Define a flow that extracts patient information from intake forms using DSPy.
-
-    This flow:
-    1. Reads patient intake PDFs as binary
-    2. Uses DSPy with vision models to extract structured patient information
-       (PDF to image conversion happens automatically inside the extractor)
-    3. Stores the results in a Postgres database
-    """
-    data_scope["documents"] = flow_builder.add_source(
-        cocoindex.sources.LocalFile(path="data/patient_forms", binary=True)
-    )
-
-    patients_index = data_scope.add_collector()
-
-    with data_scope["documents"].row() as doc:
-        # Extract patient information directly from PDF using DSPy with vision
-        # (PDF->Image conversion happens inside the extractor)
-        doc["patient_info"] = doc["content"].transform(extract_patient)
-
-        # Collect the extracted patient information
-        patients_index.collect(
-            filename=doc["filename"],
-            patient_info=doc["patient_info"],
-        )
-
-    # Export to Postgres
-    patients_index.export(
-        "patients",
-        cocoindex.storages.Postgres(table_name="patients_info_dspy"),
-        primary_key_fields=["filename"],
+@coco.fn(memo=True)
+async def process_patient_form(file: FileLike, outdir: pathlib.Path) -> None:
+    """Process a patient intake form PDF and extract structured information."""
+    content = await file.read()
+    patient_info = extract_patient(content)
+    patient_json = patient_info.model_dump_json(indent=2)
+    output_filename = file.file_path.path.stem + ".json"
+    localfs.declare_file(
+        outdir / output_filename, patient_json, create_parent_dirs=True
     )
 
 
-@cocoindex.settings
-def cocoindex_settings() -> cocoindex.Settings:
-    # Configure the model used in DSPy
-    lm = dspy.LM("gemini/gemini-2.5-flash")
-    dspy.configure(lm=lm)
+@coco.fn
+async def app_main(sourcedir: pathlib.Path, outdir: pathlib.Path) -> None:
+    """Main application function that processes patient intake forms."""
+    files = localfs.walk_dir(
+        sourcedir,
+        path_matcher=PatternFilePathMatcher(included_patterns=["**/*.pdf"]),
+    )
+    await coco.mount_each(process_patient_form, files.items(), outdir)
 
-    return cocoindex.Settings.from_env()
+
+load_dotenv()
+lm = dspy.LM("gemini/gemini-2.5-flash")
+dspy.configure(lm=lm)
+
+app = coco.App(
+    coco.AppConfig(name="PatientIntakeExtractionDSPy"),
+    app_main,
+    sourcedir=pathlib.Path("./data/patient_forms"),
+    outdir=pathlib.Path("./output_patients"),
+)

@@ -1,0 +1,152 @@
+---
+import type { MarkdownHeading } from 'astro';
+import { GITHUB_REPO, DISCORD_URL } from '../consts';
+import docsMeta from '../data/docs-meta.json';
+
+export interface Props {
+  headings: MarkdownHeading[];
+  /** Slug of the current doc — keys into src/data/docs-meta.json for edit time. */
+  slug: string;
+}
+
+const { headings, slug } = Astro.props;
+
+// Only H2 and H3 in the right rail — deeper nesting makes noise. H2s get
+// numbered ("1 · Install") to match the design mock.
+const items = headings.filter((h) => h.depth >= 2 && h.depth <= 3);
+let h2Count = 0;
+const rows = items.map((h) => {
+  if (h.depth === 2) h2Count++;
+  return { ...h, n: h.depth === 2 ? h2Count : null };
+});
+
+const metaMap = (docsMeta as {
+  _version?: string | null;
+  files: Record<string, { sourcePath: string; editTs: number }>;
+}).files ?? {};
+const meta = metaMap[slug];
+const editTs = meta?.editTs ?? 0;
+
+// "Last reviewed · Xd ago" — coarse relative time suitable for the rail.
+// Timestamp comes from the last git commit touching the source doc, which
+// is the best proxy we have for when a human last reviewed it.
+function relativeReview(ts: number): string | null {
+  if (!ts) return null;
+  const now = Math.floor(Date.now() / 1000);
+  const delta = Math.max(0, now - ts);
+  const pick = (n: number, unit: string) => `${n}${unit} ago`;
+  if (delta < 3600) return pick(Math.max(1, Math.round(delta / 60)), 'm');
+  if (delta < 86400) return pick(Math.round(delta / 3600), 'h');
+  if (delta < 86400 * 30) return pick(Math.round(delta / 86400), 'd');
+  if (delta < 86400 * 365) return pick(Math.round(delta / (86400 * 30)), 'mo');
+  return pick(Math.round(delta / (86400 * 365)), 'y');
+}
+const reviewedAgo = relativeReview(editTs);
+---
+
+<aside class="toc">
+  <h6>On this page</h6>
+  <ul>
+    {rows.map((h) => (
+      <li class={h.depth === 3 ? 'sub' : ''} data-toc-item>
+        <a href={`#${h.slug}`} data-toc-link={h.slug}>
+          {h.n != null && <span class="n">{h.n}</span>}
+          {h.text}
+        </a>
+      </li>
+    ))}
+  </ul>
+
+  <div class="meta">
+    <a href={GITHUB_REPO} target="_blank" rel="noopener">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+        <path d="M12 2A10 10 0 002 12a10 10 0 006.84 9.5c.5.1.68-.22.68-.48v-1.7c-2.8.6-3.37-1.35-3.37-1.35-.46-1.16-1.12-1.47-1.12-1.47-.91-.62.07-.6.07-.6 1 .07 1.53 1.03 1.53 1.03.9 1.52 2.34 1.08 2.9.83.1-.65.35-1.08.63-1.33-2.22-.25-4.55-1.11-4.55-4.94 0-1.09.39-1.98 1.03-2.68-.1-.25-.45-1.27.1-2.65 0 0 .84-.27 2.75 1.02A9.58 9.58 0 0112 6.8c.85 0 1.7.12 2.5.34 1.9-1.3 2.74-1.02 2.74-1.02.55 1.38.2 2.4.1 2.65.64.7 1.03 1.6 1.03 2.68 0 3.84-2.34 4.69-4.57 4.93.36.31.68.92.68 1.85v2.74c0 .27.18.59.69.49A10 10 0 0022 12 10 10 0 0012 2z"/>
+      </svg>
+      View CocoIndex
+    </a>
+    {reviewedAgo && (
+      <span class="edited">
+        <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden>
+          <circle cx="8" cy="8" r="7" fill="var(--palm)" />
+          <path d="M4.5 8.3l2.3 2.2L11.5 5.8"
+                fill="none" stroke="var(--maroon-ink)"
+                stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        Last reviewed · {reviewedAgo}
+      </span>
+    )}
+    <a href={DISCORD_URL} target="_blank" rel="noopener">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden>
+        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+      </svg>
+      Ask the community
+    </a>
+  </div>
+</aside>
+
+<script>
+  // Scroll-spy: highlight the TOC entry whose heading is furthest down but
+  // still above the fold. IntersectionObserver fires as each heading enters
+  // or leaves a slim band near the top of the viewport. One source of truth
+  // is the set of currently-intersecting headings — we re-sort on every
+  // event and flip `.on` on the single winning link.
+  const activate = () => {
+    const toc = document.querySelector('aside.toc');
+    if (!toc) return;
+    const links = new Map<string, HTMLAnchorElement>();
+    toc.querySelectorAll<HTMLAnchorElement>('a[data-toc-link]').forEach((a) => {
+      links.set(a.dataset.tocLink!, a);
+    });
+    if (!links.size) return;
+
+    const ids = Array.from(links.keys());
+    const targets = ids
+      .map((id) => document.getElementById(id))
+      .filter((x): x is HTMLElement => !!x);
+    if (!targets.length) return;
+
+    const visible = new Set<string>();
+
+    const setActive = (id: string | null) => {
+      links.forEach((a, key) => a.classList.toggle('on', key === id));
+    };
+
+    // Default to the first H2 before any intersection fires, so the rail
+    // doesn't render empty at the top of the page.
+    setActive(targets[0].id);
+
+    const io = new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) {
+          if (e.isIntersecting) visible.add(e.target.id);
+          else visible.delete(e.target.id);
+        }
+        if (visible.size) {
+          // Pick the earliest visible heading — that's "where the user is".
+          const ordered = targets
+            .map((t) => t.id)
+            .filter((id) => visible.has(id));
+          setActive(ordered[0]);
+          return;
+        }
+        // Nothing intersecting the band: use the last heading whose top is
+        // above the band — the section we've scrolled past.
+        const y = window.scrollY + 120;
+        let last = targets[0].id;
+        for (const t of targets) {
+          if (t.getBoundingClientRect().top + window.scrollY <= y) last = t.id;
+          else break;
+        }
+        setActive(last);
+      },
+      { rootMargin: '-80px 0px -70% 0px', threshold: 0 },
+    );
+    targets.forEach((t) => io.observe(t));
+  };
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', activate);
+  } else {
+    activate();
+  }
+</script>

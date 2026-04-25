@@ -1,0 +1,146 @@
+---
+// Mirrors Nav.astro in cocoindex-io.github.io (class names, markup, links)
+// so both sites share the exact same header. The stars island is a plain
+// inline script rather than a React component so we don't need to ship
+// React + a client bundle just to render one number.
+import { SITE_MAIN, SITE_BLOG, GITHUB_REPO } from '../consts';
+
+const base = import.meta.env.BASE_URL.replace(/\/$/, '') || '/';
+const CODE = `${SITE_MAIN}/cocoindex-code`;
+const DOCS = base;
+const DOCS_V0 = `${SITE_MAIN}/docs-v0`;
+const EXAMPLES_V1 = `${base}/examples`;
+const EXAMPLES_V0 = `${SITE_MAIN}/docs-v0/examples/`;
+const ENTERPRISE = `${SITE_MAIN}/enterprise`;
+---
+
+<nav class="top">
+  <div class="nav-in">
+    <a class="logo" href={SITE_MAIN}>
+      <img src={`${base === '/' ? '' : base}/images/coconut.svg`} alt="CocoIndex logo" width="28" height="28" />
+      <span>CocoIndex</span>
+    </a>
+    <div class="nav-links">
+      <a href={CODE}>CocoIndex Code</a>
+      <div class="nav-dd">
+        <a href={EXAMPLES_V1} class="nav-dd-trigger" aria-haspopup="menu">
+          Examples
+          <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden>
+            <path d="m2.5 4.5 3.5 3.5 3.5-3.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </a>
+        <div class="nav-dd-menu" role="menu">
+          <a class="on" href={EXAMPLES_V1} role="menuitem">
+            <span class="ver">v1</span>
+          </a>
+          <a href={EXAMPLES_V0} role="menuitem">
+            <span class="ver">v0</span>
+            <span class="tag legacy">legacy</span>
+          </a>
+        </div>
+      </div>
+      <div class="nav-dd">
+        <a href={DOCS} class="nav-dd-trigger" aria-haspopup="menu">
+          Documentation
+          <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden>
+            <path d="m2.5 4.5 3.5 3.5 3.5-3.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </a>
+        <div class="nav-dd-menu" role="menu">
+          <a class="on" href={DOCS} role="menuitem">
+            <span class="ver">v1</span>
+          </a>
+          <a href={DOCS_V0} role="menuitem">
+            <span class="ver">v0</span>
+            <span class="tag legacy">legacy</span>
+          </a>
+        </div>
+      </div>
+      <a href={ENTERPRISE}>Enterprise</a>
+      <a href={SITE_BLOG}>Blog</a>
+    </div>
+    <div class="nav-cta">
+      <a class="stars" href={GITHUB_REPO} target="_blank" rel="noopener" data-repo="cocoindex-io/cocoindex">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
+        </svg>
+        <span class="count" aria-label="GitHub stars">—</span>
+      </a>
+    </div>
+  </div>
+</nav>
+
+<script>
+  // Tiny islandless GitHub-stars counter. sessionStorage cache + a single
+  // fetch per tab. Matches the formatting used by IconThemeStars on the
+  // sister site (`1.2k` under 10k, `48k` above).
+  (() => {
+    const el = document.querySelector<HTMLElement>('.stars .count');
+    if (!el) return;
+    const a = el.closest('a[data-repo]') as HTMLAnchorElement | null;
+    const repo = a?.dataset.repo;
+    if (!repo) return;
+
+    const KEY = `gh-stars:${repo}`;
+    const TTL = 60 * 60 * 1000;
+
+    const fmt = (n: number) =>
+      n < 1000 ? n.toLocaleString() :
+      n < 10000 ? `${(Math.round(n / 100) / 10).toFixed(1)}k` :
+      `${Math.round(n / 1000)}k`;
+
+    try {
+      const raw = sessionStorage.getItem(KEY);
+      if (raw) {
+        const { count, ts } = JSON.parse(raw) as { count: number; ts: number };
+        if (Date.now() - ts < TTL && typeof count === 'number') {
+          el.textContent = fmt(count);
+          return;
+        }
+      }
+    } catch { /* ignore quota / JSON errors */ }
+
+    fetch(`https://api.github.com/repos/${repo}`)
+      .then((r) => r.json())
+      .then((d: { stargazers_count?: number }) => {
+        if (typeof d.stargazers_count !== 'number') return;
+        el.textContent = fmt(d.stargazers_count);
+        try { sessionStorage.setItem(KEY, JSON.stringify({ count: d.stargazers_count, ts: Date.now() })); } catch { /* ignore */ }
+      })
+      .catch(() => { /* offline / rate-limited — leave the em-dash. */ });
+  })();
+
+  // Copy-to-clipboard for every .code-figure .copy button — one delegated
+  // listener per document. Emitted markup lives in scripts/remark-code-titles.mjs.
+  (() => {
+    document.addEventListener('click', (ev) => {
+      const btn = (ev.target as HTMLElement | null)?.closest('.code-figure .copy') as HTMLButtonElement | null;
+      if (!btn) return;
+      const fig = btn.closest<HTMLElement>('.code-figure');
+      const code = fig?.querySelector<HTMLElement>('pre code, pre');
+      if (!code) return;
+      const text = code.innerText.replace(/\n$/, '');
+      const label = btn.querySelector<HTMLElement>('.copy-lbl');
+      const done = () => {
+        btn.classList.add('copied');
+        if (label) label.textContent = 'Copied';
+        window.setTimeout(() => {
+          btn.classList.remove('copied');
+          if (label) label.textContent = 'Copy';
+        }, 1500);
+      };
+      if (navigator.clipboard?.writeText) {
+        navigator.clipboard.writeText(text).then(done).catch(() => { /* fall through */ });
+      } else {
+        // Legacy fallback — create an offscreen textarea, select, execCommand.
+        const ta = document.createElement('textarea');
+        ta.value = text; ta.setAttribute('readonly', '');
+        ta.style.position = 'fixed'; ta.style.left = '-9999px';
+        document.body.appendChild(ta);
+        ta.select();
+        try { document.execCommand('copy'); done(); } catch { /* ignore */ }
+        ta.remove();
+      }
+    });
+  })();
+</script>

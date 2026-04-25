@@ -1,13 +1,17 @@
 [project]
-name = "amazon-s3-text-embedding"
+name = "amazon-s3-embedding-v1"
 version = "0.1.0"
-description = "Simple example for cocoindex: build embedding index based on Amazon S3 files."
+description = "CocoIndex v1 example: embed S3 text files into Postgres/pgvector."
 requires-python = ">=3.11"
 dependencies = [
-    "cocoindex[embeddings]>=0.3.34,<1",
-    "python-dotenv>=1.0.1",
-    "psycopg[binary,pool]",
+    "cocoindex[amazon_s3,postgres,sentence_transformers]>=1.0.0a30",
+    "asyncpg>=0.29.0",
+    "pgvector>=0.4.1",
+    "numpy",
 ]
+
+[tool.uv]
+prerelease = "explicit"
 
 [tool.setuptools]
 packages = []

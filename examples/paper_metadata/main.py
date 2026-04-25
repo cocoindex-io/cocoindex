@@ -1,34 +1,111 @@
-import cocoindex
-import io
-import tempfile
-import dataclasses
-import datetime
+"""
+Paper Metadata (v1) - CocoIndex pipeline example.
 
-from marker.config.parser import ConfigParser
-from marker.converters.pdf import PdfConverter
-from marker.models import create_model_dict
-from marker.output import text_from_rendered
-from functools import cache
+- Walk local PDF files
+- Extract the first page text
+- Use an LLM to extract title/authors/abstract
+- Embed title and abstract chunks (SentenceTransformers)
+- Store metadata and embeddings in Postgres (pgvector)
+- Query demo using pgvector cosine distance (<=>)
+"""
+
+from __future__ import annotations
+
+import asyncio
+import functools
+import io
+import os
+import pathlib
+import sys
+import uuid
+from dataclasses import dataclass
+from typing import AsyncIterator, Annotated
+
+import asyncpg
+from numpy.typing import NDArray
+from openai import OpenAI
+from dotenv import load_dotenv
 from pypdf import PdfReader, PdfWriter
 
+import cocoindex as coco
+from cocoindex.connectors import localfs, postgres
+from cocoindex.ops.text import CustomLanguageConfig, RecursiveSplitter
+from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
+from cocoindex.resources.file import FileLike, PatternFilePathMatcher
 
-@cache
-def get_marker_converter() -> PdfConverter:
-    config_parser = ConfigParser({})
-    return PdfConverter(
-        create_model_dict(), config=config_parser.generate_config_dict()
-    )
+from models import AuthorModel, PaperMetadataModel
 
 
-@dataclasses.dataclass
+TABLE_METADATA = "paper_metadata"
+TABLE_AUTHOR_PAPERS = "author_papers"
+TABLE_EMBEDDINGS = "metadata_embeddings"
+PG_SCHEMA_NAME = "coco_examples_v1"
+LLM_MODEL = "gpt-4o"
+TOP_K = 5
+
+
+EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+PG_DB = coco.ContextKey[asyncpg.Pool]("paper_metadata_db")
+EMBEDDER = coco.ContextKey[SentenceTransformerEmbedder]("embedder", detect_change=True)
+
+_abstract_splitter = RecursiveSplitter(
+    custom_languages=[
+        CustomLanguageConfig(
+            language_name="abstract",
+            separators_regex=[r"[.?!]+\s+", r"[:;]\s+", r",\s+", r"\s+"],
+        )
+    ]
+)
+
+
+@functools.cache
+def openai_client() -> OpenAI:
+    return OpenAI()
+
+
+# =========================================================================
+# Data models
+# =========================================================================
+
+
+@dataclass
 class PaperBasicInfo:
     num_pages: int
     first_page: bytes
 
 
-@cocoindex.op.function()
+@dataclass
+class PaperMetadataRow:
+    filename: str
+    title: str
+    authors: list[dict[str, str | None]]
+    abstract: str
+    num_pages: int
+
+
+@dataclass
+class AuthorPaperRow:
+    author_name: str
+    filename: str
+
+
+@dataclass
+class MetadataEmbeddingRow:
+    id: uuid.UUID
+    filename: str
+    location: str
+    text: str
+    embedding: Annotated[NDArray, EMBEDDER]
+
+
+# =========================================================================
+# PDF + LLM extraction
+# =========================================================================
+
+
+@coco.fn
 def extract_basic_info(content: bytes) -> PaperBasicInfo:
-    """Extract the first pages of a PDF."""
+    """Extract first page bytes and page count from a PDF."""
     reader = PdfReader(io.BytesIO(content))
 
     output = io.BytesIO()
@@ -39,144 +116,228 @@ def extract_basic_info(content: bytes) -> PaperBasicInfo:
     return PaperBasicInfo(num_pages=len(reader.pages), first_page=output.getvalue())
 
 
-@dataclasses.dataclass
-class Author:
-    """One author of the paper."""
-
-    name: str
-    email: str | None
-    affiliation: str | None
-
-
-@dataclasses.dataclass
-class PaperMetadata:
-    """
-    Metadata for a paper.
-    """
-
-    title: str
-    authors: list[Author]
-    abstract: str
-
-
-@cocoindex.op.function(gpu=True, cache=True, behavior_version=2)
+@coco.fn
 def pdf_to_markdown(content: bytes) -> str:
-    """Convert to Markdown."""
-
-    with tempfile.NamedTemporaryFile(delete=True, suffix=".pdf") as temp_file:
-        temp_file.write(content)
-        temp_file.flush()
-    text_any, _, _ = text_from_rendered(get_marker_converter()(temp_file.name))
-    return text_any
+    """Convert PDF bytes to text using pypdf."""
+    reader = PdfReader(io.BytesIO(content))
+    page_text = reader.pages[0].extract_text() if reader.pages else ""
+    return page_text or ""
 
 
-@cocoindex.flow_def(name="PaperMetadata")
-def paper_metadata_flow(
-    flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope
-) -> None:
-    """
-    Define an example flow that embeds files into a vector database.
-    """
-    data_scope["documents"] = flow_builder.add_source(
-        cocoindex.sources.LocalFile(path="papers", binary=True),
-        refresh_interval=datetime.timedelta(seconds=10),
-    )
-
-    paper_metadata = data_scope.add_collector()
-    author_papers = data_scope.add_collector()
-    metadata_embeddings = data_scope.add_collector()
-
-    with data_scope["documents"].row() as doc:
-        # Extract metadata
-        doc["basic_info"] = doc["content"].transform(extract_basic_info)
-        doc["first_page_md"] = doc["basic_info"]["first_page"].transform(
-            pdf_to_markdown
-        )
-        doc["metadata"] = doc["first_page_md"].transform(
-            cocoindex.functions.ExtractByLlm(
-                llm_spec=cocoindex.LlmSpec(
-                    api_type=cocoindex.LlmApiType.OPENAI, model="gpt-4o"
+@coco.fn
+def extract_metadata(markdown: str) -> PaperMetadataModel:
+    """Extract paper metadata from first-page text using an LLM."""
+    client = openai_client()
+    response = client.chat.completions.create(
+        model=LLM_MODEL,
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "You extract metadata from academic paper first pages. "
+                    "Return only JSON with keys: title, authors, abstract. "
+                    "authors is a list of {name, email, affiliation}. "
+                    "Use null for missing fields."
                 ),
-                output_type=PaperMetadata,
-                instruction="Please extract the metadata from the first page of the paper.",
-            )
-        )
-
-        # Collect metadata
-        paper_metadata.collect(
-            filename=doc["filename"],
-            title=doc["metadata"]["title"],
-            authors=doc["metadata"]["authors"],
-            abstract=doc["metadata"]["abstract"],
-            num_pages=doc["basic_info"]["num_pages"],
-        )
-
-        # Collect author to filename mapping
-        with doc["metadata"]["authors"].row() as author:
-            author_papers.collect(
-                author_name=author["name"],
-                filename=doc["filename"],
-            )
-
-        # Embed title and abstract, and collect embeddings
-        doc["title_embedding"] = doc["metadata"]["title"].transform(
-            cocoindex.functions.SentenceTransformerEmbed(
-                model="sentence-transformers/all-MiniLM-L6-v2"
-            )
-        )
-        doc["abstract_chunks"] = doc["metadata"]["abstract"].transform(
-            cocoindex.functions.SplitRecursively(
-                custom_languages=[
-                    cocoindex.functions.CustomLanguageSpec(
-                        language_name="abstract",
-                        separators_regex=[r"[.?!]+\s+", r"[:;]\s+", r",\s+", r"\s+"],
-                    )
-                ]
-            ),
-            language="abstract",
-            chunk_size=500,
-            min_chunk_size=200,
-            chunk_overlap=150,
-        )
-        metadata_embeddings.collect(
-            id=cocoindex.GeneratedField.UUID,
-            filename=doc["filename"],
-            location="title",
-            text=doc["metadata"]["title"],
-            embedding=doc["title_embedding"],
-        )
-        with doc["abstract_chunks"].row() as chunk:
-            chunk["embedding"] = chunk["text"].transform(
-                cocoindex.functions.SentenceTransformerEmbed(
-                    model="sentence-transformers/all-MiniLM-L6-v2"
-                )
-            )
-            metadata_embeddings.collect(
-                id=cocoindex.GeneratedField.UUID,
-                filename=doc["filename"],
-                location="abstract",
-                text=chunk["text"],
-                embedding=chunk["embedding"],
-            )
-
-    paper_metadata.export(
-        "paper_metadata",
-        cocoindex.targets.Postgres(),
-        primary_key_fields=["filename"],
-    )
-    author_papers.export(
-        "author_papers",
-        cocoindex.targets.Postgres(),
-        primary_key_fields=["author_name", "filename"],
-    )
-    metadata_embeddings.export(
-        "metadata_embeddings",
-        cocoindex.targets.Postgres(),
-        primary_key_fields=["id"],
-        vector_indexes=[
-            cocoindex.VectorIndexDef(
-                field_name="embedding",
-                metric=cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY,
-            )
+            },
+            {
+                "role": "user",
+                "content": markdown[:4000],
+            },
         ],
+        response_format={"type": "json_object"},
+        temperature=0,
     )
+
+    content = response.choices[0].message.content
+    if not content:
+        raise RuntimeError("LLM returned empty content.")
+    return PaperMetadataModel.model_validate_json(content)
+
+
+@coco.lifespan
+async def coco_lifespan(
+    builder: coco.EnvironmentBuilder,
+) -> AsyncIterator[None]:
+    # Provide resources needed across the CocoIndex environment
+    database_url = os.getenv("POSTGRES_URL")
+    if not database_url:
+        raise ValueError("POSTGRES_URL is not set")
+
+    async with await asyncpg.create_pool(database_url) as pool:
+        builder.provide(PG_DB, pool)
+        builder.provide(EMBEDDER, SentenceTransformerEmbedder(EMBED_MODEL))
+        yield
+
+
+@coco.fn(memo=True)
+async def process_file(
+    file: FileLike,
+    metadata_table: postgres.TableTarget[PaperMetadataRow],
+    author_table: postgres.TableTarget[AuthorPaperRow],
+    embedding_table: postgres.TableTarget[MetadataEmbeddingRow],
+) -> None:
+    content = await file.read()
+
+    basic_info = extract_basic_info(content)
+    first_page_md = pdf_to_markdown(basic_info.first_page)
+    metadata = extract_metadata(first_page_md)
+
+    authors_payload = [a.model_dump() for a in metadata.authors]
+
+    metadata_table.declare_row(
+        row=PaperMetadataRow(
+            filename=str(file.file_path.path),
+            title=metadata.title,
+            authors=authors_payload,
+            abstract=metadata.abstract,
+            num_pages=basic_info.num_pages,
+        ),
+    )
+
+    for author in metadata.authors:
+        if author.name:
+            author_table.declare_row(
+                row=AuthorPaperRow(
+                    author_name=author.name,
+                    filename=str(file.file_path.path),
+                ),
+            )
+
+    title_embedding = await coco.use_context(EMBEDDER).embed(metadata.title)
+    embedding_table.declare_row(
+        row=MetadataEmbeddingRow(
+            id=uuid.uuid4(),
+            filename=str(file.file_path.path),
+            location="title",
+            text=metadata.title,
+            embedding=title_embedding,
+        ),
+    )
+
+    abstract_chunks = _abstract_splitter.split(
+        metadata.abstract,
+        chunk_size=500,
+        min_chunk_size=200,
+        chunk_overlap=150,
+        language="abstract",
+    )
+    for chunk in abstract_chunks:
+        embedding_table.declare_row(
+            row=MetadataEmbeddingRow(
+                id=uuid.uuid4(),
+                filename=str(file.file_path.path),
+                location="abstract",
+                text=chunk.text,
+                embedding=await coco.use_context(EMBEDDER).embed(chunk.text),
+            ),
+        )
+
+
+@coco.fn
+async def app_main(sourcedir: pathlib.Path) -> None:
+    metadata_table = await postgres.mount_table_target(
+        PG_DB,
+        table_name=TABLE_METADATA,
+        table_schema=await postgres.TableSchema.from_class(
+            PaperMetadataRow,
+            primary_key=["filename"],
+        ),
+        pg_schema_name=PG_SCHEMA_NAME,
+    )
+    author_table = await postgres.mount_table_target(
+        PG_DB,
+        table_name=TABLE_AUTHOR_PAPERS,
+        table_schema=await postgres.TableSchema.from_class(
+            AuthorPaperRow,
+            primary_key=["author_name", "filename"],
+        ),
+        pg_schema_name=PG_SCHEMA_NAME,
+    )
+    embedding_table = await postgres.mount_table_target(
+        PG_DB,
+        table_name=TABLE_EMBEDDINGS,
+        table_schema=await postgres.TableSchema.from_class(
+            MetadataEmbeddingRow,
+            primary_key=["id"],
+        ),
+        pg_schema_name=PG_SCHEMA_NAME,
+    )
+
+    files = localfs.walk_dir(
+        sourcedir,
+        recursive=True,
+        path_matcher=PatternFilePathMatcher(included_patterns=["**/*.pdf"]),
+    )
+    await coco.mount_each(
+        process_file, files.items(), metadata_table, author_table, embedding_table
+    )
+
+
+app = coco.App(
+    coco.AppConfig(name="PaperMetadataV1"),
+    app_main,
+    sourcedir=pathlib.Path("./papers"),
+)
+
+
+# =========================================================================
+# Query demo (no vector index)
+# =========================================================================
+
+
+async def query_once(
+    pool: asyncpg.Pool,
+    embedder: SentenceTransformerEmbedder,
+    query: str,
+    *,
+    top_k: int = TOP_K,
+) -> None:
+    query_vec = await embedder.embed(query)
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            f"""
+            SELECT
+                filename,
+                location,
+                text,
+                embedding <=> $1 AS distance
+            FROM "{PG_SCHEMA_NAME}"."{TABLE_EMBEDDINGS}"
+            ORDER BY distance ASC
+            LIMIT $2
+            """,
+            query_vec,
+            top_k,
+        )
+
+    for r in rows:
+        score = 1.0 - float(r["distance"])
+        print(f"[{score:.3f}] {r['filename']} ({r['location']})")
+        print(f"    {r['text']}")
+        print("---")
+
+
+async def query() -> None:
+    database_url = os.getenv("POSTGRES_URL")
+    if not database_url:
+        raise ValueError("POSTGRES_URL is not set")
+
+    embedder = SentenceTransformerEmbedder(EMBED_MODEL)
+    async with await asyncpg.create_pool(database_url) as pool:
+        if len(sys.argv) > 2:
+            q = " ".join(sys.argv[2:])
+            await query_once(pool, embedder, q)
+            return
+
+        while True:
+            q = input("Enter search query (or Enter to quit): ").strip()
+            if not q:
+                break
+            await query_once(pool, embedder, q)
+
+
+load_dotenv()
+
+if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "query":
+        asyncio.run(query())

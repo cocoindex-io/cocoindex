@@ -1,0 +1,30 @@
+[package]
+name = "cocoindex_py"
+version = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+license = { workspace = true }
+
+[lib]
+crate-type = ["cdylib"]
+
+[features]
+default = ["abi3"]
+abi3 = ["pyo3/abi3-py311"]
+
+[dependencies]
+cocoindex_core = { path = "../core" }
+cocoindex_utils = { path = "../utils" }
+cocoindex_py_utils = { path = "../py_utils" }
+cocoindex_ops_text = { path = "../ops_text" }
+
+pyo3 = { workspace = true, features = ["uuid", "bytes"] }
+pyo3-async-runtimes = { workspace = true, features = ["tokio-runtime"] }
+uuid = { workspace = true }
+anyhow = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+bytes = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }

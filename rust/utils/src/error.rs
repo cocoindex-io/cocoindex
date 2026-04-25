@@ -12,8 +12,13 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-pub trait HostError: Any + StdError + Send + Sync + 'static {}
-impl<T: Any + StdError + Send + Sync + 'static> HostError for T {}
+pub trait HostError: Any + StdError + Send + Sync + 'static {
+    /// Whether this error represents a cancellation (e.g. Python `CancelledError`).
+    /// Default: `false`. Override in host-language error wrappers.
+    fn is_cancelled(&self) -> bool {
+        false
+    }
+}
 
 pub enum Error {
     Context { msg: String, source: Box<SError> },
@@ -85,6 +90,15 @@ impl Error {
             Error::Context { source, .. } => source.0.without_contexts(),
             other => other,
         }
+    }
+
+    /// Check if this error represents a cancellation (e.g. Python `CancelledError`).
+    pub fn is_cancelled(&self) -> bool {
+        let inner = self.without_contexts();
+        if let Error::HostLang(host_err) = inner {
+            return host_err.is_cancelled();
+        }
+        false
     }
 
     pub fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
@@ -470,6 +484,7 @@ mod tests {
     }
 
     impl StdError for MockHostError {}
+    impl HostError for MockHostError {}
 
     #[test]
     fn test_client_error_creation() {

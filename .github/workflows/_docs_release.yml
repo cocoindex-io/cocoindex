@@ -17,20 +17,47 @@ jobs:
           fetch-depth: 1
       - uses: actions/setup-node@v6
         with:
-          cache: yarn
-          cache-dependency-path: docs/yarn.lock
-      - uses: webfactory/ssh-agent@v0.9.1
+          node-version: 22
+          cache: npm
+          cache-dependency-path: docs/package-lock.json
+      - uses: webfactory/ssh-agent@v0.10.0
         with:
           ssh-private-key: ${{ secrets.GH_PAGES_DEPLOY }}
-      - name: Deploy to GitHub Pages
+      - name: Install dependencies
+        run: npm --prefix docs ci
+      - name: Build docs site
+        run: npm --prefix docs run build
+      - name: Deploy to cocoindex-io/docs gh-pages
         env:
-          USE_SSH: true
+          DEPLOY_USER_EMAIL: ${{ vars.COCOINDEX_DOCS_DEPLOY_USER_EMAIL }}
+          DEPLOY_USER_NAME: ${{ vars.COCOINDEX_DOCS_DEPLOY_USER_NAME }}
+          TARGET_REPO: git@github.com:cocoindex-io/docs.git
         run: |
-          export COCOINDEX_DOCS_POSTHOG_API_KEY=${{ vars.COCOINDEX_DOCS_POSTHOG_API_KEY }}
-          export COCOINDEX_DOCS_MIXPANEL_API_KEY=${{ vars.COCOINDEX_DOCS_MIXPANEL_API_KEY }}
-          export COCOINDEX_DOCS_ALGOLIA_APP_ID=${{ vars.COCOINDEX_DOCS_ALGOLIA_APP_ID }}
-          export COCOINDEX_DOCS_ALGOLIA_API_KEY=${{ vars.COCOINDEX_DOCS_ALGOLIA_API_KEY }}
-          git config --global user.email "${{ vars.COCOINDEX_DOCS_DEPLOY_USER_EMAIL }}"
-          git config --global user.name "${{ vars.COCOINDEX_DOCS_DEPLOY_USER_NAME }}"
-          yarn --cwd docs install --frozen-lockfile
-          yarn --cwd docs deploy
+          set -euo pipefail
+          git config --global user.email "$DEPLOY_USER_EMAIL"
+          git config --global user.name "$DEPLOY_USER_NAME"
+
+          TMP=$(mktemp -d)
+          if ! git clone --depth 1 --branch gh-pages "$TARGET_REPO" "$TMP"; then
+            # First deploy: seed an empty gh-pages branch.
+            git clone --depth 1 "$TARGET_REPO" "$TMP"
+            cd "$TMP"
+            git checkout --orphan gh-pages
+            git rm -rf . || true
+            cd -
+          fi
+
+          # Replace contents, preserving the CNAME file (domain mapping)
+          # and .git so the branch history continues.
+          find "$TMP" -mindepth 1 -maxdepth 1 \
+            ! -name .git ! -name CNAME -exec rm -rf {} +
+          cp -a docs/dist/. "$TMP/"
+
+          cd "$TMP"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No changes to deploy."
+            exit 0
+          fi
+          git commit -m "deploy docs from ${GITHUB_SHA::7}"
+          git push origin gh-pages

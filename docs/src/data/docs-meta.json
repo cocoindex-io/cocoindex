@@ -1,0 +1,165 @@
+{
+  "_version": "1.0.0-alpha48",
+  "files": {
+    "about/community": {
+      "sourcePath": "about/community.md",
+      "editTs": 1769751510
+    },
+    "advanced_topics/custom_target_connector": {
+      "sourcePath": "advanced_topics/custom_target_connector.md",
+      "editTs": 1776577683
+    },
+    "advanced_topics/exception_handlers": {
+      "sourcePath": "advanced_topics/exception_handlers.md",
+      "editTs": 1776627274
+    },
+    "advanced_topics/internal_storage": {
+      "sourcePath": "advanced_topics/internal_storage.md",
+      "editTs": 1772385556
+    },
+    "advanced_topics/live_component": {
+      "sourcePath": "advanced_topics/live_component.md",
+      "editTs": 1776577683
+    },
+    "advanced_topics/memoization_keys": {
+      "sourcePath": "advanced_topics/memoization_keys.md",
+      "editTs": 1776627274
+    },
+    "advanced_topics/multiple_environments": {
+      "sourcePath": "advanced_topics/multiple_environments.md",
+      "editTs": 1773596671
+    },
+    "cli": {
+      "sourcePath": "cli.mdx",
+      "editTs": 1776577683
+    },
+    "common_resources/data_types": {
+      "sourcePath": "common_resources/data_types.md",
+      "editTs": 1776627274
+    },
+    "common_resources/id_generation": {
+      "sourcePath": "common_resources/id_generation.md",
+      "editTs": 1776627274
+    },
+    "common_resources/vector_schema": {
+      "sourcePath": "common_resources/vector_schema.md",
+      "editTs": 1776627274
+    },
+    "connectors/amazon_s3": {
+      "sourcePath": "connectors/amazon_s3.md",
+      "editTs": 1776627274
+    },
+    "connectors/doris": {
+      "sourcePath": "connectors/doris.md",
+      "editTs": 1776627274
+    },
+    "connectors/google_drive": {
+      "sourcePath": "connectors/google_drive.md",
+      "editTs": 1776627274
+    },
+    "connectors/kafka": {
+      "sourcePath": "connectors/kafka.md",
+      "editTs": 1776627274
+    },
+    "connectors/lancedb": {
+      "sourcePath": "connectors/lancedb.md",
+      "editTs": 1776627274
+    },
+    "connectors/localfs": {
+      "sourcePath": "connectors/localfs.md",
+      "editTs": 1776627274
+    },
+    "connectors/postgres": {
+      "sourcePath": "connectors/postgres.md",
+      "editTs": 1776665678
+    },
+    "connectors/qdrant": {
+      "sourcePath": "connectors/qdrant.md",
+      "editTs": 1776627274
+    },
+    "connectors/sqlite": {
+      "sourcePath": "connectors/sqlite.md",
+      "editTs": 1776627274
+    },
+    "connectors/surrealdb": {
+      "sourcePath": "connectors/surrealdb.md",
+      "editTs": 1776627274
+    },
+    "contributing/guide": {
+      "sourcePath": "contributing/guide.md",
+      "editTs": 1769751510
+    },
+    "contributing/setup_dev_environment": {
+      "sourcePath": "contributing/setup_dev_environment.md",
+      "editTs": 1769751510
+    },
+    "faq": {
+      "sourcePath": "faq.md",
+      "editTs": 1776627274
+    },
+    "getting_started/installation": {
+      "sourcePath": "getting_started/installation.md",
+      "editTs": 1771359345
+    },
+    "getting_started/overview": {
+      "sourcePath": "getting_started/overview.md",
+      "editTs": 1776627274
+    },
+    "getting_started/quickstart": {
+      "sourcePath": "getting_started/quickstart.md",
+      "editTs": 1776627274
+    },
+    "ops/entity_resolution": {
+      "sourcePath": "ops/entity_resolution.md",
+      "editTs": 1776627274
+    },
+    "ops/litellm": {
+      "sourcePath": "ops/litellm.md",
+      "editTs": 1776627274
+    },
+    "ops/sentence_transformers": {
+      "sourcePath": "ops/sentence_transformers.md",
+      "editTs": 1776627274
+    },
+    "ops/text": {
+      "sourcePath": "ops/text.md",
+      "editTs": 1776627274
+    },
+    "programming_guide/app": {
+      "sourcePath": "programming_guide/app.md",
+      "editTs": 1776627274
+    },
+    "programming_guide/context": {
+      "sourcePath": "programming_guide/context.md",
+      "editTs": 1776665678
+    },
+    "programming_guide/core_concepts": {
+      "sourcePath": "programming_guide/core_concepts.mdx",
+      "editTs": 1776627274
+    },
+    "programming_guide/function": {
+      "sourcePath": "programming_guide/function.md",
+      "editTs": 1776627274
+    },
+    "programming_guide/live_mode": {
+      "sourcePath": "programming_guide/live_mode.md",
+      "editTs": 1775604044
+    },
+    "programming_guide/processing_component": {
+      "sourcePath": "programming_guide/processing_component.md",
+      "editTs": 1776627274
+    },
+    "programming_guide/sdk_overview": {
+      "sourcePath": "programming_guide/sdk_overview.md",
+      "editTs": 1776627274
+    },
+    "programming_guide/serialization": {
+      "sourcePath": "programming_guide/serialization.md",
+      "editTs": 1776577683
+    },
+    "programming_guide/target_state": {
+      "sourcePath": "programming_guide/target_state.md",
+      "editTs": 1776577683
+    }
+  }
+}

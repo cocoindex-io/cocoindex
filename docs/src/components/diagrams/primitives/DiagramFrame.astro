@@ -1,0 +1,80 @@
+---
+import '../diagrams.css';
+
+interface Props {
+  viewBox: string;
+  title?: string;
+  desc?: string;
+  class?: string;
+  maxWidth?: number;
+}
+const {
+  viewBox,
+  title,
+  desc,
+  class: extraClass = '',
+  maxWidth,
+} = Astro.props;
+
+const wrapperStyle = maxWidth ? `max-width: ${maxWidth}px;` : '';
+---
+
+<svg
+  class={`dg-root ${extraClass}`.trim()}
+  viewBox={viewBox}
+  xmlns="http://www.w3.org/2000/svg"
+  role="img"
+  aria-labelledby={title ? 'dg-title' : undefined}
+  aria-describedby={desc ? 'dg-desc' : undefined}
+  style={wrapperStyle}
+>
+  {title && <title id="dg-title">{title}</title>}
+  {desc && <desc id="dg-desc">{desc}</desc>}
+  <defs>
+    <marker
+      id="dg-arrow"
+      viewBox="0 0 10 10"
+      refX="9"
+      refY="5"
+      markerWidth="5"
+      markerHeight="5"
+      orient="auto-start-reverse"
+    >
+      <path d="M0,0 L10,5 L0,10 z" fill="currentColor" />
+    </marker>
+    <marker
+      id="dg-arrow-coral"
+      viewBox="0 0 10 10"
+      refX="9"
+      refY="5"
+      markerWidth="5"
+      markerHeight="5"
+      orient="auto-start-reverse"
+    >
+      <path d="M0,0 L10,5 L0,10 z" fill="var(--coral)" />
+    </marker>
+    <marker
+      id="dg-arrow-palm"
+      viewBox="0 0 10 10"
+      refX="9"
+      refY="5"
+      markerWidth="5"
+      markerHeight="5"
+      orient="auto-start-reverse"
+    >
+      <path d="M0,0 L10,5 L0,10 z" fill="var(--palm)" />
+    </marker>
+    <marker
+      id="dg-arrow-muted"
+      viewBox="0 0 10 10"
+      refX="9"
+      refY="5"
+      markerWidth="5"
+      markerHeight="5"
+      orient="auto-start-reverse"
+    >
+      <path d="M0,0 L10,5 L0,10 z" fill="var(--rule-strong, rgba(42,18,27,0.35))" />
+    </marker>
+  </defs>
+  <slot />
+</svg>

@@ -1,54 +1,50 @@
-import os
 import base64
+import pathlib
+
+from dotenv import load_dotenv
+
+import cocoindex as coco
+from cocoindex.resources.file import FileLike, PatternFilePathMatcher
+from cocoindex.connectors import localfs
 from baml_client import b
 from baml_client.types import Patient
 import baml_py
-import cocoindex
 
 
-@cocoindex.op.function(cache=True, behavior_version=1)
+@coco.fn
 async def extract_patient_info(content: bytes) -> Patient:
+    """Extract patient information from PDF content using BAML."""
     pdf = baml_py.Pdf.from_base64(base64.b64encode(content).decode("utf-8"))
     return await b.ExtractPatientInfo(pdf)
 
 
-@cocoindex.flow_def(name="PatientIntakeExtractionBaml")
-def patient_intake_extraction_flow(
-    flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope
-) -> None:
-    """
-    Define a flow that extracts patient information from intake forms using BAML.
-
-    This flow:
-    1. Reads patient intake documents (PDF, DOCX, etc.) as binary
-    2. Directly extracts structured patient information using BAML's native PDF/Image support
-    3. Stores the results in a Postgres database
-    """
-    # Load documents from local file source (binary mode)
-    data_scope["documents"] = flow_builder.add_source(
-        cocoindex.sources.LocalFile(
-            path=os.path.join("data", "patient_forms"), binary=True
-        )
+@coco.fn(memo=True)
+async def process_patient_form(file: FileLike, outdir: pathlib.Path) -> None:
+    """Process a patient intake form PDF and extract structured information."""
+    content = await file.read()
+    patient_info = await extract_patient_info(content)
+    patient_json = patient_info.model_dump_json(indent=2)
+    output_filename = file.file_path.path.stem + ".json"
+    localfs.declare_file(
+        outdir / output_filename, patient_json, create_parent_dirs=True
     )
 
-    # Create collector for patient data
-    patients_index = data_scope.add_collector()
 
-    # Process each document
-    with data_scope["documents"].row() as doc:
-        # Extract patient information using BAML directly from file bytes
-        # BAML natively supports PDF and Image inputs
-        doc["patient_info"] = doc["content"].transform(extract_patient_info)
-
-        # Collect the extracted patient information
-        patients_index.collect(
-            filename=doc["filename"],
-            patient_info=doc["patient_info"],
-        )
-
-    # Export to Postgres
-    patients_index.export(
-        "patients",
-        cocoindex.storages.Postgres(),
-        primary_key_fields=["filename"],
+@coco.fn
+async def app_main(sourcedir: pathlib.Path, outdir: pathlib.Path) -> None:
+    """Main application function that processes patient intake forms."""
+    files = localfs.walk_dir(
+        sourcedir,
+        path_matcher=PatternFilePathMatcher(included_patterns=["**/*.pdf"]),
     )
+    await coco.mount_each(process_patient_form, files.items(), outdir)
+
+
+load_dotenv()
+
+app = coco.App(
+    coco.AppConfig(name="PatientIntakeExtractionBaml"),
+    app_main,
+    sourcedir=pathlib.Path("./data/patient_forms"),
+    outdir=pathlib.Path("./output_patients"),
+)

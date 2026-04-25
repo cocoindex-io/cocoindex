@@ -1,0 +1,35 @@
+[package]
+name = "cocoindex_core"
+version = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+license = { workspace = true }
+
+[dependencies]
+cocoindex_utils = { path = "../utils", features = ["reqwest"] }
+
+anyhow = { workspace = true }
+bytes = { workspace = true }
+env_logger = { workspace = true }
+heed = "0.22.0"
+nix = { workspace = true }
+storekey = { workspace = true }
+serde = { workspace = true, features = ["rc", "derive"] }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+rmp = { workspace = true }
+rmp-serde = { workspace = true }
+rpds = { workspace = true }
+serde_with = { workspace = true }
+uuid = { workspace = true }
+indexmap = { workspace = true }
+
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+axum = { workspace = true }

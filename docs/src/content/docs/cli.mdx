@@ -1,0 +1,192 @@
+---
+title: The *CLI* reference
+description: >
+  Reference for the `cocoindex` CLI — app target formats, environment variable
+  loading, and subcommands for init, ls, show, update (catch-up or live), and
+  drop.
+---
+CocoIndex CLI is a standalone tool for easily managing and inspecting your apps.
+
+## Invoke the CLI
+
+Once CocoIndex is installed, you can invoke the CLI directly using the `cocoindex` command. Most commands require an `APP_TARGET` argument, which tells the CLI where your app definitions are located.
+
+### APP_TARGET Format
+
+The `APP_TARGET` can be:
+
+1. A **Python module name** that contains your app definitions (e.g., `main`, `my_package.apps`).
+    You can also use `--app-dir <path>` to specify the base directory to load the module from.
+
+2. A **path to a Python file** defining your apps (e.g., `main.py`, `path/to/my_apps.py`).
+
+    The file will be loaded as a top-level Python module, e.g. relative imports will not work as its parent package is not defined (similar to how `python main.py` resolves imports).
+
+3. For commands that operate on a *specific app* (like `show`, `update`), you can combine the application reference with an app name:
+    * `my_package.apps:MyApp`
+    * `path/to/my_apps.py:MyApp`
+
+### Environment Variables
+
+You can set environment variables in an environment file.
+
+* By default, the `cocoindex` CLI searches upward from the current directory for a `.env` file.
+* You can use `--env-file <path>` to specify one explicitly:
+
+    ```sh
+    cocoindex --env-file path/to/custom.env <COMMAND> ...
+    ```
+
+Loaded variables do *NOT* override existing system ones.
+If no file is found, only existing system environment variables are used.
+
+### Global Options
+
+CocoIndex CLI supports the following global options:
+
+* `-e, --env-file <path>`: Load environment variables from a specified `.env` file. If not provided, `.env` in the current directory is loaded if it exists.
+* `-d, --app-dir <path>`: Load apps from the specified directory. It will be treated as part of `PYTHONPATH`. Default to the current directory.
+* `-V, --version`: Show the CocoIndex version and exit.
+* `--help`: Show the main help message and exit.
+
+{/* BEGIN AUTO-GENERATED CLI SUBCOMMANDS — do not edit by hand. */}
+{/* Regenerate with: python dev/generate_cli_docs.py */}
+
+## Subcommands Reference
+
+### `drop`
+
+Drop an app and all its target states.
+
+This will:
+
+- Revert all target states created by the app (e.g., drop tables, delete rows)
+- Clear the app's internal state database
+
+`APP_TARGET`: `path/to/app.py`, `module`, `path/to/app.py:app_name`, or
+`module:app_name`.
+
+
+**Usage:**
+
+```bash
+cocoindex drop [OPTIONS] APP_TARGET
+```
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `-f, --force` | Skip confirmation prompt. |
+| `-q, --quiet` | Avoid printing anything to the standard output, e.g. statistics. |
+| `--help` | Show this message and exit. |
+
+---
+
+### `init`
+
+Initialize a new CocoIndex project.
+
+Creates a new project directory with starter files: 1. main.py (Main
+application file) 2. pyproject.toml (Project metadata and dependencies) 3.
+README.md (Quick start guide)
+
+`PROJECT_NAME`: Name of the project (defaults to current directory name if
+not specified).
+
+
+**Usage:**
+
+```bash
+cocoindex init [OPTIONS] [PROJECT_NAME]
+```
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `--dir DIRECTORY` | Directory to create the project in. |
+| `--help` | Show this message and exit. |
+
+---
+
+### `ls`
+
+List all apps.
+
+If `APP_TARGET` (`path/to/app.py` or `module`) is provided, lists apps
+defined in that module and their persisted status, grouped by environment.
+
+If `APP_TARGET` is omitted and `--db` is provided, lists all apps from the
+specified database.
+
+
+**Usage:**
+
+```bash
+cocoindex ls [OPTIONS] [APP_TARGET]
+```
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `--db TEXT` | Path to database to list apps from (only used when APP_TARGET is not specified). |
+| `--help` | Show this message and exit. |
+
+---
+
+### `show`
+
+Show the app's stable paths.
+
+If `APP_TARGET` is provided, loads the app from the module.
+Otherwise, `--db` and `--app-name` can be used to inspect an app
+directly from its database without loading the module.
+
+
+**Usage:**
+
+```bash
+cocoindex show [OPTIONS] [APP_TARGET]
+```
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `--db TEXT` | Path to database (used with --app-name when APP_TARGET is not specified). |
+| `--app-name TEXT` | App name to inspect (used with --db when APP_TARGET is not specified). |
+| `--tree` | Display stable paths as a tree with component annotations. |
+| `--help` | Show this message and exit. |
+
+---
+
+### `update`
+
+Run an app in catch-up mode. With --live, run in live mode.
+
+`APP_TARGET`: `path/to/app.py`, `module`, `path/to/app.py:app_name`, or
+`module:app_name`.
+
+
+**Usage:**
+
+```bash
+cocoindex update [OPTIONS] APP_TARGET
+```
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `-f, --force` | Skip confirmation prompt. |
+| `-q, --quiet` | Avoid printing anything to the standard output, e.g. statistics. |
+| `--reset` | Drop existing setup before updating (equivalent to running 'cocoindex drop' first). |
+| `--full-reprocess` | Reprocess everything and invalidate existing caches. |
+| `-L, --live` | Run in live mode (live components continue processing after initial update). |
+| `--help` | Show this message and exit. |
+
+---
+
+{/* END AUTO-GENERATED CLI SUBCOMMANDS */}

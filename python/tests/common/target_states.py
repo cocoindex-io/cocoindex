@@ -1,0 +1,501 @@
+from __future__ import annotations
+
+from typing import Any, Collection, Literal, NamedTuple
+import threading
+import cocoindex as coco
+
+
+class DictDataWithPrev(NamedTuple):
+    data: Any
+    prev: Collection[Any]
+    prev_may_be_missing: bool
+
+
+class Metrics:
+    data: dict[str, int]
+
+    def __init__(self, data: dict[str, int] | None = None) -> None:
+        self.data = data or {}
+        self._lock = threading.Lock()
+
+    def increment(self, metric: str) -> None:
+        with self._lock:
+            self.data[metric] = self.data.get(metric, 0) + 1
+
+    def collect(self) -> dict[str, int]:
+        with self._lock:
+            m = self.data
+            self.data = {}
+            return m
+
+    def __repr__(self) -> str:
+        return f"Metrics{self.data}"
+
+    def __add__(self, other: Metrics) -> Metrics:
+        result = {**self.data}
+        for k, v in other.data.items():
+            result[k] = result.get(k, 0) + v
+        return Metrics(result)
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, Metrics):
+            return self.data == other.data
+        elif isinstance(other, dict):
+            return self.data == other
+        else:
+            return False
+
+    def clear(self) -> None:
+        with self._lock:
+            self.data.clear()
+
+
+class DictTargetStateStore:
+    data: dict[str, DictDataWithPrev]
+    metrics: Metrics
+    _lock: threading.Lock
+    _use_async: bool
+    sink_exception: bool = False
+
+    def __init__(self, use_async: bool = False) -> None:
+        self.data = {}
+        self.metrics = Metrics()
+        self._lock = threading.Lock()
+        self._use_async = use_async
+
+    def _sink(
+        self,
+        context_provider: coco.ContextProvider,
+        actions: Collection[tuple[str, DictDataWithPrev | coco.NonExistenceType]],
+        /,
+    ) -> None:
+        if self.sink_exception:
+            raise ValueError("injected sink exception")
+        with self._lock:
+            for key, value in actions:
+                if coco.is_non_existence(value):
+                    del self.data[key]
+                    self.metrics.increment("delete")
+                else:
+                    self.data[key] = value
+                    self.metrics.increment("upsert")
+            self.metrics.increment("sink")
+
+    async def _async_sink(
+        self,
+        context_provider: coco.ContextProvider,
+        actions: Collection[tuple[str, DictDataWithPrev | coco.NonExistenceType]],
+        /,
+    ) -> None:
+        self._sink(context_provider, actions)
+
+    def reconcile(
+        self,
+        key: coco.StableKey,
+        desired_state: Any | coco.NonExistenceType,
+        prev_possible_records: Collection[Any],
+        prev_may_be_missing: bool,
+    ) -> (
+        coco.TargetReconcileOutput[
+            tuple[str, DictDataWithPrev | coco.NonExistenceType], Any
+        ]
+        | None
+    ):
+        assert isinstance(key, str)
+        # Short-circuit no-change case
+        if coco.is_non_existence(desired_state):
+            if len(prev_possible_records) == 0:
+                return None
+        else:
+            if not prev_may_be_missing and all(
+                prev == desired_state for prev in prev_possible_records
+            ):
+                return None
+
+        new_value = (
+            coco.NON_EXISTENCE
+            if coco.is_non_existence(desired_state)
+            else DictDataWithPrev(
+                data=desired_state,
+                prev=prev_possible_records,
+                prev_may_be_missing=prev_may_be_missing,
+            )
+        )
+        return coco.TargetReconcileOutput(
+            action=(key, new_value),
+            sink=(
+                coco.TargetActionSink.from_async_fn(self._async_sink)
+                if self._use_async
+                else coco.TargetActionSink.from_fn(self._sink)
+            ),
+            tracking_record=desired_state,
+        )
+
+    def clear(self) -> None:
+        self.data.clear()
+        self.metrics.clear()
+
+
+class GlobalDictTarget:
+    store = DictTargetStateStore()
+    _provider = coco.register_root_target_states_provider(
+        "test_target_state/global_dict", store
+    )
+    target_state = _provider.target_state
+
+
+class AsyncGlobalDictTarget:
+    store = DictTargetStateStore(use_async=True)
+    _provider = coco.register_root_target_states_provider(
+        "test_target_state/global_dict_async", store
+    )
+    target_state = _provider.target_state
+
+
+class _DictTargetStateStoreAction(NamedTuple):
+    name: str
+    exists: bool
+    action: Literal["insert", "upsert", "delete"] | None
+    destructive: bool = False
+
+
+class DictsTargetStateStore:
+    _stores: dict[str, DictTargetStateStore]
+    metrics: Metrics
+    _lock: threading.Lock
+    _use_async: bool
+    sink_exception: bool = False
+    child_invalidation: Literal["destructive", "lossy"] | None = None
+
+    def __init__(self, use_async: bool = False) -> None:
+        self._stores = {}
+        self.metrics = Metrics()
+        self._lock = threading.Lock()
+        self._use_async = use_async
+
+    def _sink(
+        self,
+        context_provider: coco.ContextProvider,
+        actions: Collection[_DictTargetStateStoreAction],
+        /,
+    ) -> list[coco.ChildTargetDef[DictTargetStateStore] | None]:
+        child_state_defs: list[coco.ChildTargetDef[DictTargetStateStore] | None] = []
+        if self.sink_exception:
+            raise ValueError("injected sink exception")
+        with self._lock:
+            for name, exists, action, destructive in actions:
+                if action == "insert":
+                    if name in self._stores:
+                        raise ValueError(f"store {name} already exists")
+                    self._stores[name] = DictTargetStateStore(use_async=self._use_async)
+                elif action == "upsert":
+                    if destructive or name not in self._stores:
+                        self._stores[name] = DictTargetStateStore(
+                            use_async=self._use_async
+                        )
+                elif action == "delete":
+                    del self._stores[name]
+
+                if action is not None:
+                    self.metrics.increment(action)
+
+                if exists:
+                    child_state_defs.append(coco.ChildTargetDef(self._stores[name]))
+                else:
+                    child_state_defs.append(None)
+
+            self.metrics.increment("sink")
+        return child_state_defs
+
+    async def _async_sink(
+        self,
+        context_provider: coco.ContextProvider,
+        actions: Collection[_DictTargetStateStoreAction],
+        /,
+    ) -> list[coco.ChildTargetDef[DictTargetStateStore] | None]:
+        return self._sink(context_provider, actions)
+
+    def reconcile(
+        self,
+        key: coco.StableKey,
+        desired_state: None | coco.NonExistenceType,
+        prev_possible_records: Collection[None],
+        prev_may_be_missing: bool,
+    ) -> (
+        coco.TargetReconcileOutput[
+            _DictTargetStateStoreAction, None, DictTargetStateStore
+        ]
+        | None
+    ):
+        assert isinstance(key, str)
+        sink: coco.TargetActionSink[
+            _DictTargetStateStoreAction, DictTargetStateStore
+        ] = (
+            coco.TargetActionSink.from_async_fn(self._async_sink)
+            if self._use_async
+            else coco.TargetActionSink.from_fn(self._sink)
+        )
+        if coco.is_non_existence(desired_state):
+            return coco.TargetReconcileOutput(
+                action=_DictTargetStateStoreAction(
+                    name=key, exists=False, action="delete"
+                ),
+                sink=sink,
+                tracking_record=coco.NON_EXISTENCE,
+                child_invalidation=self.child_invalidation,
+            )
+        if not prev_may_be_missing and self.child_invalidation is None:
+            assert len(prev_possible_records) > 0
+            return coco.TargetReconcileOutput(
+                action=_DictTargetStateStoreAction(name=key, exists=True, action=None),
+                sink=sink,
+                tracking_record=desired_state,
+            )
+
+        is_destructive = self.child_invalidation == "destructive"
+        return coco.TargetReconcileOutput(
+            action=_DictTargetStateStoreAction(
+                name=key,
+                exists=True,
+                action="insert" if len(prev_possible_records) == 0 else "upsert",
+                destructive=is_destructive,
+            ),
+            sink=sink,
+            tracking_record=desired_state,
+            child_invalidation=self.child_invalidation,
+        )
+
+    def clear(self) -> None:
+        self._stores.clear()
+        self.metrics.clear()
+        self.child_invalidation = None
+
+    def collect_child_metrics(self) -> dict[str, int]:
+        return sum(
+            (Metrics(store.metrics.collect()) for store in self._stores.values()),
+            Metrics(),
+        ).data
+
+    @property
+    def data(self) -> dict[str, dict[str, DictDataWithPrev]]:
+        return {name: store.data for name, store in self._stores.items()}
+
+
+class DictsTarget:
+    store = DictsTargetStateStore()
+    _provider = coco.register_root_target_states_provider(
+        "test_target_state/dicts", store
+    )
+
+    @staticmethod
+    @coco.fn
+    def declare_dict_target(name: str) -> coco.PendingTargetStateProvider[str, None]:
+        return coco.declare_target_state_with_child(
+            DictsTarget._provider.target_state(name, None)
+        )
+
+    @staticmethod
+    def dict_target(name: str) -> coco.TargetState[DictTargetStateStore]:
+        """Create a TargetState for use with mount_target()."""
+        return DictsTarget._provider.target_state(name, None)
+
+
+class AsyncDictsTarget:
+    store = DictsTargetStateStore(use_async=True)
+    _provider = coco.register_root_target_states_provider(
+        "test_target_state/async_dicts", store
+    )
+
+    @staticmethod
+    @coco.fn
+    def declare_dict_target(name: str) -> coco.PendingTargetStateProvider[str, None]:
+        return coco.declare_target_state_with_child(
+            AsyncDictsTarget._provider.target_state(name, None)
+        )
+
+
+class _AttachmentChildHandler:
+    """Child handler that supports attachment types, returning DictTargetStateStore handlers."""
+
+    _attachment_stores: dict[str, DictTargetStateStore]
+    _supported_types: frozenset[str]
+
+    def __init__(self, supported_types: frozenset[str]) -> None:
+        self._attachment_stores = {}
+        self._supported_types = supported_types
+
+    def attachments(self) -> dict[str, DictTargetStateStore]:
+        return {
+            att_type: self._attachment_stores.setdefault(
+                att_type, DictTargetStateStore()
+            )
+            for att_type in self._supported_types
+        }
+
+    def reconcile(
+        self,
+        key: coco.StableKey,
+        desired_state: Any | coco.NonExistenceType,
+        prev_possible_records: Collection[Any],
+        prev_may_be_missing: bool,
+    ) -> None:
+        return None
+
+
+class AttachmentDictsTargetStateStore:
+    """Like DictsTargetStateStore but child handlers support attachment types."""
+
+    _handlers: dict[str, _AttachmentChildHandler]
+    metrics: Metrics
+    _lock: threading.Lock
+    _supported_attachment_types: frozenset[str]
+
+    child_invalidation: Literal["destructive", "lossy"] | None = None
+
+    def __init__(
+        self,
+        supported_attachment_types: frozenset[str] | None = None,
+    ) -> None:
+        self._handlers = {}
+        self.metrics = Metrics()
+        self._lock = threading.Lock()
+        self._supported_attachment_types = supported_attachment_types or frozenset(
+            {"items"}
+        )
+
+    def _sink(
+        self,
+        context_provider: coco.ContextProvider,
+        actions: Collection[_DictTargetStateStoreAction],
+        /,
+    ) -> list[coco.ChildTargetDef[_AttachmentChildHandler] | None]:
+        child_state_defs: list[coco.ChildTargetDef[_AttachmentChildHandler] | None] = []
+        with self._lock:
+            for name, exists, action, destructive in actions:
+                if action == "insert":
+                    if name in self._handlers:
+                        raise ValueError(f"handler {name} already exists")
+                    self._handlers[name] = _AttachmentChildHandler(
+                        self._supported_attachment_types
+                    )
+                elif action == "upsert":
+                    if destructive or name not in self._handlers:
+                        self._handlers[name] = _AttachmentChildHandler(
+                            self._supported_attachment_types
+                        )
+                elif action == "delete":
+                    del self._handlers[name]
+
+                if action is not None:
+                    self.metrics.increment(action)
+
+                if exists:
+                    child_state_defs.append(coco.ChildTargetDef(self._handlers[name]))
+                else:
+                    child_state_defs.append(None)
+
+            self.metrics.increment("sink")
+        return child_state_defs
+
+    def reconcile(
+        self,
+        key: coco.StableKey,
+        desired_state: None | coco.NonExistenceType,
+        prev_possible_records: Collection[None],
+        prev_may_be_missing: bool,
+    ) -> (
+        coco.TargetReconcileOutput[
+            _DictTargetStateStoreAction, None, _AttachmentChildHandler
+        ]
+        | None
+    ):
+        assert isinstance(key, str)
+        sink: coco.TargetActionSink[
+            _DictTargetStateStoreAction, _AttachmentChildHandler
+        ] = coco.TargetActionSink.from_fn(self._sink)
+        if coco.is_non_existence(desired_state):
+            return coco.TargetReconcileOutput(
+                action=_DictTargetStateStoreAction(
+                    name=key, exists=False, action="delete"
+                ),
+                sink=sink,
+                tracking_record=coco.NON_EXISTENCE,
+                child_invalidation=self.child_invalidation,
+            )
+        if not prev_may_be_missing and self.child_invalidation is None:
+            assert len(prev_possible_records) > 0
+            return coco.TargetReconcileOutput(
+                action=_DictTargetStateStoreAction(name=key, exists=True, action=None),
+                sink=sink,
+                tracking_record=desired_state,
+            )
+
+        is_destructive = self.child_invalidation == "destructive"
+        return coco.TargetReconcileOutput(
+            action=_DictTargetStateStoreAction(
+                name=key,
+                exists=True,
+                action="insert" if len(prev_possible_records) == 0 else "upsert",
+                destructive=is_destructive,
+            ),
+            sink=sink,
+            tracking_record=desired_state,
+            child_invalidation=self.child_invalidation,
+        )
+
+    def clear(self) -> None:
+        self._handlers.clear()
+        self.metrics.clear()
+        self.child_invalidation = None
+
+    def collect_attachment_metrics(self, att_type: str) -> dict[str, int]:
+        return sum(
+            (
+                Metrics(handler._attachment_stores[att_type].metrics.collect())
+                for handler in self._handlers.values()
+                if att_type in handler._attachment_stores
+            ),
+            Metrics(),
+        ).data
+
+    @property
+    def attachment_data(
+        self,
+    ) -> dict[str, dict[str, dict[str, DictDataWithPrev]]]:
+        return {
+            name: {
+                att_type: store.data
+                for att_type, store in handler._attachment_stores.items()
+            }
+            for name, handler in self._handlers.items()
+        }
+
+
+class AttachmentDictsTarget:
+    store = AttachmentDictsTargetStateStore()
+    _provider = coco.register_root_target_states_provider(
+        "test_target_state/attachment_dicts", store
+    )
+
+    @staticmethod
+    @coco.fn
+    def declare_dict_target(name: str) -> coco.PendingTargetStateProvider[str, None]:
+        return coco.declare_target_state_with_child(
+            AttachmentDictsTarget._provider.target_state(name, None)
+        )
+
+
+class MultiAttachmentDictsTarget:
+    store = AttachmentDictsTargetStateStore(
+        supported_attachment_types=frozenset({"items", "tags"})
+    )
+    _provider = coco.register_root_target_states_provider(
+        "test_target_state/multi_attachment_dicts", store
+    )
+
+    @staticmethod
+    @coco.fn
+    def declare_dict_target(name: str) -> coco.PendingTargetStateProvider[str, None]:
+        return coco.declare_target_state_with_child(
+            MultiAttachmentDictsTarget._provider.target_state(name, None)
+        )

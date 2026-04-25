@@ -43,6 +43,12 @@ impl PatternMatcher {
             .is_some_and(|glob_set| glob_set.is_match(path))
     }
 
+    /// Check if a directory should be included (traversed) based on the exclude patterns.
+    /// Directories are included unless they match an exclude pattern.
+    pub fn is_dir_included(&self, path: &str) -> bool {
+        !self.is_excluded(path)
+    }
+
     /// Check if a file should be included based on both include and exclude patterns
     /// Should be called for each file.
     pub fn is_file_included(&self, path: &str) -> bool {
@@ -97,5 +103,30 @@ mod tests {
         assert!(matcher.is_file_included("test.txt"));
         assert!(!matcher.is_file_included("temp.txt")); // excluded despite matching include
         assert!(!matcher.is_file_included("main.rs")); // doesn't match include
+    }
+
+    #[test]
+    fn test_is_dir_included_no_patterns() {
+        let matcher = PatternMatcher::new(None, None).unwrap();
+        assert!(matcher.is_dir_included("any_dir"));
+        assert!(matcher.is_dir_included(".git"));
+    }
+
+    #[test]
+    fn test_is_dir_included_with_excluded() {
+        let matcher = PatternMatcher::new(None, Some(vec!["**/.*".to_string()])).unwrap();
+        assert!(!matcher.is_dir_included(".git"));
+        assert!(!matcher.is_dir_included("src/.hidden"));
+        assert!(matcher.is_dir_included("src"));
+        assert!(matcher.is_dir_included("node_modules"));
+    }
+
+    #[test]
+    fn test_recursive_include_patterns() {
+        let matcher = PatternMatcher::new(Some(vec!["**/*.py".to_string()]), None).unwrap();
+        assert!(matcher.is_file_included("main.py"));
+        assert!(matcher.is_file_included("src/main.py"));
+        assert!(matcher.is_file_included("a/b/c/main.py"));
+        assert!(!matcher.is_file_included("main.rs"));
     }
 }

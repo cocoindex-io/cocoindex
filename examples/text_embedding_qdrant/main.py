@@ -1,134 +1,181 @@
-import functools
-from dotenv import load_dotenv
-from qdrant_client import QdrantClient
-import cocoindex
+"""
+Text Embedding with Qdrant (v1) - CocoIndex pipeline example.
 
-# Define Qdrant connection constants
+- Walk local markdown files
+- Chunk text (RecursiveSplitter)
+- Embed chunks (SentenceTransformers)
+- Store into Qdrant collection
+- Query demo using Qdrant vector search
+"""
+
+from __future__ import annotations
+
+import asyncio
+import pathlib
+import sys
+from typing import AsyncIterator
+
+from cocoindex.resources.id import IdGenerator
+from qdrant_client import QdrantClient
+from qdrant_client.http import models as qdrant_models
+
+import cocoindex as coco
+from cocoindex.connectors import localfs, qdrant
+from cocoindex.ops.text import RecursiveSplitter
+from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
+from cocoindex.resources.chunk import Chunk
+from cocoindex.resources.file import FileLike, PatternFilePathMatcher
+
+
 QDRANT_URL = "http://localhost:6334"
 QDRANT_COLLECTION = "TextEmbedding"
+TOP_K = 5
 
 
-@cocoindex.transform_flow()
-def text_to_embedding(
-    text: cocoindex.DataSlice[str],
-) -> cocoindex.DataSlice[list[float]]:
-    """
-    Embed the text using a SentenceTransformer model.
-    This is a shared logic between indexing and querying, so extract it as a function.
-    """
-    return text.transform(
-        cocoindex.functions.SentenceTransformerEmbed(
-            model="sentence-transformers/all-MiniLM-L6-v2"
-        )
-    )
+EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+QDRANT_DB = coco.ContextKey[QdrantClient]("text_embedding_qdrant")
+EMBEDDER = coco.ContextKey[SentenceTransformerEmbedder]("embedder", detect_change=True)
+
+_splitter = RecursiveSplitter()
 
 
-qdrant_connection = cocoindex.add_auth_entry(
-    "Qdrant",
-    cocoindex.targets.QdrantConnection(grpc_url=QDRANT_URL),
-)
+@coco.lifespan
+async def coco_lifespan(
+    builder: coco.EnvironmentBuilder,
+) -> AsyncIterator[None]:
+    # Provide resources needed across the CocoIndex environment
+    client = qdrant.create_client(QDRANT_URL, prefer_grpc=True)
+    builder.provide(QDRANT_DB, client)
+    builder.provide(EMBEDDER, SentenceTransformerEmbedder(EMBED_MODEL))
+    yield
 
 
-@cocoindex.flow_def(name="TextEmbeddingWithQdrant")
-def text_embedding_flow(
-    flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope
+@coco.fn
+async def process_chunk(
+    chunk: Chunk,
+    filename: pathlib.PurePath,
+    id_gen: IdGenerator,
+    target: qdrant.CollectionTarget,
 ) -> None:
-    """
-    Define an example flow that embeds text into a vector database.
-    """
-    data_scope["documents"] = flow_builder.add_source(
-        cocoindex.sources.LocalFile(path="markdown_files")
+    embedding_vec = await coco.use_context(EMBEDDER).embed(chunk.text)
+
+    point = qdrant.PointStruct(
+        id=await id_gen.next_id(chunk.text),
+        vector=embedding_vec.tolist(),
+        payload={
+            "filename": str(filename),
+            "chunk_start": chunk.start.char_offset,
+            "chunk_end": chunk.end.char_offset,
+            "text": chunk.text,
+        },
     )
+    target.declare_point(point)
 
-    doc_embeddings = data_scope.add_collector()
 
-    with data_scope["documents"].row() as doc:
-        doc["chunks"] = doc["content"].transform(
-            cocoindex.functions.SplitRecursively(),
-            language="markdown",
-            chunk_size=2000,
-            chunk_overlap=500,
-        )
-
-        with doc["chunks"].row() as chunk:
-            chunk["embedding"] = text_to_embedding(chunk["text"])
-            doc_embeddings.collect(
-                id=cocoindex.GeneratedField.UUID,
-                filename=doc["filename"],
-                location=chunk["location"],
-                text=chunk["text"],
-                # 'text_embedding' is the name of the vector we've created the Qdrant collection with.
-                text_embedding=chunk["embedding"],
-            )
-
-    doc_embeddings.export(
-        "doc_embeddings",
-        cocoindex.targets.Qdrant(
-            collection_name=QDRANT_COLLECTION,
-            connection=qdrant_connection,
-        ),
-        primary_key_fields=["id"],
+@coco.fn(memo=True)
+async def process_file(
+    file: FileLike,
+    target: qdrant.CollectionTarget,
+) -> None:
+    text = await file.read_text()
+    chunks = _splitter.split(
+        text, chunk_size=2000, chunk_overlap=500, language="markdown"
     )
+    id_gen = IdGenerator()
+    await coco.map(process_chunk, chunks, file.file_path.path, id_gen, target)
 
 
-@functools.cache
-def get_qdrant_client() -> QdrantClient:
-    return QdrantClient(url=QDRANT_URL, prefer_grpc=True)
-
-
-@text_embedding_flow.query_handler(
-    result_fields=cocoindex.QueryHandlerResultFields(
-        embedding=["embedding"],
-        score="score",
-    ),
-)
-def search(query: str) -> cocoindex.QueryOutput:
-    client = get_qdrant_client()
-
-    # Get the embedding for the query
-    query_embedding = text_to_embedding.eval(query)
-
-    search_results = client.search(
+@coco.fn
+async def app_main(sourcedir: pathlib.Path) -> None:
+    target_collection = await qdrant.mount_collection_target(
+        QDRANT_DB,
         collection_name=QDRANT_COLLECTION,
-        query_vector=("text_embedding", query_embedding),
-        limit=10,
-    )
-    return cocoindex.QueryOutput(
-        results=[
-            {
-                "filename": result.payload["filename"],
-                "text": result.payload["text"],
-                "embedding": result.vector,
-                "score": result.score,
-            }
-            for result in search_results
-            if result.payload is not None
-        ],
-        query_info=cocoindex.QueryInfo(
-            embedding=query_embedding,
-            similarity_metric=cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY,
+        schema=await qdrant.CollectionSchema.create(
+            vectors=qdrant.QdrantVectorDef(schema=EMBEDDER)
         ),
     )
+    files = localfs.walk_dir(
+        sourcedir,
+        recursive=True,
+        path_matcher=PatternFilePathMatcher(included_patterns=["**/*.md"]),
+    )
+    await coco.mount_each(process_file, files.items(), target_collection)
 
 
-def _main() -> None:
-    # Run queries in a loop to demonstrate the query capabilities.
+app = coco.App(
+    coco.AppConfig(name="TextEmbeddingQdrantV1"),
+    app_main,
+    sourcedir=pathlib.Path("./markdown_files"),
+)
+
+
+# ============================================================================
+# Query demo
+# ============================================================================
+
+
+async def query_once(
+    client: QdrantClient,
+    embedder: SentenceTransformerEmbedder,
+    query: str,
+    *,
+    top_k: int = TOP_K,
+) -> None:
+    query_vec = await embedder.embed(query)
+    results = _qdrant_search(client, QDRANT_COLLECTION, query_vec.tolist(), top_k)
+
+    for r in results:
+        payload = r.payload or {}
+        print(f"[{r.score:.3f}] {payload.get('filename', '<unknown>')}")
+        print(f"    {payload.get('text', '')}")
+        print("---")
+
+
+async def query() -> None:
+    embedder = SentenceTransformerEmbedder(EMBED_MODEL)
+    client = qdrant.create_client(QDRANT_URL, prefer_grpc=True)
+    if len(sys.argv) > 1:
+        q = " ".join(sys.argv[1:])
+        await query_once(client, embedder, q)
+        return
+
     while True:
-        query = input("Enter search query (or Enter to quit): ")
-        if query == "":
+        q = input("Enter search query (or Enter to quit): ").strip()
+        if not q:
             break
+        await query_once(client, embedder, q)
 
-        # Run the query function with the database connection pool and the query.
-        query_output = search(query)
-        print("\nSearch results:")
-        for result in query_output.results:
-            print(f"[{result['score']:.3f}] {result['filename']}")
-            print(f"    {result['text']}")
-            print("---")
-        print()
+
+def _qdrant_search(
+    client: QdrantClient,
+    collection_name: str,
+    query_vector: list[float],
+    limit: int,
+) -> list[qdrant_models.ScoredPoint]:
+    # qdrant-client has different search APIs across versions; pick what's available.
+    if hasattr(client, "search"):
+        return client.search(
+            collection_name=collection_name,
+            query_vector=query_vector,
+            limit=limit,
+        )
+    if hasattr(client, "query_points"):
+        response = client.query_points(
+            collection_name=collection_name,
+            query=query_vector,
+            limit=limit,
+        )
+        return response.points
+    if hasattr(client, "search_points"):
+        response = client.search_points(
+            collection_name=collection_name,
+            vector=query_vector,
+            limit=limit,
+            with_payload=True,
+        )
+        return response.result
+    raise RuntimeError("Unsupported qdrant-client version: no search method found.")
 
 
 if __name__ == "__main__":
-    load_dotenv()
-    cocoindex.init()
-    _main()
+    asyncio.run(query())

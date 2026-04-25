@@ -17,6 +17,7 @@ dependencies = [
     "watchfiles>=1.1.0",
     "numpy>=1.23.2",
     "psutil>=7.2.1",
+    "msgspec>=0.19.0",
 ]
 license = "Apache-2.0"
 license-files = ["THIRD_PARTY_NOTICES.html"]
@@ -58,44 +59,73 @@ cocoindex = "cocoindex.cli:cli"
 [tool.maturin]
 bindings = "pyo3"
 python-source = "python"
-module-name = "cocoindex._engine"
+module-name = "cocoindex._internal.core"
 features = ["pyo3/extension-module"]
 include = ["THIRD_PARTY_NOTICES.html"]
 # Point to the crate within the workspace
-manifest-path = "rust/cocoindex/Cargo.toml"
+manifest-path = "rust/py/Cargo.toml"
 
 profile = "release"      # wheel / normal builds
 editable-profile = "dev" # local editable builds
 
 [project.optional-dependencies]
-embeddings = ["sentence-transformers>=3.3.1"]
+litellm = ["litellm>=1.81.0,<=1.82.6"]
+sentence_transformers = ["sentence-transformers>=3.3.1"]
 colpali = ["colpali-engine"]
 lancedb = ["lancedb>=0.25.0", "pyarrow>=19.0.0"]
-chromadb = ["chromadb>=0.4.0"]
-doris = ["aiohttp>=3.8.0", "aiomysql>=0.2.0", "pymysql>=1.0.0"]
+postgres = ["asyncpg>=0.31.0"]
+qdrant = ["qdrant-client>=1.6.0"]
+sqlite = ["sqlite-vec>=0.1.6"]
+surrealdb = ["surrealdb>=1.0.0"]
+google_drive = ["google-api-python-client>=2.0.0", "google-auth>=2.0.0"]
+amazon_s3 = ["aiobotocore>=2.0.0"]
+doris = ["aiohttp>=3.9.0", "pymysql>=1.1.0", "aiomysql>=0.2.0"]
+kafka = ["confluent_kafka>=2.6"]
+entity_resolution = ["faiss-cpu>=1.7"]
+entity_resolution_llm = [
+    "faiss-cpu>=1.7",
+    "instructor>=1.0",
+    "litellm>=1.81.0,<=1.82.6",
+]
 
 all = [
+    "litellm>=1.81.0,<=1.82.6",
     "sentence-transformers>=3.3.1",
     "colpali-engine",
     "lancedb>=0.25.0",
     "pyarrow>=19.0.0",
-    "chromadb>=0.4.0",
-    "aiohttp>=3.8.0",
+    "asyncpg>=0.31.0",
+    "pgvector>=0.4.2",
+    "qdrant-client>=1.6.0",
+    "sqlite-vec>=0.1.6",
+    "surrealdb>=1.0.0",
+    "google-api-python-client>=2.0.0",
+    "google-auth>=2.0.0",
+    "aiobotocore>=2.0.0",
+    "aiohttp>=3.9.0",
+    "pymysql>=1.1.0",
     "aiomysql>=0.2.0",
-    "pymysql>=1.0.0",
+    "confluent_kafka>=2.6",
+    "faiss-cpu>=1.7",
+    "instructor>=1.0",
 ]
+
 
 [dependency-groups]
 build-test = [
     "maturin>=1.10.0,<2.0",
-    "pytest",
+    "pytest>=9.0.3",
     "pytest-asyncio",
     "pytest-timeout",
     "mypy",
-    "ruff",
+    "moto[s3]>=5.0.0",
+    "aiomoto[s3]>=0.3.0",
+    "testcontainers[postgres]>=4.0.0; sys_platform == 'linux'",
 ]
-type-stubs = ["types-psutil>=7.2.1"]
-ci-enabled-optional-deps = ["pydantic>=2.11.9"]
+format = ["ruff"]
+type-stubs = ["types-psutil", "asyncpg-stubs"]
+ci-enabled-optional-deps = ["pydantic>=2.11.9", "asyncpg>=0.31.0"]
+examples = ["sentence-transformers>=3.0.0", "numpy"]
 
 ci = [
     { include-group = "build-test" },
@@ -132,7 +162,47 @@ disable_error_code = ["unused-ignore"]
 
 [[tool.mypy.overrides]]
 # Ignore missing imports for optional dependencies from cocoindex library
-module = ["sentence_transformers", "torch", "colpali_engine", "PIL", "aiohttp", "aiomysql", "pymysql", "chromadb"]
+# Use wildcards to cover all submodules (e.g., google.oauth2.service_account)
+module = [
+    "msgspec",
+    "msgspec.*",
+    "litellm",
+    "litellm.*",
+    "sentence_transformers",
+    "sentence_transformers.*",
+    "colpali_engine",
+    "colpali_engine.*",
+    "PIL",
+    "PIL.*",
+    "torch",
+    "torch.*",
+    "qdrant_client",
+    "qdrant_client.*",
+    "sqlite_vec",
+    "sqlite_vec.*",
+    "surrealdb",
+    "surrealdb.*",
+    "googleapiclient",
+    "googleapiclient.*",
+    "google.oauth2",
+    "google.oauth2.*",
+    "boto3",
+    "boto3.*",
+    "botocore",
+    "botocore.*",
+    "aiobotocore",
+    "aiobotocore.*",
+    "aiohttp",
+    "aiohttp.*",
+    "aiomysql",
+    "aiomysql.*",
+    "pymysql",
+    "pymysql.*",
+    "faiss",
+    "faiss.*",
+    "instructor",
+    "instructor.*",
+]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]

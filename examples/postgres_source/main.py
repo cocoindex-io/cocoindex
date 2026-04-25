@@ -1,163 +1,175 @@
-from typing import Any
-import os
+"""
+PostgreSQL Source (v1) - CocoIndex pipeline example.
 
-from dotenv import load_dotenv
-from psycopg_pool import ConnectionPool
-from pgvector.psycopg import register_vector
-from psycopg.rows import dict_row
+- Read product rows from a source PostgreSQL table
+- Compute derived fields and embeddings
+- Store results into a target PostgreSQL table with pgvector
+- Query demo using pgvector cosine distance (<=>)
+"""
+
+from __future__ import annotations
+
+import asyncio
+import os
+import sys
+from dataclasses import dataclass
+from typing import Annotated, AsyncIterator
+
+import asyncpg
 from numpy.typing import NDArray
 
-import numpy as np
-import cocoindex
+import cocoindex as coco
+from cocoindex.connectors import postgres
+from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
 
 
-@cocoindex.op.function()
-def calculate_total_value(
-    price: float,
-    amount: int,
-) -> float:
-    return price * amount
+DATABASE_URL = os.getenv(
+    "POSTGRES_URL", "postgres://cocoindex:cocoindex@localhost/cocoindex"
+)
+SOURCE_DATABASE_URL = os.getenv("SOURCE_DATABASE_URL", DATABASE_URL)
+TABLE_NAME = "output"
+PG_SCHEMA_NAME = "coco_examples_v1"
+TOP_K = 5
 
 
-@cocoindex.op.function()
-def make_full_description(
-    category: str,
-    name: str,
-    description: str,
-) -> str:
-    return f"Category: {category}\nName: {name}\n\n{description}"
+EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+PG_DB = coco.ContextKey[asyncpg.Pool]("postgres_source_db")
+SOURCE_POOL = coco.ContextKey[asyncpg.Pool]("source_pool")
+EMBEDDER = coco.ContextKey[SentenceTransformerEmbedder]("embedder", detect_change=True)
 
 
-@cocoindex.transform_flow()
-def text_to_embedding(
-    text: cocoindex.DataSlice[str],
-) -> cocoindex.DataSlice[NDArray[np.float32]]:
-    """
-    Embed the text using a SentenceTransformer model.
-    This is a shared logic between indexing and querying, so extract it as a function.
-    """
-    return text.transform(
-        cocoindex.functions.SentenceTransformerEmbed(
-            model="sentence-transformers/all-MiniLM-L6-v2"
-        )
-    )
+@dataclass
+class SourceProduct:
+    product_category: str
+    product_name: str
+    description: str
+    price: float
+    amount: int
 
 
-@cocoindex.flow_def(name="PostgresProductIndexing")
-def postgres_product_indexing_flow(
-    flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataScope
+@dataclass
+class OutputProduct:
+    product_category: str
+    product_name: str
+    description: str
+    price: float
+    amount: int
+    total_value: float
+    embedding: Annotated[NDArray, EMBEDDER]
+
+
+@coco.lifespan
+async def coco_lifespan(
+    builder: coco.EnvironmentBuilder,
+) -> AsyncIterator[None]:
+    # Provide resources needed across the CocoIndex environment
+    async with (
+        await asyncpg.create_pool(DATABASE_URL) as target_pool,
+        await asyncpg.create_pool(SOURCE_DATABASE_URL) as source_pool,
+    ):
+        builder.provide(PG_DB, target_pool)
+        builder.provide(SOURCE_POOL, source_pool)
+        builder.provide(EMBEDDER, SentenceTransformerEmbedder(EMBED_MODEL))
+        yield
+
+
+@coco.fn(memo=True)
+async def process_product(
+    product: SourceProduct,
+    table: postgres.TableTarget[OutputProduct],
 ) -> None:
-    """
-    Define a flow that reads product data from a PostgreSQL table, generates embeddings,
-    and stores them in another PostgreSQL table with pgvector.
-    """
-    data_scope["products"] = flow_builder.add_source(
-        cocoindex.sources.Postgres(
-            table_name="source_products",
-            # Optional. Use the default CocoIndex database if not specified.
-            database=cocoindex.add_transient_auth_entry(
-                cocoindex.DatabaseConnectionSpec(
-                    url=os.environ["SOURCE_DATABASE_URL"],
-                )
-            ),
-            # Optional.
-            ordinal_column="modified_time",
-            notification=cocoindex.sources.PostgresNotification(),
+    full_description = f"Category: {product.product_category}\nName: {product.product_name}\n\n{product.description}"
+    total_value = product.price * product.amount
+    embedding = await coco.use_context(EMBEDDER).embed(full_description)
+    table.declare_row(
+        row=OutputProduct(
+            product_category=product.product_category,
+            product_name=product.product_name,
+            description=product.description,
+            price=product.price,
+            amount=product.amount,
+            total_value=total_value,
+            embedding=embedding,
         ),
     )
 
-    indexed_product = data_scope.add_collector()
-    with data_scope["products"].row() as product:
-        product["full_description"] = flow_builder.transform(
-            make_full_description,
-            product["product_category"],
-            product["product_name"],
-            product["description"],
-        )
-        product["total_value"] = flow_builder.transform(
-            calculate_total_value,
-            product["price"],
-            product["amount"],
-        )
-        product["embedding"] = product["full_description"].transform(
-            cocoindex.functions.SentenceTransformerEmbed(
-                model="sentence-transformers/all-MiniLM-L6-v2"
-            )
-        )
-        indexed_product.collect(
-            product_category=product["product_category"],
-            product_name=product["product_name"],
-            description=product["description"],
-            price=product["price"],
-            amount=product["amount"],
-            total_value=product["total_value"],
-            embedding=product["embedding"],
-        )
 
-    indexed_product.export(
-        "output",
-        cocoindex.targets.Postgres(),
-        primary_key_fields=["product_category", "product_name"],
-        vector_indexes=[
-            cocoindex.VectorIndexDef(
-                field_name="embedding",
-                metric=cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY,
-            )
-        ],
+@coco.fn
+async def app_main() -> None:
+    target_table = await postgres.mount_table_target(
+        PG_DB,
+        table_name=TABLE_NAME,
+        table_schema=await postgres.TableSchema.from_class(
+            OutputProduct,
+            primary_key=["product_category", "product_name"],
+        ),
+        pg_schema_name=PG_SCHEMA_NAME,
+    )
+
+    source = postgres.PgTableSource(
+        coco.use_context(SOURCE_POOL),
+        table_name="source_products",
+        row_type=SourceProduct,
+    )
+
+    await coco.mount_each(
+        process_product,
+        source.fetch_rows().items(lambda p: (p.product_category, p.product_name)),
+        target_table,
     )
 
 
-def search(pool: ConnectionPool, query: str, top_k: int = 5) -> list[dict[str, Any]]:
-    # Get the table name, for the export target in the text_embedding_flow above.
-    table_name = cocoindex.utils.get_target_default_name(
-        postgres_product_indexing_flow, "output"
-    )
-    # Evaluate the transform flow defined above with the input query, to get the embedding.
-    query_vector = text_to_embedding.eval(query)
-    # Run the query and get the results.
-    with pool.connection() as conn:
-        register_vector(conn)
-        with conn.cursor(row_factory=dict_row) as cur:
-            cur.execute(
-                f"""
-                SELECT
-                    product_category,
-                    product_name,
-                    description,
-                    amount,
-                    total_value,
-                    (embedding <=> %s) AS distance
-                FROM {table_name}
-                ORDER BY distance ASC
-                LIMIT %s
+app = coco.App(
+    coco.AppConfig(name="PostgresSourceV1"),
+    app_main,
+)
+
+
+async def query_once(
+    pool: asyncpg.Pool,
+    embedder: SentenceTransformerEmbedder,
+    query: str,
+    *,
+    top_k: int = TOP_K,
+) -> None:
+    query_vec = await embedder.embed(query)
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            f"""
+            SELECT
+                product_category,
+                product_name,
+                description,
+                amount,
+                total_value,
+                embedding <=> $1 AS distance
+            FROM "{PG_SCHEMA_NAME}"."{TABLE_NAME}"
+            ORDER BY distance ASC
+            LIMIT $2
             """,
-                (query_vector, top_k),
-            )
-            return cur.fetchall()
+            query_vec,
+            top_k,
+        )
+
+    for r in rows:
+        score = 1.0 - float(r["distance"])
+        print(
+            f"[{score:.3f}] {r['product_category']} | {r['product_name']} | {r['amount']} | {r['total_value']}"
+        )
+        print(f"    {r['description']}")
+        print("---")
 
 
-def _main() -> None:
-    # Initialize the database connection pool.
-    pool = ConnectionPool(os.environ["COCOINDEX_DATABASE_URL"])
-    # Run queries in a loop to demonstrate the query capabilities.
-    while True:
-        query = input("Enter search query (or Enter to quit): ")
-        if query == "":
-            break
-        # Run the query function with the database connection pool and the query.
-        results = search(pool, query)
-        print("\nSearch results:")
-        for result in results:
-            score = 1.0 - result["distance"]
-            print(
-                f"[{score:.3f}] {result['product_category']} | {result['product_name']} | {result['amount']} | {result['total_value']}"
-            )
-            print(f"    {result['description']}")
-            print("---")
-        print()
+async def query() -> None:
+    embedder = SentenceTransformerEmbedder(EMBED_MODEL)
+    async with await asyncpg.create_pool(DATABASE_URL) as pool:
+        if len(sys.argv) > 2:
+            q = " ".join(sys.argv[2:])
+            await query_once(pool, embedder, q)
+            return
+        print('Usage: python main.py query "your search query"')
 
 
 if __name__ == "__main__":
-    load_dotenv()
-    cocoindex.init()
-    _main()
+    if len(sys.argv) > 1 and sys.argv[1] == "query":
+        asyncio.run(query())

@@ -61,6 +61,20 @@ impl std::error::Error for HostedPyErr {
     }
 }
 
+impl cocoindex_utils::error::HostError for HostedPyErr {
+    fn is_cancelled(&self) -> bool {
+        Python::attach(|py| {
+            let Ok(asyncio) = PyModule::import(py, "asyncio") else {
+                return false;
+            };
+            let Ok(cancelled_cls) = asyncio.getattr("CancelledError") else {
+                return false;
+            };
+            self.0.is_instance(py, &cancelled_cls)
+        })
+    }
+}
+
 fn cerror_to_pyerr(err: CError) -> PyErr {
     match err.without_contexts() {
         CError::HostLang(host_err) => {

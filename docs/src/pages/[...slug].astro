@@ -1,0 +1,45 @@
+---
+import { getCollection, render, type CollectionEntry } from 'astro:content';
+import DocsLayout from '../layouts/DocsLayout.astro';
+import { docSlug, titleText } from '../consts';
+
+export async function getStaticPaths() {
+  const docs = await getCollection('docs');
+  return docs.map((doc) => ({
+    params: { slug: docSlug(doc.id) },
+    props: { doc },
+  }));
+}
+
+type Props = { doc: CollectionEntry<'docs'> };
+const { doc } = Astro.props as Props;
+const { Content, headings: mdHeadings } = await render(doc);
+
+const slug = docSlug(doc.id);
+const rel = (doc as unknown as { filePath?: string }).filePath
+  ?.split('/src/content/docs/')
+  .pop();
+const sourcePath = rel ?? `${doc.id}.md`;
+
+// Title may contain *asterisks* marking italic-coral segments
+// (see src/consts.ts titleMarkup); plain metadata strips them.
+const rawTitle: string =
+  typeof doc.data.title === 'string' && doc.data.title.length > 0 ? doc.data.title : slug;
+const title = rawTitle;
+const metaTitle = titleText(rawTitle);
+const description =
+  typeof doc.data.description === 'string' ? doc.data.description : undefined;
+const introMeta = doc.data.meta;
+---
+
+<DocsLayout
+  title={metaTitle}
+  titleMarkup={title}
+  description={description}
+  slug={slug}
+  headings={mdHeadings}
+  sourcePath={sourcePath}
+  introMeta={introMeta}
+>
+  <Content />
+</DocsLayout>

@@ -1,0 +1,707 @@
+---
+// Ports design_guidelines/CocoIndex Examples Listing.html into an Astro page
+// at /docs/examples. Reuses the shared Topbar from the docs site so the
+// header is identical across /docs and /docs/examples. All example cards
+// come from src/data/examples.ts — when you add a new example, update that
+// file and the card appears in its category automatically.
+import '../../styles/globals.css';
+import Topbar from '../../components/Topbar.astro';
+import { GITHUB_REPO, DISCORD_URL, SITE_URL, titleMarkup } from '../../consts';
+import {
+  examples,
+  byCategory,
+  findExample,
+  CATEGORY_META,
+  SIDEBAR_TARGETS,
+  SIDEBAR_SOURCES,
+  SIDEBAR_LLMS,
+  POPULAR,
+  featuredSlug,
+  type Category,
+} from '../../data/examples';
+
+const base = import.meta.env.BASE_URL.replace(/\/$/, '') || '';
+const exampleHref = (slug: string) => `${base}/examples/${slug}`;
+const featured = findExample(featuredSlug)!;
+
+// Category order and counts, computed from the data.
+const CAT_ORDER: Category[] = ['search', 'ingest', 'llm', 'agents', 'image'];
+const catCount = (c: Category) => examples.filter((e) => e.category === c).length;
+
+const total = examples.length;
+const fullTitle = `Examples · CocoIndex Docs`;
+const description = 'Real pipelines you can clone, run, and bend to your data — custom sources, LLM extraction, vector search, streaming ingest.';
+const canonical = new URL(`${base}/examples`, SITE_URL).toString();
+---
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <meta name="theme-color" content="#FBF6E8" />
+    <title>{fullTitle}</title>
+    <meta name="description" content={description} />
+    <link rel="canonical" href={canonical} />
+    <link rel="icon" href={`${base}/img/favicon.ico`} />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&family=Source+Serif+4:ital,wght@0,400;1,400&display=swap"
+    />
+  </head>
+  <body class="ex-listing">
+    <Topbar />
+
+    <div class="ex-wrap">
+      <!-- ═══════════ HERO ═══════════ -->
+      <section class="ex-hero">
+        <div class="hero-top">
+          <span class="eyb"><span class="dot" aria-hidden="true"></span>{total} live examples · updated weekly</span>
+          <div class="stats">
+            <span><b>{total}</b> examples</span>
+            <span><b>9</b> sources</span>
+            <span><b>6</b> targets</span>
+            <span><b>5</b> LLM providers</span>
+          </div>
+        </div>
+
+        <div class="hero-grid">
+          <div>
+            <h1 class="hero-h">Examples<em>.</em></h1>
+            <p class="hero-sub">
+              Real pipelines you can <b>clone, run, and bend</b> to your data. Each example is production-wired — one source, a declarative flow, a live target. Pick the one closest to what you need and change the parts that don't fit.
+            </p>
+
+            <div class="hero-filters" id="filters">
+              <button class="filter-chip on" data-filter="all">All <span class="cnt">{total}</span></button>
+              {CAT_ORDER.map((c) => (
+                <button class="filter-chip" data-filter={c}>
+                  {CATEGORY_META[c].label}{CATEGORY_META[c].em ?? ''} <span class="cnt">{catCount(c)}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+        </div>
+      </section>
+
+      <!-- ═══════════ DOC LAYOUT ═══════════ -->
+      <div class="doc">
+        <aside class="side-nav" aria-label="Browse examples">
+          <div class="side-head">
+            <span>Browse</span>
+            <span class="ct">{total} examples</span>
+          </div>
+          <ol id="sideList">
+            <li data-target="section.feat"><a href="#feat-scroll" data-cat="featured"><span class="cat-dot"></span>Featured<span class="count">★</span></a></li>
+            {CAT_ORDER.map((c) => (
+              <li data-target={`#cat-${c}`}>
+                <a href={`#cat-${c}`} data-cat={c}>
+                  <span class="cat-dot"></span>
+                  {CATEGORY_META[c].label}{CATEGORY_META[c].em ?? ''}
+                  <span class="count">{catCount(c)}</span>
+                </a>
+              </li>
+            ))}
+          </ol>
+
+          <div class="side-group">
+            <h6>By target</h6>
+            <div class="tags-row">{SIDEBAR_TARGETS.map((t) => <span class="mini-tag">{t}</span>)}</div>
+          </div>
+
+          <div class="side-group">
+            <h6>By source</h6>
+            <div class="tags-row">{SIDEBAR_SOURCES.map((t) => <span class="mini-tag">{t}</span>)}</div>
+          </div>
+
+          <div class="side-group">
+            <h6>By LLM</h6>
+            <div class="tags-row">{SIDEBAR_LLMS.map((t) => <span class="mini-tag">{t}</span>)}</div>
+          </div>
+
+          <div class="side-group">
+            <h6>Popular</h6>
+            <div class="links">
+              {POPULAR.map((p) => (
+                <a href={exampleHref(p.slug)}>{p.label}<span class="c">{p.count}</span></a>
+              ))}
+            </div>
+          </div>
+
+          <div class="side-group">
+            <h6>Resources</h6>
+            <div class="links">
+              <a href={`${GITHUB_REPO}/tree/v1/examples`}>↗ Source on GitHub</a>
+              <a href={base || '/'}>↗ Documentation</a>
+              <a href={DISCORD_URL}>↗ Discord</a>
+            </div>
+          </div>
+        </aside>
+
+        <div class="col-main">
+          <!-- ═══════════ FEATURED ═══════════ -->
+          <section class="feat" id="feat-scroll">
+            <div class="feat-eyebrow">★ Featured</div>
+            <a class="feat-card" href={exampleHref(featured.slug)}>
+              <div class="feat-body">
+                <span class="ribbon"><span class="tick"></span>{featured.thumbLabel} · <span class="idx">{featured.index}</span></span>
+                <h3 set:html={titleMarkup(featured.title + '.')} />
+                <p>{featured.description}</p>
+                <div class="chips">
+                  {featured.tags.map((t) => <span class="chip">{t.label}</span>)}
+                </div>
+                <div class="foot">
+                  <span>{featured.footMeta}</span>
+                  <span class="go">Open example
+                    <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M2 6h8m-3-3 3 3-3 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                  </span>
+                </div>
+              </div>
+
+              <div class="feat-viz" aria-hidden="true" set:html={featured.motif ?? ''} />
+            </a>
+          </section>
+
+          <!-- ═══════════ CATEGORY SECTIONS ═══════════ -->
+          {CAT_ORDER.map((cat, ci) => {
+            const items = byCategory(cat);
+            return items.length === 0 ? null : (
+              <section class="cat" id={`cat-${cat}`} data-cat={cat}>
+                <div class="sec-head">
+                  <h2>
+                    {CATEGORY_META[cat].label}
+                    {CATEGORY_META[cat].em ? <em>{CATEGORY_META[cat].em}</em> : null}
+                  </h2>
+                  <p class="lead">{CATEGORY_META[cat].lead}</p>
+                </div>
+
+                <div class="cat-grid">
+                  {items.map((ex) => (
+                    <a class="ex-card" href={exampleHref(ex.slug)}>
+                      <div class={`ex-thumb ${ex.thumbClass ?? CATEGORY_META[ex.category].thumbClass}`}>
+                        <span class="tl">{ex.thumbLabel}</span>
+                        <span class="tr">{ex.index}</span>
+                        <div class="motif" set:html={ex.motif ?? ''} />
+                      </div>
+                      <div class="ex-body">
+                        <h3 set:html={titleMarkup(ex.title)} />
+                        <p>{ex.description}</p>
+                        <div class="ex-tags">
+                          {ex.tags.map((t) => (
+                            <span class={`tag ${t.kind}`}><span class="dt"></span>{t.label}</span>
+                          ))}
+                        </div>
+                        <div class="ex-foot">
+                          <span>{ex.footMeta}</span>
+                          <span class="go">Open →</span>
+                        </div>
+                      </div>
+                    </a>
+                  ))}
+                </div>
+              </section>
+            );
+          })}
+
+          <!-- ═══════════ CTA ═══════════ -->
+          <section class="cta-end">
+            <div class="cta-copy">
+              <h3 set:html={titleMarkup("Can't find the *shape* you need?")} />
+              <p>Clone the closest example, swap the source or the target, and keep the rest. Or request a new example — we ship the ones developers ask for.</p>
+              <div class="btns">
+                <a class="btn btn-coral" href={GITHUB_REPO}>Request on GitHub</a>
+                <a class="btn btn-primary" href={base || '/'}>Build your own</a>
+                <a class="btn btn-outline-muted" href={DISCORD_URL}>Ask on Discord</a>
+              </div>
+            </div>
+          </section>
+        </div>
+      </div>
+    </div>
+
+    <script is:inline>
+      // Category filter chips — toggle visibility of category sections.
+      (function(){
+        const chips = document.querySelectorAll('#filters .filter-chip');
+        const sections = document.querySelectorAll('section.cat[data-cat]');
+        const feat = document.querySelector('section.feat');
+
+        chips.forEach((chip) => chip.addEventListener('click', () => {
+          const f = chip.dataset.filter;
+          chips.forEach((c) => c.classList.toggle('on', c === chip));
+          if (f === 'all') {
+            sections.forEach((s) => s.style.display = '');
+            if (feat) feat.style.display = '';
+            return;
+          }
+          sections.forEach((s) => s.style.display = (s.dataset.cat === f ? '' : 'none'));
+          // The featured card is an LLM-extraction example — keep it visible
+          // when that filter is active, hide otherwise.
+          if (feat) feat.style.display = (f === 'llm' ? '' : 'none');
+        }));
+      })();
+
+      // Highlight the active category in the side nav based on scroll.
+      (function(){
+        const items = document.querySelectorAll('#sideList li[data-target]');
+        const map = new Map();
+        items.forEach((li) => {
+          const sel = li.getAttribute('data-target');
+          const el = document.querySelector(sel);
+          if (el) map.set(el, li);
+        });
+        if (!map.size) return;
+        const io = new IntersectionObserver((entries) => {
+          entries.forEach((e) => {
+            const li = map.get(e.target);
+            if (!li) return;
+            li.classList.toggle('active', e.isIntersecting);
+          });
+        }, { rootMargin: '-40% 0px -55% 0px', threshold: 0 });
+        map.forEach((_, el) => io.observe(el));
+      })();
+    </script>
+
+    <style is:global>
+      /* ═══════════ Listing-specific styles ═══════════
+         Scoped to body.ex-listing so they don't leak into the rest of the
+         docs site. Values are lifted verbatim from the design guide. */
+      body.ex-listing { font-size: 17px; line-height: 1.55; }
+
+      body.ex-listing .ex-wrap {
+        max-width: 1440px; margin: 0 auto; padding: 0 40px;
+      }
+
+      /* ── HERO ── */
+      body.ex-listing .ex-hero { padding: 72px 0 48px; border-bottom: 1px solid var(--rule); }
+      body.ex-listing .hero-top { display: flex; align-items: center; gap: 18px; margin-bottom: 32px; flex-wrap: wrap; }
+      body.ex-listing .hero-top .eyb {
+        font-family: var(--mono); font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase;
+        color: var(--coral); padding: 6px 14px; border: 1px solid var(--coral); border-radius: 999px;
+        display: inline-flex; align-items: center; gap: 10px;
+      }
+      body.ex-listing .hero-top .eyb .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--coral); animation: ex-pulse 2s ease-in-out infinite; }
+      @keyframes ex-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+      body.ex-listing .hero-top .stats { margin-left: auto; display: flex; gap: 20px; font-family: var(--mono); font-size: 12px; color: var(--muted); letter-spacing: 0.06em; flex-wrap: wrap; }
+      body.ex-listing .hero-top .stats b { color: var(--maroon); font-weight: 500; font-size: 14px; }
+
+      body.ex-listing .hero-grid { display: grid; grid-template-columns: 1fr; gap: 48px; align-items: end; }
+      body.ex-listing h1.hero-h {
+        font-family: var(--serif); font-weight: 400;
+        font-size: clamp(40px, 4.6vw, 60px); line-height: 0.98; letter-spacing: -0.03em;
+        margin: 0 0 24px;
+      }
+      body.ex-listing h1.hero-h em { font-style: italic; color: var(--coral); }
+      body.ex-listing .hero-sub {
+        font-family: var(--sans); font-size: clamp(18px, 1.6vw, 24px);
+        font-weight: 400; line-height: 1.45; letter-spacing: -0.01em;
+        color: var(--maroon-ink); max-width: 48ch; margin: 0 0 24px;
+      }
+      body.ex-listing .hero-sub b { font-weight: 600; color: var(--maroon); }
+
+      body.ex-listing .hero-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+      body.ex-listing .filter-chip {
+        font-family: var(--sans); font-size: 13px; font-weight: 500;
+        padding: 8px 14px; border-radius: 999px;
+        background: var(--cream); color: var(--maroon-ink);
+        border: 1px solid var(--rule); cursor: pointer;
+        transition: background .15s, color .15s, border-color .15s;
+        display: inline-flex; gap: 6px; align-items: center;
+      }
+      body.ex-listing .filter-chip:hover { background: var(--paper); border-color: var(--rule-strong); }
+      body.ex-listing .filter-chip.on { background: var(--maroon); color: var(--cream); border-color: var(--maroon); }
+      body.ex-listing .filter-chip .cnt { font-family: var(--mono); font-size: 11px; opacity: 0.6; letter-spacing: 0; }
+      body.ex-listing .filter-chip.on .cnt { opacity: 0.8; }
+
+      body.ex-listing .hero-viz { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; aspect-ratio: 3/2; }
+      body.ex-listing .hero-viz .t {
+        border-radius: 8px; position: relative; overflow: hidden;
+        padding: 16px; display: flex; flex-direction: column; justify-content: space-between;
+        font-family: var(--mono); font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase;
+      }
+      body.ex-listing .hero-viz .t .lb { opacity: 0.85; }
+      body.ex-listing .hero-viz .t .ct { font-family: var(--sans); font-size: 20px; font-weight: 600; letter-spacing: -0.02em; line-height: 1; text-transform: none; }
+      body.ex-listing .hero-viz .t .ct em { color: inherit; font-style: normal; }
+      body.ex-listing .hero-viz .t.search { background: var(--maroon); color: var(--cream); }
+      body.ex-listing .hero-viz .t.ingest { background: var(--peach); color: var(--maroon-ink); }
+      body.ex-listing .hero-viz .t.llm { background: var(--coral); color: var(--cream); }
+      body.ex-listing .hero-viz .t.agents { background: var(--cream); color: var(--maroon); border: 1px solid var(--rule-strong); }
+      body.ex-listing .hero-viz .t.multi { background: var(--pink); color: var(--maroon-ink); }
+      body.ex-listing .hero-viz .t.custom { background: var(--maroon-ink); color: var(--cream); }
+      body.ex-listing .hero-viz .t::after {
+        content: ""; position: absolute; inset: 0; pointer-events: none;
+        background-image: radial-gradient(circle, rgba(252, 243, 216, 0.08) 1.2px, transparent 1.6px);
+        background-size: 14px 14px; opacity: 0.6;
+      }
+      body.ex-listing .hero-viz .t.agents::after,
+      body.ex-listing .hero-viz .t.ingest::after,
+      body.ex-listing .hero-viz .t.multi::after {
+        background-image: radial-gradient(circle, rgba(42, 18, 27, 0.08) 1.2px, transparent 1.6px);
+      }
+
+      /* ── SIDEBAR + MAIN ── */
+      body.ex-listing .doc { display: grid; grid-template-columns: 1fr 260px; gap: 56px; align-items: start; padding-top: 32px; }
+      /* Swap visual order so the "Browse" nav sits on the right without
+         moving it in the DOM (keeps it first for keyboard/tab order). */
+      body.ex-listing .doc > .side-nav { grid-column: 2; grid-row: 1; }
+      body.ex-listing .doc > .col-main { grid-column: 1; grid-row: 1; }
+      body.ex-listing .side-nav { position: sticky; top: 84px; align-self: start; max-height: calc(100vh - 100px); overflow-y: auto; padding: 0 0 40px; font-family: var(--sans); }
+      body.ex-listing .side-head {
+        font-family: var(--mono); font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase;
+        color: var(--muted); padding-bottom: 10px; margin-bottom: 14px;
+        border-bottom: 1px solid var(--rule-strong);
+        display: flex; justify-content: space-between; align-items: baseline;
+      }
+      body.ex-listing .side-head .ct { color: var(--coral); font-family: var(--mono); }
+      body.ex-listing .side-nav ol { list-style: none; padding: 0; margin: 0 0 24px; }
+      body.ex-listing .side-nav ol li { margin-bottom: 2px; }
+      body.ex-listing .side-nav ol li a {
+        display: flex; align-items: center; gap: 10px;
+        text-decoration: none; color: var(--maroon-ink);
+        font-size: 14px; font-weight: 500; letter-spacing: -0.01em; line-height: 1.3;
+        padding: 9px 12px; border-radius: 6px;
+        border-left: 2px solid transparent;
+        margin-left: -14px; padding-left: 12px;
+        transition: color .15s, background .15s, border-color .15s;
+      }
+      body.ex-listing .side-nav ol li a .cat-dot { width: 10px; height: 10px; border-radius: 3px; flex: none; background: var(--maroon); }
+      body.ex-listing .side-nav ol li a[data-cat="search"]  .cat-dot { background: var(--maroon); }
+      body.ex-listing .side-nav ol li a[data-cat="ingest"]  .cat-dot { background: var(--peach); }
+      body.ex-listing .side-nav ol li a[data-cat="llm"]     .cat-dot { background: var(--coral); }
+      body.ex-listing .side-nav ol li a[data-cat="agents"]  .cat-dot { background: var(--maroon-ink); }
+      body.ex-listing .side-nav ol li a[data-cat="image"]   .cat-dot { background: var(--pink); }
+      body.ex-listing .side-nav ol li a[data-cat="featured"] .cat-dot { background: var(--coral); border-radius: 50%; }
+      body.ex-listing .side-nav ol li a .count {
+        margin-left: auto;
+        font-family: var(--mono); font-size: 11px; letter-spacing: 0.04em; color: var(--muted);
+        padding: 2px 8px; border-radius: 999px; background: transparent; border: 1px solid var(--rule);
+      }
+      body.ex-listing .side-nav ol li a:hover { color: var(--coral); background: var(--cream); }
+      body.ex-listing .side-nav ol li.active a { color: var(--maroon); background: var(--cream); border-left-color: var(--coral); }
+      body.ex-listing .side-nav ol li.active a .count { color: var(--coral); border-color: var(--coral); }
+
+      body.ex-listing .side-group { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--rule); }
+      body.ex-listing .side-group h6 {
+        font-family: var(--mono); font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase;
+        color: var(--muted); margin: 0 0 10px;
+      }
+      body.ex-listing .side-group .tags-row { display: flex; flex-wrap: wrap; gap: 5px; }
+      body.ex-listing .side-group .mini-tag {
+        font-family: var(--mono); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
+        color: var(--maroon-ink);
+        padding: 4px 9px; border-radius: 999px;
+        background: var(--cream); border: 1px solid var(--rule);
+      }
+      body.ex-listing .side-group .links { display: flex; flex-direction: column; gap: 4px; }
+      body.ex-listing .side-group .links a {
+        text-decoration: none; color: var(--maroon-ink);
+        font-size: 13px; padding: 4px 0;
+        display: flex; justify-content: space-between; align-items: center;
+      }
+      body.ex-listing .side-group .links a:hover { color: var(--coral); }
+      body.ex-listing .side-group .links a .c { font-family: var(--mono); font-size: 10px; color: var(--muted); }
+
+      body.ex-listing .col-main { min-width: 0; }
+
+      /* ── FEATURED ── */
+      body.ex-listing section.feat { padding: 0 0 40px; scroll-margin-top: 84px; }
+      body.ex-listing .sec-head {
+        display: flex; flex-direction: column; gap: 8px;
+        margin-bottom: 28px;
+        padding-bottom: 18px;
+        border-bottom: 1px solid var(--rule);
+      }
+      body.ex-listing .sec-head h2 {
+        font-family: var(--sans); font-weight: 600;
+        font-size: clamp(28px, 3.2vw, 44px); letter-spacing: -0.03em; line-height: 1.05;
+        margin: 0;
+      }
+      body.ex-listing .sec-head h2 em { font-style: normal; color: var(--coral); }
+      body.ex-listing .sec-head .lead { color: var(--muted); font-size: 15px; max-width: 60ch; margin: 0; }
+      body.ex-listing .sec-head .idx { font-family: var(--mono); font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--muted); margin-right: 8px; }
+      body.ex-listing .sec-head .all {
+        margin-left: auto;
+        font-family: var(--mono); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase;
+        color: var(--maroon); text-decoration: none;
+        padding-bottom: 2px; border-bottom: 1px solid var(--maroon);
+      }
+      body.ex-listing .sec-head .all:hover { color: var(--coral); border-color: var(--coral); }
+
+      body.ex-listing .feat-card {
+        display: grid; grid-template-columns: 1.2fr 1fr; gap: 0;
+        border-radius: 12px; overflow: hidden;
+        background: var(--maroon); color: var(--cream);
+        min-height: 440px; position: relative;
+        text-decoration: none;
+        transition: transform .2s;
+      }
+      body.ex-listing .feat-eyebrow {
+        font-family: var(--mono); font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase;
+        color: var(--coral); margin-bottom: 14px;
+      }
+      body.ex-listing .feat-card::before {
+        content: ""; position: absolute; inset: 0;
+        background-image: radial-gradient(circle, rgba(252, 243, 216, 0.07) 1.6px, transparent 2px);
+        background-size: 20px 20px; opacity: 0.7; pointer-events: none;
+      }
+      body.ex-listing .feat-body { position: relative; z-index: 2; padding: 48px; display: flex; flex-direction: column; gap: 22px; }
+      body.ex-listing .feat-body .ribbon { display: inline-flex; gap: 10px; align-items: center; font-family: var(--mono); font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--peach); }
+      body.ex-listing .feat-body .ribbon .tick { width: 6px; height: 6px; background: var(--peach); border-radius: 50%; }
+      body.ex-listing .feat-body .ribbon .idx { color: rgba(252, 243, 216, 0.6); }
+      body.ex-listing .feat-body h3 {
+        font-family: var(--sans); font-weight: 600;
+        font-size: clamp(30px, 3.6vw, 48px); line-height: 1.02; letter-spacing: -0.035em;
+        margin: 0; max-width: 16ch; color: var(--cream);
+      }
+      body.ex-listing .feat-body h3 em { color: var(--peach); font-style: italic; }
+      body.ex-listing .feat-body p { color: rgba(252, 243, 216, 0.85); margin: 0; max-width: 44ch; font-size: 16px; line-height: 1.55; }
+      body.ex-listing .feat-body .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+      body.ex-listing .feat-body .chip {
+        font-family: var(--mono); font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase;
+        padding: 5px 12px; border-radius: 999px;
+        border: 1px solid rgba(252, 243, 216, 0.25);
+        color: rgba(252, 243, 216, 0.85);
+      }
+      body.ex-listing .feat-body .foot { margin-top: auto; display: flex; justify-content: space-between; align-items: flex-end; padding-top: 20px; border-top: 1px solid rgba(252, 243, 216, 0.15); font-family: var(--mono); font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: rgba(252, 243, 216, 0.7); }
+      body.ex-listing .feat-body .foot .go {
+        font-family: var(--sans); font-size: 13px; font-weight: 500; letter-spacing: 0;
+        color: var(--cream); text-transform: none;
+        display: inline-flex; gap: 8px; align-items: center;
+        padding: 10px 18px; border-radius: 999px; background: var(--coral); border: 1px solid var(--coral);
+        transition: background .15s;
+      }
+      body.ex-listing .feat-card:hover .feat-body .foot .go { background: var(--peach); border-color: var(--peach); color: var(--maroon-ink); }
+
+      body.ex-listing .feat-viz {
+        position: relative; z-index: 2;
+        background: linear-gradient(135deg, rgba(252, 243, 216, 0.08), rgba(252, 243, 216, 0.02));
+        border-left: 1px solid rgba(252, 243, 216, 0.12);
+        padding: 40px;
+        display: flex; flex-direction: column; gap: 14px; justify-content: center; align-items: center;
+        color: var(--cream);
+      }
+      body.ex-listing .feat-viz svg { width: 55%; max-width: 260px; height: auto; }
+      body.ex-listing .feat-viz .qrow {
+        display: grid; grid-template-columns: 28px 1fr auto 60px;
+        gap: 14px; align-items: baseline;
+        padding: 10px 14px; border-radius: 6px;
+        background: rgba(252, 243, 216, 0.06); border: 1px solid rgba(252, 243, 216, 0.12);
+        font-family: var(--mono); font-size: 13px;
+      }
+      body.ex-listing .feat-viz .qrow .rk { color: rgba(252, 243, 216, 0.5); font-size: 11px; }
+      body.ex-listing .feat-viz .qrow .tp { color: var(--cream); font-weight: 500; }
+      body.ex-listing .feat-viz .qrow .tp em { color: var(--peach); font-style: normal; }
+      body.ex-listing .feat-viz .qrow .sc { color: var(--palm); font-weight: 600; }
+      body.ex-listing .feat-viz .qrow .th { color: rgba(252, 243, 216, 0.55); font-size: 11px; text-align: right; }
+      body.ex-listing .feat-viz .qlabel {
+        font-family: var(--mono); font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase;
+        color: rgba(252, 243, 216, 0.55); padding-bottom: 8px;
+        border-bottom: 1px solid rgba(252, 243, 216, 0.12);
+        display: flex; justify-content: space-between;
+      }
+      body.ex-listing .feat-viz .qlabel .pulse { display: inline-flex; gap: 5px; align-items: center; color: var(--palm); }
+      body.ex-listing .feat-viz .qlabel .pulse .d { width: 6px; height: 6px; border-radius: 50%; background: var(--palm); box-shadow: 0 0 0 3px rgba(39, 230, 43, 0.15); }
+
+      /* ── CATEGORY SECTIONS ── */
+      body.ex-listing section.cat { padding: 64px 0; scroll-margin-top: 84px; }
+      body.ex-listing .cat-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+      body.ex-listing .ex-card {
+        display: flex; flex-direction: column;
+        border: 1px solid var(--rule); border-radius: 10px;
+        background: var(--paper);
+        min-height: 280px;
+        text-decoration: none; color: inherit;
+        overflow: hidden;
+        position: relative;
+        transition: background-image .18s ease;
+      }
+      body.ex-listing .ex-card:hover {
+        background-image: radial-gradient(circle, rgba(42, 18, 27, 0.1) 1.2px, transparent 1.6px);
+        background-size: 14px 14px;
+      }
+      body.ex-listing .ex-thumb {
+        aspect-ratio: 16/7;
+        position: relative; overflow: hidden;
+        border-bottom: 1px solid var(--rule);
+      }
+      body.ex-listing .ex-thumb .motif { position: absolute; inset: 0; display: grid; place-items: center; color: var(--cream); }
+      body.ex-listing .ex-thumb .motif svg { width: 70%; height: 70%; }
+      body.ex-listing .ex-thumb .tl {
+        position: absolute; top: 12px; left: 14px; z-index: 3;
+        font-family: var(--mono); font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase;
+        padding: 4px 10px; border-radius: 999px;
+        background: rgba(252, 243, 216, 0.2); color: var(--cream);
+        backdrop-filter: blur(6px);
+        border: 1px solid rgba(252, 243, 216, 0.2);
+      }
+      body.ex-listing .ex-thumb .tr {
+        position: absolute; top: 12px; right: 14px; z-index: 3;
+        font-family: var(--mono); font-size: 10px; letter-spacing: 0.1em;
+        color: rgba(252, 243, 216, 0.8);
+      }
+      body.ex-listing .ex-thumb.search { background: var(--maroon); }
+      body.ex-listing .ex-thumb.ingest { background: var(--peach); color: var(--maroon-ink); }
+      body.ex-listing .ex-thumb.ingest .motif { color: var(--maroon); }
+      body.ex-listing .ex-thumb.ingest .tl { background: rgba(42, 18, 27, 0.1); color: var(--maroon); border-color: rgba(42, 18, 27, 0.15); }
+      body.ex-listing .ex-thumb.ingest .tr { color: rgba(42, 18, 27, 0.6); }
+      body.ex-listing .ex-thumb.llm { background: var(--coral); }
+      body.ex-listing .ex-thumb.agents { background: var(--maroon-ink); }
+      body.ex-listing .ex-thumb.pink { background: var(--pink); color: var(--maroon-ink); }
+      body.ex-listing .ex-thumb.pink .motif { color: var(--maroon); }
+      body.ex-listing .ex-thumb.pink .tl { background: rgba(42, 18, 27, 0.1); color: var(--maroon); border-color: rgba(42, 18, 27, 0.15); }
+      body.ex-listing .ex-thumb.pink .tr { color: rgba(42, 18, 27, 0.55); }
+      body.ex-listing .ex-thumb.search::after,
+      body.ex-listing .ex-thumb.llm::after,
+      body.ex-listing .ex-thumb.agents::after {
+        content: ""; position: absolute; inset: 0;
+        background-image: radial-gradient(circle, rgba(252, 243, 216, 0.1) 1.2px, transparent 1.6px);
+        background-size: 14px 14px;
+      }
+      body.ex-listing .ex-thumb.ingest::after {
+        content: ""; position: absolute; inset: 0;
+        background-image: repeating-linear-gradient(135deg, transparent 0 8px, rgba(42, 18, 27, 0.06) 8px 9px);
+      }
+      body.ex-listing .ex-thumb.pink::after {
+        content: ""; position: absolute; inset: 0;
+        background-image: linear-gradient(to right, rgba(42, 18, 27, 0.04) 1px, transparent 1px),
+                          linear-gradient(to bottom, rgba(42, 18, 27, 0.04) 1px, transparent 1px);
+        background-size: 18px 18px;
+      }
+
+      body.ex-listing .ex-body { padding: 20px 22px 22px; display: flex; flex-direction: column; gap: 10px; flex: 1; }
+      body.ex-listing .ex-body h3 { font-family: var(--sans); font-weight: 600; font-size: 22px; letter-spacing: -0.02em; line-height: 1.2; margin: 0; color: var(--maroon-ink); }
+      body.ex-listing .ex-body h3 em { color: var(--coral); font-style: normal; }
+      body.ex-listing .ex-body p { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.5; flex: 1; }
+
+      body.ex-listing .ex-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+      body.ex-listing .ex-tags .tag {
+        font-family: var(--mono); font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase;
+        padding: 4px 10px; border-radius: 999px;
+        background: var(--paper); color: var(--maroon);
+        border: 1px solid var(--rule);
+        display: inline-flex; gap: 6px; align-items: center;
+      }
+      body.ex-listing .ex-tags .tag .dt { width: 5px; height: 5px; border-radius: 50%; background: var(--coral); }
+      body.ex-listing .ex-tags .tag.src .dt { background: var(--peach); }
+      body.ex-listing .ex-tags .tag.tgt .dt { background: var(--pink); }
+      body.ex-listing .ex-tags .tag.llm .dt { background: var(--palm-ink); }
+      body.ex-listing .ex-tags .tag.ops .dt { background: var(--coral); }
+      body.ex-listing .ex-tags .tag.lvl .dt { background: var(--maroon); }
+
+      body.ex-listing .ex-foot {
+        display: flex; justify-content: space-between; align-items: center;
+        padding-top: 14px; margin-top: 6px; border-top: 1px solid var(--rule);
+        font-family: var(--mono); font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase;
+        color: var(--muted);
+      }
+      body.ex-listing .ex-foot .go { color: var(--coral); display: inline-flex; gap: 6px; align-items: center; }
+
+      body.ex-listing .m-dots circle { fill: currentColor; }
+      body.ex-listing .m-grid rect { fill: none; stroke: currentColor; stroke-width: 1; }
+      body.ex-listing .m-flow path { stroke: currentColor; stroke-width: 1.5; fill: none; stroke-linecap: round; }
+      body.ex-listing .m-node rect { fill: none; stroke: currentColor; stroke-width: 1.5; }
+      body.ex-listing .m-node circle { fill: currentColor; }
+
+      /* ── BOTTOM CTA ── */
+      body.ex-listing .cta-end {
+        margin: 72px 0 96px;
+        border-radius: 12px;
+        background: var(--cream);
+        border: 1px solid var(--rule);
+        padding: 64px 48px;
+        position: relative; overflow: hidden;
+      }
+      body.ex-listing .cta-end::before {
+        content: ""; position: absolute; right: -40px; bottom: -60px;
+        width: 260px; height: 260px; border-radius: 50%;
+        background: radial-gradient(circle at 30% 30%, rgba(190, 81, 51, 0.2), transparent 60%);
+        pointer-events: none;
+      }
+      body.ex-listing .cta-end h3 {
+        font-family: var(--sans); font-weight: 600;
+        font-size: clamp(28px, 3.4vw, 44px); line-height: 1.05; letter-spacing: -0.03em;
+        margin: 0 0 16px; max-width: 22ch;
+      }
+      body.ex-listing .cta-end h3 em { color: var(--coral); font-style: normal; }
+      body.ex-listing .cta-end p { color: var(--muted); max-width: 48ch; margin: 0 0 24px; font-size: 17px; }
+      body.ex-listing .cta-end .btns { display: flex; gap: 12px; flex-wrap: wrap; }
+      /* Buttons — see `.btn` + variants in globals.css. No local overrides. */
+      body.ex-listing .cta-end .side {
+        display: flex; flex-direction: column; gap: 18px;
+        padding: 28px 26px; border-radius: 10px;
+        background: var(--paper); border: 1px solid var(--rule);
+      }
+      body.ex-listing .cta-end .side .side-h {
+        display: flex; justify-content: space-between; align-items: baseline;
+      }
+      body.ex-listing .cta-end .side .eyebrow {
+        font-family: var(--mono); font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase;
+        color: var(--coral);
+      }
+      body.ex-listing .cta-end .side .time {
+        font-family: var(--mono); font-size: 11px; color: var(--muted);
+      }
+      body.ex-listing .cta-end .side h4 {
+        font-family: var(--sans); font-weight: 600; font-size: 22px; letter-spacing: -0.02em;
+        line-height: 1.2; margin: 0;
+      }
+      body.ex-listing .cta-end .side h4 em { color: var(--coral); font-style: normal; }
+      body.ex-listing .cta-end .side .qs-steps {
+        list-style: none; padding: 0; margin: 0;
+        display: flex; flex-direction: column; gap: 14px;
+      }
+      body.ex-listing .cta-end .side .qs-steps li {
+        display: grid; grid-template-columns: 32px 1fr; gap: 10px; align-items: start;
+      }
+      body.ex-listing .cta-end .side .qs-steps li .n {
+        font-family: var(--mono); font-size: 11px; letter-spacing: 0.08em;
+        color: var(--coral); padding-top: 4px;
+      }
+      body.ex-listing .cta-end .side .qs-steps li .t {
+        font-size: 14px; font-weight: 500; color: var(--maroon-ink); margin-bottom: 5px;
+      }
+      body.ex-listing .cta-end .side .qs-steps li .code {
+        font-family: var(--mono); font-size: 12px; color: var(--cream);
+        background: var(--maroon-ink); padding: 7px 10px; border-radius: 5px;
+        overflow-x: auto; white-space: nowrap;
+      }
+      body.ex-listing .cta-end .side .qs-steps li .code .p { color: var(--peach); margin-right: 6px; }
+      body.ex-listing .cta-end .side .side-links {
+        display: flex; flex-direction: column; gap: 4px;
+        padding-top: 12px; border-top: 1px solid var(--rule);
+      }
+      body.ex-listing .cta-end .side .side-links a {
+        font-size: 13px; color: var(--maroon-ink); text-decoration: none;
+        padding: 5px 0;
+      }
+      body.ex-listing .cta-end .side .side-links a:hover { color: var(--coral); }
+
+      @media (max-width: 1180px) {
+        body.ex-listing .doc { grid-template-columns: 1fr; gap: 0; }
+        body.ex-listing .side-nav {
+          position: static; top: auto; max-height: none;
+          padding: 16px; border: 1px solid var(--rule); border-radius: 10px;
+          background: var(--cream); margin-bottom: 32px;
+        }
+        body.ex-listing .side-nav ol { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+        body.ex-listing .side-nav ol li { margin-bottom: 0; }
+        body.ex-listing .side-nav ol li a { padding: 8px 12px; margin-left: 0; border-left: none; border: 1px solid var(--rule); }
+        body.ex-listing .side-nav ol li.active a { border-color: var(--coral); }
+        body.ex-listing .side-group { margin-top: 10px; padding-top: 10px; }
+        body.ex-listing .hero-grid { grid-template-columns: 1fr; gap: 40px; }
+        body.ex-listing .feat-card { grid-template-columns: 1fr; }
+        body.ex-listing .feat-viz { border-left: none; border-top: 1px solid rgba(252, 243, 216, 0.12); }
+        body.ex-listing .cat-grid { grid-template-columns: repeat(2, 1fr); }
+        body.ex-listing .cta-end { grid-template-columns: 1fr; }
+      }
+      @media (max-width: 640px) {
+        body.ex-listing .cat-grid { grid-template-columns: 1fr; }
+        body.ex-listing .hero-top { flex-wrap: wrap; }
+        body.ex-listing .hero-top .stats { order: 3; width: 100%; }
+      }
+    </style>
+  </body>
+</html>

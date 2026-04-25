@@ -1,0 +1,174 @@
+---
+// CSS-only tabs. Radios are direct children of .coco-tabs so they can
+// be general siblings of the bar + panels; labels reference them by
+// `for=`. No JS required. Each instance gets a unique radio-group name.
+interface Props {
+  labels: string[];
+  initial?: number;
+}
+const { labels, initial = 0 } = Astro.props;
+const id = `coco-tabs-${crypto.randomUUID().slice(0, 8)}`;
+---
+<div class="coco-tabs">
+  {labels.map((_, i) => (
+    <input
+      type="radio"
+      class="coco-tabs-radio"
+      name={id}
+      id={`${id}-${i}`}
+      checked={i === initial}
+    />
+  ))}
+  <div class="coco-tabs-bar" role="tablist">
+    {labels.map((label, i) => (
+      <label for={`${id}-${i}`} class="coco-tabs-label" role="tab">
+        <span>{label}</span>
+      </label>
+    ))}
+  </div>
+  <div class="coco-tabs-panels">
+    {labels[0] && (
+      <section class="coco-tabs-panel" data-tab-index="0" role="tabpanel"><slot name="tab-0" /></section>
+    )}
+    {labels[1] && (
+      <section class="coco-tabs-panel" data-tab-index="1" role="tabpanel"><slot name="tab-1" /></section>
+    )}
+    {labels[2] && (
+      <section class="coco-tabs-panel" data-tab-index="2" role="tabpanel"><slot name="tab-2" /></section>
+    )}
+    {labels[3] && (
+      <section class="coco-tabs-panel" data-tab-index="3" role="tabpanel"><slot name="tab-3" /></section>
+    )}
+    {labels[4] && (
+      <section class="coco-tabs-panel" data-tab-index="4" role="tabpanel"><slot name="tab-4" /></section>
+    )}
+  </div>
+</div>
+
+<style>
+.coco-tabs {
+  position: relative;
+  margin: 1.75rem 0;
+  border: 1px solid var(--rule);
+  border-radius: 14px;
+  background: var(--cream-soft);
+  overflow: hidden;
+}
+
+.coco-tabs-radio {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+  width: 0;
+  height: 0;
+}
+
+.coco-tabs-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 10px 10px 0;
+  background: linear-gradient(to bottom, var(--paper), var(--cream-soft));
+  border-bottom: 1px solid var(--rule);
+}
+
+.coco-tabs-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 9px 16px;
+  font-family: var(--sans);
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--muted);
+  cursor: pointer;
+  border-radius: 8px 8px 0 0;
+  border: 1px solid transparent;
+  border-bottom: none;
+  margin-bottom: -1px;
+  transition: color 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+  user-select: none;
+  position: relative;
+}
+
+.coco-tabs-label:hover { color: var(--maroon-ink); background: rgba(251, 246, 232, 0.6); }
+
+.coco-tabs-label::after {
+  content: "";
+  position: absolute;
+  left: 14px;
+  right: 14px;
+  bottom: 0;
+  height: 2px;
+  background: transparent;
+  border-radius: 2px 2px 0 0;
+  transition: background 0.15s ease;
+}
+
+.coco-tabs-radio:focus-visible + .coco-tabs-bar,
+.coco-tabs-radio:focus-visible ~ .coco-tabs-bar .coco-tabs-label {
+  /* no-op: focus outline handled below per active label */
+}
+
+.coco-tabs-panels {
+  background: var(--paper);
+  padding: 24px 28px;
+}
+
+.coco-tabs-panel { display: none; }
+
+/* Active label + panel, one rule per position.
+   Supports up to 5 tabs; extend if a page ever needs more. */
+.coco-tabs-radio:nth-of-type(1):checked ~ .coco-tabs-bar > .coco-tabs-label:nth-of-type(1),
+.coco-tabs-radio:nth-of-type(2):checked ~ .coco-tabs-bar > .coco-tabs-label:nth-of-type(2),
+.coco-tabs-radio:nth-of-type(3):checked ~ .coco-tabs-bar > .coco-tabs-label:nth-of-type(3),
+.coco-tabs-radio:nth-of-type(4):checked ~ .coco-tabs-bar > .coco-tabs-label:nth-of-type(4),
+.coco-tabs-radio:nth-of-type(5):checked ~ .coco-tabs-bar > .coco-tabs-label:nth-of-type(5) {
+  color: var(--maroon-ink);
+  background: var(--paper);
+  border-color: var(--rule);
+  font-weight: 600;
+}
+
+.coco-tabs-radio:nth-of-type(1):checked ~ .coco-tabs-bar > .coco-tabs-label:nth-of-type(1)::after,
+.coco-tabs-radio:nth-of-type(2):checked ~ .coco-tabs-bar > .coco-tabs-label:nth-of-type(2)::after,
+.coco-tabs-radio:nth-of-type(3):checked ~ .coco-tabs-bar > .coco-tabs-label:nth-of-type(3)::after,
+.coco-tabs-radio:nth-of-type(4):checked ~ .coco-tabs-bar > .coco-tabs-label:nth-of-type(4)::after,
+.coco-tabs-radio:nth-of-type(5):checked ~ .coco-tabs-bar > .coco-tabs-label:nth-of-type(5)::after {
+  background: var(--coral);
+}
+
+.coco-tabs-radio:nth-of-type(1):checked ~ .coco-tabs-panels > .coco-tabs-panel[data-tab-index="0"],
+.coco-tabs-radio:nth-of-type(2):checked ~ .coco-tabs-panels > .coco-tabs-panel[data-tab-index="1"],
+.coco-tabs-radio:nth-of-type(3):checked ~ .coco-tabs-panels > .coco-tabs-panel[data-tab-index="2"],
+.coco-tabs-radio:nth-of-type(4):checked ~ .coco-tabs-panels > .coco-tabs-panel[data-tab-index="3"],
+.coco-tabs-radio:nth-of-type(5):checked ~ .coco-tabs-panels > .coco-tabs-panel[data-tab-index="4"] {
+  display: block;
+}
+
+.coco-tabs-radio:focus-visible ~ .coco-tabs-bar .coco-tabs-label:hover { outline: none; }
+.coco-tabs-radio:nth-of-type(1):focus-visible ~ .coco-tabs-bar > .coco-tabs-label:nth-of-type(1),
+.coco-tabs-radio:nth-of-type(2):focus-visible ~ .coco-tabs-bar > .coco-tabs-label:nth-of-type(2),
+.coco-tabs-radio:nth-of-type(3):focus-visible ~ .coco-tabs-bar > .coco-tabs-label:nth-of-type(3),
+.coco-tabs-radio:nth-of-type(4):focus-visible ~ .coco-tabs-bar > .coco-tabs-label:nth-of-type(4),
+.coco-tabs-radio:nth-of-type(5):focus-visible ~ .coco-tabs-bar > .coco-tabs-label:nth-of-type(5) {
+  outline: 2px solid var(--coral);
+  outline-offset: 2px;
+}
+
+.coco-tabs-panel :global(img) {
+  max-width: 100%;
+  height: auto;
+  display: block;
+  margin: 4px auto 18px;
+}
+
+.coco-tabs-panel :global(p:first-child) { margin-top: 0; }
+.coco-tabs-panel :global(p:last-child),
+.coco-tabs-panel :global(ul:last-child) { margin-bottom: 0; }
+
+@media (max-width: 640px) {
+  .coco-tabs-panels { padding: 18px; }
+  .coco-tabs-label { padding: 8px 12px; font-size: 13px; }
+}
+</style>

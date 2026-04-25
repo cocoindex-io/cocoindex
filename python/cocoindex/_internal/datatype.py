@@ -1,22 +1,20 @@
 import collections
 import dataclasses
-import datetime
 import inspect
 import types
 import typing
-import uuid
 from typing import (
     Annotated,
     Any,
+    Callable,
+    Generic,
     Iterator,
-    Mapping,
     NamedTuple,
+    TypeVar,
     get_type_hints,
 )
 
 import numpy as np
-
-import cocoindex.typing
 
 # Optional Pydantic support
 try:
@@ -54,7 +52,7 @@ def is_pydantic_model(t: Any) -> bool:
         return False
 
 
-def is_struct_type(t: Any) -> bool:
+def is_record_type(t: Any) -> bool:
     return isinstance(t, type) and (
         dataclasses.is_dataclass(t) or is_namedtuple_type(t) or is_pydantic_model(t)
     )
@@ -96,26 +94,17 @@ class AnyType(NamedTuple):
     """
 
 
-class BasicType(NamedTuple):
-    """
-    For types that fit into basic type, and annotated with basic type or Json type.
-    """
-
-    kind: str
-
-
 class SequenceType(NamedTuple):
     """
     Any list type, e.g. list[T], Sequence[T], NDArray[T], etc.
     """
 
     elem_type: Any
-    vector_info: cocoindex.typing.VectorInfo | None
 
 
-class StructFieldInfo(NamedTuple):
+class RecordFieldInfo(NamedTuple):
     """
-    Info about a field in a struct type.
+    Info about a field in a record type.
     """
 
     name: str
@@ -124,39 +113,39 @@ class StructFieldInfo(NamedTuple):
     description: str | None
 
 
-class StructType(NamedTuple):
+class RecordType(NamedTuple):
     """
-    Any struct type, e.g. dataclass, NamedTuple, etc.
+    Any record type, e.g. dataclass, NamedTuple, etc.
     """
 
-    struct_type: type
+    record_type: type
 
     @property
-    def fields(self) -> Iterator[StructFieldInfo]:
-        type_hints = get_type_hints(self.struct_type, include_extras=True)
-        if dataclasses.is_dataclass(self.struct_type):
-            parameters = inspect.signature(self.struct_type).parameters
+    def fields(self) -> Iterator[RecordFieldInfo]:
+        type_hints = get_type_hints(self.record_type, include_extras=True)
+        if dataclasses.is_dataclass(self.record_type):
+            parameters = inspect.signature(self.record_type).parameters
             for name, parameter in parameters.items():
-                yield StructFieldInfo(
+                yield RecordFieldInfo(
                     name=name,
                     type_hint=type_hints.get(name, Any),
                     default_value=parameter.default,
                     description=None,
                 )
-        elif is_namedtuple_type(self.struct_type):
-            fields = getattr(self.struct_type, "_fields", ())
-            defaults = getattr(self.struct_type, "_field_defaults", {})
+        elif is_namedtuple_type(self.record_type):
+            fields = getattr(self.record_type, "_fields", ())
+            defaults = getattr(self.record_type, "_field_defaults", {})
             for name in fields:
-                yield StructFieldInfo(
+                yield RecordFieldInfo(
                     name=name,
                     type_hint=type_hints.get(name, Any),
                     default_value=defaults.get(name, inspect.Parameter.empty),
                     description=None,
                 )
-        elif is_pydantic_model(self.struct_type):
-            model_fields = getattr(self.struct_type, "model_fields", {})
+        elif is_pydantic_model(self.record_type):
+            model_fields = getattr(self.record_type, "model_fields", {})
             for name, field_info in model_fields.items():
-                yield StructFieldInfo(
+                yield RecordFieldInfo(
                     name=name,
                     type_hint=type_hints.get(name, Any),
                     default_value=field_info.default
@@ -165,7 +154,7 @@ class StructType(NamedTuple):
                     description=field_info.description,
                 )
         else:
-            raise ValueError(f"Unsupported struct type: {self.struct_type}")
+            raise ValueError(f"Unsupported record type: {self.record_type}")
 
 
 class UnionType(NamedTuple):
@@ -185,21 +174,13 @@ class MappingType(NamedTuple):
     value_type: Any
 
 
-class OtherType(NamedTuple):
+class LeafType(NamedTuple):
     """
     Any type that is not supported by CocoIndex.
     """
 
 
-TypeVariant = (
-    AnyType
-    | BasicType
-    | SequenceType
-    | MappingType
-    | StructType
-    | UnionType
-    | OtherType
-)
+TypeVariant = AnyType | SequenceType | MappingType | RecordType | UnionType | LeafType
 
 
 class DataTypeInfo(NamedTuple):
@@ -212,49 +193,22 @@ class DataTypeInfo(NamedTuple):
     # The type without annotations and parameters. e.g. int, list, dict
     base_type: Any
     variant: TypeVariant
-    attrs: dict[str, Any] | None
     nullable: bool = False
+    annotations: tuple[Any, ...] = ()
 
 
-def _get_basic_type_kind(t: Any) -> str | None:
-    if t is bytes:
-        return "Bytes"
-    elif t is str:
-        return "Str"
-    elif t is bool:
-        return "Bool"
-    elif t is int:
-        return "Int64"
-    elif t is float:
-        return "Float64"
-    elif t is uuid.UUID:
-        return "Uuid"
-    elif t is datetime.date:
-        return "Date"
-    elif t is datetime.time:
-        return "Time"
-    elif t is datetime.datetime:
-        return "OffsetDateTime"
-    elif t is datetime.timedelta:
-        return "TimeDelta"
-    else:
-        return None
-
-
-def analyze_type_info(
-    t: Any, *, nullable: bool = False, extra_attrs: Mapping[str, Any] | None = None
-) -> DataTypeInfo:
+def analyze_type_info(t: Any, *, nullable: bool = False) -> DataTypeInfo:
     """
     Analyze a Python type annotation and extract CocoIndex-specific type information.
     """
 
-    annotations: tuple[cocoindex.typing.Annotation, ...] = ()
+    annotations: tuple[Any, ...] = ()
     base_type = None
     type_args: tuple[Any, ...] = ()
     while True:
         base_type = typing.get_origin(t)
         if base_type is Annotated:
-            annotations = t.__metadata__
+            annotations += t.__metadata__
             t = t.__origin__
         else:
             if base_type is None:
@@ -264,41 +218,19 @@ def analyze_type_info(
             break
     core_type = t
 
-    attrs: dict[str, Any] | None = None
-    vector_info: cocoindex.typing.VectorInfo | None = None
-    kind: str | None = None
-    for attr in annotations:
-        if isinstance(attr, cocoindex.typing.TypeAttr):
-            if attrs is None:
-                attrs = dict()
-            attrs[attr.key] = attr.value
-        elif isinstance(attr, cocoindex.typing.VectorInfo):
-            vector_info = attr
-        elif isinstance(attr, cocoindex.typing.TypeKind):
-            kind = attr.kind
-    if extra_attrs:
-        if attrs is None:
-            attrs = dict()
-        attrs.update(extra_attrs)
-
     variant: TypeVariant | None = None
 
-    if kind is not None:
-        variant = BasicType(kind=kind)
-    elif base_type is Any or base_type is inspect.Parameter.empty:
+    if base_type is Any or base_type is inspect.Parameter.empty:
         variant = AnyType()
-    elif is_struct_type(base_type):
-        variant = StructType(struct_type=t)
-    elif is_numpy_number_type(t):
-        kind = DtypeRegistry.validate_dtype_and_get_kind(t)
-        variant = BasicType(kind=kind)
+    elif is_record_type(base_type):
+        variant = RecordType(record_type=t)
     elif base_type is collections.abc.Sequence or base_type is list:
         elem_type = type_args[0] if len(type_args) > 0 else Any
-        variant = SequenceType(elem_type=elem_type, vector_info=vector_info)
+        variant = SequenceType(elem_type=elem_type)
     elif base_type is np.ndarray:
         np_number_type = t
         elem_type = extract_ndarray_elem_dtype(np_number_type)
-        variant = SequenceType(elem_type=elem_type, vector_info=vector_info)
+        variant = SequenceType(elem_type=elem_type)
     elif base_type is collections.abc.Mapping or base_type is dict or t is dict:
         key_type = type_args[0] if len(type_args) > 0 else Any
         elem_type = type_args[1] if len(type_args) > 1 else Any
@@ -315,15 +247,169 @@ def analyze_type_info(
             )
 
         variant = UnionType(variant_types=non_none_types)
-    elif (basic_type_kind := _get_basic_type_kind(t)) is not None:
-        variant = BasicType(kind=basic_type_kind)
     else:
-        variant = OtherType()
+        variant = LeafType()
 
     return DataTypeInfo(
         core_type=core_type,
         base_type=base_type,
         variant=variant,
-        attrs=attrs,
+        annotations=annotations,
         nullable=nullable,
     )
+
+
+# =============================================================================
+# TypeChecker: Pre-built runtime type validation for StableKey values
+# =============================================================================
+
+_CheckFn = Callable[[Any, str], None]
+
+
+def _build_check_fn(tp: Any) -> _CheckFn:
+    """
+    Build a validation closure for the given type annotation.
+
+    Returns a function ``(value, path) -> None`` that raises ``TypeError``
+    on mismatch.  *path* carries positional context for error messages
+    (empty string at top level, ``"[0]"`` for tuple element 0, etc.).
+    """
+    origin = typing.get_origin(tp)
+    args = typing.get_args(tp)
+
+    # NoneType
+    if tp is type(None):
+
+        def check_none(value: Any, path: str) -> None:
+            if value is not None:
+                loc = f" at {path}" if path else ""
+                raise TypeError(f"expected None{loc}, got {type(value).__name__}")
+
+        return check_none
+
+    # Any — accept everything
+    if tp is Any:
+        return lambda _v, _p: None
+
+    # Union: str | int, str | None, etc.
+    if origin in (types.UnionType, typing.Union):
+        sub_fns = [_build_check_fn(a) for a in args]
+
+        def check_union(value: Any, path: str) -> None:
+            for fn in sub_fns:
+                try:
+                    fn(value, path)
+                    return
+                except TypeError:
+                    continue
+            loc = f" at {path}" if path else ""
+            raise TypeError(
+                f"expected {tp}{loc}, got {type(value).__name__}: {value!r}"
+            )
+
+        return check_union
+
+    # Tuple types
+    if origin is tuple:
+        if len(args) == 2 and args[1] is Ellipsis:
+            # Variable-length: tuple[X, ...]
+            if args[0] is Any:
+
+                def check_var_tuple_any(value: Any, path: str) -> None:
+                    if not isinstance(value, tuple):
+                        loc = f" at {path}" if path else ""
+                        raise TypeError(
+                            f"expected tuple{loc}, got {type(value).__name__}"
+                        )
+
+                return check_var_tuple_any
+
+            elem_fn = _build_check_fn(args[0])
+
+            def check_var_tuple(value: Any, path: str) -> None:
+                if not isinstance(value, tuple):
+                    loc = f" at {path}" if path else ""
+                    raise TypeError(f"expected tuple{loc}, got {type(value).__name__}")
+                for i, elem in enumerate(value):
+                    elem_fn(elem, f"{path}[{i}]")
+
+            return check_var_tuple
+
+        if args:
+            # Fixed-length: tuple[X, Y, ...]
+            elem_fns = [_build_check_fn(a) for a in args]
+            expected_len = len(args)
+
+            def check_fixed_tuple(value: Any, path: str) -> None:
+                if not isinstance(value, tuple):
+                    loc = f" at {path}" if path else ""
+                    raise TypeError(f"expected {tp}{loc}, got {type(value).__name__}")
+                if len(value) != expected_len:
+                    loc = f" at {path}" if path else ""
+                    raise TypeError(
+                        f"expected tuple of length {expected_len}{loc}, "
+                        f"got length {len(value)}"
+                    )
+                for i, (elem, fn) in enumerate(zip(value, elem_fns)):
+                    fn(elem, f"{path}[{i}]")
+
+            return check_fixed_tuple
+
+        # Bare tuple (no args) — just check isinstance
+        def check_bare_tuple(value: Any, path: str) -> None:
+            if not isinstance(value, tuple):
+                loc = f" at {path}" if path else ""
+                raise TypeError(f"expected tuple{loc}, got {type(value).__name__}")
+
+        return check_bare_tuple
+
+    # Simple concrete type: str, int, bytes, uuid.UUID, etc.
+    if isinstance(tp, type):
+
+        def check_isinstance(value: Any, path: str) -> None:
+            if not isinstance(value, tp):
+                loc = f" at {path}" if path else ""
+                raise TypeError(
+                    f"expected {tp.__name__}{loc}, got {type(value).__name__}: {value!r}"
+                )
+
+        return check_isinstance
+
+    raise ValueError(f"Unsupported type for TypeChecker: {tp}")
+
+
+T = TypeVar("T")
+
+
+class TypeChecker(Generic[T]):
+    """
+    Pre-built runtime type checker.
+
+    Analyzes a type annotation once at construction time and builds optimized
+    validation closures.  At check time, validation is a fast series of
+    ``isinstance`` calls and tuple-length comparisons — no reflection.
+
+    Usage::
+
+        _TABLE_KEY_CHECKER: TypeChecker[tuple[str, str]] = TypeChecker(tuple[str, str])
+
+        # In reconcile():
+        key = _TableKey(*_TABLE_KEY_CHECKER.check(key))
+    """
+
+    __slots__ = ("_expected_type", "_check_fn")
+
+    def __init__(self, expected_type: type[T]) -> None:
+        self._expected_type = expected_type
+        self._check_fn = _build_check_fn(expected_type)
+
+    def check(self, value: Any) -> T:
+        """Validate *value* and return it typed as ``T``.
+
+        Raises ``TypeError`` with a descriptive message on mismatch.
+        """
+        self._check_fn(value, "")
+        return value  # type: ignore[no-any-return]
+
+    def __repr__(self) -> str:
+        return f"TypeChecker({self._expected_type})"

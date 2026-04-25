@@ -6,37 +6,6 @@ import os
 
 from typing import Callable, Self, Any, overload
 from dataclasses import dataclass
-from . import _engine  # type: ignore
-
-
-def get_app_namespace(*, trailing_delimiter: str | None = None) -> str:
-    """Get the application namespace. Append the `trailing_delimiter` if not empty."""
-    app_namespace: str = _engine.get_app_namespace()
-    if app_namespace == "" or trailing_delimiter is None:
-        return app_namespace
-    return f"{app_namespace}{trailing_delimiter}"
-
-
-def split_app_namespace(full_name: str, delimiter: str) -> tuple[str, str]:
-    """Split the full name into the application namespace and the rest."""
-    parts = full_name.split(delimiter, 1)
-    if len(parts) == 1:
-        return "", parts[0]
-    return (parts[0], parts[1])
-
-
-@dataclass
-class DatabaseConnectionSpec:
-    """
-    Connection spec for relational database.
-    Used by both internal and target storage.
-    """
-
-    url: str
-    user: str | None = None
-    password: str | None = None
-    max_connections: int = 25
-    min_connections: int = 5
 
 
 @dataclass
@@ -75,44 +44,14 @@ def _load_field(
 class Settings:
     """Settings for the cocoindex library."""
 
-    ignore_target_drop_failures: bool = False
-    database: DatabaseConnectionSpec | None = None
-    db_schema_name: str | None = None
-    app_namespace: str = ""
+    db_path: os.PathLike[str] | None = None
     global_execution_options: GlobalExecutionOptions | None = None
+    lmdb_max_dbs: int = 1024
+    lmdb_map_size: int = 0x1_0000_0000  # 4 GiB
 
     @classmethod
-    def from_env(cls) -> Self:
+    def from_env(cls, db_path: os.PathLike[str] | None = None) -> Self:
         """Load settings from environment variables."""
-
-        ignore_target_drop_failures_dict: dict[str, Any] = {}
-        _load_field(
-            ignore_target_drop_failures_dict,
-            "ignore_target_drop_failures",
-            "COCOINDEX_IGNORE_TARGET_DROP_FAILURES",
-            parse=lambda v: v.lower() == "true",
-        )
-
-        database_url = os.getenv("COCOINDEX_DATABASE_URL")
-        if database_url is not None:
-            db_kwargs: dict[str, Any] = {"url": database_url}
-            _load_field(db_kwargs, "user", "COCOINDEX_DATABASE_USER")
-            _load_field(db_kwargs, "password", "COCOINDEX_DATABASE_PASSWORD")
-            _load_field(
-                db_kwargs,
-                "max_connections",
-                "COCOINDEX_DATABASE_MAX_CONNECTIONS",
-                parse=int,
-            )
-            _load_field(
-                db_kwargs,
-                "min_connections",
-                "COCOINDEX_DATABASE_MIN_CONNECTIONS",
-                parse=int,
-            )
-            database = DatabaseConnectionSpec(**db_kwargs)
-        else:
-            database = None
 
         exec_kwargs: dict[str, Any] = dict()
         _load_field(
@@ -127,21 +66,26 @@ class Settings:
             "COCOINDEX_SOURCE_MAX_INFLIGHT_BYTES",
             parse=int,
         )
-        db_schema_name = os.getenv("COCOINDEX_DATABASE_SCHEMA_NAME")
         global_execution_options = GlobalExecutionOptions(**exec_kwargs)
 
-        app_namespace = os.getenv("COCOINDEX_APP_NAMESPACE", "")
-
-        ignore_target_drop_failures = ignore_target_drop_failures_dict.get(
-            "ignore_target_drop_failures", False
+        lmdb_kwargs: dict[str, Any] = dict()
+        _load_field(
+            lmdb_kwargs,
+            "lmdb_max_dbs",
+            "COCOINDEX_LMDB_MAX_DBS",
+            parse=int,
+        )
+        _load_field(
+            lmdb_kwargs,
+            "lmdb_map_size",
+            "COCOINDEX_LMDB_MAP_SIZE",
+            parse=int,
         )
 
         return cls(
-            ignore_target_drop_failures=ignore_target_drop_failures,
-            database=database,
-            db_schema_name=db_schema_name,
-            app_namespace=app_namespace,
+            db_path=db_path,
             global_execution_options=global_execution_options,
+            **lmdb_kwargs,
         )
 
 

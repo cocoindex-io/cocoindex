@@ -1,65 +1,37 @@
-This example builds an embedding index based on files stored in an Amazon S3 bucket.
-It continuously updates the index as files are added / updated / deleted in the source bucket:
-it keeps the index in sync with the Amazon S3 bucket effortlessly.
+# Amazon S3 Embedding (v1) 🪣
 
-## Prerequisite
+This example embeds markdown files from an S3 bucket, stores the chunks + embeddings in Postgres (pgvector), and provides a simple semantic-search query demo.
 
-Before running the example, you need to:
+## Prerequisites
 
-1.  [Install Postgres](https://cocoindex.io/docs/getting_started/installation#-install-postgres) if you don't have one.
+- A running Postgres with the pgvector extension available
+- An S3 bucket (or S3-compatible service like MinIO) with markdown files
+- AWS credentials configured (e.g. via `aws configure`, env vars, or IAM role)
 
-2.  Prepare for Amazon S3.
-    See [Setup for AWS S3](https://cocoindex.io/docs/sources/amazons3#setup-for-amazon-s3) for more details.
+Copy `.env.example` to `.env` and fill in your values:
 
-3.  Create a `.env` file with your Amazon S3 bucket name and (optionally) prefix.
-    Start from copying the `.env.example`, and then edit it to fill in your bucket name and prefix.
-
-    ```sh
-    cp .env.example .env
-    $EDITOR .env
-    ```
-
-    Example `.env` file:
-    ```
-    # Database Configuration
-    DATABASE_URL=postgresql://localhost:5432/cocoindex
-
-    # Amazon S3 Configuration
-    AMAZON_S3_BUCKET_NAME=your-bucket-name
-    AMAZON_S3-SQS_QUEUE_URL=https://sqs.us-west-2.amazonaws.com/123456789/S3ChangeNotifications
-    ```
+```sh
+cp .env.example .env
+```
 
 ## Run
 
-Install dependencies:
+Install deps:
 
 ```sh
 pip install -e .
 ```
 
-Run:
+Build/update the index (writes rows into Postgres):
 
 ```sh
-python main.py
+cocoindex update main.py
 ```
 
-During running, it will keep observing changes in the Amazon S3 bucket and update the index automatically.
-At the same time, it accepts queries from the terminal, and performs search on top of the up-to-date index.
-
-
-## CocoInsight
-CocoInsight is in Early Access now (Free) 😊 You found us! A quick 3 minute video tutorial about CocoInsight: [Watch on YouTube](https://youtu.be/ZnmyoHslBSc?si=pPLXWALztkA710r9).
-
-Run CocoInsight to understand your RAG data pipeline:
+Query:
 
 ```sh
-cocoindex server -ci main
+python main.py query "what is self-attention?"
 ```
 
-You can also add a `-L` flag to make the server keep updating the index to reflect source changes at the same time:
-
-```sh
-cocoindex update -L main
-```
-
-Then open the CocoInsight UI at [https://cocoindex.io/cocoinsight](https://cocoindex.io/cocoinsight).
+Note: this example **does not create a vector index**; queries will do a sequential scan.

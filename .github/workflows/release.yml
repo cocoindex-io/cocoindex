@@ -86,26 +86,26 @@ jobs:
             python-version: "3.14"
             free-threaded: true
             container: "ghcr.io/rust-cross/manylinux_2_28-cross:x86_64"
-            maturin-args: "--no-default-features -F legacy-states-v0 --interpreter 3.14t"
+            maturin-args: "--no-default-features --interpreter 3.14t"
           - os: linux
             runner: ubuntu-24.04-arm
             target: aarch64
             python-version: "3.14"
             free-threaded: true
             container: "ghcr.io/rust-cross/manylinux_2_28-cross:aarch64"
-            maturin-args: "--no-default-features -F legacy-states-v0 --interpreter 3.14t"
+            maturin-args: "--no-default-features --interpreter 3.14t"
           - os: macos
             runner: macos-latest
             target: aarch64
             python-version: "3.14"
             free-threaded: true
-            maturin-args: "--no-default-features -F legacy-states-v0 --interpreter 3.14t"
+            maturin-args: "--no-default-features --interpreter 3.14t"
           - os: windows
             runner: windows-latest
             target: x64
             python-version: "3.14"
             free-threaded: true
-            maturin-args: "--no-default-features -F legacy-states-v0 --interpreter 3.14t"
+            maturin-args: "--no-default-features --interpreter 3.14t"
     steps:
       - uses: actions/checkout@v6
         with:
