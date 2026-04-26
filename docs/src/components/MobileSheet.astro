@@ -1,0 +1,236 @@
+---
+// Phone-only off-canvas drawer. Two segmented tabs:
+//   - On this page : the current doc's H2/H3 headings (numbered like Toc)
+//   - Pages        : the full sidebar tree (mirrors Sidebar.astro)
+//
+// Token discipline matches design_guidelines/ui/hamburger-toc.html:
+//   · ghost-at-rest burger + star pill in the topbar
+//   · scrim + hairline border for elevation (no drop shadows)
+//   · one coral accent at a time — the active row, or the burger glyph
+//     while open. Never both.
+//
+// Scoped via `@media (max-width: 820px)` in globals.css, so desktop is
+// unaffected — the sheet sits at `display: none` until phone width.
+import type { MarkdownHeading } from 'astro';
+import { sidebar, type SidebarItem } from '../data/docs-sidebar';
+
+export interface Props {
+  /** Slug of the currently-rendered doc. Drives the `aria-current` row in the Pages tab. */
+  currentSlug: string;
+  /** Page headings (already filtered to H2/H3 by the layout, or raw — we re-filter here). */
+  headings: MarkdownHeading[];
+  /** Optional override of the sidebar tree. Defaults to docs-sidebar. */
+  sidebarItems?: SidebarItem[];
+}
+
+const { currentSlug, headings, sidebarItems = sidebar } = Astro.props;
+const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+
+// Same H2/H3 filter + numbering as Toc.astro so the phone "On this page"
+// list matches the desktop rail one-for-one.
+const tocItems = headings.filter((h) => h.depth >= 2 && h.depth <= 3);
+let h2Count = 0;
+const tocRows = tocItems.map((h) => {
+  if (h.depth === 2) h2Count++;
+  return { ...h, n: h.depth === 2 ? h2Count : null };
+});
+
+function href(slug: string): string {
+  return `${base}/${slug}`;
+}
+---
+
+<div class="mobile-scrim" id="mobileScrim" aria-hidden="true"></div>
+
+<aside
+  class="mobile-sheet"
+  id="mobileSheet"
+  role="dialog"
+  aria-modal="true"
+  aria-labelledby="mobileSheetTtl"
+  hidden
+>
+  <header class="mobile-sheet-head">
+    <span class="ttl" id="mobileSheetTtl">Menu</span>
+    <button class="mobile-close" id="mobileClose" type="button" aria-label="Close menu">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+        <path d="M3 3l10 10M13 3L3 13"/>
+      </svg>
+    </button>
+  </header>
+
+  <div class="mobile-tabs" role="tablist" aria-label="Menu sections">
+    <button
+      id="tabPages"
+      type="button"
+      role="tab"
+      aria-selected="true"
+      aria-controls="panePages"
+    >
+      Pages
+    </button>
+    <button
+      id="tabToc"
+      type="button"
+      role="tab"
+      aria-selected="false"
+      aria-controls="paneToc"
+      disabled={tocRows.length === 0}
+    >
+      On this page
+    </button>
+  </div>
+
+  <div
+    class="mobile-pane"
+    id="paneToc"
+    role="tabpanel"
+    aria-labelledby="tabToc"
+    hidden
+  >
+    {tocRows.length === 0 ? (
+      <p class="mobile-empty">No headings on this page.</p>
+    ) : (
+      <nav class="mobile-list" aria-label="On this page">
+        {tocRows.map((h) => (
+          <a
+            href={`#${h.slug}`}
+            data-mobile-toc-link={h.slug}
+            class={h.depth === 3 ? 'sub' : ''}
+          >
+            {h.n != null && <span class="num">{h.n}</span>}
+            <span class="lbl">{h.text}</span>
+          </a>
+        ))}
+      </nav>
+    )}
+  </div>
+
+  <div
+    class="mobile-pane"
+    id="panePages"
+    role="tabpanel"
+    aria-labelledby="tabPages"
+  >
+    {sidebarItems.map((item) => (
+      item.type === 'doc' ? (
+        <div class="mobile-group">
+          <nav class="mobile-list" aria-label={item.label ?? item.slug}>
+            <a
+              href={href(item.slug)}
+              aria-current={currentSlug === item.slug ? 'page' : undefined}
+            >
+              <span class="lbl">{item.label ?? item.slug}</span>
+            </a>
+          </nav>
+        </div>
+      ) : (
+        <div class="mobile-group">
+          <h6>
+            {item.slug ? (
+              <a href={href(item.slug)}>{item.label}</a>
+            ) : (
+              <span>{item.label}</span>
+            )}
+          </h6>
+          <nav class="mobile-list" aria-label={item.label}>
+            {item.items.map((child) => (
+              child.type === 'doc' ? (
+                <a
+                  href={href(child.slug)}
+                  aria-current={currentSlug === child.slug ? 'page' : undefined}
+                >
+                  <span class="lbl">{child.label ?? child.slug}</span>
+                </a>
+              ) : null
+            ))}
+          </nav>
+        </div>
+      )
+    ))}
+  </div>
+</aside>
+
+<script>
+  // Phone drawer controller. Same logic shape as the design-system spec
+  // at design_guidelines/ui/hamburger-toc.html: open/close, tab switch,
+  // Esc, scrim-tap, body scroll-lock. The burger lives in Topbar; the
+  // sheet lives in this component; they connect by id via aria-controls.
+  (() => {
+    const burger = document.getElementById('menuBtn') as HTMLButtonElement | null;
+    const sheet  = document.getElementById('mobileSheet') as HTMLElement | null;
+    const scrim  = document.getElementById('mobileScrim') as HTMLElement | null;
+    const close  = document.getElementById('mobileClose') as HTMLButtonElement | null;
+    const tabToc   = document.getElementById('tabToc')   as HTMLButtonElement | null;
+    const tabPages = document.getElementById('tabPages') as HTMLButtonElement | null;
+    const paneToc   = document.getElementById('paneToc')   as HTMLElement | null;
+    const panePages = document.getElementById('panePages') as HTMLElement | null;
+    if (!burger || !sheet || !scrim || !close || !tabToc || !tabPages || !paneToc || !panePages) return;
+
+    const setOpen = (open: boolean) => {
+      burger.classList.toggle('open', open);
+      sheet.classList.toggle('open', open);
+      scrim.classList.toggle('open', open);
+      sheet.hidden = !open;
+      scrim.setAttribute('aria-hidden', open ? 'false' : 'true');
+      burger.setAttribute('aria-expanded', open ? 'true' : 'false');
+      burger.setAttribute('aria-label', open ? 'Close menu' : 'Open menu');
+      // Prevent the page beneath from scrolling when the sheet is open;
+      // restoring `''` keeps any user-set inline overflow intact.
+      document.body.style.overflow = open ? 'hidden' : '';
+      if (open) {
+        const active = sheet.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]');
+        active?.focus();
+      }
+    };
+
+    const setTab = (which: 'toc' | 'pages') => {
+      const onToc = which === 'toc' && !tabToc.disabled;
+      tabToc.setAttribute('aria-selected', onToc ? 'true' : 'false');
+      tabPages.setAttribute('aria-selected', onToc ? 'false' : 'true');
+      paneToc.hidden = !onToc;
+      panePages.hidden = onToc;
+    };
+
+    burger.addEventListener('click', () => setOpen(!sheet.classList.contains('open')));
+    close .addEventListener('click', () => setOpen(false));
+    scrim .addEventListener('click', () => setOpen(false));
+
+    tabToc  .addEventListener('click', () => setTab('toc'));
+    tabPages.addEventListener('click', () => setTab('pages'));
+
+    // Arrow-key tab navigation (a11y).
+    [tabToc, tabPages].forEach((t, i, arr) => {
+      t.addEventListener('keydown', (e) => {
+        if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+          e.preventDefault();
+          const target = arr[(i + (e.key === 'ArrowRight' ? 1 : -1) + arr.length) % arr.length];
+          target.focus();
+          setTab(target === tabToc ? 'toc' : 'pages');
+        }
+      });
+    });
+
+    // Tapping a TOC link closes the sheet so the user lands on the heading
+    // without an open drawer obscuring it.
+    paneToc.addEventListener('click', (e) => {
+      const a = (e.target as HTMLElement | null)?.closest('a[data-mobile-toc-link]');
+      if (a) setOpen(false);
+    });
+
+    // Esc closes the sheet — only listen at the document level when open
+    // so we don't sit on every keystroke.
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && sheet.classList.contains('open')) setOpen(false);
+    });
+
+    // If the viewport widens past phone breakpoint while the sheet is
+    // open, close it — the desktop rails take over the same job.
+    const mq = window.matchMedia('(min-width: 821px)');
+    const onMq = (ev: MediaQueryListEvent | MediaQueryList) => {
+      if ((ev as MediaQueryList).matches) setOpen(false);
+    };
+    if (mq.addEventListener) mq.addEventListener('change', onMq as (ev: MediaQueryListEvent) => void);
+    else mq.addListener(onMq as (ev: MediaQueryListEvent) => void);
+  })();
+</script>
