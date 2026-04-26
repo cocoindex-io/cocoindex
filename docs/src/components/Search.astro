@@ -10,17 +10,17 @@
 // import dynamically inside a client `<script>` so the search bundle
 // loads only when the page actually carries the integration.
 
-const APP_ID    = (import.meta.env.PUBLIC_COCOINDEX_DOCS_ALGOLIA_APP_ID
-                 ?? import.meta.env.COCOINDEX_DOCS_ALGOLIA_APP_ID
-                 ?? '') as string;
-const API_KEY   = (import.meta.env.PUBLIC_COCOINDEX_DOCS_ALGOLIA_API_KEY
-                 ?? import.meta.env.COCOINDEX_DOCS_ALGOLIA_API_KEY
-                 ?? '') as string;
-const INDEX     = 'cocoindex';
-// `enabled` lets us short-circuit on local builds where the keys aren't
-// set — the button still renders, but it links to GitHub search instead
-// of trying to mount a broken DocSearch modal.
-const enabled = APP_ID.length > 0 && API_KEY.length > 0;
+// Same env var names as the Docusaurus era (commit b8e0eda removed
+// these along with the integration). Visible to `import.meta.env`
+// because astro.config.mjs adds `COCOINDEX_` to vite.envPrefix.
+// Values inline into the client `<script>` below via `define:vars`.
+// The Algolia "search-only API key" is public by design — the
+// index is read-only with that key.
+const APP_ID  = (import.meta.env.COCOINDEX_DOCS_ALGOLIA_APP_ID  ?? '') as string;
+const API_KEY = (import.meta.env.COCOINDEX_DOCS_ALGOLIA_API_KEY ?? '') as string;
+// Keep in sync with the crawler config — v1 docs use `cocoindex_v1`
+// (PR #1551 renamed it from `cocoindex`).
+const INDEX   = 'cocoindex_v1';
 ---
 
 <div class="search-wrap">
@@ -29,7 +29,6 @@ const enabled = APP_ID.length > 0 && API_KEY.length > 0;
     type="button"
     data-search-btn
     aria-label="Search documentation"
-    data-enabled={enabled ? 'true' : 'false'}
   >
     <svg class="ic" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
       <circle cx="11" cy="11" r="7"></circle>
@@ -40,60 +39,114 @@ const enabled = APP_ID.length > 0 && API_KEY.length > 0;
   </button>
 </div>
 
-{enabled && (
-  <script define:vars={{ APP_ID, API_KEY, INDEX }}>
-    // Component can mount more than once per page (e.g. sidebar +
-    // mobile drawer), so we install one set of listeners + one
-    // DocSearch instance per document. Both buttons forward to the
-    // same hidden host trigger.
-    if (!window.__docsSearchInit) {
-      window.__docsSearchInit = true;
+<!--
+  Two scripts here, on purpose:
 
-      let bootP = null;
-      const boot = () => {
-        if (bootP) return bootP;
-        bootP = Promise.all([
-          import('@docsearch/js'),
-          import('@docsearch/css'),
-        ]).then(([{ default: docsearch }]) => {
-          let host = document.getElementById('docsSearchHost');
-          if (!host) {
-            host = document.createElement('div');
-            host.id = 'docsSearchHost';
-            host.style.display = 'none';
-            document.body.appendChild(host);
-          }
-          docsearch({
-            appId: APP_ID,
-            apiKey: API_KEY,
-            indexName: INDEX,
-            container: '#docsSearchHost',
-            searchParameters: { facetFilters: [] },
-          });
-          return host.querySelector('.DocSearch-Button');
-        });
-        return bootP;
-      };
+  1. The first one is `is:inline` + `define:vars` — that combination
+     emits the values directly into the rendered HTML so they survive
+     to the browser. It just stamps `window.__COCOINDEX_DOCSEARCH__`
+     and exits.
+  2. The second one is a plain `<script>` block. Astro routes plain
+     scripts through Vite, which means bare module specifiers like
+     `@docsearch/js` resolve correctly. (A `define:vars` script is
+     treated as inline and skips Vite — that's why the earlier version
+     hit `Failed to resolve module specifier '@docsearch/js'`.) Astro
+     also dedupes plain scripts across the page, so a Search rendered
+     in both the sidebar and the mobile drawer still registers exactly
+     one click handler.
+-->
+<script is:inline define:vars={{ APP_ID, API_KEY, INDEX }}>
+  window.__COCOINDEX_DOCSEARCH__ = { APP_ID, API_KEY, INDEX };
+</script>
 
-      // Delegate clicks across all `[data-search-btn]` instances —
-      // event delegation also covers buttons added later (e.g. when
-      // a layout re-renders).
-      document.addEventListener('click', (e) => {
-        const btn = e.target?.closest?.('[data-search-btn]');
-        if (!btn) return;
-        boot().then((real) => { real?.click(); });
-      });
+<script>
+  import docsearch from '@docsearch/js';
+  import '@docsearch/css';
 
-      // Keyboard shortcut — `/` or Cmd/Ctrl+K outside form inputs.
-      document.addEventListener('keydown', (e) => {
-        const tag = document.activeElement?.tagName ?? '';
-        const inField = /(input|textarea|select)/i.test(tag);
-        const isShortcut = (e.key === '/' && !inField)
-                        || ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k');
-        if (!isShortcut) return;
-        e.preventDefault();
-        boot().then((real) => { real?.click(); });
-      });
+  type DocSearchConfig = { APP_ID: string; API_KEY: string; INDEX: string };
+
+  declare global {
+    interface Window {
+      __COCOINDEX_DOCSEARCH__?: DocSearchConfig;
+      __docsSearchInit?: boolean;
     }
-  </script>
-)}
+  }
+
+  if (!window.__docsSearchInit) {
+    window.__docsSearchInit = true;
+
+    const cfg = window.__COCOINDEX_DOCSEARCH__ ?? { APP_ID: '', API_KEY: '', INDEX: '' };
+    const hasKeys = !!cfg.APP_ID && !!cfg.API_KEY;
+
+    // Find DocSearch's own button inside our hidden host. DocSearch
+    // renders synchronously after init(), but a requestAnimationFrame
+    // retry covers any future async-render change.
+    const fireDocSearch = (host: HTMLElement) => {
+      const tryClick = (tries: number) => {
+        const btn = host.querySelector<HTMLElement>('.DocSearch-Button');
+        if (btn) { btn.click(); return; }
+        if (tries <= 0) {
+          console.warn('[CocoIndex docs] DocSearch button not found after init.');
+          return;
+        }
+        requestAnimationFrame(() => tryClick(tries - 1));
+      };
+      tryClick(8);
+    };
+
+    let bootP: Promise<HTMLElement | null> | null = null;
+    const boot = (): Promise<HTMLElement | null> => {
+      if (!hasKeys) {
+        console.warn(
+          '[CocoIndex docs] Algolia search disabled — set ' +
+          'COCOINDEX_DOCS_ALGOLIA_APP_ID and ' +
+          'COCOINDEX_DOCS_ALGOLIA_API_KEY in docs/.env to enable.',
+        );
+        return Promise.resolve(null);
+      }
+      if (bootP) return bootP;
+      bootP = Promise.resolve().then(() => {
+        let host = document.getElementById('docsSearchHost');
+        if (!host) {
+          host = document.createElement('div');
+          host.id = 'docsSearchHost';
+          // Off-screen instead of `display: none` so DocSearch's button
+          // still registers layout/clicks.
+          host.style.cssText = 'position:absolute;left:-9999px;top:0;width:1px;height:1px;overflow:hidden;';
+          document.body.appendChild(host);
+        }
+        docsearch({
+          appId: cfg.APP_ID,
+          apiKey: cfg.API_KEY,
+          indexName: cfg.INDEX,
+          container: host,
+        });
+        return host;
+      }).catch((err: unknown) => {
+        console.error('[CocoIndex docs] DocSearch failed to load:', err);
+        return null;
+      });
+      return bootP;
+    };
+
+    // Delegated click — covers buttons added by re-rendered layouts.
+    document.addEventListener('click', (e) => {
+      const target = e.target as HTMLElement | null;
+      const btn = target?.closest?.('[data-search-btn]');
+      if (!btn) return;
+      boot().then((host) => { if (host) fireDocSearch(host); });
+    });
+
+    // Pre-warm on idle so the first click feels instant. DocSearch's
+    // own listeners (Cmd+K, /) only register after this runs.
+    if (hasKeys) {
+      const pre = () => { boot(); };
+      if ('requestIdleCallback' in window) {
+        (window as Window & { requestIdleCallback: (cb: () => void, opts?: { timeout: number }) => void })
+          .requestIdleCallback(pre, { timeout: 1500 });
+      } else {
+        setTimeout(pre, 600);
+      }
+    }
+  }
+</script>
