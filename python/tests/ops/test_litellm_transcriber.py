@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -29,8 +29,8 @@ async def test_litellm_transcriber_reads_file_and_merges_kwargs() -> None:
     fake_response = type("R", (), {"text": "hello world"})()
 
     with patch(
-        "cocoindex.ops.litellm.litellm.transcription",
-        new=MagicMock(return_value=fake_response),
+        "cocoindex.ops.litellm.litellm.atranscription",
+        new=AsyncMock(return_value=fake_response),
     ) as mocked:
         text = await transcriber.transcribe(file_like, response_format="verbose_json")
 

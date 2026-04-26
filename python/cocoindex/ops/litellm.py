@@ -164,7 +164,7 @@ class LiteLLMTranscriber:
         model: LiteLLM transcription model name (e.g., ``"whisper-1"``,
             ``"elevenlabs/scribe_v1"``).
         **kwargs: Additional keyword arguments passed through to every
-            ``litellm.transcription`` call (e.g., ``api_key``, ``api_base``,
+            ``litellm.atranscription`` call (e.g., ``api_key``, ``api_base``,
             ``language``, ``extra_body``).
 
     Example:
@@ -189,7 +189,7 @@ class LiteLLMTranscriber:
         Args:
             file: ``FileLike`` object containing audio data.
             **kwargs: Additional keyword arguments passed through to this
-                ``litellm.transcription`` call.
+                ``litellm.atranscription`` call.
 
         Returns:
             The transcribed text.
@@ -200,29 +200,11 @@ class LiteLLMTranscriber:
         """
         audio = _io.BytesIO(await file.read())
         audio.name = file.file_path.name
-        return await _asyncio.to_thread(self._transcribe, audio, kwargs)
-
-    def _transcribe(self, file: _Any, per_call_kwargs: dict[str, _Any]) -> str:
-        """Call LiteLLM's synchronous transcription API.
-
-        Args:
-            file: Binary file-like object accepted by ``litellm.transcription``.
-            per_call_kwargs: Keyword arguments passed to this specific
-                transcription call.
-
-        Returns:
-            The transcribed text.
-
-        Note:
-            ``litellm.transcription`` is synchronous, so :meth:`transcribe`
-            calls this method with ``asyncio.to_thread``.
-        """
         call_kwargs = dict(self._kwargs)
-        call_kwargs.update(per_call_kwargs)
-
-        response = litellm.transcription(
+        call_kwargs.update(kwargs)
+        response = await litellm.atranscription(
             model=self._model,
-            file=file,
+            file=audio,
             **call_kwargs,
         )
         return response.text  # type: ignore[no-any-return]
