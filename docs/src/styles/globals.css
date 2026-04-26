@@ -226,7 +226,7 @@ aside.toc h6 {
 }
 aside.toc ul { list-style: none; margin: 0; padding: 0; }
 aside.toc li a {
-  display: flex; align-items: baseline; gap: 8px;
+  display: block;
   padding: 4px 10px;
   color: var(--muted); font-size: 13px;
   text-decoration: none;
@@ -235,14 +235,6 @@ aside.toc li a {
 }
 aside.toc li a:hover { color: var(--coral); text-decoration: none; }
 aside.toc li a.on { color: var(--coral); border-left-color: var(--coral); }
-aside.toc li a.on .n { color: var(--coral); }
-aside.toc li a .n {
-  font-family: var(--mono);
-  font-size: 12px;
-  color: var(--muted);
-  min-width: 12px;
-}
-aside.toc li a .n::after { content: ' ·'; opacity: 0.65; }
 aside.toc li.sub a { padding-left: 22px; font-size: 12.5px; }
 
 aside.toc .meta {
@@ -464,7 +456,6 @@ aside.toc .meta .edited { color: var(--muted); cursor: default; }
   font-family: var(--mono);
   font-size: 11px;
   letter-spacing: 0.08em;
-  text-transform: uppercase;
   color: var(--muted);
   border-bottom-color: var(--rule-strong);
 }
