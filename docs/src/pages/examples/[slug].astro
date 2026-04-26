@@ -7,6 +7,7 @@
 import '../../styles/globals.css';
 import Topbar from '../../components/Topbar.astro';
 import Toc from '../../components/Toc.astro';
+import MobileSheet from '../../components/MobileSheet.astro';
 import { SITE_URL, titleMarkup, titleText } from '../../consts';
 import { examples, findExample, CATEGORY_META, type Category } from '../../data/examples';
 import { getEntry, render } from 'astro:content';
@@ -20,6 +21,22 @@ const grouped = CAT_ORDER.map((c) => ({
   meta: CATEGORY_META[c],
   items: examples.filter((e) => e.category === c),
 }));
+
+// Same tree, reshaped for the phone drawer (MobileSheet.SidebarItem[]).
+// The aside.ex-side rail is hidden on phones — without this, readers
+// would lose the cross-example browse nav entirely on small screens.
+import type { SidebarItem } from '../../data/docs-sidebar';
+const examplesSidebar: SidebarItem[] = grouped
+  .filter((g) => g.items.length > 0)
+  .map((g) => ({
+    type: 'category',
+    label: `${titleText(g.meta.label)}${g.meta.em ?? ''}`,
+    items: g.items.map((it) => ({
+      type: 'doc',
+      slug: `examples/${it.slug}`,
+      label: titleText(it.title),
+    })),
+  }));
 
 export async function getStaticPaths() {
   return examples.map((e) => ({ params: { slug: e.slug } }));
@@ -86,7 +103,12 @@ const introItems = [
     />
   </head>
   <body class="ex-detail">
-    <Topbar />
+    <Topbar mobileSheetId="mobileSheet" />
+    <MobileSheet
+      currentSlug={`examples/${slug}`}
+      headings={rendered?.headings ?? []}
+      sidebarItems={examplesSidebar}
+    />
 
     <div class="ex-layout">
       <!-- ─────────── LEFT: EXAMPLE NAV ─────────── -->
@@ -467,6 +489,16 @@ const introItems = [
         body.ex-detail .trending-preview { grid-template-columns: 1fr; }
       }
       @media (max-width: 640px) { body.ex-detail .var-grid { grid-template-columns: 1fr; } }
+
+      /* On phones the inline cross-example browse rail moves into the
+         hamburger drawer (MobileSheet) — keeping it inline here would
+         eat a whole pre-fold viewport before the user sees the first
+         line of the example writeup. */
+      @media (max-width: 820px) {
+        body.ex-detail .ex-side { display: none; }
+        body.ex-detail .ex-layout { grid-template-columns: 1fr; }
+        body.ex-detail .ex-main { padding: 16px 20px 56px; }
+      }
 
       /* ═══════════ Prose (rendered MDX body) ═══════════
          The ported markdown drops into `.ex-prose`. Keep the typography

@@ -13,18 +13,40 @@
 // unaffected — the sheet sits at `display: none` until phone width.
 import type { MarkdownHeading } from 'astro';
 import { sidebar, type SidebarItem } from '../data/docs-sidebar';
+import { SITE_MAIN, SITE_BLOG } from '../consts';
 
 export interface Props {
   /** Slug of the currently-rendered doc. Drives the `aria-current` row in the Pages tab. */
-  currentSlug: string;
+  currentSlug?: string;
   /** Page headings (already filtered to H2/H3 by the layout, or raw — we re-filter here). */
-  headings: MarkdownHeading[];
-  /** Optional override of the sidebar tree. Defaults to docs-sidebar. */
-  sidebarItems?: SidebarItem[];
+  headings?: MarkdownHeading[];
+  /** Sidebar tree to surface in the Pages pane below the Site links. Pass
+   *  `null` to render no docs sidebar (e.g. on examples listing or 404).
+   *  Defaults to the docs-sidebar tree (regular doc pages). */
+  sidebarItems?: SidebarItem[] | null;
 }
 
-const { currentSlug, headings, sidebarItems = sidebar } = Astro.props;
+const {
+  currentSlug = '',
+  headings = [],
+  sidebarItems: sidebarItemsRaw,
+} = Astro.props;
+const sidebarItems: SidebarItem[] | null =
+  sidebarItemsRaw === undefined ? sidebar : sidebarItemsRaw;
 const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+
+// Site-level nav — same set rendered inline in Topbar.astro at desktop
+// width. Surfaced here so phones still have a path to Examples / Docs /
+// Enterprise / Blog when `.nav-links` is hidden. Kept in this component
+// (rather than a shared module) because Topbar's links carry hover-
+// dropdown markup the drawer doesn't need; flat list reads better here.
+const SITE_LINKS: Array<{ href: string; label: string }> = [
+  { href: `${SITE_MAIN}/cocoindex-code`, label: 'CocoIndex Code' },
+  { href: `${base}/examples`,            label: 'Examples'       },
+  { href: base || '/',                   label: 'Documentation'  },
+  { href: `${SITE_MAIN}/enterprise`,     label: 'Enterprise'     },
+  { href: SITE_BLOG,                     label: 'Blog'           },
+];
 
 // Same H2/H3 filter + numbering as Toc.astro so the phone "On this page"
 // list matches the desktop rail one-for-one.
@@ -59,38 +81,37 @@ function href(slug: string): string {
     </button>
   </header>
 
-  <div class="mobile-tabs" role="tablist" aria-label="Menu sections">
-    <button
-      id="tabPages"
-      type="button"
-      role="tab"
-      aria-selected="true"
-      aria-controls="panePages"
-    >
-      Pages
-    </button>
-    <button
-      id="tabToc"
-      type="button"
-      role="tab"
-      aria-selected="false"
-      aria-controls="paneToc"
-      disabled={tocRows.length === 0}
-    >
-      On this page
-    </button>
-  </div>
+  {tocRows.length > 0 && (
+    <div class="mobile-tabs" role="tablist" aria-label="Menu sections">
+      <button
+        id="tabPages"
+        type="button"
+        role="tab"
+        aria-selected="true"
+        aria-controls="panePages"
+      >
+        Pages
+      </button>
+      <button
+        id="tabToc"
+        type="button"
+        role="tab"
+        aria-selected="false"
+        aria-controls="paneToc"
+      >
+        On this page
+      </button>
+    </div>
+  )}
 
-  <div
-    class="mobile-pane"
-    id="paneToc"
-    role="tabpanel"
-    aria-labelledby="tabToc"
-    hidden
-  >
-    {tocRows.length === 0 ? (
-      <p class="mobile-empty">No headings on this page.</p>
-    ) : (
+  {tocRows.length > 0 && (
+    <div
+      class="mobile-pane"
+      id="paneToc"
+      role="tabpanel"
+      aria-labelledby="tabToc"
+      hidden
+    >
       <nav class="mobile-list" aria-label="On this page">
         {tocRows.map((h) => (
           <a
@@ -103,8 +124,8 @@ function href(slug: string): string {
           </a>
         ))}
       </nav>
-    )}
-  </div>
+    </div>
+  )}
 
   <div
     class="mobile-pane"
@@ -112,7 +133,20 @@ function href(slug: string): string {
     role="tabpanel"
     aria-labelledby="tabPages"
   >
-    {sidebarItems.map((item) => (
+    <div class="mobile-group">
+      <h6><span>Site</span></h6>
+      <nav class="mobile-list" aria-label="Site">
+        {SITE_LINKS.map((l) => (
+          <a href={l.href}><span class="lbl">{l.label}</span></a>
+        ))}
+      </nav>
+    </div>
+
+    {sidebarItems && sidebarItems.length > 0 && (
+      <hr class="mobile-divider" />
+    )}
+
+    {sidebarItems?.map((item) => (
       item.type === 'doc' ? (
         <div class="mobile-group">
           <nav class="mobile-list" aria-label={item.label ?? item.slug}>
@@ -161,11 +195,15 @@ function href(slug: string): string {
     const sheet  = document.getElementById('mobileSheet') as HTMLElement | null;
     const scrim  = document.getElementById('mobileScrim') as HTMLElement | null;
     const close  = document.getElementById('mobileClose') as HTMLButtonElement | null;
+    // Tabs only render when the current page has headings; on pages
+    // without (e.g. the examples listing, 404), there's a single Pages
+    // pane with no segmented control, so these refs may be null.
     const tabToc   = document.getElementById('tabToc')   as HTMLButtonElement | null;
     const tabPages = document.getElementById('tabPages') as HTMLButtonElement | null;
     const paneToc   = document.getElementById('paneToc')   as HTMLElement | null;
     const panePages = document.getElementById('panePages') as HTMLElement | null;
-    if (!burger || !sheet || !scrim || !close || !tabToc || !tabPages || !paneToc || !panePages) return;
+    if (!burger || !sheet || !scrim || !close || !panePages) return;
+    const hasTabs = !!(tabToc && tabPages && paneToc);
 
     const setOpen = (open: boolean) => {
       burger.classList.toggle('open', open);
@@ -184,39 +222,42 @@ function href(slug: string): string {
       }
     };
 
-    const setTab = (which: 'toc' | 'pages') => {
-      const onToc = which === 'toc' && !tabToc.disabled;
-      tabToc.setAttribute('aria-selected', onToc ? 'true' : 'false');
-      tabPages.setAttribute('aria-selected', onToc ? 'false' : 'true');
-      paneToc.hidden = !onToc;
-      panePages.hidden = onToc;
-    };
-
     burger.addEventListener('click', () => setOpen(!sheet.classList.contains('open')));
     close .addEventListener('click', () => setOpen(false));
     scrim .addEventListener('click', () => setOpen(false));
 
-    tabToc  .addEventListener('click', () => setTab('toc'));
-    tabPages.addEventListener('click', () => setTab('pages'));
+    if (hasTabs) {
+      const setTab = (which: 'toc' | 'pages') => {
+        const onToc = which === 'toc';
+        tabToc!.setAttribute('aria-selected', onToc ? 'true' : 'false');
+        tabPages!.setAttribute('aria-selected', onToc ? 'false' : 'true');
+        paneToc!.hidden = !onToc;
+        panePages.hidden = onToc;
+      };
 
-    // Arrow-key tab navigation (a11y).
-    [tabToc, tabPages].forEach((t, i, arr) => {
-      t.addEventListener('keydown', (e) => {
-        if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
-          e.preventDefault();
-          const target = arr[(i + (e.key === 'ArrowRight' ? 1 : -1) + arr.length) % arr.length];
-          target.focus();
-          setTab(target === tabToc ? 'toc' : 'pages');
-        }
+      tabToc!  .addEventListener('click', () => setTab('toc'));
+      tabPages!.addEventListener('click', () => setTab('pages'));
+
+      // Arrow-key tab navigation (a11y).
+      const tabsArr = [tabToc!, tabPages!];
+      tabsArr.forEach((t, i, arr) => {
+        t.addEventListener('keydown', (e) => {
+          if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+            e.preventDefault();
+            const target = arr[(i + (e.key === 'ArrowRight' ? 1 : -1) + arr.length) % arr.length];
+            target.focus();
+            setTab(target === tabToc ? 'toc' : 'pages');
+          }
+        });
       });
-    });
 
-    // Tapping a TOC link closes the sheet so the user lands on the heading
-    // without an open drawer obscuring it.
-    paneToc.addEventListener('click', (e) => {
-      const a = (e.target as HTMLElement | null)?.closest('a[data-mobile-toc-link]');
-      if (a) setOpen(false);
-    });
+      // Tapping a TOC link closes the sheet so the user lands on the heading
+      // without an open drawer obscuring it.
+      paneToc!.addEventListener('click', (e) => {
+        const a = (e.target as HTMLElement | null)?.closest('a[data-mobile-toc-link]');
+        if (a) setOpen(false);
+      });
+    }
 
     // Esc closes the sheet — only listen at the document level when open
     // so we don't sit on every keystroke.
