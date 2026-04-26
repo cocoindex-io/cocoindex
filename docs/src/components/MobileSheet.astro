@@ -81,38 +81,37 @@ function href(slug: string): string {
     </button>
   </header>
 
-  <div class="mobile-tabs" role="tablist" aria-label="Menu sections">
-    <button
-      id="tabPages"
-      type="button"
-      role="tab"
-      aria-selected="true"
-      aria-controls="panePages"
-    >
-      Pages
-    </button>
-    <button
-      id="tabToc"
-      type="button"
-      role="tab"
-      aria-selected="false"
-      aria-controls="paneToc"
-      disabled={tocRows.length === 0}
-    >
-      On this page
-    </button>
-  </div>
+  {tocRows.length > 0 && (
+    <div class="mobile-tabs" role="tablist" aria-label="Menu sections">
+      <button
+        id="tabPages"
+        type="button"
+        role="tab"
+        aria-selected="true"
+        aria-controls="panePages"
+      >
+        Pages
+      </button>
+      <button
+        id="tabToc"
+        type="button"
+        role="tab"
+        aria-selected="false"
+        aria-controls="paneToc"
+      >
+        On this page
+      </button>
+    </div>
+  )}
 
-  <div
-    class="mobile-pane"
-    id="paneToc"
-    role="tabpanel"
-    aria-labelledby="tabToc"
-    hidden
-  >
-    {tocRows.length === 0 ? (
-      <p class="mobile-empty">No headings on this page.</p>
-    ) : (
+  {tocRows.length > 0 && (
+    <div
+      class="mobile-pane"
+      id="paneToc"
+      role="tabpanel"
+      aria-labelledby="tabToc"
+      hidden
+    >
       <nav class="mobile-list" aria-label="On this page">
         {tocRows.map((h) => (
           <a
@@ -125,8 +124,8 @@ function href(slug: string): string {
           </a>
         ))}
       </nav>
-    )}
-  </div>
+    </div>
+  )}
 
   <div
     class="mobile-pane"
@@ -196,11 +195,15 @@ function href(slug: string): string {
     const sheet  = document.getElementById('mobileSheet') as HTMLElement | null;
     const scrim  = document.getElementById('mobileScrim') as HTMLElement | null;
     const close  = document.getElementById('mobileClose') as HTMLButtonElement | null;
+    // Tabs only render when the current page has headings; on pages
+    // without (e.g. the examples listing, 404), there's a single Pages
+    // pane with no segmented control, so these refs may be null.
     const tabToc   = document.getElementById('tabToc')   as HTMLButtonElement | null;
     const tabPages = document.getElementById('tabPages') as HTMLButtonElement | null;
     const paneToc   = document.getElementById('paneToc')   as HTMLElement | null;
     const panePages = document.getElementById('panePages') as HTMLElement | null;
-    if (!burger || !sheet || !scrim || !close || !tabToc || !tabPages || !paneToc || !panePages) return;
+    if (!burger || !sheet || !scrim || !close || !panePages) return;
+    const hasTabs = !!(tabToc && tabPages && paneToc);
 
     const setOpen = (open: boolean) => {
       burger.classList.toggle('open', open);
@@ -219,39 +222,42 @@ function href(slug: string): string {
       }
     };
 
-    const setTab = (which: 'toc' | 'pages') => {
-      const onToc = which === 'toc' && !tabToc.disabled;
-      tabToc.setAttribute('aria-selected', onToc ? 'true' : 'false');
-      tabPages.setAttribute('aria-selected', onToc ? 'false' : 'true');
-      paneToc.hidden = !onToc;
-      panePages.hidden = onToc;
-    };
-
     burger.addEventListener('click', () => setOpen(!sheet.classList.contains('open')));
     close .addEventListener('click', () => setOpen(false));
     scrim .addEventListener('click', () => setOpen(false));
 
-    tabToc  .addEventListener('click', () => setTab('toc'));
-    tabPages.addEventListener('click', () => setTab('pages'));
+    if (hasTabs) {
+      const setTab = (which: 'toc' | 'pages') => {
+        const onToc = which === 'toc';
+        tabToc!.setAttribute('aria-selected', onToc ? 'true' : 'false');
+        tabPages!.setAttribute('aria-selected', onToc ? 'false' : 'true');
+        paneToc!.hidden = !onToc;
+        panePages.hidden = onToc;
+      };
 
-    // Arrow-key tab navigation (a11y).
-    [tabToc, tabPages].forEach((t, i, arr) => {
-      t.addEventListener('keydown', (e) => {
-        if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
-          e.preventDefault();
-          const target = arr[(i + (e.key === 'ArrowRight' ? 1 : -1) + arr.length) % arr.length];
-          target.focus();
-          setTab(target === tabToc ? 'toc' : 'pages');
-        }
+      tabToc!  .addEventListener('click', () => setTab('toc'));
+      tabPages!.addEventListener('click', () => setTab('pages'));
+
+      // Arrow-key tab navigation (a11y).
+      const tabsArr = [tabToc!, tabPages!];
+      tabsArr.forEach((t, i, arr) => {
+        t.addEventListener('keydown', (e) => {
+          if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+            e.preventDefault();
+            const target = arr[(i + (e.key === 'ArrowRight' ? 1 : -1) + arr.length) % arr.length];
+            target.focus();
+            setTab(target === tabToc ? 'toc' : 'pages');
+          }
+        });
       });
-    });
 
-    // Tapping a TOC link closes the sheet so the user lands on the heading
-    // without an open drawer obscuring it.
-    paneToc.addEventListener('click', (e) => {
-      const a = (e.target as HTMLElement | null)?.closest('a[data-mobile-toc-link]');
-      if (a) setOpen(false);
-    });
+      // Tapping a TOC link closes the sheet so the user lands on the heading
+      // without an open drawer obscuring it.
+      paneToc!.addEventListener('click', (e) => {
+        const a = (e.target as HTMLElement | null)?.closest('a[data-mobile-toc-link]');
+        if (a) setOpen(false);
+      });
+    }
 
     // Esc closes the sheet — only listen at the document level when open
     // so we don't sit on every keystroke.
