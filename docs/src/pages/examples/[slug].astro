@@ -7,6 +7,7 @@
 import '../../styles/globals.css';
 import Topbar from '../../components/Topbar.astro';
 import Toc from '../../components/Toc.astro';
+import MobileSheet from '../../components/MobileSheet.astro';
 import { SITE_URL, titleMarkup, titleText } from '../../consts';
 import { examples, findExample, CATEGORY_META, type Category } from '../../data/examples';
 import { getEntry, render } from 'astro:content';
@@ -86,7 +87,12 @@ const introItems = [
     />
   </head>
   <body class="ex-detail">
-    <Topbar />
+    <Topbar mobileSheetId="mobileSheet" />
+    <MobileSheet
+      currentSlug={slug}
+      headings={rendered?.headings ?? []}
+      sidebarItems={null}
+    />
 
     <div class="ex-layout">
       <!-- ─────────── LEFT: EXAMPLE NAV ─────────── -->

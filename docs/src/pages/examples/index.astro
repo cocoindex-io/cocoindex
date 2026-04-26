@@ -6,6 +6,7 @@
 // file and the card appears in its category automatically.
 import '../../styles/globals.css';
 import Topbar from '../../components/Topbar.astro';
+import MobileSheet from '../../components/MobileSheet.astro';
 import { GITHUB_REPO, DISCORD_URL, SITE_URL, titleMarkup } from '../../consts';
 import {
   examples,
@@ -52,7 +53,8 @@ const canonical = new URL(`${base}/examples`, SITE_URL).toString();
     />
   </head>
   <body class="ex-listing">
-    <Topbar />
+    <Topbar mobileSheetId="mobileSheet" />
+    <MobileSheet sidebarItems={null} />
 
     <div class="ex-wrap">
       <!-- ═══════════ HERO ═══════════ -->

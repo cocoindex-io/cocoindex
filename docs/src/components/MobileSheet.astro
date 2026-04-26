@@ -13,18 +13,40 @@
 // unaffected — the sheet sits at `display: none` until phone width.
 import type { MarkdownHeading } from 'astro';
 import { sidebar, type SidebarItem } from '../data/docs-sidebar';
+import { SITE_MAIN, SITE_BLOG } from '../consts';
 
 export interface Props {
   /** Slug of the currently-rendered doc. Drives the `aria-current` row in the Pages tab. */
-  currentSlug: string;
+  currentSlug?: string;
   /** Page headings (already filtered to H2/H3 by the layout, or raw — we re-filter here). */
-  headings: MarkdownHeading[];
-  /** Optional override of the sidebar tree. Defaults to docs-sidebar. */
-  sidebarItems?: SidebarItem[];
+  headings?: MarkdownHeading[];
+  /** Sidebar tree to surface in the Pages pane below the Site links. Pass
+   *  `null` to render no docs sidebar (e.g. on examples listing or 404).
+   *  Defaults to the docs-sidebar tree (regular doc pages). */
+  sidebarItems?: SidebarItem[] | null;
 }
 
-const { currentSlug, headings, sidebarItems = sidebar } = Astro.props;
+const {
+  currentSlug = '',
+  headings = [],
+  sidebarItems: sidebarItemsRaw,
+} = Astro.props;
+const sidebarItems: SidebarItem[] | null =
+  sidebarItemsRaw === undefined ? sidebar : sidebarItemsRaw;
 const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+
+// Site-level nav — same set rendered inline in Topbar.astro at desktop
+// width. Surfaced here so phones still have a path to Examples / Docs /
+// Enterprise / Blog when `.nav-links` is hidden. Kept in this component
+// (rather than a shared module) because Topbar's links carry hover-
+// dropdown markup the drawer doesn't need; flat list reads better here.
+const SITE_LINKS: Array<{ href: string; label: string }> = [
+  { href: `${SITE_MAIN}/cocoindex-code`, label: 'CocoIndex Code' },
+  { href: `${base}/examples`,            label: 'Examples'       },
+  { href: base || '/',                   label: 'Documentation'  },
+  { href: `${SITE_MAIN}/enterprise`,     label: 'Enterprise'     },
+  { href: SITE_BLOG,                     label: 'Blog'           },
+];
 
 // Same H2/H3 filter + numbering as Toc.astro so the phone "On this page"
 // list matches the desktop rail one-for-one.
@@ -112,7 +134,20 @@ function href(slug: string): string {
     role="tabpanel"
     aria-labelledby="tabPages"
   >
-    {sidebarItems.map((item) => (
+    <div class="mobile-group">
+      <h6><span>Site</span></h6>
+      <nav class="mobile-list" aria-label="Site">
+        {SITE_LINKS.map((l) => (
+          <a href={l.href}><span class="lbl">{l.label}</span></a>
+        ))}
+      </nav>
+    </div>
+
+    {sidebarItems && sidebarItems.length > 0 && (
+      <hr class="mobile-divider" />
+    )}
+
+    {sidebarItems?.map((item) => (
       item.type === 'doc' ? (
         <div class="mobile-group">
           <nav class="mobile-list" aria-label={item.label ?? item.slug}>

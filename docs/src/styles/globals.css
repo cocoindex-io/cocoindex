@@ -380,6 +380,11 @@ nav.top {
 }
 
 .mobile-group { margin: 0 8px 14px; }
+.mobile-divider {
+  border: none;
+  border-top: 1px solid var(--rule);
+  margin: 6px 14px 4px;
+}
 .mobile-group h6 {
   margin: 14px 8px 6px;
   font-family: var(--mono); font-weight: 500;
