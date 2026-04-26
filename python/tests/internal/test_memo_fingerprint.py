@@ -4,6 +4,7 @@ from typing import Any
 
 import pytest
 
+from cocoindex._internal.function import _apply_memo_key, _normalize_memo_key
 from cocoindex._internal.memo_fingerprint import (
     fingerprint_call,
     register_memo_key_function,
@@ -606,48 +607,45 @@ def _named_dummy_fn(n: int, s: str, p: Any) -> None:
     raise RuntimeError("not called")
 
 
-def test_fingerprint_call_memo_key_can_ignore_parameter() -> None:
-    fp_a = fingerprint_call(
-        _named_dummy_fn,
-        (1, "same", {"x": 1}),
-        {},
-        memo_key={"n": None},
-    )
-    fp_b = fingerprint_call(
-        _named_dummy_fn,
-        (2, "same", {"x": 1}),
-        {},
-        memo_key={"n": None},
-    )
-    assert fp_a == fp_b
+def test_apply_memo_key_can_ignore_parameter() -> None:
+    def foo(a: int, b: int) -> None:
+        return None
+
+    compiled = _normalize_memo_key(foo, {"b": None})
+    args1, kwargs1 = _apply_memo_key((1, 2), {}, compiled)
+    args2, kwargs2 = _apply_memo_key((1, 3), {}, compiled)
+
+    fp1 = fingerprint_call(foo, args1, kwargs1)
+    fp2 = fingerprint_call(foo, args2, kwargs2)
+    assert fp1 == fp2
 
 
-def test_fingerprint_call_memo_key_can_transform_parameter() -> None:
-    @dataclasses.dataclass
-    class Point:
-        x: int
-        y: int
+def test_apply_memo_key_can_transform_parameter() -> None:
+    def foo(a: int, b: int) -> None:
+        return None
 
-    fp_a = fingerprint_call(
-        _named_dummy_fn,
-        (1, "same", Point(5, 100)),
-        {},
-        memo_key={"p": lambda p: p.x},
-    )
-    fp_b = fingerprint_call(
-        _named_dummy_fn,
-        (1, "same", Point(5, 999)),
-        {},
-        memo_key={"p": lambda p: p.x},
-    )
-    fp_c = fingerprint_call(
-        _named_dummy_fn,
-        (1, "same", Point(6, 100)),
-        {},
-        memo_key={"p": lambda p: p.x},
-    )
-    assert fp_a == fp_b
-    assert fp_a != fp_c
+    compiled = _normalize_memo_key(foo, {"b": lambda x: x // 10})
+    args1, kwargs1 = _apply_memo_key((1, 20), {}, compiled)
+    args2, kwargs2 = _apply_memo_key((1, 29), {}, compiled)
+
+    fp1 = fingerprint_call(foo, args1, kwargs1)
+    fp2 = fingerprint_call(foo, args2, kwargs2)
+    assert fp1 == fp2
+
+
+def test_apply_memo_key_preserves_default_fingerprint_shape_for_missing_optional_arg() -> (
+    None
+):
+    def foo(a: int, b: int = 10) -> None:
+        return None
+
+    fp_default = fingerprint_call(foo, (1,), {})
+
+    compiled = _normalize_memo_key(foo, {"b": lambda x: x + 1})
+    args, kwargs = _apply_memo_key((1,), {}, compiled)
+    fp_with_memo_key = fingerprint_call(foo, args, kwargs)
+
+    assert fp_with_memo_key == fp_default
 
 
 def test_fingerprint_call_prefix_args_affect_fingerprint() -> None:
@@ -664,3 +662,59 @@ def test_fingerprint_call_prefix_args_affect_fingerprint() -> None:
         prefix_args=("path/b",),
     )
     assert fp_a != fp_b
+
+
+def test_apply_memo_key_with_keyword_only_parameters() -> None:
+    def foo(a: int, *, b: int, c: int = 1) -> None:
+        return None
+
+    compiled = _normalize_memo_key(foo, {"b": None, "c": lambda x: x + 1})
+    args, kwargs = _apply_memo_key((1,), {"b": 2, "c": 3}, compiled)
+
+    assert args == (1,)
+    assert kwargs == {"c": 4}
+    assert "b" not in kwargs
+
+
+def test_apply_memo_key_excludes_varargs() -> None:
+    def foo(a: int, *args: int) -> None:
+        return None
+
+    compiled = _normalize_memo_key(foo, {"args": None})
+    result_args, result_kwargs = _apply_memo_key((1, 2, 3), {}, compiled)
+
+    assert result_args == (1,)
+    assert result_kwargs == {}
+
+
+def test_apply_memo_key_transforms_varargs() -> None:
+    def foo(a: int, *args: int) -> None:
+        return None
+
+    compiled = _normalize_memo_key(foo, {"args": lambda x: (len(x),)})
+    result_args, result_kwargs = _apply_memo_key((1, 2, 3), {}, compiled)
+
+    assert result_args == (1, 2)
+    assert result_kwargs == {}
+
+
+def test_apply_memo_key_excludes_varkw() -> None:
+    def foo(a: int, **kwargs: int) -> None:
+        return None
+
+    compiled = _normalize_memo_key(foo, {"kwargs": None})
+    result_args, result_kwargs = _apply_memo_key((1,), {"x": 2, "y": 3}, compiled)
+
+    assert result_args == (1,)
+    assert result_kwargs == {}
+
+
+def test_apply_memo_key_transforms_varkw() -> None:
+    def foo(a: int, **kwargs: int) -> None:
+        return None
+
+    compiled = _normalize_memo_key(foo, {"kwargs": lambda x: {"count": len(x)}})
+    result_args, result_kwargs = _apply_memo_key((1,), {"x": 2, "y": 3}, compiled)
+
+    assert result_args == (1,)
+    assert result_kwargs == {"count": 2}

@@ -66,7 +66,24 @@ AnyCallable: TypeAlias = AsyncCallable[P, R_co] | Callable[P, R_co]
 LogicTracking: TypeAlias = Literal["full", "self"] | None
 MemoKeyTransform: TypeAlias = Callable[[Any], Any]
 MemoKeySpec: TypeAlias = Mapping[str, MemoKeyTransform | None] | None
-NormalizedMemoKeySpec: TypeAlias = dict[str, MemoKeyTransform | None] | None
+CompiledMemoKeyPositionalSpec: TypeAlias = tuple[
+    tuple[bool, MemoKeyTransform | None], ...
+]
+
+# Sentinel to distinguish "no override" from "override with None" (exclude)
+_NO_OVERRIDE = object()
+
+
+class CompiledMemoKeyPlan(NamedTuple):
+    """Precompiled memo-key plan for fast runtime application."""
+
+    positional_specs: CompiledMemoKeyPositionalSpec
+    keyword_specs: dict[str, MemoKeyTransform | None]
+    varargs_override: Any  # MemoKeyTransform | None | _NO_OVERRIDE
+    varkw_override: Any  # MemoKeyTransform | None | _NO_OVERRIDE
+
+
+NormalizedMemoKeySpec: TypeAlias = CompiledMemoKeyPlan | None
 
 # ============================================================================
 # Type protocols for batched function decorators
@@ -401,10 +418,96 @@ def _has_self_parameter(fn: Callable[..., Any]) -> bool:
     )
 
 
+def _apply_memo_key(
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+    memo_key: NormalizedMemoKeySpec,
+) -> tuple[tuple[Any, ...], dict[str, Any]]:
+    """Apply precompiled per-parameter memo-key overrides before fingerprinting.
+
+    Positional arguments remain positional, and keyword arguments remain keyword
+    arguments. Parameters absent from *memo_key* pass through unchanged.
+    Parameters mapped to ``None`` are excluded from the fingerprint input, and
+    parameters mapped to a callable are transformed by that callable.
+    """
+    if memo_key is None:
+        return args, kwargs
+
+    plan = memo_key
+    num_fixed = len(plan.positional_specs)
+
+    # Separate fixed positional args from varargs
+    fixed_args = args[:num_fixed] if len(args) >= num_fixed else args
+    varargs = args[num_fixed:] if len(args) > num_fixed else ()
+
+    # Process fixed positional args (may exclude or transform)
+    new_fixed_args: list[Any] = []
+    for i, arg in enumerate(fixed_args):
+        has_override, key_fn = plan.positional_specs[i]
+        if has_override:
+            if key_fn is None:
+                continue  # Exclude this positional arg
+            new_fixed_args.append(key_fn(arg))
+        else:
+            new_fixed_args.append(arg)
+
+    # Apply varargs override if present (whole *args parameter)
+    if plan.varargs_override is not _NO_OVERRIDE:
+        if plan.varargs_override is None:
+            # Exclude entire *args
+            varargs = ()
+        else:
+            # Transform entire *args tuple
+            varargs = plan.varargs_override(varargs)
+            if not isinstance(varargs, tuple):
+                raise TypeError(
+                    f"memo_key transform for *args must return tuple, "
+                    f"got {type(varargs).__name__}"
+                )
+
+    # Combine fixed args and varargs
+    final_args = tuple(new_fixed_args) + varargs
+
+    # Process kwargs: separate matched (keyword-only/POSITIONAL_OR_KEYWORD passed as kwarg)
+    # from unmatched (extra **kwargs)
+    new_kwargs: dict[str, Any] = {}
+    unmatched_kwargs: dict[str, Any] = {}
+
+    for key, value in kwargs.items():
+        if key in plan.keyword_specs:
+            key_fn = plan.keyword_specs[key]
+            if key_fn is None:
+                continue  # Exclude this kwarg
+            new_kwargs[key] = key_fn(value)
+        else:
+            unmatched_kwargs[key] = value
+
+    # Apply varkw override if present (whole **kwargs parameter)
+    if plan.varkw_override is not _NO_OVERRIDE:
+        if plan.varkw_override is None:
+            # Exclude entire **kwargs
+            unmatched_kwargs = {}
+        else:
+            # Transform entire unmatched kwargs dict
+            transformed = plan.varkw_override(unmatched_kwargs)
+            if not isinstance(transformed, dict):
+                raise TypeError(
+                    f"memo_key transform for **kwargs must return dict, "
+                    f"got {type(transformed).__name__}"
+                )
+            unmatched_kwargs = transformed
+
+    # Merge matched and unmatched kwargs
+    final_kwargs = new_kwargs.copy()
+    final_kwargs.update(unmatched_kwargs)
+
+    return final_args, final_kwargs
+
+
 def _normalize_memo_key(
     fn: Callable[..., Any], memo_key: MemoKeySpec
 ) -> NormalizedMemoKeySpec:
-    """Validate and normalize per-parameter memo-key overrides."""
+    """Validate and compile per-parameter memo-key overrides once."""
     if memo_key is None:
         return None
 
@@ -412,8 +515,9 @@ def _normalize_memo_key(
     if not normalized:
         return None
 
-    params = inspect.signature(fn).parameters
-    unknown = sorted(name for name in normalized if name not in params)
+    params = list(inspect.signature(fn).parameters.values())
+    param_names = [param.name for param in params]
+    unknown = sorted(name for name in normalized if name not in param_names)
     if unknown:
         raise ValueError(
             f"Unknown memo_key parameter(s) for {qualified_name(fn)}(): "
@@ -426,7 +530,33 @@ def _normalize_memo_key(
                 f"memo_key[{name!r}] for {qualified_name(fn)}() must be a callable or None"
             )
 
-    return normalized
+    positional: list[tuple[bool, MemoKeyTransform | None]] = []
+    for param in params:
+        if param.kind in (
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        ):
+            positional.append((param.name in normalized, normalized.get(param.name)))
+
+    # Check for VAR_POSITIONAL (*args) override
+    varargs_override: Any = _NO_OVERRIDE
+    for param in params:
+        if param.kind == inspect.Parameter.VAR_POSITIONAL:
+            if param.name in normalized:
+                varargs_override = normalized[param.name]
+            break
+
+    # Check for VAR_KEYWORD (**kwargs) override
+    varkw_override: Any = _NO_OVERRIDE
+    for param in params:
+        if param.kind == inspect.Parameter.VAR_KEYWORD:
+            if param.name in normalized:
+                varkw_override = normalized[param.name]
+            break
+
+    return CompiledMemoKeyPlan(
+        tuple(positional), normalized, varargs_override, varkw_override
+    )
 
 
 # ============================================================================
@@ -634,12 +764,14 @@ class SyncFunction(Function[P, R_co]):
         try:
             if self._memo:
                 state_methods: list[StateFnEntry] = []
+                memo_args: tuple[Any, ...] = args  # type: ignore[assignment]
+                memo_kwargs: dict[str, Any] = kwargs  # type: ignore[assignment]
+                if self._memo_key:
+                    memo_args, memo_kwargs = _apply_memo_key(
+                        memo_args, memo_kwargs, self._memo_key
+                    )
                 memo_fp = fingerprint_call(
-                    self._fn,
-                    args,
-                    kwargs,
-                    state_methods=state_methods,
-                    memo_key=self._memo_key,
+                    self._fn, memo_args, memo_kwargs, state_methods=state_methods
                 )
                 guard = core.reserve_memoization(
                     parent_ctx._core_processor_ctx, memo_fp
@@ -738,17 +870,20 @@ class SyncFunction(Function[P, R_co]):
         **kwargs: P0.kwargs,
     ) -> core.ComponentProcessor[R_co]:
         state_methods: list[StateFnEntry] = []
-        memo_fp = (
-            fingerprint_call(
+        memo_fp: core.Fingerprint | None = None
+        if self._memo:
+            memo_args: tuple[Any, ...] = args  # type: ignore[assignment]
+            memo_kwargs: dict[str, Any] = kwargs  # type: ignore[assignment]
+            if self._memo_key:
+                memo_args, memo_kwargs = _apply_memo_key(
+                    memo_args, memo_kwargs, self._memo_key
+                )
+            memo_fp = fingerprint_call(
                 self._fn,
-                args,
-                kwargs,
+                memo_args,
+                memo_kwargs,
                 state_methods=state_methods,
-                memo_key=self._memo_key,
             )
-            if self._memo
-            else None
-        )
         # Attach the component-level state handler only if there's something
         # for it to do. Two triggers:
         # 1. Positional state methods collected from argument canonicalization.
@@ -1117,12 +1252,17 @@ class AsyncFunction(Function[P, R_co]):
             context_states_for_resolve: dict[core.Fingerprint, list[Any]] | None = None
             if self._memo and parent_ctx is not None:
                 env = parent_ctx._env
+                async_memo_args: tuple[Any, ...] = args  # type: ignore[assignment]
+                async_memo_kwargs: dict[str, Any] = kwargs  # type: ignore[assignment]
+                if self._memo_key:
+                    async_memo_args, async_memo_kwargs = _apply_memo_key(
+                        async_memo_args, async_memo_kwargs, self._memo_key
+                    )
                 memo_fp = fingerprint_call(
                     self._any_fn,
-                    args,
-                    kwargs,
+                    async_memo_args,
+                    async_memo_kwargs,
                     state_methods=state_methods,
-                    memo_key=self._memo_key,
                 )
                 guard = await core.reserve_memoization_async(
                     parent_ctx._core_processor_ctx, memo_fp
@@ -1396,18 +1536,21 @@ class AsyncFunction(Function[P, R_co]):
         **kwargs: P.kwargs,
     ) -> core.ComponentProcessor[R_co]:
         state_methods: list[StateFnEntry] = []
-        memo_fp = (
-            fingerprint_call(
+        memo_fp: core.Fingerprint | None = None
+        if self._memo:
+            async_proc_args: tuple[Any, ...] = args  # type: ignore[assignment]
+            async_proc_kwargs: dict[str, Any] = kwargs  # type: ignore[assignment]
+            if self._memo_key:
+                async_proc_args, async_proc_kwargs = _apply_memo_key(
+                    async_proc_args, async_proc_kwargs, self._memo_key
+                )
+            memo_fp = fingerprint_call(
                 self._any_fn,
-                args,
-                kwargs,
+                async_proc_args,
+                async_proc_kwargs,
                 state_methods=state_methods,
-                memo_key=self._memo_key,
                 prefix_args=(path,),
             )
-            if self._memo
-            else None
-        )
 
         # See SyncFunction._core_processor for rationale on the attachment
         # condition — avoids a Python callback round-trip on every cache miss
