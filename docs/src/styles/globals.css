@@ -461,6 +461,77 @@ main.content {
   min-width: 0;
 }
 
+/* ─── sidebar search ───
+   Sits at the top of `aside.side`. The button is rendered server-side
+   and styled to match the docs design tokens (cream fill, hairline
+   border, mono caps row). The actual DocSearch modal is mounted lazily
+   on first interaction by Search.astro — see that file for the env
+   var wiring (PUBLIC_COCOINDEX_DOCS_ALGOLIA_*). */
+.search-wrap {
+  position: sticky; top: 0;
+  background: linear-gradient(var(--paper) 80%, transparent);
+  padding: 0 0 14px;
+  margin-bottom: 6px;
+  z-index: 5;
+}
+.search-btn {
+  width: 100%;
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--rule-strong);
+  background: var(--cream);
+  color: var(--maroon-ink);
+  font-family: var(--sans); font-size: 13px; font-weight: 500;
+  cursor: pointer;
+  transition: border-color .15s ease, background .15s ease, color .15s ease;
+}
+.search-btn:hover {
+  border-color: var(--coral);
+  color: var(--coral);
+  background: color-mix(in oklab, var(--peach) 10%, var(--cream));
+}
+.search-btn:focus-visible { outline: 2px solid var(--coral); outline-offset: 2px; }
+.search-btn .ic { flex: none; opacity: .8; }
+.search-btn:hover .ic { opacity: 1; }
+.search-btn .lbl { flex: 1; text-align: left; }
+.search-btn .kbd {
+  font-family: var(--mono); font-size: 10px; font-weight: 500;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  padding: 1px 5px;
+  background: var(--paper);
+  display: inline-flex; align-items: center; gap: 2px;
+}
+.search-btn .kbd .cmd { font-size: 11px; line-height: 1; }
+
+/* DocSearch theme — map @docsearch/css variables to our brand tokens
+   so the modal feels native instead of dropping a foreign blue UI on
+   top of the docs. Only the vars we actually need are overridden;
+   defaults from the package fill the rest. */
+:root {
+  --docsearch-primary-color: var(--coral);
+  --docsearch-text-color: var(--maroon-ink);
+  --docsearch-muted-color: var(--muted);
+  --docsearch-container-background: rgba(42, 18, 27, 0.55);
+  --docsearch-modal-background: var(--paper);
+  --docsearch-searchbox-background: var(--cream);
+  --docsearch-searchbox-focus-background: var(--paper);
+  --docsearch-hit-color: var(--maroon-ink);
+  --docsearch-hit-active-color: var(--cream);
+  --docsearch-hit-background: var(--cream);
+  --docsearch-highlight-color: var(--coral);
+  --docsearch-key-gradient: var(--cream);
+  --docsearch-key-shadow: none;
+  --docsearch-footer-background: var(--cream);
+  --docsearch-modal-shadow: none;
+  --docsearch-searchbox-shadow: inset 0 0 0 2px var(--coral);
+  --docsearch-spacing: 12px;
+  --docsearch-icon-color: var(--muted);
+}
+
 /* ─── sidebar ─── */
 .side-group { margin-bottom: 22px; }
 .side-group > h5 {

@@ -1,5 +1,6 @@
 ---
 import { sidebar, type SidebarItem } from '../data/docs-sidebar';
+import Search from './Search.astro';
 
 export interface Props {
   /** Slug of the currently-rendered doc, e.g. `getting_started/quickstart`. */
@@ -15,6 +16,7 @@ function href(slug: string): string {
 ---
 
 <aside class="side">
+  <Search />
   {sidebar.map((item) => (
     item.type === 'doc' ? (
       <div class="side-group">
