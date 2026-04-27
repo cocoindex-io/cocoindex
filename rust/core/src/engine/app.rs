@@ -6,7 +6,7 @@ use crate::engine::component::Component;
 use crate::engine::context::AppContext;
 
 use crate::engine::environment::{AppRegistration, Environment};
-use crate::engine::runtime::{get_runtime, global_cancellation_token};
+use crate::engine::runtime::get_runtime;
 use crate::state::stable_path::StablePath;
 use tokio::sync::watch;
 
@@ -100,6 +100,9 @@ impl<Prof: EngineProfile> App<Prof> {
         host_ctx: Arc<Prof::HostCtx>,
     ) -> Result<AppOpHandle<Prof::FunctionData>> {
         crate::telemetry::track("app_update");
+        // Refresh the app token if a prior operation (e.g. drop_app) cancelled
+        // it, so this update starts with a non-cancelled token.
+        self.app_ctx().reset_cancellation_token_if_cancelled();
         let processing_stats = ProcessingStats::new();
         let version_rx = processing_stats.subscribe();
         let context = self.root_component.new_processor_context_for_build(
@@ -112,7 +115,7 @@ impl<Prof: EngineProfile> App<Prof> {
 
         let root_component = self.root_component.clone();
         let stats_for_task = processing_stats.clone();
-        let cancel_token = global_cancellation_token();
+        let cancel_token = self.app_ctx().cancellation_token();
         let live = options.live;
         let span = Span::current();
         let task = get_runtime().spawn(
@@ -155,6 +158,13 @@ impl<Prof: EngineProfile> App<Prof> {
     #[instrument(name = "app.drop", skip_all, fields(app_name = %self.app_ctx().app_reg().name()))]
     pub fn drop_app(&self, host_ctx: Arc<Prof::HostCtx>) -> Result<AppOpHandle<()>> {
         crate::telemetry::track("app_drop");
+        // Refresh the app token if a prior operation cancelled it, so the
+        // cancel below applies to a token shared with any concurrent update.
+        self.app_ctx().reset_cancellation_token_if_cancelled();
+        // Cancel the app token — interrupts any in-flight update by firing the
+        // cancel arms in App::update / Component::run / run_in_background.
+        // Component::delete intentionally does not watch this token, so the
+        // delete work below proceeds normally.
         self.app_ctx().cancellation_token().cancel();
 
         let processing_stats = ProcessingStats::default();
