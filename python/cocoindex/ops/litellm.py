@@ -1,14 +1,20 @@
-"""LiteLLM integration for text embeddings.
+"""LiteLLM integration for text embeddings and speech-to-text.
 
-This module provides a wrapper around the LiteLLM library
-that implements VectorSchemaProvider for easy integration with CocoIndex connectors.
+This module provides thin wrappers around the LiteLLM library: ``LiteLLMEmbedder``
+implements ``VectorSchemaProvider`` for connector vector columns, and
+``LiteLLMTranscriber`` exposes speech-to-text via LiteLLM's transcription API.
 """
 
 from __future__ import annotations
 
-__all__ = ["LiteLLMEmbedder", "litellm"]
+__all__ = [
+    "LiteLLMEmbedder",
+    "LiteLLMTranscriber",
+    "litellm",
+]
 
 import asyncio as _asyncio
+import io as _io
 from typing import Any as _Any
 
 import litellm as litellm
@@ -16,6 +22,7 @@ import numpy as _np
 from numpy.typing import NDArray as _NDArray
 
 import cocoindex as coco
+from cocoindex.resources import file as _file
 from cocoindex.resources import schema as _schema
 
 
@@ -152,6 +159,65 @@ class LiteLLMEmbedder(_schema.VectorSchemaProvider):
         """
         dim = await self._get_dim()
         return _schema.VectorSchema(dtype=_np.dtype(_np.float32), size=dim)
+
+    def __coco_memo_key__(self) -> object:
+        return (self._model, self._kwargs)
+
+
+class LiteLLMTranscriber:
+    """Wrapper for LiteLLM speech-to-text transcription models.
+
+    This class provides an async interface to LiteLLM's transcription API
+    for CocoIndex ``FileLike`` inputs.
+
+    Args:
+        model: LiteLLM transcription model name (e.g., ``"whisper-1"``,
+            ``"elevenlabs/scribe_v1"``).
+        **kwargs: Additional keyword arguments passed through to every
+            ``litellm.atranscription`` call (e.g., ``api_key``, ``api_base``,
+            ``language``, ``extra_body``).
+
+    Example:
+        >>> from cocoindex.ops.litellm import LiteLLMTranscriber
+        >>> transcriber = LiteLLMTranscriber("whisper-1")
+        >>> transcript = await transcriber.transcribe(audio_file)
+        >>> print(transcript)
+    """
+
+    def __init__(self, model: str, **kwargs: _Any) -> None:
+        """Initialize the LiteLLM transcriber."""
+        self._model = model
+        self._kwargs = kwargs
+
+    @coco.fn(memo=True, version=1, logic_tracking="self")
+    async def transcribe(self, file: _file.FileLike[_Any], **kwargs: _Any) -> str:
+        """Transcribe audio content from a ``FileLike`` object into text.
+
+        ``FileLike`` provides async read methods. The content is read into a
+        binary file-like object before calling LiteLLM.
+
+        Args:
+            file: ``FileLike`` object containing audio data.
+            **kwargs: Additional keyword arguments passed through to this
+                ``litellm.atranscription`` call.
+
+        Returns:
+            The transcribed text.
+
+        Note:
+            Per-call keyword arguments override defaults provided when the
+            transcriber was initialized.
+        """
+        audio = _io.BytesIO(await file.read())
+        audio.name = file.file_path.name
+        call_kwargs = dict(self._kwargs)
+        call_kwargs.update(kwargs)
+        response = await litellm.atranscription(
+            model=self._model,
+            file=audio,
+            **call_kwargs,
+        )
+        return response.text  # type: ignore[no-any-return]
 
     def __coco_memo_key__(self) -> object:
         return (self._model, self._kwargs)
