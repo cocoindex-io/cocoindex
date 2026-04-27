@@ -107,7 +107,7 @@ coco.App(coco.AppConfig(name="docs"), main, src="./docs").update_blocking()
 
 
 <p align="center">
-  <a href="https://github.com/cocoindex-io/cocoindex" title="Star CocoIndex on GitHub — open-source Python framework for live agent context"><picture><source media="(prefers-color-scheme: dark)" srcset="https://cocoindex.io/blobs/github/homepage/comm-github-dark.svg"><source media="(prefers-color-scheme: light)" srcset="https://cocoindex.io/blobs/github/homepage/comm-github-light.svg"><img src="https://cocoindex.io/blobs/github/homepage/comm-github-light.svg" alt="Animated GitHub Star button for the cocoindex-io/cocoindex repository: a cursor clicks the star, it fills yellow, confetti bursts, the star count ticks up 7.0k → 7.1k, and an 'Appreciate a star if you like it!' caption with a beating heart shows below the button" width="620"/></picture></a>
+  <a href="https://github.com/cocoindex-io/cocoindex" title="Star CocoIndex on GitHub — open-source Python framework for live agent context"><picture><source media="(prefers-color-scheme: dark)" srcset="https://cocoindex.io/blobs/github/homepage/comm-github-dark.svg"><source media="(prefers-color-scheme: light)" srcset="https://cocoindex.io/blobs/github/homepage/comm-github-light.svg"><img src="https://cocoindex.io/blobs/github/homepage/comm-github-light.svg" alt="Animated GitHub Star button for the cocoindex-io/cocoindex repository: a cursor clicks the star, it fills yellow, confetti bursts, the star count ticks up 7.1k → 7.2k, and an 'Appreciate a star if you like it!' caption with a beating heart shows below the button" width="620"/></picture></a>
 </p>
 
 <br/><br/>
