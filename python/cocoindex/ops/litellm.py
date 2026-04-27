@@ -58,6 +58,18 @@ class LiteLLMEmbedder(_schema.VectorSchemaProvider):
             self._lock = _asyncio.Lock()
         return self._lock
 
+    def _build_call_kwargs(self, **extra: _Any) -> dict[str, _Any]:
+        # voyage/ and bedrock/ reject `encoding_format="float"` (voyage requires
+        # base64); leave them with their native defaults. For everyone else,
+        # ask for the float-decoded payload and let litellm drop unsupported
+        # params on a per-call basis.
+        kwargs = dict(self._kwargs)
+        kwargs.update(extra)
+        if not self._model.startswith(("voyage/", "bedrock/")):
+            kwargs.setdefault("encoding_format", "float")
+            kwargs.setdefault("drop_params", True)
+        return kwargs
+
     async def _get_dim(self) -> int:
         """Get embedding dimension, caching the result.
 
@@ -72,8 +84,7 @@ class LiteLLMEmbedder(_schema.VectorSchemaProvider):
             response = await litellm.aembedding(
                 model=self._model,
                 input=["hello"],
-                encoding_format="float",
-                **self._kwargs,
+                **self._build_call_kwargs(),
             )
             embedding = response.data[0]["embedding"]
             self._dim = len(embedding)
@@ -98,14 +109,13 @@ class LiteLLMEmbedder(_schema.VectorSchemaProvider):
             Pass ``input_type`` consistently across calls — mixing explicit
             values with the default creates separate batchers.
         """
-        kwargs = dict(self._kwargs)
+        extra: dict[str, _Any] = {}
         if input_type is not None:
-            kwargs["input_type"] = input_type
+            extra["input_type"] = input_type
         response = await litellm.aembedding(
             model=self._model,
             input=texts,
-            encoding_format="float",
-            **kwargs,
+            **self._build_call_kwargs(**extra),
         )
         return [
             _np.array(item["embedding"], dtype=_np.float32) for item in response.data
