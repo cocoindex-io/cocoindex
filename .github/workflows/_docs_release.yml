@@ -26,6 +26,16 @@ jobs:
       - name: Install dependencies
         run: npm --prefix docs ci
       - name: Build docs site
+        env:
+          # Re-exported from the Docusaurus era (commit b8e0eda removed
+          # them when the docs migrated to Astro). Names match the
+          # original config so the existing GitHub Actions vars keep
+          # working; Search.astro reads them in frontmatter and inlines
+          # the values into the client bundle via `define:vars`. The
+          # Algolia "search-only API key" is public by design — the
+          # index is read-only with that key.
+          COCOINDEX_DOCS_ALGOLIA_APP_ID:  ${{ vars.COCOINDEX_DOCS_ALGOLIA_APP_ID }}
+          COCOINDEX_DOCS_ALGOLIA_API_KEY: ${{ vars.COCOINDEX_DOCS_ALGOLIA_API_KEY }}
         run: npm --prefix docs run build
       - name: Deploy to cocoindex-io/docs-v0 gh-pages
         env:

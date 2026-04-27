@@ -100,4 +100,13 @@ export default defineConfig({
     shikiConfig: { theme: cocoindexCodeTheme, wrap: false },
   },
   redirects,
+  // Vite's default envPrefix is `VITE_`; Astro adds `PUBLIC_`. We also
+  // want unprefixed `COCOINDEX_DOCS_ALGOLIA_*` names exposed to
+  // import.meta.env in `.astro` frontmatter — those come from the
+  // GitHub Actions vars (see .github/workflows/_docs_release.yml) and
+  // are matched by the same names in docs/.env locally. The Algolia
+  // search-only API key is public by design; it's safe to inline.
+  vite: {
+    envPrefix: ['VITE_', 'PUBLIC_', 'COCOINDEX_'],
+  },
 });
