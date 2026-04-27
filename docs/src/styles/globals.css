@@ -593,12 +593,11 @@ main.content {
 
 /* Class-level tweaks for the bits variables can't reach. */
 .DocSearch-Container {
-  /* Drop the package's default 4px blur — paired with the now-
-     transparent scrim, the blur was the only thing softening the
-     page behind. Remove it so the docs read sharply through the
-     unobscured backdrop. */
-  -webkit-backdrop-filter: none !important;
-  backdrop-filter: none !important;
+  /* Backdrop blur without the maroon scrim — keeps the page colors
+     visible (no dim wash) but defocuses content so the modal is the
+     unambiguous foreground. Tune `blur(8px)` higher to soften more. */
+  -webkit-backdrop-filter: blur(8px) !important;
+  backdrop-filter: blur(8px) !important;
 }
 .DocSearch-Modal {
   border: 1px solid var(--rule-strong);
