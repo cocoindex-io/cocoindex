@@ -18,9 +18,9 @@
 // index is read-only with that key.
 const APP_ID  = (import.meta.env.COCOINDEX_DOCS_ALGOLIA_APP_ID  ?? '') as string;
 const API_KEY = (import.meta.env.COCOINDEX_DOCS_ALGOLIA_API_KEY ?? '') as string;
-// Keep in sync with the crawler config — v1 docs use `cocoindex_v1`
+// Keep in sync with the crawler config
 // (PR #1551 renamed it from `cocoindex`).
-const INDEX   = 'cocoindex_v1';
+const INDEX   = 'cocoindex';
 ---
 
 <div class="search-wrap">
