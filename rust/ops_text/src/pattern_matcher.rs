@@ -10,47 +10,126 @@ fn build_glob_set(patterns: Vec<String>) -> Result<GlobSet> {
     Ok(builder.build()?)
 }
 
-/// Pattern matcher that handles include and exclude patterns for files
+/// Splits a list of patterns into regular exclusion patterns and negation (``!``-prefixed)
+/// patterns, building a GlobSet for each group.
+///
+/// A pattern like ``!**/.github/**`` means "do **not** exclude paths that match
+/// ``**/.github/**``", allowing fine-grained exceptions to broad exclusion rules.
+fn split_excluded_patterns(
+    patterns: Option<Vec<String>>,
+) -> Result<(Option<GlobSet>, Option<GlobSet>)> {
+    let Some(pats) = patterns else {
+        return Ok((None, None));
+    };
+
+    let mut regular: Vec<String> = Vec::new();
+    let mut negation: Vec<String> = Vec::new();
+
+    for p in pats {
+        if let Some(stripped) = p.strip_prefix('!') {
+            negation.push(stripped.to_string());
+        } else {
+            regular.push(p);
+        }
+    }
+
+    let regular_set = if regular.is_empty() {
+        None
+    } else {
+        Some(build_glob_set(regular)?)
+    };
+    let negation_set = if negation.is_empty() {
+        None
+    } else {
+        Some(build_glob_set(negation)?)
+    };
+
+    Ok((regular_set, negation_set))
+}
+
+/// Pattern matcher that handles include and exclude patterns for files.
+///
+/// Supports gitignore-style ``!``-prefixed negation in ``excluded_patterns``: a pattern
+/// beginning with ``!`` un-excludes paths that would otherwise be excluded.  For example,
+/// combining ``"**/.*"`` with ``"!**/.github/**"`` excludes all dot-entries *except*
+/// anything inside ``.github/``.
 #[derive(Debug)]
 pub struct PatternMatcher {
     /// Patterns matching full path of files to be included.
     included_glob_set: Option<GlobSet>,
-    /// Patterns matching full path of files and directories to be excluded.
-    /// If a directory is excluded, all files and subdirectories within it are also excluded.
+    /// Regular (non-negated) exclusion patterns.
     excluded_glob_set: Option<GlobSet>,
+    /// Negation patterns (``!``-prefixed in the original list, stored without the ``!``).
+    /// A path that matches one of these is *not* excluded even if it matches the regular
+    /// exclusion patterns.
+    negation_glob_set: Option<GlobSet>,
 }
 
 impl PatternMatcher {
-    /// Create a new PatternMatcher from optional include and exclude pattern vectors
+    /// Create a new PatternMatcher from optional include and exclude pattern vectors.
+    ///
+    /// Patterns in `excluded_patterns` that start with ``!`` are treated as negations:
+    /// they un-exclude any path that would otherwise be excluded by the preceding patterns.
     pub fn new(
         included_patterns: Option<Vec<String>>,
         excluded_patterns: Option<Vec<String>>,
     ) -> Result<Self> {
         let included_glob_set = included_patterns.map(build_glob_set).transpose()?;
-        let excluded_glob_set = excluded_patterns.map(build_glob_set).transpose()?;
+        let (excluded_glob_set, negation_glob_set) = split_excluded_patterns(excluded_patterns)?;
 
         Ok(Self {
             included_glob_set,
             excluded_glob_set,
+            negation_glob_set,
         })
     }
 
-    /// Check if a file or directory is excluded by the exclude patterns
-    /// Can be called on directories to prune traversal on excluded directories.
+    /// Check if a path is excluded after applying both exclusion and negation patterns.
     pub fn is_excluded(&self, path: &str) -> bool {
-        self.excluded_glob_set
+        if !self
+            .excluded_glob_set
             .as_ref()
-            .is_some_and(|glob_set| glob_set.is_match(path))
+            .is_some_and(|gs| gs.is_match(path))
+        {
+            return false;
+        }
+        // The path matches an exclusion pattern; a negation pattern can un-exclude it.
+        !self
+            .negation_glob_set
+            .as_ref()
+            .is_some_and(|gs| gs.is_match(path))
     }
 
-    /// Check if a directory should be included (traversed) based on the exclude patterns.
-    /// Directories are included unless they match an exclude pattern.
+    /// Check if a directory should be traversed based on the exclude/negation patterns.
+    ///
+    /// A directory is included unless it matches an exclusion pattern *and* no negation
+    /// pattern applies to it or to any file that could live inside it.  The latter check
+    /// uses a probe path (``<dir>/__probe__``) so that patterns like ``**/.github/**``
+    /// correctly un-prune the ``.github`` directory.
     pub fn is_dir_included(&self, path: &str) -> bool {
-        !self.is_excluded(path)
+        if !self
+            .excluded_glob_set
+            .as_ref()
+            .is_some_and(|gs| gs.is_match(path))
+        {
+            return true;
+        }
+        // Directory matches an exclusion. Check whether negation patterns could apply to
+        // the directory itself or to a file one level inside it.
+        if let Some(neg_gs) = &self.negation_glob_set {
+            if neg_gs.is_match(path) {
+                return true;
+            }
+            // Probe one level inside: catches patterns like `**/.github/**`.
+            let probe = format!("{}/__probe__", path);
+            if neg_gs.is_match(probe.as_str()) {
+                return true;
+            }
+        }
+        false
     }
 
-    /// Check if a file should be included based on both include and exclude patterns
-    /// Should be called for each file.
+    /// Check if a file should be included based on both include and exclude patterns.
     pub fn is_file_included(&self, path: &str) -> bool {
         self.included_glob_set
             .as_ref()
@@ -128,5 +207,81 @@ mod tests {
         assert!(matcher.is_file_included("src/main.py"));
         assert!(matcher.is_file_included("a/b/c/main.py"));
         assert!(!matcher.is_file_included("main.rs"));
+    }
+
+    // --- Negation (!) pattern tests ---
+
+    #[test]
+    fn test_negation_un_excludes_file() {
+        // Exclude all dot-files, but un-exclude .env.example
+        let matcher = PatternMatcher::new(
+            None,
+            Some(vec!["**/.env*".to_string(), "!**/.env.example".to_string()]),
+        )
+        .unwrap();
+        assert!(!matcher.is_file_included(".env"));
+        assert!(!matcher.is_file_included("config/.env.local"));
+        assert!(matcher.is_file_included(".env.example"));
+        assert!(matcher.is_file_included("config/.env.example"));
+    }
+
+    #[test]
+    fn test_negation_un_excludes_dotdir_files() {
+        // Exclude all dot-directories, but allow .github workflow files through.
+        let matcher = PatternMatcher::new(
+            None,
+            Some(vec!["**/.*".to_string(), "!**/.github/**".to_string()]),
+        )
+        .unwrap();
+        // Dot files/dirs that are NOT in .github remain excluded.
+        assert!(!matcher.is_file_included(".git/config"));
+        assert!(!matcher.is_file_included(".vscode/settings.json"));
+        // Files under .github are un-excluded.
+        assert!(matcher.is_file_included(".github/workflows/ci.yml"));
+        assert!(matcher.is_file_included("repo/.github/dependabot.yml"));
+        // Regular files are unaffected.
+        assert!(matcher.is_file_included("src/main.rs"));
+    }
+
+    #[test]
+    fn test_negation_dir_traversal() {
+        // Exclude all dot-directories, but un-exclude .github subtree.
+        let matcher = PatternMatcher::new(
+            None,
+            Some(vec!["**/.*".to_string(), "!**/.github/**".to_string()]),
+        )
+        .unwrap();
+        // .git should be pruned.
+        assert!(!matcher.is_dir_included(".git"));
+        assert!(!matcher.is_dir_included("src/.vscode"));
+        // .github must NOT be pruned so its contents can be reached.
+        assert!(matcher.is_dir_included(".github"));
+        assert!(matcher.is_dir_included("repo/.github"));
+        // Normal directories are always included.
+        assert!(matcher.is_dir_included("src"));
+    }
+
+    #[test]
+    fn test_negation_only_no_regular_exclusion() {
+        // A negation without a corresponding exclusion is a no-op — nothing is excluded.
+        let matcher =
+            PatternMatcher::new(None, Some(vec!["!**/.github/**".to_string()])).unwrap();
+        assert!(matcher.is_file_included(".git/config"));
+        assert!(matcher.is_file_included(".github/workflows/ci.yml"));
+        assert!(matcher.is_file_included("src/main.rs"));
+    }
+
+    #[test]
+    fn test_negation_with_include_patterns() {
+        // Include only YAML files, exclude all dot-directories, but un-exclude .github.
+        let matcher = PatternMatcher::new(
+            Some(vec!["**/*.yml".to_string(), "**/*.yaml".to_string()]),
+            Some(vec!["**/.*".to_string(), "!**/.github/**".to_string()]),
+        )
+        .unwrap();
+        assert!(matcher.is_file_included(".github/workflows/ci.yml"));
+        assert!(!matcher.is_file_included(".github/workflows/ci.sh")); // not in included
+        assert!(!matcher.is_file_included(".git/config")); // excluded, not negated
+        assert!(matcher.is_file_included("src/config.yaml"));
     }
 }
