@@ -14,6 +14,7 @@
 import type { MarkdownHeading } from 'astro';
 import { sidebar, type SidebarItem } from '../data/docs-sidebar';
 import { SITE_MAIN, SITE_BLOG } from '../consts';
+import Search from './Search.astro';
 
 export interface Props {
   /** Slug of the currently-rendered doc. Drives the `aria-current` row in the Pages tab. */
@@ -80,6 +81,10 @@ function href(slug: string): string {
       </svg>
     </button>
   </header>
+
+  <div class="mobile-search">
+    <Search />
+  </div>
 
   {tocRows.length > 0 && (
     <div class="mobile-tabs" role="tablist" aria-label="Menu sections">

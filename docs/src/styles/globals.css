@@ -461,6 +461,282 @@ main.content {
   min-width: 0;
 }
 
+/* ─── sidebar search ───
+   Sits at the top of `aside.side`. The button is rendered server-side
+   and styled to match the docs design tokens (cream fill, hairline
+   border, mono caps row). The actual DocSearch modal is mounted lazily
+   on first interaction by Search.astro — see that file for the env
+   var wiring (PUBLIC_COCOINDEX_DOCS_ALGOLIA_*). */
+.search-wrap {
+  position: sticky; top: 0;
+  background: linear-gradient(var(--paper) 80%, transparent);
+  padding: 0 0 14px;
+  margin-bottom: 6px;
+  z-index: 5;
+}
+.search-btn {
+  width: 100%;
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--rule-strong);
+  background: var(--cream);
+  color: var(--maroon-ink);
+  font-family: var(--sans); font-size: 13px; font-weight: 500;
+  cursor: pointer;
+  transition: border-color .15s ease, background .15s ease, color .15s ease;
+}
+.search-btn:hover {
+  border-color: var(--coral);
+  color: var(--coral);
+  background: color-mix(in oklab, var(--peach) 10%, var(--cream));
+}
+.search-btn:focus-visible { outline: 2px solid var(--coral); outline-offset: 2px; }
+.search-btn .ic { flex: none; opacity: .8; }
+.search-btn:hover .ic { opacity: 1; }
+.search-btn .lbl { flex: 1; text-align: left; }
+.search-btn .kbd {
+  font-family: var(--mono); font-size: 10px; font-weight: 500;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  padding: 1px 5px;
+  background: var(--paper);
+  display: inline-flex; align-items: center; gap: 2px;
+}
+.search-btn .kbd .cmd { font-size: 11px; line-height: 1; }
+
+/* ─── DocSearch theme ───
+   Maps every @docsearch/css v4 variable to the CocoIndex design
+   tokens — cream surfaces, coral accent, maroon ink, hairline rules,
+   no drop shadows (elevation reads from the maroon-ink scrim, not
+   from blur — matches the rest of the site).
+
+   Scope note: @docsearch/css ships its own `:root { --docsearch-*: ... }`
+   defaults and is imported AFTER globals.css (because Search.astro's
+   bundled `<script>` does the import). A `:root` override here would
+   lose the cascade fight for unset descendants. Scoping under
+   `.DocSearch-Container` (the modal backdrop) wins by ancestor
+   proximity instead — every modal element resolves variables from
+   the closest ancestor, which is now this rule. */
+.DocSearch-Container {
+  /* — rhythm + radii — */
+  --docsearch-spacing: 12px;
+  --docsearch-border-radius: 10px;
+  --docsearch-icon-stroke-width: 1.6;
+
+  /* — modal frame — */
+  --docsearch-modal-width: 720px;
+  --docsearch-modal-height: 600px;
+  --docsearch-modal-background: var(--paper);
+  --docsearch-modal-shadow: none;
+  /* No scrim — page behind stays its natural color. The hairline
+     border on `.DocSearch-Modal` is enough to delineate the panel. */
+  --docsearch-container-background: transparent;
+
+  /* — palette (replaces every default Algolia-blue) — */
+  --docsearch-primary-color: var(--coral);
+  --docsearch-soft-primary-color: color-mix(in oklab, var(--coral) 12%, transparent);
+  --docsearch-focus-color: var(--coral);
+  --docsearch-text-color: var(--maroon-ink);
+  --docsearch-secondary-text-color: var(--muted);
+  --docsearch-muted-color: var(--muted);
+  --docsearch-muted-color-darker: var(--maroon);
+  --docsearch-subtle-color: var(--rule);
+  --docsearch-icon-color: var(--muted);
+  --docsearch-logo-color: var(--coral);
+  --docsearch-error-color: var(--berry);
+  --docsearch-success-color: var(--palm-ink);
+  --docsearch-background-color: var(--paper);
+
+  /* — searchbox (top of modal) — */
+  --docsearch-searchbox-height: 56px;
+  --docsearch-searchbox-initial-height: 44px;
+  --docsearch-searchbox-background: var(--cream);
+  --docsearch-searchbox-focus-background: var(--paper);
+
+  /* — hits (results list) —
+     `--docsearch-hit-highlight-color` paints the ACTIVE-row background,
+     not the matched-text color (despite the name). Keep it as a soft
+     coral wash so the active row reads as "highlighted but quiet"; the
+     hover state below escalates to a full coral fill. */
+  --docsearch-hit-height: 56px;
+  --docsearch-hit-color: var(--maroon-ink);
+  --docsearch-hit-active-color: var(--maroon-ink);
+  --docsearch-hit-background: var(--cream);
+  --docsearch-hit-shadow: none;
+  --docsearch-hit-highlight-color: color-mix(in oklab, var(--coral) 14%, var(--cream));
+  --docsearch-highlight-color: var(--coral);
+  --docsearch-dropdown-menu-background: var(--paper);
+  --docsearch-dropdown-menu-item-hover-background: color-mix(in oklab, var(--coral) 8%, transparent);
+
+  /* — keyboard hints (⌘K, esc, ↩) — */
+  --docsearch-key-background: var(--cream);
+  --docsearch-key-color: var(--maroon-ink);
+  --docsearch-key-pressed-shadow: none;
+
+  /* — footer — */
+  --docsearch-footer-height: 44px;
+  --docsearch-footer-background: var(--cream);
+  --docsearch-footer-shadow: inset 0 1px 0 var(--rule);
+
+  /* — search-button (package's own trigger; we hide it but theme
+       it anyway so any fallback render stays brand-consistent) — */
+  --docsearch-search-button-background: var(--cream);
+  --docsearch-search-button-text-color: var(--maroon-ink);
+
+  /* — actions (close X, submit) — */
+  --docsearch-actions-width: 28px;
+  --docsearch-actions-height: 28px;
+}
+
+/* Class-level tweaks for the bits variables can't reach. */
+.DocSearch-Container {
+  /* Drop the package's default 4px blur — paired with the now-
+     transparent scrim, the blur was the only thing softening the
+     page behind. Remove it so the docs read sharply through the
+     unobscured backdrop. */
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+.DocSearch-Modal {
+  border: 1px solid var(--rule-strong);
+}
+/* Searchbox — a quiet cream pill at rest, slightly darker rule on
+   focus. Earlier version used a coral inset ring, which read as
+   alarmist on top of the cream surface — the focus state should
+   confirm "you can type now", not flag a problem. */
+.DocSearch-Form {
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  box-shadow: none;
+  background: var(--cream);
+}
+.DocSearch-Form:focus-within {
+  border-color: var(--rule-strong);
+  box-shadow: none;
+  background: var(--paper);
+}
+.DocSearch-MagnifierLabel,
+.DocSearch-MagnifierLabel svg,
+.DocSearch-Search-Icon,
+.DocSearch-Back-Icon { color: var(--coral) !important; }
+.DocSearch-Input {
+  font-family: var(--sans);
+  font-size: 15px;
+  font-weight: 400;
+  letter-spacing: -0.01em;
+  color: var(--maroon-ink);
+}
+.DocSearch-Input::placeholder { color: var(--muted); }
+.DocSearch-Cancel,
+.DocSearch-Clear {
+  color: var(--coral) !important;
+  font-family: var(--sans);
+}
+.DocSearch-Hit-source {
+  font-family: var(--mono); font-weight: 500;
+  font-size: 11px; letter-spacing: 0.14em;
+  text-transform: uppercase; color: var(--muted) !important;
+  background: var(--paper);
+  padding: 14px 4px 6px;
+}
+.DocSearch-Hit a {
+  border-radius: 8px;
+  border: 1px solid var(--rule);
+  background: transparent !important;
+  transition: background-image .18s ease, border-color .18s ease;
+}
+/* Active (keyboard-selected) row — soft coral wash so the row still
+   stands out from a plain hover, even with no fill at rest. */
+.DocSearch-Hit[aria-selected="true"] a {
+  background: color-mix(in oklab, var(--coral) 12%, transparent) !important;
+  border-color: var(--coral);
+}
+/* Hover — standard dotted pattern shared with `.var-card` on examples
+   detail pages and the `.arch-core` radial fill. No fill, just the
+   maroon-ink dot grid stippled over the modal surface. */
+.DocSearch-Hit a:hover {
+  background-image: radial-gradient(circle, rgba(42, 18, 27, 0.1) 1.2px, transparent 1.6px);
+  background-size: 14px 14px;
+  border-color: var(--coral);
+}
+.DocSearch-Hit-title { font-family: var(--sans); font-weight: 500; }
+.DocSearch-Hit-path  { font-family: var(--mono); font-size: 11px; }
+.DocSearch-Hit-icon  { color: var(--muted); }
+.DocSearch-Hit mark {
+  background: transparent;
+  color: var(--coral) !important;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-color: var(--coral);
+  font-weight: 600;
+}
+
+/* Action chrome — close X, return ↩, dropdown arrows. Default uses
+   `--docsearch-highlight-color` which we want for matched text, not
+   for icon chrome; force coral here for visual consistency. */
+.DocSearch-Action,
+.DocSearch-Action svg,
+.DocSearch-AskAi-Return,
+.DocSearch-Hit-Select-Icon { color: var(--coral) !important; }
+.DocSearch-Action:hover,
+.DocSearch-AskAi-Return:hover {
+  background: color-mix(in oklab, var(--coral) 10%, transparent) !important;
+}
+
+/* Keyboard chips — match the topbar `.kbd` style: cream pill, mono
+   caps, hairline border, no shadow. */
+.DocSearch-Commands-Key,
+.DocSearch-Button-Key {
+  font-family: var(--mono);
+  font-weight: 500; font-size: 11px;
+  border: 1px solid var(--rule) !important;
+  border-radius: 4px;
+  padding: 1px 5px;
+  background: var(--cream) !important;
+  color: var(--maroon-ink) !important;
+  box-shadow: none !important;
+}
+
+/* Footer — hairline rule + mono caps, matches the doc-foot strip. */
+.DocSearch-Footer {
+  border-top: 1px solid var(--rule);
+  font-family: var(--mono); font-size: 11px;
+  letter-spacing: 0.06em; color: var(--muted);
+}
+.DocSearch-Commands { color: var(--muted); }
+/* The Algolia logo SVG is multi-path — the "i" stem has a hardcoded
+   accent fill on its own path that ignores `currentColor`. Force fill
+   on every descendant so the whole wordmark renders in a single coral
+   tone. */
+.DocSearch-Logo svg,
+.DocSearch-Logo svg *,
+.DocSearch-Logo svg g,
+.DocSearch-Logo svg path,
+.DocSearch-Logo svg rect,
+.DocSearch-Logo svg use {
+  fill: var(--coral) !important;
+  color: var(--coral) !important;
+}
+.DocSearch-Logo a { color: var(--muted); }
+
+/* No-results — italic-coral serif headline, matching the design system
+   "italic-coral H1" treatment used across the site. */
+.DocSearch-NoResults .DocSearch-Title {
+  font-family: var(--serif); font-style: italic;
+  font-weight: 400; color: var(--maroon-ink);
+}
+.DocSearch-NoResults .DocSearch-Title strong { color: var(--coral); }
+
+/* Tighten letter-spacing where we landed on tabular-mono columns. */
+.DocSearch-Title,
+.DocSearch-Hit-source,
+.DocSearch-NoResults-Prefill-List ul li {
+  letter-spacing: -0.005em;
+}
+
 /* ─── sidebar ─── */
 .side-group { margin-bottom: 22px; }
 .side-group > h5 {
