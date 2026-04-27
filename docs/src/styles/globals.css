@@ -602,20 +602,22 @@ main.content {
 .DocSearch-Modal {
   border: 1px solid var(--rule-strong);
 }
-/* Searchbox — a quiet cream pill at rest, slightly darker rule on
-   focus. Earlier version used a coral inset ring, which read as
-   alarmist on top of the cream surface — the focus state should
-   confirm "you can type now", not flag a problem. */
+/* Searchbox — sits flush against the modal frame, so giving it its
+   own border stacks against `.DocSearch-Modal`'s border at the top
+   corners and reads as a double rule. Drop the form's border entirely
+   and let only the cream/paper fill differentiate the input from the
+   results pane. The package's default `border-block-end: 1px solid
+   var(--docsearch-subtle-color)` already separates the form from the
+   first hit underneath. */
 .DocSearch-Form {
-  border: 1px solid var(--rule);
-  border-radius: 8px;
+  border: none;
+  border-radius: 0;
   box-shadow: none;
   background: var(--cream);
 }
 .DocSearch-Form:focus-within {
-  border-color: var(--rule-strong);
-  box-shadow: none;
   background: var(--paper);
+  box-shadow: none;
 }
 .DocSearch-MagnifierLabel,
 .DocSearch-MagnifierLabel svg,
