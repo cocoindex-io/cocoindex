@@ -115,7 +115,10 @@ export const sidebar: SidebarItem[] = [
   {
     type: 'category',
     label: 'About',
-    items: [{ type: 'doc', slug: 'about/community', label: 'Community' }],
+    items: [
+      { type: 'doc', slug: 'about/community', label: 'Community' },
+      { type: 'doc', slug: 'about/telemetry', label: 'Anonymous usage telemetry' },
+    ],
   },
 ];
 

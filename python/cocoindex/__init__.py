@@ -2,6 +2,9 @@
 Cocoindex is a framework for building and running indexing pipelines.
 """
 
+import sys as _sys
+import sysconfig as _sysconfig
+
 from ._version import __version__
 
 from . import _version_check
@@ -53,7 +56,9 @@ from .typing import (
     Json,
 )
 
-_engine.init_pyo3_runtime()
+_gil_suffix = "t" if _sysconfig.get_config_var("Py_GIL_DISABLED") else ""
+_lang = f"python{_sys.version_info.major}.{_sys.version_info.minor}{_gil_suffix}"
+_engine.init_pyo3_runtime(package_id=f"python-{__version__}", lang=_lang)
 
 __all__ = [
     "__version__",

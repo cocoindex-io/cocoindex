@@ -37,8 +37,9 @@ fn set_settings_fn(get_settings_fn: Py<PyAny>) -> PyResult<()> {
 }
 
 #[pyfunction]
-fn init_pyo3_runtime() {
+fn init_pyo3_runtime(package_id: String, lang: String) {
     pyo3_async_runtimes::tokio::init_with_runtime(get_runtime()).unwrap();
+    crate::telemetry::init(package_id, lang);
 }
 
 #[pyfunction]
@@ -162,6 +163,7 @@ impl FlowLiveUpdater {
         flow: &Flow,
         options: Pythonized<execution::FlowLiveUpdaterOptions>,
     ) -> PyResult<Bound<'py, PyAny>> {
+        crate::telemetry::track("flow_update");
         let flow = flow.0.clone();
         future_into_py(py, async move {
             let lib_context = get_lib_context().await.into_py_result()?;
@@ -494,6 +496,10 @@ impl SetupChangeBundle {
         report_to_stdout: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
         let bundle = self.0.clone();
+        crate::telemetry::track(match bundle.action {
+            setup::FlowSetupChangeAction::Setup => "flow_setup",
+            setup::FlowSetupChangeAction::Drop => "flow_drop",
+        });
 
         future_into_py(py, async move {
             let lib_context = get_lib_context().await.into_py_result()?;
