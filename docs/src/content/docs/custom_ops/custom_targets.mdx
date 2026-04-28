@@ -31,7 +31,7 @@ The implementation of a target connector needs to deal with changes, in two aspe
 
 ## Target Spec
 
-The target spec defines the configuration parameters for your custom target. When you use this target in a flow (typically by calling [`export()`](/docs/core/flow_def#export)), you instantiate this target spec with specific parameter values.
+The target spec defines the configuration parameters for your custom target. When you use this target in a flow (typically by calling [`export()`](/docs-v0/core/flow_def#export)), you instantiate this target spec with specific parameter values.
 
 
 
@@ -86,10 +86,10 @@ This method applies data changes to the target. It receives multiple mutation ba
 - A dictionary of mutations (`dict[DataKeyType, DataValueType | None]`).
   Each entry represents a mutation for a single row. When the value is `None`, it represents a deletion for the row, otherwise it's an upsert.
 
-  It represented in the same way as [*KTable*](/docs/core/data_types#ktable), except the value can be `None`.
+  It represented in the same way as [*KTable*](/docs-v0/core/data_types#ktable), except the value can be `None`.
   In particular:
 
-  - Since both `DataKeyType` and `DataValueType` can have multiple columns, they're [*Struct*](/docs/core/data_types#struct-types).
+  - Since both `DataKeyType` and `DataValueType` can have multiple columns, they're [*Struct*](/docs-v0/core/data_types#struct-types).
     - `DataKeyType` can be represented by a frozen dataclass (i.e. `@dataclass(frozen=True)`) or a `NamedTuple`, as it needs to be immutable.
     - `DataValueType` can be represented by a `dataclass`, a `NamedTuple` or a `dict[str, Any]`.
 

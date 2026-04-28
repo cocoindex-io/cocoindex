@@ -164,7 +164,7 @@ If you use the Postgres database hosted by [Supabase](https://supabase.com/), pl
 * `source_max_inflight_rows` (type: `int | None`, default: `1024`): The maximum number of concurrent inflight rows for all source operations.
 * `source_max_inflight_bytes` (type: `int | None`, default: `None`): The maximum number of concurrent inflight bytes for all source operations.
 
-See also [flow definition docs](/docs/core/flow_def#control-processing-concurrency) about why it's necessary to control processing concurrency, and how to configure it on a per-source basis.
+See also [flow definition docs](/docs-v0/core/flow_def#control-processing-concurrency) about why it's necessary to control processing concurrency, and how to configure it on a per-source basis.
 If both global and per-source limits are specified, both need to be satisfied to admit additional source rows.
 
 ## List of Environment Variables

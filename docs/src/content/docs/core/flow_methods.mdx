@@ -5,11 +5,11 @@ toc_max_heading_level: 4
 meta:
   language: Python 3.11+
 ---
-After a flow is defined as discussed in [Flow Definition](/docs/core/flow_def), you can start to transform data with it.
+After a flow is defined as discussed in [Flow Definition](/docs-v0/core/flow_def), you can start to transform data with it.
 
 It can be achieved in two ways:
 
-* Use [CocoIndex CLI](/docs/core/cli).
+* Use [CocoIndex CLI](/docs-v0/core/cli).
 
 * Use APIs provided by the library.
     You have a `cocoindex.Flow` object after defining the flow in your code, and you can interact with it later.
@@ -22,7 +22,7 @@ The following sections assume you have a flow `demo_flow`:
 
 For a flow, its persistent backends need to be ready before it can run, including:
 
-* [Internal storage](/docs/core/basics#internal-storage) for CocoIndex.
+* [Internal storage](/docs-v0/core/basics#internal-storage) for CocoIndex.
 * Backend resources for targets exported by the flow, e.g. a table (in relational databases), a collection (in some vector databases), etc.
 
 The desired state of the backends for a flow is derived based on the flow definition itself.
@@ -47,7 +47,7 @@ CocoIndex supports two types of actions to manage the persistent backends automa
 
 After dropping the flow, the in-memory `cocoindex.Flow` instance is still valid, and you can call setup methods on it again.
 
-If you want to remove the flow from the current process, you can call `demo_flow.close()` to do so (see [related doc](/docs/core/flow_def#entry-point)).
+If you want to remove the flow from the current process, you can call `demo_flow.close()` to do so (see [related doc](/docs-v0/core/flow_def#entry-point)).
 
 :::
 

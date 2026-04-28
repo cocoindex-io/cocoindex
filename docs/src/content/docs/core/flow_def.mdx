@@ -58,7 +58,7 @@ In a flow definition, you can use a data representation as input for operations,
 #### Refresh interval
 
 You can provide a `refresh_interval` argument.
-When present, in the [live update mode](/docs/core/flow_methods#live-update), the data source will be refreshed by specified interval.
+When present, in the [live update mode](/docs-v0/core/flow_methods#live-update), the data source will be refreshed by specified interval.
 
 
 
@@ -83,7 +83,7 @@ Other arguments can be passed in as positional arguments or keyword arguments, a
 
 ### For-each-row
 
-If the data slice has [table type](/docs/core/data_types#table-types), you can call `row()` method to obtain a child scope representing each row, to apply operations on each row.
+If the data slice has [table type](/docs-v0/core/data_types#table-types), you can call `row()` method to obtain a child scope representing each row, to apply operations on each row.
 
 
 
@@ -133,13 +133,13 @@ Export must happen at the top level of a flow, i.e. not within any child scopes 
   For example, `Postgres` supports `PostgresSqlAttachment`, which can be used to configure arbitrary SQL statements for the export target, after the target is created or before the target is dropped.
 * `setup_by_user` (optional):
      whether the export target is setup by user.
-     By default, CocoIndex is managing the target setup (see [Setup / drop flow](/docs/core/flow_methods#setupdrop-flow)), e.g. create related tables/collections/etc. with compatible schema, and update them upon change.
+     By default, CocoIndex is managing the target setup (see [Setup / drop flow](/docs-v0/core/flow_methods#setupdrop-flow)), e.g. create related tables/collections/etc. with compatible schema, and update them upon change.
      If `True`, the export target will be managed by users, and users are responsible for creating the target and updating it upon change.
 * Fields to configure [storage indexes](#storage-indexes). `primary_key_fields` is required, and all others are optional.
 
 
 
-The target is managed by CocoIndex, i.e. it'll be created or dropped when [setup / drop flow](/docs/core/flow_methods#setupdrop-flow), and the data will be automatically updated (including stale data removal) when updating the index.
+The target is managed by CocoIndex, i.e. it'll be created or dropped when [setup / drop flow](/docs-v0/core/flow_methods#setupdrop-flow), and the data will be automatically updated (including stale data removal) when updating the index.
 The `name` for the same target should remain stable across different runs.
 If it changes, CocoIndex will treat it as an old target removed and a new one created, and perform setup changes and reindexing accordingly.
 
@@ -233,7 +233,7 @@ These concurrency options can be configured at different levels:
 
 * **Source level** via [`FlowBuilder.add_source()`](#import-from-source): Controls how many rows from a data source are processed simultaneously. This prevents overwhelming your system when ingesting large datasets.
 
-    You can also set global limits across all sources and flows using [`GlobalExecutionOptions`](/docs/core/settings#globalexecutionoptions) or environment variables [`COCOINDEX_SOURCE_MAX_INFLIGHT_ROWS`](/docs/core/settings#list-of-environment-variables)/[`COCOINDEX_SOURCE_MAX_INFLIGHT_BYTES`](/docs/core/settings#list-of-environment-variables).
+    You can also set global limits across all sources and flows using [`GlobalExecutionOptions`](/docs-v0/core/settings#globalexecutionoptions) or environment variables [`COCOINDEX_SOURCE_MAX_INFLIGHT_ROWS`](/docs-v0/core/settings#list-of-environment-variables)/[`COCOINDEX_SOURCE_MAX_INFLIGHT_BYTES`](/docs-v0/core/settings#list-of-environment-variables).
     When both global and per-source limits are specified, both limits are enforced independently - a new row can only be processed if there's available capacity in both the global budget (shared across all sources) and the per-source budget (specific to that source).
 
 * **Row iteration level** via [`DataSlice.row()`](#for-each-row): Provides fine-grained control over parallel processing within nested data structures, allowing you to tune concurrency at any level of your data hierarchy.
@@ -280,7 +280,7 @@ Operation spec is the default way to configure sources, functions and targets. B
 
 * The spec isn't supposed to contain secret information, and it's frequently shown in various places, e.g. `cocoindex show`.
 * For targets, once an operation is removed after flow definition code change, the spec is also gone.
-    But we still need to be able to drop the persistent backend (e.g. a table) when [setup / drop flow](/docs/core/flow_methods#setupdrop-flow).
+    But we still need to be able to drop the persistent backend (e.g. a table) when [setup / drop flow](/docs-v0/core/flow_methods#setupdrop-flow).
 
 Auth registry is introduced to solve the problems above.
 

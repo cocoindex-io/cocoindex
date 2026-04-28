@@ -10,16 +10,16 @@ The way to map data from a data collector to a target depends on data model of t
 
 | Target Type    | Description                   |
 |------------------|-------------------------|
-| [Postgres](/docs/targets/postgres) | Relational Database, Vector Search (PGVector)   |
-| [Qdrant](/docs/targets/qdrant)     | Vector Database, Keyword Search       |
-| [LanceDB](/docs/targets/lancedb)   | Vector Database, Keyword Search         |
-| [Pinecone](/docs/targets/pinecone) | Vector Database, Keyword Search       |
-| [ChromaDB](/docs/targets/chromadb) | Vector Database, Text Search            |
-| [Apache Doris](/docs/targets/doris) | Analytical Database, Vector Search, Full-Text Search |
-| [Neo4j](/docs/targets/neo4j)       | [Property graph](#property-graph-targets)        |
-| [Ladybug](/docs/targets/ladybug)   | [Property graph](#property-graph-targets)  |
+| [Postgres](/docs-v0/targets/postgres) | Relational Database, Vector Search (PGVector)   |
+| [Qdrant](/docs-v0/targets/qdrant)     | Vector Database, Keyword Search       |
+| [LanceDB](/docs-v0/targets/lancedb)   | Vector Database, Keyword Search         |
+| [Pinecone](/docs-v0/targets/pinecone) | Vector Database, Keyword Search       |
+| [ChromaDB](/docs-v0/targets/chromadb) | Vector Database, Text Search            |
+| [Apache Doris](/docs-v0/targets/doris) | Analytical Database, Vector Search, Full-Text Search |
+| [Neo4j](/docs-v0/targets/neo4j)       | [Property graph](#property-graph-targets)        |
+| [Ladybug](/docs-v0/targets/ladybug)   | [Property graph](#property-graph-targets)  |
 
-If you are looking for targets beyond here, you can always use [custom targets](/docs/custom_ops/custom_targets) as building blocks.
+If you are looking for targets beyond here, you can always use [custom targets](/docs-v0/custom_ops/custom_targets) as building blocks.
 
 
 ## Property Graph Targets
@@ -116,13 +116,13 @@ graph TD
 
 ### Declare Extra Node Labels
 
-If a node label needs to appear as source or target of a relationship, but not exported as a node, you need to [declare](/docs/core/flow_def#target-declarations) the label with necessary configuration.
+If a node label needs to appear as source or target of a relationship, but not exported as a node, you need to [declare](/docs-v0/core/flow_def#target-declarations) the label with necessary configuration.
 
 The dataclass to describe the declaration is specific to each target (e.g. `cocoindex.targets.Neo4jDeclarations`),
 while they share the following common fields:
 
 *   `nodes_label` (required): The label of the node.
-*   Options for [storage indexes](/docs/core/flow_def#storage-indexes).
+*   Options for [storage indexes](/docs-v0/core/flow_def#storage-indexes).
     *   `primary_key_fields` (required)
     *   `vector_indexes` (optional)
 

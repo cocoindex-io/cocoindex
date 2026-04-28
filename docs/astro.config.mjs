@@ -4,6 +4,7 @@ import mdx from '@astrojs/mdx';
 import sitemap from '@astrojs/sitemap';
 import remarkDirective from 'remark-directive';
 import remarkAdmonitions from './scripts/remark-admonitions.mjs';
+import remarkLinkChecker from './scripts/remark-link-checker.mjs';
 import { redirects } from './src/data/docs-sidebar.ts';
 
 // Shiki theme that matches design_guidelines/CocoIndex Docs.html:
@@ -59,23 +60,43 @@ const cocoindexCodeTheme = {
 };
 
 // V0 docs are served from https://cocoindex.io/docs-v0/ as the legacy
-// location (v1 takes over /docs). `base` handles the prefix;
-// `trailingSlash: 'never'` keeps /docs-v0/core/basics shaped exactly like
-// Docusaurus did.
+// location (v1 takes over /docs). `base` handles the prefix.
+const BASE = '/docs-v0';
+// `remark-link-checker` both validates *and* rewrites relative links: under
+// `build.format: 'directory'` (the default), source-relative `./foo` links
+// resolve incorrectly in the browser (a page at `/x/` makes `./foo` mean
+// `/x/foo`). The plugin emits absolute hrefs (`<base>/<slug>/`) so links
+// work regardless of trailing-slash quirks.
+/** @type {any[]} */
+const remarkPlugins = [
+  remarkDirective,
+  remarkAdmonitions,
+  [remarkLinkChecker, { base: BASE }],
+];
+
 export default defineConfig({
   site: 'https://cocoindex.io',
-  base: '/docs-v0',
+  base: BASE,
+  // `trailingSlash: 'always'` matches `build.format: 'directory'`: every
+  // page lives at `<slug>/index.html` and is canonical at `<slug>/`. In
+  // dev, requests without the trailing slash 404 — that strictness is the
+  // point: the link-checker plugin catches no-slash hrefs in markdown/MDX,
+  // and `'always'` catches no-slash hrefs in `.astro` components (sidebar,
+  // breadcrumb, pager) before they ship. External / legacy links without
+  // the slash still resolve in production via GitHub Pages's own 301
+  // redirect, so this doesn't break inbound traffic.
+  trailingSlash: 'always',
   integrations: [
     mdx({
       // MDX's own remark pipeline doesn't inherit `markdown.remarkPlugins`
       // reliably across Astro versions — wire admonitions explicitly so
       // .mdx content collection pages get them for sure.
-      remarkPlugins: [remarkDirective, remarkAdmonitions],
+      remarkPlugins,
     }),
     sitemap(),
   ],
   markdown: {
-    remarkPlugins: [remarkDirective, remarkAdmonitions],
+    remarkPlugins,
     shikiConfig: { theme: cocoindexCodeTheme, wrap: false },
   },
   redirects,

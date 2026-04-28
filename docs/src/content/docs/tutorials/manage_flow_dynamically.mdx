@@ -13,14 +13,14 @@ Sometimes you want to reuse the same flow definition for multiple *flow instance
 A flow instance has states from two aspects:
 
 *   *In-process object*, of type `cocoindex.Flow`.
-*   *Persistent resource*, including states in the [internal storage](/docs/core/basics#internal-storage) and backend resources that are owned by the flow instance.
+*   *Persistent resource*, including states in the [internal storage](/docs-v0/core/basics#internal-storage) and backend resources that are owned by the flow instance.
 
 A flow instance is ultimately a persistent resource. Its in-process object is a handle to operate on it. Consider file handles and database connections.
 CocoIndex provides APIs to *open* and *close* flow instances, and *setup* and *drop* the persistent resource.
 
 ## Parameterize the flow definition
 
-In the example from the [Quickstart Guide](/docs/getting_started/quickstart), we decorate the flow definition function with a `@cocoindex.flow_def(name="DemoFlow")` decorator:
+In the example from the [Quickstart Guide](/docs-v0/getting_started/quickstart), we decorate the flow definition function with a `@cocoindex.flow_def(name="DemoFlow")` decorator:
 
 ```python title="Example in Quickstart Guide"
 @cocoindex.flow_def(name="TextEmbedding")
@@ -154,7 +154,7 @@ def update_text_embedding_index(name: str):
 ```
 
 You can also do a live update.
-See the [Live Updates](/docs/tutorials/live_updates) tutorial for more details.
+See the [Live Updates](/docs-v0/tutorials/live_updates) tutorial for more details.
 
 
 ### Close the flow object
@@ -298,5 +298,5 @@ You can trigger these APIs from your applications specific to your use case, e.g
 
 You can see the following documents for more details:
 
-*   [CocoIndex Flow Definition: Entry Point](/docs/core/flow_def#entry-point)
-*   [Operate a Flow](/docs/core/flow_methods)
+*   [CocoIndex Flow Definition: Entry Point](/docs-v0/core/flow_def#entry-point)
+*   [Operate a Flow](/docs-v0/core/flow_methods)

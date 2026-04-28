@@ -20,7 +20,7 @@ Custom sources are defined by two components:
 
 ## Source Spec
 
-The source spec defines the configuration parameters for your custom source. When you use this source in a flow (typically by calling [`add_source()`](/docs/core/flow_def#import-from-source)), you instantiate this source spec with specific parameter values.
+The source spec defines the configuration parameters for your custom source. When you use this source in a flow (typically by calling [`add_source()`](/docs-v0/core/flow_def#import-from-source)), you instantiate this source spec with specific parameter values.
 
 A source spec is defined as a class that inherits from `cocoindex.op.SourceSpec`.
 
@@ -245,7 +245,7 @@ class PartialSourceRowData(Generic[V]):
 
 #### Key Type (`DataKeyType`) and Value Type (`DataValueType`) for Data
 
-The data type of custom source is a [*KTable*](/docs/core/data_types#ktable), so the key type and value type also follows the same requirements as key and value of a *KTable*. Specifically:
+The data type of custom source is a [*KTable*](/docs-v0/core/data_types#ktable), so the key type and value type also follows the same requirements as key and value of a *KTable*. Specifically:
 
 * The key type uniquely identifies each data item in your source. It can be:
   * A `NamedTuple` or frozen dataclass with one or multiple fields.

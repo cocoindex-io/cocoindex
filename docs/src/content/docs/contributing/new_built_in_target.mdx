@@ -7,18 +7,18 @@ A target connects CocoIndex flow and external systems, and needs to synchronize 
 
 ## Built-in Targets and Custom Targets
 
-CocoIndex allows you to create [custom targets](/docs/custom_ops/custom_targets) by Python SDK.
+CocoIndex allows you to create [custom targets](/docs-v0/custom_ops/custom_targets) by Python SDK.
 Custom targets share the gist as built-in targets, but the interface is simplified, so it only supports a subset of capabilities.
 The most notable difference is that custom target API exposed by Python SDK doesn't provide schema of the data to be exported, so it only fits most of the use cases where the target schema is fixed.
 But the built-in targets get the schema, so it can be used to define general-purpose targets.
 
-You're recommended to read the [custom target documentation](/docs/custom_ops/custom_targets) first as a starting point.
+You're recommended to read the [custom target documentation](/docs-v0/custom_ops/custom_targets) first as a starting point.
 
 ## Life of a Built-in Target
 
 The core logic of a built-in target is the *Target Connector*, which is an implementation of the trait [`TargetFactoryBase`](https://github.com/search?q=repo%3Acocoindex-io%2Fcocoindex%20%22trait%20TargetFactoryBase%22&type=code).
 
-*Users* provide a *Target Spec* when they export specific data (in the form of [Data Collector](/docs/core/flow_def#data-collector)) to the target.
+*Users* provide a *Target Spec* when they export specific data (in the form of [Data Collector](/docs-v0/core/flow_def#data-collector)) to the target.
 
 ```mermaid
 flowchart TD
@@ -62,7 +62,7 @@ flowchart TD
 The *Target Connector* (an implementation of `TargetFactoryBase`) takes them by the `build()` method, to digest this information and return necessary information for setup changes and data changes, including a *Setup Key*, a *Setup State* and a *Export Context* for each target.
 
 *Setup Key* and *Setup State* provides information to decide how to setup the target.
-Both *Setup Key* and *Setup State* are persisted in CocoIndex's [internal storage](/docs/core/basics#internal-storage), to keep track of targets' states.
+Both *Setup Key* and *Setup State* are persisted in CocoIndex's [internal storage](/docs-v0/core/basics#internal-storage), to keep track of targets' states.
 
 -   *Setup Key* is a key used to uniquely identify the target. It should remain stable across different calls.
     If it changes, CocoIndex considers it as a different target.
@@ -125,8 +125,8 @@ This is not a consideration for target types that different targets are independ
 
 The following target implementations provide good examples:
 
--   [Postgres](/docs/targets/postgres), see [related code](https://github.com/search?q=repo%3Acocoindex-io%2Fcocoindex+path%3A%2Ftarget%2F+Postgres&type=code).
+-   [Postgres](/docs-v0/targets/postgres), see [related code](https://github.com/search?q=repo%3Acocoindex-io%2Fcocoindex+path%3A%2Ftarget%2F+Postgres&type=code).
     It provides a good example for targets with specific column types in the schema.
 
--   [Qdrant](/docs/targets/qdrant), see [related code](https://github.com/search?q=repo%3Acocoindex-io%2Fcocoindex+path%3A%2Ftarget%2F+Qdrant&type=code).
+-   [Qdrant](/docs-v0/targets/qdrant), see [related code](https://github.com/search?q=repo%3Acocoindex-io%2Fcocoindex+path%3A%2Ftarget%2F+Qdrant&type=code).
     It provides a good example for targets without specific column types in the schema, as Qdrant's payloads are JSON objects.

@@ -37,14 +37,14 @@ Generation is used as a building block for certain CocoIndex functions that proc
 
 We have one built-in function using LLM generation for now:
 
-*  [`ExtractByLlm`](/docs/ops/functions#extractbyllm): it extracts information from input text.
+*  [`ExtractByLlm`](/docs-v0/ops/functions#extractbyllm): it extracts information from input text.
 
 #### LLM Spec
 
 When calling a CocoIndex function that uses LLM generation, you need to provide a `cocoindex.LlmSpec` dataclass, to configure the LLM you want to use in these functions.
 It has the following fields:
 
-*   `api_type` (type: [`cocoindex.LlmApiType`](/docs/ai/llm#llm-api-types), required): The type of integrated LLM API to use, e.g. `cocoindex.LlmApiType.OPENAI` or `cocoindex.LlmApiType.OLLAMA`.
+*   `api_type` (type: [`cocoindex.LlmApiType`](/docs-v0/ai/llm#llm-api-types), required): The type of integrated LLM API to use, e.g. `cocoindex.LlmApiType.OPENAI` or `cocoindex.LlmApiType.OLLAMA`.
     See supported LLM APIs in the [LLM API integrations](#llm-api-integrations) section below.
 *   `model` (type: `str`, required): The name of the LLM model to use.
 *   `address` (type: `str`, optional): The address of the LLM API.
@@ -55,7 +55,7 @@ It has the following fields:
 
 Embedding means converting text into a vector space, usually for similarity matching.
 
-We provide a built-in function [`EmbedText`](/docs/ops/functions#embedtext) that converts a given text into a vector space.
+We provide a built-in function [`EmbedText`](/docs-v0/ops/functions#embedtext) that converts a given text into a vector space.
 The spec takes the following fields:
 
 *   `api_type` (type: `cocoindex.LlmApiType`, required)
@@ -64,7 +64,7 @@ The spec takes the following fields:
 *   `output_dimension` (type: `int`, optional)
 *   `task_type` (type: `str`, optional)
 
-See documentation for [`EmbedText`](/docs/ops/functions#embedtext) for more details about these fields.
+See documentation for [`EmbedText`](/docs-v0/ops/functions#embedtext) for more details about these fields.
 
 ## LLM API Integrations
 

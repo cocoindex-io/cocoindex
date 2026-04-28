@@ -13,7 +13,7 @@ In this tutorial, we’ll build an index with text embeddings, keeping it minima
 
 ## Flow Overview
 
-![Flow](/docs/img/quickstart/flow.png)
+![Flow](/docs-v0/img/quickstart/flow.png)
 
 1. Read text files from the local filesystem
 2. Chunk each document
@@ -37,7 +37,7 @@ In this tutorial, we’ll build an index with text embeddings, keeping it minima
     cd cocoindex-quickstart
     ```
 
-4. Place input files in a directory `markdown_files`. You may download from [markdown_files.zip](markdown_files.zip).
+4. Place input files in a directory `markdown_files`. You may download from [markdown_files.zip](/docs-v0/markdown_files.zip).
 
 ## Define a flow
 
@@ -89,7 +89,7 @@ We extend a new field `chunks` to each row by *transforming* the `content` field
 
 
 
-![Chunking](/docs/img/quickstart/chunk.png)
+![Chunking](/docs-v0/img/quickstart/chunk.png)
 
 #### Embed each chunk and collect the embeddings
 
@@ -113,7 +113,7 @@ with doc["chunks"].row() as chunk:
 
 This code embeds each chunk using the SentenceTransformer library and collects the results.
 
-![Embedding](/docs/img/quickstart/embed.png)
+![Embedding](/docs-v0/img/quickstart/embed.png)
 
 
 
@@ -173,5 +173,5 @@ If you want to build a end to end query flow that also searches the index, you c
 
 Next, you may want to:
 
-- Learn about [CocoIndex Basics](../core/basics.md).
+- Learn about [CocoIndex Basics](../core/basics).
 - Explore more of what you can build with CocoIndex in the [examples](https://cocoindex.io/examples) directory.
