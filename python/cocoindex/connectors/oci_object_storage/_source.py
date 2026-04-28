@@ -7,6 +7,9 @@ Live mode is opted into by passing a ``LiveStream[bytes]`` (typically from
 constructing the walker. With a live stream, ``OCIWalker.items()`` returns a
 ``LiveMapView`` that performs an initial scan + watches OCI Object Storage
 events delivered via OCI Streaming.
+
+User-facing docs and worked examples (including the OCI Streaming wiring):
+https://cocoindex.io/docs/connectors/oci_object_storage
 """
 
 from __future__ import annotations
@@ -608,7 +611,9 @@ def list_objects(
     Returns an :class:`OCIWalker` that supports async iteration. With
     ``live_stream`` provided (typically a Kafka topic stream over OCI Streaming
     consumed via ``topic_as_stream(...).payloads()``), ``walker.items()``
-    returns a ``LiveMapView`` for live watching via ``mount_each``.
+    returns a ``LiveMapView`` for live watching via ``mount_each``. See
+    https://cocoindex.io/docs/connectors/oci_object_storage#live-bucket-watching
+    for the OCI Events / OCI Streaming wiring.
 
     Args:
         client: An ``oci.object_storage.ObjectStorageClient``.

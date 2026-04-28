@@ -5,6 +5,9 @@ Exposes a Kafka topic as a :class:`LiveStream` of raw messages and as a
 :class:`LiveMapFeed` of keyed change events. ``topic_as_stream`` returns the
 primitive stream (with a ``payloads()`` view yielding bytes), and
 ``topic_as_map`` interprets messages as a keyed map for use with ``mount_each``.
+
+User-facing docs and worked examples:
+https://cocoindex.io/docs/connectors/kafka
 """
 
 from __future__ import annotations
@@ -450,7 +453,10 @@ def topic_as_stream(consumer: AIOConsumer, topics: list[str]) -> TopicStream:
     Treat a Kafka topic as a :class:`LiveStream` of raw messages.
 
     The returned :class:`TopicStream` implements ``LiveStream[Message]`` and
-    exposes ``.payloads()`` for a ``LiveStream[bytes]`` view of message values.
+    exposes ``.payloads()`` for a ``LiveStream[bytes]`` view of message values
+    — the typical input for sources that consume opaque event payloads (e.g.
+    the OCI Object Storage source's live mode; see
+    https://cocoindex.io/docs/connectors/oci_object_storage#live-bucket-watching).
 
     The consumer must be **unsubscribed** — ``topic_as_stream()`` handles
     subscription internally to register partition rebalance callbacks.

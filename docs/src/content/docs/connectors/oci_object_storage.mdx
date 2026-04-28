@@ -6,7 +6,7 @@ description: >
   with prefix filters, path matchers, size limits, and an optional live mode
   driven by OCI Object Storage events delivered through OCI Streaming.
 ---
-The `oci_object_storage` connector provides utilities for reading objects from Oracle Cloud Infrastructure (OCI) Object Storage buckets, with optional live-mode support backed by OCI Object Storage events delivered through OCI Streaming (Kafka-protocol compatible).
+The `oci_object_storage` connector provides utilities for reading objects from Oracle Cloud Infrastructure (OCI) Object Storage buckets, with an optional live mode driven by OCI Object Storage events delivered through OCI Streaming.
 
 ```python
 from cocoindex.connectors import oci_object_storage
@@ -213,13 +213,13 @@ else:
     print("Object no longer exists")
 ```
 
-A `True` verdict caches the metadata so subsequent `size()` / `read()` calls do not re-probe. A `False` verdict caches only the existence flag — a subsequent bare `size()` / `read()` without `exists()` will re-probe and re-raise the 404. The expected use is: call `exists()` first, branch on the result.
+Call `exists()` first and branch on the result; on a `True` verdict, subsequent `size()` / `read()` calls reuse the cached metadata without re-probing.
 
 ### Live bucket watching
 
 When `live_stream` is provided, `items()` returns a [`LiveMapView`](../advanced_topics/live_component#livemapfeed-and-livemapview) instead of a plain `AsyncIterable`. Combined with [`mount_each()`](../programming_guide/processing_component#mount_each), this enables automatic incremental bucket watching — newly created, updated, and deleted objects are processed without a full rescan.
 
-The typical setup uses **OCI Streaming** (Kafka-protocol compatible). Configure an [OCI Events Rule](https://docs.oracle.com/en-us/iaas/Content/Events/Concepts/eventsoverview.htm) that forwards Object Storage events (`createobject`, `updateobject`, `deleteobject`) to an OCI Streaming stream, then consume them via the [Kafka connector](./kafka) and feed the bytes payload view into `live_stream`:
+The typical setup uses **OCI Streaming**. Configure an [OCI Events Rule](https://docs.oracle.com/en-us/iaas/Content/Events/Concepts/eventsoverview.htm) that forwards Object Storage events (`createobject`, `updateobject`, `deleteobject`) to an OCI Streaming stream, then consume that stream as a `LiveStream[bytes]` via the Kafka connector — see [`topic_as_stream()` and `payloads()`](./kafka#as-a-live-stream) for the consumer / stream setup — and pass it as `live_stream`:
 
 ```python
 from confluent_kafka.aio import AIOConsumer
@@ -240,7 +240,7 @@ walker = oci_object_storage.list_objects(
 await coco.mount_each(process_file, walker.items(), target)
 ```
 
-See [Live Mode](../programming_guide/live_mode) for how this works and how to enable it on the app.
+See [Live Mode](../programming_guide/live_mode) for how live mode works and how to enable it on the app.
 
 ### Example
 

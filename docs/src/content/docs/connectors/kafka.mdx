@@ -2,11 +2,12 @@
 title: "*Kafka* connector"
 toc_max_heading_level: 4
 description: >
-  Consume Kafka topics as live keyed maps (topic_as_map → LiveMapFeed) and
-  produce messages as target states — with automatic offset commits and
-  partition rebalancing at at-least-once semantics.
+  Consume Kafka topics as live keyed maps (topic_as_map → LiveMapFeed) or as
+  raw event streams (topic_as_stream → LiveStream), and produce messages as
+  target states — with automatic offset commits and partition rebalancing at
+  at-least-once semantics.
 ---
-The `kafka` connector supports Kafka as both a **source** (consuming messages as a live keyed map) and a **target** (producing messages for declared target states).
+The `kafka` connector supports Kafka as both a **source** (consuming messages as a live keyed map, or as a raw event stream) and a **target** (producing messages for declared target states).
 
 ```python
 from cocoindex.connectors import kafka
@@ -120,6 +121,61 @@ app = coco.App(
 )
 app.update_blocking(live=True)
 ```
+
+## As a live stream
+
+Some downstream connectors don't model Kafka messages as a keyed map — they treat each message as an opaque event payload (e.g. the [OCI Object Storage](./oci_object_storage#live-bucket-watching) live mode ingests Object Storage event JSON delivered through OCI Streaming). For these, the `kafka` connector exposes a topic as a [`LiveStream`](../advanced_topics/live_component#livestream) — CocoIndex's keyless counterpart to `LiveMapFeed`, an opaque sequence of messages with the same readiness and back-pressure machinery but no key/delete semantics.
+
+Set up the consumer the same way as for [`topic_as_map()`](#setting-up-a-consumer).
+
+### `topic_as_stream()`
+
+```python
+def topic_as_stream(
+    consumer: AIOConsumer,
+    topics: list[str],
+) -> TopicStream:
+```
+
+**Parameters:**
+
+- `consumer` — An unsubscribed `AIOConsumer`. Auto-commit should be disabled.
+- `topics` — Topics to subscribe to.
+
+**Returns:** A `TopicStream` (a `LiveStream[Message]`) that delivers raw `confluent_kafka.Message` objects to its subscriber. [Offset management](#offset-management) and [readiness](#readiness) behave identically to `topic_as_map()`.
+
+### `TopicStream.payloads()`
+
+```python
+def payloads(self) -> LiveStream[bytes]:
+```
+
+A view over the same `TopicStream` that yields each message's value (the byte payload) instead of the full `Message`. Null-valued messages (Kafka tombstones) are filtered out of this view; consumers that need tombstone semantics should subscribe to the `TopicStream` directly.
+
+This is the typical input for sources that consume opaque event payloads:
+
+```python
+from confluent_kafka.aio import AIOConsumer
+from cocoindex.connectors import kafka, oci_object_storage
+
+consumer = AIOConsumer({
+    "bootstrap.servers": "localhost:9092",
+    "group.id": "my-group",
+    "enable.auto.commit": "false",
+})
+topic_stream = kafka.topic_as_stream(consumer, ["object-storage-events"])
+
+walker = oci_object_storage.list_objects(
+    client, "my-namespace", "my-bucket",
+    live_stream=topic_stream.payloads(),
+)
+```
+
+For a complete app using this pattern, see the [OCI Object Storage live-mode example](./oci_object_storage#example).
+
+:::caution
+A `TopicStream` (and any `payloads()` view of it) supports at most one active watcher — the underlying consumer can hold only one subscription. This is not runtime-checked.
+:::
 
 ## As target
 
