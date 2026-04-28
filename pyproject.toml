@@ -80,6 +80,7 @@ surrealdb = ["surrealdb>=1.0.0"]
 google_drive = ["google-api-python-client>=2.0.0", "google-auth>=2.0.0"]
 amazon_s3 = ["aiobotocore>=2.0.0"]
 doris = ["aiohttp>=3.9.0", "pymysql>=1.1.0", "aiomysql>=0.2.0"]
+falkordb = ["falkordb>=1.1.0"]
 kafka = ["confluent_kafka>=2.6"]
 oci = ["oci>=2.0"]
 entity_resolution = ["faiss-cpu>=1.7"]
@@ -106,6 +107,7 @@ all = [
     "aiohttp>=3.9.0",
     "pymysql>=1.1.0",
     "aiomysql>=0.2.0",
+    "falkordb>=1.1.0",
     "confluent_kafka>=2.6",
     "oci>=2.0",
     "faiss-cpu>=1.7",
@@ -200,6 +202,8 @@ module = [
     "aiomysql.*",
     "pymysql",
     "pymysql.*",
+    "falkordb",
+    "falkordb.*",
     "faiss",
     "faiss.*",
     "instructor",
