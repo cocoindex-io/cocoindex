@@ -6,7 +6,7 @@ meta:
   time: ~15 minutes
   language: Python 3.11+
 ---
-![Control Processing Concurrency Tuning Guide](/docs/img/tutorials/control-flow/cover.png)
+![Control Processing Concurrency Tuning Guide](/docs-v0/img/tutorials/control-flow/cover.png)
 
 CocoIndex’s parallelism model boosts speed by processing multiple data items at once, but **more parallelism isn’t always better**. Left unconstrained, excessive concurrency can strain—or even destabilize—your systems. That’s why CocoIndex includes **built-in concurrency control mechanisms** that strike the right balance between **raw performance** and **system stability**, even at massive scale.
 
@@ -24,7 +24,7 @@ Unlike generic concurrency features, CocoIndex lets you:
 
 This layered approach ensures that resource-heavy sources don’t overwhelm the system, and nested tasks (such as splitting documents into chunks) remain predictable and safe.
 
-![flow-control](/docs/img/tutorials/control-flow/flow-control.png)
+![flow-control](/docs-v0/img/tutorials/control-flow/flow-control.png)
 
 You can review the full documentation [here](https://cocoindex.io/docs-v0/core/flow_def#control-processing-concurrency). CocoIndex is powering users process at the scale of millions in production, :star: [star us](https://github.com/cocoindex-io/cocoindex) if you like it!
 
@@ -61,7 +61,7 @@ Both **global** and **per-source** limits must pass before a new row is processe
 
 #### Global Concurrency: One Setting to Shield All Flows
 
-![global-level concurrency](/docs/img/tutorials/control-flow/global-level.png)
+![global-level concurrency](/docs-v0/img/tutorials/control-flow/global-level.png)
 
 Global limits ensure your system never overshoots safe operating thresholds, even if individual flows attempt higher concurrency.
 
@@ -93,7 +93,7 @@ Currently, CocoIndex uses 1024 as the default value of global max inflight rows,
 
 #### Per-Source Concurrency: Granular Customization
 
-![per-source concurrency](/docs/img/tutorials/control-flow/per-source.png)
+![per-source concurrency](/docs-v0/img/tutorials/control-flow/per-source.png)
 
 Set different limits for each source according to workload and data characteristics:
 
@@ -109,7 +109,7 @@ def demo_flow(flow_builder: cocoindex.FlowBuilder, data_scope: cocoindex.DataSco
 
 
 ### 2. Nested Iteration Level Concurrency: Deep Structural Control
-![nested-iteration concurrency](/docs/img/tutorials/control-flow/nested-level.png)
+![nested-iteration concurrency](/docs-v0/img/tutorials/control-flow/nested-level.png)
 
 When processing nested rows, such as processing each chunk of each document, you can configure the maximum concurrent rows and/or bytes:
 
@@ -134,7 +134,7 @@ with data_scope["documents"].row() as doc:
 
 In actual incremental pipelines, the processing bottleneck is usually at a few heavy operations, such as running inference using an AI model locally or via a remote API. It's common to keep more data in memory even if it cannot be processed immediately—in this way, once the busy backend becomes available, new workloads can be taken on right away to keep the backends busy. However, we need a reasonable bound on this to prevent memory exhaustion and similar issues. That's where concurrency control comes in.
 
-![tuning-guide](/docs/img/tutorials/control-flow/tuning-guide.png)
+![tuning-guide](/docs-v0/img/tutorials/control-flow/tuning-guide.png)
 
 ### Most Situations - Default is Good Enough
 For most cases, the default global source max rows limit (`COCOINDEX_SOURCE_MAX_INFLIGHT_ROWS`: 1024) already fits the situation described above: loading more than what heavy operations can consume, but still within a reasonable bound. You don't need to do anything.

@@ -23,7 +23,7 @@ In this case, you can:
 1.  Extract a sub-flow with the shared transformation logic into a standalone function.
     *   It takes one or more data slices as input.
     *   It returns one data slice as output.
-    *   You need to annotate data types for both inputs and outputs as type parameter for `cocoindex.DataSlice[T]`. See [data types](./core/data_types.mdx) for more details about supported data types.
+    *   You need to annotate data types for both inputs and outputs as type parameter for `cocoindex.DataSlice[T]`. See [data types](./core/data_types) for more details about supported data types.
 
 2.  When you're defining your indexing flow, you can directly call the function.
     The body will be executed, so that the transformation logic will be added as part of the indexing flow.

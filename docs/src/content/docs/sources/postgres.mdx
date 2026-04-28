@@ -79,7 +79,7 @@ The spec takes the following fields:
 
 ### Schema
 
-The output is a [*KTable*](/docs/core/data_types#ktable) with straightforward 1 to 1 mapping from Postgres table columns to CocoIndex table fields:
+The output is a [*KTable*](/docs-v0/core/data_types#ktable) with straightforward 1 to 1 mapping from Postgres table columns to CocoIndex table fields:
 
 * Key fields: All primary key columns in the Postgres table will be included automatically as key fields.
 * Value fields: All non-primary-key columns in the Postgres table (included by `included_columns` or all when not specified) appear as value fields.

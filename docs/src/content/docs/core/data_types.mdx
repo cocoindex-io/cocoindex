@@ -16,7 +16,7 @@ You don't need to spell out any data type explicitly when you define the flow.
 All you need to do is to make sure the data passed to functions and targets are compatible with them.
 
 Each type in CocoIndex type system is mapped to one or multiple types in Python.
-When you define a [custom function](/docs/custom_ops/custom_functions), you need to annotate the data types of arguments and return values.
+When you define a [custom function](/docs-v0/custom_ops/custom_functions), you need to annotate the data types of arguments and return values.
 
 *   **When you pass a Python value to the engine (e.g. return values of a custom function)**, a **specific type annotation is required**.
     The type annotation needs to be specific in describing the target data type, as it provides the **ground truth of the data type in the flow**.
@@ -326,4 +326,4 @@ Non-optional argument means the function needs a known value for the argument to
 However, it doesn't forbid the argument to be *None* at runtime.
 When a non-optional argument receives a *None* value, the function execution is skipped and the result is *None*.
 
-For example, for [`SplitRecursively` function](/docs/ops/functions#splitrecursively), the `text` and `chunk_size` arguments are not optional. If the input value of either of them is *None*, the function will return *None*.
+For example, for [`SplitRecursively` function](/docs-v0/ops/functions#splitrecursively), the `text` and `chunk_size` arguments are not optional. If the input value of either of them is *None*, the function will return *None*.
