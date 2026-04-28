@@ -315,9 +315,9 @@ async def test_live_component_incremental_delete_no_stale_tombstone() -> None:
     assert stats is not None
 
     # There should be no "<unknown>" component in the stats
-    assert (
-        "<unknown>" not in stats.by_component
-    ), f"Stale tombstone caused '<unknown>' deletion: {stats.by_component}"
+    assert "<unknown>" not in stats.by_component, (
+        f"Stale tombstone caused '<unknown>' deletion: {stats.by_component}"
+    )
 
 
 class _IncrementalDeleteViaGCLiveComponent:
