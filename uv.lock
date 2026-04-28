@@ -490,6 +490,15 @@ wheels = [
 ]
 
 [[package]]
+name = "circuitbreaker"
+version = "2.1.3"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/df/ac/de7a92c4ed39cba31fe5ad9203b76a25ca67c530797f6bb420fff5f65ccb/circuitbreaker-2.1.3.tar.gz", hash = "sha256:1a4baee510f7bea3c91b194dcce7c07805fe96c4423ed5594b75af438531d084", size = 10787, upload-time = "2025-03-31T08:12:08.963Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ae/34/15f08edd4628f65217de1fc3c1a27c82e46fe357d60c217fc9881e12ebcc/circuitbreaker-2.1.3-py3-none-any.whl", hash = "sha256:87ba6a3ed03fdc7032bc175561c2b04d52ade9d5faf94ca2b035fbdc5e6b1dd1", size = 7737, upload-time = "2025-03-31T08:12:07.802Z" },
+]
+
+[[package]]
 name = "click"
 version = "8.3.1"
 source = { registry = "https://pypi.org/simple" }
@@ -529,6 +538,7 @@ all = [
     { name = "instructor" },
     { name = "lancedb" },
     { name = "litellm" },
+    { name = "oci" },
     { name = "pgvector" },
     { name = "pyarrow" },
     { name = "pymysql" },
@@ -569,6 +579,9 @@ lancedb = [
 ]
 litellm = [
     { name = "litellm" },
+]
+oci = [
+    { name = "oci" },
 ]
 postgres = [
     { name = "asyncpg" },
@@ -676,6 +689,8 @@ requires-dist = [
     { name = "litellm", marker = "extra == 'litellm'", specifier = ">=1.81.0" },
     { name = "msgspec", specifier = ">=0.19.0" },
     { name = "numpy", specifier = ">=1.23.2" },
+    { name = "oci", marker = "extra == 'all'", specifier = ">=2.0" },
+    { name = "oci", marker = "extra == 'oci'", specifier = ">=2.0" },
     { name = "pgvector", marker = "extra == 'all'", specifier = ">=0.4.2" },
     { name = "psutil", specifier = ">=7.2.1" },
     { name = "pyarrow", marker = "extra == 'all'", specifier = ">=19.0.0" },
@@ -695,7 +710,7 @@ requires-dist = [
     { name = "typing-extensions", specifier = ">=4.12" },
     { name = "watchfiles", specifier = ">=1.1.0" },
 ]
-provides-extras = ["all", "amazon-s3", "colpali", "doris", "entity-resolution", "entity-resolution-llm", "google-drive", "kafka", "lancedb", "litellm", "postgres", "qdrant", "sentence-transformers", "sqlite", "surrealdb"]
+provides-extras = ["all", "amazon-s3", "colpali", "doris", "entity-resolution", "entity-resolution-llm", "google-drive", "kafka", "lancedb", "litellm", "oci", "postgres", "qdrant", "sentence-transformers", "sqlite", "surrealdb"]
 
 [package.metadata.requires-dev]
 build-test = [
@@ -2275,6 +2290,24 @@ wheels = [
 ]
 
 [[package]]
+name = "oci"
+version = "2.172.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "certifi" },
+    { name = "circuitbreaker" },
+    { name = "cryptography" },
+    { name = "pyopenssl" },
+    { name = "python-dateutil" },
+    { name = "pytz" },
+    { name = "urllib3" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/97/ed/e9c0fa954f0fa77946993a46de68862c984f7ae8e9e651406a776214d1c9/oci-2.172.0.tar.gz", hash = "sha256:4453ab363e4f9d4b9890a3030f082f1841398f2cea66b63e44dd51cf6be0d347", size = 17086041, upload-time = "2026-04-21T04:41:35.343Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/2e/e5/193bca3a95b1fb272a0f0fb02d966a9ba1d10dd264d21143d85625c55de8/oci-2.172.0-py3-none-any.whl", hash = "sha256:61f07c086b0140033ccd57a0632bdd747ce2dbc3cedc198639116dd78510e3ca", size = 34825199, upload-time = "2026-04-21T04:41:26.297Z" },
+]
+
+[[package]]
 name = "openai"
 version = "2.18.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2868,6 +2901,19 @@ wheels = [
 ]
 
 [[package]]
+name = "pyopenssl"
+version = "26.1.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "cryptography" },
+    { name = "typing-extensions", marker = "python_full_version < '3.13'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/8c/a8/26d36401e3ab8eed9030ad33f381da7856fcfad5691780fccd1b019718fc/pyopenssl-26.1.0.tar.gz", hash = "sha256:737f0a2275c5bc54f3b02137687e1a765931fb3949b9a92a825e4d33b9eec08b", size = 186181, upload-time = "2026-04-24T20:23:48.115Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a8/41/52f3a3e812b816a91e89aa504199d8bf989a1f873192b10762be66cf2009/pyopenssl-26.1.0-py3-none-any.whl", hash = "sha256:115563879b2c8ccb207975705d3e491434d8c9d7c79667c902ecbf5f3bbd2ece", size = 58109, upload-time = "2026-04-24T20:23:46.273Z" },
+]
+
+[[package]]
 name = "pyparsing"
 version = "3.3.2"
 source = { registry = "https://pypi.org/simple" }
@@ -2936,6 +2982,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/f0/26/19cadc79a718c5edbec86fd4919a6b6d3f681039a2f6d66d14be94e75fb9/python_dotenv-1.2.1.tar.gz", hash = "sha256:42667e897e16ab0d66954af0e60a9caa94f0fd4ecf3aaf6d2d260eec1aa36ad6", size = 44221, upload-time = "2025-10-26T15:12:10.434Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/14/1b/a298b06749107c305e1fe0f814c6c74aea7b2f1e10989cb30f544a1b3253/python_dotenv-1.2.1-py3-none-any.whl", hash = "sha256:b81ee9561e9ca4004139c6cbba3a238c32b03e4894671e181b671e8cb8425d61", size = 21230, upload-time = "2025-10-26T15:12:09.109Z" },
+]
+
+[[package]]
+name = "pytz"
+version = "2026.1.post1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/56/db/b8721d71d945e6a8ac63c0fc900b2067181dbb50805958d4d4661cf7d277/pytz-2026.1.post1.tar.gz", hash = "sha256:3378dde6a0c3d26719182142c56e60c7f9af7e968076f31aae569d72a0358ee1", size = 321088, upload-time = "2026-03-03T07:47:50.683Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/10/99/781fe0c827be2742bcc775efefccb3b048a3a9c6ce9aec0cbf4a101677e5/pytz-2026.1.post1-py2.py3-none-any.whl", hash = "sha256:f2fd16142fda348286a75e1a524be810bb05d444e5a081f37f7affc635035f7a", size = 510489, upload-time = "2026-03-03T07:47:49.167Z" },
 ]
 
 [[package]]

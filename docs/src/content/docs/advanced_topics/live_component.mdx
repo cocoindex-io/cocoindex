@@ -194,6 +194,33 @@ To add live support to a source connector, make your source return an object tha
 - **`LiveMapView` example**: The [`localfs`](../connectors/localfs) connector's `DirWalker` — `walk_dir(..., live=True).items()` returns a `LiveMapView` backed by `watchfiles`.
 - **`LiveMapFeed` example**: The [`kafka`](../connectors/kafka) connector — `topic_as_map()` returns a `LiveMapFeed` that consumes messages from Kafka topics.
 
+## LiveStream
+
+Some change sources are not naturally keyed maps — they deliver opaque event payloads (e.g. cloud-storage event notifications, raw message buses) that the consuming connector translates into map updates on its own terms. For these, CocoIndex provides **`LiveStream`**: a keyless sibling of `LiveMapFeed` — an unkeyed sequence of messages without any "key" or "delete" semantics. Connectors typically wrap a user-supplied `LiveStream` into their own `LiveMapView` (or `LiveMapFeed`) by translating each event into the appropriate key-level operation.
+
+```python
+class LiveStream(Protocol[M]):
+    async def watch(self, subscriber: LiveStreamSubscriber[M]) -> None: ...
+
+class LiveStreamSubscriber(Protocol[M]):
+    async def send(self, message: M) -> ReadyAwaitable: ...
+    async def mark_ready(self) -> None: ...
+```
+
+`send()` is awaited by the producer to obtain a `ReadyAwaitable` handle; the handle's `ready()` is then awaited later (often by an internal offset/commit tracker) to signal that the message has been fully processed. The stream awaits each `send()` inline, so a slow subscriber naturally throttles the producer — at most one message is in flight per stream, bounding adapter memory regardless of producer rate.
+
+`mark_ready()` must return promptly — it is awaited inline in the producer's loop. Subscribers that need to wait on additional preconditions (e.g. a pending scan) should spawn a background task and return.
+
+### Implementing a LiveStream-based connector
+
+A connector built on `LiveStream` typically:
+
+1. Accepts a user-supplied `LiveStream[...]` as a constructor argument — the user wires up the underlying transport.
+2. Wraps the stream into a `LiveMapView` (or `LiveMapFeed`): `__aiter__()` runs an initial scan if the source has scannable state; `watch()` subscribes to the stream and translates each event into `subscriber.update(key, value)` / `subscriber.delete(key)`.
+3. Lets the underlying `LiveStream` handle offset commits, readiness signaling, and back-pressure.
+
+**Example**: The [`oci_object_storage`](../connectors/oci_object_storage#live-bucket-watching) connector takes a `LiveStream[bytes]` (typically [`kafka.topic_as_stream(...).payloads()`](../connectors/kafka#as-a-live-stream)) and translates OCI Object Storage events into bucket-keyed updates. The Kafka connector exposes `topic_as_stream()` precisely so that downstream connectors like this one can plug into Kafka without inheriting the keyed-map semantics of `topic_as_map()`.
+
 ## Live mode vs catch-up mode
 
 See [Live Mode](../programming_guide/live_mode) for how the two modes are enabled at the app level and an overview of how they work.

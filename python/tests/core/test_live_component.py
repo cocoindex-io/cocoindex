@@ -684,3 +684,36 @@ async def test_live_component_global_cancel_terminates_update() -> None:
         if not result_task.done():
             result_task.cancel()
         _core.reset_global_cancellation()
+
+
+# ============================================================================
+# LiveStream primitives
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_immediate_ready_is_immediate() -> None:
+    """_IMMEDIATE_READY.ready() resolves without suspension."""
+    from cocoindex._internal.live_component import _IMMEDIATE_READY
+
+    fut = _IMMEDIATE_READY.ready()
+    # Should already be done after one await with no scheduling.
+    await asyncio.wait_for(fut, timeout=0.1)
+
+
+def test_live_stream_protocol_runtime_check() -> None:
+    """A minimal subscriber satisfies LiveStreamSubscriber.isinstance(...)."""
+    from cocoindex._internal.live_component import (
+        LiveStreamSubscriber,
+        ReadyAwaitable,
+    )
+
+    class _Sub:
+        async def send(self, message: Any) -> ReadyAwaitable:  # noqa: ARG002
+            raise NotImplementedError
+
+        async def mark_ready(self) -> None:
+            pass
+
+    assert isinstance(_Sub(), LiveStreamSubscriber)
+    assert not isinstance(object(), LiveStreamSubscriber)
