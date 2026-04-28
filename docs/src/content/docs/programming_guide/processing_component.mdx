@@ -31,7 +31,7 @@ Here's an example component path tree for a pipeline that processes files:
 
 The tree is populated dynamically as the app runs — each `mount()` / `mount_each()` call adds a subpath.
 
-See [StableKey](./sdk_overview.md#stablekey) in the SDK Overview for details on what values can be used in component paths.
+See [StableKey](./sdk_overview#stablekey) in the SDK Overview for details on what values can be used in component paths.
 
 ## Mount
 
@@ -92,7 +92,7 @@ await handle.ready()
 
 You usually only need to call `ready()` when you have logic that depends on the processing component's target states being applied — for example, querying the latest data from a target table after syncing it.
 
-`mount()` also accepts **LiveComponent classes** — components that process continuously and react to changes incrementally instead of rescanning everything. See [Live Components](../advanced_topics/live_component.md) for details.
+`mount()` also accepts **LiveComponent classes** — components that process continuously and react to changes incrementally instead of rescanning everything. See [Live Components](../advanced_topics/live_component) for details.
 
 ### `use_mount()`
 
@@ -122,7 +122,7 @@ files = localfs.walk_dir(sourcedir, path_matcher=PatternFilePathMatcher(included
 await coco.mount_each(process_file, files.items(), target)
 ```
 
-Each item in the iterable is a `(key, value)` tuple. The value is passed as the first argument to the function, and any additional arguments are passed through. Items are mounted under an [auto-derived subpath](#auto-subpath) (`Symbol(fn.__name__)`), so the component path for each item is `parent / Symbol("process_file") / key`.
+Each item in the iterable is a `(key, value)` tuple. The value is passed as the first argument to the function, and any additional arguments are passed through. Items are mounted under an [auto-derived subpath](#automatic-subpath-derivation) (`Symbol(fn.__name__)`), so the component path for each item is `parent / Symbol("process_file") / key`.
 
 You can provide an explicit subpath as the first argument:
 
@@ -132,7 +132,7 @@ await coco.mount_each(coco.component_subpath("files"), process_file, files.items
 
 Source connectors provide an `items()` method that returns `(StableKey, T)` pairs. For example, `localfs.walk_dir(...).items()` yields `(relative_path, File)` tuples.
 
-When a source connector supports live watching, its `items()` returns a `LiveMapView` or `LiveMapFeed` instead of a plain iterable. `mount_each()` detects this and automatically handles incremental updates — no changes to `mount_each()` itself are needed. See [Live Mode](./live_mode.md).
+When a source connector supports live watching, its `items()` returns a `LiveMapView` or `LiveMapFeed` instead of a plain iterable. `mount_each()` detects this and automatically handles incremental updates — no changes to `mount_each()` itself are needed. See [Live Mode](./live_mode).
 
 ### `mount_target()`
 `mount_target()` mounts a target without requiring an explicit subpath.
@@ -187,7 +187,7 @@ for f in files:
 ```
 
 :::tip
-When iterating over keyed items, prefer [`mount_each()`](#mount-each) — it handles the loop and subpath creation for you.
+When iterating over keyed items, prefer [`mount_each()`](#mount_each) — it handles the loop and subpath creation for you.
 :::
 
 ## How target states sync
@@ -217,10 +217,10 @@ CocoIndex processes each component in two phases: **processing** (running your f
 
 To react to background failures, you can:
 
-- Install [exception handlers](../advanced_topics/exception_handlers.md#exception-handlers) — global or scoped — to send alerts, record metrics, or implement custom logic.
-- [Monitor app progress](./app.md#monitoring-progress) — `UpdateStats` exposes per-component stats including error counts, so you can detect failures programmatically.
+- Install [exception handlers](../advanced_topics/exception_handlers#exception-handlers) — global or scoped — to send alerts, record metrics, or implement custom logic.
+- [Monitor app progress](./app#monitoring-progress) — `UpdateStats` exposes per-component stats including error counts, so you can detect failures programmatically.
 
-For the full picture — including interrupted update recovery and the exception handler API — see [Error Handling](../advanced_topics/exception_handlers.md).
+For the full picture — including interrupted update recovery and the exception handler API — see [Error Handling](../advanced_topics/exception_handlers).
 
 ### No rollback, convergent roll-forward
 
@@ -275,7 +275,7 @@ This pattern ensures that CocoIndex can track component relationships and target
 ## Processing helpers
 
 ### `map()`
-`map()` applies an async function to each item in a collection, running all calls concurrently within the current processing component. Unlike [`mount()`](#mount) and [`mount_each()`](#mount-each), it does **not** create child processing components — it's purely concurrent execution (similar to `asyncio.gather()`).
+`map()` applies an async function to each item in a collection, running all calls concurrently within the current processing component. Unlike [`mount()`](#mount) and [`mount_each()`](#mount_each), it does **not** create child processing components — it's purely concurrent execution (similar to `asyncio.gather()`).
 
 ```python
 @coco.fn(memo=True)

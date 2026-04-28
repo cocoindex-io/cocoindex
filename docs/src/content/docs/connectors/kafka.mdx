@@ -23,7 +23,7 @@ pip install cocoindex[kafka]
 
 ## As source
 
-The `kafka` connector can treat a Kafka topic as a live keyed map — each message is an upsert or delete for a key. It returns a [`LiveMapFeed`](../advanced_topics/live_component.md#live-map) for use with `mount_each()`.
+The `kafka` connector can treat a Kafka topic as a live keyed map — each message is an upsert or delete for a key. It returns a [`LiveMapFeed`](../advanced_topics/live_component#livemapfeed-and-livemapview) for use with `mount_each()`.
 
 ### Setting up a consumer
 
@@ -54,7 +54,7 @@ def topic_as_map(
 
 - `consumer` — An unsubscribed `AIOConsumer`. Auto-commit should be disabled.
 - `topics` — Topics to subscribe to.
-- `is_deletion` — Optional predicate `(message: Message) -> bool` for custom deletion detection on non-tombstone messages (see [Deletion handling](#source-deletion-handling)).
+- `is_deletion` — Optional predicate `(message: Message) -> bool` for custom deletion detection on non-tombstone messages (see [Deletion handling](#deletion-handling)).
 
 **Returns:** A `LiveMapFeed[bytes | str, Message]` where each item is keyed by the message key and the value is the full `confluent_kafka.Message` object.
 
@@ -130,7 +130,7 @@ The `kafka` connector provides target state APIs for producing messages to Kafka
 Create a `ContextKey[AIOProducer]` to identify your producer, then provide it in your lifespan:
 
 :::note
-The key name is load-bearing across runs — it's the stable identity CocoIndex uses to track target state for topics produced through this key. See [ContextKey as stable identity](../programming_guide/context.md#contextkey-as-stable-identity) before renaming.
+The key name is load-bearing across runs — it's the stable identity CocoIndex uses to track target state for topics produced through this key. See [ContextKey as stable identity](../programming_guide/context#contextkey-as-stable-identity) before renaming.
 :::
 
 ```python

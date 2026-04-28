@@ -25,7 +25,7 @@ Decorating a function tells CocoIndex that calls to it are part of the increment
 - Detect when inputs or code have changed (change detection)
 - Skip work when nothing has changed (memoization)
 
-This is what lets CocoIndex avoid rerunning expensive steps on every `app.update()`. See [Processing Component](./processing_component.md) for how decorated functions are mounted at component paths.
+This is what lets CocoIndex avoid rerunning expensive steps on every `app.update()`. See [Processing Component](./processing_component) for how decorated functions are mounted at component paths.
 
 If you don't need any of the above for a helper, keep it as a plain Python function.
 
@@ -41,7 +41,7 @@ CocoIndex detects three kinds of changes:
 
 **Input changes** — the function's arguments. Tracked by `@coco.fn`. When you call a function with different arguments, the fingerprints change. Input fingerprints do not propagate transitively.
 
-**Context changes** — [context values](./context.md) with [`detect_change=True`](./context.md#change-detection). Tracked by [`use_context()`](./context.md#retrieving-values) at the call site — independent of `@coco.fn`. When a context value changes, any memoized function whose execution involved a `use_context()` call on that key is invalidated.
+**Context changes** — [context values](./context) with [`detect_change=True`](./context#change-detection). Tracked by [`use_context()`](./context#retrieving-values) at the call site — independent of `@coco.fn`. When a context value changes, any memoized function whose execution involved a `use_context()` call on that key is invalidated.
 
 ### Memoization
 
@@ -55,7 +55,7 @@ def process_chunk(chunk: Chunk) -> Embedding:
 ```
 
 :::info[Type annotations]
-Add a **return type annotation** to memoized functions so CocoIndex can properly reconstruct cached values. Without a type annotation, cached values may deserialize as basic Python types (`dict`, `list`, etc.) instead of their original types. See [Serialization](./serialization.md) for details on supported types.
+Add a **return type annotation** to memoized functions so CocoIndex can properly reconstruct cached values. Without a type annotation, cached values may deserialize as basic Python types (`dict`, `list`, etc.) instead of their original types. See [Serialization](./serialization) for details on supported types.
 :::
 
 :::tip[When to memoize]
@@ -84,7 +84,7 @@ Three parameters on `@coco.fn` let you customize how logic changes are detected:
 - **`version`** — provides explicit manual control over when dependent memos are invalidated
 - **`deps`** — declares external values (e.g. a module-level prompt string) as part of the function's logic, so changing them invalidates dependent memos
 
-These parameters control code fingerprinting for logic changes. Data fingerprinting (for arguments, `deps` values, and context values) is controlled by the objects themselves (see [Memoization Keys & States](../advanced_topics/memoization_keys.md)).
+These parameters control code fingerprinting for logic changes. Data fingerprinting (for arguments, `deps` values, and context values) is controlled by the objects themselves (see [Memoization Keys & States](../advanced_topics/memoization_keys)).
 
 #### `logic_tracking`
 
@@ -130,7 +130,7 @@ def summarize(text: str) -> str:
     return call_llm(SYSTEM_PROMPT, text, model=MODEL)
 ```
 
-The value is canonicalized through the [memoization-key pipeline](../advanced_topics/memoization_keys.md), which honors `__coco_memo_key__()`, registered memo key functions, and the standard handling for primitives, dataclasses, and Pydantic models.
+The value is canonicalized through the [memoization-key pipeline](../advanced_topics/memoization_keys), which honors `__coco_memo_key__()`, registered memo key functions, and the standard handling for primitives, dataclasses, and Pydantic models.
 
 :::caution[Snapshotted at decoration time]
 `deps` is evaluated **once** when the decorator is applied (typically at module import), not re-evaluated per call. For per-call or per-instance values — instance attributes in a bound method, request-scoped config, anything that changes at runtime — pass them as regular function arguments instead, so the memoization layer observes each new value.
@@ -173,12 +173,12 @@ def embed(text: str) -> list[float]:
 ```
 
 :::note
-[Context changes](./context.md#change-detection) are independent of `@coco.fn` and `logic_tracking`. Even with `logic_tracking=None`, a change in a change-detected context value still invalidates dependent memos, because context tracking is done by `use_context()`, not by the decorator.
+[Context changes](./context#change-detection) are independent of `@coco.fn` and `logic_tracking`. Even with `logic_tracking=None`, a change in a change-detected context value still invalidates dependent memos, because context tracking is done by `use_context()`, not by the decorator.
 :::
 
 ### Customizing data fingerprinting
 
-By default, CocoIndex fingerprints function arguments, `deps` values, and context values automatically for most types — primitives, containers, dataclasses, Pydantic models, and picklable objects. For custom types, or when you need multi-level validation (e.g., check mtime first, then content hash), see [Memoization Keys & States](../advanced_topics/memoization_keys.md).
+By default, CocoIndex fingerprints function arguments, `deps` values, and context values automatically for most types — primitives, containers, dataclasses, Pydantic models, and picklable objects. For custom types, or when you need multi-level validation (e.g., check mtime first, then content hash), see [Memoization Keys & States](../advanced_topics/memoization_keys).
 
 ## Execution capabilities
 

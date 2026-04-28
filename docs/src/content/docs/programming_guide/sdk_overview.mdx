@@ -22,7 +22,7 @@ The CocoIndex SDK is organized into several modules:
 | Package | Description |
 |---------|-------------|
 | `cocoindex.connectors` | Connectors for data sources and targets |
-| `cocoindex.resources` | [Common resources](../common_resources/data_types.md) — shared data types, vector schema annotations, and ID generation utilities |
+| `cocoindex.resources` | [Common resources](../common_resources/data_types) — shared data types, vector schema annotations, and ID generation utilities |
 | `cocoindex.ops` | Built-in operations for common data processing tasks (e.g., text splitting, embedding with SentenceTransformers) |
 
 Import connectors and extras by their specific sub-module:
@@ -48,7 +48,7 @@ StableKey = None | bool | int | str | bytes | uuid.UUID | Symbol | tuple[StableK
 Common examples include strings (like `"setup"` or `"table"`), integers, and UUIDs. Tuples allow composite keys when needed.
 `Symbol` provides predefined names that will never conflict with strings (which typically come from runtime data).
 
-Each processing component must be mounted at a unique path. See [Processing Component](./processing_component.md) for how the component path tree affects target states and ownership.
+Each processing component must be mounted at a unique path. See [Processing Component](./processing_component) for how the component path tree affects target states and ownership.
 
 ## Async vs sync APIs
 
@@ -72,11 +72,11 @@ APIs for starting and running your pipeline have both async and sync variants. S
 | `await coco.stop()` | `coco.stop_blocking()` |
 | `async with coco.runtime():` | `with coco.runtime():` |
 
-`app.update()` returns an `UpdateHandle` that is also awaitable — `await app.update()` returns the result directly, or you can use the handle for [progress monitoring](./app.md#monitoring-progress). Use the `_blocking` variants for scripts and CLI usage. See [App](./app.md) for details.
+`app.update()` returns an `UpdateHandle` that is also awaitable — `await app.update()` returns the result directly, or you can use the handle for [progress monitoring](./app#monitoring-progress). Use the `_blocking` variants for scripts and CLI usage. See [App](./app) for details.
 
 ### Processing functions (your choice)
 
-The `@coco.fn` decorator preserves the sync/async nature of your function — your processing functions can be sync or async. See [Function](./function.md) for details.
+The `@coco.fn` decorator preserves the sync/async nature of your function — your processing functions can be sync or async. See [Function](./function) for details.
 
 ## How sync and async work together
 
@@ -85,7 +85,7 @@ Like any async Python program, **async functions can call into sync code, but no
 CocoIndex provides two ways for async code to call into sync functions:
 
 - **Mounting** — When you mount a processing component, the function is scheduled on CocoIndex's runtime, not called directly. So an async function can mount a sync processing function.
-- **`@coco.fn.as_async`** — Wraps a sync function with an async interface (runs on a thread pool). Useful for compute-intensive leaf functions. See [Function](./function.md) for details.
+- **`@coco.fn.as_async`** — Wraps a sync function with an async interface (runs on a thread pool). Useful for compute-intensive leaf functions. See [Function](./function) for details.
 
 ### Example: async orchestration mounting sync leaf functions
 

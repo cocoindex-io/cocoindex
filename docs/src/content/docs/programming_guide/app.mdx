@@ -6,7 +6,7 @@ description: >
   resources.
 ---
 An **App** is the top-level runnable unit in CocoIndex.
-It names your pipeline and binds a main function with its parameters. When you call `app.update()`, CocoIndex runs that main function as the root [processing component](./processing_component.md) which can mount child processing components to do work and declare target states.
+It names your pipeline and binds a main function with its parameters. When you call `app.update()`, CocoIndex runs that main function as the root [processing component](./processing_component) which can mount child processing components to do work and declare target states.
 
 ## Creating an app
 
@@ -37,7 +37,7 @@ app = coco.App("MyPipeline", app_main, sourcedir=pathlib.Path("./data"))
 ```
 
 :::tip
-The main function can be sync or async. See [How Sync and Async Work Together](./sdk_overview.md#how-sync-and-async-work-together) for details.
+The main function can be sync or async. See [How Sync and Async Work Together](./sdk_overview#how-sync-and-async-work-together) for details.
 :::
 
 ## Updating an app
@@ -56,7 +56,7 @@ result = app.update_blocking()
 
 **Parameters:**
 
-- `live` option keeps the app running after the initial scan so live components can continue watching for changes. See [Live Mode](./live_mode.md).
+- `live` option keeps the app running after the initial scan so live components can continue watching for changes. See [Live Mode](./live_mode).
 - `report_to_stdout` option prints periodic progress updates during execution.
 - `full_reprocess` option reprocesses everything and invalidates existing caches. This forces all components to re-execute and all target states to be re-applied, even if they haven't changed.
 
@@ -115,7 +115,7 @@ For example, an app that processes files might mount one component per file:
     └── "world.md"             ← process_file component
 ```
 
-See [Processing Component](./processing_component.md) for how mounting and component paths define these boundaries.
+See [Processing Component](./processing_component) for how mounting and component paths define these boundaries.
 
 ## Database path
 
@@ -140,7 +140,7 @@ app = coco.App("MyPipeline", app_main)
 app.update_blocking()  # Uses COCOINDEX_DB for storage
 ```
 
-For details on what the internal database stores and how to tune its LMDB settings (e.g., increasing the maximum database size beyond 4 GiB), see [Internal Storage](../advanced_topics/internal_storage.md).
+For details on what the internal database stores and how to tune its LMDB settings (e.g., increasing the maximum database size beyond 4 GiB), see [Internal Storage](../advanced_topics/internal_storage).
 
 ## Lifespan (optional)
 
@@ -152,7 +152,7 @@ If you only need to set the database path, using the `COCOINDEX_DB` environment 
 
 ### Defining a lifespan
 
-Use the `@lifespan` decorator to register a lifespan function. By default, all apps share the same lifespan (unless you explicitly specify an app in a different [*Environment*](../advanced_topics/multiple_environments.md)). The function receives an `EnvironmentBuilder` for configuration and uses `yield` to separate setup from cleanup:
+Use the `@lifespan` decorator to register a lifespan function. By default, all apps share the same lifespan (unless you explicitly specify an app in a different [*Environment*](../advanced_topics/multiple_environments)). The function receives an `EnvironmentBuilder` for configuration and uses `yield` to separate setup from cleanup:
 
 ```python
 import pathlib
@@ -181,7 +181,7 @@ def coco_lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
     yield
 ```
 
-You can also use the lifespan to provide resources (like database connections) that processing components can access. See [Context](./context.md) for details on sharing resources across your pipeline.
+You can also use the lifespan to provide resources (like database connections) that processing components can access. See [Context](./context) for details on sharing resources across your pipeline.
 
 ### Explicit lifecycle control (optional)
 
@@ -229,7 +229,7 @@ Run your app once to sync all target states:
 cocoindex update main.py
 ```
 
-This executes your pipeline and applies all declared target states to external systems. Add `--live` (or `-L`) to keep the app running and react to source changes continuously — see [Live Mode](./live_mode.md).
+This executes your pipeline and applies all declared target states to external systems. Add `--live` (or `-L`) to keep the app running and react to source changes continuously — see [Live Mode](./live_mode).
 
 ### Drop an app
 

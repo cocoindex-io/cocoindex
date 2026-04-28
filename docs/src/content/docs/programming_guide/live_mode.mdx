@@ -42,16 +42,16 @@ Without `live=True` on the app, the app runs in catch-up mode — everything com
 
 ## Reacting to changes
 
-Enabling live mode keeps the app running, but something in the component tree needs to actually watch for changes. That something is a [**LiveComponent**](../advanced_topics/live_component.md) — a component with a long-running `process_live()` method that delivers incremental updates.
+Enabling live mode keeps the app running, but something in the component tree needs to actually watch for changes. That something is a [**LiveComponent**](../advanced_topics/live_component) — a component with a long-running `process_live()` method that delivers incremental updates.
 
 You rarely need to write a `LiveComponent` manually. The most common pattern is:
 
 ### Sources with `LiveMapView` or `LiveMapFeed`
 
-Source connectors can provide live capabilities via two [protocols](../advanced_topics/live_component.md#live-map):
+Source connectors can provide live capabilities via two [protocols](../advanced_topics/live_component#livemapfeed-and-livemapview):
 
-- **`LiveMapView`** — the source has scannable current state (e.g., a directory or database table). It does a full scan first, then watches for changes. Example: [`localfs.walk_dir(live=True).items()`](../connectors/localfs.md#live-file-watching).
-- **`LiveMapFeed`** — the source only streams changes, with no snapshot to scan (e.g., a Kafka consumer). All data arrives via the change stream. Example: [`kafka.topic_as_map()`](../connectors/kafka.md#as-source).
+- **`LiveMapView`** — the source has scannable current state (e.g., a directory or database table). It does a full scan first, then watches for changes. Example: [`localfs.walk_dir(live=True).items()`](../connectors/localfs#live-file-watching).
+- **`LiveMapFeed`** — the source only streams changes, with no snapshot to scan (e.g., a Kafka consumer). All data arrives via the change stream. Example: [`kafka.topic_as_map()`](../connectors/kafka#as-source).
 
 When `mount_each()` receives either, it automatically creates a `LiveComponent` internally that:
 
@@ -69,7 +69,7 @@ Without live support on the source, `mount_each()` falls back to catch-up behavi
 
 ### `localfs` — file watching with `LiveMapView`
 
-The [`localfs`](../connectors/localfs.md) connector supports live mode via `walk_dir(..., live=True)`, which watches for file system changes using `watchfiles`:
+The [`localfs`](../connectors/localfs) connector supports live mode via `walk_dir(..., live=True)`, which watches for file system changes using `watchfiles`:
 
 ```python
 @coco.fn
@@ -91,7 +91,7 @@ For a complete working example, see [`files_transform`](https://github.com/cocoi
 
 ### `kafka` — consuming a topic with `LiveMapFeed`
 
-The [`kafka`](../connectors/kafka.md) connector treats a topic as a live keyed map — each message is an upsert or delete for a key. Since there's no snapshot to scan, it returns a `LiveMapFeed`:
+The [`kafka`](../connectors/kafka) connector treats a topic as a live keyed map — each message is an upsert or delete for a key. Since there's no snapshot to scan, it returns a `LiveMapFeed`:
 
 ```python
 from confluent_kafka.aio import AIOConsumer
@@ -115,8 +115,8 @@ app.update_blocking(live=True)
 
 The abstractions behind live mode, from most general to most specific:
 
-- **[LiveComponent](../advanced_topics/live_component.md)** — the underlying protocol for components that react to changes incrementally. Most flexible — full control over the lifecycle.
-- **[LiveMapFeed / LiveMapView](../advanced_topics/live_component.md#live-map)** — represents a changing collection of keyed items. `mount_each()` uses it to construct a `LiveComponent` automatically. Connector authors implement this to add live support.
-- **Source connectors** — provide `LiveMapView` (e.g., [`localfs`](../connectors/localfs.md)) or `LiveMapFeed` (e.g., [`kafka`](../connectors/kafka.md)) from their source APIs. Users just pass the result to `mount_each()`.
+- **[LiveComponent](../advanced_topics/live_component)** — the underlying protocol for components that react to changes incrementally. Most flexible — full control over the lifecycle.
+- **[LiveMapFeed / LiveMapView](../advanced_topics/live_component#livemapfeed-and-livemapview)** — represents a changing collection of keyed items. `mount_each()` uses it to construct a `LiveComponent` automatically. Connector authors implement this to add live support.
+- **Source connectors** — provide `LiveMapView` (e.g., [`localfs`](../connectors/localfs)) or `LiveMapFeed` (e.g., [`kafka`](../connectors/kafka)) from their source APIs. Users just pass the result to `mount_each()`.
 
-For custom change feeds, fine-grained lifecycle control, or implementing live map protocols on your own connector, see [Live Components](../advanced_topics/live_component.md).
+For custom change feeds, fine-grained lifecycle control, or implementing live map protocols on your own connector, see [Live Components](../advanced_topics/live_component).

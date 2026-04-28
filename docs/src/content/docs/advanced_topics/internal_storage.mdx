@@ -15,7 +15,7 @@ CocoIndex needs a database path (`db_path`) to know where to store this internal
 export COCOINDEX_DB=./cocoindex.db
 ```
 
-You can also set it programmatically in a [lifespan function](../programming_guide/app.md#lifespan-optional):
+You can also set it programmatically in a [lifespan function](../programming_guide/app#lifespan-optional):
 
 ```python
 @coco.lifespan
@@ -24,7 +24,7 @@ def coco_lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
     yield
 ```
 
-Or pass it directly when creating a [`Settings`](./multiple_environments.md) object:
+Or pass it directly when creating a [`Settings`](./multiple_environments) object:
 
 ```python
 settings = coco.Settings(db_path=pathlib.Path("./cocoindex.db"))

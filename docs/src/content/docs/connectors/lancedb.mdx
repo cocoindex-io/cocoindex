@@ -54,7 +54,7 @@ The `lancedb` connector provides target state APIs for writing rows to tables. W
 Create a `ContextKey[lancedb.LanceAsyncConnection]` to identify your LanceDB connection, then provide it in your lifespan:
 
 :::note
-The key name is load-bearing across runs — it's the stable identity CocoIndex uses to track managed tables. See [ContextKey as stable identity](../programming_guide/context.md#contextkey-as-stable-identity) before renaming.
+The key name is load-bearing across runs — it's the stable identity CocoIndex uses to track managed tables. See [ContextKey as stable identity](../programming_guide/context#contextkey-as-stable-identity) before renaming.
 :::
 
 ```python
@@ -179,7 +179,7 @@ class MyRow:
 
 #### VectorSchemaProvider
 
-For `NDArray` fields, a [`VectorSchemaProvider`](../common_resources/vector_schema.md#vectorschemaprovider) annotation specifies the vector dimension and dtype. See [Vector Schema](../common_resources/vector_schema.md#vectorschemaprovider) for the full list of annotation options (`ContextKey`, embedder instance, or explicit `VectorSchema`).
+For `NDArray` fields, a [`VectorSchemaProvider`](../common_resources/vector_schema#vectorschemaprovider) annotation specifies the vector dimension and dtype. See [Vector Schema](../common_resources/vector_schema#vectorschemaprovider) for the full list of annotation options (`ContextKey`, embedder instance, or explicit `VectorSchema`).
 
 ### Table schema: explicit column definitions
 

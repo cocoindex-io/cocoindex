@@ -27,8 +27,8 @@ Like any memoization system (e.g., `@functools.cache`), CocoIndex's change detec
 
 CocoIndex provides mechanisms to capture some of these dependencies:
 
-- **[`deps`](./programming_guide/function.md#deps)** — declares module-level values (like a prompt string or model name) as part of the function's logic. Changes to these values invalidate dependent memos, just like any other logic change. Note: `deps` is snapshotted once at decoration time.
-- **[`use_context()`](./programming_guide/context.md)** — retrieves shared resources via `ContextKey`. With [`detect_change=True`](./programming_guide/context.md#change-detection), changes to the provided value invalidate dependent memos.
+- **[`deps`](./programming_guide/function#deps)** — declares module-level values (like a prompt string or model name) as part of the function's logic. Changes to these values invalidate dependent memos, just like any other logic change. Note: `deps` is snapshotted once at decoration time.
+- **[`use_context()`](./programming_guide/context)** — retrieves shared resources via `ContextKey`. With [`detect_change=True`](./programming_guide/context#change-detection), changes to the provided value invalidate dependent memos.
 
 For per-call values that change at runtime, pass them as regular function arguments instead.
 
@@ -36,8 +36,8 @@ For per-call values that change at runtime, pass them as regular function argume
 
 ### What happens if my pipeline crashes mid-update?
 
-CocoIndex's internal state is always consistent — even after a crash or `kill -9`. On the next `app.update()`, CocoIndex automatically recovers: it computes the current desired state and reconciles against all possible previous states, converging the target to the correct state. No manual cleanup is needed. See [Error Handling — Interrupted updates and recovery](./advanced_topics/exception_handlers.md#interrupted-updates-and-recovery) for details.
+CocoIndex's internal state is always consistent — even after a crash or `kill -9`. On the next `app.update()`, CocoIndex automatically recovers: it computes the current desired state and reconciles against all possible previous states, converging the target to the correct state. No manual cleanup is needed. See [Error Handling — Interrupted updates and recovery](./advanced_topics/exception_handlers#interrupted-updates-and-recovery) for details.
 
 ### Are target state writes transactional across targets?
 
-Not across targets. When a processing component finishes, CocoIndex sends all its target state changes to each target backend as a unit — all writes happen after processing completes, never partially during execution. Each target backend applies its batch atomically when supported (e.g., within a database transaction). But changes across *different* target backends (e.g., Postgres and local files) are not transactional with each other. See [How target states sync](./programming_guide/processing_component.md#how-target-states-sync) for details.
+Not across targets. When a processing component finishes, CocoIndex sends all its target state changes to each target backend as a unit — all writes happen after processing completes, never partially during execution. Each target backend applies its batch atomically when supported (e.g., within a database transaction). But changes across *different* target backends (e.g., Postgres and local files) are not transactional with each other. See [How target states sync](./programming_guide/processing_component#how-target-states-sync) for details.

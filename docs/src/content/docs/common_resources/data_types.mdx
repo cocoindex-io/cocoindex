@@ -5,7 +5,7 @@ description: >
   FilePath, FilePathMatcher, Chunk with text positions, and the Embedder
   protocol for single-text async embedding.
 ---
-The `cocoindex.resources` package provides common data models and abstractions shared across connectors and built-in operations. Connectors provide concrete implementations — for example, `localfs.File` implements `FileLike`, and `localfs.FilePath` extends `FilePath`. See individual [connector docs](../connectors/localfs.md) for connector-specific details.
+The `cocoindex.resources` package provides common data models and abstractions shared across connectors and built-in operations. Connectors provide concrete implementations — for example, `localfs.File` implements `FileLike`, and `localfs.FilePath` extends `FilePath`. See individual [connector docs](../connectors/localfs) for connector-specific details.
 
 ## File
 
@@ -36,7 +36,7 @@ async def process_file(file: FileLike) -> str:
 
 **Memoization:**
 
-`FileLike` objects provide a memoization key based on `file_path` (file identity). When used as arguments to a [memoized function](../programming_guide/function.md#memoization), CocoIndex uses a two-level validation: it checks the modification time first (cheap), then computes a content fingerprint only if the modification time has changed. This means touching a file or moving it won't cause unnecessary recomputation if the content is unchanged.
+`FileLike` objects provide a memoization key based on `file_path` (file identity). When used as arguments to a [memoized function](../programming_guide/function#memoization), CocoIndex uses a two-level validation: it checks the modification time first (cheap), then computes a content fingerprint only if the modification time has changed. This means touching a file or moving it won't cause unnecessary recomputation if the content is unchanged.
 
 ### FilePath
 
@@ -91,7 +91,7 @@ config_path.as_posix()  # "config/settings.json"
 - Two `FilePath` objects with the same base directory key and relative path have the same memo key
 - Moving the entire project directory doesn't invalidate memoization, as long as the same base directory key is used
 
-For connector-specific usage (e.g., `register_base_dir`), see the individual connector documentation like [Local File System](../connectors/localfs.md).
+For connector-specific usage (e.g., `register_base_dir`), see the individual connector documentation like [Local File System](../connectors/localfs).
 
 ### FilePathMatcher
 
@@ -135,7 +135,7 @@ Patterns use [globset](https://docs.rs/globset) semantics: `*.py` matches only i
 
 ## Chunk
 
-The chunk module (`cocoindex.resources.chunk`) defines types for representing text chunks produced by [text splitters](../ops/text.md).
+The chunk module (`cocoindex.resources.chunk`) defines types for representing text chunks produced by [text splitters](../ops/text).
 
 ### Chunk
 A `Chunk` is a frozen dataclass representing a piece of text with its position information in the original document.
@@ -185,7 +185,7 @@ class Embedder(Protocol):
     async def embed(self, text: str) -> NDArray[np.float32]: ...
 ```
 
-This is the call-site contract that consumers like [`resolve_entities`](../ops/entity_resolution.md) rely on. Both [`LiteLLMEmbedder`](../ops/litellm.md) and [`SentenceTransformerEmbedder`](../ops/sentence_transformers.md) satisfy this protocol — `await embedder.embed("some text")` returns a single `NDArray[np.float32]`.
+This is the call-site contract that consumers like [`resolve_entities`](../ops/entity_resolution) rely on. Both [`LiteLLMEmbedder`](../ops/litellm) and [`SentenceTransformerEmbedder`](../ops/sentence_transformers) satisfy this protocol — `await embedder.embed("some text")` returns a single `NDArray[np.float32]`.
 
 The protocol is deliberately narrow: it does not include `dimension()` or `__coco_vector_schema__()`, which are concerns of connectors and table-schema creation, not of embedding consumers.
 
