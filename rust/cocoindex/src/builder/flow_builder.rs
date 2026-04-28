@@ -718,6 +718,7 @@ impl FlowBuilder {
                 flow_ctx
             }
         };
+        crate::telemetry::track("flow_create");
         Ok(py::Flow(flow_ctx))
     }
 
