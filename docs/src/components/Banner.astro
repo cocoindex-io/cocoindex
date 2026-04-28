@@ -1,19 +1,17 @@
 ---
-// Slim announcement strip below the top nav. The countdown is resolved in
-// the visitor's local timezone — we pick the next upcoming Wednesday 08:00
-// relative to "now" so the banner stays accurate as days pass without
-// needing a rebuild.
+// Slim announcement strip below the top nav. V1 is now generally available;
+// the banner nudges V0 readers to the new docs.
 ---
 
-<div class="banner" role="status" aria-live="polite">
+<div class="banner" role="status">
   <div class="banner-accent" aria-hidden="true"></div>
   <div class="banner-in">
     <span class="tag">V0 Docs</span>
     <span class="msg">
       You are viewing <strong>CocoIndex&nbsp;V0</strong> Documentation.
-      <strong>CocoIndex&nbsp;V1</strong> will be officially supported in
+      <strong>CocoIndex&nbsp;V1</strong> is now available.
     </span>
-    <span class="countdown" data-countdown aria-live="off">—</span>
+    <a class="cta" href="/docs">Try V1 →</a>
   </div>
 </div>
 
@@ -69,32 +67,20 @@
     color: var(--peach);
     white-space: nowrap;
   }
-  .banner .countdown {
+  .banner .cta {
     font-family: var(--mono);
     font-size: 12px;
-    font-variant-numeric: tabular-nums;
-    padding: 3px 10px;
+    font-weight: 600;
+    padding: 4px 12px;
     background: var(--coral);
     color: var(--cream);
     border-radius: 999px;
+    text-decoration: none;
     flex: none;
-    margin-left: auto;
-    display: inline-flex; align-items: center; gap: 7px;
+    transition: background 120ms ease;
   }
-  /* Live dot — echoes the hero-eyebrow dot in the brand guidelines.
-     Pulses once per second, in sync with the countdown tick. */
-  .banner .countdown::before {
-    content: "";
-    display: inline-block;
-    width: 7px; height: 7px; border-radius: 50%;
-    background: var(--palm);
-    box-shadow: 0 0 0 0 color-mix(in oklab, var(--palm) 60%, transparent);
-    animation: banner-pulse 1s ease-out infinite;
-  }
-  @keyframes banner-pulse {
-    0%   { box-shadow: 0 0 0 0 color-mix(in oklab, var(--palm) 60%, transparent); transform: scale(1); }
-    70%  { box-shadow: 0 0 0 6px color-mix(in oklab, var(--palm) 0%, transparent); transform: scale(1); }
-    100% { box-shadow: 0 0 0 0 color-mix(in oklab, var(--palm) 0%, transparent); transform: scale(1); }
+  .banner .cta:hover {
+    background: color-mix(in oklab, var(--coral) 80%, var(--cream));
   }
   /* `V1` gets a quiet sheen that drifts across it — hint of arrival. */
   .banner .msg strong:last-of-type {
@@ -118,7 +104,6 @@
 
   @media (prefers-reduced-motion: reduce) {
     .banner-accent,
-    .banner .countdown::before,
     .banner .msg strong:last-of-type {
       animation: none;
     }
@@ -134,45 +119,5 @@
       flex-wrap: wrap;
       gap: 8px;
     }
-    .banner .countdown { margin-left: 0; }
   }
 </style>
-
-<script>
-  // Target: next Wednesday 08:00 in the visitor's local timezone. If it's
-  // already past 08:00 on a Wednesday, roll forward a full week so the
-  // banner never shows a negative number or "now".
-  function nextWednesday8am(from: Date = new Date()): Date {
-    const t = new Date(from);
-    t.setHours(8, 0, 0, 0);
-    const dayDelta = (3 - t.getDay() + 7) % 7; // 3 = Wednesday
-    t.setDate(t.getDate() + dayDelta);
-    if (t.getTime() <= from.getTime()) t.setDate(t.getDate() + 7);
-    return t;
-  }
-
-  function format(ms: number): string {
-    if (ms <= 0) return 'now';
-    const s = Math.floor(ms / 1000);
-    const d = Math.floor(s / 86400);
-    const h = Math.floor((s % 86400) / 3600);
-    const m = Math.floor((s % 3600) / 60);
-    const sec = s % 60;
-    const parts: string[] = [];
-    if (d) parts.push(`${d}d`);
-    if (d || h) parts.push(`${h}h`);
-    parts.push(`${m}m`);
-    parts.push(`${sec}s`);
-    return parts.join(' ');
-  }
-
-  function tick() {
-    const el = document.querySelector<HTMLElement>('[data-countdown]');
-    if (!el) return;
-    const target = nextWednesday8am();
-    el.textContent = format(target.getTime() - Date.now());
-  }
-
-  tick();
-  setInterval(tick, 1000);
-</script>
