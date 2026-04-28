@@ -3,11 +3,14 @@
 // so both sites share the exact same header. The stars island is a plain
 // inline script rather than a React component so we don't need to ship
 // React + a client bundle just to render one number.
-import { SITE_MAIN, SITE_EXAMPLES, SITE_BLOG, GITHUB_REPO } from '../consts';
+import { SITE_MAIN, SITE_BLOG, GITHUB_REPO } from '../consts';
 
 const base = import.meta.env.BASE_URL.replace(/\/$/, '') || '/';
 const CODE = `${SITE_MAIN}/cocoindex-code`;
-const DOCS = base;
+const DOCS_V0 = `${base}/`;
+const DOCS_V1 = '/docs';
+const EXAMPLES_V0 = `${base}/examples/`;
+const EXAMPLES_V1 = '/examples/';
 const ENTERPRISE = `${SITE_MAIN}/enterprise`;
 ---
 
@@ -19,19 +22,35 @@ const ENTERPRISE = `${SITE_MAIN}/enterprise`;
     </a>
     <div class="nav-links">
       <a href={CODE}>CocoIndex Code</a>
-      <a href={SITE_EXAMPLES}>Examples</a>
       <div class="nav-dd">
-        <a href={DOCS} class="nav-dd-trigger" aria-haspopup="menu">
+        <a href={EXAMPLES_V0} class="nav-dd-trigger" aria-haspopup="menu">
+          Examples
+          <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden>
+            <path d="m2.5 4.5 3.5 3.5 3.5-3.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </a>
+        <div class="nav-dd-menu" role="menu">
+          <a href={EXAMPLES_V1} role="menuitem">
+            <span class="ver">v1</span>
+          </a>
+          <a class="on" href={EXAMPLES_V0} role="menuitem">
+            <span class="ver">v0</span>
+            <span class="tag legacy">legacy</span>
+          </a>
+        </div>
+      </div>
+      <div class="nav-dd">
+        <a href={DOCS_V0} class="nav-dd-trigger" aria-haspopup="menu">
           Documentation
           <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden>
             <path d="m2.5 4.5 3.5 3.5 3.5-3.5" stroke-linecap="round" stroke-linejoin="round"/>
           </svg>
         </a>
         <div class="nav-dd-menu" role="menu">
-          <a class="on" href="/docs" role="menuitem">
+          <a href={DOCS_V1} role="menuitem">
             <span class="ver">v1</span>
           </a>
-          <a href="/docs-v0" role="menuitem">
+          <a class="on" href={DOCS_V0} role="menuitem">
             <span class="ver">v0</span>
             <span class="tag legacy">legacy</span>
           </a>
