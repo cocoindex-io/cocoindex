@@ -59,7 +59,9 @@ const tocRows = tocItems.map((h) => {
 });
 
 function href(slug: string): string {
-  return `${base}/${slug}`;
+  // Trailing slash matches the canonical URL Astro emits under
+  // `build.format: 'directory'` — saves a 301 round-trip per click.
+  return `${base}/${slug}/`;
 }
 ---
 

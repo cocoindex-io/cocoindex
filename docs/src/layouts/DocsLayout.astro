@@ -63,7 +63,7 @@ const introItems = [
   { k: 'Version',       v: version,             reviewed: false },
   { k: 'Last reviewed', v: lastReviewed,        reviewed: true  },
 ].filter((m) => m.v);
-const canonical = new URL(`${base}/${slug}`, SITE_URL).toString();
+const canonical = new URL(`${base}/${slug}/`, SITE_URL).toString();
 
 // Breadcrumb: walk the sidebar tree for the current slug so category
 // labels light up correctly even for nested pages.
@@ -73,7 +73,7 @@ function findPath(items: SidebarItem[], acc: Array<{ label: string; href?: strin
       return [...acc, { label: item.label ?? slug }];
     }
     if (item.type === 'category') {
-      const next = [...acc, { label: item.label, href: item.slug ? `${base}/${item.slug}` : undefined }];
+      const next = [...acc, { label: item.label, href: item.slug ? `${base}/${item.slug}/` : undefined }];
       if (item.slug === slug) return next;
       const down = findPath(item.items, next);
       if (down) return down;
@@ -166,13 +166,13 @@ const next = i >= 0 && i < flat.length - 1 ? flat[i + 1] : null;
         {(prev || next) && (
           <div class="pager">
             {prev ? (
-              <a href={`${base}/${prev.slug}`}>
+              <a href={`${base}/${prev.slug}/`}>
                 <span class="dir">Previous</span>
                 <span class="ttl">{prev.label ?? prev.slug}</span>
               </a>
             ) : <span />}
             {next ? (
-              <a class="next" href={`${base}/${next.slug}`}>
+              <a class="next" href={`${base}/${next.slug}/`}>
                 <span class="dir">Next</span>
                 <span class="ttl">{next.label ?? next.slug}</span>
               </a>

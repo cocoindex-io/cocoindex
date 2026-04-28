@@ -1,4 +1,5 @@
-// Validate relative links in Markdown / MDX during the build.
+// Validate (and optionally rewrite) relative links in Markdown / MDX during
+// the build.
 //
 // Three checks per `link` node:
 //
@@ -16,18 +17,34 @@
 // In-page fragment links (`#section`) are validated against the current
 // file's headings.
 //
-// Skipped: absolute URLs (`https://`), root-relative URLs (`/docs/foo` —
-// would require base-prefix-aware resolution; not common in this codebase),
-// and `mailto:` links.
+// **Rewrite (default on).** After a relative link's target is resolved, the
+// link's `url` is replaced with an absolute path of the form
+// `<base>/<slug>` (e.g. `./app` from `programming_guide/core_concepts.mdx`
+// becomes `/docs/programming_guide/app`). This is needed under Astro's
+// `build.format: 'directory'` mode: source-relative links and URL-relative
+// links diverge once each page lives at `<slug>/index.html`. Authors keep
+// writing the natural source-relative form; the plugin emits absolute hrefs
+// that resolve identically regardless of trailing-slash quirks.
 //
-// On any failure the plugin throws a single combined error per file, which
-// fails the Astro build.
+// In-page fragment links (`#section`) are NOT rewritten — they target the
+// current page and need no base prefix.
+//
+// Skipped entirely: absolute URLs (`https://`), root-relative URLs
+// (`/docs/foo` — already canonical), and `mailto:` links.
+//
+// Plugin option:
+//   - `base` (default `''`): URL prefix to prepend when rewriting. Pass the
+//     same value as Astro's `base` config. Trailing slashes normalized away.
+//
+// On any check failure the plugin throws a single combined error per file,
+// which fails the Astro build.
 import { readFileSync, existsSync } from 'node:fs';
-import { dirname, extname, resolve } from 'node:path';
+import { dirname, extname, posix, resolve, sep } from 'node:path';
 import GithubSlugger from 'github-slugger';
 import { visit } from 'unist-util-visit';
 
 const ABSOLUTE_URL = /^[a-z][a-z0-9+\-.]*:/i;
+const CONTENT_ROOT_MARKER = `${sep}src${sep}content${sep}docs${sep}`;
 
 // Cache parsed heading slugs per target file. Build-time only, so a simple
 // in-memory map is fine — and the same file can be linked from many places.
@@ -122,7 +139,34 @@ function resolveTargetFile(sourceFile, urlPath) {
   return null;
 }
 
-export default function remarkLinkChecker() {
+// Convert an absolute target file path (under `src/content/docs/`) to its
+// content-collection slug — the URL path Astro serves it at, *without* the
+// `base` prefix. `<root>/foo/bar.mdx` → `foo/bar`; `<root>/foo/index.mdx`
+// → `foo`. POSIX-separated regardless of host platform.
+function fileToSlug(targetFile) {
+  const ix = targetFile.indexOf(CONTENT_ROOT_MARKER);
+  if (ix < 0) return null;
+  let rel = targetFile.slice(ix + CONTENT_ROOT_MARKER.length);
+  // Normalize to POSIX separators for URL output.
+  rel = rel.split(sep).join('/');
+  // Strip extension.
+  rel = rel.replace(/\.(mdx|md)$/i, '');
+  // index files map to the directory URL (or '' for the root index).
+  rel = rel.replace(/(?:^|\/)index$/, (m) => (m === 'index' ? '' : ''));
+  return rel;
+}
+
+function normalizeBase(base) {
+  if (!base) return '';
+  // Trim trailing slashes; ensure a single leading slash.
+  let b = base.replace(/\/+$/, '');
+  if (b && !b.startsWith('/')) b = `/${b}`;
+  return b;
+}
+
+export default function remarkLinkChecker(options = {}) {
+  const base = normalizeBase(options.base);
+
   return (tree, file) => {
     const sourcePath = file.path;
     if (!sourcePath) return;
@@ -138,7 +182,8 @@ export default function remarkLinkChecker() {
 
       const line = node.position?.start?.line;
 
-      // In-page fragment link (`#section`): validate against this file.
+      // In-page fragment link (`#section`): validate against this file. Not
+      // rewritten — fragment-only URLs target the current page.
       if (url.startsWith('#')) {
         const fragment = url.slice(1);
         if (!fragment) return;
@@ -167,14 +212,14 @@ export default function remarkLinkChecker() {
       const targetFile = resolveTargetFile(sourcePath, pathPart);
       if (!targetFile) {
         const sourceDir = dirname(sourcePath);
-        const base = resolve(sourceDir, pathPart);
+        const probeBase = resolve(sourceDir, pathPart);
         errors.push({
           line,
           message: `link "${url}" does not resolve to a file in the docs collection (looked for: ${[
-            `${base}.mdx`,
-            `${base}.md`,
-            `${base}/index.mdx`,
-            `${base}/index.md`,
+            `${probeBase}.mdx`,
+            `${probeBase}.md`,
+            `${probeBase}/index.mdx`,
+            `${probeBase}/index.md`,
           ]
             .map((c) => c.replace(/^.*\/src\/content\/docs\//, ''))
             .join(', ')})`,
@@ -192,7 +237,21 @@ export default function remarkLinkChecker() {
               '',
             )}`,
           });
+          return;
         }
+      }
+
+      // Rewrite: replace the source-relative URL with the canonical absolute
+      // one (`<base>/<slug>/[#fragment]`). The trailing slash matches the
+      // canonical URL Astro emits under `build.format: 'directory'` — without
+      // it, the host (e.g. GitHub Pages) issues a 301 redirect on every click.
+      // Robust under directory format because the browser no longer has to
+      // interpret `./` against a trailing-slash-bearing URL.
+      const slug = fileToSlug(targetFile);
+      if (slug !== null) {
+        const joined = posix.join('/', base.replace(/^\//, ''), slug);
+        const absPath = joined.endsWith('/') ? joined : `${joined}/`;
+        node.url = fragment ? `${absPath}#${fragment}` : absPath;
       }
     });
 
