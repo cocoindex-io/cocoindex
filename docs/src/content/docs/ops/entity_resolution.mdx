@@ -140,7 +140,7 @@ Each event includes:
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `entities` | `Iterable[str]` | *(required)* | Raw entity names. Duplicates collapsed; iterated in sorted order. |
-| `embedder` | [`Embedder`](../common_resources/data_types.md#embedder) | *(required)* | Async single-text embedder. `LiteLLMEmbedder` and `SentenceTransformerEmbedder` both work. |
+| `embedder` | [`Embedder`](../common_resources/data_types#embedder) | *(required)* | Async single-text embedder. `LiteLLMEmbedder` and `SentenceTransformerEmbedder` both work. |
 | `resolve_pair` | `PairResolver` | *(required)* | Pair-resolution callback. See [`LlmPairResolver`](#llmpairresolver) for the built-in option. |
 | `is_existing_canonical` | `Callable[[str], bool] \| None` | `None` | Sync predicate for existing-canonical detection. |
 | `existing_policy` | `ExistingCanonicalPolicy` | `PINNED` | How to treat existing canonicals. Ignored when `is_existing_canonical` is `None`. |
@@ -171,7 +171,7 @@ result = await resolve_entities(
 
 ### Model strings
 
-Uses the same litellm model-string format as [`LiteLLMEmbedder`](./litellm.md):
+Uses the same litellm model-string format as [`LiteLLMEmbedder`](./litellm):
 
 | Provider | Example |
 |----------|---------|

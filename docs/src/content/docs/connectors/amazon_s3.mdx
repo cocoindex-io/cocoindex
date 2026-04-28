@@ -63,14 +63,14 @@ def list_objects(
 - `client` — An aiobotocore S3 client.
 - `bucket_name` — The S3 bucket name.
 - `prefix` — Only list objects whose key starts with this prefix. The prefix is stripped from relative paths in the returned files.
-- `path_matcher` — Optional filter for files. Patterns are matched against the relative path (after prefix stripping). See [PatternFilePathMatcher](../common_resources/data_types.md#patternfilepathmatcher).
+- `path_matcher` — Optional filter for files. Patterns are matched against the relative path (after prefix stripping). See [PatternFilePathMatcher](../common_resources/data_types#patternfilepathmatcher).
 - `max_file_size` — Skip objects larger than this size in bytes.
 
 **Returns:** An `S3Walker` that can be used with `async for` loops.
 
 ### Iterating files
 
-`list_objects()` returns an `S3Walker` that yields `S3File` objects (implementing the [`FileLike`](../common_resources/data_types.md#filelike) base class):
+`list_objects()` returns an `S3Walker` that yields `S3File` objects (implementing the [`FileLike`](../common_resources/data_types#filelike) base class):
 
 ```python
 import aiobotocore.session
@@ -83,7 +83,7 @@ async with session.create_client("s3") as client:
         ...
 ```
 
-See [`FileLike`](../common_resources/data_types.md#filelike) for details on the file objects.
+See [`FileLike`](../common_resources/data_types#filelike) for details on the file objects.
 
 ### Keyed iteration with `items()`
 
@@ -184,7 +184,7 @@ async with session.create_client("s3") as client:
 
 ### S3FilePath
 
-Each file returned by the connector has an `S3FilePath` — a [`FilePath`](../common_resources/data_types.md#filepath) specialized for S3:
+Each file returned by the connector has an `S3FilePath` — a [`FilePath`](../common_resources/data_types#filepath) specialized for S3:
 
 - **Relative path** (`file.file_path.path`) — The object key relative to the walker prefix (or the full key if no prefix was used).
 - **Resolved path** (`file.file_path.resolve()`) — The full S3 object key.

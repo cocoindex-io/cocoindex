@@ -5,7 +5,7 @@ description: >
   registered functions, and layer state validation (e.g. mtime, then content hash)
   on top — plus NotMemoKeyable to opt out for stateful types.
 ---
-As described in [Function — Change detection](../programming_guide/function.md#change-detection), CocoIndex detects [logic, input, and context changes](../programming_guide/function.md#change-detection) to decide whether a memo can be reused. Function arguments, [`deps`](../programming_guide/function.md#deps) values, and [context values](../programming_guide/context.md#change-detection) with `detect_change=True` are all fingerprinted through the same **data fingerprinting** pipeline. By default, most types are fingerprinted automatically. This page covers how to customize that pipeline — how objects are fingerprinted and validated:
+As described in [Function — Change detection](../programming_guide/function#change-detection), CocoIndex detects [logic, input, and context changes](../programming_guide/function#change-detection) to decide whether a memo can be reused. Function arguments, [`deps`](../programming_guide/function#deps) values, and [context values](../programming_guide/context#change-detection) with `detect_change=True` are all fingerprinted through the same **data fingerprinting** pipeline. By default, most types are fingerprinted automatically. This page covers how to customize that pipeline — how objects are fingerprinted and validated:
 
 - **Memoization keys** — how to control what CocoIndex uses as the fingerprint for your objects.
 - **Memo states** — how to add post-fingerprint validation to check freshness beyond simple equality.
@@ -109,7 +109,7 @@ This decouples "has the state changed?" from "can we reuse the memo?":
 ### Define `__coco_memo_state__` (when you control the type)
 
 :::info[Type annotations]
-Annotate the `prev_state` parameter with its expected type (matching what you return in `MemoStateOutcome(state=...)`) so CocoIndex can properly reconstruct stored state values. See [Serialization](../programming_guide/serialization.md) for details on supported types.
+Annotate the `prev_state` parameter with its expected type (matching what you return in `MemoStateOutcome(state=...)`) so CocoIndex can properly reconstruct stored state values. See [Serialization](../programming_guide/serialization) for details on supported types.
 :::
 
 Add a `__coco_memo_state__` method alongside `__coco_memo_key__`:

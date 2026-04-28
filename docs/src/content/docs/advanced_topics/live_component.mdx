@@ -146,7 +146,7 @@ The key difference: the LiveComponent version can later be extended to handle in
 
 ## LiveMapFeed and LiveMapView
 :::tip
-For a user-facing introduction to live mode and when to use it, see [Live Mode](../programming_guide/live_mode.md). This section covers the protocol details for connector authors and advanced use cases.
+For a user-facing introduction to live mode and when to use it, see [Live Mode](../programming_guide/live_mode). This section covers the protocol details for connector authors and advanced use cases.
 :::
 
 Two protocols represent live keyed collections that `mount_each()` can consume. Choose based on whether your source can enumerate its current state:
@@ -191,12 +191,12 @@ async def watch(self, subscriber: LiveMapSubscriber[K, V]) -> None:
 
 To add live support to a source connector, make your source return an object that implements `LiveMapView` (if the source has scannable state) or `LiveMapFeed` (if it only streams changes):
 
-- **`LiveMapView` example**: The [`localfs`](../connectors/localfs.md) connector's `DirWalker` — `walk_dir(..., live=True).items()` returns a `LiveMapView` backed by `watchfiles`.
-- **`LiveMapFeed` example**: The [`kafka`](../connectors/kafka.md) connector — `topic_as_map()` returns a `LiveMapFeed` that consumes messages from Kafka topics.
+- **`LiveMapView` example**: The [`localfs`](../connectors/localfs) connector's `DirWalker` — `walk_dir(..., live=True).items()` returns a `LiveMapView` backed by `watchfiles`.
+- **`LiveMapFeed` example**: The [`kafka`](../connectors/kafka) connector — `topic_as_map()` returns a `LiveMapFeed` that consumes messages from Kafka topics.
 
 ## Live mode vs catch-up mode
 
-See [Live Mode](../programming_guide/live_mode.md) for how the two modes are enabled at the app level and an overview of how they work.
+See [Live Mode](../programming_guide/live_mode) for how the two modes are enabled at the app level and an overview of how they work.
 
 For a manual `LiveComponent`, the mode controls whether `process_live()` continues running after `mark_ready()`:
 
@@ -216,7 +216,7 @@ This lets you use the same `LiveComponent` class in both modes without code chan
 LiveComponent classes can only be used with `coco.mount()` and `operator.update()`. Passing a LiveComponent class to `coco.use_mount()` raises a `TypeError`.
 
 :::tip
-While LiveComponent classes cannot be passed to `mount_each()`, you can get live watching behavior more easily using a [`LiveMapFeed` or `LiveMapView`](#live-map) — `mount_each()` automatically creates an internal LiveComponent when it detects one.
+While LiveComponent classes cannot be passed to `mount_each()`, you can get live watching behavior more easily using a [`LiveMapFeed` or `LiveMapView`](#livemapfeed-and-livemapview) — `mount_each()` automatically creates an internal LiveComponent when it detects one.
 :::
 
 ## Readiness

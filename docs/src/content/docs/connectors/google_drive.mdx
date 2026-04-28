@@ -57,7 +57,7 @@ class GoogleDriveSource(
 
 ### Iterating files
 
-`GoogleDriveSource` provides async iteration via `files()`, yielding `DriveFile` objects (implementing the [`FileLike`](../common_resources/data_types.md#filelike) base class):
+`GoogleDriveSource` provides async iteration via `files()`, yielding `DriveFile` objects (implementing the [`FileLike`](../common_resources/data_types#filelike) base class):
 
 ```python
 source = google_drive.GoogleDriveSource(
@@ -115,7 +115,7 @@ def list_files(spec: GoogleDriveSourceSpec) -> Iterator[DriveFile]
 
 ### DriveFile
 
-`DriveFile` implements [`FileLike`](../common_resources/data_types.md#filelike) with Google Drive-specific behavior:
+`DriveFile` implements [`FileLike`](../common_resources/data_types#filelike) with Google Drive-specific behavior:
 
 - `file_path` — A `DriveFilePath` where `resolve()` returns the Google Drive file ID.
 - `read()` / `read_text()` — Downloads file content via the Google Drive API. Partial reads (`size` parameter) are not supported.

@@ -7,7 +7,7 @@ description: >
 ---
 This page covers the full picture of failure behavior in CocoIndex — from how components fail in isolation, through what happens during interrupted updates, to the APIs for observing and reacting to errors in production.
 
-For a quick overview of failure isolation and the two-phase model, see [What happens when a component fails](../programming_guide/processing_component.md#what-happens-when-a-component-fails) in the Processing Component guide.
+For a quick overview of failure isolation and the two-phase model, see [What happens when a component fails](../programming_guide/processing_component#what-happens-when-a-component-fails) in the Processing Component guide.
 
 ## Failure isolation recap
 
@@ -33,7 +33,7 @@ CocoIndex's internal database (LMDB) uses transactions, so its own state is alwa
 
 **Recovery is automatic.** On the next `app.update()`, CocoIndex computes the current desired state and reconciles against all possible previous states. The target connector converges the target to the correct state regardless of whether the previous commit partially succeeded or never ran.
 
-For details on how target handlers deal with multiple possible previous states after an interruption, see [Custom Target Connector — Handle multiple previous states](./custom_target_connector.md#handle-multiple-previous-states).
+For details on how target handlers deal with multiple possible previous states after an interruption, see [Custom Target Connector — Handle multiple previous states](./custom_target_connector#handle-multiple-previous-states).
 
 ## Monitoring errors
 
@@ -52,7 +52,7 @@ async for snapshot in handle.watch():
     print(f"{snapshot.stats.total.num_errored} errors so far")
 ```
 
-See [Monitoring progress](../programming_guide/app.md#monitoring-progress) for the full `UpdateHandle` API.
+See [Monitoring progress](../programming_guide/app#monitoring-progress) for the full `UpdateHandle` API.
 
 ## Exception handlers
 

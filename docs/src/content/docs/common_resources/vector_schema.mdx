@@ -46,13 +46,13 @@ target_collection = await qdrant.mount_collection_target(
 
 A protocol for objects that can provide vector schema information. The primary use case is as metadata in `Annotated` type annotations — connectors extract vector column configuration from the annotation automatically.
 
-Any object that implements the `__coco_vector_schema__()` method satisfies this protocol. The built-in [`SentenceTransformerEmbedder`](../ops/sentence_transformers.md) implements it.
+Any object that implements the `__coco_vector_schema__()` method satisfies this protocol. The built-in [`SentenceTransformerEmbedder`](../ops/sentence_transformers) implements it.
 
 There are three ways to specify vector schema in annotations:
 
 ### Using a `ContextKey` (recommended)
 
-Define a [`ContextKey`](../programming_guide/context.md) for the embedder and use it as the annotation. The connector resolves the key at schema creation time. This is the recommended approach because the embedder is configured once in the lifespan and shared across all functions via context.
+Define a [`ContextKey`](../programming_guide/context) for the embedder and use it as the annotation. The connector resolves the key at schema creation time. This is the recommended approach because the embedder is configured once in the lifespan and shared across all functions via context.
 
 ```python
 import cocoindex as coco
@@ -110,7 +110,7 @@ When a connector's `TableSchema.from_class()` encounters an `Annotated[NDArray, 
 
 ## MultiVectorSchema / MultiVectorSchemaProvider
 
-Analogous types for multi-vector columns (e.g., ColBERT-style token-level embeddings). `MultiVectorSchema` wraps a `VectorSchema` describing the individual vectors. Used by connectors like [Qdrant](../connectors/qdrant.md) that support multi-vector storage.
+Analogous types for multi-vector columns (e.g., ColBERT-style token-level embeddings). `MultiVectorSchema` wraps a `VectorSchema` describing the individual vectors. Used by connectors like [Qdrant](../connectors/qdrant) that support multi-vector storage.
 
 ```python
 from cocoindex.resources.schema import MultiVectorSchema, VectorSchema
