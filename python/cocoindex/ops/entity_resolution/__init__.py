@@ -111,6 +111,7 @@ class PairResolver(_typing.Protocol):
     ) -> PairDecision: ...
 
 
+@_dataclasses.dataclass(frozen=True, slots=True)
 class ResolvedEntities:
     """Result of entity resolution.
 
@@ -119,10 +120,7 @@ class ResolvedEntities:
     contract.
     """
 
-    __slots__ = ("_dedup",)
-
-    def __init__(self, dedup: dict[str, str | None]) -> None:
-        self._dedup = dedup
+    _dedup: dict[str, str | None]
 
     def canonical_of(self, name: str) -> str:
         """Return the canonical name for ``name``.
