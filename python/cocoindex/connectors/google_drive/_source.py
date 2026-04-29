@@ -14,9 +14,11 @@ from pathlib import PurePath
 from typing import Any, AsyncIterator, Iterator, Sequence, Self
 
 try:
+    import httplib2  # type: ignore
     from google.oauth2.service_account import Credentials  # type: ignore
+    from google_auth_httplib2 import AuthorizedHttp  # type: ignore
     from googleapiclient.discovery import build  # type: ignore
-    from googleapiclient.http import MediaIoBaseDownload  # type: ignore
+    from googleapiclient.http import HttpRequest, MediaIoBaseDownload  # type: ignore
 except ImportError as e:
     raise ImportError(
         "google-auth and google-api-python-client are required to use the Google Drive source. "
@@ -65,7 +67,7 @@ _SHEETS_MIME = "application/vnd.google-apps.spreadsheet"
 _SLIDES_MIME = "application/vnd.google-apps.presentation"
 
 _EXPORT_MIME_BY_TYPE = {
-    _DOCS_MIME: "text/plain",
+    _DOCS_MIME: "text/markdown",
     _SHEETS_MIME: "text/csv",
     _SLIDES_MIME: "text/plain",
 }
@@ -155,7 +157,22 @@ def _build_service(credential_path: str) -> Any:
         credential_path,
         scopes=[_DRIVE_SCOPE],
     )
-    return build("drive", "v3", credentials=creds, cache_discovery=False)
+
+    # googleapiclient is built on httplib2, which is *not* thread-safe.
+    # The default service shares one Http (and one socket) across all
+    # requests, so concurrent downloads stall waiting on each other and
+    # eventually trip the 60s read timeout. Hand each request its own
+    # AuthorizedHttp so reads dispatched from different threads don't race.
+    def _request_builder(_http: Any, *args: Any, **kwargs: Any) -> Any:
+        return HttpRequest(AuthorizedHttp(creds, http=httplib2.Http()), *args, **kwargs)
+
+    return build(
+        "drive",
+        "v3",
+        credentials=creds,
+        requestBuilder=_request_builder,
+        cache_discovery=False,
+    )
 
 
 def _parse_modified_time(value: str | None) -> datetime:
