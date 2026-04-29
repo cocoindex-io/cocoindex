@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "CocoIndex example: convert podcast sessions to a knowledge graph in SurrealDB."
 requires-python = ">=3.11"
 dependencies = [
-    "cocoindex[surrealdb,sentence_transformers]>=1.0.0a35",
+    "cocoindex[surrealdb,sentence_transformers]>=1.0.2",
     "yt-dlp",
     "assemblyai",
     "instructor",
@@ -13,9 +13,6 @@ dependencies = [
     "numpy",
     "pydantic",
 ]
-
-[tool.uv]
-prerelease = "explicit"
 
 [tool.setuptools]
 packages = ["conv_knowledge"]

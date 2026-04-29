@@ -10,8 +10,5 @@ dependencies = [
     "pydantic>=2.0.0",
 ]
 
-[tool.uv]
-prerelease = "explicit"
-
 [tool.setuptools]
 packages = []
