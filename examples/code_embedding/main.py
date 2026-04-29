@@ -136,8 +136,8 @@ def search(query: str) -> cocoindex.QueryOutput:
 
 def _main() -> None:
     # Make sure the flow is built and up-to-date.
-    stats = code_embedding_flow.update()
-    print("Updated index: ", stats)
+    update_info = code_embedding_flow.update()
+    print("Updated index: ", update_info.stats)
 
     # Run queries in a loop to demonstrate the query capabilities.
     while True:
