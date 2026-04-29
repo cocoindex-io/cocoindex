@@ -249,7 +249,7 @@ This initialization ensures that all necessary components are properly configure
 
 
 ### Frontend
-You can check the frontend code [here](https://github.com/cocoindex-io/cocoindex/tree/main/examples/image_search/frontend). We intentionally kept it simple and minimalistic to focus on the image search functionality.
+You can check the frontend code [here](https://github.com/cocoindex-io/cocoindex/tree/v0/examples/image_search/frontend). We intentionally kept it simple and minimalistic to focus on the image search functionality.
 
 
 ## Time to have fun!

@@ -2,7 +2,7 @@
 image: https://cocoindex.io/blobs/docs/img/examples/custom_source_hackernews/cover.png
 ---
 
-[→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/custom_source_hn)
+[→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/v0/examples/custom_source_hn)
 
 
 ![Extract structured information from HackerNews with a Custom Source and export in Postgres](https://cocoindex.io/blobs/docs/img/examples/custom_source_hackernews/cover.png)

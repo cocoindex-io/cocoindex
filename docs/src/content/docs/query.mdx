@@ -32,8 +32,41 @@ In this case, you can:
     To do this, declare the function as a *transform flow*, by decorating it with `@cocoindex.transform_flow()`.
     This will add `eval()` and `eval_async()` methods to the function, so that you can directly call with specific input data.
 
+For example, based on the flow in [quickstart](getting_started/quickstart), you can extract the invocation of `SentenceTransformerEmbed` into a standalone function:
 
+```python
+@cocoindex.transform_flow()
+def text_to_embedding(text: cocoindex.DataSlice[str]) -> cocoindex.DataSlice[NDArray[np.float32]]:
+    return text.transform(
+        cocoindex.functions.SentenceTransformerEmbed(
+            model="sentence-transformers/all-MiniLM-L6-v2"))
+```
 
+When you're defining your indexing flow, you can directly call the function:
+
+```python
+with doc["chunks"].row() as chunk:
+    chunk["embedding"] = text_to_embedding(chunk["text"])
+```
+
+or, using the `call()` method of the transform flow on the first argument, to make operations chainable:
+
+```python
+with doc["chunks"].row() as chunk:
+    chunk["embedding"] = chunk["text"].call(text_to_embedding)
+```
+
+Any time, you can call the `eval()` method with specific string, which will return a `NDArray[np.float32]`:
+
+```python
+print(text_to_embedding.eval("Hello, world!"))
+```
+
+If you're in an async context, please call the `eval_async()` method instead:
+
+```python
+print(await text_to_embedding.eval_async("Hello, world!"))
+```
 
 ## Query Handler
 
@@ -48,7 +81,15 @@ Query handlers let you expose a simple function that takes a query string and re
 
 A minimum query handler looks like this:
 
+```python
+@my_flow.query_handler(name="run_query")  # Name is optional, use the function name by default
+def run_query(query: str) -> cocoindex.QueryOutput:
+    # 1) Perform your query against the input `query`
+    ...
 
+    # 2) Return structured results
+    return cocoindex.QueryOutput(results=[{"filename": "...", "text": "..."}])
+```
 
 Notes about the decorator:
 
@@ -64,7 +105,30 @@ A simple query handler like this will enable CocoInsight to display the query re
 
 You can provide additional information by extra fields like this:
 
+```python
+@my_flow.query_handler(
+    name="run_query",  # Name is optional, use the function name by default
+    result_fields=cocoindex.QueryHandlerResultFields(
+        embedding=["embedding"],  # path to the vector field in each result
+        score="score",            # numeric similarity score (higher is better)
+    )
+)
+def run_query(query: str) -> cocoindex.QueryOutput:
+    # 1) Compute embedding for the input query (often via a transform flow)
+    query_vector = text_to_embedding.eval(query)
 
+    # 2) Run your database/vector store query
+    ...
+
+    # 3) Return structured results plus optional query_info
+    return cocoindex.QueryOutput(
+        results=[{"text": "...", "embedding": some_vec, "score": 0.92}],
+        query_info=cocoindex.QueryInfo(
+            embedding=query_vector,
+            similarity_metric=cocoindex.VectorSimilarityMetric.COSINE_SIMILARITY,
+        ),
+    )
+```
 
 - `result_fields` within `query_handler` specifies field names in the query results returned by the query handler. This provides metadata for tools like CocoInsight to recognize structure of the query results, as specified by the following fields (all optional):
     - `embedding` is a list of keys that navigates to the embedding in each result (use multiple in case of multiple embeddings, e.g. using different models).
@@ -112,3 +176,9 @@ It takes the following arguments:
 *   `target_name` (type: `str`): The export target name, appeared in the `export()` call.
 
 For example:
+
+```python
+table_name = cocoindex.utils.get_target_default_name(text_embedding_flow, "doc_embeddings")
+query = f"SELECT filename, text FROM {table_name} ORDER BY embedding <=> %s DESC LIMIT 5"
+...
+```

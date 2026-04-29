@@ -2,7 +2,7 @@
 image: https://cocoindex.io/blobs/docs/img/examples/product_recommendation/cover.png
 ---
 
-[→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/product_recommendation)
+[→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/v0/examples/product_recommendation)
 
 ![Product Recommendation](https://cocoindex.io/blobs/docs/img/examples/product_recommendation/cover.png)
 

@@ -2,7 +2,7 @@
 image: https://cocoindex.io/blobs/docs/img/examples/custom_targets/cover.png
 ---
 
-[→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/custom_output_files)
+[→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/v0/examples/custom_output_files)
 
 ![Custom Targets](https://cocoindex.io/blobs/docs/img/examples/custom_targets/cover.png)
 

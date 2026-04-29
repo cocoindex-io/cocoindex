@@ -2,7 +2,7 @@
 image: https://cocoindex.io/blobs/docs/img/examples/meeting_notes_graph/cover.png
 ---
 
-[→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/meeting_notes_graph)
+[→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/v0/examples/meeting_notes_graph)
 
 ![Meeting Notes Graph](https://cocoindex.io/blobs/docs/img/examples/meeting_notes_graph/cover.png)
 

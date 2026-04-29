@@ -6,8 +6,8 @@ meta:
   language: Python 3.11+
   requires: Postgres + pgvector
 ---
-
-
+- [GitHub: cocoindex-quickstart](https://github.com/cocoindex-io/cocoindex-quickstart)
+- [YouTube tutorial](https://www.youtube.com/watch?v=gv5R8nOXsWU)
 
 In this tutorial, we’ll build an index with text embeddings, keeping it minimal and focused on the core indexing flow.
 
@@ -64,8 +64,7 @@ doc_embeddings = data_scope.add_collector()
 
 `flow_builder.add_source` will create a table with sub fields (`filename`, `content`)
 
-
-
+See [Source](/docs-v0/sources) and [Data Collector](/docs-v0/core/flow_def#data-collector) for more details.
 
 
 ### Process each document
@@ -87,7 +86,7 @@ doc["chunks"] = doc["content"].transform(
 
 We extend a new field `chunks` to each row by *transforming* the `content` field using `SplitRecursively`. The output of the `SplitRecursively` is a KTable representing each chunk of the document.
 
-
+See [SplitRecursively](/docs-v0/ops/functions#splitrecursively) for more details.
 
 ![Chunking](/docs-v0/img/quickstart/chunk.png)
 
@@ -115,7 +114,7 @@ This code embeds each chunk using the SentenceTransformer library and collects t
 
 ![Embedding](/docs-v0/img/quickstart/embed.png)
 
-
+See [SentenceTransformerEmbed](/docs-v0/ops/functions#sentencetransformerembed) for more details.
 
 ### Export the embeddings to Postgres
 
@@ -135,7 +134,7 @@ doc_embeddings.export(
 
 CocoIndex supports other vector databases as well, with 1-line switch.
 
-
+See [Targets](/docs-v0/targets) for the full list.
 
 ## Run the indexing pipeline
 

@@ -2,7 +2,7 @@
 image: https://cocoindex.io/blobs/docs/img/examples/manual_extraction/cover.png
 ---
 
-[→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/manuals_llm_extraction)
+[→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/v0/examples/manuals_llm_extraction)
 
 ![Manual Extraction](https://cocoindex.io/blobs/docs/img/examples/manual_extraction/cover.png)
 

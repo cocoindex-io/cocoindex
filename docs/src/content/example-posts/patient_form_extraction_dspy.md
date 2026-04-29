@@ -2,7 +2,7 @@
 image: https://cocoindex.io/blobs/docs/img/examples/patient_form_extraction_dspy/cover.png
 ---
 
-[→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/patient_intake_extraction_dspy)
+[→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/v0/examples/patient_intake_extraction_dspy)
 
 ![Patient Form Extraction with DSPy](https://cocoindex.io/blobs/docs/img/examples/patient_form_extraction_dspy/cover.png)
 

@@ -2,7 +2,7 @@
 image: https://cocoindex.io/blobs/docs/img/examples/hackernews-trending-topics/cover.png
 ---
 
-[→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/hn_trending_topics)
+[→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/v0/examples/hn_trending_topics)
 
 ![Building a Real-Time HackerNews Trending Topics Detector with CocoIndex: A Deep Dive into Custom Sources and AI](https://cocoindex.io/blobs/docs/img/examples/hackernews-trending-topics/cover.png)
 
