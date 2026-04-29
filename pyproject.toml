@@ -77,7 +77,12 @@ postgres = ["asyncpg>=0.31.0"]
 qdrant = ["qdrant-client>=1.6.0"]
 sqlite = ["sqlite-vec>=0.1.6"]
 surrealdb = ["surrealdb>=1.0.0"]
-google_drive = ["google-api-python-client>=2.0.0", "google-auth>=2.0.0"]
+google_drive = [
+    "google-api-python-client>=2.0.0",
+    "google-auth>=2.0.0",
+    "google-auth-httplib2>=0.2.0",
+    "httplib2>=0.22.0",
+]
 amazon_s3 = ["aiobotocore>=2.0.0"]
 doris = ["aiohttp>=3.9.0", "pymysql>=1.1.0", "aiomysql>=0.2.0"]
 falkordb = ["falkordb>=1.1.0"]
@@ -103,6 +108,8 @@ all = [
     "surrealdb>=1.0.0",
     "google-api-python-client>=2.0.0",
     "google-auth>=2.0.0",
+    "google-auth-httplib2>=0.2.0",
+    "httplib2>=0.22.0",
     "aiobotocore>=2.0.0",
     "aiohttp>=3.9.0",
     "pymysql>=1.1.0",
