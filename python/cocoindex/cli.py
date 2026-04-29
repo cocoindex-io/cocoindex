@@ -578,8 +578,38 @@ def ls(app_target: str | None, db: str | None) -> None:
     default=False,
     help="Display stable paths as a tree with component annotations.",
 )
+@click.option(
+    "-l",
+    "--long",
+    "long_format",
+    is_flag=True,
+    default=False,
+    help="Display detailed information in table format.",
+)
+@click.argument("stable_path", type=str, required=False)
+@click.option(
+    "-r",
+    "--recursive",
+    is_flag=True,
+    default=False,
+    help="Show all children recursively (requires stable_path).",
+)
+@click.option(
+    "-p",
+    "--parents",
+    is_flag=True,
+    default=False,
+    help="Show all parent paths (requires stable_path).",
+)
 def show(
-    app_target: str | None, db: str | None, app_name: str | None, tree: bool
+    app_target: str | None,
+    db: str | None,
+    app_name: str | None,
+    tree: bool,
+    long_format: bool,
+    stable_path: str | None,
+    recursive: bool,
+    parents: bool,
 ) -> None:
     """
     Show the app's stable paths.
@@ -588,16 +618,49 @@ def show(
     If `APP_TARGET` is provided, loads the app from the module.
     Otherwise, `--db` and `--app-name` can be used to inspect an app
     directly from its database without loading the module.
+
+    \b
+    Examples:
+        cocoindex show ./app.py
+        cocoindex show ./app.py --tree
+        cocoindex show ./app.py -l
+        cocoindex show ./app.py /"files" -r
+        cocoindex show ./app.py /"files"/"file1.txt" -p
+        cocoindex show --db ./my.db --app-name MyApp
     """
+    if (recursive or parents) and not stable_path:
+        raise click.ClickException(
+            "-r/--recursive and -p/--parents require a stable_path argument."
+        )
+
     if app_target:
         if db or app_name:
             click.echo(
                 "Warning: --db/--app-name are ignored when APP_TARGET is specified.",
                 err=True,
             )
-        asyncio.run(_show_from_app(_load_app(app_target), tree))
+        asyncio.run(
+            _show_from_app(
+                _load_app(app_target),
+                tree=tree,
+                long_format=long_format,
+                stable_path=stable_path,
+                recursive=recursive,
+                parents=parents,
+            )
+        )
     elif db and app_name:
-        asyncio.run(_show_from_database(db, app_name, tree))
+        asyncio.run(
+            _show_from_database(
+                db,
+                app_name,
+                tree=tree,
+                long_format=long_format,
+                stable_path=stable_path,
+                recursive=recursive,
+                parents=parents,
+            )
+        )
     elif db or app_name:
         raise click.ClickException(
             "Both --db and --app-name are required when APP_TARGET is not specified."
@@ -610,14 +673,37 @@ def show(
         )
 
 
-async def _show_from_app(app: App[Any, Any], tree: bool) -> None:
+async def _show_from_app(
+    app: App[Any, Any],
+    tree: bool = False,
+    long_format: bool = False,
+    stable_path: str | None = None,
+    recursive: bool = False,
+    parents: bool = False,
+) -> None:
     try:
-        await _show_stable_paths(iter_stable_paths(app), tree)
+        await _show_stable_paths(
+            iter_stable_paths(app),
+            app=app,
+            tree=tree,
+            long_format=long_format,
+            stable_path=stable_path,
+            recursive=recursive,
+            parents=parents,
+        )
     finally:
         await _stop_all_environments()
 
 
-async def _show_from_database(db_path: str, app_name: str, tree: bool) -> None:
+async def _show_from_database(
+    db_path: str,
+    app_name: str,
+    tree: bool = False,
+    long_format: bool = False,
+    stable_path: str | None = None,
+    recursive: bool = False,
+    parents: bool = False,
+) -> None:
     db_path_obj = pathlib.Path(db_path)
     if not db_path_obj.exists():
         raise click.ClickException(f"Database path does not exist: {db_path}")
@@ -628,18 +714,143 @@ async def _show_from_database(db_path: str, app_name: str, tree: bool) -> None:
         Settings(db_path=db_path_obj),
         event_loop=asyncio.get_running_loop(),
     )
-    await _show_stable_paths(iter_stable_paths_by_name(env, app_name), tree)
+    await _show_stable_paths(
+        iter_stable_paths_by_name(env, app_name),
+        app=None,
+        tree=tree,
+        long_format=long_format,
+        stable_path=stable_path,
+        recursive=recursive,
+        parents=parents,
+    )
 
 
-async def _show_stable_paths(items: AsyncIterator[Any], tree: bool) -> None:
-    if tree:
+async def _show_stable_paths(
+    items: AsyncIterator[Any],
+    app: App[Any, Any] | None = None,
+    tree: bool = False,
+    long_format: bool = False,
+    stable_path: str | None = None,
+    recursive: bool = False,
+    parents: bool = False,
+) -> None:
+    # Collect all items first for filtering
+    all_items = [item async for item in items]
+
+    # Filter by stable_path if provided
+    filtered_items = _filter_stable_paths(
+        all_items,
+        stable_path=stable_path,
+        recursive=recursive,
+        parents=parents,
+    )
+
+    if long_format:
+        await _print_long_format(filtered_items, app)
+    elif tree:
         component_node_type = _core.StablePathNodeType.component()
-        await _print_tree_streaming(items, component_node_type)
+        # For tree view, we need to reconstruct the iterator
+        from typing import AsyncIterator
+
+        async def iter_filtered() -> AsyncIterator[Any]:
+            for item in filtered_items:
+                yield item
+
+        await _print_tree_streaming(iter_filtered(), component_node_type)
     else:
         click.echo("Stable paths:")
-        async for item in items:
+        for item in filtered_items:
             path = StablePath(item.path)
             click.echo(f"  {path}")
+
+
+def _filter_stable_paths(
+    items: list[Any],
+    stable_path: str | None = None,
+    recursive: bool = False,
+    parents: bool = False,
+) -> list[Any]:
+    """Filter stable paths by path, recursively, or parents."""
+    if not stable_path:
+        return items
+
+    filtered = []
+    for item in items:
+        item_path = StablePath(item.path)
+        item_path_str = str(item_path)
+
+        # Check exact match
+        if item_path_str == stable_path:
+            filtered.append(item)
+            continue
+
+        # Check parent/child relationships using string prefix matching
+        # Parents: item is a prefix of target
+        if parents:
+            if stable_path.startswith(item_path_str) and stable_path != item_path_str:
+                filtered.append(item)
+
+        # Children: target is a prefix of item
+        if recursive:
+            if item_path_str.startswith(stable_path) and item_path_str != stable_path:
+                if item not in filtered:
+                    filtered.append(item)
+
+    return filtered
+
+
+async def _print_long_format(
+    items: list[Any],
+    app: App[Any, Any] | None = None,
+) -> None:
+    """Print stable paths in table format with detailed info."""
+    if not items:
+        click.echo("Stable paths:")
+        click.echo("  (none)")
+        return
+
+    # Table header
+    click.echo(
+        f"{'PATH':<35} | {'TYPE':<10} | {'VERSION':<8} | {'PROCESSOR':<20} | {'TARGETS':<8} | {'MEMO':<5}"
+    )
+    click.echo("-" * 100)
+
+    # Fetch detailed info from LMDB if app is available
+    details_map: dict[str, Any] = {}
+    if app is not None:
+        from cocoindex.inspect import get_stable_path_detail
+
+        for item in items:
+            path = StablePath(item.path)
+            detail = await get_stable_path_detail(app, path)
+            if detail:
+                details_map[str(path)] = detail
+
+    for item in items:
+        path = StablePath(item.path)
+        path_str = str(path)
+        node_type = (
+            "component"
+            if item.node_type == _core.StablePathNodeType.component()
+            else "directory"
+        )
+
+        # Get actual LMDB data if available
+        detail = details_map.get(path_str)
+        if detail:
+            version = str(detail.version)
+            processor = detail.processor_name[:20] if detail.processor_name else "-"
+            target_count = str(detail.target_state_count)
+            has_memo = "true" if detail.has_memoization else "false"
+        else:
+            version = "-"
+            processor = "-"
+            target_count = "-"
+            has_memo = "-"
+
+        click.echo(
+            f"{path_str:<35} | {node_type:<10} | {version:<8} | {processor:<20} | {target_count:<8} | {has_memo:<5}"
+        )
 
 
 async def _stop_all_environments() -> None:

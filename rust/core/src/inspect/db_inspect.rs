@@ -173,3 +173,73 @@ pub fn list_app_names<Prof: EngineProfile>(env: &Environment<Prof>) -> Result<Ve
 
     Ok(names)
 }
+
+/// Detailed information about a single stable path stored in LMDB
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct StablePathDetail {
+    pub path: StablePath,
+    pub node_type: db_schema::StablePathNodeType,
+    pub version: u64,
+    pub processor_name: String,
+    pub target_state_count: usize,
+    pub has_memoization: bool,
+}
+
+/// Get detailed information about a single stable path from LMDB
+pub fn get_stable_path_detail<Prof: EngineProfile>(
+    app: &App<Prof>,
+    path: &StablePath,
+) -> Result<Option<StablePathDetail>> {
+    let db = app.app_ctx().db();
+    let txn = app.app_ctx().env().db_env().read_txn()?;
+
+    // Get TrackingInfo (version, processor_name, target_state_items)
+    let tracking_key = db_schema::DbEntryKey::StablePath(
+        path.clone(),
+        db_schema::StablePathEntryKey::TrackingInfo,
+    )
+    .encode()?;
+
+    let (version, processor_name, target_state_count) =
+        if let Some(value) = db.get(&txn, tracking_key.as_slice())? {
+            let info: db_schema::StablePathEntryTrackingInfo = from_msgpack_slice(value)?;
+            (
+                info.version,
+                info.processor_name.to_string(),
+                info.target_state_items.len(),
+            )
+        } else {
+            (0, String::new(), 0)
+        };
+
+    // Check for ComponentMemoization (has memoization)
+    let mem_key = db_schema::DbEntryKey::StablePath(
+        path.clone(),
+        db_schema::StablePathEntryKey::ComponentMemoization,
+    )
+    .encode()?;
+
+    let has_memoization = db.get(&txn, mem_key.as_slice())?.is_some();
+
+    // Get node_type from ChildExistence
+    let node_type = if path.as_ref().is_empty() {
+        db_schema::StablePathNodeType::Component
+    } else {
+        let path_ref: StablePathRef<'_> = path.as_ref();
+        if let Some((parent_ref, key)) = path_ref.split_parent() {
+            get_path_node_type(&db, &txn, parent_ref, key)?
+                .unwrap_or(db_schema::StablePathNodeType::Directory)
+        } else {
+            db_schema::StablePathNodeType::Component
+        }
+    };
+
+    Ok(Some(StablePathDetail {
+        path: path.clone(),
+        node_type,
+        version,
+        processor_name,
+        target_state_count,
+        has_memoization,
+    }))
+}

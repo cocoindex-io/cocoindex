@@ -57,10 +57,20 @@ def list_stable_paths_info_sync(
     return asyncio.run(_iter_stable_paths_collected(app))
 
 
+async def get_stable_path_detail(
+    app: App[Any, Any],
+    path: StablePath,
+) -> core.StablePathDetail | None:
+    """Get detailed information about a single stable path from LMDB."""
+    core_app = await app._get_core()
+    return core.get_stable_path_detail(core_app, path._core)
+
+
 __all__ = [
     "iter_stable_paths",
     "iter_stable_paths_by_name",
     "list_stable_paths",
     "list_stable_paths_info_sync",
     "list_stable_paths_sync",
+    "get_stable_path_detail",
 ]

@@ -139,3 +139,36 @@ fn wrap_stream_as_async_iterator<'py>(
 pub fn list_app_names(env: &PyEnvironment) -> PyResult<Vec<String>> {
     db_inspect::list_app_names(&env.0).into_py_result()
 }
+
+#[pyclass(name = "StablePathDetail")]
+#[derive(Clone)]
+pub struct PyStablePathDetail {
+    #[pyo3(get)]
+    pub path: PyStablePath,
+    #[pyo3(get)]
+    pub node_type: PyStablePathNodeType,
+    #[pyo3(get)]
+    pub version: u64,
+    #[pyo3(get)]
+    pub processor_name: String,
+    #[pyo3(get)]
+    pub target_state_count: usize,
+    #[pyo3(get)]
+    pub has_memoization: bool,
+}
+
+#[pyfunction]
+pub fn get_stable_path_detail(
+    app: &PyApp,
+    path: &PyStablePath,
+) -> PyResult<Option<PyStablePathDetail>> {
+    let detail = db_inspect::get_stable_path_detail(&app.0, &path.0).into_py_result()?;
+    Ok(detail.map(|d| PyStablePathDetail {
+        path: PyStablePath(d.path),
+        node_type: PyStablePathNodeType(d.node_type),
+        version: d.version,
+        processor_name: d.processor_name,
+        target_state_count: d.target_state_count,
+        has_memoization: d.has_memoization,
+    }))
+}

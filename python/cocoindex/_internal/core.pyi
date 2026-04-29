@@ -95,9 +95,7 @@ class ComponentProcessorContext:
 
 # --- FnCallContext ---
 class FnCallContext:
-    def __new__(
-        cls, *, propagate_children_fn_logic: bool = True
-    ) -> FnCallContext: ...
+    def __new__(cls, *, propagate_children_fn_logic: bool = True) -> FnCallContext: ...
     def join_child(self, child_fn_ctx: FnCallContext) -> None: ...
     def join_child_memo(self, memo_fp: Fingerprint) -> None: ...
     def add_fn_logic_dep(self, fp: Fingerprint) -> None: ...
@@ -144,7 +142,9 @@ class ComponentMountHandle:
 # --- ComponentMountRunHandle ---
 class ComponentMountRunHandle:
     def result(self, comp_ctx: ComponentProcessorContext) -> StoredValue: ...
-    async def result_async(self, comp_ctx: ComponentProcessorContext) -> StoredValue: ...
+    async def result_async(
+        self, comp_ctx: ComponentProcessorContext
+    ) -> StoredValue: ...
 
 # --- AsyncContext ---
 class AsyncContext:
@@ -163,7 +163,9 @@ class Environment:
 # --- Inspect helpers ---
 def list_app_names(env: Environment) -> list[str]: ...
 def iter_stable_paths(app: App) -> StablePathInfoAsyncIterator: ...
-def iter_stable_paths_by_name(env: Environment, app_name: str) -> StablePathInfoAsyncIterator: ...
+def iter_stable_paths_by_name(
+    env: Environment, app_name: str
+) -> StablePathInfoAsyncIterator: ...
 
 class StablePathNodeType:
     @staticmethod
@@ -180,6 +182,18 @@ class StablePathInfoAsyncIterator:
 
     def __aiter__(self) -> StablePathInfoAsyncIterator: ...
     def __anext__(self) -> Awaitable[StablePathInfo]: ...
+
+class StablePathDetail:
+    """Detailed information about a stable path from LMDB."""
+
+    path: StablePath
+    node_type: StablePathNodeType
+    version: int
+    processor_name: str
+    target_state_count: int
+    has_memoization: bool
+
+def get_stable_path_detail(app: App, path: StablePath) -> StablePathDetail | None: ...
 
 # --- UpdateHandle ---
 class UpdateHandle:
