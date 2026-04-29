@@ -4,12 +4,9 @@ version = "0.1.0"
 description = "CocoIndex v1 example: transcribe audio files to text using LiteLLM."
 requires-python = ">=3.11"
 dependencies = [
-    "cocoindex[litellm,postgres]>=1.0.0a30",
+    "cocoindex[litellm,postgres]>=1.0.2",
     "asyncpg>=0.29.0",
 ]
-
-[tool.uv]
-prerelease = "explicit"
 
 [tool.setuptools]
 packages = []
