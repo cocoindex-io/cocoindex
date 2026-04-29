@@ -1,0 +1,14 @@
+[project]
+name = "meeting-notes-graph"
+version = "0.1.0"
+description = "CocoIndex example: build a knowledge graph from meeting notes in Google Drive, stored in FalkorDB."
+requires-python = ">=3.11"
+dependencies = [
+    "cocoindex[falkordb,google_drive,sentence_transformers,entity_resolution_llm]>=1.0.2",
+    "instructor",
+    "litellm",
+    "pydantic",
+]
+
+[tool.setuptools]
+py-modules = ["main"]
