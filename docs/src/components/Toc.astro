@@ -11,8 +11,8 @@ export interface Props {
 
 const { headings, slug } = Astro.props;
 
-// Only H2 and H3 in the right rail — deeper nesting makes noise.
-const rows = headings.filter((h) => h.depth >= 2 && h.depth <= 3);
+// H2 through H4 in the right rail — H5+ is too deep to be useful.
+const rows = headings.filter((h) => h.depth >= 2 && h.depth <= 4);
 
 const metaMap = (docsMeta as {
   _version?: string | null;
@@ -42,7 +42,7 @@ const reviewedAgo = relativeReview(editTs);
   <h6>On this page</h6>
   <ul>
     {rows.map((h) => (
-      <li class={h.depth === 3 ? 'sub' : ''} data-toc-item>
+      <li class={h.depth === 3 ? 'sub' : h.depth === 4 ? 'sub-sub' : ''} data-toc-item>
         <a href={`#${h.slug}`} data-toc-link={h.slug}>
           {h.text}
         </a>
