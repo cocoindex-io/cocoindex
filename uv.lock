@@ -625,7 +625,7 @@ build-test = [
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-timeout" },
-    { name = "testcontainers" },
+    { name = "testcontainers", marker = "sys_platform != 'win32'" },
 ]
 ci = [
     { name = "aiomoto", extra = ["s3"] },
@@ -638,7 +638,7 @@ ci = [
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-timeout" },
-    { name = "testcontainers" },
+    { name = "testcontainers", marker = "sys_platform != 'win32'" },
     { name = "types-psutil" },
 ]
 ci-enabled-optional-deps = [
@@ -657,7 +657,7 @@ dev = [
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-timeout" },
-    { name = "testcontainers" },
+    { name = "testcontainers", marker = "sys_platform != 'win32'" },
     { name = "types-psutil" },
 ]
 dev-local = [
@@ -744,7 +744,7 @@ build-test = [
     { name = "pytest", specifier = ">=9.0.3" },
     { name = "pytest-asyncio" },
     { name = "pytest-timeout" },
-    { name = "testcontainers", extras = ["postgres"], specifier = ">=4.0.0" },
+    { name = "testcontainers", extras = ["postgres"], marker = "sys_platform != 'win32'", specifier = ">=4.0.0" },
 ]
 ci = [
     { name = "aiomoto", extras = ["s3"], specifier = ">=0.3.0" },
@@ -757,7 +757,7 @@ ci = [
     { name = "pytest", specifier = ">=9.0.3" },
     { name = "pytest-asyncio" },
     { name = "pytest-timeout" },
-    { name = "testcontainers", extras = ["postgres"], specifier = ">=4.0.0" },
+    { name = "testcontainers", extras = ["postgres"], marker = "sys_platform != 'win32'", specifier = ">=4.0.0" },
     { name = "types-psutil" },
 ]
 ci-enabled-optional-deps = [
@@ -776,7 +776,7 @@ dev = [
     { name = "pytest", specifier = ">=9.0.3" },
     { name = "pytest-asyncio" },
     { name = "pytest-timeout" },
-    { name = "testcontainers", extras = ["postgres"], specifier = ">=4.0.0" },
+    { name = "testcontainers", extras = ["postgres"], marker = "sys_platform != 'win32'", specifier = ">=4.0.0" },
     { name = "types-psutil" },
 ]
 dev-local = [{ name = "prek" }]
