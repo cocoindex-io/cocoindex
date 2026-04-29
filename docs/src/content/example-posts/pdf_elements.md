@@ -2,7 +2,7 @@
 image: https://cocoindex.io/blobs/docs/img/examples/pdf_elements/cover.png
 ---
 
-[→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/pdf_elements_embedding)
+[→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/v0/examples/pdf_elements_embedding)
 
 ![Index PDF Elements](https://cocoindex.io/blobs/docs/img/examples/pdf_elements/cover.png)
 

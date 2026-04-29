@@ -13,7 +13,23 @@ A custom function can be defined in one of the following ways:
 
 It fits into simple cases that the function doesn't need to take additional configurations and extra setup logic.
 
+The standalone function needs to be decorated by `@cocoindex.op.function()`, like this:
 
+```python
+@cocoindex.op.function(...)
+def compute_something(arg1: str, arg2: int | None = None) -> str:
+    """
+    Documentation for the function.
+    """
+    ...
+```
+
+Notes:
+
+* The `cocoindex.op.function()` function decorator also takes optional parameters.
+    See [Parameters for custom functions](#parameters-for-custom-functions) for details.
+* Types of arguments and the return value must be annotated, so that CocoIndex will have information about data types of the operation's output fields.
+    See [Data Types](/docs-v0/core/data_types) for supported types.
 
 ### Examples
 
@@ -34,7 +50,22 @@ It allows a function to be configured with the function spec, and allow preparat
 The function spec of a function configures behavior of a specific instance of the function.
 When you use this function in a flow (typically by a [`transform()`](/docs-v0/core/flow_def#transform)), you instantiate this function spec, with specific parameter values.
 
+A function spec is defined as a class that inherits from `cocoindex.op.FunctionSpec`.
 
+```python
+class ComputeSomething(cocoindex.op.FunctionSpec):
+    """
+    Documentation for the function.
+    """
+    param1: str
+    param2: int | None = None
+    ...
+```
+
+Notes:
+
+* All fields of the spec must have a type serializable / deserializable by the `json` module.
+* All subclasses of `FunctionSpec` can be instantiated similar to a dataclass, i.e. `ClassName(param1=value1, param2=value2, ...)`.
 
 ### Function Executor
 
@@ -47,7 +78,31 @@ The function executor is responsible for:
     e.g. if the function calls a machine learning model, the model name can be a parameter as a field of the spec, and we may load the model in this phase.
 * *Run* the function, for each specific input arguments. This happens multiple times, for each specific row of data.
 
+A function executor is defined as a class decorated by `@cocoindex.op.executor_class()`.
 
+```python
+@cocoindex.op.executor_class(...)
+class ComputeSomethingExecutor:
+    spec: ComputeSomething
+    ...
+
+    def prepare(self) -> None:
+        ...
+
+    def __call__(self, arg1: str, arg2: int | None = None) -> str:
+        ...
+```
+
+Notes:
+
+* The `cocoindex.op.executor_class()` class decorator also takes optional parameters.
+    See [Parameters for custom functions](#parameters-for-custom-functions) for details.
+
+* A `spec` field must be present in the class, and must be annotated with the spec class name.
+* The `prepare()` method is optional. It's executed once and only once before any `__call__` execution, to prepare the function execution.
+* The `__call__()` method is required. It's executed for each specific rows of data.
+    Types of arugments and the return value must be decorated, so that CocoIndex will have information about data types of the operation's output fields.
+    See [Data Types](/docs-v0/core/data_types) for supported types.
 
 ### Examples
 
@@ -91,7 +146,26 @@ Custom functions take the following additional parameters:
 
 For example:
 
+This enables cache for a standalone function:
 
+```python
+@cocoindex.op.function(cache=True, behavior_version=1)
+def compute_something(arg1: str, arg2: int | None = None) -> str:
+    ...
+```
+
+This enables cache for a function defined by a spec and an executor:
+
+```python
+class ComputeSomething(cocoindex.op.FunctionSpec):
+    ...
+
+@cocoindex.op.executor_class(cache=True, behavior_version=1)
+class ComputeSomethingExecutor:
+    spec: ComputeSomething
+
+    ...
+```
 
 ## Batching
 
@@ -101,3 +175,44 @@ Sometimes batching is more efficient than processing them one by one, e.g. runni
 Batching can be enabled by setting the `batching` parameter to `True` in custom function parameters.
 Once it's set to `True`, type of the argument and return value must be a `list`.
 Currently we only support batching functions taking a single argument.
+
+For example, for a CocoIndex custom function taking `str` as argument and returning `str` as result, it can be defined as:
+
+```python
+@cocoindex.op.function(batching=True)
+def compute_something(args: list[str]) -> list[str]:
+    ...
+```
+
+or for such a function defined by an executor:
+
+```python
+@cocoindex.op.executor_class(batching=True)
+class ComputeSomethingExecutor:
+    spec: ComputeSomething
+    ...
+
+    def __call__(self, args: list[str]) -> list[str]:
+        ...
+```
+
+### Controlling Batch Size
+
+You can control the maximum batch size using the `max_batch_size` parameter. This is useful for:
+
+* Limiting memory usage when processing large batches
+* Reducing latency by flushing batches before they grow too large
+* Working with APIs that have request size limits
+
+```python
+@cocoindex.op.function(batching=True, max_batch_size=32)
+def compute_something(args: list[str]) -> list[str]:
+    ...
+```
+
+With `max_batch_size` set, a batch will be flushed when either:
+
+1. No ongoing batches are running
+2. The pending batch size reaches `max_batch_size`
+
+This ensures that requests don't wait indefinitely for a batch to fill up, while still allowing efficient batch processing.

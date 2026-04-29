@@ -35,7 +35,7 @@ const fullTitle = `${plainTitle} · CocoIndex Examples`;
 const canonical = new URL(`${base}/examples/${slug}`, SITE_URL).toString();
 // The repo directory usually matches the slug; override via sourceSlug when
 // it doesn't (e.g. listing slug `code_index` vs repo dir `code_embedding`).
-const sourceUrl = `https://github.com/cocoindex-io/cocoindex/tree/main/examples/${ex.sourceSlug ?? slug}`;
+const sourceUrl = `https://github.com/cocoindex-io/cocoindex/tree/v0/examples/${ex.sourceSlug ?? slug}`;
 
 // Pull the ported markdown body. Every listed example should have a
 // matching entry, but we tolerate a missing one so we can ship the

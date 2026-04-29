@@ -85,11 +85,23 @@ You can find the full list of models supported by OpenAI [here](https://platform
 
 For text generation, a spec for OpenAI looks like this:
 
-
+```python
+cocoindex.LlmSpec(
+    api_type=cocoindex.LlmApiType.OPENAI,
+    model="gpt-4o",
+)
+```
 
 For text embedding, a spec for OpenAI looks like this:
 
-
+```python
+cocoindex.functions.EmbedText(
+    api_type=cocoindex.LlmApiType.OPENAI,
+    model="text-embedding-3-small",
+    # Optional, use the default output dimension if not specified
+    output_dimension=1536,
+)
+```
 
 ### Azure OpenAI
 
@@ -110,11 +122,31 @@ Spec for Azure OpenAI requires:
 
 For text generation, a spec for Azure OpenAI looks like this:
 
-
+```python
+cocoindex.LlmSpec(
+    api_type=cocoindex.LlmApiType.AZURE_OPENAI,
+    model="gpt-4o",  # This is the base model name
+    address="https://your-resource-name.openai.azure.com",
+    api_config=cocoindex.llm.AzureOpenAiConfig(
+        deployment_id="your-deployment-name",
+        api_version="2024-08-01-preview",  # Optional, defaults to 2024-08-01-preview
+    ),
+)
+```
 
 For text embedding, a spec for Azure OpenAI looks like this:
 
-
+```python
+cocoindex.functions.EmbedText(
+    api_type=cocoindex.LlmApiType.AZURE_OPENAI,
+    model="text-embedding-3-small",
+    address="https://your-resource-name.openai.azure.com",
+    output_dimension=1536,  # Optional, use the default output dimension if not specified
+    api_config=cocoindex.llm.AzureOpenAiConfig(
+        deployment_id="your-embedding-deployment-name",
+    ),
+)
+```
 
 :::note
 Azure OpenAI uses deployment names instead of direct model names in API calls. The `deployment_id` in the config should match the deployment you created in Azure OpenAI Studio.
@@ -133,7 +165,14 @@ You can find the [list of models](https://ollama.com/library) supported by Ollam
 
 A spec for Ollama looks like this:
 
-
+```python
+cocoindex.LlmSpec(
+    api_type=cocoindex.LlmApiType.OLLAMA,
+    model="llama3.2:latest",
+    # Optional, use Ollama's default port (11434) on localhost if not specified
+    address="http://localhost:11434",
+)
+```
 
 For text embedding with Ollama, you'll need to pull an embedding model first:
 
@@ -143,7 +182,14 @@ ollama pull nomic-embed-text
 
 Then, a spec for Ollama embedding looks like this:
 
-
+```python
+cocoindex.functions.EmbedText(
+    api_type=cocoindex.LlmApiType.OLLAMA,
+    model="nomic-embed-text",
+    # Optional, use Ollama's default port (11434) on localhost if not specified
+    address="http://localhost:11434",
+)
+```
 
 ### Google Gemini
 
@@ -158,11 +204,25 @@ You can find the full list of models supported by Gemini [here](https://ai.googl
 
 For text generation, a spec looks like this:
 
-
+```python
+cocoindex.LlmSpec(
+    api_type=cocoindex.LlmApiType.GEMINI,
+    model="gemini-2.5-flash",
+)
+```
 
 For text embedding, a spec looks like this:
 
-
+```python
+cocoindex.functions.EmbedText(
+    api_type=cocoindex.LlmApiType.GEMINI,
+    model="text-embedding-004",
+    # Optional, use the default task type if not specified
+    task_type="SEMANTICS_SIMILARITY",
+    # Optional, use the default output dimension if not specified
+    output_dimension=1536,
+)
+```
 
 All supported embedding models can be found [here](https://ai.google.dev/gemini-api/docs/embeddings#embeddings-models).
 Gemini supports task type (optional), which can be found [here](https://ai.google.dev/gemini-api/docs/embeddings#supported-task-types).
@@ -200,12 +260,27 @@ You can find the full list of models supported by Vertex AI [here](https://cloud
 
 For text generation, a spec for Vertex AI looks like this:
 
-
-
+```python
+cocoindex.LlmSpec(
+    api_type=cocoindex.LlmApiType.VERTEX_AI,
+    model="gemini-2.0-flash",
+    api_config=cocoindex.llm.VertexAiConfig(project="your-project-id"),
+)
+```
 
 For text embedding, a spec for Vertex AI looks like this:
 
-
+```python
+cocoindex.functions.EmbedText(
+    api_type=cocoindex.LlmApiType.VERTEX_AI,
+    model="text-embedding-005",
+    # Optional, use the default task type if not specified
+    task_type="SEMANTICS_SIMILARITY",
+    # Optional, use the default output dimension if not specified
+    output_dimension=1536,
+    api_config=cocoindex.llm.VertexAiConfig(project="your-project-id"),
+)
+```
 
 Vertex AI API supports task type (optional), which can be found [here](https://cloud.google.com/vertex-ai/generative-ai/docs/model-reference/text-embeddings-api#parameter-list).
 
@@ -216,7 +291,12 @@ You can generate the API key from [Anthropic API](https://console.anthropic.com/
 
 A text generation spec for Anthropic looks like this:
 
-
+```python
+cocoindex.LlmSpec(
+    api_type=cocoindex.LlmApiType.ANTHROPIC,
+    model="claude-3-5-sonnet-latest",
+)
+```
 
 You can find the full list of models supported by Anthropic [here](https://docs.anthropic.com/en/docs/about-claude/models/all-models).
 
@@ -227,7 +307,13 @@ You can generate the API key from [Voyage dashboard](https://dashboard.voyageai.
 
 A text embedding spec for Voyage looks like this:
 
-
+```python
+cocoindex.functions.EmbedText(
+    api_type=cocoindex.LlmApiType.VOYAGE,
+    model="voyage-code-3",
+    task_type="document",
+)
+```
 
 Voyage API supports `document` and `query` as task types (optional, a.k.a. `input_type` in Voyage API, see [Voyage API documentation](https://docs.voyageai.com/reference/embeddings-api) for details).
 
@@ -280,7 +366,13 @@ litellm --config config.yml
 
 #### 4. A Spec for LiteLLM will look like this:
 
-
+```python
+cocoindex.LlmSpec(
+    api_type=cocoindex.LlmApiType.LITE_LLM,
+    model="deepseek-chat",
+    address="http://127.0.0.1:4000", # default url of LiteLLM
+)
+```
 
 You can find the full list of models supported by LiteLLM [here](https://docs.litellm.ai/docs/providers).
 
@@ -291,13 +383,27 @@ You can generate the API key from [here](https://openrouter.ai/settings/keys).
 
 A text generation spec for OpenRouter looks like this:
 
-
+```python
+cocoindex.LlmSpec(
+    api_type=cocoindex.LlmApiType.OPEN_ROUTER,
+    model="deepseek/deepseek-r1:free",
+)
+```
 
 OpenRouter also supports some text embedding models. Note that for OpenRouter embedding
 models, you need to explicitly provide the `output_dimension` parameter in the spec.
 Here's how you can define the spec to use an OpenRouter embedding model:
 
-
+```python
+cocoindex.functions.EmbedText(
+    api_type=cocoindex.LlmApiType.OPEN_ROUTER,
+    model="openai/text-embedding-3-small",
+    # Task type for embedding model
+    task_type="SEMANTICS_SIMILARITY",
+    # Required: the number of output dimensions for the embedding model
+    output_dimension=1536,
+)
+```
 
 You can find the full list of models supported by OpenRouter [here](https://openrouter.ai/models).
 
@@ -318,7 +424,13 @@ vllm serve deepseek-ai/deepseek-coder-1.3b-instruct
 
 A spec for vLLM looks like this:
 
-
+```python
+cocoindex.LlmSpec(
+    api_type=cocoindex.LlmApiType.VLLM,
+    model="deepseek-ai/deepseek-coder-1.3b-instruct",
+    address="http://127.0.0.1:8000/v1",
+)
+```
 
 ### Bedrock
 
@@ -330,6 +442,11 @@ To use the Bedrock API, you need to set up AWS credentials. You can do this by s
 
 A spec for Bedrock looks like this:
 
-
+```python
+cocoindex.LlmSpec(
+    api_type=cocoindex.LlmApiType.BEDROCK,
+    model="us.anthropic.claude-3-5-haiku-20241022-v1:0",
+)
+```
 
 You can find the full list of models supported by Bedrock [here](https://docs.aws.amazon.com/bedrock/latest/userguide/model-ids.html).

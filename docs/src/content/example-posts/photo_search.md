@@ -2,7 +2,7 @@
 image: https://cocoindex.io/blobs/docs/img/examples/photo_search/cover.png
 ---
 
-[→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/face_recognition)
+[→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/v0/examples/face_recognition)
 
 ![Photo Search](https://cocoindex.io/blobs/docs/img/examples/photo_search/cover.png)
 

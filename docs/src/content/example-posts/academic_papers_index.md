@@ -2,7 +2,7 @@
 image: https://cocoindex.io/blobs/docs/img/examples/academic_papers_index/cover.png
 ---
 
-[→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/paper_metadata)
+[→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/v0/examples/paper_metadata)
 
 ![Academic Papers Index](https://cocoindex.io/blobs/docs/img/examples/academic_papers_index/cover.png)
 

@@ -2,7 +2,7 @@
 image: https://cocoindex.io/blobs/docs/img/examples/docs_to_knowledge_graph/cover.png
 ---
 
-[→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/docs_to_knowledge_graph)
+[→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/v0/examples/docs_to_knowledge_graph)
 [→ Watch on YouTube](https://youtu.be/2KVkpUGRtnk?si=MRalDweWrid-IFje)
 
 ![Knowledge Graph for Docs](https://cocoindex.io/blobs/docs/img/examples/docs_to_knowledge_graph/cover.png)
@@ -45,7 +45,7 @@ and then build a knowledge graph.
 
 ### Add documents as source
 
-We will process CocoIndex documentation markdown files (`.md`, `.mdx`) from the `docs/core` directory ([markdown files](https://github.com/cocoindex-io/cocoindex/tree/main/docs/docs/core), [deployed docs](https://cocoindex.io/docs-v0/core/basics)).
+We will process CocoIndex documentation markdown files (`.md`, `.mdx`) from the `docs/core` directory ([markdown files](https://github.com/cocoindex-io/cocoindex/tree/v0/docs/docs/core), [deployed docs](https://cocoindex.io/docs-v0/core/basics)).
 
 ```python
 

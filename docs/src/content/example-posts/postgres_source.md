@@ -2,7 +2,7 @@
 image: https://cocoindex.io/blobs/docs/img/examples/postgres_source/cover.png
 ---
 
-<GitHubButton url="https://github.com/cocoindex-io/cocoindex/tree/main/examples/postgres_source" margin="0 0 24px 0" /
+<GitHubButton url="https://github.com/cocoindex-io/cocoindex/tree/v0/examples/postgres_source" margin="0 0 24px 0" /
 >
 ![PostgreSQL Product Indexing Flow](https://cocoindex.io/blobs/docs/img/examples/postgres_source/cover.png)
 

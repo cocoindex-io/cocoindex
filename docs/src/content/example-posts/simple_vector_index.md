@@ -2,7 +2,7 @@
 image: https://cocoindex.io/blobs/docs/img/examples/simple_vector_index/cover.png
 ---
 
-[→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/text_embedding)
+[→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/v0/examples/text_embedding)
 
 ![Simple Vector Index](https://cocoindex.io/blobs/docs/img/examples/simple_vector_index/cover.png)
 

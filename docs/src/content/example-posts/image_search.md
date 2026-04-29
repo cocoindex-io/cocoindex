@@ -2,7 +2,7 @@
 image: https://cocoindex.io/blobs/docs/img/examples/image_search/cover.png
 ---
 
-[→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/image_search)
+[→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/v0/examples/image_search)
 
 ![Image Search](https://cocoindex.io/blobs/docs/img/examples/image_search/cover.png)
 

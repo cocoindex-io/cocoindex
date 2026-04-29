@@ -2,7 +2,7 @@
 image: https://cocoindex.io/blobs/docs/img/examples/codebase_index/cover.png
 ---
 
-[→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/code_embedding)
+[→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/v0/examples/code_embedding)
 [→ Watch on YouTube](https://youtu.be/G3WstvhHO24?si=ndYfM0XRs03_hVPR)
 
 ![Codebase Index](https://cocoindex.io/blobs/docs/img/examples/codebase_index/cover.png)

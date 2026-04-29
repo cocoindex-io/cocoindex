@@ -2,7 +2,7 @@
 image: https://cocoindex.io/blobs/docs/img/examples/multi_format_index/cover.png
 ---
 
-[→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/multi_format_indexing)
+[→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/v0/examples/multi_format_indexing)
 
 ![Multi Format Index](https://cocoindex.io/blobs/docs/img/examples/multi_format_index/cover.png)
 

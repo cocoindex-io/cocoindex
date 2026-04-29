@@ -2,7 +2,7 @@
 image: https://cocoindex.io/blobs/docs/img/examples/patient_form_extraction/cover.png
 ---
 
-[→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/main/examples/patient_intake_extraction)
+[→ View on GitHub](https://github.com/cocoindex-io/cocoindex/tree/v0/examples/patient_intake_extraction)
 [→ Watch on YouTube](https://youtu.be/_mjlwVtnBn0?si=-TBImMyZbnKh-5FB)
 
 ![Patient Form Extraction](https://cocoindex.io/blobs/docs/img/examples/patient_form_extraction/cover.png)
