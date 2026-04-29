@@ -511,6 +511,7 @@ aside.toc li a {
 aside.toc li a:hover { color: var(--coral); text-decoration: none; }
 aside.toc li a.on { color: var(--coral); border-left-color: var(--coral); }
 aside.toc li.sub a { padding-left: 22px; font-size: 12.5px; }
+aside.toc li.sub-sub a { padding-left: 34px; font-size: 12px; }
 
 aside.toc .meta {
   margin-top: 28px; padding-top: 20px; border-top: 1px solid var(--rule);
