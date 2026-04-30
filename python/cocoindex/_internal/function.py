@@ -47,7 +47,7 @@ from .serde import (
     qualified_name,
     unwrap_element_type,
 )
-from .typing import NON_EXISTENCE
+from .typing import NOT_SET, NON_EXISTENCE, NotSetType
 
 P = ParamSpec("P")
 R = TypeVar("R")
@@ -67,23 +67,18 @@ LogicTracking: TypeAlias = Literal["full", "self"] | None
 MemoKeyTransform: TypeAlias = Callable[[Any], Any]
 MemoKeySpec: TypeAlias = Mapping[str, MemoKeyTransform | None] | None
 CompiledMemoKeyPositionalSpec: TypeAlias = tuple[
-    tuple[bool, MemoKeyTransform | None], ...
+    MemoKeyTransform | None | NotSetType, ...
 ]
 
-# Sentinel to distinguish "no override" from "override with None" (exclude)
-_NO_OVERRIDE = object()
 
-
-class CompiledMemoKeyPlan(NamedTuple):
+class PreparedMemoKeySpec(NamedTuple):
     """Precompiled memo-key plan for fast runtime application."""
 
     positional_specs: CompiledMemoKeyPositionalSpec
     keyword_specs: dict[str, MemoKeyTransform | None]
-    varargs_override: Any  # MemoKeyTransform | None | _NO_OVERRIDE
-    varkw_override: Any  # MemoKeyTransform | None | _NO_OVERRIDE
+    varargs_override: MemoKeyTransform | None | NotSetType
+    varkw_override: MemoKeyTransform | None | NotSetType
 
-
-NormalizedMemoKeySpec: TypeAlias = CompiledMemoKeyPlan | None
 
 # ============================================================================
 # Type protocols for batched function decorators
@@ -421,20 +416,19 @@ def _has_self_parameter(fn: Callable[..., Any]) -> bool:
 def _apply_memo_key(
     args: tuple[Any, ...],
     kwargs: dict[str, Any],
-    memo_key: NormalizedMemoKeySpec,
+    memo_key_plan: PreparedMemoKeySpec | None,
 ) -> tuple[tuple[Any, ...], dict[str, Any]]:
     """Apply precompiled per-parameter memo-key overrides before fingerprinting.
 
     Positional arguments remain positional, and keyword arguments remain keyword
-    arguments. Parameters absent from *memo_key* pass through unchanged.
+    arguments. Parameters absent from *memo_key_plan* pass through unchanged.
     Parameters mapped to ``None`` are excluded from the fingerprint input, and
     parameters mapped to a callable are transformed by that callable.
     """
-    if memo_key is None:
+    if memo_key_plan is None:
         return args, kwargs
 
-    plan = memo_key
-    num_fixed = len(plan.positional_specs)
+    num_fixed = len(memo_key_plan.positional_specs)
 
     # Separate fixed positional args from varargs
     fixed_args = args[:num_fixed] if len(args) >= num_fixed else args
@@ -443,22 +437,22 @@ def _apply_memo_key(
     # Process fixed positional args (may exclude or transform)
     new_fixed_args: list[Any] = []
     for i, arg in enumerate(fixed_args):
-        has_override, key_fn = plan.positional_specs[i]
-        if has_override:
-            if key_fn is None:
-                continue  # Exclude this positional arg
-            new_fixed_args.append(key_fn(arg))
-        else:
+        key_fn = memo_key_plan.positional_specs[i]
+        if key_fn is NOT_SET:
             new_fixed_args.append(arg)
+        elif key_fn is None:
+            continue  # Exclude this positional arg
+        else:
+            new_fixed_args.append(cast(MemoKeyTransform, key_fn)(arg))
 
     # Apply varargs override if present (whole *args parameter)
-    if plan.varargs_override is not _NO_OVERRIDE:
-        if plan.varargs_override is None:
+    if memo_key_plan.varargs_override is not NOT_SET:
+        if memo_key_plan.varargs_override is None:
             # Exclude entire *args
             varargs = ()
         else:
             # Transform entire *args tuple
-            varargs = plan.varargs_override(varargs)
+            varargs = cast(MemoKeyTransform, memo_key_plan.varargs_override)(varargs)
             if not isinstance(varargs, tuple):
                 raise TypeError(
                     f"memo_key transform for *args must return tuple, "
@@ -474,8 +468,8 @@ def _apply_memo_key(
     unmatched_kwargs: dict[str, Any] = {}
 
     for key, value in kwargs.items():
-        if key in plan.keyword_specs:
-            key_fn = plan.keyword_specs[key]
+        if key in memo_key_plan.keyword_specs:
+            key_fn = memo_key_plan.keyword_specs[key]
             if key_fn is None:
                 continue  # Exclude this kwarg
             new_kwargs[key] = key_fn(value)
@@ -483,13 +477,15 @@ def _apply_memo_key(
             unmatched_kwargs[key] = value
 
     # Apply varkw override if present (whole **kwargs parameter)
-    if plan.varkw_override is not _NO_OVERRIDE:
-        if plan.varkw_override is None:
+    if memo_key_plan.varkw_override is not NOT_SET:
+        if memo_key_plan.varkw_override is None:
             # Exclude entire **kwargs
             unmatched_kwargs = {}
         else:
             # Transform entire unmatched kwargs dict
-            transformed = plan.varkw_override(unmatched_kwargs)
+            transformed = cast(MemoKeyTransform, memo_key_plan.varkw_override)(
+                unmatched_kwargs
+            )
             if not isinstance(transformed, dict):
                 raise TypeError(
                     f"memo_key transform for **kwargs must return dict, "
@@ -498,15 +494,14 @@ def _apply_memo_key(
             unmatched_kwargs = transformed
 
     # Merge matched and unmatched kwargs
-    final_kwargs = new_kwargs.copy()
-    final_kwargs.update(unmatched_kwargs)
+    new_kwargs.update(unmatched_kwargs)
 
-    return final_args, final_kwargs
+    return final_args, new_kwargs
 
 
 def _normalize_memo_key(
     fn: Callable[..., Any], memo_key: MemoKeySpec
-) -> NormalizedMemoKeySpec:
+) -> PreparedMemoKeySpec | None:
     """Validate and compile per-parameter memo-key overrides once."""
     if memo_key is None:
         return None
@@ -515,8 +510,8 @@ def _normalize_memo_key(
     if not normalized:
         return None
 
-    params = list(inspect.signature(fn).parameters.values())
-    param_names = [param.name for param in params]
+    sig = inspect.signature(fn)
+    param_names = [param.name for param in sig.parameters.values()]
     unknown = sorted(name for name in normalized if name not in param_names)
     if unknown:
         raise ValueError(
@@ -530,31 +525,27 @@ def _normalize_memo_key(
                 f"memo_key[{name!r}] for {qualified_name(fn)}() must be a callable or None"
             )
 
-    positional: list[tuple[bool, MemoKeyTransform | None]] = []
-    for param in params:
+    positional: list[MemoKeyTransform | None | NotSetType] = []
+    varargs_override: MemoKeyTransform | None | NotSetType = NOT_SET
+    varkw_override: MemoKeyTransform | None | NotSetType = NOT_SET
+
+    for param in sig.parameters.values():
         if param.kind in (
             inspect.Parameter.POSITIONAL_ONLY,
             inspect.Parameter.POSITIONAL_OR_KEYWORD,
         ):
-            positional.append((param.name in normalized, normalized.get(param.name)))
-
-    # Check for VAR_POSITIONAL (*args) override
-    varargs_override: Any = _NO_OVERRIDE
-    for param in params:
-        if param.kind == inspect.Parameter.VAR_POSITIONAL:
+            if param.name in normalized:
+                positional.append(normalized[param.name])
+            else:
+                positional.append(NOT_SET)
+        elif param.kind == inspect.Parameter.VAR_POSITIONAL:
             if param.name in normalized:
                 varargs_override = normalized[param.name]
-            break
-
-    # Check for VAR_KEYWORD (**kwargs) override
-    varkw_override: Any = _NO_OVERRIDE
-    for param in params:
-        if param.kind == inspect.Parameter.VAR_KEYWORD:
+        elif param.kind == inspect.Parameter.VAR_KEYWORD:
             if param.name in normalized:
                 varkw_override = normalized[param.name]
-            break
 
-    return CompiledMemoKeyPlan(
+    return PreparedMemoKeySpec(
         tuple(positional), normalized, varargs_override, varkw_override
     )
 
@@ -669,7 +660,7 @@ class SyncFunction(Function[P, R_co]):
 
     _fn: Callable[P, R_co]
     _memo: bool
-    _memo_key: NormalizedMemoKeySpec
+    _memo_key: PreparedMemoKeySpec | None
     _processor_info: core.ComponentProcessorInfo
     _logic_fp: core.Fingerprint | None
     _logic_tracking: LogicTracking
@@ -1106,7 +1097,7 @@ class AsyncFunction(Function[P, R_co]):
     _orig_async_fn: AsyncCallable[..., Any] | None
     _orig_sync_fn: Callable[..., Any] | None
     _memo: bool
-    _memo_key: NormalizedMemoKeySpec
+    _memo_key: PreparedMemoKeySpec | None
     _processor_info: core.ComponentProcessorInfo
     _logic_fp: core.Fingerprint | None
     _logic_tracking: LogicTracking
