@@ -81,11 +81,13 @@ jobs:
           # macos-latest GitHub runners don't ship with a running Docker
           # daemon, so testcontainers-based tests fail with
           # "FileNotFoundError: /var/run/docker.sock". Colima provides a
-          # lightweight, license-free Docker daemon for these runners.
+          # lightweight, license-free Docker daemon. Apple's `vz` driver
+          # needs nested virtualization (unavailable on hosted runners),
+          # so use QEMU instead.
           if: startsWith(matrix.platform.runner, 'macos')
           run: |
             brew install colima docker
-            colima start --cpu 2 --memory 4
+            colima start --cpu 2 --memory 4 --vm-type=qemu
             docker info
 
         - name: Sync Python dependencies
