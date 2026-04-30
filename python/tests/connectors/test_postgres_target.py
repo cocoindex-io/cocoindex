@@ -51,6 +51,7 @@ pytestmark = [
     pytest.mark.skipif(
         not TESTCONTAINERS_AVAILABLE, reason="testcontainers not installed"
     ),
+    pytest.mark.requires_docker,
     pytest.mark.timeout(120),
 ]
 
