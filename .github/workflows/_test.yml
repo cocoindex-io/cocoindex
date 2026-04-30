@@ -86,7 +86,7 @@ jobs:
           # so use QEMU instead.
           if: startsWith(matrix.platform.runner, 'macos')
           run: |
-            brew install colima docker
+            brew install colima docker qemu
             colima start --cpu 2 --memory 4 --vm-type=qemu
             docker info
 
