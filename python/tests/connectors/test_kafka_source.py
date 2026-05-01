@@ -154,11 +154,14 @@ _mock_module.TopicPartition = MockTopicPartition
 sys.modules.setdefault("confluent_kafka", _mock_module)
 sys.modules.setdefault("confluent_kafka.aio", _mock_aio)
 
+from cocoindex._internal.live_component import _IMMEDIATE_READY  # noqa: E402
 from cocoindex.connectors.kafka._source import (  # noqa: E402
+    TopicStream,
     _OffsetTracker,
     _PartitionState,
     _TopicMapFeed,
     topic_as_map,
+    topic_as_stream,
 )
 
 
@@ -278,7 +281,7 @@ class TestPartitionStateOffsetTracking:
 
         h0 = MockComponentMountHandle()
         state.track(0, h0)
-        state.skip(1)  # null key at offset 1
+        state.track(1, _IMMEDIATE_READY)  # null-key fast path
 
         # Complete offset 0 — should drain 0 and 1
         h0.set_ready()
@@ -356,7 +359,7 @@ class TestWatchBehavior:
             MockMessage(key=b"k3", value=b"v3", offset=2),
         )
 
-        feed = _TopicMapFeed(consumer, ["test-topic"], None)  # type: ignore[arg-type]
+        feed = _TopicMapFeed(TopicStream(consumer, ["test-topic"]), None)  # type: ignore[arg-type]
         sub = MockSubscriber()
 
         # Trigger assign manually since subscribe is called inside watch
@@ -387,7 +390,7 @@ class TestWatchBehavior:
             MockMessage(key=b"k1", value=None, offset=1),
         )
 
-        feed = _TopicMapFeed(consumer, ["test-topic"], None)  # type: ignore[arg-type]
+        feed = _TopicMapFeed(TopicStream(consumer, ["test-topic"]), None)  # type: ignore[arg-type]
         sub = MockSubscriber()
 
         original_subscribe = consumer.subscribe
@@ -414,8 +417,7 @@ class TestWatchBehavior:
         )
 
         feed = _TopicMapFeed(
-            consumer,  # type: ignore[arg-type]
-            ["test-topic"],
+            TopicStream(consumer, ["test-topic"]),  # type: ignore[arg-type]
             is_deletion=lambda msg: msg.value() == b"DELETED",
         )
         sub = MockSubscriber()
@@ -443,7 +445,7 @@ class TestWatchBehavior:
             MockMessage(key=b"k2", value=b"v2", offset=1),
         )
 
-        feed = _TopicMapFeed(consumer, ["test-topic"], None)  # type: ignore[arg-type]
+        feed = _TopicMapFeed(TopicStream(consumer, ["test-topic"]), None)  # type: ignore[arg-type]
         sub = MockSubscriber()
 
         original_subscribe = consumer.subscribe
@@ -491,7 +493,7 @@ class TestWatchBehavior:
             ),
         )
 
-        feed = _TopicMapFeed(consumer, ["test-topic"], None)  # type: ignore[arg-type]
+        feed = _TopicMapFeed(TopicStream(consumer, ["test-topic"]), None)  # type: ignore[arg-type]
         sub = TrackingSubscriber()
 
         original_subscribe = consumer.subscribe
@@ -519,7 +521,7 @@ class TestWatchBehavior:
         consumer = MockAIOConsumer()
         consumer.set_watermarks("test-topic", 0, 0, 0)
 
-        feed = _TopicMapFeed(consumer, ["test-topic"], None)  # type: ignore[arg-type]
+        feed = _TopicMapFeed(TopicStream(consumer, ["test-topic"]), None)  # type: ignore[arg-type]
         sub = MockSubscriber()
 
         # We need to test rebalance during consumption.
@@ -562,9 +564,8 @@ class TestWatchBehavior:
 
         # is_deletion always returns False, but None value should still be deletion
         feed = _TopicMapFeed(
-            consumer,  # type: ignore[arg-type]
-            ["test-topic"],
-            is_deletion=lambda msg: False,
+            TopicStream(consumer, ["test-topic"]),  # type: ignore[arg-type]
+            is_deletion=lambda msg: False,  # noqa: ARG005
         )
         sub = MockSubscriber()
 
@@ -580,3 +581,120 @@ class TestWatchBehavior:
 
         assert sub.deletes == [b"k1"]
         assert len(sub.updates) == 0
+
+
+# ============================================================================
+# Fast path: _IMMEDIATE_READY in track()
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_track_immediate_ready_fast_path() -> None:
+    """track(offset, _IMMEDIATE_READY) advances commit synchronously, no task spawn."""
+    consumer = MockAIOConsumer()
+    state = _PartitionState(
+        consumer,  # type: ignore[arg-type]
+        "t",
+        0,
+        high_watermark=0,
+        committed_offset=0,
+        on_commit=lambda: None,
+    )
+
+    state.track(0, _IMMEDIATE_READY)
+    state.track(1, _IMMEDIATE_READY)
+    state.track(2, _IMMEDIATE_READY)
+
+    # No task spawn — verify immediately, before any sleep.
+    assert len(state._tasks) == 0
+    # Drain happens synchronously, but commit is dispatched via ensure_future.
+    await asyncio.sleep(0.05)
+
+    committed_offsets = [tp.offset for tp in consumer._committed]
+    assert committed_offsets[-1] == 3
+
+
+# ============================================================================
+# topic_as_stream + payloads()
+# ============================================================================
+
+
+class _StreamSubscriber:
+    """Mock LiveStreamSubscriber recording received messages."""
+
+    def __init__(self) -> None:
+        self.messages: list[Any] = []
+        self.ready_called = False
+
+    async def send(self, message: Any) -> Any:
+        self.messages.append(message)
+        return _IMMEDIATE_READY
+
+    async def mark_ready(self) -> None:
+        self.ready_called = True
+
+
+async def _watch_stream_until_done(stream: Any, sub: _StreamSubscriber) -> None:
+    try:
+        await stream.watch(sub)
+    except asyncio.CancelledError:
+        pass
+
+
+@pytest.mark.asyncio
+async def test_topic_as_stream_basic_consumption() -> None:
+    """topic_as_stream forwards every valid message to subscriber.send()."""
+    consumer = MockAIOConsumer()
+    consumer.set_watermarks("test-topic", 0, 0, 3)
+    msgs = [
+        MockMessage(key=b"k1", value=b"v1", offset=0),
+        MockMessage(key=b"k2", value=b"v2", offset=1),
+        MockMessage(key=b"k3", value=b"v3", offset=2),
+    ]
+    consumer.enqueue(*msgs)
+
+    original_subscribe = consumer.subscribe
+
+    async def patched_subscribe(topics: list[str], **kw: Any) -> None:
+        await original_subscribe(topics, **kw)
+        await consumer.trigger_assign([MockTopicPartition("test-topic", 0)])
+
+    consumer.subscribe = patched_subscribe  # type: ignore[assignment]
+
+    stream = topic_as_stream(consumer, ["test-topic"])  # type: ignore[arg-type]
+    sub = _StreamSubscriber()
+    await _watch_stream_until_done(stream, sub)
+
+    assert [m.value() for m in sub.messages] == [b"v1", b"v2", b"v3"]
+    assert sub.ready_called
+
+
+@pytest.mark.asyncio
+async def test_topic_stream_payloads_filters_null_values() -> None:
+    """payloads() unwraps Message.value() and filters None values."""
+    consumer = MockAIOConsumer()
+    consumer.set_watermarks("test-topic", 0, 0, 3)
+    consumer.enqueue(
+        MockMessage(key=b"k1", value=b"a", offset=0),
+        MockMessage(key=b"k2", value=None, offset=1),
+        MockMessage(key=b"k3", value=b"c", offset=2),
+    )
+
+    original_subscribe = consumer.subscribe
+
+    async def patched_subscribe(topics: list[str], **kw: Any) -> None:
+        await original_subscribe(topics, **kw)
+        await consumer.trigger_assign([MockTopicPartition("test-topic", 0)])
+
+    consumer.subscribe = patched_subscribe  # type: ignore[assignment]
+
+    payloads_stream = topic_as_stream(consumer, ["test-topic"]).payloads()  # type: ignore[arg-type]
+    sub = _StreamSubscriber()
+    await _watch_stream_until_done(payloads_stream, sub)
+
+    # Only non-null values reach the bytes subscriber.
+    assert sub.messages == [b"a", b"c"]
+    # All offsets advance — the null-value message acks via _IMMEDIATE_READY.
+    await asyncio.sleep(0.05)
+    final_committed = max((tp.offset for tp in consumer._committed), default=-1)
+    assert final_committed == 3

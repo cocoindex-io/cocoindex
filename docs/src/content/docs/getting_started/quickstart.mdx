@@ -29,7 +29,7 @@ When your source data is updated, or your processing logic is changed (for examp
 
 ## Setup
 
-1. Install CocoIndex (see [Installation](./installation.md) for other package managers) and the Docling dependency:
+1. Install CocoIndex (see [Installation](./installation) for other package managers) and the Docling dependency:
 
     ```bash
     pip install -U --pre cocoindex docling
@@ -87,9 +87,9 @@ def process_file(
     localfs.declare_file(outdir / outname, markdown, create_parent_dirs=True)
 ```
 
-- **`localfs.File`** — A file object returned by `localfs.walk_dir()`, implementing the [`FileLike`](../common_resources/data_types.md#filelike) base class. See the [localfs connector](../connectors/localfs.md) for full details.
+- **`localfs.File`** — A file object returned by `localfs.walk_dir()`, implementing the [`FileLike`](../common_resources/data_types#filelike) base class. See the [localfs connector](../connectors/localfs) for full details.
 - **`memo=True`** — Caches results; unchanged files are skipped on re-runs
-- **`localfs.declare_file()`** — Declares a file [target state](../programming_guide/target_state.md); auto-deleted if source is removed. See [localfs as target](../connectors/localfs.md#as-target) for the full API.
+- **`localfs.declare_file()`** — Declares a file [target state](../programming_guide/target_state); auto-deleted if source is removed. See [localfs as target](../connectors/localfs#as-target) for the full API.
 
 
 
@@ -186,6 +186,6 @@ The corresponding Markdown file is automatically removed.
 
 ## Next steps
 
-- Read [Core Concepts](../programming_guide/core_concepts.mdx) to understand the mental model — state-driven programming, processing components, and memoization
-- Dive into the [Programming Guide](../programming_guide/app.md), starting with Apps, to learn how to build more complex pipelines
+- Read [Core Concepts](../programming_guide/core_concepts) to understand the mental model — state-driven programming, processing components, and memoization
+- Dive into the [Programming Guide](../programming_guide/app), starting with Apps, to learn how to build more complex pipelines
 - Browse more [examples](https://github.com/cocoindex-io/cocoindex/tree/v1/examples) for real-world patterns (text embedding, RAG, knowledge graphs)

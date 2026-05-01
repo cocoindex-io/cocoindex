@@ -1,0 +1,12 @@
+[project]
+name = "audio-to-text-v1"
+version = "0.1.0"
+description = "CocoIndex v1 example: transcribe audio files to text using LiteLLM."
+requires-python = ">=3.11"
+dependencies = [
+    "cocoindex[litellm,postgres]>=1.0.2",
+    "asyncpg>=0.29.0",
+]
+
+[tool.setuptools]
+packages = []

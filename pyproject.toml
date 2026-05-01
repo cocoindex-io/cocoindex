@@ -69,7 +69,7 @@ profile = "release"      # wheel / normal builds
 editable-profile = "dev" # local editable builds
 
 [project.optional-dependencies]
-litellm = ["litellm>=1.81.0,<=1.82.6"]
+litellm = ["litellm>=1.81.0"]
 sentence_transformers = ["sentence-transformers>=3.3.1"]
 colpali = ["colpali-engine"]
 lancedb = ["lancedb>=0.25.0", "pyarrow>=19.0.0"]
@@ -77,19 +77,26 @@ postgres = ["asyncpg>=0.31.0"]
 qdrant = ["qdrant-client>=1.6.0"]
 sqlite = ["sqlite-vec>=0.1.6"]
 surrealdb = ["surrealdb>=1.0.0"]
-google_drive = ["google-api-python-client>=2.0.0", "google-auth>=2.0.0"]
+google_drive = [
+    "google-api-python-client>=2.0.0",
+    "google-auth>=2.0.0",
+    "google-auth-httplib2>=0.2.0",
+    "httplib2>=0.22.0",
+]
 amazon_s3 = ["aiobotocore>=2.0.0"]
 doris = ["aiohttp>=3.9.0", "pymysql>=1.1.0", "aiomysql>=0.2.0"]
+falkordb = ["falkordb>=1.1.0"]
 kafka = ["confluent_kafka>=2.6"]
+oci = ["oci>=2.0"]
 entity_resolution = ["faiss-cpu>=1.7"]
 entity_resolution_llm = [
     "faiss-cpu>=1.7",
     "instructor>=1.0",
-    "litellm>=1.81.0,<=1.82.6",
+    "litellm>=1.81.0",
 ]
 
 all = [
-    "litellm>=1.81.0,<=1.82.6",
+    "litellm>=1.81.0",
     "sentence-transformers>=3.3.1",
     "colpali-engine",
     "lancedb>=0.25.0",
@@ -101,11 +108,15 @@ all = [
     "surrealdb>=1.0.0",
     "google-api-python-client>=2.0.0",
     "google-auth>=2.0.0",
+    "google-auth-httplib2>=0.2.0",
+    "httplib2>=0.22.0",
     "aiobotocore>=2.0.0",
     "aiohttp>=3.9.0",
     "pymysql>=1.1.0",
     "aiomysql>=0.2.0",
+    "falkordb>=1.1.0",
     "confluent_kafka>=2.6",
+    "oci>=2.0",
     "faiss-cpu>=1.7",
     "instructor>=1.0",
 ]
@@ -120,7 +131,7 @@ build-test = [
     "mypy",
     "moto[s3]>=5.0.0",
     "aiomoto[s3]>=0.3.0",
-    "testcontainers[postgres]>=4.0.0; sys_platform == 'linux'",
+    "testcontainers[postgres]>=4.0.0; sys_platform != 'win32'",
 ]
 format = ["ruff"]
 type-stubs = ["types-psutil", "asyncpg-stubs"]
@@ -198,10 +209,22 @@ module = [
     "aiomysql.*",
     "pymysql",
     "pymysql.*",
+    "falkordb",
+    "falkordb.*",
     "faiss",
     "faiss.*",
     "instructor",
     "instructor.*",
+    "oci",
+    "oci.*",
+    "confluent_kafka",
+    "confluent_kafka.*",
+    "openai",
+    "openai.*",
+    "transformers",
+    "transformers.*",
+    "testcontainers",
+    "testcontainers.*",
 ]
 ignore_missing_imports = true
 

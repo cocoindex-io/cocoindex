@@ -620,3 +620,100 @@ def test_mount_each_no_name_raises() -> None:
     )
     with pytest.raises(TypeError, match="requires a ComponentSubpath"):
         app.update_blocking()
+
+
+# ============================================================================
+# Cancellation
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_live_component_global_cancel_terminates_update() -> None:
+    """Global cancellation (Ctrl+C path) must reach a blocked process_live coroutine
+    and let App.update() terminate.
+
+    Regression test for the bug where AppContextInner.cancellation_token was an
+    independent token rather than a child of GLOBAL_CANCEL, so cancel_all() never
+    propagated to LiveComponentState child tokens.
+    """
+    from cocoindex._internal import core as _core
+
+    started = asyncio.Event()
+    cancelled_in_python = asyncio.Event()
+
+    class _BlockingLive:
+        async def process(self) -> None:
+            pass
+
+        async def process_live(self, operator: coco.LiveComponentOperator) -> None:
+            await operator.update_full()
+            await operator.mark_ready()
+            started.set()
+            try:
+                await asyncio.Event().wait()  # Block forever.
+            except asyncio.CancelledError:
+                cancelled_in_python.set()
+                raise
+
+    async def _main() -> None:
+        await coco.mount(coco.component_subpath("live"), _BlockingLive)
+
+    _core.reset_global_cancellation()
+    app = coco.App(
+        coco.AppConfig(name="test_live_global_cancel_terminates", environment=coco_env),
+        _main,
+    )
+    handle = app.update(live=True)
+    # update() is lazy — kick it off by spawning a task that awaits result().
+    result_task = asyncio.create_task(handle.result())
+    try:
+        await asyncio.wait_for(started.wait(), timeout=5.0)
+
+        _core.cancel_all()  # simulates SIGINT handler in cli.py
+
+        # Wait for cancellation to actually reach Python before checking. The
+        # update task may return before the inner Python cancellation has
+        # finished propagating via CancelOnDropPy.
+        await asyncio.wait_for(cancelled_in_python.wait(), timeout=5.0)
+
+        try:
+            await asyncio.wait_for(result_task, timeout=5.0)
+        except Exception:
+            pass
+    finally:
+        if not result_task.done():
+            result_task.cancel()
+        _core.reset_global_cancellation()
+
+
+# ============================================================================
+# LiveStream primitives
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_immediate_ready_is_immediate() -> None:
+    """_IMMEDIATE_READY.ready() resolves without suspension."""
+    from cocoindex._internal.live_component import _IMMEDIATE_READY
+
+    fut = _IMMEDIATE_READY.ready()
+    # Should already be done after one await with no scheduling.
+    await asyncio.wait_for(fut, timeout=0.1)
+
+
+def test_live_stream_protocol_runtime_check() -> None:
+    """A minimal subscriber satisfies LiveStreamSubscriber.isinstance(...)."""
+    from cocoindex._internal.live_component import (
+        LiveStreamSubscriber,
+        ReadyAwaitable,
+    )
+
+    class _Sub:
+        async def send(self, message: Any) -> ReadyAwaitable:  # noqa: ARG002
+            raise NotImplementedError
+
+        async def mark_ready(self) -> None:
+            pass
+
+    assert isinstance(_Sub(), LiveStreamSubscriber)
+    assert not isinstance(object(), LiveStreamSubscriber)

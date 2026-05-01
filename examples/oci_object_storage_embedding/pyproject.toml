@@ -1,0 +1,14 @@
+[project]
+name = "oci-object-storage-embedding-v1"
+version = "0.1.0"
+description = "CocoIndex v1 example: embed OCI Object Storage text files into Postgres/pgvector, with optional live updates via OCI Streaming."
+requires-python = ">=3.11"
+dependencies = [
+    "cocoindex[oci,kafka,postgres,sentence_transformers]>=1.0.2",
+    "asyncpg>=0.29.0",
+    "pgvector>=0.4.1",
+    "numpy",
+]
+
+[tool.setuptools]
+packages = []

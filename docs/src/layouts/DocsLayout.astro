@@ -4,6 +4,7 @@ import type { MarkdownHeading } from 'astro';
 import Topbar from '../components/Topbar.astro';
 import Sidebar from '../components/Sidebar.astro';
 import Toc from '../components/Toc.astro';
+import MobileSheet from '../components/MobileSheet.astro';
 import { SITE_URL, titleMarkup, DOCS_EDIT_BASE } from '../consts';
 import { flatten, sidebar, type SidebarItem } from '../data/docs-sidebar';
 import docsMeta from '../data/docs-meta.json';
@@ -62,7 +63,7 @@ const introItems = [
   { k: 'Version',       v: version,             reviewed: false },
   { k: 'Last reviewed', v: lastReviewed,        reviewed: true  },
 ].filter((m) => m.v);
-const canonical = new URL(`${base}/${slug}`, SITE_URL).toString();
+const canonical = new URL(`${base}/${slug}/`, SITE_URL).toString();
 
 // Breadcrumb: walk the sidebar tree for the current slug so category
 // labels light up correctly even for nested pages.
@@ -72,7 +73,7 @@ function findPath(items: SidebarItem[], acc: Array<{ label: string; href?: strin
       return [...acc, { label: item.label ?? slug }];
     }
     if (item.type === 'category') {
-      const next = [...acc, { label: item.label, href: item.slug ? `${base}/${item.slug}` : undefined }];
+      const next = [...acc, { label: item.label, href: item.slug ? `${base}/${item.slug}/` : undefined }];
       if (item.slug === slug) return next;
       const down = findPath(item.items, next);
       if (down) return down;
@@ -113,7 +114,8 @@ const next = i >= 0 && i < flat.length - 1 ? flat[i + 1] : null;
     />
   </head>
   <body>
-    <Topbar />
+    <Topbar mobileSheetId="mobileSheet" />
+    <MobileSheet currentSlug={slug} headings={headings} />
 
     <div class="layout">
       <Sidebar currentSlug={slug} />
@@ -164,13 +166,13 @@ const next = i >= 0 && i < flat.length - 1 ? flat[i + 1] : null;
         {(prev || next) && (
           <div class="pager">
             {prev ? (
-              <a href={`${base}/${prev.slug}`}>
+              <a href={`${base}/${prev.slug}/`}>
                 <span class="dir">Previous</span>
                 <span class="ttl">{prev.label ?? prev.slug}</span>
               </a>
             ) : <span />}
             {next ? (
-              <a class="next" href={`${base}/${next.slug}`}>
+              <a class="next" href={`${base}/${next.slug}/`}>
                 <span class="dir">Next</span>
                 <span class="ttl">{next.label ?? next.slug}</span>
               </a>

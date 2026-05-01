@@ -7,7 +7,7 @@ description: >
 ---
 ## Overview
 
-CocoIndex serializes and caches the return values of [memoized functions](./function.md#memoization) so that unchanged work can be skipped on subsequent runs. Most Python types work automatically — the key thing to get right is the **return type annotation**, which tells CocoIndex how to reconstruct your objects:
+CocoIndex serializes and caches the return values of [memoized functions](./function#memoization) so that unchanged work can be skipped on subsequent runs. Most Python types work automatically — the key thing to get right is the **return type annotation**, which tells CocoIndex how to reconstruct your objects:
 
 ```python
 @coco.fn(memo=True)
@@ -18,10 +18,10 @@ async def process_chunk(chunk: Chunk) -> Embedding:  # return type annotation
 Without annotations, values may deserialize as basic Python types (`dict`, `list`, `str`, etc.) instead of their original types.
 
 :::info[Advanced: other places where serialization and type annotations matter]
-Serialization also applies to [memo states](../advanced_topics/memoization_keys.md#memo-state-validation) and [tracking records](../advanced_topics/custom_target_connector.md#targethandler-you-implement). If you're implementing these, add type annotations to:
+Serialization also applies to [memo states](../advanced_topics/memoization_keys#memo-state-validation) and [tracking records](../advanced_topics/custom_target_connector#targethandler-you-implement). If you're implementing these, add type annotations to:
 
-- **`__coco_memo_state__` `prev_state` parameter** — annotate with the state type you return in `MemoStateOutcome(state=...)`. See [Memo state validation](../advanced_topics/memoization_keys.md#memo-state-validation).
-- **`reconcile()` `prev_possible_records` parameter** — annotate with `Collection[YourTrackingRecord]`. See [Custom Target Connector](../advanced_topics/custom_target_connector.md#targethandler-you-implement).
+- **`__coco_memo_state__` `prev_state` parameter** — annotate with the state type you return in `MemoStateOutcome(state=...)`. See [Memo state validation](../advanced_topics/memoization_keys#memo-state-validation).
+- **`reconcile()` `prev_possible_records` parameter** — annotate with `Collection[YourTrackingRecord]`. See [Custom Target Connector](../advanced_topics/custom_target_connector#targethandler-you-implement).
 :::
 
 ## Supported types
@@ -115,7 +115,7 @@ This typically means an unsupported union type. The error message includes a hin
 The type annotation doesn't match the serialized data. Common causes:
 
 - **Missing return type annotation** on a memoized function — add `-> YourType` to the function signature.
-- **Changed type structure** between runs — if you renamed or restructured a dataclass, the cached data won't match. Rebuild the cache by running [`app.update(full_reprocess=True)`](./app.md#updating-an-app) or [`cocoindex update --full-reprocess`](../cli).
+- **Changed type structure** between runs — if you renamed or restructured a dataclass, the cached data won't match. Rebuild the cache by running [`app.update(full_reprocess=True)`](./app#updating-an-app) or [`cocoindex update --full-reprocess`](../cli).
 - **Forward reference not resolved** — if your type annotation uses a string forward reference, ensure the type is defined before the function is first called.
 
 ### `UnpicklingError: Forbidden global during unpickling`

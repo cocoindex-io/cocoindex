@@ -20,6 +20,14 @@ uv run mypy              # Type check Python code
 uv run pytest python/    # Run Python tests (use after both Rust and Python changes)
 ```
 
+### Code Formatting and Linting
+
+```bash
+uv run ruff format .           # Format Python code
+uv run ruff format --check .   # Check formatting without making changes (same as CI)
+uv run ruff check .            # Lint Python code
+```
+
 ### Workflow Summary
 
 | Change Type | Commands to Run |
@@ -27,6 +35,7 @@ uv run pytest python/    # Run Python tests (use after both Rust and Python chan
 | Rust code only | `uv run maturin develop && cargo test` |
 | Python code only | `uv run mypy && uv run pytest python/` |
 | Both Rust and Python | Run all commands from both categories above |
+| Python formatting | `uv run ruff format .` |
 
 ## Code Structure
 
@@ -196,6 +205,10 @@ We distinguish between **internal modules** (under packages with `_` prefix, e.g
 * Less strict since users shouldn't import these directly
 * Standard library and internal imports don't need underscore prefix
 * Only prefix symbols that are truly private to the module itself (e.g. `_context_var` for a module-private ContextVar)
+
+### Minimize API surface until deemed necessary
+
+When adding a new public API (function, class, kwarg, configuration option), prefer the smallest surface that solves the concrete need in front of you. Do not pre-expose tunables, hooks, or alternatives "in case someone needs them." Adding a kwarg later is straightforward and backwards-compatible; removing or renaming one is disruptive. If a knob is currently a hardcoded constant inside the implementation, leave it there until a real use case demands it — at which point promoting it to a kwarg is mechanical. This applies equally to optional parameters, callback hooks, parser/transformer plug-points, and configuration keys.
 
 ### Type Annotations
 

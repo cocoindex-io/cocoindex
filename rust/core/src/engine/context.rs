@@ -26,7 +26,11 @@ struct AppContextInner<Prof: EngineProfile> {
     app_reg: AppRegistration<Prof>,
     id_sequencer_manager: IdSequencerManager,
     inflight_semaphore: Option<Arc<tokio::sync::Semaphore>>,
-    cancellation_token: tokio_util::sync::CancellationToken,
+    /// Cancellation token for in-flight app operations. Wrapped in a `Mutex` so
+    /// it can be replaced with a fresh child of the global token after a
+    /// previous cancellation (e.g. after `App::drop_app` finishes), allowing
+    /// the same `App` instance to be reused for subsequent operations.
+    cancellation_token: std::sync::Mutex<tokio_util::sync::CancellationToken>,
 }
 
 #[derive(Clone)]
@@ -50,7 +54,9 @@ impl<Prof: EngineProfile> AppContext<Prof> {
                 app_reg,
                 id_sequencer_manager: IdSequencerManager::new(),
                 inflight_semaphore,
-                cancellation_token: tokio_util::sync::CancellationToken::new(),
+                cancellation_token: std::sync::Mutex::new(
+                    crate::engine::runtime::global_cancellation_token().child_token(),
+                ),
             }),
         }
     }
@@ -71,8 +77,23 @@ impl<Prof: EngineProfile> AppContext<Prof> {
         self.inner.inflight_semaphore.as_ref()
     }
 
-    pub fn cancellation_token(&self) -> &tokio_util::sync::CancellationToken {
-        &self.inner.cancellation_token
+    /// Returns a clone of the current app-level cancellation token.
+    ///
+    /// The clone stays valid even if the slot is later refreshed via
+    /// `reset_cancellation_token_if_cancelled`.
+    pub fn cancellation_token(&self) -> tokio_util::sync::CancellationToken {
+        self.inner.cancellation_token.lock().unwrap().clone()
+    }
+
+    /// Replace the app-level cancellation token with a fresh child of the global
+    /// token if the current one has been cancelled. Call this before starting a
+    /// new app operation so a prior cancellation (e.g. via `drop_app`) does not
+    /// poison subsequent runs.
+    pub fn reset_cancellation_token_if_cancelled(&self) {
+        let mut slot = self.inner.cancellation_token.lock().unwrap();
+        if slot.is_cancelled() {
+            *slot = crate::engine::runtime::global_cancellation_token().child_token();
+        }
     }
 
     /// Get the next ID for the given key.

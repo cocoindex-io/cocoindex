@@ -3,13 +3,15 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from typing import (
     Any,
+    Final,
     Generic,
     ParamSpec,
     TypeVar,
+    final,
     runtime_checkable,
     Protocol,
     TYPE_CHECKING,
-)
+)  # noqa: F401
 
 from . import core
 from .component_ctx import ComponentSubpath
@@ -22,6 +24,69 @@ if TYPE_CHECKING:
 _P = ParamSpec("_P")
 _K = TypeVar("_K")
 _V = TypeVar("_V")
+_M_co = TypeVar("_M_co", covariant=True)
+_M_contra = TypeVar("_M_contra", contravariant=True)
+
+
+@runtime_checkable
+class ReadyAwaitable(Protocol):
+    """A handle whose ``ready()`` awaits completion of the underlying work."""
+
+    async def ready(self) -> None: ...
+
+
+@final
+class _ImmediateReady:
+    """Pre-resolved ``ReadyAwaitable``: ``ready()`` returns immediately.
+
+    Singleton used as ``_IMMEDIATE_READY``; subscribers return it to mean
+    "ack this message now; no further work needed." The ``LiveStream``
+    implementation may identity-check (``handle is _IMMEDIATE_READY``) to
+    skip per-message task allocation.
+    """
+
+    __slots__ = ()
+
+    async def ready(self) -> None:
+        return
+
+
+_IMMEDIATE_READY: Final[_ImmediateReady] = _ImmediateReady()
+
+
+@runtime_checkable
+class LiveStream(Protocol[_M_co]):
+    """A keyless stream of messages with in-memory processing watermark tracking.
+
+    The implementation buffers inflight messages, acks the underlying source
+    once earlier messages have been processed, and signals readiness when it
+    has caught up to its initial watermark.
+    """
+
+    async def watch(self, subscriber: LiveStreamSubscriber[_M_co]) -> None: ...
+
+
+@runtime_checkable
+class LiveStreamSubscriber(Protocol[_M_contra]):
+    """Callback interface for ``LiveStream.watch()``."""
+
+    async def send(self, message: _M_contra) -> ReadyAwaitable:
+        """Process a message; return a handle whose ``ready()`` awaits completion.
+
+        Return :data:`_IMMEDIATE_READY` to mean "no work needed; ack now."
+        """
+        ...
+
+    async def mark_ready(self) -> None:
+        """Signal that the stream has caught up to its initial watermark.
+
+        Contract: implementations MUST return promptly. The stream awaits
+        ``mark_ready()`` inline in its poll loop, so a long-running
+        implementation stalls polling. Subscribers that need to wait on
+        further preconditions (e.g. a pending scan) should spawn a
+        background task and return.
+        """
+        ...
 
 
 @runtime_checkable

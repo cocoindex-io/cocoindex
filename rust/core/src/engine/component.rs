@@ -482,9 +482,16 @@ impl<Prof: EngineProfile> Component<Prof> {
             .parent_context()
             .map(|c| c.components_readiness().clone().add_child());
         let span = info_span!("component.run", component_path = %relative_path);
+        let cancel_token = self.app_ctx().cancellation_token();
         let join_handle = get_runtime().spawn(
             async move {
-                let result = self.execute_once(&context, Some(&processor)).await;
+                // Race the work against app-level cancellation. On cancel, the
+                // work future is dropped, which cascades drop into from_py_future
+                // → CancelOnDropPy and cancels the underlying Python task.
+                let result = tokio::select! {
+                    r = self.execute_once(&context, Some(&processor)) => r,
+                    _ = cancel_token.cancelled() => Err(internal_error!("operation cancelled")),
+                };
                 let (outcome, output) = match result {
                     Ok((outcome, output)) => (outcome, Ok(output)),
                     Err(err) => (ComponentRunOutcome::exception(), Err(err)),
@@ -536,6 +543,7 @@ impl<Prof: EngineProfile> Component<Prof> {
         let child_readiness_guard = context
             .parent_context()
             .map(|c| c.components_readiness().clone().add_child());
+        let cancel_token = self.app_ctx().cancellation_token();
         let join_handle = get_runtime().spawn(async move {
             // Check if this task has been superseded before executing.
             if let Some(check) = pre_execute_check {
@@ -551,16 +559,22 @@ impl<Prof: EngineProfile> Component<Prof> {
                     return Ok(());
                 }
             }
-            let result = self.execute_once(&context, Some(&processor)).await;
+            // Race the work against app-level cancellation. On cancel, the
+            // work future is dropped, which cascades drop into from_py_future
+            // → CancelOnDropPy and cancels the underlying Python task.
+            let result = tokio::select! {
+                r = self.execute_once(&context, Some(&processor)) => r,
+                _ = cancel_token.cancelled() => Err(internal_error!("operation cancelled")),
+            };
             // For background child component, never propagate the error back to the parent.
             // If an error handler is registered, run it; otherwise log.
-            // During cancellation (e.g. Ctrl+C), suppress error reporting since
-            // failures are expected as coroutines are torn down.
+            // During cancellation, suppress error reporting since failures are
+            // expected as coroutines are torn down.
             let outcome = match result {
                 Ok((outcome, _)) => outcome,
                 Err(err) => {
-                    if crate::engine::runtime::is_cancelled() {
-                        trace!("component build cancelled during shutdown");
+                    if cancel_token.is_cancelled() || err.is_cancelled() {
+                        trace!("component build cancelled");
                     } else if let Some(handler) = &on_error {
                         handler(err).await;
                     } else {

@@ -1,0 +1,67 @@
+---
+title: Use CocoIndex with *AI coding agents*
+description: >
+  Make Claude Code, Cursor, and other AI coding agents write correct CocoIndex v1
+  code by installing the official CocoIndex skill — concepts, APIs, and patterns
+  packaged for agent context.
+---
+CocoIndex ships an official **agent skill** that teaches AI coding agents how to build CocoIndex v1 pipelines correctly — core concepts, API surface, common patterns, connectors, and best practices, all in one place.
+
+The skill lives in the [`skills/cocoindex/`](https://github.com/cocoindex-io/cocoindex/tree/v1/skills/cocoindex) directory of the main repo.
+
+## Why a skill?
+
+CocoIndex v1 is a fundamental redesign from v0. Without context, an LLM trained on older snapshots tends to hallucinate the wrong API (the v0 flow-builder DSL, deprecated decorators, missing `@coco.fn`, unstable component paths). The skill gives the agent a single concise reference covering:
+
+- **Mental model** — `target_state = transform(source_state)`, declarative pipelines, processing components.
+- **Core APIs** — `@coco.fn`, `mount` / `use_mount` / `mount_each`, `ContextKey`, `@coco.lifespan`, target state declarations.
+- **Common patterns** — file transformation, vector embedding, LLM extraction, knowledge graphs.
+- **Connectors** — PostgreSQL, SQLite, LanceDB, Qdrant, SurrealDB, Apache Doris, LocalFS, S3, Kafka, Google Drive.
+- **Best practices** — memoization, stable component paths, vector schema with `Annotated[NDArray, KEY]`.
+
+## Use with Claude Code
+
+Claude Code auto-loads skills from `.claude/skills/` in the current project, or from `~/.claude/skills/` globally.
+
+Project-local install (recommended for repos that build with CocoIndex):
+
+```sh
+mkdir -p .claude/skills
+git clone --depth=1 https://github.com/cocoindex-io/cocoindex.git /tmp/cocoindex-skill
+cp -r /tmp/cocoindex-skill/skills/cocoindex .claude/skills/
+```
+
+Global install:
+
+```sh
+mkdir -p ~/.claude/skills
+git clone --depth=1 https://github.com/cocoindex-io/cocoindex.git /tmp/cocoindex-skill
+cp -r /tmp/cocoindex-skill/skills/cocoindex ~/.claude/skills/
+```
+
+Once installed, Claude Code picks up the skill automatically when you ask it to build or modify a CocoIndex pipeline.
+
+## Use with other agents
+
+The skill is plain Markdown — `SKILL.md` plus a few reference files. Any agent that accepts file-based context will work:
+
+- **Cursor** — copy `skills/cocoindex/SKILL.md` into `.cursor/rules/cocoindex.md`.
+- **Generic AGENTS.md / CLAUDE.md** — concatenate or `@import` `SKILL.md` from your top-level agent instructions file.
+- **Custom RAG / agent stack** — index the `skills/cocoindex/` directory like any other documentation source.
+
+## What's inside
+
+```
+skills/cocoindex/
+├── SKILL.md                       # main entry — concepts, APIs, patterns
+└── references/
+    ├── api_reference.md           # quick API reference
+    ├── connectors.md              # full connector reference
+    ├── patterns.md                # detailed pipeline patterns
+    ├── setup_project.md           # project setup
+    └── setup_database.md          # database setup
+```
+
+## Contributing
+
+The skill is versioned alongside the codebase — when the API changes, the skill changes with it. PRs that improve clarity, add examples, or cover new connectors are welcome. See the [contributing guide](../contributing/guide/) for how to get started.

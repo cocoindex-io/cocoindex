@@ -3,10 +3,7 @@ name = "csv-to-kafka"
 version = "0.1.0"
 description = "CocoIndex example: watch CSV files and publish rows as JSON to Kafka."
 requires-python = ">=3.11"
-dependencies = ["cocoindex[kafka]>=1.0.0a30"]
-
-[tool.uv]
-prerelease = "explicit"
+dependencies = ["cocoindex[kafka]>=1.0.2"]
 
 [tool.setuptools]
 packages = []

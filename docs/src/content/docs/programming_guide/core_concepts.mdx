@@ -145,7 +145,7 @@ In CocoIndex, both processing components and transforms are expressed as functio
 
 - *Transform level*: If the input to the "embed" transform (the chunk text) hasn't changed and the transform logic (e.g., the model) hasn't changed, that specific embedding computation is skipped.
 
-See [Function Memoization](./function.md#memoization) for more details.
+See [Function Memoization](./function#memoization) for more details.
 
 <ComponentWithChunks memoized={true} />
 
@@ -205,7 +205,7 @@ Here's how memoization behaves in different scenarios:
 
 Now that you understand the mental model, dive into the Programming Guide to learn how to use these concepts in code:
 
-- [App](./app.md) — creating and running pipelines
-- [Target State](./target_state.md) — declaring what should exist in external systems
-- [Processing Component](./processing_component.md) — structuring work and mounting components
-- [Function](./function.md) — the `@coco.fn` decorator, memoization, and change detection
+- [App](./app) — creating and running pipelines
+- [Target State](./target_state) — declaring what should exist in external systems
+- [Processing Component](./processing_component) — structuring work and mounting components
+- [Function](./function) — the `@coco.fn` decorator, memoization, and change detection

@@ -100,6 +100,12 @@ coco.App(coco.AppConfig(name="docs"), main, src="./docs").update_blocking()
 <p align="center">Run once to backfill. Re-run anytime — only the changed files re-embed.</p>
 
 <p align="center">
+  Building with an AI coding agent?<br/>
+  Drop in our <a href="skills/cocoindex/"><b>CocoIndex skill</b></a> so your agent writes correct v1 code — concepts, APIs, patterns, all in one file.<br/>
+  <sub>See <a href="https://cocoindex.io/docs/getting_started/ai_coding_agents/">Use with AI coding agents</a> for install steps.</sub>
+</p>
+
+<p align="center">
   <a href="https://cocoindex.io/docs/getting_started/quickstart" title="Full CocoIndex quickstart — install, declare sources and targets, run the incremental engine, set up vector search or knowledge graph in 5 minutes"><picture><source media="(prefers-color-scheme: dark)" srcset="https://cocoindex.io/blobs/github/homepage/quickstart-btn-dark.svg"><source media="(prefers-color-scheme: light)" srcset="https://cocoindex.io/blobs/github/homepage/quickstart-btn-light.svg"><img src="https://cocoindex.io/blobs/github/homepage/quickstart-btn-light.svg" alt="Full quickstart — open-book icon linking to the CocoIndex documentation quickstart: pip install, declare sources and targets, run the incremental engine" height="36" align="absmiddle"/></picture></a>
   &nbsp;&nbsp;
   <a href="https://cocoindex.io/docs/programming_guide/core_concepts" title="Learn the CocoIndex core concepts — sources, targets, flows, incremental engine, lineage"><picture><source media="(prefers-color-scheme: dark)" srcset="https://cocoindex.io/blobs/github/homepage/learn-concept-btn-dark.svg"><source media="(prefers-color-scheme: light)" srcset="https://cocoindex.io/blobs/github/homepage/learn-concept-btn-light.svg"><img src="https://cocoindex.io/blobs/github/homepage/learn-concept-btn-light.svg" alt="Learn the concept — lightbulb icon linking to the CocoIndex core-concepts guide: sources, targets, flows, incremental engine, and data lineage" height="36" align="absmiddle"/></picture></a>

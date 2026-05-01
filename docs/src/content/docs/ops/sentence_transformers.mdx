@@ -54,7 +54,7 @@ table.declare_row(row=CodeEmbedding(code="Hello, world!", embedding=embedding))
 
 ### Using as a type annotation
 
-The `SentenceTransformerEmbedder` implements [`VectorSchemaProvider`](../common_resources/vector_schema.md#vectorschemaprovider), which means it can be used directly as metadata in `Annotated` type annotations. This is the recommended way to declare vector columns — CocoIndex connectors automatically extract the vector dimension and dtype from the annotation when creating tables.
+The `SentenceTransformerEmbedder` implements [`VectorSchemaProvider`](../common_resources/vector_schema#vectorschemaprovider), which means it can be used directly as metadata in `Annotated` type annotations. This is the recommended way to declare vector columns — CocoIndex connectors automatically extract the vector dimension and dtype from the annotation when creating tables.
 
 ```python
 from dataclasses import dataclass
@@ -90,7 +90,7 @@ target_table = await postgres.mount_table_target(
 )
 ```
 
-The connector automatically creates the appropriate `vector(384)` column. See the [Connectors](../connectors/postgres.md) docs for other supported backends (LanceDB, Qdrant, SQLite).
+The connector automatically creates the appropriate `vector(384)` column. See the [Connectors](../connectors/postgres) docs for other supported backends (LanceDB, Qdrant, SQLite).
 
 ## Example: text embedding pipeline
 
