@@ -47,7 +47,7 @@ from .serde import (
     qualified_name,
     unwrap_element_type,
 )
-from .typing import NOT_SET, NON_EXISTENCE, NotSetType
+from .typing import NOT_SET, NON_EXISTENCE, NotSetType, is_not_set
 
 P = ParamSpec("P")
 R = TypeVar("R")
@@ -66,15 +66,12 @@ AnyCallable: TypeAlias = AsyncCallable[P, R_co] | Callable[P, R_co]
 LogicTracking: TypeAlias = Literal["full", "self"] | None
 MemoKeyTransform: TypeAlias = Callable[[Any], Any]
 MemoKeySpec: TypeAlias = Mapping[str, MemoKeyTransform | None] | None
-CompiledMemoKeyPositionalSpec: TypeAlias = tuple[
-    MemoKeyTransform | None | NotSetType, ...
-]
 
 
 class PreparedMemoKeySpec(NamedTuple):
     """Precompiled memo-key plan for fast runtime application."""
 
-    positional_specs: CompiledMemoKeyPositionalSpec
+    positional_specs: tuple[MemoKeyTransform | None | NotSetType, ...]
     keyword_specs: dict[str, MemoKeyTransform | None]
     varargs_override: MemoKeyTransform | None | NotSetType
     varkw_override: MemoKeyTransform | None | NotSetType
@@ -438,21 +435,21 @@ def _apply_memo_key(
     new_fixed_args: list[Any] = []
     for i, arg in enumerate(fixed_args):
         key_fn = memo_key_plan.positional_specs[i]
-        if key_fn is NOT_SET:
+        if is_not_set(key_fn):
             new_fixed_args.append(arg)
         elif key_fn is None:
             continue  # Exclude this positional arg
         else:
-            new_fixed_args.append(cast(MemoKeyTransform, key_fn)(arg))
+            new_fixed_args.append(key_fn(arg))
 
     # Apply varargs override if present (whole *args parameter)
-    if memo_key_plan.varargs_override is not NOT_SET:
+    if not is_not_set(memo_key_plan.varargs_override):
         if memo_key_plan.varargs_override is None:
             # Exclude entire *args
             varargs = ()
         else:
             # Transform entire *args tuple
-            varargs = cast(MemoKeyTransform, memo_key_plan.varargs_override)(varargs)
+            varargs = memo_key_plan.varargs_override(varargs)
             if not isinstance(varargs, tuple):
                 raise TypeError(
                     f"memo_key transform for *args must return tuple, "
@@ -477,15 +474,13 @@ def _apply_memo_key(
             unmatched_kwargs[key] = value
 
     # Apply varkw override if present (whole **kwargs parameter)
-    if memo_key_plan.varkw_override is not NOT_SET:
+    if not is_not_set(memo_key_plan.varkw_override):
         if memo_key_plan.varkw_override is None:
             # Exclude entire **kwargs
             unmatched_kwargs = {}
         else:
             # Transform entire unmatched kwargs dict
-            transformed = cast(MemoKeyTransform, memo_key_plan.varkw_override)(
-                unmatched_kwargs
-            )
+            transformed = memo_key_plan.varkw_override(unmatched_kwargs)
             if not isinstance(transformed, dict):
                 raise TypeError(
                     f"memo_key transform for **kwargs must return dict, "
@@ -511,7 +506,7 @@ def _normalize_memo_key(
         return None
 
     sig = inspect.signature(fn)
-    param_names = [param.name for param in sig.parameters.values()]
+    param_names = {param.name for param in sig.parameters.values()}
     unknown = sorted(name for name in normalized if name not in param_names)
     if unknown:
         raise ValueError(
