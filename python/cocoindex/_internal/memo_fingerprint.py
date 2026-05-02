@@ -337,12 +337,16 @@ def _make_call_canonical(
     *,
     version: str | int | None = None,
     state_methods: list[StateFnEntry] | None = None,
+    prefix_args: tuple[object, ...] = (),
 ) -> Fingerprintable:
     function_identity = (
         getattr(func, "__module__", None),
         getattr(func, "__qualname__", None),
     )
     canonical_args = tuple(
+        _canonicalize(a, _seen=None, state_methods=state_methods) for a in prefix_args
+    )
+    canonical_args = canonical_args + tuple(
         _canonicalize(a, _seen=None, state_methods=state_methods) for a in args
     )
     canonical_kwargs = tuple(
@@ -369,6 +373,7 @@ def fingerprint_call(
     *,
     version: str | int | None = None,
     state_methods: list[StateFnEntry] | None = None,
+    prefix_args: tuple[object, ...] = (),
 ) -> core.Fingerprint:
     """Compute the deterministic fingerprint for a function call.
 
@@ -386,6 +391,7 @@ def fingerprint_call(
         kwargs,
         version=version,
         state_methods=state_methods,
+        prefix_args=prefix_args,
     )
     # One Python -> Rust call.
     return core.fingerprint_simple_object(call_key_obj)
