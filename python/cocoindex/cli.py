@@ -417,9 +417,6 @@ requires-python = ">=3.11"
 dependencies = [
     "cocoindex>={coco.__version__}",
 ]
-
-[tool.uv]
-prerelease = "explicit"
 """
     (project_path / "pyproject.toml").write_text(pyproject_toml_content)
 

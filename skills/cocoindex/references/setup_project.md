@@ -22,13 +22,10 @@ pip install -e .
 ```toml
 [project]
 dependencies = [
-    "cocoindex>=1.0.0a1",
+    "cocoindex>=1.0.0",
     "sentence-transformers",
     "asyncpg",
 ]
-
-[tool.uv]
-prerelease = "explicit"
 ```
 
 ### PostgreSQL Integration
@@ -36,7 +33,7 @@ prerelease = "explicit"
 ```toml
 [project]
 dependencies = [
-    "cocoindex>=1.0.0a1",
+    "cocoindex>=1.0.0",
     "asyncpg",
 ]
 ```
@@ -46,7 +43,7 @@ dependencies = [
 ```toml
 [project]
 dependencies = [
-    "cocoindex>=1.0.0a1",
+    "cocoindex>=1.0.0",
     "sqlite-vec",
 ]
 ```
@@ -56,7 +53,7 @@ dependencies = [
 ```toml
 [project]
 dependencies = [
-    "cocoindex>=1.0.0a1",
+    "cocoindex>=1.0.0",
     "lancedb",
 ]
 ```
@@ -66,7 +63,7 @@ dependencies = [
 ```toml
 [project]
 dependencies = [
-    "cocoindex>=1.0.0a1",
+    "cocoindex>=1.0.0",
     "qdrant-client",
 ]
 ```
@@ -76,7 +73,7 @@ dependencies = [
 ```toml
 [project]
 dependencies = [
-    "cocoindex>=1.0.0a1",
+    "cocoindex>=1.0.0",
     "confluent-kafka",
 ]
 ```
@@ -86,7 +83,7 @@ dependencies = [
 ```toml
 [project]
 dependencies = [
-    "cocoindex>=1.0.0a1",
+    "cocoindex>=1.0.0",
     "litellm",
     "instructor",
     "pydantic>=2.0",
@@ -128,17 +125,6 @@ def coco_lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
 
 ---
 
-## Pre-release Configuration
-
-**Important**: CocoIndex is currently in pre-release. Always include:
-
-```toml
-[tool.uv]
-prerelease = "explicit"
-```
-
----
-
 ## Running Your Pipeline
 
 ```bash
@@ -152,10 +138,6 @@ cocoindex drop main.py -f           # Reset everything
 ---
 
 ## Common Issues
-
-### Pre-release Version Not Found
-
-Add `[tool.uv] prerelease = "explicit"` to `pyproject.toml`.
 
 ### Import Errors
 

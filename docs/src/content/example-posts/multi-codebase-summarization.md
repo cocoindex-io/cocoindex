@@ -40,7 +40,7 @@ When your source data is updated, or your processing logic is changed (for examp
 1. Install CocoIndex and dependencies:
 
     ```bash
-    pip install --pre 'cocoindex>=1.0.0a6' instructor litellm pydantic
+    pip install 'cocoindex>=1.0.0' instructor litellm pydantic
     ```
 
 2. Create a new directory for your project:

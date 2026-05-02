@@ -1,6 +1,6 @@
 ---
 name: cocoindex
-description: This skill should be used when building data processing pipelines with CocoIndex, a Python library for incremental data transformation. Use when the task involves processing files/data into databases, creating vector embeddings, building knowledge graphs, ETL workflows, or any data pipeline requiring automatic change detection and incremental updates. CocoIndex is Python-native (supports any Python types), has no DSL, and is currently under pre-release (version 1.0.0a1 or later).
+description: This skill should be used when building data processing pipelines with CocoIndex, a Python library for incremental data transformation. Use when the task involves processing files/data into databases, creating vector embeddings, building knowledge graphs, ETL workflows, or any data pipeline requiring automatic change detection and incremental updates. CocoIndex is Python-native (supports any Python types), has no DSL, and uses version 1.0.0 or later.
 ---
 
 # CocoIndex
@@ -47,10 +47,10 @@ This creates: `main.py`, `pyproject.toml`, `.env`, `README.md`.
 
 ```toml
 # For vector embeddings with PostgreSQL
-dependencies = ["cocoindex>=1.0.0a1", "sentence-transformers", "asyncpg"]
+dependencies = ["cocoindex>=1.0.0", "sentence-transformers", "asyncpg"]
 
 # For LLM extraction
-dependencies = ["cocoindex>=1.0.0a1", "litellm", "instructor", "pydantic>=2.0"]
+dependencies = ["cocoindex>=1.0.0", "litellm", "instructor", "pydantic>=2.0"]
 ```
 
 See [references/setup_project.md](references/setup_project.md) for complete examples.
@@ -448,15 +448,6 @@ table = await postgres.mount_table_target(
 
 ## Troubleshooting
 
-### "Module not found" Error
-
-Ensure pyproject.toml has pre-release config:
-
-```toml
-[tool.uv]
-prerelease = "explicit"
-```
-
 ### Everything Reprocessing
 
 Add `memo=True` to expensive functions:
@@ -488,4 +479,4 @@ Check component paths are stable. Use stable IDs, not object references.
 
 ## Version Note
 
-This skill is for CocoIndex `>=1.0.0a1` (v1). It uses a completely different API from v0.
+This skill is for CocoIndex `>=1.0.0` (v1). It uses a completely different API from v0.
