@@ -186,6 +186,8 @@ app.update_blocking(report_to_stdout=True)
 
 ## Code Conventions
 
+The full review-time detection checklist (with worked examples and post-hoc smell patterns) lives in the [`/review-changes`](~/.claude/skills/review-changes/SKILL.md) skill — run it on uncommitted changes before landing a non-trivial PR. The rules below are write-time mnemonics; project-specific ones (Internal/External modules, Minimize API surface, Sync vs Async, Test Environment Setup) stay here in full.
+
 ### Internal vs External Modules
 
 We distinguish between **internal modules** (under packages with `_` prefix, e.g. `_internal.*` or `connectors.*._source`) and **external modules** (which users can directly import).
@@ -210,23 +212,14 @@ We distinguish between **internal modules** (under packages with `_` prefix, e.g
 
 When adding a new public API (function, class, kwarg, configuration option), prefer the smallest surface that solves the concrete need in front of you. Do not pre-expose tunables, hooks, or alternatives "in case someone needs them." Adding a kwarg later is straightforward and backwards-compatible; removing or renaming one is disruptive. If a knob is currently a hardcoded constant inside the implementation, leave it there until a real use case demands it — at which point promoting it to a kwarg is mechanical. This applies equally to optional parameters, callback hooks, parser/transformer plug-points, and configuration keys.
 
-### Type Annotations
+### General principles (also covered by `/review-changes`)
 
-Avoid `Any` whenever feasible. Use specific types — including concrete types from third-party libraries. Only use `Any` when the type is truly generic and no downstream code needs to downcast it.
-
-### Prefer stronger types; validate and exchange early
-
-Prefer strongly-typed values over weakly-typed representations (strings, `Any`, raw identifiers). When a value enters the system in a weaker form, validate and convert it to the stronger type at the earliest point where the conversion is possible — don't propagate the weak form further than necessary.
-
-Example: connector handlers receive a `ContextKey` string as part of a target-state key. Rather than storing `_db_key: str` and re-resolving it via `context_provider.get(key_str, ConnType)` on every `_apply_actions` call, the parent handler resolves the key once (when constructing the child handler) and passes the typed connection directly. The child stores `_pool: asyncpg.Pool`, not `_db_key: str`.
-
-### Multi-Value Returns
-
-For functions returning multiple values, use `NamedTuple` instead of plain tuples. At call sites, access fields by name (`result.can_reuse`) rather than positional unpacking — this prevents misreading fields in the wrong order.
-
-### Exceptions are for exceptional situations
-
-Reserve exceptions (Python) and errors (Rust) for truly unexpected failures — not for normal control flow like signaling completion, end-of-iteration, or expected state transitions. When a condition is part of the normal, expected operation of the system, represent it with an explicit return value (e.g., a sentinel value, an enum variant, or `None`) rather than raising/throwing. This keeps exception handling clean and makes it easy to distinguish real errors from routine signals.
+- **Top-level imports.** Defer to in-function only for a real circular dependency or a heavy import that isn't always needed.
+- **Specific types over `Any`.** Use concrete types — including concrete types from third-party libraries. `Any` only when the type is truly generic and no downstream code needs to downcast it.
+- **Validate and exchange early.** When a value enters as a weaker form (`str`, `Any`, raw identifier), convert to the strong type at the earliest point. Don't propagate the weak form. Concrete example in this codebase: connector handlers receive a `ContextKey` string as part of a target-state key. The parent handler resolves the key once (when constructing the child handler) and passes the typed connection directly — the child stores `_pool: asyncpg.Pool`, not `_db_key: str`.
+- **`NamedTuple`/small dataclass for multi-value returns.** Access fields by name (`result.can_reuse`) at call sites.
+- **Exceptions for exceptional situations only.** Reserve exceptions (Python) and errors (Rust) for truly unexpected failures — not for end-of-iteration, "not found", or other expected state transitions. Use explicit return values (sentinel, enum variant, `None`) for those.
+- **Single source of truth, delete dead code, honest names.** When the same value/logic appears in multiple places, consolidate. When changes make code unreachable, delete it (and its tests, and any dead config knobs). Function and field names should describe what the implementation does today.
 
 ### Testing Guidelines
 
