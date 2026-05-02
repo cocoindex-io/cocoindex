@@ -16,40 +16,29 @@ To follow the steps in this guide, you'll need:
 
 ## Install CocoIndex
 
-:::note
-CocoIndex v1 is currently in preview (pre-release on PyPI). You need to allow pre-release versions when installing.
-:::
-
 ### Using pip
 
 ```sh
-pip install -U --pre cocoindex
+pip install -U cocoindex
 ```
 
 ### Using uv
 
 ```sh
-uv add --prerelease explicit cocoindex
-```
-
-Or add to your `pyproject.toml`:
-
-```toml
-[tool.uv]
-prerelease = "explicit"
+uv add cocoindex
 ```
 
 ### Using Poetry
 
 ```sh
-poetry add cocoindex --allow-prereleases
+poetry add cocoindex
 ```
 
 Or specify in `pyproject.toml`:
 
 ```toml
 [tool.poetry.dependencies]
-cocoindex = { version = "^1.0", allow-prereleases = true }
+cocoindex = { version = "^1.0" }
 ```
 
 ## System requirements

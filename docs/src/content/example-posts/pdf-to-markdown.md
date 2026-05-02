@@ -33,7 +33,7 @@ When your source data is updated, or your processing logic is changed (for examp
 1. Install CocoIndex and dependencies:
 
     ```bash
-    pip install 'cocoindex>=1.0.0a1' docling
+    pip install 'cocoindex>=1.0.0' docling
     ```
 
 2. Create a new directory for your project:
