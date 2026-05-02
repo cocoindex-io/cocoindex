@@ -73,7 +73,7 @@
 <h3 align="center">Get started</h3>
 
 ```sh
-pip install -U --pre cocoindex     # v1 is in preview — the --pre flag is required
+pip install -U --pre cocoindex
 ```
 
 Declare *what* should be in your target — CocoIndex keeps it in sync forever, recomputing only the Δ.
