@@ -86,6 +86,7 @@ google_drive = [
 amazon_s3 = ["aiobotocore>=2.0.0"]
 doris = ["aiohttp>=3.9.0", "pymysql>=1.1.0", "aiomysql>=0.2.0"]
 falkordb = ["falkordb>=1.1.0"]
+neo4j = ["neo4j>=5.13.0"]
 kafka = ["confluent_kafka>=2.6"]
 oci = ["oci>=2.0"]
 entity_resolution = ["faiss-cpu>=1.7"]
@@ -115,6 +116,7 @@ all = [
     "pymysql>=1.1.0",
     "aiomysql>=0.2.0",
     "falkordb>=1.1.0",
+    "neo4j>=5.13.0",
     "confluent_kafka>=2.6",
     "oci>=2.0",
     "faiss-cpu>=1.7",
@@ -131,11 +133,11 @@ build-test = [
     "mypy",
     "moto[s3]>=5.0.0",
     "aiomoto[s3]>=0.3.0",
-    "testcontainers[postgres]>=4.0.0; sys_platform != 'win32'",
+    "testcontainers[postgres,neo4j]>=4.0.0; sys_platform != 'win32'",
 ]
 format = ["ruff"]
 type-stubs = ["types-psutil", "asyncpg-stubs"]
-ci-enabled-optional-deps = ["pydantic>=2.11.9", "asyncpg>=0.31.0"]
+ci-enabled-optional-deps = ["pydantic>=2.11.9", "asyncpg>=0.31.0", "neo4j>=5.13.0"]
 examples = ["sentence-transformers>=3.0.0", "numpy"]
 
 ci = [
@@ -211,6 +213,8 @@ module = [
     "pymysql.*",
     "falkordb",
     "falkordb.*",
+    "neo4j",
+    "neo4j.*",
     "faiss",
     "faiss.*",
     "instructor",
