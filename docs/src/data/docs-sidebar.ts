@@ -71,6 +71,7 @@ export const sidebar: SidebarItem[] = [
       { type: 'doc', slug: 'connectors/qdrant', label: 'Qdrant' },
       { type: 'doc', slug: 'connectors/sqlite', label: 'SQLite' },
       { type: 'doc', slug: 'connectors/surrealdb', label: 'SurrealDB' },
+      { type: 'doc', slug: 'connectors/turbopuffer', label: 'Turbopuffer' },
     ],
   },
   {

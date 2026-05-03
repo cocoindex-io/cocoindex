@@ -77,6 +77,7 @@ postgres = ["asyncpg>=0.31.0"]
 qdrant = ["qdrant-client>=1.6.0"]
 sqlite = ["sqlite-vec>=0.1.6"]
 surrealdb = ["surrealdb>=1.0.0"]
+turbopuffer = ["turbopuffer>=0.5.0"]
 google_drive = [
     "google-api-python-client>=2.0.0",
     "google-auth>=2.0.0",
@@ -107,6 +108,7 @@ all = [
     "qdrant-client>=1.6.0",
     "sqlite-vec>=0.1.6",
     "surrealdb>=1.0.0",
+    "turbopuffer>=0.5.0",
     "google-api-python-client>=2.0.0",
     "google-auth>=2.0.0",
     "google-auth-httplib2>=0.2.0",
@@ -195,6 +197,8 @@ module = [
     "sqlite_vec.*",
     "surrealdb",
     "surrealdb.*",
+    "turbopuffer",
+    "turbopuffer.*",
     "googleapiclient",
     "googleapiclient.*",
     "google.oauth2",
