@@ -1,4 +1,4 @@
-# Build Meeting Notes Knowledge Graph from Google Drive (CocoIndex v1)
+# Build Meeting Notes Knowledge Graph from Google Drive — FalkorDB (CocoIndex v1)
 
 Extract structured information from meeting notes stored in Google Drive and
 build a knowledge graph in [FalkorDB](https://www.falkordb.com/). The flow
@@ -6,6 +6,10 @@ ingests Markdown notes, splits them by headings into per-meeting sections,
 uses an LLM (via [LiteLLM](https://docs.litellm.ai/) +
 [instructor](https://python.useinstructor.com/)) to parse participants,
 organizer, time, and tasks, and writes nodes and relationships into the graph.
+
+> **Looking for the Neo4j flavor?** See
+> [`examples/meeting_notes_graph_neo4j`](../meeting_notes_graph_neo4j/) — same
+> flow shape, swaps the FalkorDB connector for the Neo4j connector.
 
 Please drop [CocoIndex on Github](https://github.com/cocoindex-io/cocoindex) a
 star to support us and stay tuned for more updates. Thank you so much 🥥🤗.
