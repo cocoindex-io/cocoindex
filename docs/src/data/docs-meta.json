@@ -1,165 +1,189 @@
 {
-  "_version": "1.0.0-alpha48",
+  "_version": "1.0.2",
   "files": {
     "about/community": {
       "sourcePath": "about/community.md",
-      "editTs": 1769751510
+      "editTs": 1777723200
+    },
+    "about/telemetry": {
+      "sourcePath": "about/telemetry.mdx",
+      "editTs": 1777723200
+    },
+    "advanced_topics/concurrency_control": {
+      "sourcePath": "advanced_topics/concurrency_control.mdx",
+      "editTs": 1777723200
     },
     "advanced_topics/custom_target_connector": {
       "sourcePath": "advanced_topics/custom_target_connector.md",
-      "editTs": 1776577683
+      "editTs": 1777723200
     },
     "advanced_topics/exception_handlers": {
       "sourcePath": "advanced_topics/exception_handlers.md",
-      "editTs": 1776627274
+      "editTs": 1777723200
     },
     "advanced_topics/internal_storage": {
       "sourcePath": "advanced_topics/internal_storage.md",
-      "editTs": 1772385556
+      "editTs": 1777723200
     },
     "advanced_topics/live_component": {
       "sourcePath": "advanced_topics/live_component.md",
-      "editTs": 1776577683
+      "editTs": 1777723200
     },
     "advanced_topics/memoization_keys": {
       "sourcePath": "advanced_topics/memoization_keys.md",
-      "editTs": 1776627274
+      "editTs": 1777723200
     },
     "advanced_topics/multiple_environments": {
       "sourcePath": "advanced_topics/multiple_environments.md",
-      "editTs": 1773596671
+      "editTs": 1777723200
     },
     "cli": {
       "sourcePath": "cli.mdx",
-      "editTs": 1776577683
+      "editTs": 1777723200
+    },
+    "cli_commands": {
+      "sourcePath": "cli_commands.mdx",
+      "editTs": 1777723200
     },
     "common_resources/data_types": {
       "sourcePath": "common_resources/data_types.md",
-      "editTs": 1776627274
+      "editTs": 1777723200
     },
     "common_resources/id_generation": {
       "sourcePath": "common_resources/id_generation.md",
-      "editTs": 1776627274
+      "editTs": 1777723200
     },
     "common_resources/vector_schema": {
       "sourcePath": "common_resources/vector_schema.md",
-      "editTs": 1776627274
+      "editTs": 1777723200
     },
     "connectors/amazon_s3": {
       "sourcePath": "connectors/amazon_s3.md",
-      "editTs": 1776627274
+      "editTs": 1777723200
     },
     "connectors/doris": {
       "sourcePath": "connectors/doris.md",
-      "editTs": 1776627274
+      "editTs": 1777723200
+    },
+    "connectors/falkordb": {
+      "sourcePath": "connectors/falkordb.mdx",
+      "editTs": 1777723200
     },
     "connectors/google_drive": {
       "sourcePath": "connectors/google_drive.md",
-      "editTs": 1776627274
+      "editTs": 1777723200
     },
     "connectors/kafka": {
       "sourcePath": "connectors/kafka.md",
-      "editTs": 1776627274
+      "editTs": 1777723200
     },
     "connectors/lancedb": {
       "sourcePath": "connectors/lancedb.md",
-      "editTs": 1776627274
+      "editTs": 1777723200
     },
     "connectors/localfs": {
       "sourcePath": "connectors/localfs.md",
-      "editTs": 1776627274
+      "editTs": 1777723200
+    },
+    "connectors/oci_object_storage": {
+      "sourcePath": "connectors/oci_object_storage.mdx",
+      "editTs": 1777723200
     },
     "connectors/postgres": {
       "sourcePath": "connectors/postgres.md",
-      "editTs": 1776665678
+      "editTs": 1777723200
     },
     "connectors/qdrant": {
       "sourcePath": "connectors/qdrant.md",
-      "editTs": 1776627274
+      "editTs": 1777723200
     },
     "connectors/sqlite": {
       "sourcePath": "connectors/sqlite.md",
-      "editTs": 1776627274
+      "editTs": 1777723200
     },
     "connectors/surrealdb": {
       "sourcePath": "connectors/surrealdb.md",
-      "editTs": 1776627274
+      "editTs": 1777723200
     },
     "contributing/guide": {
       "sourcePath": "contributing/guide.md",
-      "editTs": 1769751510
+      "editTs": 1777723200
     },
     "contributing/setup_dev_environment": {
       "sourcePath": "contributing/setup_dev_environment.md",
-      "editTs": 1769751510
+      "editTs": 1777723200
     },
     "faq": {
       "sourcePath": "faq.md",
-      "editTs": 1776627274
+      "editTs": 1777723200
+    },
+    "getting_started/ai_coding_agents": {
+      "sourcePath": "getting_started/ai_coding_agents.mdx",
+      "editTs": 1777723200
     },
     "getting_started/installation": {
       "sourcePath": "getting_started/installation.md",
-      "editTs": 1771359345
+      "editTs": 1777723200
     },
     "getting_started/overview": {
       "sourcePath": "getting_started/overview.md",
-      "editTs": 1776627274
+      "editTs": 1777723200
     },
     "getting_started/quickstart": {
       "sourcePath": "getting_started/quickstart.md",
-      "editTs": 1776627274
+      "editTs": 1777723200
     },
     "ops/entity_resolution": {
       "sourcePath": "ops/entity_resolution.md",
-      "editTs": 1776627274
+      "editTs": 1777723200
     },
     "ops/litellm": {
       "sourcePath": "ops/litellm.md",
-      "editTs": 1776627274
+      "editTs": 1777723200
     },
     "ops/sentence_transformers": {
       "sourcePath": "ops/sentence_transformers.md",
-      "editTs": 1776627274
+      "editTs": 1777723200
     },
     "ops/text": {
       "sourcePath": "ops/text.md",
-      "editTs": 1776627274
+      "editTs": 1777723200
     },
     "programming_guide/app": {
       "sourcePath": "programming_guide/app.md",
-      "editTs": 1776627274
+      "editTs": 1777723200
     },
     "programming_guide/context": {
       "sourcePath": "programming_guide/context.md",
-      "editTs": 1776665678
+      "editTs": 1777723200
     },
     "programming_guide/core_concepts": {
       "sourcePath": "programming_guide/core_concepts.mdx",
-      "editTs": 1776627274
+      "editTs": 1777723200
     },
     "programming_guide/function": {
       "sourcePath": "programming_guide/function.md",
-      "editTs": 1776627274
+      "editTs": 1777723200
     },
     "programming_guide/live_mode": {
       "sourcePath": "programming_guide/live_mode.md",
-      "editTs": 1775604044
+      "editTs": 1777723200
     },
     "programming_guide/processing_component": {
       "sourcePath": "programming_guide/processing_component.md",
-      "editTs": 1776627274
+      "editTs": 1777723200
     },
     "programming_guide/sdk_overview": {
       "sourcePath": "programming_guide/sdk_overview.md",
-      "editTs": 1776627274
+      "editTs": 1777723200
     },
     "programming_guide/serialization": {
       "sourcePath": "programming_guide/serialization.md",
-      "editTs": 1776577683
+      "editTs": 1777723200
     },
     "programming_guide/target_state": {
       "sourcePath": "programming_guide/target_state.md",
-      "editTs": 1776577683
+      "editTs": 1777723200
     }
   }
 }
