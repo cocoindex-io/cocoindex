@@ -430,6 +430,6 @@ async def app_main() -> None:
 
 
 app = coco.App(
-    coco.AppConfig(name="MeetingNotesGraphV1"),
+    coco.AppConfig(name="MeetingNotesGraphFalkorDB"),
     app_main,
 )
