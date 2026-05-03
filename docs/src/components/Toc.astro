@@ -16,14 +16,15 @@ const rows = headings.filter((h) => h.depth >= 2 && h.depth <= 4);
 
 const metaMap = (docsMeta as {
   _version?: string | null;
-  files: Record<string, { sourcePath: string; editTs: number }>;
+  files: Record<string, { sourcePath: string; reviewedTs: number }>;
 }).files ?? {};
 const meta = metaMap[slug];
-const editTs = meta?.editTs ?? 0;
+// `about/*` pages aren't tied to a release; skip the review stamp.
+const reviewedTs = slug.startsWith('about/') ? 0 : (meta?.reviewedTs ?? 0);
 
 // "Last reviewed · Xd ago" — coarse relative time suitable for the rail.
-// Timestamp comes from the last git commit touching the source doc, which
-// is the best proxy we have for when a human last reviewed it.
+// Timestamp is set explicitly when a human reviews the doc against a
+// CocoIndex release; see docs/src/data/docs-meta.json.
 function relativeReview(ts: number): string | null {
   if (!ts) return null;
   const now = Math.floor(Date.now() / 1000);
@@ -35,7 +36,7 @@ function relativeReview(ts: number): string | null {
   if (delta < 86400 * 365) return pick(Math.round(delta / (86400 * 30)), 'mo');
   return pick(Math.round(delta / (86400 * 365)), 'y');
 }
-const reviewedAgo = relativeReview(editTs);
+const reviewedAgo = relativeReview(reviewedTs);
 ---
 
 <aside class="toc">

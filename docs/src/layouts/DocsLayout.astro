@@ -43,17 +43,17 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, '');
 const renderedTitle = titleMarkup(titleMarkupRaw ?? title);
 const fullTitle = `${title} · CocoIndex Docs`;
 
-// Version + last-updated come from data/docs-meta.json, baked at build time.
+// Version + last-reviewed come from data/docs-meta.json, baked at build time.
 const fileMeta = (
-  docsMeta as { _version?: string | null; files: Record<string, { editTs: number }> }
+  docsMeta as { _version?: string | null; files: Record<string, { reviewedTs: number }> }
 );
-const version = fileMeta._version ? `v ${fileMeta._version}` : null;
-const editTs = fileMeta.files?.[slug]?.editTs ?? 0;
-// We label this "Last reviewed" rather than "Last updated": the timestamp
-// comes from the last git commit touching the source doc, which is a
-// reliable proxy for when a human last went over it.
-const lastReviewed = editTs
-  ? new Date(editTs * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+// `about/*` pages (community, telemetry, …) are evergreen meta pages that
+// aren't tied to a release cycle, so we skip the version/last-reviewed stamp.
+const showReviewStamp = !slug.startsWith('about/');
+const version = showReviewStamp && fileMeta._version ? `v ${fileMeta._version}` : null;
+const reviewedTs = showReviewStamp ? (fileMeta.files?.[slug]?.reviewedTs ?? 0) : 0;
+const lastReviewed = reviewedTs
+  ? new Date(reviewedTs * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
   : null;
 
 const introItems = [
