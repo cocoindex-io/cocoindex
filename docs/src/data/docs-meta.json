@@ -1,14 +1,6 @@
 {
   "_version": "1.0.2",
   "files": {
-    "about/community": {
-      "sourcePath": "about/community.md",
-      "reviewedTs": 1777723200
-    },
-    "about/telemetry": {
-      "sourcePath": "about/telemetry.mdx",
-      "reviewedTs": 1777723200
-    },
     "advanced_topics/concurrency_control": {
       "sourcePath": "advanced_topics/concurrency_control.mdx",
       "reviewedTs": 1777723200

@@ -19,7 +19,8 @@ const metaMap = (docsMeta as {
   files: Record<string, { sourcePath: string; reviewedTs: number }>;
 }).files ?? {};
 const meta = metaMap[slug];
-const reviewedTs = meta?.reviewedTs ?? 0;
+// `about/*` pages aren't tied to a release; skip the review stamp.
+const reviewedTs = slug.startsWith('about/') ? 0 : (meta?.reviewedTs ?? 0);
 
 // "Last reviewed · Xd ago" — coarse relative time suitable for the rail.
 // Timestamp is set explicitly when a human reviews the doc against a

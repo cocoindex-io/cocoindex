@@ -47,8 +47,11 @@ const fullTitle = `${title} · CocoIndex Docs`;
 const fileMeta = (
   docsMeta as { _version?: string | null; files: Record<string, { reviewedTs: number }> }
 );
-const version = fileMeta._version ? `v ${fileMeta._version}` : null;
-const reviewedTs = fileMeta.files?.[slug]?.reviewedTs ?? 0;
+// `about/*` pages (community, telemetry, …) are evergreen meta pages that
+// aren't tied to a release cycle, so we skip the version/last-reviewed stamp.
+const showReviewStamp = !slug.startsWith('about/');
+const version = showReviewStamp && fileMeta._version ? `v ${fileMeta._version}` : null;
+const reviewedTs = showReviewStamp ? (fileMeta.files?.[slug]?.reviewedTs ?? 0) : 0;
 const lastReviewed = reviewedTs
   ? new Date(reviewedTs * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
   : null;
