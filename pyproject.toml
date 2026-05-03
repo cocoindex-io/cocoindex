@@ -86,7 +86,7 @@ google_drive = [
 amazon_s3 = ["aiobotocore>=2.0.0"]
 doris = ["aiohttp>=3.9.0", "pymysql>=1.1.0", "aiomysql>=0.2.0"]
 falkordb = ["falkordb>=1.1.0"]
-neo4j = ["neo4j>=5.13.0"]
+neo4j = ["neo4j>=5.18.0"]
 kafka = ["confluent_kafka>=2.6"]
 oci = ["oci>=2.0"]
 entity_resolution = ["faiss-cpu>=1.7"]
@@ -116,7 +116,7 @@ all = [
     "pymysql>=1.1.0",
     "aiomysql>=0.2.0",
     "falkordb>=1.1.0",
-    "neo4j>=5.13.0",
+    "neo4j>=5.18.0",
     "confluent_kafka>=2.6",
     "oci>=2.0",
     "faiss-cpu>=1.7",
@@ -137,7 +137,7 @@ build-test = [
 ]
 format = ["ruff"]
 type-stubs = ["types-psutil", "asyncpg-stubs"]
-ci-enabled-optional-deps = ["pydantic>=2.11.9", "asyncpg>=0.31.0", "neo4j>=5.13.0"]
+ci-enabled-optional-deps = ["pydantic>=2.11.9", "asyncpg>=0.31.0", "neo4j>=5.18.0"]
 examples = ["sentence-transformers>=3.0.0", "numpy"]
 
 ci = [

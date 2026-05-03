@@ -1,11 +1,4 @@
-"""Neo4j connector for CocoIndex.
+from . import _target
+from ._target import *  # noqa: F401, F403
 
-Public API will be re-exported from ``_target`` once that module lands. For
-now only the pure Cypher generators in ``_cypher`` are in place — they have
-no runtime dependency on the ``neo4j`` driver and are unit-testable in
-isolation.
-"""
-
-from . import _cypher
-
-__all__ = ["_cypher"]
+__all__ = _target.__all__

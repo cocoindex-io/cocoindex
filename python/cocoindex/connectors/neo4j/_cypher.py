@@ -8,7 +8,8 @@ where ``params`` is the dict assembled by the caller.
 All identifiers (labels, property names, index names) are validated by the
 caller before being passed in; values always bind via ``$``-parameters.
 
-Targets Neo4j 5.13+ (vector indexes shipped in 5.13).
+Targets Neo4j 5.18+ (CREATE VECTOR INDEX DDL shipped in 5.18; older
+versions need the db.index.vector.createNodeIndex procedure instead).
 """
 
 from __future__ import annotations

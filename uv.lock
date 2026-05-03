@@ -718,8 +718,8 @@ requires-dist = [
     { name = "litellm", marker = "extra == 'entity-resolution-llm'", specifier = ">=1.81.0" },
     { name = "litellm", marker = "extra == 'litellm'", specifier = ">=1.81.0" },
     { name = "msgspec", specifier = ">=0.19.0" },
-    { name = "neo4j", marker = "extra == 'all'", specifier = ">=5.13.0" },
-    { name = "neo4j", marker = "extra == 'neo4j'", specifier = ">=5.13.0" },
+    { name = "neo4j", marker = "extra == 'all'", specifier = ">=5.18.0" },
+    { name = "neo4j", marker = "extra == 'neo4j'", specifier = ">=5.18.0" },
     { name = "numpy", specifier = ">=1.23.2" },
     { name = "oci", marker = "extra == 'all'", specifier = ">=2.0" },
     { name = "oci", marker = "extra == 'oci'", specifier = ">=2.0" },
@@ -762,7 +762,7 @@ ci = [
     { name = "maturin", specifier = ">=1.10.0,<2.0" },
     { name = "moto", extras = ["s3"], specifier = ">=5.0.0" },
     { name = "mypy" },
-    { name = "neo4j", specifier = ">=5.13.0" },
+    { name = "neo4j", specifier = ">=5.18.0" },
     { name = "pydantic", specifier = ">=2.11.9" },
     { name = "pytest", specifier = ">=9.0.3" },
     { name = "pytest-asyncio" },
@@ -772,7 +772,7 @@ ci = [
 ]
 ci-enabled-optional-deps = [
     { name = "asyncpg", specifier = ">=0.31.0" },
-    { name = "neo4j", specifier = ">=5.13.0" },
+    { name = "neo4j", specifier = ">=5.18.0" },
     { name = "pydantic", specifier = ">=2.11.9" },
 ]
 dev = [
@@ -782,7 +782,7 @@ dev = [
     { name = "maturin", specifier = ">=1.10.0,<2.0" },
     { name = "moto", extras = ["s3"], specifier = ">=5.0.0" },
     { name = "mypy" },
-    { name = "neo4j", specifier = ">=5.13.0" },
+    { name = "neo4j", specifier = ">=5.18.0" },
     { name = "prek" },
     { name = "pydantic", specifier = ">=2.11.9" },
     { name = "pytest", specifier = ">=9.0.3" },
