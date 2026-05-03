@@ -127,15 +127,3 @@ You can also use `redis-cli`:
 redis-cli GRAPH.QUERY meeting_notes \
   "MATCH (p:Person)-[:ATTENDED]->(m:Meeting) RETURN p.name, m.note_file, m.time"
 ```
-
-## CocoInsight
-
-Use [CocoInsight](https://cocoindex.io/cocoinsight) to inspect data lineage and
-debug the pipeline. It connects to your local CocoIndex server with zero
-pipeline data retention.
-
-```sh
-cocoindex server -ci main
-```
-
-Then open <https://cocoindex.io/cocoinsight>.
