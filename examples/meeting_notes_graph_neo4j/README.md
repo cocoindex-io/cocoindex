@@ -7,10 +7,6 @@ LLM (via [LiteLLM](https://docs.litellm.ai/) +
 [instructor](https://python.useinstructor.com/)) to parse participants,
 organizer, time, and tasks, and writes nodes and relationships into the graph.
 
-> **Looking for the FalkorDB flavor?** See
-> [`examples/meeting_notes_graph_falkordb`](../meeting_notes_graph_falkordb/) — same
-> flow shape, swaps the Neo4j connector for the FalkorDB connector.
-
 Please drop [CocoIndex on Github](https://github.com/cocoindex-io/cocoindex) a
 star to support us and stay tuned for more updates. Thank you so much 🥥🤗.
 [![GitHub](https://img.shields.io/github/stars/cocoindex-io/cocoindex?color=5B5BD6)](https://github.com/cocoindex-io/cocoindex)

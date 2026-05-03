@@ -65,6 +65,7 @@ export const sidebar: SidebarItem[] = [
       { type: 'doc', slug: 'connectors/kafka', label: 'Kafka' },
       { type: 'doc', slug: 'connectors/lancedb', label: 'LanceDB' },
       { type: 'doc', slug: 'connectors/localfs', label: 'Local filesystem' },
+      { type: 'doc', slug: 'connectors/neo4j', label: 'Neo4j' },
       { type: 'doc', slug: 'connectors/oci_object_storage', label: 'OCI Object Storage' },
       { type: 'doc', slug: 'connectors/postgres', label: 'Postgres' },
       { type: 'doc', slug: 'connectors/qdrant', label: 'Qdrant' },

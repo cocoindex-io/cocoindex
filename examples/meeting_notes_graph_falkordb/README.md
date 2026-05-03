@@ -7,9 +7,6 @@ uses an LLM (via [LiteLLM](https://docs.litellm.ai/) +
 [instructor](https://python.useinstructor.com/)) to parse participants,
 organizer, time, and tasks, and writes nodes and relationships into the graph.
 
-> **Looking for the Neo4j flavor?** See
-> [`examples/meeting_notes_graph_neo4j`](../meeting_notes_graph_neo4j/) — same
-> flow shape, swaps the FalkorDB connector for the Neo4j connector.
 
 Please drop [CocoIndex on Github](https://github.com/cocoindex-io/cocoindex) a
 star to support us and stay tuned for more updates. Thank you so much 🥥🤗.
