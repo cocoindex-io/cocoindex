@@ -550,6 +550,7 @@ all = [
     { name = "instructor" },
     { name = "lancedb" },
     { name = "litellm" },
+    { name = "neo4j" },
     { name = "oci" },
     { name = "pgvector" },
     { name = "pyarrow" },
@@ -597,6 +598,9 @@ lancedb = [
 litellm = [
     { name = "litellm" },
 ]
+neo4j = [
+    { name = "neo4j" },
+]
 oci = [
     { name = "oci" },
 ]
@@ -625,7 +629,7 @@ build-test = [
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-timeout" },
-    { name = "testcontainers", marker = "sys_platform != 'win32'" },
+    { name = "testcontainers", extra = ["neo4j"], marker = "sys_platform != 'win32'" },
 ]
 ci = [
     { name = "aiomoto", extra = ["s3"] },
@@ -634,15 +638,17 @@ ci = [
     { name = "maturin" },
     { name = "moto", extra = ["s3"] },
     { name = "mypy" },
+    { name = "neo4j" },
     { name = "pydantic" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-timeout" },
-    { name = "testcontainers", marker = "sys_platform != 'win32'" },
+    { name = "testcontainers", extra = ["neo4j"], marker = "sys_platform != 'win32'" },
     { name = "types-psutil" },
 ]
 ci-enabled-optional-deps = [
     { name = "asyncpg" },
+    { name = "neo4j" },
     { name = "pydantic" },
 ]
 dev = [
@@ -652,12 +658,13 @@ dev = [
     { name = "maturin" },
     { name = "moto", extra = ["s3"] },
     { name = "mypy" },
+    { name = "neo4j" },
     { name = "prek" },
     { name = "pydantic" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-timeout" },
-    { name = "testcontainers", marker = "sys_platform != 'win32'" },
+    { name = "testcontainers", extra = ["neo4j"], marker = "sys_platform != 'win32'" },
     { name = "types-psutil" },
 ]
 dev-local = [
@@ -711,6 +718,8 @@ requires-dist = [
     { name = "litellm", marker = "extra == 'entity-resolution-llm'", specifier = ">=1.81.0" },
     { name = "litellm", marker = "extra == 'litellm'", specifier = ">=1.81.0" },
     { name = "msgspec", specifier = ">=0.19.0" },
+    { name = "neo4j", marker = "extra == 'all'", specifier = ">=5.18.0" },
+    { name = "neo4j", marker = "extra == 'neo4j'", specifier = ">=5.18.0" },
     { name = "numpy", specifier = ">=1.23.2" },
     { name = "oci", marker = "extra == 'all'", specifier = ">=2.0" },
     { name = "oci", marker = "extra == 'oci'", specifier = ">=2.0" },
@@ -733,7 +742,7 @@ requires-dist = [
     { name = "typing-extensions", specifier = ">=4.12" },
     { name = "watchfiles", specifier = ">=1.1.0" },
 ]
-provides-extras = ["all", "amazon-s3", "colpali", "doris", "entity-resolution", "entity-resolution-llm", "falkordb", "google-drive", "kafka", "lancedb", "litellm", "oci", "postgres", "qdrant", "sentence-transformers", "sqlite", "surrealdb"]
+provides-extras = ["all", "amazon-s3", "colpali", "doris", "entity-resolution", "entity-resolution-llm", "falkordb", "google-drive", "kafka", "lancedb", "litellm", "neo4j", "oci", "postgres", "qdrant", "sentence-transformers", "sqlite", "surrealdb"]
 
 [package.metadata.requires-dev]
 build-test = [
@@ -744,7 +753,7 @@ build-test = [
     { name = "pytest", specifier = ">=9.0.3" },
     { name = "pytest-asyncio" },
     { name = "pytest-timeout" },
-    { name = "testcontainers", extras = ["postgres"], marker = "sys_platform != 'win32'", specifier = ">=4.0.0" },
+    { name = "testcontainers", extras = ["postgres", "neo4j"], marker = "sys_platform != 'win32'", specifier = ">=4.0.0" },
 ]
 ci = [
     { name = "aiomoto", extras = ["s3"], specifier = ">=0.3.0" },
@@ -753,15 +762,17 @@ ci = [
     { name = "maturin", specifier = ">=1.10.0,<2.0" },
     { name = "moto", extras = ["s3"], specifier = ">=5.0.0" },
     { name = "mypy" },
+    { name = "neo4j", specifier = ">=5.18.0" },
     { name = "pydantic", specifier = ">=2.11.9" },
     { name = "pytest", specifier = ">=9.0.3" },
     { name = "pytest-asyncio" },
     { name = "pytest-timeout" },
-    { name = "testcontainers", extras = ["postgres"], marker = "sys_platform != 'win32'", specifier = ">=4.0.0" },
+    { name = "testcontainers", extras = ["postgres", "neo4j"], marker = "sys_platform != 'win32'", specifier = ">=4.0.0" },
     { name = "types-psutil" },
 ]
 ci-enabled-optional-deps = [
     { name = "asyncpg", specifier = ">=0.31.0" },
+    { name = "neo4j", specifier = ">=5.18.0" },
     { name = "pydantic", specifier = ">=2.11.9" },
 ]
 dev = [
@@ -771,12 +782,13 @@ dev = [
     { name = "maturin", specifier = ">=1.10.0,<2.0" },
     { name = "moto", extras = ["s3"], specifier = ">=5.0.0" },
     { name = "mypy" },
+    { name = "neo4j", specifier = ">=5.18.0" },
     { name = "prek" },
     { name = "pydantic", specifier = ">=2.11.9" },
     { name = "pytest", specifier = ">=9.0.3" },
     { name = "pytest-asyncio" },
     { name = "pytest-timeout" },
-    { name = "testcontainers", extras = ["postgres"], marker = "sys_platform != 'win32'", specifier = ">=4.0.0" },
+    { name = "testcontainers", extras = ["postgres", "neo4j"], marker = "sys_platform != 'win32'", specifier = ">=4.0.0" },
     { name = "types-psutil" },
 ]
 dev-local = [{ name = "prek" }]
@@ -2109,6 +2121,18 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/a2/6e/371856a3fb9d31ca8dac321cda606860fa4548858c0cc45d9d1d4ca2628b/mypy_extensions-1.1.0.tar.gz", hash = "sha256:52e68efc3284861e772bbcd66823fde5ae21fd2fdb51c62a211403730b916558", size = 6343, upload-time = "2025-04-22T14:54:24.164Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/79/7b/2c79738432f5c924bef5071f933bcc9efd0473bac3b4aa584a6f7c1c8df8/mypy_extensions-1.1.0-py3-none-any.whl", hash = "sha256:1be4cccdb0f2482337c4743e60421de3a356cd97508abadd57d47403e94f5505", size = 4963, upload-time = "2025-04-22T14:54:22.983Z" },
+]
+
+[[package]]
+name = "neo4j"
+version = "6.1.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pytz" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/1b/01/d6ce65e4647f6cb2b9cca3b813978f7329b54b4e36660aaec1ddf0ccce7a/neo4j-6.1.0.tar.gz", hash = "sha256:b5dde8c0d8481e7b6ae3733569d990dd3e5befdc5d452f531ad1884ed3500b84", size = 239629, upload-time = "2026-01-12T11:27:34.777Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/70/5c/ee71e2dd955045425ef44283f40ba1da67673cf06404916ca2950ac0cd39/neo4j-6.1.0-py3-none-any.whl", hash = "sha256:3bd93941f3a3559af197031157220af9fd71f4f93a311db687bd69ffa417b67d", size = 325326, upload-time = "2026-01-12T11:27:33.196Z" },
 ]
 
 [[package]]
@@ -3715,6 +3739,11 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/ca/ac/a597c3a0e02b26cbed6dd07df68be1e57684766fd1c381dee9b170a99690/testcontainers-4.14.2.tar.gz", hash = "sha256:1340ccf16fe3acd9389a6c9e1d9ab21d9fe99a8afdf8165f89c3e69c1967d239", size = 166841, upload-time = "2026-03-18T05:19:16.696Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/13/2d/26b8b30067d94339afee62c3edc9b803a6eb9332f521ba77d8aaab5de873/testcontainers-4.14.2-py3-none-any.whl", hash = "sha256:0d0522c3cd8f8d9627cda41f7a6b51b639fa57bdc492923c045117933c668d68", size = 125712, upload-time = "2026-03-18T05:19:15.29Z" },
+]
+
+[package.optional-dependencies]
+neo4j = [
+    { name = "neo4j" },
 ]
 
 [[package]]
