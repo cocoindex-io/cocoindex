@@ -144,11 +144,19 @@ If `APP_TARGET` is provided, loads the app from the module.
 Otherwise, `--db` and `--app-name` can be used to inspect an app
 directly from its database without loading the module.
 
+Examples:
+cocoindex show ./app.py
+cocoindex show ./app.py --tree
+cocoindex show ./app.py -l
+cocoindex show ./app.py /"files" -r
+cocoindex show ./app.py /"files"/"file1.txt" -p
+cocoindex show --db ./my.db --app-name MyApp
+
 
 **Usage:**
 
 ```bash
-cocoindex show [OPTIONS] [APP_TARGET]
+cocoindex show [OPTIONS] [APP_TARGET] [STABLE_PATH]
 ```
 
 **Options:**
@@ -158,6 +166,9 @@ cocoindex show [OPTIONS] [APP_TARGET]
 | `--db TEXT` | Path to database (used with --app-name when APP_TARGET is not specified). |
 | `--app-name TEXT` | App name to inspect (used with --db when APP_TARGET is not specified). |
 | `--tree` | Display stable paths as a tree with component annotations. |
+| `-l, --long` | Display detailed information in table format. |
+| `-r, --recursive` | Show all children recursively (requires stable_path). |
+| `-p, --parents` | Show all parent paths (requires stable_path). |
 | `--help` | Show this message and exit. |
 
 ---
