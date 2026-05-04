@@ -427,7 +427,14 @@ static LANGUAGE_INFO_BY_NAME: LazyLock<
     );
     add("squirrel", &[".nut"], None);
     add("starlark", &[".star", ".bzl"], None);
-    add("svelte", &[".svelte"], None);
+    add(
+        "svelte",
+        &[".svelte"],
+        Some(TreeSitterLanguageInfo::new(
+            tree_sitter_svelte_ng::LANGUAGE,
+            [],
+        )),
+    );
     add(
         "swift",
         &[".swift"],
@@ -469,7 +476,14 @@ static LANGUAGE_INFO_BY_NAME: LazyLock<
     add("verilog", &[".vh"], None);
     add("vhdl", &[".vhd", ".vhdl"], None);
     add("vim", &[".vim"], None);
-    add("vue", &[".vue"], None);
+    add(
+        "vue",
+        &[".vue"],
+        Some(TreeSitterLanguageInfo::new(
+            tree_sitter_vue_next::LANGUAGE,
+            [],
+        )),
+    );
     add("wast", &[".wast"], None);
     add("wat", &[".wat"], None);
     add("wgsl", &[".wgsl"], None);
@@ -538,7 +552,20 @@ mod tests {
         assert_eq!(detect_language("test.rs"), Some("rust"));
         assert_eq!(detect_language("main.py"), Some("python"));
         assert_eq!(detect_language("app.js"), Some("javascript"));
+        assert_eq!(detect_language("App.svelte"), Some("svelte"));
+        assert_eq!(detect_language("App.vue"), Some("vue"));
         assert_eq!(detect_language("noextension"), None);
         assert_eq!(detect_language("unknown.xyz"), None);
+    }
+
+    #[test]
+    fn test_svelte_and_vue_have_treesitter() {
+        let svelte = get_language_info(".svelte").unwrap();
+        assert_eq!(svelte.name.as_ref(), "svelte");
+        assert!(svelte.treesitter_info.is_some());
+
+        let vue = get_language_info(".vue").unwrap();
+        assert_eq!(vue.name.as_ref(), "vue");
+        assert!(vue.treesitter_info.is_some());
     }
 }
