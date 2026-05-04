@@ -41,5 +41,7 @@ tree-sitter-typescript = "0.23.2"
 tree-sitter-xml = "0.7.0"
 tree-sitter-yaml = "0.7.2"
 tree-sitter-solidity = "1.2.13"
+tree-sitter-svelte-ng = "1.0.2"
+tree-sitter-vue-next = "0.1.0"
 
 [dev-dependencies]

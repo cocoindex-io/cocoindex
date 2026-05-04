@@ -837,6 +837,63 @@ fn other() {
     }
 
     #[test]
+    fn test_split_with_svelte_language() {
+        let chunker = RecursiveChunker::new(RecursiveSplitConfig::default()).unwrap();
+        let text = r#"<script lang="ts">
+  let count = 0;
+  function increment() { count += 1; }
+</script>
+
+<button on:click={increment}>
+  Clicked {count} times
+</button>
+
+<style>
+  button { color: red; }
+</style>
+"#;
+        let config = RecursiveChunkConfig {
+            chunk_size: 80,
+            min_chunk_size: Some(20),
+            chunk_overlap: Some(0),
+            language: Some("svelte".to_string()),
+        };
+        let chunks = chunker.split(text, config);
+        assert!(!chunks.is_empty());
+    }
+
+    #[test]
+    fn test_split_with_vue_language() {
+        let chunker = RecursiveChunker::new(RecursiveSplitConfig::default()).unwrap();
+        let text = r#"<template>
+  <div class="hello">
+    <h1>{{ msg }}</h1>
+    <button @click="increment">Count is: {{ count }}</button>
+  </div>
+</template>
+
+<script>
+export default {
+  data() { return { msg: 'Hello', count: 0 } },
+  methods: { increment() { this.count += 1 } },
+}
+</script>
+
+<style scoped>
+.hello { color: blue; }
+</style>
+"#;
+        let config = RecursiveChunkConfig {
+            chunk_size: 80,
+            min_chunk_size: Some(20),
+            chunk_overlap: Some(0),
+            language: Some("vue".to_string()),
+        };
+        let chunks = chunker.split(text, config);
+        assert!(!chunks.is_empty());
+    }
+
+    #[test]
     fn test_split_positions() {
         let chunker = RecursiveChunker::new(RecursiveSplitConfig::default()).unwrap();
         let text = "Chunk1\n\nChunk2";

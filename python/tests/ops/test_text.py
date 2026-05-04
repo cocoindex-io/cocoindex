@@ -15,6 +15,8 @@ def test_detect_code_language_known_extensions() -> None:
     assert detect_code_language(filename="app.rs") == "rust"
     assert detect_code_language(filename="index.js") == "javascript"
     assert detect_code_language(filename="style.css") == "css"
+    assert detect_code_language(filename="App.svelte") == "svelte"
+    assert detect_code_language(filename="App.vue") == "vue"
 
 
 def test_detect_code_language_unknown_extension() -> None:
@@ -139,6 +141,49 @@ def test_recursive_splitter_with_language() -> None:
     splitter = RecursiveSplitter()
     code = "def foo():\n    pass\n\ndef bar():\n    pass"
     chunks = splitter.split(code, chunk_size=30, language="python")
+
+    assert len(chunks) >= 1
+    assert all(isinstance(c, Chunk) for c in chunks)
+
+
+def test_recursive_splitter_with_svelte() -> None:
+    """Test RecursiveSplitter with Svelte syntax-aware splitting."""
+    splitter = RecursiveSplitter()
+    code = (
+        '<script lang="ts">\n'
+        "  let count = 0;\n"
+        "  function increment() { count += 1; }\n"
+        "</script>\n\n"
+        "<button on:click={increment}>\n"
+        "  Clicked {count} times\n"
+        "</button>\n\n"
+        "<style>\n  button { color: red; }\n</style>\n"
+    )
+    chunks = splitter.split(code, chunk_size=80, min_chunk_size=20, language="svelte")
+
+    assert len(chunks) >= 1
+    assert all(isinstance(c, Chunk) for c in chunks)
+
+
+def test_recursive_splitter_with_vue() -> None:
+    """Test RecursiveSplitter with Vue syntax-aware splitting."""
+    splitter = RecursiveSplitter()
+    code = (
+        "<template>\n"
+        '  <div class="hello">\n'
+        "    <h1>{{ msg }}</h1>\n"
+        '    <button @click="increment">Count is: {{ count }}</button>\n'
+        "  </div>\n"
+        "</template>\n\n"
+        "<script>\n"
+        "export default {\n"
+        "  data() { return { msg: 'Hello', count: 0 } },\n"
+        "  methods: { increment() { this.count += 1 } },\n"
+        "}\n"
+        "</script>\n\n"
+        "<style scoped>\n.hello { color: blue; }\n</style>\n"
+    )
+    chunks = splitter.split(code, chunk_size=80, min_chunk_size=20, language="vue")
 
     assert len(chunks) >= 1
     assert all(isinstance(c, Chunk) for c in chunks)
