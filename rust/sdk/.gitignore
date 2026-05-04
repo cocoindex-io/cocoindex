@@ -1,0 +1,8 @@
+# Rust build artifacts (workspace root and nested example workspaces)
+**/target/
+
+# LMDB runtime data created by pipelines/tests
+.cocoindex_db/
+
+# Pipeline-generated outputs from examples
+examples/files-transform/output_html/

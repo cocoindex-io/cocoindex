@@ -1,0 +1,17 @@
+[workspace]
+
+[package]
+name = "multi-codebase-summarization"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+cocoindex = { path = "../../cocoindex" }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", features = ["json"] }
+dotenvy = "0.15"
+
+[dev-dependencies]
+tempfile = "3"
