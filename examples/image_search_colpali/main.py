@@ -14,7 +14,6 @@ import io
 import os
 import pathlib
 import sys
-import uuid
 from typing import AsyncIterator
 
 import torch
@@ -29,9 +28,21 @@ from colpali_engine.utils.torch_utils import (
     unbind_padded_multivector_embeddings,
 )
 
+_EXAMPLES_DIR = pathlib.Path(__file__).resolve().parents[1]
+if str(_EXAMPLES_DIR) not in sys.path:
+    sys.path.append(str(_EXAMPLES_DIR))
+
 import cocoindex as coco
-from cocoindex.connectors import localfs, qdrant
-from cocoindex.resources.file import FileLike, PatternFilePathMatcher
+from _image_search_shared import (
+    image_id,
+    print_search_results,
+    provide_qdrant_client,
+    qdrant_search,
+    query_loop,
+    walk_image_files,
+)
+from cocoindex.connectors import qdrant
+from cocoindex.resources.file import FileLike
 from cocoindex.resources.schema import MultiVectorSchema, VectorSchema
 
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6334/")
@@ -87,10 +98,7 @@ def embed_image_bytes(img_bytes: bytes) -> list[list[float]]:
 async def coco_lifespan(
     builder: coco.EnvironmentBuilder,
 ) -> AsyncIterator[None]:
-    # Provide resources needed across the CocoIndex environment
-    client = qdrant.create_client(QDRANT_URL, prefer_grpc=True)
-    builder.provide(QDRANT_DB, client)
-    builder.provide(QDRANT_CLIENT, client)
+    provide_qdrant_client(builder, QDRANT_URL, QDRANT_DB, QDRANT_CLIENT)
     yield
 
 
@@ -101,7 +109,7 @@ async def process_file(
 ) -> None:
     content = await file.read()
     embedding = embed_image_bytes(content)
-    row_id = _image_id(file.file_path.path)
+    row_id = image_id(file.file_path.path)
     point = qdrant.PointStruct(
         id=row_id,
         vector=embedding,
@@ -129,13 +137,7 @@ async def app_main(sourcedir: pathlib.Path) -> None:
         ),
     )
 
-    files = localfs.walk_dir(
-        sourcedir,
-        recursive=True,
-        path_matcher=PatternFilePathMatcher(
-            included_patterns=["**/*.jpg", "**/*.jpeg", "**/*.png"]
-        ),
-    )
+    files = walk_image_files(sourcedir)
     await coco.mount_each(process_file, files.items(), target_collection)
 
 
@@ -153,47 +155,25 @@ app = coco.App(
 
 def query_once(client: QdrantClient, query_text: str, *, top_k: int = TOP_K) -> None:
     query_vec = embed_query(query_text)
-    results = _qdrant_search(client, QDRANT_COLLECTION, query_vec, top_k)
-
-    for r in results:
-        payload = r.payload or {}
-        print(f"[{r.score:.3f}] {payload.get('filename', '<unknown>')}")
-        print("---")
+    print_search_results(search_qdrant(client, query_vec, top_k))
 
 
 def query() -> None:
-    client = qdrant.create_client(QDRANT_URL, prefer_grpc=True)
-    if len(sys.argv) > 1:
-        q = " ".join(sys.argv[1:])
-        query_once(client, q)
-        return
-
-    while True:
-        q = input("Enter search query (or Enter to quit): ").strip()
-        if not q:
-            break
-        query_once(client, q)
+    query_loop(QDRANT_URL, query_once)
 
 
-def _image_id(path: pathlib.PurePath) -> str:
-    return str(uuid.uuid5(uuid.NAMESPACE_URL, str(path)))
-
-
-def _qdrant_search(
+def search_qdrant(
     client: QdrantClient,
-    collection_name: str,
     query_vector: list[list[float]],
     limit: int,
 ) -> list[qdrant_models.ScoredPoint]:
-    if not hasattr(client, "query_points"):
-        raise RuntimeError("qdrant-client must support query_points for ColPali.")
-    response = client.query_points(
-        collection_name=collection_name,
-        query=query_vector,
-        limit=limit,
-        with_payload=True,
+    return qdrant_search(
+        client,
+        QDRANT_COLLECTION,
+        query_vector,
+        limit,
+        require_query_points=True,
     )
-    return response.points
 
 
 if __name__ == "__main__":

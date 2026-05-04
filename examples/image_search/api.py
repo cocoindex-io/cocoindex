@@ -4,16 +4,14 @@ FastAPI wrapper for the v1 image search pipeline.
 
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
-from typing import Any, AsyncIterator
+import pathlib
+import sys
 
-from fastapi import FastAPI, Query
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-from qdrant_client import QdrantClient
+_EXAMPLES_DIR = pathlib.Path(__file__).resolve().parents[1]
+if str(_EXAMPLES_DIR) not in sys.path:
+    sys.path.append(str(_EXAMPLES_DIR))
 
-import cocoindex as coco
-from cocoindex.connectors import qdrant
+from _image_search_shared import create_search_api
 
 try:
     from . import main as image_search
@@ -22,60 +20,4 @@ except ImportError:
 
     image_search = importlib.import_module("main")
 
-
-# Module-level client reference for API endpoints
-_client: QdrantClient | None = None
-
-
-@asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # type: ignore[override]
-    global _client
-    async with coco.runtime():
-        # Initialize client for API endpoints
-        _client = qdrant.create_client(image_search.QDRANT_URL, prefer_grpc=True)
-        # Build/update the index once on startup so the collection exists.
-        await coco.show_progress(image_search.app.update())
-        yield
-        _client = None
-
-
-app = FastAPI(lifespan=lifespan)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# Serve images from the local img folder
-app.mount("/img", StaticFiles(directory="img"), name="img")
-
-
-@app.get("/search")
-async def search(
-    q: str = Query(..., description="Search query"),
-    limit: int = Query(5, description="Number of results"),
-) -> dict[str, Any]:
-    query_embedding = image_search.embed_query(q)
-
-    if _client is None:
-        raise RuntimeError("Qdrant client is not initialized.")
-
-    results = image_search._qdrant_search(
-        _client,
-        image_search.QDRANT_COLLECTION,
-        query_embedding,
-        limit,
-    )
-
-    return {
-        "results": [
-            {
-                "filename": (r.payload or {}).get("filename"),
-                "score": r.score,
-            }
-            for r in results
-        ]
-    }
+app = create_search_api(image_search)
