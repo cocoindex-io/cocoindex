@@ -1,8 +1,6 @@
 import base64
 import pathlib
 
-from dotenv import load_dotenv
-
 import cocoindex as coco
 from cocoindex.resources.file import FileLike, PatternFilePathMatcher
 from cocoindex.connectors import localfs
@@ -39,8 +37,6 @@ async def app_main(sourcedir: pathlib.Path, outdir: pathlib.Path) -> None:
     )
     await coco.mount_each(process_patient_form, files.items(), outdir)
 
-
-load_dotenv()
 
 app = coco.App(
     coco.AppConfig(name="PatientIntakeExtractionBaml"),

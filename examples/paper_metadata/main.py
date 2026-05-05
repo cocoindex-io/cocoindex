@@ -336,8 +336,7 @@ async def query() -> None:
             await query_once(pool, embedder, q)
 
 
-load_dotenv()
-
 if __name__ == "__main__":
+    load_dotenv()
     if len(sys.argv) > 1 and sys.argv[1] == "query":
         asyncio.run(query())
