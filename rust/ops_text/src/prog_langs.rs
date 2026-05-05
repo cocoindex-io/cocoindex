@@ -266,7 +266,11 @@ static LANGUAGE_INFO_BY_NAME: LazyLock<
         Some(TreeSitterLanguageInfo::new(tree_sitter_json::LANGUAGE, [])),
     );
     add("jsonnet", &[".jsonnet"], None);
-    add("julia", &[".jl"], None);
+    add(
+        "julia",
+        &[".jl"],
+        Some(TreeSitterLanguageInfo::new(tree_sitter_julia::LANGUAGE, [])),
+    );
     add("kdl", &[".kdl"], None);
     add(
         "kotlin",
@@ -554,6 +558,7 @@ mod tests {
         assert_eq!(detect_language("app.js"), Some("javascript"));
         assert_eq!(detect_language("App.svelte"), Some("svelte"));
         assert_eq!(detect_language("App.vue"), Some("vue"));
+        assert_eq!(detect_language("script.jl"), Some("julia"));
         assert_eq!(detect_language("noextension"), None);
         assert_eq!(detect_language("unknown.xyz"), None);
     }
@@ -567,5 +572,12 @@ mod tests {
         let vue = get_language_info(".vue").unwrap();
         assert_eq!(vue.name.as_ref(), "vue");
         assert!(vue.treesitter_info.is_some());
+    }
+
+    #[test]
+    fn test_julia_has_treesitter() {
+        let julia = get_language_info(".jl").unwrap();
+        assert_eq!(julia.name.as_ref(), "julia");
+        assert!(julia.treesitter_info.is_some());
     }
 }
