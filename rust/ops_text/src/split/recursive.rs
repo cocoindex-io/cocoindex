@@ -863,6 +863,34 @@ fn other() {
     }
 
     #[test]
+    fn test_split_with_julia_language() {
+        let chunker = RecursiveChunker::new(RecursiveSplitConfig::default()).unwrap();
+        let text = r#"
+function foo(x)
+    return x + 1
+end
+
+struct Point
+    x::Int
+    y::Int
+end
+
+module MyModule
+    export hello
+    hello() = println("hi")
+end
+"#;
+        let config = RecursiveChunkConfig {
+            chunk_size: 60,
+            min_chunk_size: Some(20),
+            chunk_overlap: Some(0),
+            language: Some("julia".to_string()),
+        };
+        let chunks = chunker.split(text, config);
+        assert!(!chunks.is_empty());
+    }
+
+    #[test]
     fn test_split_with_vue_language() {
         let chunker = RecursiveChunker::new(RecursiveSplitConfig::default()).unwrap();
         let text = r#"<template>

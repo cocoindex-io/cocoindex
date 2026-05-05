@@ -17,6 +17,7 @@ def test_detect_code_language_known_extensions() -> None:
     assert detect_code_language(filename="style.css") == "css"
     assert detect_code_language(filename="App.svelte") == "svelte"
     assert detect_code_language(filename="App.vue") == "vue"
+    assert detect_code_language(filename="script.jl") == "julia"
 
 
 def test_detect_code_language_unknown_extension() -> None:
@@ -160,6 +161,20 @@ def test_recursive_splitter_with_svelte() -> None:
         "<style>\n  button { color: red; }\n</style>\n"
     )
     chunks = splitter.split(code, chunk_size=80, min_chunk_size=20, language="svelte")
+
+    assert len(chunks) >= 1
+    assert all(isinstance(c, Chunk) for c in chunks)
+
+
+def test_recursive_splitter_with_julia() -> None:
+    """Test RecursiveSplitter with Julia syntax-aware splitting."""
+    splitter = RecursiveSplitter()
+    code = (
+        "function foo(x)\n    return x + 1\nend\n\n"
+        "struct Point\n    x::Int\n    y::Int\nend\n\n"
+        'module MyModule\n    export hello\n    hello() = println("hi")\nend\n'
+    )
+    chunks = splitter.split(code, chunk_size=60, min_chunk_size=20, language="julia")
 
     assert len(chunks) >= 1
     assert all(isinstance(c, Chunk) for c in chunks)
