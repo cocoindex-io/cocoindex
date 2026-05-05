@@ -8,7 +8,7 @@ dependencies = [
     "asyncpg>=0.29.0",
     "pgvector>=0.4.1",
     "numpy",
-    "marker-pdf>=1.8.5",
+    "docling>=2.0.0",
     "python-dotenv>=1.0.1",
 ]
 

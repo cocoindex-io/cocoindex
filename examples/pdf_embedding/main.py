@@ -13,18 +13,16 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import io
 import os
 import pathlib
 import sys
-import tempfile
 from dataclasses import dataclass
 from typing import AsyncIterator, Annotated
 
 from dotenv import load_dotenv
-from marker.config.parser import ConfigParser
-from marker.converters.pdf import PdfConverter
-from marker.models import create_model_dict
-from marker.output import text_from_rendered
+from docling.datamodel.base_models import DocumentStream
+from docling.document_converter import DocumentConverter
 from numpy.typing import NDArray
 import asyncpg
 
@@ -50,20 +48,14 @@ _splitter = RecursiveSplitter()
 
 
 @functools.cache
-def pdf_converter() -> PdfConverter:
-    config_parser = ConfigParser({})
-    return PdfConverter(
-        create_model_dict(), config=config_parser.generate_config_dict()
-    )
+def pdf_converter() -> DocumentConverter:
+    return DocumentConverter()
 
 
+@coco.fn.as_async(runner=coco.GPU)
 def pdf_to_markdown(content: bytes) -> str:
-    converter = pdf_converter()
-    with tempfile.NamedTemporaryFile(delete=True, suffix=".pdf") as temp_file:
-        temp_file.write(content)
-        temp_file.flush()
-        text_any, _, _ = text_from_rendered(converter(temp_file.name))
-        return text_any
+    source = DocumentStream(name="input.pdf", stream=io.BytesIO(content))
+    return pdf_converter().convert(source).document.export_to_markdown()
 
 
 @dataclass
@@ -115,8 +107,7 @@ async def process_file(
     file: FileLike,
     table: postgres.TableTarget[PdfEmbedding],
 ) -> None:
-    content = await file.read()
-    markdown = pdf_to_markdown(content)
+    markdown = await pdf_to_markdown(await file.read())
     chunks = _splitter.split(
         markdown, chunk_size=2000, chunk_overlap=500, language="markdown"
     )
