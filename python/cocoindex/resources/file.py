@@ -235,6 +235,17 @@ class PatternFilePathMatcher(FilePathMatcher):
     - `*.py` — matches Python files only in the root directory
     - `**/.*` — matches dot-prefixed entries (hidden files/dirs) at any depth
     - `{*.md,*.txt}` — matches multiple extensions using alternation
+
+    ``excluded_patterns`` supports gitignore-style ``!`` negation: a pattern
+    beginning with ``!`` un-excludes paths that would otherwise be excluded by a
+    preceding pattern.  Example — exclude all dot-directories except ``.github``::
+
+        PatternFilePathMatcher(
+            excluded_patterns=[
+                "**/.*",            # exclude all dot-entries
+                "!**/.github/**",   # but keep .github through
+            ]
+        )
     """
 
     def __init__(
@@ -250,7 +261,9 @@ class PatternFilePathMatcher(FilePathMatcher):
                 to be included. Use ``**/*.ext`` to match at any depth.
             excluded_patterns: Glob patterns (globset syntax) matching full path of files
                 and directories to be excluded. If a directory is excluded, all files and
-                subdirectories within it are also excluded.
+                subdirectories within it are also excluded.  A pattern prefixed with ``!``
+                negates the exclusion for matching paths, allowing gitignore-style exceptions
+                (e.g. ``"!**/.github/**"`` after ``"**/.*"``).
 
         Raises:
             ValueError: If any pattern is invalid.

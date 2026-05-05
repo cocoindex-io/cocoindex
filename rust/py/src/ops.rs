@@ -236,6 +236,10 @@ impl PyPatternMatcher {
     /// Args:
     ///     included_patterns: Glob patterns for files to include. If None, all files are included.
     ///     excluded_patterns: Glob patterns for files/directories to exclude.
+    ///         A pattern prefixed with ``!`` negates (un-excludes) paths that would otherwise be
+    ///         excluded, enabling gitignore-style exceptions.  For example, combining
+    ///         ``"**/.*"`` with ``"!**/.github/**"`` excludes all dot-entries except anything
+    ///         inside ``.github/``.
     #[new]
     #[pyo3(signature = (included_patterns=None, excluded_patterns=None))]
     fn new(
