@@ -3,7 +3,6 @@ from __future__ import annotations
 import pathlib
 
 import dspy
-from dotenv import load_dotenv
 import pymupdf
 
 import cocoindex as coco
@@ -78,7 +77,6 @@ async def app_main(sourcedir: pathlib.Path, outdir: pathlib.Path) -> None:
     await coco.mount_each(process_patient_form, files.items(), outdir)
 
 
-load_dotenv()
 lm = dspy.LM("gemini/gemini-2.5-flash")
 dspy.configure(lm=lm)
 
