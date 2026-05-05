@@ -4,12 +4,14 @@ This example embeds local markdown files, stores the chunks + embeddings in a [T
 
 ## Prerequisites
 
-Set your Turbopuffer credentials in the environment (e.g. via a `.env` file):
+Copy `.env.example` to `.env` and fill in your Turbopuffer API key:
 
 ```sh
-export TURBOPUFFER_API_KEY=tpuf_...
-export TURBOPUFFER_REGION=gcp-us-central1   # optional; this is the default
+cp .env.example .env
+# then edit .env and set TURBOPUFFER_API_KEY=tpuf_...
 ```
+
+The example loads variables from `.env` automatically via `python-dotenv`. `TURBOPUFFER_REGION` defaults to `gcp-us-central1` if you don't change it.
 
 ## Run
 

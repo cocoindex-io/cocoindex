@@ -16,6 +16,8 @@ import pathlib
 import sys
 from typing import AsyncIterator
 
+from dotenv import load_dotenv
+
 import cocoindex as coco
 from cocoindex.connectors import localfs, turbopuffer
 from cocoindex.ops.text import RecursiveSplitter
@@ -23,7 +25,6 @@ from cocoindex.ops.sentence_transformers import SentenceTransformerEmbedder
 from cocoindex.resources.chunk import Chunk
 from cocoindex.resources.file import FileLike, PatternFilePathMatcher
 from cocoindex.resources.id import IdGenerator
-
 
 TPUF_REGION = os.environ.get("TURBOPUFFER_REGION", "gcp-us-central1")
 TPUF_NAMESPACE = "TextEmbedding"
@@ -129,12 +130,11 @@ async def query_once(
         include_attributes=True,
     )
 
-    for row in getattr(result, "rows", []) or []:
-        attrs = getattr(row, "attributes", None) or {}
-        score = getattr(row, "dist", None)
-        score_str = f"{score:.3f}" if isinstance(score, (int, float)) else "?"
-        print(f"[{score_str}] {attrs.get('filename', '<unknown>')}")
-        print(f"    {attrs.get('text', '')}")
+    for row in getattr(result, "rows", []):
+        distance = getattr(row, "$dist", None)
+        distance_str = f"{distance:.3f}" if isinstance(distance, (int, float)) else "?"
+        print(f"[{distance_str}] {row.filename}")
+        print(f"    {row.text}")
         print("---")
 
 
@@ -144,18 +144,21 @@ async def query() -> None:
         print("TURBOPUFFER_API_KEY is not set", file=sys.stderr)
         sys.exit(1)
     embedder = SentenceTransformerEmbedder(EMBED_MODEL)
-    client = turbopuffer.AsyncTurbopuffer(region=TPUF_REGION, api_key=api_key)
-    if len(sys.argv) > 1:
-        q = " ".join(sys.argv[1:])
-        await query_once(client, embedder, q)
-        return
+    async with turbopuffer.AsyncTurbopuffer(
+        region=TPUF_REGION, api_key=api_key
+    ) as client:
+        if len(sys.argv) > 1:
+            q = " ".join(sys.argv[1:])
+            await query_once(client, embedder, q)
+            return
 
-    while True:
-        q = input("Enter search query (or Enter to quit): ").strip()
-        if not q:
-            break
-        await query_once(client, embedder, q)
+        while True:
+            q = input("Enter search query (or Enter to quit): ").strip()
+            if not q:
+                break
+            await query_once(client, embedder, q)
 
 
 if __name__ == "__main__":
+    load_dotenv()
     asyncio.run(query())
