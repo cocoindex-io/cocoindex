@@ -11,15 +11,13 @@ fn build_glob_set(patterns: Vec<String>) -> Result<GlobSet> {
 }
 
 /// Splits a list of patterns into regular exclusion patterns and negation (``!``-prefixed)
-/// patterns, building a GlobSet for each group.
-///
-/// A pattern like ``!**/.github/**`` means "do **not** exclude paths that match
-/// ``**/.github/**``", allowing fine-grained exceptions to broad exclusion rules.
+/// patterns.  Returns the compiled GlobSets together with the raw negation strings so that
+/// callers can do prefix-based path ancestry checks without unpacking compiled globs.
 fn split_excluded_patterns(
     patterns: Option<Vec<String>>,
-) -> Result<(Option<GlobSet>, Option<GlobSet>)> {
+) -> Result<(Option<GlobSet>, Option<GlobSet>, Vec<String>)> {
     let Some(pats) = patterns else {
-        return Ok((None, None));
+        return Ok((None, None, Vec::new()));
     };
 
     let mut regular: Vec<String> = Vec::new();
@@ -38,13 +36,14 @@ fn split_excluded_patterns(
     } else {
         Some(build_glob_set(regular)?)
     };
+    let negation_raw = negation.clone();
     let negation_set = if negation.is_empty() {
         None
     } else {
         Some(build_glob_set(negation)?)
     };
 
-    Ok((regular_set, negation_set))
+    Ok((regular_set, negation_set, negation_raw))
 }
 
 /// Pattern matcher that handles include and exclude patterns for files.
@@ -59,10 +58,15 @@ pub struct PatternMatcher {
     included_glob_set: Option<GlobSet>,
     /// Regular (non-negated) exclusion patterns.
     excluded_glob_set: Option<GlobSet>,
-    /// Negation patterns (``!``-prefixed in the original list, stored without the ``!``).
-    /// A path that matches one of these is *not* excluded even if it matches the regular
-    /// exclusion patterns.
-    negation_glob_set: Option<GlobSet>,
+    /// Negation patterns compiled into a GlobSet (``!``-prefixed in the original list,
+    /// stored without the ``!``).  A path that matches one of these is *not* excluded
+    /// even if it matches the regular exclusion patterns.
+    negation_excluded_glob_set: Option<GlobSet>,
+    /// Raw (uncompiled) negation pattern strings, kept so that ``is_dir_included`` can
+    /// detect directories that lie on the path to a negation-exempt file even when the
+    /// directory itself would otherwise be pruned (e.g. ``!dir1/dir2/dir3/a.yml``
+    /// combined with ``dir1/**``).
+    negation_patterns_raw: Vec<String>,
 }
 
 impl PatternMatcher {
@@ -75,12 +79,14 @@ impl PatternMatcher {
         excluded_patterns: Option<Vec<String>>,
     ) -> Result<Self> {
         let included_glob_set = included_patterns.map(build_glob_set).transpose()?;
-        let (excluded_glob_set, negation_glob_set) = split_excluded_patterns(excluded_patterns)?;
+        let (excluded_glob_set, negation_excluded_glob_set, negation_patterns_raw) =
+            split_excluded_patterns(excluded_patterns)?;
 
         Ok(Self {
             included_glob_set,
             excluded_glob_set,
-            negation_glob_set,
+            negation_excluded_glob_set,
+            negation_patterns_raw,
         })
     }
 
@@ -95,7 +101,7 @@ impl PatternMatcher {
         }
         // The path matches an exclusion pattern; a negation pattern can un-exclude it.
         !self
-            .negation_glob_set
+            .negation_excluded_glob_set
             .as_ref()
             .is_some_and(|gs| gs.is_match(path))
     }
@@ -103,9 +109,19 @@ impl PatternMatcher {
     /// Check if a directory should be traversed based on the exclude/negation patterns.
     ///
     /// A directory is included unless it matches an exclusion pattern *and* no negation
-    /// pattern applies to it or to any file that could live inside it.  The latter check
-    /// uses a probe path (``<dir>/__probe__``) so that patterns like ``**/.github/**``
-    /// correctly un-prune the ``.github`` directory.
+    /// pattern applies to it or to any file that could live inside it.
+    ///
+    /// Two complementary checks are used so that both glob-style and exact-path negations
+    /// work correctly:
+    ///
+    /// 1. **GlobSet probe** — matches ``<dir>/__probe__`` against the compiled negation
+    ///    GlobSet.  Catches wildcard negations such as ``!**/.github/**`` that use ``**``
+    ///    to span multiple directory levels.
+    ///
+    /// 2. **Raw-prefix check** — scans the raw (uncompiled) negation strings and returns
+    ///    ``true`` if any of them starts with ``<dir>/``.  Catches exact-path negations
+    ///    such as ``!dir1/dir2/dir3/a.yml`` where the probe alone would not help because
+    ///    the pattern contains no wildcards relative to the directory.
     pub fn is_dir_included(&self, path: &str) -> bool {
         if !self
             .excluded_glob_set
@@ -114,17 +130,28 @@ impl PatternMatcher {
         {
             return true;
         }
-        // Directory matches an exclusion. Check whether negation patterns could apply to
-        // the directory itself or to a file one level inside it.
-        if let Some(neg_gs) = &self.negation_glob_set {
+        // Directory matches an exclusion pattern.  Check whether a negation pattern
+        // could apply to the directory itself or to any descendant.
+        if let Some(neg_gs) = &self.negation_excluded_glob_set {
             if neg_gs.is_match(path) {
                 return true;
             }
-            // Probe one level inside: catches patterns like `**/.github/**`.
+            // Probe one level inside: catches glob negations like `**/.github/**`.
             let probe = format!("{}/__probe__", path);
             if neg_gs.is_match(probe.as_str()) {
                 return true;
             }
+        }
+        // Raw-prefix check: catches exact-path negations like `!dir1/dir2/dir3/a.yml`
+        // where the parent directories would otherwise be pruned by the exclusion but
+        // need to be traversed to reach the negation-exempt file.
+        let dir_prefix = format!("{}/", path);
+        if self
+            .negation_patterns_raw
+            .iter()
+            .any(|p| p.starts_with(&dir_prefix))
+        {
+            return true;
         }
         false
     }
@@ -259,6 +286,31 @@ mod tests {
         assert!(matcher.is_dir_included("repo/.github"));
         // Normal directories are always included.
         assert!(matcher.is_dir_included("src"));
+    }
+
+    #[test]
+    fn test_negation_exact_path_deep_dir_traversal() {
+        // Exclude all of dir1, but un-exclude a specific deep file with an exact path.
+        // All ancestor directories of dir1/dir2/dir3/a.yml must be traversable.
+        let matcher = PatternMatcher::new(
+            None,
+            Some(vec![
+                "dir1/**".to_string(),
+                "!dir1/dir2/dir3/a.yml".to_string(),
+            ]),
+        )
+        .unwrap();
+        // The negation-exempt file itself must be included.
+        assert!(matcher.is_file_included("dir1/dir2/dir3/a.yml"));
+        // Other files under dir1 remain excluded.
+        assert!(!matcher.is_file_included("dir1/other.txt"));
+        assert!(!matcher.is_file_included("dir1/dir2/other.txt"));
+        // Ancestor directories must be traversable to reach the exempt file.
+        assert!(matcher.is_dir_included("dir1"));
+        assert!(matcher.is_dir_included("dir1/dir2"));
+        assert!(matcher.is_dir_included("dir1/dir2/dir3"));
+        // Sibling directories that contain no negation-exempt files are still pruned.
+        assert!(!matcher.is_dir_included("dir1/other"));
     }
 
     #[test]
