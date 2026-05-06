@@ -80,8 +80,9 @@ def message_handler_with_deletion(producer: MockAIOProducer) -> _MessageHandler:
     return _MessageHandler(
         producer=_as_producer(producer),
         topic="test-topic",
-        deletion_value_fn=lambda k: b"deleted:"
-        + (k if isinstance(k, bytes) else k.encode()),
+        deletion_value_fn=lambda k: (
+            b"deleted:" + (k if isinstance(k, bytes) else k.encode())
+        ),
     )
 
 
@@ -268,8 +269,9 @@ class TestMessageHandlerSink:
         handler = _MessageHandler(
             producer=_as_producer(producer),
             topic="test-topic",
-            deletion_value_fn=lambda k: b"del:"
-            + (k if isinstance(k, bytes) else k.encode()),
+            deletion_value_fn=lambda k: (
+                b"del:" + (k if isinstance(k, bytes) else k.encode())
+            ),
         )
 
         action = _MessageAction(key=b"k1", value=b"del:k1")

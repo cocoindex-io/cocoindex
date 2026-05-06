@@ -65,7 +65,7 @@ class Settings:
     def from_env(cls, db_path: os.PathLike[str] | None = None) -> Self:
         """Load settings from environment variables."""
 
-        exec_kwargs: dict[str, Any] = dict()
+        exec_kwargs: dict[str, Any] = {}
         _load_field(
             exec_kwargs,
             "source_max_inflight_rows",
@@ -80,7 +80,7 @@ class Settings:
         )
         global_execution_options = GlobalExecutionOptions(**exec_kwargs)
 
-        lmdb_kwargs: dict[str, Any] = dict()
+        lmdb_kwargs: dict[str, Any] = {}
         _load_field(
             lmdb_kwargs,
             "lmdb_max_dbs",
@@ -114,7 +114,7 @@ class ServerSettings:
     @classmethod
     def from_env(cls) -> Self:
         """Load settings from environment variables."""
-        kwargs: dict[str, Any] = dict()
+        kwargs: dict[str, Any] = {}
         _load_field(kwargs, "address", "COCOINDEX_SERVER_ADDRESS")
         _load_field(
             kwargs,
