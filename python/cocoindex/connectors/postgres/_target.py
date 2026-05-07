@@ -13,6 +13,7 @@ import datetime
 import decimal
 import ipaddress
 import json
+import re
 import uuid
 from dataclasses import dataclass
 from typing import (
@@ -64,6 +65,22 @@ ValueEncoder = Callable[[Any], Any]
 
 # asyncpg enforces a protocol limit of 32767 bind parameters per query.
 _BIND_LIMIT: int = 32767
+
+
+_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _validate_identifier(name: str, kind: str = "identifier") -> None:
+    """Reject identifiers outside the unquoted-identifier allow-list.
+
+    PostgreSQL identifiers are quoted with double quotes when interpolated, but
+    quoting alone does not prevent injection if the input itself contains a
+    double-quote character. Mirroring the Doris connector's approach
+    (CVE-2026-28438), we error out immediately on anything that isn't a plain
+    unquoted identifier.
+    """
+    if not isinstance(name, str) or not _IDENTIFIER_RE.match(name):
+        raise ValueError(f"Invalid {kind}: {name!r}")
 
 
 def _qualified_table_name(table_name: str, pg_schema_name: str | None) -> str:
@@ -1283,6 +1300,12 @@ def table_target(
     Returns:
         A TargetState that can be passed to ``mount_target()``.
     """
+    _validate_identifier(table_name, "table name")
+    if pg_schema_name is not None:
+        _validate_identifier(pg_schema_name, "schema name")
+    for col_name in table_schema.columns:
+        _validate_identifier(col_name, "column name")
+
     key = _TableKey(
         db_key=db.key,
         pg_schema_name=pg_schema_name,
