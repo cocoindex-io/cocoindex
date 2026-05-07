@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/cocoindex-io-cocoindex-badge.png)](https://mseep.ai/app/cocoindex-io-cocoindex)
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="https://cocoindex.io/blobs/github/homepage/enterprise-hero-dark.svg">
