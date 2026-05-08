@@ -544,7 +544,7 @@ class _TableAction(NamedTuple):
     key: _TableKey
     spec: _TableSpec | coco.NonExistenceType
     main_action: statediff.DiffAction | None
-    sub_actions: dict[str, statediff.DiffAction]
+    column_actions: dict[str, statediff.DiffAction]
 
 
 class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHandler]):
@@ -601,6 +601,15 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
                     )
                     continue
 
+                # No main change: reconcile additive columns incrementally.
+                if action.column_actions:
+                    await self._apply_column_actions(
+                        conn,
+                        key.table_name,
+                        spec.table_schema,
+                        action.column_actions,
+                    )
+
         return outputs
 
     async def _drop_table(
@@ -625,7 +634,7 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
     ) -> None:
         """Create a table."""
         # Check if table exists
-        table_names = await conn.table_names()
+        table_names = await self._list_table_names(conn)
         table_exists = table_name in table_names
 
         if table_exists and if_not_exists:
@@ -653,6 +662,13 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
         # Create table with empty data
         await conn.create_table(table_name, empty_batch, mode="overwrite")
 
+    async def _list_table_names(self, conn: LanceAsyncConnection) -> set[str]:
+        """List existing table names across LanceDB API variants."""
+        if hasattr(conn, "list_tables"):
+            response = await conn.list_tables()
+            return set(response.tables)
+        return set(await conn.table_names())
+
     def _build_pyarrow_schema(self, schema: TableSchema[Any]) -> pa.Schema:
         """Build PyArrow schema from table schema."""
         fields = []
@@ -660,6 +676,50 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
             field = pa.field(col_name, col_def.type, nullable=col_def.nullable)
             fields.append(field)
         return pa.schema(fields)
+
+    async def _apply_column_actions(
+        self,
+        conn: LanceAsyncConnection,
+        table_name: str,
+        schema: TableSchema[Any],
+        column_actions: dict[str, statediff.DiffAction],
+    ) -> None:
+        """Apply additive column schema changes in place."""
+        table = await conn.open_table(table_name)
+        existing_cols = set((await table.schema()).names)
+        pk_cols = set(schema.primary_key)
+        fields_to_add: list[pa.Field] = []
+
+        for sub_key, action in column_actions.items():
+            if not sub_key.startswith(_COL_SUBKEY_PREFIX):
+                raise ValueError(
+                    f"Unexpected column subkey format: {sub_key!r}, expected to start with {_COL_SUBKEY_PREFIX!r}"
+                )
+
+            col_name = sub_key[len(_COL_SUBKEY_PREFIX) :]
+            if col_name in pk_cols:
+                continue
+            if col_name in existing_cols:
+                continue
+
+            desired_col = schema.columns.get(col_name)
+            if desired_col is None:
+                continue
+
+            if action in ("insert", "upsert"):
+                fields_to_add.append(
+                    # Existing rows are backfilled with null, so additive schema
+                    # evolution must materialize the new column as nullable.
+                    pa.field(col_name, desired_col.type, nullable=True)
+                )
+                continue
+
+            raise ValueError(
+                f"Unsupported LanceDB column action for in-place evolution: {action!r}"
+            )
+
+        if fields_to_add:
+            await table.add_columns(fields_to_add)
 
     def reconcile(
         self,
@@ -694,28 +754,36 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
         )
         main_action, sub_transitions = statediff.diff_composite(resolved)
 
-        sub_actions: dict[str, statediff.DiffAction] = {}
+        column_actions: dict[str, statediff.DiffAction] = {}
         if main_action is None:
             for sub_key, t in sub_transitions.items():
                 action = statediff.diff(t)
                 if action is not None:
-                    sub_actions[sub_key] = action
+                    column_actions[sub_key] = action
 
         # Determine child invalidation for row-level targets.
         child_invalidation: Literal["destructive", "lossy"] | None = None
         if main_action == "replace":
             # Table is dropped and recreated — all rows are destroyed.
             child_invalidation = "destructive"
-        elif main_action is None and any(a != "insert" for a in sub_actions.values()):
-            # Schema changes (other than adding new columns) may lose data.
-            child_invalidation = "lossy"
+
+        if (
+            main_action is None
+            and column_actions
+            and any(a not in ("insert", "upsert") for a in column_actions.values())
+        ):
+            # LanceDB currently only supports additive schema evolution here.
+            # Fall back to full table replacement for destructive/lossy column changes.
+            main_action = "replace"
+            child_invalidation = "destructive"
+            column_actions = {}
 
         return coco.TargetReconcileOutput(
             action=_TableAction(
                 key=key,
                 spec=desired_state,
                 main_action=main_action,
-                sub_actions=sub_actions,
+                column_actions=column_actions,
             ),
             sink=self._sink,
             tracking_record=tracking_record,
