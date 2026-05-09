@@ -13,6 +13,7 @@ from __future__ import annotations
 import datetime
 import decimal
 import json
+import re
 import sqlite3
 import uuid
 from dataclasses import dataclass, field
@@ -143,6 +144,22 @@ class Vec0TableDef(msgspec.Struct, frozen=True):
 
 # SQLite has a limit of 999 variables per query (SQLITE_MAX_VARIABLE_NUMBER)
 _BIND_LIMIT: int = 999
+
+
+_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _validate_identifier(name: str, kind: str = "identifier") -> None:
+    """Reject identifiers outside the unquoted-identifier allow-list.
+
+    SQLite identifiers are quoted with double quotes when interpolated, but
+    quoting alone does not prevent injection if the input itself contains a
+    double-quote character. Mirroring the Doris connector's approach
+    (CVE-2026-28438), we error out immediately on anything that isn't a plain
+    unquoted identifier.
+    """
+    if not isinstance(name, str) or not _IDENTIFIER_RE.match(name):
+        raise ValueError(f"Invalid {kind}: {name!r}")
 
 
 def _qualified_table_name(table_name: str) -> str:
@@ -1129,6 +1146,10 @@ def table_target(
     Returns:
         A TargetState that can be passed to ``mount_target()``.
     """
+    _validate_identifier(table_name, "table name")
+    for col_name in table_schema.columns:
+        _validate_identifier(col_name, "column name")
+
     if isinstance(virtual_table_def, Vec0TableDef):
         managed_conn = coco.use_context(db)
         _validate_vec0_config(table_schema, virtual_table_def, managed_conn)
