@@ -83,7 +83,11 @@ static LANGUAGE_INFO_BY_NAME: LazyLock<
             [],
         )),
     );
-    add("bash", &[".sh", ".bash"], None);
+    add(
+        "bash",
+        &[".sh", ".bash"],
+        Some(TreeSitterLanguageInfo::new(tree_sitter_bash::LANGUAGE, [])),
+    );
     add("beancount", &[".beancount"], None);
     add("bibtex", &[".bib", ".bibtex"], None);
     add("bicep", &[".bicep", ".bicepparam"], None);
@@ -104,7 +108,11 @@ static LANGUAGE_INFO_BY_NAME: LazyLock<
         ],
         None,
     );
-    add("cmake", &[".cmake", ".cmake.in"], None);
+    add(
+        "cmake",
+        &[".cmake", ".cmake.in"],
+        Some(TreeSitterLanguageInfo::new(tree_sitter_cmake::LANGUAGE, [])),
+    );
     add(
         "commonlisp",
         &[
@@ -198,7 +206,11 @@ static LANGUAGE_INFO_BY_NAME: LazyLock<
     add("hare", &[".ha"], None);
     add("haskell", &[".hs", ".hs-boot", ".hsc"], None);
     add("haxe", &[".hx"], None);
-    add("hcl", &[".hcl", ".tf"], None);
+    add(
+        "hcl",
+        &[".hcl", ".tf"],
+        Some(TreeSitterLanguageInfo::new(tree_sitter_hcl::LANGUAGE, [])),
+    );
     add("heex", &[".heex"], None);
     add("hlsl", &[".hlsl"], None);
     add(
