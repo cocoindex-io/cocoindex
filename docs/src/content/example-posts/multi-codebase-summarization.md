@@ -11,7 +11,7 @@ last_reviewed: 2026-04-20
 
 Your code is the source of truth. In this tutorial, we'll build a pipeline that automatically generates a one-pager wiki for each project in a list, that never goes out-of-date with incremental processing. Think about building your own deep wiki that is always fresh.
 
-For example, for each [cocoindex example project](https://github.com/cocoindex-io/cocoindex/tree/v1/examples), we can have an auto-one-pager like this:
+For example, for each [cocoindex example project](https://github.com/cocoindex-io/cocoindex/tree/main/examples), we can have an auto-one-pager like this:
 
 
 ![markdown](https://cocoindex.io/blobs/docs-v1/img/examples/multi-codebase-summarization/markdown.png)
@@ -122,7 +122,7 @@ It is up to you to declare the process granularity. It can be
 - or at file level,
 - or at even smaller units (e.g., page level, or semantic unit level).
 
-In this example, we have a [projects folder](https://github.com/cocoindex-io/cocoindex/tree/v1/examples) containing 20+ projects. It is natural to pick granularity at the directory level for each project, because we want to create a wiki page per project.
+In this example, we have a [projects folder](https://github.com/cocoindex-io/cocoindex/tree/main/examples) containing 20+ projects. It is natural to pick granularity at the directory level for each project, because we want to create a wiki page per project.
 
 ```python title="main.py"
 @coco.function
