@@ -51,7 +51,7 @@ jobs:
           output: ./lychee/out.md
 
       - name: Create issue from report
-        if: steps.lychee.outputs.exit_code == '2'
+        if: steps.lychee.outputs.exit_code == '2' && github.event_name == 'schedule'
         uses: peter-evans/create-issue-from-file@v6
         with:
           title: Link Checker Report
