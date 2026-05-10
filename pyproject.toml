@@ -23,7 +23,7 @@ license = "Apache-2.0"
 license-files = ["THIRD_PARTY_NOTICES.html"]
 urls = { Homepage = "https://cocoindex.io/" }
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 5 - Production/Stable",
     "License :: OSI Approved :: Apache Software License",
     "Operating System :: OS Independent",
     "Programming Language :: Rust",
