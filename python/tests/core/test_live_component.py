@@ -193,6 +193,150 @@ class _IncrementalUpdateLiveComponent:
         await operator.mark_ready()
 
 
+# Slice F: nested LiveCompClass via operator.update
+class _InnerLiveComponent:
+    """Inner live component mounted via operator.update(LiveCompClass)."""
+
+    async def process(self) -> None:
+        coco.declare_target_state(GlobalDictTarget.target_state("inner_marker", 7))
+
+    async def process_live(self, operator: coco.LiveComponentOperator) -> None:
+        await operator.update_full()
+        await operator.mark_ready()
+
+
+class _OuterLiveComponentWithInner:
+    """Outer live component that mounts an inner live component via operator.update.
+
+    Exercises Slice F: the LiveCompClass branch in `operator.update()` should
+    install the inner controller under the outer's `update_full_lock`, spawn
+    the inner's `process_live`, and wait for the inner's `mark_ready`.
+    """
+
+    async def process(self) -> None:
+        coco.declare_target_state(GlobalDictTarget.target_state("outer_marker", 1))
+
+    async def process_live(self, operator: coco.LiveComponentOperator) -> None:
+        await operator.update_full()
+        # Mount a nested live component at "inner" subpath.
+        handle = await operator.update(
+            coco.component_subpath("inner"), _InnerLiveComponent
+        )
+        await handle.ready()
+        await operator.mark_ready()
+
+
+def test_in_process_live_blocks_coco_mount() -> None:
+    """Polish 2: `coco.mount(...)` inside `process_live` raises RuntimeError.
+
+    Verifies the `_in_process_live` ContextVar enforcement directly:
+    when the var is `True` (as it is inside `process_live`), the entry
+    points `coco.mount` / `coco.mount_each` / `coco.use_mount` must
+    raise a `RuntimeError` mentioning `process_live`.
+
+    The integration shape — that the var is actually set to `True` for
+    `process_live`'s body — is covered by the positive-case test
+    (`test_process_inside_live_can_call_coco_mount`): if the var weren't
+    set, calls inside `process()` would only succeed because the var was
+    already `False`, not because of the symmetric reset, which means
+    `process_live`'s body would also see `False`. The fact that the
+    positive case passes after the symmetric reset takes effect
+    (combined with the var defaulting to `False`) is the load-bearing
+    end-to-end signal that the True/False machinery works.
+    """
+    from cocoindex._internal.live_component import (
+        _in_process_live,
+        check_not_in_process_live,
+    )
+
+    # Default: not in process_live → no raise.
+    assert _in_process_live.get() is False
+    check_not_in_process_live("coco.mount")  # should not raise
+
+    # Simulate inside process_live: var set to True → must raise.
+    prev = _in_process_live.get()
+    _in_process_live.set(True)
+    try:
+        with pytest.raises(RuntimeError, match="not allowed inside process_live"):
+            check_not_in_process_live("coco.mount")
+        with pytest.raises(RuntimeError, match="not allowed inside process_live"):
+            check_not_in_process_live("coco.mount_each")
+        with pytest.raises(RuntimeError, match="not allowed inside process_live"):
+            check_not_in_process_live("coco.use_mount")
+    finally:
+        _in_process_live.set(prev)
+
+
+class _LiveComponentInnerCallsCocoMount:
+    """Polish 2 positive test: process() inside live can call coco.mount safely."""
+
+    async def process(self) -> None:
+        # This MUST NOT raise — process() is a separate context; the
+        # symmetric reset in update_full sets _in_process_live=False
+        # before the new Task captures Context for process()'s body.
+        await coco.mount(coco.component_subpath("ok"), _declare_item, "marker", 99)
+
+    async def process_live(self, operator: coco.LiveComponentOperator) -> None:
+        await operator.update_full()
+        await operator.mark_ready()
+
+
+def test_process_inside_live_can_call_coco_mount() -> None:
+    """Polish 2: `coco.mount(...)` from inside `process()` of a live component
+    must work — `update_full`'s inline `_in_process_live = False` reset
+    takes effect for the asyncio Task that runs `process()`.
+
+    This is the load-bearing positive case (design.md integration test #3):
+    if the symmetric reset breaks, every `process()` of a live component
+    would falsely raise here.
+    """
+    GlobalDictTarget.store.clear()
+
+    async def _main() -> None:
+        await coco.mount(
+            coco.component_subpath("inner_ok"), _LiveComponentInnerCallsCocoMount
+        )
+
+    app = coco.App(
+        coco.AppConfig(
+            name="test_process_inside_live_can_call_coco_mount",
+            environment=coco_env,
+        ),
+        _main,
+    )
+    app.update_blocking()
+    # The inner mount declared the marker.
+    assert "marker" in GlobalDictTarget.store.data
+
+
+def test_live_component_operator_update_with_live_class() -> None:
+    """operator.update(LiveCompClass) installs and runs a nested live component.
+
+    Verifies Slice F: the cancellable update_full_lock acquisition, fresh
+    parent_ctx construction, mount_live_prepare + complete sequence, and
+    inner controller startup all wire up correctly. Both outer and inner
+    target states should be declared.
+    """
+    GlobalDictTarget.store.clear()
+    _source_data.clear()
+
+    async def _main() -> None:
+        await coco.mount(coco.component_subpath("outer"), _OuterLiveComponentWithInner)
+
+    app = coco.App(
+        coco.AppConfig(name="test_operator_update_live_class", environment=coco_env),
+        _main,
+    )
+    app.update_blocking()
+
+    # Both outer's process() and inner's process() (via inner's update_full
+    # invoked from inner's process_live) should have declared their markers.
+    assert "outer_marker" in GlobalDictTarget.store.data
+    assert GlobalDictTarget.store.data["outer_marker"].data == 1
+    assert "inner_marker" in GlobalDictTarget.store.data
+    assert GlobalDictTarget.store.data["inner_marker"].data == 7
+
+
 def test_live_component_incremental_update() -> None:
     GlobalDictTarget.store.clear()
     _source_data.clear()

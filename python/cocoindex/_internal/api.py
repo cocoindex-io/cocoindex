@@ -106,6 +106,7 @@ from .live_component import (
     LiveMapView,
     LiveMapSubscriber,
     _MountEachLiveComponent,
+    check_not_in_process_live,
     is_live_component_class,
 )
 
@@ -286,6 +287,8 @@ async def use_mount(*pos_args: Any, **kwargs: Any) -> Any:
             )
         subpath = ComponentSubpath(Symbol(name))
 
+    check_not_in_process_live("coco.use_mount")
+
     if is_live_component_class(processor_fn):
         raise TypeError(
             "LiveComponent classes cannot be used with use_mount(). "
@@ -313,7 +316,16 @@ async def _mount_live_component(
     child_path: core.StablePath,
     instance: Any,
 ) -> ComponentMountHandle:
-    """Mount a pre-constructed LiveComponent instance."""
+    """Mount a pre-constructed LiveComponent instance.
+
+    Wraps `instance.process_live(operator)` in `_process_live_wrapper` so
+    `_in_process_live = True` is set inside the asyncio Task that runs
+    the body (the wrapper Coroutine inherits this `Context` value through
+    asyncio's standard Task-context inheritance, and any `coco.mount*`
+    call within will raise).
+    """
+    from .live_component import _process_live_wrapper
+
     controller, readiness_handle = await core.mount_live_async(
         child_path,
         parent_ctx._core_processor_ctx,
@@ -323,8 +335,7 @@ async def _mount_live_component(
 
     operator = LiveComponentOperator(controller, instance, parent_ctx._env, child_path)
 
-    process_live_coro = instance.process_live(operator)
-    controller.start(process_live_coro)
+    controller.start(_process_live_wrapper(instance, operator))
 
     return ComponentMountHandle([readiness_handle])
 
@@ -369,6 +380,8 @@ async def mount(*pos_args: Any, **kwargs: Any) -> ComponentMountHandle:
         # With explicit subpath:
         await coco.mount(coco.component_subpath("process", filename), process_file, file, target)
     """
+    check_not_in_process_live("coco.mount")
+
     if pos_args and isinstance(pos_args[0], ComponentSubpath):
         subpath = pos_args[0]
         processor_fn = pos_args[1]
@@ -462,6 +475,8 @@ async def mount_each(*pos_args: Any, **kwargs: Any) -> ComponentMountHandle:
     Returns:
         A handle that can be used to wait until all processing units are ready.
     """
+    check_not_in_process_live("coco.mount_each")
+
     if pos_args and isinstance(pos_args[0], ComponentSubpath):
         subpath = pos_args[0]
         fn = pos_args[1]
