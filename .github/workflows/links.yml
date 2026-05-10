@@ -2,14 +2,14 @@ name: Link Check
 
 on:
   pull_request:
-    branches: [main, v1]
+    branches: [main]
     paths:
       - "docs/**/*.md"
       - "docs/**/*.mdx"
       - ".lycheeignore"
       - ".github/workflows/links.yml"
   push:
-    branches: [main, v1]
+    branches: [main]
     paths:
       - "docs/**/*.md"
       - "docs/**/*.mdx"
@@ -33,6 +33,7 @@ jobs:
           fetch-depth: 1
 
       - name: Restore lychee cache
+        if: github.event_name != 'schedule'
         uses: actions/cache@v5
         with:
           path: .lycheecache
@@ -49,14 +50,14 @@ jobs:
           jobSummary: true
           output: ./lychee/out.md
 
-      - name: Fail on broken links
-        if: steps.lychee.outputs.exit_code == 1
-        run: exit 1
-
       - name: Create issue from report
-        if: steps.lychee.outputs.exit_code == 1
+        if: steps.lychee.outputs.exit_code == '2'
         uses: peter-evans/create-issue-from-file@v6
         with:
           title: Link Checker Report
           content-filepath: ./lychee/out.md
           labels: report, automated issue
+
+      - name: Fail on broken links
+        if: steps.lychee.outputs.exit_code != '0'
+        run: exit 1
