@@ -118,7 +118,7 @@ app = coco.App(
 In the main function, we walk through each project in the subdirectories and process it.
 
 It is up to you to declare the process granularity. It can be
-- at a directory level per project. For example, [code_embedding](https://github.com/cocoindex-io/cocoindex/tree/v1/examples/code_embedding) is a project, each containing multiple files,
+- at a directory level per project. For example, [code_embedding](https://github.com/cocoindex-io/cocoindex/tree/main/examples/code_embedding) is a project, each containing multiple files,
 - or at file level,
 - or at even smaller units (e.g., page level, or semantic unit level).
 
