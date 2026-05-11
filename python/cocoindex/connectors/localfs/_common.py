@@ -54,12 +54,24 @@ class FilePath(file.FilePath[pathlib.Path]):
 
     def resolve(self) -> pathlib.Path:
         """Resolve this FilePath to an absolute filesystem path."""
+        import os
+
         if self._base_dir is not None:
             import cocoindex as coco
 
             base = coco.use_context(self._base_dir)
-            return (base / self._path).resolve()
-        return pathlib.Path(self._path).resolve()
+            resolved = (base / self._path).resolve()
+            real_base = os.path.realpath(str(base))
+            real_resolved = os.path.realpath(str(resolved))
+            if not real_resolved.startswith(real_base + os.sep):
+                raise ValueError(f"Path {resolved} is outside base directory {base}")
+            return resolved
+        resolved = pathlib.Path(self._path).resolve()
+        real_cwd = os.path.realpath(os.getcwd())
+        real_resolved = os.path.realpath(str(resolved))
+        if not real_resolved.startswith(real_cwd + os.sep):
+            raise ValueError(f"Path {resolved} is outside current working directory")
+        return resolved
 
     def _with_path(self, path: pathlib.PurePath) -> Self:
         """Create a new FilePath with the given relative path, keeping the same base directory."""
