@@ -58,11 +58,11 @@ def load_user_app(app_target: str) -> types.ModuleType:
             raise Error(f"Application file path not found: {app_target}")
         app_path = os.path.abspath(app_target)
         app_dir = os.path.dirname(app_path)
-        # Use "__main__" as the module name so that functions defined in the loaded
-        # module have __module__ == "__main__", matching the behavior when running
-        # the script directly (python main.py). This keeps memoization cache keys
-        # consistent between direct execution and CLI-loaded execution.
-        module_name = "__main__"
+        # Use the file basename as the module name (e.g. main.py -> "main"). This
+        # matches the bare-module CLI form (`cocoindex update main`) so memo cache
+        # keys are consistent across both, and avoids triggering the user's
+        # `if __name__ == "__main__":` block during module loading.
+        module_name = os.path.splitext(os.path.basename(app_path))[0]
 
         # If the file lives inside a package (directory has __init__.py),
         # load it as a proper submodule so that relative imports work.
