@@ -414,6 +414,7 @@ dependencies = [
  "heed",
  "indexmap 2.14.0",
  "nix",
+ "parking_lot",
  "rmp",
  "rmp-serde",
  "rpds",

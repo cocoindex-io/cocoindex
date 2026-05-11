@@ -31,6 +31,18 @@ struct AppContextInner<Prof: EngineProfile> {
     /// previous cancellation (e.g. after `App::drop_app` finishes), allowing
     /// the same `App` instance to be reused for subsequent operations.
     cancellation_token: std::sync::Mutex<tokio_util::sync::CancellationToken>,
+
+    /// Flat registry of all live components mounted under this app.
+    /// `mount_live_async` registers (compacts then pushes) before returning;
+    /// `App::drop_app` walks this at shutdown to drain each.
+    /// Stores `Weak` so a freed `LiveComponentState` is naturally collected
+    /// on the next compaction.
+    /// Compaction-on-push: callers call `register_live_component` which removes
+    /// dead entries before appending — bounding registry size by live count
+    /// plus pending GC.
+    live_components: parking_lot::Mutex<
+        Vec<std::sync::Weak<crate::engine::live_component::LiveComponentState<Prof>>>,
+    >,
 }
 
 #[derive(Clone)]
@@ -57,8 +69,44 @@ impl<Prof: EngineProfile> AppContext<Prof> {
                 cancellation_token: std::sync::Mutex::new(
                     crate::engine::runtime::global_cancellation_token().child_token(),
                 ),
+                live_components: parking_lot::Mutex::new(Vec::new()),
             }),
         }
+    }
+
+    /// Register a live component for shutdown drain coverage.
+    ///
+    /// Compacts dead `Weak`s out of the registry before appending the new one,
+    /// so size is bounded by live + pending-GC count. The `Weak` is upgraded
+    /// during `App::drop_app`'s walk to drive `cancel_and_await_quiescence`.
+    pub fn register_live_component(
+        &self,
+        weak: std::sync::Weak<crate::engine::live_component::LiveComponentState<Prof>>,
+    ) {
+        let mut registry = self.inner.live_components.lock();
+        registry.retain(|w| w.upgrade().is_some());
+        registry.push(weak);
+    }
+
+    /// Atomically: cancel the app token AND snapshot the live-components
+    /// registry into upgraded `Arc`s. Returns the snapshot.
+    ///
+    /// Acquiring the lock first closes a race: a concurrent
+    /// `mount_live_async` mid-execution that captured an uncancelled
+    /// parent_ctx token will either (a) finish registering before this lock
+    /// acquisition (caught by the snapshot) or (b) queue behind the lock and
+    /// see the cancelled token immediately on first poll once we release.
+    pub fn cancel_and_snapshot_live_components(
+        &self,
+    ) -> Vec<Arc<crate::engine::live_component::LiveComponentState<Prof>>> {
+        let registry = self.inner.live_components.lock();
+        // Cancel inside the lock so a post-release registration sees the
+        // cancelled token.
+        self.inner.cancellation_token.lock().unwrap().cancel();
+        registry
+            .iter()
+            .filter_map(std::sync::Weak::upgrade)
+            .collect()
     }
 
     pub fn env(&self) -> &Environment<Prof> {

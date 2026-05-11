@@ -3,7 +3,6 @@ use crate::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::pin::Pin;
 use std::sync::Weak;
-use std::sync::atomic::AtomicU64;
 
 use crate::engine::context::FnCallContext;
 use crate::engine::context::{
@@ -92,28 +91,39 @@ struct ComponentInner<Prof: EngineProfile> {
     build_semaphore: tokio::sync::Semaphore,
     last_memo_fp: Mutex<Option<Fingerprint>>,
 
-    /// Latest invocation sequence number for "latest wins" ordering.
-    latest_seq: AtomicU64,
-
     /// Active child components, keyed by their full StablePath.
     /// Uses Weak references — children are kept alive by their spawned tasks
     /// and LiveComponentController references, not by this map. When a child's
     /// last strong reference is dropped, its Drop impl removes the entry here.
-    active_children: Mutex<HashMap<StablePath, Weak<ComponentInner<Prof>>>>,
+    ///
+    /// `parking_lot::Mutex` (non-poisoning): the Drop impl below acquires this
+    /// lock, and a poisoned `std::sync::Mutex` would cascade panics through
+    /// every subsequent Drop on the same parent's children map.
+    active_children: parking_lot::Mutex<HashMap<StablePath, Weak<ComponentInner<Prof>>>>,
 
     /// Shared state for a live component running at this path.
-    live_state: Mutex<Option<Arc<crate::engine::live_component::LiveComponentState>>>,
+    /// `parking_lot::Mutex` (non-poisoning): symmetric with `active_children`,
+    /// since cancel/drain paths can lock this from `Drop` as well.
+    live_state:
+        parking_lot::Mutex<Option<Arc<crate::engine::live_component::LiveComponentState<Prof>>>>,
 }
 
 impl<Prof: EngineProfile> Drop for ComponentInner<Prof> {
     fn drop(&mut self) {
         if let Some(parent) = &self.parent {
-            parent
-                .inner
-                .active_children
-                .lock()
-                .unwrap()
-                .remove(&self.stable_path);
+            // Identity check: only remove our own entry. A previous
+            // `get_child(stable_path)` may have observed our `Weak` failing to
+            // upgrade (strong_count hit zero) and inserted a *new* `Weak` at
+            // the same key BEFORE this Drop ran. Removing by key alone would
+            // erroneously delete the new entry. Compare the stored Weak's
+            // pointer against `self` to remove only if the slot still
+            // identifies us.
+            let mut children = parent.inner.active_children.lock();
+            if let Some(weak) = children.get(&self.stable_path)
+                && std::ptr::eq(weak.as_ptr(), self as *const ComponentInner<Prof>)
+            {
+                children.remove(&self.stable_path);
+            }
         }
     }
 }
@@ -332,9 +342,8 @@ impl<Prof: EngineProfile> Component<Prof> {
                 parent,
                 build_semaphore: tokio::sync::Semaphore::const_new(1),
                 last_memo_fp: Mutex::new(None),
-                latest_seq: AtomicU64::new(0),
-                active_children: Mutex::new(HashMap::new()),
-                live_state: Mutex::new(None),
+                active_children: parking_lot::Mutex::new(HashMap::new()),
+                live_state: parking_lot::Mutex::new(None),
             }),
         }
     }
@@ -389,7 +398,7 @@ impl<Prof: EngineProfile> Component<Prof> {
     }
 
     pub fn get_child(&self, stable_path: StablePath) -> Self {
-        let mut children = self.inner.active_children.lock().unwrap();
+        let mut children = self.inner.active_children.lock();
         if let Some(weak) = children.get(&stable_path) {
             if let Some(inner) = weak.upgrade() {
                 return Self { inner };
@@ -412,21 +421,22 @@ impl<Prof: EngineProfile> Component<Prof> {
         &self.inner.stable_path
     }
 
-    pub fn set_live_state(&self, state: Arc<crate::engine::live_component::LiveComponentState>) {
-        *self.inner.live_state.lock().unwrap() = Some(state);
+    pub fn set_live_state(
+        &self,
+        state: Arc<crate::engine::live_component::LiveComponentState<Prof>>,
+    ) {
+        *self.inner.live_state.lock() = Some(state);
     }
 
-    pub fn live_state(&self) -> Option<Arc<crate::engine::live_component::LiveComponentState>> {
-        self.inner.live_state.lock().unwrap().clone()
-    }
-
-    pub fn latest_seq(&self) -> &AtomicU64 {
-        &self.inner.latest_seq
+    pub fn live_state(
+        &self,
+    ) -> Option<Arc<crate::engine::live_component::LiveComponentState<Prof>>> {
+        self.inner.live_state.lock().clone()
     }
 
     /// Returns true if this component has no active children (all Weak refs are dead).
     pub fn has_active_children(&self) -> bool {
-        let children = self.inner.active_children.lock().unwrap();
+        let children = self.inner.active_children.lock();
         children.values().any(|w| w.strong_count() > 0)
     }
 

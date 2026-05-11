@@ -1498,7 +1498,7 @@ pub(crate) async fn cleanup_tombstone<Prof: EngineProfile>(
         .await
 }
 
-fn ensure_path_node_type(
+pub(crate) fn ensure_path_node_type(
     db: &db_schema::Database,
     wtxn: &mut RwTxn<'_>,
     parent_path: StablePathRef<'_>,

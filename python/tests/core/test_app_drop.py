@@ -167,3 +167,52 @@ async def test_drop_empty_app() -> None:
 
     # Verify no paths exist
     assert await coco_inspect.list_stable_paths(app) == []
+
+
+# ============================================================================
+# Slice D: drop_app live-component drain integration
+# ============================================================================
+
+
+class _CatchUpLiveComponent:
+    """Catch-up live component: process is a no-op, then process_live exits via mark_ready.
+
+    Empty `process()` is fine — declares no target states.
+    """
+
+    async def process(self) -> None:
+        pass
+
+    async def process_live(self, operator: coco.LiveComponentOperator) -> None:
+        await operator.update_full()
+        await operator.mark_ready()
+
+
+def test_drop_with_live_component_in_registry() -> None:
+    """Slice D: after a live-mode update mounts a live component, calling
+    drop_app should walk the live-components registry and drain each (with
+    30s per-component timeout). For a quiesced live component (catch-up
+    mode that mark_ready'd cleanly), the drain is a no-op and drop_app
+    completes promptly without timing out.
+    """
+    DictsTarget.store.clear()
+    _source_data.clear()
+
+    async def _main() -> None:
+        await coco.mount(coco.component_subpath("live"), _CatchUpLiveComponent)
+
+    app = coco.App(
+        coco.AppConfig(name="test_drop_live_component_drain", environment=coco_env),
+        _main,
+    )
+    # Run in catch-up mode (live=False is the default; the component's own
+    # mark_ready in non-live mode triggers process_live to suspend then be
+    # dropped via the controller's biased select).
+    app.update_blocking()
+
+    # The drain path must not hang here — registry walk + 30s-bounded drain.
+    app.drop_blocking()
+
+    # Verify state is fully cleaned up after drop.
+    assert DictsTarget.store.data == {}
+    assert coco_inspect.list_stable_paths_sync(app) == []

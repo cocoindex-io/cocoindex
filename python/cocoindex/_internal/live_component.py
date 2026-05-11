@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from contextvars import ContextVar
 from typing import (
     Any,
     Final,
@@ -26,6 +27,84 @@ _K = TypeVar("_K")
 _V = TypeVar("_V")
 _M_co = TypeVar("_M_co", covariant=True)
 _M_contra = TypeVar("_M_contra", contravariant=True)
+
+
+# ============================================================================
+# `_in_process_live` ContextVar enforcement
+# ============================================================================
+#
+# Per the design (specs/live_component/requirement.md):
+#   "process_live() may not call coco.mount() / mount_each() / use_mount() —
+#    those create children whose parent_ctx leak from outside the controller,
+#    breaking the per-controller cancellation cascade. Use operator.update /
+#    operator.delete instead."
+#
+# Enforcement: a Python `ContextVar` set to `True` for the duration of
+# `process_live(operator)`'s asyncio Task. The three mount entry points
+# (`coco.mount`, `coco.mount_each`, `coco.use_mount`) check this var and
+# raise if set.
+#
+# Symmetric reset for `process()`: `process()` is invoked from inside
+# `update_full()` which is called from `process_live` — so the asyncio
+# Task running `process()` would inherit its parent Task's `Context`
+# (where `_in_process_live = True`) and `coco.mount(...)` inside `process()`
+# would falsely raise. Reset is done inline at the top of
+# `LiveComponentOperator.update_full`: we save/restore `_in_process_live`
+# around the `update_full_async` call, so the new Task that Rust spawns
+# to run `instance.process` snapshots the current `Context` (with `False`)
+# at spawn time.
+#
+# Task-identity invariant (load-bearing, see design.md):
+#   `_process_live_wrapper` and the inline reset in `update_full` must
+#   execute on asyncio Tasks whose Context was forked from the caller's
+#   Context (so the var's value at the wrapper's / reset's `set()` call
+#   is visible when the body runs). PyO3's `from_py_future` schedules
+#   onto the current event loop without forcing a fresh Context, so the
+#   inheritance chain holds. Future-proofing: integration tests verify both:
+#     (a) `coco.mount(...)` directly inside `process_live` raises
+#     (b) `coco.mount(...)` inside `process()` of a live component does NOT raise
+#   If (a) silently stops raising, the wrapper isn't installed; if (b)
+#   starts raising, the symmetric reset isn't taking effect — both are
+#   load-bearing for the live-component installer machinery.
+_in_process_live: ContextVar[bool] = ContextVar("_in_process_live", default=False)
+
+
+def check_not_in_process_live(api_name: str) -> None:
+    """Raise if called from inside `process_live`.
+
+    Called by `coco.mount`, `coco.mount_each`, `coco.use_mount` at entry.
+    Outside of `process_live`, `_in_process_live.get()` returns the
+    default `False` (e.g. inside `process()` after `update_full`'s
+    inline reset, or in any non-live-component context).
+    """
+    if _in_process_live.get():
+        raise RuntimeError(
+            f"{api_name}() is not allowed inside process_live; "
+            f"use operator.update / operator.delete instead. "
+            f"(See specs/live_component/requirement.md for the rationale.)"
+        )
+
+
+async def _process_live_wrapper(instance: Any, operator: LiveComponentOperator) -> None:
+    """Wrap a `process_live` invocation to set `_in_process_live = True`.
+
+    Used by `_mount_live_component` (api.py) and the LiveCompClass branch
+    of `LiveComponentOperator.update`.
+
+    Save/restore the prior value rather than using `ContextVar.reset(token)`:
+    on cancellation the finally block can run in a different `Context`
+    than where the Token was created (asyncio Task cancellation can
+    swap Contexts during cleanup), and `reset(token)` then raises
+    `ValueError("Token was created in a different Context")`. Direct
+    `set(prev)` always works because we're mutating whatever the
+    current Context is.
+    """
+    prev = _in_process_live.get()
+    _in_process_live.set(True)
+    try:
+        await instance.process_live(operator)
+    finally:
+        _in_process_live.set(prev)
 
 
 @runtime_checkable
@@ -126,11 +205,24 @@ class LiveComponentOperator:
         self._path = path
 
     async def update_full(self) -> None:
-        """Trigger a full update via instance.process(). Blocks until fully ready."""
+        """Trigger a full update via instance.process(). Blocks until fully ready.
+
+        Resets `_in_process_live = False` for the duration of the call so
+        `coco.mount(...)` from inside `process()` of a live component
+        does NOT raise (we're not strictly in `process_live`'s body
+        anymore — `process()` is a separate concern). The new Task that
+        Rust spawns to run the processor's coroutine snapshots the
+        current `Context` at spawn time, so it inherits `False`.
+        """
         processor = create_core_component_processor(
             self._instance.process, self._env, self._path, (), {}
         )
-        await self._controller.update_full_async(processor)
+        prev = _in_process_live.get()
+        _in_process_live.set(False)
+        try:
+            await self._controller.update_full_async(processor)
+        finally:
+            _in_process_live.set(prev)
 
     async def update(
         self,
@@ -141,14 +233,34 @@ class LiveComponentOperator:
     ) -> Any:  # Returns ComponentMountHandle
         from .api import ComponentMountHandle
 
-        if is_live_component_class(processor_fn):
-            raise TypeError(
-                "Nested LiveComponent classes in operator.update() are not yet supported. "
-                f"Got: {processor_fn}"
-            )
         child_path = self._path
         for part in subpath.parts:
             child_path = child_path.concat(part)
+
+        # Slice F: branch on processor type. A LiveComponent class triggers
+        # the nested-mount path — we install a fresh inner controller at the
+        # child path under the parent's `update_full_lock`, then spawn the
+        # inner's `process_live`. A plain processor goes through the
+        # queued/coalesced dispatch path on the existing controller.
+        if is_live_component_class(processor_fn):
+            instance: Any = processor_fn(*args, **kwargs)
+            (
+                inner_controller,
+                readiness_handle,
+            ) = await self._controller.mount_inner_live_async(child_path)
+            inner_operator = LiveComponentOperator(
+                inner_controller, instance, self._env, child_path
+            )
+            # Wrap the inner `process_live` in `_process_live_wrapper` so
+            # `_in_process_live = True` is observable inside the inner's
+            # body. Recursive case: an outer's `_in_process_live = True`
+            # already holds; the inner's wrapper saves the prior value and
+            # restores it on exit (save/restore rather than `Token.reset`
+            # to survive cancellation across Context boundaries — see
+            # `_process_live_wrapper`'s docstring).
+            inner_controller.start(_process_live_wrapper(instance, inner_operator))
+            return ComponentMountHandle([readiness_handle])
+
         processor = create_core_component_processor(
             processor_fn, self._env, child_path, args, kwargs
         )

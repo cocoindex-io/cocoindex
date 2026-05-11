@@ -20,6 +20,26 @@ pub trait HostError: Any + StdError + Send + Sync + 'static {
     }
 }
 
+/// Concrete `HostError` representing a host-language-agnostic cancellation.
+/// Constructed via [`Error::cancelled`]; recognized by `Error::is_cancelled`
+/// and converted to `asyncio.CancelledError` at the PyO3 boundary.
+#[derive(Debug)]
+pub struct CancelledError;
+
+impl Display for CancelledError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("operation cancelled")
+    }
+}
+
+impl StdError for CancelledError {}
+
+impl HostError for CancelledError {
+    fn is_cancelled(&self) -> bool {
+        true
+    }
+}
+
 pub enum Error {
     Context { msg: String, source: Box<SError> },
     HostLang(Box<dyn HostError>),
@@ -74,6 +94,17 @@ impl Error {
 
     pub fn internal_msg(msg: impl Into<String>) -> Self {
         Self::Internal(anyhow::anyhow!("{}", msg.into()))
+    }
+
+    /// Construct a cancellation-flavored error.
+    ///
+    /// Recognizable via [`Error::is_cancelled`] from any layer (e.g. drain
+    /// task reclassification logic, host-language conversion). At the PyO3
+    /// boundary, errors with `is_cancelled() == true` are converted to
+    /// Python's `asyncio.CancelledError` so callers can `except` it
+    /// idiomatically without string-matching.
+    pub fn cancelled() -> Self {
+        Self::HostLang(Box::new(CancelledError))
     }
 
     pub fn backtrace(&self) -> Option<&Backtrace> {
