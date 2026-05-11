@@ -36,6 +36,18 @@ Both require a Google service account with access to the target Drive folders.
 2. Download the JSON credential file
 3. Share the target Drive folders with the service account's email address
 
+:::note[Google Workspace CLI]
+[`gws`](https://github.com/googleworkspace/cli) is an optional, unofficial Google Workspace CLI. It is actively developed and subject to change, but can be useful for exploring or validating Drive API access before configuring CocoIndex's service-account flow. For example:
+
+```bash
+gws auth setup
+gws auth login
+gws drive files list
+```
+
+In headless or agent workflows, `gws` can also read credentials from `GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE`. CocoIndex still expects the service account JSON path in `service_account_credential_path`; use the `gws` credentials setting for `gws` commands themselves.
+:::
+
 ### GoogleDriveSource
 
 The primary source class for iterating over Google Drive files.
