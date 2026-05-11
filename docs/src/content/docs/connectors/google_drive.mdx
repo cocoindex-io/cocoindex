@@ -36,6 +36,16 @@ Both require a Google service account with access to the target Drive folders.
 2. Download the JSON credential file
 3. Share the target Drive folders with the service account's email address
 
+:::tip[Alternative: using the `gws` CLI]
+In headless or server environments, the [`gws` CLI](https://github.com/nicholasgasior/gws) provides a convenient alternative for obtaining Google credentials:
+
+```bash
+gws auth login
+```
+
+This generates the necessary credential files that CocoIndex can use with the Google Drive connector.
+:::
+
 ### GoogleDriveSource
 
 The primary source class for iterating over Google Drive files.
