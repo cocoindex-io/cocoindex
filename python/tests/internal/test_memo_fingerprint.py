@@ -24,23 +24,23 @@ def _dummy_fn(*args: Any, **kwargs: Any) -> None:
 def test_fingerprint_dict_order_independent() -> None:
     a = {"x": 1, "y": 2}
     b = {"y": 2, "x": 1}
-    assert fingerprint_call(_dummy_fn, (a,), {}) == fingerprint_call(
-        _dummy_fn, (b,), {}
+    assert fingerprint_call(_dummy_fn, (a,), {}, []) == fingerprint_call(
+        _dummy_fn, (b,), {}, []
     )
 
 
 def test_fingerprint_set_order_independent() -> None:
     a = {3, 1, 2}
     b = {2, 3, 1}
-    assert fingerprint_call(_dummy_fn, (a,), {}) == fingerprint_call(
-        _dummy_fn, (b,), {}
+    assert fingerprint_call(_dummy_fn, (a,), {}, []) == fingerprint_call(
+        _dummy_fn, (b,), {}, []
     )
 
 
 def test_different_types_do_not_collide() -> None:
-    f_int = fingerprint_call(_dummy_fn, (1,), {})
-    f_str = fingerprint_call(_dummy_fn, ("1",), {})
-    f_bytes = fingerprint_call(_dummy_fn, (b"1",), {})
+    f_int = fingerprint_call(_dummy_fn, (1,), {}, [])
+    f_str = fingerprint_call(_dummy_fn, ("1",), {}, [])
+    f_bytes = fingerprint_call(_dummy_fn, (b"1",), {}, [])
     assert f_int != f_str
     assert f_int != f_bytes
     assert f_str != f_bytes
@@ -51,8 +51,8 @@ def test_different_types_do_not_collide() -> None:
 def test_nan_is_deterministic() -> None:
     nan1 = float("nan")
     nan2 = math.nan
-    assert fingerprint_call(_dummy_fn, (nan1,), {}) == fingerprint_call(
-        _dummy_fn, (nan2,), {}
+    assert fingerprint_call(_dummy_fn, (nan1,), {}, []) == fingerprint_call(
+        _dummy_fn, (nan2,), {}, []
     )
 
 
@@ -68,9 +68,9 @@ def test_hook_overrides_default_behavior() -> None:
     # Behavioral properties (avoid asserting on canonical form implementation details):
     # - Same memo-key-relevant data => same fingerprint
     # - Different memo-key-relevant data => different fingerprint
-    fp_a = fingerprint_call(_dummy_fn, (X(123, "a"),), {})
-    fp_irrelevant_changed = fingerprint_call(_dummy_fn, (X(123, "b"),), {})
-    fp_b = fingerprint_call(_dummy_fn, (X(124, "a"),), {})
+    fp_a = fingerprint_call(_dummy_fn, (X(123, "a"),), {}, [])
+    fp_irrelevant_changed = fingerprint_call(_dummy_fn, (X(123, "b"),), {}, [])
+    fp_b = fingerprint_call(_dummy_fn, (X(124, "a"),), {}, [])
     assert fp_a == fp_irrelevant_changed
     assert fp_a != fp_b
 
@@ -83,9 +83,9 @@ def test_registry_overrides_default_behavior() -> None:
 
     register_memo_key_function(Y, lambda y: ("y", y.v))
     try:
-        fp_a = fingerprint_call(_dummy_fn, (Y(5, "a"),), {})
-        fp_irrelevant_changed = fingerprint_call(_dummy_fn, (Y(5, "b"),), {})
-        fp_b = fingerprint_call(_dummy_fn, (Y(6, "a"),), {})
+        fp_a = fingerprint_call(_dummy_fn, (Y(5, "a"),), {}, [])
+        fp_irrelevant_changed = fingerprint_call(_dummy_fn, (Y(5, "b"),), {}, [])
+        fp_b = fingerprint_call(_dummy_fn, (Y(6, "a"),), {}, [])
         assert fp_a == fp_irrelevant_changed
         assert fp_a != fp_b
     finally:
@@ -109,8 +109,8 @@ def test_hook_and_registry_include_type_name_to_avoid_collisions() -> None:
             # Identical payload as A on purpose.
             return ("same", self.v)
 
-    assert fingerprint_call(_dummy_fn, (A(1),), {}) != fingerprint_call(
-        _dummy_fn, (B(1),), {}
+    assert fingerprint_call(_dummy_fn, (A(1),), {}, []) != fingerprint_call(
+        _dummy_fn, (B(1),), {}, []
     )
 
     class C:
@@ -124,8 +124,8 @@ def test_hook_and_registry_include_type_name_to_avoid_collisions() -> None:
     register_memo_key_function(C, lambda x: ("same", x.v))
     register_memo_key_function(D, lambda x: ("same", x.v))
     try:
-        assert fingerprint_call(_dummy_fn, (C(1),), {}) != fingerprint_call(
-            _dummy_fn, (D(1),), {}
+        assert fingerprint_call(_dummy_fn, (C(1),), {}, []) != fingerprint_call(
+            _dummy_fn, (D(1),), {}, []
         )
     finally:
         unregister_memo_key_function(C)
@@ -138,8 +138,8 @@ def test_cycles_are_supported_and_deterministic() -> None:
     a.append(a)
     b: Any = []
     b.append(b)
-    assert fingerprint_call(_dummy_fn, (a,), {}) == fingerprint_call(
-        _dummy_fn, (b,), {}
+    assert fingerprint_call(_dummy_fn, (a,), {}, []) == fingerprint_call(
+        _dummy_fn, (b,), {}, []
     )
 
     # Self-cycle dict
@@ -147,8 +147,8 @@ def test_cycles_are_supported_and_deterministic() -> None:
     d1["self"] = d1
     d2: dict[str, object] = {}
     d2["self"] = d2
-    assert fingerprint_call(_dummy_fn, (d1,), {}) == fingerprint_call(
-        _dummy_fn, (d2,), {}
+    assert fingerprint_call(_dummy_fn, (d1,), {}, []) == fingerprint_call(
+        _dummy_fn, (d2,), {}, []
     )
 
     # Mutual reference pair
@@ -160,25 +160,25 @@ def test_cycles_are_supported_and_deterministic() -> None:
     y2: list[object] = []
     x2.append(y2)
     y2.append(x2)
-    assert fingerprint_call(_dummy_fn, (x1,), {}) == fingerprint_call(
-        _dummy_fn, (x2,), {}
+    assert fingerprint_call(_dummy_fn, (x1,), {}, []) == fingerprint_call(
+        _dummy_fn, (x2,), {}, []
     )
 
 
 def test_pickle_fallback_for_unsupported_objects() -> None:
     # complex is not one of the supported primitives/containers, but is picklable.
-    assert fingerprint_call(_dummy_fn, (complex(1, 2),), {}) == fingerprint_call(
-        _dummy_fn, (complex(1, 2),), {}
+    assert fingerprint_call(_dummy_fn, (complex(1, 2),), {}, []) == fingerprint_call(
+        _dummy_fn, (complex(1, 2),), {}, []
     )
 
     # A simple user-defined type (module-level) should also work via pickle fallback.
-    assert fingerprint_call(_dummy_fn, (_PickleableZ(),), {}) == fingerprint_call(
-        _dummy_fn, (_PickleableZ(),), {}
+    assert fingerprint_call(_dummy_fn, (_PickleableZ(),), {}, []) == fingerprint_call(
+        _dummy_fn, (_PickleableZ(),), {}, []
     )
 
     # Unpicklable payloads should raise the original TypeError.
     try:
-        fingerprint_call(_dummy_fn, (lambda x: x,), {})
+        fingerprint_call(_dummy_fn, (lambda x: x,), {}, [])
         assert False, "Expected TypeError"
     except TypeError:
         pass
@@ -197,13 +197,13 @@ def test_dataclass_memo_key() -> None:
     p3 = Point(x=2, y=1)
 
     # Same values -> same fingerprint
-    assert fingerprint_call(_dummy_fn, (p1,), {}) == fingerprint_call(
-        _dummy_fn, (p2,), {}
+    assert fingerprint_call(_dummy_fn, (p1,), {}, []) == fingerprint_call(
+        _dummy_fn, (p2,), {}, []
     )
 
     # Different values -> different fingerprint
-    assert fingerprint_call(_dummy_fn, (p1,), {}) != fingerprint_call(
-        _dummy_fn, (p3,), {}
+    assert fingerprint_call(_dummy_fn, (p1,), {}, []) != fingerprint_call(
+        _dummy_fn, (p3,), {}, []
     )
 
 
@@ -224,8 +224,8 @@ def test_dataclass_field_order_preserved() -> None:
     p2 = PointYX(y=2, x=1)
 
     # Different field order -> different fingerprint (by design)
-    assert fingerprint_call(_dummy_fn, (p1,), {}) != fingerprint_call(
-        _dummy_fn, (p2,), {}
+    assert fingerprint_call(_dummy_fn, (p1,), {}, []) != fingerprint_call(
+        _dummy_fn, (p2,), {}, []
     )
 
 
@@ -246,13 +246,13 @@ def test_dataclass_nested() -> None:
     o3 = Outer(inner=Inner(value=43), name="test")
 
     # Same values -> same fingerprint
-    assert fingerprint_call(_dummy_fn, (o1,), {}) == fingerprint_call(
-        _dummy_fn, (o2,), {}
+    assert fingerprint_call(_dummy_fn, (o1,), {}, []) == fingerprint_call(
+        _dummy_fn, (o2,), {}, []
     )
 
     # Different nested values -> different fingerprint
-    assert fingerprint_call(_dummy_fn, (o1,), {}) != fingerprint_call(
-        _dummy_fn, (o3,), {}
+    assert fingerprint_call(_dummy_fn, (o1,), {}, []) != fingerprint_call(
+        _dummy_fn, (o3,), {}, []
     )
 
 
@@ -271,8 +271,8 @@ def test_dataclass_different_types_same_fields() -> None:
     b = TypeB(value=1)
 
     # Different types -> different fingerprints
-    assert fingerprint_call(_dummy_fn, (a,), {}) != fingerprint_call(
-        _dummy_fn, (b,), {}
+    assert fingerprint_call(_dummy_fn, (a,), {}, []) != fingerprint_call(
+        _dummy_fn, (b,), {}, []
     )
 
 
@@ -292,13 +292,13 @@ def test_dataclass_override_with_coco_memo_key() -> None:
     w3 = WithOverride(value=2, ignored="a")
 
     # Same memo-key-relevant data -> same fingerprint (custom hook ignores 'ignored')
-    assert fingerprint_call(_dummy_fn, (w1,), {}) == fingerprint_call(
-        _dummy_fn, (w2,), {}
+    assert fingerprint_call(_dummy_fn, (w1,), {}, []) == fingerprint_call(
+        _dummy_fn, (w2,), {}, []
     )
 
     # Different memo-key-relevant data -> different fingerprint
-    assert fingerprint_call(_dummy_fn, (w1,), {}) != fingerprint_call(
-        _dummy_fn, (w3,), {}
+    assert fingerprint_call(_dummy_fn, (w1,), {}, []) != fingerprint_call(
+        _dummy_fn, (w3,), {}, []
     )
 
 
@@ -319,13 +319,13 @@ def test_pydantic_memo_key() -> None:
     p3 = Point(x=2, y=1)
 
     # Same values -> same fingerprint
-    assert fingerprint_call(_dummy_fn, (p1,), {}) == fingerprint_call(
-        _dummy_fn, (p2,), {}
+    assert fingerprint_call(_dummy_fn, (p1,), {}, []) == fingerprint_call(
+        _dummy_fn, (p2,), {}, []
     )
 
     # Different values -> different fingerprint
-    assert fingerprint_call(_dummy_fn, (p1,), {}) != fingerprint_call(
-        _dummy_fn, (p3,), {}
+    assert fingerprint_call(_dummy_fn, (p1,), {}, []) != fingerprint_call(
+        _dummy_fn, (p3,), {}, []
     )
 
 
@@ -346,13 +346,13 @@ def test_pydantic_includes_unset_fields() -> None:
     c3 = Config(name="test", value=43)  # different value
 
     # Same effective values -> same fingerprint
-    assert fingerprint_call(_dummy_fn, (c1,), {}) == fingerprint_call(
-        _dummy_fn, (c2,), {}
+    assert fingerprint_call(_dummy_fn, (c1,), {}, []) == fingerprint_call(
+        _dummy_fn, (c2,), {}, []
     )
 
     # Different values -> different fingerprint
-    assert fingerprint_call(_dummy_fn, (c1,), {}) != fingerprint_call(
-        _dummy_fn, (c3,), {}
+    assert fingerprint_call(_dummy_fn, (c1,), {}, []) != fingerprint_call(
+        _dummy_fn, (c3,), {}, []
     )
 
 
@@ -376,13 +376,13 @@ def test_pydantic_nested() -> None:
     o3 = Outer(inner=Inner(value=43), name="test")
 
     # Same values -> same fingerprint
-    assert fingerprint_call(_dummy_fn, (o1,), {}) == fingerprint_call(
-        _dummy_fn, (o2,), {}
+    assert fingerprint_call(_dummy_fn, (o1,), {}, []) == fingerprint_call(
+        _dummy_fn, (o2,), {}, []
     )
 
     # Different nested values -> different fingerprint
-    assert fingerprint_call(_dummy_fn, (o1,), {}) != fingerprint_call(
-        _dummy_fn, (o3,), {}
+    assert fingerprint_call(_dummy_fn, (o1,), {}, []) != fingerprint_call(
+        _dummy_fn, (o3,), {}, []
     )
 
 
@@ -404,8 +404,8 @@ def test_pydantic_different_types_same_fields() -> None:
     b = TypeB(value=1)
 
     # Different types -> different fingerprints
-    assert fingerprint_call(_dummy_fn, (a,), {}) != fingerprint_call(
-        _dummy_fn, (b,), {}
+    assert fingerprint_call(_dummy_fn, (a,), {}, []) != fingerprint_call(
+        _dummy_fn, (b,), {}, []
     )
 
 
@@ -429,13 +429,13 @@ def test_pydantic_override_with_coco_memo_key() -> None:
     w3 = WithOverride(value=2, ignored="a")
 
     # Same memo-key-relevant data -> same fingerprint (custom hook ignores 'ignored')
-    assert fingerprint_call(_dummy_fn, (w1,), {}) == fingerprint_call(
-        _dummy_fn, (w2,), {}
+    assert fingerprint_call(_dummy_fn, (w1,), {}, []) == fingerprint_call(
+        _dummy_fn, (w2,), {}, []
     )
 
     # Different memo-key-relevant data -> different fingerprint
-    assert fingerprint_call(_dummy_fn, (w1,), {}) != fingerprint_call(
-        _dummy_fn, (w3,), {}
+    assert fingerprint_call(_dummy_fn, (w1,), {}, []) != fingerprint_call(
+        _dummy_fn, (w3,), {}, []
     )
 
 
@@ -460,8 +460,8 @@ def test_dataclass_and_pydantic_different_types() -> None:
     p = PydanticPoint(x=1, y=2)
 
     # Different type kinds -> different fingerprints
-    assert fingerprint_call(_dummy_fn, (d,), {}) != fingerprint_call(
-        _dummy_fn, (p,), {}
+    assert fingerprint_call(_dummy_fn, (d,), {}, []) != fingerprint_call(
+        _dummy_fn, (p,), {}, []
     )
 
 
@@ -490,8 +490,8 @@ def test_shook_tag_produces_different_fingerprint_from_hook() -> None:
         def __coco_memo_state__(self, prev_state: object) -> MemoStateOutcome:
             return MemoStateOutcome(state=prev_state, memo_valid=True)
 
-    fp_hook = fingerprint_call(_dummy_fn, (HookOnly(42),), {})
-    fp_shook = fingerprint_call(_dummy_fn, (HookAndState(42),), {})
+    fp_hook = fingerprint_call(_dummy_fn, (HookOnly(42),), {}, [])
+    fp_shook = fingerprint_call(_dummy_fn, (HookAndState(42),), {}, [])
     # "shook" tag intentionally changes fingerprint to force re-execution
     assert fp_hook != fp_shook
 
@@ -507,8 +507,8 @@ def test_shook_fingerprint_is_deterministic() -> None:
         def __coco_memo_state__(self, prev_state: object) -> MemoStateOutcome:
             return MemoStateOutcome(state=prev_state, memo_valid=True)
 
-    fp1 = fingerprint_call(_dummy_fn, (Stateful(99),), {})
-    fp2 = fingerprint_call(_dummy_fn, (Stateful(99),), {})
+    fp1 = fingerprint_call(_dummy_fn, (Stateful(99),), {}, [])
+    fp2 = fingerprint_call(_dummy_fn, (Stateful(99),), {}, [])
     assert fp1 == fp2
 
 
@@ -554,22 +554,6 @@ def test_state_methods_collected_from_registry() -> None:
         unregister_memo_key_function(Registered)
 
 
-def test_state_methods_not_collected_when_list_is_none() -> None:
-    class WithState:
-        def __init__(self, v: object) -> None:
-            self.v = v
-
-        def __coco_memo_key__(self) -> object:
-            return self.v
-
-        def __coco_memo_state__(self, prev_state: object) -> MemoStateOutcome:
-            return MemoStateOutcome(state=prev_state, memo_valid=True)
-
-    # Should not raise — state_methods defaults to None
-    fp = fingerprint_call(_dummy_fn, (WithState(1),), {})
-    assert len(bytes(fp)) == 16
-
-
 def test_multiple_state_methods_collected_in_order() -> None:
     class S1:
         def __coco_memo_key__(self) -> object:
@@ -603,6 +587,59 @@ def test_no_state_methods_for_hook_only_objects() -> None:
     assert len(methods) == 0
 
 
+def test_state_methods_collected_through_dataclass_field() -> None:
+    from cocoindex._internal.memo_fingerprint import StateFnEntry
+
+    class WithState:
+        def __init__(self, v: object) -> None:
+            self.v = v
+
+        def __coco_memo_key__(self) -> object:
+            return self.v
+
+        def __coco_memo_state__(self, prev_state: object) -> MemoStateOutcome:
+            return MemoStateOutcome(state=prev_state, memo_valid=True)
+
+    @dataclasses.dataclass
+    class Outer:
+        inner: WithState
+
+    methods: list[Any] = []
+    fingerprint_call(_dummy_fn, (Outer(WithState(42)),), {}, state_methods=methods)
+    assert len(methods) == 1
+    assert isinstance(methods[0], StateFnEntry)
+
+
+def test_state_methods_collected_through_pydantic_field() -> None:
+    try:
+        from pydantic import BaseModel, ConfigDict
+    except ImportError:
+        pytest.skip("pydantic not installed")
+        return
+    from cocoindex._internal.memo_fingerprint import StateFnEntry
+
+    class WithState:
+        def __init__(self, v: object) -> None:
+            self.v = v
+
+        def __coco_memo_key__(self) -> object:
+            return self.v
+
+        def __coco_memo_state__(self, prev_state: object) -> MemoStateOutcome:
+            return MemoStateOutcome(state=prev_state, memo_valid=True)
+
+    class Outer(BaseModel):
+        model_config = ConfigDict(arbitrary_types_allowed=True)
+        inner: WithState
+
+    methods: list[Any] = []
+    fingerprint_call(
+        _dummy_fn, (Outer(inner=WithState(42)),), {}, state_methods=methods
+    )
+    assert len(methods) == 1
+    assert isinstance(methods[0], StateFnEntry)
+
+
 def _named_dummy_fn(n: int, s: str, p: Any) -> None:
     raise RuntimeError("not called")
 
@@ -615,8 +652,8 @@ def test_apply_memo_key_can_ignore_parameter() -> None:
     args1, kwargs1 = _apply_memo_key((1, 2), {}, compiled)
     args2, kwargs2 = _apply_memo_key((1, 3), {}, compiled)
 
-    fp1 = fingerprint_call(foo, args1, kwargs1)
-    fp2 = fingerprint_call(foo, args2, kwargs2)
+    fp1 = fingerprint_call(foo, args1, kwargs1, [])
+    fp2 = fingerprint_call(foo, args2, kwargs2, [])
     assert fp1 == fp2
 
 
@@ -628,8 +665,8 @@ def test_apply_memo_key_can_transform_parameter() -> None:
     args1, kwargs1 = _apply_memo_key((1, 20), {}, compiled)
     args2, kwargs2 = _apply_memo_key((1, 29), {}, compiled)
 
-    fp1 = fingerprint_call(foo, args1, kwargs1)
-    fp2 = fingerprint_call(foo, args2, kwargs2)
+    fp1 = fingerprint_call(foo, args1, kwargs1, [])
+    fp2 = fingerprint_call(foo, args2, kwargs2, [])
     assert fp1 == fp2
 
 
@@ -639,11 +676,11 @@ def test_apply_memo_key_preserves_default_fingerprint_shape_for_missing_optional
     def foo(a: int, b: int = 10) -> None:
         return None
 
-    fp_default = fingerprint_call(foo, (1,), {})
+    fp_default = fingerprint_call(foo, (1,), {}, [])
 
     compiled = _normalize_memo_key(foo, {"b": lambda x: x + 1})
     args, kwargs = _apply_memo_key((1,), {}, compiled)
-    fp_with_memo_key = fingerprint_call(foo, args, kwargs)
+    fp_with_memo_key = fingerprint_call(foo, args, kwargs, [])
 
     assert fp_with_memo_key == fp_default
 
@@ -653,12 +690,14 @@ def test_fingerprint_call_prefix_args_affect_fingerprint() -> None:
         _named_dummy_fn,
         (1, "same", {"x": 1}),
         {},
+        [],
         prefix_args=("path/a",),
     )
     fp_b = fingerprint_call(
         _named_dummy_fn,
         (1, "same", {"x": 1}),
         {},
+        [],
         prefix_args=("path/b",),
     )
     assert fp_a != fp_b
