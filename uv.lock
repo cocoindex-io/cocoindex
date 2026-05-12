@@ -240,6 +240,32 @@ wheels = [
 ]
 
 [[package]]
+name = "apache-iggy"
+version = "0.8.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/25/7a/890fcddcf7cc3f7a45a0675a935cfb69dbb0fa106e2157b79f407ef1a777/apache_iggy-0.8.0.tar.gz", hash = "sha256:f95e48eff23db962a290cbfe587dc7cc1bf2fe707c5462f39554c2741fd33c4e", size = 429484, upload-time = "2026-04-22T10:08:48.893Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b3/fb/615f997e3903362b392883344a5f521d8d6f54cf84a880e72867c333b0a5/apache_iggy-0.8.0-cp311-cp311-macosx_10_12_x86_64.whl", hash = "sha256:f1617e6e1566de70a8fd769c5289d082e792b079e372f7c8d0c4f55676fd1bbc", size = 4985244, upload-time = "2026-04-22T10:09:07.611Z" },
+    { url = "https://files.pythonhosted.org/packages/90/55/853f82f7e4fbed8b50603512b6138296189a709b05ea4186c6600aef5c1a/apache_iggy-0.8.0-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:c1cc1b0c6df2fecae490cfb74d2c67b5c022e929cbf22b336440e67264187f30", size = 4837488, upload-time = "2026-04-22T10:08:55.382Z" },
+    { url = "https://files.pythonhosted.org/packages/81/6e/2cdcad6415114b9f6fd2e52a1631ce2b86e6057324f8469049a7d4931765/apache_iggy-0.8.0-cp311-cp311-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:32c399bdfc6541b0382989aa1bb47047fffae68fd182b12bdb8bfb0019a97812", size = 5238427, upload-time = "2026-04-22T10:09:06.147Z" },
+    { url = "https://files.pythonhosted.org/packages/ce/c1/8375cf8c899c58aba1086fc960cfec0cb4ee081f08b786b0c62720d3aedf/apache_iggy-0.8.0-cp311-cp311-manylinux_2_34_x86_64.whl", hash = "sha256:e2734829c928331e94a5c6b7fe2dbab01e0a58e850fa37ba5d933558ee07e0f9", size = 5350766, upload-time = "2026-04-22T10:08:45.569Z" },
+    { url = "https://files.pythonhosted.org/packages/d9/2a/564406cceaa9b166f40518920c70d4ca62bfa4b5cc2d29ae671eb02c4e7e/apache_iggy-0.8.0-cp311-cp311-musllinux_1_2_aarch64.whl", hash = "sha256:cf609dd61f8dcd91e2bb4140af53e5a8c8f2619e478130efcf692960b5bb9dbd", size = 5412635, upload-time = "2026-04-22T10:09:00.213Z" },
+    { url = "https://files.pythonhosted.org/packages/84/76/47c2c7158dcd68d6bdbc0fab7f05f2268d490b514efcc31244a27953039a/apache_iggy-0.8.0-cp311-cp311-musllinux_1_2_x86_64.whl", hash = "sha256:dbe050ea2359e9706fbbe03c65280a271366395863d9c713b6302324ccdd5b2b", size = 5572601, upload-time = "2026-04-22T10:08:57.519Z" },
+    { url = "https://files.pythonhosted.org/packages/40/2e/c78859c13c6429068e0977335246aeda03b58ec93de4c9d2c3941db1f714/apache_iggy-0.8.0-cp312-cp312-macosx_10_12_x86_64.whl", hash = "sha256:df06b870a0efaf1056bc1129c1e455dd52433364e03e1c2284977bc30b3d8c1d", size = 4982710, upload-time = "2026-04-22T10:09:04.698Z" },
+    { url = "https://files.pythonhosted.org/packages/f3/4a/84d4dad2c4dfd667869ae4fc493187bbce56e0bd0dc3f80c78df29013924/apache_iggy-0.8.0-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:7ed7a449425ffd426bbfbe64d2c618c14e0fae99fc275adf3a8d98ef16fcdf3c", size = 4836098, upload-time = "2026-04-22T10:09:01.759Z" },
+    { url = "https://files.pythonhosted.org/packages/f4/4e/7156a034705a1af5146547e9ee25e8c159a313fb6800e1cb5fc39306f6b9/apache_iggy-0.8.0-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:7e8700ffe6dc0602d874d4d54f148f1093109012421138721fa8a1da0e2e7aa0", size = 5233334, upload-time = "2026-04-22T10:08:31.392Z" },
+    { url = "https://files.pythonhosted.org/packages/3f/28/2963cdef38b5b0eae2ce950ca3530b8bfeff9c729088831fcd4d5cb83473/apache_iggy-0.8.0-cp312-cp312-manylinux_2_34_x86_64.whl", hash = "sha256:198c9ed00d90ab279494aed0fe538a5d5890b5549d92937ed3d99f39beab2d47", size = 5342600, upload-time = "2026-04-22T10:08:33.193Z" },
+    { url = "https://files.pythonhosted.org/packages/9f/b1/a3200ed7b4e2f666fcf076d494bbf10a94ff01095dab6b1c8aa57f09fb01/apache_iggy-0.8.0-cp312-cp312-musllinux_1_2_aarch64.whl", hash = "sha256:55a8681d43f40d6e1bf1ba937bb0a867fbe43b361d885ca96abe0f1b4d3ba171", size = 5407815, upload-time = "2026-04-22T10:08:42.66Z" },
+    { url = "https://files.pythonhosted.org/packages/d0/04/789406935af89fe8a1570c40841281937a29d9486f8a5167d34c5da99868/apache_iggy-0.8.0-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:ff6c1c4a2219986baea25acc055f9adb159da8171cbe5a85105829cf41fb828f", size = 5565518, upload-time = "2026-04-22T10:08:53.5Z" },
+    { url = "https://files.pythonhosted.org/packages/23/53/8880bac8e972f437ee55bf54ec75f89d1adcd736e40e3a2f66367ea931d3/apache_iggy-0.8.0-cp313-cp313-macosx_10_12_x86_64.whl", hash = "sha256:247b7fad1bfb98d533c79b2a4c4d1d337f35918b9591480489de3b3365e09bc1", size = 4982324, upload-time = "2026-04-22T10:08:39.556Z" },
+    { url = "https://files.pythonhosted.org/packages/85/21/39d8d0c429cbe2e2f203b42a542aae50add7cff8d01ad7d1ef1874696cf6/apache_iggy-0.8.0-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:bd4aedf9ad5af8192d51122ad4122a267927f13f7bdc72515d2956be2208484e", size = 4836015, upload-time = "2026-04-22T10:08:44.078Z" },
+    { url = "https://files.pythonhosted.org/packages/b2/3e/ad2f7b041b1c6f75b1a0dec953050a154fd352e093c782470ee884468b65/apache_iggy-0.8.0-cp313-cp313-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:0161acc29310dcb084381caa57dc3e912a23b70fae45944318d8e9449b8d42d7", size = 5233947, upload-time = "2026-04-22T10:09:09.001Z" },
+    { url = "https://files.pythonhosted.org/packages/b3/fc/0a63ac51e7d0c4e80eb77c1d5286a8d447f3f25803c6d62cee06661442e4/apache_iggy-0.8.0-cp313-cp313-manylinux_2_34_x86_64.whl", hash = "sha256:e10863db5863309a1564d489d8c33765513bcb1841717bacb2834ab362c2388c", size = 5342330, upload-time = "2026-04-22T10:08:50.363Z" },
+    { url = "https://files.pythonhosted.org/packages/7e/fe/0b9fa52eccc93736cc6429c41c13b78652d056c62207a1e48c37ff390d26/apache_iggy-0.8.0-cp313-cp313-musllinux_1_2_aarch64.whl", hash = "sha256:96b863008503685c4c21b07641af758ead10ccdf0e1e48e8520466c4dc5d48c3", size = 5408022, upload-time = "2026-04-22T10:08:34.882Z" },
+    { url = "https://files.pythonhosted.org/packages/f0/7f/c4d6607704e2ad524d285c126aefe696f1b55d51c8856a5fecb40cc63481/apache_iggy-0.8.0-cp313-cp313-musllinux_1_2_x86_64.whl", hash = "sha256:73be0d5d9f1bdf582527eb7cdea2fc9a8111ca2adea4e8a02e89f4a6a137da80", size = 5565128, upload-time = "2026-04-22T10:08:38.07Z" },
+]
+
+[[package]]
 name = "async-timeout"
 version = "5.0.1"
 source = { registry = "https://pypi.org/simple" }
@@ -538,6 +564,7 @@ all = [
     { name = "aiobotocore" },
     { name = "aiohttp" },
     { name = "aiomysql" },
+    { name = "apache-iggy" },
     { name = "asyncpg" },
     { name = "colpali-engine" },
     { name = "confluent-kafka" },
@@ -588,6 +615,9 @@ google-drive = [
     { name = "google-auth" },
     { name = "google-auth-httplib2" },
     { name = "httplib2" },
+]
+iggy = [
+    { name = "apache-iggy" },
 ]
 kafka = [
     { name = "confluent-kafka" },
@@ -694,6 +724,8 @@ requires-dist = [
     { name = "aiohttp", marker = "extra == 'doris'", specifier = ">=3.9.0" },
     { name = "aiomysql", marker = "extra == 'all'", specifier = ">=0.2.0" },
     { name = "aiomysql", marker = "extra == 'doris'", specifier = ">=0.2.0" },
+    { name = "apache-iggy", marker = "extra == 'all'", specifier = ">=0.8.0" },
+    { name = "apache-iggy", marker = "extra == 'iggy'", specifier = ">=0.8.0" },
     { name = "asyncpg", marker = "extra == 'all'", specifier = ">=0.31.0" },
     { name = "asyncpg", marker = "extra == 'postgres'", specifier = ">=0.31.0" },
     { name = "click", specifier = ">=8.1.8" },
@@ -748,7 +780,7 @@ requires-dist = [
     { name = "typing-extensions", specifier = ">=4.12" },
     { name = "watchdog", specifier = ">=6.0.0" },
 ]
-provides-extras = ["all", "amazon-s3", "colpali", "doris", "entity-resolution", "entity-resolution-llm", "falkordb", "google-drive", "kafka", "lancedb", "litellm", "neo4j", "oci", "postgres", "qdrant", "sentence-transformers", "sqlite", "surrealdb", "turbopuffer"]
+provides-extras = ["all", "amazon-s3", "colpali", "doris", "entity-resolution", "entity-resolution-llm", "falkordb", "google-drive", "iggy", "kafka", "lancedb", "litellm", "neo4j", "oci", "postgres", "qdrant", "sentence-transformers", "sqlite", "surrealdb", "turbopuffer"]
 
 [package.metadata.requires-dev]
 build-test = [
