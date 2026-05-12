@@ -28,7 +28,7 @@ from cocoindex.connectorkits.async_adapters import async_to_sync_iter
 
 
 # Valid SQL identifier pattern: starts with letter or underscore, contains only letters, digits, underscores, or $ (for temp tables)
-_VALID_IDENTIFIER_RE = re.compile(r'^[a-zA-Z_][a-zA-Z0-9_$]*$')
+_VALID_IDENTIFIER_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_$]*$")
 
 try:
     import asyncpg  # type: ignore
