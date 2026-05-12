@@ -575,8 +575,31 @@ def ls(app_target: str | None, db: str | None) -> None:
     default=False,
     help="Display stable paths as a tree with component annotations.",
 )
+@click.option(
+    "-l",
+    "--detail",
+    is_flag=True,
+    default=False,
+    help="Show detailed LMDB information for each stable path.",
+)
+@click.option(
+    "-r",
+    "recursive",
+    is_flag=True,
+    default=False,
+    help="Show children of the specified stable path recursively.",
+)
+@click.option(
+    "-p",
+    "parents",
+    is_flag=True,
+    default=False,
+    help="Show parents of the specified stable path.",
+)
 def show(
-    app_target: str | None, db: str | None, app_name: str | None, tree: bool
+    app_target: str | None, db: str | None, app_name: str | None,
+    tree: bool, detail: bool = False, recursive: bool = False, parents: bool = False,
+    stable_path: str | None = None,
 ) -> None:
     """
     Show the app's stable paths.
@@ -592,9 +615,9 @@ def show(
                 "Warning: --db/--app-name are ignored when APP_TARGET is specified.",
                 err=True,
             )
-        asyncio.run(_show_from_app(_load_app(app_target), tree))
+        asyncio.run(_show_from_app(_load_app(app_target), tree, detail, stable_path, recursive, parents))
     elif db and app_name:
-        asyncio.run(_show_from_database(db, app_name, tree))
+        asyncio.run(_show_from_database(db, app_name, tree, detail, stable_path, recursive, parents))
     elif db or app_name:
         raise click.ClickException(
             "Both --db and --app-name are required when APP_TARGET is not specified."
@@ -607,14 +630,14 @@ def show(
         )
 
 
-async def _show_from_app(app: App[Any, Any], tree: bool) -> None:
+async def _show_from_app(app: App[Any, Any], tree: bool, detail: bool = False, stable_path: str | None = None, recursive: bool = False, parents: bool = False) -> None:
     try:
         await _show_stable_paths(iter_stable_paths(app), tree)
     finally:
         await _stop_all_environments()
 
 
-async def _show_from_database(db_path: str, app_name: str, tree: bool) -> None:
+async def _show_from_database(db_path: str, app_name: str, tree: bool, detail: bool = False, stable_path: str | None = None, recursive: bool = False, parents: bool = False) -> None:
     db_path_obj = pathlib.Path(db_path)
     if not db_path_obj.exists():
         raise click.ClickException(f"Database path does not exist: {db_path}")
