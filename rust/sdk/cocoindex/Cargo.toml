@@ -2,9 +2,11 @@
 name = "cocoindex"
 version = "0.1.0"
 edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
 
 [dependencies]
-cocoindex-macros = { path = "../cocoindex-macros" }
+cocoindex_macros = { path = "../cocoindex_macros" }
 cocoindex_core = { path = "../../core", package = "cocoindex_core" }
 cocoindex_utils = { path = "../../utils", package = "cocoindex_utils" }
 thiserror = "2"

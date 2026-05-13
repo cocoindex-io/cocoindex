@@ -5,8 +5,10 @@ members = [
     "rust/py",
     "rust/py_utils",
     "rust/ops_text",
+    "rust/sdk/cocoindex",
+    "rust/sdk/cocoindex_macros",
 ]
-resolver = "2"
+resolver = "3"
 
 [workspace.package]
 version = "999.0.0"

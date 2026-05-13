@@ -29,13 +29,6 @@ repos:
         types: [rust]
         pass_filenames: false
 
-      - id: cargo-fmt-rust-sdk
-        name: cargo fmt (rust sdk)
-        entry: cargo fmt --manifest-path rust/sdk/Cargo.toml --all --check
-        language: system
-        files: ^rust/sdk/
-        pass_filenames: false
-
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.12.0
     hooks:
@@ -55,7 +48,7 @@ repos:
           name: mypy type check
           entry: uv run mypy
           language: system
-          files: ^(python/|examples/|pyproject\.toml)
+          files: ^(python/|examples/|benchmarks/|pyproject\.toml)
           pass_filenames: false
 
         - id: maturin-develop
@@ -72,18 +65,18 @@ repos:
           files: ^(rust/|Cargo\.toml)
           pass_filenames: false
 
-        - id: cargo-test-rust-sdk
-          name: cargo test (rust sdk)
-          entry: cargo test --locked --manifest-path rust/sdk/Cargo.toml -p cocoindex
+        - id: cargo-test-rust-externs
+          name: cargo test (rust examples + benchmarks)
+          entry: ./dev/run_cargo_test_rust_externs.sh
           language: system
-          files: ^rust/sdk/
+          files: ^(rust/sdk/|examples/rust/|benchmarks/.*/rust/)
           pass_filenames: false
 
-        - id: cargo-test-rust-sdk-example
-          name: cargo test (rust sdk example)
-          entry: cargo test --locked --manifest-path rust/sdk/examples/multi-codebase-summarization/Cargo.toml
+        - id: cargo-tree-sdk-no-pyo3
+          name: cargo tree (cocoindex SDK must not depend on pyo3)
+          entry: ./dev/check_sdk_no_pyo3.sh
           language: system
-          files: ^rust/sdk/
+          files: ^(rust/sdk/|rust/core/|rust/utils/|Cargo\.toml)
           pass_filenames: false
 
         - id: pytest
