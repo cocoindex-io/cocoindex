@@ -1,6 +1,6 @@
 # Multi-Codebase Summarization 📝
 
-Rust equivalent of the Python [`multi_codebase_summarization`](../../../examples/multi_codebase_summarization) example.
+Rust equivalent of the Python [`multi_codebase_summarization`](../../multi_codebase_summarization) example.
 
 Scans subdirectories of a root folder (each treated as a Python project), uses an LLM to extract structured info (public classes, functions, CocoIndex pipeline graphs), aggregates into project-level summaries, and outputs markdown documentation.
 
@@ -18,7 +18,7 @@ export LLM_BASE_URL="https://api.openai.com/v1"  # default
 ## Build
 
 ```sh
-cd rust/sdk/examples/multi-codebase-summarization
+cd examples/rust/multi-codebase-summarization
 cargo build --release
 ```
 
@@ -27,12 +27,12 @@ cargo build --release
 **Summarize** all Python examples in this repo:
 
 ```sh
-cargo run -- ../../../../examples ./output
+cargo run -- ../.. ./output
 ```
 
 This will:
 
-1. Scan each subdirectory of `../../../../examples` as a project
+1. Scan each subdirectory of `../..` as a project
 2. Walk `*.py` and `**/*.py` files in each project
 3. Extract per-file info via LLM (memoized — unchanged files skip the LLM)
 4. Aggregate into a project-level summary via LLM (memoized — unchanged projects skip the LLM)
@@ -41,7 +41,7 @@ This will:
 **Re-run** — unchanged files and unchanged project summaries are cached (memoized in LMDB), so a fully warm rerun makes zero LLM calls:
 
 ```sh
-cargo run -- ../../../../examples ./output
+cargo run -- ../.. ./output
 # Much faster — skips files and project summaries already analyzed
 ```
 

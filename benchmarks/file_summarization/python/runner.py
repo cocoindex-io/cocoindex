@@ -18,11 +18,12 @@ from common import (
 )
 
 
-BASE_DIR = Path(__file__).resolve().parent
-RUST_MANIFEST = BASE_DIR / "benchmark_rust" / "Cargo.toml"
-RUST_BIN = BASE_DIR / "benchmark_rust" / "target" / "release" / "benchmark_rust"
-PYTHON_BIN = BASE_DIR / "benchmark_python.py"
-WORK_ROOT = BASE_DIR / ".work"
+PY_DIR = Path(__file__).resolve().parent
+BENCH_ROOT = PY_DIR.parent
+RUST_MANIFEST = BENCH_ROOT / "rust" / "Cargo.toml"
+RUST_BIN = BENCH_ROOT / "rust" / "target" / "release" / "file_summarization"
+PYTHON_BIN = PY_DIR / "benchmark.py"
+WORK_ROOT = BENCH_ROOT / ".work"
 PHASES = ("cold", "warm", "edit", "shape")
 
 
@@ -66,7 +67,7 @@ def parse_args() -> argparse.Namespace:
 def build_rust_binary() -> None:
     subprocess.run(
         ["cargo", "build", "--release", "--manifest-path", str(RUST_MANIFEST)],
-        cwd=BASE_DIR,
+        cwd=BENCH_ROOT,
         check=True,
     )
 
@@ -88,7 +89,7 @@ def run_language(
             "uv",
             "run",
             "--project",
-            str(BASE_DIR),
+            str(PY_DIR),
             "python",
             str(PYTHON_BIN),
             "--scenario",
@@ -125,7 +126,7 @@ def run_language(
             phase,
         ]
 
-    subprocess.run(cmd, cwd=BASE_DIR, env=env, check=True)
+    subprocess.run(cmd, cwd=BENCH_ROOT, env=env, check=True)
     return json.loads(metrics_path.read_text(encoding="utf-8"))
 
 

@@ -158,7 +158,7 @@ package = false
 python_version = "3.11"
 strict = true
 
-files = ["python", "examples"]
+files = ["python", "examples", "benchmarks"]
 
 # This allows 'import cocoindex' to work inside examples
 mypy_path = "python"
@@ -237,7 +237,7 @@ module = [
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
-module = ["examples.*"]
+module = ["examples.*", "benchmarks.*"]
 
 # Silence missing import errors for optional dependencies
 disable_error_code = ["import-not-found", "import-untyped", "untyped-decorator"]

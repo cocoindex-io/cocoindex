@@ -1,5 +1,5 @@
 [package]
-name = "benchmark_rust"
+name = "file_summarization"
 version = "0.1.0"
 edition = "2024"
 

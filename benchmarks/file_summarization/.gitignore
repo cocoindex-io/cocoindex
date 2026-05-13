@@ -1,8 +1,11 @@
 # Python venv
 .venv/
 
-# Rust build artifacts (benchmark_rust crate)
+# Rust build artifacts
 **/target/
+
+# uv lockfile (regenerated per environment)
+**/uv.lock
 
 # Generated benchmark data
 data/

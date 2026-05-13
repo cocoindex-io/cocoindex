@@ -1,6 +1,6 @@
 # Files Transform
 
-Rust equivalent of the Python [`files_transform`](../../../examples/files_transform)
+Rust equivalent of the Python [`files_transform`](../../files_transform)
 example.
 
 It walks a directory of markdown files, memoizes the markdown-to-HTML transform
@@ -9,7 +9,7 @@ per file, and writes one HTML file per markdown input.
 ## Build
 
 ```sh
-cd rust/sdk/examples/files-transform
+cd examples/rust/files-transform
 cargo build --release
 ```
 
@@ -18,12 +18,12 @@ cargo build --release
 Run against the sample data from the Python example:
 
 ```sh
-cargo run -- ../../../../examples/files_transform/data ./output_html
+cargo run -- ../../files_transform/data ./output_html
 ```
 
 Defaults:
 
-- source dir: `../../../../examples/files_transform/data`
+- source dir: `../../files_transform/data`
 - output dir: `./output_html`
 
 ## Notes

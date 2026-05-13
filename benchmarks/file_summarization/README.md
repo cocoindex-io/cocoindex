@@ -135,26 +135,26 @@ trustworthy.
 
 ```sh
 # fastest smoke check — tiny dataset, one scenario
-python3 runner.py --scenario codebase --profile mixed --scale tiny
+./run.sh --scenario codebase --profile mixed --scale tiny
 
 # medium is where the real numbers start
-python3 runner.py --scenario all --profile mixed --scale medium --trials 3
+./run.sh --scenario all --profile mixed --scale medium --trials 3
 
 # full matrix (all scenarios × all profiles)
-python3 runner.py --scenario all --profile all --scale large
+./run.sh --scenario all --profile all --scale large
 
 # the 10k+ file matrix behind BENCHMARK_REPORT.md
-python3 runner.py --scenario all --profile all --scale xlarge
+./run.sh --scenario all --profile all --scale xlarge
 
 # JSON output for piping into something else
-python3 runner.py --scenario all --profile all --scale tiny --format json
+./run.sh --scenario all --profile all --scale tiny --format json
 ```
 
-`./run.sh` is just `exec python3 runner.py "$@"`, so the flags are identical.
+`./run.sh` is a thin wrapper that invokes `python/runner.py`, so flags pass through identically.
 
 Under the hood the runner will:
 
-1. Build `benchmark_rust` in release mode.
+1. Build the Rust binary (`rust/`) in release mode.
 2. Create `.work/<scenario>/<profile>/<scale>/trial_NN/` with fresh dataset,
    state, and output dirs.
 3. For each of `cold / warm / edit / shape`: run Rust, run Python, compare
@@ -192,16 +192,18 @@ Scales in plain English:
 ## Where everything lives
 
 ```
-benchmark_py_vs_rs/
+benchmarks/file_summarization/
 ├─ README.md              ← you are here
 ├─ BENCHMARK_REPORT.md    ← captured results across the full matrix
-├─ runner.py              ← orchestrator
-├─ run.sh                 ← thin wrapper: exec python3 runner.py "$@"
-├─ common.py              ← dataset generator, mutations, Python reference impl
-├─ benchmark_python.py    ← CocoIndex Python SDK pipeline
-├─ benchmark_rust/        ← CocoIndex Rust SDK pipeline (Cargo crate)
+├─ run.sh                 ← thin wrapper: invokes python/runner.py
+├─ python/
+│  ├─ runner.py           ← orchestrator (builds Rust, runs both, compares)
+│  ├─ benchmark.py        ← CocoIndex Python SDK pipeline
+│  ├─ common.py           ← dataset generator, mutations, Python reference impl
+│  └─ pyproject.toml      ← uv project pinning the local cocoindex editable install
+├─ rust/                  ← CocoIndex Rust SDK pipeline (Cargo crate)
+│  ├─ Cargo.toml
 │  └─ src/main.rs
-├─ pyproject.toml         ← uv project pinning the local cocoindex editable install
 └─ .work/                 ← per-trial dataset/state/output (gitignored)
 ```
 
@@ -228,7 +230,7 @@ A healthy edit/shape phase has both *small* and bounded.
 
 ## How to read the timing tables
 
-`runner.py --format table` prints one block per `(scenario, profile)`:
+`./run.sh --format table` prints one block per `(scenario, profile)`:
 
 ```
 Scenario: codebase | Profile: cpu
