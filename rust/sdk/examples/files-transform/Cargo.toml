@@ -1,0 +1,11 @@
+[workspace]
+
+[package]
+name = "files-transform"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+cocoindex = { path = "../../cocoindex" }
+tokio = { version = "1", features = ["full"] }
+pulldown-cmark = "0.13"

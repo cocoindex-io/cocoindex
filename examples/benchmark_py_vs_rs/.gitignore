@@ -1,0 +1,16 @@
+# Python venv
+.venv/
+
+# Rust build artifacts (benchmark_rust crate)
+**/target/
+
+# Generated benchmark data
+data/
+
+# Benchmark outputs
+output_*/
+.work/
+
+# Pipeline runtime state
+.cocoindex/
+coco_state/

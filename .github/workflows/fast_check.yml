@@ -33,4 +33,4 @@ jobs:
           extra-args: '--all-files'
         env:
           # Skip heavy build/test hooks - only run fast formatting/linting checks
-          PREK_SKIP: uv-lock,mypy-check,maturin-develop,cargo-test,pytest,generate-cli-docs
+          PREK_SKIP: uv-lock,mypy-check,maturin-develop,cargo-test,cargo-test-rust-sdk,cargo-test-rust-sdk-example,pytest,generate-cli-docs

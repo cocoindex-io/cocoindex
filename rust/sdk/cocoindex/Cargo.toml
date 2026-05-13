@@ -1,0 +1,33 @@
+[package]
+name = "cocoindex"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+cocoindex-macros = { path = "../cocoindex-macros" }
+cocoindex_core = { path = "../../core", package = "cocoindex_core" }
+cocoindex_utils = { path = "../../utils", package = "cocoindex_utils" }
+thiserror = "2"
+bytes = "1"
+serde = { version = "1", features = ["derive"] }
+rmp-serde = "1"
+tokio = { version = "1", features = ["fs", "sync"] }
+futures = "0.3"
+tracing = "0.1"
+globset = "0.4"
+walkdir = "2"
+async-trait = "0.1"
+rustc-hash = "2.1.1"
+
+
+
+[dev-dependencies]
+tempfile = "3"
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+criterion = "0.5"
+glob = "0.3"
+
+[[bench]]
+name = "sdk_microbench"
+harness = false

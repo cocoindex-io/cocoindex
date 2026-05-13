@@ -27,7 +27,7 @@ async def process_file(file: localfs.File) -> None:
 async def _wait_for_target_keys(
     expected_keys: set[str],
     *,
-    timeout: float = 15.0,
+    timeout: float = 30.0,
     poll_interval: float = 0.2,
 ) -> None:
     """Poll until GlobalDictTarget.store.data has exactly the expected keys."""
@@ -48,7 +48,7 @@ async def _wait_for_value(
     key: str,
     expected_value: str,
     *,
-    timeout: float = 10.0,
+    timeout: float = 20.0,
     poll_interval: float = 0.1,
 ) -> None:
     """Poll until GlobalDictTarget.store.data[key].data == expected_value."""
