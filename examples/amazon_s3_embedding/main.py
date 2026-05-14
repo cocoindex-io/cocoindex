@@ -20,6 +20,7 @@ import aiobotocore.session
 import asyncpg
 from aiobotocore.client import AioBaseClient
 from numpy.typing import NDArray
+from pgvector.asyncpg import register_vector
 
 import cocoindex as coco
 from cocoindex.connectors import amazon_s3, postgres
@@ -172,7 +173,7 @@ async def query_once(
 
 async def query() -> None:
     embedder = SentenceTransformerEmbedder(EMBED_MODEL)
-    async with await asyncpg.create_pool(DATABASE_URL) as pool:
+    async with await asyncpg.create_pool(DATABASE_URL, init=register_vector) as pool:
         if len(sys.argv) > 2:
             q = " ".join(sys.argv[2:])
             await query_once(pool, embedder, q)

@@ -28,6 +28,7 @@ import oci  # type: ignore[import-not-found]
 from confluent_kafka.aio import AIOConsumer  # type: ignore[import-not-found]
 from numpy.typing import NDArray
 from oci.object_storage import ObjectStorageClient  # type: ignore[import-not-found]
+from pgvector.asyncpg import register_vector
 
 import cocoindex as coco
 from cocoindex.connectors import kafka, oci_object_storage, postgres
@@ -237,7 +238,7 @@ async def query_once(
 
 async def query() -> None:
     embedder = SentenceTransformerEmbedder(EMBED_MODEL)
-    async with await asyncpg.create_pool(DATABASE_URL) as pool:
+    async with await asyncpg.create_pool(DATABASE_URL, init=register_vector) as pool:
         if len(sys.argv) > 2:
             q = " ".join(sys.argv[2:])
             await query_once(pool, embedder, q)

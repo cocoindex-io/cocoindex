@@ -25,6 +25,7 @@ from docling.datamodel.base_models import DocumentStream
 from docling.document_converter import DocumentConverter
 from numpy.typing import NDArray
 import asyncpg
+from pgvector.asyncpg import register_vector
 
 import cocoindex as coco
 from cocoindex.connectors import localfs, postgres
@@ -183,7 +184,7 @@ async def query() -> None:
         raise ValueError("POSTGRES_URL is not set")
 
     embedder = SentenceTransformerEmbedder(EMBED_MODEL)
-    async with await asyncpg.create_pool(database_url) as pool:
+    async with await asyncpg.create_pool(database_url, init=register_vector) as pool:
         if len(sys.argv) > 2:
             q = " ".join(sys.argv[2:])
             await query_once(pool, embedder, q)

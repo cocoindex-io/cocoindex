@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from typing import AsyncIterator, Annotated
 
 import asyncpg
+from pgvector.asyncpg import register_vector
 from numpy.typing import NDArray
 from openai import OpenAI
 from dotenv import load_dotenv
@@ -323,7 +324,7 @@ async def query() -> None:
         raise ValueError("POSTGRES_URL is not set")
 
     embedder = SentenceTransformerEmbedder(EMBED_MODEL)
-    async with await asyncpg.create_pool(database_url) as pool:
+    async with await asyncpg.create_pool(database_url, init=register_vector) as pool:
         if len(sys.argv) > 2:
             q = " ".join(sys.argv[2:])
             await query_once(pool, embedder, q)
