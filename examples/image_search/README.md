@@ -13,10 +13,15 @@ We appreciate a star ⭐ at [CocoIndex Github](https://github.com/cocoindex-io/c
 - Qdrant for vector storage
 
 ## Setup
-- [Install Postgres](https://cocoindex.io/docs/getting_started/installation#-install-postgres) if you don't have one.
+- A running Postgres. If you don't have one, start a local instance with the compose file in this repo:
+
+  ```sh
+  docker compose -f ../../dev/postgres.yaml up -d
+  ```
 
 - Make sure Qdrant is running
-  ```
+
+  ```sh
   docker run -d -p 6334:6334 -p 6333:6333 qdrant/qdrant
   ```
 

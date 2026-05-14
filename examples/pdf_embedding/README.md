@@ -8,7 +8,11 @@ We appreciate a star ⭐ at [CocoIndex Github](https://github.com/cocoindex-io/c
 
 ## Prerequisite
 
-[Install Postgres](https://cocoindex.io/docs/getting_started/installation#-install-postgres) if you don't have one.
+A running Postgres with the pgvector extension. If you don't have one, start a local instance with the compose file in this repo:
+
+```sh
+docker compose -f ../../dev/postgres.yaml up -d
+```
 
 ## Run
 
