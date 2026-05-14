@@ -12,7 +12,12 @@ Because CocoIndex is incremental, re-running after new sessions only processes w
 
 ## Prerequisites
 
-- Postgres with pgvector extension
+- Postgres with the pgvector extension. If you don't have one, start a local instance with the compose file in this repo:
+
+  ```sh
+  docker compose -f ../../dev/postgres.yaml up -d
+  ```
+
 - [Entire](https://entire.io) installed with some captured sessions
 - Python 3.11+
 

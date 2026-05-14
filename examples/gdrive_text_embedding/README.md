@@ -4,15 +4,20 @@ This example embeds text files from Google Drive, stores chunk embeddings in Pos
 
 ## Prerequisites
 
-- A running Postgres with the pgvector extension available
+- A running Postgres with the pgvector extension. If you don't have one, start a local instance with the compose file in this repo:
+
+  ```sh
+  docker compose -f ../../dev/postgres.yaml up -d
+  ```
+
 - A Google Cloud service account with Drive access
 - Environment variables:
 
-```sh
-export POSTGRES_URL="postgres://cocoindex:cocoindex@localhost/cocoindex"
-export GOOGLE_SERVICE_ACCOUNT_CREDENTIAL="/path/to/service-account.json"
-export GOOGLE_DRIVE_ROOT_FOLDER_IDS="folder_id_1,folder_id_2"
-```
+  ```sh
+  export POSTGRES_URL="postgres://cocoindex:cocoindex@localhost/cocoindex"
+  export GOOGLE_SERVICE_ACCOUNT_CREDENTIAL="/path/to/service-account.json"
+  export GOOGLE_DRIVE_ROOT_FOLDER_IDS="folder_id_1,folder_id_2"
+  ```
 
 ## Run
 

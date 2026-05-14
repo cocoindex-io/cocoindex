@@ -6,7 +6,12 @@ It optionally subscribes to **OCI Streaming** (Kafka-protocol-compatible) for li
 
 ## Prerequisites
 
-- A running Postgres with the pgvector extension available
+- A running Postgres with the pgvector extension. If you don't have one, start a local instance with the compose file in this repo:
+
+  ```sh
+  docker compose -f ../../dev/postgres.yaml up -d
+  ```
+
 - An OCI Object Storage bucket with markdown files
 - An OCI config file (default `~/.oci/config`) with API-key auth set up — see [OCI SDK config docs](https://docs.oracle.com/en-us/iaas/Content/API/Concepts/sdkconfig.htm)
 - *(Optional, for live mode)* An OCI Streaming stream pool with object events from the bucket published to a topic, plus a streaming auth token

@@ -8,7 +8,12 @@ We appreciate a star ⭐ at [CocoIndex Github](https://github.com/cocoindex-io/c
 
 ## Prerequisites
 
-- [Install Postgres](https://cocoindex.io/docs/getting_started/installation#-install-postgres)
+- A running Postgres with the pgvector extension. If you don't have one, start a local instance with the compose file in this repo:
+
+  ```sh
+  docker compose -f ../../dev/postgres.yaml up -d
+  ```
+
 - Set `OPENAI_API_KEY` for metadata extraction
 - Set `POSTGRES_URL` for Postgres access
 

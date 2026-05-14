@@ -4,14 +4,19 @@ This example transcribes local audio files with LiteLLM and stores one row per f
 
 ## Prerequisites
 
-- A running Postgres database.
+- A running Postgres database. If you don't have one, start a local instance with the compose file in this repo:
+
+  ```sh
+  docker compose -f ../../dev/postgres.yaml up -d
+  ```
+
 - LiteLLM credentials for the transcription model. For the default `whisper-1` model, set `OPENAI_API_KEY`.
 - `POSTGRES_URL` set, e.g.
 
-```sh
-export POSTGRES_URL="postgres://cocoindex:cocoindex@localhost/cocoindex"
-export OPENAI_API_KEY="..."
-```
+  ```sh
+  export POSTGRES_URL="postgres://cocoindex:cocoindex@localhost/cocoindex"
+  export OPENAI_API_KEY="..."
+  ```
 
 ## Input Files
 
