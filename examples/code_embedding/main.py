@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from typing import AsyncIterator, Annotated
 
 import asyncpg
+from pgvector.asyncpg import register_vector
 from numpy.typing import NDArray
 
 import cocoindex as coco
@@ -184,7 +185,7 @@ async def query_once(
 
 async def query() -> None:
     embedder = SentenceTransformerEmbedder(EMBED_MODEL)
-    async with await asyncpg.create_pool(DATABASE_URL) as pool:
+    async with await asyncpg.create_pool(DATABASE_URL, init=register_vector) as pool:
         if len(sys.argv) > 2:
             q = " ".join(sys.argv[2:])
             await query_once(pool, embedder, q)
