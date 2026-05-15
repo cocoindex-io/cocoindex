@@ -961,16 +961,17 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
     async def _ensure_pgvector_extension(
         self,
         conn: asyncpg.pool.PoolConnectionProxy[asyncpg.Record],
-        pg_schema_name: str | None,
     ) -> None:
         """
         Ensure the pgvector extension is installed.
 
-        Postgres extensions are installed per-database but can live in a chosen
-        schema; when `pg_schema_name` is provided we request installing into it.
+        The extension is installed into its default schema (typically `public`),
+        which is on the default `search_path`. We deliberately do not tie the
+        extension's location to the target table's schema: extensions are a
+        database-wide resource, and pinning `vector` to a per-app schema would
+        leave the unqualified `vector(N)` references in DDL unresolved.
         """
-        schema_clause = f' WITH SCHEMA "{pg_schema_name}"' if pg_schema_name else ""
-        await conn.execute(f"CREATE EXTENSION IF NOT EXISTS vector{schema_clause}")
+        await conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
 
     async def _create_table(
         self,
@@ -989,7 +990,7 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
 
         # Ensure pgvector extension exists if needed by any column type.
         if _schema_uses_pgvector(schema):
-            await self._ensure_pgvector_extension(conn, key.pg_schema_name)
+            await self._ensure_pgvector_extension(conn)
 
         # Build column definitions
         col_defs = []
@@ -1025,7 +1026,7 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
         for sub_key, action in column_actions.items():
             if sub_key == _EXT_PGVECTOR_SUBKEY:
                 if action != "delete":
-                    await self._ensure_pgvector_extension(conn, key.pg_schema_name)
+                    await self._ensure_pgvector_extension(conn)
                 continue
 
             if not sub_key.startswith(_COL_SUBKEY_PREFIX):
