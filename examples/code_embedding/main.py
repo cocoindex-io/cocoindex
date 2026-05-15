@@ -16,6 +16,7 @@ import os
 import pathlib
 import sys
 from dataclasses import dataclass
+from dotenv import load_dotenv
 from typing import AsyncIterator, Annotated
 
 import asyncpg
@@ -61,7 +62,7 @@ async def coco_lifespan(
     builder: coco.EnvironmentBuilder,
 ) -> AsyncIterator[None]:
     # Provide resources needed across the CocoIndex environment
-    async with await asyncpg.create_pool(DATABASE_URL) as pool:
+    async with asyncpg.create_pool(DATABASE_URL) as pool:
         builder.provide(PG_DB, pool)
         builder.provide(EMBEDDER, SentenceTransformerEmbedder(EMBED_MODEL))
         yield
@@ -185,7 +186,7 @@ async def query_once(
 
 async def query() -> None:
     embedder = SentenceTransformerEmbedder(EMBED_MODEL)
-    async with await asyncpg.create_pool(DATABASE_URL, init=register_vector) as pool:
+    async with asyncpg.create_pool(DATABASE_URL, init=register_vector) as pool:
         if len(sys.argv) > 2:
             q = " ".join(sys.argv[2:])
             await query_once(pool, embedder, q)
@@ -204,6 +205,11 @@ async def update_index() -> None:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "query":
+    load_dotenv()
+    if len(sys.argv) == 1:
+        # Update the index. Equivalent to running `cocoindex update main`.
+        asyncio.run(update_index())
+    elif sys.argv[1] == "query":
         asyncio.run(query())
-    asyncio.run(update_index())
+    else:
+        print("Usage: main.py [query <search terms>]")

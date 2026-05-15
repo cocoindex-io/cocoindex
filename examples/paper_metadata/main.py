@@ -165,7 +165,7 @@ async def coco_lifespan(
     if not database_url:
         raise ValueError("POSTGRES_URL is not set")
 
-    async with await asyncpg.create_pool(database_url) as pool:
+    async with asyncpg.create_pool(database_url) as pool:
         builder.provide(PG_DB, pool)
         builder.provide(EMBEDDER, SentenceTransformerEmbedder(EMBED_MODEL))
         yield
@@ -324,7 +324,7 @@ async def query() -> None:
         raise ValueError("POSTGRES_URL is not set")
 
     embedder = SentenceTransformerEmbedder(EMBED_MODEL)
-    async with await asyncpg.create_pool(database_url, init=register_vector) as pool:
+    async with asyncpg.create_pool(database_url, init=register_vector) as pool:
         if len(sys.argv) > 2:
             q = " ".join(sys.argv[2:])
             await query_once(pool, embedder, q)
@@ -337,7 +337,17 @@ async def query() -> None:
             await query_once(pool, embedder, q)
 
 
+async def update_index() -> None:
+    async with coco.runtime():
+        await coco.show_progress(app.update())
+
+
 if __name__ == "__main__":
     load_dotenv()
-    if len(sys.argv) > 1 and sys.argv[1] == "query":
+    if len(sys.argv) == 1:
+        # Update the index. Equivalent to running `cocoindex update main`.
+        asyncio.run(update_index())
+    elif sys.argv[1] == "query":
         asyncio.run(query())
+    else:
+        print("Usage: main.py [query <search terms>]")

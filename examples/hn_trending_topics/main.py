@@ -13,6 +13,7 @@ import sys
 import pathlib
 from dataclasses import dataclass
 from datetime import datetime
+from dotenv import load_dotenv
 from typing import Any, AsyncIterator
 
 import aiohttp
@@ -190,7 +191,7 @@ async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]
     # For CocoIndex internal states
     builder.settings.db_path = pathlib.Path("./cocoindex.db")
     # Provide resources needed across the CocoIndex environment
-    async with await asyncpg.create_pool(DATABASE_URL) as pool:
+    async with asyncpg.create_pool(DATABASE_URL) as pool:
         builder.provide(PG_DB, pool)
         yield
 
@@ -406,6 +407,17 @@ async def query_demo() -> None:
         await pool.close()
 
 
+async def update_index() -> None:
+    async with coco.runtime():
+        await coco.show_progress(app.update())
+
+
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "query":
+    load_dotenv()
+    if len(sys.argv) == 1:
+        # Update the index. Equivalent to running `cocoindex update main`.
+        asyncio.run(update_index())
+    elif sys.argv[1] == "query":
         asyncio.run(query_demo())
+    else:
+        print("Usage: main.py [query]")

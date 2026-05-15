@@ -15,6 +15,7 @@ import asyncio
 import pathlib
 import sys
 from dataclasses import dataclass
+from dotenv import load_dotenv
 from typing import AsyncIterator, Annotated
 
 from numpy.typing import NDArray
@@ -181,6 +182,17 @@ async def query() -> None:
         await query_once(conn, embedder, q)
 
 
+async def update_index() -> None:
+    async with coco.runtime():
+        await coco.show_progress(app.update())
+
+
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "query":
+    load_dotenv()
+    if len(sys.argv) == 1:
+        # Update the index. Equivalent to running `cocoindex update main`.
+        asyncio.run(update_index())
+    elif sys.argv[1] == "query":
         asyncio.run(query())
+    else:
+        print("Usage: main.py [query <search terms>]")

@@ -28,10 +28,16 @@ Set a database URL (or use `.env`):
 export POSTGRES_URL="postgres://cocoindex:cocoindex@localhost/cocoindex"
 ```
 
-Build/update the index:
+Build/update the index. Either of the following works:
 
 ```sh
-cocoindex update main.py
+cocoindex update main
+```
+
+or
+
+```sh
+python main.py
 ```
 
 Query:

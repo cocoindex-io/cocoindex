@@ -30,10 +30,16 @@ For simplicity, we use the same database for source and target. You can also set
 
 ## Run
 
-Build/update the index:
+Build/update the index. Either of the following works:
 
 ```sh
-cocoindex update main.py
+cocoindex update main
+```
+
+or
+
+```sh
+python main.py
 ```
 
 Query:

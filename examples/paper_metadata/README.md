@@ -34,10 +34,16 @@ export POSTGRES_URL="postgres://cocoindex:cocoindex@localhost/cocoindex"
 
 This example uses the `coco_examples_v1` schema by default to avoid clashing with the legacy example tables.
 
-Build/update the index:
+Build/update the index. Either of the following works:
 
 ```sh
-cocoindex update main.py
+cocoindex update main
+```
+
+or
+
+```sh
+python main.py
 ```
 
 Query:

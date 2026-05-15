@@ -23,10 +23,16 @@ Install deps:
 pip install -e .
 ```
 
-Build/update the index (stores data in `./lancedb_data/`):
+Build/update the index (stores data in `./lancedb_data/`). Either of the following works:
 
 ```sh
-cocoindex update main.py
+cocoindex update main
+```
+
+or
+
+```sh
+python main.py
 ```
 
 Query:
