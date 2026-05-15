@@ -27,22 +27,16 @@ Install deps:
 pip install -e .
 ```
 
-Build/update the index. Either of the following works:
+Build/update the index (one-shot catch-up; the google_drive source does not support live mode):
 
 ```sh
 cocoindex update main
 ```
 
-or
-
-```sh
-python main.py
-```
-
 Query:
 
 ```sh
-python main.py query "what is self-attention?"
+python main.py "what is self-attention?"
 ```
 
 Note: this example does not create a vector index; queries do a sequential scan.

@@ -30,20 +30,14 @@ For simplicity, we use the same database for source and target. You can also set
 
 ## Run
 
-Build/update the index. Either of the following works:
+Build/update the index (one-shot catch-up; the postgres source does not support live mode):
 
 ```sh
 cocoindex update main
 ```
 
-or
-
-```sh
-python main.py
-```
-
 Query:
 
 ```sh
-python main.py query "wireless headphones"
+python main.py "wireless headphones"
 ```

@@ -1,14 +1,14 @@
 """
 Entire Session Search - CocoIndex pipeline example.
 
-Indexes AI coding session data captured by Entire (https://entire.io)
-into Postgres with pgvector for semantic search.
+Index (use `-L` for live mode, omit for one-shot catch-up):
+    cocoindex update main
+    cocoindex update -L main
 
-Handles four file types from Entire's checkpoint format:
-- full.jsonl:  conversation transcript (chunked + embedded)
-- prompt.txt:  user's initial prompt (embedded directly)
-- context.md:  AI-generated session summary (chunked + embedded)
-- metadata.json: token counts, files touched, timestamps (stored as metadata)
+Query the index:
+    python main.py "your query"
+
+Pipeline: indexes AI coding session checkpoints from Entire (https://entire.io) — transcripts, prompts, context summaries, and metadata — into Postgres with pgvector for semantic search.
 """
 
 from __future__ import annotations
@@ -310,6 +310,7 @@ async def app_main(checkpoints_dir: pathlib.Path) -> None:
             ],
             excluded_patterns=["**/content_hash.txt"],
         ),
+        live=True,  # source supports live watch; pass -L to `cocoindex update` to actually run live
     )
     await coco.mount_each(process_file, files.items(), emb_table, meta_table)
 
@@ -362,12 +363,11 @@ async def query_once(
         print("---")
 
 
-async def query() -> None:
+async def query(initial_query: str | None = None) -> None:
     embedder = SentenceTransformerEmbedder(EMBED_MODEL)
     async with asyncpg.create_pool(DATABASE_URL, init=register_vector) as pool:
-        if len(sys.argv) > 2:
-            q = " ".join(sys.argv[2:])
-            await query_once(pool, embedder, q)
+        if initial_query is not None:
+            await query_once(pool, embedder, initial_query)
             return
 
         while True:
@@ -377,17 +377,7 @@ async def query() -> None:
             await query_once(pool, embedder, q)
 
 
-async def update_index() -> None:
-    async with coco.runtime():
-        await coco.show_progress(app.update())
-
-
 if __name__ == "__main__":
     load_dotenv()
-    if len(sys.argv) == 1:
-        # Update the index. Equivalent to running `cocoindex update main`.
-        asyncio.run(update_index())
-    elif sys.argv[1] == "query":
-        asyncio.run(query())
-    else:
-        print("Usage: main.py [query <search terms>]")
+    initial = " ".join(sys.argv[1:]) if len(sys.argv) > 1 else None
+    asyncio.run(query(initial))

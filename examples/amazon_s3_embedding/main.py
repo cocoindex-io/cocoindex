@@ -1,11 +1,13 @@
 """
-Amazon S3 Text Embedding (v1) — CocoIndex pipeline example.
+Amazon S3 Text Embedding (v1) - CocoIndex pipeline example.
 
-- List markdown files from an S3 bucket
-- Chunk text (RecursiveSplitter)
-- Embed chunks (SentenceTransformers)
-- Store into Postgres with pgvector column (no vector index)
-- Query demo using pgvector cosine distance (<=>)
+Index (one-shot catch-up; live mode is not supported for the amazon_s3 source):
+    cocoindex update main
+
+Query the index:
+    python main.py "your query"
+
+Pipeline: list markdown files from S3 -> chunk -> embed -> store in pgvector.
 """
 
 from __future__ import annotations
@@ -59,7 +61,6 @@ async def coco_lifespan(
         builder.provide(PG_DB, pool)
         builder.provide(EMBEDDER, SentenceTransformerEmbedder(EMBED_MODEL))
 
-        # Create aiobotocore S3 client.
         # Set AWS_ENDPOINT_URL for S3-compatible services (e.g. MinIO).
         session = aiobotocore.session.get_session()
         async with session.create_client("s3") as s3_client:
@@ -137,11 +138,6 @@ app = coco.App(
 )
 
 
-# ============================================================================
-# Query demo (no vector index)
-# ============================================================================
-
-
 async def query_once(
     pool: asyncpg.Pool,
     embedder: SentenceTransformerEmbedder,
@@ -172,12 +168,11 @@ async def query_once(
         print("---")
 
 
-async def query() -> None:
+async def query(initial_query: str | None = None) -> None:
     embedder = SentenceTransformerEmbedder(EMBED_MODEL)
     async with asyncpg.create_pool(DATABASE_URL, init=register_vector) as pool:
-        if len(sys.argv) > 2:
-            q = " ".join(sys.argv[2:])
-            await query_once(pool, embedder, q)
+        if initial_query is not None:
+            await query_once(pool, embedder, initial_query)
             return
 
         while True:
@@ -187,17 +182,7 @@ async def query() -> None:
             await query_once(pool, embedder, q)
 
 
-async def update_index() -> None:
-    async with coco.runtime():
-        await coco.show_progress(app.update())
-
-
 if __name__ == "__main__":
     load_dotenv()
-    if len(sys.argv) == 1:
-        # Update the index. Equivalent to running `cocoindex update main`.
-        asyncio.run(update_index())
-    elif sys.argv[1] == "query":
-        asyncio.run(query())
-    else:
-        print("Usage: main.py [query <search terms>]")
+    initial = " ".join(sys.argv[1:]) if len(sys.argv) > 1 else None
+    asyncio.run(query(initial))

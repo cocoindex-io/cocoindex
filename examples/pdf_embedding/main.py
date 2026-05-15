@@ -1,12 +1,14 @@
 """
 PDF Embedding (v1) - CocoIndex pipeline example.
 
-- Walk local PDF files
-- Convert PDFs to markdown
-- Chunk text (RecursiveSplitter)
-- Embed chunks (SentenceTransformers)
-- Store into Postgres with pgvector column (no vector index)
-- Query demo using pgvector cosine distance (<=>)
+Index (use `-L` for live mode, omit for one-shot catch-up):
+    cocoindex update main
+    cocoindex update -L main
+
+Query the index:
+    python main.py "your query"
+
+Pipeline: walk local PDFs -> convert to markdown -> chunk -> embed -> store in Postgres pgvector.
 """
 
 from __future__ import annotations
@@ -73,7 +75,6 @@ class PdfEmbedding:
 async def coco_lifespan(
     builder: coco.EnvironmentBuilder,
 ) -> AsyncIterator[None]:
-    # Provide resources needed across the CocoIndex environment
     database_url = os.getenv("POSTGRES_URL")
     if not database_url:
         raise ValueError("POSTGRES_URL is not set")
@@ -132,6 +133,7 @@ async def app_main(sourcedir: pathlib.Path) -> None:
         sourcedir,
         recursive=True,
         path_matcher=PatternFilePathMatcher(included_patterns=["**/*.pdf"]),
+        live=True,  # source supports live watch; pass -L to `cocoindex update` to actually run live
     )
     await coco.mount_each(process_file, files.items(), target_table)
 
@@ -178,16 +180,15 @@ async def query_once(
         print("---")
 
 
-async def query() -> None:
+async def query(initial_query: str | None = None) -> None:
     database_url = os.getenv("POSTGRES_URL")
     if not database_url:
         raise ValueError("POSTGRES_URL is not set")
 
     embedder = SentenceTransformerEmbedder(EMBED_MODEL)
     async with asyncpg.create_pool(database_url, init=register_vector) as pool:
-        if len(sys.argv) > 2:
-            q = " ".join(sys.argv[2:])
-            await query_once(pool, embedder, q)
+        if initial_query is not None:
+            await query_once(pool, embedder, initial_query)
             return
 
         while True:
@@ -197,17 +198,7 @@ async def query() -> None:
             await query_once(pool, embedder, q)
 
 
-async def update_index() -> None:
-    async with coco.runtime():
-        await coco.show_progress(app.update())
-
-
 if __name__ == "__main__":
     load_dotenv()
-    if len(sys.argv) == 1:
-        # Update the index. Equivalent to running `cocoindex update main`.
-        asyncio.run(update_index())
-    elif sys.argv[1] == "query":
-        asyncio.run(query())
-    else:
-        print("Usage: main.py [query <search terms>]")
+    initial = " ".join(sys.argv[1:]) if len(sys.argv) > 1 else None
+    asyncio.run(query(initial))

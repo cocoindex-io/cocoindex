@@ -24,20 +24,22 @@ Install deps:
 pip install -e .
 ```
 
-Build/update the index (writes rows into Postgres). Either of the following works:
+Build/update the index (writes rows into Postgres). Pick one of the two modes:
 
-```sh
-cocoindex update main
-```
+- **Catch-up run** — scan sources, sync changes, exit:
 
-or
+  ```sh
+  cocoindex update main
+  ```
 
-```sh
-python main.py
-```
+- **Live run** — catch up, then keep watching for file changes (the source declares `live=True` in `main.py`):
+
+  ```sh
+  cocoindex update -L main
+  ```
 
 Query:
 
 ```sh
-python main.py query "embedding"
+python main.py "embedding"
 ```

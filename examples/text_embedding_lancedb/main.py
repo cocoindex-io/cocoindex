@@ -1,11 +1,14 @@
 """
 Text Embedding with LanceDB (v1) - CocoIndex pipeline example.
 
-- Walk local markdown files
-- Chunk text (RecursiveSplitter)
-- Embed chunks (SentenceTransformers)
-- Store into LanceDB with vector column
-- Query demo using LanceDB native vector search
+Index (use `-L` for live mode, omit for one-shot catch-up):
+    cocoindex update main
+    cocoindex update -L main
+
+Query the index:
+    python main.py "your query"
+
+Pipeline: walk local markdown files -> chunk -> embed -> store in LanceDB.
 """
 
 from __future__ import annotations
@@ -54,7 +57,6 @@ class DocEmbedding:
 async def coco_lifespan(
     builder: coco.EnvironmentBuilder,
 ) -> AsyncIterator[None]:
-    # Provide resources needed across the CocoIndex environment
     conn = await lancedb.connect_async(LANCEDB_URI)
     builder.provide(LANCE_DB, conn)
     builder.provide(EMBEDDER, SentenceTransformerEmbedder(EMBED_MODEL))
@@ -107,6 +109,7 @@ async def app_main(sourcedir: pathlib.Path) -> None:
         sourcedir,
         recursive=True,
         path_matcher=PatternFilePathMatcher(included_patterns=["**/*.md"]),
+        live=True,  # source supports live watch; pass -L to `cocoindex update` to actually run live
     )
     await coco.mount_each(process_file, files.items(), target_table)
 
@@ -144,13 +147,12 @@ async def query_once(
         print("---")
 
 
-async def query() -> None:
+async def query(initial_query: str | None = None) -> None:
     embedder = SentenceTransformerEmbedder(EMBED_MODEL)
     conn = await lancedb.connect_async(LANCEDB_URI)
 
-    if len(sys.argv) > 2:
-        q = " ".join(sys.argv[2:])
-        await query_once(conn, embedder, q)
+    if initial_query is not None:
+        await query_once(conn, embedder, initial_query)
         return
 
     while True:
@@ -160,17 +162,7 @@ async def query() -> None:
         await query_once(conn, embedder, q)
 
 
-async def update_index() -> None:
-    async with coco.runtime():
-        await coco.show_progress(app.update())
-
-
 if __name__ == "__main__":
     load_dotenv()
-    if len(sys.argv) == 1:
-        # Update the index. Equivalent to running `cocoindex update main`.
-        asyncio.run(update_index())
-    elif sys.argv[1] == "query":
-        asyncio.run(query())
-    else:
-        print("Usage: main.py [query <search terms>]")
+    initial = " ".join(sys.argv[1:]) if len(sys.argv) > 1 else None
+    asyncio.run(query(initial))

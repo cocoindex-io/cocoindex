@@ -38,3 +38,6 @@ examples/**/uv.lock
 
 # CocoIndex Code (ccc)
 /.cocoindex_code/
+
+# Claude Code local state
+.claude/*.lock
