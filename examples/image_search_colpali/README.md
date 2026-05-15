@@ -26,10 +26,16 @@ Install dependencies:
 pip install -e .
 ```
 
-Build/update the index:
+Build/update the index. Either of the following works:
 
 ```
-cocoindex update main.py
+cocoindex update main
+```
+
+or
+
+```
+python main.py
 ```
 
 Query:

@@ -21,20 +21,26 @@ Install deps:
 pip install -e .
 ```
 
-Build/update the index:
+Build/update the index. Either of the following works:
 
 ```sh
-cocoindex update main.py
+cocoindex update main
+```
+
+or
+
+```sh
+python main.py
 ```
 
 Query:
 
 ```sh
-python main.py "what is self-attention?"
+python main.py query "what is self-attention?"
 ```
 
 Or run interactively:
 
 ```sh
-python main.py
+python main.py query
 ```

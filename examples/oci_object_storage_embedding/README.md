@@ -30,16 +30,22 @@ Install deps:
 pip install -e .
 ```
 
-Build/update the index in catch-up mode (writes rows into Postgres and exits):
+Build/update the index in catch-up mode (writes rows into Postgres and exits). Either of the following works:
 
 ```sh
-cocoindex update main.py
+cocoindex update main
+```
+
+or
+
+```sh
+python main.py
 ```
 
 Run in **live mode** — performs an initial scan, then keeps watching the OCI Streaming topic and applies incremental updates:
 
 ```sh
-cocoindex update -L main.py
+cocoindex update -L main
 ```
 
 Live mode requires `OCI_STREAMING_BOOTSTRAP_SERVERS`, `OCI_STREAMING_TOPIC`, `OCI_STREAMING_USERNAME`, and `OCI_STREAMING_AUTH_TOKEN` to be set in `.env`. With those unset, the connector skips live-stream subscription and just performs the catch-up scan.

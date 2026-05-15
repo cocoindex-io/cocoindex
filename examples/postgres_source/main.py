@@ -13,6 +13,7 @@ import asyncio
 import os
 import sys
 from dataclasses import dataclass
+from dotenv import load_dotenv
 from typing import Annotated, AsyncIterator
 
 import asyncpg
@@ -65,8 +66,8 @@ async def coco_lifespan(
 ) -> AsyncIterator[None]:
     # Provide resources needed across the CocoIndex environment
     async with (
-        await asyncpg.create_pool(DATABASE_URL) as target_pool,
-        await asyncpg.create_pool(SOURCE_DATABASE_URL) as source_pool,
+        asyncpg.create_pool(DATABASE_URL) as target_pool,
+        asyncpg.create_pool(SOURCE_DATABASE_URL) as source_pool,
     ):
         builder.provide(PG_DB, target_pool)
         builder.provide(SOURCE_POOL, source_pool)
@@ -163,7 +164,7 @@ async def query_once(
 
 async def query() -> None:
     embedder = SentenceTransformerEmbedder(EMBED_MODEL)
-    async with await asyncpg.create_pool(DATABASE_URL, init=register_vector) as pool:
+    async with asyncpg.create_pool(DATABASE_URL, init=register_vector) as pool:
         if len(sys.argv) > 2:
             q = " ".join(sys.argv[2:])
             await query_once(pool, embedder, q)
@@ -171,6 +172,17 @@ async def query() -> None:
         print('Usage: python main.py query "your search query"')
 
 
+async def update_index() -> None:
+    async with coco.runtime():
+        await coco.show_progress(app.update())
+
+
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "query":
+    load_dotenv()
+    if len(sys.argv) == 1:
+        # Update the index. Equivalent to running `cocoindex update main`.
+        asyncio.run(update_index())
+    elif sys.argv[1] == "query":
         asyncio.run(query())
+    else:
+        print("Usage: main.py [query <search terms>]")

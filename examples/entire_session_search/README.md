@@ -46,22 +46,28 @@ POSTGRES_URL=postgres://cocoindex:cocoindex@localhost/cocoindex
 
 ## Run
 
-Build the index:
+Build the index. Either of the following works:
 
 ```sh
-cocoindex update main.py
+cocoindex update main
+```
+
+or
+
+```sh
+python main.py
 ```
 
 Search your sessions:
 
 ```sh
-python main.py "how did I fix the auth bug"
+python main.py query "how did I fix the auth bug"
 ```
 
 Or start an interactive search:
 
 ```sh
-python main.py
+python main.py query
 ```
 
 ## Configuration

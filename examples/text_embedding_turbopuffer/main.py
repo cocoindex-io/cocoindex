@@ -147,8 +147,8 @@ async def query() -> None:
     async with turbopuffer.AsyncTurbopuffer(
         region=TPUF_REGION, api_key=api_key
     ) as client:
-        if len(sys.argv) > 1:
-            q = " ".join(sys.argv[1:])
+        if len(sys.argv) > 2:
+            q = " ".join(sys.argv[2:])
             await query_once(client, embedder, q)
             return
 
@@ -159,6 +159,17 @@ async def query() -> None:
             await query_once(client, embedder, q)
 
 
+async def update_index() -> None:
+    async with coco.runtime():
+        await coco.show_progress(app.update())
+
+
 if __name__ == "__main__":
     load_dotenv()
-    asyncio.run(query())
+    if len(sys.argv) == 1:
+        # Update the index. Equivalent to running `cocoindex update main`.
+        asyncio.run(update_index())
+    elif sys.argv[1] == "query":
+        asyncio.run(query())
+    else:
+        print("Usage: main.py [query <search terms>]")
