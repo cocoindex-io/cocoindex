@@ -1,13 +1,14 @@
 """
-OCI Object Storage Text Embedding (v1) — CocoIndex pipeline example.
+OCI Object Storage Text Embedding (v1) - CocoIndex pipeline example.
 
-- List markdown files from an OCI Object Storage bucket
-- Optionally subscribe to OCI Streaming (Kafka-compatible) for change events,
-  enabling live-mode updates via the connector's ``LiveMapView``
-- Chunk text (RecursiveSplitter)
-- Embed chunks (SentenceTransformers)
-- Store into Postgres with pgvector column (no vector index)
-- Query demo using pgvector cosine distance (<=>)
+Index (use `-L` for live mode, omit for one-shot catch-up):
+    cocoindex update main
+    cocoindex update -L main
+
+Query the index:
+    python main.py "your query"
+
+Pipeline: list markdown objects from an OCI Object Storage bucket -> chunk -> embed -> store in Postgres pgvector.
 
 Live mode is opt-in via the ``OCI_STREAMING_BOOTSTRAP_SERVERS`` env var
 (plus ``OCI_STREAMING_TOPIC`` and credentials). When set, the example
@@ -237,12 +238,11 @@ async def query_once(
         print("---")
 
 
-async def query() -> None:
+async def query(initial_query: str | None = None) -> None:
     embedder = SentenceTransformerEmbedder(EMBED_MODEL)
     async with asyncpg.create_pool(DATABASE_URL, init=register_vector) as pool:
-        if len(sys.argv) > 2:
-            q = " ".join(sys.argv[2:])
-            await query_once(pool, embedder, q)
+        if initial_query is not None:
+            await query_once(pool, embedder, initial_query)
             return
 
         while True:
@@ -252,17 +252,7 @@ async def query() -> None:
             await query_once(pool, embedder, q)
 
 
-async def update_index() -> None:
-    async with coco.runtime():
-        await coco.show_progress(app.update())
-
-
 if __name__ == "__main__":
     load_dotenv()
-    if len(sys.argv) == 1:
-        # Update the index. Equivalent to running `cocoindex update main`.
-        asyncio.run(update_index())
-    elif sys.argv[1] == "query":
-        asyncio.run(query())
-    else:
-        print("Usage: main.py [query <search terms>]")
+    initial = " ".join(sys.argv[1:]) if len(sys.argv) > 1 else None
+    asyncio.run(query(initial))

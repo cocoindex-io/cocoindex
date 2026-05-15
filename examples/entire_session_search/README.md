@@ -46,28 +46,24 @@ POSTGRES_URL=postgres://cocoindex:cocoindex@localhost/cocoindex
 
 ## Run
 
-Build the index. Either of the following works:
+Build/update the index (writes rows into Postgres). Pick one of the two modes:
+
+- **Catch-up run** — scan sources, sync changes, exit:
+
+  ```sh
+  cocoindex update main
+  ```
+
+- **Live run** — catch up, then keep watching for file changes (the source declares `live=True` in `main.py`):
+
+  ```sh
+  cocoindex update -L main
+  ```
+
+Query:
 
 ```sh
-cocoindex update main
-```
-
-or
-
-```sh
-python main.py
-```
-
-Search your sessions:
-
-```sh
-python main.py query "how did I fix the auth bug"
-```
-
-Or start an interactive search:
-
-```sh
-python main.py query
+python main.py "how did I fix the auth bug"
 ```
 
 ## Configuration

@@ -30,23 +30,19 @@ Install deps:
 pip install -e .
 ```
 
-Build/update the index in catch-up mode (writes rows into Postgres and exits). Either of the following works:
+Build/update the index (writes rows into Postgres). Pick one of the two modes:
 
-```sh
-cocoindex update main
-```
+- **Catch-up run** — scan the bucket, sync changes, exit:
 
-or
+  ```sh
+  cocoindex update main
+  ```
 
-```sh
-python main.py
-```
+- **Live run** — catch up, then keep watching the OCI Streaming topic for change events and apply incremental updates:
 
-Run in **live mode** — performs an initial scan, then keeps watching the OCI Streaming topic and applies incremental updates:
-
-```sh
-cocoindex update -L main
-```
+  ```sh
+  cocoindex update -L main
+  ```
 
 Live mode requires `OCI_STREAMING_BOOTSTRAP_SERVERS`, `OCI_STREAMING_TOPIC`, `OCI_STREAMING_USERNAME`, and `OCI_STREAMING_AUTH_TOKEN` to be set in `.env`. With those unset, the connector skips live-stream subscription and just performs the catch-up scan.
 
@@ -67,7 +63,7 @@ This is a per-user "Auth Token" — a one-shot credential, distinct from your Co
 Query:
 
 ```sh
-python main.py query "what is self-attention?"
+python main.py "what is self-attention?"
 ```
 
 Note: this example **does not create a vector index**; queries will do a sequential scan.
