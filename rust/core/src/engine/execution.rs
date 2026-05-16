@@ -23,7 +23,6 @@ use crate::state::target_state_path::{
     TargetStatePath, TargetStatePathWithProviderId, TargetStateProviderGeneration,
 };
 use crate::state_store::{AnyTxn, Store, WriteTxn, ops};
-use cocoindex_utils::deser::from_msgpack_slice;
 use cocoindex_utils::fingerprint::Fingerprint;
 
 /// Deserialize a `Vec<MemoizedValue>` into a `Vec<Prof::FunctionData>`.
@@ -345,21 +344,12 @@ struct ChildrenPathInfo {
     child_path_set: Option<ChildStablePathSet>,
 }
 
-struct ChildPathInfo {
-    encoded_db_key: Vec<u8>,
-    encoded_db_value: Vec<u8>,
-    stable_key: StableKey,
-    path_set: StablePathSet,
-}
-
 struct Committer<Prof: EngineProfile> {
     component_ctx: ComponentProcessorContext<Prof>,
     store: Store,
     target_states_providers: rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
 
     component_path: StablePath,
-
-    encoded_tombstone_key_prefix: Vec<u8>,
 
     existence_processing_queue: VecDeque<ChildrenPathInfo>,
     buffered_paths_for_tombstone: Vec<StablePath>,
@@ -374,17 +364,11 @@ impl<Prof: EngineProfile> Committer<Prof> {
         demote_component_only: bool,
     ) -> Result<Self> {
         let component_path = component_ctx.stable_path().clone();
-        let tombstone_key_prefix = db_schema::DbEntryKey::StablePath(
-            component_path.clone(),
-            db_schema::StablePathEntryKey::ChildComponentTombstonePrefix,
-        );
-        let encoded_tombstone_key_prefix = tombstone_key_prefix.encode()?;
         Ok(Self {
             component_ctx: component_ctx.clone(),
             store: component_ctx.app_ctx().store().clone(),
             target_states_providers: target_states_providers.clone(),
             component_path,
-            encoded_tombstone_key_prefix,
             existence_processing_queue: VecDeque::new(),
             buffered_paths_for_tombstone: Vec::new(),
             demote_component_only,
@@ -397,24 +381,19 @@ impl<Prof: EngineProfile> Committer<Prof> {
         mut self,
         wtxn: &mut WriteTxn<'_>,
         child_path_set: Option<ChildStablePathSet>,
-        encoded_target_state_info_key: &[u8],
         all_memo_fps: &HashSet<Fingerprint>,
         memos_without_mounts_to_store: Vec<(Fingerprint, FnCallMemo<Prof>)>,
         curr_version: Option<u64>,
     ) -> Result<Self> {
         {
             if self.component_ctx.mode() == ComponentProcessingMode::Delete {
-                self.store
-                    .db()
-                    .delete(&mut *wtxn, encoded_target_state_info_key.as_ref())?;
+                ops::delete_tracking_info(wtxn, &self.store, &self.component_path)?;
             } else {
                 let curr_version = curr_version
                     .ok_or_else(|| internal_error!("curr_version is required for Build mode"))?;
-                let mut tracking_info: db_schema::StablePathEntryTrackingInfo = wtxn
-                    .db_get_bytes(self.store.db(), encoded_target_state_info_key.as_ref())?
-                    .map(|data| from_msgpack_slice(data))
-                    .transpose()?
-                    .ok_or_else(|| internal_error!("tracking info not found for commit"))?;
+                let mut tracking_info: db_schema::StablePathEntryTrackingInfo =
+                    ops::read_tracking_info(&*wtxn, &self.store, &self.component_path)?
+                        .ok_or_else(|| internal_error!("tracking info not found for commit"))?;
 
                 for item in tracking_info.target_state_items.values_mut() {
                     item.states.retain(|(version, state)| {
@@ -470,11 +449,7 @@ impl<Prof: EngineProfile> Committer<Prof> {
 
                 let data_bytes = rmp_serde::to_vec_named(&tracking_info)?;
                 drop(tracking_info); // Release borrow before mutable operations.
-                self.store.db().put(
-                    &mut *wtxn,
-                    encoded_target_state_info_key.as_ref(),
-                    data_bytes.as_slice(),
-                )?;
+                ops::write_tracking_info_raw(wtxn, &self.store, &self.component_path, &data_bytes)?;
 
                 // Clean up inverted tracking for pruned entries.
                 for path in &pruned_paths {
@@ -501,12 +476,10 @@ impl<Prof: EngineProfile> Committer<Prof> {
     async fn commit(
         self,
         child_path_set: Option<ChildStablePathSet>,
-        target_state_info_key: db_schema::DbEntryKey<'_>,
         all_memo_fps: HashSet<Fingerprint>,
         memos_without_mounts_to_store: Vec<(Fingerprint, FnCallMemo<Prof>)>,
         curr_version: Option<u64>,
     ) -> Result<()> {
-        let encoded_target_state_info_key = target_state_info_key.encode()?;
         // Single cheap Arc clone so we can call txn_batcher() / db_env() after self moves into the closure.
         let app_ctx = self.component_ctx.app_ctx().clone();
         let committer = app_ctx
@@ -516,7 +489,6 @@ impl<Prof: EngineProfile> Committer<Prof> {
                 self.commit_in_txn(
                     wtxn,
                     child_path_set,
-                    &encoded_target_state_info_key,
                     &all_memo_fps,
                     memos_without_mounts_to_store,
                     curr_version,
@@ -538,140 +510,125 @@ impl<Prof: EngineProfile> Committer<Prof> {
             child_path_set,
         });
         while let Some(path_info) = self.existence_processing_queue.pop_front() {
-            let mut children_to_add: Vec<ChildPathInfo> = Vec::new();
-            {
-                let mut curr_iter = path_info
-                    .child_path_set
-                    .into_iter()
-                    .flat_map(|set| set.children.into_iter());
+            // Sorted merge between the declared children (in-memory BTreeMap
+            // iteration, sorted by StableKey) and the existing on-disk
+            // entries (storekey-encoded byte order matches StableKey Ord).
+            let mut curr_iter = path_info
+                .child_path_set
+                .into_iter()
+                .flat_map(|set| set.children.into_iter());
+            let existing_children = ops::list_child_existence(wtxn, &self.store, &path_info.path)?;
+            let mut existing_iter = existing_children.into_iter();
 
-                let mut curr_iter_next = || -> Result<Option<ChildPathInfo>> {
-                    let v = if let Some((stable_key, path_set)) = curr_iter.next() {
-                        let db_key = db_schema::DbEntryKey::StablePath(
-                            path_info.path.clone(),
-                            db_schema::StablePathEntryKey::ChildExistence(stable_key.clone()),
-                        );
-                        Some(ChildPathInfo {
-                            encoded_db_key: db_key.encode()?,
-                            encoded_db_value: Self::encode_child_existence_info(&path_set)?,
-                            stable_key,
-                            path_set,
-                        })
-                    } else {
-                        None
-                    };
-                    Ok(v)
-                };
+            let mut curr_next = curr_iter.next();
+            let mut existing_next = existing_iter.next();
+            let mut children_to_add: Vec<(StableKey, StablePathSet)> = Vec::new();
 
-                let mut curr_next = curr_iter_next()?;
-
-                let db_key_prefix = db_schema::DbEntryKey::StablePath(
-                    path_info.path.clone(),
-                    db_schema::StablePathEntryKey::ChildExistencePrefix,
-                );
-                let encoded_db_key_prefix = db_key_prefix.encode()?;
-                let mut db_prefix_iter = self
-                    .store
-                    .db()
-                    .prefix_iter_mut(&mut **wtxn, encoded_db_key_prefix.as_ref())?;
-                let mut db_next = db_prefix_iter.next().transpose()?;
-
-                loop {
-                    let Some(db_next_entry) = db_next else {
-                        // All remaining children are new.
-                        curr_next.map(|v| children_to_add.push(v));
-                        while let Some(entry) = curr_iter_next()? {
+            loop {
+                match (&curr_next, &existing_next) {
+                    (None, None) => break,
+                    (Some(_), None) => {
+                        // All remaining declared children are new.
+                        if let Some(entry) = curr_next.take() {
                             children_to_add.push(entry);
                         }
+                        children_to_add.extend(curr_iter.by_ref());
                         break;
-                    };
-                    let Some(curr_next_v) = &curr_next else {
-                        // All remaining children should be deleted.
-                        let mut db_next_entry = db_next_entry;
-                        loop {
-                            self.del_child(db_next_entry, &path_info.path, &encoded_db_key_prefix)?;
-                            unsafe {
-                                db_prefix_iter.del_current()?;
-                            }
-                            db_next_entry =
-                                if let Some(entry) = db_prefix_iter.next().transpose()? {
-                                    entry
-                                } else {
-                                    break;
-                                };
+                    }
+                    (None, Some(_)) => {
+                        // All remaining existing children should be deleted.
+                        if let Some((key, info)) = existing_next.take() {
+                            ops::delete_child_existence(wtxn, &self.store, &path_info.path, &key)?;
+                            self.del_child(&key, &info, &path_info.path)?;
+                        }
+                        for (key, info) in existing_iter.by_ref() {
+                            ops::delete_child_existence(wtxn, &self.store, &path_info.path, &key)?;
+                            self.del_child(&key, &info, &path_info.path)?;
                         }
                         break;
-                    };
-                    match Ord::cmp(curr_next_v.encoded_db_key.as_slice(), db_next_entry.0) {
-                        Ordering::Less => {
-                            // New child.
-                            children_to_add.push(curr_next.ok_or_else(invariance_violation)?);
-                            curr_next = curr_iter_next()?;
-                        }
-                        Ordering::Greater => {
-                            // Child to delete.
-                            self.del_child(db_next_entry, &path_info.path, &encoded_db_key_prefix)?;
-                            unsafe {
-                                db_prefix_iter.del_current()?;
+                    }
+                    (Some((curr_key, _)), Some((existing_key, _))) => {
+                        match curr_key.cmp(existing_key) {
+                            Ordering::Less => {
+                                // New child.
+                                children_to_add
+                                    .push(curr_next.take().ok_or_else(invariance_violation)?);
+                                curr_next = curr_iter.next();
                             }
-                            db_next = db_prefix_iter.next().transpose()?;
-                        }
-                        Ordering::Equal => {
-                            let curr_next_v = curr_next.ok_or_else(invariance_violation)?;
+                            Ordering::Greater => {
+                                // Existing child no longer declared — delete.
+                                let (key, info) =
+                                    existing_next.take().ok_or_else(invariance_violation)?;
+                                ops::delete_child_existence(
+                                    wtxn,
+                                    &self.store,
+                                    &path_info.path,
+                                    &key,
+                                )?;
+                                self.del_child(&key, &info, &path_info.path)?;
+                                existing_next = existing_iter.next();
+                            }
+                            Ordering::Equal => {
+                                let (curr_key, curr_path_set) =
+                                    curr_next.take().ok_or_else(invariance_violation)?;
+                                let (_, existing_info) =
+                                    existing_next.take().ok_or_else(invariance_violation)?;
+                                let new_node_type = node_type_for(&curr_path_set);
 
-                            // Update the child existence info if it has changed.
-                            if curr_next_v.encoded_db_value.as_slice() != db_next_entry.1 {
-                                unsafe {
-                                    db_prefix_iter.put_current(
-                                        curr_next_v.encoded_db_key.as_slice(),
-                                        curr_next_v.encoded_db_value.as_slice(),
+                                // Update the child existence info if the node type changed.
+                                if existing_info.node_type != new_node_type {
+                                    ops::write_child_existence(
+                                        wtxn,
+                                        &self.store,
+                                        &path_info.path,
+                                        &curr_key,
+                                        &db_schema::ChildExistenceInfo {
+                                            node_type: new_node_type,
+                                        },
                                     )?;
                                 }
-                            }
 
-                            match curr_next_v.path_set {
-                                StablePathSet::Directory(curr_dir_set) => {
-                                    let db_value: db_schema::ChildExistenceInfo =
-                                        from_msgpack_slice(db_next_entry.1)?;
-                                    if db_value.node_type
+                                if let StablePathSet::Directory(curr_dir_set) = curr_path_set {
+                                    // Demotion: existing was a Component, now becoming a Directory
+                                    // (its descendants have replaced the leaf). The old component
+                                    // needs a tombstone so its target states get cleaned up.
+                                    if existing_info.node_type
                                         == db_schema::StablePathNodeType::Component
                                     {
                                         self.buffered_paths_for_tombstone.push(
                                             self.relative_path(path_info.path.as_ref())?
-                                                .concat_part(curr_next_v.stable_key.clone()),
+                                                .concat_part(curr_key.clone()),
                                         );
                                     }
                                     self.existence_processing_queue.push_back(ChildrenPathInfo {
-                                        path: path_info
-                                            .path
-                                            .concat_part(curr_next_v.stable_key.clone()),
+                                        path: path_info.path.concat_part(curr_key),
                                         child_path_set: Some(curr_dir_set),
                                     });
                                 }
-                                StablePathSet::Component => {
-                                    // No-op. Everything should be handled by the sub component.
-                                }
+                                // StablePathSet::Component case: no-op (sub-component handles itself).
+                                curr_next = curr_iter.next();
+                                existing_next = existing_iter.next();
                             }
-
-                            curr_next = curr_iter_next()?;
-                            db_next = db_prefix_iter.next().transpose()?;
                         }
                     }
                 }
             }
 
-            for child_to_add in children_to_add {
-                if let StablePathSet::Directory(child_path_set) = child_to_add.path_set {
+            for (stable_key, path_set) in children_to_add {
+                let node_type = node_type_for(&path_set);
+                ops::write_child_existence(
+                    wtxn,
+                    &self.store,
+                    &path_info.path,
+                    &stable_key,
+                    &db_schema::ChildExistenceInfo { node_type },
+                )?;
+                if let StablePathSet::Directory(child_path_set) = path_set {
                     self.existence_processing_queue.push_back(ChildrenPathInfo {
-                        path: path_info.path.concat_part(child_to_add.stable_key),
+                        path: path_info.path.concat_part(stable_key),
                         child_path_set: Some(child_path_set),
                     });
                 }
-                self.store.db().put(
-                    &mut **wtxn,
-                    child_to_add.encoded_db_key.as_slice(),
-                    child_to_add.encoded_db_value.as_slice(),
-                )?;
             }
 
             self.flush_component_tombstones(wtxn)?;
@@ -680,12 +637,7 @@ impl<Prof: EngineProfile> Committer<Prof> {
     }
 
     fn launch_child_component_gc<T: AnyTxn>(&self, rtxn: &T) -> Result<()> {
-        let tombstone_key_prefix_iter =
-            rtxn.db_prefix_iter(self.store.db(), self.encoded_tombstone_key_prefix.as_ref())?;
-        for tombstone_entry in tombstone_key_prefix_iter {
-            let (ts_key, _) = tombstone_entry?;
-            let relative_path: StablePath =
-                storekey::decode(&ts_key[self.encoded_tombstone_key_prefix.len()..])?;
+        for relative_path in ops::list_tombstones(rtxn, &self.store, &self.component_path)? {
             let stable_path = self.component_path.concat(relative_path.as_ref());
             let component = self.component_ctx.component().get_child(stable_path);
             let delete_ctx = component.new_processor_context_for_delete(
@@ -701,59 +653,43 @@ impl<Prof: EngineProfile> Committer<Prof> {
 
     fn del_child(
         &mut self,
-        db_entry: (&[u8], &[u8]),
-        path: &StablePath,
-        encoded_db_key_prefix: &[u8],
+        stable_key: &StableKey,
+        info: &db_schema::ChildExistenceInfo,
+        parent_path: &StablePath,
     ) -> Result<()> {
-        let (raw_db_key, raw_db_value) = db_entry;
-        let stable_key: StableKey =
-            storekey::decode(raw_db_key[encoded_db_key_prefix.len()..].as_ref())?;
-        let db_value: db_schema::ChildExistenceInfo = from_msgpack_slice(raw_db_value)?;
-        match db_value.node_type {
+        match info.node_type {
             db_schema::StablePathNodeType::Directory => {
                 self.existence_processing_queue.push_back(ChildrenPathInfo {
-                    path: path.concat_part(stable_key),
+                    path: parent_path.concat_part(stable_key.clone()),
                     child_path_set: None,
                 });
             }
             db_schema::StablePathNodeType::Component => {
-                self.buffered_paths_for_tombstone
-                    .push(self.relative_path(path.as_ref())?.concat_part(stable_key));
+                self.buffered_paths_for_tombstone.push(
+                    self.relative_path(parent_path.as_ref())?
+                        .concat_part(stable_key.clone()),
+                );
             }
         }
         Ok(())
     }
 
     fn flush_component_tombstones(&mut self, wtxn: &mut WriteTxn<'_>) -> Result<()> {
-        if self.buffered_paths_for_tombstone.is_empty() {
-            return Ok(());
-        }
-        let mut encoded_tombstone_key = self.encoded_tombstone_key_prefix.clone();
-        let prefix_len = encoded_tombstone_key.len();
-        for stable_path in std::mem::take(&mut self.buffered_paths_for_tombstone) {
-            encoded_tombstone_key.truncate(prefix_len);
-            storekey::encode(&mut encoded_tombstone_key, &stable_path)?;
-            self.store
-                .db()
-                .put(&mut **wtxn, encoded_tombstone_key.as_slice(), &[])?;
+        for relative_path in std::mem::take(&mut self.buffered_paths_for_tombstone) {
+            ops::write_tombstone(wtxn, &self.store, &self.component_path, &relative_path)?;
         }
         Ok(())
     }
 
-    fn encode_child_existence_info(path_set: &StablePathSet) -> Result<Vec<u8>> {
-        let existence_info = match path_set {
-            StablePathSet::Directory(_) => db_schema::ChildExistenceInfo {
-                node_type: db_schema::StablePathNodeType::Directory,
-            },
-            StablePathSet::Component => db_schema::ChildExistenceInfo {
-                node_type: db_schema::StablePathNodeType::Component,
-            },
-        };
-        Ok(rmp_serde::to_vec_named(&existence_info)?)
-    }
-
     fn relative_path<'p>(&self, path: StablePathRef<'p>) -> Result<StablePathRef<'p>> {
         path.strip_parent(self.component_path.as_ref())
+    }
+}
+
+fn node_type_for(path_set: &StablePathSet) -> db_schema::StablePathNodeType {
+    match path_set {
+        StablePathSet::Directory(_) => db_schema::StablePathNodeType::Directory,
+        StablePathSet::Component => db_schema::StablePathNodeType::Component,
     }
 }
 
@@ -798,23 +734,38 @@ struct PreCommitOutput<Prof: EngineProfile> {
     processor_name_for_del: Option<String>,
 }
 
-// --- Inverted tracking (TargetStatePath → owning component) helpers ---
-
-/// Encode an inverted tracking upsert as a deferred write (key, Some(value)).
+/// Write deferred to after `pre_commit` finishes inspecting `tracking_info`.
 ///
-/// Still uses raw key+value bytes because `deferred_writes` mixes
-/// `TrackingInfo` writes and `TargetStateOwner` upserts in the same
-/// `Vec<(Vec<u8>, Vec<u8>)>`. See `specs/core/state_store_refactor.md` §10
-/// for the deferred typed-enum refactor.
-fn encode_owner_upsert(
-    target_state_path: &TargetStatePath,
-    component_path: &StablePath,
-) -> Result<(Vec<u8>, Vec<u8>)> {
-    let key = db_schema::DbEntryKey::TargetState(target_state_path.clone()).encode()?;
-    let value = rmp_serde::to_vec_named(&db_schema::TargetStateOwnerInfo {
-        component_path: component_path.clone(),
-    })?;
-    Ok((key, value))
+/// The two cases mix in one queue because both arise during the ownership
+/// preemption flow: when a target state moves from component A to B, we
+/// need to (a) rewrite A's tracking info with the entry removed, and (b)
+/// point the inverted index at B. Both writes must happen after the
+/// borrowed `tracking_info` in `pre_commit` is dropped — hence "deferred".
+enum DeferredWrite {
+    /// Pre-serialized tracking info. Stored as bytes because the typed
+    /// value borrows from the write txn (the read returns `*Info<'txn>`);
+    /// serializing at deferral time releases that borrow so the eventual
+    /// flush can take `&mut WriteTxn` for the write.
+    TrackingInfoRaw { path: StablePath, encoded: Vec<u8> },
+    /// Inverted-index upsert pointing `target_state_path` at `component_path`.
+    OwnerUpsert {
+        target_state_path: TargetStatePath,
+        component_path: StablePath,
+    },
+}
+
+impl DeferredWrite {
+    fn flush(self, wtxn: &mut WriteTxn<'_>, store: &Store) -> Result<()> {
+        match self {
+            DeferredWrite::TrackingInfoRaw { path, encoded } => {
+                ops::write_tracking_info_raw(wtxn, store, &path, &encoded)
+            }
+            DeferredWrite::OwnerUpsert {
+                target_state_path,
+                component_path,
+            } => ops::upsert_target_state_owner(wtxn, store, &target_state_path, &component_path),
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -825,8 +776,6 @@ fn pre_commit<Prof: EngineProfile>(
     stable_path: &StablePath,
     full_reprocess: bool,
     processor_name: Option<&str>,
-    encoded_target_state_info_key: &[u8],
-    memo_del_key: &[u8],
     contained_target_state_paths: &HashSet<TargetStatePath>,
     target_states_providers: &rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
     declared_target_states: BTreeMap<TargetStatePath, DeclaredTargetState<Prof>>,
@@ -836,7 +785,7 @@ fn pre_commit<Prof: EngineProfile>(
     let mut processor_name_for_del: Option<String> = None;
 
     if comp_mode == ComponentProcessingMode::Delete {
-        store.db().delete(&mut **wtxn, memo_del_key)?;
+        ops::delete_component_memo(wtxn, store, stable_path)?;
     }
 
     if let Some((parent_path, key)) = stable_path.as_ref().split_parent() {
@@ -866,14 +815,11 @@ fn pre_commit<Prof: EngineProfile>(
     }
 
     let mut id_reservation = IdReservation::new(&TARGET_ID_KEY);
-    let mut tracking_info: Option<db_schema::StablePathEntryTrackingInfo> = wtxn
-        .db_get_bytes(store.db(), encoded_target_state_info_key)?
-        .map(|data| from_msgpack_slice(data))
-        .transpose()?;
+    let mut tracking_info: Option<db_schema::StablePathEntryTrackingInfo> =
+        ops::read_tracking_info(wtxn, store, stable_path)?;
     // Deferred DB writes that will be flushed after tracking_info is dropped,
     // since tracking_info borrows from wtxn and prevents mutable DB operations.
-    // Each entry is (encoded_key, optional_encoded_value); None value means delete.
-    let mut deferred_writes: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+    let mut deferred_writes: Vec<DeferredWrite> = Vec::new();
     let previously_exists = tracking_info.is_some();
     if let Some(tracking_info) = &mut tracking_info {
         if let Some(processor_name) = processor_name {
@@ -925,16 +871,10 @@ fn pre_commit<Prof: EngineProfile>(
                 // Insert path: check inverted tracking for ownership preempt.
                 match ops::read_target_state_owner(wtxn, store, &target_state_path)? {
                     Some(owner_info) if owner_info.component_path != *stable_path => {
-                        let old_owner_key = db_schema::DbEntryKey::StablePath(
-                            owner_info.component_path.clone(),
-                            db_schema::StablePathEntryKey::TrackingInfo,
-                        )
-                        .encode()?;
-                        if let Some(data) =
-                            wtxn.db_get_bytes(store.db(), old_owner_key.as_slice())?
+                        let old_owner_path = owner_info.component_path.clone();
+                        if let Some(mut old_tracking) =
+                            ops::read_tracking_info(wtxn, store, &old_owner_path)?
                         {
-                            let mut old_tracking: db_schema::StablePathEntryTrackingInfo =
-                                from_msgpack_slice(data)?;
                             let len_before = old_tracking.target_state_items.len();
                             // Look up the entry matching current provider_id.
                             let prev_item = old_tracking
@@ -956,9 +896,13 @@ fn pre_commit<Prof: EngineProfile>(
                                 .target_state_items
                                 .retain(|k, _| k.target_state_path != target_state_path);
                             if old_tracking.target_state_items.len() < len_before {
-                                // Write back old owner's modified tracking info — deferred.
+                                // Write back old owner's modified tracking info — deferred
+                                // because the deserialized struct borrows from wtxn.
                                 let old_data = rmp_serde::to_vec_named(&old_tracking)?;
-                                deferred_writes.push((old_owner_key, old_data));
+                                deferred_writes.push(DeferredWrite::TrackingInfoRaw {
+                                    path: old_owner_path,
+                                    encoded: old_data,
+                                });
                             }
                             prev_item
                         } else {
@@ -1082,7 +1026,10 @@ fn pre_commit<Prof: EngineProfile>(
             if let Some(item) = prev_item {
                 // Write inverted tracking for entries new to this component — deferred.
                 if is_new_to_component {
-                    deferred_writes.push(encode_owner_upsert(&target_state_path, stable_path)?);
+                    deferred_writes.push(DeferredWrite::OwnerUpsert {
+                        target_state_path: target_state_path.clone(),
+                        component_path: stable_path.clone(),
+                    });
                 }
                 items_to_insert.push((lookup_key, item));
             }
@@ -1176,21 +1123,15 @@ fn pre_commit<Prof: EngineProfile>(
 
         let data_bytes = rmp_serde::to_vec_named(&tracking_info)?;
         drop(tracking_info); // Release borrow before mutable operations.
-        store.db().put(
-            &mut **wtxn,
-            encoded_target_state_info_key,
-            data_bytes.as_slice(),
-        )?;
+        ops::write_tracking_info_raw(wtxn, store, stable_path, &data_bytes)?;
         Some(curr_version)
     } else {
         None
     };
 
     // Flush deferred writes now that tracking_info is dropped.
-    for (key, value) in &deferred_writes {
-        store
-            .db()
-            .put(&mut **wtxn, key.as_slice(), value.as_slice())?;
+    for dw in deferred_writes {
+        dw.flush(wtxn, store)?;
     }
 
     id_reservation.commit(wtxn, store)?;
@@ -1262,16 +1203,6 @@ pub(crate) async fn submit<Prof: EngineProfile>(
     let full_reprocess = comp_ctx.full_reprocess();
     let processor_name_owned: Option<String> = processor_name.map(|s| s.to_owned());
 
-    let target_state_info_key = db_schema::DbEntryKey::StablePath(
-        stable_path.clone(),
-        db_schema::StablePathEntryKey::TrackingInfo,
-    );
-    let encoded_target_state_info_key = target_state_info_key.encode()?;
-    let memo_del_key = db_schema::DbEntryKey::StablePath(
-        stable_path.clone(),
-        db_schema::StablePathEntryKey::ComponentMemoization,
-    )
-    .encode()?;
     let contained_target_state_paths =
         std::mem::take(&mut finalized_fn_call_memos.contained_target_state_paths);
 
@@ -1291,8 +1222,6 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                 &stable_path,
                 full_reprocess,
                 processor_name_owned.as_deref(),
-                &encoded_target_state_info_key,
-                &memo_del_key,
                 &contained_target_state_paths,
                 &target_states_providers_owned,
                 declared_target_states,
@@ -1353,7 +1282,6 @@ pub(crate) async fn submit<Prof: EngineProfile>(
     committer
         .commit(
             child_path_set,
-            target_state_info_key,
             finalized_fn_call_memos.all_memos_fps,
             finalized_fn_call_memos.memos_without_mounts_to_store,
             curr_version,

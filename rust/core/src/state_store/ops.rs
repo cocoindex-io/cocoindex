@@ -2,13 +2,11 @@
 //!
 //! Each function is a thin wrapper around `(key encode) + (msgpack serde) +
 //! (heed get/put/delete/iter)`. Signatures are heed-free so the engine never
-//! sees LMDB types. The same signatures are expected to exist verbatim in
-//! the enterprise (Postgres) repo with PG-specific bodies.
+//! sees LMDB types.
 //!
 //! Lifetime contract: read functions return schema types parameterized by
-//! the transaction lifetime, borrowing from LMDB mmap pages (or, in the PG
-//! backend, from Row buffers retained by the read transaction). See
-//! `specs/core/state_store_refactor.md` §3 "borrow-on-read".
+//! the transaction lifetime, borrowing from the LMDB mmap pages held by
+//! the read transaction.
 
 use std::collections::HashSet;
 
@@ -18,13 +16,18 @@ use cocoindex_utils::fingerprint::Fingerprint;
 use crate::prelude::*;
 use crate::state::db_schema::{
     ChildExistenceInfo, ComponentMemoizationInfo, DbEntryKey, FunctionMemoizationEntry,
-    IdSequencerInfo, StablePathEntryKey, StablePathNodeType, TargetStateOwnerInfo,
+    IdSequencerInfo, StablePathEntryKey, StablePathEntryTrackingInfo, StablePathNodeType,
+    TargetStateOwnerInfo,
 };
 use crate::state::stable_path::{StableKey, StablePath, StablePathPrefix, StablePathRef};
 use crate::state::target_state_path::TargetStatePath;
 use crate::state_store::store::{AnyTxn, Database, ReadTxn, Store, WriteTxn};
 
 // --- Key encoding helpers (internal) ---
+
+fn key_tracking_info(path: &StablePath) -> Result<Vec<u8>> {
+    DbEntryKey::StablePath(path.clone(), StablePathEntryKey::TrackingInfo).encode()
+}
 
 fn key_component_memo(path: &StablePath) -> Result<Vec<u8>> {
     DbEntryKey::StablePath(path.clone(), StablePathEntryKey::ComponentMemoization).encode()
@@ -46,10 +49,22 @@ fn key_child_existence(parent: &StablePath, child_key: &StableKey) -> Result<Vec
     .encode()
 }
 
+fn key_child_existence_prefix(parent: &StablePath) -> Result<Vec<u8>> {
+    DbEntryKey::StablePath(parent.clone(), StablePathEntryKey::ChildExistencePrefix).encode()
+}
+
 fn key_tombstone(parent: &StablePath, relative_path: &StablePath) -> Result<Vec<u8>> {
     DbEntryKey::StablePath(
         parent.clone(),
         StablePathEntryKey::ChildComponentTombstone(relative_path.clone()),
+    )
+    .encode()
+}
+
+fn key_tombstone_prefix(parent: &StablePath) -> Result<Vec<u8>> {
+    DbEntryKey::StablePath(
+        parent.clone(),
+        StablePathEntryKey::ChildComponentTombstonePrefix,
     )
     .encode()
 }
@@ -60,6 +75,39 @@ fn key_target_state_owner(path: &TargetStatePath) -> Result<Vec<u8>> {
 
 fn key_id_sequencer(key: &StableKey) -> Result<Vec<u8>> {
     DbEntryKey::IdSequencer(key.clone()).encode()
+}
+
+// --- Tracking info ---
+
+pub fn read_tracking_info<'a, T: AnyTxn>(
+    txn: &'a T,
+    store: &Store,
+    path: &StablePath,
+) -> Result<Option<StablePathEntryTrackingInfo<'a>>> {
+    let key = key_tracking_info(path)?;
+    let data = txn.db_get_bytes(store.db(), &key)?;
+    data.map(from_msgpack_slice).transpose().map_err(Into::into)
+}
+
+/// Write pre-serialized tracking info. Callers serialize externally so the
+/// txn can be re-borrowed mutably after the read-modify-write pattern used
+/// in `pre_commit` (where the deserialized `tracking_info` borrows from the
+/// write txn and must be released before writing back).
+pub fn write_tracking_info_raw(
+    txn: &mut WriteTxn,
+    store: &Store,
+    path: &StablePath,
+    encoded: &[u8],
+) -> Result<()> {
+    let key = key_tracking_info(path)?;
+    store.db().put(&mut **txn, &key, encoded)?;
+    Ok(())
+}
+
+pub fn delete_tracking_info(txn: &mut WriteTxn, store: &Store, path: &StablePath) -> Result<()> {
+    let key = key_tracking_info(path)?;
+    store.db().delete(&mut **txn, &key)?;
+    Ok(())
 }
 
 // --- Component memoization ---
@@ -143,9 +191,9 @@ pub fn retain_fn_memos(
     Ok(())
 }
 
-// --- Child existence (internal — public ops compose these) ---
+// --- Child existence ---
 
-fn read_child_existence<T: AnyTxn>(
+pub fn read_child_existence<T: AnyTxn>(
     txn: &T,
     store: &Store,
     parent: &StablePath,
@@ -156,7 +204,7 @@ fn read_child_existence<T: AnyTxn>(
     data.map(from_msgpack_slice).transpose().map_err(Into::into)
 }
 
-fn write_child_existence(
+pub fn write_child_existence(
     txn: &mut WriteTxn,
     store: &Store,
     parent: &StablePath,
@@ -169,7 +217,7 @@ fn write_child_existence(
     Ok(())
 }
 
-fn delete_child_existence(
+pub fn delete_child_existence(
     txn: &mut WriteTxn,
     store: &Store,
     parent: &StablePath,
@@ -180,9 +228,30 @@ fn delete_child_existence(
     Ok(())
 }
 
+/// All child-existence entries for `parent`, in sorted-key order (which
+/// matches `BTreeMap<StableKey, _>` iteration order because the on-disk
+/// encoding via `storekey` is order-preserving). Used by
+/// `Committer::update_existence` for the sorted-merge against the in-memory
+/// declared children.
+pub fn list_child_existence<T: AnyTxn>(
+    txn: &T,
+    store: &Store,
+    parent: &StablePath,
+) -> Result<Vec<(StableKey, ChildExistenceInfo)>> {
+    let prefix = key_child_existence_prefix(parent)?;
+    let mut out = Vec::new();
+    for entry in txn.db_prefix_iter(store.db(), &prefix)? {
+        let (raw_key, raw_value) = entry?;
+        let stable_key: StableKey = storekey::decode(raw_key[prefix.len()..].as_ref())?;
+        let info: ChildExistenceInfo = from_msgpack_slice(raw_value)?;
+        out.push((stable_key, info));
+    }
+    Ok(out)
+}
+
 // --- Tombstones ---
 
-fn write_tombstone(
+pub fn write_tombstone(
     txn: &mut WriteTxn,
     store: &Store,
     parent: &StablePath,
@@ -202,6 +271,23 @@ pub fn delete_tombstone(
     let key = key_tombstone(parent, relative_path)?;
     store.db().delete(&mut **txn, &key)?;
     Ok(())
+}
+
+/// Relative paths of all tombstones for `parent`. Used by
+/// `Committer::launch_child_component_gc` to find which children need GC.
+pub fn list_tombstones<T: AnyTxn>(
+    txn: &T,
+    store: &Store,
+    parent: &StablePath,
+) -> Result<Vec<StablePath>> {
+    let prefix = key_tombstone_prefix(parent)?;
+    let mut out = Vec::new();
+    for entry in txn.db_prefix_iter(store.db(), &prefix)? {
+        let (raw_key, _) = entry?;
+        let relative: StablePath = storekey::decode(raw_key[prefix.len()..].as_ref())?;
+        out.push(relative);
+    }
+    Ok(out)
 }
 
 /// Atomic existence-removal + tombstone-write, matching the contract of
@@ -229,6 +315,20 @@ pub fn read_target_state_owner<T: AnyTxn>(
     let key = key_target_state_owner(path)?;
     let data = txn.db_get_bytes(store.db(), &key)?;
     data.map(from_msgpack_slice).transpose().map_err(Into::into)
+}
+
+pub fn upsert_target_state_owner(
+    txn: &mut WriteTxn,
+    store: &Store,
+    path: &TargetStatePath,
+    owner: &StablePath,
+) -> Result<()> {
+    let key = key_target_state_owner(path)?;
+    let value = rmp_serde::to_vec_named(&TargetStateOwnerInfo {
+        component_path: owner.clone(),
+    })?;
+    store.db().put(&mut **txn, &key, &value)?;
+    Ok(())
 }
 
 pub fn delete_target_state_owner(
@@ -347,9 +447,6 @@ pub fn ensure_path_node_type(
 // --- Inspection (cross-component scans) ---
 
 /// Scan all stable-path entries and return one path per component / directory.
-///
-/// On Postgres this becomes a partition-wise scan across all hash partitions
-/// — acceptable cost for an inspection tool, see `specs/core/internal_states.md`.
 pub fn list_all_stable_paths(txn: &ReadTxn, store: &Store) -> Result<Vec<StablePath>> {
     let encoded_key_prefix =
         DbEntryKey::StablePathPrefixPrefix(StablePathPrefix::default()).encode()?;
