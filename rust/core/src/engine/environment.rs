@@ -1,6 +1,8 @@
 use crate::{
-    engine::profile::EngineProfile, engine::target_state::TargetStateProviderRegistry,
-    engine::txn_batcher::TxnBatcher, prelude::*,
+    engine::profile::EngineProfile,
+    engine::target_state::TargetStateProviderRegistry,
+    prelude::*,
+    state_store::{ReadTxn, TxnBatcher},
 };
 
 use cocoindex_utils::fingerprint::Fingerprint;
@@ -133,13 +135,26 @@ impl<Prof: EngineProfile> Environment<Prof> {
         &self.inner.db_env
     }
 
+    /// Create the per-app sub-database for this environment and wrap it in a
+    /// `Store`. Hides the underlying LMDB sub-database creation from
+    /// `App::new`.
+    pub fn create_app_store(&self, app_name: &str) -> Result<crate::state_store::Store> {
+        let mut wtxn = self.inner.db_env.write_txn()?;
+        let db = self
+            .inner
+            .db_env
+            .create_database(&mut wtxn, Some(app_name))?;
+        wtxn.commit()?;
+        Ok(crate::state_store::Store::new(db))
+    }
+
     /// Open an LMDB read transaction with automatic retry on `MDB_READERS_FULL`.
     ///
     /// Two-phase strategy:
     /// 1. Retry with a short timeout — handles transient reader slot contention.
     /// 2. If phase 1 times out, call `clear_stale_readers()` to reclaim slots
     ///    from dead processes, then retry indefinitely.
-    pub async fn read_txn(&self) -> Result<heed::RoTxn<'_, heed::WithoutTls>> {
+    pub async fn read_txn(&self) -> Result<ReadTxn<'_>> {
         let db_env = self.db_env();
         let try_read_txn = || async {
             match db_env.read_txn() {
@@ -156,7 +171,7 @@ impl<Prof: EngineProfile> Environment<Prof> {
 
         // Phase 1: short timeout for transient concurrency.
         match retryable::run(&try_read_txn, &LMDB_READ_TXN_RETRY_PHASE1).await {
-            Ok(txn) => return Ok(txn),
+            Ok(txn) => return Ok(ReadTxn::new(txn)),
             Err(e) if !e.is_retryable => return Err(e.into()),
             Err(_) => {}
         }
@@ -168,6 +183,7 @@ impl<Prof: EngineProfile> Environment<Prof> {
         }
         retryable::run(&try_read_txn, &LMDB_READ_TXN_RETRY_PHASE2)
             .await
+            .map(ReadTxn::new)
             .map_err(Into::into)
     }
 

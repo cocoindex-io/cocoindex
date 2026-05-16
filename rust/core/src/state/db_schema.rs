@@ -17,8 +17,6 @@ use crate::state::{
     target_state_path::TargetStatePath,
 };
 
-pub type Database = heed::Database<heed::types::Bytes, heed::types::Bytes>;
-
 #[derive(Debug)]
 pub enum StablePathEntryKey {
     /// Value type: ComponentMemoizationInfo

@@ -18,11 +18,12 @@ use crate::state::target_state_path::TargetStatePath;
 use crate::{
     engine::environment::{AppRegistration, Environment},
     state::stable_path::StablePath,
+    state_store::Store,
 };
 
 struct AppContextInner<Prof: EngineProfile> {
     env: Environment<Prof>,
-    db: db_schema::Database,
+    store: Store,
     app_reg: AppRegistration<Prof>,
     id_sequencer_manager: IdSequencerManager,
     inflight_semaphore: Option<Arc<tokio::sync::Semaphore>>,
@@ -53,7 +54,7 @@ pub struct AppContext<Prof: EngineProfile> {
 impl<Prof: EngineProfile> AppContext<Prof> {
     pub fn new(
         env: Environment<Prof>,
-        db: db_schema::Database,
+        store: Store,
         app_reg: AppRegistration<Prof>,
         max_inflight_components: Option<usize>,
     ) -> Self {
@@ -62,7 +63,7 @@ impl<Prof: EngineProfile> AppContext<Prof> {
         Self {
             inner: Arc::new(AppContextInner {
                 env,
-                db,
+                store,
                 app_reg,
                 id_sequencer_manager: IdSequencerManager::new(),
                 inflight_semaphore,
@@ -113,8 +114,8 @@ impl<Prof: EngineProfile> AppContext<Prof> {
         &self.inner.env
     }
 
-    pub fn db(&self) -> &db_schema::Database {
-        &self.inner.db
+    pub fn store(&self) -> &Store {
+        &self.inner.store
     }
 
     pub fn app_reg(&self) -> &AppRegistration<Prof> {
@@ -152,7 +153,7 @@ impl<Prof: EngineProfile> AppContext<Prof> {
         let key = key.unwrap_or(&default_key);
         self.inner
             .id_sequencer_manager
-            .next_id(self.inner.env.txn_batcher(), &self.inner.db, key)
+            .next_id(self.inner.env.txn_batcher(), &self.inner.store, key)
             .await
     }
 }

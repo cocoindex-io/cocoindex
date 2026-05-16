@@ -9,9 +9,9 @@ use crate::engine::profile::EngineProfile;
 use crate::engine::stats::ProcessingStats;
 use crate::engine::target_state::TargetStateProvider;
 use crate::prelude::*;
-use crate::state::db_schema;
 use crate::state::stable_path::StablePath;
 use crate::state::target_state_path::TargetStatePath;
+use crate::state_store::ops;
 use cocoindex_utils::error::{SharedError, SharedResult};
 
 use tokio::sync::oneshot;
@@ -546,7 +546,7 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
         // Synchronously remove the existence entry and write a tombstone,
         // matching the prior implementation's contract.
         if let Some((parent_ref, child_key)) = subpath.as_ref().split_parent() {
-            let db = self.component.app_ctx().db().clone();
+            let store = self.component.app_ctx().store().clone();
             let parent_path: StablePath = parent_ref.into();
             let child_key = child_key.clone();
             let component_path = self.component.stable_path().clone();
@@ -557,20 +557,14 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
                 .env()
                 .txn_batcher()
                 .run(move |wtxn| {
-                    let existence_key = db_schema::DbEntryKey::StablePath(
-                        parent_path,
-                        db_schema::StablePathEntryKey::ChildExistence(child_key),
+                    ops::remove_child_with_tombstone(
+                        wtxn,
+                        &store,
+                        &parent_path,
+                        &child_key,
+                        &component_path,
+                        &relative_child,
                     )
-                    .encode()?;
-                    db.delete(wtxn, &existence_key)?;
-
-                    let tombstone_key = db_schema::DbEntryKey::StablePath(
-                        component_path,
-                        db_schema::StablePathEntryKey::ChildComponentTombstone(relative_child),
-                    )
-                    .encode()?;
-                    db.put(wtxn, &tombstone_key, &[])?;
-                    Ok(())
                 })
                 .await?;
         }
@@ -800,7 +794,7 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
         // operator.update call. With this row, the install/tombstone
         // state machine is symmetric across both installer paths.
         if let Some((parent_path_ref, child_key)) = child_path.as_ref().split_parent() {
-            let db = self.component.app_ctx().db().clone();
+            let store = self.component.app_ctx().store().clone();
             let parent_path: StablePath = parent_path_ref.into();
             let child_key = child_key.clone();
             self.component
@@ -809,7 +803,7 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
                 .txn_batcher()
                 .run(move |wtxn| {
                     crate::engine::execution::ensure_path_node_type(
-                        &db,
+                        &store,
                         wtxn,
                         parent_path.as_ref(),
                         &child_key,

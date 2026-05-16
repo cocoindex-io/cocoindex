@@ -5,8 +5,6 @@ use std::borrow::Cow;
 use std::cmp::{Ord, Ordering};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque, btree_map};
 
-use heed::{RoTxn, RwTxn};
-
 use crate::engine::context::{
     ComponentProcessingAction, ComponentProcessingMode, ComponentProcessorContext,
     DeclaredTargetState, FnCallMemo, MemoStatesPayload, TARGET_ID_KEY,
@@ -24,6 +22,7 @@ use crate::state::stable_path_set::{ChildStablePathSet, StablePathSet};
 use crate::state::target_state_path::{
     TargetStatePath, TargetStatePathWithProviderId, TargetStateProviderGeneration,
 };
+use crate::state_store::{AnyTxn, Store, WriteTxn, ops};
 use cocoindex_utils::deser::from_msgpack_slice;
 use cocoindex_utils::fingerprint::Fingerprint;
 
@@ -86,20 +85,14 @@ pub(crate) async fn use_or_invalidate_component_memoization<Prof: EngineProfile>
         return Ok(None);
     }
 
-    let key = db_schema::DbEntryKey::StablePath(
-        comp_ctx.stable_path().clone(),
-        db_schema::StablePathEntryKey::ComponentMemoization,
-    )
-    .encode()?;
-
-    let db = comp_ctx.app_ctx().db();
+    let store = comp_ctx.app_ctx().store();
+    let path = comp_ctx.stable_path();
     {
         let rtxn = comp_ctx.app_ctx().env().read_txn().await?;
-        let Some(data) = db.get(&rtxn, key.as_slice())? else {
+        let Some(memo_info) = ops::read_component_memo(&rtxn, store, path)? else {
             return Ok(None);
         };
         if let Some(processor_fp) = processor_fp {
-            let memo_info: db_schema::ComponentMemoizationInfo<'_> = from_msgpack_slice(&data)?;
             if memo_info.processor_fp == processor_fp
                 && logic_registry::all_contained_with_env(
                     &memo_info.logic_deps,
@@ -137,15 +130,13 @@ pub(crate) async fn use_or_invalidate_component_memoization<Prof: EngineProfile>
 
     // Invalidate the memoization.
     {
-        let db = comp_ctx.app_ctx().db().clone();
+        let store = comp_ctx.app_ctx().store().clone();
+        let path = path.clone();
         comp_ctx
             .app_ctx()
             .env()
             .txn_batcher()
-            .run(move |wtxn| {
-                db.delete(wtxn, key.as_slice())?;
-                Ok(())
-            })
+            .run(move |wtxn| ops::delete_component_memo(wtxn, &store, &path))
             .await?;
     }
 
@@ -162,56 +153,50 @@ pub(crate) async fn update_component_memo_states<Prof: EngineProfile>(
     comp_ctx: &ComponentProcessorContext<Prof>,
     new_states: &MemoStatesPayload<Prof>,
 ) -> Result<()> {
-    let key = db_schema::DbEntryKey::StablePath(
-        comp_ctx.stable_path().clone(),
-        db_schema::StablePathEntryKey::ComponentMemoization,
-    )
-    .encode()?;
-
-    let db = comp_ctx.app_ctx().db().clone();
+    let store = comp_ctx.app_ctx().store().clone();
+    let path = comp_ctx.stable_path().clone();
 
     // Serialize new states
     let memo_states_serialized = serialize_memo_values::<Prof>(&new_states.positional)?;
     let context_memo_states_serialized =
         serialize_context_memo_states::<Prof>(&new_states.by_context_fp)?;
 
-    // Read existing entry and write back with updated states in one transaction
+    // Read existing entry and write back with updated states in one
+    // transaction. The deserialized memo_info borrows from wtxn, so we
+    // serialize the modified struct to bytes (releasing the borrow) before
+    // writing back.
     comp_ctx
         .app_ctx()
         .env()
         .txn_batcher()
         .run(move |wtxn| {
-            let Some(data) = db.get(wtxn, key.as_slice())? else {
-                return Ok(());
+            let encoded = {
+                let Some(existing) = ops::read_component_memo(&*wtxn, &store, &path)? else {
+                    return Ok(());
+                };
+                let new_info = db_schema::ComponentMemoizationInfo {
+                    processor_fp: existing.processor_fp,
+                    return_value: existing.return_value,
+                    logic_deps: existing.logic_deps,
+                    memo_states: memo_states_serialized,
+                    context_memo_states: context_memo_states_serialized,
+                };
+                rmp_serde::to_vec_named(&new_info)?
             };
-            let existing: db_schema::ComponentMemoizationInfo<'_> = from_msgpack_slice(data)?;
-            let memo_info = db_schema::ComponentMemoizationInfo {
-                processor_fp: existing.processor_fp,
-                return_value: existing.return_value,
-                logic_deps: existing.logic_deps,
-                memo_states: memo_states_serialized,
-                context_memo_states: context_memo_states_serialized,
-            };
-            let encoded = rmp_serde::to_vec_named(&memo_info)?;
-            db.put(wtxn, key.as_slice(), encoded.as_slice())?;
-            Ok(())
+            // Borrows from wtxn are released; we can take &mut wtxn for write.
+            ops::write_component_memo_raw(wtxn, &store, &path, &encoded)
         })
         .await?;
     Ok(())
 }
 
 fn write_fn_call_memo<Prof: EngineProfile>(
-    wtxn: &mut RwTxn<'_>,
-    db: &db_schema::Database,
+    wtxn: &mut WriteTxn<'_>,
+    store: &Store,
     comp_ctx: &ComponentProcessorContext<Prof>,
     memo_fp: Fingerprint,
     memo: FnCallMemo<Prof>,
 ) -> Result<()> {
-    let key = db_schema::DbEntryKey::StablePath(
-        comp_ctx.stable_path().clone(),
-        db_schema::StablePathEntryKey::FunctionMemoization(memo_fp),
-    )
-    .encode()?;
     let ret_bytes = memo.ret.to_bytes()?;
     let memo_states_serialized = serialize_memo_values::<Prof>(&memo.memo_states)?;
     let context_memo_states_serialized =
@@ -225,28 +210,19 @@ fn write_fn_call_memo<Prof: EngineProfile>(
         memo_states: memo_states_serialized,
         context_memo_states: context_memo_states_serialized,
     };
-    let encoded = rmp_serde::to_vec_named(&fn_call_memo)?;
-    db.put(wtxn, key.as_slice(), encoded.as_slice())?;
-    Ok(())
+    ops::write_fn_memo(wtxn, store, comp_ctx.stable_path(), memo_fp, &fn_call_memo)
 }
 
-fn read_fn_call_memo_with_txn<Prof: EngineProfile>(
-    rtxn: &RoTxn,
-    db: &db_schema::Database,
+fn read_fn_call_memo_with_txn<Prof: EngineProfile, T: AnyTxn>(
+    rtxn: &T,
+    store: &Store,
     comp_ctx: &ComponentProcessorContext<Prof>,
     memo_fp: Fingerprint,
 ) -> Result<Option<FnCallMemo<Prof>>> {
-    let key = db_schema::DbEntryKey::StablePath(
-        comp_ctx.stable_path().clone(),
-        db_schema::StablePathEntryKey::FunctionMemoization(memo_fp),
-    )
-    .encode()?;
-
-    let data = db.get(rtxn, key.as_slice())?;
-    let Some(data) = data else {
+    let Some(fn_call_memo) = ops::read_fn_memo(rtxn, store, comp_ctx.stable_path(), memo_fp)?
+    else {
         return Ok(None);
     };
-    let fn_call_memo: db_schema::FunctionMemoizationEntry<'_> = from_msgpack_slice(&data)?;
     if !logic_registry::all_contained_with_env(&fn_call_memo.logic_deps, comp_ctx.app_ctx().env()) {
         return Ok(None);
     }
@@ -282,7 +258,7 @@ pub(crate) async fn read_fn_call_memo<Prof: EngineProfile>(
         return Ok(None);
     }
     let rtxn = comp_ctx.app_ctx().env().read_txn().await?;
-    read_fn_call_memo_with_txn(&rtxn, comp_ctx.app_ctx().db(), comp_ctx, memo_fp)
+    read_fn_call_memo_with_txn(&rtxn, comp_ctx.app_ctx().store(), comp_ctx, memo_fp)
 }
 
 pub fn declare_target_state<Prof: EngineProfile>(
@@ -378,7 +354,7 @@ struct ChildPathInfo {
 
 struct Committer<Prof: EngineProfile> {
     component_ctx: ComponentProcessorContext<Prof>,
-    db: db_schema::Database,
+    store: Store,
     target_states_providers: rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
 
     component_path: StablePath,
@@ -405,7 +381,7 @@ impl<Prof: EngineProfile> Committer<Prof> {
         let encoded_tombstone_key_prefix = tombstone_key_prefix.encode()?;
         Ok(Self {
             component_ctx: component_ctx.clone(),
-            db: component_ctx.app_ctx().db().clone(),
+            store: component_ctx.app_ctx().store().clone(),
             target_states_providers: target_states_providers.clone(),
             component_path,
             encoded_tombstone_key_prefix,
@@ -419,7 +395,7 @@ impl<Prof: EngineProfile> Committer<Prof> {
     /// Returns `self` so the caller can use it for post-commit work (e.g. GC).
     fn commit_in_txn(
         mut self,
-        wtxn: &mut RwTxn<'_>,
+        wtxn: &mut WriteTxn<'_>,
         child_path_set: Option<ChildStablePathSet>,
         encoded_target_state_info_key: &[u8],
         all_memo_fps: &HashSet<Fingerprint>,
@@ -428,14 +404,14 @@ impl<Prof: EngineProfile> Committer<Prof> {
     ) -> Result<Self> {
         {
             if self.component_ctx.mode() == ComponentProcessingMode::Delete {
-                self.db
+                self.store
+                    .db()
                     .delete(&mut *wtxn, encoded_target_state_info_key.as_ref())?;
             } else {
                 let curr_version = curr_version
                     .ok_or_else(|| internal_error!("curr_version is required for Build mode"))?;
-                let mut tracking_info: db_schema::StablePathEntryTrackingInfo = self
-                    .db
-                    .get(&*wtxn, encoded_target_state_info_key.as_ref())?
+                let mut tracking_info: db_schema::StablePathEntryTrackingInfo = wtxn
+                    .db_get_bytes(self.store.db(), encoded_target_state_info_key.as_ref())?
                     .map(|data| from_msgpack_slice(data))
                     .transpose()?
                     .ok_or_else(|| internal_error!("tracking info not found for commit"))?;
@@ -494,7 +470,7 @@ impl<Prof: EngineProfile> Committer<Prof> {
 
                 let data_bytes = rmp_serde::to_vec_named(&tracking_info)?;
                 drop(tracking_info); // Release borrow before mutable operations.
-                self.db.put(
+                self.store.db().put(
                     &mut *wtxn,
                     encoded_target_state_info_key.as_ref(),
                     data_bytes.as_slice(),
@@ -502,37 +478,17 @@ impl<Prof: EngineProfile> Committer<Prof> {
 
                 // Clean up inverted tracking for pruned entries.
                 for path in &pruned_paths {
-                    delete_target_state_owner(&mut *wtxn, &self.db, path)?;
+                    ops::delete_target_state_owner(wtxn, &self.store, path)?;
                 }
             }
 
             // Write memos.
             for (fp, memo) in memos_without_mounts_to_store {
-                write_fn_call_memo(&mut *wtxn, &self.db, &self.component_ctx, fp, memo)?;
+                write_fn_call_memo(wtxn, &self.store, &self.component_ctx, fp, memo)?;
             }
 
             // Delete all function memo entries that are not in the all_memo_fps.
-            {
-                let fn_memo_key_prefix = db_schema::DbEntryKey::StablePath(
-                    self.component_path.clone(),
-                    db_schema::StablePathEntryKey::FunctionMemoizationPrefix,
-                );
-                let encoded_fn_memo_key_prefix = fn_memo_key_prefix.encode()?;
-                let mut fn_memo_key_prefix_iter = self
-                    .db
-                    .prefix_iter_mut(&mut *wtxn, encoded_fn_memo_key_prefix.as_ref())?;
-                while let Some((key, _)) = fn_memo_key_prefix_iter.next().transpose()? {
-                    // Decode key
-                    let decoded_fp: Fingerprint =
-                        storekey::decode(key[encoded_fn_memo_key_prefix.len()..].as_ref())?;
-                    if all_memo_fps.contains(&decoded_fp) {
-                        continue;
-                    }
-                    unsafe {
-                        fn_memo_key_prefix_iter.del_current()?;
-                    }
-                }
-            }
+            ops::retain_fn_memos(wtxn, &self.store, &self.component_path, all_memo_fps)?;
 
             if !self.demote_component_only {
                 self.update_existence(&mut *wtxn, child_path_set)?;
@@ -574,7 +530,7 @@ impl<Prof: EngineProfile> Committer<Prof> {
 
     fn update_existence(
         &mut self,
-        wtxn: &mut RwTxn<'_>,
+        wtxn: &mut WriteTxn<'_>,
         child_path_set: Option<ChildStablePathSet>,
     ) -> Result<()> {
         self.existence_processing_queue.push_back(ChildrenPathInfo {
@@ -615,8 +571,9 @@ impl<Prof: EngineProfile> Committer<Prof> {
                 );
                 let encoded_db_key_prefix = db_key_prefix.encode()?;
                 let mut db_prefix_iter = self
-                    .db
-                    .prefix_iter_mut(wtxn, encoded_db_key_prefix.as_ref())?;
+                    .store
+                    .db()
+                    .prefix_iter_mut(&mut **wtxn, encoded_db_key_prefix.as_ref())?;
                 let mut db_next = db_prefix_iter.next().transpose()?;
 
                 loop {
@@ -710,8 +667,8 @@ impl<Prof: EngineProfile> Committer<Prof> {
                         child_path_set: Some(child_path_set),
                     });
                 }
-                self.db.put(
-                    wtxn,
+                self.store.db().put(
+                    &mut **wtxn,
                     child_to_add.encoded_db_key.as_slice(),
                     child_to_add.encoded_db_value.as_slice(),
                 )?;
@@ -722,10 +679,9 @@ impl<Prof: EngineProfile> Committer<Prof> {
         Ok(())
     }
 
-    fn launch_child_component_gc(&self, rtxn: &RoTxn<'_>) -> Result<()> {
-        let tombstone_key_prefix_iter = self
-            .db
-            .prefix_iter(rtxn, self.encoded_tombstone_key_prefix.as_ref())?;
+    fn launch_child_component_gc<T: AnyTxn>(&self, rtxn: &T) -> Result<()> {
+        let tombstone_key_prefix_iter =
+            rtxn.db_prefix_iter(self.store.db(), self.encoded_tombstone_key_prefix.as_ref())?;
         for tombstone_entry in tombstone_key_prefix_iter {
             let (ts_key, _) = tombstone_entry?;
             let relative_path: StablePath =
@@ -768,7 +724,7 @@ impl<Prof: EngineProfile> Committer<Prof> {
         Ok(())
     }
 
-    fn flush_component_tombstones(&mut self, wtxn: &mut RwTxn<'_>) -> Result<()> {
+    fn flush_component_tombstones(&mut self, wtxn: &mut WriteTxn<'_>) -> Result<()> {
         if self.buffered_paths_for_tombstone.is_empty() {
             return Ok(());
         }
@@ -777,7 +733,9 @@ impl<Prof: EngineProfile> Committer<Prof> {
         for stable_path in std::mem::take(&mut self.buffered_paths_for_tombstone) {
             encoded_tombstone_key.truncate(prefix_len);
             storekey::encode(&mut encoded_tombstone_key, &stable_path)?;
-            self.db.put(wtxn, encoded_tombstone_key.as_slice(), &[])?;
+            self.store
+                .db()
+                .put(&mut **wtxn, encoded_tombstone_key.as_slice(), &[])?;
         }
         Ok(())
     }
@@ -842,19 +800,12 @@ struct PreCommitOutput<Prof: EngineProfile> {
 
 // --- Inverted tracking (TargetStatePath → owning component) helpers ---
 
-fn read_target_state_owner(
-    wtxn: &heed::RwTxn<'_>,
-    db: &db_schema::Database,
-    target_state_path: &TargetStatePath,
-) -> Result<Option<db_schema::TargetStateOwnerInfo>> {
-    let key = db_schema::DbEntryKey::TargetState(target_state_path.clone()).encode()?;
-    Ok(db
-        .get(wtxn, key.as_slice())?
-        .map(|data| from_msgpack_slice(data))
-        .transpose()?)
-}
-
 /// Encode an inverted tracking upsert as a deferred write (key, Some(value)).
+///
+/// Still uses raw key+value bytes because `deferred_writes` mixes
+/// `TrackingInfo` writes and `TargetStateOwner` upserts in the same
+/// `Vec<(Vec<u8>, Vec<u8>)>`. See `specs/core/state_store_refactor.md` §10
+/// for the deferred typed-enum refactor.
 fn encode_owner_upsert(
     target_state_path: &TargetStatePath,
     component_path: &StablePath,
@@ -866,20 +817,10 @@ fn encode_owner_upsert(
     Ok((key, value))
 }
 
-fn delete_target_state_owner(
-    wtxn: &mut heed::RwTxn<'_>,
-    db: &db_schema::Database,
-    target_state_path: &TargetStatePath,
-) -> Result<()> {
-    let key = db_schema::DbEntryKey::TargetState(target_state_path.clone()).encode()?;
-    db.delete(wtxn, key.as_slice())?;
-    Ok(())
-}
-
 #[allow(clippy::too_many_arguments)]
 fn pre_commit<Prof: EngineProfile>(
-    wtxn: &mut heed::RwTxn<'_>,
-    db: &db_schema::Database,
+    wtxn: &mut WriteTxn<'_>,
+    store: &Store,
     comp_mode: ComponentProcessingMode,
     stable_path: &StablePath,
     full_reprocess: bool,
@@ -895,14 +836,14 @@ fn pre_commit<Prof: EngineProfile>(
     let mut processor_name_for_del: Option<String> = None;
 
     if comp_mode == ComponentProcessingMode::Delete {
-        db.delete(wtxn, memo_del_key)?;
+        store.db().delete(&mut **wtxn, memo_del_key)?;
     }
 
     if let Some((parent_path, key)) = stable_path.as_ref().split_parent() {
         match comp_mode {
             ComponentProcessingMode::Build => {
                 ensure_path_node_type(
-                    db,
+                    store,
                     wtxn,
                     parent_path,
                     key,
@@ -910,7 +851,7 @@ fn pre_commit<Prof: EngineProfile>(
                 )?;
             }
             ComponentProcessingMode::Delete => {
-                let node_type = get_path_node_type(db, wtxn, parent_path, key)?;
+                let node_type = get_path_node_type(store, wtxn, parent_path, key)?;
                 match node_type {
                     Some(db_schema::StablePathNodeType::Component) => {
                         return Ok(None);
@@ -925,8 +866,8 @@ fn pre_commit<Prof: EngineProfile>(
     }
 
     let mut id_reservation = IdReservation::new(&TARGET_ID_KEY);
-    let mut tracking_info: Option<db_schema::StablePathEntryTrackingInfo> = db
-        .get(wtxn, encoded_target_state_info_key)?
+    let mut tracking_info: Option<db_schema::StablePathEntryTrackingInfo> = wtxn
+        .db_get_bytes(store.db(), encoded_target_state_info_key)?
         .map(|data| from_msgpack_slice(data))
         .transpose()?;
     // Deferred DB writes that will be flushed after tracking_info is dropped,
@@ -982,14 +923,16 @@ fn pre_commit<Prof: EngineProfile>(
                 Some(existing_item)
             } else {
                 // Insert path: check inverted tracking for ownership preempt.
-                match read_target_state_owner(wtxn, db, &target_state_path)? {
+                match ops::read_target_state_owner(wtxn, store, &target_state_path)? {
                     Some(owner_info) if owner_info.component_path != *stable_path => {
                         let old_owner_key = db_schema::DbEntryKey::StablePath(
                             owner_info.component_path.clone(),
                             db_schema::StablePathEntryKey::TrackingInfo,
                         )
                         .encode()?;
-                        if let Some(data) = db.get(wtxn, old_owner_key.as_slice())? {
+                        if let Some(data) =
+                            wtxn.db_get_bytes(store.db(), old_owner_key.as_slice())?
+                        {
                             let mut old_tracking: db_schema::StablePathEntryTrackingInfo =
                                 from_msgpack_slice(data)?;
                             let len_before = old_tracking.target_state_items.len();
@@ -1073,7 +1016,7 @@ fn pre_commit<Prof: EngineProfile>(
                     let existing_gen = provider_generation.clone().unwrap_or_default();
                     let new_gen = match recon_output.child_invalidation {
                         Some(ChildInvalidation::Destructive) => {
-                            let new_id = id_reservation.next_id(wtxn, db)?;
+                            let new_id = id_reservation.next_id(wtxn, store)?;
                             TargetStateProviderGeneration {
                                 provider_id: new_id,
                                 provider_schema_version: 0,
@@ -1233,7 +1176,11 @@ fn pre_commit<Prof: EngineProfile>(
 
         let data_bytes = rmp_serde::to_vec_named(&tracking_info)?;
         drop(tracking_info); // Release borrow before mutable operations.
-        db.put(wtxn, encoded_target_state_info_key, data_bytes.as_slice())?;
+        store.db().put(
+            &mut **wtxn,
+            encoded_target_state_info_key,
+            data_bytes.as_slice(),
+        )?;
         Some(curr_version)
     } else {
         None
@@ -1241,10 +1188,12 @@ fn pre_commit<Prof: EngineProfile>(
 
     // Flush deferred writes now that tracking_info is dropped.
     for (key, value) in &deferred_writes {
-        db.put(wtxn, key.as_slice(), value.as_slice())?;
+        store
+            .db()
+            .put(&mut **wtxn, key.as_slice(), value.as_slice())?;
     }
 
-    id_reservation.commit(wtxn, db)?;
+    id_reservation.commit(wtxn, store)?;
     Ok(Some(PreCommitOutput {
         curr_version,
         previously_exists,
@@ -1307,7 +1256,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
         ),
     };
 
-    let db = comp_ctx.app_ctx().db().clone();
+    let store = comp_ctx.app_ctx().store().clone();
     let comp_mode = comp_ctx.mode();
     let stable_path = comp_ctx.stable_path().clone();
     let full_reprocess = comp_ctx.full_reprocess();
@@ -1337,7 +1286,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
         .run(move |wtxn| {
             pre_commit(
                 wtxn,
-                &db,
+                &store,
                 comp_mode,
                 &stable_path,
                 full_reprocess,
@@ -1439,11 +1388,6 @@ pub(crate) async fn post_submit_for_build<Prof: EngineProfile>(
     };
 
     // Serialize outside the closure (no transaction needed for serialization).
-    let key = db_schema::DbEntryKey::StablePath(
-        comp_ctx.stable_path().clone(),
-        db_schema::StablePathEntryKey::ComponentMemoization,
-    )
-    .encode()?;
     let ret_bytes = ret.to_bytes()?;
     let memo_states_serialized = serialize_memo_values::<Prof>(&memo_states.positional)?;
     let context_memo_states_serialized =
@@ -1457,15 +1401,13 @@ pub(crate) async fn post_submit_for_build<Prof: EngineProfile>(
     };
     let encoded = rmp_serde::to_vec_named(&memo_info)?;
 
-    let db = comp_ctx.app_ctx().db().clone();
+    let store = comp_ctx.app_ctx().store().clone();
+    let path = comp_ctx.stable_path().clone();
     comp_ctx
         .app_ctx()
         .env()
         .txn_batcher()
-        .run(move |wtxn| {
-            db.put(wtxn, key.as_slice(), encoded.as_slice())?;
-            Ok(())
-        })
+        .run(move |wtxn| ops::write_component_memo_raw(wtxn, &store, &path, &encoded))
         .await
 }
 
@@ -1475,97 +1417,38 @@ pub(crate) async fn cleanup_tombstone<Prof: EngineProfile>(
     let Some(parent) = comp_ctx.component().parent() else {
         return Ok(());
     };
-    let owner_path = parent.stable_path();
-    let relative_path = comp_ctx
+    let owner_path: StablePath = parent.stable_path().clone();
+    let relative_path: StablePath = comp_ctx
         .stable_path()
         .as_ref()
-        .strip_parent(owner_path.as_ref())?;
-    let tombstone_key = db_schema::DbEntryKey::StablePath(
-        owner_path.clone(),
-        db_schema::StablePathEntryKey::ChildComponentTombstone(relative_path.into()),
-    );
-    let encoded_tombstone_key = tombstone_key.encode()?;
-
-    let db = comp_ctx.app_ctx().db().clone();
+        .strip_parent(owner_path.as_ref())?
+        .into();
+    let store = comp_ctx.app_ctx().store().clone();
     comp_ctx
         .app_ctx()
         .env()
         .txn_batcher()
-        .run(move |wtxn| {
-            db.delete(wtxn, encoded_tombstone_key.as_ref())?;
-            Ok(())
-        })
+        .run(move |wtxn| ops::delete_tombstone(wtxn, &store, &owner_path, &relative_path))
         .await
 }
 
 pub(crate) fn ensure_path_node_type(
-    db: &db_schema::Database,
-    wtxn: &mut RwTxn<'_>,
+    store: &Store,
+    wtxn: &mut WriteTxn<'_>,
     parent_path: StablePathRef<'_>,
     key: &StableKey,
     target_node_type: db_schema::StablePathNodeType,
 ) -> Result<()> {
-    let db_key = db_schema::DbEntryKey::StablePath(
-        parent_path.into(),
-        db_schema::StablePathEntryKey::ChildExistence(key.clone()),
-    );
-    let encoded_db_key = db_key.encode()?;
-
-    let existing_node_type = get_path_node_type_with_raw_key(db, wtxn, encoded_db_key.as_slice())?;
-    match (existing_node_type, target_node_type) {
-        (None, _)
-        | (
-            Some(db_schema::StablePathNodeType::Directory),
-            db_schema::StablePathNodeType::Component,
-        ) => {
-            let encoded_db_value = rmp_serde::to_vec_named(&db_schema::ChildExistenceInfo {
-                node_type: target_node_type,
-            })?;
-            db.put(wtxn, encoded_db_key.as_slice(), encoded_db_value.as_slice())?;
-        }
-        _ => {
-            // No-op for all other cases
-        }
-    }
-    if existing_node_type.is_none()
-        && let Some((parent, key)) = parent_path.split_parent()
-    {
-        return ensure_path_node_type(
-            db,
-            wtxn,
-            parent,
-            key,
-            db_schema::StablePathNodeType::Directory,
-        );
-    }
-    Ok(())
+    ops::ensure_path_node_type(wtxn, store, parent_path, key, target_node_type)
 }
 
-fn get_path_node_type(
-    db: &db_schema::Database,
-    rtxn: &RoTxn<'_>,
+fn get_path_node_type<T: AnyTxn>(
+    store: &Store,
+    rtxn: &T,
     parent_path: StablePathRef<'_>,
     key: &StableKey,
 ) -> Result<Option<db_schema::StablePathNodeType>> {
-    let encoded_db_key = db_schema::DbEntryKey::StablePath(
-        parent_path.into(),
-        db_schema::StablePathEntryKey::ChildExistence(key.clone()),
-    )
-    .encode()?;
-    get_path_node_type_with_raw_key(db, rtxn, encoded_db_key.as_slice())
-}
-
-fn get_path_node_type_with_raw_key(
-    db: &db_schema::Database,
-    rtxn: &RoTxn<'_>,
-    raw_key: &[u8],
-) -> Result<Option<db_schema::StablePathNodeType>> {
-    let db_value = db.get(rtxn, raw_key)?;
-    let Some(db_value) = db_value else {
-        return Ok(None);
-    };
-    let child_existence_info: db_schema::ChildExistenceInfo = from_msgpack_slice(db_value)?;
-    Ok(Some(child_existence_info.node_type))
+    ops::read_path_node_type(rtxn, store, parent_path, key)
 }
 
 #[derive(Default)]
@@ -1614,12 +1497,12 @@ async fn finalize_fn_call_memoization<Prof: EngineProfile>(
     // Use a single read transaction for all DB reads.
     if !deps_to_process.is_empty() {
         let rtxn = comp_ctx.app_ctx().env().read_txn().await?;
-        let db = comp_ctx.app_ctx().db();
+        let store = comp_ctx.app_ctx().store();
         while let Some(fp) = deps_to_process.pop_front() {
             if !result.all_memos_fps.insert(fp) {
                 continue;
             }
-            let Some(memo) = read_fn_call_memo_with_txn(&rtxn, db, comp_ctx, fp)? else {
+            let Some(memo) = read_fn_call_memo_with_txn(&rtxn, store, comp_ctx, fp)? else {
                 continue;
             };
             result
