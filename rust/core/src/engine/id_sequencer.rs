@@ -7,13 +7,13 @@
 //! - Batch sizes grow exponentially (2, 4, 8, ..., 256) for better performance
 //!
 //! Storage I/O goes through `crate::state_store::ops`; this module is
-//! the in-memory caching half and never touches LMDB directly.
+//! the in-memory caching half and never touches the storage backend directly.
 
 use std::collections::HashMap;
 
 use crate::prelude::*;
 use crate::state::stable_path::StableKey;
-use crate::state_store::{Store, TxnBatcher, WriteTxn, ops};
+use crate::state_store::{AppStore, TxnBatcher, WriteTxn, ops};
 
 /// Initial batch size for ID allocation.
 const INITIAL_BATCH_SIZE: u64 = 2;
@@ -86,7 +86,7 @@ impl IdSequencerManager {
     pub async fn next_id(
         &self,
         txn_batcher: &TxnBatcher,
-        store: &Store,
+        app_store: &AppStore,
         key: &StableKey,
     ) -> Result<u64> {
         // Get or create the per-key state (brief lock on main map)
@@ -103,10 +103,10 @@ impl IdSequencerManager {
 
         if state.needs_refill() {
             let batch_size = state.next_batch_size;
-            let store = store.clone();
+            let app_store = app_store.clone();
             let key = key.clone();
             let start_id = txn_batcher
-                .run(move |wtxn| ops::reserve_id_range(wtxn, &store, &key, batch_size))
+                .run(move |wtxn| ops::reserve_id_range(wtxn, &app_store, &key, batch_size))
                 .await?;
             state.refill(start_id, batch_size);
         }
@@ -122,8 +122,8 @@ impl IdSequencerManager {
 /// [`commit()`](IdReservation::commit).
 ///
 /// Each reservation is scoped to a single key. At most one reservation per key
-/// should be live at a time, which is naturally enforced by LMDB's single-writer
-/// constraint.
+/// should be live at a time, which is naturally enforced by the storage
+/// backend's single-writer transaction.
 pub struct IdReservation {
     key: &'static StableKey,
     /// Next ID to hand out (initialized from DB on first `next_id` call).
@@ -139,11 +139,11 @@ impl IdReservation {
     }
 
     /// Allocate the next ID. Reads from DB on first call, then tracks locally.
-    pub fn next_id(&mut self, wtxn: &WriteTxn<'_>, store: &Store) -> Result<u64> {
+    pub fn next_id(&mut self, wtxn: &WriteTxn<'_>, app_store: &AppStore) -> Result<u64> {
         let next_id = match &mut self.next_id_state {
             Some(n) => n,
             slot @ None => {
-                let current = ops::peek_id_sequence(wtxn, store, self.key)?.unwrap_or(1);
+                let current = ops::peek_id_sequence(wtxn, app_store, self.key)?.unwrap_or(1);
                 slot.insert(current)
             }
         };
@@ -153,9 +153,9 @@ impl IdReservation {
     }
 
     /// Write the reserved ID range back to DB. Call once at end of transaction.
-    pub fn commit(self, wtxn: &mut WriteTxn<'_>, store: &Store) -> Result<()> {
+    pub fn commit(self, wtxn: &mut WriteTxn<'_>, app_store: &AppStore) -> Result<()> {
         if let Some(next_id) = self.next_id_state {
-            ops::write_id_sequence(wtxn, store, self.key, next_id)?;
+            ops::write_id_sequence(wtxn, app_store, self.key, next_id)?;
         }
         Ok(())
     }

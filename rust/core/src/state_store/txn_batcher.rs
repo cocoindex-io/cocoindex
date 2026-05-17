@@ -10,7 +10,7 @@ use std::sync::Arc;
 use cocoindex_utils::batching::{BatchQueue, Batcher, BatchingOptions, Runner};
 
 use crate::prelude::*;
-use crate::state_store::store::WriteTxn;
+use crate::state_store::txn::WriteTxn;
 
 /// Type-erased body for a write transaction.
 /// Runs inside a shared `WriteTxn`, returns a boxed output value.

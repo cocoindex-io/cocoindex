@@ -11,9 +11,9 @@ use futures::stream::{Stream, StreamExt};
 use tokio_stream::wrappers::ReceiverStream;
 
 pub fn list_stable_paths<Prof: EngineProfile>(app: &App<Prof>) -> Result<Vec<StablePath>> {
-    let store = app.app_ctx().store();
-    let rtxn = ops::open_read_txn_for_inspect(app.app_ctx().env().db_env())?;
-    ops::list_all_stable_paths(&rtxn, store)
+    let app_store = app.app_ctx().app_store();
+    let rtxn = app.app_ctx().env().storage().read_txn_for_inspect()?;
+    ops::list_all_stable_paths(&rtxn, app_store)
 }
 
 /// Represents a stable path with metadata (e.g. node type); more properties may be added.
@@ -27,13 +27,13 @@ pub struct StablePathInfo {
 pub use db_schema::StablePathNodeType;
 
 /// Returns a stream of stable paths with their metadata (e.g. node type).
-/// LMDB iteration runs on a dedicated thread (RoTxn/cursors are !Send); items are sent over a channel.
+/// Iteration runs on a dedicated thread (read txns/cursors are !Send); items are sent over a channel.
 pub fn iter_stable_paths<Prof: EngineProfile>(
     app: &App<Prof>,
 ) -> impl Stream<Item = Result<StablePathInfo>> + Send + 'static {
-    let store = app.app_ctx().store().clone();
-    let db_env = app.app_ctx().env().db_env().clone();
-    let rx = ops::spawn_iter_stable_paths_with_node_type(store, db_env);
+    let app_store = app.app_ctx().app_store().clone();
+    let storage = app.app_ctx().env().storage().clone();
+    let rx = ops::spawn_iter_stable_paths_with_node_type(app_store, storage);
     receiver_to_stable_path_info_stream(rx)
 }
 
@@ -43,8 +43,8 @@ pub fn iter_stable_paths_by_name<Prof: EngineProfile>(
     env: &Environment<Prof>,
     app_name: &str,
 ) -> Result<Pin<Box<dyn Stream<Item = Result<StablePathInfo>> + Send + 'static>>> {
-    let db_env = env.db_env().clone();
-    match ops::spawn_iter_stable_paths_with_node_type_for_app_name(db_env, app_name)? {
+    let storage = env.storage().clone();
+    match ops::spawn_iter_stable_paths_with_node_type_for_app_name(storage, app_name)? {
         Some(rx) => Ok(Box::pin(receiver_to_stable_path_info_stream(rx))),
         None => Ok(Box::pin(futures::stream::empty())),
     }
@@ -58,5 +58,5 @@ fn receiver_to_stable_path_info_stream(
 }
 
 pub fn list_app_names<Prof: EngineProfile>(env: &Environment<Prof>) -> Result<Vec<String>> {
-    ops::list_app_names(env.db_env())
+    ops::list_app_names(env.storage())
 }

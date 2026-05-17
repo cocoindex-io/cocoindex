@@ -22,7 +22,7 @@ use crate::state::stable_path_set::{ChildStablePathSet, StablePathSet};
 use crate::state::target_state_path::{
     TargetStatePath, TargetStatePathWithProviderId, TargetStateProviderGeneration,
 };
-use crate::state_store::{AnyTxn, Store, WriteTxn, ops};
+use crate::state_store::{AnyTxn, AppStore, WriteTxn, ops};
 use cocoindex_utils::fingerprint::Fingerprint;
 
 /// Deserialize a `Vec<MemoizedValue>` into a `Vec<Prof::FunctionData>`.
@@ -84,11 +84,11 @@ pub(crate) async fn use_or_invalidate_component_memoization<Prof: EngineProfile>
         return Ok(None);
     }
 
-    let store = comp_ctx.app_ctx().store();
+    let app_store = comp_ctx.app_ctx().app_store();
     let path = comp_ctx.stable_path();
     {
         let rtxn = comp_ctx.app_ctx().env().read_txn().await?;
-        let Some(memo_info) = ops::read_component_memo(&rtxn, store, path)? else {
+        let Some(memo_info) = ops::read_component_memo(&rtxn, app_store, path)? else {
             return Ok(None);
         };
         if let Some(processor_fp) = processor_fp {
@@ -129,13 +129,13 @@ pub(crate) async fn use_or_invalidate_component_memoization<Prof: EngineProfile>
 
     // Invalidate the memoization.
     {
-        let store = comp_ctx.app_ctx().store().clone();
+        let app_store = comp_ctx.app_ctx().app_store().clone();
         let path = path.clone();
         comp_ctx
             .app_ctx()
             .env()
             .txn_batcher()
-            .run(move |wtxn| ops::delete_component_memo(wtxn, &store, &path))
+            .run(move |wtxn| ops::delete_component_memo(wtxn, &app_store, &path))
             .await?;
     }
 
@@ -152,7 +152,7 @@ pub(crate) async fn update_component_memo_states<Prof: EngineProfile>(
     comp_ctx: &ComponentProcessorContext<Prof>,
     new_states: &MemoStatesPayload<Prof>,
 ) -> Result<()> {
-    let store = comp_ctx.app_ctx().store().clone();
+    let app_store = comp_ctx.app_ctx().app_store().clone();
     let path = comp_ctx.stable_path().clone();
 
     // Serialize new states
@@ -170,7 +170,7 @@ pub(crate) async fn update_component_memo_states<Prof: EngineProfile>(
         .txn_batcher()
         .run(move |wtxn| {
             let encoded = {
-                let Some(existing) = ops::read_component_memo(&*wtxn, &store, &path)? else {
+                let Some(existing) = ops::read_component_memo(&*wtxn, &app_store, &path)? else {
                     return Ok(());
                 };
                 let new_info = db_schema::ComponentMemoizationInfo {
@@ -183,7 +183,7 @@ pub(crate) async fn update_component_memo_states<Prof: EngineProfile>(
                 rmp_serde::to_vec_named(&new_info)?
             };
             // Borrows from wtxn are released; we can take &mut wtxn for write.
-            ops::write_component_memo_raw(wtxn, &store, &path, &encoded)
+            ops::write_component_memo_raw(wtxn, &app_store, &path, &encoded)
         })
         .await?;
     Ok(())
@@ -191,7 +191,7 @@ pub(crate) async fn update_component_memo_states<Prof: EngineProfile>(
 
 fn write_fn_call_memo<Prof: EngineProfile>(
     wtxn: &mut WriteTxn<'_>,
-    store: &Store,
+    app_store: &AppStore,
     comp_ctx: &ComponentProcessorContext<Prof>,
     memo_fp: Fingerprint,
     memo: FnCallMemo<Prof>,
@@ -209,16 +209,22 @@ fn write_fn_call_memo<Prof: EngineProfile>(
         memo_states: memo_states_serialized,
         context_memo_states: context_memo_states_serialized,
     };
-    ops::write_fn_memo(wtxn, store, comp_ctx.stable_path(), memo_fp, &fn_call_memo)
+    ops::write_fn_memo(
+        wtxn,
+        app_store,
+        comp_ctx.stable_path(),
+        memo_fp,
+        &fn_call_memo,
+    )
 }
 
 fn read_fn_call_memo_with_txn<Prof: EngineProfile, T: AnyTxn>(
     rtxn: &T,
-    store: &Store,
+    app_store: &AppStore,
     comp_ctx: &ComponentProcessorContext<Prof>,
     memo_fp: Fingerprint,
 ) -> Result<Option<FnCallMemo<Prof>>> {
-    let Some(fn_call_memo) = ops::read_fn_memo(rtxn, store, comp_ctx.stable_path(), memo_fp)?
+    let Some(fn_call_memo) = ops::read_fn_memo(rtxn, app_store, comp_ctx.stable_path(), memo_fp)?
     else {
         return Ok(None);
     };
@@ -257,7 +263,7 @@ pub(crate) async fn read_fn_call_memo<Prof: EngineProfile>(
         return Ok(None);
     }
     let rtxn = comp_ctx.app_ctx().env().read_txn().await?;
-    read_fn_call_memo_with_txn(&rtxn, comp_ctx.app_ctx().store(), comp_ctx, memo_fp)
+    read_fn_call_memo_with_txn(&rtxn, comp_ctx.app_ctx().app_store(), comp_ctx, memo_fp)
 }
 
 pub fn declare_target_state<Prof: EngineProfile>(
@@ -346,7 +352,7 @@ struct ChildrenPathInfo {
 
 struct Committer<Prof: EngineProfile> {
     component_ctx: ComponentProcessorContext<Prof>,
-    store: Store,
+    app_store: AppStore,
     target_states_providers: rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
 
     component_path: StablePath,
@@ -366,7 +372,7 @@ impl<Prof: EngineProfile> Committer<Prof> {
         let component_path = component_ctx.stable_path().clone();
         Ok(Self {
             component_ctx: component_ctx.clone(),
-            store: component_ctx.app_ctx().store().clone(),
+            app_store: component_ctx.app_ctx().app_store().clone(),
             target_states_providers: target_states_providers.clone(),
             component_path,
             existence_processing_queue: VecDeque::new(),
@@ -387,12 +393,12 @@ impl<Prof: EngineProfile> Committer<Prof> {
     ) -> Result<Self> {
         {
             if self.component_ctx.mode() == ComponentProcessingMode::Delete {
-                ops::delete_tracking_info(wtxn, &self.store, &self.component_path)?;
+                ops::delete_tracking_info(wtxn, &self.app_store, &self.component_path)?;
             } else {
                 let curr_version = curr_version
                     .ok_or_else(|| internal_error!("curr_version is required for Build mode"))?;
                 let mut tracking_info: db_schema::StablePathEntryTrackingInfo =
-                    ops::read_tracking_info(&*wtxn, &self.store, &self.component_path)?
+                    ops::read_tracking_info(&*wtxn, &self.app_store, &self.component_path)?
                         .ok_or_else(|| internal_error!("tracking info not found for commit"))?;
 
                 for item in tracking_info.target_state_items.values_mut() {
@@ -449,21 +455,26 @@ impl<Prof: EngineProfile> Committer<Prof> {
 
                 let data_bytes = rmp_serde::to_vec_named(&tracking_info)?;
                 drop(tracking_info); // Release borrow before mutable operations.
-                ops::write_tracking_info_raw(wtxn, &self.store, &self.component_path, &data_bytes)?;
+                ops::write_tracking_info_raw(
+                    wtxn,
+                    &self.app_store,
+                    &self.component_path,
+                    &data_bytes,
+                )?;
 
                 // Clean up inverted tracking for pruned entries.
                 for path in &pruned_paths {
-                    ops::delete_target_state_owner(wtxn, &self.store, path)?;
+                    ops::delete_target_state_owner(wtxn, &self.app_store, path)?;
                 }
             }
 
             // Write memos.
             for (fp, memo) in memos_without_mounts_to_store {
-                write_fn_call_memo(wtxn, &self.store, &self.component_ctx, fp, memo)?;
+                write_fn_call_memo(wtxn, &self.app_store, &self.component_ctx, fp, memo)?;
             }
 
             // Delete all function memo entries that are not in the all_memo_fps.
-            ops::retain_fn_memos(wtxn, &self.store, &self.component_path, all_memo_fps)?;
+            ops::retain_fn_memos(wtxn, &self.app_store, &self.component_path, all_memo_fps)?;
 
             if !self.demote_component_only {
                 self.update_existence(&mut *wtxn, child_path_set)?;
@@ -517,7 +528,8 @@ impl<Prof: EngineProfile> Committer<Prof> {
                 .child_path_set
                 .into_iter()
                 .flat_map(|set| set.children.into_iter());
-            let existing_children = ops::list_child_existence(wtxn, &self.store, &path_info.path)?;
+            let existing_children =
+                ops::list_child_existence(wtxn, &self.app_store, &path_info.path)?;
             let mut existing_iter = existing_children.into_iter();
 
             let mut curr_next = curr_iter.next();
@@ -538,11 +550,21 @@ impl<Prof: EngineProfile> Committer<Prof> {
                     (None, Some(_)) => {
                         // All remaining existing children should be deleted.
                         if let Some((key, info)) = existing_next.take() {
-                            ops::delete_child_existence(wtxn, &self.store, &path_info.path, &key)?;
+                            ops::delete_child_existence(
+                                wtxn,
+                                &self.app_store,
+                                &path_info.path,
+                                &key,
+                            )?;
                             self.del_child(&key, &info, &path_info.path)?;
                         }
                         for (key, info) in existing_iter.by_ref() {
-                            ops::delete_child_existence(wtxn, &self.store, &path_info.path, &key)?;
+                            ops::delete_child_existence(
+                                wtxn,
+                                &self.app_store,
+                                &path_info.path,
+                                &key,
+                            )?;
                             self.del_child(&key, &info, &path_info.path)?;
                         }
                         break;
@@ -561,7 +583,7 @@ impl<Prof: EngineProfile> Committer<Prof> {
                                     existing_next.take().ok_or_else(invariance_violation)?;
                                 ops::delete_child_existence(
                                     wtxn,
-                                    &self.store,
+                                    &self.app_store,
                                     &path_info.path,
                                     &key,
                                 )?;
@@ -579,7 +601,7 @@ impl<Prof: EngineProfile> Committer<Prof> {
                                 if existing_info.node_type != new_node_type {
                                     ops::write_child_existence(
                                         wtxn,
-                                        &self.store,
+                                        &self.app_store,
                                         &path_info.path,
                                         &curr_key,
                                         &db_schema::ChildExistenceInfo {
@@ -618,7 +640,7 @@ impl<Prof: EngineProfile> Committer<Prof> {
                 let node_type = node_type_for(&path_set);
                 ops::write_child_existence(
                     wtxn,
-                    &self.store,
+                    &self.app_store,
                     &path_info.path,
                     &stable_key,
                     &db_schema::ChildExistenceInfo { node_type },
@@ -637,7 +659,7 @@ impl<Prof: EngineProfile> Committer<Prof> {
     }
 
     fn launch_child_component_gc<T: AnyTxn>(&self, rtxn: &T) -> Result<()> {
-        for relative_path in ops::list_tombstones(rtxn, &self.store, &self.component_path)? {
+        for relative_path in ops::list_tombstones(rtxn, &self.app_store, &self.component_path)? {
             let stable_path = self.component_path.concat(relative_path.as_ref());
             let component = self.component_ctx.component().get_child(stable_path);
             let delete_ctx = component.new_processor_context_for_delete(
@@ -676,7 +698,7 @@ impl<Prof: EngineProfile> Committer<Prof> {
 
     fn flush_component_tombstones(&mut self, wtxn: &mut WriteTxn<'_>) -> Result<()> {
         for relative_path in std::mem::take(&mut self.buffered_paths_for_tombstone) {
-            ops::write_tombstone(wtxn, &self.store, &self.component_path, &relative_path)?;
+            ops::write_tombstone(wtxn, &self.app_store, &self.component_path, &relative_path)?;
         }
         Ok(())
     }
@@ -755,15 +777,17 @@ enum DeferredWrite {
 }
 
 impl DeferredWrite {
-    fn flush(self, wtxn: &mut WriteTxn<'_>, store: &Store) -> Result<()> {
+    fn flush(self, wtxn: &mut WriteTxn<'_>, app_store: &AppStore) -> Result<()> {
         match self {
             DeferredWrite::TrackingInfoRaw { path, encoded } => {
-                ops::write_tracking_info_raw(wtxn, store, &path, &encoded)
+                ops::write_tracking_info_raw(wtxn, app_store, &path, &encoded)
             }
             DeferredWrite::OwnerUpsert {
                 target_state_path,
                 component_path,
-            } => ops::upsert_target_state_owner(wtxn, store, &target_state_path, &component_path),
+            } => {
+                ops::upsert_target_state_owner(wtxn, app_store, &target_state_path, &component_path)
+            }
         }
     }
 }
@@ -771,7 +795,7 @@ impl DeferredWrite {
 #[allow(clippy::too_many_arguments)]
 fn pre_commit<Prof: EngineProfile>(
     wtxn: &mut WriteTxn<'_>,
-    store: &Store,
+    app_store: &AppStore,
     comp_mode: ComponentProcessingMode,
     stable_path: &StablePath,
     full_reprocess: bool,
@@ -785,14 +809,14 @@ fn pre_commit<Prof: EngineProfile>(
     let mut processor_name_for_del: Option<String> = None;
 
     if comp_mode == ComponentProcessingMode::Delete {
-        ops::delete_component_memo(wtxn, store, stable_path)?;
+        ops::delete_component_memo(wtxn, app_store, stable_path)?;
     }
 
     if let Some((parent_path, key)) = stable_path.as_ref().split_parent() {
         match comp_mode {
             ComponentProcessingMode::Build => {
                 ensure_path_node_type(
-                    store,
+                    app_store,
                     wtxn,
                     parent_path,
                     key,
@@ -800,7 +824,7 @@ fn pre_commit<Prof: EngineProfile>(
                 )?;
             }
             ComponentProcessingMode::Delete => {
-                let node_type = get_path_node_type(store, wtxn, parent_path, key)?;
+                let node_type = get_path_node_type(app_store, wtxn, parent_path, key)?;
                 match node_type {
                     Some(db_schema::StablePathNodeType::Component) => {
                         return Ok(None);
@@ -816,7 +840,7 @@ fn pre_commit<Prof: EngineProfile>(
 
     let mut id_reservation = IdReservation::new(&TARGET_ID_KEY);
     let mut tracking_info: Option<db_schema::StablePathEntryTrackingInfo> =
-        ops::read_tracking_info(wtxn, store, stable_path)?;
+        ops::read_tracking_info(wtxn, app_store, stable_path)?;
     // Deferred DB writes that will be flushed after tracking_info is dropped,
     // since tracking_info borrows from wtxn and prevents mutable DB operations.
     let mut deferred_writes: Vec<DeferredWrite> = Vec::new();
@@ -869,11 +893,11 @@ fn pre_commit<Prof: EngineProfile>(
                 Some(existing_item)
             } else {
                 // Insert path: check inverted tracking for ownership preempt.
-                match ops::read_target_state_owner(wtxn, store, &target_state_path)? {
+                match ops::read_target_state_owner(wtxn, app_store, &target_state_path)? {
                     Some(owner_info) if owner_info.component_path != *stable_path => {
                         let old_owner_path = owner_info.component_path.clone();
                         if let Some(mut old_tracking) =
-                            ops::read_tracking_info(wtxn, store, &old_owner_path)?
+                            ops::read_tracking_info(wtxn, app_store, &old_owner_path)?
                         {
                             let len_before = old_tracking.target_state_items.len();
                             // Look up the entry matching current provider_id.
@@ -960,7 +984,7 @@ fn pre_commit<Prof: EngineProfile>(
                     let existing_gen = provider_generation.clone().unwrap_or_default();
                     let new_gen = match recon_output.child_invalidation {
                         Some(ChildInvalidation::Destructive) => {
-                            let new_id = id_reservation.next_id(wtxn, store)?;
+                            let new_id = id_reservation.next_id(wtxn, app_store)?;
                             TargetStateProviderGeneration {
                                 provider_id: new_id,
                                 provider_schema_version: 0,
@@ -1123,7 +1147,7 @@ fn pre_commit<Prof: EngineProfile>(
 
         let data_bytes = rmp_serde::to_vec_named(&tracking_info)?;
         drop(tracking_info); // Release borrow before mutable operations.
-        ops::write_tracking_info_raw(wtxn, store, stable_path, &data_bytes)?;
+        ops::write_tracking_info_raw(wtxn, app_store, stable_path, &data_bytes)?;
         Some(curr_version)
     } else {
         None
@@ -1131,10 +1155,10 @@ fn pre_commit<Prof: EngineProfile>(
 
     // Flush deferred writes now that tracking_info is dropped.
     for dw in deferred_writes {
-        dw.flush(wtxn, store)?;
+        dw.flush(wtxn, app_store)?;
     }
 
-    id_reservation.commit(wtxn, store)?;
+    id_reservation.commit(wtxn, app_store)?;
     Ok(Some(PreCommitOutput {
         curr_version,
         previously_exists,
@@ -1197,7 +1221,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
         ),
     };
 
-    let store = comp_ctx.app_ctx().store().clone();
+    let app_store = comp_ctx.app_ctx().app_store().clone();
     let comp_mode = comp_ctx.mode();
     let stable_path = comp_ctx.stable_path().clone();
     let full_reprocess = comp_ctx.full_reprocess();
@@ -1217,7 +1241,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
         .run(move |wtxn| {
             pre_commit(
                 wtxn,
-                &store,
+                &app_store,
                 comp_mode,
                 &stable_path,
                 full_reprocess,
@@ -1329,13 +1353,13 @@ pub(crate) async fn post_submit_for_build<Prof: EngineProfile>(
     };
     let encoded = rmp_serde::to_vec_named(&memo_info)?;
 
-    let store = comp_ctx.app_ctx().store().clone();
+    let app_store = comp_ctx.app_ctx().app_store().clone();
     let path = comp_ctx.stable_path().clone();
     comp_ctx
         .app_ctx()
         .env()
         .txn_batcher()
-        .run(move |wtxn| ops::write_component_memo_raw(wtxn, &store, &path, &encoded))
+        .run(move |wtxn| ops::write_component_memo_raw(wtxn, &app_store, &path, &encoded))
         .await
 }
 
@@ -1351,32 +1375,32 @@ pub(crate) async fn cleanup_tombstone<Prof: EngineProfile>(
         .as_ref()
         .strip_parent(owner_path.as_ref())?
         .into();
-    let store = comp_ctx.app_ctx().store().clone();
+    let app_store = comp_ctx.app_ctx().app_store().clone();
     comp_ctx
         .app_ctx()
         .env()
         .txn_batcher()
-        .run(move |wtxn| ops::delete_tombstone(wtxn, &store, &owner_path, &relative_path))
+        .run(move |wtxn| ops::delete_tombstone(wtxn, &app_store, &owner_path, &relative_path))
         .await
 }
 
 pub(crate) fn ensure_path_node_type(
-    store: &Store,
+    app_store: &AppStore,
     wtxn: &mut WriteTxn<'_>,
     parent_path: StablePathRef<'_>,
     key: &StableKey,
     target_node_type: db_schema::StablePathNodeType,
 ) -> Result<()> {
-    ops::ensure_path_node_type(wtxn, store, parent_path, key, target_node_type)
+    ops::ensure_path_node_type(wtxn, app_store, parent_path, key, target_node_type)
 }
 
 fn get_path_node_type<T: AnyTxn>(
-    store: &Store,
+    app_store: &AppStore,
     rtxn: &T,
     parent_path: StablePathRef<'_>,
     key: &StableKey,
 ) -> Result<Option<db_schema::StablePathNodeType>> {
-    ops::read_path_node_type(rtxn, store, parent_path, key)
+    ops::read_path_node_type(rtxn, app_store, parent_path, key)
 }
 
 #[derive(Default)]
@@ -1425,12 +1449,12 @@ async fn finalize_fn_call_memoization<Prof: EngineProfile>(
     // Use a single read transaction for all DB reads.
     if !deps_to_process.is_empty() {
         let rtxn = comp_ctx.app_ctx().env().read_txn().await?;
-        let store = comp_ctx.app_ctx().store();
+        let app_store = comp_ctx.app_ctx().app_store();
         while let Some(fp) = deps_to_process.pop_front() {
             if !result.all_memos_fps.insert(fp) {
                 continue;
             }
-            let Some(memo) = read_fn_call_memo_with_txn(&rtxn, store, comp_ctx, fp)? else {
+            let Some(memo) = read_fn_call_memo_with_txn(&rtxn, app_store, comp_ctx, fp)? else {
                 continue;
             };
             result

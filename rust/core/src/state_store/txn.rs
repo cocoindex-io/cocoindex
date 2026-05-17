@@ -1,37 +1,16 @@
-//! Opaque storage handle and transaction wrappers.
+//! Read and write transaction wrappers.
 //!
-//! These wrap the underlying LMDB types so engine code outside `state_store/`
-//! can pass them through as tokens without ever naming `heed::*`. During the
-//! refactor migration the wrappers implement `Deref` to the inner heed types
-//! so existing call sites continue to compile; once all engine call sites go
-//! through `state_store::ops::*` the deref impls can be tightened or removed.
+//! These wrap the underlying LMDB transaction types so engine code outside
+//! `state_store/` doesn't see `heed::*`. The wrappers `Deref` to the inner
+//! heed types so internal call sites (within `state_store::ops`) can still
+//! reach the heed API.
 //!
-//! See `specs/core/state_store_refactor.md`.
+//! The [`AnyTxn`] trait lets read-only `state_store::ops` functions be
+//! called from either a `ReadTxn` or `WriteTxn` context.
+
+use crate::state_store::app_store::Database;
 
 use std::ops::{Deref, DerefMut};
-
-/// LMDB database handle. Keys and values are opaque bytes; logical
-/// key/value schemas live in [`crate::state::db_schema`].
-pub type Database = heed::Database<heed::types::Bytes, heed::types::Bytes>;
-
-/// Per-app storage handle. Holds the LMDB database handle; transactions are
-/// opened from the parent `Environment`.
-#[derive(Clone)]
-pub struct Store {
-    pub(crate) db: Database,
-}
-
-impl Store {
-    pub fn new(db: Database) -> Self {
-        Self { db }
-    }
-
-    /// Internal accessor for `state_store::ops`. Engine code outside this
-    /// module never reaches the raw `Database`.
-    pub(crate) fn db(&self) -> Database {
-        self.db
-    }
-}
 
 /// Write transaction wrapper. Threaded through `TxnBatcher::run` closures.
 pub struct WriteTxn<'env>(pub(crate) heed::RwTxn<'env>);
@@ -59,7 +38,7 @@ impl<'env> DerefMut for WriteTxn<'env> {
     }
 }
 
-/// Read transaction wrapper. Opened from `Environment::read_txn()`.
+/// Read transaction wrapper. Opened from [`Storage::read_txn`](super::Storage::read_txn).
 pub struct ReadTxn<'env>(pub(crate) heed::RoTxn<'env, heed::WithoutTls>);
 
 impl<'env> ReadTxn<'env> {

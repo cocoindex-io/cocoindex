@@ -72,9 +72,9 @@ impl<Prof: EngineProfile> App<Prof> {
         let app_reg = AppRegistration::new(name, &env)?;
 
         // TODO: This database initialization logic should happen lazily on first call to `update()`.
-        let store = env.create_app_store(name)?;
+        let app_store = env.create_app_store(name)?;
 
-        let app_ctx = AppContext::new(env, store, app_reg, max_inflight_components);
+        let app_ctx = AppContext::new(env, app_store, app_reg, max_inflight_components);
         let root_component = Component::new(app_ctx, StablePath::root(), None);
         crate::telemetry::track("app_create");
         Ok(Self { root_component })
@@ -211,12 +211,12 @@ impl<Prof: EngineProfile> App<Prof> {
                 handle.ready().await?;
 
                 // Clear the database
-                let store = root_component.app_ctx().store().clone();
+                let app_store = root_component.app_ctx().app_store().clone();
                 root_component
                     .app_ctx()
                     .env()
                     .txn_batcher()
-                    .run(move |wtxn| crate::state_store::ops::clear_all(wtxn, &store))
+                    .run(move |wtxn| crate::state_store::ops::clear_all(wtxn, &app_store))
                     .await?;
 
                 info!("App dropped successfully");

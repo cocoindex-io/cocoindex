@@ -21,7 +21,9 @@ use crate::state::db_schema::{
 };
 use crate::state::stable_path::{StableKey, StablePath, StablePathPrefix, StablePathRef};
 use crate::state::target_state_path::TargetStatePath;
-use crate::state_store::store::{AnyTxn, Database, ReadTxn, Store, WriteTxn};
+use crate::state_store::app_store::AppStore;
+use crate::state_store::storage::Storage;
+use crate::state_store::txn::{AnyTxn, ReadTxn, WriteTxn};
 
 // --- Key encoding helpers (internal) ---
 
@@ -81,11 +83,11 @@ fn key_id_sequencer(key: &StableKey) -> Result<Vec<u8>> {
 
 pub fn read_tracking_info<'a, T: AnyTxn>(
     txn: &'a T,
-    store: &Store,
+    app_store: &AppStore,
     path: &StablePath,
 ) -> Result<Option<StablePathEntryTrackingInfo<'a>>> {
     let key = key_tracking_info(path)?;
-    let data = txn.db_get_bytes(store.db(), &key)?;
+    let data = txn.db_get_bytes(app_store.db(), &key)?;
     data.map(from_msgpack_slice).transpose().map_err(Into::into)
 }
 
@@ -95,18 +97,22 @@ pub fn read_tracking_info<'a, T: AnyTxn>(
 /// write txn and must be released before writing back).
 pub fn write_tracking_info_raw(
     txn: &mut WriteTxn,
-    store: &Store,
+    app_store: &AppStore,
     path: &StablePath,
     encoded: &[u8],
 ) -> Result<()> {
     let key = key_tracking_info(path)?;
-    store.db().put(&mut **txn, &key, encoded)?;
+    app_store.db().put(&mut **txn, &key, encoded)?;
     Ok(())
 }
 
-pub fn delete_tracking_info(txn: &mut WriteTxn, store: &Store, path: &StablePath) -> Result<()> {
+pub fn delete_tracking_info(
+    txn: &mut WriteTxn,
+    app_store: &AppStore,
+    path: &StablePath,
+) -> Result<()> {
     let key = key_tracking_info(path)?;
-    store.db().delete(&mut **txn, &key)?;
+    app_store.db().delete(&mut **txn, &key)?;
     Ok(())
 }
 
@@ -114,11 +120,11 @@ pub fn delete_tracking_info(txn: &mut WriteTxn, store: &Store, path: &StablePath
 
 pub fn read_component_memo<'a, T: AnyTxn>(
     txn: &'a T,
-    store: &Store,
+    app_store: &AppStore,
     path: &StablePath,
 ) -> Result<Option<ComponentMemoizationInfo<'a>>> {
     let key = key_component_memo(path)?;
-    let data = txn.db_get_bytes(store.db(), &key)?;
+    let data = txn.db_get_bytes(app_store.db(), &key)?;
     data.map(from_msgpack_slice).transpose().map_err(Into::into)
 }
 
@@ -127,18 +133,22 @@ pub fn read_component_memo<'a, T: AnyTxn>(
 /// in [`update_component_memo_states`] (engine code, not in this module).
 pub fn write_component_memo_raw(
     txn: &mut WriteTxn,
-    store: &Store,
+    app_store: &AppStore,
     path: &StablePath,
     encoded: &[u8],
 ) -> Result<()> {
     let key = key_component_memo(path)?;
-    store.db().put(&mut **txn, &key, encoded)?;
+    app_store.db().put(&mut **txn, &key, encoded)?;
     Ok(())
 }
 
-pub fn delete_component_memo(txn: &mut WriteTxn, store: &Store, path: &StablePath) -> Result<()> {
+pub fn delete_component_memo(
+    txn: &mut WriteTxn,
+    app_store: &AppStore,
+    path: &StablePath,
+) -> Result<()> {
     let key = key_component_memo(path)?;
-    store.db().delete(&mut **txn, &key)?;
+    app_store.db().delete(&mut **txn, &key)?;
     Ok(())
 }
 
@@ -146,37 +156,37 @@ pub fn delete_component_memo(txn: &mut WriteTxn, store: &Store, path: &StablePat
 
 pub fn read_fn_memo<'a, T: AnyTxn>(
     txn: &'a T,
-    store: &Store,
+    app_store: &AppStore,
     path: &StablePath,
     fp: Fingerprint,
 ) -> Result<Option<FunctionMemoizationEntry<'a>>> {
     let key = key_fn_memo(path, fp)?;
-    let data = txn.db_get_bytes(store.db(), &key)?;
+    let data = txn.db_get_bytes(app_store.db(), &key)?;
     data.map(from_msgpack_slice).transpose().map_err(Into::into)
 }
 
 pub fn write_fn_memo(
     txn: &mut WriteTxn,
-    store: &Store,
+    app_store: &AppStore,
     path: &StablePath,
     fp: Fingerprint,
     entry: &FunctionMemoizationEntry<'_>,
 ) -> Result<()> {
     let key = key_fn_memo(path, fp)?;
     let value = rmp_serde::to_vec_named(entry)?;
-    store.db().put(&mut **txn, &key, &value)?;
+    app_store.db().put(&mut **txn, &key, &value)?;
     Ok(())
 }
 
 /// GC: delete all function memos for `path` whose fingerprint is NOT in `keep`.
 pub fn retain_fn_memos(
     txn: &mut WriteTxn,
-    store: &Store,
+    app_store: &AppStore,
     path: &StablePath,
     keep: &HashSet<Fingerprint>,
 ) -> Result<()> {
     let prefix = key_fn_memo_prefix(path)?;
-    let db = store.db();
+    let db = app_store.db();
     let mut iter = db.prefix_iter_mut(&mut **txn, &prefix)?;
     while let Some((raw_key, _)) = iter.next().transpose()? {
         let fp: Fingerprint = storekey::decode(raw_key[prefix.len()..].as_ref())?;
@@ -195,36 +205,36 @@ pub fn retain_fn_memos(
 
 pub fn read_child_existence<T: AnyTxn>(
     txn: &T,
-    store: &Store,
+    app_store: &AppStore,
     parent: &StablePath,
     child_key: &StableKey,
 ) -> Result<Option<ChildExistenceInfo>> {
     let key = key_child_existence(parent, child_key)?;
-    let data = txn.db_get_bytes(store.db(), &key)?;
+    let data = txn.db_get_bytes(app_store.db(), &key)?;
     data.map(from_msgpack_slice).transpose().map_err(Into::into)
 }
 
 pub fn write_child_existence(
     txn: &mut WriteTxn,
-    store: &Store,
+    app_store: &AppStore,
     parent: &StablePath,
     child_key: &StableKey,
     info: &ChildExistenceInfo,
 ) -> Result<()> {
     let key = key_child_existence(parent, child_key)?;
     let value = rmp_serde::to_vec_named(info)?;
-    store.db().put(&mut **txn, &key, &value)?;
+    app_store.db().put(&mut **txn, &key, &value)?;
     Ok(())
 }
 
 pub fn delete_child_existence(
     txn: &mut WriteTxn,
-    store: &Store,
+    app_store: &AppStore,
     parent: &StablePath,
     child_key: &StableKey,
 ) -> Result<()> {
     let key = key_child_existence(parent, child_key)?;
-    store.db().delete(&mut **txn, &key)?;
+    app_store.db().delete(&mut **txn, &key)?;
     Ok(())
 }
 
@@ -235,12 +245,12 @@ pub fn delete_child_existence(
 /// declared children.
 pub fn list_child_existence<T: AnyTxn>(
     txn: &T,
-    store: &Store,
+    app_store: &AppStore,
     parent: &StablePath,
 ) -> Result<Vec<(StableKey, ChildExistenceInfo)>> {
     let prefix = key_child_existence_prefix(parent)?;
     let mut out = Vec::new();
-    for entry in txn.db_prefix_iter(store.db(), &prefix)? {
+    for entry in txn.db_prefix_iter(app_store.db(), &prefix)? {
         let (raw_key, raw_value) = entry?;
         let stable_key: StableKey = storekey::decode(raw_key[prefix.len()..].as_ref())?;
         let info: ChildExistenceInfo = from_msgpack_slice(raw_value)?;
@@ -253,23 +263,23 @@ pub fn list_child_existence<T: AnyTxn>(
 
 pub fn write_tombstone(
     txn: &mut WriteTxn,
-    store: &Store,
+    app_store: &AppStore,
     parent: &StablePath,
     relative_path: &StablePath,
 ) -> Result<()> {
     let key = key_tombstone(parent, relative_path)?;
-    store.db().put(&mut **txn, &key, &[])?;
+    app_store.db().put(&mut **txn, &key, &[])?;
     Ok(())
 }
 
 pub fn delete_tombstone(
     txn: &mut WriteTxn,
-    store: &Store,
+    app_store: &AppStore,
     parent: &StablePath,
     relative_path: &StablePath,
 ) -> Result<()> {
     let key = key_tombstone(parent, relative_path)?;
-    store.db().delete(&mut **txn, &key)?;
+    app_store.db().delete(&mut **txn, &key)?;
     Ok(())
 }
 
@@ -277,12 +287,12 @@ pub fn delete_tombstone(
 /// `Committer::launch_child_component_gc` to find which children need GC.
 pub fn list_tombstones<T: AnyTxn>(
     txn: &T,
-    store: &Store,
+    app_store: &AppStore,
     parent: &StablePath,
 ) -> Result<Vec<StablePath>> {
     let prefix = key_tombstone_prefix(parent)?;
     let mut out = Vec::new();
-    for entry in txn.db_prefix_iter(store.db(), &prefix)? {
+    for entry in txn.db_prefix_iter(app_store.db(), &prefix)? {
         let (raw_key, _) = entry?;
         let relative: StablePath = storekey::decode(raw_key[prefix.len()..].as_ref())?;
         out.push(relative);
@@ -294,14 +304,14 @@ pub fn list_tombstones<T: AnyTxn>(
 /// `LiveComponentController::delete`'s synchronous step.
 pub fn remove_child_with_tombstone(
     txn: &mut WriteTxn,
-    store: &Store,
+    app_store: &AppStore,
     parent: &StablePath,
     child_key: &StableKey,
     owner_path: &StablePath,
     relative_child: &StablePath,
 ) -> Result<()> {
-    delete_child_existence(txn, store, parent, child_key)?;
-    write_tombstone(txn, store, owner_path, relative_child)?;
+    delete_child_existence(txn, app_store, parent, child_key)?;
+    write_tombstone(txn, app_store, owner_path, relative_child)?;
     Ok(())
 }
 
@@ -309,17 +319,17 @@ pub fn remove_child_with_tombstone(
 
 pub fn read_target_state_owner<T: AnyTxn>(
     txn: &T,
-    store: &Store,
+    app_store: &AppStore,
     path: &TargetStatePath,
 ) -> Result<Option<TargetStateOwnerInfo>> {
     let key = key_target_state_owner(path)?;
-    let data = txn.db_get_bytes(store.db(), &key)?;
+    let data = txn.db_get_bytes(app_store.db(), &key)?;
     data.map(from_msgpack_slice).transpose().map_err(Into::into)
 }
 
 pub fn upsert_target_state_owner(
     txn: &mut WriteTxn,
-    store: &Store,
+    app_store: &AppStore,
     path: &TargetStatePath,
     owner: &StablePath,
 ) -> Result<()> {
@@ -327,25 +337,29 @@ pub fn upsert_target_state_owner(
     let value = rmp_serde::to_vec_named(&TargetStateOwnerInfo {
         component_path: owner.clone(),
     })?;
-    store.db().put(&mut **txn, &key, &value)?;
+    app_store.db().put(&mut **txn, &key, &value)?;
     Ok(())
 }
 
 pub fn delete_target_state_owner(
     txn: &mut WriteTxn,
-    store: &Store,
+    app_store: &AppStore,
     path: &TargetStatePath,
 ) -> Result<()> {
     let key = key_target_state_owner(path)?;
-    store.db().delete(&mut **txn, &key)?;
+    app_store.db().delete(&mut **txn, &key)?;
     Ok(())
 }
 
 // --- ID sequencer ---
 
-pub fn peek_id_sequence<T: AnyTxn>(txn: &T, store: &Store, key: &StableKey) -> Result<Option<u64>> {
+pub fn peek_id_sequence<T: AnyTxn>(
+    txn: &T,
+    app_store: &AppStore,
+    key: &StableKey,
+) -> Result<Option<u64>> {
     let db_key = key_id_sequencer(key)?;
-    let data = txn.db_get_bytes(store.db(), &db_key)?;
+    let data = txn.db_get_bytes(app_store.db(), &db_key)?;
     match data {
         None => Ok(None),
         Some(bytes) => {
@@ -357,14 +371,14 @@ pub fn peek_id_sequence<T: AnyTxn>(txn: &T, store: &Store, key: &StableKey) -> R
 
 pub fn write_id_sequence(
     txn: &mut WriteTxn,
-    store: &Store,
+    app_store: &AppStore,
     key: &StableKey,
     next_id: u64,
 ) -> Result<()> {
     let db_key = key_id_sequencer(key)?;
     let info = IdSequencerInfo { next_id };
     let value = rmp_serde::to_vec_named(&info)?;
-    store.db().put(&mut **txn, &db_key, &value)?;
+    app_store.db().put(&mut **txn, &db_key, &value)?;
     Ok(())
 }
 
@@ -372,19 +386,19 @@ pub fn write_id_sequence(
 /// available ID. Returns the first reserved ID. IDs start at 1 (0 is reserved).
 pub fn reserve_id_range(
     txn: &mut WriteTxn,
-    store: &Store,
+    app_store: &AppStore,
     key: &StableKey,
     count: u64,
 ) -> Result<u64> {
-    let current_next_id = peek_id_sequence(txn, store, key)?.unwrap_or(1);
-    write_id_sequence(txn, store, key, current_next_id + count)?;
+    let current_next_id = peek_id_sequence(txn, app_store, key)?.unwrap_or(1);
+    write_id_sequence(txn, app_store, key, current_next_id + count)?;
     Ok(current_next_id)
 }
 
 // --- App-level ---
 
-pub fn clear_all(txn: &mut WriteTxn, store: &Store) -> Result<()> {
-    store.db().clear(&mut **txn)?;
+pub fn clear_all(txn: &mut WriteTxn, app_store: &AppStore) -> Result<()> {
+    app_store.db().clear(&mut **txn)?;
     Ok(())
 }
 
@@ -394,12 +408,12 @@ pub fn clear_all(txn: &mut WriteTxn, store: &Store) -> Result<()> {
 /// child-existence entry. Used by `pre_commit` path-existence checks.
 pub fn read_path_node_type<T: AnyTxn>(
     txn: &T,
-    store: &Store,
+    app_store: &AppStore,
     parent_path: StablePathRef<'_>,
     key: &StableKey,
 ) -> Result<Option<StablePathNodeType>> {
     let parent_owned: StablePath = parent_path.into();
-    let info = read_child_existence(txn, store, &parent_owned, key)?;
+    let info = read_child_existence(txn, app_store, &parent_owned, key)?;
     Ok(info.map(|i| i.node_type))
 }
 
@@ -412,19 +426,19 @@ pub fn read_path_node_type<T: AnyTxn>(
 /// - anything else → no-op
 pub fn ensure_path_node_type(
     txn: &mut WriteTxn,
-    store: &Store,
+    app_store: &AppStore,
     parent_path: StablePathRef<'_>,
     key: &StableKey,
     target_node_type: StablePathNodeType,
 ) -> Result<()> {
     let parent_owned: StablePath = parent_path.into();
-    let existing = read_child_existence(txn, store, &parent_owned, key)?;
+    let existing = read_child_existence(txn, app_store, &parent_owned, key)?;
     let existing_node_type = existing.as_ref().map(|i| i.node_type);
     match (existing_node_type, target_node_type) {
         (None, _) | (Some(StablePathNodeType::Directory), StablePathNodeType::Component) => {
             write_child_existence(
                 txn,
-                store,
+                app_store,
                 &parent_owned,
                 key,
                 &ChildExistenceInfo {
@@ -439,7 +453,7 @@ pub fn ensure_path_node_type(
     if existing_node_type.is_none()
         && let Some((parent, key)) = parent_path.split_parent()
     {
-        return ensure_path_node_type(txn, store, parent, key, StablePathNodeType::Directory);
+        return ensure_path_node_type(txn, app_store, parent, key, StablePathNodeType::Directory);
     }
     Ok(())
 }
@@ -447,10 +461,10 @@ pub fn ensure_path_node_type(
 // --- Inspection (cross-component scans) ---
 
 /// Scan all stable-path entries and return one path per component / directory.
-pub fn list_all_stable_paths(txn: &ReadTxn, store: &Store) -> Result<Vec<StablePath>> {
+pub fn list_all_stable_paths(txn: &ReadTxn, app_store: &AppStore) -> Result<Vec<StablePath>> {
     let encoded_key_prefix =
         DbEntryKey::StablePathPrefixPrefix(StablePathPrefix::default()).encode()?;
-    let db = store.db();
+    let db = app_store.db();
     let mut result = Vec::new();
     let mut last_prefix: Option<Vec<u8>> = None;
     for entry in db.prefix_iter(&**txn, &encoded_key_prefix)? {
@@ -470,32 +484,22 @@ pub fn list_all_stable_paths(txn: &ReadTxn, store: &Store) -> Result<Vec<StableP
     Ok(result)
 }
 
-/// Open a `ReadTxn` for inspection ops that don't go through the engine's
-/// retry-on-`MDB_READERS_FULL` path. Inspection tools are best-effort and
-/// callers can retry at a higher level if a read txn fails to open.
-pub fn open_read_txn_for_inspect(db_env: &heed::Env<heed::WithoutTls>) -> Result<ReadTxn<'_>> {
-    let rtxn = db_env.read_txn()?;
-    Ok(ReadTxn::new(rtxn))
-}
-
-/// Resolves the store by app name then spawns the stable-path iteration
+/// Resolves the app_store by app name then spawns the stable-path iteration
 /// thread. Returns `None` if the app's database doesn't exist.
 pub fn spawn_iter_stable_paths_with_node_type_for_app_name(
-    db_env: heed::Env<heed::WithoutTls>,
+    storage: Storage,
     app_name: &str,
 ) -> Result<Option<tokio::sync::mpsc::Receiver<Result<(StablePath, StablePathNodeType)>>>> {
-    let rtxn = db_env.read_txn()?;
-    let store = open_app_store_by_name(&db_env, &rtxn, app_name)?;
-    drop(rtxn);
-    Ok(store.map(|store| spawn_iter_stable_paths_with_node_type(store, db_env)))
+    let app_store = storage.open_app_store_by_name(app_name)?;
+    Ok(app_store.map(|app_store| spawn_iter_stable_paths_with_node_type(app_store, storage)))
 }
 
 /// Spawn a thread to stream every `(StablePath, node_type)` entry from the
-/// store via a channel. Used by `inspect::iter_stable_paths`; the thread
+/// app_store via a channel. Used by `inspect::iter_stable_paths`; the thread
 /// model is needed because LMDB read transactions/cursors are `!Send`.
 pub fn spawn_iter_stable_paths_with_node_type(
-    store: Store,
-    db_env: heed::Env<heed::WithoutTls>,
+    app_store: AppStore,
+    storage: Storage,
 ) -> tokio::sync::mpsc::Receiver<Result<(StablePath, StablePathNodeType)>> {
     let (tx, rx) = tokio::sync::mpsc::channel(128);
 
@@ -503,8 +507,8 @@ pub fn spawn_iter_stable_paths_with_node_type(
         let result: Result<()> = (|| {
             let encoded_key_prefix =
                 DbEntryKey::StablePathPrefixPrefix(StablePathPrefix::default()).encode()?;
-            let txn = db_env.read_txn()?;
-            let db = store.db();
+            let txn = storage.heed_env().read_txn()?;
+            let db = app_store.db();
 
             let mut last_prefix: Option<Vec<u8>> = None;
             for entry in db.prefix_iter(&txn, &encoded_key_prefix)? {
@@ -558,21 +562,10 @@ pub fn spawn_iter_stable_paths_with_node_type(
     rx
 }
 
-/// Open a logical app sub-database within the LMDB environment by name,
-/// returning `None` if it doesn't exist. Used by
-/// `spawn_iter_stable_paths_with_node_type_for_app_name`.
-fn open_app_store_by_name(
-    db_env: &heed::Env<heed::WithoutTls>,
-    rtxn: &heed::RoTxn<'_, heed::WithoutTls>,
-    app_name: &str,
-) -> Result<Option<Store>> {
-    let db: Option<Database> = db_env.open_database(rtxn, Some(app_name))?;
-    Ok(db.map(Store::new))
-}
-
-/// List every non-empty named app database in the environment. LMDB-specific
-/// — the unnamed database is its catalog of named sub-databases.
-pub fn list_app_names(db_env: &heed::Env<heed::WithoutTls>) -> Result<Vec<String>> {
+/// List every non-empty named app sub-app_store in the storage environment.
+/// The "unnamed database" is LMDB's catalog of named sub-databases.
+pub fn list_app_names(storage: &Storage) -> Result<Vec<String>> {
+    let db_env = storage.heed_env();
     let rtxn = db_env.read_txn()?;
     let unnamed: heed::Database<heed::types::Str, heed::types::DecodeIgnore> = db_env
         .open_database(&rtxn, None)?
