@@ -107,7 +107,11 @@ impl IdSequencerManager {
             let app_store = app_store.clone();
             let key = key.clone();
             let start_id = storage
-                .run_txn(move |wtxn| app_store.reserve_id_range(wtxn, &key, batch_size))
+                .run_txn(move |wtxn| {
+                    Box::pin(
+                        async move { app_store.reserve_id_range(wtxn, &key, batch_size).await },
+                    )
+                })
                 .await?;
             state.refill(start_id, batch_size);
         }
@@ -140,11 +144,14 @@ impl IdReservation {
     }
 
     /// Allocate the next ID. Reads from DB on first call, then tracks locally.
-    pub fn next_id(&mut self, wtxn: &WriteTxn<'_>, app_store: &AppStore) -> Result<u64> {
+    pub async fn next_id(&mut self, wtxn: &mut WriteTxn<'_>, app_store: &AppStore) -> Result<u64> {
         let next_id = match &mut self.next_id_state {
             Some(n) => n,
             slot @ None => {
-                let current = app_store.peek_id_sequence(wtxn, self.key)?.unwrap_or(1);
+                let current = app_store
+                    .peek_id_sequence(wtxn, self.key)
+                    .await?
+                    .unwrap_or(1);
                 slot.insert(current)
             }
         };
@@ -154,9 +161,9 @@ impl IdReservation {
     }
 
     /// Write the reserved ID range back to DB. Call once at end of transaction.
-    pub fn commit(self, wtxn: &mut WriteTxn<'_>, app_store: &AppStore) -> Result<()> {
+    pub async fn commit(self, wtxn: &mut WriteTxn<'_>, app_store: &AppStore) -> Result<()> {
         if let Some(next_id) = self.next_id_state {
-            app_store.write_id_sequence(wtxn, self.key, next_id)?;
+            app_store.write_id_sequence(wtxn, self.key, next_id).await?;
         }
         Ok(())
     }

@@ -9,10 +9,10 @@ use crate::state::stable_path::StablePath;
 use futures::stream::{Stream, StreamExt};
 use tokio_stream::wrappers::ReceiverStream;
 
-pub fn list_stable_paths<Prof: EngineProfile>(app: &App<Prof>) -> Result<Vec<StablePath>> {
+pub async fn list_stable_paths<Prof: EngineProfile>(app: &App<Prof>) -> Result<Vec<StablePath>> {
     let app_store = app.app_ctx().app_store();
-    let rtxn = app.app_ctx().env().storage().read_txn_for_inspect()?;
-    app_store.list_all_stable_paths(&rtxn)
+    let mut rtxn = app.app_ctx().env().storage().read_txn_for_inspect().await?;
+    app_store.list_all_stable_paths(&mut rtxn).await
 }
 
 /// Represents a stable path with metadata (e.g. node type); more properties may be added.
@@ -27,23 +27,28 @@ pub use db_schema::StablePathNodeType;
 
 /// Returns a stream of stable paths with their metadata (e.g. node type).
 /// Iteration runs on a dedicated thread (read txns/cursors are !Send); items are sent over a channel.
-pub fn iter_stable_paths<Prof: EngineProfile>(
+pub async fn iter_stable_paths<Prof: EngineProfile>(
     app: &App<Prof>,
-) -> impl Stream<Item = Result<StablePathInfo>> + Send + 'static {
+) -> impl Stream<Item = Result<StablePathInfo>> + Send + 'static + use<Prof> {
     let app_store = app.app_ctx().app_store().clone();
     let storage = app.app_ctx().env().storage().clone();
-    let rx = storage.spawn_iter_stable_paths_with_node_type(app_store);
+    let rx = storage
+        .spawn_iter_stable_paths_with_node_type(app_store)
+        .await;
     receiver_to_stable_path_info_stream(rx)
 }
 
 /// Like [`iter_stable_paths`], but takes an environment and an app name instead of a full `App`.
 /// Opens the app's database read-only; returns an empty stream if the database doesn't exist.
-pub fn iter_stable_paths_by_name<Prof: EngineProfile>(
+pub async fn iter_stable_paths_by_name<Prof: EngineProfile>(
     env: &Environment<Prof>,
     app_name: &str,
 ) -> Result<Pin<Box<dyn Stream<Item = Result<StablePathInfo>> + Send + 'static>>> {
     let storage = env.storage();
-    match storage.spawn_iter_stable_paths_with_node_type_for_app_name(app_name)? {
+    match storage
+        .spawn_iter_stable_paths_with_node_type_for_app_name(app_name)
+        .await?
+    {
         Some(rx) => Ok(Box::pin(receiver_to_stable_path_info_stream(rx))),
         None => Ok(Box::pin(futures::stream::empty())),
     }
@@ -56,6 +61,6 @@ fn receiver_to_stable_path_info_stream(
         .map(|item| item.map(|(path, node_type)| StablePathInfo { path, node_type }))
 }
 
-pub fn list_app_names<Prof: EngineProfile>(env: &Environment<Prof>) -> Result<Vec<String>> {
-    env.storage().list_app_names()
+pub async fn list_app_names<Prof: EngineProfile>(env: &Environment<Prof>) -> Result<Vec<String>> {
+    env.storage().list_app_names().await
 }

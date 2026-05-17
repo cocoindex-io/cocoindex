@@ -16,6 +16,7 @@ use crate::state_store::txn::{ReadTxn, WriteTxn};
 use cocoindex_utils::batching::{BatchQueue, Batcher, BatchingOptions, Runner};
 use cocoindex_utils::deser::from_msgpack_slice;
 use cocoindex_utils::retryable;
+use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use std::any::Any;
 use std::path::{Path, PathBuf};
@@ -70,12 +71,16 @@ struct StorageInner {
     batcher: Batcher<TxnRunner>,
 }
 
-/// Type-erased body for a batched write transaction. Runs inside a shared
-/// `WriteTxn`, returns a boxed output value.
-type TxnBody = Box<dyn for<'txn> FnOnce(&mut WriteTxn<'txn>) -> Result<Box<dyn Any + Send>> + Send>;
+/// Type-erased body for a batched write transaction. Each body returns a
+/// future that runs against the shared `WriteTxn` and resolves to a boxed
+/// output. The future is bound to the borrow of the txn (`'a`).
+type TxnBody = Box<
+    dyn for<'a, 'env> FnOnce(&'a mut WriteTxn<'env>) -> BoxFuture<'a, Result<Box<dyn Any + Send>>>
+        + Send,
+>;
 
 /// `Runner` implementation that opens a single write txn, runs each batched
-/// closure against it, then commits.
+/// body against it (awaiting in turn), then commits.
 struct TxnRunner {
     db_env: heed::Env<heed::WithoutTls>,
 }
@@ -92,7 +97,7 @@ impl Runner for TxnRunner {
         let mut outputs = Vec::with_capacity(inputs.len());
         let mut wtxn = WriteTxn::new(self.db_env.write_txn()?);
         for body in inputs {
-            outputs.push(body(&mut wtxn)?);
+            outputs.push(body(&mut wtxn).await?);
         }
         wtxn.into_inner().commit()?;
         Ok(outputs.into_iter())
@@ -100,7 +105,7 @@ impl Runner for TxnRunner {
 }
 
 impl Storage {
-    pub fn new(settings: &StorageSettings) -> Result<Self> {
+    pub async fn new(settings: &StorageSettings) -> Result<Self> {
         let db_path = settings.db_path.join("mdb");
         std::fs::create_dir_all(&db_path)?;
         // Backward compatibility: migrate files from old layout into mdb/.
@@ -159,24 +164,33 @@ impl Storage {
 
     /// Run `body` inside a batched write transaction.
     ///
-    /// Multiple concurrent callers' closures are coalesced into a single
-    /// underlying write txn for throughput. FIFO: the first caller executes
-    /// inline; concurrent callers queue up and are flushed together once
-    /// the current batch commits. If any closure in a batch returns `Err`,
-    /// the whole batch is rolled back (the `WriteTxn` is dropped without
-    /// committing) and every caller in the batch receives an error.
+    /// `body` receives `&mut WriteTxn` and returns a `Send` future (typically
+    /// `Box::pin(async move { … })`). Multiple concurrent callers' bodies are
+    /// coalesced into a single underlying write txn for throughput. FIFO:
+    /// the first caller executes inline; concurrent callers queue up and are
+    /// flushed together once the current batch commits. Bodies within a
+    /// batch are awaited sequentially against the same txn. If any body
+    /// resolves to `Err`, the whole batch is rolled back (the `WriteTxn` is
+    /// dropped without committing) and every caller in the batch receives
+    /// an error.
+    ///
+    /// The future must be boxed (`BoxFuture<'a, _>` = `Pin<Box<dyn Future +
+    /// Send + 'a>>`) because stable Rust can't yet express a `Send` bound on
+    /// the future returned by an `AsyncFnOnce` borrowing from the txn.
     pub async fn run_txn<T, F>(&self, body: F) -> Result<T>
     where
         T: Send + 'static,
-        F: for<'txn> FnOnce(&mut WriteTxn<'txn>) -> Result<T> + Send + 'static,
+        F: for<'a, 'env> FnOnce(&'a mut WriteTxn<'env>) -> BoxFuture<'a, Result<T>>
+            + Send
+            + 'static,
     {
-        let output = self
-            .inner
-            .batcher
-            .run(Box::new(move |wtxn| {
-                Ok(Box::new(body(wtxn)?) as Box<dyn Any + Send>)
-            }))
-            .await?;
+        let erased: TxnBody = Box::new(move |wtxn| {
+            Box::pin(async move {
+                let value = body(wtxn).await?;
+                Ok(Box::new(value) as Box<dyn Any + Send>)
+            })
+        });
+        let output = self.inner.batcher.run(erased).await?;
         output
             .downcast::<T>()
             .map(|b| *b)
@@ -184,7 +198,7 @@ impl Storage {
     }
 
     /// Create the per-app sub-database and wrap it in an `AppStore`.
-    pub fn create_app_store(&self, app_name: &str) -> Result<AppStore> {
+    pub async fn create_app_store(&self, app_name: &str) -> Result<AppStore> {
         let mut wtxn = self.inner.db_env.write_txn()?;
         let db = self
             .inner
@@ -196,7 +210,7 @@ impl Storage {
 
     /// Open the per-app sub-database by name, or `None` if it doesn't exist.
     /// Opens an internal read transaction for the lookup.
-    pub fn open_app_store_by_name(&self, app_name: &str) -> Result<Option<AppStore>> {
+    pub async fn open_app_store_by_name(&self, app_name: &str) -> Result<Option<AppStore>> {
         let rtxn = self.inner.db_env.read_txn()?;
         let db: Option<Database> = self.inner.db_env.open_database(&rtxn, Some(app_name))?;
         Ok(db.map(AppStore::new))
@@ -241,17 +255,17 @@ impl Storage {
             .map_err(Into::into)
     }
 
-    /// Synchronous, non-retrying read txn for inspection use. Callers tolerate
+    /// Non-retrying read txn for inspection use. Callers tolerate
     /// `MDB_READERS_FULL` at a higher level rather than going through the
     /// engine's two-phase retry path.
-    pub fn read_txn_for_inspect(&self) -> Result<ReadTxn<'_>> {
+    pub async fn read_txn_for_inspect(&self) -> Result<ReadTxn<'_>> {
         Ok(ReadTxn::new(self.inner.db_env.read_txn()?))
     }
 
     /// Spawn a thread that streams every `(StablePath, node_type)` entry
     /// from `app_store` via a channel. A dedicated thread is needed because
     /// LMDB read transactions and cursors are `!Send`.
-    pub fn spawn_iter_stable_paths_with_node_type(
+    pub async fn spawn_iter_stable_paths_with_node_type(
         &self,
         app_store: AppStore,
     ) -> tokio::sync::mpsc::Receiver<Result<(StablePath, StablePathNodeType)>> {
@@ -321,17 +335,20 @@ impl Storage {
 
     /// Resolves the app store by name, then spawns the stable-path iteration
     /// thread. Returns `None` if the app's database doesn't exist.
-    pub fn spawn_iter_stable_paths_with_node_type_for_app_name(
+    pub async fn spawn_iter_stable_paths_with_node_type_for_app_name(
         &self,
         app_name: &str,
     ) -> Result<Option<tokio::sync::mpsc::Receiver<Result<(StablePath, StablePathNodeType)>>>> {
-        let app_store = self.open_app_store_by_name(app_name)?;
-        Ok(app_store.map(|store| self.spawn_iter_stable_paths_with_node_type(store)))
+        let app_store = self.open_app_store_by_name(app_name).await?;
+        Ok(match app_store {
+            Some(store) => Some(self.spawn_iter_stable_paths_with_node_type(store).await),
+            None => None,
+        })
     }
 
     /// List every non-empty named app sub-store in this storage environment.
     /// The "unnamed database" is LMDB's catalog of named sub-databases.
-    pub fn list_app_names(&self) -> Result<Vec<String>> {
+    pub async fn list_app_names(&self) -> Result<Vec<String>> {
         let db_env = &self.inner.db_env;
         let rtxn = db_env.read_txn()?;
         let unnamed: heed::Database<heed::types::Str, heed::types::DecodeIgnore> = db_env

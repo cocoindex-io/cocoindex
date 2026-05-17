@@ -241,7 +241,8 @@ async fn main() -> cocoindex::Result<()> {
     .db_path(&args.state)
     .provide(metrics.clone())
     .provide(profile.clone())
-    .build()?;
+    .build()
+    .await?;
 
     let dataset = args.dataset.clone();
     let output = args.output.clone();

@@ -52,7 +52,7 @@ async fn main() -> Result<()> {
     let (source_dir, output_dir) = parse_args();
     ensure_dir(&output_dir)?;
 
-    let app = cocoindex::App::open("files_transform", ".cocoindex_db")?;
+    let app = cocoindex::App::open("files_transform", ".cocoindex_db").await?;
     let stats = app
         .run(move |ctx| {
             let source_dir = source_dir.clone();

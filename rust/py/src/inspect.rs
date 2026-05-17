@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use crate::{app::PyApp, environment::PyEnvironment, prelude::*, stable_path::PyStablePath};
 
+use cocoindex_core::engine::runtime::get_runtime;
 use cocoindex_core::inspect::db_inspect;
 use cocoindex_core::inspect::db_inspect::StablePathNodeType;
 use futures::stream::Stream;
@@ -10,8 +11,11 @@ use pyo3::exceptions::PyStopAsyncIteration;
 use pyo3_async_runtimes::tokio::future_into_py;
 
 #[pyfunction]
-pub fn list_stable_paths(app: &PyApp) -> PyResult<Vec<PyStablePath>> {
-    let stable_paths = db_inspect::list_stable_paths(&app.0).into_py_result()?;
+pub fn list_stable_paths(py: Python<'_>, app: &PyApp) -> PyResult<Vec<PyStablePath>> {
+    let app = app.0.clone();
+    let stable_paths = py
+        .detach(|| get_runtime().block_on(async move { db_inspect::list_stable_paths(&app).await }))
+        .into_py_result()?;
     let py_stable_paths = stable_paths
         .into_iter()
         .map(|path| PyStablePath(path))
@@ -106,7 +110,9 @@ impl PyStablePathInfoAsyncIterator {
 #[pyfunction]
 pub fn iter_stable_paths<'py>(app: &PyApp, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
     let app_clone = app.0.clone();
-    let stream = db_inspect::iter_stable_paths(&app_clone);
+    let stream = py.detach(|| {
+        get_runtime().block_on(async move { db_inspect::iter_stable_paths(&app_clone).await })
+    });
     wrap_stream_as_async_iterator(stream, py)
 }
 
@@ -116,7 +122,15 @@ pub fn iter_stable_paths_by_name<'py>(
     app_name: &str,
     py: Python<'py>,
 ) -> PyResult<Bound<'py, PyAny>> {
-    let stream = db_inspect::iter_stable_paths_by_name(&env.0, app_name).into_py_result()?;
+    let env_clone = env.0.clone();
+    let app_name = app_name.to_string();
+    let stream = py
+        .detach(|| {
+            get_runtime().block_on(async move {
+                db_inspect::iter_stable_paths_by_name(&env_clone, &app_name).await
+            })
+        })
+        .into_py_result()?;
     wrap_stream_as_async_iterator(stream, py)
 }
 
@@ -136,6 +150,10 @@ fn wrap_stream_as_async_iterator<'py>(
 }
 
 #[pyfunction]
-pub fn list_app_names(env: &PyEnvironment) -> PyResult<Vec<String>> {
-    db_inspect::list_app_names(&env.0).into_py_result()
+pub fn list_app_names(py: Python<'_>, env: &PyEnvironment) -> PyResult<Vec<String>> {
+    let env_clone = env.0.clone();
+    py.detach(|| {
+        get_runtime().block_on(async move { db_inspect::list_app_names(&env_clone).await })
+    })
+    .into_py_result()
 }

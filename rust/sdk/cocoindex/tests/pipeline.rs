@@ -3,12 +3,24 @@
 use cocoindex::App;
 use tokio::time::{Duration, sleep};
 
-/// Helper: create an App with a temp LMDB directory.
-fn temp_app(name: &str) -> (App, tempfile::TempDir) {
+/// Helper: create an App with a temp LMDB directory (async tests).
+async fn temp_app(name: &str) -> (App, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
     let app = App::builder(name)
         .db_path(dir.path().join("lmdb"))
         .build()
+        .await
+        .unwrap();
+    (app, dir)
+}
+
+/// Helper: create an App with a temp LMDB directory (sync tests). Uses
+/// the `_blocking` variant so it can be called from `#[test]` functions.
+fn temp_app_blocking(name: &str) -> (App, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    let app = App::builder(name)
+        .db_path(dir.path().join("lmdb"))
+        .build_blocking()
         .unwrap();
     (app, dir)
 }
@@ -19,14 +31,14 @@ fn temp_app(name: &str) -> (App, tempfile::TempDir) {
 
 #[test]
 fn update_blocking_runs_closure() {
-    let (app, _dir) = temp_app("sync_basic");
+    let (app, _dir) = temp_app_blocking("sync_basic");
     let result = app.update_blocking(|_ctx| async move { Ok(()) });
     assert!(result.is_ok());
 }
 
 #[test]
 fn update_blocking_provides_pipeline_context() {
-    let (app, _dir) = temp_app("sync_ctx");
+    let (app, _dir) = temp_app_blocking("sync_ctx");
     app.update_blocking(|ctx| async move {
         assert!(ctx.has_pipeline_context());
         Ok(())
@@ -45,7 +57,7 @@ fn update_blocking_provide_and_get() {
     let app = App::builder("sync_provide")
         .db_path(dir.path().join("lmdb"))
         .provide(Config { value: 42 })
-        .build()
+        .build_blocking()
         .unwrap();
 
     app.update_blocking(|ctx| async move {
@@ -61,7 +73,7 @@ fn update_blocking_missing_context_returns_typed_error() {
     #[derive(Debug)]
     struct MissingConfig;
 
-    let (app, _dir) = temp_app("sync_missing_context");
+    let (app, _dir) = temp_app_blocking("sync_missing_context");
     app.update_blocking(|ctx| async move {
         let err = ctx.get_or_err::<MissingConfig>().unwrap_err();
         assert!(
@@ -79,13 +91,13 @@ fn update_blocking_missing_context_returns_typed_error() {
 
 #[tokio::test]
 async fn update_async_runs_closure() {
-    let (app, _dir) = temp_app("async_basic");
+    let (app, _dir) = temp_app("async_basic").await;
     app.update(|_ctx| async move { Ok(()) }).await.unwrap();
 }
 
 #[tokio::test]
 async fn update_async_provides_pipeline_context() {
-    let (app, _dir) = temp_app("async_ctx");
+    let (app, _dir) = temp_app("async_ctx").await;
     app.update(|ctx| async move {
         assert!(ctx.has_pipeline_context());
         Ok(())
@@ -103,7 +115,7 @@ async fn memo_cached_executes_on_first_call() {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    let (app, _dir) = temp_app("memo_first");
+    let (app, _dir) = temp_app("memo_first").await;
     let call_count = Arc::new(AtomicUsize::new(0));
 
     let count = call_count.clone();
@@ -129,7 +141,7 @@ async fn memo_cached_returns_cached_on_second_run() {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    let (app, _dir) = temp_app("memo_cache_hit");
+    let (app, _dir) = temp_app("memo_cache_hit").await;
     let call_count = Arc::new(AtomicUsize::new(0));
 
     // First run: should execute the closure.
@@ -174,7 +186,7 @@ async fn memo_cached_reexecutes_on_key_change() {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    let (app, _dir) = temp_app("memo_cache_miss");
+    let (app, _dir) = temp_app("memo_cache_miss").await;
     let call_count = Arc::new(AtomicUsize::new(0));
 
     // First run with key "v1".
@@ -219,7 +231,7 @@ fn memo_cached_blocking() {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    let (app, _dir) = temp_app("memo_blocking");
+    let (app, _dir) = temp_app_blocking("memo_blocking");
     let call_count = Arc::new(AtomicUsize::new(0));
 
     // First run.
@@ -266,7 +278,7 @@ fn drop_state_blocking_clears_memoization() {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    let (app, _dir) = temp_app("drop_state");
+    let (app, _dir) = temp_app_blocking("drop_state");
     let call_count = Arc::new(AtomicUsize::new(0));
 
     // First run: populate cache.
@@ -312,7 +324,7 @@ fn drop_state_blocking_clears_memoization() {
 
 #[tokio::test]
 async fn memo_cached_propagates_closure_error() {
-    let (app, _dir) = temp_app("memo_error");
+    let (app, _dir) = temp_app("memo_error").await;
     let result = app
         .update(|ctx| async move {
             let _: i32 = cocoindex::memo::cached(&ctx, &"key", || async {
@@ -327,7 +339,7 @@ async fn memo_cached_propagates_closure_error() {
 
 #[test]
 fn update_blocking_propagates_closure_error() {
-    let (app, _dir) = temp_app("sync_error");
+    let (app, _dir) = temp_app_blocking("sync_error");
     let result = app.update_blocking(|_ctx| async move {
         Err::<(), _>(cocoindex::Error::engine("sync test error"))
     });
@@ -348,7 +360,7 @@ async fn memo_cached_complex_types() {
         line: usize,
     }
 
-    let (app, _dir) = temp_app("memo_complex");
+    let (app, _dir) = temp_app("memo_complex").await;
 
     // Run 1: store complex type.
     app.update(|ctx| async move {
@@ -394,7 +406,7 @@ async fn memo_cached_complex_types() {
 #[test]
 fn app_open_convenience() {
     let dir = tempfile::tempdir().unwrap();
-    let app = App::open("open_test", dir.path().join("lmdb")).unwrap();
+    let app = App::open_blocking("open_test", dir.path().join("lmdb")).unwrap();
     app.update_blocking(|ctx| async move {
         assert!(ctx.has_pipeline_context());
         Ok(())
@@ -409,7 +421,9 @@ fn app_open_convenience() {
 #[tokio::test]
 async fn app_run_returns_stats() {
     let dir = tempfile::tempdir().unwrap();
-    let app = App::open("run_stats", dir.path().join("lmdb")).unwrap();
+    let app = App::open("run_stats", dir.path().join("lmdb"))
+        .await
+        .unwrap();
     let stats = app.run(|_ctx| async move { Ok(()) }).await.unwrap();
     // Stats should have a non-zero elapsed time
     assert!(stats.elapsed.as_nanos() > 0);
@@ -427,7 +441,7 @@ async fn ctx_memo_method() {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    let (app, _dir) = temp_app("ctx_memo");
+    let (app, _dir) = temp_app("ctx_memo").await;
     let call_count = Arc::new(AtomicUsize::new(0));
 
     // First run
@@ -482,7 +496,7 @@ async fn ctx_scope_runs_child() {
         value: i32,
     }
 
-    let (app, _dir) = temp_app("ctx_scope");
+    let (app, _dir) = temp_app("ctx_scope").await;
     app.update(|ctx| async move {
         let result: Output = ctx
             .scope(
@@ -503,7 +517,7 @@ async fn ctx_scope_runs_child() {
 
 #[tokio::test]
 async fn ctx_write_file_creates_file() {
-    let (app, dir) = temp_app("ctx_write");
+    let (app, dir) = temp_app("ctx_write").await;
     let output_dir = dir.path().join("output");
 
     let out = output_dir.clone();
@@ -520,7 +534,7 @@ async fn ctx_write_file_creates_file() {
 
 #[tokio::test]
 async fn ctx_write_file_creates_nested_dirs_and_overwrites() {
-    let (app, dir) = temp_app("ctx_write_nested");
+    let (app, dir) = temp_app("ctx_write_nested").await;
     let output_dir = dir.path().join("output");
     let nested = output_dir.join("sub/hello.txt");
 
@@ -556,7 +570,7 @@ async fn function_macro_bare() {
     assert_ne!(hash, 0);
 
     // The function itself should still work normally.
-    let (app, _dir) = temp_app("fn_bare");
+    let (app, _dir) = temp_app("fn_bare").await;
     app.update(|ctx| async move {
         let result = bare_fn(&ctx, "hello").await?;
         assert_eq!(result, 1);
@@ -590,7 +604,7 @@ mod memo_test_basic {
         assert_ne!(hash, 0);
 
         CALLS.store(0, Ordering::SeqCst);
-        let (app, _dir) = temp_app("fn_memo");
+        let (app, _dir) = temp_app("fn_memo").await;
 
         app.update(|ctx| async move {
             let result = the_fn(&ctx, &"k1".to_string()).await?;
@@ -620,7 +634,7 @@ mod memo_test_cache_hit {
     #[tokio::test]
     async fn function_macro_memo_cache_hit() {
         CALLS.store(0, Ordering::SeqCst);
-        let (app, _dir) = temp_app("fn_memo_hit");
+        let (app, _dir) = temp_app("fn_memo_hit").await;
 
         // First run — executes.
         app.update(|ctx| async move {
@@ -675,7 +689,7 @@ async fn ctx_mount_each() {
         value: i32,
     }
 
-    let (app, _dir) = temp_app("mount_each");
+    let (app, _dir) = temp_app("mount_each").await;
     app.update(|ctx| async move {
         let items = vec![("alpha", 1), ("beta", 2), ("gamma", 3)];
         let results: Vec<Output> = ctx
@@ -709,7 +723,7 @@ async fn ctx_mount_each_independent_memo() {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    let (app, _dir) = temp_app("mount_each_memo");
+    let (app, _dir) = temp_app("mount_each_memo").await;
     let call_count = Arc::new(AtomicUsize::new(0));
 
     // First run: two children, each memos.
@@ -777,7 +791,7 @@ async fn ctx_mount_each_independent_memo() {
 
 #[tokio::test]
 async fn ctx_mount_each_preserves_input_order_under_concurrency() {
-    let (app, _dir) = temp_app("mount_each_order");
+    let (app, _dir) = temp_app("mount_each_order").await;
     app.update(|ctx| async move {
         let items = vec![("slow", 30_u64), ("fast", 0_u64), ("mid", 10_u64)];
         let results: Vec<String> = ctx
@@ -804,7 +818,7 @@ async fn ctx_mount_each_preserves_input_order_under_concurrency() {
 
 #[tokio::test]
 async fn ctx_map() {
-    let (app, _dir) = temp_app("ctx_map");
+    let (app, _dir) = temp_app("ctx_map").await;
     app.update(|ctx| async move {
         let items = vec![1, 2, 3, 4, 5];
         let results: Vec<i32> = ctx.map(items, |x| async move { Ok(x * x) }).await?;
@@ -817,7 +831,7 @@ async fn ctx_map() {
 
 #[tokio::test]
 async fn ctx_map_error_propagation() {
-    let (app, _dir) = temp_app("ctx_map_err");
+    let (app, _dir) = temp_app("ctx_map_err").await;
     let result = app
         .update(|ctx| async move {
             let items = vec![1, 2, 3];
@@ -845,7 +859,7 @@ async fn ctx_batch_all_miss() {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    let (app, _dir) = temp_app("batch_miss");
+    let (app, _dir) = temp_app("batch_miss").await;
     let batch_calls = Arc::new(AtomicUsize::new(0));
 
     let calls = batch_calls.clone();
@@ -876,7 +890,7 @@ async fn ctx_batch_cache_hit() {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    let (app, _dir) = temp_app("batch_hit");
+    let (app, _dir) = temp_app("batch_hit").await;
     let batch_calls = Arc::new(AtomicUsize::new(0));
 
     // First run: all misses.
@@ -925,7 +939,7 @@ async fn ctx_batch_partial_hit() {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    let (app, _dir) = temp_app("batch_partial");
+    let (app, _dir) = temp_app("batch_partial").await;
     let batch_calls = Arc::new(AtomicUsize::new(0));
 
     // First run: cache "a" and "b".
@@ -975,7 +989,7 @@ async fn ctx_batch_partial_hit() {
 
 #[tokio::test]
 async fn ctx_batch_error_propagation() {
-    let (app, _dir) = temp_app("batch_err");
+    let (app, _dir) = temp_app("batch_err").await;
     let result = app
         .update(|ctx| async move {
             let items = vec![1, 2, 3];
@@ -1027,7 +1041,7 @@ async fn ctx_batch_serialization_error_clears_pending_memo() {
         }
     }
 
-    let (app, _dir) = temp_app("batch_serialize_fail");
+    let (app, _dir) = temp_app("batch_serialize_fail").await;
     let first_calls = Arc::new(AtomicUsize::new(0));
     let first_calls_for_run = first_calls.clone();
     let result = app
@@ -1139,7 +1153,7 @@ async fn ctx_batch_fingerprint_error_clears_pending_memo() {
         }
     }
 
-    let (app, _dir) = temp_app("batch_fingerprint_fail");
+    let (app, _dir) = temp_app("batch_fingerprint_fail").await;
     let first_calls = Arc::new(AtomicUsize::new(0));
     let first_calls_for_run = first_calls.clone();
     let result = app
@@ -1224,7 +1238,7 @@ mod batch_macro_miss {
         assert_ne!(hash, 0);
 
         let before = BATCH_CALLS.load(Ordering::SeqCst);
-        let (app, _dir) = temp_app("fn_batch_miss");
+        let (app, _dir) = temp_app("fn_batch_miss").await;
 
         app.update(|ctx| async move {
             let results = process_items(&ctx, vec![1, 2, 3]).await?;
@@ -1257,7 +1271,7 @@ mod batch_macro_hit {
 
     #[tokio::test]
     async fn function_macro_batch_cache_hit() {
-        let (app, _dir) = temp_app("fn_batch_hit");
+        let (app, _dir) = temp_app("fn_batch_hit").await;
 
         // First run — all misses.
         let before = BATCH_CALLS.load(Ordering::SeqCst);
@@ -1301,7 +1315,7 @@ mod batch_macro_partial {
 
     #[tokio::test]
     async fn function_macro_batch_partial_hit() {
-        let (app, _dir) = temp_app("fn_batch_partial");
+        let (app, _dir) = temp_app("fn_batch_partial").await;
 
         // First run: cache items 1 and 2.
         let before = BATCH_CALLS.load(Ordering::SeqCst);
@@ -1366,6 +1380,7 @@ mod batch_macro_ctx_access {
             .db_path(dir.path().join("lmdb"))
             .provide("hello".to_string())
             .build()
+            .await
             .unwrap();
 
         app.update(|ctx| async move {
@@ -1401,7 +1416,7 @@ mod batching_no_memo {
         let hash = __COCO_FN_HASH_PROCESS_ALL;
         assert_ne!(hash, 0);
 
-        let (app, _dir) = temp_app("batching_only");
+        let (app, _dir) = temp_app("batching_only").await;
 
         let before = CALLS.load(Ordering::SeqCst);
         app.update(|ctx| async move {
@@ -1430,7 +1445,7 @@ mod batching_no_memo_no_cache {
 
     #[tokio::test]
     async fn batching_only_no_cache_on_second_run() {
-        let (app, _dir) = temp_app("batching_no_cache");
+        let (app, _dir) = temp_app("batching_no_cache").await;
 
         // First run.
         let before = CALLS.load(Ordering::SeqCst);
@@ -1514,6 +1529,7 @@ mod mock_bare {
             .db_path(dir.path().join("lmdb"))
             .provide(api.clone())
             .build()
+            .await
             .unwrap();
 
         // First run.
@@ -1569,6 +1585,7 @@ mod mock_memo {
             .db_path(dir.path().join("lmdb"))
             .provide(api.clone())
             .build()
+            .await
             .unwrap();
 
         // First run — cache miss, API called.
@@ -1626,6 +1643,7 @@ mod mock_batching {
             .db_path(dir.path().join("lmdb"))
             .provide(api.clone())
             .build()
+            .await
             .unwrap();
 
         // First run.
@@ -1677,6 +1695,7 @@ mod mock_memo_batching {
             .db_path(dir.path().join("lmdb"))
             .provide(api.clone())
             .build()
+            .await
             .unwrap();
 
         // First run — all misses, API called once with all 3 items.
@@ -1744,7 +1763,7 @@ fn fs_walk_integration() {
 
 #[tokio::test]
 async fn ctx_mount_each_rejects_duplicate_keys() {
-    let (app, _dir) = temp_app("mount_each_dupes");
+    let (app, _dir) = temp_app("mount_each_dupes").await;
     let result = app
         .update(|ctx| async move {
             // "alpha" is duplicated
@@ -1771,7 +1790,7 @@ async fn ctx_mount_each_rejects_duplicate_keys() {
 
 #[tokio::test]
 async fn ctx_batch_rejects_duplicate_keys() {
-    let (app, _dir) = temp_app("batch_each_dupes");
+    let (app, _dir) = temp_app("batch_each_dupes").await;
     let result = app
         .update(|ctx| async move {
             // "gamma" is duplicated
