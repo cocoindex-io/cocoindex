@@ -16,4 +16,3 @@ pub mod txn_batcher;
 pub use app_store::{AppStore, Database};
 pub use storage::{Storage, StorageSettings};
 pub use txn::{AnyTxn, ReadTxn, WriteTxn};
-pub use txn_batcher::TxnBatcher;

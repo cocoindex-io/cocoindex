@@ -134,8 +134,7 @@ pub(crate) async fn use_or_invalidate_component_memoization<Prof: EngineProfile>
         comp_ctx
             .app_ctx()
             .env()
-            .txn_batcher()
-            .run(move |wtxn| ops::delete_component_memo(wtxn, &app_store, &path))
+            .run_txn(move |wtxn| ops::delete_component_memo(wtxn, &app_store, &path))
             .await?;
     }
 
@@ -167,8 +166,7 @@ pub(crate) async fn update_component_memo_states<Prof: EngineProfile>(
     comp_ctx
         .app_ctx()
         .env()
-        .txn_batcher()
-        .run(move |wtxn| {
+        .run_txn(move |wtxn| {
             let encoded = {
                 let Some(existing) = ops::read_component_memo(&*wtxn, &app_store, &path)? else {
                     return Ok(());
@@ -495,8 +493,7 @@ impl<Prof: EngineProfile> Committer<Prof> {
         let app_ctx = self.component_ctx.app_ctx().clone();
         let committer = app_ctx
             .env()
-            .txn_batcher()
-            .run(move |wtxn| {
+            .run_txn(move |wtxn| {
                 self.commit_in_txn(
                     wtxn,
                     child_path_set,
@@ -1237,8 +1234,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
     let pre_commit_out = comp_ctx
         .app_ctx()
         .env()
-        .txn_batcher()
-        .run(move |wtxn| {
+        .run_txn(move |wtxn| {
             pre_commit(
                 wtxn,
                 &app_store,
@@ -1358,8 +1354,7 @@ pub(crate) async fn post_submit_for_build<Prof: EngineProfile>(
     comp_ctx
         .app_ctx()
         .env()
-        .txn_batcher()
-        .run(move |wtxn| ops::write_component_memo_raw(wtxn, &app_store, &path, &encoded))
+        .run_txn(move |wtxn| ops::write_component_memo_raw(wtxn, &app_store, &path, &encoded))
         .await
 }
 
@@ -1379,8 +1374,7 @@ pub(crate) async fn cleanup_tombstone<Prof: EngineProfile>(
     comp_ctx
         .app_ctx()
         .env()
-        .txn_batcher()
-        .run(move |wtxn| ops::delete_tombstone(wtxn, &app_store, &owner_path, &relative_path))
+        .run_txn(move |wtxn| ops::delete_tombstone(wtxn, &app_store, &owner_path, &relative_path))
         .await
 }
 

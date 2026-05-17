@@ -7,7 +7,7 @@
 
 use crate::prelude::*;
 use crate::state_store::app_store::{AppStore, Database};
-use crate::state_store::txn::ReadTxn;
+use crate::state_store::txn::{ReadTxn, WriteTxn};
 use crate::state_store::txn_batcher::TxnBatcher;
 
 use cocoindex_utils::retryable;
@@ -119,8 +119,16 @@ impl Storage {
         Ok(())
     }
 
-    pub fn txn_batcher(&self) -> &TxnBatcher {
-        &self.inner.txn_batcher
+    /// Run `body` inside a batched write transaction. Multiple concurrent
+    /// callers' closures are coalesced into a single underlying write txn
+    /// for throughput; ordering and atomicity within a batch follow FIFO.
+    /// See [`TxnBatcher`](super::txn_batcher::TxnBatcher) for details.
+    pub async fn run_txn<T, F>(&self, body: F) -> Result<T>
+    where
+        T: Send + 'static,
+        F: for<'txn> FnOnce(&mut WriteTxn<'txn>) -> Result<T> + Send + 'static,
+    {
+        self.inner.txn_batcher.run(body).await
     }
 
     /// Create the per-app sub-database and wrap it in an `AppStore`.

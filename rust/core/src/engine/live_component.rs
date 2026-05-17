@@ -555,8 +555,7 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
             self.component
                 .app_ctx()
                 .env()
-                .txn_batcher()
-                .run(move |wtxn| {
+                .run_txn(move |wtxn| {
                     ops::remove_child_with_tombstone(
                         wtxn,
                         &app_store,
@@ -800,8 +799,7 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
             self.component
                 .app_ctx()
                 .env()
-                .txn_batcher()
-                .run(move |wtxn| {
+                .run_txn(move |wtxn| {
                     crate::engine::execution::ensure_path_node_type(
                         &app_store,
                         wtxn,

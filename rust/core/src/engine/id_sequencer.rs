@@ -13,7 +13,7 @@ use std::collections::HashMap;
 
 use crate::prelude::*;
 use crate::state::stable_path::StableKey;
-use crate::state_store::{AppStore, TxnBatcher, WriteTxn, ops};
+use crate::state_store::{AppStore, Storage, WriteTxn, ops};
 
 /// Initial batch size for ID allocation.
 const INITIAL_BATCH_SIZE: u64 = 2;
@@ -85,7 +85,7 @@ impl IdSequencerManager {
     /// are serialized.
     pub async fn next_id(
         &self,
-        txn_batcher: &TxnBatcher,
+        storage: &Storage,
         app_store: &AppStore,
         key: &StableKey,
     ) -> Result<u64> {
@@ -105,8 +105,8 @@ impl IdSequencerManager {
             let batch_size = state.next_batch_size;
             let app_store = app_store.clone();
             let key = key.clone();
-            let start_id = txn_batcher
-                .run(move |wtxn| ops::reserve_id_range(wtxn, &app_store, &key, batch_size))
+            let start_id = storage
+                .run_txn(move |wtxn| ops::reserve_id_range(wtxn, &app_store, &key, batch_size))
                 .await?;
             state.refill(start_id, batch_size);
         }
