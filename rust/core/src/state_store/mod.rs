@@ -7,9 +7,13 @@
 //!
 //! See `specs/core/state_store_refactor.md` for the design rationale.
 
+pub mod app_store;
 pub mod ops;
-pub mod store;
+pub mod storage;
+pub mod txn;
 pub mod txn_batcher;
 
-pub use store::{AnyTxn, Database, ReadTxn, Store, WriteTxn};
+pub use app_store::{AppStore, Database};
+pub use storage::{Storage, StorageSettings};
+pub use txn::{AnyTxn, ReadTxn, WriteTxn};
 pub use txn_batcher::TxnBatcher;

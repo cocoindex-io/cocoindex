@@ -133,7 +133,7 @@ impl<Prof: EngineProfile> MountLivePending<Prof> {
         ));
 
         // 6. Install ordering (matters for drop_app race coverage):
-        //    (i)   store the new state in `child.live_state` (strong-ref anchor)
+        //    (i)   app_store the new state in `child.live_state` (strong-ref anchor)
         //    (ii)  register Weak in `app_ctx.live_components` (compaction-on-push)
         //
         // The DB `ChildExistence` row is written separately:
@@ -546,7 +546,7 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
         // Synchronously remove the existence entry and write a tombstone,
         // matching the prior implementation's contract.
         if let Some((parent_ref, child_key)) = subpath.as_ref().split_parent() {
-            let store = self.component.app_ctx().store().clone();
+            let app_store = self.component.app_ctx().app_store().clone();
             let parent_path: StablePath = parent_ref.into();
             let child_key = child_key.clone();
             let component_path = self.component.stable_path().clone();
@@ -559,7 +559,7 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
                 .run(move |wtxn| {
                     ops::remove_child_with_tombstone(
                         wtxn,
-                        &store,
+                        &app_store,
                         &parent_path,
                         &child_key,
                         &component_path,
@@ -794,7 +794,7 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
         // operator.update call. With this row, the install/tombstone
         // state machine is symmetric across both installer paths.
         if let Some((parent_path_ref, child_key)) = child_path.as_ref().split_parent() {
-            let store = self.component.app_ctx().store().clone();
+            let app_store = self.component.app_ctx().app_store().clone();
             let parent_path: StablePath = parent_path_ref.into();
             let child_key = child_key.clone();
             self.component
@@ -803,7 +803,7 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
                 .txn_batcher()
                 .run(move |wtxn| {
                     crate::engine::execution::ensure_path_node_type(
-                        &store,
+                        &app_store,
                         wtxn,
                         parent_path.as_ref(),
                         &child_key,
