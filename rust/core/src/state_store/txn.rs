@@ -60,17 +60,24 @@ impl<'env> Deref for ReadTxn<'env> {
 ///
 /// The trait is sealed — only the two wrapper types implement it. The hidden
 /// methods are accessed within this module via `pub(crate)` visibility.
+///
+/// The methods take `&mut self`. They don't actually mutate the txn — but
+/// the LMDB-backed transactions wrap `!Sync` raw pointers, so a `&Self`
+/// borrow would make any async future capturing this txn `!Send`. Using
+/// `&mut self` keeps borrows `Send`, at the cost of forcing read methods to
+/// be called sequentially (which they are anyway — there's no parallelism
+/// to lose).
 pub trait AnyTxn: sealed::Sealed {
     #[doc(hidden)]
     fn db_get_bytes<'a>(
-        &'a self,
+        &'a mut self,
         db: Database,
         key: &[u8],
     ) -> crate::prelude::Result<Option<&'a [u8]>>;
 
     #[doc(hidden)]
     fn db_prefix_iter<'a>(
-        &'a self,
+        &'a mut self,
         db: Database,
         prefix: &[u8],
     ) -> crate::prelude::Result<heed::RoPrefix<'a, heed::types::Bytes, heed::types::Bytes>>;
@@ -84,7 +91,7 @@ mod sealed {
 
 impl<'env> AnyTxn for ReadTxn<'env> {
     fn db_get_bytes<'a>(
-        &'a self,
+        &'a mut self,
         db: Database,
         key: &[u8],
     ) -> crate::prelude::Result<Option<&'a [u8]>> {
@@ -92,7 +99,7 @@ impl<'env> AnyTxn for ReadTxn<'env> {
     }
 
     fn db_prefix_iter<'a>(
-        &'a self,
+        &'a mut self,
         db: Database,
         prefix: &[u8],
     ) -> crate::prelude::Result<heed::RoPrefix<'a, heed::types::Bytes, heed::types::Bytes>> {
@@ -102,7 +109,7 @@ impl<'env> AnyTxn for ReadTxn<'env> {
 
 impl<'env> AnyTxn for WriteTxn<'env> {
     fn db_get_bytes<'a>(
-        &'a self,
+        &'a mut self,
         db: Database,
         key: &[u8],
     ) -> crate::prelude::Result<Option<&'a [u8]>> {
@@ -110,7 +117,7 @@ impl<'env> AnyTxn for WriteTxn<'env> {
     }
 
     fn db_prefix_iter<'a>(
-        &'a self,
+        &'a mut self,
         db: Database,
         prefix: &[u8],
     ) -> crate::prelude::Result<heed::RoPrefix<'a, heed::types::Bytes, heed::types::Bytes>> {

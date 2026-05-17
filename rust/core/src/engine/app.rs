@@ -64,7 +64,7 @@ pub struct App<Prof: EngineProfile> {
 }
 
 impl<Prof: EngineProfile> App<Prof> {
-    pub fn new(
+    pub async fn new(
         name: &str,
         env: Environment<Prof>,
         max_inflight_components: Option<usize>,
@@ -72,7 +72,7 @@ impl<Prof: EngineProfile> App<Prof> {
         let app_reg = AppRegistration::new(name, &env)?;
 
         // TODO: This database initialization logic should happen lazily on first call to `update()`.
-        let app_store = env.create_app_store(name)?;
+        let app_store = env.create_app_store(name).await?;
 
         let app_ctx = AppContext::new(env, app_store, app_reg, max_inflight_components);
         let root_component = Component::new(app_ctx, StablePath::root(), None);
@@ -215,7 +215,7 @@ impl<Prof: EngineProfile> App<Prof> {
                 root_component
                     .app_ctx()
                     .env()
-                    .run_txn(move |wtxn| app_store.clear_all(wtxn))
+                    .run_txn(move |wtxn| Box::pin(async move { app_store.clear_all(wtxn).await }))
                     .await?;
 
                 info!("App dropped successfully");

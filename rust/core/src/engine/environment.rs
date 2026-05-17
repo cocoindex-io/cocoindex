@@ -6,6 +6,7 @@ use crate::{
 };
 
 use cocoindex_utils::fingerprint::Fingerprint;
+use futures::future::BoxFuture;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::RwLock;
 
@@ -33,12 +34,12 @@ pub struct Environment<Prof: EngineProfile> {
 }
 
 impl<Prof: EngineProfile> Environment<Prof> {
-    pub fn new(
+    pub async fn new(
         settings: EnvironmentSettings,
         target_states_providers: Arc<Mutex<TargetStateProviderRegistry<Prof>>>,
         host_runtime_ctx: Prof::HostRuntimeCtx,
     ) -> Result<Self> {
-        let storage = Storage::new(&settings)?;
+        let storage = Storage::new(&settings).await?;
         let state = Arc::new(EnvironmentInner {
             storage,
             app_names: Mutex::new(BTreeSet::new()),
@@ -64,14 +65,16 @@ impl<Prof: EngineProfile> Environment<Prof> {
     pub async fn run_txn<T, F>(&self, body: F) -> Result<T>
     where
         T: Send + 'static,
-        F: for<'txn> FnOnce(&mut WriteTxn<'txn>) -> Result<T> + Send + 'static,
+        F: for<'a, 'env> FnOnce(&'a mut WriteTxn<'env>) -> BoxFuture<'a, Result<T>>
+            + Send
+            + 'static,
     {
         self.inner.storage.run_txn(body).await
     }
 
     /// Create the per-app sub-store. Delegates to [`Storage::create_app_store`].
-    pub fn create_app_store(&self, app_name: &str) -> Result<AppStore> {
-        self.inner.storage.create_app_store(app_name)
+    pub async fn create_app_store(&self, app_name: &str) -> Result<AppStore> {
+        self.inner.storage.create_app_store(app_name).await
     }
 
     pub fn target_states_providers(&self) -> &Arc<Mutex<TargetStateProviderRegistry<Prof>>> {

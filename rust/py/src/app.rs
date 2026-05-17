@@ -166,11 +166,19 @@ impl PyApp {
     #[new]
     #[pyo3(signature = (name, env, max_inflight_components=None))]
     pub fn new(
+        py: Python<'_>,
         name: &str,
         env: &PyEnvironment,
         max_inflight_components: Option<usize>,
     ) -> PyResult<Self> {
-        let app = App::new(name, env.0.clone(), max_inflight_components)
+        let name_owned = name.to_string();
+        let env = env.0.clone();
+        let app = py
+            .detach(|| {
+                get_runtime().block_on(async move {
+                    App::new(&name_owned, env, max_inflight_components).await
+                })
+            })
             .context(format!("failed to initialize app '{name}'"))
             .into_py_result()?;
         Ok(Self(Arc::new(app)))

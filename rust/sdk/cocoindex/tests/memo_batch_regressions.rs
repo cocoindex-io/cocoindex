@@ -5,11 +5,12 @@ use cocoindex::App;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// Focused regression tests for `memo::batch` edge cases.
-fn temp_app(name: &str) -> (App, tempfile::TempDir) {
+async fn temp_app(name: &str) -> (App, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
     let app = App::builder(name)
         .db_path(dir.path().join("lmdb"))
         .build()
+        .await
         .unwrap();
     (app, dir)
 }
@@ -45,7 +46,7 @@ async fn batch_serialization_error_releases_previous_pending_entries() {
         }
     }
 
-    let (app, _dir) = temp_app("batch_serialize_fail");
+    let (app, _dir) = temp_app("batch_serialize_fail").await;
     let first_calls = Arc::new(AtomicUsize::new(0));
     let first_calls_for_run = first_calls.clone();
     let result = app
@@ -153,7 +154,7 @@ async fn batch_fingerprint_error_releases_previous_pending_entries() {
         }
     }
 
-    let (app, _dir) = temp_app("batch_fingerprint_fail");
+    let (app, _dir) = temp_app("batch_fingerprint_fail").await;
     let first_calls = Arc::new(AtomicUsize::new(0));
     let first_calls_for_run = first_calls.clone();
     let result = app
@@ -211,7 +212,7 @@ async fn batch_fingerprint_error_releases_previous_pending_entries() {
 
 #[tokio::test]
 async fn batch_returns_error_when_mismatch_count() {
-    let (app, _dir) = temp_app("batch_result_mismatch");
+    let (app, _dir) = temp_app("batch_result_mismatch").await;
     let result = app
         .update(|ctx| async move {
             let items = vec![1, 2, 3];

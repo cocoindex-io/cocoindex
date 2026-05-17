@@ -55,7 +55,7 @@ impl AppBuilder {
     ///
     /// Returns an error if the LMDB database environment fails to initialize
     /// (e.g., due to permissions, disk space, or a corrupted state directory).
-    pub fn build(self) -> Result<App> {
+    pub async fn build(self) -> Result<App> {
         let db_path = self
             .db_path
             .unwrap_or_else(|| PathBuf::from(format!("./coco_state/{}/", self.name)));
@@ -69,8 +69,10 @@ impl AppBuilder {
             Default::default(),
         )));
         let env = Environment::<RustProfile>::new(settings, providers, ())
+            .await
             .map_err(|e| Error::engine(format!("failed to open LMDB: {e}")))?;
         let core_app = CoreApp::new(&self.name, env, None)
+            .await
             .map_err(|e| Error::engine(format!("failed to create app: {e}")))?;
 
         Ok(App {
@@ -80,6 +82,14 @@ impl AppBuilder {
                 state: self.state,
             }),
         })
+    }
+
+    /// Build the app (blocking). Convenience for sync callers — creates a
+    /// tokio runtime internally and awaits [`Self::build`].
+    pub fn build_blocking(self) -> Result<App> {
+        let rt = tokio::runtime::Runtime::new()
+            .map_err(|e| Error::engine(format!("failed to create tokio runtime: {e}")))?;
+        rt.block_on(self.build())
     }
 }
 
@@ -113,14 +123,14 @@ pub struct App {
 
 impl App {
     /// Convenience: open an app with a specific DB path. Equivalent to
-    /// `App::builder(name).db_path(db_path).build()`.
+    /// `App::builder(name).db_path(db_path).build().await`.
     ///
     /// # Examples
     ///
     /// ```no_run
     /// # use cocoindex::app::App;
-    /// # fn main() -> cocoindex::error::Result<()> {
-    /// let app = App::open("my_app", "./data")?;
+    /// # async fn run() -> cocoindex::error::Result<()> {
+    /// let app = App::open("my_app", "./data").await?;
     /// # Ok(())
     /// # }
     /// ```
@@ -128,8 +138,14 @@ impl App {
     /// # Errors
     ///
     /// Returns an error if the LMDB database environment fails to initialize.
-    pub fn open(name: &str, db_path: impl Into<PathBuf>) -> Result<App> {
-        App::builder(name).db_path(db_path).build()
+    pub async fn open(name: &str, db_path: impl Into<PathBuf>) -> Result<App> {
+        App::builder(name).db_path(db_path).build().await
+    }
+
+    /// Convenience: synchronously open an app with a specific DB path. Same
+    /// as [`Self::open`] but blocks on a tokio runtime internally.
+    pub fn open_blocking(name: &str, db_path: impl Into<PathBuf>) -> Result<App> {
+        App::builder(name).db_path(db_path).build_blocking()
     }
 
     /// Start building an app. Name determines the LMDB database namespace.
@@ -138,11 +154,12 @@ impl App {
     ///
     /// ```no_run
     /// # use cocoindex::app::App;
-    /// # fn main() -> cocoindex::error::Result<()> {
+    /// # async fn run() -> cocoindex::error::Result<()> {
     /// let app = App::builder("my_app")
     ///     .db_path("./data")
     ///     .provide(String::from("shared resource"))
-    ///     .build()?;
+    ///     .build()
+    ///     .await?;
     /// # Ok(())
     /// # }
     /// ```
@@ -162,7 +179,7 @@ impl App {
     /// ```no_run
     /// # use cocoindex::app::App;
     /// # async fn run() -> cocoindex::error::Result<()> {
-    /// let app = App::open("my_app", "./data")?;
+    /// let app = App::open("my_app", "./data").await?;
     /// let stats = app.run(|ctx| async move {
     ///     // ... pipeline logic ...
     ///     Ok(())
@@ -196,7 +213,7 @@ impl App {
     /// ```no_run
     /// # use cocoindex::app::App;
     /// # async fn doc() -> cocoindex::error::Result<()> {
-    /// let app = App::open("my_app", "./data")?;
+    /// let app = App::open("my_app", "./data").await?;
     /// app.update(|ctx| async move {
     ///     // ... update logic ...
     ///     Ok(())

@@ -354,7 +354,7 @@ async fn main() -> Result<()> {
     );
     let output_dir = PathBuf::from(args.get(2).map(|s| s.as_str()).unwrap_or("./output"));
 
-    let app = cocoindex::App::open("multi_codebase_summarization", ".cocoindex_db")?;
+    let app = cocoindex::App::open("multi_codebase_summarization", ".cocoindex_db").await?;
 
     let stats = app
         .run(move |ctx| async move {

@@ -555,13 +555,17 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
                 .app_ctx()
                 .env()
                 .run_txn(move |wtxn| {
-                    app_store.remove_child_with_tombstone(
-                        wtxn,
-                        &parent_path,
-                        &child_key,
-                        &component_path,
-                        &relative_child,
-                    )
+                    Box::pin(async move {
+                        app_store
+                            .remove_child_with_tombstone(
+                                wtxn,
+                                &parent_path,
+                                &child_key,
+                                &component_path,
+                                &relative_child,
+                            )
+                            .await
+                    })
                 })
                 .await?;
         }
@@ -798,13 +802,16 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
                 .app_ctx()
                 .env()
                 .run_txn(move |wtxn| {
-                    crate::engine::execution::ensure_path_node_type(
-                        &app_store,
-                        wtxn,
-                        parent_path.as_ref(),
-                        &child_key,
-                        crate::state::db_schema::StablePathNodeType::Component,
-                    )
+                    Box::pin(async move {
+                        crate::engine::execution::ensure_path_node_type(
+                            &app_store,
+                            wtxn,
+                            parent_path.as_ref(),
+                            &child_key,
+                            crate::state::db_schema::StablePathNodeType::Component,
+                        )
+                        .await
+                    })
                 })
                 .await?;
         }

@@ -238,6 +238,15 @@ impl<'a> TargetStateInfoItemState<'a> {
             TargetStateInfoItemState::Existing(s) => Some(s.as_ref()),
         }
     }
+
+    pub fn into_owned(self) -> TargetStateInfoItemState<'static> {
+        match self {
+            TargetStateInfoItemState::Deleted => TargetStateInfoItemState::Deleted,
+            TargetStateInfoItemState::Existing(s) => {
+                TargetStateInfoItemState::Existing(Cow::Owned(s.into_owned()))
+            }
+        }
+    }
 }
 
 fn u64_is_zero(v: &u64) -> bool {
@@ -262,6 +271,21 @@ pub struct TargetStateInfoItem<'a> {
     /// It decides the generation of the provider.
     #[serde(rename = "G", default, skip_serializing_if = "Option::is_none")]
     pub provider_generation: Option<TargetStateProviderGeneration>,
+}
+
+impl<'a> TargetStateInfoItem<'a> {
+    pub fn into_owned(self) -> TargetStateInfoItem<'static> {
+        TargetStateInfoItem {
+            key: Cow::Owned(self.key.into_owned()),
+            states: self
+                .states
+                .into_iter()
+                .map(|(v, s)| (v, s.into_owned()))
+                .collect(),
+            provider_schema_version: self.provider_schema_version,
+            provider_generation: self.provider_generation,
+        }
+    }
 }
 
 /// Inverted tracking: maps a `TargetStatePath` to the component that owns it.

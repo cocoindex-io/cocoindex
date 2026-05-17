@@ -5,6 +5,10 @@
 //! [`WriteTxn`](super::WriteTxn) or [`ReadTxn`](super::ReadTxn) (or
 //! anything implementing [`AnyTxn`](super::AnyTxn) for the read-only ops),
 //! and the txn parameter always comes first.
+//!
+//! All I/O methods are `async fn`. The current LMDB implementation is
+//! synchronous internally — the returned futures never yield — but the
+//! async signature future-proofs the API.
 
 use std::collections::HashSet;
 
@@ -13,9 +17,8 @@ use cocoindex_utils::fingerprint::Fingerprint;
 
 use crate::prelude::*;
 use crate::state::db_schema::{
-    ChildExistenceInfo, ComponentMemoizationInfo, DbEntryKey, FunctionMemoizationEntry,
-    IdSequencerInfo, StablePathEntryKey, StablePathEntryTrackingInfo, StablePathNodeType,
-    TargetStateOwnerInfo,
+    ChildExistenceInfo, DbEntryKey, FunctionMemoizationEntry, IdSequencerInfo, StablePathEntryKey,
+    StablePathNodeType, TargetStateOwnerInfo,
 };
 use crate::state::stable_path::{StableKey, StablePath, StablePathPrefix, StablePathRef};
 use crate::state::target_state_path::TargetStatePath;
@@ -100,23 +103,26 @@ fn key_id_sequencer(key: &StableKey) -> Result<Vec<u8>> {
 // --- Tracking info -------------------------------------------------------
 
 impl AppStore {
-    pub fn read_tracking_info<'a, T: AnyTxn>(
+    /// Read raw tracking-info bytes. Returns owned bytes (`Vec<u8>`) so the
+    /// caller can deserialize from a local buffer and avoid keeping the txn
+    /// borrowed for the deserialized struct's lifetime. Callers typically
+    /// then do `from_msgpack_slice::<StablePathEntryTrackingInfo>(&bytes)`.
+    pub async fn read_tracking_info<T: AnyTxn>(
         &self,
-        txn: &'a T,
+        txn: &mut T,
         path: &StablePath,
-    ) -> Result<Option<StablePathEntryTrackingInfo<'a>>> {
+    ) -> Result<Option<Vec<u8>>> {
         let key = key_tracking_info(path)?;
-        let data = txn.db_get_bytes(self.db(), &key)?;
-        data.map(from_msgpack_slice).transpose().map_err(Into::into)
+        Ok(txn.db_get_bytes(self.db(), &key)?.map(<[u8]>::to_vec))
     }
 
     /// Write pre-serialized tracking info. Callers serialize externally so
     /// the txn can be re-borrowed mutably after the read-modify-write
     /// pattern used in `pre_commit` (the deserialized `tracking_info`
     /// borrows from the write txn and must be released before writing back).
-    pub fn write_tracking_info_raw(
+    pub async fn write_tracking_info_raw(
         &self,
-        txn: &mut WriteTxn,
+        txn: &mut WriteTxn<'_>,
         path: &StablePath,
         encoded: &[u8],
     ) -> Result<()> {
@@ -125,7 +131,11 @@ impl AppStore {
         Ok(())
     }
 
-    pub fn delete_tracking_info(&self, txn: &mut WriteTxn, path: &StablePath) -> Result<()> {
+    pub async fn delete_tracking_info(
+        &self,
+        txn: &mut WriteTxn<'_>,
+        path: &StablePath,
+    ) -> Result<()> {
         let key = key_tracking_info(path)?;
         self.db().delete(&mut **txn, &key)?;
         Ok(())
@@ -135,22 +145,23 @@ impl AppStore {
 // --- Component memoization -----------------------------------------------
 
 impl AppStore {
-    pub fn read_component_memo<'a, T: AnyTxn>(
+    /// Read raw component-memo bytes. See [`Self::read_tracking_info`] for
+    /// the owned-bytes return rationale.
+    pub async fn read_component_memo<T: AnyTxn>(
         &self,
-        txn: &'a T,
+        txn: &mut T,
         path: &StablePath,
-    ) -> Result<Option<ComponentMemoizationInfo<'a>>> {
+    ) -> Result<Option<Vec<u8>>> {
         let key = key_component_memo(path)?;
-        let data = txn.db_get_bytes(self.db(), &key)?;
-        data.map(from_msgpack_slice).transpose().map_err(Into::into)
+        Ok(txn.db_get_bytes(self.db(), &key)?.map(<[u8]>::to_vec))
     }
 
     /// Write a pre-serialized component memo. Callers serialize externally
     /// for the read-modify-write pattern (see `update_component_memo_states`
     /// in engine code).
-    pub fn write_component_memo_raw(
+    pub async fn write_component_memo_raw(
         &self,
-        txn: &mut WriteTxn,
+        txn: &mut WriteTxn<'_>,
         path: &StablePath,
         encoded: &[u8],
     ) -> Result<()> {
@@ -159,7 +170,11 @@ impl AppStore {
         Ok(())
     }
 
-    pub fn delete_component_memo(&self, txn: &mut WriteTxn, path: &StablePath) -> Result<()> {
+    pub async fn delete_component_memo(
+        &self,
+        txn: &mut WriteTxn<'_>,
+        path: &StablePath,
+    ) -> Result<()> {
         let key = key_component_memo(path)?;
         self.db().delete(&mut **txn, &key)?;
         Ok(())
@@ -169,20 +184,21 @@ impl AppStore {
 // --- Function memoization ------------------------------------------------
 
 impl AppStore {
-    pub fn read_fn_memo<'a, T: AnyTxn>(
+    /// Read raw function-memo bytes. See [`Self::read_tracking_info`] for
+    /// the owned-bytes return rationale.
+    pub async fn read_fn_memo<T: AnyTxn>(
         &self,
-        txn: &'a T,
+        txn: &mut T,
         path: &StablePath,
         fp: Fingerprint,
-    ) -> Result<Option<FunctionMemoizationEntry<'a>>> {
+    ) -> Result<Option<Vec<u8>>> {
         let key = key_fn_memo(path, fp)?;
-        let data = txn.db_get_bytes(self.db(), &key)?;
-        data.map(from_msgpack_slice).transpose().map_err(Into::into)
+        Ok(txn.db_get_bytes(self.db(), &key)?.map(<[u8]>::to_vec))
     }
 
-    pub fn write_fn_memo(
+    pub async fn write_fn_memo(
         &self,
-        txn: &mut WriteTxn,
+        txn: &mut WriteTxn<'_>,
         path: &StablePath,
         fp: Fingerprint,
         entry: &FunctionMemoizationEntry<'_>,
@@ -194,9 +210,9 @@ impl AppStore {
     }
 
     /// GC: delete all function memos for `path` whose fingerprint is NOT in `keep`.
-    pub fn retain_fn_memos(
+    pub async fn retain_fn_memos(
         &self,
-        txn: &mut WriteTxn,
+        txn: &mut WriteTxn<'_>,
         path: &StablePath,
         keep: &HashSet<Fingerprint>,
     ) -> Result<()> {
@@ -220,9 +236,9 @@ impl AppStore {
 // --- Child existence -----------------------------------------------------
 
 impl AppStore {
-    pub fn read_child_existence<T: AnyTxn>(
+    pub async fn read_child_existence<T: AnyTxn>(
         &self,
-        txn: &T,
+        txn: &mut T,
         parent: &StablePath,
         child_key: &StableKey,
     ) -> Result<Option<ChildExistenceInfo>> {
@@ -231,9 +247,9 @@ impl AppStore {
         data.map(from_msgpack_slice).transpose().map_err(Into::into)
     }
 
-    pub fn write_child_existence(
+    pub async fn write_child_existence(
         &self,
-        txn: &mut WriteTxn,
+        txn: &mut WriteTxn<'_>,
         parent: &StablePath,
         child_key: &StableKey,
         info: &ChildExistenceInfo,
@@ -244,9 +260,9 @@ impl AppStore {
         Ok(())
     }
 
-    pub fn delete_child_existence(
+    pub async fn delete_child_existence(
         &self,
-        txn: &mut WriteTxn,
+        txn: &mut WriteTxn<'_>,
         parent: &StablePath,
         child_key: &StableKey,
     ) -> Result<()> {
@@ -260,9 +276,9 @@ impl AppStore {
     /// encoding via `storekey` is order-preserving). Used by
     /// `Committer::update_existence` for the sorted-merge against the
     /// in-memory declared children.
-    pub fn list_child_existence<T: AnyTxn>(
+    pub async fn list_child_existence<T: AnyTxn>(
         &self,
-        txn: &T,
+        txn: &mut T,
         parent: &StablePath,
     ) -> Result<Vec<(StableKey, ChildExistenceInfo)>> {
         let prefix = key_child_existence_prefix(parent)?;
@@ -280,9 +296,9 @@ impl AppStore {
 // --- Tombstones ----------------------------------------------------------
 
 impl AppStore {
-    pub fn write_tombstone(
+    pub async fn write_tombstone(
         &self,
-        txn: &mut WriteTxn,
+        txn: &mut WriteTxn<'_>,
         parent: &StablePath,
         relative_path: &StablePath,
     ) -> Result<()> {
@@ -291,9 +307,9 @@ impl AppStore {
         Ok(())
     }
 
-    pub fn delete_tombstone(
+    pub async fn delete_tombstone(
         &self,
-        txn: &mut WriteTxn,
+        txn: &mut WriteTxn<'_>,
         parent: &StablePath,
         relative_path: &StablePath,
     ) -> Result<()> {
@@ -304,9 +320,9 @@ impl AppStore {
 
     /// Relative paths of all tombstones for `parent`. Used by
     /// `Committer::launch_child_component_gc` to find which children need GC.
-    pub fn list_tombstones<T: AnyTxn>(
+    pub async fn list_tombstones<T: AnyTxn>(
         &self,
-        txn: &T,
+        txn: &mut T,
         parent: &StablePath,
     ) -> Result<Vec<StablePath>> {
         let prefix = key_tombstone_prefix(parent)?;
@@ -321,16 +337,17 @@ impl AppStore {
 
     /// Atomic existence-removal + tombstone-write, matching the contract of
     /// `LiveComponentController::delete`'s synchronous step.
-    pub fn remove_child_with_tombstone(
+    pub async fn remove_child_with_tombstone(
         &self,
-        txn: &mut WriteTxn,
+        txn: &mut WriteTxn<'_>,
         parent: &StablePath,
         child_key: &StableKey,
         owner_path: &StablePath,
         relative_child: &StablePath,
     ) -> Result<()> {
-        self.delete_child_existence(txn, parent, child_key)?;
-        self.write_tombstone(txn, owner_path, relative_child)?;
+        self.delete_child_existence(txn, parent, child_key).await?;
+        self.write_tombstone(txn, owner_path, relative_child)
+            .await?;
         Ok(())
     }
 }
@@ -338,9 +355,9 @@ impl AppStore {
 // --- Inverted target-state owner index -----------------------------------
 
 impl AppStore {
-    pub fn read_target_state_owner<T: AnyTxn>(
+    pub async fn read_target_state_owner<T: AnyTxn>(
         &self,
-        txn: &T,
+        txn: &mut T,
         path: &TargetStatePath,
     ) -> Result<Option<TargetStateOwnerInfo>> {
         let key = key_target_state_owner(path)?;
@@ -348,9 +365,9 @@ impl AppStore {
         data.map(from_msgpack_slice).transpose().map_err(Into::into)
     }
 
-    pub fn upsert_target_state_owner(
+    pub async fn upsert_target_state_owner(
         &self,
-        txn: &mut WriteTxn,
+        txn: &mut WriteTxn<'_>,
         path: &TargetStatePath,
         owner: &StablePath,
     ) -> Result<()> {
@@ -362,9 +379,9 @@ impl AppStore {
         Ok(())
     }
 
-    pub fn delete_target_state_owner(
+    pub async fn delete_target_state_owner(
         &self,
-        txn: &mut WriteTxn,
+        txn: &mut WriteTxn<'_>,
         path: &TargetStatePath,
     ) -> Result<()> {
         let key = key_target_state_owner(path)?;
@@ -376,7 +393,11 @@ impl AppStore {
 // --- ID sequencer --------------------------------------------------------
 
 impl AppStore {
-    pub fn peek_id_sequence<T: AnyTxn>(&self, txn: &T, key: &StableKey) -> Result<Option<u64>> {
+    pub async fn peek_id_sequence<T: AnyTxn>(
+        &self,
+        txn: &mut T,
+        key: &StableKey,
+    ) -> Result<Option<u64>> {
         let db_key = key_id_sequencer(key)?;
         let data = txn.db_get_bytes(self.db(), &db_key)?;
         match data {
@@ -388,9 +409,9 @@ impl AppStore {
         }
     }
 
-    pub fn write_id_sequence(
+    pub async fn write_id_sequence(
         &self,
-        txn: &mut WriteTxn,
+        txn: &mut WriteTxn<'_>,
         key: &StableKey,
         next_id: u64,
     ) -> Result<()> {
@@ -404,9 +425,15 @@ impl AppStore {
     /// Atomically reserve `count` consecutive IDs starting from the next
     /// available ID. Returns the first reserved ID. IDs start at 1
     /// (0 is reserved).
-    pub fn reserve_id_range(&self, txn: &mut WriteTxn, key: &StableKey, count: u64) -> Result<u64> {
-        let current_next_id = self.peek_id_sequence(txn, key)?.unwrap_or(1);
-        self.write_id_sequence(txn, key, current_next_id + count)?;
+    pub async fn reserve_id_range(
+        &self,
+        txn: &mut WriteTxn<'_>,
+        key: &StableKey,
+        count: u64,
+    ) -> Result<u64> {
+        let current_next_id = self.peek_id_sequence(&mut *txn, key).await?.unwrap_or(1);
+        self.write_id_sequence(txn, key, current_next_id + count)
+            .await?;
         Ok(current_next_id)
     }
 }
@@ -414,7 +441,7 @@ impl AppStore {
 // --- App-level -----------------------------------------------------------
 
 impl AppStore {
-    pub fn clear_all(&self, txn: &mut WriteTxn) -> Result<()> {
+    pub async fn clear_all(&self, txn: &mut WriteTxn<'_>) -> Result<()> {
         self.db().clear(&mut **txn)?;
         Ok(())
     }
@@ -425,14 +452,14 @@ impl AppStore {
 impl AppStore {
     /// Looks up the node type of `parent_path/key` by reading the parent's
     /// child-existence entry. Used by `pre_commit` path-existence checks.
-    pub fn read_path_node_type<T: AnyTxn>(
+    pub async fn read_path_node_type<T: AnyTxn>(
         &self,
-        txn: &T,
+        txn: &mut T,
         parent_path: StablePathRef<'_>,
         key: &StableKey,
     ) -> Result<Option<StablePathNodeType>> {
         let parent_owned: StablePath = parent_path.into();
-        let info = self.read_child_existence(txn, &parent_owned, key)?;
+        let info = self.read_child_existence(txn, &parent_owned, key).await?;
         Ok(info.map(|i| i.node_type))
     }
 
@@ -443,15 +470,15 @@ impl AppStore {
     /// - missing → write `target_node_type`
     /// - `Directory` + target=`Component` → upgrade to Component
     /// - anything else → no-op
-    pub fn ensure_path_node_type(
+    pub async fn ensure_path_node_type(
         &self,
-        txn: &mut WriteTxn,
+        txn: &mut WriteTxn<'_>,
         parent_path: StablePathRef<'_>,
         key: &StableKey,
         target_node_type: StablePathNodeType,
     ) -> Result<()> {
         let parent_owned: StablePath = parent_path.into();
-        let existing = self.read_child_existence(txn, &parent_owned, key)?;
+        let existing = self.read_child_existence(txn, &parent_owned, key).await?;
         let existing_node_type = existing.as_ref().map(|i| i.node_type);
         match (existing_node_type, target_node_type) {
             (None, _) | (Some(StablePathNodeType::Directory), StablePathNodeType::Component) => {
@@ -462,7 +489,8 @@ impl AppStore {
                     &ChildExistenceInfo {
                         node_type: target_node_type,
                     },
-                )?;
+                )
+                .await?;
             }
             _ => {
                 // No-op for all other cases
@@ -471,7 +499,13 @@ impl AppStore {
         if existing_node_type.is_none()
             && let Some((parent, key)) = parent_path.split_parent()
         {
-            return self.ensure_path_node_type(txn, parent, key, StablePathNodeType::Directory);
+            return Box::pin(self.ensure_path_node_type(
+                txn,
+                parent,
+                key,
+                StablePathNodeType::Directory,
+            ))
+            .await;
         }
         Ok(())
     }
@@ -482,7 +516,7 @@ impl AppStore {
 impl AppStore {
     /// Scan all stable-path entries in this app and return one path per
     /// component / directory.
-    pub fn list_all_stable_paths(&self, txn: &ReadTxn) -> Result<Vec<StablePath>> {
+    pub async fn list_all_stable_paths(&self, txn: &mut ReadTxn<'_>) -> Result<Vec<StablePath>> {
         let encoded_key_prefix =
             DbEntryKey::StablePathPrefixPrefix(StablePathPrefix::default()).encode()?;
         let db = self.db();
