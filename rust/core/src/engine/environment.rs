@@ -2,7 +2,7 @@ use crate::{
     engine::profile::EngineProfile,
     engine::target_state::TargetStateProviderRegistry,
     prelude::*,
-    state_store::{AppStore, ReadTxn, Storage, StorageSettings, TxnBatcher},
+    state_store::{AppStore, ReadTxn, Storage, StorageSettings, WriteTxn},
 };
 
 use cocoindex_utils::fingerprint::Fingerprint;
@@ -60,11 +60,16 @@ impl<Prof: EngineProfile> Environment<Prof> {
         self.inner.storage.read_txn().await
     }
 
-    pub fn txn_batcher(&self) -> &TxnBatcher {
-        self.inner.storage.txn_batcher()
+    /// Run a batched write transaction. Delegates to [`Storage::run_txn`].
+    pub async fn run_txn<T, F>(&self, body: F) -> Result<T>
+    where
+        T: Send + 'static,
+        F: for<'txn> FnOnce(&mut WriteTxn<'txn>) -> Result<T> + Send + 'static,
+    {
+        self.inner.storage.run_txn(body).await
     }
 
-    /// Create the per-app sub-app_store. Delegates to [`Storage::create_app_store`].
+    /// Create the per-app sub-store. Delegates to [`Storage::create_app_store`].
     pub fn create_app_store(&self, app_name: &str) -> Result<AppStore> {
         self.inner.storage.create_app_store(app_name)
     }

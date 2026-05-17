@@ -6,14 +6,13 @@ use crate::engine::environment::Environment;
 use crate::engine::{app::App, profile::EngineProfile};
 use crate::state::db_schema;
 use crate::state::stable_path::StablePath;
-use crate::state_store::ops;
 use futures::stream::{Stream, StreamExt};
 use tokio_stream::wrappers::ReceiverStream;
 
 pub fn list_stable_paths<Prof: EngineProfile>(app: &App<Prof>) -> Result<Vec<StablePath>> {
     let app_store = app.app_ctx().app_store();
     let rtxn = app.app_ctx().env().storage().read_txn_for_inspect()?;
-    ops::list_all_stable_paths(&rtxn, app_store)
+    app_store.list_all_stable_paths(&rtxn)
 }
 
 /// Represents a stable path with metadata (e.g. node type); more properties may be added.
@@ -33,7 +32,7 @@ pub fn iter_stable_paths<Prof: EngineProfile>(
 ) -> impl Stream<Item = Result<StablePathInfo>> + Send + 'static {
     let app_store = app.app_ctx().app_store().clone();
     let storage = app.app_ctx().env().storage().clone();
-    let rx = ops::spawn_iter_stable_paths_with_node_type(app_store, storage);
+    let rx = storage.spawn_iter_stable_paths_with_node_type(app_store);
     receiver_to_stable_path_info_stream(rx)
 }
 
@@ -43,8 +42,8 @@ pub fn iter_stable_paths_by_name<Prof: EngineProfile>(
     env: &Environment<Prof>,
     app_name: &str,
 ) -> Result<Pin<Box<dyn Stream<Item = Result<StablePathInfo>> + Send + 'static>>> {
-    let storage = env.storage().clone();
-    match ops::spawn_iter_stable_paths_with_node_type_for_app_name(storage, app_name)? {
+    let storage = env.storage();
+    match storage.spawn_iter_stable_paths_with_node_type_for_app_name(app_name)? {
         Some(rx) => Ok(Box::pin(receiver_to_stable_path_info_stream(rx))),
         None => Ok(Box::pin(futures::stream::empty())),
     }
@@ -58,5 +57,5 @@ fn receiver_to_stable_path_info_stream(
 }
 
 pub fn list_app_names<Prof: EngineProfile>(env: &Environment<Prof>) -> Result<Vec<String>> {
-    ops::list_app_names(env.storage())
+    env.storage().list_app_names()
 }

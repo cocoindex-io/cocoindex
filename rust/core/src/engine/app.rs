@@ -215,8 +215,7 @@ impl<Prof: EngineProfile> App<Prof> {
                 root_component
                     .app_ctx()
                     .env()
-                    .txn_batcher()
-                    .run(move |wtxn| crate::state_store::ops::clear_all(wtxn, &app_store))
+                    .run_txn(move |wtxn| app_store.clear_all(wtxn))
                     .await?;
 
                 info!("App dropped successfully");

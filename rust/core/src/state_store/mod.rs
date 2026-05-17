@@ -1,19 +1,17 @@
 //! Storage layer for engine internal state.
 //!
 //! Everything LMDB-specific lives in this module: heed types, key encoding,
-//! transaction batching, and the thin per-entity I/O wrappers used by the
-//! engine. The engine code outside this module never touches `heed::*`,
-//! the key codec, or the msgpack serialization — only typed entity ops.
+//! transaction batching, and the typed per-entity I/O methods on
+//! [`AppStore`] and [`Storage`]. Engine code outside this module never
+//! touches `heed::*`, the key codec, or the msgpack serialization — it
+//! only calls methods on these types.
 //!
-//! See `specs/core/state_store_refactor.md` for the design rationale.
+//! Submodules are private; reach types via `state_store::AppStore` etc.
 
-pub mod app_store;
-pub mod ops;
-pub mod storage;
-pub mod txn;
-pub mod txn_batcher;
+mod app_store;
+mod storage;
+mod txn;
 
-pub use app_store::{AppStore, Database};
+pub use app_store::AppStore;
 pub use storage::{Storage, StorageSettings};
 pub use txn::{AnyTxn, ReadTxn, WriteTxn};
-pub use txn_batcher::TxnBatcher;

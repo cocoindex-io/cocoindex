@@ -6,14 +6,15 @@
 //! - IDs are allocated in batches to minimize database transactions
 //! - Batch sizes grow exponentially (2, 4, 8, ..., 256) for better performance
 //!
-//! Storage I/O goes through `crate::state_store::ops`; this module is
-//! the in-memory caching half and never touches the storage backend directly.
+//! Storage I/O goes through methods on `AppStore` / `Storage`; this module
+//! is the in-memory caching half and never touches the storage backend
+//! directly.
 
 use std::collections::HashMap;
 
 use crate::prelude::*;
 use crate::state::stable_path::StableKey;
-use crate::state_store::{AppStore, TxnBatcher, WriteTxn, ops};
+use crate::state_store::{AppStore, Storage, WriteTxn};
 
 /// Initial batch size for ID allocation.
 const INITIAL_BATCH_SIZE: u64 = 2;
@@ -85,7 +86,7 @@ impl IdSequencerManager {
     /// are serialized.
     pub async fn next_id(
         &self,
-        txn_batcher: &TxnBatcher,
+        storage: &Storage,
         app_store: &AppStore,
         key: &StableKey,
     ) -> Result<u64> {
@@ -105,8 +106,8 @@ impl IdSequencerManager {
             let batch_size = state.next_batch_size;
             let app_store = app_store.clone();
             let key = key.clone();
-            let start_id = txn_batcher
-                .run(move |wtxn| ops::reserve_id_range(wtxn, &app_store, &key, batch_size))
+            let start_id = storage
+                .run_txn(move |wtxn| app_store.reserve_id_range(wtxn, &key, batch_size))
                 .await?;
             state.refill(start_id, batch_size);
         }
@@ -143,7 +144,7 @@ impl IdReservation {
         let next_id = match &mut self.next_id_state {
             Some(n) => n,
             slot @ None => {
-                let current = ops::peek_id_sequence(wtxn, app_store, self.key)?.unwrap_or(1);
+                let current = app_store.peek_id_sequence(wtxn, self.key)?.unwrap_or(1);
                 slot.insert(current)
             }
         };
@@ -155,7 +156,7 @@ impl IdReservation {
     /// Write the reserved ID range back to DB. Call once at end of transaction.
     pub fn commit(self, wtxn: &mut WriteTxn<'_>, app_store: &AppStore) -> Result<()> {
         if let Some(next_id) = self.next_id_state {
-            ops::write_id_sequence(wtxn, app_store, self.key, next_id)?;
+            app_store.write_id_sequence(wtxn, self.key, next_id)?;
         }
         Ok(())
     }

@@ -153,7 +153,7 @@ impl<Prof: EngineProfile> AppContext<Prof> {
         let key = key.unwrap_or(&default_key);
         self.inner
             .id_sequencer_manager
-            .next_id(self.inner.env.txn_batcher(), &self.inner.app_store, key)
+            .next_id(self.inner.env.storage(), &self.inner.app_store, key)
             .await
     }
 }

@@ -1,17 +1,23 @@
-//! Per-environment storage handle: opens the underlying LMDB env, hosts
-//! the [`TxnBatcher`], and exposes per-app [`AppStore`] creation.
+//! Per-environment storage handle: opens the underlying LMDB env, batches
+//! write transactions, and exposes per-app [`AppStore`] creation.
 //!
 //! `Storage` is the env-level analog of the per-app [`AppStore`]. Both are
 //! cheaply clonable (internally `Arc`-backed) so callers can move them
 //! into spawned threads for inspection-style streaming reads.
 
 use crate::prelude::*;
+use crate::state::db_schema::{
+    ChildExistenceInfo, DbEntryKey, StablePathEntryKey, StablePathNodeType,
+};
+use crate::state::stable_path::{StablePath, StablePathPrefix, StablePathRef};
 use crate::state_store::app_store::{AppStore, Database};
-use crate::state_store::txn::ReadTxn;
-use crate::state_store::txn_batcher::TxnBatcher;
+use crate::state_store::txn::{ReadTxn, WriteTxn};
 
+use cocoindex_utils::batching::{BatchQueue, Batcher, BatchingOptions, Runner};
+use cocoindex_utils::deser::from_msgpack_slice;
 use cocoindex_utils::retryable;
 use serde::{Deserialize, Serialize};
+use std::any::Any;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -61,7 +67,36 @@ pub struct Storage {
 
 struct StorageInner {
     db_env: heed::Env<heed::WithoutTls>,
-    txn_batcher: TxnBatcher,
+    batcher: Batcher<TxnRunner>,
+}
+
+/// Type-erased body for a batched write transaction. Runs inside a shared
+/// `WriteTxn`, returns a boxed output value.
+type TxnBody = Box<dyn for<'txn> FnOnce(&mut WriteTxn<'txn>) -> Result<Box<dyn Any + Send>> + Send>;
+
+/// `Runner` implementation that opens a single write txn, runs each batched
+/// closure against it, then commits.
+struct TxnRunner {
+    db_env: heed::Env<heed::WithoutTls>,
+}
+
+#[async_trait]
+impl Runner for TxnRunner {
+    type Input = TxnBody;
+    type Output = Box<dyn Any + Send>;
+
+    async fn run(
+        &self,
+        inputs: Vec<TxnBody>,
+    ) -> Result<impl ExactSizeIterator<Item = Box<dyn Any + Send>>> {
+        let mut outputs = Vec::with_capacity(inputs.len());
+        let mut wtxn = WriteTxn::new(self.db_env.write_txn()?);
+        for body in inputs {
+            outputs.push(body(&mut wtxn)?);
+        }
+        wtxn.into_inner().commit()?;
+        Ok(outputs.into_iter())
+    }
 }
 
 impl Storage {
@@ -87,12 +122,15 @@ impl Storage {
         if cleared_count > 0 {
             info!("Cleared {cleared_count} stale readers");
         }
-        let txn_batcher = TxnBatcher::new(db_env.clone());
+        let batcher = Batcher::new(
+            TxnRunner {
+                db_env: db_env.clone(),
+            },
+            Arc::new(BatchQueue::new()),
+            BatchingOptions::default(),
+        );
         Ok(Self {
-            inner: Arc::new(StorageInner {
-                db_env,
-                txn_batcher,
-            }),
+            inner: Arc::new(StorageInner { db_env, batcher }),
         })
     }
 
@@ -119,8 +157,30 @@ impl Storage {
         Ok(())
     }
 
-    pub fn txn_batcher(&self) -> &TxnBatcher {
-        &self.inner.txn_batcher
+    /// Run `body` inside a batched write transaction.
+    ///
+    /// Multiple concurrent callers' closures are coalesced into a single
+    /// underlying write txn for throughput. FIFO: the first caller executes
+    /// inline; concurrent callers queue up and are flushed together once
+    /// the current batch commits. If any closure in a batch returns `Err`,
+    /// the whole batch is rolled back (the `WriteTxn` is dropped without
+    /// committing) and every caller in the batch receives an error.
+    pub async fn run_txn<T, F>(&self, body: F) -> Result<T>
+    where
+        T: Send + 'static,
+        F: for<'txn> FnOnce(&mut WriteTxn<'txn>) -> Result<T> + Send + 'static,
+    {
+        let output = self
+            .inner
+            .batcher
+            .run(Box::new(move |wtxn| {
+                Ok(Box::new(body(wtxn)?) as Box<dyn Any + Send>)
+            }))
+            .await?;
+        output
+            .downcast::<T>()
+            .map(|b| *b)
+            .map_err(|_| internal_error!("Storage::run_txn: output type mismatch"))
     }
 
     /// Create the per-app sub-database and wrap it in an `AppStore`.
@@ -188,10 +248,106 @@ impl Storage {
         Ok(ReadTxn::new(self.inner.db_env.read_txn()?))
     }
 
-    /// Internal accessor for the spawn-iter pattern in `state_store::ops`,
-    /// which needs to move the env handle into a dedicated thread because
+    /// Spawn a thread that streams every `(StablePath, node_type)` entry
+    /// from `app_store` via a channel. A dedicated thread is needed because
     /// LMDB read transactions and cursors are `!Send`.
-    pub(crate) fn heed_env(&self) -> &heed::Env<heed::WithoutTls> {
-        &self.inner.db_env
+    pub fn spawn_iter_stable_paths_with_node_type(
+        &self,
+        app_store: AppStore,
+    ) -> tokio::sync::mpsc::Receiver<Result<(StablePath, StablePathNodeType)>> {
+        let (tx, rx) = tokio::sync::mpsc::channel(128);
+        let storage = self.clone();
+
+        std::thread::spawn(move || {
+            let result: Result<()> = (|| {
+                let encoded_key_prefix =
+                    DbEntryKey::StablePathPrefixPrefix(StablePathPrefix::default()).encode()?;
+                let txn = storage.inner.db_env.read_txn()?;
+                let db = app_store.db();
+
+                let mut last_prefix: Option<Vec<u8>> = None;
+                for entry in db.prefix_iter(&txn, &encoded_key_prefix)? {
+                    let (raw_key, _) = entry?;
+                    if let Some(last_prefix) = &last_prefix
+                        && raw_key.starts_with(last_prefix)
+                    {
+                        continue;
+                    }
+                    let key: DbEntryKey = DbEntryKey::decode(raw_key)?;
+                    let path = match key {
+                        DbEntryKey::StablePath(path, _) => path,
+                        other => {
+                            return Err(internal_error!("Expected StablePath, got {other:?}"));
+                        }
+                    };
+                    last_prefix = Some(DbEntryKey::StablePathPrefix(path.as_ref()).encode()?);
+
+                    let node_type = if path.as_ref().is_empty() {
+                        StablePathNodeType::Component
+                    } else {
+                        let path_ref: StablePathRef<'_> = path.as_ref();
+                        if let Some((parent_ref, key)) = path_ref.split_parent() {
+                            let parent_owned: StablePath = parent_ref.into();
+                            let info = {
+                                let key_encoded = DbEntryKey::StablePath(
+                                    parent_owned,
+                                    StablePathEntryKey::ChildExistence(key.clone()),
+                                )
+                                .encode()?;
+                                db.get(&txn, &key_encoded)?
+                                    .map(from_msgpack_slice::<ChildExistenceInfo>)
+                                    .transpose()?
+                            };
+                            info.map(|i| i.node_type)
+                                .unwrap_or(StablePathNodeType::Directory)
+                        } else {
+                            StablePathNodeType::Component
+                        }
+                    };
+
+                    if tx.blocking_send(Ok((path, node_type))).is_err() {
+                        break;
+                    }
+                }
+                Ok(())
+            })();
+            if let Err(err) = result {
+                let _ = tx.blocking_send(Err(err));
+            }
+        });
+
+        rx
+    }
+
+    /// Resolves the app store by name, then spawns the stable-path iteration
+    /// thread. Returns `None` if the app's database doesn't exist.
+    pub fn spawn_iter_stable_paths_with_node_type_for_app_name(
+        &self,
+        app_name: &str,
+    ) -> Result<Option<tokio::sync::mpsc::Receiver<Result<(StablePath, StablePathNodeType)>>>> {
+        let app_store = self.open_app_store_by_name(app_name)?;
+        Ok(app_store.map(|store| self.spawn_iter_stable_paths_with_node_type(store)))
+    }
+
+    /// List every non-empty named app sub-store in this storage environment.
+    /// The "unnamed database" is LMDB's catalog of named sub-databases.
+    pub fn list_app_names(&self) -> Result<Vec<String>> {
+        let db_env = &self.inner.db_env;
+        let rtxn = db_env.read_txn()?;
+        let unnamed: heed::Database<heed::types::Str, heed::types::DecodeIgnore> = db_env
+            .open_database(&rtxn, None)?
+            .expect("the unnamed database always exists");
+
+        let mut names = Vec::new();
+        for result in unnamed.iter(&rtxn)? {
+            let (name, ()) = result?;
+            if let Ok(Some(db)) =
+                db_env.open_database::<heed::types::Bytes, heed::types::Bytes>(&rtxn, Some(name))
+                && db.first(&rtxn)?.is_some()
+            {
+                names.push(name.to_string());
+            }
+        }
+        Ok(names)
     }
 }
