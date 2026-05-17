@@ -142,7 +142,11 @@ static LANGUAGE_INFO_BY_NAME: LazyLock<
     );
     add("elisp", &[".el"], None);
     add("elixir", &[".ex", ".exs"], None);
-    add("elm", &[".elm"], None);
+    add(
+        "elm",
+        &[".elm"],
+        Some(TreeSitterLanguageInfo::new(tree_sitter_elm::LANGUAGE, [])),
+    );
     add("embeddedtemplate", &[".ets"], None);
     add(
         "erlang",
