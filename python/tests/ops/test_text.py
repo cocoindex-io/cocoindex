@@ -310,7 +310,7 @@ def test_recursive_splitter_with_bash() -> None:
         '    echo "Hello, $1!"\n'
         "}\n\n"
         "for name in Alice Bob; do\n"
-        "    greet \"$name\"\n"
+        '    greet "$name"\n'
         "done\n"
     )
     chunks = splitter.split(code, chunk_size=60, min_chunk_size=20, language="bash")
@@ -349,7 +349,7 @@ def test_recursive_splitter_with_hcl() -> None:
         "  }\n"
         "}\n\n"
         'output "bucket_name" {\n'
-        '  value = aws_s3_bucket.example.bucket\n'
+        "  value = aws_s3_bucket.example.bucket\n"
         "}\n"
     )
     chunks = splitter.split(code, chunk_size=80, min_chunk_size=20, language="hcl")
