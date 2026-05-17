@@ -11,7 +11,6 @@ use crate::engine::target_state::TargetStateProvider;
 use crate::prelude::*;
 use crate::state::stable_path::StablePath;
 use crate::state::target_state_path::TargetStatePath;
-use crate::state_store::ops;
 use cocoindex_utils::error::{SharedError, SharedResult};
 
 use tokio::sync::oneshot;
@@ -140,7 +139,7 @@ impl<Prof: EngineProfile> MountLivePending<Prof> {
         //   - For `coco.mount(LiveCompClass)` from inside `process()`: by
         //     submit/commit, via `update_building_state`'s `child_path_set`.
         //   - For `operator.update(LiveCompClass)` from `process_live`: by
-        //     `mount_inner_live` directly via `txn_batcher`, just below this
+        //     `mount_inner_live` directly via `Storage::run_txn`, just below this
         //     `complete()` call. (See `LiveComponentController::mount_inner_live`.)
         // Both paths produce the same on-disk state.
         //
@@ -556,9 +555,8 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
                 .app_ctx()
                 .env()
                 .run_txn(move |wtxn| {
-                    ops::remove_child_with_tombstone(
+                    app_store.remove_child_with_tombstone(
                         wtxn,
-                        &app_store,
                         &parent_path,
                         &child_key,
                         &component_path,

@@ -2,17 +2,17 @@
 //!
 //! These wrap the underlying LMDB transaction types so engine code outside
 //! `state_store/` doesn't see `heed::*`. The wrappers `Deref` to the inner
-//! heed types so internal call sites (within `state_store::ops`) can still
-//! reach the heed API.
+//! heed types so internal call sites (within this module) can still reach
+//! the heed API.
 //!
-//! The [`AnyTxn`] trait lets read-only `state_store::ops` functions be
-//! called from either a `ReadTxn` or `WriteTxn` context.
+//! The [`AnyTxn`] trait lets read-only [`AppStore`](super::AppStore) methods
+//! be called from either a `ReadTxn` or `WriteTxn` context.
 
 use crate::state_store::app_store::Database;
 
 use std::ops::{Deref, DerefMut};
 
-/// Write transaction wrapper. Threaded through `TxnBatcher::run` closures.
+/// Write transaction wrapper. Threaded through `Storage::run_txn` closures.
 pub struct WriteTxn<'env>(pub(crate) heed::RwTxn<'env>);
 
 impl<'env> WriteTxn<'env> {
@@ -55,11 +55,11 @@ impl<'env> Deref for ReadTxn<'env> {
 }
 
 /// Marker trait for operations that only need read access. Implemented by
-/// both `ReadTxn` and `WriteTxn` so `state_store::ops` read functions can
-/// be called from either context without separate variants.
+/// both `ReadTxn` and `WriteTxn` so `AppStore` read methods can be called
+/// from either context without separate variants.
 ///
 /// The trait is sealed — only the two wrapper types implement it. The hidden
-/// methods are accessed by the `ops` module via `pub(crate)` visibility.
+/// methods are accessed within this module via `pub(crate)` visibility.
 pub trait AnyTxn: sealed::Sealed {
     #[doc(hidden)]
     fn db_get_bytes<'a>(
