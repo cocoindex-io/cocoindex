@@ -181,44 +181,68 @@ impl AppStore {
     }
 }
 
-// --- Function memoization ------------------------------------------------
+// --- Function memoization (per-component, via FnMemoAccessor) -----------
 
-impl AppStore {
-    /// Read raw function-memo bytes. See [`Self::read_tracking_info`] for
-    /// the owned-bytes return rationale.
-    pub async fn read_fn_memo<T: AnyTxn>(
-        &self,
-        txn: &mut T,
-        path: &StablePath,
-        fp: Fingerprint,
-    ) -> Result<Option<Vec<u8>>> {
-        let key = key_fn_memo(path, fp)?;
-        Ok(txn.db_get_bytes(self.db(), &key)?.map(<[u8]>::to_vec))
+/// Per-component handle that mediates function-memoization reads, writes,
+/// and retention during a single component build.
+///
+/// Engine code routes all per-component function-memo I/O through this type
+/// rather than calling [`AppStore`] methods directly, so storage backends
+/// that benefit from prefetching (e.g. a future Postgres backend that wants
+/// to load all entries for a component in one prefix scan and serve all
+/// reads from memory) can introduce a per-build buffer here without
+/// touching the engine call sites.
+///
+/// The accessor is constructed once per component build and held by
+/// [`ComponentProcessorContext`](crate::engine::context::ComponentProcessorContext)
+/// — engine code reaches it via `comp_ctx.fn_memo_accessor()`, which
+/// returns a borrow rather than a fresh value, so any per-build state
+/// (a future buffer) persists across the many fn-memo lookups inside a
+/// single component's processing phase.
+///
+/// The current LMDB implementation is a pure passthrough — every call
+/// delegates directly to the corresponding [`AppStore`] method, since LMDB's
+/// random reads are already memory speed.
+pub struct FnMemoAccessor {
+    app_store: AppStore,
+    component_path: StablePath,
+}
+
+impl FnMemoAccessor {
+    pub fn new(app_store: AppStore, component_path: StablePath) -> Self {
+        Self {
+            app_store,
+            component_path,
+        }
     }
 
-    pub async fn write_fn_memo(
+    /// Read raw function-memo bytes for the given fingerprint. Returns
+    /// owned bytes; see [`AppStore::read_tracking_info`] for the rationale.
+    pub async fn read<T: AnyTxn>(&self, txn: &mut T, fp: Fingerprint) -> Result<Option<Vec<u8>>> {
+        let key = key_fn_memo(&self.component_path, fp)?;
+        Ok(txn
+            .db_get_bytes(self.app_store.db(), &key)?
+            .map(<[u8]>::to_vec))
+    }
+
+    pub async fn write(
         &self,
-        txn: &mut WriteTxn<'_>,
-        path: &StablePath,
+        wtxn: &mut WriteTxn<'_>,
         fp: Fingerprint,
         entry: &FunctionMemoizationEntry<'_>,
     ) -> Result<()> {
-        let key = key_fn_memo(path, fp)?;
+        let key = key_fn_memo(&self.component_path, fp)?;
         let value = rmp_serde::to_vec_named(entry)?;
-        self.db().put(&mut **txn, &key, &value)?;
+        self.app_store.db().put(&mut **wtxn, &key, &value)?;
         Ok(())
     }
 
-    /// GC: delete all function memos for `path` whose fingerprint is NOT in `keep`.
-    pub async fn retain_fn_memos(
-        &self,
-        txn: &mut WriteTxn<'_>,
-        path: &StablePath,
-        keep: &HashSet<Fingerprint>,
-    ) -> Result<()> {
-        let prefix = key_fn_memo_prefix(path)?;
-        let db = self.db();
-        let mut iter = db.prefix_iter_mut(&mut **txn, &prefix)?;
+    /// GC: delete all function memos for this component whose fingerprint
+    /// is NOT in `keep`.
+    pub async fn retain(&self, wtxn: &mut WriteTxn<'_>, keep: &HashSet<Fingerprint>) -> Result<()> {
+        let prefix = key_fn_memo_prefix(&self.component_path)?;
+        let db = self.app_store.db();
+        let mut iter = db.prefix_iter_mut(&mut **wtxn, &prefix)?;
         while let Some((raw_key, _)) = iter.next().transpose()? {
             let fp: Fingerprint = storekey::decode(raw_key[prefix.len()..].as_ref())?;
             if keep.contains(&fp) {

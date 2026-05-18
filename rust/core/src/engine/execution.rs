@@ -199,7 +199,6 @@ pub(crate) async fn update_component_memo_states<Prof: EngineProfile>(
 
 async fn write_fn_call_memo<Prof: EngineProfile>(
     wtxn: &mut WriteTxn<'_>,
-    app_store: &AppStore,
     comp_ctx: &ComponentProcessorContext<Prof>,
     memo_fp: Fingerprint,
     memo: FnCallMemo<Prof>,
@@ -217,21 +216,18 @@ async fn write_fn_call_memo<Prof: EngineProfile>(
         memo_states: memo_states_serialized,
         context_memo_states: context_memo_states_serialized,
     };
-    app_store
-        .write_fn_memo(wtxn, comp_ctx.stable_path(), memo_fp, &fn_call_memo)
+    comp_ctx
+        .fn_memo_accessor()
+        .write(wtxn, memo_fp, &fn_call_memo)
         .await
 }
 
 async fn read_fn_call_memo_with_txn<Prof: EngineProfile, T: AnyTxn>(
     rtxn: &mut T,
-    app_store: &AppStore,
     comp_ctx: &ComponentProcessorContext<Prof>,
     memo_fp: Fingerprint,
 ) -> Result<Option<FnCallMemo<Prof>>> {
-    let Some(bytes) = app_store
-        .read_fn_memo(rtxn, comp_ctx.stable_path(), memo_fp)
-        .await?
-    else {
+    let Some(bytes) = comp_ctx.fn_memo_accessor().read(rtxn, memo_fp).await? else {
         return Ok(None);
     };
     let fn_call_memo: db_schema::FunctionMemoizationEntry<'_> = from_msgpack_slice(&bytes)?;
@@ -270,7 +266,7 @@ pub(crate) async fn read_fn_call_memo<Prof: EngineProfile>(
         return Ok(None);
     }
     let mut rtxn = comp_ctx.app_ctx().env().read_txn().await?;
-    read_fn_call_memo_with_txn(&mut rtxn, comp_ctx.app_ctx().app_store(), comp_ctx, memo_fp).await
+    read_fn_call_memo_with_txn(&mut rtxn, comp_ctx, memo_fp).await
 }
 
 pub fn declare_target_state<Prof: EngineProfile>(
@@ -480,12 +476,13 @@ impl<Prof: EngineProfile> Committer<Prof> {
 
             // Write memos.
             for (fp, memo) in memos_without_mounts_to_store {
-                write_fn_call_memo(wtxn, &self.app_store, &self.component_ctx, fp, memo).await?;
+                write_fn_call_memo(wtxn, &self.component_ctx, fp, memo).await?;
             }
 
             // Delete all function memo entries that are not in the all_memo_fps.
-            self.app_store
-                .retain_fn_memos(wtxn, &self.component_path, all_memo_fps)
+            self.component_ctx
+                .fn_memo_accessor()
+                .retain(wtxn, all_memo_fps)
                 .await?;
 
             if !self.demote_component_only {
@@ -1496,13 +1493,11 @@ async fn finalize_fn_call_memoization<Prof: EngineProfile>(
     // Use a single read transaction for all DB reads.
     if !deps_to_process.is_empty() {
         let mut rtxn = comp_ctx.app_ctx().env().read_txn().await?;
-        let app_store = comp_ctx.app_ctx().app_store();
         while let Some(fp) = deps_to_process.pop_front() {
             if !result.all_memos_fps.insert(fp) {
                 continue;
             }
-            let Some(memo) = read_fn_call_memo_with_txn(&mut rtxn, app_store, comp_ctx, fp).await?
-            else {
+            let Some(memo) = read_fn_call_memo_with_txn(&mut rtxn, comp_ctx, fp).await? else {
                 continue;
             };
             result

@@ -12,6 +12,6 @@ mod app_store;
 mod storage;
 mod txn;
 
-pub use app_store::AppStore;
+pub use app_store::{AppStore, FnMemoAccessor};
 pub use storage::{Storage, StorageSettings};
 pub use txn::{AnyTxn, ReadTxn, WriteTxn};
