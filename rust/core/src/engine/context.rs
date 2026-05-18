@@ -18,7 +18,7 @@ use crate::state::target_state_path::TargetStatePath;
 use crate::{
     engine::environment::{AppRegistration, Environment},
     state::stable_path::StablePath,
-    state_store::AppStore,
+    state_store::{AppStore, FnMemoAccessor},
 };
 
 struct AppContextInner<Prof: EngineProfile> {
@@ -283,6 +283,13 @@ struct ComponentProcessorContextInner<Prof: EngineProfile> {
 
     /// Opaque per-operation context (e.g. ContextProvider on the Python side).
     host_ctx: Arc<Prof::HostCtx>,
+
+    /// Per-component handle for function-memo I/O. Built once when the
+    /// context is constructed and shared by reference, so any per-build
+    /// state inside the accessor (e.g. a buffer in a future backend)
+    /// persists across the many fn-memo lookups within one component's
+    /// processing phase.
+    fn_memo_accessor: FnMemoAccessor,
 }
 
 #[derive(Clone)]
@@ -298,6 +305,10 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         host_ctx: Arc<Prof::HostCtx>,
         processing_action: ComponentProcessingAction<Prof>,
     ) -> Self {
+        let fn_memo_accessor = FnMemoAccessor::new(
+            component.app_ctx().app_store().clone(),
+            component.stable_path().clone(),
+        );
         Self {
             inner: Arc::new(ComponentProcessorContextInner {
                 component,
@@ -308,6 +319,7 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
                 inflight_permit: Mutex::new(None),
                 logic_deps: Mutex::new(HashSet::new()),
                 host_ctx,
+                fn_memo_accessor,
             }),
         }
     }
@@ -326,6 +338,14 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
 
     pub fn stable_path(&self) -> &StablePath {
         self.inner.component.stable_path()
+    }
+
+    /// Per-component handle for function-memoization I/O. All engine code
+    /// that reads, writes, or retains function memos under this component's
+    /// path should go through this handle rather than calling `AppStore`
+    /// methods directly — see [`FnMemoAccessor`] for why.
+    pub fn fn_memo_accessor(&self) -> &FnMemoAccessor {
+        &self.inner.fn_memo_accessor
     }
 
     pub(crate) fn parent_context(&self) -> Option<&ComponentProcessorContext<Prof>> {
