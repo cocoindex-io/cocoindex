@@ -18,6 +18,7 @@ use crate::engine::runtime::{get_runtime, is_runtime_shutdown};
 const SCARF_BASE: &str = "https://cocoindex.gateway.scarf.sh";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const DISABLE_ENV: &str = "COCOINDEX_DISABLE_USAGE_TRACKING";
+const APPLICATION_ENV: &str = "COCOINDEX_APPLICATION_FOR_TRACKING";
 
 static TELEMETRY: OnceLock<TelemetryContext> = OnceLock::new();
 
@@ -26,6 +27,7 @@ struct TelemetryContext {
     base_url: String,
     platform: String,
     lang: String,
+    application: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -33,6 +35,8 @@ struct EventPayload<'a> {
     event: &'a str,
     platform: &'a str,
     lang: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    application: Option<&'a str>,
 }
 
 /// Initialize telemetry. No-op in debug builds, no-op if
@@ -80,7 +84,14 @@ fn build_context(package_id: String, lang: String) -> Option<TelemetryContext> {
         base_url: format!("{SCARF_BASE}/{package_id}"),
         platform: current_platform(),
         lang,
+        application: read_application_env(),
     })
+}
+
+fn read_application_env() -> Option<String> {
+    std::env::var(APPLICATION_ENV)
+        .ok()
+        .filter(|v| !v.is_empty())
 }
 
 fn current_platform() -> String {
@@ -103,6 +114,7 @@ async fn send_event(ctx: &TelemetryContext, event: &'static str) {
         event,
         platform: &ctx.platform,
         lang: &ctx.lang,
+        application: ctx.application.as_deref(),
     };
     let result = ctx
         .client
@@ -183,11 +195,21 @@ mod tests {
     }
 
     fn make_test_ctx(base_url: String, lang: String, timeout: Duration) -> TelemetryContext {
+        make_test_ctx_with_application(base_url, lang, timeout, None)
+    }
+
+    fn make_test_ctx_with_application(
+        base_url: String,
+        lang: String,
+        timeout: Duration,
+        application: Option<String>,
+    ) -> TelemetryContext {
         TelemetryContext {
             client: reqwest::Client::builder().timeout(timeout).build().unwrap(),
             base_url,
             platform: current_platform(),
             lang,
+            application,
         }
     }
 
@@ -210,6 +232,24 @@ mod tests {
         assert_eq!(body["event"], "app_create");
         assert_eq!(body["lang"], "python3.11");
         assert_eq!(body["platform"], current_platform());
+        assert!(body.get("application").is_none());
+    }
+
+    #[tokio::test]
+    async fn send_event_includes_application_when_set() {
+        let (addr, recorded) = spawn_mock_server(StatusCode::OK).await;
+        let ctx = make_test_ctx_with_application(
+            format!("http://{addr}/python-1.0.0a1"),
+            "python3.11".to_string(),
+            Duration::from_secs(5),
+            Some("my-app".to_string()),
+        );
+
+        send_event(&ctx, "app_create").await;
+
+        let recs = recorded.lock().unwrap().clone();
+        assert_eq!(recs.len(), 1);
+        assert_eq!(recs[0].body["application"], "my-app");
     }
 
     #[tokio::test]
