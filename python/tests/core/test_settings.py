@@ -67,14 +67,17 @@ def test_conflict_between_db_settings_and_legacy_kwargs_raises() -> None:
 def test_engine_wire_format_is_flat() -> None:
     """The Rust engine expects flat `lmdb_max_dbs` / `lmdb_map_size` keys; the
     Python encapsulation must not change that wire format."""
+    db_path = pathlib.Path("/tmp/cocoindex_test")
     settings = Settings(
-        db_path=pathlib.Path("/tmp/cocoindex_test"),
+        db_path=db_path,
         db_settings=LmdbSettings(max_dbs=2048, map_size=4096),
     )
     wire = settings._to_engine_dict()
     assert wire["lmdb_max_dbs"] == 2048
     assert wire["lmdb_map_size"] == 4096
-    assert wire["db_path"] == "/tmp/cocoindex_test"
+    # Use `str(pathlib.Path(...))` rather than a literal so the comparison works
+    # on Windows, where `str(Path("/tmp/x"))` is `"\\tmp\\x"`.
+    assert wire["db_path"] == str(db_path)
     assert "db_settings" not in wire
     assert "global_execution_options" not in wire
 
