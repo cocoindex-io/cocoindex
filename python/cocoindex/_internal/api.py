@@ -147,7 +147,7 @@ from .component_ctx import (
     get_component_context,
 )
 
-from .setting import Settings
+from .setting import Settings, LmdbSettings
 
 from .stable_path import ROOT_PATH, StablePath
 
@@ -741,6 +741,7 @@ __all__ = [
     "get_component_context",
     # .setting
     "Settings",
+    "LmdbSettings",
     # .stable_path
     "ROOT_PATH",
     "StablePath",
