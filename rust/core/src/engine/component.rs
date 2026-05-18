@@ -741,6 +741,13 @@ impl<Prof: EngineProfile> Component<Prof> {
                 let ret_n_submit_output = {
                     let _permit = self.inner.build_semaphore.acquire().await?;
 
+                    // Eagerly load all function-memo entries for this component
+                    // into the per-build cache, so every subsequent fn-call probe
+                    // serves from memory. Skipped under `full_reprocess` and in
+                    // delete mode (no `ComponentBuildingState`); see the cache
+                    // flush logic for how those cases are handled at commit time.
+                    processor_context.prefetch_fn_memos().await?;
+
                     if memo_fp_to_store.is_some() {
                         *self.inner.last_memo_fp.lock().unwrap() = memo_fp_to_store;
                         // TODO: when matching, it means there're ongoing processing for the same memoization key pending on children.
