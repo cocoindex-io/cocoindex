@@ -7,9 +7,9 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque, btree_map};
 
 use crate::engine::context::{
     ComponentProcessingAction, ComponentProcessingMode, ComponentProcessorContext,
-    DeclaredTargetState, FnCallMemo, MemoStatesPayload, TARGET_ID_KEY,
+    DeclaredTargetState, MemoStatesPayload, TARGET_ID_KEY,
 };
-use crate::engine::context::{FnCallContext, FnCallMemoEntry};
+use crate::engine::context::{FnCallContext, FnCallMemoEntry, FnMemoCache, decode_stored_entry};
 use crate::engine::id_sequencer::IdReservation;
 use crate::engine::logic_registry;
 use crate::engine::profile::{EngineProfile, Persist};
@@ -27,7 +27,7 @@ use cocoindex_utils::deser::from_msgpack_slice;
 use cocoindex_utils::fingerprint::Fingerprint;
 
 /// Deserialize a `Vec<MemoizedValue>` into a `Vec<Prof::FunctionData>`.
-fn deserialize_memo_values<Prof: EngineProfile>(
+pub(crate) fn deserialize_memo_values<Prof: EngineProfile>(
     values: &[db_schema::MemoizedValue<'_>],
 ) -> Result<Vec<Prof::FunctionData>> {
     values
@@ -44,7 +44,7 @@ fn deserialize_memo_values<Prof: EngineProfile>(
 /// Serialize a `&[Prof::FunctionData]` into a `Vec<MemoizedValue<'static>>`.
 /// The returned values own their bytes (`Cow::Owned`), so they're independent of
 /// the input lifetime.
-fn serialize_memo_values<Prof: EngineProfile>(
+pub(crate) fn serialize_memo_values<Prof: EngineProfile>(
     values: &[Prof::FunctionData],
 ) -> Result<Vec<db_schema::MemoizedValue<'static>>> {
     values
@@ -57,7 +57,7 @@ fn serialize_memo_values<Prof: EngineProfile>(
 }
 
 /// Deserialize the context-borne memo states (fp-tagged list of value blobs).
-fn deserialize_context_memo_states<Prof: EngineProfile>(
+pub(crate) fn deserialize_context_memo_states<Prof: EngineProfile>(
     entries: &[(Fingerprint, Vec<db_schema::MemoizedValue<'_>>)],
 ) -> Result<Vec<(Fingerprint, Vec<Prof::FunctionData>)>> {
     entries
@@ -67,7 +67,7 @@ fn deserialize_context_memo_states<Prof: EngineProfile>(
 }
 
 /// Serialize the context-borne memo states into the on-disk representation.
-fn serialize_context_memo_states<Prof: EngineProfile>(
+pub(crate) fn serialize_context_memo_states<Prof: EngineProfile>(
     entries: &[(Fingerprint, Vec<Prof::FunctionData>)],
 ) -> Result<Vec<(Fingerprint, Vec<db_schema::MemoizedValue<'static>>)>> {
     entries
@@ -197,78 +197,6 @@ pub(crate) async fn update_component_memo_states<Prof: EngineProfile>(
     Ok(())
 }
 
-async fn write_fn_call_memo<Prof: EngineProfile>(
-    wtxn: &mut WriteTxn<'_>,
-    comp_ctx: &ComponentProcessorContext<Prof>,
-    memo_fp: Fingerprint,
-    memo: FnCallMemo<Prof>,
-) -> Result<()> {
-    let ret_bytes = memo.ret.to_bytes()?;
-    let memo_states_serialized = serialize_memo_values::<Prof>(&memo.memo_states)?;
-    let context_memo_states_serialized =
-        serialize_context_memo_states::<Prof>(&memo.context_memo_states)?;
-    let fn_call_memo = db_schema::FunctionMemoizationEntry {
-        return_value: db_schema::MemoizedValue::Inlined(Cow::Borrowed(ret_bytes.as_ref())),
-        child_components: vec![],
-        target_state_paths: memo.target_state_paths,
-        dependency_memo_entries: memo.dependency_memo_entries.into_iter().collect(),
-        logic_deps: memo.logic_deps.into_iter().collect(),
-        memo_states: memo_states_serialized,
-        context_memo_states: context_memo_states_serialized,
-    };
-    comp_ctx
-        .fn_memo_accessor()
-        .write(wtxn, memo_fp, &fn_call_memo)
-        .await
-}
-
-async fn read_fn_call_memo_with_txn<Prof: EngineProfile, T: AnyTxn>(
-    rtxn: &mut T,
-    comp_ctx: &ComponentProcessorContext<Prof>,
-    memo_fp: Fingerprint,
-) -> Result<Option<FnCallMemo<Prof>>> {
-    let Some(bytes) = comp_ctx.fn_memo_accessor().read(rtxn, memo_fp).await? else {
-        return Ok(None);
-    };
-    let fn_call_memo: db_schema::FunctionMemoizationEntry<'_> = from_msgpack_slice(&bytes)?;
-    if !logic_registry::all_contained_with_env(&fn_call_memo.logic_deps, comp_ctx.app_ctx().env()) {
-        return Ok(None);
-    }
-    if !fn_call_memo.child_components.is_empty() {
-        // Legacy entry stored child component paths. Invalidate it so the function re-runs,
-        // detects the child components, logs a warning, and the entry is cleaned up.
-        return Ok(None);
-    }
-    let return_value_bytes = match fn_call_memo.return_value {
-        db_schema::MemoizedValue::Inlined(b) => b,
-    };
-    let ret = Prof::FunctionData::from_bytes(return_value_bytes.as_ref())?;
-    let memo_states = deserialize_memo_values::<Prof>(&fn_call_memo.memo_states)?;
-    let context_memo_states =
-        deserialize_context_memo_states::<Prof>(&fn_call_memo.context_memo_states)?;
-    Ok(Some(FnCallMemo {
-        ret,
-        target_state_paths: fn_call_memo.target_state_paths,
-        dependency_memo_entries: fn_call_memo.dependency_memo_entries.into_iter().collect(),
-        logic_deps: fn_call_memo.logic_deps.into_iter().collect(),
-        memo_states,
-        context_memo_states,
-        already_stored: true,
-    }))
-}
-
-pub(crate) async fn read_fn_call_memo<Prof: EngineProfile>(
-    comp_ctx: &ComponentProcessorContext<Prof>,
-    memo_fp: Fingerprint,
-) -> Result<Option<FnCallMemo<Prof>>> {
-    // Short-circuit to miss under full_reprocess
-    if comp_ctx.full_reprocess() {
-        return Ok(None);
-    }
-    let mut rtxn = comp_ctx.app_ctx().env().read_txn().await?;
-    read_fn_call_memo_with_txn(&mut rtxn, comp_ctx, memo_fp).await
-}
-
 pub fn declare_target_state<Prof: EngineProfile>(
     comp_ctx: &ComponentProcessorContext<Prof>,
     fn_ctx: &FnCallContext,
@@ -390,8 +318,7 @@ impl<Prof: EngineProfile> Committer<Prof> {
         mut self,
         wtxn: &mut WriteTxn<'_>,
         child_path_set: Option<ChildStablePathSet>,
-        all_memo_fps: &HashSet<Fingerprint>,
-        memos_without_mounts_to_store: Vec<(Fingerprint, FnCallMemo<Prof>)>,
+        fn_memos: FnMemoCache<Prof>,
         curr_version: Option<u64>,
     ) -> Result<Self> {
         {
@@ -474,15 +401,11 @@ impl<Prof: EngineProfile> Committer<Prof> {
                 }
             }
 
-            // Write memos.
-            for (fp, memo) in memos_without_mounts_to_store {
-                write_fn_call_memo(wtxn, &self.component_ctx, fp, memo).await?;
-            }
-
-            // Delete all function memo entries that are not in the all_memo_fps.
-            self.component_ctx
-                .fn_memo_accessor()
-                .retain(wtxn, all_memo_fps)
+            // Flush the function-memo cache: writes new/re-executed entries,
+            // deletes untouched prefetched entries (or prefix-deletes the
+            // whole range under full_reprocess / no-prefetch paths).
+            fn_memos
+                .flush_to_db(wtxn, &self.app_store, &self.component_path)
                 .await?;
 
             if !self.demote_component_only {
@@ -496,8 +419,7 @@ impl<Prof: EngineProfile> Committer<Prof> {
     async fn commit(
         self,
         child_path_set: Option<ChildStablePathSet>,
-        all_memo_fps: HashSet<Fingerprint>,
-        memos_without_mounts_to_store: Vec<(Fingerprint, FnCallMemo<Prof>)>,
+        fn_memos: FnMemoCache<Prof>,
         curr_version: Option<u64>,
     ) -> Result<()> {
         // Single cheap Arc clone so we can call run_txn() / read_txn() after self moves into the closure.
@@ -506,14 +428,8 @@ impl<Prof: EngineProfile> Committer<Prof> {
             .env()
             .run_txn(move |wtxn| {
                 Box::pin(async move {
-                    self.commit_in_txn(
-                        wtxn,
-                        child_path_set,
-                        &all_memo_fps,
-                        memos_without_mounts_to_store,
-                        curr_version,
-                    )
-                    .await
+                    self.commit_in_txn(wtxn, child_path_set, fn_memos, curr_version)
+                        .await
                 })
             })
             .await?;
@@ -1216,7 +1132,8 @@ pub(crate) async fn submit<Prof: EngineProfile>(
         target_states_providers,
         declared_target_states,
         child_path_set,
-        mut finalized_fn_call_memos,
+        fn_memos,
+        contained_target_state_paths,
     ) = match comp_ctx.processing_state() {
         ComponentProcessingAction::Build(build_ctx) => {
             // Extract from MutexGuard in a block so the guard is dropped before `.await`.
@@ -1232,22 +1149,24 @@ pub(crate) async fn submit<Prof: EngineProfile>(
             };
 
             let child_path_set = building_state.child_path_set;
-            let finalized_fn_call_memos =
-                finalize_fn_call_memoization(comp_ctx, building_state.fn_call_memos).await?;
+            let fn_memos = building_state.fn_memos;
+            let contained_target_state_paths = finalize_fn_call_memoization(comp_ctx, &fn_memos)?;
             (
                 &built_target_states_providers
                     .get_or_insert(building_state.target_states.provider_registry)
                     .providers,
                 building_state.target_states.declared_target_states,
                 Some(child_path_set),
-                finalized_fn_call_memos,
+                fn_memos,
+                contained_target_state_paths,
             )
         }
         ComponentProcessingAction::Delete(delete_context) => (
             &delete_context.providers,
             Default::default(),
             None,
-            Default::default(),
+            FnMemoCache::default(),
+            HashSet::new(),
         ),
     };
 
@@ -1256,9 +1175,6 @@ pub(crate) async fn submit<Prof: EngineProfile>(
     let stable_path = comp_ctx.stable_path().clone();
     let full_reprocess = comp_ctx.full_reprocess();
     let processor_name_owned: Option<String> = processor_name.map(|s| s.to_owned());
-
-    let contained_target_state_paths =
-        std::mem::take(&mut finalized_fn_call_memos.contained_target_state_paths);
 
     let mut pending_fulfillments: Vec<(TargetStateProvider<Prof>, Prof::TargetHdl)> = Vec::new();
     let target_states_providers_owned = target_states_providers.clone();
@@ -1336,12 +1252,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
 
     let committer = Committer::new(comp_ctx, &target_states_providers, demote_component_only)?;
     committer
-        .commit(
-            child_path_set,
-            finalized_fn_call_memos.all_memos_fps,
-            finalized_fn_call_memos.memos_without_mounts_to_store,
-            curr_version,
-        )
+        .commit(child_path_set, fn_memos, curr_version)
         .await?;
 
     // Fulfill child handlers and register their attachment providers.
@@ -1447,64 +1358,65 @@ async fn get_path_node_type<T: AnyTxn>(
     app_store.read_path_node_type(rtxn, parent_path, key).await
 }
 
-#[derive(Default)]
-struct FinalizedFnCallMemoization<Prof: EngineProfile> {
-    memos_without_mounts_to_store: Vec<(Fingerprint, FnCallMemo<Prof>)>,
-    // Fingerprints of all memos, including dependencies that is not populated in the current processing.
-    all_memos_fps: HashSet<Fingerprint>,
-    // Target state paths covered by memos but not explicitly declared in the current run, because of contained by memos that already stored, including dependency memos of already stored ones.
-    // We collect them to avoid GC of these target states.
-    contained_target_state_paths: HashSet<TargetStatePath>,
-}
-
-async fn finalize_fn_call_memoization<Prof: EngineProfile>(
+/// Walk every entry in the function-memo cache and produce the set of
+/// target-state paths protected from GC because they are referenced
+/// (directly or transitively) by an already-stored memo.
+///
+/// All reads are in-memory; the cache was eagerly prefetched at the start
+/// of build mode. Untouched entries remain in `Stored(_)` state and get
+/// deleted at flush time; entries that are reachable as transitive deps
+/// of an already-stored memo are decoded in place so flush keeps them.
+fn finalize_fn_call_memoization<Prof: EngineProfile>(
     comp_ctx: &ComponentProcessorContext<Prof>,
-    fn_call_memos: HashMap<Fingerprint, Arc<tokio::sync::RwLock<FnCallMemoEntry<Prof>>>>,
-) -> Result<FinalizedFnCallMemoization<Prof>> {
-    let mut result = FinalizedFnCallMemoization::default();
+    cache: &FnMemoCache<Prof>,
+) -> Result<HashSet<TargetStatePath>> {
+    let env = comp_ctx.app_ctx().env();
+    let mut contained_target_state_paths: HashSet<TargetStatePath> = HashSet::new();
+    let mut visited: HashSet<Fingerprint> = HashSet::new();
+    let mut deps_to_walk: VecDeque<Fingerprint> = VecDeque::new();
 
-    let mut deps_to_process: VecDeque<Fingerprint> = VecDeque::new();
-
-    // Extract memos from the in-memory map.
-    for (fp, memo_lock) in fn_call_memos.iter() {
-        let mut guard = memo_lock
-            .try_write()
+    // First pass: every Ready(Some) entry with `already_stored=true`
+    // contributes its target states and seeds the dep walk. `already_stored=false`
+    // entries were just executed this run; their target states are in the
+    // regular declared_target_states pipeline, not "contained".
+    for (fp, lock) in cache.iter() {
+        let guard = lock
+            .try_read()
             .map_err(|_| internal_error!("fn call memo entry is locked during finalize"))?;
-        let FnCallMemoEntry::Ready(Some(memo)) = std::mem::take(&mut *guard) else {
+        if let FnCallMemoEntry::Ready(Some(memo)) = &*guard {
+            if memo.already_stored {
+                visited.insert(*fp);
+                contained_target_state_paths.extend(memo.target_state_paths.iter().cloned());
+                for dep_fp in memo.dependency_memo_entries.iter() {
+                    if visited.insert(*dep_fp) {
+                        deps_to_walk.push_back(*dep_fp);
+                    }
+                }
+            }
+        }
+    }
+
+    // Transitive dep walk: decode-on-access `Stored` entries so flush keeps
+    // them, and collect their target states. Entries already `Ready` skip
+    // straight to the field read.
+    while let Some(fp) = deps_to_walk.pop_front() {
+        let Some(lock) = cache.get(fp) else {
             continue;
         };
-
-        result.all_memos_fps.insert(*fp);
-
-        if memo.already_stored {
-            result
-                .contained_target_state_paths
-                .extend(memo.target_state_paths.into_iter());
-            deps_to_process.extend(memo.dependency_memo_entries.into_iter());
-        } else {
-            result.memos_without_mounts_to_store.push((*fp, memo));
+        let mut guard = lock
+            .try_write()
+            .map_err(|_| internal_error!("fn call memo entry is locked during finalize"))?;
+        if matches!(&*guard, FnCallMemoEntry::Stored(_)) {
+            decode_stored_entry::<Prof>(&mut guard, env)?;
         }
-        // For non-stored memos, their dependencies were already resolved in this run,
-        // so they exist in `fn_call_memos` and will be visited by the outer loop.
-    }
-
-    // Transitively expand deps of already-stored memos (read from DB).
-    // Collect their target_state_paths so those target states are not GC'd.
-    // Use a single read transaction for all DB reads.
-    if !deps_to_process.is_empty() {
-        let mut rtxn = comp_ctx.app_ctx().env().read_txn().await?;
-        while let Some(fp) = deps_to_process.pop_front() {
-            if !result.all_memos_fps.insert(fp) {
-                continue;
+        if let FnCallMemoEntry::Ready(Some(memo)) = &*guard {
+            contained_target_state_paths.extend(memo.target_state_paths.iter().cloned());
+            for dep_fp in memo.dependency_memo_entries.iter() {
+                if visited.insert(*dep_fp) {
+                    deps_to_walk.push_back(*dep_fp);
+                }
             }
-            let Some(memo) = read_fn_call_memo_with_txn(&mut rtxn, comp_ctx, fp).await? else {
-                continue;
-            };
-            result
-                .contained_target_state_paths
-                .extend(memo.target_state_paths.into_iter());
-            deps_to_process.extend(memo.dependency_memo_entries.into_iter());
         }
     }
-    Ok(result)
+    Ok(contained_target_state_paths)
 }

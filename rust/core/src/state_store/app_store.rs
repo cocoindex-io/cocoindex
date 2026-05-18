@@ -10,8 +10,6 @@
 //! synchronous internally — the returned futures never yield — but the
 //! async signature future-proofs the API.
 
-use std::collections::HashSet;
-
 use cocoindex_utils::deser::from_msgpack_slice;
 use cocoindex_utils::fingerprint::Fingerprint;
 
@@ -181,74 +179,65 @@ impl AppStore {
     }
 }
 
-// --- Function memoization (per-component, via FnMemoAccessor) -----------
+// --- Function memoization ------------------------------------------------
 
-/// Per-component handle that mediates function-memoization reads, writes,
-/// and retention during a single component build.
-///
-/// Engine code routes all per-component function-memo I/O through this type
-/// rather than calling [`AppStore`] methods directly, so storage backends
-/// that benefit from prefetching (e.g. a future Postgres backend that wants
-/// to load all entries for a component in one prefix scan and serve all
-/// reads from memory) can introduce a per-build buffer here without
-/// touching the engine call sites.
-///
-/// The accessor is constructed once per component build and held by
-/// [`ComponentProcessorContext`](crate::engine::context::ComponentProcessorContext)
-/// — engine code reaches it via `comp_ctx.fn_memo_accessor()`, which
-/// returns a borrow rather than a fresh value, so any per-build state
-/// (a future buffer) persists across the many fn-memo lookups inside a
-/// single component's processing phase.
-///
-/// The current LMDB implementation is a pure passthrough — every call
-/// delegates directly to the corresponding [`AppStore`] method, since LMDB's
-/// random reads are already memory speed.
-pub struct FnMemoAccessor {
-    app_store: AppStore,
-    component_path: StablePath,
-}
-
-impl FnMemoAccessor {
-    pub fn new(app_store: AppStore, component_path: StablePath) -> Self {
-        Self {
-            app_store,
-            component_path,
-        }
-    }
-
-    /// Read raw function-memo bytes for the given fingerprint. Returns
-    /// owned bytes; see [`AppStore::read_tracking_info`] for the rationale.
-    pub async fn read<T: AnyTxn>(&self, txn: &mut T, fp: Fingerprint) -> Result<Option<Vec<u8>>> {
-        let key = key_fn_memo(&self.component_path, fp)?;
-        Ok(txn
-            .db_get_bytes(self.app_store.db(), &key)?
-            .map(<[u8]>::to_vec))
-    }
-
-    pub async fn write(
+impl AppStore {
+    /// List every function memo under `path`. Returns owned `(fp, value)`
+    /// pairs from a single prefix scan. Matches the shape of
+    /// [`Self::list_child_existence`] and [`Self::list_tombstones`].
+    pub async fn list_fn_memos(
         &self,
-        wtxn: &mut WriteTxn<'_>,
+        txn: &mut ReadTxn<'_>,
+        path: &StablePath,
+    ) -> Result<Vec<(Fingerprint, Vec<u8>)>> {
+        let prefix = key_fn_memo_prefix(path)?;
+        let db = self.db();
+        let mut out = Vec::new();
+        for entry in db.prefix_iter(&**txn, &prefix)? {
+            let (raw_key, raw_val) = entry?;
+            let fp: Fingerprint = storekey::decode(raw_key[prefix.len()..].as_ref())?;
+            out.push((fp, raw_val.to_vec()));
+        }
+        Ok(out)
+    }
+
+    pub async fn write_fn_memo(
+        &self,
+        txn: &mut WriteTxn<'_>,
+        path: &StablePath,
         fp: Fingerprint,
         entry: &FunctionMemoizationEntry<'_>,
     ) -> Result<()> {
-        let key = key_fn_memo(&self.component_path, fp)?;
+        let key = key_fn_memo(path, fp)?;
         let value = rmp_serde::to_vec_named(entry)?;
-        self.app_store.db().put(&mut **wtxn, &key, &value)?;
+        self.db().put(&mut **txn, &key, &value)?;
         Ok(())
     }
 
-    /// GC: delete all function memos for this component whose fingerprint
-    /// is NOT in `keep`.
-    pub async fn retain(&self, wtxn: &mut WriteTxn<'_>, keep: &HashSet<Fingerprint>) -> Result<()> {
-        let prefix = key_fn_memo_prefix(&self.component_path)?;
-        let db = self.app_store.db();
-        let mut iter = db.prefix_iter_mut(&mut **wtxn, &prefix)?;
-        while let Some((raw_key, _)) = iter.next().transpose()? {
-            let fp: Fingerprint = storekey::decode(raw_key[prefix.len()..].as_ref())?;
-            if keep.contains(&fp) {
-                continue;
-            }
-            // Safety: we drop the borrowed key before the next `next()` call.
+    pub async fn delete_fn_memo(
+        &self,
+        txn: &mut WriteTxn<'_>,
+        path: &StablePath,
+        fp: Fingerprint,
+    ) -> Result<()> {
+        let key = key_fn_memo(path, fp)?;
+        self.db().delete(&mut **txn, &key)?;
+        Ok(())
+    }
+
+    /// Prefix-delete every function memo under `path`. Used when the cache
+    /// was not populated (full_reprocess, delete mode) — see
+    /// `FnMemoCache::flush_to_db`.
+    pub async fn delete_all_fn_memos(
+        &self,
+        txn: &mut WriteTxn<'_>,
+        path: &StablePath,
+    ) -> Result<()> {
+        let prefix = key_fn_memo_prefix(path)?;
+        let db = self.db();
+        let mut iter = db.prefix_iter_mut(&mut **txn, &prefix)?;
+        while iter.next().transpose()?.is_some() {
+            // Safety: we drop the borrowed key/value before the next `next()`.
             unsafe {
                 iter.del_current()?;
             }

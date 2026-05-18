@@ -1,7 +1,7 @@
 use crate::engine::context::{
     ComponentProcessorContext, FnCallContext, FnCallMemo, FnCallMemoEntry, MemoStatesPayload,
+    decode_stored_entry,
 };
-use crate::engine::execution::read_fn_call_memo;
 use crate::engine::profile::EngineProfile;
 use crate::prelude::*;
 
@@ -113,24 +113,19 @@ pub async fn reserve_memoization<Prof: EngineProfile>(
     memo_fp: Fingerprint,
 ) -> Result<FnCallMemoGuard<Prof>> {
     // Clone the Arc so we don't hold building_state's mutex across `.await`.
+    // The cache was eagerly prefetched at the start of build mode, so any
+    // entry from the database is already in memory as `Stored(bytes)`.
     let memo_entry = comp_exec_ctx.update_building_state(|building_state| {
-        Ok(building_state
-            .fn_call_memos
-            .entry(memo_fp)
-            .or_insert_with(|| Arc::new(tokio::sync::RwLock::new(FnCallMemoEntry::Pending)))
-            .clone())
+        Ok(building_state.fn_memos.entry_or_pending(memo_fp))
     })?;
 
     let mut guard = memo_entry.write_owned().await;
 
-    // If still pending (first caller, or retry after a previous caller failed),
-    // try loading from the database.
-    if let FnCallMemoEntry::Pending = &*guard {
-        if !comp_exec_ctx.full_reprocess() {
-            if let Some(fn_call_memo) = read_fn_call_memo(comp_exec_ctx, memo_fp).await? {
-                *guard = FnCallMemoEntry::Ready(Some(fn_call_memo));
-            }
-        }
+    // Lazy-decode prefetched bytes on first access. Decoding may fall through
+    // to `Ready(None)` if the entry's logic deps no longer resolve or if it's
+    // a legacy entry with `child_components` — both cases force re-execution.
+    if matches!(&*guard, FnCallMemoEntry::Stored(_)) {
+        decode_stored_entry::<Prof>(&mut guard, comp_exec_ctx.app_ctx().env())?;
     }
 
     Ok(FnCallMemoGuard { guard })
