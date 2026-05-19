@@ -223,13 +223,20 @@ class App:
 # --- LiveComponentController ---
 class LiveComponentController:
     def update_full_async(
-        self, processor: ComponentProcessor[Any]
+        self,
+        processor: ComponentProcessor[Any],
+        handler_callback: Callable[[str], Awaitable[None]] | None = None,
     ) -> Coroutine[Any, Any, None]: ...
     def update_async(
-        self, stable_path: StablePath, processor: ComponentProcessor[Any]
+        self,
+        stable_path: StablePath,
+        processor: ComponentProcessor[Any],
+        handler_callback: Callable[[str], Awaitable[None]] | None = None,
     ) -> Coroutine[Any, Any, ComponentMountHandle]: ...
     def delete_async(
-        self, stable_path: StablePath
+        self,
+        stable_path: StablePath,
+        handler_callback: Callable[[str], Awaitable[None]] | None = None,
     ) -> Coroutine[Any, Any, ComponentMountHandle]: ...
     def mark_ready_async(self) -> Coroutine[Any, Any, None]: ...
     def start(self, process_live_fut: Any) -> None: ...
