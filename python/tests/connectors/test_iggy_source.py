@@ -262,6 +262,36 @@ class TestTopicStream:
         )
 
     @pytest.mark.asyncio
+    async def test_stream_skips_duplicate_offsets_from_live_consumer(self) -> None:
+        consumer = MockIggyConsumer(
+            [
+                MockReceiveMessage(payload=b"v1", offset=0),
+                MockReceiveMessage(payload=b"v2", offset=1),
+                MockReceiveMessage(payload=b"v2-duplicate", offset=1),
+                MockReceiveMessage(payload=b"v3", offset=2),
+            ]
+        )
+        client = MockIggyClient(consumer, messages_count=3)
+        stream = topic_as_stream(
+            client,  # type: ignore[arg-type]
+            "group",
+            "stream",
+            "topic",
+        )
+        subscriber = MockStreamSubscriber()
+
+        await stream.watch(subscriber)  # type: ignore[arg-type]
+        await asyncio.sleep(0.05)
+
+        assert [(m.offset(), m.payload()) for m in subscriber.messages] == [
+            (0, b"v1"),
+            (1, b"v2"),
+            (2, b"v3"),
+        ]
+        assert consumer.stored_offsets[-1] == (2, 0)
+        assert subscriber.ready_called
+
+    @pytest.mark.asyncio
     async def test_payloads_view_forwards_bytes(self) -> None:
         consumer = MockIggyConsumer([MockReceiveMessage(payload=b"payload", offset=0)])
         client = MockIggyClient(consumer, messages_count=1)

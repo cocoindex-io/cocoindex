@@ -337,11 +337,25 @@ class TopicStream:
 
         ready_signaled = False
         active_next_task: asyncio.Future[ReceiveMessage] | None = None
+        last_delivered_offsets: dict[int, int] = {}
         iterator = consumer.iter_messages().__aiter__()
 
         async def _process_message(message: ReceiveMessage) -> None:
             partition = message.partition_id()
             offset = message.offset()
+            last_delivered_offset = last_delivered_offsets.get(partition)
+            if last_delivered_offset is not None and offset <= last_delivered_offset:
+                _logger.debug(
+                    "Skipping duplicate Iggy message for %s/%s partition %d "
+                    "offset %d; last delivered offset is %d",
+                    self._stream,
+                    self._topic,
+                    partition,
+                    offset,
+                    last_delivered_offset,
+                )
+                return
+            last_delivered_offsets[partition] = offset
             part_state = tracker.get(partition)
             handle = await subscriber.send(message)
             part_state.track(offset, handle)
