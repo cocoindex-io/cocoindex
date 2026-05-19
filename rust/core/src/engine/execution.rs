@@ -344,6 +344,9 @@ impl<Prof: EngineProfile> Committer<Prof> {
                 }
                 // Prune entries with empty states and collect their paths for
                 // inverted tracking cleanup (deferred until tracking_info is dropped).
+                // Surviving entries get their `pending_process_token` cleared —
+                // the lifecycle (pre_commit → sink_apply → commit) is succeeding,
+                // so any token written by pre_commit is no longer "pending".
                 let mut pruned_paths: HashSet<TargetStatePath> = HashSet::new();
                 tracking_info
                     .target_state_items
@@ -352,6 +355,7 @@ impl<Prof: EngineProfile> Committer<Prof> {
                             pruned_paths.insert(path_with_pid.target_state_path.clone());
                             false
                         } else {
+                            item.pending_process_token = None;
                             true
                         }
                     });
@@ -684,6 +688,21 @@ struct PreCommitOutput<Prof: EngineProfile> {
     processor_name_for_del: Option<String>,
 }
 
+/// Either a completed pre_commit (with optional output for skip-cases) or a
+/// "back off and retry" signal triggered by detecting a concurrent
+/// pre_commit's live `pending_process_token` on disk. See
+/// `specs/target_state_ownership_transfer/concurrent_preempt_race_fix.md`.
+///
+/// `PendingRetry` returns the input `declared_target_states` back to the
+/// caller: the detection sub-pass aborts before any `TargetStateValue` is
+/// consumed, so the map is intact and can be re-passed on the next attempt.
+enum PreCommitOutcome<Prof: EngineProfile> {
+    Done(Option<PreCommitOutput<Prof>>),
+    PendingRetry {
+        declared_target_states: BTreeMap<TargetStatePath, DeclaredTargetState<Prof>>,
+    },
+}
+
 /// Write deferred to after `pre_commit` finishes inspecting `tracking_info`.
 ///
 /// The two cases mix in one queue because both arise during the ownership
@@ -728,6 +747,7 @@ impl DeferredWrite {
 async fn pre_commit<Prof: EngineProfile>(
     wtxn: &mut WriteTxn<'_>,
     app_store: &AppStore,
+    process_token: u128,
     comp_mode: ComponentProcessingMode,
     stable_path: &StablePath,
     full_reprocess: bool,
@@ -735,7 +755,7 @@ async fn pre_commit<Prof: EngineProfile>(
     contained_target_state_paths: &HashSet<TargetStatePath>,
     target_states_providers: &rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
     declared_target_states: BTreeMap<TargetStatePath, DeclaredTargetState<Prof>>,
-) -> Result<Option<PreCommitOutput<Prof>>> {
+) -> Result<PreCommitOutcome<Prof>> {
     let mut actions_by_sinks = HashMap::<Prof::TargetActionSink, SinkInput<Prof>>::new();
     let mut demote_component_only = false;
     let mut processor_name_for_del: Option<String> = None;
@@ -760,7 +780,7 @@ async fn pre_commit<Prof: EngineProfile>(
                 let node_type = get_path_node_type(app_store, wtxn, parent_path, key).await?;
                 match node_type {
                     Some(db_schema::StablePathNodeType::Component) => {
-                        return Ok(None);
+                        return Ok(PreCommitOutcome::Done(None));
                     }
                     Some(db_schema::StablePathNodeType::Directory) => {
                         demote_component_only = true;
@@ -773,6 +793,96 @@ async fn pre_commit<Prof: EngineProfile>(
 
     let mut id_reservation = IdReservation::new(&TARGET_ID_KEY);
     let tracking_info_bytes = app_store.read_tracking_info(wtxn, stable_path).await?;
+
+    // Detection sub-pass — runs before any `TargetStateValue` is consumed by
+    // reconcile, so a `PendingRetry` return leaves the input `declared_target_states`
+    // intact and the surrounding txn write-free for the retry. Two things happen:
+    //   1. Own tracking_info items: a non-None token must be dead, since only
+    //      one lifecycle per component_path runs at a time. Flag the path for
+    //      `prev_may_be_missing = true` on the main pass.
+    //   2. Each declared target_state_path that would go through the preempt
+    //      branch: read the old owner's tracking_info; peek the matching
+    //      item's token. Live → PendingRetry. Dead → flag for force-missing.
+    //
+    // Old-owner tracking_info bytes read here are cached and reused by the
+    // Phase 1 preempt branch — the main pass deserializes, modifies, and
+    // re-serializes into the same cache slot, so multiple preempts from the
+    // same old owner accumulate in memory and produce a single deferred
+    // write at the end of pre_commit.
+    let mut dead_token_paths: HashSet<TargetStatePath> = HashSet::new();
+    let mut old_tracking_cache: HashMap<StablePath, Vec<u8>> = HashMap::new();
+    let mut pending_retry = false;
+    {
+        let own_tracking: Option<db_schema::StablePathEntryTrackingInfo<'_>> = tracking_info_bytes
+            .as_deref()
+            .map(from_msgpack_slice)
+            .transpose()?;
+        if let Some(own) = &own_tracking {
+            for (path_with_pid, item) in &own.target_state_items {
+                if item.pending_process_token.is_some() {
+                    dead_token_paths.insert(path_with_pid.target_state_path.clone());
+                }
+            }
+        }
+        // Materialize keys into an owned Vec so the iterator doesn't borrow
+        // `declared_target_states` across the awaits below — the map's
+        // values (`TargetStateValue`) are `!Sync`, which would otherwise
+        // make the resulting future `!Send`.
+        let declared_paths: Vec<TargetStatePath> = declared_target_states.keys().cloned().collect();
+        for target_state_path in declared_paths {
+            let parent_provider_gen = target_states_providers
+                .get(target_state_path.provider_path())
+                .and_then(|p| p.provider_generation());
+            let lookup_key = TargetStatePathWithProviderId {
+                target_state_path: target_state_path.clone(),
+                provider_id: parent_provider_gen.map(|g| g.provider_id),
+            };
+            if own_tracking
+                .as_ref()
+                .is_some_and(|t| t.target_state_items.contains_key(&lookup_key))
+            {
+                continue;
+            }
+            let Some(owner_info) = app_store
+                .read_target_state_owner(wtxn, &target_state_path)
+                .await?
+            else {
+                continue;
+            };
+            if owner_info.component_path == *stable_path {
+                continue;
+            }
+            if !old_tracking_cache.contains_key(&owner_info.component_path) {
+                let Some(old_bytes) = app_store
+                    .read_tracking_info(wtxn, &owner_info.component_path)
+                    .await?
+                else {
+                    continue;
+                };
+                old_tracking_cache.insert(owner_info.component_path.clone(), old_bytes);
+            }
+            let cached = &old_tracking_cache[&owner_info.component_path];
+            let old: db_schema::StablePathEntryTrackingInfo<'_> = from_msgpack_slice(cached)?;
+            if let Some(item) = old.target_state_items.get(&lookup_key) {
+                match item.pending_process_token {
+                    Some(t) if t == process_token => {
+                        pending_retry = true;
+                        break;
+                    }
+                    Some(_) => {
+                        dead_token_paths.insert(target_state_path);
+                    }
+                    None => {}
+                }
+            }
+        }
+    }
+    if pending_retry {
+        return Ok(PreCommitOutcome::PendingRetry {
+            declared_target_states,
+        });
+    }
+    let mut modified_old_owners: HashSet<StablePath> = HashSet::new();
     let mut tracking_info: Option<db_schema::StablePathEntryTrackingInfo<'_>> = tracking_info_bytes
         .as_deref()
         .map(from_msgpack_slice)
@@ -792,6 +902,17 @@ async fn pre_commit<Prof: EngineProfile>(
             processor_name,
         )));
     }
+    // Provider generation updates deferred to after Phase 1 + Phase 2 complete
+    // — `TargetStateProvider::set_provider_generation` is OnceLock-backed and
+    // would error on a hypothetical retry. The detection sub-pass already
+    // returned PendingRetry before any reconcile ran, so by the time we
+    // reach here we're committed to this attempt; collecting and applying at
+    // the end keeps the invariant "set at most once per successful lifecycle"
+    // explicit.
+    let mut deferred_provider_generations: Vec<(
+        TargetStateProvider<Prof>,
+        TargetStateProviderGeneration,
+    )> = Vec::new();
     let curr_version = if let Some(mut tracking_info) = tracking_info {
         let curr_version = tracking_info.version + 1;
         tracking_info.version = curr_version;
@@ -829,21 +950,23 @@ async fn pre_commit<Prof: EngineProfile>(
                 Some(existing_item)
             } else {
                 // Insert path: check inverted tracking for ownership preempt.
+                // Old-owner bytes were cached by the detection sub-pass; we
+                // deserialize from the cache, remove our target, re-serialize
+                // back into the cache, and flag the owner as modified. One
+                // deferred write per old owner is emitted after Phase 1.
                 match app_store
                     .read_target_state_owner(wtxn, &target_state_path)
                     .await?
                 {
                     Some(owner_info) if owner_info.component_path != *stable_path => {
-                        let old_owner_path = owner_info.component_path.clone();
-                        if let Some(old_tracking_bytes) =
-                            app_store.read_tracking_info(wtxn, &old_owner_path).await?
-                        {
+                        let old_owner_path = owner_info.component_path;
+                        if let Some(cached_bytes) = old_tracking_cache.get(&old_owner_path) {
                             let mut old_tracking: db_schema::StablePathEntryTrackingInfo<'_> =
-                                from_msgpack_slice(&old_tracking_bytes)?;
+                                from_msgpack_slice(cached_bytes)?;
                             let len_before = old_tracking.target_state_items.len();
                             // Look up the entry matching current provider_id.
-                            // `into_owned()` releases the borrow on `old_tracking_bytes` so
-                            // `prev_item` can outlive this `if let` block.
+                            // `into_owned()` releases the borrow on the cached
+                            // bytes so `prev_item` outlives this scope.
                             let prev_item = old_tracking
                                 .target_state_items
                                 .remove(&lookup_key)
@@ -864,13 +987,10 @@ async fn pre_commit<Prof: EngineProfile>(
                                 .target_state_items
                                 .retain(|k, _| k.target_state_path != target_state_path);
                             if old_tracking.target_state_items.len() < len_before {
-                                // Write back old owner's modified tracking info — deferred
-                                // because the deserialized struct borrows from wtxn.
-                                let old_data = rmp_serde::to_vec_named(&old_tracking)?;
-                                deferred_writes.push(DeferredWrite::TrackingInfoRaw {
-                                    path: old_owner_path,
-                                    encoded: old_data,
-                                });
+                                let new_bytes = rmp_serde::to_vec_named(&old_tracking)?;
+                                drop(old_tracking);
+                                old_tracking_cache.insert(old_owner_path.clone(), new_bytes);
+                                modified_old_owners.insert(old_owner_path);
                             }
                             prev_item
                         } else {
@@ -882,6 +1002,10 @@ async fn pre_commit<Prof: EngineProfile>(
             };
 
             // Compute prev_states and prev_may_be_missing uniformly from prev_item.
+            // A dead-token flag on this path (from the detection sub-pass) means
+            // the prior lifecycle that wrote prev_states crashed before its
+            // sink_apply / commit could finish — so the sink may not reflect
+            // what's tracked. Force prev_may_be_missing = true to reflect that.
             let (prev_states, prev_may_be_missing) = if let Some(ref prev_item) = prev_item {
                 let schema_version_mismatch = match parent_provider_gen {
                     Some(pg) => prev_item.provider_schema_version != pg.provider_schema_version,
@@ -889,6 +1013,7 @@ async fn pre_commit<Prof: EngineProfile>(
                 };
                 let prev_may_be_missing = full_reprocess
                     || schema_version_mismatch
+                    || dead_token_paths.contains(&target_state_path)
                     || prev_item.states.iter().any(|(_, s)| s.is_deleted());
                 let prev_states = prev_item
                     .states
@@ -941,7 +1066,7 @@ async fn pre_commit<Prof: EngineProfile>(
                         None => existing_gen,
                     };
                     provider_generation = Some(new_gen.clone());
-                    child_provider.set_provider_generation(new_gen)?;
+                    deferred_provider_generations.push((child_provider.clone(), new_gen));
                 }
 
                 actions_by_sinks
@@ -966,6 +1091,7 @@ async fn pre_commit<Prof: EngineProfile>(
                             None => db_schema::TargetStateInfoItemState::Deleted,
                         },
                     ));
+                    item.pending_process_token = Some(process_token);
                 } else if let Some(new_state) = new_state_bytes {
                     // Insert new item.
                     prev_item = Some(db_schema::TargetStateInfoItem {
@@ -981,6 +1107,7 @@ async fn pre_commit<Prof: EngineProfile>(
                         ],
                         provider_schema_version: 0,
                         provider_generation,
+                        pending_process_token: Some(process_token),
                     });
                 }
             } else if let Some(item) = &mut prev_item {
@@ -1051,6 +1178,8 @@ async fn pre_commit<Prof: EngineProfile>(
                 .map(|s_bytes| Prof::TargetStateTrackingRecord::from_bytes(s_bytes))
                 .collect::<Result<Vec<_>>>()?;
 
+            let prev_may_be_missing = prev_may_be_missing
+                || dead_token_paths.contains(&target_state_path_with_pid.target_state_path);
             let recon_output = target_states_provider
                 .handler()
                 .ok_or_else(|| {
@@ -1077,6 +1206,7 @@ async fn pre_commit<Prof: EngineProfile>(
                         None => db_schema::TargetStateInfoItemState::Deleted,
                     },
                 ));
+                item.pending_process_token = Some(process_token);
             } else {
                 for (version, _) in item.states.iter_mut() {
                     *version = curr_version;
@@ -1099,19 +1229,36 @@ async fn pre_commit<Prof: EngineProfile>(
         None
     };
 
+    // Emit one tracking_info writeback per modified old owner. Doing this
+    // after Phase 1 (instead of per-preempt-iteration) collapses N writes
+    // into 1 when multiple declared paths preempt from the same owner.
+    for path in modified_old_owners {
+        let encoded = old_tracking_cache
+            .remove(&path)
+            .ok_or_else(|| internal_error!("modified old owner missing from cache: {}", path))?;
+        deferred_writes.push(DeferredWrite::TrackingInfoRaw { path, encoded });
+    }
+
     // Flush deferred writes now that tracking_info is dropped.
     for dw in deferred_writes {
         dw.flush(wtxn, app_store).await?;
     }
 
+    // Apply provider-generation updates. Past this point we're committed to
+    // this pre_commit attempt — no further code path can abort with
+    // PendingRetry — so the OnceLock-backed setter is called at most once.
+    for (child_provider, new_gen) in deferred_provider_generations {
+        child_provider.set_provider_generation(new_gen)?;
+    }
+
     id_reservation.commit(wtxn, app_store).await?;
-    Ok(Some(PreCommitOutput {
+    Ok(PreCommitOutcome::Done(Some(PreCommitOutput {
         curr_version,
         previously_exists,
         demote_component_only,
         actions_by_sinks,
         processor_name_for_del,
-    }))
+    })))
 }
 
 pub(crate) struct SubmitOutput<Prof: EngineProfile> {
@@ -1170,36 +1317,82 @@ pub(crate) async fn submit<Prof: EngineProfile>(
         ),
     };
 
-    let app_store = comp_ctx.app_ctx().app_store().clone();
     let comp_mode = comp_ctx.mode();
-    let stable_path = comp_ctx.stable_path().clone();
     let full_reprocess = comp_ctx.full_reprocess();
-    let processor_name_owned: Option<String> = processor_name.map(|s| s.to_owned());
+    let process_token = comp_ctx.app_ctx().env().process_token();
 
     let mut pending_fulfillments: Vec<(TargetStateProvider<Prof>, Prof::TargetHdl)> = Vec::new();
-    let target_states_providers_owned = target_states_providers.clone();
 
-    // Reconcile and pre-commit target states
-    let pre_commit_out = comp_ctx
-        .app_ctx()
-        .env()
-        .run_txn(move |wtxn| {
-            Box::pin(async move {
-                pre_commit(
-                    wtxn,
-                    &app_store,
-                    comp_mode,
-                    &stable_path,
-                    full_reprocess,
-                    processor_name_owned.as_deref(),
-                    &contained_target_state_paths,
-                    &target_states_providers_owned,
-                    declared_target_states,
-                )
-                .await
-            })
-        })
-        .await?;
+    // Reconcile and pre-commit target states.
+    //
+    // Retry loop: on `PendingRetry` (concurrent pre_commit elsewhere in this
+    // process holds a live token on a preempt-target path) we back off and
+    // re-run pre_commit. The detection sub-pass returns the unconsumed
+    // `declared_target_states` back to us, and pre_commit's txn made no writes
+    // on the PendingRetry path, so the retry is clean.
+    //
+    // `contained_target_state_paths` is wrapped in `Arc` to avoid full
+    // HashSet rehash per retry (its size is unbounded — one entry per fn-memo
+    // target). The other captures are O(1) clones (Arc-internal or
+    // persistent data structures).
+    let contained_target_state_paths = Arc::new(contained_target_state_paths);
+    let pre_commit_out = {
+        let mut declared_opt = Some(declared_target_states);
+        let mut backoff = std::time::Duration::from_millis(5);
+        const MAX_PENDING_RETRIES: u32 = 8;
+        let mut attempt: u32 = 0;
+        loop {
+            let app_store_iter = comp_ctx.app_ctx().app_store().clone();
+            let stable_path_iter = comp_ctx.stable_path().clone();
+            let target_states_providers_iter = target_states_providers.clone();
+            let contained_iter = Arc::clone(&contained_target_state_paths);
+            let processor_name_iter: Option<String> = processor_name.map(|s| s.to_owned());
+            let declared = declared_opt
+                .take()
+                .expect("declared_opt populated each iter");
+
+            let outcome = comp_ctx
+                .app_ctx()
+                .env()
+                .run_txn(move |wtxn| {
+                    Box::pin(async move {
+                        pre_commit(
+                            wtxn,
+                            &app_store_iter,
+                            process_token,
+                            comp_mode,
+                            &stable_path_iter,
+                            full_reprocess,
+                            processor_name_iter.as_deref(),
+                            &contained_iter,
+                            &target_states_providers_iter,
+                            declared,
+                        )
+                        .await
+                    })
+                })
+                .await?;
+
+            match outcome {
+                PreCommitOutcome::Done(out) => break out,
+                PreCommitOutcome::PendingRetry {
+                    declared_target_states: returned,
+                } => {
+                    attempt += 1;
+                    if attempt >= MAX_PENDING_RETRIES {
+                        client_bail!(
+                            "pre_commit gave up after {} retries waiting for concurrent ownership transfer at {}",
+                            MAX_PENDING_RETRIES,
+                            comp_ctx.stable_path(),
+                        );
+                    }
+                    tokio::time::sleep(backoff).await;
+                    backoff = std::cmp::min(backoff * 2, std::time::Duration::from_millis(200));
+                    declared_opt = Some(returned);
+                }
+            }
+        }
+    };
 
     let Some(pre_commit_out) = pre_commit_out else {
         return Ok(SubmitOutput {
@@ -1215,45 +1408,62 @@ pub(crate) async fn submit<Prof: EngineProfile>(
     let demote_component_only = pre_commit_out.demote_component_only;
     let actions_by_sinks = pre_commit_out.actions_by_sinks;
 
-    // Apply actions and collect child handlers to fulfill.
-    let host_runtime_ctx = comp_ctx.app_ctx().env().host_runtime_ctx();
-    for (sink, input) in actions_by_sinks {
-        let handlers = sink
-            .apply(
-                host_runtime_ctx,
-                Arc::clone(comp_ctx.host_ctx()),
-                input.actions,
-            )
-            .await?;
-        if let Some(child_providers) = input.child_providers {
-            let Some(handlers) = handlers else {
-                client_bail!("expect child providers returned by Sink");
-            };
-            if handlers.len() != child_providers.len() {
-                client_bail!(
-                    "expect child providers returned by Sink to be the same length as the actions ({}), got {}",
-                    child_providers.len(),
-                    handlers.len(),
-                );
-            }
-            for (child_target_state_def, child_provider) in
-                std::iter::zip(handlers, child_providers)
-            {
-                if let Some(child_provider) = child_provider {
-                    if let Some(child_target_state_def) = child_target_state_def {
-                        pending_fulfillments.push((child_provider, child_target_state_def.handler));
-                    } else {
-                        client_bail!("expect child provider returned by Sink to be fulfilled");
+    // Run sink_apply + commit. On any failure between here and a successful
+    // `commit_in_txn`, run rollback to clear `pending_process_token` entries
+    // pre_commit wrote — otherwise subsequent pre_commits in this process see
+    // those tokens as live and back off forever. Rollback is a no-op when
+    // pre_commit didn't write any matching tokens, so we run it
+    // unconditionally on the error path.
+    let result = async {
+        // Apply actions and collect child handlers to fulfill.
+        let host_runtime_ctx = comp_ctx.app_ctx().env().host_runtime_ctx();
+        for (sink, input) in actions_by_sinks {
+            let handlers = sink
+                .apply(
+                    host_runtime_ctx,
+                    Arc::clone(comp_ctx.host_ctx()),
+                    input.actions,
+                )
+                .await?;
+            if let Some(child_providers) = input.child_providers {
+                let Some(handlers) = handlers else {
+                    client_bail!("expect child providers returned by Sink");
+                };
+                if handlers.len() != child_providers.len() {
+                    client_bail!(
+                        "expect child providers returned by Sink to be the same length as the actions ({}), got {}",
+                        child_providers.len(),
+                        handlers.len(),
+                    );
+                }
+                for (child_target_state_def, child_provider) in
+                    std::iter::zip(handlers, child_providers)
+                {
+                    if let Some(child_provider) = child_provider {
+                        if let Some(child_target_state_def) = child_target_state_def {
+                            pending_fulfillments
+                                .push((child_provider, child_target_state_def.handler));
+                        } else {
+                            client_bail!("expect child provider returned by Sink to be fulfilled");
+                        }
                     }
                 }
             }
         }
-    }
 
-    let committer = Committer::new(comp_ctx, &target_states_providers, demote_component_only)?;
-    committer
-        .commit(child_path_set, fn_memos, curr_version)
-        .await?;
+        let committer =
+            Committer::new(comp_ctx, &target_states_providers, demote_component_only)?;
+        committer
+            .commit(child_path_set, fn_memos, curr_version)
+            .await?;
+        Ok::<_, Error>(())
+    }
+    .await;
+
+    if let Err(e) = result {
+        rollback_pending_tokens(comp_ctx, process_token).await;
+        return Err(e);
+    }
 
     // Fulfill child handlers and register their attachment providers.
     // Done after commit so the immutable borrow on providers is released.
@@ -1267,6 +1477,69 @@ pub(crate) async fn submit<Prof: EngineProfile>(
         built_target_states_providers,
         touched_previous_states,
     })
+}
+
+/// Clear every `pending_process_token` on `comp_ctx`'s tracking_info that
+/// matches the current process's token. Called when pre_commit succeeded but
+/// the subsequent sink_apply / commit failed: without this, the tokens
+/// pre_commit wrote would deadlock any future pre_commit in this process that
+/// touches an overlapping path (live-token branch in the detection sub-pass).
+///
+/// Retried indefinitely with exponential backoff — every failure is logged
+/// but the function does not return until the cleanup succeeds. If the
+/// process exits while this is still retrying, the tokens become "dead" from
+/// the next process's perspective and the dead-token recovery branch in
+/// pre_commit's detection sub-pass takes over.
+async fn rollback_pending_tokens<Prof: EngineProfile>(
+    comp_ctx: &ComponentProcessorContext<Prof>,
+    process_token: u128,
+) {
+    let mut backoff = std::time::Duration::from_millis(10);
+    loop {
+        let app_store = comp_ctx.app_ctx().app_store().clone();
+        let path = comp_ctx.stable_path().clone();
+        let res = comp_ctx
+            .app_ctx()
+            .env()
+            .run_txn(move |wtxn| {
+                Box::pin(async move {
+                    let Some(bytes) = app_store.read_tracking_info(wtxn, &path).await? else {
+                        return Ok(());
+                    };
+                    let encoded = {
+                        let mut tracking_info: db_schema::StablePathEntryTrackingInfo<'_> =
+                            from_msgpack_slice(&bytes)?;
+                        let mut changed = false;
+                        for item in tracking_info.target_state_items.values_mut() {
+                            if item.pending_process_token == Some(process_token) {
+                                item.pending_process_token = None;
+                                changed = true;
+                            }
+                        }
+                        if !changed {
+                            return Ok(());
+                        }
+                        rmp_serde::to_vec_named(&tracking_info)?
+                    };
+                    app_store
+                        .write_tracking_info_raw(wtxn, &path, &encoded)
+                        .await
+                })
+            })
+            .await;
+        match res {
+            Ok(()) => return,
+            Err(e) => {
+                error!(
+                    "Failed to rollback pending tokens for {}: {:?}; will retry",
+                    comp_ctx.stable_path(),
+                    e
+                );
+                tokio::time::sleep(backoff).await;
+                backoff = std::cmp::min(backoff * 2, std::time::Duration::from_secs(5));
+            }
+        }
+    }
 }
 
 #[instrument(name = "post_submit_after_ready", skip_all)]

@@ -271,6 +271,18 @@ pub struct TargetStateInfoItem<'a> {
     /// It decides the generation of the provider.
     #[serde(rename = "G", default, skip_serializing_if = "Option::is_none")]
     pub provider_generation: Option<TargetStateProviderGeneration>,
+
+    /// Set by `pre_commit` when it queues a sink action against this item;
+    /// cleared by `commit_in_txn`'s retention pass after the lifecycle commits.
+    /// While set:
+    ///   - if the token equals the current process's startup token, another
+    ///     concurrent `pre_commit` in this process owns the item and observers
+    ///     must back off (see `PreCommitOutcome::PendingRetry`).
+    ///   - if the token does not match, the holding process crashed mid-
+    ///     lifecycle; observers take the dead-token recovery path (force
+    ///     `prev_may_be_missing = true`).
+    #[serde(rename = "T", default, skip_serializing_if = "Option::is_none")]
+    pub pending_process_token: Option<u128>,
 }
 
 impl<'a> TargetStateInfoItem<'a> {
@@ -284,6 +296,7 @@ impl<'a> TargetStateInfoItem<'a> {
                 .collect(),
             provider_schema_version: self.provider_schema_version,
             provider_generation: self.provider_generation,
+            pending_process_token: self.pending_process_token,
         }
     }
 }
