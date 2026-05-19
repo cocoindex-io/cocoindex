@@ -186,7 +186,9 @@ class MockMapSubscriber:
 
 class TestPartitionState:
     @pytest.mark.asyncio
-    async def test_stores_last_consumed_offset_after_contiguous_completion(self) -> None:
+    async def test_stores_last_consumed_offset_after_contiguous_completion(
+        self,
+    ) -> None:
         consumer = MockIggyConsumer([])
         state = _PartitionState(
             consumer,  # type: ignore[arg-type]
