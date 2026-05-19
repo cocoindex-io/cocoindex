@@ -271,18 +271,6 @@ pub struct TargetStateInfoItem<'a> {
     /// It decides the generation of the provider.
     #[serde(rename = "G", default, skip_serializing_if = "Option::is_none")]
     pub provider_generation: Option<TargetStateProviderGeneration>,
-
-    /// Set by `pre_commit` when it queues a sink action against this item;
-    /// cleared by `commit_in_txn`'s retention pass after the lifecycle commits.
-    /// While set:
-    ///   - if the token equals the current process's startup token, another
-    ///     concurrent `pre_commit` in this process owns the item and observers
-    ///     must back off (see `PreCommitOutcome::PendingRetry`).
-    ///   - if the token does not match, the holding process crashed mid-
-    ///     lifecycle; observers take the dead-token recovery path (force
-    ///     `prev_may_be_missing = true`).
-    #[serde(rename = "T", default, skip_serializing_if = "Option::is_none")]
-    pub pending_process_token: Option<u128>,
 }
 
 impl<'a> TargetStateInfoItem<'a> {
@@ -296,8 +284,23 @@ impl<'a> TargetStateInfoItem<'a> {
                 .collect(),
             provider_schema_version: self.provider_schema_version,
             provider_generation: self.provider_generation,
-            pending_process_token: self.pending_process_token,
         }
+    }
+
+    /// True iff this item's `states` carries an unsettled push from a
+    /// pre_commit that hasn't been finalized by `commit_in_txn`'s retention
+    /// pass — either an in-flight modification by *this* process, a crashed
+    /// prior process, or a rolled-back failed attempt. Used to force
+    /// `prev_may_be_missing = true` on reconcile so the sink gets a fresh
+    /// upsert/delete instead of a short-circuit "no change" decision.
+    ///
+    /// Invariant: at rest (after a successful `commit_in_txn`), every item
+    /// has `states.len() <= 1`. Retention always reduces the vec by dropping
+    /// pre-curr_version entries and curr_version-Deleted entries. Multi-state
+    /// only exists during the write→commit window or after a crash/rollback
+    /// of a prior lifecycle.
+    pub fn is_pending(&self) -> bool {
+        self.states.len() > 1
     }
 }
 
@@ -323,6 +326,16 @@ pub struct StablePathEntryTrackingInfo<'a> {
     pub target_state_items: BTreeMap<TargetStatePathWithProviderId, TargetStateInfoItem<'a>>,
     #[serde(rename = "N", borrow, default = "unknown_processor_name")]
     pub processor_name: Cow<'a, str>,
+    /// Set by `pre_commit` when it queues at least one sink action against
+    /// this component; cleared by `commit_in_txn` and by
+    /// `rollback_pending_tokens` on failure. Distinguishes a live in-flight
+    /// lifecycle in *this* process (token equals the process's startup token
+    /// → preempting components must back off and retry) from one left by a
+    /// crashed prior process (token is something else → observers proceed,
+    /// using the per-item multi-state signal to force
+    /// `prev_may_be_missing = true`). At-rest value is `None`.
+    #[serde(rename = "T", default, skip_serializing_if = "Option::is_none")]
+    pub pending_process_token: Option<u128>,
 }
 
 impl<'a> StablePathEntryTrackingInfo<'a> {
@@ -331,6 +344,7 @@ impl<'a> StablePathEntryTrackingInfo<'a> {
             version: 0,
             target_state_items: BTreeMap::new(),
             processor_name,
+            pending_process_token: None,
         }
     }
 }

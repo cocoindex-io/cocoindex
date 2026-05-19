@@ -344,9 +344,10 @@ impl<Prof: EngineProfile> Committer<Prof> {
                 }
                 // Prune entries with empty states and collect their paths for
                 // inverted tracking cleanup (deferred until tracking_info is dropped).
-                // Surviving entries get their `pending_process_token` cleared —
-                // the lifecycle (pre_commit → sink_apply → commit) is succeeding,
-                // so any token written by pre_commit is no longer "pending".
+                // The component-level `pending_process_token` is cleared below
+                // (after this retention pass) — the lifecycle (pre_commit →
+                // sink_apply → commit) is succeeding, so any token written by
+                // pre_commit is no longer "pending".
                 let mut pruned_paths: HashSet<TargetStatePath> = HashSet::new();
                 tracking_info
                     .target_state_items
@@ -355,10 +356,10 @@ impl<Prof: EngineProfile> Committer<Prof> {
                             pruned_paths.insert(path_with_pid.target_state_path.clone());
                             false
                         } else {
-                            item.pending_process_token = None;
                             true
                         }
                     });
+                tracking_info.pending_process_token = None;
                 // Don't delete inverted tracking if a surviving entry shares the same
                 // target_state_path (can happen when provider_id changed — old entry
                 // pruned, new entry survives under different provider_id).
@@ -793,37 +794,36 @@ async fn pre_commit<Prof: EngineProfile>(
 
     let mut id_reservation = IdReservation::new(&TARGET_ID_KEY);
     let tracking_info_bytes = app_store.read_tracking_info(wtxn, stable_path).await?;
+    let mut tracking_info: Option<db_schema::StablePathEntryTrackingInfo<'_>> = tracking_info_bytes
+        .as_deref()
+        .map(from_msgpack_slice)
+        .transpose()?;
 
     // Detection sub-pass — runs before any `TargetStateValue` is consumed by
     // reconcile, so a `PendingRetry` return leaves the input `declared_target_states`
-    // intact and the surrounding txn write-free for the retry. Two things happen:
-    //   1. Own tracking_info items: a non-None token must be dead, since only
-    //      one lifecycle per component_path runs at a time. Flag the path for
-    //      `prev_may_be_missing = true` on the main pass.
-    //   2. Each declared target_state_path that would go through the preempt
-    //      branch: read the old owner's tracking_info; peek the matching
-    //      item's token. Live → PendingRetry. Dead → flag for force-missing.
+    // intact and the surrounding txn write-free for the retry.
+    //
+    // We're only looking for one thing: a *live* in-flight pre_commit from
+    // this process on an old owner whose item we want to preempt. The signal
+    // is `old.tracking.pending_process_token == self AND item.is_pending()`
+    // — the component-level token says the lifecycle is in flight, the
+    // per-item multi-state signal filters to just the items that lifecycle
+    // actually touched. Without the per-item filter, C2 would back off
+    // preempting item I from C1 even when C1's pre_commit only modified
+    // item J — over-conservative.
+    //
+    // Crashed-prior-process and rolled-back states are *not* detected here.
+    // Both leave multi-state items on disk (a token from a dead process, or
+    // no token after `rollback_pending_tokens` ran), and the main pass picks
+    // them up uniformly via `prev_item.is_pending()` → force
+    // `prev_may_be_missing = true` on reconcile.
     //
     // Old-owner tracking_info bytes read here are cached and reused by the
-    // Phase 1 preempt branch — the main pass deserializes, modifies, and
-    // re-serializes into the same cache slot, so multiple preempts from the
-    // same old owner accumulate in memory and produce a single deferred
-    // write at the end of pre_commit.
-    let mut dead_token_paths: HashSet<TargetStatePath> = HashSet::new();
+    // Phase 1 preempt branch: deserialize, modify, re-serialize into the
+    // same slot, emit one deferred write per modified owner at the end.
     let mut old_tracking_cache: HashMap<StablePath, Vec<u8>> = HashMap::new();
     let mut pending_retry = false;
     {
-        let own_tracking: Option<db_schema::StablePathEntryTrackingInfo<'_>> = tracking_info_bytes
-            .as_deref()
-            .map(from_msgpack_slice)
-            .transpose()?;
-        if let Some(own) = &own_tracking {
-            for (path_with_pid, item) in &own.target_state_items {
-                if item.pending_process_token.is_some() {
-                    dead_token_paths.insert(path_with_pid.target_state_path.clone());
-                }
-            }
-        }
         // Materialize keys into an owned Vec so the iterator doesn't borrow
         // `declared_target_states` across the awaits below — the map's
         // values (`TargetStateValue`) are `!Sync`, which would otherwise
@@ -837,7 +837,7 @@ async fn pre_commit<Prof: EngineProfile>(
                 target_state_path: target_state_path.clone(),
                 provider_id: parent_provider_gen.map(|g| g.provider_id),
             };
-            if own_tracking
+            if tracking_info
                 .as_ref()
                 .is_some_and(|t| t.target_state_items.contains_key(&lookup_key))
             {
@@ -863,16 +863,12 @@ async fn pre_commit<Prof: EngineProfile>(
             }
             let cached = &old_tracking_cache[&owner_info.component_path];
             let old: db_schema::StablePathEntryTrackingInfo<'_> = from_msgpack_slice(cached)?;
-            if let Some(item) = old.target_state_items.get(&lookup_key) {
-                match item.pending_process_token {
-                    Some(t) if t == process_token => {
+            if old.pending_process_token == Some(process_token) {
+                if let Some(item) = old.target_state_items.get(&lookup_key) {
+                    if item.is_pending() {
                         pending_retry = true;
                         break;
                     }
-                    Some(_) => {
-                        dead_token_paths.insert(target_state_path);
-                    }
-                    None => {}
                 }
             }
         }
@@ -883,10 +879,6 @@ async fn pre_commit<Prof: EngineProfile>(
         });
     }
     let mut modified_old_owners: HashSet<StablePath> = HashSet::new();
-    let mut tracking_info: Option<db_schema::StablePathEntryTrackingInfo<'_>> = tracking_info_bytes
-        .as_deref()
-        .map(from_msgpack_slice)
-        .transpose()?;
     // Deferred DB writes that will be flushed after tracking_info is dropped,
     // since tracking_info borrows from wtxn and prevents mutable DB operations.
     let mut deferred_writes: Vec<DeferredWrite> = Vec::new();
@@ -1002,19 +994,18 @@ async fn pre_commit<Prof: EngineProfile>(
             };
 
             // Compute prev_states and prev_may_be_missing uniformly from prev_item.
-            // A dead-token flag on this path (from the detection sub-pass) means
-            // the prior lifecycle that wrote prev_states crashed before its
-            // sink_apply / commit could finish — so the sink may not reflect
-            // what's tracked. Force prev_may_be_missing = true to reflect that.
+            // `prev_item.is_pending()` (multi-state) means the prior lifecycle's
+            // sink_apply / commit didn't finish — could be a crash on a different
+            // process or a `rollback_pending_tokens` after a sink_apply failure
+            // here. In either case the sink may not reflect what's tracked, so
+            // force `prev_may_be_missing = true`.
             let (prev_states, prev_may_be_missing) = if let Some(ref prev_item) = prev_item {
                 let schema_version_mismatch = match parent_provider_gen {
                     Some(pg) => prev_item.provider_schema_version != pg.provider_schema_version,
                     None => false,
                 };
-                let prev_may_be_missing = full_reprocess
-                    || schema_version_mismatch
-                    || dead_token_paths.contains(&target_state_path)
-                    || prev_item.states.iter().any(|(_, s)| s.is_deleted());
+                let prev_may_be_missing =
+                    full_reprocess || schema_version_mismatch || prev_item.is_pending();
                 let prev_states = prev_item
                     .states
                     .iter()
@@ -1091,7 +1082,6 @@ async fn pre_commit<Prof: EngineProfile>(
                             None => db_schema::TargetStateInfoItemState::Deleted,
                         },
                     ));
-                    item.pending_process_token = Some(process_token);
                 } else if let Some(new_state) = new_state_bytes {
                     // Insert new item.
                     prev_item = Some(db_schema::TargetStateInfoItem {
@@ -1107,7 +1097,6 @@ async fn pre_commit<Prof: EngineProfile>(
                         ],
                         provider_schema_version: 0,
                         provider_generation,
-                        pending_process_token: Some(process_token),
                     });
                 }
             } else if let Some(item) = &mut prev_item {
@@ -1178,8 +1167,7 @@ async fn pre_commit<Prof: EngineProfile>(
                 .map(|s_bytes| Prof::TargetStateTrackingRecord::from_bytes(s_bytes))
                 .collect::<Result<Vec<_>>>()?;
 
-            let prev_may_be_missing = prev_may_be_missing
-                || dead_token_paths.contains(&target_state_path_with_pid.target_state_path);
+            let prev_may_be_missing = prev_may_be_missing || item.is_pending();
             let recon_output = target_states_provider
                 .handler()
                 .ok_or_else(|| {
@@ -1206,7 +1194,6 @@ async fn pre_commit<Prof: EngineProfile>(
                         None => db_schema::TargetStateInfoItemState::Deleted,
                     },
                 ));
-                item.pending_process_token = Some(process_token);
             } else {
                 for (version, _) in item.states.iter_mut() {
                     *version = curr_version;
@@ -1218,6 +1205,17 @@ async fn pre_commit<Prof: EngineProfile>(
         for (path_with_pid, item) in items_to_insert {
             tracking_info.target_state_items.insert(path_with_pid, item);
         }
+
+        // Mark the component as in-flight if we queued any sink action; else
+        // clear the slot (no-op if it was already None, but also wipes a stale
+        // token from a prior crashed lifecycle now that the current pre_commit
+        // has rewritten the items). On success this is cleared by
+        // `commit_in_txn`; on sink/commit failure, `rollback_pending_tokens`.
+        tracking_info.pending_process_token = if actions_by_sinks.is_empty() {
+            None
+        } else {
+            Some(process_token)
+        };
 
         let data_bytes = rmp_serde::to_vec_named(&tracking_info)?;
         drop(tracking_info); // Release borrow before mutable operations.
@@ -1479,17 +1477,22 @@ pub(crate) async fn submit<Prof: EngineProfile>(
     })
 }
 
-/// Clear every `pending_process_token` on `comp_ctx`'s tracking_info that
-/// matches the current process's token. Called when pre_commit succeeded but
-/// the subsequent sink_apply / commit failed: without this, the tokens
-/// pre_commit wrote would deadlock any future pre_commit in this process that
-/// touches an overlapping path (live-token branch in the detection sub-pass).
+/// Clear `comp_ctx`'s tracking_info `pending_process_token` if it matches
+/// the current process's token. Called when pre_commit succeeded but the
+/// subsequent sink_apply / commit failed: without this, the token pre_commit
+/// wrote would deadlock any future pre_commit in this process that touches
+/// an overlapping path (live-token branch in the detection sub-pass).
+///
+/// Items the failed pre_commit modified retain their multi-state shape on
+/// disk; the next pre_commit's main pass picks them up via
+/// `prev_item.is_pending()` → force `prev_may_be_missing = true`, so the
+/// sink-tracking divergence the failure may have caused gets re-reconciled.
 ///
 /// Retried indefinitely with exponential backoff — every failure is logged
 /// but the function does not return until the cleanup succeeds. If the
-/// process exits while this is still retrying, the tokens become "dead" from
-/// the next process's perspective and the dead-token recovery branch in
-/// pre_commit's detection sub-pass takes over.
+/// process exits while this is still retrying, the remaining multi-state
+/// items still flag themselves to the next process via the same
+/// `is_pending()` check.
 async fn rollback_pending_tokens<Prof: EngineProfile>(
     comp_ctx: &ComponentProcessorContext<Prof>,
     process_token: u128,
@@ -1509,16 +1512,10 @@ async fn rollback_pending_tokens<Prof: EngineProfile>(
                     let encoded = {
                         let mut tracking_info: db_schema::StablePathEntryTrackingInfo<'_> =
                             from_msgpack_slice(&bytes)?;
-                        let mut changed = false;
-                        for item in tracking_info.target_state_items.values_mut() {
-                            if item.pending_process_token == Some(process_token) {
-                                item.pending_process_token = None;
-                                changed = true;
-                            }
-                        }
-                        if !changed {
+                        if tracking_info.pending_process_token != Some(process_token) {
                             return Ok(());
                         }
+                        tracking_info.pending_process_token = None;
                         rmp_serde::to_vec_named(&tracking_info)?
                     };
                     app_store
