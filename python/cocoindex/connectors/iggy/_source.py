@@ -299,7 +299,7 @@ class TopicStream:
                 "Pass initial_high_watermark for multi-partition topics, or consume "
                 "a single-partition topic."
             )
-        return topic.messages_count
+        return int(topic.messages_count)
 
     async def _create_consumer(self) -> IggyConsumer:
         """Create an Iggy consumer group configured for manual offset storage."""
