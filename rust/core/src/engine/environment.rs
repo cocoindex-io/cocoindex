@@ -26,6 +26,12 @@ struct EnvironmentInner<Prof: EngineProfile> {
     /// See `specs/memo_validation/plan.md` → "Extension: state validation
     /// for tracked context values".
     context_initial_states: RwLock<HashMap<Fingerprint, Vec<Prof::FunctionData>>>,
+    /// Per-process liveness token. Used by `pre_commit` to distinguish a
+    /// pending tracking-info entry written by this process (live → caller
+    /// backs off and retries) from one left behind by a crashed prior
+    /// process (dead → take the recovery path).
+    /// See `specs/target_state_ownership_transfer/concurrent_preempt_race_fix.md`.
+    process_token: u128,
 }
 
 #[derive(Clone)]
@@ -47,8 +53,14 @@ impl<Prof: EngineProfile> Environment<Prof> {
             host_runtime_ctx,
             logic_set: RwLock::new(HashSet::new()),
             context_initial_states: RwLock::new(HashMap::new()),
+            process_token: uuid::Uuid::new_v4().as_u128(),
         });
         Ok(Self { inner: state })
+    }
+
+    /// Liveness token for the current process. See `EnvironmentInner::process_token`.
+    pub fn process_token(&self) -> u128 {
+        self.inner.process_token
     }
 
     pub fn storage(&self) -> &Storage {
