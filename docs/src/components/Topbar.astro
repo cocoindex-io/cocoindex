@@ -133,6 +133,41 @@ const ENTERPRISE = `${SITE_MAIN}/enterprise`;
       .catch(() => { /* offline / rate-limited — leave the em-dash. */ });
   })();
 
+  // On touch / no-hover devices the `:hover` rule that reveals .nav-dd-menu
+  // never fires, so the first tap on the trigger anchor navigates away
+  // before the user can pick v1 vs v0. Intercept that first tap to open
+  // the menu; the second tap (or selecting an item) navigates as normal.
+  (() => {
+    if (!window.matchMedia('(hover: none)').matches) return;
+    const dds = Array.from(document.querySelectorAll<HTMLElement>('.nav-dd'));
+    if (!dds.length) return;
+
+    const closeAll = (except?: HTMLElement) => {
+      for (const dd of dds) if (dd !== except) dd.classList.remove('open');
+    };
+
+    for (const dd of dds) {
+      const trigger = dd.querySelector<HTMLAnchorElement>('.nav-dd-trigger');
+      if (!trigger) continue;
+      trigger.addEventListener('click', (ev) => {
+        if (!dd.classList.contains('open')) {
+          ev.preventDefault();
+          closeAll(dd);
+          dd.classList.add('open');
+        }
+      });
+    }
+
+    document.addEventListener('click', (ev) => {
+      const target = ev.target as Node | null;
+      if (target && dds.some((dd) => dd.contains(target))) return;
+      closeAll();
+    });
+    document.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Escape') closeAll();
+    });
+  })();
+
   // Copy-to-clipboard for every .code-figure .copy button — one delegated
   // listener per document. Emitted markup lives in scripts/remark-code-titles.mjs.
   (() => {

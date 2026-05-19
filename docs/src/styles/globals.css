@@ -148,7 +148,8 @@ nav.top {
   transition: transform .15s ease;
 }
 .nav-dd:hover .nav-dd-trigger svg,
-.nav-dd:focus-within .nav-dd-trigger svg {
+.nav-dd:focus-within .nav-dd-trigger svg,
+.nav-dd.open .nav-dd-trigger svg {
   color: var(--coral);
   transform: rotate(180deg);
 }
@@ -169,7 +170,8 @@ nav.top {
   z-index: 60;
 }
 .nav-dd:hover .nav-dd-menu,
-.nav-dd:focus-within .nav-dd-menu {
+.nav-dd:focus-within .nav-dd-menu,
+.nav-dd.open .nav-dd-menu {
   opacity: 1;
   visibility: visible;
   transform: translateY(0);
