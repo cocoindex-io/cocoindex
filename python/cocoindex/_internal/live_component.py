@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+import asyncio
+import datetime
+import inspect
+import traceback
 from collections.abc import AsyncIterator
 from contextvars import ContextVar
 from typing import (
     Any,
+    Awaitable,
+    Callable,
     Final,
     Generic,
     ParamSpec,
@@ -15,7 +21,10 @@ from typing import (
 )  # noqa: F401
 
 from . import core
-from .component_ctx import ComponentSubpath
+from .component_ctx import (
+    ComponentSubpath,
+    get_context_from_ctx,
+)
 from .function import AnyCallable, create_core_component_processor
 from .environment import Environment
 
@@ -204,6 +213,22 @@ class LiveComponentOperator:
         self._env = env
         self._path = path
 
+    def _resolve_exception_handler(self) -> Callable[[str], Awaitable[None]]:
+        """Build a resolver for the parent's exception handler chain.
+
+        Delegates to :meth:`ComponentContext.resolve_exception_handler`
+        — the same path used by ``coco.mount`` / ``coco.mount_each`` —
+        so component-failure logs go through one canonical Python
+        fallback. Always non-None. Used both by :meth:`update_full`
+        (passes to Rust as ``on_error``) and :meth:`report_exception`
+        (invokes directly with a stringified exception).
+        """
+        return get_context_from_ctx().resolve_exception_handler(
+            stable_path=self._path.to_string(),
+            processor_name=type(self._instance).__name__,
+            mount_kind="process_live",
+        )
+
     async def update_full(self) -> None:
         """Trigger a full update via instance.process(). Blocks until fully ready.
 
@@ -213,14 +238,23 @@ class LiveComponentOperator:
         anymore — `process()` is a separate concern). The new Task that
         Rust spawns to run the processor's coroutine snapshots the
         current `Context` at spawn time, so it inherits `False`.
+
+        Exceptions raised inside `process()` (or its descendants) are
+        routed via the parent's exception handler chain — same shape as
+        background `coco.mount()` failures — and do NOT propagate to the
+        caller. This matches the framework's "background work failures
+        are reported, not raised" model and lets periodic-refresh
+        patterns (e.g. `coco.auto_refresh`) keep looping when a single
+        cycle fails, while still surfacing the failure to operators.
         """
         processor = create_core_component_processor(
             self._instance.process, self._env, self._path, (), {}
         )
+        on_error = self._resolve_exception_handler()
         prev = _in_process_live.get()
         _in_process_live.set(False)
         try:
-            await self._controller.update_full_async(processor)
+            await self._controller.update_full_async(processor, on_error)
         finally:
             _in_process_live.set(prev)
 
@@ -264,21 +298,75 @@ class LiveComponentOperator:
         processor = create_core_component_processor(
             processor_fn, self._env, child_path, args, kwargs
         )
-        core_handle = await self._controller.update_async(child_path, processor)
+        # Build on_error using the CHILD's path/processor_name (not the live
+        # component's own) so handlers attribute failures to the right unit.
+        on_error = get_context_from_ctx().resolve_exception_handler(
+            stable_path=child_path.to_string(),
+            processor_name=getattr(processor_fn, "__qualname__", None),
+            mount_kind="process_live",
+        )
+        core_handle = await self._controller.update_async(
+            child_path, processor, on_error
+        )
         return ComponentMountHandle([core_handle])
 
     async def delete(self, subpath: ComponentSubpath) -> Any:
+        """Delete a child component.
+
+        Symmetric with :meth:`update`: failures route through the
+        parent's exception handler chain. Handlers control whether the
+        failure propagates back to ``handle.ready()`` — returning
+        normally swallows; raising propagates. With no handler
+        registered, the framework logs at ``ERROR`` and ``handle.ready()``
+        returns ``Ok``.
+
+        Even when the delete fails, the tombstone is already written
+        synchronously by the framework — the next reconcile's GC sweep
+        retries the underlying target-state cleanup.
+        """
         from .api import ComponentMountHandle
 
         child_path = self._path
         for part in subpath.parts:
             child_path = child_path.concat(part)
-        core_handle = await self._controller.delete_async(child_path)
+        on_error = get_context_from_ctx().resolve_exception_handler(
+            stable_path=child_path.to_string(),
+            processor_name=None,
+            mount_kind="process_live",
+        )
+        core_handle = await self._controller.delete_async(child_path, on_error)
         return ComponentMountHandle([core_handle])
 
     async def mark_ready(self) -> None:
         """Signal readiness. In catch-up mode, this never returns (terminates process_live)."""
         await self._controller.mark_ready_async()
+
+    async def report_exception(self, exc: BaseException) -> None:
+        """Route an exception raised during ``process_live`` to the parent's exception handler chain.
+
+        Walks the exception handler chain on the parent's
+        :class:`ComponentContext` (inherited via the asyncio Task that runs
+        ``process_live``). The constructed :class:`ExceptionContext` uses
+        this live component's own ``stable_path`` (not the parent's), so
+        handlers can attribute the failure to the correct component, and
+        ``mount_kind="process_live"`` so handlers can distinguish runtime
+        cycle failures from initial build failures (``"mount"`` /
+        ``"mount_each"``).
+
+        The exception is formatted via :func:`traceback.format_exception`
+        so handlers and the fallback log both see the full Python
+        traceback (when ``exc.__traceback__`` is set — i.e. when the
+        caller is reporting a caught exception). This matches the
+        text-with-trace shape that the Rust-side ``on_error`` path
+        produces for background ``mount`` / ``mount_each`` failures.
+
+        Falls back to ERROR-level logging if no handler is registered or
+        every handler re-raises. Intended for surfacing recoverable errors
+        (e.g. an external watcher emits a malformed event) without
+        tearing down the live component.
+        """
+        err_text = "".join(traceback.format_exception(exc))
+        await self._resolve_exception_handler()(err_text)
 
 
 @runtime_checkable
@@ -382,3 +470,69 @@ class _MountEachLiveComponent:
             operator, self._fn, self._args, self._kwargs
         )
         await self._items.watch(subscriber)
+
+
+def auto_refresh(
+    process_fn: AnyCallable[_P, None],
+    *,
+    interval: datetime.timedelta,
+) -> type[LiveComponent]:
+    """Wrap a process function as a LiveComponent that re-runs every ``interval``.
+
+    The returned class can be passed to :func:`coco.mount` (and
+    :meth:`LiveComponentOperator.update`) wherever a LiveComponent class is
+    accepted. Its ``__init__`` accepts the same positional and keyword
+    arguments as ``process_fn`` and forwards them to ``process_fn`` on each
+    invocation.
+
+    Semantics:
+
+    - ``process()`` calls ``process_fn(*args, **kwargs)``.
+    - ``process_live(operator)`` runs ``update_full`` once, ``mark_ready``,
+      then loops ``sleep(interval) -> update_full`` with a **fixed delay**
+      (the sleep happens after each cycle, so cycles never overlap).
+    - In catch-up mode (``live=False``), ``mark_ready`` terminates the live
+      component after the first full pass — observationally identical to
+      mounting ``process_fn`` directly; the interval is ignored.
+    - Cycle exceptions raised inside ``process_fn`` are routed via the
+      parent's exception handler chain (same shape as background
+      ``coco.mount`` failures — see ``advanced_topics/exception_handlers``).
+      ``update_full`` does NOT propagate them to the loop, so the next
+      cycle still runs.
+
+    Args:
+        process_fn: Async process function — same shape as a function passed
+            directly to ``coco.mount``.
+        interval: Delay between cycles. Applied between the end of one cycle
+            and the start of the next (fixed delay, not fixed rate).
+
+    Example::
+
+        await coco.mount(
+            coco.auto_refresh(sync_users, interval=datetime.timedelta(minutes=5)),
+            db, target,
+        )
+    """
+    sleep_seconds = interval.total_seconds()
+    fn_name = getattr(process_fn, "__name__", "auto_refresh")
+
+    class _AutoRefresh:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            self._args = args
+            self._kwargs = kwargs
+
+        async def process(self) -> None:
+            result: Any = process_fn(*self._args, **self._kwargs)
+            if inspect.isawaitable(result):
+                await result
+
+        async def process_live(self, operator: LiveComponentOperator) -> None:
+            await operator.update_full()
+            await operator.mark_ready()
+            while True:
+                await asyncio.sleep(sleep_seconds)
+                await operator.update_full()
+
+    _AutoRefresh.__name__ = f"AutoRefresh[{fn_name}]"
+    _AutoRefresh.__qualname__ = _AutoRefresh.__name__
+    return _AutoRefresh

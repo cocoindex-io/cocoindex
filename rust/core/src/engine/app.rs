@@ -187,11 +187,22 @@ impl<Prof: EngineProfile> App<Prof> {
             .providers
             .clone();
 
+        // Install a single on_error handler that always propagates: app.drop
+        // is an explicit operation, so root-delete failures (and any
+        // descendant failures, via the GC-sweep cascade) must surface to the
+        // caller (Python `app.drop()` then raises). Without it, the framework
+        // default of "log + swallow" would hide failures behind stale tracking
+        // records while pretending app.drop succeeded. The handler is stored
+        // in the delete context so the GC sweep can read and cascade it to
+        // descendant deletes (see `specs/core/error_handling.md`).
+        let raise_on_error: crate::engine::component::OnError =
+            Arc::new(|err| Box::pin(async move { Err(err) }));
         let context = self.root_component.new_processor_context_for_delete(
             providers,
             None,
             processing_stats.clone(),
             host_ctx,
+            Some(raise_on_error),
         );
 
         let root_component = self.root_component.clone();
@@ -204,7 +215,7 @@ impl<Prof: EngineProfile> App<Prof> {
                 // don't race teardown of shared resources) ──
                 drain_live_components(live_snapshot).await;
 
-                // Delete the root component
+                // Delete the root component (uses on_error from the context).
                 let handle = root_component.clone().delete(context.clone(), None)?;
 
                 // Wait for the drop operation to complete

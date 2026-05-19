@@ -586,6 +586,18 @@ impl<Prof: EngineProfile> Committer<Prof> {
     }
 
     async fn launch_child_component_gc<T: AnyTxn>(&self, rtxn: &mut T) -> Result<()> {
+        // Cascade the parent's delete on_error to descendant deletes.
+        // For Delete-mode parents (the recursive cascade triggered by
+        // `App.drop()`'s root delete), the parent's on_error propagates
+        // here so any descendant failure surfaces through it. For
+        // Build-mode parents (orphan deletes during a normal update),
+        // `delete_action_on_error()` returns None — preserving the
+        // pre-existing "log + swallow" default.
+        //
+        // The `Arc` makes cloning cheap regardless of how many
+        // descendants we spawn.
+        let cascaded_on_error = self.component_ctx.delete_action_on_error();
+        let mut handles = Vec::new();
         for relative_path in self
             .app_store
             .list_tombstones(rtxn, &self.component_path)
@@ -598,8 +610,20 @@ impl<Prof: EngineProfile> Committer<Prof> {
                 Some(&self.component_ctx),
                 self.component_ctx.processing_stats().clone(),
                 self.component_ctx.host_ctx().clone(),
+                cascaded_on_error.clone(),
             );
-            let _ = component.delete(delete_ctx, None)?;
+            handles.push(component.delete(delete_ctx, None)?);
+        }
+        // Await each handle so descendant failures (when on_error
+        // propagates) reach our own task_result, which the parent
+        // delete's spawned task surfaces via `handle.ready()` —
+        // eventually back to `app.drop()`. Short-circuits on first Err;
+        // remaining children continue running (orphan tasks), but their
+        // tombstones survive for the next reconcile to retry. With
+        // `on_error = None`, every handle resolves Ok regardless of
+        // child failures, so this is a no-op cost in that case.
+        for handle in handles {
+            handle.ready().await?;
         }
         Ok(())
     }

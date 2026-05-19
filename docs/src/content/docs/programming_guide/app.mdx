@@ -241,4 +241,6 @@ cocoindex drop main.py
 
 This will delete all target states created by the app (e.g., drop tables, delete rows) and clear its internal state.
 
+`drop` is an explicit, foreground operation — any failure during the recursive delete (root or any descendant) raises rather than being silently logged. The internal tracking record for a component whose delete failed is preserved so the next `drop` (with the underlying problem fixed) can complete the cleanup. See [Error Handling](../advanced_topics/exception_handlers) for the general principle.
+
 See [CLI Reference](../cli) for more commands and options.

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import contextlib
+import inspect
+import logging
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from typing import (
@@ -20,6 +22,8 @@ from cocoindex._internal.environment import Environment
 from . import core
 from .stable_path import StableKey
 
+_logger = logging.getLogger(__name__)
+
 T = TypeVar("T")
 
 ExceptionHandler: TypeAlias = Callable[
@@ -36,7 +40,9 @@ class ExceptionHandlerChain(NamedTuple):
 # ContextVar for the current ComponentContext
 _context_var: ContextVar[ComponentContext] = ContextVar("coco_component_context")
 
-MountKind: TypeAlias = Literal["mount", "mount_each", "delete_background"]
+MountKind: TypeAlias = Literal[
+    "mount", "mount_each", "delete_background", "process_live"
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,6 +105,79 @@ class ComponentContext:
             self._core_fn_call_ctx,
             ExceptionHandlerChain(handler=handler, base=self._exception_handler_chain),
         )
+
+    def resolve_exception_handler(
+        self,
+        *,
+        stable_path: str,
+        processor_name: str | None,
+        mount_kind: MountKind,
+    ) -> Callable[[str], Awaitable[None]]:
+        """Build the exception-handler resolver for a child mounted under this context.
+
+        Returns a callable that takes a stringified error and:
+        - walks this context's handler chain (innermost first);
+        - if a handler raises, calls the next outer handler with the
+          new exception;
+        - on chain exhaustion (every handler re-raised), **re-raises the
+          final handler's exception** — the Rust side propagates that
+          back through ``handle.ready()``. Handlers therefore control
+          propagation: returning swallows; raising propagates;
+        - when no handler is registered at all, logs at ``ERROR`` via
+          the Python logger and returns normally (today's contract for
+          "no chain → not propagated"; ``app.drop`` uses a Rust-side
+          raising handler explicitly to surface root-delete failures).
+
+        Always non-None. Single canonical entry point used by ``coco.mount``,
+        ``coco.mount_each``, and the live-component operator so all
+        component-failure routing goes through the same Python path.
+        """
+
+        # Defer all derivations into the closure body so the happy path
+        # (no exception) pays only for closure construction. `self` is
+        # captured implicitly. `self._core_path.to_string()` in particular
+        # is a PyO3 → Rust → string allocation we don't want to pay on
+        # every mount.
+        async def _run(err_str: str) -> None:
+            node = self._exception_handler_chain
+            if node is None:
+                # No handlers registered — log directly without building
+                # the ExceptionContext metadata at all. Don't propagate.
+                _logger.error("component build failed:\n%s", err_str)
+                return
+
+            env_name = self._env.name
+            parent_stable_path = self._core_path.to_string()
+            original_exc: BaseException = RuntimeError(err_str)
+            current_exc: BaseException = original_exc
+            source: Literal["component", "handler"] = "component"
+            while node is not None:
+                ctx = ExceptionContext(
+                    env_name=env_name,
+                    stable_path=stable_path,
+                    processor_name=processor_name,
+                    mount_kind=mount_kind,
+                    parent_stable_path=parent_stable_path,
+                    is_background=True,
+                    source=source,
+                    original_exception=None if source == "component" else original_exc,
+                )
+                try:
+                    ret = node.handler(current_exc, ctx)
+                    if inspect.isawaitable(ret):
+                        await ret
+                    return  # Handler swallowed → don't propagate.
+                except BaseException as handler_exc:
+                    current_exc = handler_exc
+                    source = "handler"
+                    node = node.base
+            # Every handler in the chain raised. Propagate the final
+            # raise — Rust's on_error catches it and the spawned task
+            # returns Err, so `handle.ready()` raises. Handlers thus
+            # control propagation: return (swallow) vs raise (propagate).
+            raise current_exc
+
+        return _run
 
     @contextlib.contextmanager
     def attach(self) -> Generator[None, None, None]:

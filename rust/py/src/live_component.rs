@@ -2,6 +2,7 @@ use crate::{
     component::{PyComponentMountHandle, PyComponentProcessor},
     context::{PyComponentProcessorContext, PyFnCallContext},
     prelude::*,
+    runtime::build_on_error,
     stable_path::PyStablePath,
 };
 
@@ -19,10 +20,15 @@ impl PyLiveComponentController {
         &self,
         py: Python<'py>,
         processor: PyComponentProcessor,
+        handler_callback: Option<Py<PyAny>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let ctrl = self.0.clone();
+        let host_runtime_ctx = ctrl.component().app_ctx().env().host_runtime_ctx().clone();
+        let on_error = build_on_error(host_runtime_ctx, handler_callback);
         future_into_py(py, async move {
-            ctrl.update_full(processor).await.into_py_result()?;
+            ctrl.update_full(processor, on_error)
+                .await
+                .into_py_result()?;
             Ok(())
         })
     }
@@ -32,11 +38,14 @@ impl PyLiveComponentController {
         py: Python<'py>,
         stable_path: PyStablePath,
         processor: PyComponentProcessor,
+        handler_callback: Option<Py<PyAny>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let ctrl = self.0.clone();
+        let host_runtime_ctx = ctrl.component().app_ctx().env().host_runtime_ctx().clone();
+        let on_error = build_on_error(host_runtime_ctx, handler_callback);
         future_into_py(py, async move {
             let handle = ctrl
-                .update(stable_path.0, processor)
+                .update(stable_path.0, processor, on_error)
                 .await
                 .into_py_result()?;
             Ok(PyComponentMountHandle::from_handle(handle))
@@ -47,10 +56,16 @@ impl PyLiveComponentController {
         &self,
         py: Python<'py>,
         stable_path: PyStablePath,
+        handler_callback: Option<Py<PyAny>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let ctrl = self.0.clone();
+        let host_runtime_ctx = ctrl.component().app_ctx().env().host_runtime_ctx().clone();
+        let on_error = build_on_error(host_runtime_ctx, handler_callback);
         future_into_py(py, async move {
-            let handle = ctrl.delete(stable_path.0).await.into_py_result()?;
+            let handle = ctrl
+                .delete(stable_path.0, on_error)
+                .await
+                .into_py_result()?;
             Ok(PyComponentMountHandle::from_handle(handle))
         })
     }

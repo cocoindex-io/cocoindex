@@ -22,6 +22,32 @@ use crate::state::target_state_path::TargetStatePath;
 use cocoindex_utils::error::{SharedError, SharedResult, SharedResultExt};
 use cocoindex_utils::fingerprint::Fingerprint;
 
+/// Async on-error callback for background-style component execution.
+///
+/// Invoked by `run_in_background` / `delete` when the spawned task fails
+/// (other than via cancellation, which is filtered). The callback can
+/// either:
+///
+/// - Return `Ok(())` to swallow the failure (mount-style; the spawned
+///   task returns Ok and `handle.ready()` resolves Ok). This is what
+///   the Python-side exception handler chain does when at least one
+///   handler returns normally.
+/// - Return `Err(err)` to propagate the failure (the spawned task
+///   returns Err and `handle.ready()` raises). This is what the chain
+///   does when every handler re-raises, and what `app.drop()`'s
+///   built-in raising handler does to surface root-delete failures.
+///
+/// Cancellation is never delivered to the handler — it's filtered
+/// before this is invoked. The "no chain registered" case logs at
+/// ERROR and swallows; only an explicitly-installed handler causes
+/// propagation.
+pub type OnError = Arc<
+    dyn Fn(Error) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'static>>
+        + Send
+        + Sync
+        + 'static,
+>;
+
 #[derive(Debug, Clone)]
 pub struct ComponentProcessorInfo {
     pub name: String,
@@ -376,14 +402,7 @@ impl<Prof: EngineProfile> Component<Prof> {
         self,
         parent_ctx: &ComponentProcessorContext<Prof>,
         processor: Prof::ComponentProc,
-        on_error: Option<
-            Arc<
-                dyn Fn(Error) -> Pin<Box<dyn Future<Output = ()> + Send + 'static>>
-                    + Send
-                    + Sync
-                    + 'static,
-            >,
-        >,
+        on_error: Option<OnError>,
         pre_execute_check: Option<Box<dyn FnOnce() -> bool + Send>>,
     ) -> Result<ComponentExecutionHandle> {
         let child_ctx = self.new_processor_context_for_build(
@@ -523,14 +542,7 @@ impl<Prof: EngineProfile> Component<Prof> {
         self,
         processor: Prof::ComponentProc,
         context: ComponentProcessorContext<Prof>,
-        on_error: Option<
-            Arc<
-                dyn Fn(Error) -> Pin<Box<dyn Future<Output = ()> + Send + 'static>>
-                    + Send
-                    + Sync
-                    + 'static,
-            >,
-        >,
+        on_error: Option<OnError>,
         pre_execute_check: Option<Box<dyn FnOnce() -> bool + Send>>,
     ) -> Result<ComponentExecutionHandle> {
         // TODO: Skip building and reuse cached result if the component is already built and up to date.
@@ -576,21 +588,34 @@ impl<Prof: EngineProfile> Component<Prof> {
                 r = self.execute_once(&context, Some(&processor)) => r,
                 _ = cancel_token.cancelled() => Err(internal_error!("operation cancelled")),
             };
-            // For background child component, never propagate the error back to the parent.
-            // If an error handler is registered, run it; otherwise log.
-            // During cancellation, suppress error reporting since failures are
-            // expected as coroutines are torn down.
-            let outcome = match result {
-                Ok((outcome, _)) => outcome,
+            // Background-style error handling:
+            // - Cancellation is always swallowed (no handler call, no
+            //   propagation) — Ctrl+C / shutdown / re-mount shouldn't
+            //   surface as a user-visible error.
+            // - With a handler registered: invoke it. The handler's
+            //   Result decides propagation — Ok = swallow (mount-style),
+            //   Err = propagate via task_result. This lets the Python
+            //   exception handler chain control propagation: handlers
+            //   that return normally → swallow; chain exhausted via
+            //   raises → propagate.
+            // - No handler: log at ERROR, swallow. Matches the existing
+            //   "no chain registered → not propagated" contract.
+            let (outcome, task_result) = match result {
+                Ok((outcome, _)) => (outcome, Ok(())),
                 Err(err) => {
-                    if cancel_token.is_cancelled() || err.is_cancelled() {
+                    let task_result = if cancel_token.is_cancelled() || err.is_cancelled() {
                         trace!("component build cancelled");
+                        Ok(())
                     } else if let Some(handler) = &on_error {
-                        handler(err).await;
+                        match handler(err).await {
+                            Ok(()) => Ok(()),
+                            Err(propagated) => Err(SharedError::from(propagated)),
+                        }
                     } else {
                         error!("component build failed:\n{err:?}");
-                    }
-                    ComponentRunOutcome::exception()
+                        Ok(())
+                    };
+                    (ComponentRunOutcome::exception(), task_result)
                 }
             };
             context.release_inflight_permit();
@@ -600,7 +625,7 @@ impl<Prof: EngineProfile> Component<Prof> {
             if let Some(guard) = child_readiness_guard {
                 guard.resolve(outcome);
             }
-            Ok(())
+            task_result
         });
         Ok(ComponentExecutionHandle::new(async move {
             join_handle
@@ -617,6 +642,10 @@ impl<Prof: EngineProfile> Component<Prof> {
         let child_readiness_guard = context
             .parent_context()
             .map(|c| c.components_readiness().clone().add_child());
+        // Pull on_error out of the delete context so the spawned task
+        // can invoke it. The context still carries the same handler for
+        // descendant GC sweeps to read and cascade.
+        let on_error = context.delete_action_on_error();
         let join_handle: tokio::task::JoinHandle<SharedResult<()>> =
             get_runtime().spawn(async move {
                 if let Some(check) = pre_execute_check {
@@ -631,14 +660,28 @@ impl<Prof: EngineProfile> Component<Prof> {
                 }
                 trace!("deleting component at {}", self.stable_path());
                 let result = self.execute_once(&context, None).await;
-                let outcome = match &result {
-                    Ok((outcome, _)) => outcome.clone(),
+                // Same error model as `run_in_background`: cancellation
+                // filtered; with-handler delegates propagation to the
+                // handler's Result (Ok = swallow, Err = propagate);
+                // without-handler logs + swallow.
+                let (outcome, task_result) = match result {
+                    Ok((outcome, _)) => (outcome, Ok(())),
                     Err(err) => {
-                        error!("component delete failed:\n{err}");
-                        ComponentRunOutcome::exception()
+                        let task_result = if err.is_cancelled() {
+                            trace!("component delete cancelled");
+                            Ok(())
+                        } else if let Some(handler) = &on_error {
+                            match handler(err).await {
+                                Ok(()) => Ok(()),
+                                Err(propagated) => Err(SharedError::from(propagated)),
+                            }
+                        } else {
+                            error!("component delete failed:\n{err:?}");
+                            Ok(())
+                        };
+                        (ComponentRunOutcome::exception(), task_result)
                     }
                 };
-                let task_result = result.map(|_| ()).map_err(SharedError::from);
                 // Drop profile-specific objects BEFORE resolving child readiness.
                 // See run_in_background for the rationale (PyGILState finalization fix).
                 drop(context);
@@ -846,7 +889,22 @@ impl<Prof: EngineProfile> Component<Prof> {
                         })
                     }
                     None => {
-                        cleanup_tombstone(&processor_context).await?;
+                        // Delete path. When any descendant delete failed,
+                        // skip `cleanup_tombstone` (symmetric with the
+                        // build branch skipping `post_submit_for_build`)
+                        // — that preserves the tombstone for the next
+                        // reconcile to retry.
+                        //
+                        // We do NOT propagate via `Err` from here.
+                        // Descendant-failure propagation to awaiting
+                        // callers (notably `App.drop()`) happens via
+                        // the cascading `on_error` plumbed through the
+                        // GC sweep — see `execution.rs::launch_child_component_gc`.
+                        // That's the single, unified error-handling
+                        // channel; this branch just preserves metadata.
+                        if !children_outcome.has_exception {
+                            cleanup_tombstone(&processor_context).await?;
+                        }
                         None
                     }
                 };
@@ -943,13 +1001,17 @@ impl<Prof: EngineProfile> Component<Prof> {
         parent_ctx: Option<&ComponentProcessorContext<Prof>>,
         processing_stats: ProcessingStats,
         host_ctx: Arc<Prof::HostCtx>,
+        on_error: Option<OnError>,
     ) -> ComponentProcessorContext<Prof> {
         ComponentProcessorContext::new(
             self.clone(),
             parent_ctx.cloned(),
             processing_stats,
             host_ctx,
-            ComponentProcessingAction::Delete(ComponentDeleteContext { providers }),
+            ComponentProcessingAction::Delete(ComponentDeleteContext {
+                providers,
+                on_error,
+            }),
         )
     }
 }

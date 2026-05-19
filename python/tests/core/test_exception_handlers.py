@@ -76,3 +76,45 @@ def test_scoped_handler_overrides_global_and_fallback_on_handler_error() -> None
         "inner:component:RuntimeError",
         "global:handler:RuntimeError",
     ]
+
+
+def _raise_for_trace_test() -> None:
+    raise ValueError("traceful boom")
+
+
+def test_background_mount_failure_surfaces_python_traceback() -> None:
+    """The handler should see the full Python traceback for a background mount failure,
+    not just the exception message — the trace is what makes the error actionable."""
+    envmod.reset_default_env_for_tests()
+
+    seen_messages: list[str] = []
+
+    @coco.lifespan
+    def _lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
+        builder.settings.db_path = common.get_env_db_path(
+            "test_exception_handlers_trace"
+        )
+
+        def handler(exc: BaseException, ctx: coco.ExceptionContext) -> None:
+            seen_messages.append(str(exc))
+
+        builder.set_exception_handler(handler)
+        yield
+
+    @coco.fn
+    async def _failing() -> None:
+        _raise_for_trace_test()
+
+    @coco.fn
+    async def _root() -> None:
+        await coco.mount(coco.component_subpath("child"), _failing)
+
+    app = coco.App("test_exception_handlers_trace", _root)
+    app.update_blocking()
+
+    assert len(seen_messages) == 1
+    msg = seen_messages[0]
+    assert "ValueError" in msg
+    assert "traceful boom" in msg
+    assert "Traceback (most recent call last)" in msg
+    assert "_raise_for_trace_test" in msg

@@ -451,6 +451,16 @@ pub(crate) struct ComponentBuildContext<Prof: EngineProfile> {
 
 pub(crate) struct ComponentDeleteContext<Prof: EngineProfile> {
     pub providers: rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
+    /// Error handler that cascades through descendant deletes triggered
+    /// by this delete's GC sweep. `App.drop()` installs a raising handler
+    /// at the root; it propagates down so any descendant failure surfaces
+    /// back through `handle.ready()` to the awaiting caller. `None`
+    /// preserves the "log + swallow" default for callers that don't need
+    /// propagation (e.g. `operator.delete` without a user-installed
+    /// raising handler).
+    ///
+    /// See `specs/core/error_handling.md` for the unified principle.
+    pub on_error: Option<crate::engine::component::OnError>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -621,6 +631,20 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         match &self.inner.processing_action {
             ComponentProcessingAction::Build(_) => ComponentProcessingMode::Build,
             ComponentProcessingAction::Delete { .. } => ComponentProcessingMode::Delete,
+        }
+    }
+
+    /// For Delete-mode contexts: clone of the `on_error` handler installed
+    /// at the context's creation. Read by `Component::delete` (to invoke
+    /// on this component's own failure) and by the GC sweep (to cascade
+    /// to descendant deletes — `App.drop`'s raising handler thus propagates
+    /// down the tree). Returns `None` for Build-mode contexts and for
+    /// Delete-mode contexts with no handler installed (e.g. `operator.delete`
+    /// without a user-installed raising handler).
+    pub(crate) fn delete_action_on_error(&self) -> Option<crate::engine::component::OnError> {
+        match &self.inner.processing_action {
+            ComponentProcessingAction::Delete(d) => d.on_error.clone(),
+            ComponentProcessingAction::Build(_) => None,
         }
     }
 
