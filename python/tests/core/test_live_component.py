@@ -752,28 +752,91 @@ def test_operator_delete_failure_routes_to_handler() -> None:
     assert "c" in stable_path
 
 
-# NOTE: a test that exercises a raising-handler propagating through
-# `handle.ready()` in operator.delete is conspicuously absent here. An
-# initial attempt deadlocked (the live-component task or the drain
-# never observed the propagation). The contract is verified for the
-# `app.drop()` path (see test_app_drop.py::test_drop_failure_raises);
-# the equivalent for operator.delete's handle is implementation-
-# documented but not yet test-covered — follow-up.
+class _LiveThatDeletesWithRaisingHandler:
+    """`operator.delete` with a raising-handler: handle.ready() should raise.
+
+    The raise should propagate via the user's handler chain → Rust
+    on_error returns Err → spawned task task_result = Err →
+    HandleOutcome::Executed(Err) → user's await handle.ready() raises.
+    """
+
+    delete_err: BaseException | None = None
+
+    async def process(self) -> None:
+        pass
+
+    async def process_live(self, operator: coco.LiveComponentOperator) -> None:
+        type(self).delete_err = None
+        await operator.update_full()
+        h = await operator.update(coco.component_subpath("c"), _child_declare_one, 1)
+        await h.ready()
+        await operator.mark_ready()
+        GlobalDictTarget.store.sink_exception = True
+        try:
+            dh = await operator.delete(coco.component_subpath("c"))
+            try:
+                await dh.ready()
+            except Exception as e:
+                # Hold the real exception object on a class attribute:
+                # exercises the operator-detach guarantee (the framework
+                # releases the controller in `_process_live_wrapper`'s
+                # finally, so the exception's traceback no longer pins
+                # the live component's Arc via `operator`).
+                type(self).delete_err = e
+        finally:
+            GlobalDictTarget.store.sink_exception = False
+
+
+@pytest.mark.timeout(10, method="thread")
+def test_operator_delete_failure_propagates_via_raising_handler() -> None:
+    """A handler that raises must propagate the err to handle.ready()."""
+    GlobalDictTarget.store.clear()
+    GlobalDictTarget.store.sink_exception = False
+    _LiveThatDeletesWithRaisingHandler.delete_err = None
+
+    async def raising_handler(exc: BaseException, ctx: coco.ExceptionContext) -> None:
+        raise exc
+
+    env = common.create_test_env(
+        __file__, suffix="delete_raise", exception_handler=raising_handler
+    )
+
+    async def _root() -> None:
+        await coco.mount(
+            coco.component_subpath("live"), _LiveThatDeletesWithRaisingHandler
+        )
+
+    app = coco.App(coco.AppConfig(name="test_delete_raise", environment=env), _root)
+    app.update_blocking(live=True)
+
+    err = _LiveThatDeletesWithRaisingHandler.delete_err
+    assert err is not None
+    assert "injected sink exception" in str(err)
 
 
 class _LiveThatUpdatesFailingChild:
     """Mount a child via operator.update() that raises; the loop continues."""
 
+    update_err: BaseException | None = None
+
     async def process(self) -> None:
         coco.declare_target_state(GlobalDictTarget.target_state("marker", 1))
 
     async def process_live(self, operator: coco.LiveComponentOperator) -> None:
+        type(self).update_err = None
         await operator.update_full()
         await operator.mark_ready()
         handle = await operator.update(
             coco.component_subpath("bad_child"), _failing_child, 42
         )
-        await handle.ready()  # should NOT raise — error goes via handler chain
+        try:
+            await handle.ready()
+        except Exception as e:
+            # Hold the real exception (with traceback) on a class
+            # attribute to verify the operator-detach guarantee:
+            # `_process_live_wrapper`'s finally releases the controller
+            # so the retained traceback can't pin the live component.
+            type(self).update_err = e
 
 
 def test_operator_update_child_failure_routes_to_handler() -> None:
@@ -781,6 +844,7 @@ def test_operator_update_child_failure_routes_to_handler() -> None:
     through the parent's exception handler chain with mount_kind='process_live'
     — same as update_full() cycle failures, not silently logged via Rust."""
     GlobalDictTarget.store.clear()
+    _LiveThatUpdatesFailingChild.update_err = None
 
     seen: list[tuple[str, str, str]] = []
 
@@ -804,6 +868,34 @@ def test_operator_update_child_failure_routes_to_handler() -> None:
     assert exc_name == "RuntimeError"
     assert mount_kind == "process_live"
     assert "bad_child" in stable_path
+    # Swallowing handler → no propagation
+    assert _LiveThatUpdatesFailingChild.update_err is None
+
+
+@pytest.mark.timeout(10, method="thread")
+def test_operator_update_child_failure_propagates_via_raising_handler() -> None:
+    """operator.update with a RAISING handler: handle.ready() should raise.
+    Probe to localize the hang — if this also hangs, the issue is in the
+    on_error mechanism generally, not delete-specific."""
+    GlobalDictTarget.store.clear()
+    _LiveThatUpdatesFailingChild.update_err = None
+
+    def raising(exc: BaseException, ctx: coco.ExceptionContext) -> None:
+        raise exc
+
+    env = common.create_test_env(
+        __file__, suffix="op_update_raise", exception_handler=raising
+    )
+
+    async def _root() -> None:
+        await coco.mount(coco.component_subpath("live"), _LiveThatUpdatesFailingChild)
+
+    app = coco.App(coco.AppConfig(name="test_op_update_raise", environment=env), _root)
+    app.update_blocking(live=True)
+
+    err = _LiveThatUpdatesFailingChild.update_err
+    assert err is not None
+    assert "child failed with value=42" in str(err)
 
 
 def test_report_exception_falls_back_to_log_when_no_handler(

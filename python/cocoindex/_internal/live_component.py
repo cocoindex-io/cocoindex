@@ -95,7 +95,8 @@ def check_not_in_process_live(api_name: str) -> None:
 
 
 async def _process_live_wrapper(instance: Any, operator: LiveComponentOperator) -> None:
-    """Wrap a `process_live` invocation to set `_in_process_live = True`.
+    """Wrap a `process_live` invocation to set `_in_process_live = True`
+    and detach the operator's controller on exit.
 
     Used by `_mount_live_component` (api.py) and the LiveCompClass branch
     of `LiveComponentOperator.update`.
@@ -107,6 +108,17 @@ async def _process_live_wrapper(instance: Any, operator: LiveComponentOperator) 
     `ValueError("Token was created in a different Context")`. Direct
     `set(prev)` always works because we're mutating whatever the
     current Context is.
+
+    The ``operator._detach()`` in the same finally is the framework's
+    fix for a subtle live-mode leak: if user code in ``process_live``
+    catches an exception and retains it (``self.last_err = e`` /
+    re-raises later), the exception's traceback holds the calling
+    frame's locals, which include ``operator`` — and ``operator`` owns a
+    Rust ``Arc`` to the live component's ``Component``. Without
+    detach, ``App.update``'s ``wait_until_inactive`` poll never observes
+    the live component as inactive. After detach, the Rust controller
+    drops on schedule; later operator method calls raise. See
+    ``specs/core/error_handling.md`` §4.1.
     """
     prev = _in_process_live.get()
     _in_process_live.set(True)
@@ -114,6 +126,7 @@ async def _process_live_wrapper(instance: Any, operator: LiveComponentOperator) 
         await instance.process_live(operator)
     finally:
         _in_process_live.set(prev)
+        operator._detach()
 
 
 @runtime_checkable
@@ -197,9 +210,27 @@ def is_live_component_class(cls: Any) -> bool:
 
 
 class LiveComponentOperator:
-    """Passed to process_live(). Wraps the Rust LiveComponentController."""
+    """Passed to process_live(). Wraps the Rust LiveComponentController.
+
+    Lifecycle: the operator is **scoped to one invocation of process_live**.
+    After process_live returns (normally or via exception), the wrapper that
+    invoked it calls :meth:`_detach` to release the Rust controller. This
+    matters because the Rust ``LiveComponentController`` holds a strong
+    ``Arc`` to the live component's ``Component``, and the framework's
+    ``wait_until_inactive`` poll (used by ``App.update`` in live mode to
+    detect "all done, safe to terminate") tracks that strong count.
+
+    Without detach, user code in ``process_live`` that catches an
+    exception and stores it (e.g. ``self.last_err = e``) would
+    accidentally pin the live component forever — Python exception
+    objects retain their traceback, which retains the caller's frame
+    locals, which retains ``operator``. See
+    ``specs/core/error_handling.md`` §4.1.
+    """
 
     __slots__ = ("_controller", "_instance", "_env", "_path")
+
+    _controller: core.LiveComponentController | None
 
     def __init__(
         self,
@@ -212,6 +243,27 @@ class LiveComponentOperator:
         self._instance = instance
         self._env = env
         self._path = path
+
+    def _detach(self) -> None:
+        """Release the Rust controller; subsequent operator calls raise.
+
+        Called by ``_process_live_wrapper`` in a ``finally`` block once
+        ``process_live`` returns. After detach, the operator is usable only
+        for inspecting its own metadata (``_env``, ``_path``); the
+        controller-backed methods (:meth:`update_full`, :meth:`update`,
+        :meth:`delete`, :meth:`mark_ready`) raise :class:`RuntimeError`.
+        """
+        self._controller = None
+
+    def _require_controller(self) -> core.LiveComponentController:
+        """Return the controller or raise if already detached."""
+        ctrl = self._controller
+        if ctrl is None:
+            raise RuntimeError(
+                "LiveComponentOperator is no longer active. Operator "
+                "methods are only valid inside the body of process_live."
+            )
+        return ctrl
 
     def _resolve_exception_handler(self) -> Callable[[str], Awaitable[None]]:
         """Build a resolver for the parent's exception handler chain.
@@ -247,6 +299,7 @@ class LiveComponentOperator:
         patterns (e.g. `coco.auto_refresh`) keep looping when a single
         cycle fails, while still surfacing the failure to operators.
         """
+        controller = self._require_controller()
         processor = create_core_component_processor(
             self._instance.process, self._env, self._path, (), {}
         )
@@ -254,7 +307,7 @@ class LiveComponentOperator:
         prev = _in_process_live.get()
         _in_process_live.set(False)
         try:
-            await self._controller.update_full_async(processor, on_error)
+            await controller.update_full_async(processor, on_error)
         finally:
             _in_process_live.set(prev)
 
@@ -271,6 +324,7 @@ class LiveComponentOperator:
         for part in subpath.parts:
             child_path = child_path.concat(part)
 
+        controller = self._require_controller()
         # Slice F: branch on processor type. A LiveComponent class triggers
         # the nested-mount path — we install a fresh inner controller at the
         # child path under the parent's `update_full_lock`, then spawn the
@@ -281,7 +335,7 @@ class LiveComponentOperator:
             (
                 inner_controller,
                 readiness_handle,
-            ) = await self._controller.mount_inner_live_async(child_path)
+            ) = await controller.mount_inner_live_async(child_path)
             inner_operator = LiveComponentOperator(
                 inner_controller, instance, self._env, child_path
             )
@@ -305,9 +359,7 @@ class LiveComponentOperator:
             processor_name=getattr(processor_fn, "__qualname__", None),
             mount_kind="process_live",
         )
-        core_handle = await self._controller.update_async(
-            child_path, processor, on_error
-        )
+        core_handle = await controller.update_async(child_path, processor, on_error)
         return ComponentMountHandle([core_handle])
 
     async def delete(self, subpath: ComponentSubpath) -> Any:
@@ -326,6 +378,7 @@ class LiveComponentOperator:
         """
         from .api import ComponentMountHandle
 
+        controller = self._require_controller()
         child_path = self._path
         for part in subpath.parts:
             child_path = child_path.concat(part)
@@ -334,12 +387,12 @@ class LiveComponentOperator:
             processor_name=None,
             mount_kind="process_live",
         )
-        core_handle = await self._controller.delete_async(child_path, on_error)
+        core_handle = await controller.delete_async(child_path, on_error)
         return ComponentMountHandle([core_handle])
 
     async def mark_ready(self) -> None:
         """Signal readiness. In catch-up mode, this never returns (terminates process_live)."""
-        await self._controller.mark_ready_async()
+        await self._require_controller().mark_ready_async()
 
     async def report_exception(self, exc: BaseException) -> None:
         """Route an exception raised during ``process_live`` to the parent's exception handler chain.
