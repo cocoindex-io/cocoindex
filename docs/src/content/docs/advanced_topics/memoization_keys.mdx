@@ -78,6 +78,37 @@ register_memo_key_function(Path, path_key)
 - Registration is **MRO-aware**: if you register both a base class and a subclass, the **most specific** match wins.
 - Your key function must return the same kinds of stable objects as `__coco_memo_key__` (small primitives/tuples).
 
+### Override at the call site with `memo_key=`
+
+The two approaches above are **type-level**: every memoized function sees the same fingerprint for a given object. To customize fingerprinting **only for a specific function**, pass `memo_key=` to `@coco.fn` (or `@coco.fn.as_async`). It maps parameter names to either a callable (transform the value before fingerprinting) or `None` (exclude the parameter entirely).
+
+```python
+@coco.fn(memo=True, memo_key={"entry": lambda e: (e.name, e.version), "extra": None})
+def transform(entry: SourceDataEntry, extra: str) -> str:
+    ...
+```
+
+Each entry in `memo_key`:
+
+- **Callable** — applied to the argument; its return value is fingerprinted in place of the original. Semantically the same as `__coco_memo_key__()` on the type, but scoped to this one function. Useful when the type's default fingerprint is correct everywhere *else*, and only this function should treat the argument differently.
+- **`None`** — the parameter is excluded from the memo key. Changing its value never invalidates the cache. Useful for arguments that don't affect the result (logger handles, debug flags, request-scoped context that isn't part of the computation).
+- **Not listed** — the parameter is fingerprinted normally (type-level `__coco_memo_key__`, registered handler, or default canonicalization).
+
+It works for every parameter kind:
+
+- **Positional / keyword parameters** — referenced by name.
+- **`self`** — methods can pass `memo_key={"self": lambda self: self.prefix}` to memoize on selected instance state instead of the whole instance. Changes to other attributes on the same instance won't invalidate the memo.
+- **`*args`** — name the varargs parameter; the callable receives the full tuple and must return a tuple. `None` excludes all variadic positional arguments.
+- **`**kwargs`** — name the varkw parameter; the callable receives a dict and must return a dict. `None` excludes all variadic keyword arguments.
+
+`memo_key` is validated at decoration time: unknown parameter names raise `ValueError`, and values that are neither callable nor `None` raise `TypeError`.
+
+:::tip[Picking the right tool]
+- You control the type and the fingerprint is the same wherever it's used → **`__coco_memo_key__`**.
+- You don't control the type but want a global handler → **`register_memo_key_function`**.
+- Only *this* function should treat an argument specially (transform or skip it) → **`memo_key=`**.
+:::
+
 ## Memo state validation
 
 Sometimes fingerprint matching alone isn't enough to decide whether a cached result is valid. For example:

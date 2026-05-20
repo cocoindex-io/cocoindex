@@ -240,6 +240,8 @@ Conversely, if a memo is hitting when you expect invalidation, common causes are
 
 By default, CocoIndex fingerprints function arguments, `deps` values, and context values automatically for most types — primitives, containers, dataclasses, Pydantic models, and picklable objects. For custom types, or when you need multi-level validation (e.g., check mtime first, then content hash), see [Memoization Keys & States](../advanced_topics/memoization_keys).
 
+For per-function overrides — excluding an argument from the memo key, or transforming it just for this function — pass `memo_key={...}` on `@coco.fn` / `@coco.fn.as_async`; see [Override at the call site with `memo_key=`](../advanced_topics/memoization_keys#override-at-the-call-site-with-memo_key).
+
 ## Execution capabilities
 
 The following capabilities control *how* the function executes, independent of change detection and memoization.
