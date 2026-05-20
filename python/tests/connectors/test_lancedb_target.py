@@ -5,7 +5,7 @@ from __future__ import annotations
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterator, cast
 
 import pytest
 
@@ -62,7 +62,7 @@ if HAS_LANCEDB:
     ) -> list[dict[str, Any]]:
         table = await conn.open_table(table_name)
         arrow_table = await table.to_arrow()
-        return arrow_table.to_pylist()
+        return cast(list[dict[str, Any]], arrow_table.to_pylist())
 
     async def _read_column_names(
         conn: lancedb.LanceAsyncConnection, table_name: str
@@ -74,7 +74,7 @@ if HAS_LANCEDB:
         conn: lancedb.LanceAsyncConnection, table_name: str
     ) -> int:
         table = await conn.open_table(table_name)
-        return await table.version()
+        return cast(int, await table.version())
 
     def _make_env(
         conn: lancedb.LanceAsyncConnection, env_name: str
@@ -293,8 +293,8 @@ async def test_add_multiple_columns_in_place(lancedb_dir: Path) -> None:
 
 @requires_lancedb
 def test_lancedb_async_table_supports_add_columns_api() -> None:
-    from lancedb.table import AsyncTable
+    async_table = cast(Any, lancedb).table.AsyncTable
 
-    assert hasattr(AsyncTable, "add_columns")
-    assert callable(AsyncTable.add_columns)
+    assert hasattr(async_table, "add_columns")
+    assert callable(async_table.add_columns)
     assert pa.field("x", pa.string())
