@@ -392,6 +392,11 @@ impl<Prof: EngineProfile> Component<Prof> {
             parent_ctx.full_reprocess(),
             parent_ctx.live(), // use_mount inherits live from parent
             parent_ctx.host_ctx().clone(),
+            // No build-mode on_error: use_mount is foreground; failures
+            // propagate as `Err` to the awaiting parent via `.result()`.
+            // Orphan-delete failures during this child's commit fall
+            // through to the framework's default `error!` log.
+            None,
         )?;
         self.run(processor, child_ctx).await
     }
@@ -405,12 +410,17 @@ impl<Prof: EngineProfile> Component<Prof> {
         on_error: Option<OnError>,
         pre_execute_check: Option<Box<dyn FnOnce() -> bool + Send>>,
     ) -> Result<ComponentExecutionHandle> {
+        // Store `on_error` on the child's build context too, so the
+        // commit-phase GC sweep can cascade it to orphan deletes. The
+        // same handler is also passed to `run_in_background` for the
+        // child's own task failure — one handler, two surfaces.
         let child_ctx = self.new_processor_context_for_build(
             Some(parent_ctx),
             parent_ctx.processing_stats().clone(),
             parent_ctx.full_reprocess(),
             parent_ctx.live(), // mount inherits live from parent
             parent_ctx.host_ctx().clone(),
+            on_error.clone(),
         )?;
         self.run_in_background(processor, child_ctx, on_error, pre_execute_check)
             .await
@@ -961,6 +971,7 @@ impl<Prof: EngineProfile> Component<Prof> {
         full_reprocess: bool,
         live: bool,
         host_ctx: Arc<Prof::HostCtx>,
+        on_error: Option<OnError>,
     ) -> Result<ComponentProcessorContext<Prof>> {
         let providers = if let Some(parent_ctx) = parent_ctx {
             let sub_path = self
@@ -991,7 +1002,7 @@ impl<Prof: EngineProfile> Component<Prof> {
             parent_ctx.cloned(),
             processing_stats,
             host_ctx,
-            ComponentProcessingAction::new_build(providers, full_reprocess, live),
+            ComponentProcessingAction::new_build(providers, full_reprocess, live, on_error),
         ))
     }
 

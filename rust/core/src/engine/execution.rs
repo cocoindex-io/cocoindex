@@ -586,17 +586,24 @@ impl<Prof: EngineProfile> Committer<Prof> {
     }
 
     async fn launch_child_component_gc<T: AnyTxn>(&self, rtxn: &mut T) -> Result<()> {
-        // Cascade the parent's delete on_error to descendant deletes.
-        // For Delete-mode parents (the recursive cascade triggered by
-        // `App.drop()`'s root delete), the parent's on_error propagates
-        // here so any descendant failure surfaces through it. For
-        // Build-mode parents (orphan deletes during a normal update),
-        // `delete_action_on_error()` returns None — preserving the
-        // pre-existing "log + swallow" default.
+        // Cascade the parent's on_error to descendant orphan deletes.
+        //
+        // - Delete-mode parent (recursive cascade from `App.drop()`'s
+        //   root delete): the raising on_error propagates so any
+        //   descendant failure surfaces back through `handle.ready()`.
+        // - Build-mode parent (orphan deletes during a normal update,
+        //   triggered by the parent's `process()` no longer declaring a
+        //   previously-existing child): the on_error installed on the
+        //   parent's build context — same handler `Component::mount`
+        //   wires for the child's own task failure — sees orphan-delete
+        //   failures too.
+        // - No installed handler (root `App.update`, `use_mount`,
+        //   `operator.delete` without a chain): `None` preserves the
+        //   "log + swallow" default.
         //
         // The `Arc` makes cloning cheap regardless of how many
         // descendants we spawn.
-        let cascaded_on_error = self.component_ctx.delete_action_on_error();
+        let cascaded_on_error = self.component_ctx.processing_action_on_error();
         let mut handles = Vec::new();
         for relative_path in self
             .app_store
