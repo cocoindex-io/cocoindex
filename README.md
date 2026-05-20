@@ -310,3 +310,220 @@ coco.App(coco.AppConfig(name="docs"), main, src="./docs").update_blocking()
 <br/><br/>
 
 <p align="center"><sub>Apache 2.0 · © CocoIndex contributors 🥥</sub></p>
+
+## ❓ FAQ
+
+<details>
+<summary><b>What is CocoIndex?</b></summary>
+
+**CocoIndex** is an open-source Python framework for building **incremental data pipelines for AI agents**. It transforms codebases, meeting notes, Slack, PDFs, and videos into live, continuously fresh context for your AI agents — with minimal incremental processing.
+
+**Key differentiators:**
+- **Incremental**: Only the Δ (delta) is reprocessed on every change
+- **Declarative**: Declare target state, engine keeps it in sync
+- **Any scale**: Parallel by default, handles petabyte-scale corpora
+- **Lineage**: Every vector/row traces back to exact source byte
+
+**"Your agents deserve fresh context."** — CocoIndex keeps AI agent memory live, not stale.
+
+</details>
+
+<details>
+<summary><b>How does CocoIndex compare to LangChain or LlamaIndex?</b></summary>
+
+| Framework | Focus | Best For |
+|-----------|-------|----------|
+| **CocoIndex** | Incremental data pipelines for AI agents | Live agent context, production RAG, explainable data |
+| **LangChain** | LLM application chains | Chain-based LLM apps, tool calling |
+| **LlamaIndex** | LLM data indexing | Document Q&A, static RAG |
+
+**CocoIndex** is specifically designed for **incremental, production-grade data pipelines** that stay fresh at any scale.
+
+</details>
+
+<details>
+<summary><b>What are the core concepts?</b></summary>
+
+**Sources**: Where data comes from
+- Codebases (Git repos, AST-aware chunking)
+- Meeting notes, Slack, PDFs, videos
+- Web APIs, databases, message queues
+- File systems, blob stores (S3, GDrive)
+
+**Targets**: Where data goes
+- Vector DBs (pgvector, LanceDB)
+- Graph DBs (Neo4j, Kuzu)
+- Relational DBs, warehouses
+- Message queues (Kafka)
+
+**Flows**: Python transformation functions
+- `@coco.fn(memo=True)` — cached by hash(input) + hash(code)
+- `table.declare_row()` — declare target state
+- `table.declare_vector_index()` — declare vector index
+
+**Incremental Engine**: Keeps target in sync with source
+- Only changed files/chunks re-process
+- Code changes invalidate dependent rows
+- Sub-second freshness
+
+</details>
+
+<details>
+<summary><b>What LLM providers are supported?</b></summary>
+
+**Embedding providers:**
+- OpenAI (text-embedding-ada-002, text-embedding-3-small/large)
+- Sentence Transformers (local)
+- Cohere
+- Azure OpenAI
+- Google Gemini
+- Any embedding provider via custom drivers
+
+**LLM extraction (structured extraction):**
+- OpenAI (GPT-4, GPT-4.1)
+- Anthropic (Claude)
+- Google Gemini (2.5 Flash for fast extraction)
+- BAML / DSPy for structured extraction
+
+</details>
+
+<details>
+<summary><b>How do I get started?</b></summary>
+
+**Install:**
+```bash
+pip install -U cocoindex
+```
+
+**Quick example:**
+```python
+import cocoindex as coco
+from cocoindex.connectors import localfs, postgres
+from cocoindex.ops.text import RecursiveSplitter
+
+@coco.fn(memo=True)  # cached by hash(input) + hash(code)
+async def index_file(file, table):
+    for chunk in RecursiveSplitter().split(await file.read_text()):
+        table.declare_row(text=chunk.text, embedding=embed(chunk.text))
+
+@coco.fn
+async def main(src):
+    table = await postgres.mount_table_target(PG, table_name="docs")
+    table.declare_vector_index(column="embedding")
+    await coco.mount_each(index_file, localfs.walk_dir(src).items(), table)
+
+coco.App(coco.AppConfig(name="docs"), main, src="./docs").update_blocking()
+```
+
+**Run once to backfill. Re-run anytime — only changed files re-embed.**
+
+</details>
+
+<details>
+<summary><b>Why incremental?</b></summary>
+
+**Your agents are only as good as the data they see.** Batch pipelines drift stale. CocoIndex stays live.
+
+**Four key benefits:**
+
+1. **Sub-second fresh**: Source changes propagate to target in under a second
+2. **10× cheaper at scale**: Only 0.1% of corpus re-runs, 99.9% stays cached
+3. **Explainable by default**: Every vector traces back to exact source byte
+4. **Production-grade**: Rust core with retries, back-off, dead-letter queues, no data loss
+
+</details>
+
+<details>
+<summary><b>What can I build with CocoIndex?</b></summary>
+
+**20+ working examples** from [examples/](examples/):
+
+- **Code embedding**: Walk git repo, AST-chunk, embed, upsert to pgvector/LanceDB
+- **PDF → RAG**: Ingest PDFs from S3/GDrive, chunk, embed, vector search
+- **HN trending topics**: Fetch Hacker News, LLM-extract topics, rank by mention count
+- **Conversation → knowledge graph**: Extract entities from transcripts, upsert to Neo4j/Kuzu
+- **Multi-repo summarization**: Summarize N git repos, roll up org-level summary
+- **Structured extraction**: BAML/DSPy schema extraction from forms, PDFs
+- **Podcast → knowledge graph**: Transcribe YouTube audio, extract speakers/statements
+- **CSV → Kafka**: Watch CSVs, publish rows to Kafka topic (sub-second incremental)
+
+</details>
+
+<details>
+<summary><b>What is CocoIndex-code?</b></summary>
+
+**CocoIndex-code** is the flagship MCP server for AI coding agents (Claude Code, Cursor).
+
+**Features:**
+- AST-aware incremental code index
+- Semantic search by meaning (not grep)
+- Call graphs and blast-radius analysis
+- Global repo view for duplicates and architecture
+- 70% fewer tokens per turn, 80-90% cache hits on re-index
+
+**Install:** [cocoindex.io/cocoindex-code](https://cocoindex.io/cocoindex-code)
+
+</details>
+
+<details>
+<summary><b>What Python versions are supported?</b></summary>
+
+CocoIndex supports **Python 3.10 - 3.13**.
+
+The core engine is built in **Rust** for production-grade reliability.
+
+</details>
+
+<details>
+<summary><b>How do I use CocoIndex with AI coding agents?</b></summary>
+
+**Install the CocoIndex skill** so your AI coding agent writes correct v1 code:
+
+- See [skills/cocoindex/](skills/cocoindex/) for the skill file
+- See [Use with AI coding agents](https://cocoindex.io/docs/getting_started/ai_coding_agents/) for install steps
+
+The skill provides concepts, APIs, and patterns in one file for Claude Code, Cursor, etc.
+
+</details>
+
+<details>
+<summary><b>What connectors are available?</b></summary>
+
+**Sources (8 categories):**
+- Codebases (Git repos)
+- Meeting notes, transcripts
+- Web APIs (Algolia, etc.)
+- File systems, blob stores (S3, GDrive)
+- Databases (Postgres, etc.)
+- Message queues
+- Images, videos
+- Voice transcripts
+
+**Targets (6 stores):**
+- Relational DB (Postgres)
+- Data warehouse
+- Vector DB (pgvector, LanceDB)
+- Graph DB (Neo4j, Kuzu)
+- Message queue (Kafka)
+- Feature store
+
+</details>
+
+<details>
+<summary><b>What is the license?</b></summary>
+
+CocoIndex is available under the **Apache-2.0 License**.
+
+</details>
+
+<details>
+<summary><b>Where can I get help?</b></summary>
+
+- 📖 **Documentation**: [cocoindex.io/docs](https://cocoindex.io/docs)
+- 🥥 **Examples**: [examples/](examples) — 20+ working starters
+- 💬 **Discord**: [Join the community](https://discord.com/invite/zpA9S2DR7s)
+- 🐛 **Issues**: [GitHub Issues](https://github.com/cocoindex-io/cocoindex/issues)
+- 📺 **YouTube**: [@cocoindex-io](https://www.youtube.com/@cocoindex-io)
+- 𝕏 **X/Twitter**: [@cocoindex_io](https://x.com/cocoindex_io)
+
+</details>
