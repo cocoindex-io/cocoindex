@@ -522,10 +522,14 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
             None,
             self.processing_stats.clone(),
             self.host_ctx.clone(),
+            // Mirror `Component::mount`: store the same on_error on the
+            // build context so the cycle's commit-phase GC sweep cascades
+            // it to orphan deletes too.
             ComponentProcessingAction::new_build(
                 self.providers.clone(),
                 self.full_reprocess,
                 self.live,
+                on_error.clone(),
             ),
         );
 
@@ -813,10 +817,14 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
             None,
             self.processing_stats.clone(),
             self.host_ctx.clone(),
+            // No on_error on this synthetic parent context — it only
+            // exists to register the child in `child_path_set`; no
+            // commit/GC sweep runs through it.
             ComponentProcessingAction::new_build(
                 self.providers.clone(),
                 self.full_reprocess,
                 self.live,
+                None,
             ),
         );
         let fn_ctx = FnCallContext::default();
@@ -1110,7 +1118,15 @@ async fn run_op<Prof: EngineProfile>(
                 None,
                 processing_stats.clone(),
                 host_ctx.clone(),
-                ComponentProcessingAction::new_build(providers.clone(), full_reprocess, live),
+                // Mirror `Component::mount`: same on_error stored on the
+                // build context so this op's commit-phase GC sweep
+                // cascades it to orphan deletes.
+                ComponentProcessingAction::new_build(
+                    providers.clone(),
+                    full_reprocess,
+                    live,
+                    on_error.clone(),
+                ),
             );
             let inner_handle = child
                 .run_in_background(processor, context, on_error, None)

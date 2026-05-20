@@ -107,6 +107,12 @@ impl<Prof: EngineProfile> App<Prof> {
             options.full_reprocess,
             options.live,
             host_ctx,
+            // Root has no installed on_error in Build mode — orphan-delete
+            // failures from the root's GC sweep log + swallow. (Cascading
+            // a raising on_error from root would equate "any orphan delete
+            // failed" with "the whole update failed", which is too strict;
+            // tombstones survive for retry on the next reconcile.)
+            None,
         )?;
 
         let root_component = self.root_component.clone();

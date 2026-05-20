@@ -447,6 +447,13 @@ pub(crate) struct ComponentBuildContext<Prof: EngineProfile> {
     pub state: Mutex<Option<ComponentBuildingState<Prof>>>,
     pub full_reprocess: bool,
     pub live: bool,
+    /// Error handler routed to orphan-delete failures from this build's
+    /// commit-phase GC sweep. Same shape and meaning as
+    /// `ComponentDeleteContext::on_error` — see that doc for the
+    /// unified principle. `None` preserves the "log + swallow"
+    /// default (e.g. root `App.update`, `use_mount`'s foreground path,
+    /// `mount_inner_live`'s self-built parent context).
+    pub on_error: Option<crate::engine::component::OnError>,
 }
 
 pub(crate) struct ComponentDeleteContext<Prof: EngineProfile> {
@@ -479,6 +486,7 @@ impl<Prof: EngineProfile> ComponentProcessingAction<Prof> {
         providers: rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
         full_reprocess: bool,
         live: bool,
+        on_error: Option<crate::engine::component::OnError>,
     ) -> Self {
         Self::Build(ComponentBuildContext {
             state: Mutex::new(Some(ComponentBuildingState {
@@ -491,6 +499,7 @@ impl<Prof: EngineProfile> ComponentProcessingAction<Prof> {
             })),
             full_reprocess,
             live,
+            on_error,
         })
     }
 }
@@ -634,13 +643,39 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         }
     }
 
-    /// For Delete-mode contexts: clone of the `on_error` handler installed
-    /// at the context's creation. Read by `Component::delete` (to invoke
-    /// on this component's own failure) and by the GC sweep (to cascade
-    /// to descendant deletes — `App.drop`'s raising handler thus propagates
-    /// down the tree). Returns `None` for Build-mode contexts and for
-    /// Delete-mode contexts with no handler installed (e.g. `operator.delete`
-    /// without a user-installed raising handler).
+    /// Clone of the `on_error` handler installed at the context's creation,
+    /// available for both Build- and Delete-mode contexts.
+    ///
+    /// Read by:
+    /// - `Component::delete`'s spawned task (Delete only — invoke on this
+    ///   component's own failure).
+    /// - The commit-phase GC sweep (both modes — cascade to descendant
+    ///   deletes triggered by this component's submit/commit).
+    ///
+    /// For Delete-mode (`App.drop`'s root), the raising handler installed
+    /// at root cascades down through every recursive delete. For Build-mode
+    /// (a `coco.mount` child whose `process()` no longer declares a
+    /// previously-existing grandchild), the child's user-installed
+    /// exception handler chain — wired through `Component::mount`'s
+    /// `on_error` parameter — sees orphan-delete failures from the
+    /// commit-phase GC sweep.
+    ///
+    /// Returns `None` when no handler was installed (e.g. root `App.update`,
+    /// `use_mount`'s foreground path, `operator.delete` without a
+    /// user-installed raising handler).
+    pub(crate) fn processing_action_on_error(&self) -> Option<crate::engine::component::OnError> {
+        match &self.inner.processing_action {
+            ComponentProcessingAction::Build(b) => b.on_error.clone(),
+            ComponentProcessingAction::Delete(d) => d.on_error.clone(),
+        }
+    }
+
+    /// Delete-mode-only on_error accessor. Used by `Component::delete`'s
+    /// spawned task to invoke the handler on this component's own
+    /// execution failure (a *Build*-context's on_error is meant for
+    /// orphan-delete cascades, not for invoking on the build's own
+    /// failure — that flows through the `on_error` argument to
+    /// `run_in_background` directly).
     pub(crate) fn delete_action_on_error(&self) -> Option<crate::engine::component::OnError> {
         match &self.inner.processing_action {
             ComponentProcessingAction::Delete(d) => d.on_error.clone(),
