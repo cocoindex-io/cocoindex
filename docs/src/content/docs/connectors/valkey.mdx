@@ -29,6 +29,11 @@ Requires a Valkey server with the [valkey-search](https://github.com/valkey-io/v
 def create_client_config(
     host: str = "localhost",
     port: int = 6379,
+    *,
+    password: str | None = None,
+    use_tls: bool = False,
+    client_name: str | None = None,
+    **kwargs: Any,
 ) -> GlideClientConfiguration
 ```
 
@@ -36,6 +41,12 @@ def create_client_config(
 
 - `host` — Valkey server host (default: `"localhost"`).
 - `port` — Valkey server port (default: `6379`).
+- `password` — Optional authentication password.
+- `use_tls` — Whether to use TLS for the connection (default: `False`).
+- `client_name` — Optional client name for the connection.
+- `**kwargs` — Additional keyword arguments passed to `GlideClientConfiguration`.
+
+For advanced configurations not covered by these parameters, construct `GlideClientConfiguration` directly.
 
 **Returns:** A `GlideClientConfiguration` instance.
 
@@ -128,12 +139,14 @@ class IndexSchema:
     async def create(
         cls,
         vectors: VectorDef,
+        fields: list[FieldDef] | None = None,
     ) -> IndexSchema
 ```
 
 **Parameters:**
 
 - `vectors` — A `VectorDef` specifying the vector field configuration.
+- `fields` — Optional list of `FieldDef` for indexed payload fields (enables search/filtering).
 
 #### VectorDef
 

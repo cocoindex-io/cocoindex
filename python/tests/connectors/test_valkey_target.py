@@ -364,6 +364,64 @@ async def test_update_document(valkey_env: _ValkeyEnv) -> None:
 @requires_glide
 @requires_server
 @pytest.mark.asyncio
+async def test_update_document_removes_stale_fields(valkey_env: _ValkeyEnv) -> None:
+    """Test that updating a document removes payload fields no longer present."""
+    index_name = _unique_name("test_stale")
+    source_docs: list[valkey.Document] = []
+
+    async def declare_fn() -> None:
+        index = await coco.use_mount(
+            coco.component_subpath("setup", "index"),
+            valkey.declare_index_target,
+            _VALKEY_DB_KEY,
+            index_name,
+            await valkey.IndexSchema.create(
+                vectors=valkey.VectorDef(schema=_VECTOR_SCHEMA, distance="cosine"),
+            ),
+        )
+        for doc in source_docs:
+            index.declare_document(doc)
+
+    app = coco.App(
+        coco.AppConfig(name="test_stale_fields", environment=valkey_env.coco_env),
+        declare_fn,
+    )
+
+    # First version has two payload fields
+    source_docs.append(
+        valkey.Document(
+            id="doc1",
+            vector=_make_vector(_DIM, 1.0),
+            payload={"text": "hello", "category": "greeting"},
+        )
+    )
+    await app.update()
+
+    client = valkey_env.client
+    assert await client.hget(f"{index_name}:doc1", "category") in (
+        b"greeting",
+        "greeting",
+    )
+
+    # Update: remove the "category" field from payload
+    source_docs.clear()
+    source_docs.append(
+        valkey.Document(
+            id="doc1",
+            vector=_make_vector(_DIM, 2.0),
+            payload={"text": "updated"},
+        )
+    )
+    await app.update()
+
+    # "category" should no longer exist in the hash
+    assert await client.hget(f"{index_name}:doc1", "text") in (b"updated", "updated")
+    assert await client.hget(f"{index_name}:doc1", "category") is None
+
+
+@requires_glide
+@requires_server
+@pytest.mark.asyncio
 async def test_delete_document(valkey_env: _ValkeyEnv) -> None:
     """Test deleting a document when no longer declared."""
     index_name = _unique_name("test_delete")

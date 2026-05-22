@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 import struct
 from dataclasses import dataclass
 from typing import (
+    Any,
     Collection,
     Generic,
     Literal,
@@ -14,6 +16,8 @@ from typing import (
 
 import msgspec
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 try:
     from glide import (
@@ -273,7 +277,9 @@ class _DocumentHandler(coco.TargetHandler[Document, _DocumentFingerprint]):
             if action.fields is None:
                 await self._client.delete([action.hash_key])
             else:
-                # Upsert via HSET
+                # Delete then re-create to avoid stale payload fields from
+                # previous versions persisting in the HASH.
+                await self._client.delete([action.hash_key])
                 await self._client.hset(action.hash_key, action.fields)  # type: ignore[arg-type]
 
     def reconcile(
@@ -360,12 +366,20 @@ class _IndexHandler(
                 action = actions_list[i]
 
                 if action.main_action in ("replace", "delete"):
+                    # Drop the index first; on "replace" we also purge all
+                    # prefixed document keys before re-creating the index.
                     try:
                         await ft.dropindex(client, key.index_name)
-                    except Exception:
-                        pass  # Index may not exist
+                    except Exception as exc:
+                        # RequestError is raised when the index doesn't exist.
+                        # Log unexpected errors but continue — the index may
+                        # have already been removed externally.
+                        logger.debug(
+                            "dropindex(%s) failed (may not exist): %s",
+                            key.index_name,
+                            exc,
+                        )
 
-                    # Delete all documents with the prefix
                     if action.main_action == "replace":
                         await self._delete_prefix_keys(client, key.index_name)
 
@@ -391,13 +405,24 @@ class _IndexHandler(
 
         return outputs
 
-    async def _delete_prefix_keys(self, client: GlideClient, index_name: str) -> None:
-        """Delete all hash keys with the index prefix."""
+    async def _delete_prefix_keys(
+        self, client: GlideClient, index_name: str, *, max_iterations: int = 10_000
+    ) -> None:
+        """Delete all hash keys with the index prefix.
+
+        Args:
+            client: The Valkey client.
+            index_name: Index name to derive the prefix from.
+            max_iterations: Safety limit to prevent infinite loops on
+                malformed SCAN responses.
+        """
         prefix = _make_prefix(index_name)
         cursor: str | bytes = "0"
-        while True:
+        iterations = 0
+        while iterations < max_iterations:
+            iterations += 1
             result = await client.custom_command(
-                ["SCAN", cursor, "MATCH", f"{prefix}*", "COUNT", "100"]
+                ["SCAN", cursor, "MATCH", f"{prefix}*", "COUNT", "500"]
             )
             if isinstance(result, list) and len(result) == 2:
                 cursor = result[0]
@@ -410,6 +435,12 @@ class _IndexHandler(
                     break
             else:
                 break
+        if iterations >= max_iterations:
+            logger.warning(
+                "SCAN loop for prefix %r hit safety limit (%d iterations)",
+                prefix,
+                max_iterations,
+            )
 
     async def _create_index(
         self,
@@ -658,17 +689,42 @@ async def mount_index_target(
 def create_client_config(
     host: str = "localhost",
     port: int = 6379,
+    *,
+    password: str | None = None,
+    use_tls: bool = False,
+    client_name: str | None = None,
+    **kwargs: Any,
 ) -> "GlideClientConfiguration":
     """Create a GlideClientConfiguration for connecting to Valkey.
+
+    For advanced configurations not covered by these parameters, construct
+    ``GlideClientConfiguration`` directly.
 
     Args:
         host: Valkey server host.
         port: Valkey server port.
+        password: Optional authentication password.
+        use_tls: Whether to use TLS for the connection.
+        client_name: Optional client name for the connection.
+        **kwargs: Additional keyword arguments passed to GlideClientConfiguration.
 
     Returns:
         GlideClientConfiguration instance.
     """
-    return GlideClientConfiguration([NodeAddress(host=host, port=port)])
+    from glide import ServerCredentials
+
+    addresses = [NodeAddress(host=host, port=port)]
+    config_kwargs: dict[str, Any] = {}
+
+    if password is not None:
+        config_kwargs["credentials"] = ServerCredentials(password=password)
+    if use_tls:
+        config_kwargs["use_tls"] = True
+    if client_name is not None:
+        config_kwargs["client_name"] = client_name
+    config_kwargs.update(kwargs)
+
+    return GlideClientConfiguration(addresses, **config_kwargs)
 
 
 __all__ = [
