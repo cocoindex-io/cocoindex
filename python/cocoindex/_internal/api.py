@@ -112,6 +112,23 @@ _ValueT = TypeVar("_ValueT")
 _ChildHandlerT = TypeVar("_ChildHandlerT", bound="TargetHandler[Any, Any, Any] | None")
 
 
+def _default_subpath_name(processor_fn: Any) -> str | None:
+    """Resolve the default subpath name for a mount target.
+
+    Honors an explicit ``__coco_subpath_name__`` attribute (set by wrappers
+    like ``coco.auto_refresh`` so the wrapper class can keep an honest
+    ``__name__`` while still mounting under the wrapped function's name),
+    falling back to ``__name__``.
+    """
+    name = getattr(processor_fn, "__coco_subpath_name__", None)
+    if isinstance(name, str):
+        return name
+    name = getattr(processor_fn, "__name__", None)
+    if isinstance(name, str):
+        return name
+    return None
+
+
 class ComponentMountHandle:
     """Handle for processing unit(s) started with `mount()` or `mount_each()`. Allows waiting until ready."""
 
@@ -223,7 +240,7 @@ async def use_mount(*pos_args: Any, **kwargs: Any) -> Any:
     else:
         processor_fn = pos_args[0]
         args = pos_args[1:]
-        name = getattr(processor_fn, "__name__", None)
+        name = _default_subpath_name(processor_fn)
         if name is None:
             raise TypeError(
                 "use_mount() requires a ComponentSubpath when the function has no "
@@ -333,7 +350,7 @@ async def mount(*pos_args: Any, **kwargs: Any) -> ComponentMountHandle:
     else:
         processor_fn = pos_args[0]
         args = pos_args[1:]
-        name = getattr(processor_fn, "__name__", None)
+        name = _default_subpath_name(processor_fn)
         if name is None:
             raise TypeError(
                 "mount() requires a ComponentSubpath when the function has no "
@@ -423,7 +440,7 @@ async def mount_each(*pos_args: Any, **kwargs: Any) -> ComponentMountHandle:
         fn = pos_args[0]
         items = pos_args[1]
         extra_args = pos_args[2:]
-        name = getattr(fn, "__name__", None)
+        name = _default_subpath_name(fn)
         if name is None:
             raise TypeError(
                 "mount_each() requires a ComponentSubpath when the function has no "
