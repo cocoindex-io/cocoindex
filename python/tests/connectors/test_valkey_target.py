@@ -14,7 +14,7 @@ import os
 import struct
 import uuid
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Any, NamedTuple
 
 import numpy as np
 import pytest
@@ -86,19 +86,18 @@ def _decode_vector(blob: bytes, dim: int) -> list[float]:
 # =============================================================================
 
 
-class _ValkeyEnv:
+class _ValkeyEnv(NamedTuple):
     """Bundle of client + coco environment for valkey target tests."""
 
-    __slots__ = ("client", "coco_env")
-
-    def __init__(self, client: Any, coco_env: coco.Environment) -> None:
-        self.client = client
-        self.coco_env = coco_env
+    client: Any
+    coco_env: coco.Environment
 
 
 @pytest_asyncio.fixture
 async def valkey_env(request: pytest.FixtureRequest) -> AsyncIterator[_ValkeyEnv]:
     """Create a GlideClient and coco environment bound to the current event loop."""
+    if not (HAS_GLIDE and _HAS_SERVER):
+        pytest.skip("VALKEY_TEST_SERVER not set or valkey-glide not installed")
     config = GlideClientConfiguration(
         [NodeAddress(host=_VALKEY_HOST, port=_VALKEY_PORT)]
     )

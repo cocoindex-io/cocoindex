@@ -1,32 +1,39 @@
-"""
-Valkey target for CocoIndex.
-
-This module provides a two-level target state system for Valkey with vector search:
-1. Index level: Creates/drops search indexes via FT.CREATE / FT.DROPINDEX
-2. Document level: Upserts/deletes hash documents within indexes
-
-Requires the valkey-search module to be loaded in the Valkey server.
-"""
+"""Valkey target for CocoIndex (vector search via FT.CREATE / FT.SEARCH)."""
 
 from __future__ import annotations
 
-import struct as _struct
-from dataclasses import dataclass as _dataclass
+import struct
+from dataclasses import dataclass
 from typing import (
-    Collection as _Collection,
-    Generic as _Generic,
-    Literal as _Literal,
-    NamedTuple as _NamedTuple,
-    Sequence as _Sequence,
+    Collection,
+    Generic,
+    Literal,
+    NamedTuple,
+    Sequence,
 )
 
-import msgspec as _msgspec
-import numpy as _np
+import msgspec
+import numpy as np
 
 try:
-    from glide import GlideClient
-    from glide import GlideClientConfiguration  # noqa: F401 — re-exported
-    from glide.async_commands import ft as _ft
+    from glide import (
+        DataType,
+        DistanceMetricType,
+        Field,
+        FtCreateOptions,
+        GlideClient,
+        GlideClientConfiguration,  # noqa: F401 — re-exported
+        NodeAddress,
+        NumericField,
+        TagField,
+        TextField,
+        VectorAlgorithm,
+        VectorField,
+        VectorFieldAttributesFlat,
+        VectorFieldAttributesHnsw,
+        VectorType,
+    )
+    from glide.async_commands import ft
 except ImportError as e:
     raise ImportError(
         "valkey-glide>=2.4.0 is required to use the Valkey connector. "
@@ -34,14 +41,11 @@ except ImportError as e:
     ) from e
 
 import cocoindex as coco
-from cocoindex.connectorkits import statediff as _statediff
-from cocoindex.connectorkits import target as _target
-from cocoindex.connectorkits.fingerprint import (
-    fingerprint_object as _fingerprint_object,
-)
-from cocoindex.resources import schema as _res_schema
+from cocoindex.connectorkits import statediff, target
+from cocoindex.connectorkits.fingerprint import fingerprint_object
+from cocoindex.resources import schema as res_schema
 from cocoindex._internal.context_keys import ContextKey, ContextProvider
-from cocoindex._internal.datatype import TypeChecker as _TypeChecker
+from cocoindex._internal.datatype import TypeChecker
 
 
 # ---------------------------------------------------------------------------
@@ -49,7 +53,7 @@ from cocoindex._internal.datatype import TypeChecker as _TypeChecker
 # ---------------------------------------------------------------------------
 
 
-class VectorDef(_NamedTuple):
+class VectorDef(NamedTuple):
     """Valkey vector field specification.
 
     Args:
@@ -59,14 +63,14 @@ class VectorDef(_NamedTuple):
     """
 
     schema: (
-        _res_schema.VectorSchemaProvider
-        | coco.ContextKey[_res_schema.VectorSchemaProvider]
+        res_schema.VectorSchemaProvider
+        | coco.ContextKey[res_schema.VectorSchemaProvider]
     )
-    distance: _Literal["cosine", "l2", "ip"] = "cosine"
-    algorithm: _Literal["hnsw", "flat"] = "hnsw"
+    distance: Literal["cosine", "l2", "ip"] = "cosine"
+    algorithm: Literal["hnsw", "flat"] = "hnsw"
 
 
-class FieldDef(_NamedTuple):
+class FieldDef(NamedTuple):
     """Definition of an indexed payload field in the search schema.
 
     Fields declared here will be included in FT.CREATE and can be used for
@@ -80,20 +84,20 @@ class FieldDef(_NamedTuple):
     """
 
     name: str
-    type: _Literal["text", "tag", "numeric"]
+    type: Literal["text", "tag", "numeric"]
     sortable: bool = False
 
 
-class _ResolvedVectorDef(_msgspec.Struct, frozen=True, tag=True):
+class _ResolvedVectorDef(msgspec.Struct, frozen=True, tag=True):
     """Internal resolved form after calling __coco_vector_schema__()."""
 
-    schema: _res_schema.VectorSchema
-    distance: _Literal["cosine", "l2", "ip"]
-    algorithm: _Literal["hnsw", "flat"]
+    schema: res_schema.VectorSchema
+    distance: Literal["cosine", "l2", "ip"]
+    algorithm: Literal["hnsw", "flat"]
 
 
 async def _resolve_vector_def(vector_def: VectorDef) -> _ResolvedVectorDef:
-    vs = await _res_schema.get_vector_schema(vector_def.schema)
+    vs = await res_schema.get_vector_schema(vector_def.schema)
     if vs is None:
         raise ValueError(
             f"VectorDef schema must implement VectorSchemaProvider: {vector_def.schema}"
@@ -105,7 +109,7 @@ async def _resolve_vector_def(vector_def: VectorDef) -> _ResolvedVectorDef:
     )
 
 
-@_dataclass(slots=True)
+@dataclass(slots=True)
 class IndexSchema:
     """Schema definition for a Valkey search index.
 
@@ -162,7 +166,7 @@ class IndexSchema:
         return self._fields
 
 
-@_dataclass(slots=True)
+@dataclass(slots=True)
 class Document:
     """A document to store in the Valkey index.
 
@@ -173,7 +177,7 @@ class Document:
     """
 
     id: str
-    vector: list[float] | _np.ndarray  # type: ignore[type-arg]
+    vector: list[float] | np.ndarray  # type: ignore[type-arg]
     payload: dict[str, str | int | float] | None = None
 
 
@@ -182,15 +186,15 @@ class Document:
 # ---------------------------------------------------------------------------
 
 
-class _IndexKey(_NamedTuple):
+class _IndexKey(NamedTuple):
     db_key: str
     index_name: str
 
 
-_INDEX_KEY_CHECKER = _TypeChecker(tuple[str, str])
+_INDEX_KEY_CHECKER = TypeChecker(tuple[str, str])
 
 
-class _DocumentAction(_NamedTuple):
+class _DocumentAction(NamedTuple):
     """Action for a single document: upsert (doc not None) or delete (doc is None)."""
 
     hash_key: str
@@ -200,24 +204,24 @@ class _DocumentAction(_NamedTuple):
 _DocumentFingerprint = bytes
 
 
-class _IndexAction(_NamedTuple):
+class _IndexAction(NamedTuple):
     key: _IndexKey
     spec: _IndexSpec | coco.NonExistenceType
-    main_action: _statediff.DiffAction | None
+    main_action: statediff.DiffAction | None
 
 
-@_dataclass(slots=True)
+@dataclass(slots=True)
 class _IndexSpec:
     schema: IndexSchema
-    managed_by: _target.ManagedBy = _target.ManagedBy.SYSTEM
+    managed_by: target.ManagedBy = target.ManagedBy.SYSTEM
 
 
-class _IndexTrackingRecordCore(_msgspec.Struct, frozen=True, array_like=True):
+class _IndexTrackingRecordCore(msgspec.Struct, frozen=True, array_like=True):
     vectors: _ResolvedVectorDef
     fields: tuple[FieldDef, ...]
 
 
-_IndexTrackingRecord = _statediff.MutualTrackingRecord[_IndexTrackingRecordCore]
+_IndexTrackingRecord = statediff.MutualTrackingRecord[_IndexTrackingRecordCore]
 
 
 # ---------------------------------------------------------------------------
@@ -225,11 +229,11 @@ _IndexTrackingRecord = _statediff.MutualTrackingRecord[_IndexTrackingRecordCore]
 # ---------------------------------------------------------------------------
 
 
-def _vector_to_bytes(vector: list[float] | _np.ndarray) -> bytes:  # type: ignore[type-arg]
+def _vector_to_bytes(vector: list[float] | np.ndarray) -> bytes:  # type: ignore[type-arg]
     """Pack a vector into little-endian float32 bytes for Valkey HASH storage."""
-    if isinstance(vector, _np.ndarray):
-        return vector.astype(_np.float32).tobytes()
-    return _struct.pack(f"<{len(vector)}f", *vector)
+    if isinstance(vector, np.ndarray):
+        return vector.astype(np.float32).tobytes()
+    return struct.pack(f"<{len(vector)}f", *vector)
 
 
 def _make_prefix(index_name: str) -> str:
@@ -240,15 +244,6 @@ def _make_prefix(index_name: str) -> str:
 def _make_hash_key(index_name: str, doc_id: str) -> str:
     """Create the full hash key for a document."""
     return f"{_make_prefix(index_name)}{doc_id}"
-
-
-def _distance_metric_arg(distance: _Literal["cosine", "l2", "ip"]) -> str:
-    """Convert distance literal to the Valkey FT.CREATE DISTANCE_METRIC argument.
-
-    Returns the enum member name string (COSINE, L2, IP) which will be
-    converted to a DistanceMetricType enum at index creation time.
-    """
-    return distance.upper()
 
 
 # ---------------------------------------------------------------------------
@@ -269,18 +264,14 @@ class _DocumentHandler(coco.TargetHandler[Document, _DocumentFingerprint]):
         self._sink = coco.TargetActionSink.from_async_fn(self._apply_actions)
 
     async def _apply_actions(
-        self, context_provider: ContextProvider, actions: _Sequence[_DocumentAction]
+        self, context_provider: ContextProvider, actions: Sequence[_DocumentAction]
     ) -> None:
         if not actions:
             return
 
         for action in actions:
             if action.fields is None:
-                # Delete
-                try:
-                    await self._client.delete([action.hash_key])
-                except Exception:
-                    pass  # Key may not exist
+                await self._client.delete([action.hash_key])
             else:
                 # Upsert via HSET
                 await self._client.hset(action.hash_key, action.fields)  # type: ignore[arg-type]
@@ -289,7 +280,7 @@ class _DocumentHandler(coco.TargetHandler[Document, _DocumentFingerprint]):
         self,
         key: coco.StableKey,
         desired_state: Document | coco.NonExistenceType,
-        prev_possible_records: _Collection[_DocumentFingerprint],
+        prev_possible_records: Collection[_DocumentFingerprint],
         prev_may_be_missing: bool,
         /,
     ) -> coco.TargetReconcileOutput[_DocumentAction, _DocumentFingerprint] | None:
@@ -308,9 +299,9 @@ class _DocumentHandler(coco.TargetHandler[Document, _DocumentFingerprint]):
             )
 
         # Build fingerprint from vector + payload
-        target_fp = _fingerprint_object(
+        target_fp = fingerprint_object(
             (desired_state.vector, desired_state.payload)
-            if not isinstance(desired_state.vector, _np.ndarray)
+            if not isinstance(desired_state.vector, np.ndarray)
             else (desired_state.vector.tolist(), desired_state.payload)
         )
 
@@ -352,7 +343,7 @@ class _IndexHandler(
     async def _apply_actions(
         self,
         context_provider: ContextProvider,
-        actions: _Collection[_IndexAction],
+        actions: Collection[_IndexAction],
     ) -> list[coco.ChildTargetDef[_DocumentHandler] | None]:
         actions_list = list(actions)
         outputs: list[coco.ChildTargetDef[_DocumentHandler] | None] = [None] * len(
@@ -370,7 +361,7 @@ class _IndexHandler(
 
                 if action.main_action in ("replace", "delete"):
                     try:
-                        await _ft.dropindex(client, key.index_name)
+                        await ft.dropindex(client, key.index_name)
                     except Exception:
                         pass  # Index may not exist
 
@@ -403,7 +394,6 @@ class _IndexHandler(
     async def _delete_prefix_keys(self, client: GlideClient, index_name: str) -> None:
         """Delete all hash keys with the index prefix."""
         prefix = _make_prefix(index_name)
-        # Use SCAN to find and delete keys with prefix
         cursor: str | bytes = "0"
         while True:
             result = await client.custom_command(
@@ -431,83 +421,62 @@ class _IndexHandler(
     ) -> None:
         if if_not_exists:
             try:
-                await _ft.info(client, index_name)
+                await ft.info(client, index_name)
                 return  # Index already exists
             except Exception:
                 pass  # Index doesn't exist, create it
 
         vec_def = schema.vectors
         dim = vec_def.schema.size
-        algorithm = vec_def.algorithm.upper()
 
-        # Build field schema for FT.CREATE
-        from glide import (
-            DistanceMetricType as _DistanceMetricType,
-            VectorAlgorithm as _VectorAlgorithm,
-            VectorField as _VectorField,
-            VectorFieldAttributesFlat as _VectorFieldAttributesFlat,
-            VectorFieldAttributesHnsw as _VectorFieldAttributesHnsw,
-            VectorType as _VectorType,
-            FtCreateOptions as _LocalFtCreateOptions,
-            DataType as _DataType,
-        )
+        distance_enum = DistanceMetricType[vec_def.distance.upper()]
 
-        distance_enum = _DistanceMetricType[_distance_metric_arg(vec_def.distance)]
-
-        if algorithm == "HNSW":
-            attributes = _VectorFieldAttributesHnsw(
+        if vec_def.algorithm == "hnsw":
+            attributes = VectorFieldAttributesHnsw(
                 dimensions=dim,
                 distance_metric=distance_enum,
-                type=_VectorType.FLOAT32,
+                type=VectorType.FLOAT32,
             )
-            algo_enum = _VectorAlgorithm.HNSW
+            algo_enum = VectorAlgorithm.HNSW
         else:
-            attributes = _VectorFieldAttributesFlat(
+            attributes = VectorFieldAttributesFlat(
                 dimensions=dim,
                 distance_metric=distance_enum,
-                type=_VectorType.FLOAT32,
+                type=VectorType.FLOAT32,
             )
-            algo_enum = _VectorAlgorithm.FLAT
+            algo_enum = VectorAlgorithm.FLAT
 
-        vector_field = _VectorField(
+        vector_field = VectorField(
             name="vector",
             algorithm=algo_enum,
             attributes=attributes,
         )
 
-        # Build additional indexed fields
-        from glide import (
-            TextField as _TextField,
-            TagField as _TagField,
-            NumericField as _NumericField,
-            Field as _Field,
-        )
-
-        all_fields: list[_Field] = [vector_field]
+        all_fields: list[Field] = [vector_field]
         for field_def in schema.fields:
             if field_def.type == "text":
                 all_fields.append(
-                    _TextField(name=field_def.name, sortable=field_def.sortable)
+                    TextField(name=field_def.name, sortable=field_def.sortable)
                 )
             elif field_def.type == "tag":
                 all_fields.append(
-                    _TagField(name=field_def.name, sortable=field_def.sortable)
+                    TagField(name=field_def.name, sortable=field_def.sortable)
                 )
             elif field_def.type == "numeric":
                 all_fields.append(
-                    _NumericField(name=field_def.name, sortable=field_def.sortable)
+                    NumericField(name=field_def.name, sortable=field_def.sortable)
                 )
 
         prefix = _make_prefix(index_name)
-        options = _LocalFtCreateOptions(data_type=_DataType.HASH, prefixes=[prefix])
+        options = FtCreateOptions(data_type=DataType.HASH, prefixes=[prefix])
 
-        await _ft.create(client, index_name, schema=all_fields, options=options)
+        await ft.create(client, index_name, schema=all_fields, options=options)
 
     def reconcile(
         self,
         key: coco.StableKey,
         desired_state: _IndexSpec | coco.NonExistenceType,
-        prev_possible_records: _Collection[_IndexTrackingRecord],
+        prev_possible_records: Collection[_IndexTrackingRecord],
         prev_may_be_missing: bool,
         /,
     ) -> (
@@ -524,7 +493,7 @@ class _IndexHandler(
         if coco.is_non_existence(desired_state):
             tracking_record = coco.NON_EXISTENCE
         else:
-            tracking_record = _statediff.MutualTrackingRecord(
+            tracking_record = statediff.MutualTrackingRecord(
                 tracking_record=_IndexTrackingRecordCore(
                     vectors=desired_state.schema.vectors,
                     fields=desired_state.schema.fields,
@@ -532,16 +501,16 @@ class _IndexHandler(
                 managed_by=desired_state.managed_by,
             )
 
-        transition = _statediff.TrackingRecordTransition(
+        transition = statediff.TrackingRecordTransition(
             tracking_record,
             prev_possible_records,
             prev_may_be_missing,
         )
-        resolved = _statediff.resolve_system_transition(transition)
-        main_action = _statediff.diff(resolved)
+        resolved = statediff.resolve_system_transition(transition)
+        main_action = statediff.diff(resolved)
 
         # Index replacement destroys all documents.
-        child_invalidation: _Literal["destructive"] | None = (
+        child_invalidation: Literal["destructive"] | None = (
             "destructive" if main_action == "replace" else None
         )
 
@@ -571,7 +540,7 @@ _index_provider = coco.register_root_target_states_provider(
 # ---------------------------------------------------------------------------
 
 
-class IndexTarget(_Generic[coco.MaybePendingS], coco.ResolvesTo["IndexTarget"]):
+class IndexTarget(Generic[coco.MaybePendingS], coco.ResolvesTo["IndexTarget"]):
     """Target for declaring documents in a Valkey search index.
 
     Use this to declare individual documents to be stored in the index.
@@ -615,7 +584,7 @@ def index_target(
     index_name: str,
     schema: IndexSchema,
     *,
-    managed_by: _target.ManagedBy = _target.ManagedBy.SYSTEM,
+    managed_by: target.ManagedBy = target.ManagedBy.SYSTEM,
 ) -> "coco.TargetState[_DocumentHandler]":
     """Create a TargetState for a Valkey index target.
 
@@ -641,7 +610,7 @@ def declare_index_target(
     index_name: str,
     schema: IndexSchema,
     *,
-    managed_by: _target.ManagedBy = _target.ManagedBy.SYSTEM,
+    managed_by: target.ManagedBy = target.ManagedBy.SYSTEM,
 ) -> "IndexTarget[coco.PendingS]":
     """Declare a Valkey index target.
 
@@ -665,7 +634,7 @@ async def mount_index_target(
     index_name: str,
     schema: IndexSchema,
     *,
-    managed_by: _target.ManagedBy = _target.ManagedBy.SYSTEM,
+    managed_by: target.ManagedBy = target.ManagedBy.SYSTEM,
 ) -> "IndexTarget[coco.ResolvedS]":
     """Mount an index target and return a ready-to-use IndexTarget.
 
@@ -699,8 +668,6 @@ def create_client_config(
     Returns:
         GlideClientConfiguration instance.
     """
-    from glide import NodeAddress
-
     return GlideClientConfiguration([NodeAddress(host=host, port=port)])
 
 
