@@ -586,6 +586,5 @@ def auto_refresh(
                 await asyncio.sleep(sleep_seconds)
                 await operator.update_full()
 
-    _AutoRefresh.__name__ = f"AutoRefresh[{fn_name}]"
-    _AutoRefresh.__qualname__ = _AutoRefresh.__name__
+    _AutoRefresh.__coco_subpath_name__ = fn_name  # type: ignore[attr-defined]
     return _AutoRefresh
