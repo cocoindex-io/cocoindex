@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import struct
 from dataclasses import dataclass
@@ -21,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 try:
     from glide import (
+        Batch,
         DataType,
         DistanceMetricType,
         Field,
@@ -29,6 +31,7 @@ try:
         GlideClientConfiguration,  # noqa: F401 — re-exported
         NodeAddress,
         NumericField,
+        RequestError,
         TagField,
         TextField,
         VectorAlgorithm,
@@ -250,6 +253,11 @@ def _make_hash_key(index_name: str, doc_id: str) -> str:
     return f"{_make_prefix(index_name)}{doc_id}"
 
 
+async def _index_exists(client: GlideClient, index_name: str) -> bool:
+    names = await ft.list(client)
+    return any((n.decode() if isinstance(n, bytes) else n) == index_name for n in names)
+
+
 # ---------------------------------------------------------------------------
 # Document handler (child level)
 # ---------------------------------------------------------------------------
@@ -273,14 +281,25 @@ class _DocumentHandler(coco.TargetHandler[Document, _DocumentFingerprint]):
         if not actions:
             return
 
-        for action in actions:
-            if action.fields is None:
-                await self._client.delete([action.hash_key])
-            else:
-                # Delete then re-create to avoid stale payload fields from
-                # previous versions persisting in the HASH.
-                await self._client.delete([action.hash_key])
-                await self._client.hset(action.hash_key, action.fields)  # type: ignore[arg-type]
+        delete_keys = [a.hash_key for a in actions if a.fields is None]
+        upserts = [(a.hash_key, a.fields) for a in actions if a.fields is not None]
+
+        tasks: list[asyncio.Future[object]] = []
+
+        if delete_keys:
+            tasks.append(asyncio.ensure_future(self._client.delete(delete_keys)))
+
+        for hash_key, fields in upserts:
+            # Atomic MULTI/EXEC: delete stale hash then re-create, so no
+            # leftover payload fields survive across updates.
+            batch = Batch(is_atomic=True)
+            batch.delete([hash_key])
+            batch.hset(hash_key, fields)  # type: ignore[arg-type]
+            tasks.append(
+                asyncio.ensure_future(self._client.exec(batch, raise_on_error=True))
+            )
+
+        await asyncio.gather(*tasks)
 
     def reconcile(
         self,
@@ -370,15 +389,9 @@ class _IndexHandler(
                     # prefixed document keys before re-creating the index.
                     try:
                         await ft.dropindex(client, key.index_name)
-                    except Exception as exc:
-                        # RequestError is raised when the index doesn't exist.
-                        # Log unexpected errors but continue — the index may
-                        # have already been removed externally.
-                        logger.debug(
-                            "dropindex(%s) failed (may not exist): %s",
-                            key.index_name,
-                            exc,
-                        )
+                    except RequestError:
+                        # Index was already removed externally — nothing to do.
+                        logger.debug("dropindex %s: index not found", key.index_name)
 
                     if action.main_action == "replace":
                         await self._delete_prefix_keys(client, key.index_name)
@@ -450,12 +463,8 @@ class _IndexHandler(
         *,
         if_not_exists: bool,
     ) -> None:
-        if if_not_exists:
-            try:
-                await ft.info(client, index_name)
-                return  # Index already exists
-            except Exception:
-                pass  # Index doesn't exist, create it
+        if if_not_exists and await _index_exists(client, index_name):
+            return
 
         vec_def = schema.vectors
         dim = vec_def.schema.size

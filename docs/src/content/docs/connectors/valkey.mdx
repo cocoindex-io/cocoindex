@@ -93,12 +93,14 @@ async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]
 Declares a search index as a target state. Returns an `IndexTarget` for declaring documents.
 
 ```python
+from cocoindex.connectorkits.target import ManagedBy
+
 def declare_index_target(
     db: ContextKey[GlideClient],
     index_name: str,
     schema: IndexSchema,
     *,
-    managed_by: Literal["system", "user"] = "system",
+    managed_by: ManagedBy = ManagedBy.SYSTEM,
 ) -> IndexTarget[coco.PendingS]
 ```
 
@@ -107,7 +109,7 @@ def declare_index_target(
 - `db` — A `ContextKey[GlideClient]` identifying the Valkey client to use.
 - `index_name` — Name of the search index.
 - `schema` — Schema definition specifying vector configuration (see [Index Schema](#index-schema)).
-- `managed_by` — Whether CocoIndex manages the index lifecycle (`"system"`) or assumes it exists (`"user"`).
+- `managed_by` — `ManagedBy.SYSTEM` (default): CocoIndex creates and drops the index automatically. `ManagedBy.USER`: assumes the index already exists and never drops it.
 
 **Returns:** A pending `IndexTarget`. Use the convenience wrapper `await valkey.mount_index_target(VALKEY_DB, index_name, schema)` to resolve.
 

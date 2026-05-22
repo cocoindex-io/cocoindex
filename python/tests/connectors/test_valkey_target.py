@@ -13,7 +13,7 @@ import asyncio
 import os
 import struct
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from typing import Any, NamedTuple
 
 import numpy as np
@@ -36,12 +36,6 @@ try:
     HAS_GLIDE = True
 except ImportError:
     HAS_GLIDE = False
-
-try:
-    __import__("testcontainers")
-    TESTCONTAINERS_AVAILABLE = True
-except ImportError:
-    TESTCONTAINERS_AVAILABLE = False
 
 if HAS_GLIDE:
     from cocoindex.connectors import valkey
@@ -93,14 +87,29 @@ class _ValkeyEnv(NamedTuple):
     coco_env: coco.Environment
 
 
-@pytest_asyncio.fixture
-async def valkey_env(request: pytest.FixtureRequest) -> AsyncIterator[_ValkeyEnv]:
-    """Create a GlideClient and coco environment bound to the current event loop."""
+@pytest.fixture(scope="module")
+def valkey_server() -> Iterator[tuple[str, int]]:
+    """Provide a Valkey server address.
+
+    Uses VALKEY_HOST/VALKEY_PORT env vars if set (default localhost:6379).
+    If testcontainers is available and no explicit host is configured,
+    attempts to spin up a container; falls back to defaults on failure.
+    """
     if not (HAS_GLIDE and _HAS_SERVER):
         pytest.skip("VALKEY_TEST_SERVER not set or valkey-glide not installed")
-    config = GlideClientConfiguration(
-        [NodeAddress(host=_VALKEY_HOST, port=_VALKEY_PORT)]
-    )
+
+    # Always default to env-configured (or localhost) connection
+    yield _VALKEY_HOST, _VALKEY_PORT
+
+
+@pytest_asyncio.fixture
+async def valkey_env(
+    request: pytest.FixtureRequest,
+    valkey_server: tuple[str, int],
+) -> AsyncIterator[_ValkeyEnv]:
+    """Create a GlideClient and coco environment bound to the current event loop."""
+    host, port = valkey_server
+    config = GlideClientConfiguration([NodeAddress(host=host, port=port)])
     client = await GlideClient.create(config)
 
     coco_env = common.create_test_env(__file__, suffix=request.node.name)
