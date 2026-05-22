@@ -438,9 +438,9 @@ impl<Prof: EngineProfile> Committer<Prof> {
                 })
             })
             .await?;
-        // Transaction committed — open a read txn so GC sees the committed tombstones.
-        let mut rtxn = app_ctx.env().read_txn().await?;
-        committer.launch_child_component_gc(&mut rtxn).await
+        // Transaction committed — GC sees the committed tombstones via the
+        // read txn opened inside `launch_child_component_gc`.
+        committer.launch_child_component_gc().await
     }
 
     async fn update_existence(
@@ -585,7 +585,7 @@ impl<Prof: EngineProfile> Committer<Prof> {
         Ok(())
     }
 
-    async fn launch_child_component_gc<T: AnyTxn>(&self, rtxn: &mut T) -> Result<()> {
+    async fn launch_child_component_gc(&self) -> Result<()> {
         // Cascade the parent's on_error to descendant orphan deletes.
         //
         // - Delete-mode parent (recursive cascade from `App.drop()`'s
@@ -604,12 +604,22 @@ impl<Prof: EngineProfile> Committer<Prof> {
         // The `Arc` makes cloning cheap regardless of how many
         // descendants we spawn.
         let cascaded_on_error = self.component_ctx.processing_action_on_error();
-        let mut handles = Vec::new();
-        for relative_path in self
-            .app_store
-            .list_tombstones(rtxn, &self.component_path)
-            .await?
-        {
+        // Hold the read txn only for as long as it takes to read tombstones,
+        // then drop it before spawning + awaiting child delete tasks. Each
+        // recursively-spawned child delete opens its own read txn, so any
+        // backend whose `ReadTxn` pins a shared resource (e.g. a connection
+        // from a fixed-size pool) would otherwise hit a fanout-driven
+        // deadlock: every connection held by a parent waiting for a child
+        // that can't acquire one. LMDB-only builds don't suffer this, but
+        // the lifetime discipline is correct either way.
+        let tombstones = {
+            let mut rtxn = self.component_ctx.app_ctx().env().read_txn().await?;
+            self.app_store
+                .list_tombstones(&mut rtxn, &self.component_path)
+                .await?
+        };
+        let mut handles = Vec::with_capacity(tombstones.len());
+        for relative_path in tombstones {
             let stable_path = self.component_path.concat(relative_path.as_ref());
             let component = self.component_ctx.component().get_child(stable_path);
             let delete_ctx = component.new_processor_context_for_delete(
