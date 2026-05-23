@@ -242,22 +242,29 @@ async def resolve_entities(
             current = target
 
     def _search_candidates(info: _EntityInfo) -> list[str]:
-        if index.ntotal == 0:
+        if index.ntotal == 0 or top_n <= 0:
             return []
-        k = min(top_n, index.ntotal)
-        scores, idxs = index.search(info.normalized_vec, k)
         threshold = 1.0 - max_distance
-        seen: set[str] = set()
-        out: list[str] = []
-        for score, idx in zip(scores[0], idxs[0]):
-            if idx < 0 or score < threshold:
-                continue
-            canonical = _chain_walk(indexed_names[idx])
-            if canonical == info.name or canonical in seen:
-                continue
-            seen.add(canonical)
-            out.append(canonical)
-        return out
+        k = min(top_n, index.ntotal)
+
+        while True:
+            scores, idxs = index.search(info.normalized_vec, k)
+            seen: set[str] = set()
+            out: list[str] = []
+            for score, idx in zip(scores[0], idxs[0]):
+                if idx < 0 or score < threshold:
+                    continue
+                canonical = _chain_walk(indexed_names[idx])
+                if canonical == info.name or canonical in seen:
+                    continue
+                seen.add(canonical)
+                out.append(canonical)
+                if len(out) >= top_n:
+                    return out
+
+            if k >= index.ntotal or scores[0][-1] < threshold:
+                return out
+            k = min(index.ntotal, max(k + 1, k * 2))
 
     if existing_policy == ExistingCanonicalPolicy.PINNED:
         pass_1 = [i for i in entity_map.values() if i.is_existing]

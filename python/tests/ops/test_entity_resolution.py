@@ -59,6 +59,18 @@ class MockEmbedder:
         return self._vectors[text]
 
 
+class VectorEmbedder:
+    """Embedder backed by explicit vectors for ranking-sensitive tests."""
+
+    def __init__(self, vectors: dict[str, tuple[float, ...]]) -> None:
+        self._vectors = {
+            name: np.array(vector, dtype=np.float32) for name, vector in vectors.items()
+        }
+
+    async def embed(self, text: str) -> NDArray[np.float32]:
+        return self._vectors[text]
+
+
 @dataclass
 class ScriptedResolver:
     """PairResolver with pre-scripted decisions per (entity, candidates) call.
@@ -201,6 +213,37 @@ async def test_multi_hop_chain() -> None:
     assert result.canonical_of("B") == "A"
     assert result.canonical_of("C") == "A"
     assert result.groups() == {"A": {"A", "B", "C"}}
+
+
+@pytest.mark.asyncio
+async def test_candidate_search_continues_until_distinct_canonicals() -> None:
+    embedder = VectorEmbedder(
+        {
+            "A": (1.0, 0.0),
+            "A1": (1.0, 0.0),
+            "A2": (1.0, 0.0),
+            "X": (0.8, 0.6),
+            "Z": (1.0, 0.0),
+        }
+    )
+    resolver = ScriptedResolver(
+        {
+            ("A1", frozenset({"A"})): PairDecision(matched="A"),
+            ("A2", frozenset({"A"})): PairDecision(matched="A"),
+            ("X", frozenset({"A"})): PairDecision(),
+            ("Z", frozenset({"A", "X"})): PairDecision(matched="X"),
+        }
+    )
+
+    result = await resolve_entities(
+        entities={"A", "A1", "A2", "X", "Z"},
+        embedder=embedder,
+        resolve_pair=resolver,
+        top_n=2,
+    )
+
+    assert result.canonical_of("Z") == "X"
+    assert ("Z", ["A", "X"]) in resolver.calls
 
 
 # ---------------------------------------------------------------------------
