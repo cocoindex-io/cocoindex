@@ -881,6 +881,43 @@ async def test_resolver_error_cancels_sibling_components() -> None:
 
 
 @pytest.mark.asyncio
+async def test_on_resolution_receives_partial_events_on_resolver_error() -> None:
+    """When one component's resolve_pair raises, the events emitted by
+    components that finished before the failure must still be delivered to
+    on_resolution. Otherwise observability into 'which entities completed
+    successfully' is lost — a regression vs the pre-parallelization
+    real-time emission semantics.
+    """
+    pairs = [("A1", "A2"), ("B1", "B2"), ("C1", "C2")]
+    embedder = MockEmbedder([{a, b} for a, b in pairs])
+
+    # Stagger resolver latency so two components finish before the failing
+    # one raises.
+    delays = {"A2": 0.0, "B2": 0.0, "C2": 0.05}
+    matches = {"A2": "A1", "B2": "B1"}
+
+    async def resolver(entity: str, candidates: list[str]) -> PairDecision:
+        await asyncio.sleep(delays[entity])
+        if entity == "C2":
+            raise RuntimeError("boom")
+        return PairDecision(matched=matches[entity])
+
+    events, on_res = capture_events()
+    with pytest.raises(RuntimeError, match="boom"):
+        await resolve_entities(
+            entities={n for pair in pairs for n in pair},
+            embedder=embedder,
+            resolve_pair=resolver,
+            on_resolution=on_res,
+        )
+
+    delivered = {e.entity for e in events}
+    assert {"A1", "A2", "B1", "B2"}.issubset(delivered), (
+        f"completed events were not delivered: {delivered}"
+    )
+
+
+@pytest.mark.asyncio
 async def test_on_resolution_exception_aborts() -> None:
     embedder = MockEmbedder([{"A"}, {"B"}, {"C"}])
     resolver = ScriptedResolver({})

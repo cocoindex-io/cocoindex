@@ -525,9 +525,14 @@ async def resolve_entities(
     )
 
     dedup: dict[str, str | None] = {}
+    # Pre-allocated per-component event lists. Storing the lists in the
+    # parent scope (instead of returning them from each task) keeps
+    # already-emitted events reachable even if a sibling task gets
+    # cancelled mid-flight — important for preserving partial-failure
+    # observability through on_resolution.
+    per_component_events: list[list[ResolutionEvent]] = [[] for _ in components]
 
-    async def _run_one(member_idxs: list[int]) -> list[ResolutionEvent]:
-        events: list[ResolutionEvent] = []
+    async def _run_one(events: list[ResolutionEvent], member_idxs: list[int]) -> None:
         component_index = _CandidateIndex(
             dim=dim,
             dedup=dedup,
@@ -544,7 +549,6 @@ async def resolve_entities(
             resolve_pair=resolve_pair,
             emit=events.append,
         )
-        return events
 
     # Cancel sibling component tasks on the first exception. Bare
     # asyncio.gather lets siblings keep running after the exception has
@@ -553,31 +557,46 @@ async def resolve_entities(
     # TaskGroup would also achieve this but wraps the exception in
     # BaseExceptionGroup, hiding the original type from callers; spelling
     # the cancellation out preserves the original exception.
-    tasks: list[_asyncio.Task[list[ResolutionEvent]]] = [
-        _asyncio.create_task(_run_one(members)) for members in components
+    tasks: list[_asyncio.Task[None]] = [
+        _asyncio.create_task(_run_one(events, members))
+        for events, members in zip(per_component_events, components)
     ]
     try:
-        per_component_events = await _asyncio.gather(*tasks)
+        await _asyncio.gather(*tasks)
     except BaseException:
         for task in tasks:
             if not task.done():
                 task.cancel()
         if tasks:
             await _asyncio.gather(*tasks, return_exceptions=True)
+        # Even on partial failure, surface the events that completed
+        # before the exception. Otherwise on_resolution loses every
+        # already-resolved entity, breaking observability the prior
+        # single-pass implementation provided via real-time emission.
+        if on_resolution is not None:
+            _deliver_events(per_component_events, existing_policy, on_resolution)
         raise
 
     if on_resolution is not None:
-        merged: list[ResolutionEvent] = [
-            e for events in per_component_events for e in events
-        ]
-        if existing_policy == ExistingCanonicalPolicy.PINNED:
-            merged.sort(key=lambda e: (not e.seeded, e.entity))
-        else:
-            merged.sort(key=lambda e: e.entity)
-        for event in merged:
-            on_resolution(event)
+        _deliver_events(per_component_events, existing_policy, on_resolution)
 
     return ResolvedEntities(dedup)
+
+
+def _deliver_events(
+    per_component_events: list[list[ResolutionEvent]],
+    existing_policy: ExistingCanonicalPolicy,
+    on_resolution: _Callable[[ResolutionEvent], None],
+) -> None:
+    merged: list[ResolutionEvent] = [
+        e for events in per_component_events for e in events
+    ]
+    if existing_policy == ExistingCanonicalPolicy.PINNED:
+        merged.sort(key=lambda e: (not e.seeded, e.entity))
+    else:
+        merged.sort(key=lambda e: e.entity)
+    for event in merged:
+        on_resolution(event)
 
 
 def _new_wins(
