@@ -346,6 +346,22 @@ def _event_for_pair_decision(
     )
 
 
+@_dataclasses.dataclass(frozen=True, slots=True)
+class _ComponentEvents:
+    """Per-component events split by resolution phase.
+
+    The split is the source of truth for cross-component ordering. The
+    PINNED contract is 'all pass-1 (seeded existings) first, then all
+    pass-2 (non-existings)', and storing the phases separately means the
+    merge step does not have to infer phase from a derived field on
+    ResolutionEvent (which historically conflated `seeded=True` with
+    'belongs in pass-1').
+    """
+
+    pass_1: list[ResolutionEvent]
+    pass_2: list[ResolutionEvent]
+
+
 async def _resolve_component(
     infos: list[_EntityInfo],
     *,
@@ -354,14 +370,14 @@ async def _resolve_component(
     candidate_index: _CandidateIndex,
     existing_policy: ExistingCanonicalPolicy,
     resolve_pair: PairResolver,
-    emit: _Callable[[ResolutionEvent], None],
+    events: _ComponentEvents,
 ) -> None:
     """Greedy two-pass resolution over one connected component (or one
     entire input, when no graph partitioning has happened yet).
 
-    Mutates ``dedup`` and the supplied ``candidate_index``. ``entity_map``
-    is read-only for canonical-selection lookups during decision
-    application.
+    Mutates ``dedup``, ``candidate_index``, and ``events`` in place.
+    ``entity_map`` is read-only for canonical-selection lookups during
+    decision application.
     """
     if existing_policy == ExistingCanonicalPolicy.PINNED:
         pass_1 = [i for i in infos if i.is_existing]
@@ -373,7 +389,7 @@ async def _resolve_component(
     for info in pass_1:
         dedup[info.name] = None
         candidate_index.add(info)
-        emit(_event_for_seeded_existing(info))
+        events.pass_1.append(_event_for_seeded_existing(info))
 
     for info in pass_2:
         candidates = candidate_index.search(info)
@@ -381,7 +397,7 @@ async def _resolve_component(
         if not candidates:
             dedup[info.name] = None
             candidate_index.add(info)
-            emit(_event_for_new_canonical(info))
+            events.pass_2.append(_event_for_new_canonical(info))
             continue
 
         decision = await resolve_pair(info.name, candidates)
@@ -398,7 +414,7 @@ async def _resolve_component(
             existing_policy=existing_policy,
         )
         candidate_index.add(info)
-        emit(
+        events.pass_2.append(
             _event_for_pair_decision(
                 info=info,
                 candidates=candidates,
@@ -531,14 +547,16 @@ async def resolve_entities(
     )
 
     dedup: dict[str, str | None] = {}
-    # Pre-allocated per-component event lists. Storing the lists in the
+    # Pre-allocated per-component event records. Storing the lists in the
     # parent scope (instead of returning them from each task) keeps
     # already-emitted events reachable even if a sibling task gets
     # cancelled mid-flight — important for preserving partial-failure
     # observability through on_resolution.
-    per_component_events: list[list[ResolutionEvent]] = [[] for _ in components]
+    per_component_events: list[_ComponentEvents] = [
+        _ComponentEvents(pass_1=[], pass_2=[]) for _ in components
+    ]
 
-    async def _run_one(events: list[ResolutionEvent], member_idxs: list[int]) -> None:
+    async def _run_one(events: _ComponentEvents, member_idxs: list[int]) -> None:
         component_index = _CandidateIndex(
             dim=dim,
             dedup=dedup,
@@ -553,7 +571,7 @@ async def resolve_entities(
             candidate_index=component_index,
             existing_policy=existing_policy,
             resolve_pair=resolve_pair,
-            emit=events.append,
+            events=events,
         )
 
     # Cancel sibling component tasks on the first exception. Bare
@@ -580,11 +598,11 @@ async def resolve_entities(
         # already-resolved entity, breaking observability the prior
         # single-pass implementation provided via real-time emission.
         if on_resolution is not None:
-            _deliver_events(per_component_events, existing_policy, on_resolution)
+            _deliver_events(per_component_events, on_resolution)
         raise
 
     if on_resolution is not None:
-        _deliver_events(per_component_events, existing_policy, on_resolution)
+        _deliver_events(per_component_events, on_resolution)
 
     # Rebuild the dedup map in sorted entity order. Concurrent component
     # runners populated the shared dict in scheduler-interleaved order;
@@ -596,18 +614,26 @@ async def resolve_entities(
 
 
 def _deliver_events(
-    per_component_events: list[list[ResolutionEvent]],
-    existing_policy: ExistingCanonicalPolicy,
+    per_component_events: list[_ComponentEvents],
     on_resolution: _Callable[[ResolutionEvent], None],
 ) -> None:
-    merged: list[ResolutionEvent] = [
-        e for events in per_component_events for e in events
-    ]
-    if existing_policy == ExistingCanonicalPolicy.PINNED:
-        merged.sort(key=lambda e: (not e.seeded, e.entity))
-    else:
-        merged.sort(key=lambda e: e.entity)
-    for event in merged:
+    # PINNED requires 'all pass-1 first, then all pass-2'. PREFERRED's
+    # pass_1 lists are always empty (the policy only seeds in PINNED), so
+    # the same two-phase emit collapses to a single sorted stream there.
+    # Using the explicit phase lists — rather than inferring from
+    # ``ResolutionEvent.seeded`` — keeps the ordering invariant tied to
+    # the source of truth in _resolve_component.
+    pass_1 = sorted(
+        (e for events in per_component_events for e in events.pass_1),
+        key=lambda e: e.entity,
+    )
+    pass_2 = sorted(
+        (e for events in per_component_events for e in events.pass_2),
+        key=lambda e: e.entity,
+    )
+    for event in pass_1:
+        on_resolution(event)
+    for event in pass_2:
         on_resolution(event)
 
 
