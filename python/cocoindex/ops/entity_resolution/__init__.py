@@ -181,6 +181,155 @@ class _EntityInfo:
         self.is_existing = is_existing
 
 
+@_dataclasses.dataclass(frozen=True, slots=True)
+class _DecisionApplication:
+    canonical: str
+    repointed: str | None = None
+
+
+class _CandidateIndex:
+    """FAISS index plus canonical-chain aware candidate lookup."""
+
+    __slots__ = ("_dedup", "_index", "_indexed_names", "_max_distance", "_top_n")
+
+    def __init__(
+        self,
+        *,
+        dim: int,
+        dedup: dict[str, str | None],
+        max_distance: float,
+        top_n: int,
+    ) -> None:
+        self._dedup = dedup
+        self._index = _faiss.IndexFlatIP(dim)
+        self._indexed_names: list[str] = []
+        self._max_distance = max_distance
+        self._top_n = top_n
+
+    def add(self, info: _EntityInfo) -> None:
+        self._index.add(info.normalized_vec)
+        self._indexed_names.append(info.name)
+
+    def search(self, info: _EntityInfo) -> list[str]:
+        if self._index.ntotal == 0 or self._top_n <= 0:
+            return []
+        threshold = 1.0 - self._max_distance
+        k = min(self._top_n, self._index.ntotal)
+
+        while True:
+            scores, idxs = self._index.search(info.normalized_vec, k)
+            candidates = self._distinct_canonicals(scores[0], idxs[0], threshold, info)
+            if len(candidates) >= self._top_n:
+                return candidates
+            if k >= self._index.ntotal or scores[0][-1] < threshold:
+                return candidates
+            k = min(self._index.ntotal, max(k + 1, k * 2))
+
+    def _distinct_canonicals(
+        self,
+        scores: _NDArray[_np.float32],
+        idxs: _NDArray[_np.int64],
+        threshold: float,
+        info: _EntityInfo,
+    ) -> list[str]:
+        seen: set[str] = set()
+        out: list[str] = []
+        for score, idx in zip(scores, idxs):
+            if idx < 0 or score < threshold:
+                continue
+            canonical = _chain_walk(self._dedup, self._indexed_names[idx])
+            if canonical == info.name or canonical in seen:
+                continue
+            seen.add(canonical)
+            out.append(canonical)
+        return out
+
+
+def _chain_walk(dedup: dict[str, str | None], name: str) -> str:
+    current = name
+    while True:
+        target = dedup.get(current)
+        if target is None:
+            return current
+        current = target
+
+
+def _validate_pair_decision(
+    *,
+    entity: str,
+    candidates: list[str],
+    decision: PairDecision,
+) -> None:
+    if decision.matched is not None and (
+        decision.matched not in candidates or decision.matched == entity
+    ):
+        raise ValueError(
+            f"resolve_pair returned matched={decision.matched!r}, "
+            f"which is not in candidates={candidates!r}. This is a "
+            f"contract violation (see requirement.md)."
+        )
+
+
+def _apply_pair_decision(
+    *,
+    info: _EntityInfo,
+    decision: PairDecision,
+    entity_map: dict[str, _EntityInfo],
+    dedup: dict[str, str | None],
+    existing_policy: ExistingCanonicalPolicy,
+) -> _DecisionApplication:
+    if decision.matched is None:
+        dedup[info.name] = None
+        return _DecisionApplication(canonical=info.name)
+
+    matched = decision.matched
+    if _new_wins(
+        entity_info=info,
+        matched_info=entity_map[matched],
+        decision=decision,
+        existing_policy=existing_policy,
+    ):
+        dedup[info.name] = None
+        dedup[matched] = info.name
+        return _DecisionApplication(canonical=info.name, repointed=matched)
+
+    dedup[info.name] = matched
+    return _DecisionApplication(canonical=matched)
+
+
+def _event_for_seeded_existing(info: _EntityInfo) -> ResolutionEvent:
+    return ResolutionEvent(
+        entity=info.name,
+        canonical=info.name,
+        candidates=[],
+        seeded=True,
+    )
+
+
+def _event_for_new_canonical(info: _EntityInfo) -> ResolutionEvent:
+    return ResolutionEvent(
+        entity=info.name,
+        canonical=info.name,
+        candidates=[],
+    )
+
+
+def _event_for_pair_decision(
+    *,
+    info: _EntityInfo,
+    candidates: list[str],
+    decision: PairDecision,
+    application: _DecisionApplication,
+) -> ResolutionEvent:
+    return ResolutionEvent(
+        entity=info.name,
+        canonical=application.canonical,
+        candidates=candidates,
+        decision=decision,
+        repointed=application.repointed,
+    )
+
+
 async def resolve_entities(
     entities: _Iterable[str],
     *,
@@ -220,51 +369,17 @@ async def resolve_entities(
             ),
         )
 
-    dim = int(raw_embeddings[0].shape[-1])
-    index = _faiss.IndexFlatIP(dim)
-    indexed_names: list[str] = []
     dedup: dict[str, str | None] = {}
+    candidate_index = _CandidateIndex(
+        dim=int(raw_embeddings[0].shape[-1]),
+        dedup=dedup,
+        max_distance=max_distance,
+        top_n=top_n,
+    )
 
     def _emit(event: ResolutionEvent) -> None:
         if on_resolution is not None:
             on_resolution(event)
-
-    def _add_to_index(info: _EntityInfo) -> None:
-        index.add(info.normalized_vec)
-        indexed_names.append(info.name)
-
-    def _chain_walk(name: str) -> str:
-        current = name
-        while True:
-            target = dedup.get(current)
-            if target is None:
-                return current
-            current = target
-
-    def _search_candidates(info: _EntityInfo) -> list[str]:
-        if index.ntotal == 0 or top_n <= 0:
-            return []
-        threshold = 1.0 - max_distance
-        k = min(top_n, index.ntotal)
-
-        while True:
-            scores, idxs = index.search(info.normalized_vec, k)
-            seen: set[str] = set()
-            out: list[str] = []
-            for score, idx in zip(scores[0], idxs[0]):
-                if idx < 0 or score < threshold:
-                    continue
-                canonical = _chain_walk(indexed_names[idx])
-                if canonical == info.name or canonical in seen:
-                    continue
-                seen.add(canonical)
-                out.append(canonical)
-                if len(out) >= top_n:
-                    return out
-
-            if k >= index.ntotal or scores[0][-1] < threshold:
-                return out
-            k = min(index.ntotal, max(k + 1, k * 2))
 
     if existing_policy == ExistingCanonicalPolicy.PINNED:
         pass_1 = [i for i in entity_map.values() if i.is_existing]
@@ -275,71 +390,38 @@ async def resolve_entities(
 
     for info in pass_1:
         dedup[info.name] = None
-        _add_to_index(info)
-        _emit(
-            ResolutionEvent(
-                entity=info.name,
-                canonical=info.name,
-                candidates=[],
-                seeded=True,
-            )
-        )
+        candidate_index.add(info)
+        _emit(_event_for_seeded_existing(info))
 
     for info in pass_2:
-        candidates = _search_candidates(info)
+        candidates = candidate_index.search(info)
 
         if not candidates:
             dedup[info.name] = None
-            _add_to_index(info)
-            _emit(
-                ResolutionEvent(
-                    entity=info.name,
-                    canonical=info.name,
-                    candidates=[],
-                )
-            )
+            candidate_index.add(info)
+            _emit(_event_for_new_canonical(info))
             continue
 
         decision = await resolve_pair(info.name, candidates)
-
-        if decision.matched is not None and (
-            decision.matched not in candidates or decision.matched == info.name
-        ):
-            raise ValueError(
-                f"resolve_pair returned matched={decision.matched!r}, "
-                f"which is not in candidates={candidates!r}. This is a "
-                f"contract violation (see requirement.md)."
-            )
-
-        if decision.matched is None:
-            dedup[info.name] = None
-            canonical = info.name
-            repointed: str | None = None
-        else:
-            matched = decision.matched
-            if _new_wins(
-                entity_info=info,
-                matched_info=entity_map[matched],
-                decision=decision,
-                existing_policy=existing_policy,
-            ):
-                dedup[info.name] = None
-                dedup[matched] = info.name
-                canonical = info.name
-                repointed = matched
-            else:
-                dedup[info.name] = matched
-                canonical = matched
-                repointed = None
-
-        _add_to_index(info)
+        _validate_pair_decision(
+            entity=info.name,
+            candidates=candidates,
+            decision=decision,
+        )
+        application = _apply_pair_decision(
+            info=info,
+            decision=decision,
+            entity_map=entity_map,
+            dedup=dedup,
+            existing_policy=existing_policy,
+        )
+        candidate_index.add(info)
         _emit(
-            ResolutionEvent(
-                entity=info.name,
-                canonical=canonical,
+            _event_for_pair_decision(
+                info=info,
                 candidates=candidates,
                 decision=decision,
-                repointed=repointed,
+                application=application,
             )
         )
 

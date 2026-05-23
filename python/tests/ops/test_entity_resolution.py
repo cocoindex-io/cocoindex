@@ -16,7 +16,6 @@ from cocoindex.ops.entity_resolution import (  # noqa: E402
     ExistingCanonicalPolicy,
     PairDecision,
     ResolutionEvent,
-    ResolvedEntities,
     resolve_entities,
 )
 
@@ -136,6 +135,37 @@ async def test_single_entity() -> None:
 
 
 @pytest.mark.asyncio
+async def test_duplicates_collapsed_and_processed_in_sorted_order() -> None:
+    embedder = MockEmbedder([{"A", "B"}])
+    resolver = ScriptedResolver({("B", frozenset({"A"})): PairDecision(matched="A")})
+    events, on_res = capture_events()
+
+    result = await resolve_entities(
+        entities=["B", "A", "B", "A"],
+        embedder=embedder,
+        resolve_pair=resolver,
+        on_resolution=on_res,
+    )
+
+    assert len(result) == 2
+    assert result.to_dict() == {"A": None, "B": "A"}
+    assert [event.entity for event in events] == ["A", "B"]
+    assert resolver.calls == [("B", ["A"])]
+
+
+@pytest.mark.asyncio
+async def test_resolved_entities_unknown_name_raises_key_error() -> None:
+    result = await resolve_entities(
+        entities={"A"},
+        embedder=MockEmbedder([{"A"}]),
+        resolve_pair=ScriptedResolver({}),
+    )
+
+    with pytest.raises(KeyError, match="unknown"):
+        result.canonical_of("unknown")
+
+
+@pytest.mark.asyncio
 async def test_no_matches_all_canonical() -> None:
     # Three distinct groups → no matches expected
     embedder = MockEmbedder([{"A"}, {"B"}, {"C"}])
@@ -147,6 +177,38 @@ async def test_no_matches_all_canonical() -> None:
     )
     assert result.canonicals() == {"A", "B", "C"}
     assert resolver.calls == []  # no candidates above threshold
+
+
+@pytest.mark.asyncio
+async def test_max_distance_threshold_excludes_candidate() -> None:
+    embedder = VectorEmbedder({"A": (1.0, 0.0), "B": (0.8, 0.6)})
+    resolver = ScriptedResolver({})
+
+    result = await resolve_entities(
+        entities={"A", "B"},
+        embedder=embedder,
+        resolve_pair=resolver,
+        max_distance=0.1,
+    )
+
+    assert result.canonicals() == {"A", "B"}
+    assert resolver.calls == []
+
+
+@pytest.mark.asyncio
+async def test_top_n_zero_disables_candidate_search() -> None:
+    embedder = MockEmbedder([{"A", "B"}])
+    resolver = ScriptedResolver({})
+
+    result = await resolve_entities(
+        entities={"A", "B"},
+        embedder=embedder,
+        resolve_pair=resolver,
+        top_n=0,
+    )
+
+    assert result.canonicals() == {"A", "B"}
+    assert resolver.calls == []
 
 
 @pytest.mark.asyncio
@@ -371,6 +433,36 @@ async def test_mode3_binding_pass2_existing_wins() -> None:
     )
     assert result.canonical_of("B") == "A"
     assert result.canonicals() == {"A"}
+
+
+@pytest.mark.asyncio
+async def test_mode3_binding_new_can_repoint_non_existing_canonical() -> None:
+    # PINNED only locks existing canonicals. If the matched canonical is not
+    # existing, the resolver can still promote the new entity.
+    embedder = MockEmbedder([{"A", "B"}])
+    resolver = ScriptedResolver(
+        {
+            ("B", frozenset({"A"})): PairDecision(
+                matched="A", canonical=CanonicalSide.NEW
+            )
+        }
+    )
+    events, on_res = capture_events()
+
+    result = await resolve_entities(
+        entities={"A", "B"},
+        embedder=embedder,
+        resolve_pair=resolver,
+        is_existing_canonical=lambda n: False,
+        existing_policy=ExistingCanonicalPolicy.PINNED,
+        on_resolution=on_res,
+    )
+
+    assert result.canonical_of("A") == "B"
+    assert result.canonical_of("B") == "B"
+    assert result.canonicals() == {"B"}
+    b_event = next(e for e in events if e.entity == "B")
+    assert b_event.repointed == "A"
 
 
 # ---------------------------------------------------------------------------
