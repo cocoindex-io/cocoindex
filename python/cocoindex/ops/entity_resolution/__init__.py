@@ -68,8 +68,12 @@ class ExistingCanonicalPolicy(_enum.StrEnum):
 
 @_dataclasses.dataclass(frozen=True, slots=True)
 class ResolutionEvent:
-    """A single entity's resolution outcome. Emitted in real time as
-    ``resolve_entities`` proceeds."""
+    """A single entity's resolution outcome. ``resolve_entities`` collects
+    one event per resolved entity and invokes ``on_resolution`` for each
+    one after all components finish, in the same order the prior
+    single-pass implementation used (PREFERRED: sorted by entity name;
+    PINNED: pass-1 existings first then pass-2 non-existings, each in
+    sorted order)."""
 
     entity: str
     """The entity just resolved."""
