@@ -315,15 +315,11 @@ async def test_candidate_search_respects_top_n_upper_bound() -> None:
             "Z": (1.0, 0.0),
         }
     )
-    resolver = ScriptedResolver(
-        {
-            ("B", frozenset({"A"})): PairDecision(),
-            ("C", frozenset({"A", "B"})): PairDecision(),
-            ("D", frozenset({"A", "B"})): PairDecision(),
-            ("E", frozenset({"A", "B"})): PairDecision(),
-            ("Z", frozenset({"A", "B"})): PairDecision(),
-        }
-    )
+    calls: list[tuple[str, list[str]]] = []
+
+    async def resolver(entity: str, candidates: list[str]) -> PairDecision:
+        calls.append((entity, candidates))
+        return PairDecision()
 
     await resolve_entities(
         entities={"A", "B", "C", "D", "E", "Z"},
@@ -332,7 +328,7 @@ async def test_candidate_search_respects_top_n_upper_bound() -> None:
         top_n=2,
     )
 
-    for _, candidates in resolver.calls:
+    for _, candidates in calls:
         assert len(candidates) <= 2, f"top_n=2 violated: resolver got {candidates!r}"
 
 

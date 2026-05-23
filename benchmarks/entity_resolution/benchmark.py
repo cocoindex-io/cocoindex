@@ -461,8 +461,9 @@ def _count_candidate_components(
     faiss.normalize_L2(matrix)
     index = faiss.IndexFlatIP(dim)
     index.add(matrix)
-    threshold = 1.0 - max_distance
-    lims, _scores, idxs = index.range_search(matrix, threshold)
+    threshold = np.float32(1.0 - max_distance)
+    radius = float(np.nextafter(threshold, np.float32(-np.inf)))
+    lims, _scores, idxs = index.range_search(matrix, radius)
 
     parent = list(range(len(names)))
 
