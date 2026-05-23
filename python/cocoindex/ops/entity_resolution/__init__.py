@@ -252,6 +252,12 @@ class _CandidateIndex:
                 continue
             seen.add(canonical)
             out.append(canonical)
+            if len(out) >= self._top_n:
+                # ``top_n`` bounds the candidate list size — the public
+                # docs frame it as a maximum. Stop as soon as we have
+                # enough distinct canonicals so the backfill loop in
+                # ``search`` returns exactly ``top_n`` and never more.
+                break
         return out
 
 

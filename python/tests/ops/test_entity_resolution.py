@@ -301,6 +301,42 @@ async def test_multi_hop_chain() -> None:
 
 
 @pytest.mark.asyncio
+async def test_candidate_search_respects_top_n_upper_bound() -> None:
+    # Six near-identical entities and top_n=2: the backfill loop must not
+    # return more than two candidates to the resolver, matching the public
+    # docs that frame top_n as the maximum candidates surfaced per entity.
+    embedder = VectorEmbedder(
+        {
+            "A": (1.0, 0.0),
+            "B": (1.0, 0.0),
+            "C": (1.0, 0.0),
+            "D": (1.0, 0.0),
+            "E": (1.0, 0.0),
+            "Z": (1.0, 0.0),
+        }
+    )
+    resolver = ScriptedResolver(
+        {
+            ("B", frozenset({"A"})): PairDecision(),
+            ("C", frozenset({"A", "B"})): PairDecision(),
+            ("D", frozenset({"A", "B"})): PairDecision(),
+            ("E", frozenset({"A", "B"})): PairDecision(),
+            ("Z", frozenset({"A", "B"})): PairDecision(),
+        }
+    )
+
+    await resolve_entities(
+        entities={"A", "B", "C", "D", "E", "Z"},
+        embedder=embedder,
+        resolve_pair=resolver,
+        top_n=2,
+    )
+
+    for _, candidates in resolver.calls:
+        assert len(candidates) <= 2, f"top_n=2 violated: resolver got {candidates!r}"
+
+
+@pytest.mark.asyncio
 async def test_candidate_search_continues_until_distinct_canonicals() -> None:
     embedder = VectorEmbedder(
         {
