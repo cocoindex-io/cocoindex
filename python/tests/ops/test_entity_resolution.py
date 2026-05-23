@@ -843,6 +843,44 @@ async def test_independent_components_resolve_concurrently() -> None:
 
 
 @pytest.mark.asyncio
+async def test_resolver_error_cancels_sibling_components() -> None:
+    """If one component's resolve_pair raises, sibling component coroutines
+    must be cancelled — not allowed to keep firing resolver calls in the
+    background after resolve_entities has already raised.
+    """
+    pairs = [("A1", "A2"), ("B1", "B2"), ("C1", "C2"), ("D1", "D2"), ("E1", "E2")]
+    embedder = MockEmbedder([{a, b} for a, b in pairs])
+
+    started = 0
+    completed_normally = 0
+
+    async def resolver(entity: str, candidates: list[str]) -> PairDecision:
+        nonlocal started, completed_normally
+        started += 1
+        if entity == "A2":
+            await asyncio.sleep(0)
+            raise RuntimeError("boom")
+        await asyncio.sleep(1.0)
+        completed_normally += 1
+        return PairDecision(matched=candidates[0])
+
+    with pytest.raises(RuntimeError, match="boom"):
+        await resolve_entities(
+            entities={n for pair in pairs for n in pair},
+            embedder=embedder,
+            resolve_pair=resolver,
+        )
+
+    # Give any leaked siblings a chance to run to completion.
+    await asyncio.sleep(0.2)
+    assert started >= 2, "test setup: at least the failing call should have started"
+    assert completed_normally == 0, (
+        f"sibling resolver calls were not cancelled: started={started}, "
+        f"completed_normally={completed_normally}"
+    )
+
+
+@pytest.mark.asyncio
 async def test_on_resolution_exception_aborts() -> None:
     embedder = MockEmbedder([{"A"}, {"B"}, {"C"}])
     resolver = ScriptedResolver({})

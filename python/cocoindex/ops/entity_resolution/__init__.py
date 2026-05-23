@@ -546,9 +546,25 @@ async def resolve_entities(
         )
         return events
 
-    per_component_events = await _asyncio.gather(
-        *(_run_one(members) for members in components)
-    )
+    # Cancel sibling component tasks on the first exception. Bare
+    # asyncio.gather lets siblings keep running after the exception has
+    # already propagated to the caller, leaking resolver calls (and any
+    # LLM cost they incur) for results that will never be observed. A
+    # TaskGroup would also achieve this but wraps the exception in
+    # BaseExceptionGroup, hiding the original type from callers; spelling
+    # the cancellation out preserves the original exception.
+    tasks: list[_asyncio.Task[list[ResolutionEvent]]] = [
+        _asyncio.create_task(_run_one(members)) for members in components
+    ]
+    try:
+        per_component_events = await _asyncio.gather(*tasks)
+    except BaseException:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        if tasks:
+            await _asyncio.gather(*tasks, return_exceptions=True)
+        raise
 
     if on_resolution is not None:
         merged: list[ResolutionEvent] = [
