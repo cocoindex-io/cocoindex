@@ -45,7 +45,7 @@ class BenchmarkProfile:
     synthetic_dim: int = 384
     synthetic_embed_delay_ms: float = 0.0
     rule_resolver_delay_ms: float = 0.0
-    llm_model: str = "openai/gpt-4o-mini"
+    llm_model: str = "openai/gpt-5.4-nano"
     entity_type: str = "organization"
 
 
@@ -89,6 +89,15 @@ BENCHMARK_PROFILES: dict[str, BenchmarkProfile] = {
         groups=5,
         aliases_per_group=3,
         isolated=5,
+    ),
+    "openai-many-components": BenchmarkProfile(
+        embedder="litellm",
+        resolver="llm",
+        groups=0,
+        aliases_per_group=0,
+        isolated=0,
+        cluster_sizes=tuple([3] * 10 + [1] * 5),
+        max_distance=0.15,
     ),
 }
 

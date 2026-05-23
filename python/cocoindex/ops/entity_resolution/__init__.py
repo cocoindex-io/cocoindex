@@ -102,6 +102,12 @@ class PairResolver(_typing.Protocol):
     the threshold. Must return a :class:`PairDecision` whose ``matched`` is
     either None or one of the supplied ``candidates`` (else
     ``resolve_entities`` raises :exc:`ValueError`).
+
+    ``__call__`` may be invoked concurrently. ``resolve_entities`` partitions
+    entities into independent components and resolves them in parallel, so a
+    resolver instance can see overlapping ``__call__`` invocations. Built-in
+    resolvers are concurrency-safe; custom implementations with mutable
+    internal state should guard it accordingly.
     """
 
     async def __call__(
@@ -392,6 +398,62 @@ async def _resolve_component(
         )
 
 
+def _partition_components(
+    entity_list: list[str],
+    normalized_vecs: list[_NDArray[_np.float32]],
+    *,
+    max_distance: float,
+) -> list[list[int]]:
+    """Connected components of the conservative candidate-edge graph.
+
+    Edges: every (i, j) pair with cosine similarity ≥ ``1 - max_distance``.
+    This is a superset of any edge the runtime greedy ``_CandidateIndex``
+    could ever surface (which only ever filters down via chain-walk). Extra
+    edges reduce parallelism but cannot change correctness; missing edges
+    can change behavior, so we must not under-approximate.
+
+    Returns a list of components, each as a sorted list of indexes into
+    ``entity_list``. The component list itself is sorted by lex-min entity
+    name so downstream dispatch is deterministic.
+    """
+    n = len(entity_list)
+    if n == 0:
+        return []
+    if n == 1:
+        return [[0]]
+
+    dim = int(normalized_vecs[0].shape[-1])
+    matrix = _np.stack([v.reshape(-1) for v in normalized_vecs]).astype(_np.float32)
+    index = _faiss.IndexFlatIP(dim)
+    index.add(matrix)
+    lims, _scores, idxs = index.range_search(matrix, 1.0 - max_distance)
+
+    parent = list(range(n))
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for i in range(n):
+        for slot in range(int(lims[i]), int(lims[i + 1])):
+            j = int(idxs[slot])
+            if j <= i:
+                continue
+            ri, rj = find(i), find(j)
+            if ri != rj:
+                parent[ri] = rj
+
+    groups: dict[int, list[int]] = {}
+    for i in range(n):
+        groups.setdefault(find(i), []).append(i)
+    return sorted(
+        groups.values(),
+        key=lambda members: entity_list[members[0]],
+    )
+
+
 async def resolve_entities(
     entities: _Iterable[str],
     *,
@@ -404,6 +466,18 @@ async def resolve_entities(
     top_n: int = 5,
 ) -> ResolvedEntities:
     """Resolve a set of raw entity names into a canonical dedup map.
+
+    Resolution proceeds in three phases. First, all entities are embedded
+    concurrently. Second, a transient FAISS index partitions entities into
+    connected components of the candidate-similarity graph — entities in
+    different components can never compare to each other under any chain
+    walk. Third, each component is resolved by an independent greedy runner
+    (same algorithm as the single-component case) and runners execute
+    concurrently. Within a component, processing order is deterministic
+    (sorted by entity name); across components, the ``on_resolution``
+    callback fires in the same per-policy order as the single-component
+    case (PREFERRED: globally sorted; PINNED: all existings first sorted,
+    then all non-existings sorted).
 
     See ``specs/entity_resolution/requirement.md`` for the full contract,
     including existing-canonical policies (PINNED / PREFERRED),
@@ -418,6 +492,7 @@ async def resolve_entities(
     )
 
     entity_map: dict[str, _EntityInfo] = {}
+    normalized_vecs: list[_NDArray[_np.float32]] = []
     for name, raw_vec in zip(entity_list, raw_embeddings):
         vec = raw_vec.reshape(1, -1).copy()
         _faiss.normalize_L2(vec)
@@ -430,28 +505,49 @@ async def resolve_entities(
                 else False
             ),
         )
+        normalized_vecs.append(vec)
+
+    dim = int(raw_embeddings[0].shape[-1])
+    components = _partition_components(
+        entity_list, normalized_vecs, max_distance=max_distance
+    )
 
     dedup: dict[str, str | None] = {}
-    candidate_index = _CandidateIndex(
-        dim=int(raw_embeddings[0].shape[-1]),
-        dedup=dedup,
-        max_distance=max_distance,
-        top_n=top_n,
+
+    async def _run_one(member_idxs: list[int]) -> list[ResolutionEvent]:
+        events: list[ResolutionEvent] = []
+        component_index = _CandidateIndex(
+            dim=dim,
+            dedup=dedup,
+            max_distance=max_distance,
+            top_n=top_n,
+        )
+        infos = [entity_map[entity_list[i]] for i in member_idxs]
+        await _resolve_component(
+            infos,
+            entity_map=entity_map,
+            dedup=dedup,
+            candidate_index=component_index,
+            existing_policy=existing_policy,
+            resolve_pair=resolve_pair,
+            emit=events.append,
+        )
+        return events
+
+    per_component_events = await _asyncio.gather(
+        *(_run_one(members) for members in components)
     )
 
-    def _emit(event: ResolutionEvent) -> None:
-        if on_resolution is not None:
+    if on_resolution is not None:
+        merged: list[ResolutionEvent] = [
+            e for events in per_component_events for e in events
+        ]
+        if existing_policy == ExistingCanonicalPolicy.PINNED:
+            merged.sort(key=lambda e: (not e.seeded, e.entity))
+        else:
+            merged.sort(key=lambda e: e.entity)
+        for event in merged:
             on_resolution(event)
-
-    await _resolve_component(
-        list(entity_map.values()),
-        entity_map=entity_map,
-        dedup=dedup,
-        candidate_index=candidate_index,
-        existing_policy=existing_policy,
-        resolve_pair=resolve_pair,
-        emit=_emit,
-    )
 
     return ResolvedEntities(dedup)
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
@@ -547,6 +548,56 @@ async def test_on_resolution_decision_field() -> None:
 
 
 @pytest.mark.asyncio
+async def test_resolver_partitions_oversized_component_into_multiple_canonicals() -> None:
+    """A single FAISS component contains two ground-truth clusters; the
+    resolver rejects cross-cluster candidates and the algorithm produces
+    the right partition.
+
+    Mirrors what real embedders do when canonicals share vocabulary
+    (e.g. "Acme Analytics" and "Northwind Analytics" both ride the
+    "Analytics" axis). FAISS groups them; the LLM tells them apart. This
+    test exercises the no-match path of the greedy loop inside a single
+    oversized component — a regime the orthogonal MockEmbedder defaults
+    don't naturally produce.
+    """
+    embedder = MockEmbedder([{"a", "b", "c", "d"}])
+    decisions = {
+        ("b", frozenset({"a"})): PairDecision(matched="a"),
+        ("c", frozenset({"a"})): PairDecision(),
+        ("d", frozenset({"a", "c"})): PairDecision(matched="c"),
+    }
+    result = await resolve_entities(
+        entities={"a", "b", "c", "d"},
+        embedder=embedder,
+        resolve_pair=ScriptedResolver(decisions),
+    )
+    assert result.to_dict() == {"a": None, "b": "a", "c": None, "d": "c"}
+    assert result.canonicals() == {"a", "c"}
+
+
+@pytest.mark.asyncio
+async def test_pinned_existings_in_one_component_attach_correctly() -> None:
+    """Two PINNED existings sit in the same FAISS component as their
+    non-existing aliases; the resolver chooses which existing each alias
+    attaches to. Verifies PINNED's two-phase order (existings seeded
+    first) combined with resolver-driven partitioning inside one
+    component."""
+    embedder = MockEmbedder([{"M1", "M2", "X1", "X2"}])
+    decisions = {
+        ("X1", frozenset({"M1", "M2"})): PairDecision(matched="M1"),
+        ("X2", frozenset({"M1", "M2"})): PairDecision(matched="M2"),
+    }
+    result = await resolve_entities(
+        entities={"M1", "M2", "X1", "X2"},
+        embedder=embedder,
+        resolve_pair=ScriptedResolver(decisions),
+        is_existing_canonical=lambda n: n in {"M1", "M2"},
+        existing_policy=ExistingCanonicalPolicy.PINNED,
+    )
+    assert result.to_dict() == {"M1": None, "M2": None, "X1": "M1", "X2": "M2"}
+
+
+@pytest.mark.asyncio
 async def test_event_order_preferred_mode_is_sorted_by_entity() -> None:
     """PREFERRED policy: events emit in sorted(set(entities)) order.
 
@@ -595,6 +646,180 @@ async def test_event_order_pinned_mode_pass1_then_pass2_each_sorted() -> None:
     # pass_1 existings in sorted order: B, D; then pass_2 non-existings: A, C.
     assert [e.entity for e in events] == ["B", "D", "A", "C"]
     assert [e.seeded for e in events] == [True, True, False, False]
+
+
+@dataclass(frozen=True)
+class _ParityScenario:
+    """One input to the parity test: drives both the parallel-dispatch and
+    forced-single-component paths and asserts identical dedup maps."""
+
+    name: str
+    entities: set[str]
+    embedder: MockEmbedder
+    resolve_pair: ScriptedResolver
+    is_existing_canonical: Callable[[str], bool] | None = None
+    existing_policy: ExistingCanonicalPolicy = ExistingCanonicalPolicy.PINNED
+    top_n: int = 5
+
+
+def _build_parity_scenarios() -> list[_ParityScenario]:
+    scenarios: list[_ParityScenario] = []
+
+    pairs = [("A1", "A2"), ("B1", "B2"), ("C1", "C2"), ("D1", "D2")]
+    scenarios.append(
+        _ParityScenario(
+            name="many_small_components",
+            entities={n for p in pairs for n in p},
+            embedder=MockEmbedder([{a, b} for a, b in pairs]),
+            resolve_pair=ScriptedResolver(
+                {(b, frozenset({a})): PairDecision(matched=a) for a, b in pairs}
+            ),
+        )
+    )
+
+    scenarios.append(
+        _ParityScenario(
+            name="preferred_mixed_existing",
+            entities={"A", "B", "C", "D", "E"},
+            embedder=MockEmbedder([{"A", "B", "C"}, {"D", "E"}]),
+            resolve_pair=ScriptedResolver(
+                {
+                    ("B", frozenset({"A"})): PairDecision(matched="A"),
+                    ("C", frozenset({"A"})): PairDecision(matched="A"),
+                    ("E", frozenset({"D"})): PairDecision(
+                        matched="D", canonical=CanonicalSide.NEW
+                    ),
+                }
+            ),
+            is_existing_canonical=lambda n: n == "A",
+            existing_policy=ExistingCanonicalPolicy.PREFERRED,
+        )
+    )
+
+    scenarios.append(
+        _ParityScenario(
+            name="pinned_two_existings_two_new",
+            entities={"A", "B", "X", "Y"},
+            embedder=MockEmbedder([{"A", "X"}, {"B", "Y"}]),
+            resolve_pair=ScriptedResolver(
+                {
+                    ("X", frozenset({"A"})): PairDecision(matched="A"),
+                    ("Y", frozenset({"B"})): PairDecision(matched="B"),
+                }
+            ),
+            is_existing_canonical=lambda n: n in {"A", "B"},
+            existing_policy=ExistingCanonicalPolicy.PINNED,
+        )
+    )
+
+    isolates_embedder = MockEmbedder([{"A", "B"}, {"C", "D"}])
+    isolates_embedder.add_isolated("solo1", axis=10)
+    isolates_embedder.add_isolated("solo2", axis=11)
+    scenarios.append(
+        _ParityScenario(
+            name="isolates_and_clusters_mixed",
+            entities={"A", "B", "C", "D", "solo1", "solo2"},
+            embedder=isolates_embedder,
+            resolve_pair=ScriptedResolver(
+                {
+                    ("B", frozenset({"A"})): PairDecision(matched="A"),
+                    ("D", frozenset({"C"})): PairDecision(matched="C"),
+                }
+            ),
+        )
+    )
+
+    return scenarios
+
+
+_PARITY_SCENARIOS = _build_parity_scenarios()
+
+
+async def _run_resolve(scenario: _ParityScenario) -> dict[str, str | None]:
+    result = await resolve_entities(
+        entities=scenario.entities,
+        embedder=scenario.embedder,
+        resolve_pair=scenario.resolve_pair,
+        is_existing_canonical=scenario.is_existing_canonical,
+        existing_policy=scenario.existing_policy,
+        top_n=scenario.top_n,
+    )
+    return result.to_dict()
+
+
+@pytest.mark.parametrize(
+    "scenario", _PARITY_SCENARIOS, ids=lambda s: s.name
+)
+@pytest.mark.asyncio
+async def test_parallel_dispatch_matches_forced_single_component(
+    scenario: _ParityScenario, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Feed the same input through both the real component-graph dispatch
+    and a forced one-big-component dispatch; assert byte-identical dedup
+    maps. The one-component dispatch is the pure greedy path with no
+    partitioning, so equality here proves the partitioning + parallel
+    runner does not perturb canonical selection.
+    """
+    parallel_dedup = await _run_resolve(scenario)
+
+    import cocoindex.ops.entity_resolution as er
+
+    def _one_component(
+        entity_list: list[str],
+        normalized_vecs: list[NDArray[np.float32]],
+        *,
+        max_distance: float,
+    ) -> list[list[int]]:
+        return [list(range(len(entity_list)))] if entity_list else []
+
+    monkeypatch.setattr(er, "_partition_components", _one_component)
+    single_component_dedup = await _run_resolve(scenario)
+
+    assert parallel_dedup == single_component_dedup, (
+        f"scenario {scenario.name!r}: parallel and single-component dedup maps differ"
+    )
+
+
+@pytest.mark.asyncio
+async def test_independent_components_resolve_concurrently() -> None:
+    """Disjoint similarity components must overlap their resolver calls.
+
+    Uses 5 vertex-disjoint 2-entity clusters. Each second-entity match is one
+    resolver call. A resolver that yields the event loop between increment
+    and decrement of an "active" counter records the peak observed
+    concurrency; a sequential implementation would observe peak=1.
+    """
+    pairs = [("A1", "A2"), ("B1", "B2"), ("C1", "C2"), ("D1", "D2"), ("E1", "E2")]
+    embedder = MockEmbedder([{a, b} for a, b in pairs])
+    decisions = {
+        (b, frozenset({a})): PairDecision(matched=a) for a, b in pairs
+    }
+
+    active = 0
+    peak = 0
+
+    async def resolver(entity: str, candidates: list[str]) -> PairDecision:
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        # Yield once so other component tasks reach this point before we
+        # return. asyncio.sleep(0) re-schedules the current task at the back
+        # of the ready queue without any wall-clock dependency.
+        await asyncio.sleep(0)
+        active -= 1
+        return decisions[(entity, frozenset(candidates))]
+
+    result = await resolve_entities(
+        entities={n for pair in pairs for n in pair},
+        embedder=embedder,
+        resolve_pair=resolver,
+    )
+    assert peak >= 2, f"expected concurrent resolver calls, observed peak={peak}"
+    # And the partitioning didn't break correctness — every pair merged.
+    canonicals = result.canonicals()
+    assert len(canonicals) == 5
+    for a, b in pairs:
+        assert result.canonical_of(a) == result.canonical_of(b)
 
 
 @pytest.mark.asyncio
