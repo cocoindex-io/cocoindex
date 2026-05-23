@@ -57,6 +57,15 @@ async def generate_id(_dep: _typing.Any = None) -> int:
     return await _component_ctx.next_id(None)
 
 
+# Namespace UUID for stable UUID generation (using UUID v5 algorithm)
+_COCOINDEX_UUID_NAMESPACE = _uuid.UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
+
+
+def _fingerprint_to_uuid(fp: bytes) -> _uuid.UUID:
+    """Convert a fingerprint to a UUID v5 (deterministic from fingerprint bytes)."""
+    return _uuid.uuid5(_COCOINDEX_UUID_NAMESPACE, fp.hex())
+
+
 @_coco.fn(memo=True)
 def generate_uuid(_dep: _typing.Any = None) -> _uuid.UUID:
     """
@@ -83,7 +92,8 @@ def generate_uuid(_dep: _typing.Any = None) -> _uuid.UUID:
             item_uuid = generate_uuid(item.key)
             return Row(id=item_uuid, data=item.data)
     """
-    return _uuid.uuid4()
+    fp = _memo_fingerprint.memo_fingerprint(_dep).as_bytes()
+    return _fingerprint_to_uuid(fp)
 
 
 class IdGenerator(_coco.NotMemoKeyable):
@@ -221,5 +231,7 @@ async def _generate_next_id(_deps_fp: bytes, _dep_fp: bytes, _ordinal: int) -> i
 
 @_coco.fn(memo=True)
 def _generate_next_uuid(_deps_fp: bytes, _dep_fp: bytes, _ordinal: int) -> _uuid.UUID:
-    """Internal memoized function that generates the actual UUID."""
-    return _uuid.uuid4()
+    """Internal memoized function that generates a deterministic UUID based on inputs."""
+    # Combine deps_fp, dep_fp, and ordinal to create a unique deterministic seed
+    combined = _deps_fp + _dep_fp + _ordinal.to_bytes(8, "little")
+    return _fingerprint_to_uuid(combined)
