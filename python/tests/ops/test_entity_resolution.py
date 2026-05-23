@@ -547,6 +547,57 @@ async def test_on_resolution_decision_field() -> None:
 
 
 @pytest.mark.asyncio
+async def test_event_order_preferred_mode_is_sorted_by_entity() -> None:
+    """PREFERRED policy: events emit in sorted(set(entities)) order.
+
+    Locks in the callback order so a future component-graph runner can
+    parallelize across components without changing user-visible event order.
+    """
+    embedder = MockEmbedder([{"A", "B"}, {"C", "D"}])
+    resolver = ScriptedResolver(
+        {
+            ("B", frozenset({"A"})): PairDecision(matched="A"),
+            ("D", frozenset({"C"})): PairDecision(matched="C"),
+        }
+    )
+    events, on_res = capture_events()
+    await resolve_entities(
+        entities={"D", "C", "B", "A"},
+        embedder=embedder,
+        resolve_pair=resolver,
+        existing_policy=ExistingCanonicalPolicy.PREFERRED,
+        on_resolution=on_res,
+    )
+    assert [e.entity for e in events] == ["A", "B", "C", "D"]
+
+
+@pytest.mark.asyncio
+async def test_event_order_pinned_mode_pass1_then_pass2_each_sorted() -> None:
+    """PINNED policy: all pass-1 (existings) events emit first in sorted
+    order, then all pass-2 (non-existings) events in sorted order. Commit 3
+    parallelism must preserve this exact two-phase order."""
+    embedder = MockEmbedder([{"A", "B"}, {"C", "D"}])
+    resolver = ScriptedResolver(
+        {
+            ("A", frozenset({"B"})): PairDecision(matched="B"),
+            ("C", frozenset({"D"})): PairDecision(matched="D"),
+        }
+    )
+    events, on_res = capture_events()
+    await resolve_entities(
+        entities={"A", "B", "C", "D"},
+        embedder=embedder,
+        resolve_pair=resolver,
+        is_existing_canonical=lambda n: n in {"B", "D"},
+        existing_policy=ExistingCanonicalPolicy.PINNED,
+        on_resolution=on_res,
+    )
+    # pass_1 existings in sorted order: B, D; then pass_2 non-existings: A, C.
+    assert [e.entity for e in events] == ["B", "D", "A", "C"]
+    assert [e.seeded for e in events] == [True, True, False, False]
+
+
+@pytest.mark.asyncio
 async def test_on_resolution_exception_aborts() -> None:
     embedder = MockEmbedder([{"A"}, {"B"}, {"C"}])
     resolver = ScriptedResolver({})

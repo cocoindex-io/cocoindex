@@ -330,6 +330,68 @@ def _event_for_pair_decision(
     )
 
 
+async def _resolve_component(
+    infos: list[_EntityInfo],
+    *,
+    entity_map: dict[str, _EntityInfo],
+    dedup: dict[str, str | None],
+    candidate_index: _CandidateIndex,
+    existing_policy: ExistingCanonicalPolicy,
+    resolve_pair: PairResolver,
+    emit: _Callable[[ResolutionEvent], None],
+) -> None:
+    """Greedy two-pass resolution over one connected component (or one
+    entire input, when no graph partitioning has happened yet).
+
+    Mutates ``dedup`` and the supplied ``candidate_index``. ``entity_map``
+    is read-only for canonical-selection lookups during decision
+    application.
+    """
+    if existing_policy == ExistingCanonicalPolicy.PINNED:
+        pass_1 = [i for i in infos if i.is_existing]
+        pass_2 = [i for i in infos if not i.is_existing]
+    else:
+        pass_1 = []
+        pass_2 = infos
+
+    for info in pass_1:
+        dedup[info.name] = None
+        candidate_index.add(info)
+        emit(_event_for_seeded_existing(info))
+
+    for info in pass_2:
+        candidates = candidate_index.search(info)
+
+        if not candidates:
+            dedup[info.name] = None
+            candidate_index.add(info)
+            emit(_event_for_new_canonical(info))
+            continue
+
+        decision = await resolve_pair(info.name, candidates)
+        _validate_pair_decision(
+            entity=info.name,
+            candidates=candidates,
+            decision=decision,
+        )
+        application = _apply_pair_decision(
+            info=info,
+            decision=decision,
+            entity_map=entity_map,
+            dedup=dedup,
+            existing_policy=existing_policy,
+        )
+        candidate_index.add(info)
+        emit(
+            _event_for_pair_decision(
+                info=info,
+                candidates=candidates,
+                decision=decision,
+                application=application,
+            )
+        )
+
+
 async def resolve_entities(
     entities: _Iterable[str],
     *,
@@ -381,49 +443,15 @@ async def resolve_entities(
         if on_resolution is not None:
             on_resolution(event)
 
-    if existing_policy == ExistingCanonicalPolicy.PINNED:
-        pass_1 = [i for i in entity_map.values() if i.is_existing]
-        pass_2 = [i for i in entity_map.values() if not i.is_existing]
-    else:
-        pass_1 = []
-        pass_2 = list(entity_map.values())
-
-    for info in pass_1:
-        dedup[info.name] = None
-        candidate_index.add(info)
-        _emit(_event_for_seeded_existing(info))
-
-    for info in pass_2:
-        candidates = candidate_index.search(info)
-
-        if not candidates:
-            dedup[info.name] = None
-            candidate_index.add(info)
-            _emit(_event_for_new_canonical(info))
-            continue
-
-        decision = await resolve_pair(info.name, candidates)
-        _validate_pair_decision(
-            entity=info.name,
-            candidates=candidates,
-            decision=decision,
-        )
-        application = _apply_pair_decision(
-            info=info,
-            decision=decision,
-            entity_map=entity_map,
-            dedup=dedup,
-            existing_policy=existing_policy,
-        )
-        candidate_index.add(info)
-        _emit(
-            _event_for_pair_decision(
-                info=info,
-                candidates=candidates,
-                decision=decision,
-                application=application,
-            )
-        )
+    await _resolve_component(
+        list(entity_map.values()),
+        entity_map=entity_map,
+        dedup=dedup,
+        candidate_index=candidate_index,
+        existing_policy=existing_policy,
+        resolve_pair=resolve_pair,
+        emit=_emit,
+    )
 
     return ResolvedEntities(dedup)
 
