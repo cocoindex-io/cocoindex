@@ -548,7 +548,9 @@ async def test_on_resolution_decision_field() -> None:
 
 
 @pytest.mark.asyncio
-async def test_resolver_partitions_oversized_component_into_multiple_canonicals() -> None:
+async def test_resolver_partitions_oversized_component_into_multiple_canonicals() -> (
+    None
+):
     """A single FAISS component contains two ground-truth clusters; the
     resolver rejects cross-cluster candidates and the algorithm produces
     the right partition.
@@ -747,9 +749,7 @@ async def _run_resolve(scenario: _ParityScenario) -> dict[str, str | None]:
     return result.to_dict()
 
 
-@pytest.mark.parametrize(
-    "scenario", _PARITY_SCENARIOS, ids=lambda s: s.name
-)
+@pytest.mark.parametrize("scenario", _PARITY_SCENARIOS, ids=lambda s: s.name)
 @pytest.mark.asyncio
 async def test_parallel_dispatch_matches_forced_single_component(
     scenario: _ParityScenario, monkeypatch: pytest.MonkeyPatch
@@ -791,9 +791,7 @@ async def test_independent_components_resolve_concurrently() -> None:
     """
     pairs = [("A1", "A2"), ("B1", "B2"), ("C1", "C2"), ("D1", "D2"), ("E1", "E2")]
     embedder = MockEmbedder([{a, b} for a, b in pairs])
-    decisions = {
-        (b, frozenset({a})): PairDecision(matched=a) for a, b in pairs
-    }
+    decisions = {(b, frozenset({a})): PairDecision(matched=a) for a, b in pairs}
 
     active = 0
     peak = 0
