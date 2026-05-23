@@ -606,6 +606,32 @@ async def test_on_resolution_decision_field() -> None:
 
 
 @pytest.mark.asyncio
+async def test_resolved_entities_iteration_order_is_sorted() -> None:
+    """The dedup map is mutated by concurrent component runners in
+    scheduler-interleaved order. Iteration order, however, must stay
+    sorted-by-entity so callers using ``for name in result`` or
+    ``result.to_dict()`` see deterministic results across runs."""
+    pairs = [("A1", "A2"), ("B1", "B2"), ("C1", "C2"), ("D1", "D2"), ("E1", "E2")]
+    embedder = MockEmbedder([{a, b} for a, b in pairs])
+
+    async def resolver(entity: str, candidates: list[str]) -> PairDecision:
+        # Asymmetric delays force the components to finish out of order;
+        # without re-ordering, the dedup dict would reflect interleaved
+        # writes from the asyncio scheduler.
+        await asyncio.sleep(0.01 if entity > "C2" else 0.0)
+        return PairDecision(matched=candidates[0])
+
+    result = await resolve_entities(
+        entities={n for pair in pairs for n in pair},
+        embedder=embedder,
+        resolve_pair=resolver,
+    )
+
+    keys = list(result)
+    assert keys == sorted(keys)
+
+
+@pytest.mark.asyncio
 async def test_resolver_partitions_oversized_component_into_multiple_canonicals() -> (
     None
 ):

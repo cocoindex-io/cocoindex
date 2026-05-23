@@ -586,7 +586,13 @@ async def resolve_entities(
     if on_resolution is not None:
         _deliver_events(per_component_events, existing_policy, on_resolution)
 
-    return ResolvedEntities(dedup)
+    # Rebuild the dedup map in sorted entity order. Concurrent component
+    # runners populated the shared dict in scheduler-interleaved order;
+    # exposing that as ResolvedEntities iteration order would be a
+    # behavioral regression vs the prior single-pass implementation that
+    # iterated `sorted(set(entities))`.
+    ordered_dedup: dict[str, str | None] = {name: dedup[name] for name in entity_list}
+    return ResolvedEntities(ordered_dedup)
 
 
 def _deliver_events(
