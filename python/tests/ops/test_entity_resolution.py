@@ -197,6 +197,28 @@ async def test_max_distance_threshold_excludes_candidate() -> None:
 
 
 @pytest.mark.asyncio
+async def test_partition_includes_edges_at_exact_threshold() -> None:
+    # Two L2-normalized vectors with cosine similarity exactly 1 - max_distance.
+    # FAISS IndexFlatIP.range_search uses strict `> radius`, while the runtime
+    # _CandidateIndex.search filter is inclusive `>= threshold`. Without the
+    # nextafter step-down, the partition would drop this boundary edge and
+    # place A and B in disjoint components, while the sequential implementation
+    # would have surfaced B as a candidate of A.
+    embedder = VectorEmbedder({"A": (1.0, 0.0), "B": (0.5, float(np.sqrt(0.75)))})
+    resolver = ScriptedResolver({("B", frozenset({"A"})): PairDecision(matched="A")})
+
+    result = await resolve_entities(
+        entities={"A", "B"},
+        embedder=embedder,
+        resolve_pair=resolver,
+        max_distance=0.5,
+    )
+
+    assert result.to_dict() == {"A": None, "B": "A"}
+    assert resolver.calls == [("B", ["A"])]
+
+
+@pytest.mark.asyncio
 async def test_top_n_zero_disables_candidate_search() -> None:
     embedder = MockEmbedder([{"A", "B"}])
     resolver = ScriptedResolver({})

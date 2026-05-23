@@ -430,7 +430,15 @@ def _partition_components(
     matrix = _np.stack([v.reshape(-1) for v in normalized_vecs]).astype(_np.float32)
     index = _faiss.IndexFlatIP(dim)
     index.add(matrix)
-    lims, _scores, idxs = index.range_search(matrix, 1.0 - max_distance)
+    # FAISS IndexFlatIP.range_search is strict (returns pairs with score >
+    # radius). The runtime _CandidateIndex.search filter is inclusive
+    # (score >= threshold). Stepping the radius one float32 below the
+    # threshold ensures the boundary-equal pairs that the runtime would
+    # surface are also captured by the partition, preserving the
+    # superset invariant at the exact equality boundary.
+    threshold = _np.float32(1.0 - max_distance)
+    radius = float(_np.nextafter(threshold, _np.float32(-_np.inf)))
+    lims, _scores, idxs = index.range_search(matrix, radius)
 
     parent = list(range(n))
 
