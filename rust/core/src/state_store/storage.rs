@@ -11,34 +11,67 @@ use crate::state::db_schema::{
 };
 use crate::state::stable_path::{StablePath, StablePathPrefix, StablePathRef};
 use crate::state_store::app_store::{AppStore, Database};
-use crate::state_store::txn::{ReadTxn, WriteTxn};
+use crate::state_store::txn::WriteTxn;
 
 use cocoindex_utils::batching::{BatchQueue, Batcher, BatchingOptions, Runner};
 use cocoindex_utils::deser::from_msgpack_slice;
-use cocoindex_utils::retryable;
 use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use std::any::Any;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
 
 const DEFAULT_MAX_DBS: u32 = 1024;
 const DEFAULT_MAP_SIZE: usize = 0x1_0000_0000; // 4GiB
 
-/// Phase 1: short timeout to handle transient concurrency.
-static READ_TXN_RETRY_PHASE1: retryable::RetryOptions = retryable::RetryOptions {
-    retry_timeout: Some(Duration::from_secs(3)),
-    initial_backoff: Duration::from_millis(10),
-    max_backoff: Duration::from_secs(1),
-};
+/// Sync sibling of [`AppStore::read_txn`]'s `MDB_READERS_FULL` retry,
+/// for use inside `spawn_blocking` where the async retry helper isn't
+/// reachable. Same two-phase policy.
+fn open_read_txn_sync_with_retry(
+    env: &heed::Env<heed::WithoutTls>,
+) -> Result<heed::RoTxn<'_, heed::WithoutTls>> {
+    use std::time::{Duration, Instant};
 
-/// Phase 2: after clearing stale readers, retry indefinitely.
-static READ_TXN_RETRY_PHASE2: retryable::RetryOptions = retryable::RetryOptions {
-    retry_timeout: None,
-    initial_backoff: Duration::from_millis(10),
-    max_backoff: Duration::from_secs(1),
-};
+    const INITIAL_BACKOFF: Duration = Duration::from_millis(10);
+    const MAX_BACKOFF: Duration = Duration::from_secs(1);
+    const PHASE1_TIMEOUT: Duration = Duration::from_secs(3);
+
+    // Phase 1: short timeout for transient concurrency.
+    let phase1_start = Instant::now();
+    let mut backoff = INITIAL_BACKOFF;
+    loop {
+        match env.read_txn() {
+            Ok(txn) => return Ok(txn),
+            Err(heed::Error::Mdb(heed::MdbError::ReadersFull)) => {
+                if phase1_start.elapsed() >= PHASE1_TIMEOUT {
+                    break;
+                }
+                warn!("LMDB readers full, retrying");
+                std::thread::sleep(backoff);
+                backoff = (backoff * 2).min(MAX_BACKOFF);
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+
+    // Phase 2: clear stale readers, then retry indefinitely.
+    let cleared = env.clear_stale_readers()?;
+    if cleared > 0 {
+        warn!("Cleared {cleared} stale LMDB readers");
+    }
+    backoff = INITIAL_BACKOFF;
+    loop {
+        match env.read_txn() {
+            Ok(txn) => return Ok(txn),
+            Err(heed::Error::Mdb(heed::MdbError::ReadersFull)) => {
+                warn!("LMDB readers still full after clearing stale readers, retrying");
+                std::thread::sleep(backoff);
+                backoff = (backoff * 2).min(MAX_BACKOFF);
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+}
 
 fn default_max_dbs() -> u32 {
     DEFAULT_MAX_DBS
@@ -205,7 +238,7 @@ impl Storage {
             .db_env
             .create_database(&mut wtxn, Some(app_name))?;
         wtxn.commit()?;
-        Ok(AppStore::new(db))
+        Ok(AppStore::new(db, self.inner.db_env.clone()))
     }
 
     /// Open the per-app sub-database by name, or `None` if it doesn't exist.
@@ -213,70 +246,28 @@ impl Storage {
     pub async fn open_app_store_by_name(&self, app_name: &str) -> Result<Option<AppStore>> {
         let rtxn = self.inner.db_env.read_txn()?;
         let db: Option<Database> = self.inner.db_env.open_database(&rtxn, Some(app_name))?;
-        Ok(db.map(AppStore::new))
+        let env = self.inner.db_env.clone();
+        Ok(db.map(|db| AppStore::new(db, env)))
     }
 
-    /// Open a read transaction with automatic retry on `MDB_READERS_FULL`.
-    ///
-    /// Two-phase strategy:
-    /// 1. Retry with a short timeout — handles transient reader slot contention.
-    /// 2. If phase 1 times out, call `clear_stale_readers()` to reclaim slots
-    ///    from dead processes, then retry indefinitely.
-    pub async fn read_txn(&self) -> Result<ReadTxn<'_>> {
-        let db_env = &self.inner.db_env;
-        let try_read_txn = || async {
-            match db_env.read_txn() {
-                Ok(txn) => retryable::Ok(txn),
-                Err(heed::Error::Mdb(heed::MdbError::ReadersFull)) => {
-                    warn!("Storage readers full, retrying");
-                    Err(retryable::Error::retryable(internal_error!(
-                        "Storage readers full"
-                    )))
-                }
-                Err(e) => Err(retryable::Error::not_retryable(e)),
-            }
-        };
-
-        // Phase 1: short timeout for transient concurrency.
-        match retryable::run(&try_read_txn, &READ_TXN_RETRY_PHASE1).await {
-            Ok(txn) => return Ok(ReadTxn::new(txn)),
-            Err(e) if !e.is_retryable => return Err(e.into()),
-            Err(_) => {}
-        }
-
-        // Phase 2: clear stale readers, then retry indefinitely.
-        let cleared = db_env.clear_stale_readers()?;
-        if cleared > 0 {
-            warn!("Cleared {cleared} stale storage readers");
-        }
-        retryable::run(&try_read_txn, &READ_TXN_RETRY_PHASE2)
-            .await
-            .map(ReadTxn::new)
-            .map_err(Into::into)
-    }
-
-    /// Non-retrying read txn for inspection use. Callers tolerate
-    /// `MDB_READERS_FULL` at a higher level rather than going through the
-    /// engine's two-phase retry path.
-    pub async fn read_txn_for_inspect(&self) -> Result<ReadTxn<'_>> {
-        Ok(ReadTxn::new(self.inner.db_env.read_txn()?))
-    }
-
-    /// Spawn a thread that streams every `(StablePath, node_type)` entry
-    /// from `app_store` via a channel. A dedicated thread is needed because
-    /// LMDB read transactions and cursors are `!Send`.
+    /// Stream every `(StablePath, node_type)` entry from `app_store` via
+    /// a channel. Runs on `tokio::task::spawn_blocking` because the LMDB
+    /// cursor (`RoPrefix`) wraps a raw `*mut MDB_cursor` and is `!Send`,
+    /// so the cursor can't be held across an `.await`. The sync loop on
+    /// the blocking-pool thread uses `blocking_send` for backpressure.
+    /// The rtxn open uses the same `MDB_READERS_FULL` retry policy as
+    /// [`AppStore::read_txn`], but sync (since we're off the runtime).
     pub async fn spawn_iter_stable_paths_with_node_type(
         &self,
         app_store: AppStore,
     ) -> tokio::sync::mpsc::Receiver<Result<(StablePath, StablePathNodeType)>> {
         let (tx, rx) = tokio::sync::mpsc::channel(128);
-        let storage = self.clone();
 
-        std::thread::spawn(move || {
+        tokio::task::spawn_blocking(move || {
             let result: Result<()> = (|| {
                 let encoded_key_prefix =
                     DbEntryKey::StablePathPrefixPrefix(StablePathPrefix::default()).encode()?;
-                let txn = storage.inner.db_env.read_txn()?;
+                let txn = open_read_txn_sync_with_retry(&app_store.env)?;
                 let db = app_store.db();
 
                 let mut last_prefix: Option<Vec<u8>> = None;
