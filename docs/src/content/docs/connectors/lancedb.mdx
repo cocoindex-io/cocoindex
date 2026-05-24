@@ -80,6 +80,7 @@ def declare_table_target(
     table_schema: TableSchema[RowT],
     *,
     managed_by: Literal["system", "user"] = "system",
+    num_transactions_before_optimize: int = 50,
 ) -> TableTarget[RowT, coco.PendingS]
 ```
 
@@ -89,6 +90,7 @@ def declare_table_target(
 - `table_name` — Name of the table.
 - `table_schema` — Schema definition including columns and primary key (see [Table Schema](#table-schema-from-python-class)).
 - `managed_by` — Whether CocoIndex manages the table lifecycle (`"system"`) or assumes it exists (`"user"`).
+- `num_transactions_before_optimize` — Number of successful row mutation batches before scheduling a background LanceDB `table.optimize()` call.
 
 **Returns:** A pending `TableTarget`. Use the convenience wrapper `await lancedb.mount_table_target(LANCE_DB, table_name, table_schema)` to resolve.
 
