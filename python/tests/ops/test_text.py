@@ -18,6 +18,8 @@ def test_detect_code_language_known_extensions() -> None:
     assert detect_code_language(filename="App.svelte") == "svelte"
     assert detect_code_language(filename="App.vue") == "vue"
     assert detect_code_language(filename="script.jl") == "julia"
+    assert detect_code_language(filename="Main.elm") == "elm"
+    assert detect_code_language(filename="index.astro") == "astro"
 
 
 def test_detect_code_language_unknown_extension() -> None:
@@ -199,6 +201,43 @@ def test_recursive_splitter_with_vue() -> None:
         "<style scoped>\n.hello { color: blue; }\n</style>\n"
     )
     chunks = splitter.split(code, chunk_size=80, min_chunk_size=20, language="vue")
+
+    assert len(chunks) >= 1
+    assert all(isinstance(c, Chunk) for c in chunks)
+
+
+def test_recursive_splitter_with_elm() -> None:
+    """Test RecursiveSplitter with Elm syntax-aware splitting."""
+    splitter = RecursiveSplitter()
+    code = (
+        "module Main exposing (main)\n\n"
+        "import Html exposing (text)\n\n"
+        "greet : String -> String\n"
+        'greet name =\n    "Hello, " ++ name ++ "!"\n\n'
+        "main =\n"
+        '    text (greet "World")\n'
+    )
+    chunks = splitter.split(code, chunk_size=60, min_chunk_size=20, language="elm")
+
+    assert len(chunks) >= 1
+    assert all(isinstance(c, Chunk) for c in chunks)
+
+
+def test_recursive_splitter_with_astro() -> None:
+    """Test RecursiveSplitter with Astro syntax-aware splitting."""
+    splitter = RecursiveSplitter()
+    code = (
+        "---\n"
+        'const title = "Hello";\n'
+        "---\n\n"
+        "<html>\n"
+        "  <head><title>{title}</title></head>\n"
+        "  <body>\n"
+        "    <h1>{title}</h1>\n"
+        "  </body>\n"
+        "</html>\n"
+    )
+    chunks = splitter.split(code, chunk_size=60, min_chunk_size=20, language="astro")
 
     assert len(chunks) >= 1
     assert all(isinstance(c, Chunk) for c in chunks)

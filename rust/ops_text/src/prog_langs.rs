@@ -75,7 +75,14 @@ static LANGUAGE_INFO_BY_NAME: LazyLock<
     add("apex", &[".cls", ".trigger"], None);
     add("arduino", &[".ino"], None);
     add("asm", &[".asm", ".a51", ".i", ".nas", ".nasm", ".s"], None);
-    add("astro", &[".astro"], None);
+    add(
+        "astro",
+        &[".astro"],
+        Some(TreeSitterLanguageInfo::new(
+            tree_sitter_astro_next::LANGUAGE,
+            [],
+        )),
+    );
     add("bash", &[".sh", ".bash"], None);
     add("beancount", &[".beancount"], None);
     add("bibtex", &[".bib", ".bibtex"], None);
@@ -142,7 +149,11 @@ static LANGUAGE_INFO_BY_NAME: LazyLock<
     );
     add("elisp", &[".el"], None);
     add("elixir", &[".ex", ".exs"], None);
-    add("elm", &[".elm"], None);
+    add(
+        "elm",
+        &[".elm"],
+        Some(TreeSitterLanguageInfo::new(tree_sitter_elm::LANGUAGE, [])),
+    );
     add("embeddedtemplate", &[".ets"], None);
     add(
         "erlang",
@@ -579,5 +590,12 @@ mod tests {
         let julia = get_language_info(".jl").unwrap();
         assert_eq!(julia.name.as_ref(), "julia");
         assert!(julia.treesitter_info.is_some());
+    }
+
+    #[test]
+    fn test_astro_has_treesitter() {
+        let astro = get_language_info(".astro").unwrap();
+        assert_eq!(astro.name.as_ref(), "astro");
+        assert!(astro.treesitter_info.is_some());
     }
 }

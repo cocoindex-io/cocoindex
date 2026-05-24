@@ -48,7 +48,7 @@ When your source data is updated, or your processing logic is changed (for examp
     ```bash
     mkdir pdf_files
     ```
-    You can download sample PDF files from the [git repo](https://github.com/cocoindex-io/cocoindex/tree/v1/examples/pdf_to_markdown).
+    You can download sample PDF files from the [git repo](https://github.com/cocoindex-io/cocoindex/tree/main/examples/pdf_to_markdown).
 
 4. Create a `.env` file to configure the database path:
 

@@ -1,16 +1,12 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
-import logging
 from collections.abc import AsyncIterable, Coroutine
 from typing import (
     Any,
-    Awaitable,
-    Concatenate,
     Callable,
+    Concatenate,
     Iterable,
-    Literal,
     ParamSpec,
     TypeVar,
     overload,
@@ -24,63 +20,10 @@ from .component_ctx import (
     ComponentSubpath,
     ExceptionContext,
     ExceptionHandler,
-    ExceptionHandlerChain,
-    MountKind,
     build_child_path,
     get_context_from_ctx,
     exception_handler,
 )
-
-_logger = logging.getLogger(__name__)
-
-
-def _resolve_handler(
-    handler_chain: ExceptionHandlerChain,
-    *,
-    env_name: str,
-    stable_path: str,
-    processor_name: str | None,
-    mount_kind: MountKind,
-    parent_stable_path: str | None,
-) -> Callable[[str], Awaitable[None]]:
-    """
-    Wrap a handler chain into a single async callable invoked by Rust.
-
-    The returned callable takes a stringified error (from Rust) and runs:
-    - innermost handler first (head of the chain)
-    - if a handler raises, calls the next outer handler with the new exception
-    - if all handlers raise, logs the original component error (built-in fallback)
-    """
-
-    async def _run(err_str: str) -> None:
-        original_exc: BaseException = RuntimeError(err_str)
-        current_exc: BaseException = original_exc
-        source: Literal["component", "handler"] = "component"
-        node: ExceptionHandlerChain | None = handler_chain
-        while node is not None:
-            ctx = ExceptionContext(
-                env_name=env_name,
-                stable_path=stable_path,
-                processor_name=processor_name,
-                mount_kind=mount_kind,
-                parent_stable_path=parent_stable_path,
-                is_background=True,
-                source=source,
-                original_exception=None if source == "component" else original_exc,
-            )
-            try:
-                ret = node.handler(current_exc, ctx)
-                if inspect.isawaitable(ret):
-                    await ret
-                return
-            except BaseException as handler_exc:
-                current_exc = handler_exc
-                source = "handler"
-                node = node.base
-        # All handlers raised — fall back to built-in log, matching the no-handler path.
-        _logger.error("component build failed:\n%s", err_str, exc_info=current_exc)
-
-    return _run
 
 
 from .stable_path import StableKey
@@ -106,6 +49,8 @@ from .live_component import (
     LiveMapView,
     LiveMapSubscriber,
     _MountEachLiveComponent,
+    auto_refresh,
+    check_not_in_process_live,
     is_live_component_class,
 )
 
@@ -146,7 +91,7 @@ from .component_ctx import (
     get_component_context,
 )
 
-from .setting import Settings
+from .setting import Settings, LmdbSettings
 
 from .stable_path import ROOT_PATH, StablePath
 
@@ -165,6 +110,23 @@ ResolvedT = TypeVar("ResolvedT")
 
 _ValueT = TypeVar("_ValueT")
 _ChildHandlerT = TypeVar("_ChildHandlerT", bound="TargetHandler[Any, Any, Any] | None")
+
+
+def _default_subpath_name(processor_fn: Any) -> str | None:
+    """Resolve the default subpath name for a mount target.
+
+    Honors an explicit ``__coco_subpath_name__`` attribute (set by wrappers
+    like ``coco.auto_refresh`` so the wrapper class can keep an honest
+    ``__name__`` while still mounting under the wrapped function's name),
+    falling back to ``__name__``.
+    """
+    name = getattr(processor_fn, "__coco_subpath_name__", None)
+    if isinstance(name, str):
+        return name
+    name = getattr(processor_fn, "__name__", None)
+    if isinstance(name, str):
+        return name
+    return None
 
 
 class ComponentMountHandle:
@@ -278,13 +240,15 @@ async def use_mount(*pos_args: Any, **kwargs: Any) -> Any:
     else:
         processor_fn = pos_args[0]
         args = pos_args[1:]
-        name = getattr(processor_fn, "__name__", None)
+        name = _default_subpath_name(processor_fn)
         if name is None:
             raise TypeError(
                 "use_mount() requires a ComponentSubpath when the function has no "
                 "__name__. Provide an explicit subpath as the first argument."
             )
         subpath = ComponentSubpath(Symbol(name))
+
+    check_not_in_process_live("coco.use_mount")
 
     if is_live_component_class(processor_fn):
         raise TypeError(
@@ -313,7 +277,16 @@ async def _mount_live_component(
     child_path: core.StablePath,
     instance: Any,
 ) -> ComponentMountHandle:
-    """Mount a pre-constructed LiveComponent instance."""
+    """Mount a pre-constructed LiveComponent instance.
+
+    Wraps `instance.process_live(operator)` in `_process_live_wrapper` so
+    `_in_process_live = True` is set inside the asyncio Task that runs
+    the body (the wrapper Coroutine inherits this `Context` value through
+    asyncio's standard Task-context inheritance, and any `coco.mount*`
+    call within will raise).
+    """
+    from .live_component import _process_live_wrapper
+
     controller, readiness_handle = await core.mount_live_async(
         child_path,
         parent_ctx._core_processor_ctx,
@@ -323,8 +296,7 @@ async def _mount_live_component(
 
     operator = LiveComponentOperator(controller, instance, parent_ctx._env, child_path)
 
-    process_live_coro = instance.process_live(operator)
-    controller.start(process_live_coro)
+    controller.start(_process_live_wrapper(instance, operator))
 
     return ComponentMountHandle([readiness_handle])
 
@@ -369,6 +341,8 @@ async def mount(*pos_args: Any, **kwargs: Any) -> ComponentMountHandle:
         # With explicit subpath:
         await coco.mount(coco.component_subpath("process", filename), process_file, file, target)
     """
+    check_not_in_process_live("coco.mount")
+
     if pos_args and isinstance(pos_args[0], ComponentSubpath):
         subpath = pos_args[0]
         processor_fn = pos_args[1]
@@ -376,7 +350,7 @@ async def mount(*pos_args: Any, **kwargs: Any) -> ComponentMountHandle:
     else:
         processor_fn = pos_args[0]
         args = pos_args[1:]
-        name = getattr(processor_fn, "__name__", None)
+        name = _default_subpath_name(processor_fn)
         if name is None:
             raise TypeError(
                 "mount() requires a ComponentSubpath when the function has no "
@@ -394,17 +368,10 @@ async def mount(*pos_args: Any, **kwargs: Any) -> ComponentMountHandle:
     processor = create_core_component_processor(
         processor_fn, parent_ctx._env, child_path, args, kwargs
     )
-    resolved = (
-        _resolve_handler(
-            parent_ctx._exception_handler_chain,
-            env_name=parent_ctx._env.name,
-            stable_path=child_path.to_string(),
-            processor_name=getattr(processor_fn, "__qualname__", None),
-            mount_kind="mount",
-            parent_stable_path=parent_ctx._core_path.to_string(),
-        )
-        if parent_ctx._exception_handler_chain
-        else None
+    resolved = parent_ctx.resolve_exception_handler(
+        stable_path=child_path.to_string(),
+        processor_name=getattr(processor_fn, "__qualname__", None),
+        mount_kind="mount",
     )
     core_handle = await core.mount_async(
         processor,
@@ -462,6 +429,8 @@ async def mount_each(*pos_args: Any, **kwargs: Any) -> ComponentMountHandle:
     Returns:
         A handle that can be used to wait until all processing units are ready.
     """
+    check_not_in_process_live("coco.mount_each")
+
     if pos_args and isinstance(pos_args[0], ComponentSubpath):
         subpath = pos_args[0]
         fn = pos_args[1]
@@ -471,7 +440,7 @@ async def mount_each(*pos_args: Any, **kwargs: Any) -> ComponentMountHandle:
         fn = pos_args[0]
         items = pos_args[1]
         extra_args = pos_args[2:]
-        name = getattr(fn, "__name__", None)
+        name = _default_subpath_name(fn)
         if name is None:
             raise TypeError(
                 "mount_each() requires a ComponentSubpath when the function has no "
@@ -499,17 +468,10 @@ async def mount_each(*pos_args: Any, **kwargs: Any) -> ComponentMountHandle:
         processor = create_core_component_processor(
             fn, parent_ctx._env, item_path, (item, *extra_args), kwargs
         )
-        resolved = (
-            _resolve_handler(
-                parent_ctx._exception_handler_chain,
-                env_name=parent_ctx._env.name,
-                stable_path=item_path.to_string(),
-                processor_name=getattr(fn, "__qualname__", None),
-                mount_kind="mount_each",
-                parent_stable_path=parent_ctx._core_path.to_string(),
-            )
-            if parent_ctx._exception_handler_chain
-            else None
+        resolved = parent_ctx.resolve_exception_handler(
+            stable_path=item_path.to_string(),
+            processor_name=getattr(fn, "__qualname__", None),
+            mount_kind="mount_each",
         )
         core_handle = await core.mount_async(
             processor,
@@ -726,6 +688,7 @@ __all__ = [
     "get_component_context",
     # .setting
     "Settings",
+    "LmdbSettings",
     # .stable_path
     "ROOT_PATH",
     "StablePath",
@@ -742,6 +705,7 @@ __all__ = [
     "LiveMapFeed",
     "LiveMapView",
     "LiveMapSubscriber",
+    "auto_refresh",
     # Mount APIs
     "ComponentMountHandle",
     "mount",

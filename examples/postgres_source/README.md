@@ -14,7 +14,11 @@ We appreciate a star ⭐ at [CocoIndex Github](https://github.com/cocoindex-io/c
 pip install -e .
 ```
 
-2. Follow the [CocoIndex PostgreSQL setup guide](https://cocoindex.io/docs/getting_started/quickstart) to install and configure PostgreSQL with pgvector extension.
+2. A running Postgres with the pgvector extension. If you don't have one, start a local instance with the compose file in this repo:
+
+   ```sh
+   docker compose -f ../../dev/postgres.yaml up -d
+   ```
 
 3. Create source table `source_products` with sample data:
 
@@ -26,14 +30,14 @@ For simplicity, we use the same database for source and target. You can also set
 
 ## Run
 
-Build/update the index:
+Build/update the index (one-shot catch-up; the postgres source does not support live mode):
 
 ```sh
-cocoindex update main.py
+cocoindex update main
 ```
 
 Query:
 
 ```sh
-python main.py query "wireless headphones"
+python main.py "wireless headphones"
 ```

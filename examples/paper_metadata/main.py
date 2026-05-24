@@ -1,12 +1,14 @@
 """
 Paper Metadata (v1) - CocoIndex pipeline example.
 
-- Walk local PDF files
-- Extract the first page text
-- Use an LLM to extract title/authors/abstract
-- Embed title and abstract chunks (SentenceTransformers)
-- Store metadata and embeddings in Postgres (pgvector)
-- Query demo using pgvector cosine distance (<=>)
+Index (use `-L` for live mode, omit for one-shot catch-up):
+    cocoindex update main
+    cocoindex update -L main
+
+Query the index:
+    python main.py "your query"
+
+Pipeline: walk local PDFs -> extract first-page text -> LLM-extract title/authors/abstract -> embed title and abstract chunks -> store in Postgres pgvector.
 """
 
 from __future__ import annotations
@@ -22,6 +24,7 @@ from dataclasses import dataclass
 from typing import AsyncIterator, Annotated
 
 import asyncpg
+from pgvector.asyncpg import register_vector
 from numpy.typing import NDArray
 from openai import OpenAI
 from dotenv import load_dotenv
@@ -159,12 +162,11 @@ def extract_metadata(markdown: str) -> PaperMetadataModel:
 async def coco_lifespan(
     builder: coco.EnvironmentBuilder,
 ) -> AsyncIterator[None]:
-    # Provide resources needed across the CocoIndex environment
     database_url = os.getenv("POSTGRES_URL")
     if not database_url:
         raise ValueError("POSTGRES_URL is not set")
 
-    async with await asyncpg.create_pool(database_url) as pool:
+    async with asyncpg.create_pool(database_url) as pool:
         builder.provide(PG_DB, pool)
         builder.provide(EMBEDDER, SentenceTransformerEmbedder(EMBED_MODEL))
         yield
@@ -268,6 +270,7 @@ async def app_main(sourcedir: pathlib.Path) -> None:
         sourcedir,
         recursive=True,
         path_matcher=PatternFilePathMatcher(included_patterns=["**/*.pdf"]),
+        live=True,  # source supports live watch; pass -L to `cocoindex update` to actually run live
     )
     await coco.mount_each(
         process_file, files.items(), metadata_table, author_table, embedding_table
@@ -317,16 +320,15 @@ async def query_once(
         print("---")
 
 
-async def query() -> None:
+async def query(initial_query: str | None = None) -> None:
     database_url = os.getenv("POSTGRES_URL")
     if not database_url:
         raise ValueError("POSTGRES_URL is not set")
 
     embedder = SentenceTransformerEmbedder(EMBED_MODEL)
-    async with await asyncpg.create_pool(database_url) as pool:
-        if len(sys.argv) > 2:
-            q = " ".join(sys.argv[2:])
-            await query_once(pool, embedder, q)
+    async with asyncpg.create_pool(database_url, init=register_vector) as pool:
+        if initial_query is not None:
+            await query_once(pool, embedder, initial_query)
             return
 
         while True:
@@ -338,5 +340,5 @@ async def query() -> None:
 
 if __name__ == "__main__":
     load_dotenv()
-    if len(sys.argv) > 1 and sys.argv[1] == "query":
-        asyncio.run(query())
+    initial = " ".join(sys.argv[1:]) if len(sys.argv) > 1 else None
+    asyncio.run(query(initial))

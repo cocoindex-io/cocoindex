@@ -5,8 +5,10 @@ members = [
     "rust/py",
     "rust/py_utils",
     "rust/ops_text",
+    "rust/sdk/cocoindex",
+    "rust/sdk/cocoindex_macros",
 ]
-resolver = "2"
+resolver = "3"
 
 [workspace.package]
 version = "999.0.0"
@@ -40,6 +42,7 @@ indoc = "2.0.7"
 itertools = "0.14.0"
 log = "0.4.28"
 numpy = "0.27.0"
+parking_lot = "0.12.5"
 pgvector = { version = "0.4.1", features = ["sqlx", "halfvec"] }
 pyo3 = { version = "0.27.1", features = ["auto-initialize", "chrono", "uuid"] }
 pyo3-async-runtimes = { version = "0.27.0", features = ["tokio-runtime"] }

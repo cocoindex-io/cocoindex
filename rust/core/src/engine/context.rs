@@ -18,11 +18,20 @@ use crate::state::target_state_path::TargetStatePath;
 use crate::{
     engine::environment::{AppRegistration, Environment},
     state::stable_path::StablePath,
+    state_store::{AppStore, WriteTxn},
 };
+
+use cocoindex_utils::deser::from_msgpack_slice;
+
+use crate::engine::execution::{
+    deserialize_context_memo_states, deserialize_memo_values, serialize_context_memo_states,
+    serialize_memo_values,
+};
+use crate::engine::profile::Persist;
 
 struct AppContextInner<Prof: EngineProfile> {
     env: Environment<Prof>,
-    db: db_schema::Database,
+    app_store: AppStore,
     app_reg: AppRegistration<Prof>,
     id_sequencer_manager: IdSequencerManager,
     inflight_semaphore: Option<Arc<tokio::sync::Semaphore>>,
@@ -31,6 +40,18 @@ struct AppContextInner<Prof: EngineProfile> {
     /// previous cancellation (e.g. after `App::drop_app` finishes), allowing
     /// the same `App` instance to be reused for subsequent operations.
     cancellation_token: std::sync::Mutex<tokio_util::sync::CancellationToken>,
+
+    /// Flat registry of all live components mounted under this app.
+    /// `mount_live_async` registers (compacts then pushes) before returning;
+    /// `App::drop_app` walks this at shutdown to drain each.
+    /// Stores `Weak` so a freed `LiveComponentState` is naturally collected
+    /// on the next compaction.
+    /// Compaction-on-push: callers call `register_live_component` which removes
+    /// dead entries before appending — bounding registry size by live count
+    /// plus pending GC.
+    live_components: parking_lot::Mutex<
+        Vec<std::sync::Weak<crate::engine::live_component::LiveComponentState<Prof>>>,
+    >,
 }
 
 #[derive(Clone)]
@@ -41,7 +62,7 @@ pub struct AppContext<Prof: EngineProfile> {
 impl<Prof: EngineProfile> AppContext<Prof> {
     pub fn new(
         env: Environment<Prof>,
-        db: db_schema::Database,
+        app_store: AppStore,
         app_reg: AppRegistration<Prof>,
         max_inflight_components: Option<usize>,
     ) -> Self {
@@ -50,23 +71,59 @@ impl<Prof: EngineProfile> AppContext<Prof> {
         Self {
             inner: Arc::new(AppContextInner {
                 env,
-                db,
+                app_store,
                 app_reg,
                 id_sequencer_manager: IdSequencerManager::new(),
                 inflight_semaphore,
                 cancellation_token: std::sync::Mutex::new(
                     crate::engine::runtime::global_cancellation_token().child_token(),
                 ),
+                live_components: parking_lot::Mutex::new(Vec::new()),
             }),
         }
+    }
+
+    /// Register a live component for shutdown drain coverage.
+    ///
+    /// Compacts dead `Weak`s out of the registry before appending the new one,
+    /// so size is bounded by live + pending-GC count. The `Weak` is upgraded
+    /// during `App::drop_app`'s walk to drive `cancel_and_await_quiescence`.
+    pub fn register_live_component(
+        &self,
+        weak: std::sync::Weak<crate::engine::live_component::LiveComponentState<Prof>>,
+    ) {
+        let mut registry = self.inner.live_components.lock();
+        registry.retain(|w| w.upgrade().is_some());
+        registry.push(weak);
+    }
+
+    /// Atomically: cancel the app token AND snapshot the live-components
+    /// registry into upgraded `Arc`s. Returns the snapshot.
+    ///
+    /// Acquiring the lock first closes a race: a concurrent
+    /// `mount_live_async` mid-execution that captured an uncancelled
+    /// parent_ctx token will either (a) finish registering before this lock
+    /// acquisition (caught by the snapshot) or (b) queue behind the lock and
+    /// see the cancelled token immediately on first poll once we release.
+    pub fn cancel_and_snapshot_live_components(
+        &self,
+    ) -> Vec<Arc<crate::engine::live_component::LiveComponentState<Prof>>> {
+        let registry = self.inner.live_components.lock();
+        // Cancel inside the lock so a post-release registration sees the
+        // cancelled token.
+        self.inner.cancellation_token.lock().unwrap().cancel();
+        registry
+            .iter()
+            .filter_map(std::sync::Weak::upgrade)
+            .collect()
     }
 
     pub fn env(&self) -> &Environment<Prof> {
         &self.inner.env
     }
 
-    pub fn db(&self) -> &db_schema::Database {
-        &self.inner.db
+    pub fn app_store(&self) -> &AppStore {
+        &self.inner.app_store
     }
 
     pub fn app_reg(&self) -> &AppRegistration<Prof> {
@@ -104,7 +161,7 @@ impl<Prof: EngineProfile> AppContext<Prof> {
         let key = key.unwrap_or(&default_key);
         self.inner
             .id_sequencer_manager
-            .next_id(self.inner.env.txn_batcher(), &self.inner.db, key)
+            .next_id(self.inner.env.storage(), &self.inner.app_store, key)
             .await
     }
 }
@@ -160,6 +217,10 @@ impl<Prof: EngineProfile> MemoStatesPayload<Prof> {
 }
 
 pub enum FnCallMemoEntry<Prof: EngineProfile> {
+    /// Prefetched from the database but not yet accessed during this build.
+    /// Lazily decoded on first access (transitions to `Ready` or stays
+    /// `Stored` for later GC). Treated as untouched at flush time.
+    Stored(Vec<u8>),
     /// Memoization result is pending, i.e. the function call is not finished yet.
     Pending,
     /// Memoization result is ready. None means memoization is disabled, e.g. it mounts child components.
@@ -172,20 +233,241 @@ impl<Prof: EngineProfile> Default for FnCallMemoEntry<Prof> {
     }
 }
 
+/// In-memory cache of all function-memoization entries for a single
+/// component build. Populated by [`Self::prefetch`] (one prefix scan over
+/// the storage layer) at the start of build mode, then serves every
+/// subsequent fn-memo lookup in memory. New entries from cache-miss
+/// executions accumulate here; [`Self::flush_to_db`] applies the diff to
+/// storage at commit time as per-entry writes and deletes.
+pub(crate) struct FnMemoCache<Prof: EngineProfile> {
+    /// All known fn-memo entries for this component. Prefetched entries
+    /// start as `Stored(bytes)` and lazily decode to `Ready` on first
+    /// access; cache-miss inserts go straight to `Pending` then `Ready`.
+    entries: HashMap<Fingerprint, Arc<tokio::sync::RwLock<FnCallMemoEntry<Prof>>>>,
+    /// True after a successful `prefetch`. Stays false under
+    /// `full_reprocess` (prefetch skipped) or before `prefetch` runs.
+    /// Determines the flush strategy: per-entry writes/deletes when true,
+    /// prefix-delete + per-entry writes when false.
+    is_fully_loaded: bool,
+}
+
+impl<Prof: EngineProfile> FnMemoCache<Prof> {
+    pub(crate) fn new() -> Self {
+        Self {
+            entries: HashMap::new(),
+            is_fully_loaded: false,
+        }
+    }
+
+    /// Insert prefetched rows from the database into the cache and mark it
+    /// fully loaded. The async I/O lives at the context layer
+    /// ([`ComponentProcessorContext::prefetch_fn_memos`]); this is the sync
+    /// half that runs under the building-state mutex.
+    pub(crate) fn populate(&mut self, rows: Vec<(Fingerprint, Vec<u8>)>) {
+        for (fp, bytes) in rows {
+            self.entries.entry(fp).or_insert_with(|| {
+                Arc::new(tokio::sync::RwLock::new(FnCallMemoEntry::Stored(bytes)))
+            });
+        }
+        self.is_fully_loaded = true;
+    }
+
+    /// Get the entry for `fp`, inserting a `Pending` slot if absent. The
+    /// returned `Arc<RwLock<_>>` is what `reserve_memoization` locks.
+    pub(crate) fn entry_or_pending(
+        &mut self,
+        fp: Fingerprint,
+    ) -> Arc<tokio::sync::RwLock<FnCallMemoEntry<Prof>>> {
+        self.entries
+            .entry(fp)
+            .or_insert_with(|| Arc::new(tokio::sync::RwLock::new(FnCallMemoEntry::Pending)))
+            .clone()
+    }
+
+    /// Read-only lookup. Returns `None` if no entry exists for `fp`. Used
+    /// by the finalize-time dep walk.
+    pub(crate) fn get(
+        &self,
+        fp: Fingerprint,
+    ) -> Option<Arc<tokio::sync::RwLock<FnCallMemoEntry<Prof>>>> {
+        self.entries.get(&fp).cloned()
+    }
+
+    pub(crate) fn is_fully_loaded(&self) -> bool {
+        self.is_fully_loaded
+    }
+
+    /// Walk all entries. Used by finalize to enumerate touched/untouched
+    /// state without consuming the cache.
+    pub(crate) fn iter(
+        &self,
+    ) -> impl Iterator<
+        Item = (
+            &Fingerprint,
+            &Arc<tokio::sync::RwLock<FnCallMemoEntry<Prof>>>,
+        ),
+    > {
+        self.entries.iter()
+    }
+
+    /// Consume the cache and apply its diff to storage in a single write
+    /// transaction.
+    ///
+    /// - If `is_fully_loaded` is true: for each entry, write `Ready(Some)`
+    ///   with `already_stored=false` (new or re-executed), delete
+    ///   `Stored(_)` and `Ready(None)` (untouched or memoization-disabled),
+    ///   skip `Ready(Some)` with `already_stored=true` (cache hit, row
+    ///   already in DB).
+    /// - Otherwise: prefix-delete every fn-memo row for `path`, then write
+    ///   the `Ready(Some)` `already_stored=false` entries. Covers
+    ///   `full_reprocess` and any path where the cache was not prefetched.
+    pub(crate) async fn flush_to_db(
+        self,
+        wtxn: &mut WriteTxn<'_>,
+        app_store: &AppStore,
+        path: &StablePath,
+    ) -> Result<()> {
+        if !self.is_fully_loaded {
+            app_store.delete_all_fn_memos(wtxn, path).await?;
+        }
+        for (fp, lock) in self.entries.into_iter() {
+            // No other holders at flush time — extract by reference under
+            // a try_write guard rather than unwrapping the Arc, since
+            // upstream cancellation paths may have leaked clones.
+            let mut guard = lock.try_write().map_err(|_| {
+                internal_error!("fn memo entry for {fp:?} still locked at flush time")
+            })?;
+            let state = std::mem::replace(&mut *guard, FnCallMemoEntry::Pending);
+            match state {
+                FnCallMemoEntry::Ready(Some(memo)) => {
+                    if memo.already_stored {
+                        // Cache hit: DB row already correct.
+                        continue;
+                    }
+                    let ret_bytes = memo.ret.to_bytes()?;
+                    let memo_states_serialized = serialize_memo_values::<Prof>(&memo.memo_states)?;
+                    let context_memo_states_serialized =
+                        serialize_context_memo_states::<Prof>(&memo.context_memo_states)?;
+                    let entry = db_schema::FunctionMemoizationEntry {
+                        return_value: db_schema::MemoizedValue::Inlined(Cow::Borrowed(
+                            ret_bytes.as_ref(),
+                        )),
+                        child_components: vec![],
+                        target_state_paths: memo.target_state_paths,
+                        dependency_memo_entries: memo.dependency_memo_entries.into_iter().collect(),
+                        logic_deps: memo.logic_deps.into_iter().collect(),
+                        memo_states: memo_states_serialized,
+                        context_memo_states: context_memo_states_serialized,
+                    };
+                    app_store.write_fn_memo(wtxn, path, fp, &entry).await?;
+                }
+                FnCallMemoEntry::Stored(_) | FnCallMemoEntry::Ready(None) => {
+                    if self.is_fully_loaded {
+                        // Stored: untouched prefetched entry, stale.
+                        // Ready(None): memoization disabled at runtime.
+                        app_store.delete_fn_memo(wtxn, path, fp).await?;
+                    }
+                }
+                FnCallMemoEntry::Pending => {
+                    // The slot was inserted via `entry_or_pending` for a fp not
+                    // present in the prefetched cache (prefetched fps decode
+                    // to `Ready` in `reserve_memoization`, never end up
+                    // Pending). The function call then errored before
+                    // resolving — e.g. the caller wrapped it in try/except
+                    // and continued. Such fps have no DB row, so nothing to
+                    // write or delete.
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+impl<Prof: EngineProfile> Default for FnMemoCache<Prof> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Decode a `Stored(bytes)` entry into `Ready(Some(memo))` if the entry's
+/// stored logic deps still resolve. If the deps no longer resolve (e.g.
+/// logic registry no longer contains a fingerprint), or the entry is a
+/// legacy form with `child_components`, the result is `Ready(None)` so
+/// the entry is treated as a deletion at flush time.
+///
+/// This helper is shared between `reserve_memoization` (probe path) and
+/// the finalize dep walk; both call it under the per-entry write lock.
+///
+/// `*entry` must be `Stored(_)` on entry. After this call it is `Ready`.
+pub(crate) fn decode_stored_entry<Prof: EngineProfile>(
+    entry: &mut FnCallMemoEntry<Prof>,
+    env: &Environment<Prof>,
+) -> Result<()> {
+    let FnCallMemoEntry::Stored(bytes) = std::mem::replace(entry, FnCallMemoEntry::Pending) else {
+        internal_bail!("decode_stored_entry called on non-Stored entry");
+    };
+    let decoded: db_schema::FunctionMemoizationEntry<'_> = from_msgpack_slice(&bytes)?;
+    if !crate::engine::logic_registry::all_contained_with_env(&decoded.logic_deps, env) {
+        *entry = FnCallMemoEntry::Ready(None);
+        return Ok(());
+    }
+    if !decoded.child_components.is_empty() {
+        // Legacy entry with stored child component paths. Invalidate so the
+        // function re-runs, detects child components, and the entry is
+        // cleaned up.
+        *entry = FnCallMemoEntry::Ready(None);
+        return Ok(());
+    }
+    let return_value_bytes = match decoded.return_value {
+        db_schema::MemoizedValue::Inlined(b) => b,
+    };
+    let ret = Prof::FunctionData::from_bytes(return_value_bytes.as_ref())?;
+    let memo_states = deserialize_memo_values::<Prof>(&decoded.memo_states)?;
+    let context_memo_states =
+        deserialize_context_memo_states::<Prof>(&decoded.context_memo_states)?;
+    *entry = FnCallMemoEntry::Ready(Some(FnCallMemo {
+        ret,
+        target_state_paths: decoded.target_state_paths,
+        dependency_memo_entries: decoded.dependency_memo_entries.into_iter().collect(),
+        logic_deps: decoded.logic_deps.into_iter().collect(),
+        memo_states,
+        context_memo_states,
+        already_stored: true,
+    }));
+    Ok(())
+}
+
 pub(crate) struct ComponentBuildingState<Prof: EngineProfile> {
     pub target_states: ComponentTargetStatesContext<Prof>,
     pub child_path_set: ChildStablePathSet,
-    pub fn_call_memos: HashMap<Fingerprint, Arc<tokio::sync::RwLock<FnCallMemoEntry<Prof>>>>,
+    pub fn_memos: FnMemoCache<Prof>,
 }
 
 pub(crate) struct ComponentBuildContext<Prof: EngineProfile> {
     pub state: Mutex<Option<ComponentBuildingState<Prof>>>,
     pub full_reprocess: bool,
     pub live: bool,
+    /// Error handler routed to orphan-delete failures from this build's
+    /// commit-phase GC sweep. Same shape and meaning as
+    /// `ComponentDeleteContext::on_error` — see that doc for the
+    /// unified principle. `None` preserves the "log + swallow"
+    /// default (e.g. root `App.update`, `use_mount`'s foreground path,
+    /// `mount_inner_live`'s self-built parent context).
+    pub on_error: Option<crate::engine::component::OnError>,
 }
 
 pub(crate) struct ComponentDeleteContext<Prof: EngineProfile> {
     pub providers: rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
+    /// Error handler that cascades through descendant deletes triggered
+    /// by this delete's GC sweep. `App.drop()` installs a raising handler
+    /// at the root; it propagates down so any descendant failure surfaces
+    /// back through `handle.ready()` to the awaiting caller. `None`
+    /// preserves the "log + swallow" default for callers that don't need
+    /// propagation (e.g. `operator.delete` without a user-installed
+    /// raising handler).
+    ///
+    /// See `specs/core/error_handling.md` for the unified principle.
+    pub on_error: Option<crate::engine::component::OnError>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -204,6 +486,7 @@ impl<Prof: EngineProfile> ComponentProcessingAction<Prof> {
         providers: rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
         full_reprocess: bool,
         live: bool,
+        on_error: Option<crate::engine::component::OnError>,
     ) -> Self {
         Self::Build(ComponentBuildContext {
             state: Mutex::new(Some(ComponentBuildingState {
@@ -212,10 +495,11 @@ impl<Prof: EngineProfile> ComponentProcessingAction<Prof> {
                     provider_registry: TargetStateProviderRegistry::new(providers),
                 },
                 child_path_set: Default::default(),
-                fn_call_memos: Default::default(),
+                fn_memos: FnMemoCache::new(),
             })),
             full_reprocess,
             live,
+            on_error,
         })
     }
 }
@@ -279,6 +563,38 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         self.inner.component.stable_path()
     }
 
+    /// Eagerly load every function-memo entry for this component from
+    /// storage into the per-build cache. Called at the start of build mode
+    /// before any function calls run; skipped under `full_reprocess` so
+    /// the cache stays empty and `FnMemoCache::flush_to_db` falls through
+    /// to a prefix delete + write of newly-computed entries.
+    pub(crate) async fn prefetch_fn_memos(&self) -> Result<()> {
+        if self.full_reprocess() {
+            return Ok(());
+        }
+        // Cheap check: skip if already loaded (re-entry, etc.).
+        let already_loaded = match &self.inner.processing_action {
+            ComponentProcessingAction::Build(build_ctx) => {
+                let guard = build_ctx.state.lock().unwrap();
+                let Some(state) = guard.as_ref() else {
+                    return Ok(());
+                };
+                state.fn_memos.is_fully_loaded()
+            }
+            ComponentProcessingAction::Delete { .. } => return Ok(()),
+        };
+        if already_loaded {
+            return Ok(());
+        }
+        let app_store = self.app_ctx().app_store();
+        let path = self.stable_path();
+        let rows = app_store.list_fn_memos(path).await?;
+        self.update_building_state(|s| {
+            s.fn_memos.populate(rows);
+            Ok(())
+        })
+    }
+
     pub(crate) fn parent_context(&self) -> Option<&ComponentProcessorContext<Prof>> {
         self.inner.parent_context.as_ref()
     }
@@ -322,6 +638,46 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         match &self.inner.processing_action {
             ComponentProcessingAction::Build(_) => ComponentProcessingMode::Build,
             ComponentProcessingAction::Delete { .. } => ComponentProcessingMode::Delete,
+        }
+    }
+
+    /// Clone of the `on_error` handler installed at the context's creation,
+    /// available for both Build- and Delete-mode contexts.
+    ///
+    /// Read by:
+    /// - `Component::delete`'s spawned task (Delete only — invoke on this
+    ///   component's own failure).
+    /// - The commit-phase GC sweep (both modes — cascade to descendant
+    ///   deletes triggered by this component's submit/commit).
+    ///
+    /// For Delete-mode (`App.drop`'s root), the raising handler installed
+    /// at root cascades down through every recursive delete. For Build-mode
+    /// (a `coco.mount` child whose `process()` no longer declares a
+    /// previously-existing grandchild), the child's user-installed
+    /// exception handler chain — wired through `Component::mount`'s
+    /// `on_error` parameter — sees orphan-delete failures from the
+    /// commit-phase GC sweep.
+    ///
+    /// Returns `None` when no handler was installed (e.g. root `App.update`,
+    /// `use_mount`'s foreground path, `operator.delete` without a
+    /// user-installed raising handler).
+    pub(crate) fn processing_action_on_error(&self) -> Option<crate::engine::component::OnError> {
+        match &self.inner.processing_action {
+            ComponentProcessingAction::Build(b) => b.on_error.clone(),
+            ComponentProcessingAction::Delete(d) => d.on_error.clone(),
+        }
+    }
+
+    /// Delete-mode-only on_error accessor. Used by `Component::delete`'s
+    /// spawned task to invoke the handler on this component's own
+    /// execution failure (a *Build*-context's on_error is meant for
+    /// orphan-delete cascades, not for invoking on the build's own
+    /// failure — that flows through the `on_error` argument to
+    /// `run_in_background` directly).
+    pub(crate) fn delete_action_on_error(&self) -> Option<crate::engine::component::OnError> {
+        match &self.inner.processing_action {
+            ComponentProcessingAction::Delete(d) => d.on_error.clone(),
+            ComponentProcessingAction::Build(_) => None,
         }
     }
 

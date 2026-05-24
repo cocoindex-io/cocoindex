@@ -1,11 +1,14 @@
 """
 Text Embedding with Turbopuffer (v1) - CocoIndex pipeline example.
 
-- Walk local markdown files
-- Chunk text (RecursiveSplitter)
-- Embed chunks (SentenceTransformers)
-- Store into a Turbopuffer namespace
-- Query demo using Turbopuffer ANN search
+Index (use `-L` for live mode, omit for one-shot catch-up):
+    cocoindex update main
+    cocoindex update -L main
+
+Query the index:
+    python main.py "your query"
+
+Pipeline: walk local markdown files -> chunk -> embed -> store in a Turbopuffer namespace.
 """
 
 from __future__ import annotations
@@ -99,6 +102,7 @@ async def app_main(sourcedir: pathlib.Path) -> None:
         sourcedir,
         recursive=True,
         path_matcher=PatternFilePathMatcher(included_patterns=["**/*.md"]),
+        live=True,  # source supports live watch; pass -L to `cocoindex update` to actually run live
     )
     await coco.mount_each(process_file, files.items(), target_namespace)
 
@@ -138,7 +142,7 @@ async def query_once(
         print("---")
 
 
-async def query() -> None:
+async def query(initial_query: str | None = None) -> None:
     api_key = os.environ.get("TURBOPUFFER_API_KEY")
     if not api_key:
         print("TURBOPUFFER_API_KEY is not set", file=sys.stderr)
@@ -147,9 +151,8 @@ async def query() -> None:
     async with turbopuffer.AsyncTurbopuffer(
         region=TPUF_REGION, api_key=api_key
     ) as client:
-        if len(sys.argv) > 1:
-            q = " ".join(sys.argv[1:])
-            await query_once(client, embedder, q)
+        if initial_query is not None:
+            await query_once(client, embedder, initial_query)
             return
 
         while True:
@@ -161,4 +164,5 @@ async def query() -> None:
 
 if __name__ == "__main__":
     load_dotenv()
-    asyncio.run(query())
+    initial = " ".join(sys.argv[1:]) if len(sys.argv) > 1 else None
+    asyncio.run(query(initial))

@@ -38,7 +38,12 @@ from .component_ctx import (
     get_context_from_ctx,
 )
 from .context_keys import resolve_awaitables_sync
-from .memo_fingerprint import StateFnEntry, fingerprint_call, memo_fingerprint
+from .memo_fingerprint import (
+    StateFnEntry,
+    canonical_module_name,
+    fingerprint_call,
+    memo_fingerprint,
+)
 from .runner import Runner
 from .runner import in_subprocess as _in_subprocess
 from .serde import (
@@ -623,7 +628,7 @@ def _compute_logic_fingerprint(
             canonical = ast.dump(tree, include_attributes=False, annotate_fields=True)
         except (OSError, SyntaxError):
             canonical = f"<bytecode>{hashlib.sha256(fn.__code__.co_code).hexdigest()}"
-    payload = f"{fn.__module__}.{fn.__qualname__}\n{canonical}"
+    payload = f"{canonical_module_name(fn)}.{fn.__qualname__}\n{canonical}"
     if deps is not None:
         # Use an explicit stable encoding (hex of the 16-byte digest) rather
         # than Fingerprint.__str__ — the deps fingerprint ends up embedded in

@@ -8,7 +8,9 @@ This module provides a two-level target state system for LanceDB:
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 from dataclasses import dataclass
 from typing import (
     Any,
@@ -51,6 +53,8 @@ from cocoindex.resources import schema as res_schema
 import msgspec
 
 from cocoindex._internal.context_keys import ContextKey, ContextProvider
+
+_logger = logging.getLogger(__name__)
 
 # Type aliases
 _RowKey = tuple[Any, ...]  # Primary key values as tuple
@@ -327,6 +331,10 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
     _conn: LanceAsyncConnection
     _table_name: str
     _table_schema: TableSchema
+    _num_transactions_before_optimize: int
+    _num_applied_mutations: int
+    _optimize_lock: asyncio.Lock
+    _optimize_task: asyncio.Task[None] | None
     _sink: coco.TargetActionSink[_RowAction]
 
     def __init__(
@@ -334,10 +342,15 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
         conn: LanceAsyncConnection,
         table_name: str,
         table_schema: TableSchema,
+        num_transactions_before_optimize: int,
     ) -> None:
         self._conn = conn
         self._table_name = table_name
         self._table_schema = table_schema
+        self._num_transactions_before_optimize = num_transactions_before_optimize
+        self._num_applied_mutations = 0
+        self._optimize_lock = asyncio.Lock()
+        self._optimize_task = None
         self._sink = coco.TargetActionSink.from_async_fn(self._apply_actions)
 
     async def _apply_actions(
@@ -366,6 +379,45 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
         # Process deletes
         if deletes:
             await self._execute_deletes(table, deletes)
+
+        await self._maybe_optimize(table)
+
+    async def _maybe_optimize(self, table: lancedb.table.AsyncTable) -> None:
+        """Periodically optimize the table after successful mutation batches."""
+        async with self._optimize_lock:
+            self._num_applied_mutations += 1
+            if self._num_applied_mutations >= self._num_transactions_before_optimize:
+                self._schedule_optimize_locked(table)
+
+    async def _schedule_optimize(self, table: lancedb.table.AsyncTable) -> None:
+        """Schedule a background table optimization if one is not already running."""
+        async with self._optimize_lock:
+            self._schedule_optimize_locked(table)
+
+    def _schedule_optimize_locked(self, table: lancedb.table.AsyncTable) -> None:
+        if self._optimize_task is not None and not self._optimize_task.done():
+            return
+        self._optimize_task = asyncio.create_task(self._run_optimize(table))
+
+    async def _run_optimize(self, table: lancedb.table.AsyncTable) -> None:
+        succeeded = False
+        try:
+            await table.optimize()
+            succeeded = True
+        except Exception:  # pylint: disable=broad-exception-caught
+            _logger.exception(
+                "Exception in optimizing LanceDB table %s", self._table_name
+            )
+        finally:
+            async with self._optimize_lock:
+                if asyncio.current_task() is self._optimize_task:
+                    self._optimize_task = None
+                    if succeeded:
+                        self._num_applied_mutations = 0
+                    else:
+                        self._num_applied_mutations = (
+                            self._num_transactions_before_optimize
+                        )
 
     async def _execute_upserts(
         self,
@@ -489,6 +541,7 @@ class _TableSpec:
 
     table_schema: TableSchema[Any]
     managed_by: target.ManagedBy = target.ManagedBy.SYSTEM
+    num_transactions_before_optimize: int = 50
 
 
 class _ColumnState(msgspec.Struct, frozen=True, array_like=True):
@@ -584,13 +637,13 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
                     continue
 
                 spec = action.spec
-                outputs[i] = coco.ChildTargetDef(
-                    handler=_RowHandler(
-                        conn=conn,
-                        table_name=key.table_name,
-                        table_schema=spec.table_schema,
-                    )
+                handler = _RowHandler(
+                    conn=conn,
+                    table_name=key.table_name,
+                    table_schema=spec.table_schema,
+                    num_transactions_before_optimize=spec.num_transactions_before_optimize,
                 )
+                outputs[i] = coco.ChildTargetDef(handler=handler)
 
                 if action.main_action in ("insert", "upsert", "replace"):
                     await self._create_table(
@@ -599,7 +652,9 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
                         spec.table_schema,
                         if_not_exists=(action.main_action == "upsert"),
                     )
-                    continue
+
+                table = await conn.open_table(key.table_name)
+                await handler._schedule_optimize(table)
 
                 # No main change: reconcile additive columns incrementally.
                 if action.column_actions:
@@ -860,6 +915,7 @@ def table_target(
     table_schema: TableSchema[RowT],
     *,
     managed_by: target.ManagedBy = target.ManagedBy.SYSTEM,
+    num_transactions_before_optimize: int = 50,
 ) -> coco.TargetState[_RowHandler]:
     """
     Create a TargetState for a LanceDB table target.
@@ -872,14 +928,20 @@ def table_target(
         table_name: Name of the table.
         table_schema: Schema definition including columns and primary key.
         managed_by: Whether the table is managed by "system" or "user".
+        num_transactions_before_optimize: Number of successful row mutation batches
+            before scheduling a background ``table.optimize()``.
 
     Returns:
         A TargetState that can be passed to ``mount_target()``.
     """
+    if num_transactions_before_optimize <= 0:
+        raise ValueError("num_transactions_before_optimize must be positive")
+
     key = _TableKey(db_key=db.key, table_name=table_name)
     spec = _TableSpec(
         table_schema=table_schema,
         managed_by=managed_by,
+        num_transactions_before_optimize=num_transactions_before_optimize,
     )
     return _table_provider.target_state(key, spec)
 
@@ -890,6 +952,7 @@ def declare_table_target(
     table_schema: TableSchema[RowT],
     *,
     managed_by: target.ManagedBy = target.ManagedBy.SYSTEM,
+    num_transactions_before_optimize: int = 50,
 ) -> TableTarget[RowT, coco.PendingS]:
     """
     Create a TableTarget for writing rows to a LanceDB table.
@@ -900,12 +963,20 @@ def declare_table_target(
         table_schema: Schema definition including columns and primary key.
         managed_by: Whether the table is managed by "system" (CocoIndex creates/drops it)
                     or "user" (table must exist, CocoIndex only manages rows).
+        num_transactions_before_optimize: Number of successful row mutation batches
+            before scheduling a background ``table.optimize()``.
 
     Returns:
         A TableTarget that can be used to declare rows.
     """
     provider = coco.declare_target_state_with_child(
-        table_target(db, table_name, table_schema, managed_by=managed_by)
+        table_target(
+            db,
+            table_name,
+            table_schema,
+            managed_by=managed_by,
+            num_transactions_before_optimize=num_transactions_before_optimize,
+        )
     )
     return TableTarget(provider, table_schema)
 
@@ -916,6 +987,7 @@ async def mount_table_target(
     table_schema: TableSchema[RowT],
     *,
     managed_by: target.ManagedBy = target.ManagedBy.SYSTEM,
+    num_transactions_before_optimize: int = 50,
 ) -> TableTarget[RowT]:
     """
     Mount a table target and return a ready-to-use TableTarget.
@@ -927,12 +999,20 @@ async def mount_table_target(
         table_name: Name of the table.
         table_schema: Schema definition including columns and primary key.
         managed_by: Whether the table is managed by "system" or "user".
+        num_transactions_before_optimize: Number of successful row mutation batches
+            before scheduling a background ``table.optimize()``.
 
     Returns:
         A TableTarget that can be used to declare rows.
     """
     provider = await coco.mount_target(
-        table_target(db, table_name, table_schema, managed_by=managed_by)
+        table_target(
+            db,
+            table_name,
+            table_schema,
+            managed_by=managed_by,
+            num_transactions_before_optimize=num_transactions_before_optimize,
+        )
     )
     return TableTarget(provider, table_schema)
 

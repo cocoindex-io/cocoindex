@@ -48,7 +48,7 @@ repos:
           name: mypy type check
           entry: uv run mypy
           language: system
-          files: ^(python/|examples/|pyproject\.toml)
+          files: ^(python/|examples/|benchmarks/|pyproject\.toml)
           pass_filenames: false
 
         - id: maturin-develop
@@ -63,6 +63,20 @@ repos:
           entry: ./dev/run_cargo_test.sh
           language: system
           files: ^(rust/|Cargo\.toml)
+          pass_filenames: false
+
+        - id: cargo-test-rust-externs
+          name: cargo test (rust examples + benchmarks)
+          entry: ./dev/run_cargo_test_rust_externs.sh
+          language: system
+          files: ^(rust/sdk/|examples/rust/|benchmarks/.*/rust/)
+          pass_filenames: false
+
+        - id: cargo-tree-sdk-no-pyo3
+          name: cargo tree (cocoindex SDK must not depend on pyo3)
+          entry: ./dev/check_sdk_no_pyo3.sh
+          language: system
+          files: ^(rust/sdk/|rust/core/|rust/utils/|Cargo\.toml)
           pass_filenames: false
 
         - id: pytest

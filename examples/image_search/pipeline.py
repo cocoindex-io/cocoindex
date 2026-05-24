@@ -1,10 +1,14 @@
 """
-Image Search with Qdrant (v1) - CocoIndex pipeline example.
+Image Search with Qdrant (v1) - CocoIndex pipeline definition.
 
-- Walk local image files
-- Embed images with CLIP
-- Store embeddings in Qdrant
-- Query by text using CLIP text embeddings
+Defines the CocoIndex `app` (walk local images -> embed with CLIP -> store in Qdrant)
+and the helper functions (`embed_query`, `_qdrant_search`) used by `api.py`.
+
+This module is not an entry point. To run the example, start the FastAPI server:
+
+    python -m uvicorn api:app --reload --host 0.0.0.0 --port 8000
+
+The server runs the index in live mode in the background and serves search requests.
 """
 
 from __future__ import annotations
@@ -13,9 +17,8 @@ import functools
 import io
 import os
 import pathlib
-import sys
 import uuid
-from typing import AsyncIterator
+from typing import Any, AsyncIterator
 
 import torch
 from PIL import Image
@@ -29,10 +32,13 @@ from cocoindex.connectors import localfs, qdrant
 from cocoindex.resources.file import FileLike, PatternFilePathMatcher
 from cocoindex.resources.schema import VectorSchema
 
-QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6334/")
 QDRANT_COLLECTION = "ImageSearch"
 CLIP_MODEL_NAME = "openai/clip-vit-large-patch14"
 TOP_K = 5
+
+
+def qdrant_url() -> str:
+    return os.getenv("QDRANT_URL", "http://localhost:6334/")
 
 
 QDRANT_DB = coco.ContextKey[QdrantClient]("image_search_qdrant")
@@ -46,12 +52,18 @@ def get_clip_model() -> tuple[CLIPModel, CLIPProcessor]:
     return model, processor
 
 
+def _projected_features(out: Any) -> torch.Tensor:
+    # transformers >=5 returns BaseModelOutputWithPooling with the projected features in pooler_output;
+    # transformers <5 returns the projected features tensor directly.
+    return out.pooler_output if hasattr(out, "pooler_output") else out
+
+
 def embed_query(text: str) -> list[float]:
     model, processor = get_clip_model()
     inputs = processor(text=[text], return_tensors="pt", padding=True)
     with torch.no_grad():
-        features = model.get_text_features(**inputs)
-    return features[0].tolist()
+        out = model.get_text_features(**inputs)
+    return _projected_features(out)[0].tolist()
 
 
 def embed_image_bytes(img_bytes: bytes) -> list[float]:
@@ -59,16 +71,15 @@ def embed_image_bytes(img_bytes: bytes) -> list[float]:
     image = Image.open(io.BytesIO(img_bytes)).convert("RGB")
     inputs = processor(images=image, return_tensors="pt")
     with torch.no_grad():
-        features = model.get_image_features(**inputs)
-    return features[0].tolist()
+        out = model.get_image_features(**inputs)
+    return _projected_features(out)[0].tolist()
 
 
 @coco.lifespan
 async def coco_lifespan(
     builder: coco.EnvironmentBuilder,
 ) -> AsyncIterator[None]:
-    # Provide resources needed across the CocoIndex environment
-    client = qdrant.create_client(QDRANT_URL, prefer_grpc=True)
+    client = qdrant.create_client(qdrant_url(), prefer_grpc=True)
     builder.provide(QDRANT_DB, client)
     builder.provide(QDRANT_CLIENT, client)
     yield
@@ -112,6 +123,7 @@ async def app_main(sourcedir: pathlib.Path) -> None:
         path_matcher=PatternFilePathMatcher(
             included_patterns=["**/*.jpg", "**/*.jpeg", "**/*.png"]
         ),
+        live=True,  # source supports live watch; api.py runs the app with live=True
     )
     await coco.mount_each(process_file, files.items(), target_collection)
 
@@ -121,35 +133,6 @@ app = coco.App(
     app_main,
     sourcedir=pathlib.Path("./img"),
 )
-
-
-# ============================================================================
-# Query demo
-# ============================================================================
-
-
-def query_once(client: QdrantClient, query_text: str, *, top_k: int = TOP_K) -> None:
-    query_vec = embed_query(query_text)
-    results = _qdrant_search(client, QDRANT_COLLECTION, query_vec, top_k)
-
-    for r in results:
-        payload = r.payload or {}
-        print(f"[{r.score:.3f}] {payload.get('filename', '<unknown>')}")
-        print("---")
-
-
-def query() -> None:
-    client = qdrant.create_client(QDRANT_URL, prefer_grpc=True)
-    if len(sys.argv) > 1:
-        q = " ".join(sys.argv[1:])
-        query_once(client, q)
-        return
-
-    while True:
-        q = input("Enter search query (or Enter to quit): ").strip()
-        if not q:
-            break
-        query_once(client, q)
 
 
 def _image_id(path: pathlib.PurePath) -> str:
@@ -186,7 +169,3 @@ def _qdrant_search(
         )
         return response.result
     raise RuntimeError("Unsupported qdrant-client version: no search method found.")
-
-
-if __name__ == "__main__":
-    query()

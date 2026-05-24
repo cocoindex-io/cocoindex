@@ -1,10 +1,15 @@
 """
-Image Search with ColPali (v1) - CocoIndex pipeline example.
+Image Search with ColPali (v1) - CocoIndex pipeline definition.
 
-- Walk local image files
-- Embed images with ColPali (multi-vector)
-- Store embeddings in Qdrant with MaxSim multivector config
-- Query by text using ColPali query embeddings
+Defines the CocoIndex `app` (walk local images -> embed with ColPali multi-vector ->
+store in Qdrant with MaxSim multivector config) and the helper functions
+(`embed_query`, `_qdrant_search`) used by `api.py`.
+
+This module is not an entry point. To run the example, start the FastAPI server:
+
+    python -m uvicorn api:app --reload --host 0.0.0.0 --port 8000
+
+The server runs the index in live mode in the background and serves search requests.
 """
 
 from __future__ import annotations
@@ -13,7 +18,6 @@ import functools
 import io
 import os
 import pathlib
-import sys
 import uuid
 from typing import AsyncIterator
 
@@ -34,10 +38,13 @@ from cocoindex.connectors import localfs, qdrant
 from cocoindex.resources.file import FileLike, PatternFilePathMatcher
 from cocoindex.resources.schema import MultiVectorSchema, VectorSchema
 
-QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6334/")
 QDRANT_COLLECTION = "ImageSearchColpali"
 COLPALI_MODEL_NAME = os.getenv("COLPALI_MODEL", "vidore/colpali-v1.2")
 TOP_K = 5
+
+
+def qdrant_url() -> str:
+    return os.getenv("QDRANT_URL", "http://localhost:6334/")
 
 
 QDRANT_DB = coco.ContextKey[QdrantClient]("image_search_colpali")
@@ -87,8 +94,7 @@ def embed_image_bytes(img_bytes: bytes) -> list[list[float]]:
 async def coco_lifespan(
     builder: coco.EnvironmentBuilder,
 ) -> AsyncIterator[None]:
-    # Provide resources needed across the CocoIndex environment
-    client = qdrant.create_client(QDRANT_URL, prefer_grpc=True)
+    client = qdrant.create_client(qdrant_url(), prefer_grpc=True)
     builder.provide(QDRANT_DB, client)
     builder.provide(QDRANT_CLIENT, client)
     yield
@@ -135,6 +141,7 @@ async def app_main(sourcedir: pathlib.Path) -> None:
         path_matcher=PatternFilePathMatcher(
             included_patterns=["**/*.jpg", "**/*.jpeg", "**/*.png"]
         ),
+        live=True,  # source supports live watch; api.py runs the app with live=True
     )
     await coco.mount_each(process_file, files.items(), target_collection)
 
@@ -144,35 +151,6 @@ app = coco.App(
     app_main,
     sourcedir=pathlib.Path("./img"),
 )
-
-
-# ============================================================================
-# Query demo
-# ============================================================================
-
-
-def query_once(client: QdrantClient, query_text: str, *, top_k: int = TOP_K) -> None:
-    query_vec = embed_query(query_text)
-    results = _qdrant_search(client, QDRANT_COLLECTION, query_vec, top_k)
-
-    for r in results:
-        payload = r.payload or {}
-        print(f"[{r.score:.3f}] {payload.get('filename', '<unknown>')}")
-        print("---")
-
-
-def query() -> None:
-    client = qdrant.create_client(QDRANT_URL, prefer_grpc=True)
-    if len(sys.argv) > 1:
-        q = " ".join(sys.argv[1:])
-        query_once(client, q)
-        return
-
-    while True:
-        q = input("Enter search query (or Enter to quit): ").strip()
-        if not q:
-            break
-        query_once(client, q)
 
 
 def _image_id(path: pathlib.PurePath) -> str:
@@ -194,7 +172,3 @@ def _qdrant_search(
         with_payload=True,
     )
     return response.points
-
-
-if __name__ == "__main__":
-    query()

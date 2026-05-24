@@ -1,0 +1,11 @@
+[project]
+name = "file_summarization"
+version = "0.1.0"
+description = "File summarization benchmark — Python implementation"
+requires-python = ">=3.11"
+dependencies = [
+    "cocoindex",
+]
+
+[tool.uv.sources]
+cocoindex = {path = "../../../", editable = true}

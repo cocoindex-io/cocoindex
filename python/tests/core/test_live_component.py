@@ -193,6 +193,150 @@ class _IncrementalUpdateLiveComponent:
         await operator.mark_ready()
 
 
+# Slice F: nested LiveCompClass via operator.update
+class _InnerLiveComponent:
+    """Inner live component mounted via operator.update(LiveCompClass)."""
+
+    async def process(self) -> None:
+        coco.declare_target_state(GlobalDictTarget.target_state("inner_marker", 7))
+
+    async def process_live(self, operator: coco.LiveComponentOperator) -> None:
+        await operator.update_full()
+        await operator.mark_ready()
+
+
+class _OuterLiveComponentWithInner:
+    """Outer live component that mounts an inner live component via operator.update.
+
+    Exercises Slice F: the LiveCompClass branch in `operator.update()` should
+    install the inner controller under the outer's `update_full_lock`, spawn
+    the inner's `process_live`, and wait for the inner's `mark_ready`.
+    """
+
+    async def process(self) -> None:
+        coco.declare_target_state(GlobalDictTarget.target_state("outer_marker", 1))
+
+    async def process_live(self, operator: coco.LiveComponentOperator) -> None:
+        await operator.update_full()
+        # Mount a nested live component at "inner" subpath.
+        handle = await operator.update(
+            coco.component_subpath("inner"), _InnerLiveComponent
+        )
+        await handle.ready()
+        await operator.mark_ready()
+
+
+def test_in_process_live_blocks_coco_mount() -> None:
+    """Polish 2: `coco.mount(...)` inside `process_live` raises RuntimeError.
+
+    Verifies the `_in_process_live` ContextVar enforcement directly:
+    when the var is `True` (as it is inside `process_live`), the entry
+    points `coco.mount` / `coco.mount_each` / `coco.use_mount` must
+    raise a `RuntimeError` mentioning `process_live`.
+
+    The integration shape — that the var is actually set to `True` for
+    `process_live`'s body — is covered by the positive-case test
+    (`test_process_inside_live_can_call_coco_mount`): if the var weren't
+    set, calls inside `process()` would only succeed because the var was
+    already `False`, not because of the symmetric reset, which means
+    `process_live`'s body would also see `False`. The fact that the
+    positive case passes after the symmetric reset takes effect
+    (combined with the var defaulting to `False`) is the load-bearing
+    end-to-end signal that the True/False machinery works.
+    """
+    from cocoindex._internal.live_component import (
+        _in_process_live,
+        check_not_in_process_live,
+    )
+
+    # Default: not in process_live → no raise.
+    assert _in_process_live.get() is False
+    check_not_in_process_live("coco.mount")  # should not raise
+
+    # Simulate inside process_live: var set to True → must raise.
+    prev = _in_process_live.get()
+    _in_process_live.set(True)
+    try:
+        with pytest.raises(RuntimeError, match="not allowed inside process_live"):
+            check_not_in_process_live("coco.mount")
+        with pytest.raises(RuntimeError, match="not allowed inside process_live"):
+            check_not_in_process_live("coco.mount_each")
+        with pytest.raises(RuntimeError, match="not allowed inside process_live"):
+            check_not_in_process_live("coco.use_mount")
+    finally:
+        _in_process_live.set(prev)
+
+
+class _LiveComponentInnerCallsCocoMount:
+    """Polish 2 positive test: process() inside live can call coco.mount safely."""
+
+    async def process(self) -> None:
+        # This MUST NOT raise — process() is a separate context; the
+        # symmetric reset in update_full sets _in_process_live=False
+        # before the new Task captures Context for process()'s body.
+        await coco.mount(coco.component_subpath("ok"), _declare_item, "marker", 99)
+
+    async def process_live(self, operator: coco.LiveComponentOperator) -> None:
+        await operator.update_full()
+        await operator.mark_ready()
+
+
+def test_process_inside_live_can_call_coco_mount() -> None:
+    """Polish 2: `coco.mount(...)` from inside `process()` of a live component
+    must work — `update_full`'s inline `_in_process_live = False` reset
+    takes effect for the asyncio Task that runs `process()`.
+
+    This is the load-bearing positive case (design.md integration test #3):
+    if the symmetric reset breaks, every `process()` of a live component
+    would falsely raise here.
+    """
+    GlobalDictTarget.store.clear()
+
+    async def _main() -> None:
+        await coco.mount(
+            coco.component_subpath("inner_ok"), _LiveComponentInnerCallsCocoMount
+        )
+
+    app = coco.App(
+        coco.AppConfig(
+            name="test_process_inside_live_can_call_coco_mount",
+            environment=coco_env,
+        ),
+        _main,
+    )
+    app.update_blocking()
+    # The inner mount declared the marker.
+    assert "marker" in GlobalDictTarget.store.data
+
+
+def test_live_component_operator_update_with_live_class() -> None:
+    """operator.update(LiveCompClass) installs and runs a nested live component.
+
+    Verifies Slice F: the cancellable update_full_lock acquisition, fresh
+    parent_ctx construction, mount_live_prepare + complete sequence, and
+    inner controller startup all wire up correctly. Both outer and inner
+    target states should be declared.
+    """
+    GlobalDictTarget.store.clear()
+    _source_data.clear()
+
+    async def _main() -> None:
+        await coco.mount(coco.component_subpath("outer"), _OuterLiveComponentWithInner)
+
+    app = coco.App(
+        coco.AppConfig(name="test_operator_update_live_class", environment=coco_env),
+        _main,
+    )
+    app.update_blocking()
+
+    # Both outer's process() and inner's process() (via inner's update_full
+    # invoked from inner's process_live) should have declared their markers.
+    assert "outer_marker" in GlobalDictTarget.store.data
+    assert GlobalDictTarget.store.data["outer_marker"].data == 1
+    assert "inner_marker" in GlobalDictTarget.store.data
+    assert GlobalDictTarget.store.data["inner_marker"].data == 7
+
+
 def test_live_component_incremental_update() -> None:
     GlobalDictTarget.store.clear()
     _source_data.clear()
@@ -431,6 +575,351 @@ def test_live_component_update_full_gc() -> None:
     assert "gc_b" in GlobalDictTarget.store.data
     assert "gc_c" not in GlobalDictTarget.store.data
     assert "gc_d" not in GlobalDictTarget.store.data
+
+
+# ============================================================================
+# LiveComponentOperator.report_exception
+# ============================================================================
+
+
+class _LiveThatReports:
+    """Live component that calls operator.report_exception once after mark_ready."""
+
+    def __init__(self, exc: BaseException) -> None:
+        self._exc = exc
+
+    async def process(self) -> None:
+        coco.declare_target_state(GlobalDictTarget.target_state("marker", 1))
+
+    async def process_live(self, operator: coco.LiveComponentOperator) -> None:
+        await operator.update_full()
+        await operator.mark_ready()
+        await operator.report_exception(self._exc)
+
+
+def _raise_for_trace_test() -> None:
+    raise ValueError("traceful boom")
+
+
+class _LiveThatReportsCaught:
+    """Raises and catches a ValueError, then reports it — exc.__traceback__ is real."""
+
+    async def process(self) -> None:
+        coco.declare_target_state(GlobalDictTarget.target_state("marker", 1))
+
+    async def process_live(self, operator: coco.LiveComponentOperator) -> None:
+        await operator.update_full()
+        await operator.mark_ready()
+        try:
+            _raise_for_trace_test()
+        except ValueError as exc:
+            await operator.report_exception(exc)
+
+
+def test_report_exception_routes_to_global_handler() -> None:
+    """report_exception walks the parent's exception handler chain."""
+    GlobalDictTarget.store.clear()
+
+    seen: list[tuple[str, str, str, str | None, str | None]] = []
+
+    def handler(exc: BaseException, ctx: coco.ExceptionContext) -> None:
+        seen.append(
+            (
+                type(exc).__name__,
+                ctx.mount_kind,
+                ctx.stable_path,
+                ctx.parent_stable_path,
+                ctx.processor_name,
+            )
+        )
+
+    env = common.create_test_env(
+        __file__, suffix="report_exc_global", exception_handler=handler
+    )
+
+    async def _root() -> None:
+        await coco.mount(
+            coco.component_subpath("live"),
+            _LiveThatReports,
+            ValueError("boom from cycle"),
+        )
+
+    app = coco.App(
+        coco.AppConfig(name="test_report_exc_global", environment=env), _root
+    )
+    app.update_blocking(live=True)
+
+    assert len(seen) == 1
+    exc_name, mount_kind, stable_path, parent_path, processor_name = seen[0]
+    # resolve_handler synthesizes a RuntimeError from the stringified error
+    assert exc_name == "RuntimeError"
+    assert mount_kind == "process_live"
+    # The live component's path includes the "live" subpath component
+    assert "live" in stable_path
+    # Parent is the root context
+    assert parent_path is not None
+    assert processor_name == "_LiveThatReports"
+
+
+def test_report_exception_surfaces_python_traceback() -> None:
+    """The handler should see the original Python traceback, not just the message."""
+    GlobalDictTarget.store.clear()
+
+    seen_messages: list[str] = []
+
+    def handler(exc: BaseException, ctx: coco.ExceptionContext) -> None:
+        seen_messages.append(str(exc))
+
+    env = common.create_test_env(
+        __file__, suffix="report_exc_trace", exception_handler=handler
+    )
+
+    async def _root() -> None:
+        await coco.mount(coco.component_subpath("live"), _LiveThatReportsCaught)
+
+    app = coco.App(coco.AppConfig(name="test_report_exc_trace", environment=env), _root)
+    app.update_blocking(live=True)
+
+    assert len(seen_messages) == 1
+    msg = seen_messages[0]
+    assert "ValueError" in msg
+    assert "traceful boom" in msg
+    assert "Traceback (most recent call last)" in msg
+    assert "_raise_for_trace_test" in msg
+
+
+async def _failing_child(value: int) -> None:
+    raise ValueError(f"child failed with value={value}")
+
+
+async def _child_declare_one(value: int) -> None:
+    """Helper for delete-propagation test: declares a single target row."""
+    coco.declare_target_state(GlobalDictTarget.target_state("c", value))
+
+
+class _LiveThatDeletesWithFailingSink:
+    """Mount a child, await ready, toggle the sink to fail, then delete.
+
+    ``operator.delete`` is symmetric with ``operator.update`` —
+    failures route through the parent's exception handler chain.
+    Handlers control whether ``handle.ready()`` raises (raise to
+    propagate, return to swallow). This test verifies the routing.
+    """
+
+    async def process(self) -> None:
+        pass
+
+    async def process_live(self, operator: coco.LiveComponentOperator) -> None:
+        await operator.update_full()
+        h = await operator.update(coco.component_subpath("c"), _child_declare_one, 1)
+        await h.ready()
+        await operator.mark_ready()
+        GlobalDictTarget.store.sink_exception = True
+        try:
+            dh = await operator.delete(coco.component_subpath("c"))
+            await dh.ready()
+        finally:
+            GlobalDictTarget.store.sink_exception = False
+
+
+def test_operator_delete_failure_routes_to_handler() -> None:
+    """`operator.delete()` failure → handler chain (mount-style symmetry
+    with `operator.update`). Handler that returns normally → swallow."""
+    GlobalDictTarget.store.clear()
+    GlobalDictTarget.store.sink_exception = False
+
+    seen: list[tuple[str, str, str]] = []
+
+    def handler(exc: BaseException, ctx: coco.ExceptionContext) -> None:
+        seen.append((type(exc).__name__, ctx.mount_kind, ctx.stable_path))
+
+    env = common.create_test_env(
+        __file__, suffix="delete_route", exception_handler=handler
+    )
+
+    async def _root() -> None:
+        await coco.mount(
+            coco.component_subpath("live"), _LiveThatDeletesWithFailingSink
+        )
+
+    app = coco.App(coco.AppConfig(name="test_delete_route", environment=env), _root)
+    app.update_blocking(live=True)
+
+    assert len(seen) == 1
+    exc_name, mount_kind, stable_path = seen[0]
+    assert exc_name == "RuntimeError"
+    assert mount_kind == "process_live"
+    assert "c" in stable_path
+
+
+class _LiveThatDeletesWithRaisingHandler:
+    """`operator.delete` with a raising-handler: handle.ready() should raise.
+
+    The raise should propagate via the user's handler chain → Rust
+    on_error returns Err → spawned task task_result = Err →
+    HandleOutcome::Executed(Err) → user's await handle.ready() raises.
+    """
+
+    delete_err: BaseException | None = None
+
+    async def process(self) -> None:
+        pass
+
+    async def process_live(self, operator: coco.LiveComponentOperator) -> None:
+        type(self).delete_err = None
+        await operator.update_full()
+        h = await operator.update(coco.component_subpath("c"), _child_declare_one, 1)
+        await h.ready()
+        await operator.mark_ready()
+        GlobalDictTarget.store.sink_exception = True
+        try:
+            dh = await operator.delete(coco.component_subpath("c"))
+            try:
+                await dh.ready()
+            except Exception as e:
+                # Hold the real exception object on a class attribute:
+                # exercises the operator-detach guarantee (the framework
+                # releases the controller in `_process_live_wrapper`'s
+                # finally, so the exception's traceback no longer pins
+                # the live component's Arc via `operator`).
+                type(self).delete_err = e
+        finally:
+            GlobalDictTarget.store.sink_exception = False
+
+
+@pytest.mark.timeout(10, method="thread")
+def test_operator_delete_failure_propagates_via_raising_handler() -> None:
+    """A handler that raises must propagate the err to handle.ready()."""
+    GlobalDictTarget.store.clear()
+    GlobalDictTarget.store.sink_exception = False
+    _LiveThatDeletesWithRaisingHandler.delete_err = None
+
+    async def raising_handler(exc: BaseException, ctx: coco.ExceptionContext) -> None:
+        raise exc
+
+    env = common.create_test_env(
+        __file__, suffix="delete_raise", exception_handler=raising_handler
+    )
+
+    async def _root() -> None:
+        await coco.mount(
+            coco.component_subpath("live"), _LiveThatDeletesWithRaisingHandler
+        )
+
+    app = coco.App(coco.AppConfig(name="test_delete_raise", environment=env), _root)
+    app.update_blocking(live=True)
+
+    err = _LiveThatDeletesWithRaisingHandler.delete_err
+    assert err is not None
+    assert "injected sink exception" in str(err)
+
+
+class _LiveThatUpdatesFailingChild:
+    """Mount a child via operator.update() that raises; the loop continues."""
+
+    update_err: BaseException | None = None
+
+    async def process(self) -> None:
+        coco.declare_target_state(GlobalDictTarget.target_state("marker", 1))
+
+    async def process_live(self, operator: coco.LiveComponentOperator) -> None:
+        type(self).update_err = None
+        await operator.update_full()
+        await operator.mark_ready()
+        handle = await operator.update(
+            coco.component_subpath("bad_child"), _failing_child, 42
+        )
+        try:
+            await handle.ready()
+        except Exception as e:
+            # Hold the real exception (with traceback) on a class
+            # attribute to verify the operator-detach guarantee:
+            # `_process_live_wrapper`'s finally releases the controller
+            # so the retained traceback can't pin the live component.
+            type(self).update_err = e
+
+
+def test_operator_update_child_failure_routes_to_handler() -> None:
+    """A child mounted via operator.update() that raises should be routed
+    through the parent's exception handler chain with mount_kind='process_live'
+    — same as update_full() cycle failures, not silently logged via Rust."""
+    GlobalDictTarget.store.clear()
+    _LiveThatUpdatesFailingChild.update_err = None
+
+    seen: list[tuple[str, str, str]] = []
+
+    def handler(exc: BaseException, ctx: coco.ExceptionContext) -> None:
+        seen.append((type(exc).__name__, ctx.mount_kind, ctx.stable_path))
+
+    env = common.create_test_env(
+        __file__, suffix="op_update_failure", exception_handler=handler
+    )
+
+    async def _root() -> None:
+        await coco.mount(coco.component_subpath("live"), _LiveThatUpdatesFailingChild)
+
+    app = coco.App(
+        coco.AppConfig(name="test_op_update_failure", environment=env), _root
+    )
+    app.update_blocking(live=True)
+
+    assert len(seen) == 1
+    exc_name, mount_kind, stable_path = seen[0]
+    assert exc_name == "RuntimeError"
+    assert mount_kind == "process_live"
+    assert "bad_child" in stable_path
+    # Swallowing handler → no propagation
+    assert _LiveThatUpdatesFailingChild.update_err is None
+
+
+@pytest.mark.timeout(10, method="thread")
+def test_operator_update_child_failure_propagates_via_raising_handler() -> None:
+    """operator.update with a RAISING handler: handle.ready() should raise.
+    Probe to localize the hang — if this also hangs, the issue is in the
+    on_error mechanism generally, not delete-specific."""
+    GlobalDictTarget.store.clear()
+    _LiveThatUpdatesFailingChild.update_err = None
+
+    def raising(exc: BaseException, ctx: coco.ExceptionContext) -> None:
+        raise exc
+
+    env = common.create_test_env(
+        __file__, suffix="op_update_raise", exception_handler=raising
+    )
+
+    async def _root() -> None:
+        await coco.mount(coco.component_subpath("live"), _LiveThatUpdatesFailingChild)
+
+    app = coco.App(coco.AppConfig(name="test_op_update_raise", environment=env), _root)
+    app.update_blocking(live=True)
+
+    err = _LiveThatUpdatesFailingChild.update_err
+    assert err is not None
+    assert "child failed with value=42" in str(err)
+
+
+def test_report_exception_falls_back_to_log_when_no_handler(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """With no handler registered, report_exception logs at ERROR."""
+    GlobalDictTarget.store.clear()
+
+    env = common.create_test_env(__file__, suffix="report_exc_no_handler")
+
+    async def _root() -> None:
+        await coco.mount(
+            coco.component_subpath("live"),
+            _LiveThatReports,
+            RuntimeError("no handler boom"),
+        )
+
+    app = coco.App(
+        coco.AppConfig(name="test_report_exc_no_handler", environment=env), _root
+    )
+    with caplog.at_level("ERROR"):
+        app.update_blocking(live=True)
+
+    assert any("no handler boom" in record.getMessage() for record in caplog.records)
 
 
 # ============================================================================

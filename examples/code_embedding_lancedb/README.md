@@ -24,20 +24,22 @@ Install dependencies:
 pip install -e .
 ```
 
-Build/update the index (stores data in `./lancedb_data/`):
+Build/update the index (writes rows into LanceDB). Pick one of the two modes:
+
+- **Catch-up run** — scan sources, sync changes, exit:
+
+  ```sh
+  cocoindex update main
+  ```
+
+- **Live run** — catch up, then keep watching for file changes (the source declares `live=True` in `main.py`):
+
+  ```sh
+  cocoindex update -L main
+  ```
+
+Query:
 
 ```sh
-cocoindex update main.py
-```
-
-Query interactively:
-
-```sh
-python main.py query
-```
-
-Or query with a specific search term:
-
-```sh
-python main.py query "embedding"
+python main.py "embedding"
 ```

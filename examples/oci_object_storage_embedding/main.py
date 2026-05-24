@@ -1,13 +1,14 @@
 """
-OCI Object Storage Text Embedding (v1) — CocoIndex pipeline example.
+OCI Object Storage Text Embedding (v1) - CocoIndex pipeline example.
 
-- List markdown files from an OCI Object Storage bucket
-- Optionally subscribe to OCI Streaming (Kafka-compatible) for change events,
-  enabling live-mode updates via the connector's ``LiveMapView``
-- Chunk text (RecursiveSplitter)
-- Embed chunks (SentenceTransformers)
-- Store into Postgres with pgvector column (no vector index)
-- Query demo using pgvector cosine distance (<=>)
+Index (use `-L` for live mode, omit for one-shot catch-up):
+    cocoindex update main
+    cocoindex update -L main
+
+Query the index:
+    python main.py "your query"
+
+Pipeline: list markdown objects from an OCI Object Storage bucket -> chunk -> embed -> store in Postgres pgvector.
 
 Live mode is opt-in via the ``OCI_STREAMING_BOOTSTRAP_SERVERS`` env var
 (plus ``OCI_STREAMING_TOPIC`` and credentials). When set, the example
@@ -21,6 +22,7 @@ import asyncio
 import os
 import sys
 from dataclasses import dataclass
+from dotenv import load_dotenv
 from typing import Annotated, AsyncIterator
 
 import asyncpg
@@ -28,6 +30,7 @@ import oci  # type: ignore[import-not-found]
 from confluent_kafka.aio import AIOConsumer  # type: ignore[import-not-found]
 from numpy.typing import NDArray
 from oci.object_storage import ObjectStorageClient  # type: ignore[import-not-found]
+from pgvector.asyncpg import register_vector
 
 import cocoindex as coco
 from cocoindex.connectors import kafka, oci_object_storage, postgres
@@ -112,7 +115,7 @@ def _build_streaming_consumer() -> AIOConsumer | None:
 async def coco_lifespan(
     builder: coco.EnvironmentBuilder,
 ) -> AsyncIterator[None]:
-    async with await asyncpg.create_pool(DATABASE_URL) as pool:
+    async with asyncpg.create_pool(DATABASE_URL) as pool:
         builder.provide(PG_DB, pool)
         builder.provide(EMBEDDER, SentenceTransformerEmbedder(EMBED_MODEL))
         builder.provide(OCI_CLIENT, _build_oci_client())
@@ -235,12 +238,11 @@ async def query_once(
         print("---")
 
 
-async def query() -> None:
+async def query(initial_query: str | None = None) -> None:
     embedder = SentenceTransformerEmbedder(EMBED_MODEL)
-    async with await asyncpg.create_pool(DATABASE_URL) as pool:
-        if len(sys.argv) > 2:
-            q = " ".join(sys.argv[2:])
-            await query_once(pool, embedder, q)
+    async with asyncpg.create_pool(DATABASE_URL, init=register_vector) as pool:
+        if initial_query is not None:
+            await query_once(pool, embedder, initial_query)
             return
 
         while True:
@@ -251,5 +253,6 @@ async def query() -> None:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "query":
-        asyncio.run(query())
+    load_dotenv()
+    initial = " ".join(sys.argv[1:]) if len(sys.argv) > 1 else None
+    asyncio.run(query(initial))

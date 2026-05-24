@@ -8,7 +8,11 @@ We appreciate a star ⭐ at [CocoIndex Github](https://github.com/cocoindex-io/c
 
 ## Prerequisite
 
-[Install Postgres](https://cocoindex.io/docs/getting_started/installation#-install-postgres) if you don't have one.
+A running Postgres with the pgvector extension. If you don't have one, start a local instance with the compose file in this repo:
+
+```sh
+docker compose -f ../../dev/postgres.yaml up -d
+```
 
 ## Run
 
@@ -24,16 +28,24 @@ Set a database URL (or use `.env`):
 export POSTGRES_URL="postgres://cocoindex:cocoindex@localhost/cocoindex"
 ```
 
-Build/update the index:
+Build/update the index (writes rows into Postgres). Pick one of the two modes:
 
-```sh
-cocoindex update main.py
-```
+- **Catch-up run** — scan sources, sync changes, exit:
+
+  ```sh
+  cocoindex update main
+  ```
+
+- **Live run** — catch up, then keep watching for file changes (the source declares `live=True` in `main.py`):
+
+  ```sh
+  cocoindex update -L main
+  ```
 
 Query:
 
 ```sh
-python main.py query "what is attention?"
+python main.py "what is attention?"
 ```
 
 Note: this example **does not create a vector index**; queries will do a sequential scan.

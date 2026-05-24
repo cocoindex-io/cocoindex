@@ -42,7 +42,7 @@ export default function App() {
         {results.length === 0 && !loading && <div>No results</div>}
         {results.map((result, idx) => (
           <div key={idx} className="result-card">
-            <img src={`http://${window.location.hostname}:8000/img/${result.filename}`} alt={result.filename} className="result-img" />
+            <img src={`http://${window.location.hostname}:8000/${result.filename}`} alt={result.filename} className="result-img" />
             <div className="score">Score: {result.score?.toFixed(3)}</div>
           </div>
         ))}

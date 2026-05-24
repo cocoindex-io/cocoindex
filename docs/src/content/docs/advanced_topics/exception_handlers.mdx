@@ -9,10 +9,27 @@ This page covers the full picture of failure behavior in CocoIndex — from how 
 
 For a quick overview of failure isolation and the two-phase model, see [What happens when a component fails](../programming_guide/processing_component#what-happens-when-a-component-fails) in the Processing Component guide.
 
-## Failure isolation recap
+## The guiding principle
 
-- **`use_mount()`** — data dependency: the child's exception propagates to the parent.
-- **`mount()` and `mount_each()`** — background: a failure in one child does **not** affect the parent or siblings. By default the exception is logged at `ERROR` level.
+**Whether a CocoIndex call raises on failure depends on what's on the critical path for the call to finish and return.** Things on that path that fail surface as exceptions; things off that path don't.
+
+| API | What it takes to return | Raises on failure? |
+|---|---|---|
+| `coco.mount`, `coco.mount_each`, `LiveComponentOperator.update`/`.delete` | the work is *scheduled* (returns a handle) | **No** — execution runs in the background |
+| `await handle.ready()` (any of the above) | reaches *ready state* | **No by default** — logged at `ERROR`; opt into propagation by installing a handler that raises |
+| `await LiveComponentOperator.update_full()` | reaches *ready state* of the full cycle | **No by default** — same shape as `handle.ready()` |
+| `await coco.use_mount(...)` | the inner component's *value* is produced | **Yes** — component success is on the critical path |
+| `await app.drop()` (and `cocoindex drop`) | GC succeeds at *every* level | **Yes**, at any depth — leaking target state would otherwise go silent |
+
+**Why `ready`/`update_full` tolerate errors by default:** `handle.ready()` is usually not awaited (callers spawn many mounts in a loop and rely on the parent's `wait_for_children`), so raising into nobody would silently disappear. Logging the failure gives operators a signal regardless. The same applies to `update_full` — a periodic refresh that died on the first cycle failure would be worse than one that logs and retries on the next tick.
+
+**Why `app.drop` raises at every level:** clearing tracking records is only safe if every component's delete actually ran its sink calls. If a descendant delete silently fails, `await app.drop()` would return Ok while target state is still live in your database — a leak. So failures at any depth surface as an exception.
+
+## How to opt into propagation
+
+Install an exception handler (described below). A handler that **returns normally** swallows; a handler that **raises** propagates through `handle.ready()` (or `update_full()`) up to your awaiting code. For `app.drop`, propagation is built in — you don't need to install anything.
+
+[Live components](./live_component) follow the same principle: their `update`/`delete`/`update_full` calls route failures through this chain with `mount_kind="process_live"`. The operator also exposes [`report_exception(exc)`](./live_component#report_exception) for surfacing errors raised in `process_live`'s body that aren't already routed by `update`/`delete`/`update_full`.
 
 ## Processing and submit phases
 
@@ -136,7 +153,7 @@ Your handler receives an `ExceptionContext` dataclass with information about the
 | `env_name` | `str` | Name of the CocoIndex environment |
 | `stable_path` | `str` | Full stable path of the failing component |
 | `processor_name` | `str \| None` | Name of the processor (best-effort) |
-| `mount_kind` | `"mount" \| "mount_each" \| "delete_background"` | How the component was mounted |
+| `mount_kind` | `"mount" \| "mount_each" \| "delete_background" \| "process_live"` | Source of the failure: `"mount"`/`"mount_each"` for background build errors, `"delete_background"` for sweep-driven deletions, `"process_live"` for exceptions surfaced from a live component's `process_live` via `LiveComponentOperator.report_exception` (e.g. a failed `coco.auto_refresh` cycle) |
 | `parent_stable_path` | `str \| None` | Stable path of the parent component |
 | `is_background` | `bool` | Always `True` for exception handler invocations |
 | `source` | `"component" \| "handler"` | `"component"` for the original failure; `"handler"` if a handler itself raised |

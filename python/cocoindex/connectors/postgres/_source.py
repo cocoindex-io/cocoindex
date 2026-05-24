@@ -20,9 +20,15 @@ from typing import (
 
 from typing_extensions import TypeVar
 
+import re
+
 from cocoindex._internal.datatype import RecordType, is_record_type
 from cocoindex._internal.stable_path import StableKey
 from cocoindex.connectorkits.async_adapters import async_to_sync_iter
+
+
+# Valid SQL identifier pattern: starts with letter or underscore, contains only letters, digits, underscores, or $ (for temp tables)
+_VALID_IDENTIFIER_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_$]*$")
 
 try:
     import asyncpg  # type: ignore
@@ -34,6 +40,17 @@ except ImportError as e:
 
 
 RowT = TypeVar("RowT", default=dict[str, Any])
+
+
+def _validate_identifier(name: str, identifier_type: str) -> None:
+    """Validate that a string is a valid SQL identifier."""
+    if not name:
+        raise ValueError(f"{identifier_type} cannot be empty")
+    if not _VALID_IDENTIFIER_RE.match(name):
+        raise ValueError(
+            f"Invalid {identifier_type}: '{name}'. "
+            f"Must start with a letter or underscore and contain only letters, digits, underscores, or $"
+        )
 
 
 def _create_row_factory(
@@ -93,6 +110,14 @@ class RowFetcher(Generic[RowT]):
     async def __aiter__(self) -> AsyncIterator[RowT]:
         """Asynchronously iterate over rows."""
         spec = self._spec
+
+        # Validate identifiers to prevent SQL injection
+        _validate_identifier(spec.table_name, "table name")
+        if spec.pg_schema_name:
+            _validate_identifier(spec.pg_schema_name, "schema name")
+        if spec.columns:
+            for col in spec.columns:
+                _validate_identifier(col, "column name")
 
         if spec.columns:
             cols_sql = ", ".join(f'"{c}"' for c in spec.columns)

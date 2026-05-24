@@ -1,10 +1,13 @@
 """
-HackerNews Trending Topics - CocoIndex Pipeline Example
+HackerNews Trending Topics - CocoIndex pipeline example.
 
-This example demonstrates a CocoIndex pipeline that:
-1. Scrapes HackerNews threads and comments via API
-2. Extracts topics using LLM (Gemini 2.5 Flash via LiteLLM)
-3. Stores everything in PostgreSQL using the cocoindex postgres target
+Index (one-shot catch-up; live mode is not supported for the postgres source):
+    cocoindex update main
+
+Query the index:
+    python main.py "your topic"
+
+Pipeline: scrape HN threads + comments -> extract topics via LLM -> store in Postgres.
 """
 
 import asyncio
@@ -13,6 +16,7 @@ import sys
 import pathlib
 from dataclasses import dataclass
 from datetime import datetime
+from dotenv import load_dotenv
 from typing import Any, AsyncIterator
 
 import aiohttp
@@ -186,11 +190,8 @@ async def fetch_thread(session: aiohttp.ClientSession, thread_id: str) -> Thread
 
 @coco.lifespan
 async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]:
-    """Set up CocoIndex environment with PostgreSQL database."""
-    # For CocoIndex internal states
     builder.settings.db_path = pathlib.Path("./cocoindex.db")
-    # Provide resources needed across the CocoIndex environment
-    async with await asyncpg.create_pool(DATABASE_URL) as pool:
+    async with asyncpg.create_pool(DATABASE_URL) as pool:
         builder.provide(PG_DB, pool)
         yield
 
@@ -378,13 +379,24 @@ async def search_by_topic(pool: asyncpg.Pool, topic: str) -> list[dict[str, Any]
         ]
 
 
-async def query_demo() -> None:
-    """Demo querying the database."""
+async def _print_topic_search(pool: asyncpg.Pool, topic: str) -> None:
+    print(f"Searching for '{topic}' related content:")
+    print("-" * 60)
+    results = await search_by_topic(pool, topic)
+    for result in results[:5]:
+        print(f"[{result['type']}] by {result['author']}: {result['text'][:100]}...")
+
+
+async def query_demo(initial_query: str | None = None) -> None:
     pool = await asyncpg.create_pool(DATABASE_URL)
     if not pool:
         raise RuntimeError("Failed to create database pool")
 
     try:
+        if initial_query is not None:
+            await _print_topic_search(pool, initial_query)
+            return
+
         print("Top 20 Trending Topics:")
         print("-" * 60)
         topics = await get_trending_topics(pool, limit=20)
@@ -392,20 +404,18 @@ async def query_demo() -> None:
             print(
                 f"{i:2}. {topic['topic']:<30} (score: {topic['score']}, threads: {topic['thread_count']})"
             )
-
         print()
-        print("Searching for 'AI' related content:")
-        print("-" * 60)
-        results = await search_by_topic(pool, "AI")
-        for result in results[:5]:
-            print(
-                f"[{result['type']}] by {result['author']}: {result['text'][:100]}..."
-            )
 
+        while True:
+            q = input("Enter topic to search (or Enter to quit): ").strip()
+            if not q:
+                break
+            await _print_topic_search(pool, q)
     finally:
         await pool.close()
 
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "query":
-        asyncio.run(query_demo())
+    load_dotenv()
+    initial = " ".join(sys.argv[1:]) if len(sys.argv) > 1 else None
+    asyncio.run(query_demo(initial))

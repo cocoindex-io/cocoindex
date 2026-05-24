@@ -26,7 +26,6 @@ from typing import (
 
 from . import core
 from . import setting
-from ..engine_object import dump_engine_object
 from .context_keys import ContextKey, ContextProvider
 
 if TYPE_CHECKING:
@@ -238,7 +237,7 @@ class Environment:
 
         self._async_context = core.AsyncContext(self._loop_runner.loop)
         self._core_env = core.Environment(
-            dump_engine_object(settings), self._async_context
+            settings._to_engine_dict(), self._async_context
         )
         self._context_provider.set_core_env(self._core_env)
         self._exception_handler = exception_handler

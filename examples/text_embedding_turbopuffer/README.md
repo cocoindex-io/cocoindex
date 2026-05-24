@@ -21,20 +21,22 @@ Install deps:
 pip install -e .
 ```
 
-Build/update the index:
+Build/update the index (writes rows into Turbopuffer). Pick one of the two modes:
 
-```sh
-cocoindex update main.py
-```
+- **Catch-up run** — scan sources, sync changes, exit:
+
+  ```sh
+  cocoindex update main
+  ```
+
+- **Live run** — catch up, then keep watching for file changes (the source declares `live=True` in `main.py`):
+
+  ```sh
+  cocoindex update -L main
+  ```
 
 Query:
 
 ```sh
 python main.py "what is self-attention?"
-```
-
-Or run interactively:
-
-```sh
-python main.py
 ```

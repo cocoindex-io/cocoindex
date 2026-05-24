@@ -115,11 +115,44 @@ chunks = splitter.split(
 ```
 
 **Supported languages:**
-- Python
-- Rust
-- JavaScript/TypeScript
-- Markdown
-- And many more...
+
+Languages with syntax-aware (tree-sitter) splitting — splits at logical boundaries like functions, classes, and blocks:
+
+| Language | `language=` value | Extensions |
+|---|---|---|
+| Astro | `"astro"` | `.astro` |
+| C | `"c"` | `.c`, `.h` |
+| C++ | `"cpp"` | `.cpp`, `.cc`, `.cxx`, `.c++` |
+| C# | `"c_sharp"` | `.cs` |
+| CSS | `"css"` | `.css` |
+| Fortran | `"fortran"` | `.f`, `.f90`, `.f95` |
+| Go | `"go"` | `.go` |
+| HTML | `"html"` | `.html`, `.htm` |
+| Java | `"java"` | `.java` |
+| JavaScript | `"javascript"` | `.js`, `.mjs`, `.cjs`, `.jsx` |
+| JSON | `"json"` | `.json`, `.jsonc` |
+| Julia | `"julia"` | `.jl` |
+| Kotlin | `"kotlin"` | `.kt`, `.kts` |
+| Markdown | `"markdown"` | `.md` |
+| Pascal | `"pascal"` | `.pas` |
+| PHP | `"php"` | `.php` |
+| Python | `"python"` | `.py` |
+| R | `"r"` | `.r`, `.R` |
+| Ruby | `"ruby"` | `.rb` |
+| Rust | `"rust"` | `.rs` |
+| Scala | `"scala"` | `.scala` |
+| Solidity | `"solidity"` | `.sol` |
+| SQL | `"sql"` | `.sql` |
+| Svelte | `"svelte"` | `.svelte` |
+| Swift | `"swift"` | `.swift` |
+| TOML | `"toml"` | `.toml` |
+| TSX | `"tsx"` | `.tsx` |
+| TypeScript | `"typescript"` | `.ts` |
+| Vue | `"vue"` | `.vue` |
+| XML | `"xml"` | `.xml` |
+| YAML | `"yaml"` | `.yaml`, `.yml` |
+
+Many additional languages use separator-based splitting (e.g. `"bash"`, `"dart"`, `"elixir"`, `"elm"`, `"go"`, `"haskell"`, `"lua"`, `"perl"`, `"swift"`, and more). Pass the language name string to `language=` — use [`detect_code_language()`](#detect_code_language) to infer it from a filename.
 
 ### `CustomLanguageConfig`
 

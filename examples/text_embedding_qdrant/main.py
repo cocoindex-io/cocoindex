@@ -1,11 +1,14 @@
 """
 Text Embedding with Qdrant (v1) - CocoIndex pipeline example.
 
-- Walk local markdown files
-- Chunk text (RecursiveSplitter)
-- Embed chunks (SentenceTransformers)
-- Store into Qdrant collection
-- Query demo using Qdrant vector search
+Index (use `-L` for live mode, omit for one-shot catch-up):
+    cocoindex update main
+    cocoindex update -L main
+
+Query the index:
+    python main.py "your query"
+
+Pipeline: walk local markdown files -> chunk -> embed -> store in a Qdrant collection.
 """
 
 from __future__ import annotations
@@ -13,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import pathlib
 import sys
+from dotenv import load_dotenv
 from typing import AsyncIterator
 
 from cocoindex.resources.id import IdGenerator
@@ -43,7 +47,6 @@ _splitter = RecursiveSplitter()
 async def coco_lifespan(
     builder: coco.EnvironmentBuilder,
 ) -> AsyncIterator[None]:
-    # Provide resources needed across the CocoIndex environment
     client = qdrant.create_client(QDRANT_URL, prefer_grpc=True)
     builder.provide(QDRANT_DB, client)
     builder.provide(EMBEDDER, SentenceTransformerEmbedder(EMBED_MODEL))
@@ -98,6 +101,7 @@ async def app_main(sourcedir: pathlib.Path) -> None:
         sourcedir,
         recursive=True,
         path_matcher=PatternFilePathMatcher(included_patterns=["**/*.md"]),
+        live=True,  # source supports live watch; pass -L to `cocoindex update` to actually run live
     )
     await coco.mount_each(process_file, files.items(), target_collection)
 
@@ -131,12 +135,11 @@ async def query_once(
         print("---")
 
 
-async def query() -> None:
+async def query(initial_query: str | None = None) -> None:
     embedder = SentenceTransformerEmbedder(EMBED_MODEL)
     client = qdrant.create_client(QDRANT_URL, prefer_grpc=True)
-    if len(sys.argv) > 1:
-        q = " ".join(sys.argv[1:])
-        await query_once(client, embedder, q)
+    if initial_query is not None:
+        await query_once(client, embedder, initial_query)
         return
 
     while True:
@@ -178,4 +181,6 @@ def _qdrant_search(
 
 
 if __name__ == "__main__":
-    asyncio.run(query())
+    load_dotenv()
+    initial = " ".join(sys.argv[1:]) if len(sys.argv) > 1 else None
+    asyncio.run(query(initial))

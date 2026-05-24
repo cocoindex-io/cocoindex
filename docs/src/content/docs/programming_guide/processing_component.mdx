@@ -208,19 +208,21 @@ All writes happen strictly after processing completes — you never see partial 
 
 ## What happens when a component fails
 
-CocoIndex processes each component in two phases: **processing** (running your function, declaring target states) and **submit** (writing changes to target backends). Failure behavior depends on how the component was mounted and which phase fails.
+CocoIndex processes each component in two phases: **processing** (running your function, declaring target states) and **submit** (writing changes to target backends).
 
 ### Failure isolation
 
-- **`use_mount()`** — the parent has a data dependency on the child's result, so the child's exception propagates directly to the parent. The parent must handle it or it will fail too.
-- **`mount()` and `mount_each()`** — the child runs in the background. A failure in one child does **not** affect the parent or siblings — by default the exception is logged and other components continue. This isolation is intentional: one bad file shouldn't take down the entire pipeline.
+The framework's general rule: **a call raises on failure iff the failed work was on the critical path for the call to return.**
+
+- **`use_mount()`** — you're awaiting the child's *value*, so the child succeeding is on the critical path. The child's exception propagates to the parent.
+- **`mount()` and `mount_each()`** — these return as soon as the work is *scheduled* (you get a handle back). The child's execution runs in the background, off your critical path. A failure in one child does **not** affect the parent or siblings — by default the exception is logged and other components continue. One bad file shouldn't take down the entire pipeline.
 
 To react to background failures, you can:
 
-- Install [exception handlers](../advanced_topics/exception_handlers#exception-handlers) — global or scoped — to send alerts, record metrics, or implement custom logic.
+- Install [exception handlers](../advanced_topics/exception_handlers#exception-handlers) — global or scoped — to send alerts, record metrics, or implement custom logic. A handler that raises propagates the failure through `await handle.ready()` if you choose to await it.
 - [Monitor app progress](./app#monitoring-progress) — `UpdateStats` exposes per-component stats including error counts, so you can detect failures programmatically.
 
-For the full picture — including interrupted update recovery and the exception handler API — see [Error Handling](../advanced_topics/exception_handlers).
+For the full picture — including the critical-path principle applied to every API, interrupted update recovery, and the exception handler API — see [Error Handling](../advanced_topics/exception_handlers).
 
 ### No rollback, convergent roll-forward
 

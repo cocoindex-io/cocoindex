@@ -8,6 +8,7 @@ dependencies = [
     "aiohttp>=3.9.0",
     "litellm>=1.40.0",
     "pydantic>=2.0.0",
+    "python-dotenv>=1.0.1",
 ]
 
 [tool.setuptools]

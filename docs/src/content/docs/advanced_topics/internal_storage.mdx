@@ -34,17 +34,17 @@ Setting `db_path` in the lifespan or `Settings` takes precedence over the `COCOI
 
 ## LMDB tuning
 
-The LMDB database has two tunable settings. The defaults work well for most use cases — you only need to adjust them for large-scale deployments.
+The LMDB database has two tunable settings, grouped under `coco.LmdbSettings` and attached to `Settings` as `db_settings`. The defaults work well for most use cases — you only need to adjust them for large-scale deployments.
 
 | Setting | Default | Env Variable | Description |
 |---------|---------|-------------|-------------|
-| `lmdb_max_dbs` | `1024` | `COCOINDEX_LMDB_MAX_DBS` | Maximum number of named LMDB databases. Must be &ge; 1. |
-| `lmdb_map_size` | `4294967296` (4 GiB) | `COCOINDEX_LMDB_MAP_SIZE` | Maximum size of the LMDB memory map in bytes. Must be &gt; 0. |
+| `max_dbs` | `1024` | `COCOINDEX_LMDB_MAX_DBS` | Maximum number of named LMDB databases. Must be &ge; 1. |
+| `map_size` | `4294967296` (4 GiB) | `COCOINDEX_LMDB_MAP_SIZE` | Maximum size of the LMDB memory map in bytes. Must be &gt; 0. |
 
 ### When to adjust
 
-- **Increase `lmdb_map_size`** if you encounter LMDB "map full" errors. This happens when the accumulated internal state (target states + memoization cache) exceeds 4 GiB. On 64-bit systems, `map_size` is a virtual address space reservation — setting it larger than needed is safe and does not consume physical memory.
-- **Increase `lmdb_max_dbs`** if you have an unusually large number of apps sharing a single database directory.
+- **Increase `map_size`** if you encounter LMDB "map full" errors. This happens when the accumulated internal state (target states + memoization cache) exceeds 4 GiB. On 64-bit systems, `map_size` is a virtual address space reservation — setting it larger than needed is safe and does not consume physical memory.
+- **Increase `max_dbs`** if you have an unusually large number of apps sharing a single database directory.
 
 ### Configuration
 
@@ -61,8 +61,8 @@ Or programmatically in a lifespan function:
 @coco.lifespan
 def coco_lifespan(builder: coco.EnvironmentBuilder) -> Iterator[None]:
     builder.settings.db_path = pathlib.Path("./cocoindex.db")
-    builder.settings.lmdb_map_size = 8 * 1024 * 1024 * 1024  # 8 GiB
-    builder.settings.lmdb_max_dbs = 2048
+    builder.settings.db_settings.map_size = 8 * 1024 * 1024 * 1024  # 8 GiB
+    builder.settings.db_settings.max_dbs = 2048
     yield
 ```
 
@@ -71,9 +71,15 @@ Or when creating a `Settings` object directly:
 ```python
 settings = coco.Settings(
     db_path=pathlib.Path("./cocoindex.db"),
-    lmdb_map_size=8 * 1024 * 1024 * 1024,  # 8 GiB
-    lmdb_max_dbs=2048,
+    db_settings=coco.LmdbSettings(
+        map_size=8 * 1024 * 1024 * 1024,  # 8 GiB
+        max_dbs=2048,
+    ),
 )
 ```
 
 When using `Settings.from_env()`, the LMDB settings are automatically loaded from their environment variables if set; otherwise, the defaults apply.
+
+:::note[Legacy keyword arguments]
+For backward compatibility, `Settings` still accepts `lmdb_max_dbs` and `lmdb_map_size` as keyword arguments, and exposes them as attributes (e.g., `settings.lmdb_map_size = ...`). These read and write the same underlying values as `settings.db_settings.max_dbs` / `settings.db_settings.map_size`. Passing both `db_settings=` and the legacy keywords in the same `Settings(...)` call raises `ValueError`.
+:::

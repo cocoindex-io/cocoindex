@@ -18,16 +18,24 @@ Install deps:
 pip install -e .
 ```
 
-Build/update the index:
+Build/update the index (writes points into Qdrant). Pick one of the two modes:
 
-```sh
-cocoindex update main.py
-```
+- **Catch-up run** — scan sources, sync changes, exit:
+
+  ```sh
+  cocoindex update main
+  ```
+
+- **Live run** — catch up, then keep watching for file changes (the source declares `live=True` in `main.py`):
+
+  ```sh
+  cocoindex update -L main
+  ```
 
 Query:
 
 ```sh
-python main.py query "what is self-attention?"
+python main.py "what is self-attention?"
 ```
 
 You can also open the Qdrant dashboard at <http://localhost:6333/dashboard>.

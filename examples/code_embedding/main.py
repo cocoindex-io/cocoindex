@@ -1,12 +1,13 @@
 """
 Code Embedding (v1) - CocoIndex pipeline example.
 
-- Walk local code files (Python, Rust, TOML, Markdown)
-- Detect programming language
-- Chunk code (RecursiveSplitter with syntax awareness)
-- Embed chunks (SentenceTransformers)
-- Store into Postgres with pgvector column
-- Query demo using pgvector cosine distance (<=>)
+Index live (runs once and keeps watching for changes):
+    cocoindex update -L main
+
+Query the index:
+    python main.py "your query"
+
+Pipeline: walk -> detect language -> chunk -> embed -> store in pgvector.
 """
 
 from __future__ import annotations
@@ -16,9 +17,11 @@ import os
 import pathlib
 import sys
 from dataclasses import dataclass
+from dotenv import load_dotenv
 from typing import AsyncIterator, Annotated
 
 import asyncpg
+from pgvector.asyncpg import register_vector
 from numpy.typing import NDArray
 
 import cocoindex as coco
@@ -59,8 +62,7 @@ class CodeEmbedding:
 async def coco_lifespan(
     builder: coco.EnvironmentBuilder,
 ) -> AsyncIterator[None]:
-    # Provide resources needed across the CocoIndex environment
-    async with await asyncpg.create_pool(DATABASE_URL) as pool:
+    async with asyncpg.create_pool(DATABASE_URL) as pool:
         builder.provide(PG_DB, pool)
         builder.provide(EMBEDDER, SentenceTransformerEmbedder(EMBED_MODEL))
         yield
@@ -92,10 +94,7 @@ async def process_file(
     table: postgres.TableTarget[CodeEmbedding],
 ) -> None:
     text = await file.read_text()
-    # Detect programming language from filename
     language = detect_code_language(filename=str(file.file_path.path.name))
-
-    # Split with syntax awareness if language is detected
     chunks = _splitter.split(
         text,
         chunk_size=1000,
@@ -120,7 +119,6 @@ async def app_main(sourcedir: pathlib.Path) -> None:
     )
     target_table.declare_vector_index(column="embedding")
 
-    # Process multiple file types across the repository
     files = localfs.walk_dir(
         sourcedir,
         recursive=True,
@@ -134,6 +132,7 @@ async def app_main(sourcedir: pathlib.Path) -> None:
             ],
             excluded_patterns=["**/.*", "**/target", "**/node_modules"],
         ),
+        live=True,  # source supports live watch; pass -L to `cocoindex update` to actually run live
     )
     await coco.mount_each(process_file, files.items(), target_table)
 
@@ -182,12 +181,11 @@ async def query_once(
         print("---")
 
 
-async def query() -> None:
+async def query(initial_query: str | None = None) -> None:
     embedder = SentenceTransformerEmbedder(EMBED_MODEL)
-    async with await asyncpg.create_pool(DATABASE_URL) as pool:
-        if len(sys.argv) > 2:
-            q = " ".join(sys.argv[2:])
-            await query_once(pool, embedder, q)
+    async with asyncpg.create_pool(DATABASE_URL, init=register_vector) as pool:
+        if initial_query is not None:
+            await query_once(pool, embedder, initial_query)
             return
 
         while True:
@@ -197,12 +195,7 @@ async def query() -> None:
             await query_once(pool, embedder, q)
 
 
-async def update_index() -> None:
-    async with coco.runtime():
-        await coco.show_progress(app.update())
-
-
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "query":
-        asyncio.run(query())
-    asyncio.run(update_index())
+    load_dotenv()
+    initial = " ".join(sys.argv[1:]) if len(sys.argv) > 1 else None
+    asyncio.run(query(initial))

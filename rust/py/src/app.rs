@@ -166,11 +166,21 @@ impl PyApp {
     #[new]
     #[pyo3(signature = (name, env, max_inflight_components=None))]
     pub fn new(
+        py: Python<'_>,
         name: &str,
         env: &PyEnvironment,
         max_inflight_components: Option<usize>,
     ) -> PyResult<Self> {
-        let app = App::new(name, env.0.clone(), max_inflight_components).into_py_result()?;
+        let name_owned = name.to_string();
+        let env = env.0.clone();
+        let app = py
+            .detach(|| {
+                get_runtime().block_on(async move {
+                    App::new(&name_owned, env, max_inflight_components).await
+                })
+            })
+            .context(format!("failed to initialize app '{name}'"))
+            .into_py_result()?;
         Ok(Self(Arc::new(app)))
     }
 
@@ -190,6 +200,7 @@ impl PyApp {
         let host_ctx = Arc::new(host_ctx);
         let handle = app
             .update(root_processor, options, host_ctx)
+            .context("failed to start app update")
             .into_py_result()?;
         Ok(PyUpdateHandle::new(handle))
     }
@@ -214,6 +225,7 @@ impl PyApp {
             get_runtime().block_on(async move {
                 let handle = app
                     .update(root_processor, options, host_ctx)
+                    .context("failed to start app update")
                     .into_py_result()?;
                 if report_to_stdout {
                     rust_show_progress(handle, ProgressDisplayOptions::default())
@@ -229,7 +241,10 @@ impl PyApp {
     pub fn drop_async(&self, host_ctx: Py<PyAny>) -> PyResult<PyDropHandle> {
         let app = self.0.clone();
         let host_ctx = Arc::new(host_ctx);
-        let handle = app.drop_app(host_ctx).into_py_result()?;
+        let handle = app
+            .drop_app(host_ctx)
+            .context("failed to start app drop")
+            .into_py_result()?;
         Ok(PyDropHandle::new(handle))
     }
 
@@ -244,7 +259,10 @@ impl PyApp {
         let host_ctx = Arc::new(host_ctx);
         py.detach(|| {
             get_runtime().block_on(async move {
-                let handle = app.drop_app(host_ctx).into_py_result()?;
+                let handle = app
+                    .drop_app(host_ctx)
+                    .context("failed to start app drop")
+                    .into_py_result()?;
                 if report_to_stdout {
                     rust_show_progress(handle, ProgressDisplayOptions::default())
                         .await

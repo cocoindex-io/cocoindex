@@ -33,29 +33,69 @@ If you don't need any of the above for a helper, keep it as a plain Python funct
 
 Every `@coco.fn` function participates in CocoIndex's change detection system. With `memo=True`, the function's results are cached and reused when nothing has changed. These two mechanisms — detecting changes and acting on them — work together to enable incremental updates.
 
+:::tip[Mental model]
+A function's behavior is determined by its **logic** (source code, [`deps`](#deps), [`version`](#version)), its **inputs** (arguments), and the **context values** it reads via [`use_context()`](./context#retrieving-values). If none of those have changed, a memoized function returns its cached result without re-executing. You don't need to reason about *how* CocoIndex tracks any of this; just trust the contract.
+:::
+
 ### Change detection
 
 CocoIndex detects three kinds of changes:
 
-**Logic changes** — the function's source code, [`deps`](#deps) values, and explicit [`version`](#version) bumps. Tracked by `@coco.fn`. Logic fingerprints **propagate transitively** up the call chain: if `foo` (memoized) calls `bar` (not memoized), and `bar`'s logic changes, `foo`'s memo is invalidated — because `foo`'s output could be different. This is why `@coco.fn` matters for **any** function in the call chain, not just memoized ones.
+**Logic changes** — the function's source code, [`deps`](#deps) values, and explicit [`version`](#version) bumps. Tracked by `@coco.fn`. Logic fingerprints **propagate transitively** up the call chain — but only through `@coco.fn` boundaries. If `foo` (memoized) calls `bar` (also `@coco.fn`-decorated, with or without `memo=True`), and `bar`'s logic changes, `foo`'s memo is invalidated. A bare Python helper that isn't decorated is invisible to change detection: editing it will not invalidate `foo`. This is why `@coco.fn` matters for **any** function in the call chain, not just memoized ones — see [Common patterns](#common-patterns).
 
 **Input changes** — the function's arguments. Tracked by `@coco.fn`. When you call a function with different arguments, the fingerprints change. Input fingerprints do not propagate transitively.
 
-**Context changes** — [context values](./context) with [`detect_change=True`](./context#change-detection). Tracked by [`use_context()`](./context#retrieving-values) at the call site — independent of `@coco.fn`. When a context value changes, any memoized function whose execution involved a `use_context()` call on that key is invalidated.
+**Context changes** — [context values](./context) with [`detect_change=True`](./context#change-detection). Tracked by [`use_context()`](./context#retrieving-values) at the call site — independent of `@coco.fn`. Context reads propagate transitively: if a memoized `foo` calls `bar` and `bar` reads a change-detected context value, then changing that value invalidates `foo`'s memo too — even though `foo` itself never called `use_context()`. What matters is whether the key was read *anywhere* during the memoized call, not where in the call chain.
 
 ### Memoization
 
-With `memo=True`, the function's result is cached. On subsequent calls, if no logic or input fingerprints have changed, the cached result is reused without executing the function body — it carries over target states declared during the function's previous invocation and returns its previous return value.
+With `memo=True`, the function's result is cached. On subsequent calls, if no logic, input, or read context values have changed, the cached result is reused without executing the function body — it carries over [target states](./target_state) declared during the function's previous invocation and returns its previous return value.
 
 ```python
 @coco.fn(memo=True)
-def process_chunk(chunk: Chunk) -> Embedding:
+def process_chunk(chunk: Chunk) -> list[float]:
     # This computation is skipped if chunk, logic, and context are unchanged
     return embed(chunk.text)
 ```
 
 :::info[Type annotations]
 Add a **return type annotation** to memoized functions so CocoIndex can properly reconstruct cached values. Without a type annotation, cached values may deserialize as basic Python types (`dict`, `list`, etc.) instead of their original types. See [Serialization](./serialization) for details on supported types.
+:::
+
+:::caution[`memo=True` constraints]
+A memoized function:
+
+- **Must run inside a [processing component](./processing_component)** for memoization to take effect. Outside a component context (e.g., called directly from a script or test), the function still executes correctly but the cache is bypassed silently — every call runs the body.
+- **Cannot mount child components** (`coco.mount(...)` / `coco.use_mount(...)` inside the body). Mounting is a side effect the cache cannot replay; CocoIndex raises an error if a memoized function attempts it. Either drop `memo=True`, or restructure so the mount happens in a non-memoized caller.
+:::
+
+#### Cache-hit semantics
+
+When a memoized function's cache hits, its **body does not run** — and neither do any nested `@coco.fn` calls inside it. The cached output is replayed directly: the previous return value is returned, and any target states the function declared on its previous run are carried over.
+
+```python
+@coco.fn(memo=True)
+async def inner(text: str) -> str:
+    print("inner ran")
+    return await call_llm(text)
+
+@coco.fn(memo=True)
+async def outer(text: str) -> str:
+    print("outer ran")
+    return await inner(text) + "!"
+
+# First call: both print, both bodies execute
+result = await outer("hello")
+
+# Second call with same inputs: nothing prints — outer's cached value is returned
+# directly, and inner is not invoked at all.
+result = await outer("hello")
+```
+
+Propagation (logic, `deps`, context) is recorded during the **previous** invocation and replayed on cache lookup. You don't need to model the internals — change anything that affects behavior and the cache invalidates correctly.
+
+:::note[Exceptions and the cache]
+If a memoized function raises, no cache entry is written for that call. The next invocation with the same inputs sees a cache miss and re-executes the body — exceptions never poison the cache, so you don't need to wrap calls defensively.
 :::
 
 :::tip[When to memoize]
@@ -71,7 +111,7 @@ Add a **return type annotation** to memoized functions so CocoIndex can properly
 
 - ✅ **Embedding functions** — good to memoize. Computation is heavy; return value is fixed-size and not too large.
 - ❌ **Splitting text into fixed-size chunks** — usually not worth memoizing. Computation is light; return value can be large.
-- ✅ **Processing component for files that mostly stable between runs** — very beneficial to memoize, since unchanged files are skipped entirely. We can save the cost of reading file content and processing them when they haven't changed.
+- ✅ **Processing component for files that are mostly stable between runs** — very beneficial to memoize, since unchanged files are skipped entirely. We can save the cost of reading file content and processing them when they haven't changed.
 - 🤔 **Chunk embedding when file-level memoization is already enabled** — still beneficial, but less so for stable files. The benefit increases for files that change frequently, or when your code evolves (e.g., adding more features per file triggers file-level reprocessing, but unchanged chunks can still skip embedding).
 
 :::
@@ -84,7 +124,7 @@ Three parameters on `@coco.fn` let you customize how logic changes are detected:
 - **`version`** — provides explicit manual control over when dependent memos are invalidated
 - **`deps`** — declares external values (e.g. a module-level prompt string) as part of the function's logic, so changing them invalidates dependent memos
 
-These parameters control code fingerprinting for logic changes. Data fingerprinting (for arguments, `deps` values, and context values) is controlled by the objects themselves (see [Memoization Keys & States](../advanced_topics/memoization_keys)).
+These parameters control logic fingerprinting. Data fingerprinting (for arguments, `deps` values, and context values) is controlled by the objects themselves (see [Memoization Keys & States](../advanced_topics/memoization_keys)).
 
 #### `logic_tracking`
 
@@ -100,7 +140,7 @@ The `version` parameter lets you explicitly invalidate dependent memos by bumpin
 
 ```python
 @coco.fn(version=2)
-def process_chunk(chunk: Chunk) -> Embedding:
+def process_chunk(chunk: Chunk) -> list[float]:
     # Bumping version invalidates all memoized callers, even if code looks the same
     return embed(chunk.text)
 ```
@@ -140,7 +180,11 @@ The value is canonicalized through the [memoization-key pipeline](../advanced_to
 
 #### Common patterns
 
-These parameters can be set on any `@coco.fn` function — not just memoized ones. A non-memoized function's fingerprint still propagates to its memoized callers and components.
+:::tip[`@coco.fn` on non-memoized helpers]
+You can — and often should — decorate helpers with `@coco.fn` even without `memo=True`. The decorator's job is to make the function's logic *visible* to the change detection system. A bare helper is invisible: editing it will not invalidate any memoized caller, leading to silently stale results. Add `@coco.fn` so its fingerprint propagates; only add `memo=True` if caching its return value is worth it.
+:::
+
+These parameters can be set on any `@coco.fn` function — not just memoized ones.
 
 **Fully automatic (default)** — use `logic_tracking="full"` (or omit it) without setting `version`. Any logic change in the function or its callees invalidates dependent memos. This always just works.
 
@@ -176,9 +220,27 @@ def embed(text: str) -> list[float]:
 [Context changes](./context#change-detection) are independent of `@coco.fn` and `logic_tracking`. Even with `logic_tracking=None`, a change in a change-detected context value still invalidates dependent memos, because context tracking is done by `use_context()`, not by the decorator.
 :::
 
+### Debugging unexpected re-runs
+
+If a memoized function is re-running when you expect a cache hit, walk through the inputs in order:
+
+1. **Logic** — did the function's source code change? Did any `@coco.fn` it transitively calls change? Was a `version` bumped? Was a `deps` value edited?
+2. **Inputs** — are the arguments byte-identical to the previous call (after canonicalization)? Custom types with unstable equality are a common source of spurious invalidation — see [Memoization Keys & States](../advanced_topics/memoization_keys).
+3. **Context** — did any [`detect_change=True`](./context#change-detection) context value read during the previous invocation change? Remember this propagates transitively through nested `@coco.fn` calls.
+
+If none of those changed and the function still re-runs, the most common cause is a non-stable fingerprint on a custom-typed argument or context value — define `__coco_memo_key__` to make it deterministic.
+
+Conversely, if a memo is hitting when you expect invalidation, common causes are:
+
+- A logic change in a helper that is **not** decorated with `@coco.fn`. Add `@coco.fn` to it (no `memo=` needed) so its logic participates in propagation — see [Common patterns](#common-patterns).
+- A `deps` value that you changed at runtime: `deps` is [snapshotted at decoration time](#deps), so per-instance or per-request values must be passed as regular arguments instead.
+- The function uses [`logic_tracking=None`](#logic_tracking), which opts it out of code-change detection entirely.
+
 ### Customizing data fingerprinting
 
 By default, CocoIndex fingerprints function arguments, `deps` values, and context values automatically for most types — primitives, containers, dataclasses, Pydantic models, and picklable objects. For custom types, or when you need multi-level validation (e.g., check mtime first, then content hash), see [Memoization Keys & States](../advanced_topics/memoization_keys).
+
+For per-function overrides — excluding an argument from the memo key, or transforming it just for this function — pass `memo_key={...}` on `@coco.fn` / `@coco.fn.as_async`; see [Override at the call site with `memo_key=`](../advanced_topics/memoization_keys#override-at-the-call-site-with-memo_key).
 
 ## Execution capabilities
 

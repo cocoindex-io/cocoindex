@@ -1,0 +1,14 @@
+[project]
+name = "entity_resolution_benchmark"
+version = "0.1.0"
+description = "Synthetic benchmark for CocoIndex entity resolution"
+requires-python = ">=3.11"
+dependencies = [
+    "cocoindex[entity_resolution_llm]",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+cocoindex = {path = "../../", editable = true}

@@ -5,13 +5,11 @@ use std::borrow::Cow;
 use std::cmp::{Ord, Ordering};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque, btree_map};
 
-use heed::{RoTxn, RwTxn};
-
 use crate::engine::context::{
     ComponentProcessingAction, ComponentProcessingMode, ComponentProcessorContext,
-    DeclaredTargetState, FnCallMemo, MemoStatesPayload, TARGET_ID_KEY,
+    DeclaredTargetState, MemoStatesPayload, TARGET_ID_KEY,
 };
-use crate::engine::context::{FnCallContext, FnCallMemoEntry};
+use crate::engine::context::{FnCallContext, FnCallMemoEntry, FnMemoCache, decode_stored_entry};
 use crate::engine::id_sequencer::IdReservation;
 use crate::engine::logic_registry;
 use crate::engine::profile::{EngineProfile, Persist};
@@ -24,11 +22,12 @@ use crate::state::stable_path_set::{ChildStablePathSet, StablePathSet};
 use crate::state::target_state_path::{
     TargetStatePath, TargetStatePathWithProviderId, TargetStateProviderGeneration,
 };
+use crate::state_store::{AppStore, WriteTxn};
 use cocoindex_utils::deser::from_msgpack_slice;
 use cocoindex_utils::fingerprint::Fingerprint;
 
 /// Deserialize a `Vec<MemoizedValue>` into a `Vec<Prof::FunctionData>`.
-fn deserialize_memo_values<Prof: EngineProfile>(
+pub(crate) fn deserialize_memo_values<Prof: EngineProfile>(
     values: &[db_schema::MemoizedValue<'_>],
 ) -> Result<Vec<Prof::FunctionData>> {
     values
@@ -45,7 +44,7 @@ fn deserialize_memo_values<Prof: EngineProfile>(
 /// Serialize a `&[Prof::FunctionData]` into a `Vec<MemoizedValue<'static>>`.
 /// The returned values own their bytes (`Cow::Owned`), so they're independent of
 /// the input lifetime.
-fn serialize_memo_values<Prof: EngineProfile>(
+pub(crate) fn serialize_memo_values<Prof: EngineProfile>(
     values: &[Prof::FunctionData],
 ) -> Result<Vec<db_schema::MemoizedValue<'static>>> {
     values
@@ -58,7 +57,7 @@ fn serialize_memo_values<Prof: EngineProfile>(
 }
 
 /// Deserialize the context-borne memo states (fp-tagged list of value blobs).
-fn deserialize_context_memo_states<Prof: EngineProfile>(
+pub(crate) fn deserialize_context_memo_states<Prof: EngineProfile>(
     entries: &[(Fingerprint, Vec<db_schema::MemoizedValue<'_>>)],
 ) -> Result<Vec<(Fingerprint, Vec<Prof::FunctionData>)>> {
     entries
@@ -68,7 +67,7 @@ fn deserialize_context_memo_states<Prof: EngineProfile>(
 }
 
 /// Serialize the context-borne memo states into the on-disk representation.
-fn serialize_context_memo_states<Prof: EngineProfile>(
+pub(crate) fn serialize_context_memo_states<Prof: EngineProfile>(
     entries: &[(Fingerprint, Vec<Prof::FunctionData>)],
 ) -> Result<Vec<(Fingerprint, Vec<db_schema::MemoizedValue<'static>>)>> {
     entries
@@ -86,20 +85,14 @@ pub(crate) async fn use_or_invalidate_component_memoization<Prof: EngineProfile>
         return Ok(None);
     }
 
-    let key = db_schema::DbEntryKey::StablePath(
-        comp_ctx.stable_path().clone(),
-        db_schema::StablePathEntryKey::ComponentMemoization,
-    )
-    .encode()?;
-
-    let db = comp_ctx.app_ctx().db();
+    let app_store = comp_ctx.app_ctx().app_store();
+    let path = comp_ctx.stable_path();
     {
-        let rtxn = comp_ctx.app_ctx().env().read_txn().await?;
-        let Some(data) = db.get(&rtxn, key.as_slice())? else {
+        let Some(memo_bytes) = app_store.read_component_memo(path).await? else {
             return Ok(None);
         };
+        let memo_info: db_schema::ComponentMemoizationInfo<'_> = from_msgpack_slice(&memo_bytes)?;
         if let Some(processor_fp) = processor_fp {
-            let memo_info: db_schema::ComponentMemoizationInfo<'_> = from_msgpack_slice(&data)?;
             if memo_info.processor_fp == processor_fp
                 && logic_registry::all_contained_with_env(
                     &memo_info.logic_deps,
@@ -137,14 +130,13 @@ pub(crate) async fn use_or_invalidate_component_memoization<Prof: EngineProfile>
 
     // Invalidate the memoization.
     {
-        let db = comp_ctx.app_ctx().db().clone();
+        let app_store = comp_ctx.app_ctx().app_store().clone();
+        let path = path.clone();
         comp_ctx
             .app_ctx()
             .env()
-            .txn_batcher()
-            .run(move |wtxn| {
-                db.delete(wtxn, key.as_slice())?;
-                Ok(())
+            .run_txn(move |wtxn| {
+                Box::pin(async move { app_store.delete_component_memo(wtxn, &path).await })
             })
             .await?;
     }
@@ -162,127 +154,47 @@ pub(crate) async fn update_component_memo_states<Prof: EngineProfile>(
     comp_ctx: &ComponentProcessorContext<Prof>,
     new_states: &MemoStatesPayload<Prof>,
 ) -> Result<()> {
-    let key = db_schema::DbEntryKey::StablePath(
-        comp_ctx.stable_path().clone(),
-        db_schema::StablePathEntryKey::ComponentMemoization,
-    )
-    .encode()?;
-
-    let db = comp_ctx.app_ctx().db().clone();
+    let app_store = comp_ctx.app_ctx().app_store().clone();
+    let path = comp_ctx.stable_path().clone();
 
     // Serialize new states
     let memo_states_serialized = serialize_memo_values::<Prof>(&new_states.positional)?;
     let context_memo_states_serialized =
         serialize_context_memo_states::<Prof>(&new_states.by_context_fp)?;
 
-    // Read existing entry and write back with updated states in one transaction
+    // Read existing entry and write back with updated states in one
+    // transaction. The deserialized memo_info borrows from wtxn, so we
+    // serialize the modified struct to bytes (releasing the borrow) before
+    // writing back.
     comp_ctx
         .app_ctx()
         .env()
-        .txn_batcher()
-        .run(move |wtxn| {
-            let Some(data) = db.get(wtxn, key.as_slice())? else {
-                return Ok(());
-            };
-            let existing: db_schema::ComponentMemoizationInfo<'_> = from_msgpack_slice(data)?;
-            let memo_info = db_schema::ComponentMemoizationInfo {
-                processor_fp: existing.processor_fp,
-                return_value: existing.return_value,
-                logic_deps: existing.logic_deps,
-                memo_states: memo_states_serialized,
-                context_memo_states: context_memo_states_serialized,
-            };
-            let encoded = rmp_serde::to_vec_named(&memo_info)?;
-            db.put(wtxn, key.as_slice(), encoded.as_slice())?;
-            Ok(())
+        .run_txn(move |wtxn| {
+            Box::pin(async move {
+                let encoded = {
+                    let Some(existing_bytes) =
+                        app_store.read_component_memo_in_txn(wtxn, &path).await?
+                    else {
+                        return Ok(());
+                    };
+                    let existing: db_schema::ComponentMemoizationInfo<'_> =
+                        from_msgpack_slice(&existing_bytes)?;
+                    let new_info = db_schema::ComponentMemoizationInfo {
+                        processor_fp: existing.processor_fp,
+                        return_value: existing.return_value,
+                        logic_deps: existing.logic_deps,
+                        memo_states: memo_states_serialized,
+                        context_memo_states: context_memo_states_serialized,
+                    };
+                    rmp_serde::to_vec_named(&new_info)?
+                };
+                app_store
+                    .write_component_memo_raw(wtxn, &path, &encoded)
+                    .await
+            })
         })
         .await?;
     Ok(())
-}
-
-fn write_fn_call_memo<Prof: EngineProfile>(
-    wtxn: &mut RwTxn<'_>,
-    db: &db_schema::Database,
-    comp_ctx: &ComponentProcessorContext<Prof>,
-    memo_fp: Fingerprint,
-    memo: FnCallMemo<Prof>,
-) -> Result<()> {
-    let key = db_schema::DbEntryKey::StablePath(
-        comp_ctx.stable_path().clone(),
-        db_schema::StablePathEntryKey::FunctionMemoization(memo_fp),
-    )
-    .encode()?;
-    let ret_bytes = memo.ret.to_bytes()?;
-    let memo_states_serialized = serialize_memo_values::<Prof>(&memo.memo_states)?;
-    let context_memo_states_serialized =
-        serialize_context_memo_states::<Prof>(&memo.context_memo_states)?;
-    let fn_call_memo = db_schema::FunctionMemoizationEntry {
-        return_value: db_schema::MemoizedValue::Inlined(Cow::Borrowed(ret_bytes.as_ref())),
-        child_components: vec![],
-        target_state_paths: memo.target_state_paths,
-        dependency_memo_entries: memo.dependency_memo_entries.into_iter().collect(),
-        logic_deps: memo.logic_deps.into_iter().collect(),
-        memo_states: memo_states_serialized,
-        context_memo_states: context_memo_states_serialized,
-    };
-    let encoded = rmp_serde::to_vec_named(&fn_call_memo)?;
-    db.put(wtxn, key.as_slice(), encoded.as_slice())?;
-    Ok(())
-}
-
-fn read_fn_call_memo_with_txn<Prof: EngineProfile>(
-    rtxn: &RoTxn,
-    db: &db_schema::Database,
-    comp_ctx: &ComponentProcessorContext<Prof>,
-    memo_fp: Fingerprint,
-) -> Result<Option<FnCallMemo<Prof>>> {
-    let key = db_schema::DbEntryKey::StablePath(
-        comp_ctx.stable_path().clone(),
-        db_schema::StablePathEntryKey::FunctionMemoization(memo_fp),
-    )
-    .encode()?;
-
-    let data = db.get(rtxn, key.as_slice())?;
-    let Some(data) = data else {
-        return Ok(None);
-    };
-    let fn_call_memo: db_schema::FunctionMemoizationEntry<'_> = from_msgpack_slice(&data)?;
-    if !logic_registry::all_contained_with_env(&fn_call_memo.logic_deps, comp_ctx.app_ctx().env()) {
-        return Ok(None);
-    }
-    if !fn_call_memo.child_components.is_empty() {
-        // Legacy entry stored child component paths. Invalidate it so the function re-runs,
-        // detects the child components, logs a warning, and the entry is cleaned up.
-        return Ok(None);
-    }
-    let return_value_bytes = match fn_call_memo.return_value {
-        db_schema::MemoizedValue::Inlined(b) => b,
-    };
-    let ret = Prof::FunctionData::from_bytes(return_value_bytes.as_ref())?;
-    let memo_states = deserialize_memo_values::<Prof>(&fn_call_memo.memo_states)?;
-    let context_memo_states =
-        deserialize_context_memo_states::<Prof>(&fn_call_memo.context_memo_states)?;
-    Ok(Some(FnCallMemo {
-        ret,
-        target_state_paths: fn_call_memo.target_state_paths,
-        dependency_memo_entries: fn_call_memo.dependency_memo_entries.into_iter().collect(),
-        logic_deps: fn_call_memo.logic_deps.into_iter().collect(),
-        memo_states,
-        context_memo_states,
-        already_stored: true,
-    }))
-}
-
-pub(crate) async fn read_fn_call_memo<Prof: EngineProfile>(
-    comp_ctx: &ComponentProcessorContext<Prof>,
-    memo_fp: Fingerprint,
-) -> Result<Option<FnCallMemo<Prof>>> {
-    // Short-circuit to miss under full_reprocess
-    if comp_ctx.full_reprocess() {
-        return Ok(None);
-    }
-    let rtxn = comp_ctx.app_ctx().env().read_txn().await?;
-    read_fn_call_memo_with_txn(&rtxn, comp_ctx.app_ctx().db(), comp_ctx, memo_fp)
 }
 
 pub fn declare_target_state<Prof: EngineProfile>(
@@ -369,21 +281,12 @@ struct ChildrenPathInfo {
     child_path_set: Option<ChildStablePathSet>,
 }
 
-struct ChildPathInfo {
-    encoded_db_key: Vec<u8>,
-    encoded_db_value: Vec<u8>,
-    stable_key: StableKey,
-    path_set: StablePathSet,
-}
-
 struct Committer<Prof: EngineProfile> {
     component_ctx: ComponentProcessorContext<Prof>,
-    db: db_schema::Database,
+    app_store: AppStore,
     target_states_providers: rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
 
     component_path: StablePath,
-
-    encoded_tombstone_key_prefix: Vec<u8>,
 
     existence_processing_queue: VecDeque<ChildrenPathInfo>,
     buffered_paths_for_tombstone: Vec<StablePath>,
@@ -398,17 +301,11 @@ impl<Prof: EngineProfile> Committer<Prof> {
         demote_component_only: bool,
     ) -> Result<Self> {
         let component_path = component_ctx.stable_path().clone();
-        let tombstone_key_prefix = db_schema::DbEntryKey::StablePath(
-            component_path.clone(),
-            db_schema::StablePathEntryKey::ChildComponentTombstonePrefix,
-        );
-        let encoded_tombstone_key_prefix = tombstone_key_prefix.encode()?;
         Ok(Self {
             component_ctx: component_ctx.clone(),
-            db: component_ctx.app_ctx().db().clone(),
+            app_store: component_ctx.app_ctx().app_store().clone(),
             target_states_providers: target_states_providers.clone(),
             component_path,
-            encoded_tombstone_key_prefix,
             existence_processing_queue: VecDeque::new(),
             buffered_paths_for_tombstone: Vec::new(),
             demote_component_only,
@@ -417,28 +314,28 @@ impl<Prof: EngineProfile> Committer<Prof> {
 
     /// Run all DB write operations inside a provided write transaction.
     /// Returns `self` so the caller can use it for post-commit work (e.g. GC).
-    fn commit_in_txn(
+    async fn commit_in_txn(
         mut self,
-        wtxn: &mut RwTxn<'_>,
+        wtxn: &mut WriteTxn<'_>,
         child_path_set: Option<ChildStablePathSet>,
-        encoded_target_state_info_key: &[u8],
-        all_memo_fps: &HashSet<Fingerprint>,
-        memos_without_mounts_to_store: Vec<(Fingerprint, FnCallMemo<Prof>)>,
+        fn_memos: FnMemoCache<Prof>,
         curr_version: Option<u64>,
     ) -> Result<Self> {
         {
             if self.component_ctx.mode() == ComponentProcessingMode::Delete {
-                self.db
-                    .delete(&mut *wtxn, encoded_target_state_info_key.as_ref())?;
+                self.app_store
+                    .delete_tracking_info(wtxn, &self.component_path)
+                    .await?;
             } else {
                 let curr_version = curr_version
                     .ok_or_else(|| internal_error!("curr_version is required for Build mode"))?;
-                let mut tracking_info: db_schema::StablePathEntryTrackingInfo = self
-                    .db
-                    .get(&*wtxn, encoded_target_state_info_key.as_ref())?
-                    .map(|data| from_msgpack_slice(data))
-                    .transpose()?
+                let tracking_info_bytes = self
+                    .app_store
+                    .read_tracking_info_in_txn(&mut *wtxn, &self.component_path)
+                    .await?
                     .ok_or_else(|| internal_error!("tracking info not found for commit"))?;
+                let mut tracking_info: db_schema::StablePathEntryTrackingInfo<'_> =
+                    from_msgpack_slice(&tracking_info_bytes)?;
 
                 for item in tracking_info.target_state_items.values_mut() {
                     item.states.retain(|(version, state)| {
@@ -447,6 +344,10 @@ impl<Prof: EngineProfile> Committer<Prof> {
                 }
                 // Prune entries with empty states and collect their paths for
                 // inverted tracking cleanup (deferred until tracking_info is dropped).
+                // The component-level `pending_process_token` is cleared below
+                // (after this retention pass) — the lifecycle (pre_commit →
+                // sink_apply → commit) is succeeding, so any token written by
+                // pre_commit is no longer "pending".
                 let mut pruned_paths: HashSet<TargetStatePath> = HashSet::new();
                 tracking_info
                     .target_state_items
@@ -458,6 +359,7 @@ impl<Prof: EngineProfile> Committer<Prof> {
                             true
                         }
                     });
+                tracking_info.pending_process_token = None;
                 // Don't delete inverted tracking if a surviving entry shares the same
                 // target_state_path (can happen when provider_id changed — old entry
                 // pruned, new entry survives under different provider_id).
@@ -494,48 +396,25 @@ impl<Prof: EngineProfile> Committer<Prof> {
 
                 let data_bytes = rmp_serde::to_vec_named(&tracking_info)?;
                 drop(tracking_info); // Release borrow before mutable operations.
-                self.db.put(
-                    &mut *wtxn,
-                    encoded_target_state_info_key.as_ref(),
-                    data_bytes.as_slice(),
-                )?;
+                self.app_store
+                    .write_tracking_info_raw(wtxn, &self.component_path, &data_bytes)
+                    .await?;
 
                 // Clean up inverted tracking for pruned entries.
                 for path in &pruned_paths {
-                    delete_target_state_owner(&mut *wtxn, &self.db, path)?;
+                    self.app_store.delete_target_state_owner(wtxn, path).await?;
                 }
             }
 
-            // Write memos.
-            for (fp, memo) in memos_without_mounts_to_store {
-                write_fn_call_memo(&mut *wtxn, &self.db, &self.component_ctx, fp, memo)?;
-            }
-
-            // Delete all function memo entries that are not in the all_memo_fps.
-            {
-                let fn_memo_key_prefix = db_schema::DbEntryKey::StablePath(
-                    self.component_path.clone(),
-                    db_schema::StablePathEntryKey::FunctionMemoizationPrefix,
-                );
-                let encoded_fn_memo_key_prefix = fn_memo_key_prefix.encode()?;
-                let mut fn_memo_key_prefix_iter = self
-                    .db
-                    .prefix_iter_mut(&mut *wtxn, encoded_fn_memo_key_prefix.as_ref())?;
-                while let Some((key, _)) = fn_memo_key_prefix_iter.next().transpose()? {
-                    // Decode key
-                    let decoded_fp: Fingerprint =
-                        storekey::decode(key[encoded_fn_memo_key_prefix.len()..].as_ref())?;
-                    if all_memo_fps.contains(&decoded_fp) {
-                        continue;
-                    }
-                    unsafe {
-                        fn_memo_key_prefix_iter.del_current()?;
-                    }
-                }
-            }
+            // Flush the function-memo cache: writes new/re-executed entries,
+            // deletes untouched prefetched entries (or prefix-deletes the
+            // whole range under full_reprocess / no-prefetch paths).
+            fn_memos
+                .flush_to_db(wtxn, &self.app_store, &self.component_path)
+                .await?;
 
             if !self.demote_component_only {
-                self.update_existence(&mut *wtxn, child_path_set)?;
+                self.update_existence(&mut *wtxn, child_path_set).await?;
             }
         }
 
@@ -545,36 +424,28 @@ impl<Prof: EngineProfile> Committer<Prof> {
     async fn commit(
         self,
         child_path_set: Option<ChildStablePathSet>,
-        target_state_info_key: db_schema::DbEntryKey<'_>,
-        all_memo_fps: HashSet<Fingerprint>,
-        memos_without_mounts_to_store: Vec<(Fingerprint, FnCallMemo<Prof>)>,
+        fn_memos: FnMemoCache<Prof>,
         curr_version: Option<u64>,
     ) -> Result<()> {
-        let encoded_target_state_info_key = target_state_info_key.encode()?;
-        // Single cheap Arc clone so we can call txn_batcher() / db_env() after self moves into the closure.
+        // Single cheap Arc clone so we can call run_txn() / read_txn() after self moves into the closure.
         let app_ctx = self.component_ctx.app_ctx().clone();
         let committer = app_ctx
             .env()
-            .txn_batcher()
-            .run(move |wtxn| {
-                self.commit_in_txn(
-                    wtxn,
-                    child_path_set,
-                    &encoded_target_state_info_key,
-                    &all_memo_fps,
-                    memos_without_mounts_to_store,
-                    curr_version,
-                )
+            .run_txn(move |wtxn| {
+                Box::pin(async move {
+                    self.commit_in_txn(wtxn, child_path_set, fn_memos, curr_version)
+                        .await
+                })
             })
             .await?;
-        // Transaction committed — open a read txn so GC sees the committed tombstones.
-        let rtxn = app_ctx.env().read_txn().await?;
-        committer.launch_child_component_gc(&rtxn)
+        // Transaction committed — GC sees the committed tombstones via the
+        // read txn opened inside `launch_child_component_gc`.
+        committer.launch_child_component_gc().await
     }
 
-    fn update_existence(
+    async fn update_existence(
         &mut self,
-        wtxn: &mut RwTxn<'_>,
+        wtxn: &mut WriteTxn<'_>,
         child_path_set: Option<ChildStablePathSet>,
     ) -> Result<()> {
         self.existence_processing_queue.push_back(ChildrenPathInfo {
@@ -582,154 +453,162 @@ impl<Prof: EngineProfile> Committer<Prof> {
             child_path_set,
         });
         while let Some(path_info) = self.existence_processing_queue.pop_front() {
-            let mut children_to_add: Vec<ChildPathInfo> = Vec::new();
-            {
-                let mut curr_iter = path_info
-                    .child_path_set
-                    .into_iter()
-                    .flat_map(|set| set.children.into_iter());
+            // Sorted merge between the declared children (in-memory BTreeMap
+            // iteration, sorted by StableKey) and the existing on-disk
+            // entries (storekey-encoded byte order matches StableKey Ord).
+            let mut curr_iter = path_info
+                .child_path_set
+                .into_iter()
+                .flat_map(|set| set.children.into_iter());
+            let existing_children = self
+                .app_store
+                .list_child_existence_in_txn(&mut *wtxn, &path_info.path)
+                .await?;
+            let mut existing_iter = existing_children.into_iter();
 
-                let mut curr_iter_next = || -> Result<Option<ChildPathInfo>> {
-                    let v = if let Some((stable_key, path_set)) = curr_iter.next() {
-                        let db_key = db_schema::DbEntryKey::StablePath(
-                            path_info.path.clone(),
-                            db_schema::StablePathEntryKey::ChildExistence(stable_key.clone()),
-                        );
-                        Some(ChildPathInfo {
-                            encoded_db_key: db_key.encode()?,
-                            encoded_db_value: Self::encode_child_existence_info(&path_set)?,
-                            stable_key,
-                            path_set,
-                        })
-                    } else {
-                        None
-                    };
-                    Ok(v)
-                };
+            let mut curr_next = curr_iter.next();
+            let mut existing_next = existing_iter.next();
+            let mut children_to_add: Vec<(StableKey, StablePathSet)> = Vec::new();
 
-                let mut curr_next = curr_iter_next()?;
-
-                let db_key_prefix = db_schema::DbEntryKey::StablePath(
-                    path_info.path.clone(),
-                    db_schema::StablePathEntryKey::ChildExistencePrefix,
-                );
-                let encoded_db_key_prefix = db_key_prefix.encode()?;
-                let mut db_prefix_iter = self
-                    .db
-                    .prefix_iter_mut(wtxn, encoded_db_key_prefix.as_ref())?;
-                let mut db_next = db_prefix_iter.next().transpose()?;
-
-                loop {
-                    let Some(db_next_entry) = db_next else {
-                        // All remaining children are new.
-                        curr_next.map(|v| children_to_add.push(v));
-                        while let Some(entry) = curr_iter_next()? {
+            loop {
+                match (&curr_next, &existing_next) {
+                    (None, None) => break,
+                    (Some(_), None) => {
+                        // All remaining declared children are new.
+                        if let Some(entry) = curr_next.take() {
                             children_to_add.push(entry);
                         }
+                        children_to_add.extend(curr_iter.by_ref());
                         break;
-                    };
-                    let Some(curr_next_v) = &curr_next else {
-                        // All remaining children should be deleted.
-                        let mut db_next_entry = db_next_entry;
-                        loop {
-                            self.del_child(db_next_entry, &path_info.path, &encoded_db_key_prefix)?;
-                            unsafe {
-                                db_prefix_iter.del_current()?;
-                            }
-                            db_next_entry =
-                                if let Some(entry) = db_prefix_iter.next().transpose()? {
-                                    entry
-                                } else {
-                                    break;
-                                };
+                    }
+                    (None, Some(_)) => {
+                        // All remaining existing children should be deleted.
+                        if let Some((key, info)) = existing_next.take() {
+                            self.app_store
+                                .delete_child_existence(wtxn, &path_info.path, &key)
+                                .await?;
+                            self.del_child(&key, &info, &path_info.path)?;
+                        }
+                        for (key, info) in existing_iter.by_ref() {
+                            self.app_store
+                                .delete_child_existence(wtxn, &path_info.path, &key)
+                                .await?;
+                            self.del_child(&key, &info, &path_info.path)?;
                         }
                         break;
-                    };
-                    match Ord::cmp(curr_next_v.encoded_db_key.as_slice(), db_next_entry.0) {
-                        Ordering::Less => {
-                            // New child.
-                            children_to_add.push(curr_next.ok_or_else(invariance_violation)?);
-                            curr_next = curr_iter_next()?;
-                        }
-                        Ordering::Greater => {
-                            // Child to delete.
-                            self.del_child(db_next_entry, &path_info.path, &encoded_db_key_prefix)?;
-                            unsafe {
-                                db_prefix_iter.del_current()?;
+                    }
+                    (Some((curr_key, _)), Some((existing_key, _))) => {
+                        match curr_key.cmp(existing_key) {
+                            Ordering::Less => {
+                                // New child.
+                                children_to_add
+                                    .push(curr_next.take().ok_or_else(invariance_violation)?);
+                                curr_next = curr_iter.next();
                             }
-                            db_next = db_prefix_iter.next().transpose()?;
-                        }
-                        Ordering::Equal => {
-                            let curr_next_v = curr_next.ok_or_else(invariance_violation)?;
+                            Ordering::Greater => {
+                                // Existing child no longer declared — delete.
+                                let (key, info) =
+                                    existing_next.take().ok_or_else(invariance_violation)?;
+                                self.app_store
+                                    .delete_child_existence(wtxn, &path_info.path, &key)
+                                    .await?;
+                                self.del_child(&key, &info, &path_info.path)?;
+                                existing_next = existing_iter.next();
+                            }
+                            Ordering::Equal => {
+                                let (curr_key, curr_path_set) =
+                                    curr_next.take().ok_or_else(invariance_violation)?;
+                                let (_, existing_info) =
+                                    existing_next.take().ok_or_else(invariance_violation)?;
+                                let new_node_type = node_type_for(&curr_path_set);
 
-                            // Update the child existence info if it has changed.
-                            if curr_next_v.encoded_db_value.as_slice() != db_next_entry.1 {
-                                unsafe {
-                                    db_prefix_iter.put_current(
-                                        curr_next_v.encoded_db_key.as_slice(),
-                                        curr_next_v.encoded_db_value.as_slice(),
-                                    )?;
+                                // Update the child existence info if the node type changed.
+                                if existing_info.node_type != new_node_type {
+                                    self.app_store
+                                        .write_child_existence(
+                                            wtxn,
+                                            &path_info.path,
+                                            &curr_key,
+                                            &db_schema::ChildExistenceInfo {
+                                                node_type: new_node_type,
+                                            },
+                                        )
+                                        .await?;
                                 }
-                            }
 
-                            match curr_next_v.path_set {
-                                StablePathSet::Directory(curr_dir_set) => {
-                                    let db_value: db_schema::ChildExistenceInfo =
-                                        from_msgpack_slice(db_next_entry.1)?;
-                                    if db_value.node_type
+                                if let StablePathSet::Directory(curr_dir_set) = curr_path_set {
+                                    // Demotion: existing was a Component, now becoming a Directory
+                                    // (its descendants have replaced the leaf). The old component
+                                    // needs a tombstone so its target states get cleaned up.
+                                    if existing_info.node_type
                                         == db_schema::StablePathNodeType::Component
                                     {
                                         self.buffered_paths_for_tombstone.push(
                                             self.relative_path(path_info.path.as_ref())?
-                                                .concat_part(curr_next_v.stable_key.clone()),
+                                                .concat_part(curr_key.clone()),
                                         );
                                     }
                                     self.existence_processing_queue.push_back(ChildrenPathInfo {
-                                        path: path_info
-                                            .path
-                                            .concat_part(curr_next_v.stable_key.clone()),
+                                        path: path_info.path.concat_part(curr_key),
                                         child_path_set: Some(curr_dir_set),
                                     });
                                 }
-                                StablePathSet::Component => {
-                                    // No-op. Everything should be handled by the sub component.
-                                }
+                                // StablePathSet::Component case: no-op (sub-component handles itself).
+                                curr_next = curr_iter.next();
+                                existing_next = existing_iter.next();
                             }
-
-                            curr_next = curr_iter_next()?;
-                            db_next = db_prefix_iter.next().transpose()?;
                         }
                     }
                 }
             }
 
-            for child_to_add in children_to_add {
-                if let StablePathSet::Directory(child_path_set) = child_to_add.path_set {
+            for (stable_key, path_set) in children_to_add {
+                let node_type = node_type_for(&path_set);
+                self.app_store
+                    .write_child_existence(
+                        wtxn,
+                        &path_info.path,
+                        &stable_key,
+                        &db_schema::ChildExistenceInfo { node_type },
+                    )
+                    .await?;
+                if let StablePathSet::Directory(child_path_set) = path_set {
                     self.existence_processing_queue.push_back(ChildrenPathInfo {
-                        path: path_info.path.concat_part(child_to_add.stable_key),
+                        path: path_info.path.concat_part(stable_key),
                         child_path_set: Some(child_path_set),
                     });
                 }
-                self.db.put(
-                    wtxn,
-                    child_to_add.encoded_db_key.as_slice(),
-                    child_to_add.encoded_db_value.as_slice(),
-                )?;
             }
 
-            self.flush_component_tombstones(wtxn)?;
+            self.flush_component_tombstones(wtxn).await?;
         }
         Ok(())
     }
 
-    fn launch_child_component_gc(&self, rtxn: &RoTxn<'_>) -> Result<()> {
-        let tombstone_key_prefix_iter = self
-            .db
-            .prefix_iter(rtxn, self.encoded_tombstone_key_prefix.as_ref())?;
-        for tombstone_entry in tombstone_key_prefix_iter {
-            let (ts_key, _) = tombstone_entry?;
-            let relative_path: StablePath =
-                storekey::decode(&ts_key[self.encoded_tombstone_key_prefix.len()..])?;
+    async fn launch_child_component_gc(&self) -> Result<()> {
+        // Cascade the parent's on_error to descendant orphan deletes.
+        //
+        // - Delete-mode parent (recursive cascade from `App.drop()`'s
+        //   root delete): the raising on_error propagates so any
+        //   descendant failure surfaces back through `handle.ready()`.
+        // - Build-mode parent (orphan deletes during a normal update,
+        //   triggered by the parent's `process()` no longer declaring a
+        //   previously-existing child): the on_error installed on the
+        //   parent's build context — same handler `Component::mount`
+        //   wires for the child's own task failure — sees orphan-delete
+        //   failures too.
+        // - No installed handler (root `App.update`, `use_mount`,
+        //   `operator.delete` without a chain): `None` preserves the
+        //   "log + swallow" default.
+        //
+        // The `Arc` makes cloning cheap regardless of how many
+        // descendants we spawn.
+        let cascaded_on_error = self.component_ctx.processing_action_on_error();
+        // Standalone snapshot read — `list_tombstones` opens its own
+        // fresh `RoTxn` internally.
+        let tombstones = self.app_store.list_tombstones(&self.component_path).await?;
+        let mut handles = Vec::with_capacity(tombstones.len());
+        for relative_path in tombstones {
             let stable_path = self.component_path.concat(relative_path.as_ref());
             let component = self.component_ctx.component().get_child(stable_path);
             let delete_ctx = component.new_processor_context_for_delete(
@@ -737,65 +616,65 @@ impl<Prof: EngineProfile> Committer<Prof> {
                 Some(&self.component_ctx),
                 self.component_ctx.processing_stats().clone(),
                 self.component_ctx.host_ctx().clone(),
+                cascaded_on_error.clone(),
             );
-            let _ = component.delete(delete_ctx, None)?;
+            handles.push(component.delete(delete_ctx, None)?);
+        }
+        // Await each handle so descendant failures (when on_error
+        // propagates) reach our own task_result, which the parent
+        // delete's spawned task surfaces via `handle.ready()` —
+        // eventually back to `app.drop()`. Short-circuits on first Err;
+        // remaining children continue running (orphan tasks), but their
+        // tombstones survive for the next reconcile to retry. With
+        // `on_error = None`, every handle resolves Ok regardless of
+        // child failures, so this is a no-op cost in that case.
+        for handle in handles {
+            handle.ready().await?;
         }
         Ok(())
     }
 
     fn del_child(
         &mut self,
-        db_entry: (&[u8], &[u8]),
-        path: &StablePath,
-        encoded_db_key_prefix: &[u8],
+        stable_key: &StableKey,
+        info: &db_schema::ChildExistenceInfo,
+        parent_path: &StablePath,
     ) -> Result<()> {
-        let (raw_db_key, raw_db_value) = db_entry;
-        let stable_key: StableKey =
-            storekey::decode(raw_db_key[encoded_db_key_prefix.len()..].as_ref())?;
-        let db_value: db_schema::ChildExistenceInfo = from_msgpack_slice(raw_db_value)?;
-        match db_value.node_type {
+        match info.node_type {
             db_schema::StablePathNodeType::Directory => {
                 self.existence_processing_queue.push_back(ChildrenPathInfo {
-                    path: path.concat_part(stable_key),
+                    path: parent_path.concat_part(stable_key.clone()),
                     child_path_set: None,
                 });
             }
             db_schema::StablePathNodeType::Component => {
-                self.buffered_paths_for_tombstone
-                    .push(self.relative_path(path.as_ref())?.concat_part(stable_key));
+                self.buffered_paths_for_tombstone.push(
+                    self.relative_path(parent_path.as_ref())?
+                        .concat_part(stable_key.clone()),
+                );
             }
         }
         Ok(())
     }
 
-    fn flush_component_tombstones(&mut self, wtxn: &mut RwTxn<'_>) -> Result<()> {
-        if self.buffered_paths_for_tombstone.is_empty() {
-            return Ok(());
-        }
-        let mut encoded_tombstone_key = self.encoded_tombstone_key_prefix.clone();
-        let prefix_len = encoded_tombstone_key.len();
-        for stable_path in std::mem::take(&mut self.buffered_paths_for_tombstone) {
-            encoded_tombstone_key.truncate(prefix_len);
-            storekey::encode(&mut encoded_tombstone_key, &stable_path)?;
-            self.db.put(wtxn, encoded_tombstone_key.as_slice(), &[])?;
+    async fn flush_component_tombstones(&mut self, wtxn: &mut WriteTxn<'_>) -> Result<()> {
+        for relative_path in std::mem::take(&mut self.buffered_paths_for_tombstone) {
+            self.app_store
+                .write_tombstone(wtxn, &self.component_path, &relative_path)
+                .await?;
         }
         Ok(())
     }
 
-    fn encode_child_existence_info(path_set: &StablePathSet) -> Result<Vec<u8>> {
-        let existence_info = match path_set {
-            StablePathSet::Directory(_) => db_schema::ChildExistenceInfo {
-                node_type: db_schema::StablePathNodeType::Directory,
-            },
-            StablePathSet::Component => db_schema::ChildExistenceInfo {
-                node_type: db_schema::StablePathNodeType::Component,
-            },
-        };
-        Ok(rmp_serde::to_vec_named(&existence_info)?)
-    }
-
     fn relative_path<'p>(&self, path: StablePathRef<'p>) -> Result<StablePathRef<'p>> {
         path.strip_parent(self.component_path.as_ref())
+    }
+}
+
+fn node_type_for(path_set: &StablePathSet) -> db_schema::StablePathNodeType {
+    match path_set {
+        StablePathSet::Directory(_) => db_schema::StablePathNodeType::Directory,
+        StablePathSet::Component => db_schema::StablePathNodeType::Component,
     }
 }
 
@@ -840,80 +719,99 @@ struct PreCommitOutput<Prof: EngineProfile> {
     processor_name_for_del: Option<String>,
 }
 
-// --- Inverted tracking (TargetStatePath → owning component) helpers ---
-
-fn read_target_state_owner(
-    wtxn: &heed::RwTxn<'_>,
-    db: &db_schema::Database,
-    target_state_path: &TargetStatePath,
-) -> Result<Option<db_schema::TargetStateOwnerInfo>> {
-    let key = db_schema::DbEntryKey::TargetState(target_state_path.clone()).encode()?;
-    Ok(db
-        .get(wtxn, key.as_slice())?
-        .map(|data| from_msgpack_slice(data))
-        .transpose()?)
+/// Either a completed pre_commit (with optional output for skip-cases) or a
+/// "back off and retry" signal triggered by detecting a concurrent
+/// pre_commit's live `pending_process_token` on disk. See
+/// `specs/target_state_ownership_transfer/concurrent_preempt_race_fix.md`.
+///
+/// `PendingRetry` returns the input `declared_target_states` back to the
+/// caller: the detection sub-pass aborts before any `TargetStateValue` is
+/// consumed, so the map is intact and can be re-passed on the next attempt.
+enum PreCommitOutcome<Prof: EngineProfile> {
+    Done(Option<PreCommitOutput<Prof>>),
+    PendingRetry {
+        declared_target_states: BTreeMap<TargetStatePath, DeclaredTargetState<Prof>>,
+    },
 }
 
-/// Encode an inverted tracking upsert as a deferred write (key, Some(value)).
-fn encode_owner_upsert(
-    target_state_path: &TargetStatePath,
-    component_path: &StablePath,
-) -> Result<(Vec<u8>, Vec<u8>)> {
-    let key = db_schema::DbEntryKey::TargetState(target_state_path.clone()).encode()?;
-    let value = rmp_serde::to_vec_named(&db_schema::TargetStateOwnerInfo {
-        component_path: component_path.clone(),
-    })?;
-    Ok((key, value))
+/// Write deferred to after `pre_commit` finishes inspecting `tracking_info`.
+///
+/// The two cases mix in one queue because both arise during the ownership
+/// preemption flow: when a target state moves from component A to B, we
+/// need to (a) rewrite A's tracking info with the entry removed, and (b)
+/// point the inverted index at B. Both writes must happen after the
+/// borrowed `tracking_info` in `pre_commit` is dropped — hence "deferred".
+enum DeferredWrite {
+    /// Pre-serialized tracking info. Stored as bytes because the typed
+    /// value borrows from the write txn (the read returns `*Info<'txn>`);
+    /// serializing at deferral time releases that borrow so the eventual
+    /// flush can take `&mut WriteTxn` for the write.
+    TrackingInfoRaw { path: StablePath, encoded: Vec<u8> },
+    /// Inverted-index upsert pointing `target_state_path` at `component_path`.
+    OwnerUpsert {
+        target_state_path: TargetStatePath,
+        component_path: StablePath,
+    },
 }
 
-fn delete_target_state_owner(
-    wtxn: &mut heed::RwTxn<'_>,
-    db: &db_schema::Database,
-    target_state_path: &TargetStatePath,
-) -> Result<()> {
-    let key = db_schema::DbEntryKey::TargetState(target_state_path.clone()).encode()?;
-    db.delete(wtxn, key.as_slice())?;
-    Ok(())
+impl DeferredWrite {
+    async fn flush(self, wtxn: &mut WriteTxn<'_>, app_store: &AppStore) -> Result<()> {
+        match self {
+            DeferredWrite::TrackingInfoRaw { path, encoded } => {
+                app_store
+                    .write_tracking_info_raw(wtxn, &path, &encoded)
+                    .await
+            }
+            DeferredWrite::OwnerUpsert {
+                target_state_path,
+                component_path,
+            } => {
+                app_store
+                    .upsert_target_state_owner(wtxn, &target_state_path, &component_path)
+                    .await
+            }
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
-fn pre_commit<Prof: EngineProfile>(
-    wtxn: &mut heed::RwTxn<'_>,
-    db: &db_schema::Database,
+async fn pre_commit<Prof: EngineProfile>(
+    wtxn: &mut WriteTxn<'_>,
+    app_store: &AppStore,
+    process_token: u128,
     comp_mode: ComponentProcessingMode,
     stable_path: &StablePath,
     full_reprocess: bool,
     processor_name: Option<&str>,
-    encoded_target_state_info_key: &[u8],
-    memo_del_key: &[u8],
     contained_target_state_paths: &HashSet<TargetStatePath>,
     target_states_providers: &rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
     declared_target_states: BTreeMap<TargetStatePath, DeclaredTargetState<Prof>>,
-) -> Result<Option<PreCommitOutput<Prof>>> {
+) -> Result<PreCommitOutcome<Prof>> {
     let mut actions_by_sinks = HashMap::<Prof::TargetActionSink, SinkInput<Prof>>::new();
     let mut demote_component_only = false;
     let mut processor_name_for_del: Option<String> = None;
 
     if comp_mode == ComponentProcessingMode::Delete {
-        db.delete(wtxn, memo_del_key)?;
+        app_store.delete_component_memo(wtxn, stable_path).await?;
     }
 
     if let Some((parent_path, key)) = stable_path.as_ref().split_parent() {
         match comp_mode {
             ComponentProcessingMode::Build => {
                 ensure_path_node_type(
-                    db,
+                    app_store,
                     wtxn,
                     parent_path,
                     key,
                     db_schema::StablePathNodeType::Component,
-                )?;
+                )
+                .await?;
             }
             ComponentProcessingMode::Delete => {
-                let node_type = get_path_node_type(db, wtxn, parent_path, key)?;
+                let node_type = get_path_node_type(app_store, wtxn, parent_path, key).await?;
                 match node_type {
                     Some(db_schema::StablePathNodeType::Component) => {
-                        return Ok(None);
+                        return Ok(PreCommitOutcome::Done(None));
                     }
                     Some(db_schema::StablePathNodeType::Directory) => {
                         demote_component_only = true;
@@ -925,14 +823,97 @@ fn pre_commit<Prof: EngineProfile>(
     }
 
     let mut id_reservation = IdReservation::new(&TARGET_ID_KEY);
-    let mut tracking_info: Option<db_schema::StablePathEntryTrackingInfo> = db
-        .get(wtxn, encoded_target_state_info_key)?
-        .map(|data| from_msgpack_slice(data))
+    let tracking_info_bytes = app_store
+        .read_tracking_info_in_txn(wtxn, stable_path)
+        .await?;
+    let mut tracking_info: Option<db_schema::StablePathEntryTrackingInfo<'_>> = tracking_info_bytes
+        .as_deref()
+        .map(from_msgpack_slice)
         .transpose()?;
+
+    // Detection sub-pass — runs before any `TargetStateValue` is consumed by
+    // reconcile, so a `PendingRetry` return leaves the input `declared_target_states`
+    // intact and the surrounding txn write-free for the retry.
+    //
+    // We're only looking for one thing: a *live* in-flight pre_commit from
+    // this process on an old owner whose item we want to preempt. The signal
+    // is `old.tracking.pending_process_token == self AND item.is_pending()`
+    // — the component-level token says the lifecycle is in flight, the
+    // per-item multi-state signal filters to just the items that lifecycle
+    // actually touched. Without the per-item filter, C2 would back off
+    // preempting item I from C1 even when C1's pre_commit only modified
+    // item J — over-conservative.
+    //
+    // Crashed-prior-process and rolled-back states are *not* detected here.
+    // Both leave multi-state items on disk (a token from a dead process, or
+    // no token after `rollback_pending_tokens` ran), and the main pass picks
+    // them up uniformly via `prev_item.is_pending()` → force
+    // `prev_may_be_missing = true` on reconcile.
+    //
+    // Old-owner tracking_info bytes read here are cached and reused by the
+    // Phase 1 preempt branch: deserialize, modify, re-serialize into the
+    // same slot, emit one deferred write per modified owner at the end.
+    let mut old_tracking_cache: HashMap<StablePath, Vec<u8>> = HashMap::new();
+    let mut pending_retry = false;
+    {
+        // Materialize keys into an owned Vec so the iterator doesn't borrow
+        // `declared_target_states` across the awaits below — the map's
+        // values (`TargetStateValue`) are `!Sync`, which would otherwise
+        // make the resulting future `!Send`.
+        let declared_paths: Vec<TargetStatePath> = declared_target_states.keys().cloned().collect();
+        for target_state_path in declared_paths {
+            let parent_provider_gen = target_states_providers
+                .get(target_state_path.provider_path())
+                .and_then(|p| p.provider_generation());
+            let lookup_key = TargetStatePathWithProviderId {
+                target_state_path: target_state_path.clone(),
+                provider_id: parent_provider_gen.map(|g| g.provider_id),
+            };
+            if tracking_info
+                .as_ref()
+                .is_some_and(|t| t.target_state_items.contains_key(&lookup_key))
+            {
+                continue;
+            }
+            let Some(owner_info) = app_store
+                .read_target_state_owner_in_txn(wtxn, &target_state_path)
+                .await?
+            else {
+                continue;
+            };
+            if owner_info.component_path == *stable_path {
+                continue;
+            }
+            if !old_tracking_cache.contains_key(&owner_info.component_path) {
+                let Some(old_bytes) = app_store
+                    .read_tracking_info_in_txn(wtxn, &owner_info.component_path)
+                    .await?
+                else {
+                    continue;
+                };
+                old_tracking_cache.insert(owner_info.component_path.clone(), old_bytes);
+            }
+            let cached = &old_tracking_cache[&owner_info.component_path];
+            let old: db_schema::StablePathEntryTrackingInfo<'_> = from_msgpack_slice(cached)?;
+            if old.pending_process_token == Some(process_token) {
+                if let Some(item) = old.target_state_items.get(&lookup_key) {
+                    if item.is_pending() {
+                        pending_retry = true;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    if pending_retry {
+        return Ok(PreCommitOutcome::PendingRetry {
+            declared_target_states,
+        });
+    }
+    let mut modified_old_owners: HashSet<StablePath> = HashSet::new();
     // Deferred DB writes that will be flushed after tracking_info is dropped,
     // since tracking_info borrows from wtxn and prevents mutable DB operations.
-    // Each entry is (encoded_key, optional_encoded_value); None value means delete.
-    let mut deferred_writes: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+    let mut deferred_writes: Vec<DeferredWrite> = Vec::new();
     let previously_exists = tracking_info.is_some();
     if let Some(tracking_info) = &mut tracking_info {
         if let Some(processor_name) = processor_name {
@@ -945,6 +926,17 @@ fn pre_commit<Prof: EngineProfile>(
             processor_name,
         )));
     }
+    // Provider generation updates deferred to after Phase 1 + Phase 2 complete
+    // — `TargetStateProvider::set_provider_generation` is OnceLock-backed and
+    // would error on a hypothetical retry. The detection sub-pass already
+    // returned PendingRetry before any reconcile ran, so by the time we
+    // reach here we're committed to this attempt; collecting and applying at
+    // the end keeps the invariant "set at most once per successful lifecycle"
+    // explicit.
+    let mut deferred_provider_generations: Vec<(
+        TargetStateProvider<Prof>,
+        TargetStateProviderGeneration,
+    )> = Vec::new();
     let curr_version = if let Some(mut tracking_info) = tracking_info {
         let curr_version = tracking_info.version + 1;
         tracking_info.version = curr_version;
@@ -982,22 +974,28 @@ fn pre_commit<Prof: EngineProfile>(
                 Some(existing_item)
             } else {
                 // Insert path: check inverted tracking for ownership preempt.
-                match read_target_state_owner(wtxn, db, &target_state_path)? {
+                // Old-owner bytes were cached by the detection sub-pass; we
+                // deserialize from the cache, remove our target, re-serialize
+                // back into the cache, and flag the owner as modified. One
+                // deferred write per old owner is emitted after Phase 1.
+                match app_store
+                    .read_target_state_owner_in_txn(wtxn, &target_state_path)
+                    .await?
+                {
                     Some(owner_info) if owner_info.component_path != *stable_path => {
-                        let old_owner_key = db_schema::DbEntryKey::StablePath(
-                            owner_info.component_path.clone(),
-                            db_schema::StablePathEntryKey::TrackingInfo,
-                        )
-                        .encode()?;
-                        if let Some(data) = db.get(wtxn, old_owner_key.as_slice())? {
-                            let mut old_tracking: db_schema::StablePathEntryTrackingInfo =
-                                from_msgpack_slice(data)?;
+                        let old_owner_path = owner_info.component_path;
+                        if let Some(cached_bytes) = old_tracking_cache.get(&old_owner_path) {
+                            let mut old_tracking: db_schema::StablePathEntryTrackingInfo<'_> =
+                                from_msgpack_slice(cached_bytes)?;
                             let len_before = old_tracking.target_state_items.len();
                             // Look up the entry matching current provider_id.
+                            // `into_owned()` releases the borrow on the cached
+                            // bytes so `prev_item` outlives this scope.
                             let prev_item = old_tracking
                                 .target_state_items
                                 .remove(&lookup_key)
-                                .map(|mut item| {
+                                .map(|item| {
+                                    let mut item = item.into_owned();
                                     // Reset version numbers so the new component's commit
                                     // retention prunes them. The old owner's versions are from
                                     // a different version space and may collide with
@@ -1013,9 +1011,10 @@ fn pre_commit<Prof: EngineProfile>(
                                 .target_state_items
                                 .retain(|k, _| k.target_state_path != target_state_path);
                             if old_tracking.target_state_items.len() < len_before {
-                                // Write back old owner's modified tracking info — deferred.
-                                let old_data = rmp_serde::to_vec_named(&old_tracking)?;
-                                deferred_writes.push((old_owner_key, old_data));
+                                let new_bytes = rmp_serde::to_vec_named(&old_tracking)?;
+                                drop(old_tracking);
+                                old_tracking_cache.insert(old_owner_path.clone(), new_bytes);
+                                modified_old_owners.insert(old_owner_path);
                             }
                             prev_item
                         } else {
@@ -1027,14 +1026,18 @@ fn pre_commit<Prof: EngineProfile>(
             };
 
             // Compute prev_states and prev_may_be_missing uniformly from prev_item.
+            // `prev_item.is_pending()` (multi-state) means the prior lifecycle's
+            // sink_apply / commit didn't finish — could be a crash on a different
+            // process or a `rollback_pending_tokens` after a sink_apply failure
+            // here. In either case the sink may not reflect what's tracked, so
+            // force `prev_may_be_missing = true`.
             let (prev_states, prev_may_be_missing) = if let Some(ref prev_item) = prev_item {
                 let schema_version_mismatch = match parent_provider_gen {
                     Some(pg) => prev_item.provider_schema_version != pg.provider_schema_version,
                     None => false,
                 };
-                let prev_may_be_missing = full_reprocess
-                    || schema_version_mismatch
-                    || prev_item.states.iter().any(|(_, s)| s.is_deleted());
+                let prev_may_be_missing =
+                    full_reprocess || schema_version_mismatch || prev_item.is_pending();
                 let prev_states = prev_item
                     .states
                     .iter()
@@ -1073,7 +1076,7 @@ fn pre_commit<Prof: EngineProfile>(
                     let existing_gen = provider_generation.clone().unwrap_or_default();
                     let new_gen = match recon_output.child_invalidation {
                         Some(ChildInvalidation::Destructive) => {
-                            let new_id = id_reservation.next_id(wtxn, db)?;
+                            let new_id = id_reservation.next_id(wtxn, app_store).await?;
                             TargetStateProviderGeneration {
                                 provider_id: new_id,
                                 provider_schema_version: 0,
@@ -1086,7 +1089,7 @@ fn pre_commit<Prof: EngineProfile>(
                         None => existing_gen,
                     };
                     provider_generation = Some(new_gen.clone());
-                    child_provider.set_provider_generation(new_gen)?;
+                    deferred_provider_generations.push((child_provider.clone(), new_gen));
                 }
 
                 actions_by_sinks
@@ -1139,7 +1142,10 @@ fn pre_commit<Prof: EngineProfile>(
             if let Some(item) = prev_item {
                 // Write inverted tracking for entries new to this component — deferred.
                 if is_new_to_component {
-                    deferred_writes.push(encode_owner_upsert(&target_state_path, stable_path)?);
+                    deferred_writes.push(DeferredWrite::OwnerUpsert {
+                        target_state_path: target_state_path.clone(),
+                        component_path: stable_path.clone(),
+                    });
                 }
                 items_to_insert.push((lookup_key, item));
             }
@@ -1193,6 +1199,7 @@ fn pre_commit<Prof: EngineProfile>(
                 .map(|s_bytes| Prof::TargetStateTrackingRecord::from_bytes(s_bytes))
                 .collect::<Result<Vec<_>>>()?;
 
+            let prev_may_be_missing = prev_may_be_missing || item.is_pending();
             let recon_output = target_states_provider
                 .handler()
                 .ok_or_else(|| {
@@ -1231,27 +1238,57 @@ fn pre_commit<Prof: EngineProfile>(
             tracking_info.target_state_items.insert(path_with_pid, item);
         }
 
+        // Mark the component as in-flight if we queued any sink action; else
+        // clear the slot (no-op if it was already None, but also wipes a stale
+        // token from a prior crashed lifecycle now that the current pre_commit
+        // has rewritten the items). On success this is cleared by
+        // `commit_in_txn`; on sink/commit failure, `rollback_pending_tokens`.
+        tracking_info.pending_process_token = if actions_by_sinks.is_empty() {
+            None
+        } else {
+            Some(process_token)
+        };
+
         let data_bytes = rmp_serde::to_vec_named(&tracking_info)?;
         drop(tracking_info); // Release borrow before mutable operations.
-        db.put(wtxn, encoded_target_state_info_key, data_bytes.as_slice())?;
+        app_store
+            .write_tracking_info_raw(wtxn, stable_path, &data_bytes)
+            .await?;
         Some(curr_version)
     } else {
         None
     };
 
-    // Flush deferred writes now that tracking_info is dropped.
-    for (key, value) in &deferred_writes {
-        db.put(wtxn, key.as_slice(), value.as_slice())?;
+    // Emit one tracking_info writeback per modified old owner. Doing this
+    // after Phase 1 (instead of per-preempt-iteration) collapses N writes
+    // into 1 when multiple declared paths preempt from the same owner.
+    for path in modified_old_owners {
+        let encoded = old_tracking_cache
+            .remove(&path)
+            .ok_or_else(|| internal_error!("modified old owner missing from cache: {}", path))?;
+        deferred_writes.push(DeferredWrite::TrackingInfoRaw { path, encoded });
     }
 
-    id_reservation.commit(wtxn, db)?;
-    Ok(Some(PreCommitOutput {
+    // Flush deferred writes now that tracking_info is dropped.
+    for dw in deferred_writes {
+        dw.flush(wtxn, app_store).await?;
+    }
+
+    // Apply provider-generation updates. Past this point we're committed to
+    // this pre_commit attempt — no further code path can abort with
+    // PendingRetry — so the OnceLock-backed setter is called at most once.
+    for (child_provider, new_gen) in deferred_provider_generations {
+        child_provider.set_provider_generation(new_gen)?;
+    }
+
+    id_reservation.commit(wtxn, app_store).await?;
+    Ok(PreCommitOutcome::Done(Some(PreCommitOutput {
         curr_version,
         previously_exists,
         demote_component_only,
         actions_by_sinks,
         processor_name_for_del,
-    }))
+    })))
 }
 
 pub(crate) struct SubmitOutput<Prof: EngineProfile> {
@@ -1272,7 +1309,8 @@ pub(crate) async fn submit<Prof: EngineProfile>(
         target_states_providers,
         declared_target_states,
         child_path_set,
-        mut finalized_fn_call_memos,
+        fn_memos,
+        contained_target_state_paths,
     ) = match comp_ctx.processing_state() {
         ComponentProcessingAction::Build(build_ctx) => {
             // Extract from MutexGuard in a block so the guard is dropped before `.await`.
@@ -1288,68 +1326,103 @@ pub(crate) async fn submit<Prof: EngineProfile>(
             };
 
             let child_path_set = building_state.child_path_set;
-            let finalized_fn_call_memos =
-                finalize_fn_call_memoization(comp_ctx, building_state.fn_call_memos).await?;
+            let fn_memos = building_state.fn_memos;
+            let contained_target_state_paths = finalize_fn_call_memoization(comp_ctx, &fn_memos)?;
             (
                 &built_target_states_providers
                     .get_or_insert(building_state.target_states.provider_registry)
                     .providers,
                 building_state.target_states.declared_target_states,
                 Some(child_path_set),
-                finalized_fn_call_memos,
+                fn_memos,
+                contained_target_state_paths,
             )
         }
         ComponentProcessingAction::Delete(delete_context) => (
             &delete_context.providers,
             Default::default(),
             None,
-            Default::default(),
+            FnMemoCache::default(),
+            HashSet::new(),
         ),
     };
 
-    let db = comp_ctx.app_ctx().db().clone();
     let comp_mode = comp_ctx.mode();
-    let stable_path = comp_ctx.stable_path().clone();
     let full_reprocess = comp_ctx.full_reprocess();
-    let processor_name_owned: Option<String> = processor_name.map(|s| s.to_owned());
-
-    let target_state_info_key = db_schema::DbEntryKey::StablePath(
-        stable_path.clone(),
-        db_schema::StablePathEntryKey::TrackingInfo,
-    );
-    let encoded_target_state_info_key = target_state_info_key.encode()?;
-    let memo_del_key = db_schema::DbEntryKey::StablePath(
-        stable_path.clone(),
-        db_schema::StablePathEntryKey::ComponentMemoization,
-    )
-    .encode()?;
-    let contained_target_state_paths =
-        std::mem::take(&mut finalized_fn_call_memos.contained_target_state_paths);
+    let process_token = comp_ctx.app_ctx().env().process_token();
 
     let mut pending_fulfillments: Vec<(TargetStateProvider<Prof>, Prof::TargetHdl)> = Vec::new();
-    let target_states_providers_owned = target_states_providers.clone();
 
-    // Reconcile and pre-commit target states
-    let pre_commit_out = comp_ctx
-        .app_ctx()
-        .env()
-        .txn_batcher()
-        .run(move |wtxn| {
-            pre_commit(
-                wtxn,
-                &db,
-                comp_mode,
-                &stable_path,
-                full_reprocess,
-                processor_name_owned.as_deref(),
-                &encoded_target_state_info_key,
-                &memo_del_key,
-                &contained_target_state_paths,
-                &target_states_providers_owned,
-                declared_target_states,
-            )
-        })
-        .await?;
+    // Reconcile and pre-commit target states.
+    //
+    // Retry loop: on `PendingRetry` (concurrent pre_commit elsewhere in this
+    // process holds a live token on a preempt-target path) we back off and
+    // re-run pre_commit. The detection sub-pass returns the unconsumed
+    // `declared_target_states` back to us, and pre_commit's txn made no writes
+    // on the PendingRetry path, so the retry is clean.
+    //
+    // `contained_target_state_paths` is wrapped in `Arc` to avoid full
+    // HashSet rehash per retry (its size is unbounded — one entry per fn-memo
+    // target). The other captures are O(1) clones (Arc-internal or
+    // persistent data structures).
+    let contained_target_state_paths = Arc::new(contained_target_state_paths);
+    let pre_commit_out = {
+        let mut declared_opt = Some(declared_target_states);
+        let mut backoff = std::time::Duration::from_millis(5);
+        const MAX_PENDING_RETRIES: u32 = 8;
+        let mut attempt: u32 = 0;
+        loop {
+            let app_store_iter = comp_ctx.app_ctx().app_store().clone();
+            let stable_path_iter = comp_ctx.stable_path().clone();
+            let target_states_providers_iter = target_states_providers.clone();
+            let contained_iter = Arc::clone(&contained_target_state_paths);
+            let processor_name_iter: Option<String> = processor_name.map(|s| s.to_owned());
+            let declared = declared_opt
+                .take()
+                .expect("declared_opt populated each iter");
+
+            let outcome = comp_ctx
+                .app_ctx()
+                .env()
+                .run_txn(move |wtxn| {
+                    Box::pin(async move {
+                        pre_commit(
+                            wtxn,
+                            &app_store_iter,
+                            process_token,
+                            comp_mode,
+                            &stable_path_iter,
+                            full_reprocess,
+                            processor_name_iter.as_deref(),
+                            &contained_iter,
+                            &target_states_providers_iter,
+                            declared,
+                        )
+                        .await
+                    })
+                })
+                .await?;
+
+            match outcome {
+                PreCommitOutcome::Done(out) => break out,
+                PreCommitOutcome::PendingRetry {
+                    declared_target_states: returned,
+                } => {
+                    attempt += 1;
+                    if attempt >= MAX_PENDING_RETRIES {
+                        client_bail!(
+                            "pre_commit gave up after {} retries waiting for concurrent ownership transfer at {}",
+                            MAX_PENDING_RETRIES,
+                            comp_ctx.stable_path(),
+                        );
+                    }
+                    tokio::time::sleep(backoff).await;
+                    backoff = std::cmp::min(backoff * 2, std::time::Duration::from_millis(200));
+                    declared_opt = Some(returned);
+                }
+            }
+        }
+    };
 
     let Some(pre_commit_out) = pre_commit_out else {
         return Ok(SubmitOutput {
@@ -1365,51 +1438,62 @@ pub(crate) async fn submit<Prof: EngineProfile>(
     let demote_component_only = pre_commit_out.demote_component_only;
     let actions_by_sinks = pre_commit_out.actions_by_sinks;
 
-    // Apply actions and collect child handlers to fulfill.
-    let host_runtime_ctx = comp_ctx.app_ctx().env().host_runtime_ctx();
-    for (sink, input) in actions_by_sinks {
-        let handlers = sink
-            .apply(
-                host_runtime_ctx,
-                Arc::clone(comp_ctx.host_ctx()),
-                input.actions,
-            )
-            .await?;
-        if let Some(child_providers) = input.child_providers {
-            let Some(handlers) = handlers else {
-                client_bail!("expect child providers returned by Sink");
-            };
-            if handlers.len() != child_providers.len() {
-                client_bail!(
-                    "expect child providers returned by Sink to be the same length as the actions ({}), got {}",
-                    child_providers.len(),
-                    handlers.len(),
-                );
-            }
-            for (child_target_state_def, child_provider) in
-                std::iter::zip(handlers, child_providers)
-            {
-                if let Some(child_provider) = child_provider {
-                    if let Some(child_target_state_def) = child_target_state_def {
-                        pending_fulfillments.push((child_provider, child_target_state_def.handler));
-                    } else {
-                        client_bail!("expect child provider returned by Sink to be fulfilled");
+    // Run sink_apply + commit. On any failure between here and a successful
+    // `commit_in_txn`, run rollback to clear `pending_process_token` entries
+    // pre_commit wrote — otherwise subsequent pre_commits in this process see
+    // those tokens as live and back off forever. Rollback is a no-op when
+    // pre_commit didn't write any matching tokens, so we run it
+    // unconditionally on the error path.
+    let result = async {
+        // Apply actions and collect child handlers to fulfill.
+        let host_runtime_ctx = comp_ctx.app_ctx().env().host_runtime_ctx();
+        for (sink, input) in actions_by_sinks {
+            let handlers = sink
+                .apply(
+                    host_runtime_ctx,
+                    Arc::clone(comp_ctx.host_ctx()),
+                    input.actions,
+                )
+                .await?;
+            if let Some(child_providers) = input.child_providers {
+                let Some(handlers) = handlers else {
+                    client_bail!("expect child providers returned by Sink");
+                };
+                if handlers.len() != child_providers.len() {
+                    client_bail!(
+                        "expect child providers returned by Sink to be the same length as the actions ({}), got {}",
+                        child_providers.len(),
+                        handlers.len(),
+                    );
+                }
+                for (child_target_state_def, child_provider) in
+                    std::iter::zip(handlers, child_providers)
+                {
+                    if let Some(child_provider) = child_provider {
+                        if let Some(child_target_state_def) = child_target_state_def {
+                            pending_fulfillments
+                                .push((child_provider, child_target_state_def.handler));
+                        } else {
+                            client_bail!("expect child provider returned by Sink to be fulfilled");
+                        }
                     }
                 }
             }
         }
-    }
 
-    let committer = Committer::new(comp_ctx, &target_states_providers, demote_component_only)?;
-    committer
-        .commit(
-            child_path_set,
-            target_state_info_key,
-            finalized_fn_call_memos.all_memos_fps,
-            finalized_fn_call_memos.memos_without_mounts_to_store,
-            curr_version,
-        )
-        .await?;
+        let committer =
+            Committer::new(comp_ctx, &target_states_providers, demote_component_only)?;
+        committer
+            .commit(child_path_set, fn_memos, curr_version)
+            .await?;
+        Ok::<_, Error>(())
+    }
+    .await;
+
+    if let Err(e) = result {
+        rollback_pending_tokens(comp_ctx, process_token).await;
+        return Err(e);
+    }
 
     // Fulfill child handlers and register their attachment providers.
     // Done after commit so the immutable borrow on providers is released.
@@ -1423,6 +1507,69 @@ pub(crate) async fn submit<Prof: EngineProfile>(
         built_target_states_providers,
         touched_previous_states,
     })
+}
+
+/// Clear `comp_ctx`'s tracking_info `pending_process_token` if it matches
+/// the current process's token. Called when pre_commit succeeded but the
+/// subsequent sink_apply / commit failed: without this, the token pre_commit
+/// wrote would deadlock any future pre_commit in this process that touches
+/// an overlapping path (live-token branch in the detection sub-pass).
+///
+/// Items the failed pre_commit modified retain their multi-state shape on
+/// disk; the next pre_commit's main pass picks them up via
+/// `prev_item.is_pending()` → force `prev_may_be_missing = true`, so the
+/// sink-tracking divergence the failure may have caused gets re-reconciled.
+///
+/// Retried indefinitely with exponential backoff — every failure is logged
+/// but the function does not return until the cleanup succeeds. If the
+/// process exits while this is still retrying, the remaining multi-state
+/// items still flag themselves to the next process via the same
+/// `is_pending()` check.
+async fn rollback_pending_tokens<Prof: EngineProfile>(
+    comp_ctx: &ComponentProcessorContext<Prof>,
+    process_token: u128,
+) {
+    let mut backoff = std::time::Duration::from_millis(10);
+    loop {
+        let app_store = comp_ctx.app_ctx().app_store().clone();
+        let path = comp_ctx.stable_path().clone();
+        let res = comp_ctx
+            .app_ctx()
+            .env()
+            .run_txn(move |wtxn| {
+                Box::pin(async move {
+                    let Some(bytes) = app_store.read_tracking_info_in_txn(wtxn, &path).await?
+                    else {
+                        return Ok(());
+                    };
+                    let encoded = {
+                        let mut tracking_info: db_schema::StablePathEntryTrackingInfo<'_> =
+                            from_msgpack_slice(&bytes)?;
+                        if tracking_info.pending_process_token != Some(process_token) {
+                            return Ok(());
+                        }
+                        tracking_info.pending_process_token = None;
+                        rmp_serde::to_vec_named(&tracking_info)?
+                    };
+                    app_store
+                        .write_tracking_info_raw(wtxn, &path, &encoded)
+                        .await
+                })
+            })
+            .await;
+        match res {
+            Ok(()) => return,
+            Err(e) => {
+                error!(
+                    "Failed to rollback pending tokens for {}: {:?}; will retry",
+                    comp_ctx.stable_path(),
+                    e
+                );
+                tokio::time::sleep(backoff).await;
+                backoff = std::cmp::min(backoff * 2, std::time::Duration::from_secs(5));
+            }
+        }
+    }
 }
 
 #[instrument(name = "post_submit_after_ready", skip_all)]
@@ -1439,11 +1586,6 @@ pub(crate) async fn post_submit_for_build<Prof: EngineProfile>(
     };
 
     // Serialize outside the closure (no transaction needed for serialization).
-    let key = db_schema::DbEntryKey::StablePath(
-        comp_ctx.stable_path().clone(),
-        db_schema::StablePathEntryKey::ComponentMemoization,
-    )
-    .encode()?;
     let ret_bytes = ret.to_bytes()?;
     let memo_states_serialized = serialize_memo_values::<Prof>(&memo_states.positional)?;
     let context_memo_states_serialized =
@@ -1457,14 +1599,17 @@ pub(crate) async fn post_submit_for_build<Prof: EngineProfile>(
     };
     let encoded = rmp_serde::to_vec_named(&memo_info)?;
 
-    let db = comp_ctx.app_ctx().db().clone();
+    let app_store = comp_ctx.app_ctx().app_store().clone();
+    let path = comp_ctx.stable_path().clone();
     comp_ctx
         .app_ctx()
         .env()
-        .txn_batcher()
-        .run(move |wtxn| {
-            db.put(wtxn, key.as_slice(), encoded.as_slice())?;
-            Ok(())
+        .run_txn(move |wtxn| {
+            Box::pin(async move {
+                app_store
+                    .write_component_memo_raw(wtxn, &path, &encoded)
+                    .await
+            })
         })
         .await
 }
@@ -1475,158 +1620,108 @@ pub(crate) async fn cleanup_tombstone<Prof: EngineProfile>(
     let Some(parent) = comp_ctx.component().parent() else {
         return Ok(());
     };
-    let owner_path = parent.stable_path();
-    let relative_path = comp_ctx
+    let owner_path: StablePath = parent.stable_path().clone();
+    let relative_path: StablePath = comp_ctx
         .stable_path()
         .as_ref()
-        .strip_parent(owner_path.as_ref())?;
-    let tombstone_key = db_schema::DbEntryKey::StablePath(
-        owner_path.clone(),
-        db_schema::StablePathEntryKey::ChildComponentTombstone(relative_path.into()),
-    );
-    let encoded_tombstone_key = tombstone_key.encode()?;
-
-    let db = comp_ctx.app_ctx().db().clone();
+        .strip_parent(owner_path.as_ref())?
+        .into();
+    let app_store = comp_ctx.app_ctx().app_store().clone();
     comp_ctx
         .app_ctx()
         .env()
-        .txn_batcher()
-        .run(move |wtxn| {
-            db.delete(wtxn, encoded_tombstone_key.as_ref())?;
-            Ok(())
+        .run_txn(move |wtxn| {
+            Box::pin(async move {
+                app_store
+                    .delete_tombstone(wtxn, &owner_path, &relative_path)
+                    .await
+            })
         })
         .await
 }
 
-fn ensure_path_node_type(
-    db: &db_schema::Database,
-    wtxn: &mut RwTxn<'_>,
+pub(crate) async fn ensure_path_node_type(
+    app_store: &AppStore,
+    wtxn: &mut WriteTxn<'_>,
     parent_path: StablePathRef<'_>,
     key: &StableKey,
     target_node_type: db_schema::StablePathNodeType,
 ) -> Result<()> {
-    let db_key = db_schema::DbEntryKey::StablePath(
-        parent_path.into(),
-        db_schema::StablePathEntryKey::ChildExistence(key.clone()),
-    );
-    let encoded_db_key = db_key.encode()?;
-
-    let existing_node_type = get_path_node_type_with_raw_key(db, wtxn, encoded_db_key.as_slice())?;
-    match (existing_node_type, target_node_type) {
-        (None, _)
-        | (
-            Some(db_schema::StablePathNodeType::Directory),
-            db_schema::StablePathNodeType::Component,
-        ) => {
-            let encoded_db_value = rmp_serde::to_vec_named(&db_schema::ChildExistenceInfo {
-                node_type: target_node_type,
-            })?;
-            db.put(wtxn, encoded_db_key.as_slice(), encoded_db_value.as_slice())?;
-        }
-        _ => {
-            // No-op for all other cases
-        }
-    }
-    if existing_node_type.is_none()
-        && let Some((parent, key)) = parent_path.split_parent()
-    {
-        return ensure_path_node_type(
-            db,
-            wtxn,
-            parent,
-            key,
-            db_schema::StablePathNodeType::Directory,
-        );
-    }
-    Ok(())
+    app_store
+        .ensure_path_node_type(wtxn, parent_path, key, target_node_type)
+        .await
 }
 
-fn get_path_node_type(
-    db: &db_schema::Database,
-    rtxn: &RoTxn<'_>,
+async fn get_path_node_type(
+    app_store: &AppStore,
+    wtxn: &mut WriteTxn<'_>,
     parent_path: StablePathRef<'_>,
     key: &StableKey,
 ) -> Result<Option<db_schema::StablePathNodeType>> {
-    let encoded_db_key = db_schema::DbEntryKey::StablePath(
-        parent_path.into(),
-        db_schema::StablePathEntryKey::ChildExistence(key.clone()),
-    )
-    .encode()?;
-    get_path_node_type_with_raw_key(db, rtxn, encoded_db_key.as_slice())
+    app_store
+        .read_path_node_type_in_txn(wtxn, parent_path, key)
+        .await
 }
 
-fn get_path_node_type_with_raw_key(
-    db: &db_schema::Database,
-    rtxn: &RoTxn<'_>,
-    raw_key: &[u8],
-) -> Result<Option<db_schema::StablePathNodeType>> {
-    let db_value = db.get(rtxn, raw_key)?;
-    let Some(db_value) = db_value else {
-        return Ok(None);
-    };
-    let child_existence_info: db_schema::ChildExistenceInfo = from_msgpack_slice(db_value)?;
-    Ok(Some(child_existence_info.node_type))
-}
-
-#[derive(Default)]
-struct FinalizedFnCallMemoization<Prof: EngineProfile> {
-    memos_without_mounts_to_store: Vec<(Fingerprint, FnCallMemo<Prof>)>,
-    // Fingerprints of all memos, including dependencies that is not populated in the current processing.
-    all_memos_fps: HashSet<Fingerprint>,
-    // Target state paths covered by memos but not explicitly declared in the current run, because of contained by memos that already stored, including dependency memos of already stored ones.
-    // We collect them to avoid GC of these target states.
-    contained_target_state_paths: HashSet<TargetStatePath>,
-}
-
-async fn finalize_fn_call_memoization<Prof: EngineProfile>(
+/// Walk every entry in the function-memo cache and produce the set of
+/// target-state paths protected from GC because they are referenced
+/// (directly or transitively) by an already-stored memo.
+///
+/// All reads are in-memory; the cache was eagerly prefetched at the start
+/// of build mode. Untouched entries remain in `Stored(_)` state and get
+/// deleted at flush time; entries that are reachable as transitive deps
+/// of an already-stored memo are decoded in place so flush keeps them.
+fn finalize_fn_call_memoization<Prof: EngineProfile>(
     comp_ctx: &ComponentProcessorContext<Prof>,
-    fn_call_memos: HashMap<Fingerprint, Arc<tokio::sync::RwLock<FnCallMemoEntry<Prof>>>>,
-) -> Result<FinalizedFnCallMemoization<Prof>> {
-    let mut result = FinalizedFnCallMemoization::default();
+    cache: &FnMemoCache<Prof>,
+) -> Result<HashSet<TargetStatePath>> {
+    let env = comp_ctx.app_ctx().env();
+    let mut contained_target_state_paths: HashSet<TargetStatePath> = HashSet::new();
+    let mut visited: HashSet<Fingerprint> = HashSet::new();
+    let mut deps_to_walk: VecDeque<Fingerprint> = VecDeque::new();
 
-    let mut deps_to_process: VecDeque<Fingerprint> = VecDeque::new();
-
-    // Extract memos from the in-memory map.
-    for (fp, memo_lock) in fn_call_memos.iter() {
-        let mut guard = memo_lock
-            .try_write()
+    // First pass: every Ready(Some) entry with `already_stored=true`
+    // contributes its target states and seeds the dep walk. `already_stored=false`
+    // entries were just executed this run; their target states are in the
+    // regular declared_target_states pipeline, not "contained".
+    for (fp, lock) in cache.iter() {
+        let guard = lock
+            .try_read()
             .map_err(|_| internal_error!("fn call memo entry is locked during finalize"))?;
-        let FnCallMemoEntry::Ready(Some(memo)) = std::mem::take(&mut *guard) else {
+        if let FnCallMemoEntry::Ready(Some(memo)) = &*guard {
+            if memo.already_stored {
+                visited.insert(*fp);
+                contained_target_state_paths.extend(memo.target_state_paths.iter().cloned());
+                for dep_fp in memo.dependency_memo_entries.iter() {
+                    if visited.insert(*dep_fp) {
+                        deps_to_walk.push_back(*dep_fp);
+                    }
+                }
+            }
+        }
+    }
+
+    // Transitive dep walk: decode-on-access `Stored` entries so flush keeps
+    // them, and collect their target states. Entries already `Ready` skip
+    // straight to the field read.
+    while let Some(fp) = deps_to_walk.pop_front() {
+        let Some(lock) = cache.get(fp) else {
             continue;
         };
-
-        result.all_memos_fps.insert(*fp);
-
-        if memo.already_stored {
-            result
-                .contained_target_state_paths
-                .extend(memo.target_state_paths.into_iter());
-            deps_to_process.extend(memo.dependency_memo_entries.into_iter());
-        } else {
-            result.memos_without_mounts_to_store.push((*fp, memo));
+        let mut guard = lock
+            .try_write()
+            .map_err(|_| internal_error!("fn call memo entry is locked during finalize"))?;
+        if matches!(&*guard, FnCallMemoEntry::Stored(_)) {
+            decode_stored_entry::<Prof>(&mut guard, env)?;
         }
-        // For non-stored memos, their dependencies were already resolved in this run,
-        // so they exist in `fn_call_memos` and will be visited by the outer loop.
-    }
-
-    // Transitively expand deps of already-stored memos (read from DB).
-    // Collect their target_state_paths so those target states are not GC'd.
-    // Use a single read transaction for all DB reads.
-    if !deps_to_process.is_empty() {
-        let rtxn = comp_ctx.app_ctx().env().read_txn().await?;
-        let db = comp_ctx.app_ctx().db();
-        while let Some(fp) = deps_to_process.pop_front() {
-            if !result.all_memos_fps.insert(fp) {
-                continue;
+        if let FnCallMemoEntry::Ready(Some(memo)) = &*guard {
+            contained_target_state_paths.extend(memo.target_state_paths.iter().cloned());
+            for dep_fp in memo.dependency_memo_entries.iter() {
+                if visited.insert(*dep_fp) {
+                    deps_to_walk.push_back(*dep_fp);
+                }
             }
-            let Some(memo) = read_fn_call_memo_with_txn(&rtxn, db, comp_ctx, fp)? else {
-                continue;
-            };
-            result
-                .contained_target_state_paths
-                .extend(memo.target_state_paths.into_iter());
-            deps_to_process.extend(memo.dependency_memo_entries.into_iter());
         }
     }
-    Ok(result)
+    Ok(contained_target_state_paths)
 }

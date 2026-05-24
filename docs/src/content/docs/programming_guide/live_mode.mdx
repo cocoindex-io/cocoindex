@@ -44,7 +44,7 @@ Without `live=True` on the app, the app runs in catch-up mode — everything com
 
 Enabling live mode keeps the app running, but something in the component tree needs to actually watch for changes. That something is a [**LiveComponent**](../advanced_topics/live_component) — a component with a long-running `process_live()` method that delivers incremental updates.
 
-You rarely need to write a `LiveComponent` manually. The most common pattern is:
+You rarely need to write a `LiveComponent` manually. The two most common patterns are:
 
 ### Sources with `LiveMapView` or `LiveMapFeed`
 
@@ -64,6 +64,34 @@ When `mount_each()` receives either, it automatically creates a `LiveComponent` 
 CocoIndex handles change detection, memoization, and target state reconciliation the same way as in catch-up mode.
 
 Without live support on the source, `mount_each()` falls back to catch-up behavior — a one-time iteration over items and that's it.
+
+### Periodic refresh with `coco.auto_refresh`
+
+When the source isn't change-aware but you still want fresh data — say, polling a REST endpoint or re-reading a database table that doesn't emit change events — wrap your processor function in [`coco.auto_refresh`](../advanced_topics/live_component#example-periodic-refresh-with-cocoauto_refresh). It runs your function once, signals readiness, then re-runs it on a fixed delay:
+
+```python
+import datetime
+import cocoindex as coco
+
+async def sync_users(db, target) -> None:
+    rows = await db.fetch_all_users()
+    for row in rows:
+        target.declare_row(row=UserRow(...))
+
+@coco.fn
+async def app_main(db, target) -> None:
+    await coco.mount(
+        coco.auto_refresh(sync_users, interval=datetime.timedelta(minutes=5)),
+        db, target,
+    )
+
+app = coco.App(coco.AppConfig(name="UserSync"), app_main, db=..., target=...)
+app.update_blocking(live=True)
+```
+
+**Catch-up compatibility:** in catch-up mode (the default), `auto_refresh` runs `sync_users` once and exits — observationally identical to mounting `sync_users` directly. The interval is ignored. Same pipeline, choose catch-up or live at run time.
+
+**Handling deletes:** each cycle's declarations are reconciled against the previous run. If a row disappears from the source table between polls, `sync_users` simply doesn't declare it that cycle — CocoIndex automatically deletes the corresponding target. You don't need to track deletions yourself.
 
 ## Examples
 
@@ -87,7 +115,7 @@ app.update_blocking(live=True)
 
 **Catch-up compatibility:** `LiveMapView` sources also work without `live=True` — they do the initial full scan and exit cleanly. You can write your pipeline once and choose catch-up or live at run time.
 
-For a complete working example, see [`files_transform`](https://github.com/cocoindex-io/cocoindex/tree/v1/examples/files_transform).
+For a complete working example, see [`files_transform`](https://github.com/cocoindex-io/cocoindex/tree/main/examples/files_transform).
 
 ### `kafka` — consuming a topic with `LiveMapFeed`
 
@@ -117,6 +145,7 @@ The abstractions behind live mode, from most general to most specific:
 
 - **[LiveComponent](../advanced_topics/live_component)** — the underlying protocol for components that react to changes incrementally. Most flexible — full control over the lifecycle.
 - **[LiveMapFeed / LiveMapView](../advanced_topics/live_component#livemapfeed-and-livemapview)** — represents a changing collection of keyed items. `mount_each()` uses it to construct a `LiveComponent` automatically. Connector authors implement this to add live support.
+- **[`coco.auto_refresh`](../advanced_topics/live_component#example-periodic-refresh-with-cocoauto_refresh)** — wraps a regular processor function as a `LiveComponent` that re-runs on a fixed interval. Use when there's no change-event source.
 - **Source connectors** — provide `LiveMapView` (e.g., [`localfs`](../connectors/localfs)) or `LiveMapFeed` (e.g., [`kafka`](../connectors/kafka)) from their source APIs. Users just pass the result to `mount_each()`.
 
 For custom change feeds, fine-grained lifecycle control, or implementing live map protocols on your own connector, see [Live Components](../advanced_topics/live_component).
