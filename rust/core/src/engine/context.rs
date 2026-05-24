@@ -588,9 +588,7 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         }
         let app_store = self.app_ctx().app_store();
         let path = self.stable_path();
-        let mut rtxn = self.app_ctx().env().read_txn().await?;
-        let rows = app_store.list_fn_memos(&mut rtxn, path).await?;
-        drop(rtxn);
+        let rows = app_store.list_fn_memos(path).await?;
         self.update_building_state(|s| {
             s.fn_memos.populate(rows);
             Ok(())

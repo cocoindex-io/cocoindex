@@ -2,7 +2,7 @@ use crate::{
     engine::profile::EngineProfile,
     engine::target_state::TargetStateProviderRegistry,
     prelude::*,
-    state_store::{AppStore, ReadTxn, Storage, StorageSettings, WriteTxn},
+    state_store::{AppStore, Storage, StorageSettings, WriteTxn},
 };
 
 use cocoindex_utils::fingerprint::Fingerprint;
@@ -65,12 +65,6 @@ impl<Prof: EngineProfile> Environment<Prof> {
 
     pub fn storage(&self) -> &Storage {
         &self.inner.storage
-    }
-
-    /// Open a read transaction. Delegates to [`Storage::read_txn`] which
-    /// handles transient and stale-reader retry.
-    pub async fn read_txn(&self) -> Result<ReadTxn<'_>> {
-        self.inner.storage.read_txn().await
     }
 
     /// Run a batched write transaction. Delegates to [`Storage::run_txn`].

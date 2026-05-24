@@ -149,7 +149,7 @@ impl IdReservation {
             Some(n) => n,
             slot @ None => {
                 let current = app_store
-                    .peek_id_sequence(wtxn, self.key)
+                    .peek_id_sequence_in_txn(wtxn, self.key)
                     .await?
                     .unwrap_or(1);
                 slot.insert(current)

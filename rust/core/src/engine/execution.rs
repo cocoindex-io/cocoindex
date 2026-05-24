@@ -22,7 +22,7 @@ use crate::state::stable_path_set::{ChildStablePathSet, StablePathSet};
 use crate::state::target_state_path::{
     TargetStatePath, TargetStatePathWithProviderId, TargetStateProviderGeneration,
 };
-use crate::state_store::{AnyTxn, AppStore, WriteTxn};
+use crate::state_store::{AppStore, WriteTxn};
 use cocoindex_utils::deser::from_msgpack_slice;
 use cocoindex_utils::fingerprint::Fingerprint;
 
@@ -88,8 +88,7 @@ pub(crate) async fn use_or_invalidate_component_memoization<Prof: EngineProfile>
     let app_store = comp_ctx.app_ctx().app_store();
     let path = comp_ctx.stable_path();
     {
-        let mut rtxn = comp_ctx.app_ctx().env().read_txn().await?;
-        let Some(memo_bytes) = app_store.read_component_memo(&mut rtxn, path).await? else {
+        let Some(memo_bytes) = app_store.read_component_memo(path).await? else {
             return Ok(None);
         };
         let memo_info: db_schema::ComponentMemoizationInfo<'_> = from_msgpack_slice(&memo_bytes)?;
@@ -173,7 +172,8 @@ pub(crate) async fn update_component_memo_states<Prof: EngineProfile>(
         .run_txn(move |wtxn| {
             Box::pin(async move {
                 let encoded = {
-                    let Some(existing_bytes) = app_store.read_component_memo(wtxn, &path).await?
+                    let Some(existing_bytes) =
+                        app_store.read_component_memo_in_txn(wtxn, &path).await?
                     else {
                         return Ok(());
                     };
@@ -331,7 +331,7 @@ impl<Prof: EngineProfile> Committer<Prof> {
                     .ok_or_else(|| internal_error!("curr_version is required for Build mode"))?;
                 let tracking_info_bytes = self
                     .app_store
-                    .read_tracking_info(&mut *wtxn, &self.component_path)
+                    .read_tracking_info_in_txn(&mut *wtxn, &self.component_path)
                     .await?
                     .ok_or_else(|| internal_error!("tracking info not found for commit"))?;
                 let mut tracking_info: db_schema::StablePathEntryTrackingInfo<'_> =
@@ -462,7 +462,7 @@ impl<Prof: EngineProfile> Committer<Prof> {
                 .flat_map(|set| set.children.into_iter());
             let existing_children = self
                 .app_store
-                .list_child_existence(&mut *wtxn, &path_info.path)
+                .list_child_existence_in_txn(&mut *wtxn, &path_info.path)
                 .await?;
             let mut existing_iter = existing_children.into_iter();
 
@@ -604,20 +604,9 @@ impl<Prof: EngineProfile> Committer<Prof> {
         // The `Arc` makes cloning cheap regardless of how many
         // descendants we spawn.
         let cascaded_on_error = self.component_ctx.processing_action_on_error();
-        // Hold the read txn only for as long as it takes to read tombstones,
-        // then drop it before spawning + awaiting child delete tasks. Each
-        // recursively-spawned child delete opens its own read txn, so any
-        // backend whose `ReadTxn` pins a shared resource (e.g. a connection
-        // from a fixed-size pool) would otherwise hit a fanout-driven
-        // deadlock: every connection held by a parent waiting for a child
-        // that can't acquire one. LMDB-only builds don't suffer this, but
-        // the lifetime discipline is correct either way.
-        let tombstones = {
-            let mut rtxn = self.component_ctx.app_ctx().env().read_txn().await?;
-            self.app_store
-                .list_tombstones(&mut rtxn, &self.component_path)
-                .await?
-        };
+        // Standalone snapshot read — `list_tombstones` opens its own
+        // fresh `RoTxn` internally.
+        let tombstones = self.app_store.list_tombstones(&self.component_path).await?;
         let mut handles = Vec::with_capacity(tombstones.len());
         for relative_path in tombstones {
             let stable_path = self.component_path.concat(relative_path.as_ref());
@@ -834,7 +823,9 @@ async fn pre_commit<Prof: EngineProfile>(
     }
 
     let mut id_reservation = IdReservation::new(&TARGET_ID_KEY);
-    let tracking_info_bytes = app_store.read_tracking_info(wtxn, stable_path).await?;
+    let tracking_info_bytes = app_store
+        .read_tracking_info_in_txn(wtxn, stable_path)
+        .await?;
     let mut tracking_info: Option<db_schema::StablePathEntryTrackingInfo<'_>> = tracking_info_bytes
         .as_deref()
         .map(from_msgpack_slice)
@@ -885,7 +876,7 @@ async fn pre_commit<Prof: EngineProfile>(
                 continue;
             }
             let Some(owner_info) = app_store
-                .read_target_state_owner(wtxn, &target_state_path)
+                .read_target_state_owner_in_txn(wtxn, &target_state_path)
                 .await?
             else {
                 continue;
@@ -895,7 +886,7 @@ async fn pre_commit<Prof: EngineProfile>(
             }
             if !old_tracking_cache.contains_key(&owner_info.component_path) {
                 let Some(old_bytes) = app_store
-                    .read_tracking_info(wtxn, &owner_info.component_path)
+                    .read_tracking_info_in_txn(wtxn, &owner_info.component_path)
                     .await?
                 else {
                     continue;
@@ -988,7 +979,7 @@ async fn pre_commit<Prof: EngineProfile>(
                 // back into the cache, and flag the owner as modified. One
                 // deferred write per old owner is emitted after Phase 1.
                 match app_store
-                    .read_target_state_owner(wtxn, &target_state_path)
+                    .read_target_state_owner_in_txn(wtxn, &target_state_path)
                     .await?
                 {
                     Some(owner_info) if owner_info.component_path != *stable_path => {
@@ -1547,7 +1538,8 @@ async fn rollback_pending_tokens<Prof: EngineProfile>(
             .env()
             .run_txn(move |wtxn| {
                 Box::pin(async move {
-                    let Some(bytes) = app_store.read_tracking_info(wtxn, &path).await? else {
+                    let Some(bytes) = app_store.read_tracking_info_in_txn(wtxn, &path).await?
+                    else {
                         return Ok(());
                     };
                     let encoded = {
@@ -1660,13 +1652,15 @@ pub(crate) async fn ensure_path_node_type(
         .await
 }
 
-async fn get_path_node_type<T: AnyTxn>(
+async fn get_path_node_type(
     app_store: &AppStore,
-    rtxn: &mut T,
+    wtxn: &mut WriteTxn<'_>,
     parent_path: StablePathRef<'_>,
     key: &StableKey,
 ) -> Result<Option<db_schema::StablePathNodeType>> {
-    app_store.read_path_node_type(rtxn, parent_path, key).await
+    app_store
+        .read_path_node_type_in_txn(wtxn, parent_path, key)
+        .await
 }
 
 /// Walk every entry in the function-memo cache and produce the set of

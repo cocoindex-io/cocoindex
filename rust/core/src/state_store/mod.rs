@@ -14,4 +14,4 @@ mod txn;
 
 pub use app_store::AppStore;
 pub use storage::{Storage, StorageSettings};
-pub use txn::{AnyTxn, ReadTxn, WriteTxn};
+pub use txn::WriteTxn;
