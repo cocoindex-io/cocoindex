@@ -9,6 +9,7 @@ import pytest
 
 try:
     import pyarrow as pa  # type: ignore
+    from cocoindex.connectorkits import target
     from cocoindex.connectors import lancedb
     from cocoindex.connectors.lancedb import _target
 
@@ -150,7 +151,7 @@ async def test_table_handler_schedules_initial_optimize() -> None:
         key=_target._TableKey(db_key="test_db", table_name="test_table"),
         spec=_target._TableSpec(
             table_schema=_make_table_schema(),
-            managed_by=_target.target.ManagedBy.USER,
+            managed_by=target.ManagedBy.USER,
             num_transactions_before_optimize=50,
         ),
         main_action=None,
