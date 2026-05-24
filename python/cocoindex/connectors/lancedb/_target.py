@@ -389,17 +389,17 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
             if self._num_applied_mutations >= self._num_transactions_before_optimize:
                 self._schedule_optimize_locked(table)
 
-    async def _schedule_optimize(self, table: lancedb.table.AsyncTable) -> None:
-        """Schedule a background table optimization if one is not already running."""
-        async with self._optimize_lock:
-            self._schedule_optimize_locked(table)
-
     def _schedule_optimize_locked(self, table: lancedb.table.AsyncTable) -> None:
         if self._optimize_task is not None and not self._optimize_task.done():
             return
-        self._optimize_task = asyncio.create_task(self._run_optimize(table))
+        num_mutations_to_consume = self._num_applied_mutations
+        self._optimize_task = asyncio.create_task(
+            self._run_optimize(table, num_mutations_to_consume)
+        )
 
-    async def _run_optimize(self, table: lancedb.table.AsyncTable) -> None:
+    async def _run_optimize(
+        self, table: lancedb.table.AsyncTable, num_mutations_to_consume: int
+    ) -> None:
         succeeded = False
         try:
             await table.optimize()
@@ -413,10 +413,19 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
                 if asyncio.current_task() is self._optimize_task:
                     self._optimize_task = None
                     if succeeded:
-                        self._num_applied_mutations = 0
+                        self._num_applied_mutations = max(
+                            0,
+                            self._num_applied_mutations - num_mutations_to_consume,
+                        )
+                        if (
+                            self._num_applied_mutations
+                            >= self._num_transactions_before_optimize
+                        ):
+                            self._schedule_optimize_locked(table)
                     else:
-                        self._num_applied_mutations = (
-                            self._num_transactions_before_optimize
+                        self._num_applied_mutations = max(
+                            self._num_applied_mutations,
+                            self._num_transactions_before_optimize,
                         )
 
     async def _execute_upserts(
@@ -652,9 +661,6 @@ class _TableHandler(coco.TargetHandler[_TableSpec, _TableTrackingRecord, _RowHan
                         spec.table_schema,
                         if_not_exists=(action.main_action == "upsert"),
                     )
-
-                table = await conn.open_table(key.table_name)
-                await handler._schedule_optimize(table)
 
         return outputs
 
