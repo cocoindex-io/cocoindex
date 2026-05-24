@@ -111,7 +111,7 @@ result = await resolve_entities(
 
 ## Events
 
-Pass `on_resolution` to receive a `ResolutionEvent` for each entity as resolution proceeds — useful for streaming progress logs:
+Pass `on_resolution` to receive a `ResolutionEvent` for each entity. Events are delivered once resolution finishes, in the same order the sequential implementation would have emitted them (PREFERRED: sorted by entity; PINNED: pass-1 existings first then pass-2 non-existings):
 
 ```python
 from cocoindex.ops.entity_resolution import ResolutionEvent
@@ -144,7 +144,7 @@ Each event includes:
 | `resolve_pair` | `PairResolver` | *(required)* | Pair-resolution callback. See [`LlmPairResolver`](#llmpairresolver) for the built-in option. |
 | `is_existing_canonical` | `Callable[[str], bool] \| None` | `None` | Sync predicate for existing-canonical detection. |
 | `existing_policy` | `ExistingCanonicalPolicy` | `PINNED` | How to treat existing canonicals. Ignored when `is_existing_canonical` is `None`. |
-| `on_resolution` | `Callable[[ResolutionEvent], None] \| None` | `None` | Sync callback fired per entity in real time. |
+| `on_resolution` | `Callable[[ResolutionEvent], None] \| None` | `None` | Sync callback fired once per entity after resolution finishes, in deterministic per-policy order. |
 | `max_distance` | `float` | `0.3` | Cosine distance threshold (similarity >= 0.7). |
 | `top_n` | `int` | `5` | Max candidates surfaced per entity. |
 
