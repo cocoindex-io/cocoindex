@@ -45,15 +45,7 @@ def run_cli(
     *args: str, check: bool = True, input: str | None = None
 ) -> subprocess.CompletedProcess[str]:
     """Run a cocoindex CLI command and return the result."""
-    cmd_args = list(args)
-    if (
-        cmd_args
-        and cmd_args[0] == "update"
-        and "-q" not in cmd_args
-        and "--quiet" not in cmd_args
-    ):
-        cmd_args.insert(1, "-q")
-    cmd = ["cocoindex", *cmd_args]
+    cmd = ["cocoindex", *args]
     result = subprocess.run(
         cmd,
         cwd=TEST_DIR,
@@ -260,8 +252,8 @@ class TestMultipleEnvironments:
     @_SKIP_WINDOWS_FREE_THREADED_MULTI_ENV
     def test_update_both_environments(self) -> None:
         """Can update apps in different environments."""
-        run_cli("update", "./multi_env.py:DB1App")
-        run_cli("update", "./multi_env.py:DB2App")
+        run_cli("update", "-q", "./multi_env.py:DB1App")
+        run_cli("update", "-q", "./multi_env.py:DB2App")
 
         # Both output dirs should have files
         assert (TEST_DIR / "out_db1" / "db1.txt").exists()
@@ -270,8 +262,8 @@ class TestMultipleEnvironments:
     @_SKIP_WINDOWS_FREE_THREADED_MULTI_ENV
     def test_drop_in_different_envs(self) -> None:
         """Can drop apps in different environments independently."""
-        run_cli("update", "./multi_env.py:DB1App")
-        run_cli("update", "./multi_env.py:DB2App")
+        run_cli("update", "-q", "./multi_env.py:DB1App")
+        run_cli("update", "-q", "./multi_env.py:DB2App")
 
         # Drop only DB1App
         run_cli("drop", "./multi_env.py:DB1App", "-f")
