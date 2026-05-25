@@ -55,7 +55,7 @@ _OBJECT_EVENT_PREFIX = "com.oraclecloud.objectstorage."
 # Wall-clock tolerance for the event-time cutoff. Events with eventTime older
 # than this window before _LiveOCIItems.watch() starts are dropped — the scan
 # is authoritative for their state. Hardcoded; promote to a kwarg only if a
-# concrete need emerges (per CLAUDE.md "Minimize API surface").
+# concrete need emerges (per AGENTS.md "Minimize API surface").
 _SKEW_TOLERANCE = timedelta(seconds=5)
 
 
