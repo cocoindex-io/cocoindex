@@ -135,7 +135,9 @@ pub(crate) async fn use_or_invalidate_component_memoization<Prof: EngineProfile>
         comp_ctx
             .app_ctx()
             .env()
-            .run_txn(move |wtxn| {
+            .run_txn_with_retry(move |wtxn| {
+                let app_store = app_store.clone();
+                let path = path.clone();
                 Box::pin(async move { app_store.delete_component_memo(wtxn, &path).await })
             })
             .await?;
@@ -166,6 +168,13 @@ pub(crate) async fn update_component_memo_states<Prof: EngineProfile>(
     // transaction. The deserialized memo_info borrows from wtxn, so we
     // serialize the modified struct to bytes (releasing the borrow) before
     // writing back.
+    //
+    // No auto-retry on 40001 here: the closure consumes non-Clone
+    // serialized state vectors. This is a rare path (only invoked when
+    // memo state validation hits "can_reuse=true but states changed"),
+    // so the lack of retry isn't a hot-spot. If we ever see 40001 here
+    // under parallel writes, derive Clone on MemoizedValue and switch
+    // to `run_txn_with_retry`.
     comp_ctx
         .app_ctx()
         .env()
@@ -717,6 +726,13 @@ struct PreCommitOutput<Prof: EngineProfile> {
     actions_by_sinks: HashMap<Prof::TargetActionSink, SinkInput<Prof>>,
     /// Name of the processor to be deleted; caller passes it to `collect_processor_name_name_for_del`.
     processor_name_for_del: Option<String>,
+    /// Provider generations that should be applied (via
+    /// `TargetStateProvider::set_provider_generation`) to child providers
+    /// once the outer `run_txn` has committed. Buffered here — not
+    /// applied inside `pre_commit` — so that a retry of the outer txn
+    /// doesn't trip the `OnceLock` "already set" guard. See submit's
+    /// retry loop and the apply step right after it.
+    deferred_provider_generations: Vec<(TargetStateProvider<Prof>, TargetStateProviderGeneration)>,
 }
 
 /// Either a completed pre_commit (with optional output for skip-cases) or a
@@ -724,14 +740,15 @@ struct PreCommitOutput<Prof: EngineProfile> {
 /// pre_commit's live `pending_process_token` on disk. See
 /// `specs/target_state_ownership_transfer/concurrent_preempt_race_fix.md`.
 ///
-/// `PendingRetry` returns the input `declared_target_states` back to the
-/// caller: the detection sub-pass aborts before any `TargetStateValue` is
-/// consumed, so the map is intact and can be re-passed on the next attempt.
+/// `pre_commit` borrows `declared_target_states` (via a
+/// `tokio::sync::MutexGuard` held by the caller for the duration of one
+/// attempt). On `PendingRetry` the outer loop just re-locks and calls
+/// again — no clones, no consumed state to restore. `TargetStateValue`s
+/// are borrowed directly into `TargetHandler::reconcile` from within
+/// the lock scope; reconcile impls decide whether (and how) to clone.
 enum PreCommitOutcome<Prof: EngineProfile> {
     Done(Option<PreCommitOutput<Prof>>),
-    PendingRetry {
-        declared_target_states: BTreeMap<TargetStatePath, DeclaredTargetState<Prof>>,
-    },
+    PendingRetry,
 }
 
 /// Write deferred to after `pre_commit` finishes inspecting `tracking_info`.
@@ -785,7 +802,9 @@ async fn pre_commit<Prof: EngineProfile>(
     processor_name: Option<&str>,
     contained_target_state_paths: &HashSet<TargetStatePath>,
     target_states_providers: &rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
-    declared_target_states: BTreeMap<TargetStatePath, DeclaredTargetState<Prof>>,
+    declared_target_states: Arc<
+        tokio::sync::Mutex<BTreeMap<TargetStatePath, DeclaredTargetState<Prof>>>,
+    >,
 ) -> Result<PreCommitOutcome<Prof>> {
     let mut actions_by_sinks = HashMap::<Prof::TargetActionSink, SinkInput<Prof>>::new();
     let mut demote_component_only = false;
@@ -795,30 +814,21 @@ async fn pre_commit<Prof: EngineProfile>(
         app_store.delete_component_memo(wtxn, stable_path).await?;
     }
 
-    if let Some((parent_path, key)) = stable_path.as_ref().split_parent() {
-        match comp_mode {
-            ComponentProcessingMode::Build => {
-                ensure_path_node_type(
-                    app_store,
-                    wtxn,
-                    parent_path,
-                    key,
-                    db_schema::StablePathNodeType::Component,
-                )
-                .await?;
+    // Delete-mode node-type check. Build mode's existence bit is written
+    // by `eager_existence_upsert` at the start of execute_once, not here —
+    // see `internal_states.md` §3.1 / §3.3 for the invariant.
+    if comp_mode == ComponentProcessingMode::Delete
+        && let Some((parent_path, key)) = stable_path.as_ref().split_parent()
+    {
+        let node_type = get_path_node_type(app_store, wtxn, parent_path, key).await?;
+        match node_type {
+            Some(db_schema::StablePathNodeType::Component) => {
+                return Ok(PreCommitOutcome::Done(None));
             }
-            ComponentProcessingMode::Delete => {
-                let node_type = get_path_node_type(app_store, wtxn, parent_path, key).await?;
-                match node_type {
-                    Some(db_schema::StablePathNodeType::Component) => {
-                        return Ok(PreCommitOutcome::Done(None));
-                    }
-                    Some(db_schema::StablePathNodeType::Directory) => {
-                        demote_component_only = true;
-                    }
-                    None => {}
-                }
+            Some(db_schema::StablePathNodeType::Directory) => {
+                demote_component_only = true;
             }
+            None => {}
         }
     }
 
@@ -859,8 +869,12 @@ async fn pre_commit<Prof: EngineProfile>(
         // Materialize keys into an owned Vec so the iterator doesn't borrow
         // `declared_target_states` across the awaits below — the map's
         // values (`TargetStateValue`) are `!Sync`, which would otherwise
-        // make the resulting future `!Send`.
-        let declared_paths: Vec<TargetStatePath> = declared_target_states.keys().cloned().collect();
+        // make the resulting future `!Send`. The lock is scoped to this
+        // extract and released before any await runs.
+        let declared_paths: Vec<TargetStatePath> = {
+            let guard = declared_target_states.lock().await;
+            guard.keys().cloned().collect()
+        };
         for target_state_path in declared_paths {
             let parent_provider_gen = target_states_providers
                 .get(target_state_path.provider_path())
@@ -906,9 +920,7 @@ async fn pre_commit<Prof: EngineProfile>(
         }
     }
     if pending_retry {
-        return Ok(PreCommitOutcome::PendingRetry {
-            declared_target_states,
-        });
+        return Ok(PreCommitOutcome::PendingRetry);
     }
     let mut modified_old_owners: HashSet<StablePath> = HashSet::new();
     // Deferred DB writes that will be flushed after tracking_info is dropped,
@@ -951,7 +963,17 @@ async fn pre_commit<Prof: EngineProfile>(
         // Phase 1: Insert + Update — iterate declared target states.
         // For each declared target state, find and remove any existing tracked entry,
         // then reconcile. This unifies the insert and update code paths.
-        for (target_state_path, declared_target_state) in declared_target_states {
+        //
+        // Materialize keys first so the lock isn't held across awaits inside
+        // the loop body. Per-entry extracts re-lock briefly; the reconcile
+        // call itself runs inside that lock and borrows `&decl.value`
+        // directly (no engine-level clone — host-specific reconcile impl
+        // decides whether and how to clone).
+        let declared_paths: Vec<TargetStatePath> = {
+            let guard = declared_target_states.lock().await;
+            guard.keys().cloned().collect()
+        };
+        for target_state_path in declared_paths {
             // Look up existing tracked entry using exact key (provider_id from current providers).
             let parent_provider_gen = target_states_providers
                 .get(target_state_path.provider_path())
@@ -1049,30 +1071,46 @@ async fn pre_commit<Prof: EngineProfile>(
                 (vec![], true)
             };
 
-            let target_state_key_bytes = storekey::encode_vec(&declared_target_state.item_key)
-                .map_err(|e| internal_error!("Failed to encode StableKey: {e}"))?;
-            let recon_output = declared_target_state
-                .provider
-                .handler()
-                .ok_or_else(|| {
-                    internal_error!(
-                        "provider not ready for target state with key {:?}",
-                        declared_target_state.item_key
-                    )
-                })?
-                .reconcile(
-                    declared_target_state.item_key,
-                    Some(declared_target_state.value),
-                    &prev_states,
-                    prev_may_be_missing,
-                )?;
+            // Lock the shared map to run `reconcile` against `&decl.value`,
+            // then extract the post-reconcile data we'll need below
+            // (`target_state_key_bytes`, `recon_output`, `child_provider`).
+            // The guard drops at the end of this scope so subsequent awaits
+            // in this iteration aren't carrying a `!Send` borrow.
+            let (target_state_key_bytes, recon_output, child_provider) = {
+                let guard = declared_target_states.lock().await;
+                let decl = guard.get(&target_state_path).ok_or_else(|| {
+                    internal_error!("declared entry vanished mid-pre_commit: {target_state_path}")
+                })?;
+                let target_state_key_bytes = storekey::encode_vec(&decl.item_key)
+                    .map_err(|e| internal_error!("Failed to encode StableKey: {e}"))?;
+                let recon_output = decl
+                    .provider
+                    .handler()
+                    .ok_or_else(|| {
+                        internal_error!(
+                            "provider not ready for target state with key {:?}",
+                            decl.item_key
+                        )
+                    })?
+                    .reconcile(
+                        decl.item_key.clone(),
+                        Some(&decl.value),
+                        &prev_states,
+                        prev_may_be_missing,
+                    )?;
+                (
+                    target_state_key_bytes,
+                    recon_output,
+                    decl.child_provider.clone(),
+                )
+            };
 
             if let Some(recon_output) = recon_output {
                 let mut provider_generation = prev_item
                     .as_ref()
                     .and_then(|item| item.provider_generation.clone());
 
-                if let Some(child_provider) = &declared_target_state.child_provider {
+                if let Some(child_provider) = &child_provider {
                     let existing_gen = provider_generation.clone().unwrap_or_default();
                     let new_gen = match recon_output.child_invalidation {
                         Some(ChildInvalidation::Destructive) => {
@@ -1095,7 +1133,7 @@ async fn pre_commit<Prof: EngineProfile>(
                 actions_by_sinks
                     .entry(recon_output.sink)
                     .or_default()
-                    .add_action(recon_output.action, declared_target_state.child_provider);
+                    .add_action(recon_output.action, child_provider);
 
                 let new_state_bytes = recon_output
                     .tracking_record
@@ -1274,13 +1312,11 @@ async fn pre_commit<Prof: EngineProfile>(
         dw.flush(wtxn, app_store).await?;
     }
 
-    // Apply provider-generation updates. Past this point we're committed to
-    // this pre_commit attempt — no further code path can abort with
-    // PendingRetry — so the OnceLock-backed setter is called at most once.
-    for (child_provider, new_gen) in deferred_provider_generations {
-        child_provider.set_provider_generation(new_gen)?;
-    }
-
+    // Provider-generation updates are buffered, not applied here. The
+    // caller (submit) applies them once after the outer `run_txn` has
+    // committed successfully — so a retry of `pre_commit` doesn't trip
+    // the `OnceLock` "already set" guard on the second attempt. See the
+    // retry loop's success path.
     id_reservation.commit(wtxn, app_store).await?;
     Ok(PreCommitOutcome::Done(Some(PreCommitOutput {
         curr_version,
@@ -1288,6 +1324,7 @@ async fn pre_commit<Prof: EngineProfile>(
         demote_component_only,
         actions_by_sinks,
         processor_name_for_del,
+        deferred_provider_generations,
     })))
 }
 
@@ -1357,31 +1394,43 @@ pub(crate) async fn submit<Prof: EngineProfile>(
     //
     // Retry loop: on `PendingRetry` (concurrent pre_commit elsewhere in this
     // process holds a live token on a preempt-target path) we back off and
-    // re-run pre_commit. The detection sub-pass returns the unconsumed
-    // `declared_target_states` back to us, and pre_commit's txn made no writes
-    // on the PendingRetry path, so the retry is clean.
+    // re-run pre_commit. On PG SSI 40001 (commit-time SSI conflict) we also
+    // re-run. `pre_commit` borrows the map and only borrows individual
+    // `TargetStateValue`s into `reconcile` — abortive paths pay zero
+    // clones; the host-specific reconcile impl decides whether to clone
+    // into its action.
     //
     // `contained_target_state_paths` is wrapped in `Arc` to avoid full
     // HashSet rehash per retry (its size is unbounded — one entry per fn-memo
     // target). The other captures are O(1) clones (Arc-internal or
     // persistent data structures).
     let contained_target_state_paths = Arc::new(contained_target_state_paths);
+    // `declared_target_states` is shared across retries via
+    // `Arc<tokio::sync::Mutex<…>>`. The mutex is necessary (not just an
+    // `Arc<BTreeMap<…>>`) because for some profiles `TargetStateValue` is
+    // `!Sync` (e.g. Python's `Py<PyAny>`); `tokio::sync::Mutex<T>: Sync`
+    // holds whenever `T: Send`. There's no contention — only the outer
+    // submit task ever locks — so the mutex is purely a `Sync` marker.
+    let declared_target_states = Arc::new(tokio::sync::Mutex::new(declared_target_states));
     let pre_commit_out = {
-        let mut declared_opt = Some(declared_target_states);
-        let mut backoff = std::time::Duration::from_millis(5);
+        // PendingRetry backoff: fixed exponential cap on the
+        // ownership-transfer-in-progress signal (different from 40001 —
+        // bounded because the other side either commits or aborts in
+        // finite time).
+        let mut pending_backoff = std::time::Duration::from_millis(5);
         const MAX_PENDING_RETRIES: u32 = 8;
-        let mut attempt: u32 = 0;
+        let mut pending_attempt: u32 = 0;
+        // 40001 backoff: shared schedule with `Storage::run_txn_with_retry`.
+        let mut pg_backoff = crate::state_store::Pg40001Backoff::new();
         loop {
             let app_store_iter = comp_ctx.app_ctx().app_store().clone();
             let stable_path_iter = comp_ctx.stable_path().clone();
             let target_states_providers_iter = target_states_providers.clone();
             let contained_iter = Arc::clone(&contained_target_state_paths);
             let processor_name_iter: Option<String> = processor_name.map(|s| s.to_owned());
-            let declared = declared_opt
-                .take()
-                .expect("declared_opt populated each iter");
+            let declared_iter = Arc::clone(&declared_target_states);
 
-            let outcome = comp_ctx
+            let result = comp_ctx
                 .app_ctx()
                 .env()
                 .run_txn(move |wtxn| {
@@ -1396,30 +1445,34 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                             processor_name_iter.as_deref(),
                             &contained_iter,
                             &target_states_providers_iter,
-                            declared,
+                            declared_iter,
                         )
                         .await
                     })
                 })
-                .await?;
+                .await;
 
-            match outcome {
-                PreCommitOutcome::Done(out) => break out,
-                PreCommitOutcome::PendingRetry {
-                    declared_target_states: returned,
-                } => {
-                    attempt += 1;
-                    if attempt >= MAX_PENDING_RETRIES {
+            match result {
+                Ok(PreCommitOutcome::Done(out)) => break out,
+                Ok(PreCommitOutcome::PendingRetry) => {
+                    pending_attempt += 1;
+                    if pending_attempt >= MAX_PENDING_RETRIES {
                         client_bail!(
                             "pre_commit gave up after {} retries waiting for concurrent ownership transfer at {}",
                             MAX_PENDING_RETRIES,
                             comp_ctx.stable_path(),
                         );
                     }
-                    tokio::time::sleep(backoff).await;
-                    backoff = std::cmp::min(backoff * 2, std::time::Duration::from_millis(200));
-                    declared_opt = Some(returned);
+                    tokio::time::sleep(pending_backoff).await;
+                    pending_backoff =
+                        std::cmp::min(pending_backoff * 2, std::time::Duration::from_millis(200));
                 }
+                Err(e) if crate::state_store::is_pg_serialization_failure(&e) => {
+                    // Indefinite retry on PG SSI 40001. No re-clone needed —
+                    // `pre_commit` borrows from the shared `Arc<Mutex<…>>`.
+                    pg_backoff.sleep().await;
+                }
+                Err(e) => return Err(e),
             }
         }
     };
@@ -1437,6 +1490,14 @@ pub(crate) async fn submit<Prof: EngineProfile>(
     let touched_previous_states = pre_commit_out.previously_exists;
     let demote_component_only = pre_commit_out.demote_component_only;
     let actions_by_sinks = pre_commit_out.actions_by_sinks;
+
+    // Apply the deferred provider-generation updates now that pre_commit's
+    // run_txn has committed — past this point no retry can roll back.
+    // `set_provider_generation` is `OnceLock::set`, so calling it at most
+    // once per successful submit is the invariant we preserve.
+    for (child_provider, new_gen) in pre_commit_out.deferred_provider_generations {
+        child_provider.set_provider_generation(new_gen)?;
+    }
 
     // Run sink_apply + commit. On any failure between here and a successful
     // `commit_in_txn`, run rollback to clear `pending_process_token` entries
@@ -1604,7 +1665,10 @@ pub(crate) async fn post_submit_for_build<Prof: EngineProfile>(
     comp_ctx
         .app_ctx()
         .env()
-        .run_txn(move |wtxn| {
+        .run_txn_with_retry(move |wtxn| {
+            let app_store = app_store.clone();
+            let path = path.clone();
+            let encoded = encoded.clone();
             Box::pin(async move {
                 app_store
                     .write_component_memo_raw(wtxn, &path, &encoded)
@@ -1630,7 +1694,10 @@ pub(crate) async fn cleanup_tombstone<Prof: EngineProfile>(
     comp_ctx
         .app_ctx()
         .env()
-        .run_txn(move |wtxn| {
+        .run_txn_with_retry(move |wtxn| {
+            let app_store = app_store.clone();
+            let owner_path = owner_path.clone();
+            let relative_path = relative_path.clone();
             Box::pin(async move {
                 app_store
                     .delete_tombstone(wtxn, &owner_path, &relative_path)
@@ -1649,6 +1716,52 @@ pub(crate) async fn ensure_path_node_type(
 ) -> Result<()> {
     app_store
         .ensure_path_node_type(wtxn, parent_path, key, target_node_type)
+        .await
+}
+
+/// Eager existence upsert at the start of Build. Writes the component's own
+/// `ChildExistence(self)` row into its parent and recursively ensures every
+/// ancestor existence bit up to the root, in its own write transaction
+/// (separate from submit/commit). Called once per Build invocation before
+/// the user processor runs.
+///
+/// Maintains the invariant: a component's existence bit (and the full
+/// ancestor chain) must exist in DB before any of its (or its descendants')
+/// tracked state. See `internal_states.md` §3.1 / §3.3.
+///
+/// Routes through `Storage::run_txn` so concurrent eager-upserts coalesce
+/// through the LMDB batcher — opening our own `env.write_txn()` would
+/// bypass the batcher and serialize every eager-upsert through heed's
+/// writer mutex (measured ~30× regression at N=10000 cold).
+pub(crate) async fn eager_existence_upsert<Prof: EngineProfile>(
+    comp_ctx: &ComponentProcessorContext<Prof>,
+) -> Result<()> {
+    let path = comp_ctx.stable_path();
+    if path.is_empty() {
+        return Ok(());
+    }
+    let path = path.clone();
+    let app_store = comp_ctx.app_ctx().app_store().clone();
+    comp_ctx
+        .app_ctx()
+        .env()
+        .run_txn(move |wtxn| {
+            Box::pin(async move {
+                let Some((parent, key)) = path.as_ref().split_parent() else {
+                    return Ok(());
+                };
+                let parent_owned: StablePath = parent.into();
+                let key_owned = key.clone();
+                app_store
+                    .ensure_path_node_type(
+                        wtxn,
+                        parent_owned.as_ref(),
+                        &key_owned,
+                        db_schema::StablePathNodeType::Component,
+                    )
+                    .await
+            })
+        })
         .await
 }
 

@@ -10,8 +10,8 @@ use crate::engine::context::{
     ComponentProcessorContext, MemoStatesPayload,
 };
 use crate::engine::execution::{
-    cleanup_tombstone, post_submit_for_build, submit, update_component_memo_states,
-    use_or_invalidate_component_memoization,
+    cleanup_tombstone, eager_existence_upsert, post_submit_for_build, submit,
+    update_component_memo_states, use_or_invalidate_component_memoization,
 };
 use crate::engine::profile::EngineProfile;
 use crate::engine::stats::ProcessingStats;
@@ -794,6 +794,16 @@ impl<Prof: EngineProfile> Component<Prof> {
                 // with another execution of the same component.
                 let (ret, submit_output, children_outcome) = {
                     let _permit = self.inner.build_semaphore.acquire().await?;
+
+                    // Build mode only: write the component's own existence bit
+                    // (and ancestor chain) into the parent in its own txn,
+                    // before the user processor runs. Maintains the invariant
+                    // that existence ⊇ tracked state and eliminates the
+                    // dual-writer conflict with the parent's commit-time
+                    // existence reconciliation. See `internal_states.md` §3.1.
+                    if processor_context.mode() == ComponentProcessingMode::Build {
+                        eager_existence_upsert(processor_context).await?;
+                    }
 
                     // Eagerly load all function-memo entries for this component
                     // into the per-build cache, so every subsequent fn-call probe
