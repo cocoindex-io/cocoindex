@@ -20,6 +20,7 @@ cocoindex_ops_text = { path = "../ops_text" }
 
 pyo3 = { workspace = true, features = ["uuid", "bytes"] }
 pyo3-async-runtimes = { workspace = true, features = ["tokio-runtime"] }
+numpy = { workspace = true }
 uuid = { workspace = true }
 anyhow = { workspace = true }
 tokio = { workspace = true }
@@ -28,3 +29,4 @@ tracing = { workspace = true }
 bytes = { workspace = true }
 futures = { workspace = true }
 async-trait = { workspace = true }
+turbovec = { workspace = true }

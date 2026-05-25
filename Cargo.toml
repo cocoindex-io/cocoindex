@@ -78,6 +78,7 @@ tracing = { version = "0.1", features = ["log"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 unicase = "2.8.1"
 uuid = { version = "1.18.1", features = ["serde", "v4", "v8"] }
+turbovec = { path = "../turbovec/turbovec" }
 
 [profile.release]
 codegen-units = 1
