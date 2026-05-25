@@ -230,6 +230,40 @@ impl Storage {
             .map_err(|_| internal_error!("Storage::run_txn: output type mismatch"))
     }
 
+    /// Like [`Self::run_txn`], but retries on transient PG SSI
+    /// serialization failures (SQLSTATE `40001`). The `body_factory`
+    /// closure is `Fn` — called once per attempt to produce a fresh
+    /// body. Captures consumed by the body must be cloned inside the
+    /// factory.
+    ///
+    /// For LMDB, this is equivalent to `run_txn`: LMDB's single-writer
+    /// batcher serializes writes and never produces `40001`, so
+    /// [`crate::state_store::is_pg_serialization_failure`] returns
+    /// false and the loop exits after one attempt. The helper exists
+    /// for shape parity with the enterprise edition's Postgres backend.
+    pub async fn run_txn_with_retry<T, F>(&self, body_factory: F) -> Result<T>
+    where
+        T: Send + 'static,
+        F: for<'a, 'env> Fn(&'a mut WriteTxn<'env>) -> BoxFuture<'a, Result<T>>
+            + Send
+            + Sync
+            + 'static,
+    {
+        let factory = std::sync::Arc::new(body_factory);
+        let mut backoff = Pg40001Backoff::new();
+        loop {
+            let f = std::sync::Arc::clone(&factory);
+            let result = self.run_txn(move |wtxn| f(wtxn)).await;
+            match result {
+                Ok(t) => return Ok(t),
+                Err(e) if crate::state_store::is_pg_serialization_failure(&e) => {
+                    backoff.sleep().await;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
     /// Create the per-app sub-database and wrap it in an `AppStore`.
     pub async fn create_app_store(&self, app_name: &str) -> Result<AppStore> {
         let mut wtxn = self.inner.db_env.write_txn()?;
@@ -357,5 +391,59 @@ impl Storage {
             }
         }
         Ok(names)
+    }
+}
+
+/// Full-jitter exponential backoff schedule shared by every PG SSI
+/// 40001 retry loop ([`Storage::run_txn_with_retry`] and submit's own
+/// loop). Each attempt sleeps a uniformly-random duration in
+/// `[0, cap_ms]` where `cap_ms` starts at `INITIAL_BACKOFF_MS` and
+/// doubles per attempt up to `MAX_BACKOFF_MS`.
+///
+/// Without jitter, N concurrent retries land in lockstep and re-create
+/// the same conflict pattern. With a fixed cap (no growth), the
+/// schedule can't absorb persistent contention. The exponential cap
+/// with full jitter is the AWS "Full Jitter" recommendation for this
+/// shape.
+///
+/// In OSS the LMDB backend never returns `40001` (single-writer
+/// batcher), so the helper exists purely for shape parity with the
+/// enterprise edition. Code paths that wire it in are dead under OSS
+/// but live under the PG backend.
+pub struct Pg40001Backoff {
+    cap_ms: u64,
+    attempt: u32,
+}
+
+impl Pg40001Backoff {
+    const INITIAL_BACKOFF_MS: u64 = 10;
+    const MAX_BACKOFF_MS: u64 = 1000;
+
+    pub fn new() -> Self {
+        Self {
+            cap_ms: Self::INITIAL_BACKOFF_MS,
+            attempt: 0,
+        }
+    }
+
+    /// Sleep one attempt's randomized backoff and advance the cap.
+    pub async fn sleep(&mut self) {
+        use rand::Rng;
+        let sleep_ms = rand::rng().random_range(0..=self.cap_ms);
+        self.attempt += 1;
+        tracing::debug!(
+            "PG 40001 retry attempt {} sleeping {}ms (cap {}ms)",
+            self.attempt,
+            sleep_ms,
+            self.cap_ms,
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(sleep_ms)).await;
+        self.cap_ms = (self.cap_ms * 2).min(Self::MAX_BACKOFF_MS);
+    }
+}
+
+impl Default for Pg40001Backoff {
+    fn default() -> Self {
+        Self::new()
     }
 }

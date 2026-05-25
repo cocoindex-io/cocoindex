@@ -595,7 +595,12 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
             self.component
                 .app_ctx()
                 .env()
-                .run_txn(move |wtxn| {
+                .run_txn_with_retry(move |wtxn| {
+                    let app_store = app_store.clone();
+                    let parent_path = parent_path.clone();
+                    let child_key = child_key.clone();
+                    let component_path = component_path.clone();
+                    let relative_child = relative_child.clone();
                     Box::pin(async move {
                         app_store
                             .remove_child_with_tombstone(
@@ -846,7 +851,10 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
             self.component
                 .app_ctx()
                 .env()
-                .run_txn(move |wtxn| {
+                .run_txn_with_retry(move |wtxn| {
+                    let app_store = app_store.clone();
+                    let parent_path = parent_path.clone();
+                    let child_key = child_key.clone();
                     Box::pin(async move {
                         crate::engine::execution::ensure_path_node_type(
                             &app_store,

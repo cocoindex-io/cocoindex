@@ -298,6 +298,7 @@ dependencies = [
  "indexmap 2.14.0",
  "nix",
  "parking_lot",
+ "rand 0.9.4",
  "rmp",
  "rmp-serde",
  "rpds",
