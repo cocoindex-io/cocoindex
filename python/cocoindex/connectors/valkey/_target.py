@@ -237,6 +237,7 @@ _IndexTrackingRecord = statediff.MutualTrackingRecord[_IndexTrackingRecordCore]
 # ---------------------------------------------------------------------------
 
 _SAFE_NAME_RE = re.compile(r"^[a-zA-Z0-9_\-]+$")
+_VECTOR_FIELD_NAME = "vector"
 
 
 def _validate_name(value: str, label: str) -> str:
@@ -356,7 +357,7 @@ class _DocumentHandler(coco.TargetHandler[Document, _DocumentFingerprint]):
 
         # Build hash fields
         fields: dict[str, bytes | str] = {
-            "vector": _vector_to_bytes(desired_state.vector),
+            _VECTOR_FIELD_NAME: _vector_to_bytes(desired_state.vector),
         }
         if desired_state.payload:
             for k, v in desired_state.payload.items():
@@ -510,7 +511,7 @@ class _IndexHandler(
             algo_enum = VectorAlgorithm.FLAT
 
         vector_field = VectorField(
-            name="vector",
+            name=_VECTOR_FIELD_NAME,
             algorithm=algo_enum,
             attributes=attributes,
         )
@@ -529,6 +530,8 @@ class _IndexHandler(
                 all_fields.append(
                     NumericField(name=field_def.name, sortable=field_def.sortable)
                 )
+            else:
+                raise ValueError(f"Unsupported field type: {field_def.type!r}")
 
         prefix = _make_prefix(index_name)
         options = FtCreateOptions(data_type=DataType.HASH, prefixes=[prefix])
@@ -747,15 +750,16 @@ def create_client_config(
     from glide import ServerCredentials
 
     addresses = [NodeAddress(host=host, port=port)]
-    config_kwargs: dict[str, Any] = {}
+    config_kwargs: dict[str, Any] = dict(kwargs)
 
+    # Explicit parameters take precedence over **kwargs to prevent
+    # accidental override of security-sensitive settings.
     if password is not None:
         config_kwargs["credentials"] = ServerCredentials(password=password)
     if use_tls:
         config_kwargs["use_tls"] = True
     if client_name is not None:
         config_kwargs["client_name"] = client_name
-    config_kwargs.update(kwargs)
 
     return GlideClientConfiguration(addresses, **config_kwargs)
 

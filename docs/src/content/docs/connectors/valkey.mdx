@@ -266,7 +266,7 @@ import struct
 
 # Build a KNN query
 query_vec = struct.pack(f"<{len(embedding)}f", *embedding)
-query = f"*=>[KNN 10 @vector $query_vec]"
+query = f"*=>[KNN 10 @vector $query_vec AS score]"
 
 results = await ft.search(
     client,
