@@ -75,6 +75,42 @@ def _decode_vector(blob: bytes, dim: int) -> list[float]:
     return list(struct.unpack(f"<{dim}f", blob))
 
 
+async def _wait_for_index_count(
+    client: Any,
+    index_name: str,
+    expected_count: int,
+    *,
+    timeout: float = 5.0,
+    interval: float = 0.05,
+) -> None:
+    """Poll FT.INFO until the index has the expected document count, or timeout."""
+    import time
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            info = await glide_ft.info(client, index_name)
+            # FT.INFO returns a flat list of key-value pairs.
+            # Look for num_docs or equivalent field.
+            if isinstance(info, list):
+                for i, item in enumerate(info):
+                    key_val = item.decode() if isinstance(item, bytes) else str(item)
+                    if key_val == "num_docs" and i + 1 < len(info):
+                        count_val = info[i + 1]
+                        count = int(
+                            count_val.decode()
+                            if isinstance(count_val, bytes)
+                            else count_val
+                        )
+                        if count >= expected_count:
+                            return
+                        break
+        except Exception:
+            pass
+        await asyncio.sleep(interval)
+    # Fall through — test assertions will catch any real problem
+
+
 # =============================================================================
 # Fixtures
 # =============================================================================
@@ -194,6 +230,40 @@ class TestDocument:
         arr = np.array([1.0, 2.0, 3.0], dtype=np.float32)
         doc = valkey.Document(id="d3", vector=arr)
         assert isinstance(doc.vector, np.ndarray)
+
+
+@requires_glide
+class TestInputValidation:
+    """Tests for input validation on index_name and doc_id."""
+
+    def test_valid_index_name(self) -> None:
+        from cocoindex.connectors.valkey._target import _validate_name
+
+        assert _validate_name("my-index_123", "index_name") == "my-index_123"
+
+    def test_invalid_index_name_with_spaces(self) -> None:
+        from cocoindex.connectors.valkey._target import _validate_name
+
+        with pytest.raises(ValueError, match="index_name must contain only"):
+            _validate_name("my index", "index_name")
+
+    def test_invalid_index_name_with_colon(self) -> None:
+        from cocoindex.connectors.valkey._target import _validate_name
+
+        with pytest.raises(ValueError, match="index_name must contain only"):
+            _validate_name("my:index", "index_name")
+
+    def test_invalid_index_name_with_braces(self) -> None:
+        from cocoindex.connectors.valkey._target import _validate_name
+
+        with pytest.raises(ValueError, match="index_name must contain only"):
+            _validate_name("my{index}", "index_name")
+
+    def test_empty_name_rejected(self) -> None:
+        from cocoindex.connectors.valkey._target import _validate_name
+
+        with pytest.raises(ValueError, match="index_name must contain only"):
+            _validate_name("", "index_name")
 
 
 # =============================================================================
@@ -727,7 +797,7 @@ async def test_text_field_search(valkey_env: _ValkeyEnv) -> None:
         ]
     )
     await app.update()
-    await asyncio.sleep(0.3)  # Allow indexing
+    await _wait_for_index_count(valkey_env.client, index_name, 3)
 
     # Search for "learning" — should match d1 and d2
     result = await glide_ft.search(valkey_env.client, index_name, "@content:learning")
@@ -776,7 +846,7 @@ async def test_tag_field_filter(valkey_env: _ValkeyEnv) -> None:
         ]
     )
     await app.update()
-    await asyncio.sleep(0.3)
+    await _wait_for_index_count(valkey_env.client, index_name, 3)
 
     # Filter by tag — should match d1 and d3
     result = await glide_ft.search(valkey_env.client, index_name, "@category:{sports}")
@@ -830,7 +900,7 @@ async def test_numeric_field_range_filter(valkey_env: _ValkeyEnv) -> None:
         ]
     )
     await app.update()
-    await asyncio.sleep(0.3)
+    await _wait_for_index_count(valkey_env.client, index_name, 3)
 
     # Range: price >= 10 AND price <= 100
     result = await glide_ft.search(valkey_env.client, index_name, "@price:[10 100]")
@@ -893,7 +963,7 @@ async def test_combined_field_filters(valkey_env: _ValkeyEnv) -> None:
         ]
     )
     await app.update()
-    await asyncio.sleep(0.3)
+    await _wait_for_index_count(valkey_env.client, index_name, 3)
 
     # electronics AND price >= 200
     result = await glide_ft.search(
@@ -937,7 +1007,7 @@ async def test_vector_knn_search(valkey_env: _ValkeyEnv) -> None:
         ]
     )
     await app.update()
-    await asyncio.sleep(0.3)
+    await _wait_for_index_count(valkey_env.client, index_name, 3)
 
     # KNN search for vector closest to [1, 0, 0, 0]
     from glide import FtSearchOptions
@@ -1053,7 +1123,7 @@ async def test_field_schema_change_recreates_index(valkey_env: _ValkeyEnv) -> No
     assert await valkey_env.client.hget(f"{index_name}:d1", "category") is not None
 
     # And the field should now be searchable
-    await asyncio.sleep(0.3)
+    await _wait_for_index_count(valkey_env.client, index_name, 1)
     result = await glide_ft.search(valkey_env.client, index_name, "@category:{x}")
     assert isinstance(result, list)
     assert result[0] == 1

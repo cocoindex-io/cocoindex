@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import struct
 from dataclasses import dataclass
 from typing import (
@@ -235,6 +236,23 @@ _IndexTrackingRecord = statediff.MutualTrackingRecord[_IndexTrackingRecordCore]
 # Helpers
 # ---------------------------------------------------------------------------
 
+_SAFE_NAME_RE = re.compile(r"^[a-zA-Z0-9_\-]+$")
+
+
+def _validate_name(value: str, label: str) -> str:
+    """Validate that a name contains only safe characters.
+
+    Raises:
+        ValueError: If the name contains characters that could cause key
+            collisions or injection into the Valkey search DSL.
+    """
+    if not _SAFE_NAME_RE.match(value):
+        raise ValueError(
+            f"{label} must contain only alphanumeric characters, "
+            f"hyphens, and underscores, got: {value!r}"
+        )
+    return value
+
 
 def _vector_to_bytes(vector: list[float] | np.ndarray) -> bytes:  # type: ignore[type-arg]
     """Pack a vector into little-endian float32 bytes for Valkey HASH storage."""
@@ -312,6 +330,7 @@ class _DocumentHandler(coco.TargetHandler[Document, _DocumentFingerprint]):
         if not isinstance(key, str):
             raise TypeError(f"Document key must be a string, got {type(key)}")
 
+        _validate_name(key, "doc_id")
         hash_key = _make_hash_key(self._index_name, key)
 
         if coco.is_non_existence(desired_state):
@@ -444,7 +463,11 @@ class _IndexHandler(
                     key_list = [k for k in keys if isinstance(k, (str, bytes))]
                     if key_list:
                         await client.delete(key_list)
-                if cursor in (b"0", "0"):
+                # Normalize cursor: some client versions return int 0
+                if isinstance(cursor, int):
+                    if cursor == 0:
+                        break
+                elif cursor in (b"0", "0"):
                     break
             else:
                 break
@@ -640,6 +663,7 @@ def index_target(
     Returns:
         A TargetState that can be passed to ``mount_target()``.
     """
+    _validate_name(index_name, "index_name")
     key = _IndexKey(db_key=db.key, index_name=index_name)
     spec = _IndexSpec(schema=schema, managed_by=managed_by)
     return _index_provider.target_state(key, spec)
