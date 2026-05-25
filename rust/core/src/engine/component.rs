@@ -10,8 +10,8 @@ use crate::engine::context::{
     ComponentProcessorContext, MemoStatesPayload,
 };
 use crate::engine::execution::{
-    cleanup_tombstone, post_submit_for_build, submit, update_component_memo_states,
-    use_or_invalidate_component_memoization,
+    cleanup_tombstone, eager_existence_upsert, post_submit_for_build, submit,
+    update_component_memo_states, use_or_invalidate_component_memoization,
 };
 use crate::engine::profile::EngineProfile;
 use crate::engine::stats::ProcessingStats;
@@ -790,9 +790,20 @@ impl<Prof: EngineProfile> Component<Prof> {
         let result = {
             let reported_processor_name = &mut reported_processor_name;
             async move {
-                // Acquire the semaphore to ensure `process()` and `commit_effects()` cannot happen in parallel.
-                let ret_n_submit_output = {
+                // Acquire the semaphore to ensure `process()` and `submit()` cannot overlap
+                // with another execution of the same component.
+                let (ret, submit_output, children_outcome) = {
                     let _permit = self.inner.build_semaphore.acquire().await?;
+
+                    // Build mode only: write the component's own existence bit
+                    // (and ancestor chain) into the parent in its own txn,
+                    // before the user processor runs. Maintains the invariant
+                    // that existence ⊇ tracked state and eliminates the
+                    // dual-writer conflict with the parent's commit-time
+                    // existence reconciliation. See `internal_states.md` §3.1.
+                    if processor_context.mode() == ComponentProcessingMode::Build {
+                        eager_existence_upsert(processor_context).await?;
+                    }
 
                     // Eagerly load all function-memo entries for this component
                     // into the per-build cache, so every subsequent fn-call probe
@@ -817,38 +828,35 @@ impl<Prof: EngineProfile> Component<Prof> {
                             .map(Some),
                         None => Ok(None),
                     };
-                    match ret {
-                        Ok(ret) => {
-                            let submit_output = submit(processor_context, processor, |name| {
-                                if reported_processor_name.is_none() {
-                                    processing_stats.update(&name, |stats| {
-                                        stats.num_execution_starts += 1;
-                                    });
-                                    *reported_processor_name = Some(Cow::Owned(name.to_string()));
-                                }
-                            })
-                            .await?;
-                            Ok((ret, submit_output))
+
+                    // Wait until children components ready before submitting this
+                    // component's target states and child-existence reconciliation.
+                    let components_readiness = processor_context.components_readiness();
+                    components_readiness.set_build_done();
+                    let mut children_outcome = components_readiness
+                        .readiness()
+                        .wait()
+                        .await
+                        .clone()
+                        .into_result()?;
+
+                    // Merge children's logic deps into this component's context before
+                    // post-submit memoization stores this component's dependency set.
+                    processor_context
+                        .merge_logic_deps(std::mem::take(&mut children_outcome.logic_deps));
+
+                    let ret = ret?;
+                    let submit_output = submit(processor_context, processor, |name| {
+                        if reported_processor_name.is_none() {
+                            processing_stats.update(&name, |stats| {
+                                stats.num_execution_starts += 1;
+                            });
+                            *reported_processor_name = Some(Cow::Owned(name.to_string()));
                         }
-                        Err(err) => Err(err),
-                    }
-                };
-
-                // Wait until children components ready.
-                let components_readiness = processor_context.components_readiness();
-                components_readiness.set_build_done();
-                let mut children_outcome = components_readiness
-                    .readiness()
-                    .wait()
-                    .await
-                    .clone()
-                    .into_result()?;
-
-                // Merge children's logic deps into this component's context.
-                processor_context
-                    .merge_logic_deps(std::mem::take(&mut children_outcome.logic_deps));
-
-                let (ret, submit_output) = ret_n_submit_output?;
+                    })
+                    .await?;
+                    Ok::<_, Error>((ret, submit_output, children_outcome))
+                }?;
                 let build_output = match ret {
                     Some(ret) => {
                         if !children_outcome.has_exception {

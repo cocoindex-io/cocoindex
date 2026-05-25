@@ -171,7 +171,7 @@ pub(crate) struct BoxedHandler {
 
 type ReconcileFn = dyn Fn(
         StableKey,
-        Option<Value>,
+        Option<&Value>,
         &[Value],
         bool,
     ) -> cocoindex_utils::error::Result<Option<TargetReconcileOutput<RustProfile>>>
@@ -182,7 +182,7 @@ impl BoxedHandler {
     pub(crate) fn new(
         f: impl Fn(
             StableKey,
-            Option<Value>,
+            Option<&Value>,
             &[Value],
             bool,
         )
@@ -201,7 +201,7 @@ impl TargetHandler<RustProfile> for BoxedHandler {
     fn reconcile(
         &self,
         key: StableKey,
-        desired_target_state: Option<Value>,
+        desired_target_state: Option<&Value>,
         prev_possible_states: &[Value],
         prev_may_be_missing: bool,
     ) -> cocoindex_utils::error::Result<Option<TargetReconcileOutput<RustProfile>>> {

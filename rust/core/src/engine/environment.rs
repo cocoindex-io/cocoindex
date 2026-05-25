@@ -78,6 +78,22 @@ impl<Prof: EngineProfile> Environment<Prof> {
         self.inner.storage.run_txn(body).await
     }
 
+    /// Run a batched write transaction with automatic retry on PG SSI
+    /// serialization failures (SQLSTATE `40001`). Delegates to
+    /// [`Storage::run_txn_with_retry`] — see that method's docs for the
+    /// idempotency contract. For LMDB this is a passthrough (LMDB never
+    /// returns `40001`).
+    pub async fn run_txn_with_retry<T, F>(&self, body_factory: F) -> Result<T>
+    where
+        T: Send + 'static,
+        F: for<'a, 'env> Fn(&'a mut WriteTxn<'env>) -> BoxFuture<'a, Result<T>>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.inner.storage.run_txn_with_retry(body_factory).await
+    }
+
     /// Create the per-app sub-store. Delegates to [`Storage::create_app_store`].
     pub async fn create_app_store(&self, app_name: &str) -> Result<AppStore> {
         self.inner.storage.create_app_store(app_name).await

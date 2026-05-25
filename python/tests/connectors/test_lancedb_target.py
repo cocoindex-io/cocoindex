@@ -80,15 +80,34 @@ if HAS_LANCEDB:
                 raise RuntimeError("optimize failed")
 
     class _FakeAsyncConnection:
-        def __init__(self) -> None:
+        def __init__(self, *, table_exists: bool = True) -> None:
             self.table = _FakeAsyncTable()
+            self.table_exists = table_exists
+            self.open_table_count = 0
+            self.create_table_count = 0
+            self.drop_table_count = 0
 
         async def table_names(self) -> list[str]:
-            return ["test_table"]
+            return ["test_table"] if self.table_exists else []
 
         async def open_table(self, table_name: str) -> _FakeAsyncTable:
             assert table_name == "test_table"
+            self.open_table_count += 1
             return self.table
+
+        async def create_table(
+            self, table_name: str, data: Any, *, mode: str
+        ) -> _FakeAsyncTable:
+            assert table_name == "test_table"
+            assert mode == "overwrite"
+            self.create_table_count += 1
+            self.table_exists = True
+            return self.table
+
+        async def drop_table(self, table_name: str) -> None:
+            assert table_name == "test_table"
+            self.drop_table_count += 1
+            self.table_exists = False
 
     class _FakeContextProvider:
         def __init__(self, conn: _FakeAsyncConnection) -> None:
@@ -402,6 +421,37 @@ async def test_row_handler_does_not_overlap_optimize_tasks() -> None:
 
 @pytest.mark.asyncio
 @requires_lancedb
+async def test_row_handler_preserves_mutations_during_optimize() -> None:
+    handler = _target._RowHandler(
+        conn=cast(Any, None),
+        table_name="test_table",
+        table_schema=_make_table_schema(),
+        num_transactions_before_optimize=2,
+    )
+    unblock = asyncio.Event()
+    table = _FakeAsyncTable(block=unblock)
+
+    await handler._maybe_optimize(cast(Any, table))
+    assert table.optimize_count == 0
+
+    await handler._maybe_optimize(cast(Any, table))
+    await asyncio.sleep(0)
+    assert table.optimize_count == 1
+
+    await handler._maybe_optimize(cast(Any, table))
+    await asyncio.sleep(0)
+    assert table.optimize_count == 1
+
+    unblock.set()
+    await _wait_for_optimize_task(handler)
+
+    await handler._maybe_optimize(cast(Any, table))
+    await _wait_for_optimize_task(handler)
+    assert table.optimize_count == 2
+
+
+@pytest.mark.asyncio
+@requires_lancedb
 async def test_row_handler_retries_after_optimize_failure() -> None:
     handler = _target._RowHandler(
         conn=cast(Any, None),
@@ -422,7 +472,7 @@ async def test_row_handler_retries_after_optimize_failure() -> None:
 
 @pytest.mark.asyncio
 @requires_lancedb
-async def test_table_handler_schedules_initial_optimize() -> None:
+async def test_table_handler_skips_optimize_for_existing_table() -> None:
     conn = _FakeAsyncConnection()
     handler = _target._TableHandler()
     action = _target._TableAction(
@@ -439,7 +489,32 @@ async def test_table_handler_schedules_initial_optimize() -> None:
     await handler._apply_actions(cast(Any, _FakeContextProvider(conn)), [action])
     await asyncio.sleep(0)
 
-    assert conn.table.optimize_count == 1
+    assert conn.open_table_count == 0
+    assert conn.table.optimize_count == 0
+
+
+@pytest.mark.asyncio
+@requires_lancedb
+async def test_table_handler_does_not_optimize_new_table_before_row_mutations() -> None:
+    conn = _FakeAsyncConnection(table_exists=False)
+    handler = _target._TableHandler()
+    action = _target._TableAction(
+        key=_target._TableKey(db_key="test_db", table_name="test_table"),
+        spec=_target._TableSpec(
+            table_schema=_make_table_schema(),
+            managed_by=target.ManagedBy.SYSTEM,
+            num_transactions_before_optimize=50,
+        ),
+        main_action="insert",
+        sub_actions={},
+    )
+
+    await handler._apply_actions(cast(Any, _FakeContextProvider(conn)), [action])
+    await asyncio.sleep(0)
+
+    assert conn.create_table_count == 1
+    assert conn.open_table_count == 0
+    assert conn.table.optimize_count == 0
 
 
 @requires_lancedb

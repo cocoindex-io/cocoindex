@@ -43,10 +43,27 @@ pub struct TargetReconcileOutput<Prof: EngineProfile> {
 }
 
 pub trait TargetHandler<Prof: EngineProfile>: Send + Sync + Sized + 'static {
+    /// Reconcile the desired target state against the previously-tracked
+    /// records, returning the action to take.
+    ///
+    /// `desired_target_state` is borrowed (not owned) because the engine
+    /// holds it under a short-lived `tokio::sync::MutexGuard` for the
+    /// duration of this call — see the lock-scoped call site in
+    /// `submit()`'s `pre_commit`. Borrowing here lets the host-specific
+    /// implementation decide whether (and how) to clone:
+    ///
+    /// * Native Rust profile (`Value: Clone`): typically `value.clone()`
+    ///   when constructing the `Action`.
+    /// * Python profile (`Py<PyAny>: !Clone`): `value.clone_ref(py)`
+    ///   under the GIL.
+    ///
+    /// Avoids forcing every call site to round-trip through an
+    /// engine-level `clone_target_state_value` even when the impl
+    /// might not need an owned copy.
     fn reconcile(
         &self,
         key: StableKey,
-        desired_target_state: Option<Prof::TargetStateValue>,
+        desired_target_state: Option<&Prof::TargetStateValue>,
         prev_possible_records: &[Prof::TargetStateTrackingRecord],
         prev_may_be_missing: bool,
     ) -> Result<Option<TargetReconcileOutput<Prof>>>;

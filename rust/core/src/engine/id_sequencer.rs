@@ -106,8 +106,16 @@ impl IdSequencerManager {
             let batch_size = state.next_batch_size;
             let app_store = app_store.clone();
             let key = key.clone();
+            // `reserve_id_range` is idempotent under retry: each attempt
+            // reads the current counter, computes `start_id`, writes
+            // `start_id + batch_size`. On 40001 retry, a fresh attempt
+            // observes any winning concurrent reservation and allocates
+            // the next range. Without retry, parallel components trying
+            // to refill the same key would surface 40001 to the user.
             let start_id = storage
-                .run_txn(move |wtxn| {
+                .run_txn_with_retry(move |wtxn| {
+                    let app_store = app_store.clone();
+                    let key = key.clone();
                     Box::pin(
                         async move { app_store.reserve_id_range(wtxn, &key, batch_size).await },
                     )
