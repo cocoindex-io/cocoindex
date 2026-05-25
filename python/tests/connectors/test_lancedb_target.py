@@ -506,7 +506,7 @@ async def test_table_handler_does_not_optimize_new_table_before_row_mutations() 
             num_transactions_before_optimize=50,
         ),
         main_action="insert",
-        sub_actions={},
+        column_actions={},
     )
 
     await handler._apply_actions(cast(Any, _FakeContextProvider(conn)), [action])
