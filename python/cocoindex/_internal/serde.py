@@ -77,10 +77,21 @@ def _register_builtin_types() -> None:
             _UNPICKLE_SAFE_GLOBALS[(_dtype_sub.__module__, _dtype_sub.__qualname__)] = (
                 _dtype_sub
             )
-        _core_numeric = getattr(np, "_core", None)
-        if _core_numeric is not None:
-            _frombuffer = getattr(_core_numeric.numeric, "_frombuffer", None)
+        _numeric = None
+        for _root_name in ("_core", "core"):
+            _root = getattr(np, _root_name, None)
+            if _root is None:
+                continue
+            _candidate = getattr(_root, "numeric", None)
+            if _candidate is not None:
+                _numeric = _candidate
+                break
+        if _numeric is not None:
+            _frombuffer = getattr(_numeric, "_frombuffer", None)
             if _frombuffer is not None:
+                _UNPICKLE_SAFE_GLOBALS[("numpy.core.numeric", "_frombuffer")] = (
+                    _frombuffer
+                )
                 _UNPICKLE_SAFE_GLOBALS[("numpy._core.numeric", "_frombuffer")] = (
                     _frombuffer
                 )
