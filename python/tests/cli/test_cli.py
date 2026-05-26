@@ -42,13 +42,16 @@ _SKIP_WINDOWS_FREE_THREADED_MULTI_ENV = pytest.mark.skipif(
 
 
 def run_cli(
-    *args: str, check: bool = True, input: str | None = None
+    *args: str,
+    check: bool = True,
+    input: str | None = None,
+    cwd: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run a cocoindex CLI command and return the result."""
     cmd = ["cocoindex", *args]
     result = subprocess.run(
         cmd,
-        cwd=TEST_DIR,
+        cwd=cwd if cwd is not None else TEST_DIR,
         capture_output=True,
         text=True,
         check=False,
@@ -604,35 +607,35 @@ class TestUpdateFlags:
         third = stamp_path.read_text()
         assert third != first, "--full-reprocess should force rewrite even if unchanged"
 
-    def test_full_reprocess_deleted_target_not_resurrected(self) -> None:
+    def test_full_reprocess_deleted_target_not_resurrected(
+        self, tmp_path: Path
+    ) -> None:
         """Test that --full-reprocess doesn't keep deleted targets alive via memo reuse."""
         app_path = "./full_reprocess_app.py"
-        target_a_path = TEST_DIR / "out_full_reprocess" / "target_a.txt"
-        target_b_path = TEST_DIR / "out_full_reprocess" / "target_b.txt"
+        (tmp_path / "full_reprocess_app.py").write_text(
+            (TEST_DIR / "full_reprocess_app.py").read_text()
+        )
+        target_a_path = tmp_path / "out_full_reprocess" / "target_a.txt"
+        target_b_path = tmp_path / "out_full_reprocess" / "target_b.txt"
 
         # First run: create both targets A and B
-        run_cli("update", app_path)
+        run_cli("update", app_path, cwd=tmp_path)
         assert target_a_path.exists(), "target_a.txt should exist after first run"
         assert target_b_path.exists(), "target_b.txt should exist after first run"
 
         # Modify the app to only create A (remove B)
-        # We'll do this by creating a modified version of the app
-        original_content = (TEST_DIR / app_path).read_text()
-        modified_content = original_content.replace(
-            "create_b: bool = True", "create_b: bool = False"
+        (tmp_path / "full_reprocess_app.py").write_text(
+            (tmp_path / "full_reprocess_app.py")
+            .read_text()
+            .replace("create_b: bool = True", "create_b: bool = False")
         )
-        (TEST_DIR / app_path).write_text(modified_content)
 
-        try:
-            # Run with --full-reprocess: B should be deleted, not kept alive by old memos
-            run_cli("update", app_path, "--full-reprocess")
-            assert target_a_path.exists(), "target_a.txt should still exist"
-            assert not target_b_path.exists(), (
-                "target_b.txt should be deleted, not kept alive by old memos"
-            )
-        finally:
-            # Restore original content
-            (TEST_DIR / app_path).write_text(original_content)
+        # Run with --full-reprocess: B should be deleted, not kept alive by old memos
+        run_cli("update", app_path, "--full-reprocess", cwd=tmp_path)
+        assert target_a_path.exists(), "target_a.txt should still exist"
+        assert not target_b_path.exists(), (
+            "target_b.txt should be deleted, not kept alive by old memos"
+        )
 
 
 class TestFullReprocess:
@@ -657,35 +660,35 @@ class TestFullReprocess:
         third = stamp_path.read_text()
         assert third != first, "--full-reprocess should force rewrite even if unchanged"
 
-    def test_full_reprocess_deleted_target_not_resurrected(self) -> None:
+    def test_full_reprocess_deleted_target_not_resurrected(
+        self, tmp_path: Path
+    ) -> None:
         """Test that --full-reprocess doesn't keep deleted targets alive via memo reuse."""
         app_path = "./full_reprocess_app.py"
-        target_a_path = TEST_DIR / "out_full_reprocess" / "target_a.txt"
-        target_b_path = TEST_DIR / "out_full_reprocess" / "target_b.txt"
+        (tmp_path / "full_reprocess_app.py").write_text(
+            (TEST_DIR / "full_reprocess_app.py").read_text()
+        )
+        target_a_path = tmp_path / "out_full_reprocess" / "target_a.txt"
+        target_b_path = tmp_path / "out_full_reprocess" / "target_b.txt"
 
         # First run: create both targets A and B
-        run_cli("update", app_path)
+        run_cli("update", app_path, cwd=tmp_path)
         assert target_a_path.exists(), "target_a.txt should exist after first run"
         assert target_b_path.exists(), "target_b.txt should exist after first run"
 
         # Modify the app to only create A (remove B)
-        # We'll do this by creating a modified version of the app
-        original_content = (TEST_DIR / app_path).read_text()
-        modified_content = original_content.replace(
-            "create_b: bool = True", "create_b: bool = False"
+        (tmp_path / "full_reprocess_app.py").write_text(
+            (tmp_path / "full_reprocess_app.py")
+            .read_text()
+            .replace("create_b: bool = True", "create_b: bool = False")
         )
-        (TEST_DIR / app_path).write_text(modified_content)
 
-        try:
-            # Run with --full-reprocess: B should be deleted, not kept alive by old memos
-            run_cli("update", app_path, "--full-reprocess")
-            assert target_a_path.exists(), "target_a.txt should still exist"
-            assert not target_b_path.exists(), (
-                "target_b.txt should be deleted, not kept alive by old memos"
-            )
-        finally:
-            # Restore original content
-            (TEST_DIR / app_path).write_text(original_content)
+        # Run with --full-reprocess: B should be deleted, not kept alive by old memos
+        run_cli("update", app_path, "--full-reprocess", cwd=tmp_path)
+        assert target_a_path.exists(), "target_a.txt should still exist"
+        assert not target_b_path.exists(), (
+            "target_b.txt should be deleted, not kept alive by old memos"
+        )
 
 
 class TestDropQuiet:

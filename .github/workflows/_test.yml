@@ -36,6 +36,11 @@ jobs:
           RUSTC_WRAPPER: "sccache"
 
         steps:
+        - name: Disable Git autocrlf on Windows
+          if: runner.os == 'Windows'
+          shell: bash
+          run: git config --global core.autocrlf false
+
         - uses: actions/checkout@v6
           with:
             fetch-depth: 1
@@ -72,13 +77,14 @@ jobs:
         - name: Install uv
           uses: astral-sh/setup-uv@v7
 
-        - name: Remove .python-version if exists
-          # Ensure uv uses Python from PATH (set by setup-python) rather than a pinned version
-          shell: bash
-          run: rm -f .python-version
-
         - name: Sync Python dependencies
-          run: uv sync --no-dev --group ci --no-install-project
+          shell: bash
+          run: |
+            uv sync \
+              --python "$(python -c 'import sys; print(sys.executable)')" \
+              --no-dev \
+              --group ci \
+              --no-install-project
 
         - name: Install prek
           uses: j178/prek-action@v2
