@@ -78,6 +78,20 @@ async def _index_info(pool: "asyncpg.Pool", index_name: str) -> dict[str, Any] |
         return dict(row) if row else None
 
 
+async def _index_opclass_names(pool: "asyncpg.Pool", index_name: str) -> list[str]:
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT opc.opcname "
+            "FROM pg_index i "
+            "JOIN pg_class c ON i.indexrelid = c.oid "
+            "JOIN generate_series(0, i.indnatts - 1) AS s(n) ON true "
+            "JOIN pg_opclass opc ON opc.oid = i.indclass[s.n] "
+            "WHERE c.relname = $1 ORDER BY s.n",
+            index_name,
+        )
+        return [str(row["opcname"]) for row in rows]
+
+
 async def _table_exists(pool: "asyncpg.Pool", table_name: str) -> bool:
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
@@ -158,6 +172,15 @@ class VectorRow:
     content: str
     embedding: Annotated[
         NDArray[np.float32], VectorSchema(dtype=np.dtype(np.float32), size=4)
+    ]
+
+
+@dataclass
+class HalfVectorRow:
+    id: str
+    content: str
+    embedding: Annotated[
+        NDArray[np.float16], VectorSchema(dtype=np.dtype(np.float16), size=4)
     ]
 
 
@@ -298,6 +321,59 @@ async def test_postgres_declare_vector_index_fingerprint_no_change(
         info2 = await _index_info(pool, pg_index_name)
         assert info2 is not None
         assert info2["amname"] == "ivfflat"
+
+    finally:
+        await _drop_table(pool, table_name)
+
+
+@pytest.mark.asyncio
+async def test_postgres_declare_halfvec_vector_index_uses_halfvec_opclass(
+    pg_env: _PgEnv,
+) -> None:
+    """halfvec columns need halfvec_* pgvector operator classes."""
+    pool = pg_env.pool
+    coco_env = pg_env.coco_env
+    table_name = _unique_name("test_halfvec_idx")
+    logical_name = "idx1"
+    pg_index_name = f"{table_name}__vector__{logical_name}"
+
+    try:
+
+        async def declare_fn() -> None:
+            table = await coco.use_mount(
+                coco.component_subpath("setup", "table"),
+                postgres.declare_table_target,
+                _PG_DB_KEY,
+                table_name,
+                await postgres.TableSchema.from_class(
+                    HalfVectorRow, primary_key=["id"]
+                ),
+            )
+            table.declare_row(
+                row=HalfVectorRow(
+                    id="1",
+                    content="hello",
+                    embedding=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float16),
+                )
+            )
+            table.declare_vector_index(
+                name=logical_name,
+                column="embedding",
+                metric="cosine",
+                method="ivfflat",
+            )
+
+        app = coco.App(
+            coco.AppConfig(name=f"test_halfvec_idx_{table_name}", environment=coco_env),
+            declare_fn,
+        )
+
+        await app.update()
+
+        info = await _index_info(pool, pg_index_name)
+        assert info is not None, f"Index {pg_index_name} should exist"
+        assert info["amname"] == "ivfflat"
+        assert await _index_opclass_names(pool, pg_index_name) == ["halfvec_cosine_ops"]
 
     finally:
         await _drop_table(pool, table_name)
