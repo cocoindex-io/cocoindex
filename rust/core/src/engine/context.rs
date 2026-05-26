@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use cocoindex_utils::fingerprint::Fingerprint;
 
@@ -451,10 +451,142 @@ pub(crate) fn decode_stored_entry<Prof: EngineProfile>(
     Ok(())
 }
 
+/// Lifecycle state of one user-state key within a single component build.
+///
+/// TODO: make `V` generic over the engine profile (like `FnCallMemoEntry<Prof>`) so
+/// `Declared` can hold a `Prof::FunctionData` (= `PyStoredValue` in the Python profile)
+/// instead of raw bytes. `PyStoredValue` holds both representations lazily behind an
+/// `Arc<Mutex<...>>`, so cloning is a cheap refcount bump, deserialization from bytes
+/// happens once on first access, and serialization to bytes happens once at flush.
+/// Requires adding a `FunctionData`-equivalent associated type to `EngineProfile` (or
+/// reusing `FunctionData` directly) and threading it through `UserStateCache`.
+enum UserStateEntry {
+    /// Prefetched from DB at build start; `use_state()` not yet called for
+    /// this key. Deleted at flush time if it stays in this state (set-reduction path).
+    Loaded(Vec<u8>),
+    /// Claimed by `use_state()` and optionally overwritten by
+    /// `update_declared()`. Written to DB at flush time.
+    Declared(Vec<u8>),
+}
+
+/// Per-component user state cache for a single build.
+///
+/// Mirrors the `FnMemoCache` pattern: `populate` fills it from a
+/// standalone read at build start, then `use_state` / `update_declared`
+/// accumulate the declared states, and `flush_to_db` commits them.
+/// At flush time only keys re-declared or newly declared by the user
+/// during this build through use_state() survive: `Declared` entries are
+/// written to DB and `Loaded` entries (present in the previous build but
+/// not re-declared this build) are deleted.
+pub(crate) struct UserStateCache {
+    /// All entries seen this build. Prefetched entries start as `Loaded` and
+    /// transition to `Declared` when claimed by `use_state()`; brand-new keys
+    /// start directly as `Declared`.
+    entries: HashMap<StableKey, UserStateEntry>,
+    /// True after a successful `populate`;
+    /// False under `full_reprocess` (prefetch skipped).
+    ///
+    /// When true: stale `Loaded` entries are individually deleted.
+    /// When false: all existing entries are wiped upfront via
+    /// delete_all_user_states before writing.
+    is_loaded: bool,
+}
+
+impl UserStateCache {
+    pub(crate) fn new() -> Self {
+        Self {
+            entries: HashMap::new(),
+            is_loaded: false,
+        }
+    }
+
+    pub(crate) fn is_loaded(&self) -> bool {
+        self.is_loaded
+    }
+
+    pub(crate) fn populate(&mut self, rows: Vec<(StableKey, Vec<u8>)>) {
+        self.entries = rows
+            .into_iter()
+            .map(|(k, v)| (k, UserStateEntry::Loaded(v)))
+            .collect();
+        self.is_loaded = true;
+    }
+
+    /// Register `key` as declared for this build. Returns the previously
+    /// stored value (if any) or `initial_value`. Errors on duplicate keys.
+    /// Called when the user calls coco.use_state("key", initial_value)
+    pub(crate) fn use_state(&mut self, key: StableKey, initial_value: Vec<u8>) -> Result<Vec<u8>> {
+        use std::collections::hash_map::Entry;
+        match self.entries.entry(key) {
+            Entry::Occupied(mut e) => match e.get() {
+                UserStateEntry::Declared(_) => {
+                    client_bail!(
+                        "coco.use_state() key {:?} declared more than once in the same component run",
+                        e.key()
+                    );
+                }
+                UserStateEntry::Loaded(v) => {
+                    let value = v.clone();
+                    e.insert(UserStateEntry::Declared(value.clone()));
+                    Ok(value)
+                }
+            },
+            Entry::Vacant(e) => {
+                e.insert(UserStateEntry::Declared(initial_value.clone()));
+                Ok(initial_value)
+            }
+        }
+    }
+
+    /// Update the current value for an already-declared key. Called when
+    /// the user sets `my_state.value = ...`.
+    pub(crate) fn update_declared(&mut self, key: &StableKey, value: Vec<u8>) -> Result<()> {
+        match self.entries.get_mut(key) {
+            Some(UserStateEntry::Declared(v)) => {
+                *v = value;
+                Ok(())
+            }
+            _ => {
+                client_bail!(
+                    "coco.use_state() key {:?} has not been declared via use_state() in this component run",
+                    key
+                );
+            }
+        }
+    }
+
+    /// Apply the set-reduction diff to LMDB inside `commit_in_txn`.
+    pub(crate) async fn flush_to_db(
+        self,
+        wtxn: &mut WriteTxn<'_>,
+        app_store: &AppStore,
+        path: &StablePath,
+    ) -> Result<()> {
+        if !self.is_loaded {
+            // full_reprocess path: wipe all existing entries, then write declared.
+            app_store.delete_all_user_states(wtxn, path).await?;
+        }
+        for (key, entry) in &self.entries {
+            match entry {
+                UserStateEntry::Loaded(_) if self.is_loaded => {
+                    // Loaded from DB but not re-declared this build: delete.
+                    app_store.delete_user_state(wtxn, path, key).await?;
+                }
+                UserStateEntry::Declared(value) => {
+                    app_store.write_user_state(wtxn, path, key, value).await?;
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+}
+
 pub(crate) struct ComponentBuildingState<Prof: EngineProfile> {
     pub target_states: ComponentTargetStatesContext<Prof>,
     pub child_path_set: ChildStablePathSet,
     pub fn_memos: FnMemoCache<Prof>,
+    pub user_states: UserStateCache,
 }
 
 /// Shared collector for preview actions across all components in a single update.
@@ -512,6 +644,7 @@ impl<Prof: EngineProfile> ComponentProcessingAction<Prof> {
                 },
                 child_path_set: Default::default(),
                 fn_memos: FnMemoCache::new(),
+                user_states: UserStateCache::new(),
             })),
             full_reprocess,
             live,
@@ -648,6 +781,56 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
             s.fn_memos.populate(rows);
             Ok(())
         })
+    }
+
+    /// Eagerly load every user-state entry for this component from storage
+    /// into the per-build cache. Mirrors `prefetch_fn_memos`; skipped under
+    /// `full_reprocess` so `UserStateCache::flush_to_db` falls through to
+    /// a delete-all + write of the newly-declared entries.
+    pub(crate) async fn prefetch_user_states(&self) -> Result<()> {
+        if self.full_reprocess() {
+            return Ok(());
+        }
+
+        // Cheap check: skip if already loaded (re-entry, etc.).
+        let already_loaded = match &self.inner.processing_action {
+            ComponentProcessingAction::Build(build_ctx) => {
+                let guard = build_ctx.state.lock().unwrap();
+                let Some(state) = guard.as_ref() else {
+                    return Ok(());
+                };
+                state.user_states.is_loaded()
+            }
+            ComponentProcessingAction::Delete { .. } => return Ok(()),
+        };
+        if already_loaded {
+            return Ok(());
+        }
+
+        let rows = self
+            .app_ctx()
+            .app_store()
+            .list_user_states(self.stable_path())
+            .await?;
+        self.update_building_state(|s| {
+            s.user_states.populate(rows);
+            Ok(())
+        })
+    }
+
+    /// Register `key` as a user state for this build and return its current
+    /// value. On first call for a key, the stored value (if any) is returned;
+    /// otherwise `initial_value` is used. Duplicate keys within the same
+    /// component run are an error.
+    /// Called when the user calls coco.use_state("key", initial_value)
+    pub fn use_state(&self, key: StableKey, initial_value: Vec<u8>) -> Result<Vec<u8>> {
+        self.update_building_state(|s| s.user_states.use_state(key, initial_value))
+    }
+
+    /// Update the current value for an already-declared user state key.
+    /// Called when the user sets `my_state.value = ...`.
+    pub fn update_user_state(&self, key: &StableKey, value: Vec<u8>) -> Result<()> {
+        self.update_building_state(|s| s.user_states.update_declared(key, value))
     }
 
     pub(crate) fn parent_context(&self) -> Option<&ComponentProcessorContext<Prof>> {
@@ -909,5 +1092,284 @@ impl FnCallContext {
     pub fn update<T>(&self, f: impl FnOnce(&mut FnCallContextInner) -> T) -> T {
         let mut guard = self.inner.lock().unwrap();
         f(&mut guard)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{UserStateCache, UserStateEntry};
+    use crate::state::stable_path::{StableKey, StablePath};
+    use crate::state_store::{AppStore, WriteTxn};
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use tempfile::TempDir;
+
+    fn sym(s: &str) -> StableKey {
+        StableKey::Symbol(Arc::from(s))
+    }
+
+    fn b(s: &str) -> Vec<u8> {
+        s.as_bytes().to_vec()
+    }
+
+    fn comp_path(name: &str) -> StablePath {
+        StablePath(Arc::from(vec![StableKey::Str(Arc::from(name))]))
+    }
+
+    async fn make_test_store() -> (AppStore, TempDir) {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("mdb");
+        std::fs::create_dir_all(&db_path).unwrap();
+        let env = unsafe {
+            heed::EnvOpenOptions::new()
+                .read_txn_without_tls()
+                .max_dbs(4)
+                .map_size(1 << 22)
+                .open(&db_path)
+        }
+        .unwrap();
+        let mut wtxn = env.write_txn().unwrap();
+        let db = env.create_database(&mut wtxn, Some("test")).unwrap();
+        wtxn.commit().unwrap();
+        (AppStore::new(db, env), dir)
+    }
+
+    fn to_map(pairs: Vec<(StableKey, Vec<u8>)>) -> HashMap<StableKey, Vec<u8>> {
+        pairs.into_iter().collect()
+    }
+
+    // --- use_state -----------------------------------------------------------
+
+    #[test]
+    fn use_state_returns_initial_when_no_loaded_state() {
+        let mut cache = UserStateCache::new();
+        let val = cache.use_state(sym("k"), b("init")).unwrap();
+        assert_eq!(val, b("init"));
+    }
+
+    #[test]
+    fn use_state_returns_loaded_value_ignoring_initial() {
+        let mut cache = UserStateCache::new();
+        cache.populate(vec![(sym("k"), b("stored"))]);
+        let val = cache.use_state(sym("k"), b("init")).unwrap();
+        assert_eq!(val, b("stored")); // initial_value is ignored
+    }
+
+    #[test]
+    fn use_state_duplicate_key_errors() {
+        let mut cache = UserStateCache::new();
+        cache.use_state(sym("k"), b("v")).unwrap();
+        assert!(cache.use_state(sym("k"), b("v2")).is_err());
+    }
+
+    #[test]
+    fn use_state_loaded_and_fresh_keys_independent() {
+        let mut cache = UserStateCache::new();
+        cache.populate(vec![(sym("a"), b("stored_a"))]);
+        let va = cache.use_state(sym("a"), b("ignored")).unwrap();
+        let vb = cache.use_state(sym("b"), b("init_b")).unwrap();
+        assert_eq!(va, b("stored_a")); // from loaded state
+        assert_eq!(vb, b("init_b")); // initial_value (not in loaded)
+    }
+
+    // --- update_declared -----------------------------------------------------
+
+    #[test]
+    fn update_declared_undeclared_key_errors() {
+        let mut cache = UserStateCache::new();
+        assert!(cache.update_declared(&sym("k"), b("v")).is_err());
+    }
+
+    #[test]
+    fn update_declared_updates_value_in_declared() {
+        let mut cache = UserStateCache::new();
+        cache.use_state(sym("k"), b("init")).unwrap();
+        cache.update_declared(&sym("k"), b("updated")).unwrap();
+        // The updated value is what flush_to_db will write.
+        assert!(matches!(
+            &cache.entries[&sym("k")],
+            UserStateEntry::Declared(v) if v == &b("updated")
+        ));
+    }
+
+    // --- flush_to_db: set-reduction (is_loaded = true) -----------------------
+
+    #[tokio::test]
+    async fn flush_set_reduction_removes_dropped_keys() {
+        // loaded = {a, b, c}; declared = {a, b}  →  c must be deleted.
+        let (store, _dir) = make_test_store().await;
+        let p = comp_path("comp");
+
+        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
+        store
+            .write_user_state(&mut wtxn, &p, &sym("a"), b"a_val")
+            .await
+            .unwrap();
+        store
+            .write_user_state(&mut wtxn, &p, &sym("b"), b"b_val")
+            .await
+            .unwrap();
+        store
+            .write_user_state(&mut wtxn, &p, &sym("c"), b"c_val")
+            .await
+            .unwrap();
+        wtxn.into_inner().commit().unwrap();
+
+        let mut cache = UserStateCache::new();
+        cache.populate(vec![
+            (sym("a"), b("a_val")),
+            (sym("b"), b("b_val")),
+            (sym("c"), b("c_val")),
+        ]);
+        cache.use_state(sym("a"), b("ignored")).unwrap();
+        cache.use_state(sym("b"), b("ignored")).unwrap();
+        // "c" not re-declared
+
+        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
+        cache.flush_to_db(&mut wtxn, &store, &p).await.unwrap();
+        wtxn.into_inner().commit().unwrap();
+
+        let entries = to_map(store.list_user_states(&p).await.unwrap());
+        assert_eq!(entries.len(), 2);
+        assert!(entries.contains_key(&sym("a")));
+        assert!(entries.contains_key(&sym("b")));
+        assert!(!entries.contains_key(&sym("c")));
+    }
+
+    #[tokio::test]
+    async fn flush_set_reduction_adds_new_keys() {
+        // loaded = {a}; declared = {a, b_new}  →  b is inserted.
+        let (store, _dir) = make_test_store().await;
+        let p = comp_path("comp");
+
+        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
+        store
+            .write_user_state(&mut wtxn, &p, &sym("a"), b"a_val")
+            .await
+            .unwrap();
+        wtxn.into_inner().commit().unwrap();
+
+        let mut cache = UserStateCache::new();
+        cache.populate(vec![(sym("a"), b("a_val"))]);
+        // keep initial value from previous flush.
+        cache.use_state(sym("a"), b("should_be_ignored")).unwrap();
+        cache.use_state(sym("b"), b("b_new")).unwrap(); // new key
+
+        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
+        cache.flush_to_db(&mut wtxn, &store, &p).await.unwrap();
+        wtxn.into_inner().commit().unwrap();
+
+        let entries = to_map(store.list_user_states(&p).await.unwrap());
+        assert_eq!(entries.len(), 2);
+        // keep initial value from previous flush.
+        assert_eq!(entries[&sym("a")], b("a_val"));
+        assert_eq!(entries[&sym("b")], b("b_new"));
+    }
+
+    #[tokio::test]
+    async fn flush_set_reduction_persists_updated_value() {
+        // loaded = {k: "old"}; declare k then update_declared to "new"
+        // →  k must be written with "new".
+        let (store, _dir) = make_test_store().await;
+        let p = comp_path("comp");
+
+        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
+        store
+            .write_user_state(&mut wtxn, &p, &sym("k"), b"old")
+            .await
+            .unwrap();
+        wtxn.into_inner().commit().unwrap();
+
+        let mut cache = UserStateCache::new();
+        cache.populate(vec![(sym("k"), b("old"))]);
+        cache.use_state(sym("k"), b("ignored")).unwrap();
+        cache.update_declared(&sym("k"), b("new")).unwrap();
+
+        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
+        cache.flush_to_db(&mut wtxn, &store, &p).await.unwrap();
+        wtxn.into_inner().commit().unwrap();
+
+        let entries = to_map(store.list_user_states(&p).await.unwrap());
+        assert_eq!(entries[&sym("k")], b("new"));
+    }
+
+    #[tokio::test]
+    async fn flush_set_reduction_empty_declared_removes_all() {
+        // loaded = {a, b}; no use_state calls  →  all entries deleted.
+        let (store, _dir) = make_test_store().await;
+        let p = comp_path("comp");
+
+        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
+        store
+            .write_user_state(&mut wtxn, &p, &sym("a"), b"a_val")
+            .await
+            .unwrap();
+        store
+            .write_user_state(&mut wtxn, &p, &sym("b"), b"b_val")
+            .await
+            .unwrap();
+        wtxn.into_inner().commit().unwrap();
+
+        let mut cache = UserStateCache::new();
+        cache.populate(vec![(sym("a"), b("a_val")), (sym("b"), b("b_val"))]);
+        // no use_state calls
+
+        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
+        cache.flush_to_db(&mut wtxn, &store, &p).await.unwrap();
+        wtxn.into_inner().commit().unwrap();
+
+        assert!(store.list_user_states(&p).await.unwrap().is_empty());
+    }
+
+    // --- flush_to_db: full-reprocess (is_loaded = false) ---------------------
+
+    #[tokio::test]
+    async fn flush_full_reprocess_writes_declared_only() {
+        // DB has pre-existing entry; cache never populated; declared = {new_k}
+        // delete_all wipes old entry, only new_k survives.
+        let (store, _dir) = make_test_store().await;
+        let p = comp_path("comp");
+
+        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
+        store
+            .write_user_state(&mut wtxn, &p, &sym("old"), b"old_val")
+            .await
+            .unwrap();
+        wtxn.into_inner().commit().unwrap();
+
+        let mut cache = UserStateCache::new(); // no populate
+        cache.use_state(sym("new_k"), b("new_val")).unwrap();
+
+        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
+        cache.flush_to_db(&mut wtxn, &store, &p).await.unwrap();
+        wtxn.into_inner().commit().unwrap();
+
+        let entries = to_map(store.list_user_states(&p).await.unwrap());
+        assert_eq!(entries.len(), 1);
+        assert!(!entries.contains_key(&sym("old")));
+        assert_eq!(entries[&sym("new_k")], b("new_val"));
+    }
+
+    #[tokio::test]
+    async fn flush_full_reprocess_no_declared_clears_db() {
+        // DB has pre-existing entry; cache never populated; no use_state calls
+        // delete_all wipes everything, DB is empty.
+        let (store, _dir) = make_test_store().await;
+        let p = comp_path("comp");
+
+        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
+        store
+            .write_user_state(&mut wtxn, &p, &sym("old"), b"old_val")
+            .await
+            .unwrap();
+        wtxn.into_inner().commit().unwrap();
+
+        let cache = UserStateCache::new(); // no populate, no use_state
+
+        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
+        cache.flush_to_db(&mut wtxn, &store, &p).await.unwrap();
+        wtxn.into_inner().commit().unwrap();
+
+        assert!(store.list_user_states(&p).await.unwrap().is_empty());
     }
 }
