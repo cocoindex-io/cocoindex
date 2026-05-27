@@ -23,6 +23,8 @@
 //! `MDB_READERS_FULL` retry pauses — but the async signature
 //! future-proofs the API.
 
+use futures::future::BoxFuture;
+
 use cocoindex_utils::deser::from_msgpack_slice;
 use cocoindex_utils::fingerprint::Fingerprint;
 
@@ -39,25 +41,65 @@ use crate::state_store::txn::WriteTxn;
 /// key/value schemas live in [`crate::state::db_schema`].
 pub(crate) type Database = heed::Database<heed::types::Bytes, heed::types::Bytes>;
 
-/// Per-app handle within a `Storage`. Carries both the `Database` and a
-/// clone of the parent `Env` so standalone read methods can open their
-/// own `RoTxn` without the caller having to do so.
+/// Per-app handle within a `Storage`. Carries the `Database`, a clone
+/// of the parent `Env` (so standalone read methods can open their own
+/// `RoTxn` without the caller having to do so), and a clone of the
+/// parent `Storage` (so the session backend can route writes through
+/// `Storage::run_txn_boxed`'s single-writer batcher — bypassing it
+/// would serialize every per-session write through heed's writer
+/// mutex with no amortization).
 #[derive(Clone)]
 pub struct AppStore {
     pub(crate) db: Database,
     pub(crate) env: heed::Env<heed::WithoutTls>,
+    pub(crate) storage: super::storage::Storage,
 }
 
 impl AppStore {
-    pub(crate) fn new(db: Database, env: heed::Env<heed::WithoutTls>) -> Self {
-        Self { db, env }
+    pub(crate) fn new(
+        db: Database,
+        env: heed::Env<heed::WithoutTls>,
+        storage: super::storage::Storage,
+    ) -> Self {
+        Self { db, env, storage }
     }
 
     /// Internal accessor for cursor-iteration code (e.g.
-    /// `Storage::spawn_iter_stable_paths_with_node_type`) that needs the
+    /// `Storage::spawn_stable_path_iter`) that needs the
     /// raw heed handle.
     pub(crate) fn db(&self) -> Database {
         self.db
+    }
+
+    /// Run `body` inside a write txn driven by the single-writer
+    /// batcher. Concurrent callers coalesce into one underlying
+    /// `heed::RwTxn`; bodies within a batch are awaited sequentially.
+    /// Every LMDB write path (session writes and the standalone
+    /// methods alike) goes through this so that no caller opens
+    /// `env.write_txn()` directly — bypassing the batcher would
+    /// serialize each call through heed's writer mutex with no
+    /// amortization.
+    pub(super) async fn run_in_batcher<F>(&self, body: F) -> Result<()>
+    where
+        F: for<'a, 'env> FnOnce(&'a mut WriteTxn<'env>) -> BoxFuture<'a, Result<()>>
+            + Send
+            + 'static,
+    {
+        self.run_in_batcher_typed::<(), _>(move |wtxn| Box::pin(async move { body(wtxn).await }))
+            .await
+    }
+
+    /// Generic variant of [`Self::run_in_batcher`] that returns a
+    /// typed value out of the batched body. Used by methods like
+    /// `reserve_id_range` whose batched work computes a fresh value.
+    pub(super) async fn run_in_batcher_typed<T, F>(&self, body: F) -> Result<T>
+    where
+        T: Send + 'static,
+        F: for<'a, 'env> FnOnce(&'a mut WriteTxn<'env>) -> BoxFuture<'a, Result<T>>
+            + Send
+            + 'static,
+    {
+        self.storage.run_txn(body).await
     }
 
     /// Open a fresh LMDB read transaction with `MDB_READERS_FULL` retry
@@ -182,6 +224,16 @@ impl AppStore {
         Ok(self.db().get(&**txn, &key)?.map(<[u8]>::to_vec))
     }
 
+    /// Standalone snapshot read of raw tracking-info bytes — no
+    /// caller-managed txn. Engine `Committer` uses this to fetch the
+    /// post-pre_commit tracking_info for prune+converge, then hands
+    /// the new bytes to [`SubmitSession::commit`] via the plan.
+    pub async fn read_tracking_info(&self, path: &StablePath) -> Result<Option<Vec<u8>>> {
+        let rtxn = self.read_txn().await?;
+        let key = key_tracking_info(path)?;
+        Ok(self.db().get(&rtxn, &key)?.map(<[u8]>::to_vec))
+    }
+
     /// Write pre-serialized tracking info. Callers serialize externally so
     /// the txn can be re-borrowed mutably after the read-modify-write
     /// pattern used in `pre_commit` (the deserialized `tracking_info`
@@ -205,6 +257,180 @@ impl AppStore {
         let key = key_tracking_info(path)?;
         self.db().delete(&mut **txn, &key)?;
         Ok(())
+    }
+
+    /// Stage-with-read primitive. Reads the existing blob; if it has a
+    /// `pending_process_token` field, returns it (don't overwrite —
+    /// somebody else is in flight). Otherwise reports the slot as
+    /// claimed by `self_token`.
+    ///
+    /// LMDB's single-writer model means no concurrent stagers can race
+    /// us. The actual persistence of `self_token` is deferred to the
+    /// eventual `write_tracking_info_raw` at end of pre-commit, where
+    /// the engine encodes `pending_process_token = Some(self_token)`
+    /// into the blob. No extra write here.
+    pub async fn stage_and_read_tracking_in_txn(
+        &self,
+        txn: &mut WriteTxn<'_>,
+        path: &StablePath,
+        self_token: u128,
+    ) -> Result<(Option<Vec<u8>>, u128)> {
+        let key = key_tracking_info(path)?;
+        let raw = self.db().get(&**txn, &key)?.map(<[u8]>::to_vec);
+        let existing_token = match raw.as_deref() {
+            Some(bytes) => {
+                let info: crate::state::db_schema::StablePathEntryTrackingInfo<'_> =
+                    cocoindex_utils::deser::from_msgpack_slice(bytes)?;
+                info.pending_process_token
+            }
+            None => None,
+        };
+        Ok((raw, existing_token.unwrap_or(self_token)))
+    }
+
+    /// Cleanup primitive: read the blob, clear `pending_process_token`
+    /// iff it equals `self_token`, write back. Opens its own write txn
+    /// (standalone — no caller-provided handle). Idempotent.
+    pub async fn clear_staged_tracking(&self, path: &StablePath, self_token: u128) -> Result<()> {
+        let env = self.env.clone();
+        let path = path.clone();
+        let db = self.db();
+        let key = key_tracking_info(&path)?;
+        tokio::task::spawn_blocking(move || -> Result<()> {
+            let mut wtxn = env.write_txn()?;
+            let Some(bytes) = db.get(&wtxn, &key)? else {
+                return Ok(());
+            };
+            let mut info: crate::state::db_schema::StablePathEntryTrackingInfo<'_> =
+                cocoindex_utils::deser::from_msgpack_slice(bytes)?;
+            if info.pending_process_token != Some(self_token) {
+                return Ok(());
+            }
+            info.pending_process_token = None;
+            let new_bytes = rmp_serde::to_vec_named(&info)?;
+            db.put(&mut wtxn, &key, &new_bytes)?;
+            wtxn.commit()?;
+            Ok(())
+        })
+        .await
+        .map_err(|e| internal_error!("clear_staged_tracking join: {e}"))?
+    }
+
+    /// Standalone Phase 5 sweep: delete one tombstone. Routed through
+    /// the single-writer batcher so concurrent callers coalesce into
+    /// one underlying write txn (opening `env.write_txn()` here would
+    /// serialize every per-component sweep through heed's writer mutex
+    /// with no amortization). Idempotent — `delete` on a missing key
+    /// is a no-op for heed.
+    pub async fn cleanup_tombstone_standalone(
+        &self,
+        parent: &StablePath,
+        relative: &StablePath,
+    ) -> Result<()> {
+        let app_store = self.clone();
+        let parent = parent.clone();
+        let relative = relative.clone();
+        self.run_in_batcher(move |wtxn| {
+            Box::pin(async move { app_store.delete_tombstone(wtxn, &parent, &relative).await })
+        })
+        .await
+    }
+
+    /// Standalone existence-chain upsert. Writes the leaf
+    /// `__cex(parent_of_leaf, leaf_key, Component)` row; missing
+    /// ancestor `Directory` rows are filled in by
+    /// [`Self::ensure_path_node_type`]'s recursion, which stops as
+    /// soon as it finds an existing row.
+    ///
+    /// Routed through the single-writer batcher (see
+    /// [`Self::cleanup_tombstone_standalone`] for the rationale).
+    pub async fn ensure_existence_chain_standalone(&self, path: &StablePath) -> Result<()> {
+        let Some((_, _)) = path.as_ref().split_parent() else {
+            return Ok(());
+        };
+        let app_store = self.clone();
+        let path = path.clone();
+        self.run_in_batcher(move |wtxn| {
+            Box::pin(async move {
+                let Some((parent, key)) = path.as_ref().split_parent() else {
+                    return Ok(());
+                };
+                let parent_owned: StablePath = parent.into();
+                app_store
+                    .ensure_path_node_type(
+                        wtxn,
+                        parent_owned.as_ref(),
+                        key,
+                        StablePathNodeType::Component,
+                    )
+                    .await
+            })
+        })
+        .await
+    }
+
+    /// Standalone Phase 6: upsert the component memo. Routed through
+    /// the single-writer batcher (see [`Self::cleanup_tombstone_standalone`]
+    /// for the rationale).
+    pub async fn finalize_memoization_standalone(
+        &self,
+        component_path: &StablePath,
+        encoded: &[u8],
+    ) -> Result<()> {
+        let app_store = self.clone();
+        let path = component_path.clone();
+        let encoded = encoded.to_vec();
+        self.run_in_batcher(move |wtxn| {
+            Box::pin(async move {
+                app_store
+                    .write_component_memo_raw(wtxn, &path, &encoded)
+                    .await
+            })
+        })
+        .await
+    }
+
+    /// Delete the component-memo row outside a caller-supplied txn.
+    /// Routed through the single-writer batcher so concurrent
+    /// callers coalesce into one underlying write txn (the same
+    /// invariant `LmdbSubmitSession`'s write phases rely on; opening
+    /// `env.write_txn()` here would serialize every Delete-mode
+    /// preflight through heed's writer mutex with no amortization).
+    pub async fn delete_component_memo(&self, path: &StablePath) -> Result<()> {
+        let app_store = self.clone();
+        let path = path.clone();
+        self.run_in_batcher(move |wtxn| {
+            Box::pin(async move { app_store.delete_component_memo_in_txn(wtxn, &path).await })
+        })
+        .await
+    }
+
+    /// Standalone snapshot read of the `(parent_path, key)` node type.
+    pub async fn read_path_node_type(
+        &self,
+        parent_path: StablePathRef<'_>,
+        key: &StableKey,
+    ) -> Result<Option<StablePathNodeType>> {
+        let rtxn = self.read_txn().await?;
+        let parent_owned: StablePath = parent_path.into();
+        let cex_key = key_child_existence(&parent_owned, key)?;
+        let Some(bytes) = self.db().get(&rtxn, &cex_key)? else {
+            return Ok(None);
+        };
+        let info: ChildExistenceInfo = from_msgpack_slice(bytes)?;
+        Ok(Some(info.node_type))
+    }
+
+    /// Reserve an ID range outside a caller-supplied txn. Routed
+    /// through the single-writer batcher so concurrent callers
+    /// coalesce. Returns the first reserved ID.
+    pub async fn reserve_id_range(&self, key: &StableKey, count: u64) -> Result<u64> {
+        let app_store = self.clone();
+        let key = key.clone();
+        self.run_in_batcher_typed(move |wtxn| {
+            Box::pin(async move { app_store.reserve_id_range_in_txn(wtxn, &key, count).await })
+        })
+        .await
     }
 }
 
@@ -245,7 +471,7 @@ impl AppStore {
         Ok(())
     }
 
-    pub async fn delete_component_memo(
+    pub async fn delete_component_memo_in_txn(
         &self,
         txn: &mut WriteTxn<'_>,
         path: &StablePath,
@@ -281,9 +507,19 @@ impl AppStore {
         fp: Fingerprint,
         entry: &FunctionMemoizationEntry<'_>,
     ) -> Result<()> {
-        let key = key_fn_memo(path, fp)?;
         let value = rmp_serde::to_vec_named(entry)?;
-        self.db().put(&mut **txn, &key, &value)?;
+        self.write_fn_memo_raw(txn, path, fp, &value).await
+    }
+
+    pub async fn write_fn_memo_raw(
+        &self,
+        txn: &mut WriteTxn<'_>,
+        path: &StablePath,
+        fp: Fingerprint,
+        encoded: &[u8],
+    ) -> Result<()> {
+        let key = key_fn_memo(path, fp)?;
+        self.db().put(&mut **txn, &key, encoded)?;
         Ok(())
     }
 
@@ -509,7 +745,7 @@ impl AppStore {
     /// Atomically reserve `count` consecutive IDs starting from the next
     /// available ID. Returns the first reserved ID. IDs start at 1
     /// (0 is reserved).
-    pub async fn reserve_id_range(
+    pub async fn reserve_id_range_in_txn(
         &self,
         txn: &mut WriteTxn<'_>,
         key: &StableKey,
@@ -632,5 +868,70 @@ impl AppStore {
             out.push(path);
         }
         Ok(out)
+    }
+}
+
+// --- Submit lifecycle (engine-facing shapes) ----------------------------
+//
+// Convenience aliases for the `*_standalone` helpers above, named to
+// match how engine code refers to these operations.
+
+impl AppStore {
+    /// Standalone Phase 5 tombstone sweep. See
+    /// [`Self::cleanup_tombstone_standalone`].
+    pub async fn cleanup_tombstone(
+        &self,
+        parent_path: &StablePath,
+        relative_path: &StablePath,
+    ) -> Result<()> {
+        self.cleanup_tombstone_standalone(parent_path, relative_path)
+            .await
+    }
+
+    /// Standalone Phase 6 component-memo persist. See
+    /// [`Self::finalize_memoization_standalone`].
+    pub async fn finalize_memoization(
+        &self,
+        component_path: &StablePath,
+        encoded: &[u8],
+    ) -> Result<()> {
+        self.finalize_memoization_standalone(component_path, encoded)
+            .await
+    }
+
+    /// Standalone existence-chain upsert. `_known_parent_path` is
+    /// unused on LMDB — `ensure_path_node_type`'s recursion already
+    /// short-circuits at the first existing row — but kept for
+    /// signature parity with how engine code calls this.
+    pub async fn ensure_existence_chain(
+        &self,
+        path: &StablePath,
+        _known_parent_path: &StablePath,
+    ) -> Result<()> {
+        self.ensure_existence_chain_standalone(path).await
+    }
+
+    /// Open a per-component submit session.
+    pub async fn begin_submit(
+        &self,
+        component_path: StablePath,
+        process_token: u128,
+    ) -> Result<crate::state_store::SubmitSession> {
+        Ok(crate::state_store::submit_session::SubmitSession::new(
+            self.clone(),
+            component_path,
+            process_token,
+        ))
+    }
+
+    /// Spawn a background task that streams every `(StablePath,
+    /// StablePathNodeType)` pair in this app's store, in stable-path
+    /// order. Iteration runs on a dedicated `spawn_blocking` thread
+    /// because the LMDB cursor is `!Send`. Forwards to
+    /// [`crate::state_store::Storage::spawn_stable_path_iter`].
+    pub async fn spawn_stable_path_iter(
+        &self,
+    ) -> tokio::sync::mpsc::Receiver<Result<(StablePath, StablePathNodeType)>> {
+        self.storage.spawn_stable_path_iter(self.clone()).await
     }
 }
