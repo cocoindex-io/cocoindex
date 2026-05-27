@@ -227,13 +227,25 @@ impl<Prof: EngineProfile> App<Prof> {
                 // Wait for the drop operation to complete
                 handle.ready().await?;
 
-                // Clear the database
-                let app_store = root_component.app_ctx().app_store().clone();
+                // Drop the per-app state-store data. Clears the per-app
+                // sub-database (heed 0.22 doesn't expose `mdb_drop`).
+                // Subsumes the previous `clear_all` step — `drop_app`
+                // wipes everything `clear_all` would have emptied.
+                let app_name = root_component.app_ctx().app_reg().name().to_owned();
                 root_component
                     .app_ctx()
                     .env()
-                    .run_txn(move |wtxn| Box::pin(async move { app_store.clear_all(wtxn).await }))
+                    .storage()
+                    .drop_app(&app_name)
                     .await?;
+
+                // Release the env-side `app_names` slot eagerly so a
+                // follow-up `App::new(name, …)` (e.g. Python re-using
+                // the same `App` instance for `update()` after `drop()`)
+                // doesn't trip the "App name already registered" check
+                // while pending tokio captures of `Arc<AppContextInner>`
+                // are still releasing.
+                root_component.app_ctx().app_reg().unregister();
 
                 info!("App dropped successfully");
                 stats_for_task.notify_terminated();

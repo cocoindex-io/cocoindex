@@ -595,7 +595,7 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
             self.component
                 .app_ctx()
                 .env()
-                .run_txn_with_retry(move |wtxn| {
+                .run_txn(move |wtxn| {
                     let app_store = app_store.clone();
                     let parent_path = parent_path.clone();
                     let child_key = child_key.clone();
@@ -851,7 +851,7 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
             self.component
                 .app_ctx()
                 .env()
-                .run_txn_with_retry(move |wtxn| {
+                .run_txn(move |wtxn| {
                     let app_store = app_store.clone();
                     let parent_path = parent_path.clone();
                     let child_key = child_key.clone();

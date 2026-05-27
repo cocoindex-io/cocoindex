@@ -29,10 +29,7 @@ pub async fn iter_stable_paths<Prof: EngineProfile>(
     app: &App<Prof>,
 ) -> impl Stream<Item = Result<StablePathInfo>> + Send + 'static + use<Prof> {
     let app_store = app.app_ctx().app_store().clone();
-    let storage = app.app_ctx().env().storage().clone();
-    let rx = storage
-        .spawn_iter_stable_paths_with_node_type(app_store)
-        .await;
+    let rx = app_store.spawn_stable_path_iter().await;
     receiver_to_stable_path_info_stream(rx)
 }
 
@@ -43,10 +40,7 @@ pub async fn iter_stable_paths_by_name<Prof: EngineProfile>(
     app_name: &str,
 ) -> Result<Pin<Box<dyn Stream<Item = Result<StablePathInfo>> + Send + 'static>>> {
     let storage = env.storage();
-    match storage
-        .spawn_iter_stable_paths_with_node_type_for_app_name(app_name)
-        .await?
-    {
+    match storage.spawn_stable_path_iter_by_name(app_name).await? {
         Some(rx) => Ok(Box::pin(receiver_to_stable_path_info_stream(rx))),
         None => Ok(Box::pin(futures::stream::empty())),
     }

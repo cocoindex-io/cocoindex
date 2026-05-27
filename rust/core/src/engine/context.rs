@@ -18,7 +18,7 @@ use crate::state::target_state_path::TargetStatePath;
 use crate::{
     engine::environment::{AppRegistration, Environment},
     state::stable_path::StablePath,
-    state_store::{AppStore, WriteTxn},
+    state_store::AppStore,
 };
 
 use cocoindex_utils::deser::from_msgpack_slice;
@@ -310,26 +310,29 @@ impl<Prof: EngineProfile> FnMemoCache<Prof> {
         self.entries.iter()
     }
 
-    /// Consume the cache and apply its diff to storage in a single write
-    /// transaction.
+    /// Consume the cache, classify entries, and serialize the writes
+    /// into a [`FnMemoFlushPlan`] that can be re-applied to storage
+    /// across retries.
     ///
-    /// - If `is_fully_loaded` is true: for each entry, write `Ready(Some)`
-    ///   with `already_stored=false` (new or re-executed), delete
-    ///   `Stored(_)` and `Ready(None)` (untouched or memoization-disabled),
-    ///   skip `Ready(Some)` with `already_stored=true` (cache hit, row
-    ///   already in DB).
-    /// - Otherwise: prefix-delete every fn-memo row for `path`, then write
-    ///   the `Ready(Some)` `already_stored=false` entries. Covers
-    ///   `full_reprocess` and any path where the cache was not prefetched.
-    pub(crate) async fn flush_to_db(
-        self,
-        wtxn: &mut WriteTxn<'_>,
-        app_store: &AppStore,
-        path: &StablePath,
-    ) -> Result<()> {
-        if !self.is_fully_loaded {
-            app_store.delete_all_fn_memos(wtxn, path).await?;
-        }
+    /// Inclusion rule (same as the old `flush_to_db`):
+    ///
+    /// - `Ready(Some, already_stored=false)` → serialize bytes into
+    ///   `writes` (new or re-executed entries that must be written).
+    /// - `Ready(Some, already_stored=true)` → skip (DB row already correct).
+    /// - `Stored(_)` and `Ready(None)` → record in `deletes`, only when
+    ///   `is_fully_loaded=true` (otherwise these entries can't exist on
+    ///   disk because prefetch didn't run).
+    /// - `Pending` → no-op (the function errored before resolving; no
+    ///   DB row exists or needs to exist).
+    ///
+    /// `clear_all_first` is set when `!is_fully_loaded` so the apply
+    /// step prefix-deletes the whole range before writing `writes`.
+    pub(crate) fn into_flush_plan(self) -> Result<FnMemoFlushPlan> {
+        let mut plan = FnMemoFlushPlan {
+            clear_all_first: !self.is_fully_loaded,
+            writes: Vec::new(),
+            deletes: Vec::new(),
+        };
         for (fp, lock) in self.entries.into_iter() {
             // No other holders at flush time — extract by reference under
             // a try_write guard rather than unwrapping the Arc, since
@@ -359,13 +362,14 @@ impl<Prof: EngineProfile> FnMemoCache<Prof> {
                         memo_states: memo_states_serialized,
                         context_memo_states: context_memo_states_serialized,
                     };
-                    app_store.write_fn_memo(wtxn, path, fp, &entry).await?;
+                    let encoded = rmp_serde::to_vec_named(&entry)?;
+                    plan.writes.push((fp, encoded));
                 }
                 FnCallMemoEntry::Stored(_) | FnCallMemoEntry::Ready(None) => {
                     if self.is_fully_loaded {
                         // Stored: untouched prefetched entry, stale.
                         // Ready(None): memoization disabled at runtime.
-                        app_store.delete_fn_memo(wtxn, path, fp).await?;
+                        plan.deletes.push(fp);
                     }
                 }
                 FnCallMemoEntry::Pending => {
@@ -379,8 +383,18 @@ impl<Prof: EngineProfile> FnMemoCache<Prof> {
                 }
             }
         }
-        Ok(())
+        Ok(plan)
     }
+}
+
+/// A serialized, re-applyable diff produced by
+/// [`FnMemoCache::into_flush_plan`]. Owns the encoded bytes for every
+/// write so `apply_to_db` can be called repeatedly across retries
+/// without re-touching the cache.
+pub(crate) struct FnMemoFlushPlan {
+    pub(crate) clear_all_first: bool,
+    pub(crate) writes: Vec<(Fingerprint, Vec<u8>)>,
+    pub(crate) deletes: Vec<Fingerprint>,
 }
 
 impl<Prof: EngineProfile> Default for FnMemoCache<Prof> {
