@@ -6,6 +6,7 @@ from typing import (
     Any,
     Callable,
     Concatenate,
+    Generic,
     Iterable,
     ParamSpec,
     TypeVar,
@@ -88,7 +89,12 @@ from .memo_fingerprint import (
     NotMemoKeyable,
 )
 
-from .serde import unpickle_safe, serialize_by_pickle
+from .serde import (
+    unpickle_safe,
+    serialize_by_pickle,
+    serialize as _serialize,
+    deserialize as _deserialize,
+)
 
 from .pending_marker import PendingS, ResolvedS, MaybePendingS
 
@@ -616,6 +622,69 @@ def runtime() -> _DualModeRuntime:
 
 
 # ============================================================================
+# use_state
+# ============================================================================
+
+_StateT = TypeVar("_StateT")
+
+
+class StateHandle(Generic[_StateT]):
+    """
+    Handle for a persistent per-component state value.
+
+    Returned by `coco.use_state()`. Read the current value via `.value`;
+    assign to `.value` to persist a new value for the next run.
+    """
+
+    __slots__ = ("_key", "_value", "_core_processor_ctx")
+
+    def __init__(
+        self,
+        key: str,
+        value: _StateT,
+        core_processor_ctx: core.ComponentProcessorContext,
+    ) -> None:
+        self._key = key
+        self._value = value
+        self._core_processor_ctx = core_processor_ctx
+
+    @property
+    def value(self) -> _StateT:
+        return self._value
+
+    @value.setter
+    def value(self, new_value: _StateT) -> None:
+        self._core_processor_ctx.update_user_state(self._key, _serialize(new_value))
+        self._value = new_value
+
+
+@overload
+def use_state(key: str) -> StateHandle[Any]: ...
+@overload
+def use_state(key: str, initial_value: _StateT) -> StateHandle[_StateT]: ...
+def use_state(key: str, initial_value: Any = None) -> StateHandle[Any]:
+    """
+    Declare a persistent state for the current component.
+
+    On the first run, returns `initial_value` (or `None` if omitted). On
+    subsequent runs, returns the value stored at the end of the previous run.
+    Assign to `handle.value` during the run to persist a new value.
+
+    Args:
+        key: Unique key within this component. Must be declared at most
+             once per component run.
+        initial_value: Value to use when no stored state exists for `key`.
+                       Defaults to `None`.
+
+    Returns:
+        A StateHandle wrapping the current value.
+    """
+    ctx = get_context_from_ctx()
+    stored_bytes = ctx._core_processor_ctx.use_state(key, _serialize(initial_value))
+    return StateHandle(key, _deserialize(stored_bytes), ctx._core_processor_ctx)
+
+
+# ============================================================================
 # __all__
 # ============================================================================
 
@@ -699,6 +768,9 @@ __all__ = [
     "LiveMapView",
     "LiveMapSubscriber",
     "auto_refresh",
+    # use_state
+    "StateHandle",
+    "use_state",
     # Mount APIs
     "ComponentMountHandle",
     "mount",
