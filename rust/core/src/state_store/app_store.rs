@@ -909,7 +909,8 @@ mod tests {
         let mut wtxn = env.write_txn().unwrap();
         let db = env.create_database(&mut wtxn, Some("test_app")).unwrap();
         wtxn.commit().unwrap();
-        (AppStore::new(db, env), dir)
+        let storage = crate::state_store::Storage::from_env(env.clone());
+        (AppStore::new(db, env, storage), dir)
     }
 
     fn comp_path(name: &str) -> StablePath {

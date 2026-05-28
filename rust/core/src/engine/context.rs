@@ -18,7 +18,7 @@ use crate::state::target_state_path::TargetStatePath;
 use crate::{
     engine::environment::{AppRegistration, Environment},
     state::stable_path::StablePath,
-    state_store::AppStore,
+    state_store::{AppStore, WriteTxn},
 };
 
 use cocoindex_utils::deser::from_msgpack_slice;
@@ -555,7 +555,25 @@ impl UserStateCache {
         }
     }
 
-    /// Apply the set-reduction diff to LMDB inside `commit_in_txn`.
+    /// Drain the cache into a serialized plan for inclusion in [`CommitPlan`].
+    /// Mirrors [`FnMemoCache::into_flush_plan`].
+    pub(crate) fn into_flush_plan(self) -> UserStateFlushPlan {
+        let mut plan = UserStateFlushPlan {
+            clear_all_first: !self.is_loaded,
+            writes: Vec::new(),
+            deletes: Vec::new(),
+        };
+        for (key, entry) in self.entries {
+            match entry {
+                UserStateEntry::Loaded(_) if self.is_loaded => plan.deletes.push(key),
+                UserStateEntry::Declared(value) => plan.writes.push((key, value)),
+                _ => {}
+            }
+        }
+        plan
+    }
+
+    /// Apply the set-reduction diff to LMDB directly (used by tests).
     pub(crate) async fn flush_to_db(
         self,
         wtxn: &mut WriteTxn<'_>,
@@ -580,6 +598,14 @@ impl UserStateCache {
         }
         Ok(())
     }
+}
+
+/// Serialized diff produced by [`UserStateCache::into_flush_plan`].
+/// Included in [`CommitPlan`] so the AppStore can apply it atomically.
+pub(crate) struct UserStateFlushPlan {
+    pub(crate) clear_all_first: bool,
+    pub(crate) writes: Vec<(StableKey, Vec<u8>)>,
+    pub(crate) deletes: Vec<StableKey>,
 }
 
 pub(crate) struct ComponentBuildingState<Prof: EngineProfile> {
@@ -1131,7 +1157,8 @@ mod tests {
         let mut wtxn = env.write_txn().unwrap();
         let db = env.create_database(&mut wtxn, Some("test")).unwrap();
         wtxn.commit().unwrap();
-        (AppStore::new(db, env), dir)
+        let storage = crate::state_store::Storage::from_env(env.clone());
+        (AppStore::new(db, env, storage), dir)
     }
 
     fn to_map(pairs: Vec<(StableKey, Vec<u8>)>) -> HashMap<StableKey, Vec<u8>> {
@@ -1371,5 +1398,98 @@ mod tests {
         wtxn.into_inner().commit().unwrap();
 
         assert!(store.list_user_states(&p).await.unwrap().is_empty());
+    }
+
+    // --- into_flush_plan: verifies plan output matches flush_to_db semantics --
+
+    /// Helper: apply a UserStateFlushPlan through CommitPlan + AppStore::commit,
+    /// which is the production path (as opposed to flush_to_db used above).
+    async fn apply_plan_via_commit(store: &AppStore, path: &StablePath, cache: UserStateCache) {
+        use crate::state_store::{CommitPlan, ExistenceReconciler};
+        use futures::future::BoxFuture;
+
+        let plan_data = cache.into_flush_plan();
+        let plan = CommitPlan {
+            new_tracking_info: None,
+            target_owners_to_upsert: Vec::new(),
+            target_owners_to_delete: Vec::new(),
+            fn_memo_clear_all_first: false,
+            fn_memo_writes: Vec::new(),
+            fn_memo_deletes: Vec::new(),
+            user_state_clear_all_first: plan_data.clear_all_first,
+            user_state_writes: plan_data.writes,
+            user_state_deletes: plan_data.deletes,
+            child_path_set: None,
+        };
+        let reconciler: ExistenceReconciler =
+            Box::new(|_wtxn| -> BoxFuture<'_, crate::prelude::Result<()>> {
+                Box::pin(async { Ok(()) })
+            });
+        store.commit(path, plan, reconciler).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn flush_plan_set_reduction_removes_dropped_keys() {
+        // loaded = {a, b, c}; declared = {a, b} → c deleted via CommitPlan path.
+        let (store, _dir) = make_test_store().await;
+        let p = comp_path("comp");
+
+        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
+        store
+            .write_user_state(&mut wtxn, &p, &sym("a"), b"a")
+            .await
+            .unwrap();
+        store
+            .write_user_state(&mut wtxn, &p, &sym("b"), b"b")
+            .await
+            .unwrap();
+        store
+            .write_user_state(&mut wtxn, &p, &sym("c"), b"c")
+            .await
+            .unwrap();
+        wtxn.into_inner().commit().unwrap();
+
+        let mut cache = UserStateCache::new();
+        cache.populate(vec![
+            (sym("a"), b("a")),
+            (sym("b"), b("b")),
+            (sym("c"), b("c")),
+        ]);
+        cache.use_state(sym("a"), b("ignored")).unwrap();
+        cache.use_state(sym("b"), b("ignored")).unwrap();
+        // "c" not re-declared
+
+        apply_plan_via_commit(&store, &p, cache).await;
+
+        let entries = to_map(store.list_user_states(&p).await.unwrap());
+        assert_eq!(entries.len(), 2);
+        assert!(entries.contains_key(&sym("a")));
+        assert!(entries.contains_key(&sym("b")));
+        assert!(!entries.contains_key(&sym("c")));
+    }
+
+    #[tokio::test]
+    async fn flush_plan_full_reprocess_wipes_and_writes_declared() {
+        // DB has pre-existing entry; cache never populated (full_reprocess);
+        // declared = {new_k} → old entry wiped, only new_k survives.
+        let (store, _dir) = make_test_store().await;
+        let p = comp_path("comp");
+
+        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
+        store
+            .write_user_state(&mut wtxn, &p, &sym("old"), b"old")
+            .await
+            .unwrap();
+        wtxn.into_inner().commit().unwrap();
+
+        let mut cache = UserStateCache::new(); // no populate
+        cache.use_state(sym("new_k"), b("new_val")).unwrap();
+
+        apply_plan_via_commit(&store, &p, cache).await;
+
+        let entries = to_map(store.list_user_states(&p).await.unwrap());
+        assert_eq!(entries.len(), 1);
+        assert!(!entries.contains_key(&sym("old")));
+        assert_eq!(entries[&sym("new_k")], b("new_val"));
     }
 }

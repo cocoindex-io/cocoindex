@@ -8,7 +8,9 @@ use crate::engine::context::{
     ComponentProcessingAction, ComponentProcessingMode, ComponentProcessorContext,
     DeclaredTargetState, MemoStatesPayload, TARGET_ID_KEY,
 };
-use crate::engine::context::{FnCallContext, FnCallMemoEntry, FnMemoCache, decode_stored_entry};
+use crate::engine::context::{
+    FnCallContext, FnCallMemoEntry, FnMemoCache, UserStateCache, decode_stored_entry,
+};
 use crate::engine::logic_registry;
 use crate::engine::profile::{EngineProfile, Persist};
 use crate::engine::target_state::{
@@ -345,18 +347,21 @@ impl<Prof: EngineProfile> Committer<Prof> {
     /// Build the engine-side decisions for Phase 4 commit and run
     /// them through [`AppStore::commit`](crate::state_store::AppStore::commit).
     /// The AppStore opens its own write txn, applies the plan's writes
-    /// (tracking-info, fn-memo flush, target-owner cleanup), and
-    /// invokes the `ExistenceReconciler` callback to walk the
+    /// (tracking-info, fn-memo flush, user-state flush, target-owner cleanup),
+    /// and invokes the `ExistenceReconciler` callback to walk the
     /// child-existence tree atomically inside the same txn. Then
     /// launches Phase 5 GC.
+
     async fn commit(
         self,
         child_path_set: Option<ChildStablePathSet>,
         fn_memos: FnMemoCache<Prof>,
+        user_states: UserStateCache,
         curr_version: Option<u64>,
     ) -> Result<()> {
         // Consume FnMemoCache once (drains each entry's RwLock to Pending).
         let fn_memo_plan = fn_memos.into_flush_plan()?;
+        let user_state_plan = user_states.into_flush_plan();
 
         // Engine-side decisions: read existing tracking_info, prune by
         // version retention, clear pending_process_token, version-
@@ -379,6 +384,9 @@ impl<Prof: EngineProfile> Committer<Prof> {
             fn_memo_clear_all_first: fn_memo_plan.clear_all_first,
             fn_memo_writes: fn_memo_plan.writes,
             fn_memo_deletes: fn_memo_plan.deletes,
+            user_state_clear_all_first: user_state_plan.clear_all_first,
+            user_state_writes: user_state_plan.writes,
+            user_state_deletes: user_state_plan.deletes,
             child_path_set: child_path_set.clone(),
         };
 
@@ -1146,6 +1154,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
         declared_target_states,
         child_path_set,
         fn_memos,
+        user_states,
         contained_target_state_paths,
     ) = match comp_ctx.processing_state() {
         ComponentProcessingAction::Build(build_ctx) => {
@@ -1163,6 +1172,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
 
             let child_path_set = building_state.child_path_set;
             let fn_memos = building_state.fn_memos;
+            let user_states = building_state.user_states;
             let contained_target_state_paths = finalize_fn_call_memoization(comp_ctx, &fn_memos)?;
             (
                 &built_target_states_providers
@@ -1171,6 +1181,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                 building_state.target_states.declared_target_states,
                 Some(child_path_set),
                 fn_memos,
+                user_states,
                 contained_target_state_paths,
             )
         }
@@ -1179,6 +1190,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
             Default::default(),
             None,
             FnMemoCache::default(),
+            UserStateCache::new(),
             HashSet::new(),
         ),
     };
@@ -1594,7 +1606,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
     // session handoff needed.
     let committer = Committer::new(comp_ctx, &target_states_providers, demote_component_only)?;
     if let Err(e) = committer
-        .commit(child_path_set, fn_memos, curr_version)
+        .commit(child_path_set, fn_memos, user_states, curr_version)
         .await
     {
         // The commit txn either committed or rolled back before

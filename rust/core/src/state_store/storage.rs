@@ -172,6 +172,21 @@ impl Storage {
         })
     }
 
+    /// Construct a `Storage` from an already-open `heed::Env`. Used in tests
+    /// where the env is created directly without going through `StorageSettings`.
+    pub(crate) fn from_env(db_env: heed::Env<heed::WithoutTls>) -> Self {
+        let batcher = Batcher::new(
+            TxnRunner {
+                db_env: db_env.clone(),
+            },
+            Arc::new(BatchQueue::new()),
+            BatchingOptions::default(),
+        );
+        Self {
+            inner: Arc::new(StorageInner { db_env, batcher }),
+        }
+    }
+
     /// Migrate legacy files from the old layout (directly in `base_path`)
     /// into the new `db_path` subdirectory.
     fn migrate_legacy_db_files(base_path: &Path, db_path: &Path) -> Result<()> {
