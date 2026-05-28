@@ -742,8 +742,10 @@ class SyncFunction(Function[P, R_co]):
         if parent_ctx is None:
             return self._fn(*args, **kwargs)
 
-        def _call_in_context(ctx: core.FnCallContext) -> R_co:
-            context = parent_ctx._with_fn_call_ctx(ctx)
+        def _call_in_context(
+            ctx: core.FnCallContext, *, in_memo_fn: bool = False
+        ) -> R_co:
+            context = parent_ctx._with_fn_call_ctx(ctx, in_memo_fn=in_memo_fn)
             tok = _context_var.set(context)
             try:
                 return self._fn(*args, **kwargs)
@@ -816,7 +818,7 @@ class SyncFunction(Function[P, R_co]):
                     fn_ctx = core.FnCallContext(propagate_children_fn_logic=propagate)
                     if self._logic_fp is not None:
                         fn_ctx.add_fn_logic_dep(self._logic_fp)
-                    ret = _call_in_context(fn_ctx)
+                    ret = _call_in_context(fn_ctx, in_memo_fn=True)
                     # Positional: collect only if not already set (cache-miss path).
                     # Context: look up eager initial states from the Rust
                     # registry in a single call — no state fn calls on cache
@@ -844,7 +846,7 @@ class SyncFunction(Function[P, R_co]):
                 fn_ctx = core.FnCallContext(propagate_children_fn_logic=propagate)
                 if self._logic_fp is not None:
                     fn_ctx.add_fn_logic_dep(self._logic_fp)
-                return _call_in_context(fn_ctx)
+                return _call_in_context(fn_ctx, in_memo_fn=parent_ctx._in_memo_fn)
         finally:
             if fn_ctx is not None:
                 parent_ctx._core_fn_call_ctx.join_child(fn_ctx)
@@ -1298,7 +1300,9 @@ class AsyncFunction(Function[P, R_co]):
                 async_ctx = core.AsyncContext(get_event_loop_or_default())
                 result = await self._execute(async_ctx, *args, **kwargs)
             else:
-                comp_ctx = parent_ctx._with_fn_call_ctx(fn_ctx)
+                comp_ctx = parent_ctx._with_fn_call_ctx(
+                    fn_ctx, in_memo_fn=guard is not None or parent_ctx._in_memo_fn
+                )
                 tok = _context_var.set(comp_ctx)
                 try:
                     result = await self._execute(
