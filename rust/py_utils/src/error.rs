@@ -73,6 +73,14 @@ impl cocoindex_utils::error::HostError for HostedPyErr {
             self.0.is_instance(py, &cancelled_cls)
         })
     }
+
+    fn try_clone(&self) -> Option<Box<dyn cocoindex_utils::error::HostError>> {
+        // `PyErr::clone_ref` shares the underlying Python exception object
+        // (type + value + traceback), so every batch residual recipient gets
+        // the original error — catchable by type, with the full Python
+        // traceback intact — instead of a flattened string.
+        Python::attach(|py| Some(Box::new(HostedPyErr(self.0.clone_ref(py))) as _))
+    }
 }
 
 fn cerror_to_pyerr(err: CError) -> PyErr {
