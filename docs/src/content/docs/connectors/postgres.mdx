@@ -339,6 +339,10 @@ Python types are automatically mapped to PostgreSQL types:
 | `list`, `dict`, nested structs | `jsonb` |
 | `NDArray` (with vector schema) | `vector(n)` or `halfvec(n)` |
 
+:::note[U+0000 (NUL) in strings]
+U+0000 (NUL) is a valid Unicode codepoint, but Postgres cannot store it — neither in `text`-family columns nor inside strings in `jsonb` (the `\u0000` escape is rejected at parse time). CocoIndex automatically strips U+0000 from strings before writing to Postgres, recursively for nested strings and dict keys in `jsonb` payloads. For example, `"Hello\0World"` is written as `"HelloWorld"`.
+:::
+
 To override the default mapping, provide a `PgType` or `VectorSchemaProvider` via:
 
 - **Type annotation** — using `typing.Annotated` on the field

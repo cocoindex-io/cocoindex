@@ -16,7 +16,5 @@ pub mod bytes_decode;
 pub mod http;
 #[cfg(feature = "reqwest")]
 pub use reqwest;
-#[cfg(feature = "sqlx")]
-pub mod str_sanitize;
 #[cfg(feature = "yaml")]
 pub mod yaml_ser;
