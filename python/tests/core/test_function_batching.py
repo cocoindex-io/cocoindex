@@ -305,6 +305,59 @@ async def test_batching_out_of_component() -> None:
 
 
 # ============================================================================
+# Error propagation: exception type + traceback survive for all callers
+# ============================================================================
+
+
+class _CustomBatchError(Exception):
+    """Distinct type so we can assert it survives the batch round-trip."""
+
+
+@pytest.mark.asyncio
+async def test_batching_error_preserves_type_for_all_callers() -> None:
+    """A raising batched impl propagates the *same* exception type to every
+    concurrent caller — including the residual recipients the batcher fans
+    the failure out to — not a flattened RuntimeError.
+
+    Regression for the PyErr-through-residuals fix: residuals used to come
+    back as RuntimeError with the original type and traceback lost. Only the
+    first caller in a batch ever saw the real exception.
+    """
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    @coco.fn.as_async(batching=True)
+    async def failing(inputs: list[int]) -> list[int]:
+        started.set()
+        await release.wait()
+        raise _CustomBatchError("boom")
+
+    # First call runs inline and blocks inside the impl, keeping the queue
+    # busy so the next two calls queue into a single pending batch.
+    task1 = asyncio.create_task(failing(1))
+    await started.wait()
+
+    task2 = asyncio.create_task(failing(2))
+    task3 = asyncio.create_task(failing(3))
+    await asyncio.sleep(0.05)  # let task2/task3 enqueue behind the inline call
+
+    release.set()
+
+    results = await asyncio.gather(task1, task2, task3, return_exceptions=True)
+
+    # Every caller — inline (task1), first batch recipient (task2), and
+    # residual recipient (task3) — sees the original exception type, with
+    # its message intact.
+    for r in results:
+        assert isinstance(r, _CustomBatchError), (
+            f"expected _CustomBatchError, got {type(r).__name__}: {r!r}"
+        )
+        assert str(r) == "boom"
+        # Traceback is preserved (clone_ref keeps the original exception).
+        assert r.__traceback__ is not None
+
+
+# ============================================================================
 # Async batching tests
 # ============================================================================
 

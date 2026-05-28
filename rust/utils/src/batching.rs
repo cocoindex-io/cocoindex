@@ -6,7 +6,7 @@ use tokio::sync::{oneshot, watch};
 use tokio_util::task::AbortOnDropHandle;
 use tracing::{Instrument, Span, error};
 
-use crate::error::{Error, ResidualError, Result};
+use crate::error::{Error, Result};
 use crate::internal_bail;
 
 #[async_trait]
@@ -125,11 +125,13 @@ impl<R: Runner + 'static> BatcherData<R> {
             Err(err) => {
                 let mut senders_iter = batch.output_txs.into_iter();
                 if let Some(sender) = senders_iter.next() {
-                    if senders_iter.len() > 0 {
-                        let residual_err = ResidualError::new(&err);
-                        for sender in senders_iter {
-                            sender.send(Err(residual_err.clone().into())).ok();
-                        }
+                    // Hand the original to the first recipient; every other
+                    // recipient gets an `Error::replica` — a faithful copy
+                    // that preserves a clonable structural error (e.g. a
+                    // Python `PyErr` with its type + traceback) and flattens
+                    // only what can't be cloned.
+                    for sender in senders_iter {
+                        sender.send(Err(err.replica())).ok();
                     }
                     sender.send(Err(err)).ok();
                 }
