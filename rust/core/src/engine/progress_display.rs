@@ -257,7 +257,7 @@ async fn show_progress_pty<T: Send + 'static>(
     start_time: Instant,
 ) -> Result<T> {
     use nix::pty::openpty;
-    use std::os::unix::io::{FromRawFd, IntoRawFd};
+    use std::os::unix::io::IntoRawFd;
 
     // Open PTY
     let pty = openpty(None, None).map_err(|e| internal_error!("openpty failed: {e}"))?;
@@ -284,11 +284,31 @@ async fn show_progress_pty<T: Send + 'static>(
     // Number of progress lines currently displayed
     let num_lines = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
-    // Own the master fd via std::fs::File so it closes when the reader thread exits.
-    let mut master_file: std::fs::File = unsafe { FromRawFd::from_raw_fd(master_fd) };
+    // Set master fd to non-blocking so we can poll for readability with a
+    // short timeout — required for a reliable shutdown signal (see the
+    // shutdown flag below).
+    unsafe {
+        let flags = nix::libc::fcntl(master_fd, nix::libc::F_GETFL);
+        nix::libc::fcntl(master_fd, nix::libc::F_SETFL, flags | nix::libc::O_NONBLOCK);
+    }
 
     // Dup saved_stdout for the reader thread (guard will close the original)
     let reader_stdout_fd = unsafe { nix::libc::dup(saved_stdout) };
+
+    // Shutdown flag: set when the display loop ends so the reader exits
+    // promptly even if the PTY slave hasn't fully closed in the kernel.
+    //
+    // Why this matters: on macOS, the master's blocking `read()` only returns
+    // EOF once *every* fd referencing the slave is closed. If Python (or any
+    // dependency) forks a helper between `dup2(slave, STDOUT_FILENO)` and the
+    // guard drop — `multiprocessing.resource_tracker` is one such helper —
+    // that helper inherits fd 1/fd 2 pointing at our slave, and even after
+    // we restore the parent's fds the slave's kernel refcount stays > 0.
+    // Without an out-of-band exit signal, the reader's `read()` would hang
+    // forever and `reader_handle.join()` below would deadlock the cleanup
+    // path. Polling with a short timeout lets us notice the flag promptly.
+    let shutdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let shutdown_for_reader = shutdown.clone();
 
     let stats_clone = handle.stats().clone();
     let reader_num_lines = num_lines.clone();
@@ -303,15 +323,39 @@ async fn show_progress_pty<T: Send + 'static>(
     // no thread to be scheduled on — a classic runtime-starvation deadlock.
     // An OS thread is always schedulable independent of the Tokio runtime.
     let reader_handle = std::thread::spawn(move || {
-        use std::io::Read;
         let mut buf = [0u8; 4096];
         loop {
-            let n = match master_file.read(&mut buf) {
-                Ok(0) => break, // EOF — slave fully closed
-                Ok(n) => n,
-                Err(_) => break, // EIO when slave closes, or other error
+            if shutdown_for_reader.load(Ordering::Relaxed) {
+                break;
+            }
+            let mut pfd = nix::libc::pollfd {
+                fd: master_fd,
+                events: nix::libc::POLLIN,
+                revents: 0,
             };
-            let captured = &buf[..n];
+            // 100 ms timeout: bounds shutdown latency without busy-looping.
+            let rc = unsafe { nix::libc::poll(&mut pfd, 1, 100) };
+            if rc <= 0 {
+                continue; // timeout (0) or EINTR/error (<0) — loop & re-check flag
+            }
+            let n = unsafe {
+                nix::libc::read(
+                    master_fd,
+                    buf.as_mut_ptr() as *mut nix::libc::c_void,
+                    buf.len(),
+                )
+            };
+            if n < 0 {
+                let errno = std::io::Error::last_os_error().raw_os_error();
+                if errno == Some(nix::libc::EAGAIN) || errno == Some(nix::libc::EWOULDBLOCK) {
+                    continue;
+                }
+                break; // EIO (slave closed) or other terminal error
+            }
+            if n == 0 {
+                break; // EOF
+            }
+            let captured = &buf[..n as usize];
             let cur_lines = reader_num_lines.load(Ordering::Relaxed);
 
             let mut output = Vec::new();
@@ -347,9 +391,10 @@ async fn show_progress_pty<T: Send + 'static>(
             reader_num_lines.store(lines.len(), Ordering::Relaxed);
             write_to_fd(reader_stdout_fd, &output);
         }
-        // Close our dup of saved_stdout
+        // Close our dup of saved_stdout and the master fd.
         unsafe {
             nix::libc::close(reader_stdout_fd);
+            nix::libc::close(master_fd);
         }
     });
 
@@ -424,10 +469,12 @@ async fn show_progress_pty<T: Send + 'static>(
         write_to_fd(saved_stdout, &output);
     }
 
-    // Drop guard first: restores stdout/stderr (closing slave-side refs).
-    // Once the slave is fully closed, the master's blocking read() returns 0
-    // (EOF), which lets the reader thread exit naturally.
+    // Drop guard first: restores stdout/stderr (closing the parent's
+    // slave-side refs). The slave may still be referenced by an inherited
+    // child fd (e.g. multiprocessing.resource_tracker), so we don't rely on
+    // EOF — we set the shutdown flag and let the reader's poll loop notice.
     drop(_guard);
+    shutdown.store(true, Ordering::Relaxed);
 
     // Joining the OS thread is blocking; offload to spawn_blocking so we
     // don't stall the Tokio worker we're running on.
