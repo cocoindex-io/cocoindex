@@ -257,8 +257,7 @@ async fn show_progress_pty<T: Send + 'static>(
     start_time: Instant,
 ) -> Result<T> {
     use nix::pty::openpty;
-    use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd};
-    use tokio::io::unix::AsyncFd;
+    use std::os::unix::io::{FromRawFd, IntoRawFd};
 
     // Open PTY
     let pty = openpty(None, None).map_err(|e| internal_error!("openpty failed: {e}"))?;
@@ -285,89 +284,68 @@ async fn show_progress_pty<T: Send + 'static>(
     // Number of progress lines currently displayed
     let num_lines = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
-    // Set master fd to non-blocking for AsyncFd (kqueue/epoll readiness).
-    // tokio::fs::File uses spawn_blocking, which can hang on macOS when the PTY
-    // slave closes while a blocking read is in progress on the master.
-    unsafe {
-        let flags = nix::libc::fcntl(master_fd, nix::libc::F_GETFL);
-        nix::libc::fcntl(master_fd, nix::libc::F_SETFL, flags | nix::libc::O_NONBLOCK);
-    }
-    let master_file: std::fs::File = unsafe { FromRawFd::from_raw_fd(master_fd) };
-    let async_master = AsyncFd::new(master_file)
-        .map_err(|e| internal_error!("AsyncFd for PTY master failed: {e}"))?;
+    // Own the master fd via std::fs::File so it closes when the reader thread exits.
+    let mut master_file: std::fs::File = unsafe { FromRawFd::from_raw_fd(master_fd) };
 
-    // Dup saved_stdout for the reader task (guard will close the original)
+    // Dup saved_stdout for the reader thread (guard will close the original)
     let reader_stdout_fd = unsafe { nix::libc::dup(saved_stdout) };
 
     let stats_clone = handle.stats().clone();
     let reader_num_lines = num_lines.clone();
 
-    // Spawn reader task — forwards captured output to real terminal.
-    // Uses AsyncFd (kqueue/epoll) for readiness, with non-blocking reads.
-    let reader_handle = tokio::spawn(async move {
+    // Spawn reader on a dedicated OS thread, *not* the Tokio runtime.
+    //
+    // The reader's job is to drain the PTY master so that anyone (tracing
+    // subscribers, println!, etc.) writing to the slave can make progress.
+    // If the reader ran as a Tokio task, a flood of concurrent writes from
+    // worker threads could fill the slave→master kernel buffer, block every
+    // worker in write(2) while holding StdoutLock, and leave the reader with
+    // no thread to be scheduled on — a classic runtime-starvation deadlock.
+    // An OS thread is always schedulable independent of the Tokio runtime.
+    let reader_handle = std::thread::spawn(move || {
+        use std::io::Read;
         let mut buf = [0u8; 4096];
         loop {
-            // Wait for readability via kqueue/epoll
-            let mut ready_guard = match async_master.readable().await {
-                Ok(g) => g,
-                Err(_) => break,
+            let n = match master_file.read(&mut buf) {
+                Ok(0) => break, // EOF — slave fully closed
+                Ok(n) => n,
+                Err(_) => break, // EIO when slave closes, or other error
             };
+            let captured = &buf[..n];
+            let cur_lines = reader_num_lines.load(Ordering::Relaxed);
 
-            // Non-blocking read from PTY master
-            let read_result = ready_guard.try_io(|inner| {
-                let fd = inner.as_raw_fd();
-                let n = unsafe {
-                    nix::libc::read(fd, buf.as_mut_ptr() as *mut nix::libc::c_void, buf.len())
-                };
-                if n < 0 {
-                    Err(std::io::Error::last_os_error())
-                } else {
-                    Ok(n as usize)
+            let mut output = Vec::new();
+            // Clear progress region
+            if cur_lines > 0 {
+                use std::io::Write;
+                write!(&mut output, "\x1b[{}A", cur_lines).unwrap();
+                for _ in 0..cur_lines {
+                    write!(&mut output, "\r\x1b[2K\n").unwrap();
                 }
-            });
-
-            match read_result {
-                Ok(Ok(0)) => break,
-                Ok(Ok(n)) => {
-                    let captured = &buf[..n];
-                    let cur_lines = reader_num_lines.load(Ordering::Relaxed);
-
-                    let mut output = Vec::new();
-                    // Clear progress region
-                    if cur_lines > 0 {
-                        use std::io::Write;
-                        write!(&mut output, "\x1b[{}A", cur_lines).unwrap();
-                        for _ in 0..cur_lines {
-                            write!(&mut output, "\r\x1b[2K\n").unwrap();
-                        }
-                        write!(&mut output, "\x1b[{}A", cur_lines).unwrap();
-                    }
-                    // Write captured output
-                    output.extend_from_slice(captured);
-                    // Redraw progress with current stats
-                    let snapshot = stats_clone.snapshot();
-                    let width = terminal_width_from_fd(reader_stdout_fd);
-                    let lines = build_progress_lines(
-                        &snapshot.stats,
-                        live,
-                        snapshot.ready,
-                        start_time,
-                        &None,
-                        0,
-                        width,
-                    );
-                    {
-                        use std::io::Write;
-                        for line in &lines {
-                            write!(&mut output, "\r\x1b[2K{line}\n").unwrap();
-                        }
-                    }
-                    reader_num_lines.store(lines.len(), Ordering::Relaxed);
-                    write_to_fd(reader_stdout_fd, &output);
-                }
-                Ok(Err(_)) => break,           // EIO when slave closes
-                Err(_would_block) => continue, // Spurious readiness, retry
+                write!(&mut output, "\x1b[{}A", cur_lines).unwrap();
             }
+            // Write captured output
+            output.extend_from_slice(captured);
+            // Redraw progress with current stats
+            let snapshot = stats_clone.snapshot();
+            let width = terminal_width_from_fd(reader_stdout_fd);
+            let lines = build_progress_lines(
+                &snapshot.stats,
+                live,
+                snapshot.ready,
+                start_time,
+                &None,
+                0,
+                width,
+            );
+            {
+                use std::io::Write;
+                for line in &lines {
+                    write!(&mut output, "\r\x1b[2K{line}\n").unwrap();
+                }
+            }
+            reader_num_lines.store(lines.len(), Ordering::Relaxed);
+            write_to_fd(reader_stdout_fd, &output);
         }
         // Close our dup of saved_stdout
         unsafe {
@@ -446,13 +424,14 @@ async fn show_progress_pty<T: Send + 'static>(
         write_to_fd(saved_stdout, &output);
     }
 
-    // Drop guard first: restores stdout/stderr (closing slave side refs).
+    // Drop guard first: restores stdout/stderr (closing slave-side refs).
+    // Once the slave is fully closed, the master's blocking read() returns 0
+    // (EOF), which lets the reader thread exit naturally.
     drop(_guard);
 
-    // On macOS, kqueue may not report readability when the PTY slave closes,
-    // so the reader could remain blocked in readable().await. Abort it.
-    reader_handle.abort();
-    let _ = reader_handle.await;
+    // Joining the OS thread is blocking; offload to spawn_blocking so we
+    // don't stall the Tokio worker we're running on.
+    let _ = tokio::task::spawn_blocking(move || reader_handle.join()).await;
 
     // Print final stats to restored stdout
     let snapshot = handle.stats_snapshot();
