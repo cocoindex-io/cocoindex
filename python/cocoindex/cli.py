@@ -1,3 +1,4 @@
+import logging
 import os
 import signal
 import sys
@@ -23,6 +24,25 @@ from cocoindex._internal.environment import (
 from cocoindex._internal.setting import get_default_db_path
 from cocoindex.inspect import iter_stable_paths, iter_stable_paths_by_name
 from cocoindex._internal.stable_path import StablePath
+
+
+# ---------------------------------------------------------------------------
+# Logging setup
+# ---------------------------------------------------------------------------
+
+
+def _setup_logging() -> None:
+    """Configure Python's root logger for CLI use.
+
+    Level is taken from the ``COCOINDEX_LOG_LEVEL`` env var (default ``WARNING``).
+    Uses ``force=True`` so re-invocation (e.g. tests) replaces any prior config.
+    """
+    level = os.environ.get("COCOINDEX_LOG_LEVEL", "WARNING").upper()
+    logging.basicConfig(
+        format="%(asctime)s %(levelname)-5s %(name)s: %(message)s",
+        level=level,
+        force=True,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -501,6 +521,8 @@ async def _print_tree_streaming(
 )
 def cli(env_file: str | None = None, app_dir: str | None = "") -> None:
     """CLI for CocoIndex."""
+    _setup_logging()
+
     dotenv_path = env_file or find_dotenv(usecwd=True)
 
     if load_dotenv(dotenv_path=dotenv_path):
