@@ -117,9 +117,46 @@ class PgType(NamedTuple):
     encoder: ValueEncoder | None = None
 
 
+def _strip_nul(s: str) -> str:
+    """Strip U+0000 (NUL) bytes from a string.
+
+    Postgres ``text`` cannot contain NUL, and ``jsonb`` additionally rejects
+    the ``\\u0000`` escape on parse. ``str.replace`` returns the original
+    string object when no NUL is present, so this is allocation-free in the
+    common case.
+    """
+    return s.replace("\x00", "")
+
+
+def _sanitize_nul(value: Any) -> Any:
+    """Recursively strip NUL from strings, dict keys, and nested containers.
+
+    Applied to jsonb payloads before ``json.dumps`` so nested strings — and
+    dict keys — don't surface as ``\\u0000`` escapes in the serialized JSON
+    (which Postgres rejects when parsing ``jsonb``).
+    """
+    if isinstance(value, str):
+        return _strip_nul(value)
+    if isinstance(value, dict):
+        return {_sanitize_nul(k): _sanitize_nul(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_sanitize_nul(v) for v in value]
+    return value
+
+
+def _json_default(obj: Any) -> str:
+    """``json.dumps`` fallback that stringifies and strips NUL.
+
+    The pre-walk in ``_sanitize_nul`` runs before serialization and so cannot
+    see strings produced mid-stream by ``default`` (e.g., a non-JSON-native
+    object whose ``str()`` contains NUL). Stripping here closes that gap.
+    """
+    return _strip_nul(str(obj))
+
+
 def _json_encoder(value: Any) -> str:
-    """Encode a value to JSON string for asyncpg."""
-    return json.dumps(value, default=str)
+    """Encode a value to JSON string for asyncpg, stripping NUL from every string."""
+    return json.dumps(_sanitize_nul(value), default=_json_default)
 
 
 def _vector_encoder(value: Any) -> str:
@@ -1238,6 +1275,14 @@ class TableTarget(
 
             if value is not None and col.encoder is not None:
                 value = col.encoder(value)
+            # Strip NUL from any string bound directly to Postgres. Text-family
+            # columns reject it; jsonb columns are already handled inside
+            # `_json_encoder` (nested strings + dict keys), so this is a no-op
+            # on the encoded JSON string but catches `text`/`varchar`/`citext`/
+            # custom-typed str columns regardless of whether the user supplied
+            # an encoder.
+            if isinstance(value, str):
+                value = _strip_nul(value)
             out[col_name] = value
         return out
 

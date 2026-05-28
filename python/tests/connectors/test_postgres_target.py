@@ -190,6 +190,24 @@ class TextRow:
     content: str
 
 
+@dataclass
+class _NulProbeRow:
+    """Row type covering both NUL-stripping paths: a `text` column and a
+    `jsonb` column (via `dict[str, Any]`)."""
+
+    id: str
+    content: str
+    extra: dict[str, Any]
+
+
+class _NulInStr:
+    """Object whose ``str()`` contains NUL; exercises the ``json.dumps``
+    ``default`` hook (objects produced mid-serialization)."""
+
+    def __str__(self) -> str:
+        return "weird\x00str"
+
+
 # =============================================================================
 # Tests
 # =============================================================================
@@ -598,6 +616,64 @@ async def test_postgres_mixed_rows_and_attachments(pg_env: _PgEnv) -> None:
         info = await _index_info(pool, pg_index_name)
         assert info is not None
         assert info["amname"] == "hnsw"  # changed
+
+    finally:
+        await _drop_table(pool, table_name)
+
+
+@pytest.mark.asyncio
+async def test_postgres_strips_nul_in_text_and_jsonb(pg_env: _PgEnv) -> None:
+    """U+0000 (NUL) is stripped from text columns and recursively from jsonb
+    (nested string values, dict keys, and strings produced via
+    ``json.dumps``'s ``default`` hook)."""
+    import json as _json
+
+    pool = pg_env.pool
+    coco_env = pg_env.coco_env
+    table_name = _unique_name("test_nul_strip")
+
+    rows = [
+        _NulProbeRow(
+            id="row1",
+            content="hello\x00world",
+            extra={
+                "nested": ["a\x00b", {"deep\x00key": "deep\x00val"}],
+                "weird\x00key": _NulInStr(),  # → exercises default=str
+            },
+        ),
+    ]
+
+    try:
+
+        async def declare_fn() -> None:
+            table = await coco.use_mount(
+                coco.component_subpath("setup", "table"),
+                postgres.declare_table_target,
+                _PG_DB_KEY,
+                table_name,
+                await postgres.TableSchema.from_class(_NulProbeRow, primary_key=["id"]),
+            )
+            for row in rows:
+                table.declare_row(row=row)
+
+        app = coco.App(
+            coco.AppConfig(name=f"test_nul_strip_{table_name}", environment=coco_env),
+            declare_fn,
+        )
+        await app.update()
+
+        async with pool.acquire() as conn:
+            written = await conn.fetchrow(
+                f'SELECT "content", "extra" FROM "{table_name}" WHERE "id" = $1',
+                "row1",
+            )
+        assert written is not None
+        assert written["content"] == "helloworld"
+        # asyncpg returns jsonb as a JSON-encoded string by default; decode it.
+        assert _json.loads(written["extra"]) == {
+            "nested": ["ab", {"deepkey": "deepval"}],
+            "weirdkey": "weirdstr",
+        }
 
     finally:
         await _drop_table(pool, table_name)
