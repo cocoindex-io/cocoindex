@@ -845,18 +845,20 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
             };
 
             // Compute prev_states and prev_may_be_missing uniformly from prev_item.
-            // `prev_item.is_pending()` (multi-state) means the prior lifecycle's
-            // sink_apply / commit didn't finish — could be a crash on a different
-            // process or a `rollback_pending_tokens` after a sink_apply failure
-            // here. In either case the sink may not reflect what's tracked, so
-            // force `prev_may_be_missing = true`.
+            // A `Deleted` entry among the states means the sink may be absent —
+            // e.g. a prior delete whose sink_apply succeeded but whose commit
+            // didn't finish (crash, or a `rollback_pending_tokens` after a later
+            // failure). Multi-state on its own does NOT imply missing: every
+            // value the sink could hold is already among `prev_states`, so the
+            // handler's own `all(prev == desired)` check decides whether to act.
             let (prev_states, prev_may_be_missing) = if let Some(ref prev_item) = prev_item {
                 let schema_version_mismatch = match parent_provider_gen {
                     Some(pg) => prev_item.provider_schema_version != pg.provider_schema_version,
                     None => false,
                 };
-                let prev_may_be_missing =
-                    full_reprocess || schema_version_mismatch || prev_item.is_pending();
+                let prev_may_be_missing = full_reprocess
+                    || schema_version_mismatch
+                    || prev_item.states.iter().any(|(_, s)| s.is_deleted());
                 let prev_states = prev_item
                     .states
                     .iter()
@@ -1035,7 +1037,6 @@ async fn pre_commit<'tracking, Prof: EngineProfile>(
                 .map(|s_bytes| Prof::TargetStateTrackingRecord::from_bytes(s_bytes))
                 .collect::<Result<Vec<_>>>()?;
 
-            let prev_may_be_missing = prev_may_be_missing || item.is_pending();
             let recon_output = target_states_provider
                 .handler()
                 .ok_or_else(|| {
