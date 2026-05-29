@@ -266,6 +266,12 @@ async def pool(pg_dsn: str) -> Any:
     await p.close()
 ```
 
+### LMDB write paths
+
+- All LMDB writes must go through `Storage::run_txn` (uses the single-writer batcher).
+- Do not open a heed write txn directly or wrap the env in a separate mutex/semaphore — bypassing the batcher loses fsync coalescing and regresses concurrent-submit throughput by 10-100×.
+- LMDB has no savepoints. If a sub-operation needs to "abort," handle it at the body level (e.g. return a sentinel result without writing); never attempt per-body rollback inside the batcher.
+
 ### Sync vs Async
 
 The Rust core (`rust/core`, `rust/utils`) uses **async-first** design with Tokio. The `rust/py` crate bridges Rust async to Python, offering both sync and async APIs:
