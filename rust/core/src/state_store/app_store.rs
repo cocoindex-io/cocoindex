@@ -227,7 +227,8 @@ impl AppStore {
     /// Standalone snapshot read of raw tracking-info bytes — no
     /// caller-managed txn. Engine `Committer` uses this to fetch the
     /// post-pre_commit tracking_info for prune+converge, then hands
-    /// the new bytes to [`SubmitSession::commit`] via the plan.
+    /// the new bytes to [`AppStoreTrait::commit`](super::AppStoreTrait::commit)
+    /// via the plan.
     pub async fn read_tracking_info(&self, path: &StablePath) -> Result<Option<Vec<u8>>> {
         let rtxn = self.read_txn().await?;
         let key = key_tracking_info(path)?;
@@ -257,35 +258,6 @@ impl AppStore {
         let key = key_tracking_info(path)?;
         self.db().delete(&mut **txn, &key)?;
         Ok(())
-    }
-
-    /// Stage-with-read primitive. Reads the existing blob; if it has a
-    /// `pending_process_token` field, returns it (don't overwrite —
-    /// somebody else is in flight). Otherwise reports the slot as
-    /// claimed by `self_token`.
-    ///
-    /// LMDB's single-writer model means no concurrent stagers can race
-    /// us. The actual persistence of `self_token` is deferred to the
-    /// eventual `write_tracking_info_raw` at end of pre-commit, where
-    /// the engine encodes `pending_process_token = Some(self_token)`
-    /// into the blob. No extra write here.
-    pub async fn stage_and_read_tracking_in_txn(
-        &self,
-        txn: &mut WriteTxn<'_>,
-        path: &StablePath,
-        self_token: u128,
-    ) -> Result<(Option<Vec<u8>>, u128)> {
-        let key = key_tracking_info(path)?;
-        let raw = self.db().get(&**txn, &key)?.map(<[u8]>::to_vec);
-        let existing_token = match raw.as_deref() {
-            Some(bytes) => {
-                let info: crate::state::db_schema::StablePathEntryTrackingInfo<'_> =
-                    cocoindex_utils::deser::from_msgpack_slice(bytes)?;
-                info.pending_process_token
-            }
-            None => None,
-        };
-        Ok((raw, existing_token.unwrap_or(self_token)))
     }
 
     /// Cleanup primitive: read the blob, clear `pending_process_token`
@@ -393,7 +365,7 @@ impl AppStore {
     /// Delete the component-memo row outside a caller-supplied txn.
     /// Routed through the single-writer batcher so concurrent
     /// callers coalesce into one underlying write txn (the same
-    /// invariant `LmdbSubmitSession`'s write phases rely on; opening
+    /// invariant the LMDB precommit/commit phases rely on; opening
     /// `env.write_txn()` here would serialize every Delete-mode
     /// preflight through heed's writer mutex with no amortization).
     pub async fn delete_component_memo(&self, path: &StablePath) -> Result<()> {
@@ -909,19 +881,6 @@ impl AppStore {
         _known_parent_path: &StablePath,
     ) -> Result<()> {
         self.ensure_existence_chain_standalone(path).await
-    }
-
-    /// Open a per-component submit session.
-    pub async fn begin_submit(
-        &self,
-        component_path: StablePath,
-        process_token: u128,
-    ) -> Result<crate::state_store::SubmitSession> {
-        Ok(crate::state_store::submit_session::SubmitSession::new(
-            self.clone(),
-            component_path,
-            process_token,
-        ))
     }
 
     /// Spawn a background task that streams every `(StablePath,

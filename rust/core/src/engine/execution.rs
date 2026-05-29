@@ -21,8 +21,8 @@ use crate::state::target_state_path::{
     TargetStatePath, TargetStatePathWithProviderId, TargetStateProviderGeneration,
 };
 use crate::state_store::{
-    AppStore, CommitPlan, ExistenceReconciler, OwnerStateForPreempt, PrecommitReadPlan,
-    PrecommitWritePlan, SubmitSession, WriteTxn, reconcile_child_existence,
+    AppStore, CommitPlan, ExistenceReconciler, OwnerStateForPreempt, PrecommitClaimTargetsPlan,
+    PrecommitReadPlan, PrecommitWritePlan, WriteTxn, reconcile_child_existence,
 };
 use cocoindex_utils::deser::from_msgpack_slice;
 use cocoindex_utils::fingerprint::Fingerprint;
@@ -343,16 +343,14 @@ impl<Prof: EngineProfile> Committer<Prof> {
     }
 
     /// Build the engine-side decisions for Phase 4 commit and run
-    /// them through [`SubmitSession::commit`] using the caller-
-    /// supplied session (opened by `submit()` at the start of the
-    /// submit lifecycle). The session opens its own write txn, applies
-    /// the plan's writes (tracking-info, fn-memo flush, target-owner
-    /// cleanup), and invokes the `ExistenceReconciler` callback to
-    /// walk the child-existence tree atomically inside the same txn.
-    /// Then launches Phase 5 GC.
+    /// them through [`AppStore::commit`](crate::state_store::AppStore::commit).
+    /// The AppStore opens its own write txn, applies the plan's writes
+    /// (tracking-info, fn-memo flush, target-owner cleanup), and
+    /// invokes the `ExistenceReconciler` callback to walk the
+    /// child-existence tree atomically inside the same txn. Then
+    /// launches Phase 5 GC.
     async fn commit(
         self,
-        session: SubmitSession,
         child_path_set: Option<ChildStablePathSet>,
         fn_memos: FnMemoCache<Prof>,
         curr_version: Option<u64>,
@@ -362,9 +360,9 @@ impl<Prof: EngineProfile> Committer<Prof> {
 
         // Engine-side decisions: read existing tracking_info, prune by
         // version retention, clear pending_process_token, version-
-        // converge — produce final bytes the session will write. Per-
+        // converge — produce final bytes the AppStore will write. Per-
         // component exclusivity means no concurrent writer can change
-        // `__track` between this standalone read and `session.commit`.
+        // `__track` between this standalone read and `app_store.commit`.
         let (new_tracking_info, target_owners_to_delete) =
             self.build_commit_writes(curr_version).await?;
 
@@ -386,8 +384,8 @@ impl<Prof: EngineProfile> Committer<Prof> {
 
         // Reconciler closure: walks `child_path_set` against on-disk
         // `__cex` rows, writes diffs and tombstones. Runs inside the
-        // session's commit txn so the existence diff is atomic with the
-        // rest of the commit plan.
+        // AppStore's commit txn so the existence diff is atomic with
+        // the rest of the commit plan.
         let app_store = self.app_store.clone();
         let component_path = self.component_path.clone();
         let cps = child_path_set;
@@ -397,7 +395,9 @@ impl<Prof: EngineProfile> Committer<Prof> {
             })
         });
 
-        session.commit(plan, reconciler).await?;
+        self.app_store
+            .commit(&self.component_path, plan, reconciler)
+            .await?;
 
         // Phase 5 GC: snapshot-read tombstones and spawn child delete
         // operations. Outside the commit txn — tombstones are durable
@@ -599,30 +599,36 @@ enum PreCommitOutcome<Prof: EngineProfile> {
     PendingRetry,
 }
 
-/// Result of one attempt at the engine `pre_commit` retry loop:
-/// either the precommit txn committed (session + output in hand) or
-/// the engine detected `PendingRetry`. Other errors surface as
-/// `Err(_)` and are matched on at the loop level.
-enum PrecommitAttempt<Prof: EngineProfile> {
-    Committed {
-        session: SubmitSession,
-        output: PreCommitOutput<Prof>,
-    },
-    PendingRetry,
+/// Captures bundle shared into the precommit callback closure. Every
+/// field is `O(1)` to clone (Arc-internal or persistent data structure)
+/// so the body's per-call `Arc::clone(&captures)` is cheap. LMDB never
+/// retries the callback, but the bundle's `Fn`-friendly shape keeps the
+/// closure structurally aligned with retry-capable backends.
+struct PreCommitCaptures<Prof: EngineProfile> {
+    app_store: AppStore,
+    stable_path: StablePath,
+    processor_name: Option<Arc<str>>,
+    contained_target_state_paths: Arc<HashSet<TargetStatePath>>,
+    target_states_providers: rpds::HashTrieMapSync<TargetStatePath, TargetStateProvider<Prof>>,
+    declared_target_states:
+        Arc<tokio::sync::Mutex<BTreeMap<TargetStatePath, DeclaredTargetState<Prof>>>>,
 }
 
 /// Engine-side reconcile body. Takes precomputed reads from
-/// [`SubmitSession::precommit_read`] (existing tracking_info,
-/// declared-target owners, preempted-owner tracking blobs) and
-/// returns the [`PrecommitWritePlan`] that the caller threads into
-/// [`SubmitSession::precommit_write`].
+/// [`PrecommitSession::precommit_read`] and
+/// [`PrecommitSession::precommit_claim_targets`] (existing tracking_info,
+/// declared-target owners, preempted-owner tracking blobs) and returns
+/// the [`PrecommitWritePlan`] that the caller returns from the
+/// [`AppStore::precommit`](crate::state_store::AppStore::precommit)
+/// callback for the AppStore to apply + commit.
 ///
 /// Delete-mode preflight (`delete_component_memo` + node-type check)
-/// runs outside, in [`submit`], before the session is opened — the
-/// `demote_component_only` decision lives there too.
+/// runs outside, in [`submit`], before the precommit txn is opened —
+/// the `demote_component_only` decision lives there too.
 #[allow(clippy::too_many_arguments)]
-async fn pre_commit<Prof: EngineProfile>(
+async fn pre_commit<'tracking, Prof: EngineProfile>(
     app_store: &AppStore,
+    wtxn: &mut WriteTxn<'_>,
     process_token: u128,
     stable_path: &StablePath,
     full_reprocess: bool,
@@ -633,27 +639,25 @@ async fn pre_commit<Prof: EngineProfile>(
         tokio::sync::Mutex<BTreeMap<TargetStatePath, DeclaredTargetState<Prof>>>,
     >,
     declared_paths_all: Vec<TargetStatePath>,
-    existing_tracking_info_bytes: Option<Vec<u8>>,
-    current_owners: BTreeMap<TargetStatePath, Option<StablePath>>,
+    mut tracking_info: Option<db_schema::StablePathEntryTrackingInfo<'tracking>>,
+    prior_owners: BTreeMap<TargetStatePath, Option<StablePath>>,
     preempted_owner_states: BTreeMap<StablePath, OwnerStateForPreempt>,
 ) -> Result<PreCommitOutcome<Prof>> {
     let mut actions_by_sinks = HashMap::<Prof::TargetActionSink, SinkInput<Prof>>::new();
     let mut processor_name_for_del: Option<String> = None;
 
-    // Flatten `current_owners` to drop `None` entries (paths with no
+    // Flatten `prior_owners` to drop `None` entries (paths with no
     // existing owner row). The detection sub-pass + Phase 1 preempt
-    // branch only look at non-self owners; storing `Option` would force
-    // every lookup to double-deref.
-    let bulk_target_owners: HashMap<TargetStatePath, StablePath> = current_owners
+    // branch only look at non-self owners; storing `Option` would
+    // force every lookup to double-deref. Note: `prior_owners` only
+    // contains entries for `paths_to_claim` (the subset of declared
+    // paths the engine just decided to claim); paths self already owns
+    // per `tracking_info` are absent from the map and treated as
+    // "owner == self" by construction.
+    let bulk_target_owners: HashMap<TargetStatePath, StablePath> = prior_owners
         .into_iter()
         .filter_map(|(k, v)| v.map(|owner| (k, owner)))
         .collect();
-
-    let mut tracking_info: Option<db_schema::StablePathEntryTrackingInfo<'_>> =
-        existing_tracking_info_bytes
-            .as_deref()
-            .map(from_msgpack_slice)
-            .transpose()?;
 
     // Old-owner tracking_info bytes were prefetched by the session.
     // The cache is per-owner-path; the detection sub-pass and Phase 1
@@ -727,9 +731,6 @@ async fn pre_commit<Prof: EngineProfile>(
         return Ok(PreCommitOutcome::PendingRetry);
     }
     let mut modified_old_owners: HashSet<StablePath> = HashSet::new();
-    // Writes collected during the body; flushed into `PrecommitWritePlan`
-    // at the end so the session can apply them inside its precommit txn.
-    let mut target_owners_to_upsert: BTreeMap<TargetStatePath, StablePath> = BTreeMap::new();
     let previously_exists = tracking_info.is_some();
     if let Some(tracking_info) = &mut tracking_info {
         if let Some(processor_name) = processor_name {
@@ -791,7 +792,6 @@ async fn pre_commit<Prof: EngineProfile>(
             // (either fresh insert or preempted from another component).
             // When provider_id changed, the old entry (under old_pid) stays for Phase 2
             // to skip (stale) and commit to prune.
-            let is_new_to_component = existing_item.is_none();
 
             // Obtain prev_item: either from this component's existing entry or via preempt.
             // Owner info comes from the pre-fetched `bulk_target_owners` map (no
@@ -911,7 +911,12 @@ async fn pre_commit<Prof: EngineProfile>(
                     let existing_gen = provider_generation.clone().unwrap_or_default();
                     let new_gen = match recon_output.child_invalidation {
                         Some(ChildInvalidation::Destructive) => {
-                            let new_id = app_store.reserve_id_range(&TARGET_ID_KEY, 1).await?;
+                            // Inside the open precommit WTxn — use the
+                            // in-txn variant to avoid nesting another
+                            // batched WTxn on LMDB (would deadlock).
+                            let new_id = app_store
+                                .reserve_id_range_in_txn(wtxn, &TARGET_ID_KEY, 1)
+                                .await?;
                             TargetStateProviderGeneration {
                                 provider_id: new_id,
                                 provider_schema_version: 0,
@@ -973,13 +978,11 @@ async fn pre_commit<Prof: EngineProfile>(
                 }
             }
 
-            // Collect item for re-insertion after Phase 2.
+            // Collect item for re-insertion after Phase 2. The
+            // `__target` claim for `is_new_to_component` paths was
+            // already handed off to `precommit_claim_targets` via the
+            // pre-flight `paths_to_claim` filter in `submit()`.
             if let Some(item) = prev_item {
-                // Inverted tracking upsert — collected into the precommit
-                // write plan, applied inside the session's precommit txn.
-                if is_new_to_component {
-                    target_owners_to_upsert.insert(target_state_path.clone(), stable_path.clone());
-                }
                 items_to_insert.push((lookup_key, item));
             }
         }
@@ -1091,9 +1094,10 @@ async fn pre_commit<Prof: EngineProfile>(
     let (curr_version, new_tracking_info_bytes) = curr_version;
 
     // Collect modified preempted-owner blobs from `old_tracking_cache`
-    // into the write plan. The session's precommit_write writes them
-    // alongside the self tracking_info in the same txn, collapsing N
-    // preempts of one owner into one upsert.
+    // into the write plan. The backend writes them alongside the self
+    // tracking_info in the same precommit txn (the apply step inside
+    // `precommit(callback)`), collapsing N preempts of one owner into
+    // one upsert.
     let mut preempted_owner_updates: BTreeMap<StablePath, Vec<u8>> = BTreeMap::new();
     for path in modified_old_owners {
         let encoded = old_tracking_cache
@@ -1104,8 +1108,8 @@ async fn pre_commit<Prof: EngineProfile>(
 
     // Provider-generation updates: buffered into the output, applied
     // by `submit()` after the precommit txn commits — so a retry of
-    // precommit (a fresh session.precommit_read on PendingRetry)
-    // doesn't trip the `OnceLock::set` "already set" guard.
+    // precommit (a fresh precommit_read on PendingRetry) doesn't trip
+    // the `OnceLock::set` "already set" guard.
     Ok(PreCommitOutcome::Done {
         output: PreCommitOutput {
             curr_version,
@@ -1117,7 +1121,6 @@ async fn pre_commit<Prof: EngineProfile>(
         write_plan: PrecommitWritePlan {
             self_path: stable_path.clone(),
             new_tracking_info: new_tracking_info_bytes,
-            target_owners_to_upsert,
             preempted_owner_updates,
         },
     })
@@ -1200,7 +1203,7 @@ pub(crate) async fn submit<Prof: EngineProfile>(
     // or persistent data structures).
     let app_store = comp_ctx.app_ctx().app_store().clone();
     let stable_path = comp_ctx.stable_path().clone();
-    let processor_name_owned: Option<String> = processor_name.map(|s| s.to_owned());
+    let processor_name_owned: Option<Arc<str>> = processor_name.map(Arc::from);
 
     // Delete-mode preflight (was in `pre_commit` body pre-Session).
     // The early-return / `demote_component_only` decision needs to
@@ -1235,77 +1238,128 @@ pub(crate) async fn submit<Prof: EngineProfile>(
     // marker.
     let declared_target_states = Arc::new(tokio::sync::Mutex::new(declared_target_states));
 
-    // Open the submit session and drive Phase 2 (precommit_read →
-    // engine reconcile → precommit_write).
+    // Open the precommit txn via `AppStore::precommit` and drive
+    // Phase 2 inside the callback: precommit_read + engine reconcile +
+    // precommit_claim_targets, returning either `Some((plan, output))`
+    // (AppStore applies + commits) or `None` (PendingRetry → AppStore
+    // contributes no writes).
     //
     // Retry condition: `PendingRetry` — application-layer signal that
     // another in-process pre_commit holds a live token on a contested
     // target path. Bounded by `MAX_PENDING_RETRIES` (the other side
     // either commits or aborts in finite time).
     //
-    // Each retry attempt opens a fresh session; LMDB's read-snapshot
-    // precommit_read has nothing to roll back on retry.
-    let (mut session_opt, pre_commit_out): (Option<SubmitSession>, PreCommitOutput<Prof>) = {
+    // Each retry re-enters `precommit` from scratch; LMDB's
+    // read-snapshot precommit_read has nothing to roll back on retry.
+    let pre_commit_out: PreCommitOutput<Prof> = {
         let mut pending_backoff = std::time::Duration::from_millis(5);
         const MAX_PENDING_RETRIES: u32 = 8;
         let mut pending_attempt: u32 = 0;
         loop {
-            // Body runs as a single fallible block so we can dispatch
-            // on the failure kind below.
-            let attempt: Result<PrecommitAttempt<Prof>> = async {
-                // The eager `__cex` upsert (Phase 1) ran earlier from
-                // `component.rs` via `eager_existence_upsert`, so the
-                // session opens straight into Phase 2.
-                let mut session = app_store
-                    .begin_submit(stable_path.clone(), process_token)
-                    .await?;
+            // Per-attempt captures bundle. Every field is `O(1)` to
+            // clone (Arc-internal or persistent data structure), so
+            // the body's per-call `Arc::clone(&captures)` is cheap.
+            let captures: Arc<PreCommitCaptures<Prof>> = Arc::new(PreCommitCaptures {
+                app_store: app_store.clone(),
+                stable_path: stable_path.clone(),
+                processor_name: processor_name_owned.clone(),
+                contained_target_state_paths: Arc::clone(&contained_target_state_paths),
+                target_states_providers: target_states_providers.clone(),
+                declared_target_states: Arc::clone(&declared_target_states),
+            });
 
-                let declared_paths_all: Vec<TargetStatePath> = {
-                    let guard = declared_target_states.lock().await;
-                    guard.keys().cloned().collect()
-                };
-                let reads = session
-                    .precommit_read(PrecommitReadPlan {
-                        self_path: stable_path.clone(),
-                        self_token: process_token,
-                        declared_target_states: declared_paths_all.clone(),
+            // The eager `__cex` upsert (Phase 1) ran earlier from
+            // `component.rs` via `eager_existence_upsert`, so this
+            // drops straight into Phase 2.
+            let output: Option<PreCommitOutput<Prof>> = app_store
+                .precommit(&stable_path, move |wtxn, session| {
+                    let c = Arc::clone(&captures);
+                    Box::pin(async move {
+                        let declared_paths_all: Vec<TargetStatePath> = {
+                            let guard = c.declared_target_states.lock().await;
+                            guard.keys().cloned().collect()
+                        };
+                        let reads = session
+                            .precommit_read(
+                                wtxn,
+                                PrecommitReadPlan {
+                                    self_path: c.stable_path.clone(),
+                                    self_token: process_token,
+                                },
+                            )
+                            .await?;
+
+                        // Deserialize the existing tracking record once; the
+                        // bytes stay alive in `existing_tracking_info_bytes`
+                        // for the remainder of this attempt. Engine-side
+                        // filter: only paths not already in self's tracking
+                        // need a `__target` touch (per spec §4.1
+                        // per-component exclusivity), so warm reprocess
+                        // collapses to zero `__target` round-trips.
+                        let existing_tracking_info_bytes = reads.existing_tracking_info;
+                        let tracking_info: Option<db_schema::StablePathEntryTrackingInfo<'_>> =
+                            existing_tracking_info_bytes
+                                .as_deref()
+                                .map(from_msgpack_slice)
+                                .transpose()?;
+                        let existing_paths: std::collections::HashSet<TargetStatePath> =
+                            tracking_info
+                                .as_ref()
+                                .map(|info| {
+                                    info.target_state_items
+                                        .keys()
+                                        .map(|k| k.target_state_path.clone())
+                                        .collect()
+                                })
+                                .unwrap_or_default();
+                        let paths_to_claim: Vec<TargetStatePath> = declared_paths_all
+                            .iter()
+                            .filter(|p| !existing_paths.contains(*p))
+                            .cloned()
+                            .collect();
+
+                        let claim = session
+                            .precommit_claim_targets(
+                                wtxn,
+                                PrecommitClaimTargetsPlan {
+                                    self_path: c.stable_path.clone(),
+                                    paths_to_claim,
+                                },
+                            )
+                            .await?;
+
+                        let outcome = pre_commit(
+                            &c.app_store,
+                            wtxn,
+                            process_token,
+                            &c.stable_path,
+                            full_reprocess,
+                            c.processor_name.as_deref(),
+                            &c.contained_target_state_paths,
+                            &c.target_states_providers,
+                            Arc::clone(&c.declared_target_states),
+                            declared_paths_all,
+                            tracking_info,
+                            claim.prior_owners,
+                            claim.preempted_owner_states,
+                        )
+                        .await?;
+
+                        Ok(match outcome {
+                            PreCommitOutcome::Done { output, write_plan } => {
+                                Some((write_plan, output))
+                            }
+                            PreCommitOutcome::PendingRetry => None,
+                        })
                     })
-                    .await?;
-
-                let outcome = pre_commit(
-                    &app_store,
-                    process_token,
-                    &stable_path,
-                    full_reprocess,
-                    processor_name_owned.as_deref(),
-                    &contained_target_state_paths,
-                    &target_states_providers,
-                    Arc::clone(&declared_target_states),
-                    declared_paths_all,
-                    reads.existing_tracking_info,
-                    reads.current_owners,
-                    reads.preempted_owner_states,
-                )
+                })
                 .await?;
 
-                match outcome {
-                    PreCommitOutcome::Done { output, write_plan } => {
-                        session.precommit_write(write_plan).await?;
-                        Ok(PrecommitAttempt::Committed { session, output })
-                    }
-                    PreCommitOutcome::PendingRetry => {
-                        drop(session);
-                        Ok(PrecommitAttempt::PendingRetry)
-                    }
-                }
-            }
-            .await;
-
-            match attempt {
-                Ok(PrecommitAttempt::Committed { session, output }) => {
-                    break (Some(session), output);
-                }
-                Ok(PrecommitAttempt::PendingRetry) => {
+            match output {
+                Some(output) => break output,
+                None => {
+                    // PendingRetry: AppStore contributed no writes. Back
+                    // off, retry.
                     pending_attempt += 1;
                     if pending_attempt >= MAX_PENDING_RETRIES {
                         client_bail!(
@@ -1318,7 +1372,6 @@ pub(crate) async fn submit<Prof: EngineProfile>(
                     pending_backoff =
                         std::cmp::min(pending_backoff * 2, std::time::Duration::from_millis(200));
                 }
-                Err(e) => return Err(e),
             }
         }
     };
@@ -1338,8 +1391,9 @@ pub(crate) async fn submit<Prof: EngineProfile>(
         child_provider.set_provider_generation(new_gen)?;
     }
 
-    // Sink apply. On failure the session (still in hand) cleans up
-    // the stage marker.
+    // Sink apply. On failure we clear the stage marker so a
+    // subsequent precommit doesn't see a stale token from this
+    // attempt.
     let sink_result: Result<()> = async {
         let host_runtime_ctx = comp_ctx.app_ctx().env().host_runtime_ctx();
         for (sink, input) in actions_by_sinks {
@@ -1378,34 +1432,20 @@ pub(crate) async fn submit<Prof: EngineProfile>(
     .await;
 
     if let Err(e) = sink_result {
-        if let Some(s) = session_opt.take() {
-            if let Err(cleanup_err) = s.cleanup().await {
-                error!(
-                    "session cleanup after sink_apply failure for {}: {:?}",
-                    comp_ctx.stable_path(),
-                    cleanup_err
-                );
-                // Continue with retry-helper fallback so the in-flight
-                // marker doesn't strand subsequent pre_commits.
-                cleanup_pending_token(comp_ctx, process_token).await;
-            }
-        } else {
-            cleanup_pending_token(comp_ctx, process_token).await;
-        }
+        cleanup_pending_token(comp_ctx, process_token).await;
         return Err(e);
     }
 
-    // Commit. Consumes the session.
-    let session = session_opt
-        .take()
-        .ok_or_else(|| internal_error!("session missing at commit"))?;
+    // Commit. `AppStore::commit` is a normal trait method — no
+    // session handoff needed.
     let committer = Committer::new(comp_ctx, &target_states_providers, demote_component_only)?;
     if let Err(e) = committer
-        .commit(session, child_path_set, fn_memos, curr_version)
+        .commit(child_path_set, fn_memos, curr_version)
         .await
     {
-        // Session was consumed (Ok or Err mid-commit). Use the
-        // helper, which opens a fresh session for cleanup retry.
+        // The commit txn either committed or rolled back before
+        // returning Err — either way the stage marker may still be
+        // live, so clear it via the retry helper.
         cleanup_pending_token(comp_ctx, process_token).await;
         return Err(e);
     }
@@ -1426,8 +1466,8 @@ pub(crate) async fn submit<Prof: EngineProfile>(
 
 /// Clear this component's `pending_process_token` field in the
 /// tracking-info blob. Called when sink_apply or commit failed
-/// between `session.precommit_write` and a successful
-/// `session.commit`.
+/// between the successful precommit txn and a successful
+/// `app_store.commit`.
 ///
 /// Without this, the token the precommit wrote would deadlock any
 /// future pre_commit in this process that touches an overlapping
@@ -1439,12 +1479,13 @@ pub(crate) async fn submit<Prof: EngineProfile>(
 /// the sink-tracking divergence the failure may have caused gets
 /// re-reconciled.
 ///
-/// Each iteration opens a fresh `SubmitSession` and calls
-/// `session.cleanup()`. Retried indefinitely with exponential
-/// backoff — every failure is logged but the function does not
-/// return until the cleanup succeeds. If the process exits while
-/// this is still retrying, the next process picks up the leftover
-/// state via the same `is_pending()` check.
+/// Each iteration calls
+/// [`AppStoreTrait::clear_stage_marker`](crate::state_store::AppStoreTrait::clear_stage_marker).
+/// Retried indefinitely with exponential backoff — every failure is
+/// logged but the function does not return until the cleanup
+/// succeeds. If the process exits while this is still retrying, the
+/// next process picks up the leftover state via the same
+/// `is_pending()` check.
 async fn cleanup_pending_token<Prof: EngineProfile>(
     comp_ctx: &ComponentProcessorContext<Prof>,
     process_token: u128,
@@ -1453,12 +1494,7 @@ async fn cleanup_pending_token<Prof: EngineProfile>(
     let path = comp_ctx.stable_path().clone();
     let mut backoff = std::time::Duration::from_millis(10);
     loop {
-        let result: Result<()> = async {
-            let session = app_store.begin_submit(path.clone(), process_token).await?;
-            session.cleanup().await
-        }
-        .await;
-        match result {
+        match app_store.clear_stage_marker(&path, process_token).await {
             Ok(()) => return,
             Err(e) => {
                 error!(

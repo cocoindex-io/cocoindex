@@ -16,7 +16,8 @@ mod txn;
 pub use app_store::AppStore;
 pub use storage::{Storage, StorageSettings};
 pub use submit_session::{
-    CommitPlan, ExistenceReconciler, OwnerStateForPreempt, PrecommitReadPlan, PrecommitReadResult,
-    PrecommitWritePlan, SubmitSession, reconcile_child_existence,
+    CommitPlan, ExistenceReconciler, OwnerStateForPreempt, PrecommitClaimTargetsPlan,
+    PrecommitClaimTargetsResult, PrecommitReadPlan, PrecommitReadResult, PrecommitSession,
+    PrecommitWritePlan, reconcile_child_existence,
 };
 pub use txn::WriteTxn;
