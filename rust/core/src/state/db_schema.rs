@@ -290,9 +290,15 @@ impl<'a> TargetStateInfoItem<'a> {
     /// True iff this item's `states` carries an unsettled push from a
     /// pre_commit that hasn't been finalized by `commit_in_txn`'s retention
     /// pass — either an in-flight modification by *this* process, a crashed
-    /// prior process, or a rolled-back failed attempt. Used to force
-    /// `prev_may_be_missing = true` on reconcile so the sink gets a fresh
-    /// upsert/delete instead of a short-circuit "no change" decision.
+    /// prior process, or a rolled-back failed attempt.
+    ///
+    /// Used in the pre_commit detection sub-pass to recognize a *live*
+    /// in-flight lifecycle (paired with `pending_process_token == self`).
+    /// It does NOT drive `prev_may_be_missing`: multi-state means the sink
+    /// holds one of the enumerated `states`, all of which are passed to
+    /// reconcile as `prev_states`, so the handler's own `all(prev == desired)`
+    /// check decides whether an action is needed. The "sink may be absent"
+    /// case is signalled separately by a `Deleted` entry among the states.
     ///
     /// Invariant: at rest (after a successful `commit_in_txn`), every item
     /// has `states.len() <= 1`. Retention always reduces the vec by dropping

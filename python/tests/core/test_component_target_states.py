@@ -652,6 +652,62 @@ def test_proceed_with_failed_creation() -> None:
 
 
 ##################################################################################
+# Test for prev_may_be_missing after a failed update
+
+
+def test_prev_may_be_missing_after_failed_update() -> None:
+    """A failed sink_apply leaves the target-state item with multiple possible
+    states on disk (the value it had before the failed attempt, plus the value
+    it tried to write). Both of those are real prior sink states — the actual
+    sink content is guaranteed to be one of them — so a later run that observes
+    these possible states must NOT set ``prev_may_be_missing=True``.
+
+    Scenario:
+      t1: declare a=1 (committed) -> possible states [1].
+      t2: declare a=2, leaf sink fails -> possible states left as [1, 2].
+      t3: declare a=2 again, sink ok -> reconcile must see prev=[1, 2] with
+          prev_may_be_missing=False (not True).
+    """
+    DictsTarget.store.clear()
+    _source_data.clear()
+
+    app = coco.App(
+        coco.AppConfig(
+            name="test_prev_may_be_missing_after_failed_update", environment=coco_env
+        ),
+        _declare_dicts_data_together,
+    )
+
+    # t1: insert a=1.
+    _source_data["D1"] = {"a": 1}
+    app.update_blocking()
+    assert DictsTarget.store.data == {
+        "D1": {"a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True)},
+    }
+
+    # t2: update a=2, but make the leaf sink for D1 fail. The failed attempt
+    # leaves the item with two possible states [1, 2] on disk; the sink itself
+    # is untouched, so a=1 is still what's stored.
+    _source_data["D1"]["a"] = 2
+    leaf_store = DictsTarget.store._stores["D1"]
+    try:
+        leaf_store.sink_exception = True
+        with pytest.raises(Exception):
+            app.update_blocking()
+    finally:
+        leaf_store.sink_exception = False
+    assert DictsTarget.store.data["D1"]["a"].data == 1
+
+    # t3: declare a=2 again; the sink now succeeds. The item carries possible
+    # states [1, 2], but both are real prior sink values, so prev_may_be_missing
+    # must be False.
+    app.update_blocking()
+    assert DictsTarget.store.data == {
+        "D1": {"a": DictDataWithPrev(data=2, prev=[1, 2], prev_may_be_missing=False)},
+    }
+
+
+##################################################################################
 # Test for cleanup of partially-built components
 
 

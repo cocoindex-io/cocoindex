@@ -109,6 +109,16 @@ async def _row_count(pool: "asyncpg.Pool", table_name: str) -> int:
         return int(row["cnt"])
 
 
+async def _table_columns(pool: "asyncpg.Pool", table_name: str) -> set[str]:
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = $1 AND table_schema = 'public'",
+            table_name,
+        )
+        return {str(row["column_name"]) for row in rows}
+
+
 async def _drop_table(pool: "asyncpg.Pool", table_name: str) -> None:
     async with pool.acquire() as conn:
         await conn.execute(f'DROP TABLE IF EXISTS "{table_name}" CASCADE')
@@ -676,4 +686,82 @@ async def test_postgres_strips_nul_in_text_and_jsonb(pg_env: _PgEnv) -> None:
         }
 
     finally:
+        await _drop_table(pool, table_name)
+
+
+@pytest.mark.asyncio
+async def test_postgres_column_drop_retries_after_failed_attempt(
+    pg_env: _PgEnv,
+) -> None:
+    """A column drop that fails (here, blocked by a dependent view) leaves the
+    table's tracking item with multiple possible states on disk. A later run,
+    once the dependency is gone, must still recompute the column-level diff and
+    actually drop the column — it must NOT treat the prior states as missing and
+    short-circuit into a no-op ``CREATE TABLE IF NOT EXISTS``.
+
+    Scenario:
+      t1: create table with columns (id, value, extra).
+      t2: remove "extra" from the schema, but a view depends on it, so the
+          ``DROP COLUMN`` fails. The table item is left with possible states
+          [(id, value, extra), (id, value)].
+      t3: drop the view, run again -> "extra" must actually be dropped.
+    """
+    pool = pg_env.pool
+    coco_env = pg_env.coco_env
+    table_name = _unique_name("test_col_drop")
+    view_name = _unique_name("test_col_drop_view")
+
+    include_extra = True
+
+    def _schema() -> "postgres.TableSchema[dict[str, Any]]":
+        columns = {
+            "id": postgres.ColumnDef("text", nullable=False),
+            "value": postgres.ColumnDef("text"),
+        }
+        if include_extra:
+            columns["extra"] = postgres.ColumnDef("text")
+        return postgres.TableSchema(columns=columns, primary_key=["id"])
+
+    try:
+
+        async def declare_fn() -> None:
+            await coco.use_mount(
+                coco.component_subpath("setup", "table"),
+                postgres.declare_table_target,
+                _PG_DB_KEY,
+                table_name,
+                _schema(),
+            )
+
+        app = coco.App(
+            coco.AppConfig(name=f"test_col_drop_{table_name}", environment=coco_env),
+            declare_fn,
+        )
+
+        # t1: create table with id, value, extra.
+        await app.update()
+        assert await _table_columns(pool, table_name) == {"id", "value", "extra"}
+
+        # Create a view that depends on column "extra" so DROP COLUMN fails.
+        async with pool.acquire() as conn:
+            await conn.execute(
+                f'CREATE VIEW "{view_name}" AS SELECT "extra" FROM "{table_name}"'
+            )
+
+        # t2: drop "extra" -> blocked by the dependent view, so the run fails.
+        include_extra = False
+        with pytest.raises(Exception):
+            await app.update()
+        # The column is still present because the drop failed.
+        assert "extra" in await _table_columns(pool, table_name)
+
+        # t3: remove the dependency, run again. The column drop must now happen.
+        async with pool.acquire() as conn:
+            await conn.execute(f'DROP VIEW IF EXISTS "{view_name}"')
+        await app.update()
+        assert await _table_columns(pool, table_name) == {"id", "value"}
+
+    finally:
+        async with pool.acquire() as conn:
+            await conn.execute(f'DROP VIEW IF EXISTS "{view_name}"')
         await _drop_table(pool, table_name)
