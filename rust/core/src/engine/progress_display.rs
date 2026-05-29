@@ -489,7 +489,7 @@ async fn show_progress_pty<T: Send + 'static>(
 
 /// Plain text fallback (non-TTY, Windows).
 async fn show_progress_plain<T: Send + 'static>(
-    mut handle: AppOpHandle<T>,
+    handle: AppOpHandle<T>,
     options: ProgressDisplayOptions,
     live: bool,
     start_time: Instant,
@@ -499,19 +499,15 @@ async fn show_progress_plain<T: Send + 'static>(
 
     loop {
         tokio::select! {
-            result = handle.changed() => {
-                let version = match result {
-                    Ok(v) => v,
-                    Err(_) => break,
-                };
-                if version >= TERMINATED_VERSION {
-                    break;
-                }
+            // Only wakes on termination, not on every stats change, so the
+            // refresh timer is what drives rendering in the no-TTY case.
+            // On termination we exit immediately and fall through to the
+            // final stats below.
+            () = handle.wait_terminated() => break,
+            () = &mut sleep_fut => {
+                sleep_fut.set(tokio::time::sleep(options.refresh_interval));
             }
-            () = &mut sleep_fut => {}
         }
-
-        sleep_fut.set(tokio::time::sleep(options.refresh_interval));
 
         let snapshot = handle.stats_snapshot();
         if snapshot.ready && ready_time.is_none() {

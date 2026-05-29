@@ -51,6 +51,13 @@ impl<T: Send + 'static> AppOpHandle<T> {
         Ok(*self.version_rx.borrow())
     }
 
+    /// Waits until the operation terminates, ignoring intermediate changes.
+    /// Unlike `changed()`, this only resolves on termination, so callers that
+    /// don't care about every update aren't woken on every version bump.
+    pub async fn wait_terminated(&self) {
+        self.stats.wait_terminated().await;
+    }
+
     /// Awaits the task completion and returns the result.
     pub async fn result(self) -> Result<T> {
         self.task

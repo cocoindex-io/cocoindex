@@ -52,6 +52,10 @@ pub struct ProcessingStats {
     inner: Arc<Mutex<VersionedProcessingStats>>,
     version_tx: watch::Sender<u64>,
     version_rx: watch::Receiver<u64>,
+    /// Fires exactly once, on termination. Separate from `version_*` so that
+    /// terminated-only waiters aren't woken on every stats update.
+    terminated_tx: watch::Sender<bool>,
+    terminated_rx: watch::Receiver<bool>,
 }
 
 impl Default for ProcessingStats {
@@ -63,10 +67,13 @@ impl Default for ProcessingStats {
 impl ProcessingStats {
     pub fn new() -> Self {
         let (version_tx, version_rx) = watch::channel(0u64);
+        let (terminated_tx, terminated_rx) = watch::channel(false);
         Self {
             inner: Arc::new(Mutex::new(VersionedProcessingStats::default())),
             version_tx,
             version_rx,
+            terminated_tx,
+            terminated_rx,
         }
     }
 
@@ -103,7 +110,20 @@ impl ProcessingStats {
 
     /// Signal that the processing task has fully terminated.
     pub fn notify_terminated(&self) {
+        // The version channel carries the sentinel for change-tracking
+        // consumers (e.g. the TTY display, which wants every update anyway);
+        // the dedicated terminated channel is for terminated-only waiters.
         let _ = self.version_tx.send(TERMINATED_VERSION);
+        let _ = self.terminated_tx.send(true);
+    }
+
+    /// Resolves only when the operation has terminated. Because the underlying
+    /// channel fires exactly once, the waiter isn't woken on intermediate
+    /// stats updates (unlike the version channel).
+    pub async fn wait_terminated(&self) {
+        let mut rx = self.terminated_rx.clone();
+        // Err means the sender was dropped, which we also treat as terminated.
+        let _ = rx.wait_for(|terminated| *terminated).await;
     }
 
     /// Subscribe to version change notifications.
