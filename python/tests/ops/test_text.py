@@ -20,6 +20,9 @@ def test_detect_code_language_known_extensions() -> None:
     assert detect_code_language(filename="script.jl") == "julia"
     assert detect_code_language(filename="Main.elm") == "elm"
     assert detect_code_language(filename="index.astro") == "astro"
+    assert detect_code_language(filename="deploy.sh") == "bash"
+    assert detect_code_language(filename="CMakeLists.cmake") == "cmake"
+    assert detect_code_language(filename="main.tf") == "hcl"
 
 
 def test_detect_code_language_unknown_extension() -> None:
@@ -296,3 +299,60 @@ def test_custom_language_config_alias() -> None:
     assert len(chunks) == 2
     assert chunks[0].text == "PartA"
     assert chunks[1].text == "PartB"
+
+
+def test_recursive_splitter_with_bash() -> None:
+    """Test RecursiveSplitter with Bash syntax-aware splitting."""
+    splitter = RecursiveSplitter()
+    code = (
+        "#!/usr/bin/env bash\n\n"
+        "greet() {\n"
+        '    echo "Hello, $1!"\n'
+        "}\n\n"
+        "for name in Alice Bob; do\n"
+        '    greet "$name"\n'
+        "done\n"
+    )
+    chunks = splitter.split(code, chunk_size=60, min_chunk_size=20, language="bash")
+
+    assert len(chunks) >= 1
+    assert all(isinstance(c, Chunk) for c in chunks)
+
+
+def test_recursive_splitter_with_cmake() -> None:
+    """Test RecursiveSplitter with CMake syntax-aware splitting."""
+    splitter = RecursiveSplitter()
+    code = (
+        "cmake_minimum_required(VERSION 3.20)\n"
+        "project(MyProject)\n\n"
+        "function(add_my_target name)\n"
+        "    add_executable(${name} main.cpp)\n"
+        "    target_compile_features(${name} PRIVATE cxx_std_17)\n"
+        "endfunction()\n\n"
+        "add_my_target(app)\n"
+    )
+    chunks = splitter.split(code, chunk_size=80, min_chunk_size=20, language="cmake")
+
+    assert len(chunks) >= 1
+    assert all(isinstance(c, Chunk) for c in chunks)
+
+
+def test_recursive_splitter_with_hcl() -> None:
+    """Test RecursiveSplitter with HCL/Terraform syntax-aware splitting."""
+    splitter = RecursiveSplitter()
+    code = (
+        'terraform {\n  required_version = ">= 1.0"\n}\n\n'
+        'resource "aws_s3_bucket" "example" {\n'
+        '  bucket = "my-bucket"\n\n'
+        "  tags = {\n"
+        '    Name = "example"\n'
+        "  }\n"
+        "}\n\n"
+        'output "bucket_name" {\n'
+        "  value = aws_s3_bucket.example.bucket\n"
+        "}\n"
+    )
+    chunks = splitter.split(code, chunk_size=80, min_chunk_size=20, language="hcl")
+
+    assert len(chunks) >= 1
+    assert all(isinstance(c, Chunk) for c in chunks)
