@@ -220,7 +220,7 @@ The framework's general rule: **a call raises on failure iff the failed work was
 To react to background failures, you can:
 
 - Install [exception handlers](../advanced_topics/exception_handlers#exception-handlers) — global or scoped — to send alerts, record metrics, or implement custom logic. A handler that raises propagates the failure through `await handle.ready()` if you choose to await it.
-- [Monitor app progress](./app#monitoring-progress) — `UpdateStats` exposes per-component stats including error counts, so you can detect failures programmatically.
+- [Monitor app progress](../advanced_topics/progress_monitoring) — `UpdateStats` exposes per-component stats including error counts, so you can detect failures programmatically.
 
 For the full picture — including the critical-path principle applied to every API, interrupted update recovery, and the exception handler API — see [Error Handling](../advanced_topics/exception_handlers).
 

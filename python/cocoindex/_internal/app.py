@@ -23,17 +23,17 @@ from .function import (
     fn_ret_deserializer,
 )
 from .update_stats import (
-    ComponentStats,
     UpdateSnapshot,
     UpdateStats,
     UpdateStatus,
+    _StatsView,
+    _decode_update_stats,
+    _TERMINATED_VERSION,
 )
 
 
 P = ParamSpec("P")
 R = TypeVar("R")
-
-_TERMINATED_VERSION = 2**64 - 1  # u64::MAX
 
 
 class _StatsSnapshot(NamedTuple):
@@ -68,11 +68,6 @@ class UpdateHandle(Generic[R]):
             self._init_coro = None
         return self._core_handle
 
-    @staticmethod
-    def _make_update_stats(raw: dict[str, dict[str, int]]) -> UpdateStats:
-        by_component = {name: ComponentStats(**group) for name, group in raw.items()}
-        return UpdateStats(by_component=by_component)
-
     def _snapshot_from_handle(
         self,
         handle: core.UpdateHandle,
@@ -80,7 +75,7 @@ class UpdateHandle(Generic[R]):
         version, ready, raw = handle.stats_snapshot()
         if not raw:
             return _StatsSnapshot(version, ready, None)
-        return _StatsSnapshot(version, ready, self._make_update_stats(raw))
+        return _StatsSnapshot(version, ready, _decode_update_stats(raw))
 
     def stats(self) -> UpdateStats | None:
         """Returns a snapshot of the latest stats, or None if not yet started."""
@@ -140,48 +135,11 @@ class UpdateHandle(Generic[R]):
         return self.result().__await__()
 
 
-class DropHandle:
+class DropHandle(_StatsView[core.DropHandle]):
     """Handle for a running or completed drop operation."""
 
     def __init__(self, core_handle: core.DropHandle) -> None:
         self._core_handle = core_handle
-
-    @staticmethod
-    def _make_update_stats(raw: dict[str, dict[str, int]]) -> UpdateStats:
-        by_component = {name: ComponentStats(**group) for name, group in raw.items()}
-        return UpdateStats(by_component=by_component)
-
-    def stats(self) -> UpdateStats | None:
-        """Returns a snapshot of the latest stats."""
-        version, ready, raw = self._core_handle.stats_snapshot()
-        if not raw:
-            return None
-        return self._make_update_stats(raw)
-
-    async def watch(self) -> AsyncIterator[UpdateSnapshot[None]]:
-        """Async iterator that yields progress snapshots until completion."""
-        last_version = 0
-        while True:
-            version = await self._core_handle.changed()
-
-            if version >= _TERMINATED_VERSION:
-                version, ready, raw = self._core_handle.stats_snapshot()
-                if raw:
-                    stats = self._make_update_stats(raw)
-                    yield UpdateSnapshot(
-                        stats=stats, status=UpdateStatus.READY, result=None
-                    )
-                return
-
-            version, ready, raw = self._core_handle.stats_snapshot()
-            if version == last_version:
-                continue
-            last_version = version
-
-            if raw:
-                stats = self._make_update_stats(raw)
-                status = UpdateStatus.READY if ready else UpdateStatus.RUNNING
-                yield UpdateSnapshot(stats=stats, status=status, result=None)
 
     async def result(self) -> None:
         """Await the drop completion. Raises on error."""

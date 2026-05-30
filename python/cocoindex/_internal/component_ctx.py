@@ -21,6 +21,7 @@ from cocoindex._internal.environment import Environment
 
 from . import core
 from .stable_path import StableKey
+from .update_stats import StatsGroupHandle
 
 _logger = logging.getLogger(__name__)
 
@@ -93,6 +94,19 @@ class ComponentContext:
             self._env,
             new_path,
             self._core_processor_ctx,
+            self._core_fn_call_ctx,
+            self._exception_handler_chain,
+        )
+
+    def _with_core_processor_ctx(
+        self, core_processor_ctx: core.ComponentProcessorContext
+    ) -> ComponentContext:
+        """New context reporting through a different core processor ctx (e.g. a
+        stats-group view), keeping the same path / fn-call ctx / handler chain."""
+        return ComponentContext(
+            self._env,
+            self._core_path,
+            core_processor_ctx,
             self._core_fn_call_ctx,
             self._exception_handler_chain,
         )
@@ -404,6 +418,45 @@ def get_component_context() -> ComponentContext:
             executor.submit(task)
     """
     return get_context_from_ctx()
+
+
+@contextlib.contextmanager
+def stats_group(
+    title: str, *, report_to_stdout: bool = False
+) -> Generator[StatsGroupHandle, None, None]:
+    """Aggregate the stats of everything mounted within this scope separately,
+    under ``title``, split out of the enclosing report.
+
+    The returned handle mirrors ``UpdateHandle``'s ``stats()`` / ``watch()``.
+    Entering and exiting the block only bound *member registration* — exit is
+    non-blocking; the group becomes ready asynchronously once the body has
+    exited and all members are ready. With ``report_to_stdout=True`` the group
+    is also rendered as plain, title-prefixed log lines (interleaved above the
+    progress region when a TTY display is active).
+
+    This is a plain (synchronous) ``with`` block — like ``component_subpath`` —
+    even though the body typically ``await``s ``mount``/``use_mount``.
+
+    Example::
+
+        with coco.stats_group("Indexing docs") as sg:
+            await coco.mount_each(process_file, files.items(), target)
+        async for snap in sg.watch():
+            ...
+    """
+    current_ctx = get_context_from_ctx()
+    derived_core_ctx, core_handle = current_ctx._core_processor_ctx.begin_stats_group(
+        title, report_to_stdout
+    )
+    new_ctx = current_ctx._with_core_processor_ctx(derived_core_ctx)
+    tok = _context_var.set(new_ctx)
+    try:
+        yield StatsGroupHandle(core_handle)
+    finally:
+        # Mark registration done (non-blocking) and pop the scope, even if the
+        # body raised — so the group's readiness/watchers always unblock.
+        derived_core_ctx.end_stats_group()
+        _context_var.reset(tok)
 
 
 @contextlib.asynccontextmanager

@@ -246,11 +246,18 @@ impl Drop for ComponentBgChildReadinessChildGuard {
 }
 
 impl ComponentBgChildReadinessChildGuard {
-    pub(crate) fn resolve(mut self, outcome: ComponentRunOutcome) {
+    pub(crate) fn resolve(self, outcome: ComponentRunOutcome) {
+        self.resolve_result(Ok(outcome));
+    }
+
+    /// Like `resolve`, but propagates a full `SharedResult`: `Ok` merges the
+    /// outcome (logic deps), `Err` fails the enclosing readiness. Used by a
+    /// `StatsGroup` to forward its members' aggregate readiness to its parent.
+    pub(crate) fn resolve_result(mut self, result: SharedResult<ComponentRunOutcome>) {
         {
             let mut state = self.readiness.state().lock().unwrap();
             state.remaining_count -= 1;
-            state.maybe_set_readiness(Some(Ok(outcome)), self.readiness.readiness());
+            state.maybe_set_readiness(Some(result), self.readiness.readiness());
         }
         self.resolved = true;
     }
@@ -293,6 +300,129 @@ impl ComponentBgChildReadiness {
         let mut state = self.state().lock().unwrap();
         state.build_done = true;
         state.maybe_set_readiness(None, self.readiness());
+    }
+}
+
+/// "Is any member still active?" — pops dead `Weak`s off the back until the
+/// first live one (or empty). Each entry is removed at most once over the
+/// collection's lifetime ⇒ amortized O(1) per inserted member, no full scan.
+/// Used by [`StatsGroup`] for live-mode termination (the group's unkeyed,
+/// drop-hookless analogue of `active_children`).
+fn any_active<T>(members: &mut Vec<Weak<T>>) -> bool {
+    while let Some(last) = members.last() {
+        if last.strong_count() > 0 {
+            return true;
+        }
+        members.pop();
+    }
+    false
+}
+
+/// A named, separate stats aggregation scope created by `coco.stats_group(...)`.
+/// Components mounted within the scope report into `stats` (split out of the
+/// enclosing aggregate), register their initial readiness into `readiness`, and
+/// are tracked for liveness in `active_members`. Shared (`Arc`) between the
+/// substituted context view (which pushes members) and the spawned
+/// group-lifecycle task (which awaits readiness and polls liveness).
+pub(crate) struct StatsGroup<Prof: EngineProfile> {
+    stats: ProcessingStats,
+    readiness: ComponentBgChildReadiness,
+    active_members: parking_lot::Mutex<Vec<Weak<ComponentInner<Prof>>>>,
+}
+
+impl<Prof: EngineProfile> StatsGroup<Prof> {
+    pub(crate) fn new() -> Self {
+        Self {
+            stats: ProcessingStats::new(),
+            readiness: ComponentBgChildReadiness::default(),
+            active_members: parking_lot::Mutex::new(Vec::new()),
+        }
+    }
+
+    pub(crate) fn stats(&self) -> &ProcessingStats {
+        &self.stats
+    }
+
+    pub(crate) fn readiness(&self) -> &ComponentBgChildReadiness {
+        &self.readiness
+    }
+
+    /// Register a direct member's `ComponentInner` for liveness tracking.
+    pub(crate) fn push_member(&self, child: &Component<Prof>) {
+        self.active_members.lock().push(child.downgrade_inner());
+    }
+
+    /// True while any member (or anything in its subtree, via the strong
+    /// parent-chain) is still alive. Prunes dead entries as it scans.
+    pub(crate) fn any_active(&self) -> bool {
+        any_active(&mut self.active_members.lock())
+    }
+}
+
+impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
+    /// Open a stats group rooted at this context. Returns a derived context view
+    /// (whose mounts report into the group and register liveness with it) and
+    /// the group's `ProcessingStats` (for the Python handle / watch).
+    ///
+    /// Spawns the group-lifecycle task, which mirrors the root's
+    /// `notify_ready → wait_until_inactive → notify_terminated` flow but resolves
+    /// the parent-readiness guard at READY (not at termination) so a live member
+    /// can never deadlock the enclosing component's initial readiness.
+    pub fn begin_stats_group(
+        &self,
+        title: String,
+        report_to_stdout: bool,
+    ) -> (ComponentProcessorContext<Prof>, ProcessingStats) {
+        let group = Arc::new(StatsGroup::new());
+        let group_stats = group.stats().clone();
+
+        // The group counts as one pending child of the enclosing readiness, so
+        // the parent component (or outer group) waits for it as a unit.
+        let parent_guard = self.components_readiness().clone().add_child();
+
+        let cancel_token = self.app_ctx().cancellation_token();
+        let live = self.live();
+        let lifecycle_group = group.clone();
+        get_runtime().spawn(async move {
+            // Fires once registration is closed (`set_build_done` via
+            // `end_stats_group`) AND every member reached initial readiness.
+            let outcome = lifecycle_group.readiness().readiness().wait().await.clone();
+            lifecycle_group.stats().notify_ready();
+            // Propagate readiness/logic-deps upward AT READY — decoupled from
+            // termination, matching the root (app.rs).
+            parent_guard.resolve_result(outcome);
+
+            if live && !cancel_token.is_cancelled() {
+                // Cancel-aware inactivity poll, scoped to this group's members
+                // (the group's analogue of `wait_until_inactive`).
+                let mut delay = std::time::Duration::from_millis(1);
+                let max_delay = std::time::Duration::from_secs(10);
+                while lifecycle_group.any_active() {
+                    tokio::select! {
+                        () = tokio::time::sleep(delay) => {}
+                        () = cancel_token.cancelled() => break,
+                    }
+                    delay = (delay * 2).min(max_delay);
+                }
+            }
+            lifecycle_group.stats().notify_terminated();
+        });
+
+        if report_to_stdout {
+            crate::engine::progress_display::spawn_group_plain_report(
+                group_stats.clone(),
+                title,
+                live,
+            );
+        }
+
+        (self.with_stats_group(&group), group_stats)
+    }
+
+    /// Close the group opened by `begin_stats_group` for member registration.
+    /// Non-blocking — readiness then resolves once the members finish.
+    pub fn end_stats_group(&self) {
+        self.components_readiness().set_build_done();
     }
 }
 
@@ -448,6 +578,12 @@ impl<Prof: EngineProfile> Component<Prof> {
 
     pub fn stable_path(&self) -> &StablePath {
         &self.inner.stable_path
+    }
+
+    /// A `Weak` to this component's inner, for liveness tracking by a
+    /// [`StatsGroup`] (alive iff this component or any descendant is alive).
+    fn downgrade_inner(&self) -> Weak<ComponentInner<Prof>> {
+        Arc::downgrade(&self.inner)
     }
 
     pub fn set_live_state(
@@ -1032,5 +1168,37 @@ impl<Prof: EngineProfile> Component<Prof> {
                 on_error,
             }),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::any_active;
+    use std::sync::{Arc, Weak};
+
+    #[test]
+    fn test_any_active_pop_prune() {
+        // Empty → inactive.
+        let mut members: Vec<Weak<()>> = Vec::new();
+        assert!(!any_active(&mut members));
+
+        // One live entry → active, not pruned.
+        let live = Arc::new(());
+        members.push(Arc::downgrade(&live));
+        assert!(any_active(&mut members));
+        assert_eq!(members.len(), 1);
+
+        // Trailing dead entries are popped off the back until the first live
+        // one; the live entry at the front is preserved.
+        let dead = Arc::new(());
+        members.push(Arc::downgrade(&dead));
+        drop(dead);
+        assert!(any_active(&mut members)); // pops the dead tail, finds `live`
+        assert_eq!(members.len(), 1);
+
+        // All dead → inactive and emptied.
+        drop(live);
+        assert!(!any_active(&mut members));
+        assert!(members.is_empty());
     }
 }

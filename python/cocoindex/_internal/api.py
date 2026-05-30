@@ -14,7 +14,13 @@ from typing import (
 
 from . import core, environment
 from .app import App, AppConfig, DropHandle, UpdateHandle, show_progress
-from .update_stats import ComponentStats, UpdateSnapshot, UpdateStats, UpdateStatus
+from .update_stats import (
+    ComponentStats,
+    StatsGroupHandle,
+    UpdateSnapshot,
+    UpdateStats,
+    UpdateStatus,
+)
 from .pending_marker import ResolvesTo
 from .component_ctx import (
     ComponentSubpath,
@@ -23,6 +29,7 @@ from .component_ctx import (
     build_child_path,
     get_context_from_ctx,
     exception_handler,
+    stats_group,
 )
 
 
@@ -621,6 +628,7 @@ __all__ = [
     "show_progress",
     # .update_stats
     "ComponentStats",
+    "StatsGroupHandle",
     "UpdateSnapshot",
     "UpdateStats",
     "UpdateStatus",
@@ -668,6 +676,7 @@ __all__ = [
     "ExceptionHandler",
     "component_subpath",
     "exception_handler",
+    "stats_group",
     "use_context",
     "get_component_context",
     # .setting
