@@ -3,7 +3,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::engine::app::AppOpHandle;
-use crate::engine::stats::{ProcessingStatsGroup, TERMINATED_VERSION};
+use crate::engine::runtime::get_runtime;
+use crate::engine::stats::{ProcessingStats, ProcessingStatsGroup, TERMINATED_VERSION};
 use crate::prelude::*;
 
 /// Spinner characters (braille pattern), cycled on each redraw.
@@ -130,7 +131,9 @@ fn build_progress_lines(
     spinner_idx: usize,
     max_width: usize,
 ) -> Vec<String> {
-    let mut lines = Vec::new();
+    // Header labels the region so it's identifiable among interleaved group
+    // log blocks ([Stats: <title>]) the PTY reader scrolls above it.
+    let mut lines = vec![truncate_to_width("[Stats]", max_width)];
     for (name, group) in stats.iter() {
         let line = format_component_line(name, group, spinner_idx);
         lines.push(truncate_to_width(&line, max_width));
@@ -152,6 +155,7 @@ fn print_final_stats(
     start_time: Instant,
     ready_time: &Option<Instant>,
 ) {
+    println!("[Stats] (terminated)");
     for (name, group) in stats.iter() {
         // Use static checkmark for final output
         let line = format_component_line(name, group, 0);
@@ -494,48 +498,103 @@ async fn show_progress_plain<T: Send + 'static>(
     live: bool,
     start_time: Instant,
 ) -> Result<T> {
-    let mut ready_time: Option<Instant> = None;
-    let mut sleep_fut = std::pin::pin!(tokio::time::sleep(options.refresh_interval));
+    render_plain(handle.stats(), None, live, &options, start_time).await;
+    PROGRESS_ACTIVE.store(false, Ordering::SeqCst);
+    handle.result().await
+}
 
+/// Render `stats` as plain scrolling text until it terminates. Decoupled from
+/// `AppOpHandle` and from the `PROGRESS_ACTIVE` singleton, so a stats group can
+/// run this concurrently with the root reporter — its writes are captured and
+/// interleaved by the root's PTY reader when one is active (see
+/// specs/progress_report), and scroll directly otherwise.
+///
+/// A block is emitted only when the stats changed since the last one (skipping
+/// idle refreshes), plus a final block on termination. `title`, when set,
+/// headers each block (groups).
+async fn render_plain(
+    stats: &ProcessingStats,
+    title: Option<&str>,
+    live: bool,
+    options: &ProgressDisplayOptions,
+    start_time: Instant,
+) {
+    let mut ready_time: Option<Instant> = None;
+    // `ProcessingStats` starts at version 0; first real change bumps it, so an
+    // idle group emits nothing until it has something to show.
+    let mut last_printed_version: u64 = 0;
+
+    let mut sleep_fut = std::pin::pin!(tokio::time::sleep(options.refresh_interval));
     loop {
-        tokio::select! {
-            // Only wakes on termination, not on every stats change, so the
-            // refresh timer is what drives rendering in the no-TTY case.
-            // On termination we exit immediately and fall through to the
-            // final stats below.
-            () = handle.wait_terminated() => break,
+        let terminated = tokio::select! {
+            // Wakes only on termination, not on every stats change; the refresh
+            // timer drives rendering.
+            () = stats.wait_terminated() => true,
             () = &mut sleep_fut => {
                 sleep_fut.set(tokio::time::sleep(options.refresh_interval));
+                false
             }
-        }
+        };
 
-        let snapshot = handle.stats_snapshot();
+        let snapshot = stats.snapshot();
         if snapshot.ready && ready_time.is_none() {
             ready_time = Some(Instant::now());
         }
 
-        for (name, group) in snapshot.stats.iter() {
-            println!("{}", format_component_line(name, group, 0));
+        // Skip idle refreshes (no change since the last block); always emit the
+        // final terminated block.
+        if !terminated && snapshot.version == last_printed_version {
+            continue;
         }
-        println!(
-            "{}",
-            format_status_line(
-                live,
-                snapshot.ready,
-                start_time.elapsed(),
-                ready_time.map(|t| t.duration_since(start_time))
-            )
-        );
-        println!();
+        last_printed_version = snapshot.version;
+
+        render_plain_block(title, terminated, &snapshot, live, start_time, &ready_time);
+        if terminated {
+            break;
+        }
     }
+}
 
-    PROGRESS_ACTIVE.store(false, Ordering::SeqCst);
+/// Render one plain block: a `[Stats]` header for the root or `[Stats: <title>]`
+/// for a group (with a `(terminated)` marker on the final one), the per-component
+/// lines, the status line, and a trailing blank line.
+fn render_plain_block(
+    title: Option<&str>,
+    terminated: bool,
+    snapshot: &crate::engine::stats::VersionedProcessingStats,
+    live: bool,
+    start_time: Instant,
+    ready_time: &Option<Instant>,
+) {
+    let marker = if terminated { " (terminated)" } else { "" };
+    match title {
+        Some(title) => println!("[Stats: {title}]{marker}"),
+        None => println!("[Stats]{marker}"),
+    }
+    for (name, group) in snapshot.stats.iter() {
+        println!("{}", format_component_line(name, group, 0));
+    }
+    println!(
+        "{}",
+        format_status_line(
+            live,
+            snapshot.ready,
+            start_time.elapsed(),
+            ready_time.map(|t| t.duration_since(start_time))
+        )
+    );
+    println!();
+}
 
-    // Print final stats
-    let snapshot = handle.stats_snapshot();
-    print_final_stats(&snapshot.stats, live, start_time, &ready_time);
-
-    handle.result().await
+/// Spawn a standalone plain reporter for a stats group's `ProcessingStats`.
+/// Always plain scrolling output: when a root PTY display is active its reader
+/// captures and interleaves these writes above the progress region; otherwise
+/// they scroll directly. Self-terminates when the group terminates.
+pub(crate) fn spawn_group_plain_report(stats: ProcessingStats, title: String, live: bool) {
+    get_runtime().spawn(async move {
+        let options = ProgressDisplayOptions::default();
+        render_plain(&stats, Some(&title), live, &options, Instant::now()).await;
+    });
 }
 
 #[cfg(test)]

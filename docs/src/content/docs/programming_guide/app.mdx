@@ -37,7 +37,7 @@ app = coco.App("MyPipeline", app_main, sourcedir=pathlib.Path("./data"))
 ```
 
 :::tip
-The main function can be sync or async. See [How Sync and Async Work Together](./sdk_overview#how-sync-and-async-work-together) for details.
+The main function is usually async. See [How Sync and Async Work Together](./sdk_overview#how-sync-and-async-work-together) for details.
 :::
 
 ## Updating an app
@@ -60,33 +60,6 @@ result = app.update_blocking()
 - `report_to_stdout` option prints periodic progress updates during execution.
 - `full_reprocess` option reprocesses everything and invalidates existing caches. This forces all components to re-execute and all target states to be re-applied, even if they haven't changed.
 
-### Monitoring progress
-
-`app.update()` returns an `UpdateHandle` that provides structured access to processing stats while the update is running:
-
-```python
-handle = app.update()
-
-# Poll current stats at any time
-stats = handle.stats()  # returns UpdateStats or None if not yet started
-
-# Await the final result
-result = await handle.result()
-
-# stats() still works after completion
-final_stats = handle.stats()
-```
-
-For streaming progress, use `watch()` which yields `UpdateSnapshot` objects as stats are updated:
-
-```python
-handle = app.update()
-async for snapshot in handle.watch():
-    print(snapshot.stats.total.num_finished, "items processed")
-    # snapshot.status is UpdateStatus.RUNNING or UpdateStatus.READY
-    # snapshot.result is set in the final snapshot when the iterator ends
-```
-
 When you update an App, CocoIndex:
 
 1. Runs the lifespan setup (if not already done)
@@ -94,6 +67,8 @@ When you update an App, CocoIndex:
 3. Compares the declared target states with the previous run and applies only the necessary changes to external systems
 
 Given the same logic and inputs, updates are repeatable. When logic or inputs change, only the affected parts re-execute.
+
+To watch progress beyond the `report_to_stdout` flag, the `UpdateHandle` returned by `app.update()` also exposes stats programmatically — poll with `handle.stats()` or stream with `handle.watch()`. For those structured APIs, and for splitting a run into separately-reported scopes with `coco.stats_group()`, see [Progress monitoring](../advanced_topics/progress_monitoring).
 
 ## How an app runs
 

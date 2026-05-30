@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashSet};
 
 use cocoindex_utils::fingerprint::Fingerprint;
 
-use crate::engine::component::{Component, ComponentBgChildReadiness};
+use crate::engine::component::{Component, ComponentBgChildReadiness, StatsGroup};
 use crate::engine::id_sequencer::IdSequencerManager;
 use crate::engine::profile::EngineProfile;
 use crate::engine::stats::ProcessingStats;
@@ -522,9 +522,7 @@ struct ComponentProcessorContextInner<Prof: EngineProfile> {
     component: Component<Prof>,
     parent_context: Option<ComponentProcessorContext<Prof>>,
     processing_action: ComponentProcessingAction<Prof>,
-    components_readiness: ComponentBgChildReadiness,
 
-    processing_stats: ProcessingStats,
     inflight_permit: Mutex<Option<tokio::sync::OwnedSemaphorePermit>>,
 
     /// Logic fingerprints accumulated from function calls and child components.
@@ -534,9 +532,22 @@ struct ComponentProcessorContextInner<Prof: EngineProfile> {
     host_ctx: Arc<Prof::HostCtx>,
 }
 
+/// A `ComponentProcessorContext` is a thin view over a shared `inner`
+/// (component identity, building state, providers — never forked) plus three
+/// **per-view** fields that a `stats_group` substitutes: the stats bucket, the
+/// child-readiness accumulator, and the enclosing-group list for liveness.
+/// `Clone` shares everything (all `Arc`-based handles), so an unscoped clone is
+/// byte-for-byte equivalent; only `with_stats_group` produces a divergent view.
 #[derive(Clone)]
 pub struct ComponentProcessorContext<Prof: EngineProfile> {
     inner: Arc<ComponentProcessorContextInner<Prof>>,
+    /// Where this view's components report stats (root's, or a group's).
+    processing_stats: ProcessingStats,
+    /// Where children mounted under this view register their readiness.
+    components_readiness: ComponentBgChildReadiness,
+    /// Enclosing stats groups, outermost-first, for live-member liveness
+    /// fan-out. Empty for the root / unscoped views.
+    stats_groups: Arc<Vec<Arc<StatsGroup<Prof>>>>,
 }
 
 impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
@@ -552,12 +563,39 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
                 component,
                 parent_context,
                 processing_action,
-                components_readiness: Default::default(),
-                processing_stats,
                 inflight_permit: Mutex::new(None),
                 logic_deps: Mutex::new(HashSet::new()),
                 host_ctx,
             }),
+            processing_stats,
+            components_readiness: Default::default(),
+            stats_groups: Arc::new(Vec::new()),
+        }
+    }
+
+    /// Derive a sibling view that reports into `group`'s stats, registers child
+    /// readiness into `group`'s readiness, and appends `group` to the
+    /// enclosing-group list (for live-member liveness). Shares `inner` — so
+    /// component identity, building state, providers, and the inflight permit
+    /// are unchanged.
+    pub(crate) fn with_stats_group(&self, group: &Arc<StatsGroup<Prof>>) -> Self {
+        let mut stats_groups = Vec::with_capacity(self.stats_groups.len() + 1);
+        stats_groups.extend(self.stats_groups.iter().cloned());
+        stats_groups.push(group.clone());
+        Self {
+            inner: self.inner.clone(),
+            processing_stats: group.stats().clone(),
+            components_readiness: group.readiness().clone(),
+            stats_groups: Arc::new(stats_groups),
+        }
+    }
+
+    /// Register a freshly-mounted child as an active member of every enclosing
+    /// stats group, so each group's liveness tracking sees it (and, via the
+    /// strong parent-chain, its whole subtree). No-op when not in a group.
+    pub fn push_active_member(&self, child: &Component<Prof>) {
+        for group in self.stats_groups.iter() {
+            group.push_member(child);
         }
     }
 
@@ -645,7 +683,7 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
     }
 
     pub fn components_readiness(&self) -> &ComponentBgChildReadiness {
-        &self.inner.components_readiness
+        &self.components_readiness
     }
 
     pub(crate) fn mode(&self) -> ComponentProcessingMode {
@@ -744,7 +782,7 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
     }
 
     pub fn processing_stats(&self) -> &ProcessingStats {
-        &self.inner.processing_stats
+        &self.processing_stats
     }
 
     pub fn full_reprocess(&self) -> bool {

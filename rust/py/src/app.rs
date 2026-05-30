@@ -158,6 +158,50 @@ impl PyDropHandle {
     }
 }
 
+/// Read handle for a `coco.stats_group(...)` scope: the same stats/watch
+/// surface as `UpdateHandle`, over the group's `ProcessingStats`. No `result()` —
+/// a group has no return value.
+#[pyclass(name = "StatsGroupHandle")]
+pub struct PyStatsGroupHandle {
+    stats: ProcessingStats,
+    /// Persistent receiver shared across `changed()` calls via Arc<tokio::Mutex>.
+    version_rx: Arc<tokio::sync::Mutex<watch::Receiver<u64>>>,
+}
+
+impl PyStatsGroupHandle {
+    pub fn new(stats: ProcessingStats) -> Self {
+        let version_rx = Arc::new(tokio::sync::Mutex::new(stats.subscribe()));
+        Self { stats, version_rx }
+    }
+}
+
+#[pymethods]
+impl PyStatsGroupHandle {
+    /// Returns (version, ready, {processor_name: {field: value}}) — atomic snapshot.
+    pub fn stats_snapshot<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> PyResult<(u64, bool, Bound<'py, PyDict>)> {
+        let snapshot = self.stats.snapshot();
+        let dict = snapshot_to_py(py, &snapshot)?;
+        Ok((snapshot.version, snapshot.ready, dict))
+    }
+
+    /// Awaits a version change notification. Returns the new version, or
+    /// u64::MAX when the group terminates.
+    pub fn changed<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let rx = self.version_rx.clone();
+        future_into_py(py, async move {
+            let mut guard = rx.lock().await;
+            guard
+                .changed()
+                .await
+                .map_err(|_| PyRuntimeError::new_err("stats group dropped"))?;
+            Ok(*guard.borrow())
+        })
+    }
+}
+
 #[pyclass(name = "App")]
 pub struct PyApp(pub Arc<App<PyEngineProfile>>);
 
