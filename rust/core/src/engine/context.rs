@@ -457,17 +457,18 @@ pub(crate) struct ComponentBuildingState<Prof: EngineProfile> {
     pub fn_memos: FnMemoCache<Prof>,
 }
 
+/// Shared collector for preview actions across all components in a single update.
+pub(crate) type PreviewActionCollector<Prof> =
+    Arc<std::sync::Mutex<Vec<<Prof as EngineProfile>::TargetAction>>>;
+
 pub(crate) struct ComponentBuildContext<Prof: EngineProfile> {
     pub state: Mutex<Option<ComponentBuildingState<Prof>>>,
     pub full_reprocess: bool,
     pub live: bool,
-    /// Error handler routed to orphan-delete failures from this build's
-    /// commit-phase GC sweep. Same shape and meaning as
-    /// `ComponentDeleteContext::on_error` — see that doc for the
-    /// unified principle. `None` preserves the "log + swallow"
     /// default (e.g. root `App.update`, `use_mount`'s foreground path,
     /// `mount_inner_live`'s self-built parent context).
     pub on_error: Option<crate::engine::component::OnError>,
+    pub preview_collector: Option<PreviewActionCollector<Prof>>,
 }
 
 pub(crate) struct ComponentDeleteContext<Prof: EngineProfile> {
@@ -501,6 +502,7 @@ impl<Prof: EngineProfile> ComponentProcessingAction<Prof> {
         full_reprocess: bool,
         live: bool,
         on_error: Option<crate::engine::component::OnError>,
+        preview_collector: Option<PreviewActionCollector<Prof>>,
     ) -> Self {
         Self::Build(ComponentBuildContext {
             state: Mutex::new(Some(ComponentBuildingState {
@@ -514,6 +516,7 @@ impl<Prof: EngineProfile> ComponentProcessingAction<Prof> {
             full_reprocess,
             live,
             on_error,
+            preview_collector,
         })
     }
 }
@@ -789,6 +792,20 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         match &self.inner.processing_action {
             ComponentProcessingAction::Build(build_ctx) => build_ctx.full_reprocess,
             ComponentProcessingAction::Delete { .. } => false,
+        }
+    }
+
+    pub fn preview(&self) -> bool {
+        match &self.inner.processing_action {
+            ComponentProcessingAction::Build(build_ctx) => build_ctx.preview_collector.is_some(),
+            ComponentProcessingAction::Delete { .. } => false,
+        }
+    }
+
+    pub(crate) fn preview_collector(&self) -> Option<&PreviewActionCollector<Prof>> {
+        match &self.inner.processing_action {
+            ComponentProcessingAction::Build(build_ctx) => build_ctx.preview_collector.as_ref(),
+            ComponentProcessingAction::Delete { .. } => None,
         }
     }
 

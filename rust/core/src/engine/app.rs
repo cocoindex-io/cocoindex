@@ -3,7 +3,7 @@ use crate::engine::stats::{ProcessingStats, VersionedProcessingStats};
 use crate::prelude::*;
 
 use crate::engine::component::Component;
-use crate::engine::context::AppContext;
+use crate::engine::context::{AppContext, PreviewActionCollector};
 use crate::engine::live_component::{LIVE_COMPONENT_DRAIN_TIMEOUT_SECS, LiveComponentState};
 
 use crate::engine::environment::{AppRegistration, Environment};
@@ -101,7 +101,11 @@ impl<Prof: EngineProfile> App<Prof> {
         root_processor: Prof::ComponentProc,
         options: AppUpdateOptions,
         host_ctx: Arc<Prof::HostCtx>,
-    ) -> Result<AppOpHandle<Prof::FunctionData>> {
+        preview_collector: Option<PreviewActionCollector<Prof>>,
+    ) -> Result<(
+        AppOpHandle<Prof::FunctionData>,
+        Option<PreviewActionCollector<Prof>>,
+    )> {
         crate::telemetry::track("app_update");
         // Refresh the app token if a prior operation (e.g. drop_app) cancelled
         // it, so this update starts with a non-cancelled token.
@@ -113,6 +117,7 @@ impl<Prof: EngineProfile> App<Prof> {
             processing_stats.clone(),
             options.full_reprocess,
             options.live,
+            preview_collector.clone(),
             host_ctx,
             // Root has no installed on_error in Build mode — orphan-delete
             // failures from the root's GC sweep log + swallow. (Cascading
@@ -152,12 +157,15 @@ impl<Prof: EngineProfile> App<Prof> {
             .instrument(span),
         );
 
-        Ok(AppOpHandle {
-            task,
-            stats: processing_stats,
-            version_rx,
-            live,
-        })
+        Ok((
+            AppOpHandle {
+                task,
+                stats: processing_stats,
+                version_rx,
+                live,
+            },
+            preview_collector,
+        ))
     }
 
     /// Drop the app, reverting all target states and clearing the database.

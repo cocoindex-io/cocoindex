@@ -59,10 +59,12 @@ class UpdateHandle(Generic[R]):
         self,
         init_coro: Any,  # Coroutine that returns core.UpdateHandle
         main_fn: Any = None,
+        preview: bool = False,
     ) -> None:
         self._init_coro = init_coro
         self._core_handle: core.UpdateHandle | None = None
         self._main_fn = main_fn  # used for return type inspection
+        self._preview = preview
 
     async def _ensure_started(self) -> core.UpdateHandle:
         if self._core_handle is None:
@@ -98,6 +100,8 @@ class UpdateHandle(Generic[R]):
 
         On error, raises the exception directly from the iterator.
         """
+        if self._preview:
+            raise TypeError("watch() is not supported when preview=True")
         handle = await self._ensure_started()
         last_version = 0
         while True:
@@ -130,6 +134,9 @@ class UpdateHandle(Generic[R]):
     async def result(self) -> R:
         """Await the update result. Raises on error."""
         handle = await self._ensure_started()
+        if self._preview:
+            await handle.result()
+            return handle.take_preview_actions()  # type: ignore[return-value]
         pyvalue: Any = await handle.result()
         return pyvalue.get(fn_ret_deserializer(self._main_fn))  # type: ignore[no-any-return]
 
@@ -269,6 +276,7 @@ class App(Generic[P, R]):
         *,
         full_reprocess: bool = False,
         live: bool = False,
+        preview: bool = False,
     ) -> UpdateHandle[R]:
         """
         Start an update and return a handle for tracking progress and awaiting the result.
@@ -280,6 +288,8 @@ class App(Generic[P, R]):
             full_reprocess: If True, reprocess everything and invalidate existing caches.
             live: If True, run in live mode (live components continue processing
                 after mark_ready).
+            preview: If True, compute target actions without applying them.
+                The handle's result will be a list of raw action objects.
 
         Returns:
             An UpdateHandle that provides access to stats(), watch(), and result().
@@ -295,10 +305,11 @@ class App(Generic[P, R]):
                 processor,
                 full_reprocess=full_reprocess,
                 live=live,
+                preview=preview,
                 host_ctx=env._context_provider,
             )
 
-        return UpdateHandle(_init(), main_fn=self._main_fn)
+        return UpdateHandle(_init(), main_fn=self._main_fn, preview=preview)
 
     def update_blocking(
         self,
@@ -306,7 +317,8 @@ class App(Generic[P, R]):
         report_to_stdout: bool | timedelta = False,
         full_reprocess: bool = False,
         live: bool = False,
-    ) -> R:
+        preview: bool = False,
+    ) -> R | list[Any]:
         """
         Update the app synchronously (run the app once to process all pending changes).
 
@@ -317,9 +329,11 @@ class App(Generic[P, R]):
             full_reprocess: If True, reprocess everything and invalidate existing caches.
             live: If True, run in live mode (live components continue processing
                 after mark_ready).
+            preview: If True, compute target actions without applying them.
+                Returns a list of raw action objects instead of the main function result.
 
         Returns:
-            The result of the main function.
+            The result of the main function, or a list of actions in preview mode.
         """
         env, core_app = self._get_core_env_app_sync()
         root_path = core.StablePath()
@@ -334,7 +348,10 @@ class App(Generic[P, R]):
             report_to_stdout=report,
             refresh_interval_secs=refresh_interval_secs,
             live=live,
+            preview=preview,
         )
+        if preview:
+            return pyvalue  # type: ignore[no-any-return]
         return pyvalue.get(fn_ret_deserializer(self._main_fn))  # type: ignore[no-any-return]
 
     async def drop(self) -> None:

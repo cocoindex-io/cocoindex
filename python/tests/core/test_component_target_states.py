@@ -1166,3 +1166,24 @@ def test_mount_target_delete() -> None:
     }
     assert DictsTarget.store.metrics.collect() == {"sink": 2, "delete": 1}
     assert DictsTarget.store.collect_child_metrics() == {"sink": 1, "upsert": 1}
+
+
+##################################################################################
+# Test: preview rejects child target providers
+##################################################################################
+
+
+def test_preview_rejects_child_target_providers() -> None:
+    DictsTarget.store.clear()
+    _source_data.clear()
+
+    app = coco.App(
+        coco.AppConfig(
+            name="test_preview_rejects_child_target_providers", environment=coco_env
+        ),
+        _declare_dicts_data_together,
+    )
+
+    _source_data["D1"] = {"a": 1}
+    with pytest.raises(Exception, match="child target providers"):
+        app.update_blocking(preview=True)

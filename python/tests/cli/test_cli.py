@@ -707,6 +707,32 @@ class TestDropQuiet:
 # =============================================================================
 
 
+class TestPreview:
+    """Tests for the --preview flag on update."""
+
+    def test_preview_prints_actions(self) -> None:
+        """update --preview should print planned actions without writing."""
+        result = run_cli("update", "./flat_target_app.py", "--preview")
+        assert "Preview: planned target actions" in result.stdout
+        assert "('x', 42)" in result.stdout
+
+    def test_preview_reset_rejected(self) -> None:
+        """--preview --reset should be rejected."""
+        result = run_cli(
+            "update", "./single_app.py", "--preview", "--reset", check=False
+        )
+        assert result.returncode != 0
+        assert "cannot be used together" in result.stderr.lower()
+
+    def test_preview_live_rejected(self) -> None:
+        """--preview --live should be rejected."""
+        result = run_cli(
+            "update", "./single_app.py", "--preview", "--live", check=False
+        )
+        assert result.returncode != 0
+        assert "cannot be used together" in result.stderr.lower()
+
+
 class TestShowTree:
     """Tests for the show command with --tree flag."""
 

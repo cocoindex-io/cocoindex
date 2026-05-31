@@ -530,6 +530,7 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
                 self.full_reprocess,
                 self.live,
                 on_error.clone(),
+                None,
             ),
         );
 
@@ -829,6 +830,7 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
                 self.providers.clone(),
                 self.full_reprocess,
                 self.live,
+                None,
                 None,
             ),
         );
@@ -1134,6 +1136,7 @@ async fn run_op<Prof: EngineProfile>(
                     full_reprocess,
                     live,
                     on_error.clone(),
+                    None,
                 ),
             );
             let inner_handle = child
