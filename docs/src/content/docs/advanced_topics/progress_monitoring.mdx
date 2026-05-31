@@ -5,7 +5,7 @@ description: >
   and watch(), and split a run into separately-reported scopes with stats_group().
 ---
 
-Most runs only need the basics covered in [App](../programming_guide/app#updating-an-app): awaiting `app.update()` for the result, or the built-in stdout progress display — `report_to_stdout=True` on `app.update_blocking()` (or the CLI), or `await coco.show_progress(handle)` with the async API.
+Most runs only need the basics covered in [App](../programming_guide/app#updating-an-app): awaiting `app.update()` for the result, or the built-in stdout progress display — `report_to_stdout=True` on `app.update_blocking()` (or the CLI), or `await coco.show_progress(handle)` with the async API. `report_to_stdout` accepts a `timedelta` to set the refresh interval (`True` uses the default); `show_progress` takes a `refresh_interval` keyword.
 
 This page covers the **structured** progress APIs for cases that need more: a daemon streaming progress to a client, a custom dashboard, or splitting a large pipeline into independently-reported phases.
 
@@ -84,7 +84,7 @@ async def app_main(docs_dir, code_dir, target):
         await coco.mount_each(process_code, files.items(), target)
 ```
 
-With `report_to_stdout=True`, the group's progress is also printed to stdout, labeled by its title, alongside the main `report_to_stdout` display without disrupting it.
+With `report_to_stdout=True`, the group's progress is also printed to stdout, labeled by its title, alongside the main `report_to_stdout` display without disrupting it. Pass a `timedelta` instead of `True` to set the group's refresh interval.
 
 The block yields a `StatsGroupHandle` with the same `stats()` and `watch()` as `UpdateHandle` (a group has no return value, so there's no `result()`):
 

@@ -249,7 +249,7 @@ impl PyApp {
         Ok(PyUpdateHandle::new(handle))
     }
 
-    #[pyo3(signature = (root_processor, full_reprocess, host_ctx, report_to_stdout=false, live=false))]
+    #[pyo3(signature = (root_processor, full_reprocess, host_ctx, report_to_stdout=false, refresh_interval_secs=None, live=false))]
     pub fn update(
         &self,
         py: Python<'_>,
@@ -257,6 +257,7 @@ impl PyApp {
         full_reprocess: bool,
         host_ctx: Py<PyAny>,
         report_to_stdout: bool,
+        refresh_interval_secs: Option<f64>,
         live: bool,
     ) -> PyResult<PyStoredValue> {
         let app = self.0.clone();
@@ -272,9 +273,12 @@ impl PyApp {
                     .context("failed to start app update")
                     .into_py_result()?;
                 if report_to_stdout {
-                    rust_show_progress(handle, ProgressDisplayOptions::default())
-                        .await
-                        .into_py_result()
+                    rust_show_progress(
+                        handle,
+                        ProgressDisplayOptions::from_refresh_secs(refresh_interval_secs),
+                    )
+                    .await
+                    .into_py_result()
                 } else {
                     handle.result().await.into_py_result()
                 }
@@ -292,12 +296,13 @@ impl PyApp {
         Ok(PyDropHandle::new(handle))
     }
 
-    #[pyo3(signature = (host_ctx, report_to_stdout=false))]
+    #[pyo3(signature = (host_ctx, report_to_stdout=false, refresh_interval_secs=None))]
     pub fn drop(
         &self,
         py: Python<'_>,
         host_ctx: Py<PyAny>,
         report_to_stdout: bool,
+        refresh_interval_secs: Option<f64>,
     ) -> PyResult<()> {
         let app = self.0.clone();
         let host_ctx = Arc::new(host_ctx);
@@ -308,9 +313,12 @@ impl PyApp {
                     .context("failed to start app drop")
                     .into_py_result()?;
                 if report_to_stdout {
-                    rust_show_progress(handle, ProgressDisplayOptions::default())
-                        .await
-                        .into_py_result()
+                    rust_show_progress(
+                        handle,
+                        ProgressDisplayOptions::from_refresh_secs(refresh_interval_secs),
+                    )
+                    .await
+                    .into_py_result()
                 } else {
                     handle.result().await.into_py_result()
                 }
@@ -322,7 +330,12 @@ impl PyApp {
 /// Awaits the update handle with progress display. Returns the result.
 /// Consumes the handle.
 #[pyfunction]
-pub fn show_progress<'py>(py: Python<'py>, handle: &PyUpdateHandle) -> PyResult<Bound<'py, PyAny>> {
+#[pyo3(signature = (handle, refresh_interval_secs=None))]
+pub fn show_progress<'py>(
+    py: Python<'py>,
+    handle: &PyUpdateHandle,
+    refresh_interval_secs: Option<f64>,
+) -> PyResult<Bound<'py, PyAny>> {
     let op_handle = handle
         .handle
         .lock()
@@ -330,9 +343,12 @@ pub fn show_progress<'py>(py: Python<'py>, handle: &PyUpdateHandle) -> PyResult<
         .take()
         .ok_or_else(|| PyRuntimeError::new_err("handle already consumed"))?;
     future_into_py(py, async move {
-        let ret = rust_show_progress(op_handle, ProgressDisplayOptions::default())
-            .await
-            .into_py_result()?;
+        let ret = rust_show_progress(
+            op_handle,
+            ProgressDisplayOptions::from_refresh_secs(refresh_interval_secs),
+        )
+        .await
+        .into_py_result()?;
         Ok(ret)
     })
 }

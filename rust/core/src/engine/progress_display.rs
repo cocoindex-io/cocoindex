@@ -30,6 +30,19 @@ impl Default for ProgressDisplayOptions {
     }
 }
 
+impl ProgressDisplayOptions {
+    /// Build options from an optional refresh interval in seconds — `None`
+    /// (or a non-positive value) falls back to the default interval.
+    pub fn from_refresh_secs(refresh_interval_secs: Option<f64>) -> Self {
+        match refresh_interval_secs {
+            Some(secs) if secs > 0.0 => Self {
+                refresh_interval: Duration::from_secs_f64(secs),
+            },
+            _ => Self::default(),
+        }
+    }
+}
+
 /// Format a single component stats line.
 pub fn format_component_line(
     name: &str,
@@ -590,9 +603,14 @@ fn render_plain_block(
 /// Always plain scrolling output: when a root PTY display is active its reader
 /// captures and interleaves these writes above the progress region; otherwise
 /// they scroll directly. Self-terminates when the group terminates.
-pub(crate) fn spawn_group_plain_report(stats: ProcessingStats, title: String, live: bool) {
+pub(crate) fn spawn_group_plain_report(
+    stats: ProcessingStats,
+    title: String,
+    live: bool,
+    refresh_interval_secs: Option<f64>,
+) {
     get_runtime().spawn(async move {
-        let options = ProgressDisplayOptions::default();
+        let options = ProgressDisplayOptions::from_refresh_secs(refresh_interval_secs);
         render_plain(&stats, Some(&title), live, &options, Instant::now()).await;
     });
 }

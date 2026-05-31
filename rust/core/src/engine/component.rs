@@ -372,6 +372,7 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         &self,
         title: String,
         report_to_stdout: bool,
+        refresh_interval_secs: Option<f64>,
     ) -> (ComponentProcessorContext<Prof>, ProcessingStats) {
         let group = Arc::new(StatsGroup::new());
         let group_stats = group.stats().clone();
@@ -413,6 +414,7 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
                 group_stats.clone(),
                 title,
                 live,
+                refresh_interval_secs,
             );
         }
 

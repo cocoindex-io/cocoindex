@@ -93,7 +93,10 @@ class ComponentProcessorContext:
     ) -> dict[Fingerprint, list[Any]]: ...
     async def next_id(self, key: StableKey | None = None) -> int: ...
     def begin_stats_group(
-        self, title: str, report_to_stdout: bool
+        self,
+        title: str,
+        report_to_stdout: bool,
+        refresh_interval_secs: float | None = None,
     ) -> tuple[ComponentProcessorContext, StatsGroupHandle]: ...
     def end_stats_group(self) -> None: ...
 
@@ -204,7 +207,9 @@ class StatsGroupHandle:
     def stats_snapshot(self) -> tuple[int, bool, dict[str, dict[str, int]]]: ...
     def changed(self) -> Coroutine[Any, Any, int]: ...
 
-def show_progress(handle: UpdateHandle) -> Coroutine[Any, Any, StoredValue]: ...
+def show_progress(
+    handle: UpdateHandle, refresh_interval_secs: float | None = None
+) -> Coroutine[Any, Any, StoredValue]: ...
 
 # --- App ---
 class App:
@@ -217,6 +222,7 @@ class App:
         full_reprocess: bool = False,
         host_ctx: Any = None,
         report_to_stdout: bool = False,
+        refresh_interval_secs: float | None = None,
         live: bool = False,
     ) -> StoredValue: ...
     def update_async(
@@ -226,7 +232,12 @@ class App:
         live: bool = False,
         host_ctx: Any = None,
     ) -> UpdateHandle: ...
-    def drop(self, host_ctx: Any = None, report_to_stdout: bool = False) -> None: ...
+    def drop(
+        self,
+        host_ctx: Any = None,
+        report_to_stdout: bool = False,
+        refresh_interval_secs: float | None = None,
+    ) -> None: ...
     def drop_async(self, host_ctx: Any = None) -> DropHandle: ...
 
 # --- LiveComponentController ---
