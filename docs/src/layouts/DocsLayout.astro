@@ -5,6 +5,7 @@ import Topbar from '../components/Topbar.astro';
 import Sidebar from '../components/Sidebar.astro';
 import Toc from '../components/Toc.astro';
 import MobileSheet from '../components/MobileSheet.astro';
+import MermaidRenderer from '../components/MermaidRenderer.astro';
 import { SITE_URL, titleMarkup, DOCS_EDIT_BASE } from '../consts';
 import { flatten, sidebar, type SidebarItem } from '../data/docs-sidebar';
 import docsMeta from '../data/docs-meta.json';
@@ -116,6 +117,7 @@ const next = i >= 0 && i < flat.length - 1 ? flat[i + 1] : null;
   <body>
     <Topbar mobileSheetId="mobileSheet" />
     <MobileSheet currentSlug={slug} headings={headings} />
+    <MermaidRenderer />
 
     <div class="layout">
       <Sidebar currentSlug={slug} />

@@ -5,6 +5,7 @@ import sitemap from '@astrojs/sitemap';
 import remarkDirective from 'remark-directive';
 import remarkAdmonitions from './scripts/remark-admonitions.mjs';
 import remarkCodeTitles from './scripts/remark-code-titles.mjs';
+import remarkMermaid from './scripts/remark-mermaid.mjs';
 import remarkLinkChecker from './scripts/remark-link-checker.mjs';
 import { redirects } from './src/data/docs-sidebar.ts';
 
@@ -76,6 +77,7 @@ const BASE = '/docs';
 const remarkPlugins = [
   remarkDirective,
   remarkAdmonitions,
+  remarkMermaid,
   remarkCodeTitles,
   [remarkLinkChecker, { base: BASE }],
 ];
