@@ -708,6 +708,13 @@ async def _stop_all_environments() -> None:
     default=False,
     help="Run in live mode (live components continue processing after initial update).",
 )
+@click.option(
+    "--preview",
+    is_flag=True,
+    show_default=True,
+    default=False,
+    help="Compute target actions without applying them. Prints planned actions.",
+)
 def update(
     app_target: str,
     force: bool,
@@ -715,12 +722,18 @@ def update(
     reset: bool,
     full_reprocess: bool,
     live: bool,
+    preview: bool,
 ) -> None:
     """
     Run an app in catch-up mode. With --live, run in live mode.
 
     `APP_TARGET`: `path/to/app.py`, `module`, `path/to/app.py:app_name`, or `module:app_name`.
     """
+    if preview and reset:
+        raise click.UsageError("--preview and --reset cannot be used together.")
+    if preview and live:
+        raise click.UsageError("--preview and --live cannot be used together.")
+
     app = _load_app(app_target)
 
     async def _do(cancelled: Any) -> None:
@@ -732,6 +745,20 @@ def update(
                 print(
                     f"Running app '{app._name}' from environment '{env.name}' (db path: {env.settings.db_path})"
                 )
+
+            if preview:
+                handle = app.update(
+                    full_reprocess=full_reprocess,
+                    preview=True,
+                )
+                actions: list[Any] = await handle.result()
+                click.echo("Preview: planned target actions")
+                if actions:
+                    for action in actions:
+                        click.echo(f"  {action!r}")
+                else:
+                    click.echo("  No target actions planned.")
+                return
 
             # --reset: drop existing state first (equivalent to `cocoindex drop ...`)
             if reset:

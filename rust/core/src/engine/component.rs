@@ -7,7 +7,7 @@ use std::sync::Weak;
 use crate::engine::context::FnCallContext;
 use crate::engine::context::{
     AppContext, ComponentDeleteContext, ComponentProcessingAction, ComponentProcessingMode,
-    ComponentProcessorContext, MemoStatesPayload,
+    ComponentProcessorContext, MemoStatesPayload, PreviewActionCollector,
 };
 use crate::engine::execution::{
     cleanup_tombstone, eager_existence_upsert, post_submit_for_build, submit,
@@ -523,6 +523,7 @@ impl<Prof: EngineProfile> Component<Prof> {
             parent_ctx.processing_stats().clone(),
             parent_ctx.full_reprocess(),
             parent_ctx.live(), // use_mount inherits live from parent
+            parent_ctx.preview_collector().cloned(),
             parent_ctx.host_ctx().clone(),
             // No build-mode on_error: use_mount is foreground; failures
             // propagate as `Err` to the awaiting parent via `.result()`.
@@ -551,6 +552,7 @@ impl<Prof: EngineProfile> Component<Prof> {
             parent_ctx.processing_stats().clone(),
             parent_ctx.full_reprocess(),
             parent_ctx.live(), // mount inherits live from parent
+            parent_ctx.preview_collector().cloned(),
             parent_ctx.host_ctx().clone(),
             on_error.clone(),
         )?;
@@ -939,7 +941,9 @@ impl<Prof: EngineProfile> Component<Prof> {
                     // that existence ⊇ tracked state and eliminates the
                     // dual-writer conflict with the parent's commit-time
                     // existence reconciliation. See `internal_states.md` §3.1.
-                    if processor_context.mode() == ComponentProcessingMode::Build {
+                    if processor_context.mode() == ComponentProcessingMode::Build
+                        && !processor_context.preview()
+                    {
                         eager_existence_upsert(processor_context).await?;
                     }
 
@@ -1116,6 +1120,7 @@ impl<Prof: EngineProfile> Component<Prof> {
         processing_stats: ProcessingStats,
         full_reprocess: bool,
         live: bool,
+        preview_collector: Option<PreviewActionCollector<Prof>>,
         host_ctx: Arc<Prof::HostCtx>,
         on_error: Option<OnError>,
     ) -> Result<ComponentProcessorContext<Prof>> {
@@ -1148,7 +1153,13 @@ impl<Prof: EngineProfile> Component<Prof> {
             parent_ctx.cloned(),
             processing_stats,
             host_ctx,
-            ComponentProcessingAction::new_build(providers, full_reprocess, live, on_error),
+            ComponentProcessingAction::new_build(
+                providers,
+                full_reprocess,
+                live,
+                on_error,
+                preview_collector,
+            ),
         ))
     }
 

@@ -195,6 +195,7 @@ class UpdateHandle:
     def stats_snapshot(self) -> tuple[int, bool, dict[str, dict[str, int]]]: ...
     def changed(self) -> Coroutine[Any, Any, int]: ...
     def result(self) -> Coroutine[Any, Any, StoredValue]: ...
+    def take_preview_actions(self) -> list[Any]: ...
 
 # --- DropHandle ---
 class DropHandle:
@@ -224,12 +225,14 @@ class App:
         report_to_stdout: bool = False,
         refresh_interval_secs: float | None = None,
         live: bool = False,
-    ) -> StoredValue: ...
+        preview: bool = False,
+    ) -> StoredValue | list[Any]: ...
     def update_async(
         self,
         root_processor: ComponentProcessor[T_co],
         full_reprocess: bool = False,
         live: bool = False,
+        preview: bool = False,
         host_ctx: Any = None,
     ) -> UpdateHandle: ...
     def drop(

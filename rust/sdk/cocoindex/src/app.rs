@@ -272,10 +272,10 @@ impl App {
             live: false,
         };
 
-        let handle = self
+        let (handle, _preview_collector) = self
             .inner
             .core_app
-            .update(processor, options, Arc::new(()))
+            .update(processor, options, Arc::new(()), None)
             .map_err(|e| Error::engine(format!("{e}")))?;
         handle
             .result()

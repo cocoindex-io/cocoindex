@@ -31,6 +31,8 @@ fn snapshot_to_py<'py>(
     Ok(dict)
 }
 
+type PyPreviewCollector = Arc<std::sync::Mutex<Vec<Py<PyAny>>>>;
+
 #[pyclass(name = "UpdateHandle")]
 pub struct PyUpdateHandle {
     handle: Mutex<Option<AppOpHandle<PyStoredValue>>>,
@@ -38,6 +40,7 @@ pub struct PyUpdateHandle {
     /// Persistent receiver shared across `changed()` calls via Arc<tokio::Mutex>.
     /// Using tokio::Mutex so it can be held across .await points.
     version_rx: Arc<tokio::sync::Mutex<watch::Receiver<u64>>>,
+    preview_collector: Option<PyPreviewCollector>,
 }
 
 impl PyUpdateHandle {
@@ -48,6 +51,7 @@ impl PyUpdateHandle {
             handle: Mutex::new(Some(handle)),
             stats,
             version_rx,
+            preview_collector: None,
         }
     }
 }
@@ -93,6 +97,19 @@ impl PyUpdateHandle {
             let ret = handle.result().await.into_py_result()?;
             Ok(ret)
         })
+    }
+
+    /// Returns collected preview actions as a Python list. Call after result().
+    pub fn take_preview_actions<'py>(
+        &mut self,
+        py: Python<'py>,
+    ) -> PyResult<Bound<'py, pyo3::types::PyList>> {
+        let actions = self
+            .preview_collector
+            .as_ref()
+            .map(|c| std::mem::take(&mut *c.lock().unwrap()))
+            .unwrap_or_default();
+        pyo3::types::PyList::new(py, actions.iter().map(|a| a.bind(py))).map_err(|e| e.into())
     }
 }
 
@@ -228,13 +245,14 @@ impl PyApp {
         Ok(Self(Arc::new(app)))
     }
 
-    #[pyo3(signature = (root_processor, full_reprocess, host_ctx, live=false))]
+    #[pyo3(signature = (root_processor, full_reprocess, host_ctx, live=false, preview=false))]
     pub fn update_async(
         &self,
         root_processor: PyComponentProcessor,
         full_reprocess: bool,
         host_ctx: Py<PyAny>,
         live: bool,
+        preview: bool,
     ) -> PyResult<PyUpdateHandle> {
         let app = self.0.clone();
         let options = AppUpdateOptions {
@@ -242,14 +260,21 @@ impl PyApp {
             live,
         };
         let host_ctx = Arc::new(host_ctx);
-        let handle = app
-            .update(root_processor, options, host_ctx)
+        let preview_collector = if preview {
+            Some(Arc::new(std::sync::Mutex::new(Vec::new())))
+        } else {
+            None
+        };
+        let (handle, preview_collector) = app
+            .update(root_processor, options, host_ctx, preview_collector)
             .context("failed to start app update")
             .into_py_result()?;
-        Ok(PyUpdateHandle::new(handle))
+        let mut uh = PyUpdateHandle::new(handle);
+        uh.preview_collector = preview_collector;
+        Ok(uh)
     }
 
-    #[pyo3(signature = (root_processor, full_reprocess, host_ctx, report_to_stdout=false, refresh_interval_secs=None, live=false))]
+    #[pyo3(signature = (root_processor, full_reprocess, host_ctx, report_to_stdout=false, refresh_interval_secs=None, live=false, preview=false))]
     pub fn update(
         &self,
         py: Python<'_>,
@@ -259,28 +284,46 @@ impl PyApp {
         report_to_stdout: bool,
         refresh_interval_secs: Option<f64>,
         live: bool,
-    ) -> PyResult<PyStoredValue> {
+        preview: bool,
+    ) -> PyResult<Py<PyAny>> {
         let app = self.0.clone();
         let options = AppUpdateOptions {
             full_reprocess,
             live,
         };
         let host_ctx = Arc::new(host_ctx);
+        let preview_collector = if preview {
+            Some(Arc::new(std::sync::Mutex::new(Vec::new())))
+        } else {
+            None
+        };
         py.detach(|| {
             get_runtime().block_on(async move {
-                let handle = app
-                    .update(root_processor, options, host_ctx)
+                let (handle, preview_collector) = app
+                    .update(root_processor, options, host_ctx, preview_collector)
                     .context("failed to start app update")
                     .into_py_result()?;
-                if report_to_stdout {
-                    rust_show_progress(
+                if preview {
+                    handle.result().await.into_py_result()?;
+                    let actions = preview_collector
+                        .map(|c| std::mem::take(&mut *c.lock().unwrap()))
+                        .unwrap_or_default();
+                    Python::attach(|py| {
+                        let list =
+                            pyo3::types::PyList::new(py, actions.iter().map(|a| a.bind(py)))?;
+                        Ok(list.unbind().into_any())
+                    })
+                } else if report_to_stdout {
+                    let ret: PyStoredValue = rust_show_progress(
                         handle,
                         ProgressDisplayOptions::from_refresh_secs(refresh_interval_secs),
                     )
                     .await
-                    .into_py_result()
+                    .into_py_result()?;
+                    Python::attach(|py| Ok(Py::new(py, ret)?.into_any()))
                 } else {
-                    handle.result().await.into_py_result()
+                    let ret: PyStoredValue = handle.result().await.into_py_result()?;
+                    Python::attach(|py| Ok(Py::new(py, ret)?.into_any()))
                 }
             })
         })
