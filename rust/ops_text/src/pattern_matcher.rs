@@ -10,6 +10,79 @@ fn build_glob_set(patterns: Vec<String>) -> Result<GlobSet> {
     Ok(builder.build()?)
 }
 
+/// Expands brace alternations (``{a,b}``) in a glob pattern into the full set of
+/// concrete alternatives, e.g. ``a/{b/c,d}/e`` → ``["a/b/c/e", "a/d/e"]``.
+///
+/// Multiple groups expand combinatorially (``a/{b,c}/{d,e}`` → four forms) and
+/// nested groups are handled recursively (``a/{b,{c,d}}/e`` → three forms).
+/// Braces and commas inside a character class (``[...]``) are treated as
+/// literals, and wildcards (``*``, ``**``, ``?``) are preserved untouched.
+/// A pattern with no expandable braces — including a malformed, unbalanced one —
+/// returns a single-element vector holding the original string, so that any
+/// genuine syntax error still surfaces when the glob is later compiled.
+///
+/// This is the *only* piece of glob grammar the matcher reimplements: once the
+/// alternations are flattened, every remaining matching concern (wildcards,
+/// character classes, ``**`` spans) is delegated back to ``globset``.
+fn brace_expand(pattern: &str) -> Vec<String> {
+    let bytes = pattern.as_bytes();
+    let mut in_class = false;
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'[' => in_class = true,
+            b']' => in_class = false,
+            b'{' if !in_class => {
+                // First top-level group found. Scan to its matching close,
+                // collecting the depth-1 comma-separated alternatives.
+                let open = i;
+                let mut depth = 1;
+                let mut inner_class = false;
+                let mut seg_start = open + 1;
+                let mut alternatives: Vec<&str> = Vec::new();
+                let mut j = open + 1;
+                while j < bytes.len() && depth > 0 {
+                    match bytes[j] {
+                        b'[' => inner_class = true,
+                        b']' => inner_class = false,
+                        b'{' if !inner_class => depth += 1,
+                        b'}' if !inner_class => {
+                            depth -= 1;
+                            if depth == 0 {
+                                alternatives.push(&pattern[seg_start..j]);
+                            }
+                        }
+                        b',' if !inner_class && depth == 1 => {
+                            alternatives.push(&pattern[seg_start..j]);
+                            seg_start = j + 1;
+                        }
+                        _ => {}
+                    }
+                    j += 1;
+                }
+                // Unbalanced braces: leave the pattern untouched so globset can
+                // report the error rather than us silently swallowing the brace.
+                if depth != 0 {
+                    return vec![pattern.to_string()];
+                }
+                let prefix = &pattern[..open];
+                let suffix = &pattern[j..]; // j is one past the closing '}'
+                let mut out = Vec::new();
+                for alt in alternatives {
+                    // Recurse on the recombined string: this expands any nested
+                    // group inside `alt` and any further group in `suffix`.
+                    let combined = format!("{prefix}{alt}{suffix}");
+                    out.extend(brace_expand(&combined));
+                }
+                return out;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    vec![pattern.to_string()]
+}
+
 /// Splits a list of patterns into regular exclusion patterns and negation (``!``-prefixed)
 /// patterns.  Returns the compiled GlobSets together with the raw negation strings so that
 /// callers can do prefix-based path ancestry checks without unpacking compiled globs.
@@ -36,7 +109,14 @@ fn split_excluded_patterns(
     } else {
         Some(build_glob_set(regular)?)
     };
-    let negation_raw = negation.clone();
+    // Brace-expand the raw negation strings into their concrete alternation
+    // forms (e.g. `a/{b/c,d}/e` → [`a/b/c/e`, `a/d/e`]).  `is_dir_included`
+    // does prefix-based ancestry checks on these raw strings; without expansion
+    // an intermediate directory like `a/b` would fail `starts_with("a/{b/c,d}…")`
+    // and be pruned, never reaching the negation-exempt file.  The compiled
+    // `negation_set` is left built from the original patterns because `globset`
+    // already expands braces when matching, so file-level negation is unaffected.
+    let negation_raw: Vec<String> = negation.iter().flat_map(|p| brace_expand(p)).collect();
     let negation_set = if negation.is_empty() {
         None
     } else {
@@ -62,10 +142,12 @@ pub struct PatternMatcher {
     /// stored without the ``!``).  A path that matches one of these is *not* excluded
     /// even if it matches the regular exclusion patterns.
     negation_excluded_glob_set: Option<GlobSet>,
-    /// Raw (uncompiled) negation pattern strings, kept so that ``is_dir_included`` can
-    /// detect directories that lie on the path to a negation-exempt file even when the
-    /// directory itself would otherwise be pruned (e.g. ``!dir1/dir2/dir3/a.yml``
-    /// combined with ``dir1/**``).
+    /// Raw (uncompiled) negation pattern strings, **brace-expanded** into their concrete
+    /// alternation forms, kept so that ``is_dir_included`` can detect directories that lie
+    /// on the path to a negation-exempt file even when the directory itself would otherwise
+    /// be pruned (e.g. ``!dir1/dir2/dir3/a.yml`` combined with ``dir1/**``).  Brace expansion
+    /// means ``!a/{b/c,d}/e`` is stored as ``["a/b/c/e", "a/d/e"]`` so the prefix-ancestry
+    /// check below sees each branch (``a/b``, ``a/d`` …) rather than the literal ``a/{b/c,d}…``.
     negation_patterns_raw: Vec<String>,
 }
 
@@ -118,10 +200,12 @@ impl PatternMatcher {
     ///    GlobSet.  Catches wildcard negations such as ``!**/.github/**`` that use ``**``
     ///    to span multiple directory levels.
     ///
-    /// 2. **Raw-prefix check** — scans the raw (uncompiled) negation strings and returns
+    /// 2. **Raw-prefix check** — scans the brace-expanded raw negation strings and returns
     ///    ``true`` if any of them starts with ``<dir>/``.  Catches exact-path negations
     ///    such as ``!dir1/dir2/dir3/a.yml`` where the probe alone would not help because
-    ///    the pattern contains no wildcards relative to the directory.
+    ///    the pattern contains no wildcards relative to the directory.  Brace expansion
+    ///    happens up front (see ``negation_patterns_raw``) so that comma-alternations such
+    ///    as ``!a/{b/c,d}/e`` contribute every branch to this check.
     pub fn is_dir_included(&self, path: &str) -> bool {
         if !self
             .excluded_glob_set
@@ -335,5 +419,93 @@ mod tests {
         assert!(!matcher.is_file_included(".github/workflows/ci.sh")); // not in included
         assert!(!matcher.is_file_included(".git/config")); // excluded, not negated
         assert!(matcher.is_file_included("src/config.yaml"));
+    }
+
+    // --- Brace-expansion tests ---
+
+    #[test]
+    fn test_brace_expand_helper() {
+        // No braces: identity.
+        assert_eq!(brace_expand("a/b/c"), vec!["a/b/c".to_string()]);
+        // Single group spanning a separator.
+        assert_eq!(
+            brace_expand("a/{b/c,d}/e"),
+            vec!["a/b/c/e".to_string(), "a/d/e".to_string()]
+        );
+        // Multiple groups expand combinatorially.
+        assert_eq!(
+            brace_expand("a/{b,c}/{d,e}"),
+            vec![
+                "a/b/d".to_string(),
+                "a/b/e".to_string(),
+                "a/c/d".to_string(),
+                "a/c/e".to_string(),
+            ]
+        );
+        // Nested groups.
+        assert_eq!(
+            brace_expand("a/{b,{c,d}}/e"),
+            vec![
+                "a/b/e".to_string(),
+                "a/c/e".to_string(),
+                "a/d/e".to_string()
+            ]
+        );
+        // Wildcards inside an alternative are preserved untouched.
+        assert_eq!(
+            brace_expand("a/{b*,d}/e"),
+            vec!["a/b*/e".to_string(), "a/d/e".to_string()]
+        );
+        // A comma inside a character class is a literal, not an alternation.
+        assert_eq!(brace_expand("a/[b,c]/d"), vec!["a/[b,c]/d".to_string()]);
+        // Unbalanced braces are left untouched (globset will report the error).
+        assert_eq!(brace_expand("a/{b,c"), vec!["a/{b,c".to_string()]);
+    }
+
+    #[test]
+    fn test_negation_brace_expansion_dir_traversal() {
+        // George's case: exclude all of `a`, but un-exclude two specific deep
+        // files expressed via a single brace-alternation negation. Every
+        // ancestor directory of `a/b/c/e` and `a/d/e` must stay traversable.
+        let matcher = PatternMatcher::new(
+            None,
+            Some(vec!["a/**".to_string(), "!a/{b/c,d}/e".to_string()]),
+        )
+        .unwrap();
+        // Both negation-exempt files are included.
+        assert!(matcher.is_file_included("a/b/c/e"));
+        assert!(matcher.is_file_included("a/d/e"));
+        // Other files under `a` remain excluded.
+        assert!(!matcher.is_file_included("a/b/c/x"));
+        assert!(!matcher.is_file_included("a/d/x"));
+        assert!(!matcher.is_file_included("a/other.txt"));
+        // Ancestors on both branches must be traversable.
+        assert!(matcher.is_dir_included("a"));
+        assert!(matcher.is_dir_included("a/b"));
+        assert!(matcher.is_dir_included("a/b/c"));
+        assert!(matcher.is_dir_included("a/d"));
+        // Directories that lie on neither branch are still pruned.
+        assert!(!matcher.is_dir_included("a/x"));
+        assert!(!matcher.is_dir_included("a/b/x"));
+    }
+
+    #[test]
+    fn test_negation_brace_expansion_multiple_groups() {
+        // Two brace groups -> four exempt files, all ancestors traversable.
+        let matcher = PatternMatcher::new(
+            None,
+            Some(vec![
+                "build/**".to_string(),
+                "!build/{lib,bin}/{keep,save}.txt".to_string(),
+            ]),
+        )
+        .unwrap();
+        assert!(matcher.is_file_included("build/lib/keep.txt"));
+        assert!(matcher.is_file_included("build/bin/save.txt"));
+        assert!(!matcher.is_file_included("build/lib/drop.txt"));
+        assert!(matcher.is_dir_included("build"));
+        assert!(matcher.is_dir_included("build/lib"));
+        assert!(matcher.is_dir_included("build/bin"));
+        assert!(!matcher.is_dir_included("build/etc"));
     }
 }
