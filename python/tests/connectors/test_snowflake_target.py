@@ -362,6 +362,7 @@ def test_live_snowflake_upsert_and_delete() -> None:
         user=os.environ["SNOWFLAKE_USER"],
         password=os.environ["SNOWFLAKE_PASSWORD"],
         warehouse=os.environ["SNOWFLAKE_WAREHOUSE"],
+        role=os.environ.get("SNOWFLAKE_ROLE"),
     )
     schema_name = os.environ["SNOWFLAKE_SCHEMA"]
     database = os.environ["SNOWFLAKE_DATABASE"]
@@ -414,10 +415,13 @@ def test_live_snowflake_upsert_and_delete() -> None:
             cursor = conn.cursor()
             try:
                 cursor.execute(
-                    f"SELECT id, payload:v::string FROM "
+                    f'SELECT "id", "payload":v::string FROM '
                     f"{_target._qualified_table_name(database, schema_name, table_name)}"
                 )
-                assert cursor.fetchall() == [(1, "one-updated")]
+                rows = cursor.fetchall()
+                assert len(rows) == 1
+                assert int(rows[0][0]) == 1
+                assert rows[0][1] == "one-updated"
             finally:
                 cursor.close()
     finally:
