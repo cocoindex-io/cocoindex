@@ -2,11 +2,30 @@ from __future__ import annotations
 
 import enum as _enum
 from collections.abc import AsyncIterator, Coroutine
+from datetime import timedelta
 from typing import Any, Generic, NamedTuple, Protocol, TypeVar
 
 R = TypeVar("R")
 
 _TERMINATED_VERSION = 2**64 - 1  # u64::MAX
+
+
+def _resolve_report_to_stdout(
+    report_to_stdout: bool | timedelta,
+) -> tuple[bool, float | None]:
+    """Normalize a ``bool | timedelta`` progress flag into
+    ``(enabled, refresh_interval_secs)`` for the core boundary.
+
+    - ``False`` → ``(False, None)`` (no report)
+    - ``True`` → ``(True, None)`` (report at the default interval)
+    - ``timedelta`` → ``(True, secs)`` (report at that interval; must be positive)
+    """
+    if isinstance(report_to_stdout, timedelta):
+        secs = report_to_stdout.total_seconds()
+        if secs <= 0:
+            raise ValueError("report_to_stdout interval must be a positive duration")
+        return True, secs
+    return bool(report_to_stdout), None
 
 
 class _CoreStatsHandle(Protocol):

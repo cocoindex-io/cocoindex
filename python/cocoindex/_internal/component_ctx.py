@@ -5,6 +5,7 @@ import inspect
 import logging
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import (
     AsyncIterator,
     Awaitable,
@@ -21,7 +22,7 @@ from cocoindex._internal.environment import Environment
 
 from . import core
 from .stable_path import StableKey
-from .update_stats import StatsGroupHandle
+from .update_stats import StatsGroupHandle, _resolve_report_to_stdout
 
 _logger = logging.getLogger(__name__)
 
@@ -422,7 +423,7 @@ def get_component_context() -> ComponentContext:
 
 @contextlib.contextmanager
 def stats_group(
-    title: str, *, report_to_stdout: bool = False
+    title: str, *, report_to_stdout: bool | timedelta = False
 ) -> Generator[StatsGroupHandle, None, None]:
     """Aggregate the stats of everything mounted within this scope separately,
     under ``title``, split out of the enclosing report.
@@ -430,9 +431,10 @@ def stats_group(
     The returned handle mirrors ``UpdateHandle``'s ``stats()`` / ``watch()``.
     Entering and exiting the block only bound *member registration* — exit is
     non-blocking; the group becomes ready asynchronously once the body has
-    exited and all members are ready. With ``report_to_stdout=True`` the group
+    exited and all members are ready. With ``report_to_stdout`` truthy the group
     is also rendered as plain, title-prefixed log lines (interleaved above the
-    progress region when a TTY display is active).
+    progress region when a TTY display is active); pass a ``timedelta`` to set
+    the refresh interval.
 
     This is a plain (synchronous) ``with`` block — like ``component_subpath`` —
     even though the body typically ``await``s ``mount``/``use_mount``.
@@ -445,8 +447,9 @@ def stats_group(
             ...
     """
     current_ctx = get_context_from_ctx()
+    report, refresh_interval_secs = _resolve_report_to_stdout(report_to_stdout)
     derived_core_ctx, core_handle = current_ctx._core_processor_ctx.begin_stats_group(
-        title, report_to_stdout
+        title, report, refresh_interval_secs
     )
     new_ctx = current_ctx._with_core_processor_ctx(derived_core_ctx)
     tok = _context_var.set(new_ctx)

@@ -57,7 +57,7 @@ result = app.update_blocking()
 **Parameters:**
 
 - `live` option keeps the app running after the initial scan so live components can continue watching for changes. See [Live Mode](./live_mode).
-- `report_to_stdout` option prints periodic progress updates during execution.
+- `report_to_stdout` option prints periodic progress updates during execution. Pass `True` for the default refresh interval, or a `timedelta` to set it.
 - `full_reprocess` option reprocesses everything and invalidates existing caches. This forces all components to re-execute and all target states to be re-applied, even if they haven't changed.
 
 When you update an App, CocoIndex:

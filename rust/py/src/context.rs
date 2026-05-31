@@ -38,12 +38,16 @@ impl PyComponentProcessorContext {
     /// Open a stats group rooted at this context. Returns the derived context
     /// (whose mounts aggregate into the group, split out of the enclosing
     /// scope) and a `StatsGroupHandle` for `stats()`/`watch()`.
+    #[pyo3(signature = (title, report_to_stdout, refresh_interval_secs=None))]
     fn begin_stats_group(
         &self,
         title: String,
         report_to_stdout: bool,
+        refresh_interval_secs: Option<f64>,
     ) -> (PyComponentProcessorContext, PyStatsGroupHandle) {
-        let (derived, stats) = self.0.begin_stats_group(title, report_to_stdout);
+        let (derived, stats) =
+            self.0
+                .begin_stats_group(title, report_to_stdout, refresh_interval_secs);
         (
             PyComponentProcessorContext(derived),
             PyStatsGroupHandle::new(stats),

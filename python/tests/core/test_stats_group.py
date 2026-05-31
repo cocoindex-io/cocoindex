@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import timedelta
 from typing import Any
 
 import pytest
 
 import cocoindex as coco
+from cocoindex._internal.update_stats import _resolve_report_to_stdout
 from tests.common import create_test_env
 from tests.common.target_states import GlobalDictTarget
 
@@ -349,3 +351,44 @@ async def test_stats_group_live_member_termination() -> None:
     assert grp_keys, "live member should report into the group"
     assert not (grp_keys & root_keys)
     assert GlobalDictTarget.store.data["live"].data == 1
+
+
+# --- 12. report_to_stdout: bool | timedelta ---
+
+
+def test_resolve_report_to_stdout() -> None:
+    assert _resolve_report_to_stdout(False) == (False, None)
+    assert _resolve_report_to_stdout(True) == (True, None)
+    assert _resolve_report_to_stdout(timedelta(seconds=5)) == (True, 5.0)
+    assert _resolve_report_to_stdout(timedelta(milliseconds=250)) == (True, 0.25)
+    for bad in (timedelta(0), timedelta(seconds=-1)):
+        with pytest.raises(ValueError, match="positive duration"):
+            _resolve_report_to_stdout(bad)
+
+
+@coco.fn()
+async def _main_report_interval() -> None:
+    with coco.stats_group(
+        "Indexing", report_to_stdout=timedelta(milliseconds=50)
+    ) as sg:
+        _captured["sg"] = sg
+        for k in ("a", "b"):
+            await coco.mount(coco.component_subpath(f"ri_{k}"), _emit_grp, k, ord(k))
+
+
+@pytest.mark.asyncio
+async def test_stats_group_report_to_stdout_interval(
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    _reset()
+    app = coco.App(
+        coco.AppConfig(name="test_sg_report_interval", environment=coco_env),
+        _main_report_interval,
+    )
+    handle = app.update()
+    await handle.result()
+    await asyncio.sleep(0.2)
+    out = capfd.readouterr().out
+    # A custom refresh interval still produces the labeled group report.
+    assert "[Stats: Indexing]" in out
+    assert "(terminated)" in out

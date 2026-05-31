@@ -4,6 +4,7 @@ import os
 import threading
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import (
     Any,
     Callable,
@@ -28,6 +29,7 @@ from .update_stats import (
     UpdateStatus,
     _StatsView,
     _decode_update_stats,
+    _resolve_report_to_stdout,
     _TERMINATED_VERSION,
 )
 
@@ -149,10 +151,18 @@ class DropHandle(_StatsView[core.DropHandle]):
         return self.result().__await__()
 
 
-async def show_progress(handle: UpdateHandle[R]) -> R:
-    """Run the operation with progress display. Consumes the handle."""
+async def show_progress(
+    handle: UpdateHandle[R], *, refresh_interval: timedelta | None = None
+) -> R:
+    """Run the operation with progress display (async). Consumes the handle.
+
+    ``refresh_interval`` overrides the default refresh interval.
+    """
     core_handle = await handle._ensure_started()
-    pyvalue: Any = await core.show_progress(core_handle)
+    refresh_interval_secs = (
+        refresh_interval.total_seconds() if refresh_interval is not None else None
+    )
+    pyvalue: Any = await core.show_progress(core_handle, refresh_interval_secs)
     return pyvalue.get(fn_ret_deserializer(handle._main_fn))  # type: ignore[no-any-return]
 
 
@@ -293,7 +303,7 @@ class App(Generic[P, R]):
     def update_blocking(
         self,
         *,
-        report_to_stdout: bool = False,
+        report_to_stdout: bool | timedelta = False,
         full_reprocess: bool = False,
         live: bool = False,
     ) -> R:
@@ -301,7 +311,9 @@ class App(Generic[P, R]):
         Update the app synchronously (run the app once to process all pending changes).
 
         Args:
-            report_to_stdout: If True, periodically report processing stats to stdout.
+            report_to_stdout: If truthy, periodically report processing stats to
+                stdout. Pass a ``timedelta`` to set the refresh interval; ``True``
+                uses the default interval.
             full_reprocess: If True, reprocess everything and invalidate existing caches.
             live: If True, run in live mode (live components continue processing
                 after mark_ready).
@@ -314,11 +326,13 @@ class App(Generic[P, R]):
         processor = create_core_component_processor(
             self._main_fn, env, root_path, self._app_args, self._app_kwargs
         )
+        report, refresh_interval_secs = _resolve_report_to_stdout(report_to_stdout)
         pyvalue: Any = core_app.update(
             processor,
             full_reprocess=full_reprocess,
             host_ctx=env._context_provider,
-            report_to_stdout=report_to_stdout,
+            report_to_stdout=report,
+            refresh_interval_secs=refresh_interval_secs,
             live=live,
         )
         return pyvalue.get(fn_ret_deserializer(self._main_fn))  # type: ignore[no-any-return]
@@ -335,7 +349,7 @@ class App(Generic[P, R]):
         drop_handle = core_app.drop_async(env._context_provider)
         await drop_handle.result()
 
-    def drop_blocking(self, *, report_to_stdout: bool = False) -> None:
+    def drop_blocking(self, *, report_to_stdout: bool | timedelta = False) -> None:
         """
         Drop the app synchronously, reverting all its target states and clearing its database.
 
@@ -344,7 +358,14 @@ class App(Generic[P, R]):
         - Clear the app's internal state database
 
         Args:
-            report_to_stdout: If True, periodically report processing stats to stdout.
+            report_to_stdout: If truthy, periodically report processing stats to
+                stdout. Pass a ``timedelta`` to set the refresh interval; ``True``
+                uses the default interval.
         """
         env, core_app = self._get_core_env_app_sync()
-        core_app.drop(env._context_provider, report_to_stdout=report_to_stdout)
+        report, refresh_interval_secs = _resolve_report_to_stdout(report_to_stdout)
+        core_app.drop(
+            env._context_provider,
+            report_to_stdout=report,
+            refresh_interval_secs=refresh_interval_secs,
+        )
