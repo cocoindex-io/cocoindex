@@ -987,6 +987,38 @@ aside.toc .meta .edited { color: var(--muted); cursor: default; }
   font-family: var(--mono); font-size: 13px;
 }
 
+/* Mermaid diagrams — rendered from ```mermaid fenced blocks by
+   scripts/remark-mermaid.mjs and initialized in MermaidRenderer.astro. */
+.mermaid-figure {
+  margin: 24px 0;
+  padding: 18px;
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  background: var(--paper);
+  overflow-x: auto;
+}
+.mermaid-figure .mermaid {
+  display: flex;
+  justify-content: center;
+  min-width: 620px;
+  margin: 0;
+  padding: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+  color: var(--maroon-ink);
+  font-family: var(--sans);
+}
+.mermaid-figure svg {
+  max-width: 100%;
+  height: auto;
+}
+.mermaid-figure-error {
+  border-color: color-mix(in oklab, var(--pink) 70%, var(--rule));
+}
+@media (max-width: 720px) {
+  .mermaid-figure .mermaid { min-width: 560px; }
+}
+
 /* Admonitions — rendered from Docusaurus-style `:::note`, `:::info`,
    `:::tip`, `:::warning` blocks via scripts/remark-admonitions.mjs.
    Ported verbatim from design_guidelines/ui/admonitions.html — four
