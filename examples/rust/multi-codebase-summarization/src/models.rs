@@ -9,7 +9,7 @@ pub struct FunctionInfo {
     pub name: String,
     /// Function signature, e.g. `async def foo(x: int) -> str`.
     pub signature: String,
-    /// Whether decorated with @coco.function or @cocoindex.function.
+    /// Whether decorated as a CocoIndex function.
     pub is_coco_function: bool,
     /// Brief summary of what the function does.
     pub summary: String,

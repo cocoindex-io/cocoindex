@@ -23,8 +23,10 @@ from dataclasses import dataclass
 from typing import AsyncIterator, Annotated
 
 from dotenv import load_dotenv
-from docling.datamodel.base_models import DocumentStream
-from docling.document_converter import DocumentConverter
+from docling.datamodel.accelerator_options import AcceleratorDevice, AcceleratorOptions
+from docling.datamodel.base_models import DocumentStream, InputFormat
+from docling.datamodel.pipeline_options import PdfPipelineOptions
+from docling.document_converter import DocumentConverter, PdfFormatOption
 from numpy.typing import NDArray
 import asyncpg
 from pgvector.asyncpg import register_vector
@@ -52,7 +54,14 @@ _splitter = RecursiveSplitter()
 
 @functools.cache
 def pdf_converter() -> DocumentConverter:
-    return DocumentConverter()
+    pipeline_options = PdfPipelineOptions(
+        accelerator_options=AcceleratorOptions(device=AcceleratorDevice.CPU)
+    )
+    return DocumentConverter(
+        format_options={
+            InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)
+        }
+    )
 
 
 @coco.fn.as_async(runner=coco.GPU)
