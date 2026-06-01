@@ -24,10 +24,11 @@ Quick start::
     async def app_main():
         accounts = await notion.mount_database_target(
             notion_client,
-            "d7b662bc-3241-49d2-b41f-92aed710630e",
-            await notion.DatabaseSchema.from_class(
+            schema=await notion.DatabaseSchema.from_class(
                 AccountRow, primary_key=["domain"]
             ),
+            parent_page_id=os.environ["NOTION_PARENT_PAGE_ID"],
+            title="Accounts",
         )
         accounts.declare_row(row=AccountRow(domain="anthropic.com", name="Anthropic"))
 """

@@ -245,9 +245,12 @@ schema = await notion.DatabaseSchema.from_class(
 )
 ```
 
-Both forms validate that every field has a binding, that there's at most one
-`TitleProp`, and that every primary-key field has a binding. Typos in
-`property_map` keys (i.e. keys that don't name a real field) raise loudly.
+Both forms validate that at least one field has a binding, that no two fields
+map to the same Notion property name, that there's at most one `TitleProp`, and
+that every primary-key field has a binding. Fields without a binding are
+ignored, which lets the Python class carry transient state that should not be
+written to Notion. Typos in `property_map` keys (i.e. keys that don't name a
+real field) raise loudly.
 
 ### Property types
 
@@ -271,7 +274,9 @@ argument: `notion.SelectProp("Role")` binds to the property literally named
 "Role" in your Notion data source.
 
 `RelationProp` writes Notion relation values as page IDs from the related data
-source. Relation values follow Notion's
+source. It is intentionally page-ID based: it does not resolve related rows by
+CocoIndex primary key, coordinate writes across targets, or create related pages
+for you. Relation values follow Notion's
 [page property value shape](https://developers.notion.com/reference/page-property-values)
 (checked 2026-06-01): page references are written as
 `{"relation": [{"id": "..."}]}`. The connector does not look up or create

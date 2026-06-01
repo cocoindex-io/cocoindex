@@ -33,6 +33,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Collection, Sequence
 from dataclasses import dataclass
+from datetime import date
 from enum import Enum
 from typing import Any, Generic, Literal, NamedTuple
 from urllib.parse import urlencode
@@ -56,6 +57,12 @@ RowT = TypeVar("RowT")
 _PageKey = tuple[Any, ...]
 _PageValue = dict[str, Any]  # Python field name -> Python value
 _PageFingerprint = bytes
+
+
+def _date_filter_value(value: Any) -> str:
+    if isinstance(value, date):
+        return value.isoformat()
+    return str(value)
 
 
 class OnDelete(Enum):
@@ -96,7 +103,7 @@ def _property_filter(prop: PropType, value: Any) -> dict[str, Any]:
     if nt == "checkbox":
         return {"property": name, "checkbox": {"equals": bool(value)}}
     if nt == "date":
-        return {"property": name, "date": {"equals": str(value)}}
+        return {"property": name, "date": {"equals": _date_filter_value(value)}}
     if nt == "select":
         return {"property": name, "select": {"equals": str(value)}}
     raise ValueError(
@@ -323,6 +330,8 @@ async def _find_or_create_data_source(client: NotionClient, spec: _DatabaseSpec)
         # GET list endpoints return at most 100 results and require passing
         # next_cursor as start_cursor to continue.
         cursor: str | None = None
+        matching_data_source_ids: list[str] = []
+        fallback_single_source_ids: list[str] = []
         while True:
             params = {"page_size": "100"}
             if cursor is not None:
@@ -338,17 +347,40 @@ async def _find_or_create_data_source(client: NotionClient, spec: _DatabaseSpec)
                     db = await client.get_database(child["id"])
                 except Exception:
                     continue
-                if _read_notion_title(db.get("title")) == spec.title:
-                    data_sources = db.get("data_sources") or []
-                    if data_sources:
-                        ds_id: str = data_sources[0]["id"]
-                        return ds_id
+                data_sources = db.get("data_sources") or []
+                matching_data_sources = [
+                    ds for ds in data_sources if ds.get("name") == spec.title
+                ]
+                matching_data_source_ids.extend(
+                    str(ds["id"]) for ds in matching_data_sources
+                )
+                if (
+                    len(data_sources) == 1
+                    and _read_notion_title(db.get("title")) == spec.title
+                ):
+                    fallback_single_source_ids.append(str(data_sources[0]["id"]))
             if not children.get("has_more"):
                 break
             next_cursor = children.get("next_cursor")
             if next_cursor is None:
                 break
             cursor = str(next_cursor)
+        if len(matching_data_source_ids) == 1:
+            return matching_data_source_ids[0]
+        if len(matching_data_source_ids) > 1:
+            raise ValueError(
+                f"Found multiple Notion data sources named {spec.title!r} "
+                f"under parent {spec.parent_page_id!r}. Pass "
+                "parent_database_id or choose a unique data source title."
+            )
+        if len(fallback_single_source_ids) == 1:
+            return fallback_single_source_ids[0]
+        if len(fallback_single_source_ids) > 1:
+            raise ValueError(
+                f"Found multiple single-source Notion databases titled "
+                f"{spec.title!r} under parent {spec.parent_page_id!r}. Pass "
+                "parent_database_id or choose a unique data source title."
+            )
         # Not found — create.
         new_db = await client.create_database(
             parent_page_id=spec.parent_page_id,

@@ -18,7 +18,7 @@ import os
 import time
 import uuid
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from typing import Any, AsyncIterator, Callable, Coroutine, cast
 
 import pytest
@@ -32,6 +32,7 @@ from cocoindex.connectors.notion._target import (  # pyright: ignore[reportPriva
     _DatabaseSpec,
     _evolve_schema_if_needed,
     _find_or_create_data_source,
+    _property_filter,
 )
 
 from tests import common
@@ -154,6 +155,8 @@ class _FakeSystemClient(notion.NotionClient):
         self.request_paths.append(path)
         assert method == "GET"
         assert path.startswith("/blocks/parent-page/children?")
+        if not self.child_pages:
+            return {"results": [], "has_more": False, "next_cursor": None}
         if "start_cursor=cursor-2" in path:
             return {
                 "results": [self.child_pages[1]],
@@ -162,8 +165,8 @@ class _FakeSystemClient(notion.NotionClient):
             }
         return {
             "results": [self.child_pages[0]],
-            "has_more": True,
-            "next_cursor": "cursor-2",
+            "has_more": len(self.child_pages) > 1,
+            "next_cursor": "cursor-2" if len(self.child_pages) > 1 else None,
         }
 
     async def get_database(self, database_id: str) -> dict[str, Any]:
@@ -249,7 +252,7 @@ class _FakeSession:
 async def client() -> AsyncIterator[notion.NotionClient]:
     """Per-test NotionClient with the test token."""
     assert NOTION_TEST_TOKEN is not None
-    async with notion.NotionClient(token=NOTION_TEST_TOKEN) as c:
+    async with notion.NotionClient(token=NOTION_TEST_TOKEN, max_concurrency=1) as c:
         yield c
 
 
@@ -301,6 +304,17 @@ async def test_schema_requires_at_most_one_title() -> None:
 
 
 @pytest.mark.asyncio
+async def test_duplicate_notion_property_names_raise() -> None:
+    @dataclass
+    class DuplicateNames:
+        name: Annotated[str, notion.TitleProp("Name")]
+        display_name: Annotated[str, notion.RichTextProp("Name")]
+
+    with pytest.raises(ValueError, match="same Notion property"):
+        await notion.DatabaseSchema.from_class(DuplicateNames, primary_key=["name"])
+
+
+@pytest.mark.asyncio
 async def test_relation_prop_encode_decode() -> None:
     """RelationProp writes page-id lists and creates data-source relations."""
     p = notion.RelationProp("Account")
@@ -319,6 +333,19 @@ async def test_relation_prop_encode_decode() -> None:
 
     p_typed = notion.RelationProp("Account", target_data_source_id="ds-related")
     assert p_typed.to_notion_schema() == {"relation": {"data_source_id": "ds-related"}}
+
+
+def test_date_primary_key_filter_uses_isoformat() -> None:
+    prop = notion.DateProp("Published")
+
+    assert _property_filter(prop, date(2026, 6, 1)) == {
+        "property": "Published",
+        "date": {"equals": "2026-06-01"},
+    }
+    assert _property_filter(prop, datetime(2026, 6, 1, 12, 34, 56)) == {
+        "property": "Published",
+        "date": {"equals": "2026-06-01T12:34:56"},
+    }
 
 
 @pytest.mark.asyncio
@@ -403,6 +430,170 @@ async def test_system_lookup_paginates_parent_children() -> None:
     assert client.created_databases == []
     assert len(client.request_paths) == 2
     assert "start_cursor=cursor-2" in client.request_paths[1]
+
+
+@pytest.mark.asyncio
+async def test_system_lookup_matches_data_source_name_when_database_has_many() -> None:
+    @dataclass
+    class R:
+        name: Annotated[str, notion.TitleProp("Name")]
+
+    schema = await notion.DatabaseSchema.from_class(R, primary_key=["name"])
+    client = _FakeSystemClient()
+    client.child_pages = [{"type": "child_database", "id": "db-match"}]
+    client.databases = {
+        "db-match": {
+            "title": [{"plain_text": "People"}],
+            "data_sources": [
+                {"id": "wrong-ds", "name": "Archive"},
+                {"id": "right-ds", "name": "People"},
+            ],
+        },
+    }
+
+    data_source_id = await _find_or_create_data_source(
+        client,
+        _DatabaseSpec(
+            schema=schema,
+            managed_by="system",
+            parent_page_id="parent-page",
+            title="People",
+        ),
+    )
+
+    assert data_source_id == "right-ds"
+
+
+@pytest.mark.asyncio
+async def test_system_lookup_matches_data_source_when_database_title_differs() -> None:
+    @dataclass
+    class R:
+        name: Annotated[str, notion.TitleProp("Name")]
+
+    schema = await notion.DatabaseSchema.from_class(R, primary_key=["name"])
+    client = _FakeSystemClient()
+    client.child_pages = [{"type": "child_database", "id": "db-match"}]
+    client.databases = {
+        "db-match": {
+            "title": [{"plain_text": "Workspace CRM"}],
+            "data_sources": [
+                {"id": "right-ds", "name": "People"},
+            ],
+        },
+    }
+
+    data_source_id = await _find_or_create_data_source(
+        client,
+        _DatabaseSpec(
+            schema=schema,
+            managed_by="system",
+            parent_page_id="parent-page",
+            title="People",
+        ),
+    )
+
+    assert data_source_id == "right-ds"
+
+
+@pytest.mark.asyncio
+async def test_system_lookup_rejects_duplicate_data_source_names() -> None:
+    @dataclass
+    class R:
+        name: Annotated[str, notion.TitleProp("Name")]
+
+    schema = await notion.DatabaseSchema.from_class(R, primary_key=["name"])
+    client = _FakeSystemClient()
+    client.child_pages = [{"type": "child_database", "id": "db-match"}]
+    client.databases = {
+        "db-match": {
+            "title": [{"plain_text": "Workspace CRM"}],
+            "data_sources": [
+                {"id": "people-a", "name": "People"},
+                {"id": "people-b", "name": "People"},
+            ],
+        },
+    }
+
+    with pytest.raises(ValueError, match="multiple Notion data sources"):
+        await _find_or_create_data_source(
+            client,
+            _DatabaseSpec(
+                schema=schema,
+                managed_by="system",
+                parent_page_id="parent-page",
+                title="People",
+            ),
+        )
+
+
+@pytest.mark.asyncio
+async def test_system_lookup_rejects_duplicate_data_sources_across_databases() -> None:
+    @dataclass
+    class R:
+        name: Annotated[str, notion.TitleProp("Name")]
+
+    schema = await notion.DatabaseSchema.from_class(R, primary_key=["name"])
+    client = _FakeSystemClient()
+    client.child_pages = [
+        {"type": "child_database", "id": "db-a"},
+        {"type": "child_database", "id": "db-b"},
+    ]
+    client.databases = {
+        "db-a": {
+            "title": [{"plain_text": "First CRM"}],
+            "data_sources": [{"id": "people-a", "name": "People"}],
+        },
+        "db-b": {
+            "title": [{"plain_text": "Second CRM"}],
+            "data_sources": [{"id": "people-b", "name": "People"}],
+        },
+    }
+
+    with pytest.raises(ValueError, match="multiple Notion data sources"):
+        await _find_or_create_data_source(
+            client,
+            _DatabaseSpec(
+                schema=schema,
+                managed_by="system",
+                parent_page_id="parent-page",
+                title="People",
+            ),
+        )
+
+
+@pytest.mark.asyncio
+async def test_system_lookup_rejects_duplicate_single_source_title_fallbacks() -> None:
+    @dataclass
+    class R:
+        name: Annotated[str, notion.TitleProp("Name")]
+
+    schema = await notion.DatabaseSchema.from_class(R, primary_key=["name"])
+    client = _FakeSystemClient()
+    client.child_pages = [
+        {"type": "child_database", "id": "db-a"},
+        {"type": "child_database", "id": "db-b"},
+    ]
+    client.databases = {
+        "db-a": {
+            "title": [{"plain_text": "People"}],
+            "data_sources": [{"id": "ds-a"}],
+        },
+        "db-b": {
+            "title": [{"plain_text": "People"}],
+            "data_sources": [{"id": "ds-b"}],
+        },
+    }
+
+    with pytest.raises(ValueError, match="single-source Notion databases"):
+        await _find_or_create_data_source(
+            client,
+            _DatabaseSpec(
+                schema=schema,
+                managed_by="system",
+                parent_page_id="parent-page",
+                title="People",
+            ),
+        )
 
 
 @pytest.mark.asyncio
@@ -857,6 +1048,7 @@ async def test_multiple_targets_in_one_app(
                 NOTION_CK,
                 ds_a,
                 schema,
+                managed_by="user",
             )
             target_b = await coco.use_mount(
                 coco.component_subpath("setup", "target_b"),
@@ -864,6 +1056,7 @@ async def test_multiple_targets_in_one_app(
                 NOTION_CK,
                 ds_b,
                 schema,
+                managed_by="user",
             )
             for r in rows_a:
                 target_a.declare_row(row=r)

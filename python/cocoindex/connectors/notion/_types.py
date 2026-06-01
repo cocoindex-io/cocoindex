@@ -12,6 +12,7 @@ relation. People and files can land in a follow-up.
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any, Generic, get_args, get_origin, get_type_hints
@@ -299,6 +300,16 @@ class DatabaseSchema(Generic[RowT]):
         if len(titles) > 1:
             raise ValueError(
                 f"{record_type.__name__}: only one TitleProp allowed; got {titles}"
+            )
+
+        notion_names = Counter(prop.name for _, prop in bindings)
+        duplicate_notion_names = sorted(
+            name for name, count in notion_names.items() if count > 1
+        )
+        if duplicate_notion_names:
+            raise ValueError(
+                f"{record_type.__name__}: multiple fields map to the same Notion "
+                f"property name(s): {duplicate_notion_names}."
             )
 
         # Sanity: every PK field must be in bindings.
