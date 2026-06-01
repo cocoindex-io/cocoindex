@@ -586,6 +586,7 @@ all = [
     { name = "sentence-transformers" },
     { name = "sqlite-vec" },
     { name = "surrealdb" },
+    { name = "tenacity" },
     { name = "turbopuffer" },
 ]
 amazon-s3 = [
@@ -631,6 +632,10 @@ litellm = [
 ]
 neo4j = [
     { name = "neo4j" },
+]
+notion = [
+    { name = "aiohttp" },
+    { name = "tenacity" },
 ]
 oci = [
     { name = "oci" },
@@ -722,6 +727,7 @@ requires-dist = [
     { name = "aiobotocore", marker = "extra == 'amazon-s3'", specifier = ">=2.0.0" },
     { name = "aiohttp", marker = "extra == 'all'", specifier = ">=3.9.0" },
     { name = "aiohttp", marker = "extra == 'doris'", specifier = ">=3.9.0" },
+    { name = "aiohttp", marker = "extra == 'notion'", specifier = ">=3.9.0" },
     { name = "aiomysql", marker = "extra == 'all'", specifier = ">=0.2.0" },
     { name = "aiomysql", marker = "extra == 'doris'", specifier = ">=0.2.0" },
     { name = "apache-iggy", marker = "extra == 'all'", specifier = ">=0.8.0" },
@@ -775,12 +781,14 @@ requires-dist = [
     { name = "sqlite-vec", marker = "extra == 'sqlite'", specifier = ">=0.1.6" },
     { name = "surrealdb", marker = "extra == 'all'", specifier = ">=1.0.0" },
     { name = "surrealdb", marker = "extra == 'surrealdb'", specifier = ">=1.0.0" },
+    { name = "tenacity", marker = "extra == 'all'", specifier = ">=8.2.0" },
+    { name = "tenacity", marker = "extra == 'notion'", specifier = ">=8.2.0" },
     { name = "turbopuffer", marker = "extra == 'all'", specifier = ">=0.5.0" },
     { name = "turbopuffer", marker = "extra == 'turbopuffer'", specifier = ">=0.5.0" },
     { name = "typing-extensions", specifier = ">=4.12" },
     { name = "watchdog", specifier = ">=6.0.0" },
 ]
-provides-extras = ["all", "amazon-s3", "colpali", "doris", "entity-resolution", "entity-resolution-llm", "falkordb", "google-drive", "iggy", "kafka", "lancedb", "litellm", "neo4j", "oci", "postgres", "qdrant", "sentence-transformers", "sqlite", "surrealdb", "turbopuffer"]
+provides-extras = ["all", "amazon-s3", "colpali", "doris", "entity-resolution", "entity-resolution-llm", "falkordb", "google-drive", "iggy", "kafka", "lancedb", "litellm", "neo4j", "notion", "oci", "postgres", "qdrant", "sentence-transformers", "sqlite", "surrealdb", "turbopuffer"]
 
 [package.metadata.requires-dev]
 build-test = [

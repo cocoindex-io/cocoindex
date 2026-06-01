@@ -1,0 +1,9 @@
+[project]
+name = "notion-target-hello-world"
+version = "0.1.0"
+description = "Hello-world for the cocoindex Notion target connector."
+requires-python = ">=3.11"
+dependencies = ["cocoindex[notion]>=1.0.7"]
+
+[tool.setuptools]
+packages = []
