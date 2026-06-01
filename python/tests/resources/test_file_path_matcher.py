@@ -80,6 +80,25 @@ class TestPatternFilePathMatcherExclude:
         assert not matcher.is_file_included(PurePath("test_main.py"))
         assert not matcher.is_file_included(PurePath("tests/test_main.py"))
 
+    def test_negated_exclude_reincludes_file(self) -> None:
+        matcher = PatternFilePathMatcher(
+            included_patterns=["**/*.tmp"],
+            excluded_patterns=["**/*.tmp", "!keep.tmp"],
+        )
+        assert matcher.is_file_included(PurePath("keep.tmp"))
+        assert not matcher.is_file_included(PurePath("scratch.tmp"))
+
+    def test_negated_exclude_keeps_exception_directory_traversable(self) -> None:
+        matcher = PatternFilePathMatcher(
+            included_patterns=["**/*.yml", "**/*.yaml"],
+            excluded_patterns=["**/.*", "!**/.github/**"],
+        )
+        assert matcher.is_dir_included(PurePath(".github"))
+        assert matcher.is_dir_included(PurePath(".github/workflows"))
+        assert matcher.is_file_included(PurePath(".github/workflows/ci.yml"))
+        assert not matcher.is_dir_included(PurePath(".git"))
+        assert not matcher.is_dir_included(PurePath(".vscode"))
+
 
 class TestPatternFilePathMatcherEdgeCases:
     def test_invalid_pattern_raises(self) -> None:

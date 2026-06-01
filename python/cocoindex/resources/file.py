@@ -30,7 +30,6 @@ from cocoindex._internal.typing import (
     NonExistenceType as _NonExistenceType,
     is_non_existence as _is_non_existence,
 )
-from cocoindex import StableKey as _StableKey
 from cocoindex.connectorkits.fingerprint import fingerprint_bytes as _fingerprint_bytes
 
 # Type variable for the resolved path type (e.g., pathlib.Path for local filesystem)
@@ -234,6 +233,7 @@ class PatternFilePathMatcher(FilePathMatcher):
     - `**/*.py` — matches Python files at any depth
     - `*.py` — matches Python files only in the root directory
     - `**/.*` — matches dot-prefixed entries (hidden files/dirs) at any depth
+    - `!**/.github/**` — re-includes paths matched by an earlier exclude pattern
     - `{*.md,*.txt}` — matches multiple extensions using alternation
     """
 
@@ -250,7 +250,8 @@ class PatternFilePathMatcher(FilePathMatcher):
                 to be included. Use ``**/*.ext`` to match at any depth.
             excluded_patterns: Glob patterns (globset syntax) matching full path of files
                 and directories to be excluded. If a directory is excluded, all files and
-                subdirectories within it are also excluded.
+                subdirectories within it are also excluded. Prefix a pattern with ``!``
+                to re-include matching paths after a broader exclude pattern.
 
         Raises:
             ValueError: If any pattern is invalid.

@@ -127,6 +127,16 @@ async for file in localfs.walk_dir("/path/to/project", recursive=True, path_matc
     await process(file)
 ```
 
+`excluded_patterns` also supports a leading `!` to keep exceptions after a broader exclude. Rules are evaluated in order, so the last matching exclude rule wins:
+
+```python
+# Exclude dot-directories, but keep GitHub workflow files
+matcher = PatternFilePathMatcher(
+    included_patterns=["**/*.yml", "**/*.yaml"],
+    excluded_patterns=["**/.*", "!**/.github/**"],
+)
+```
+
 ### Live file watching
 
 When `live=True`, `items()` returns a [`LiveMapView`](../advanced_topics/live_component#livemapfeed-and-livemapview) instead of a plain `AsyncIterable`. Combined with [`mount_each()`](../programming_guide/processing_component#mount_each), this enables automatic incremental file watching — new, modified, and deleted files are processed without a full rescan:
