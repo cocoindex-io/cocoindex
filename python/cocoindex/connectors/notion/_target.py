@@ -5,14 +5,14 @@ Two-level structure that mirrors ``connectors.postgres`` /
 
 - ``_DatabaseHandler`` (root) owns the data source. Supports two modes:
 
-  - ``managed_by="user"`` (default): the data source must already exist;
-    the connector validates that the declared property schema matches the
-    live data source on every apply.
-  - ``managed_by="system"``: the connector looks under the parent (page or
-    database) for a data source with the given title; creates it on first
-    run if missing, and PATCH-adds new properties on subsequent runs when
-    the dataclass grows. Destructive schema changes are rejected unless
+  - ``managed_by="system"`` (default): the connector looks under the parent
+    (page or database) for a data source with the given title; creates it on
+    first run if missing, and PATCH-adds new properties on subsequent runs
+    when the dataclass grows. Destructive schema changes are rejected unless
     ``allow_destructive=True``.
+  - ``managed_by="user"``: the data source must already exist; the connector
+    validates that the declared property schema matches the live data source
+    on every apply.
 
 - ``_RowHandler`` (child) reconciles individual pages against their
   fingerprints and applies upsert / archive actions.
@@ -261,7 +261,7 @@ class _DatabaseSpec:
 
     schema: DatabaseSchema[Any]
     on_delete: OnDelete = OnDelete.ARCHIVE
-    managed_by: ManagedBy = "user"
+    managed_by: ManagedBy = "system"
     # user mode:
     data_source_id: str | None = None
     # system mode:
@@ -650,7 +650,7 @@ def database_target(
     data_source_id: str | None = None,
     schema: DatabaseSchema[RowT] | None = None,
     *,
-    managed_by: ManagedBy = "user",
+    managed_by: ManagedBy = "system",
     parent_page_id: str | None = None,
     parent_database_id: str | None = None,
     title: str | None = None,
@@ -681,7 +681,7 @@ def declare_database_target(
     data_source_id: str | None = None,
     schema: DatabaseSchema[RowT] | None = None,
     *,
-    managed_by: ManagedBy = "user",
+    managed_by: ManagedBy = "system",
     parent_page_id: str | None = None,
     parent_database_id: str | None = None,
     title: str | None = None,
@@ -712,7 +712,7 @@ async def mount_database_target(
     data_source_id: str | None = None,
     schema: DatabaseSchema[RowT] | None = None,
     *,
-    managed_by: ManagedBy = "user",
+    managed_by: ManagedBy = "system",
     parent_page_id: str | None = None,
     parent_database_id: str | None = None,
     title: str | None = None,
@@ -723,14 +723,14 @@ async def mount_database_target(
 
     Two modes:
 
-    - ``managed_by="user"`` (default): pass an existing ``data_source_id``.
-      The connector validates that the live property schema matches.
-    - ``managed_by="system"``: pass ``parent_page_id`` or
+    - ``managed_by="system"`` (default): pass ``parent_page_id`` or
       ``parent_database_id`` plus ``title``. The connector creates the data
       source on first run if it doesn't exist, and PATCH-adds new properties
       on subsequent runs when the dataclass grows. Destructive changes
       (existing property type changed) are rejected unless
       ``allow_destructive=True``.
+    - ``managed_by="user"``: pass an existing ``data_source_id``. The
+      connector validates that the live property schema matches.
     """
     if schema is None:
         raise ValueError("schema is required.")

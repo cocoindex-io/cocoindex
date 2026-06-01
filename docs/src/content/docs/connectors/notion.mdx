@@ -23,15 +23,15 @@ pip install cocoindex[notion]
 
 The connector supports two modes:
 
-- **`managed_by="user"`** (default) — you point it at an existing data source
-  and the connector keeps individual rows in sync. The declared property
-  schema is validated against the live data source at mount, and the
-  connector refuses to write if anything's mismatched.
-- **`managed_by="system"`** — you give the connector a parent (page or
-  database) and a title; it finds or creates the data source for you, and
+- **`managed_by="system"`** (default) — you give the connector a parent (page
+  or database) and a title; it finds or creates the data source for you, and
   PATCH-adds new properties as your row class grows. Destructive changes
   (existing column's type changed) are rejected unless you opt in with
   `allow_destructive=True`.
+- **`managed_by="user"`** — you point it at an existing data source
+  and the connector keeps individual rows in sync. The declared property
+  schema is validated against the live data source at mount, and the
+  connector refuses to write if anything's mismatched.
 
 ## Connection setup
 
@@ -104,7 +104,7 @@ async def mount_database_target(
     data_source_id: str | None = None,
     schema: DatabaseSchema[RowT] | None = None,
     *,
-    managed_by: Literal["user", "system"] = "user",
+    managed_by: Literal["user", "system"] = "system",
     parent_page_id: str | None = None,
     parent_database_id: str | None = None,
     title: str | None = None,
@@ -120,8 +120,8 @@ async def mount_database_target(
   (find it via the database URL or `GET /v1/databases/{id}/data_sources`).
 - `schema` — A `DatabaseSchema` describing the row class and its mapping onto
   Notion properties.
-- `managed_by` — `"user"` (default) reuses an existing data source; `"system"`
-  creates and evolves it.
+- `managed_by` — `"system"` (default) creates and evolves the data source;
+  `"user"` reuses an existing one.
 - `parent_page_id` / `parent_database_id` — Required in `system` mode, exactly
   one of them. The data source is created (or found) under this parent.
 - `title` — Required in `system` mode. The Notion display name for the data
@@ -314,6 +314,7 @@ target = await notion.mount_database_target(
     NOTION,
     data_source_id,
     schema,
+    managed_by="user",
     on_delete=notion.OnDelete.HARD,
 )
 ```
@@ -422,6 +423,7 @@ async def app_main() -> None:
         NOTION,
         os.environ["NOTION_DATA_SOURCE_ID"],
         await notion.DatabaseSchema.from_class(Person, primary_key=["name"]),
+        managed_by="user",
     )
     for person in PEOPLE:
         target.declare_row(row=person)

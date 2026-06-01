@@ -68,6 +68,7 @@ async def app_main() -> None:
         notion_client,
         os.environ["NOTION_DATA_SOURCE_ID"],
         await notion.DatabaseSchema.from_class(Person, primary_key=["name"]),
+        managed_by="user",
     )
     for person in PEOPLE:
         target.declare_row(row=person)

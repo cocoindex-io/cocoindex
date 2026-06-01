@@ -499,6 +499,7 @@ def _user_mode_main(
             NOTION_CK,
             user_db_id,
             await notion.DatabaseSchema.from_class(Person, primary_key=["name"]),
+            managed_by="user",
             on_delete=on_delete,
         )
         for r in rows:
@@ -701,6 +702,7 @@ async def test_property_types_roundtrip(
                 NOTION_CK,
                 ds_id,
                 await notion.DatabaseSchema.from_class(AllTypes, primary_key=["name"]),
+                managed_by="user",
             )
             target.declare_row(row=row)
 
@@ -783,6 +785,7 @@ async def test_schema_validation_type_mismatch(
             NOTION_CK,
             user_db,
             await notion.DatabaseSchema.from_class(WrongPerson, primary_key=["name"]),
+            managed_by="user",
         )
 
     app = coco.App(coco.AppConfig(name="mismatch", environment=env), app_main)
@@ -809,6 +812,7 @@ async def test_schema_validation_missing_property(
             NOTION_CK,
             user_db,
             await notion.DatabaseSchema.from_class(ExtraField, primary_key=["name"]),
+            managed_by="user",
         )
 
     app = coco.App(coco.AppConfig(name="missing", environment=env), app_main)

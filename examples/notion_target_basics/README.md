@@ -81,6 +81,7 @@ target = await notion.mount_database_target(
     notion_client,
     os.environ["NOTION_DATA_SOURCE_ID"],
     schema,
+    managed_by="user",
     on_delete=notion.OnDelete.HARD,    # send page to trash
     # on_delete=notion.OnDelete.IGNORE  # leave page alone
 )
