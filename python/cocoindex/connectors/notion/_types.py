@@ -164,6 +164,46 @@ class CheckboxProp(PropType):
 
 
 @dataclass(frozen=True)
+class RelationProp(PropType):
+    """A Notion relation property pointing at another data source.
+
+    The Python value is a list of page IDs (or a single page ID string) of
+    pages in the related data source. The connector does not look these up
+    for you — when porting from notion-client-style code, you typically pass
+    the page IDs you got from an upstream upsert.
+
+    For system mode, ``target_database_id`` is required to create the
+    relation column on the live Notion data source.
+    """
+
+    notion_type: str = "relation"
+    target_database_id: str | None = None
+
+    def encode(self, value: Any) -> dict[str, Any]:
+        if value is None:
+            return {"relation": []}
+        if isinstance(value, str):
+            ids = [value]
+        else:
+            ids = [str(v) for v in value if v]
+        return {"relation": [{"id": pid} for pid in ids]}
+
+    def decode(self, prop_json: dict[str, Any]) -> Any:
+        return [r.get("id") for r in (prop_json.get("relation") or [])]
+
+    def to_notion_schema(self) -> dict[str, Any]:
+        if self.target_database_id is None:
+            return {"relation": {}}
+        return {
+            "relation": {
+                "database_id": self.target_database_id,
+                "type": "single_property",
+                "single_property": {},
+            }
+        }
+
+
+@dataclass(frozen=True)
 class DateProp(PropType):
     notion_type: str = "date"
 

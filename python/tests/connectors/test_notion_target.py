@@ -301,6 +301,32 @@ async def test_schema_requires_at_most_one_title() -> None:
 
 
 @pytest.mark.asyncio
+async def test_relation_prop_encode_decode() -> None:
+    """RelationProp encodes page-id lists; decodes them back; to_notion_schema
+    emits ``{"relation": {}}`` when no target database is given, or the full
+    single_property body when one is.
+    """
+    p = notion.RelationProp("Account")
+    assert p.encode(["page1", "page2"]) == {
+        "relation": [{"id": "page1"}, {"id": "page2"}]
+    }
+    assert p.encode("page1") == {"relation": [{"id": "page1"}]}
+    assert p.encode(None) == {"relation": []}
+    assert p.encode([]) == {"relation": []}
+    assert p.decode({"relation": [{"id": "p1"}, {"id": "p2"}]}) == ["p1", "p2"]
+    assert p.to_notion_schema() == {"relation": {}}
+
+    p_typed = notion.RelationProp("Account", target_database_id="db-1")
+    assert p_typed.to_notion_schema() == {
+        "relation": {
+            "database_id": "db-1",
+            "type": "single_property",
+            "single_property": {},
+        }
+    }
+
+
+@pytest.mark.asyncio
 async def test_managed_by_args_validation() -> None:
     """User mode rejects parent_/title kwargs; system mode rejects data_source_id."""
 
