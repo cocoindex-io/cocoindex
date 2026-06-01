@@ -13,12 +13,13 @@ pattern used elsewhere in this repo.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 import uuid
 from dataclasses import dataclass
 from datetime import date
-from typing import Any, AsyncIterator, Callable, Coroutine
+from typing import Any, AsyncIterator, Callable, Coroutine, cast
 
 import pytest
 import pytest_asyncio
@@ -27,6 +28,11 @@ from typing_extensions import Annotated
 import cocoindex as coco
 from cocoindex._internal.context_keys import ContextProvider
 from cocoindex.connectors import notion
+from cocoindex.connectors.notion._target import (  # pyright: ignore[reportPrivateUsage]
+    _DatabaseSpec,
+    _evolve_schema_if_needed,
+    _find_or_create_data_source,
+)
 
 from tests import common
 
@@ -132,6 +138,108 @@ PERSON_SCHEMA_PROPS: dict[str, dict[str, Any]] = {
 }
 
 
+class _FakeSystemClient(notion.NotionClient):
+    def __init__(self) -> None:
+        super().__init__(token="fake", session=cast(Any, object()))
+        self.child_pages: list[dict[str, Any]] = []
+        self.databases: dict[str, dict[str, Any]] = {}
+        self.data_source: dict[str, Any] = {"properties": {}}
+        self.created_databases: list[dict[str, Any]] = []
+        self.schema_updates: list[dict[str, dict[str, Any] | None]] = []
+        self.request_paths: list[str] = []
+
+    async def _request(
+        self, method: str, path: str, json_body: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        self.request_paths.append(path)
+        assert method == "GET"
+        assert path.startswith("/blocks/parent-page/children?")
+        if "start_cursor=cursor-2" in path:
+            return {
+                "results": [self.child_pages[1]],
+                "has_more": False,
+                "next_cursor": None,
+            }
+        return {
+            "results": [self.child_pages[0]],
+            "has_more": True,
+            "next_cursor": "cursor-2",
+        }
+
+    async def get_database(self, database_id: str) -> dict[str, Any]:
+        return self.databases[database_id]
+
+    async def create_database(
+        self,
+        *,
+        parent_page_id: str,
+        title: str,
+        properties: dict[str, dict[str, Any]],
+    ) -> dict[str, Any]:
+        self.created_databases.append(
+            {
+                "parent_page_id": parent_page_id,
+                "title": title,
+                "properties": properties,
+            }
+        )
+        return {"data_sources": [{"id": "created-ds"}]}
+
+    async def get_data_source(self, data_source_id: str) -> dict[str, Any]:
+        assert data_source_id == "ds-1"
+        return self.data_source
+
+    async def update_data_source_properties(
+        self,
+        data_source_id: str,
+        properties: dict[str, dict[str, Any] | None],
+    ) -> dict[str, Any]:
+        assert data_source_id == "ds-1"
+        self.schema_updates.append(properties)
+        return {"id": data_source_id, "properties": properties}
+
+
+class _FakeResponse:
+    def __init__(self, status: int, body: dict[str, Any]) -> None:
+        self.status = status
+        self.headers: dict[str, str] = {}
+        self._body = body
+
+    async def __aenter__(self) -> "_FakeResponse":
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        return None
+
+    def raise_for_status(self) -> None:
+        return None
+
+    async def json(self) -> dict[str, Any]:
+        return self._body
+
+
+class _FakeSession:
+    def __init__(self, second_request_started: asyncio.Event) -> None:
+        self.second_request_started = second_request_started
+        self.calls = 0
+
+    def request(
+        self,
+        method: str,
+        url: str,
+        *,
+        json: dict[str, Any] | None,
+        headers: dict[str, str],
+    ) -> _FakeResponse:
+        self.calls += 1
+        if self.calls == 1:
+            response = _FakeResponse(429, {})
+            response.headers["Retry-After"] = "1"
+            return response
+        self.second_request_started.set()
+        return _FakeResponse(200, {"ok": True})
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -224,6 +332,122 @@ async def test_managed_by_args_validation() -> None:
         notion.database_target(
             client_key, None, schema, managed_by="system", title="Foo"
         )
+
+
+@pytest.mark.asyncio
+async def test_system_lookup_paginates_parent_children() -> None:
+    @dataclass
+    class R:
+        name: Annotated[str, notion.TitleProp("Name")]
+
+    schema = await notion.DatabaseSchema.from_class(R, primary_key=["name"])
+    client = _FakeSystemClient()
+    client.child_pages = [
+        {"type": "child_database", "id": "db-other"},
+        {"type": "child_database", "id": "db-match"},
+    ]
+    client.databases = {
+        "db-other": {
+            "title": [{"plain_text": "Other"}],
+            "data_sources": [{"id": "other-ds"}],
+        },
+        "db-match": {
+            "title": [{"plain_text": "Wanted"}],
+            "data_sources": [{"id": "wanted-ds"}],
+        },
+    }
+
+    data_source_id = await _find_or_create_data_source(
+        client,
+        _DatabaseSpec(
+            schema=schema,
+            managed_by="system",
+            parent_page_id="parent-page",
+            title="Wanted",
+        ),
+    )
+
+    assert data_source_id == "wanted-ds"
+    assert client.created_databases == []
+    assert len(client.request_paths) == 2
+    assert "start_cursor=cursor-2" in client.request_paths[1]
+
+
+@pytest.mark.asyncio
+async def test_system_destructive_evolution_patches_type_change() -> None:
+    @dataclass
+    class R:
+        name: Annotated[str, notion.TitleProp("Name")]
+        email: Annotated[str, notion.RichTextProp("Email")]
+
+    schema = await notion.DatabaseSchema.from_class(R, primary_key=["name"])
+    client = _FakeSystemClient()
+    client.data_source = {
+        "properties": {
+            "Name": {"type": "title"},
+            "Email": {"type": "email"},
+        }
+    }
+    spec = _DatabaseSpec(
+        schema=schema,
+        managed_by="system",
+        parent_page_id="parent-page",
+        title="People",
+        allow_destructive=True,
+    )
+
+    await _evolve_schema_if_needed(client, "ds-1", spec)
+
+    assert client.schema_updates == [{"Email": {"rich_text": {}}}]
+
+
+@pytest.mark.asyncio
+async def test_system_destructive_evolution_still_rejects_title_changes() -> None:
+    @dataclass
+    class R:
+        name: Annotated[str, notion.TitleProp("Name")]
+
+    schema = await notion.DatabaseSchema.from_class(R, primary_key=["name"])
+    client = _FakeSystemClient()
+    client.data_source = {"properties": {"Title": {"type": "title"}}}
+    spec = _DatabaseSpec(
+        schema=schema,
+        managed_by="system",
+        parent_page_id="parent-page",
+        title="People",
+        allow_destructive=True,
+    )
+
+    with pytest.raises(ValueError, match="title property cannot"):
+        await _evolve_schema_if_needed(client, "ds-1", spec)
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_sleep_releases_concurrency_slot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    second_request_started = asyncio.Event()
+    first_sleep_started = asyncio.Event()
+    finish_sleep = asyncio.Event()
+    session = _FakeSession(second_request_started)
+    client = notion.NotionClient(
+        token="fake", max_concurrency=1, session=cast(Any, session)
+    )
+
+    async def fake_sleep(delay: float) -> None:
+        assert delay == 1.0
+        first_sleep_started.set()
+        await finish_sleep.wait()
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+    first = asyncio.create_task(client._request("GET", "/first"))
+    await first_sleep_started.wait()
+    second = asyncio.create_task(client._request("GET", "/second"))
+    await asyncio.wait_for(second_request_started.wait(), timeout=1)
+    assert await second == {"ok": True}
+    finish_sleep.set()
+    assert await first == {"ok": True}
 
 
 # ---------------------------------------------------------------------------

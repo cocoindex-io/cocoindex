@@ -35,6 +35,7 @@ from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Generic, Literal, NamedTuple
+from urllib.parse import urlencode
 
 from typing_extensions import TypeVar
 
@@ -318,22 +319,36 @@ async def _find_or_create_data_source(client: NotionClient, spec: _DatabaseSpec)
     assert spec.title is not None
 
     if spec.parent_page_id is not None:
-        # Look through the page's children for a database with this title.
-        children = await client._request(
-            "GET", f"/blocks/{spec.parent_page_id}/children?page_size=100"
-        )
-        for child in children.get("results", []):
-            if child.get("type") != "child_database":
-                continue
-            try:
-                db = await client.get_database(child["id"])
-            except Exception:
-                continue
-            if _read_notion_title(db.get("title")) == spec.title:
-                data_sources = db.get("data_sources") or []
-                if data_sources:
-                    ds_id: str = data_sources[0]["id"]
-                    return ds_id
+        # Notion pagination docs, checked 2026-06-01:
+        # GET list endpoints return at most 100 results and require passing
+        # next_cursor as start_cursor to continue.
+        cursor: str | None = None
+        while True:
+            params = {"page_size": "100"}
+            if cursor is not None:
+                params["start_cursor"] = cursor
+            children = await client._request(
+                "GET",
+                f"/blocks/{spec.parent_page_id}/children?{urlencode(params)}",
+            )
+            for child in children.get("results", []):
+                if child.get("type") != "child_database":
+                    continue
+                try:
+                    db = await client.get_database(child["id"])
+                except Exception:
+                    continue
+                if _read_notion_title(db.get("title")) == spec.title:
+                    data_sources = db.get("data_sources") or []
+                    if data_sources:
+                        ds_id: str = data_sources[0]["id"]
+                        return ds_id
+            if not children.get("has_more"):
+                break
+            next_cursor = children.get("next_cursor")
+            if next_cursor is None:
+                break
+            cursor = str(next_cursor)
         # Not found — create.
         new_db = await client.create_database(
             parent_page_id=spec.parent_page_id,
@@ -373,6 +388,25 @@ async def _evolve_schema_if_needed(
     ds = await client.get_data_source(data_source_id)
     notion_props = ds.get("properties") or {}
     missing, type_mismatch = spec.schema.diff_against(notion_props)
+    prop_by_name = spec.schema.properties_by_notion_name
+
+    # Notion data-source property docs, checked 2026-06-01:
+    # every data source requires exactly one title property, and its type
+    # cannot be changed or added/removed through schema PATCHes.
+    missing_title = [
+        name for name in missing if prop_by_name[name].notion_type == "title"
+    ]
+    mismatched_title = [
+        name
+        for name, declared, actual in type_mismatch
+        if declared == "title" or actual == "title"
+    ]
+    if missing_title or mismatched_title:
+        raise ValueError(
+            f"{spec.schema.record_type.__name__}: Notion title property cannot "
+            "be added or type-changed via the API. Edit the data source title "
+            "property in Notion's UI to match the declared schema."
+        )
 
     if type_mismatch and not spec.allow_destructive:
         details = ", ".join(
@@ -385,12 +419,17 @@ async def _evolve_schema_if_needed(
             "match, or pass allow_destructive=True to apply the change."
         )
 
-    if missing:
-        prop_by_name = spec.schema.properties_by_notion_name
-        additions: dict[str, dict[str, Any] | None] = {
-            name: prop_by_name[name].to_notion_schema() for name in missing
-        }
-        await client.update_data_source_properties(data_source_id, additions)
+    updates: dict[str, dict[str, Any] | None] = {
+        name: prop_by_name[name].to_notion_schema() for name in missing
+    }
+    if spec.allow_destructive:
+        # Notion update-data-source docs, checked 2026-06-01:
+        # property type changes are PATCHed by sending the new type schema.
+        # Not all conversions are accepted by Notion; surface that API error.
+        for name, _, _ in type_mismatch:
+            updates[name] = prop_by_name[name].to_notion_schema()
+    if updates:
+        await client.update_data_source_properties(data_source_id, updates)
 
 
 async def _apply_database_actions(

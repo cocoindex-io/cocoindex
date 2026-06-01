@@ -5,7 +5,7 @@ concurrency + retry behavior required by CocoIndex's high-fanout sinks:
 
 - shared per-client asyncio.Semaphore caps concurrent calls
 - honors Retry-After on 429s
-- bounded exponential backoff via tenacity
+- bounded exponential backoff
 """
 
 from __future__ import annotations
@@ -89,21 +89,27 @@ class NotionClient:
         url = f"{NOTION_BASE_URL}{path}"
         last_error: Exception | None = None
         for attempt in range(_MAX_ATTEMPTS):
+            retry_after: float | None = None
             async with self._sem:
                 async with session.request(
                     method, url, json=json_body, headers=self._headers()
                 ) as r:
                     if r.status == 429:
-                        # Honor server-supplied backoff, then retry.
+                        # Notion rate-limit docs, checked 2026-06-01:
+                        # Retry-After is an integer number of seconds. Sleep
+                        # after releasing the semaphore so unrelated requests
+                        # can still use the connection's concurrency budget.
                         retry_after = float(r.headers.get("Retry-After", "1"))
-                        await asyncio.sleep(retry_after)
                         last_error = RuntimeError("notion rate_limited")
-                        continue
-                    r.raise_for_status()
-                    result: dict[str, Any] = await r.json()
-                    return result
-            # Exponential backoff between attempts, capped at _MAX_WAIT.
-            await asyncio.sleep(min(_MIN_WAIT * (2**attempt), _MAX_WAIT))
+                    else:
+                        r.raise_for_status()
+                        result: dict[str, Any] = await r.json()
+                        return result
+            if retry_after is not None:
+                await asyncio.sleep(retry_after)
+            else:
+                # Exponential backoff between attempts, capped at _MAX_WAIT.
+                await asyncio.sleep(min(_MIN_WAIT * (2**attempt), _MAX_WAIT))
         raise RuntimeError(
             f"Notion request {method} {path} failed after {_MAX_ATTEMPTS} attempts"
         ) from last_error
