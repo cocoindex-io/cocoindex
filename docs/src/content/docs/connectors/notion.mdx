@@ -272,9 +272,12 @@ argument: `notion.SelectProp("Role")` binds to the property literally named
 
 `RelationProp` writes Notion relation values as page IDs from the related data
 source. In `managed_by="system"` mode, pass `target_data_source_id`; Notion's
-data-source property docs (checked 2026-06-01) define relation schema with
-`data_source_id`, and the related data source must be shared with the
-integration. The connector does not look up or create related pages for you.
+[data-source property docs](https://developers.notion.com/reference/property-object)
+(checked 2026-06-01) define relation schema with `data_source_id`, and the
+related data source must be shared with the integration. Relation values follow
+Notion's [page property value shape](https://developers.notion.com/reference/page-property-values):
+page references are written as `{"relation": [{"id": "..."}]}`. The connector
+does not look up or create related pages for you.
 
 People, files, formula, status, rollup, created_time / last_edited_time, and
 "place" properties are not yet supported.
