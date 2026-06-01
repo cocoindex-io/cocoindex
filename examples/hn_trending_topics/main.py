@@ -328,7 +328,7 @@ async def get_trending_topics(
                 SUM(CASE WHEN content_type = 'thread' THEN {THREAD_LEVEL_MENTION_SCORE} ELSE {COMMENT_LEVEL_MENTION_SCORE} END) AS score,
                 MAX(created_at) AS latest_mention,
                 COUNT(DISTINCT thread_id) AS thread_count
-            FROM hn_topics
+            FROM coco_examples.hn_topics
             GROUP BY topic
             ORDER BY score DESC, latest_mention DESC
             LIMIT $1
@@ -355,8 +355,8 @@ async def search_by_topic(pool: asyncpg.Pool, topic: str) -> list[dict[str, Any]
         rows = await conn.fetch(
             """
             SELECT m.id, m.thread_id, m.author, m.content_type, m.text, m.created_at, t.topic
-            FROM hn_topics t
-            JOIN hn_messages m ON t.message_id = m.id
+            FROM coco_examples.hn_topics t
+            JOIN coco_examples.hn_messages m ON t.message_id = m.id
             WHERE LOWER(t.topic) LIKE LOWER($1)
             ORDER BY m.created_at DESC
         """,

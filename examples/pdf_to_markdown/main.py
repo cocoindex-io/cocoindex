@@ -10,14 +10,24 @@ from __future__ import annotations
 
 import pathlib
 
-from docling.document_converter import DocumentConverter
+from docling.datamodel.accelerator_options import AcceleratorDevice, AcceleratorOptions
+from docling.datamodel.base_models import InputFormat
+from docling.datamodel.pipeline_options import PdfPipelineOptions
+from docling.document_converter import DocumentConverter, PdfFormatOption
 
 import cocoindex as coco
 from cocoindex.connectors import localfs
 from cocoindex.resources.file import PatternFilePathMatcher
 
 
-_converter = DocumentConverter()
+_pipeline_options = PdfPipelineOptions(
+    accelerator_options=AcceleratorOptions(device=AcceleratorDevice.CPU)
+)
+_converter = DocumentConverter(
+    format_options={
+        InputFormat.PDF: PdfFormatOption(pipeline_options=_pipeline_options)
+    }
+)
 
 
 @coco.fn(memo=True)
