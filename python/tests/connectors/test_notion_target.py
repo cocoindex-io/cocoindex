@@ -17,6 +17,7 @@ import os
 import time
 import uuid
 from dataclasses import dataclass
+from datetime import date
 from typing import Any, AsyncIterator, Callable, Coroutine
 
 import pytest
@@ -266,9 +267,15 @@ async def test_insert_update_archive(
         Person(name="Alan", email="alan@x.com", role="Engineer", active=False),
     ]
 
+    # All three steps reuse the same App name so cocoindex's tracking record
+    # carries across; without that, step 3 wouldn't know Alan was previously
+    # declared and the archive wouldn't fire.
+    app_name = "lifecycle"
+
     # 1. Insert
     await coco.App(
-        coco.AppConfig(name="t1", environment=env), _user_mode_main(user_db, rows)
+        coco.AppConfig(name=app_name, environment=env),
+        _user_mode_main(user_db, rows),
     ).update()
     pages = await _active_pages(client, user_db)
     assert {_title_of(p) for p in pages} == {"Ada", "Grace", "Alan"}
@@ -276,7 +283,8 @@ async def test_insert_update_archive(
     # 2. Update Ada's email
     rows[0] = Person(name="Ada", email="ada@new.com", role="Engineer", active=True)
     await coco.App(
-        coco.AppConfig(name="t2", environment=env), _user_mode_main(user_db, rows)
+        coco.AppConfig(name=app_name, environment=env),
+        _user_mode_main(user_db, rows),
     ).update()
     pages = await _active_pages(client, user_db)
     ada = next(p for p in pages if _title_of(p) == "Ada")
@@ -285,7 +293,8 @@ async def test_insert_update_archive(
     # 3. Drop Alan -> page archived
     rows.pop()  # remove Alan
     await coco.App(
-        coco.AppConfig(name="t3", environment=env), _user_mode_main(user_db, rows)
+        coco.AppConfig(name=app_name, environment=env),
+        _user_mode_main(user_db, rows),
     ).update()
     pages = await _active_pages(client, user_db)
     assert {_title_of(p) for p in pages} == {"Ada", "Grace"}
@@ -300,19 +309,201 @@ async def test_on_delete_ignore_leaves_page(
 ) -> None:
     env = _make_env(client, request.node.name)
     rows = [Person(name="Ada", email="ada@x.com", role="Engineer", active=True)]
+    app_name = "ignore"
     await coco.App(
-        coco.AppConfig(name="i1", environment=env),
+        coco.AppConfig(name=app_name, environment=env),
         _user_mode_main(user_db, rows, on_delete=notion.OnDelete.IGNORE),
     ).update()
     assert len(await _active_pages(client, user_db)) == 1
 
-    # Undeclare
+    # Undeclare — reuse the same app name so cocoindex's prior tracking is
+    # carried across; otherwise it wouldn't know the row "went missing".
     await coco.App(
-        coco.AppConfig(name="i2", environment=env),
+        coco.AppConfig(name=app_name, environment=env),
         _user_mode_main(user_db, [], on_delete=notion.OnDelete.IGNORE),
     ).update()
     # Page is still there — IGNORE doesn't archive.
     assert len(await _active_pages(client, user_db)) == 1
+
+
+@requires_notion_env
+@pytest.mark.asyncio
+async def test_noop_when_no_changes(
+    client: notion.NotionClient,
+    user_db: str,
+    request: pytest.FixtureRequest,
+) -> None:
+    """Second run with identical data must not touch Notion.
+
+    Concretely: capture last_edited_time after run 1, run 2 with the same rows,
+    confirm the timestamps are unchanged (no PATCH was issued).
+    """
+    env = _make_env(client, request.node.name)
+    rows = [
+        Person(name="Ada", email="ada@x.com", role="Engineer", active=True),
+        Person(name="Grace", email="grace@x.com", role="Engineer", active=True),
+    ]
+    app_name = "noop"
+    await coco.App(
+        coco.AppConfig(name=app_name, environment=env),
+        _user_mode_main(user_db, rows),
+    ).update()
+    timestamps_run1 = {
+        _title_of(p): p["last_edited_time"]
+        for p in await _active_pages(client, user_db)
+    }
+
+    # Re-run with identical rows; cocoindex's fingerprint should short-circuit
+    # the reconcile and no PATCH should be issued.
+    await coco.App(
+        coco.AppConfig(name=app_name, environment=env),
+        _user_mode_main(user_db, rows),
+    ).update()
+    timestamps_run2 = {
+        _title_of(p): p["last_edited_time"]
+        for p in await _active_pages(client, user_db)
+    }
+    assert timestamps_run1 == timestamps_run2, "no-op run somehow touched the pages"
+
+
+@requires_notion_env
+@pytest.mark.asyncio
+async def test_on_delete_hard(
+    client: notion.NotionClient,
+    user_db: str,
+    request: pytest.FixtureRequest,
+) -> None:
+    """OnDelete.HARD trashes the page (DELETE /blocks/{id}). Verify it's gone
+    from active queries (same as archive from the user POV, but the page is
+    in trash rather than archived)."""
+    env = _make_env(client, request.node.name)
+    app_name = "hard"
+    rows = [Person(name="Ada", email="ada@x.com", role="Engineer", active=True)]
+    await coco.App(
+        coco.AppConfig(name=app_name, environment=env),
+        _user_mode_main(user_db, rows, on_delete=notion.OnDelete.HARD),
+    ).update()
+    assert len(await _active_pages(client, user_db)) == 1
+
+    await coco.App(
+        coco.AppConfig(name=app_name, environment=env),
+        _user_mode_main(user_db, [], on_delete=notion.OnDelete.HARD),
+    ).update()
+    assert len(await _active_pages(client, user_db)) == 0
+
+
+@requires_notion_env
+@pytest.mark.asyncio
+async def test_property_types_roundtrip(
+    client: notion.NotionClient,
+    request: pytest.FixtureRequest,
+) -> None:
+    """Title + rich_text + number + url + checkbox + select + date all round-trip
+    through encode -> Notion -> query -> decode without corruption.
+    """
+
+    @dataclass
+    class AllTypes:
+        name: Annotated[str, notion.TitleProp("Name")]
+        notes: Annotated[str, notion.RichTextProp("Notes")]
+        score: Annotated[float, notion.NumberProp("Score")]
+        homepage: Annotated[str, notion.UrlProp("Homepage")]
+        active: Annotated[bool, notion.CheckboxProp("Active")]
+        role: Annotated[str, notion.SelectProp("Role")]
+        joined: Annotated[date, notion.DateProp("Joined")]
+
+    assert NOTION_TEST_PARENT_PAGE is not None
+    title = _unique_title(request.node.name)
+    ds_id = await _create_test_db(
+        client,
+        NOTION_TEST_PARENT_PAGE,
+        title,
+        {
+            "Name": {"title": {}},
+            "Notes": {"rich_text": {}},
+            "Score": {"number": {}},
+            "Homepage": {"url": {}},
+            "Active": {"checkbox": {}},
+            "Role": {"select": {"options": [{"name": "Engineer"}]}},
+            "Joined": {"date": {}},
+        },
+    )
+    try:
+        env = _make_env(client, request.node.name)
+        row = AllTypes(
+            name="Alice",
+            notes="Likes long walks",
+            score=3.14,
+            homepage="https://example.com",
+            active=True,
+            role="Engineer",
+            joined=date(2026, 1, 15),
+        )
+
+        async def app_main() -> None:
+            target = await notion.mount_database_target(
+                NOTION_CK,
+                ds_id,
+                await notion.DatabaseSchema.from_class(AllTypes, primary_key=["name"]),
+            )
+            target.declare_row(row=row)
+
+        await coco.App(
+            coco.AppConfig(name="alltypes", environment=env), app_main
+        ).update()
+
+        pages = await _active_pages(client, ds_id)
+        assert len(pages) == 1
+        props = pages[0]["properties"]
+        assert _title_of(pages[0]) == "Alice"
+        assert (
+            "".join(p.get("plain_text", "") for p in props["Notes"]["rich_text"])
+            == "Likes long walks"
+        )
+        assert props["Score"]["number"] == 3.14
+        assert props["Homepage"]["url"] == "https://example.com"
+        assert props["Active"]["checkbox"] is True
+        assert props["Role"]["select"]["name"] == "Engineer"
+        assert props["Joined"]["date"]["start"] == "2026-01-15"
+    finally:
+        await _archive_db(client, ds_id)
+
+
+@requires_notion_env
+@pytest.mark.asyncio
+async def test_first_run_against_existing_page(
+    client: notion.NotionClient,
+    user_db: str,
+    request: pytest.FixtureRequest,
+) -> None:
+    """If a page with the declared PK already exists in Notion (e.g. the user
+    pre-seeded it), the first run should PATCH it — not create a duplicate.
+    Exercises the query-on-miss path returning a hit on first attempt.
+    """
+    # Pre-seed: create a page directly via the API.
+    await client.create_page(
+        user_db,
+        {
+            "Name": {"title": [{"text": {"content": "Ada"}}]},
+            "Email": {"email": "ada@old.com"},
+            "Role": {"select": {"name": "Engineer"}},
+            "Active": {"checkbox": False},
+        },
+    )
+    assert len(await _active_pages(client, user_db)) == 1
+
+    env = _make_env(client, request.node.name)
+    await coco.App(
+        coco.AppConfig(name="preseed", environment=env),
+        _user_mode_main(
+            user_db,
+            [Person(name="Ada", email="ada@updated.com", role="Engineer", active=True)],
+        ),
+    ).update()
+    pages = await _active_pages(client, user_db)
+    assert len(pages) == 1, "should have updated the pre-existing page, not duplicated"
+    assert pages[0]["properties"]["Email"]["email"] == "ada@updated.com"
+    assert pages[0]["properties"]["Active"]["checkbox"] is True
 
 
 @requires_notion_env
