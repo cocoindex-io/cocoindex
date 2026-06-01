@@ -104,7 +104,7 @@ async def mount_database_target(
     data_source_id: str | None = None,
     schema: DatabaseSchema[RowT] | None = None,
     *,
-    managed_by: Literal["user", "system"] = "system",
+    managed_by: Literal["system", "user"] = "system",
     parent_page_id: str | None = None,
     parent_database_id: str | None = None,
     title: str | None = None,
@@ -358,9 +358,9 @@ the Connections menu lives.
 
 `POST /v1/databases` with `parent.type = "workspace"` returns
 `validation_error` for internal (token-based) integrations. Pass
-`parent.page_id` pointing at a page the integration can see. This will matter
-mostly for `managed_by="system"` in the follow-up — the user-managed flow
-sidesteps it.
+`parent.page_id` pointing at a page the integration can see. This matters for
+`managed_by="system"` (the default), which creates databases — the
+user-managed flow sidesteps it since it never creates anything.
 
 ### 3. Sharing is per-integration
 

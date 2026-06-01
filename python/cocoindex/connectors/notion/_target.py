@@ -247,7 +247,7 @@ class _RowHandler(coco.TargetHandler[_PageValue, _PageFingerprint]):
 # ---------------------------------------------------------------------------
 
 
-ManagedBy = Literal["user", "system"]
+ManagedBy = Literal["system", "user"]
 
 
 @dataclass(frozen=True)
