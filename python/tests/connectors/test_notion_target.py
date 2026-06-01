@@ -334,6 +334,17 @@ async def test_managed_by_args_validation() -> None:
         )
 
 
+# ---------------------------------------------------------------------------
+# API-contract regressions (no Notion access)
+# ---------------------------------------------------------------------------
+#
+# The approved design's acceptance path is real Notion API coverage. These unit
+# tests are intentionally narrower: they cover hard-to-force edge contracts from
+# Notion's public API docs, while the integration tests below keep exercising
+# the actual connector lifecycle against a real workspace when env vars exist.
+#
+
+
 @pytest.mark.asyncio
 async def test_system_lookup_paginates_parent_children() -> None:
     @dataclass
