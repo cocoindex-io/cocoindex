@@ -302,10 +302,7 @@ async def test_schema_requires_at_most_one_title() -> None:
 
 @pytest.mark.asyncio
 async def test_relation_prop_encode_decode() -> None:
-    """RelationProp encodes page-id lists; decodes them back; to_notion_schema
-    emits ``{"relation": {}}`` when no target database is given, or the full
-    single_property body when one is.
-    """
+    """RelationProp writes page-id lists and creates data-source relations."""
     p = notion.RelationProp("Account")
     assert p.encode(["page1", "page2"]) == {
         "relation": [{"id": "page1"}, {"id": "page2"}]
@@ -313,16 +310,16 @@ async def test_relation_prop_encode_decode() -> None:
     assert p.encode("page1") == {"relation": [{"id": "page1"}]}
     assert p.encode(None) == {"relation": []}
     assert p.encode([]) == {"relation": []}
-    assert p.decode({"relation": [{"id": "p1"}, {"id": "p2"}]}) == ["p1", "p2"]
-    assert p.to_notion_schema() == {"relation": {}}
+    assert p.decode({"relation": [{"id": "p1"}, {}, {"id": "p2"}]}) == [
+        "p1",
+        "p2",
+    ]
+    with pytest.raises(ValueError, match="target_data_source_id"):
+        p.to_notion_schema()
 
-    p_typed = notion.RelationProp("Account", target_database_id="db-1")
+    p_typed = notion.RelationProp("Account", target_data_source_id="ds-related")
     assert p_typed.to_notion_schema() == {
-        "relation": {
-            "database_id": "db-1",
-            "type": "single_property",
-            "single_property": {},
-        }
+        "relation": {"data_source_id": "ds-related"}
     }
 
 

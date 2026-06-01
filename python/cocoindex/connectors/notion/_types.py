@@ -6,8 +6,8 @@ decode it back (used by query-on-miss to extract the primary key from an
 existing page returned by ``POST /v1/data_sources/{id}/query``).
 
 The MVP supports the property types you'd reach for first:
-title, rich_text, number, url, email, date, select, multi_select, checkbox.
-Relation, people, and files can land in a follow-up.
+title, rich_text, number, url, email, date, select, multi_select, checkbox,
+relation. People and files can land in a follow-up.
 """
 
 from __future__ import annotations
@@ -172,12 +172,12 @@ class RelationProp(PropType):
     for you — when porting from notion-client-style code, you typically pass
     the page IDs you got from an upstream upsert.
 
-    For system mode, ``target_database_id`` is required to create the
+    For system mode, ``target_data_source_id`` is required to create the
     relation column on the live Notion data source.
     """
 
     notion_type: str = "relation"
-    target_database_id: str | None = None
+    target_data_source_id: str | None = None
 
     def encode(self, value: Any) -> dict[str, Any]:
         if value is None:
@@ -189,18 +189,15 @@ class RelationProp(PropType):
         return {"relation": [{"id": pid} for pid in ids]}
 
     def decode(self, prop_json: dict[str, Any]) -> Any:
-        return [r.get("id") for r in (prop_json.get("relation") or [])]
+        return [r["id"] for r in (prop_json.get("relation") or []) if r.get("id")]
 
     def to_notion_schema(self) -> dict[str, Any]:
-        if self.target_database_id is None:
-            return {"relation": {}}
-        return {
-            "relation": {
-                "database_id": self.target_database_id,
-                "type": "single_property",
-                "single_property": {},
-            }
-        }
+        if self.target_data_source_id is None:
+            raise ValueError(
+                f"RelationProp {self.name!r} requires target_data_source_id when "
+                "CocoIndex creates or adds the Notion relation property."
+            )
+        return {"relation": {"data_source_id": self.target_data_source_id}}
 
 
 @dataclass(frozen=True)

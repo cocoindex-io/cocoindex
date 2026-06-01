@@ -264,13 +264,20 @@ The connector supports the property types you'd reach for first:
 | `MultiSelectProp` | `multi_select` | `list[str]` | no |
 | `DateProp` | `date` | `datetime` / `date` / ISO string | yes |
 | `CheckboxProp` | `checkbox` | `bool` | yes |
+| `RelationProp` | `relation` | page ID or `list[str]` | no |
 
 Each `PropType` takes the Notion property's display name as its only positional
 argument: `notion.SelectProp("Role")` binds to the property literally named
 "Role" in your Notion data source.
 
-Relations, people, files, formula, status, rollup, created_time / last_edited_time,
-and "place" properties are not yet supported.
+`RelationProp` writes Notion relation values as page IDs from the related data
+source. In `managed_by="system"` mode, pass `target_data_source_id`; Notion's
+data-source property docs (checked 2026-06-01) define relation schema with
+`data_source_id`, and the related data source must be shared with the
+integration. The connector does not look up or create related pages for you.
+
+People, files, formula, status, rollup, created_time / last_edited_time, and
+"place" properties are not yet supported.
 
 ### Delete strategies
 
