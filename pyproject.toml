@@ -201,6 +201,8 @@ module = [
     "sqlite_vec.*",
     "surrealdb",
     "surrealdb.*",
+    "tenacity",
+    "tenacity.*",
     "turbopuffer",
     "turbopuffer.*",
     "googleapiclient",

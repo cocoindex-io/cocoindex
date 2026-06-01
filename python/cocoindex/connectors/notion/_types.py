@@ -38,11 +38,11 @@ class PropType:
     name: str  # The property's name as it appears in the Notion data source
     notion_type: str = ""
 
-    def encode(self, value: Any) -> dict:
+    def encode(self, value: Any) -> dict[str, Any]:
         """Return the Notion property JSON body for this value."""
         raise NotImplementedError
 
-    def decode(self, prop_json: dict) -> Any:
+    def decode(self, prop_json: dict[str, Any]) -> Any:
         """Extract the Python value from a Notion property JSON body."""
         raise NotImplementedError
 
@@ -53,11 +53,11 @@ class TitleProp(PropType):
 
     notion_type: str = "title"
 
-    def encode(self, value: Any) -> dict:
+    def encode(self, value: Any) -> dict[str, Any]:
         text = "" if value is None else str(value)
         return {"title": [{"text": {"content": text[:2000]}}]}
 
-    def decode(self, prop_json: dict) -> Any:
+    def decode(self, prop_json: dict[str, Any]) -> Any:
         parts = prop_json.get("title") or []
         return "".join(p.get("plain_text", "") for p in parts)
 
@@ -66,11 +66,11 @@ class TitleProp(PropType):
 class RichTextProp(PropType):
     notion_type: str = "rich_text"
 
-    def encode(self, value: Any) -> dict:
+    def encode(self, value: Any) -> dict[str, Any]:
         text = "" if value is None else str(value)
         return {"rich_text": [{"text": {"content": text[:2000]}}]}
 
-    def decode(self, prop_json: dict) -> Any:
+    def decode(self, prop_json: dict[str, Any]) -> Any:
         parts = prop_json.get("rich_text") or []
         return "".join(p.get("plain_text", "") for p in parts)
 
@@ -79,10 +79,10 @@ class RichTextProp(PropType):
 class NumberProp(PropType):
     notion_type: str = "number"
 
-    def encode(self, value: Any) -> dict:
+    def encode(self, value: Any) -> dict[str, Any]:
         return {"number": None if value is None else float(value)}
 
-    def decode(self, prop_json: dict) -> Any:
+    def decode(self, prop_json: dict[str, Any]) -> Any:
         return prop_json.get("number")
 
 
@@ -90,10 +90,10 @@ class NumberProp(PropType):
 class UrlProp(PropType):
     notion_type: str = "url"
 
-    def encode(self, value: Any) -> dict:
+    def encode(self, value: Any) -> dict[str, Any]:
         return {"url": None if value is None else str(value)}
 
-    def decode(self, prop_json: dict) -> Any:
+    def decode(self, prop_json: dict[str, Any]) -> Any:
         return prop_json.get("url")
 
 
@@ -101,10 +101,10 @@ class UrlProp(PropType):
 class EmailProp(PropType):
     notion_type: str = "email"
 
-    def encode(self, value: Any) -> dict:
+    def encode(self, value: Any) -> dict[str, Any]:
         return {"email": None if value is None else str(value)}
 
-    def decode(self, prop_json: dict) -> Any:
+    def decode(self, prop_json: dict[str, Any]) -> Any:
         return prop_json.get("email")
 
 
@@ -112,10 +112,10 @@ class EmailProp(PropType):
 class SelectProp(PropType):
     notion_type: str = "select"
 
-    def encode(self, value: Any) -> dict:
+    def encode(self, value: Any) -> dict[str, Any]:
         return {"select": None if value is None else {"name": str(value)}}
 
-    def decode(self, prop_json: dict) -> Any:
+    def decode(self, prop_json: dict[str, Any]) -> Any:
         sel = prop_json.get("select")
         return sel.get("name") if sel else None
 
@@ -124,11 +124,11 @@ class SelectProp(PropType):
 class MultiSelectProp(PropType):
     notion_type: str = "multi_select"
 
-    def encode(self, value: Any) -> dict:
+    def encode(self, value: Any) -> dict[str, Any]:
         items = list(value or [])
         return {"multi_select": [{"name": str(v)} for v in items]}
 
-    def decode(self, prop_json: dict) -> Any:
+    def decode(self, prop_json: dict[str, Any]) -> Any:
         return [opt.get("name") for opt in (prop_json.get("multi_select") or [])]
 
 
@@ -136,10 +136,10 @@ class MultiSelectProp(PropType):
 class CheckboxProp(PropType):
     notion_type: str = "checkbox"
 
-    def encode(self, value: Any) -> dict:
+    def encode(self, value: Any) -> dict[str, Any]:
         return {"checkbox": bool(value)}
 
-    def decode(self, prop_json: dict) -> Any:
+    def decode(self, prop_json: dict[str, Any]) -> Any:
         return bool(prop_json.get("checkbox"))
 
 
@@ -147,7 +147,7 @@ class CheckboxProp(PropType):
 class DateProp(PropType):
     notion_type: str = "date"
 
-    def encode(self, value: Any) -> dict:
+    def encode(self, value: Any) -> dict[str, Any]:
         if value is None:
             return {"date": None}
         if isinstance(value, datetime):
@@ -156,7 +156,7 @@ class DateProp(PropType):
             return {"date": {"start": value.isoformat()}}
         return {"date": {"start": str(value)}}
 
-    def decode(self, prop_json: dict) -> Any:
+    def decode(self, prop_json: dict[str, Any]) -> Any:
         d = prop_json.get("date")
         if not d:
             return None
@@ -259,9 +259,9 @@ class DatabaseSchema(Generic[RowT]):
             properties=tuple(bindings),
         )
 
-    def encode_row(self, row: Any) -> dict[str, dict]:
+    def encode_row(self, row: Any) -> dict[str, dict[str, Any]]:
         """Encode a row instance into Notion's ``properties`` body."""
-        out: dict[str, dict] = {}
+        out: dict[str, dict[str, Any]] = {}
         for field_name, prop in self.properties:
             if isinstance(row, dict):
                 value = row.get(field_name)
@@ -270,7 +270,7 @@ class DatabaseSchema(Generic[RowT]):
             out[prop.name] = prop.encode(value)
         return out
 
-    def extract_pk(self, page_properties: dict) -> tuple[Any, ...]:
+    def extract_pk(self, page_properties: dict[str, Any]) -> tuple[Any, ...]:
         """Pull the primary-key tuple out of a Notion page's properties payload."""
         prop_by_field = self.properties_by_field
         return tuple(
@@ -278,7 +278,7 @@ class DatabaseSchema(Generic[RowT]):
             for pk in self.primary_key
         )
 
-    def validate_against(self, notion_schema: dict[str, dict]) -> None:
+    def validate_against(self, notion_schema: dict[str, dict[str, Any]]) -> None:
         """Check the declared schema against the live Notion data source.
 
         ``notion_schema`` is the ``properties`` map from
@@ -312,8 +312,7 @@ class DatabaseSchema(Generic[RowT]):
         if missing:
             available = sorted(notion_schema)
             parts.append(
-                f"missing properties {sorted(missing)} "
-                f"(data source has: {available})"
+                f"missing properties {sorted(missing)} (data source has: {available})"
             )
         if type_mismatch:
             parts.append(

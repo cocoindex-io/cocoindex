@@ -78,8 +78,8 @@ class NotionClient:
 
     @retry(stop=stop_after_attempt(10), wait=wait_exponential(min=2, max=60))
     async def _request(
-        self, method: str, path: str, json_body: dict | None = None
-    ) -> dict:
+        self, method: str, path: str, json_body: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         session = self._require_session()
         url = f"{NOTION_BASE_URL}{path}"
         async with self._sem:
@@ -92,19 +92,20 @@ class NotionClient:
                     await asyncio.sleep(retry_after)
                     raise RuntimeError("notion rate_limited")
                 r.raise_for_status()
-                return await r.json()
+                result: dict[str, Any] = await r.json()
+                return result
 
-    async def get_data_source(self, data_source_id: str) -> dict:
+    async def get_data_source(self, data_source_id: str) -> dict[str, Any]:
         return await self._request("GET", f"/data_sources/{data_source_id}")
 
     async def query_data_source(
         self,
         data_source_id: str,
         *,
-        filter: dict | None = None,
+        filter: dict[str, Any] | None = None,
         page_size: int = 100,
         start_cursor: str | None = None,
-    ) -> dict:
+    ) -> dict[str, Any]:
         body: dict[str, Any] = {"page_size": page_size}
         if filter is not None:
             body["filter"] = filter
@@ -115,8 +116,8 @@ class NotionClient:
         )
 
     async def query_all(
-        self, data_source_id: str, *, filter: dict | None = None
-    ) -> AsyncIterator[dict]:
+        self, data_source_id: str, *, filter: dict[str, Any] | None = None
+    ) -> AsyncIterator[dict[str, Any]]:
         cursor: str | None = None
         while True:
             res = await self.query_data_source(
@@ -128,21 +129,25 @@ class NotionClient:
                 return
             cursor = res.get("next_cursor")
 
-    async def create_page(self, data_source_id: str, properties: dict) -> dict:
-        body = {
+    async def create_page(
+        self, data_source_id: str, properties: dict[str, Any]
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {
             "parent": {"data_source_id": data_source_id},
             "properties": properties,
         }
         return await self._request("POST", "/pages", body)
 
-    async def update_page_properties(self, page_id: str, properties: dict) -> dict:
+    async def update_page_properties(
+        self, page_id: str, properties: dict[str, Any]
+    ) -> dict[str, Any]:
         return await self._request(
             "PATCH", f"/pages/{page_id}", {"properties": properties}
         )
 
-    async def archive_page(self, page_id: str) -> dict:
+    async def archive_page(self, page_id: str) -> dict[str, Any]:
         return await self._request("PATCH", f"/pages/{page_id}", {"archived": True})
 
-    async def delete_page(self, page_id: str) -> dict:
+    async def delete_page(self, page_id: str) -> dict[str, Any]:
         # Notion treats DELETE on a block (a page IS a block) as a trash operation.
         return await self._request("DELETE", f"/blocks/{page_id}")

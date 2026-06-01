@@ -66,7 +66,7 @@ class _PageAction(NamedTuple):
     value: _PageValue | None
 
 
-def _property_filter(prop: PropType, value: Any) -> dict:
+def _property_filter(prop: PropType, value: Any) -> dict[str, Any]:
     """Build a Notion data-source query filter for ``prop == value``.
 
     Each Notion property type wants a different filter shape; this dispatches
@@ -148,11 +148,11 @@ class _RowHandler(coco.TargetHandler[_PageValue, _PageFingerprint]):
         results = res.get("results", [])
         if not results:
             return None
-        page_id = results[0]["id"]
+        page_id: str = results[0]["id"]
         self._page_id_cache[key] = page_id
         return page_id
 
-    def _build_pk_filter(self, key: _PageKey) -> dict:
+    def _build_pk_filter(self, key: _PageKey) -> dict[str, Any]:
         pk_fields = self._schema.primary_key
         prop_by_field = self._schema.properties_by_field
         terms = [
@@ -188,9 +188,7 @@ class _RowHandler(coco.TargetHandler[_PageValue, _PageFingerprint]):
 
                 properties = self._schema.encode_row(action.value)
                 if existing_id:
-                    await self._client.update_page_properties(
-                        existing_id, properties
-                    )
+                    await self._client.update_page_properties(existing_id, properties)
                 else:
                     created = await self._client.create_page(
                         self._data_source_id, properties
@@ -387,6 +385,7 @@ class DatabaseTarget(
     run but not in this run are automatically archived (subject to ``on_delete``).
     """
 
+    _provider: "coco.TargetStateProvider[_PageValue, None, coco.MaybePendingS]"
     _schema: DatabaseSchema[RowT]
 
     def __init__(
@@ -420,7 +419,8 @@ class DatabaseTarget(
         coco.declare_target_state(self._provider.target_state(pk_values, value))
 
     def __coco_memo_key__(self) -> str:
-        return self._provider.memo_key
+        key: str = self._provider.memo_key
+        return key
 
 
 def database_target(
