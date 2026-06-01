@@ -271,13 +271,29 @@ argument: `notion.SelectProp("Role")` binds to the property literally named
 "Role" in your Notion data source.
 
 `RelationProp` writes Notion relation values as page IDs from the related data
-source. In `managed_by="system"` mode, pass `target_data_source_id`; Notion's
+source. Relation values follow Notion's
+[page property value shape](https://developers.notion.com/reference/page-property-values)
+(checked 2026-06-01): page references are written as
+`{"relation": [{"id": "..."}]}`. The connector does not look up or create
+related pages for you.
+
+For `managed_by="user"`, the relation column must already exist in Notion and
+the connector validates that its Notion type is `relation`. For
+`managed_by="system"`, pass `target_data_source_id` so CocoIndex can create or
+add the relation column. Notion's
 [data-source property docs](https://developers.notion.com/reference/property-object)
 (checked 2026-06-01) define relation schema with `data_source_id`, and the
-related data source must be shared with the integration. Relation values follow
-Notion's [page property value shape](https://developers.notion.com/reference/page-property-values):
-page references are written as `{"relation": [{"id": "..."}]}`. The connector
-does not look up or create related pages for you.
+related data source must be shared with the integration.
+
+```python
+@dataclass
+class TaskRow:
+    name: Annotated[str, notion.TitleProp("Name")]
+    project_page_ids: Annotated[
+        list[str],
+        notion.RelationProp("Projects", target_data_source_id=PROJECTS_DS_ID),
+    ]
+```
 
 People, files, formula, status, rollup, created_time / last_edited_time, and
 "place" properties are not yet supported.
