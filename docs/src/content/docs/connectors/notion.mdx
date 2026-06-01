@@ -139,6 +139,26 @@ queries the parent for an existing data source with the matching title — if
 none, it creates one via `POST /v1/databases` (page parent) or
 `POST /v1/data_sources` (database parent). New properties declared in the
 dataclass are added via `PATCH /v1/data_sources/{id}` on subsequent runs.
+If `allow_destructive=True`, existing non-title property type mismatches are
+also PATCHed to the declared type. Notion may reject unsupported conversions.
+The title property is special: Notion requires exactly one title property and
+does not allow its type to be added, removed, or changed via the API, so the
+connector always raises for title-property mismatches instead of attempting an
+automatic destructive change.
+
+Notion API references checked on 2026-06-01:
+
+- [Pagination](https://developers.notion.com/reference/intro) — list endpoints
+  such as block children return at most 100 items per page and continue with
+  `next_cursor` / `start_cursor`.
+- [Rate limits](https://developers.notion.com/reference/request-limits) —
+  Notion returns `Retry-After` on `429` responses.
+- [Update data source properties](https://developers.notion.com/reference/update-data-source-properties)
+  — data source property types are updated by PATCHing the new type schema;
+  title property type changes are not allowed.
+- [Update a data source](https://developers.notion.com/reference/update-a-data-source)
+  — Notion describes property type conversion behavior and notes that some
+  conversions are unsupported.
 
 Lower-level entry points — `database_target()` returns a `TargetState` for
 composition with `coco.mount_target()`, and `declare_database_target()` is the
