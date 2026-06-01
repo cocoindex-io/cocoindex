@@ -419,11 +419,13 @@ async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]
 
 @coco.fn
 async def app_main() -> None:
+    # managed_by="system" is the default — CocoIndex creates the "People"
+    # database under the parent page on first run and evolves it as Person grows.
     target = await notion.mount_database_target(
         NOTION,
-        os.environ["NOTION_DATA_SOURCE_ID"],
-        await notion.DatabaseSchema.from_class(Person, primary_key=["name"]),
-        managed_by="user",
+        schema=await notion.DatabaseSchema.from_class(Person, primary_key=["name"]),
+        parent_page_id=os.environ["NOTION_PARENT_PAGE"],
+        title="People",
     )
     for person in PEOPLE:
         target.declare_row(row=person)
@@ -439,27 +441,31 @@ Run it:
 
 ```bash
 export NOTION_TOKEN=ntn_...
-export NOTION_DATA_SOURCE_ID=<your-data-source-id>
+export NOTION_PARENT_PAGE=<your-parent-page-id>
 cocoindex update main.py:NotionTargetBasics
 ```
 
-Edit `PEOPLE` (add, remove, change) and re-run — CocoIndex syncs the diff,
-and any row you delete from the list gets archived in Notion on the next
-run.
+On the first run the connector creates a database titled "People" under the
+parent page. Edit `PEOPLE` (add, remove, change) and re-run — CocoIndex syncs
+the diff, and any row you delete from the list gets archived in Notion on the
+next run.
 
-### System-managed variant
+### User-managed variant
 
-To have the connector create and evolve the data source for you:
+To point the connector at an existing data source instead of creating one,
+pass `managed_by="user"` with its `data_source_id`:
 
 ```python
 target = await notion.mount_database_target(
     NOTION,
+    os.environ["NOTION_DATA_SOURCE_ID"],
     schema=await notion.DatabaseSchema.from_class(Person, primary_key=["name"]),
-    managed_by="system",
-    parent_page_id=os.environ["NOTION_PARENT_PAGE"],
-    title="People",
+    managed_by="user",
 )
 ```
+
+The declared property schema is validated against the live data source at
+mount; the connector refuses to write if anything's mismatched.
 
 On the first run the connector creates a database titled "People" under the
 given page. On later runs, adding a new field with an `Annotated[T,

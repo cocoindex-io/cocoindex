@@ -1,23 +1,27 @@
 """Minimal example for the cocoindex Notion target connector.
 
-Declares three rows against a Notion database (data source). On the first
-run, the rows are created. On subsequent runs with identical rows, nothing
-happens. Modify the ``PEOPLE`` list below to see how reconciliation works:
+CocoIndex manages the database for you (``managed_by="system"``, the default):
+on the first run it creates a database titled "People" under the parent page
+you point it at, then keeps the rows in sync on every run. Modify the
+``PEOPLE`` list below to see how reconciliation works:
 
 - Edit a row's value -> CocoIndex PATCHes the corresponding Notion page.
 - Remove a row -> CocoIndex archives the page (or hard-deletes, or leaves
   it untouched, depending on the ``on_delete`` strategy).
 - Add a row -> CocoIndex creates a new page.
+- Add a field to ``Person`` -> CocoIndex adds the property to the database.
 
 Setup
 -----
-1. Create a Notion database with the properties: ``Name`` (title),
-   ``Email`` (email), ``Role`` (select), ``Active`` (checkbox).
-2. Share it with your integration (top-right ··· -> Connections).
-3. Grab the data source ID from the URL (or via
-   ``GET /v1/databases/{id}/data_sources``).
-4. Export ``NOTION_TOKEN`` and ``NOTION_DATA_SOURCE_ID``.
-5. ``cocoindex update main.py:NotionTargetBasics``
+1. Create (or pick) a Notion page to hold the database.
+2. Share it with your integration (top-right ··· -> Connections). Every parent
+   page in the path must be shared, not just the database.
+3. Export ``NOTION_TOKEN`` and ``NOTION_PARENT_PAGE`` (the page's ID, from its
+   URL).
+4. ``cocoindex update main.py:NotionTargetBasics``
+
+To point at an existing database instead of creating one, pass
+``managed_by="user"`` with a ``data_source_id`` — see the connector docs.
 """
 
 import os
@@ -64,11 +68,13 @@ async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]
 
 @coco.fn
 async def app_main() -> None:
+    # managed_by="system" is the default — CocoIndex creates the "People"
+    # database under the parent page on first run and evolves it as Person grows.
     target = await notion.mount_database_target(
         notion_client,
-        os.environ["NOTION_DATA_SOURCE_ID"],
-        await notion.DatabaseSchema.from_class(Person, primary_key=["name"]),
-        managed_by="user",
+        schema=await notion.DatabaseSchema.from_class(Person, primary_key=["name"]),
+        parent_page_id=os.environ["NOTION_PARENT_PAGE"],
+        title="People",
     )
     for person in PEOPLE:
         target.declare_row(row=person)

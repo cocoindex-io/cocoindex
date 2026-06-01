@@ -1,8 +1,9 @@
 # Notion target — basics
 
 Minimal example for the cocoindex Notion target connector. Declares three rows
-of `Person` data; cocoindex syncs them to a Notion database — creating new
-pages, patching changed ones, and archiving pages whose source row goes away.
+of `Person` data; cocoindex creates the Notion database for you
+(`managed_by="system"`, the default) and syncs the rows — creating new pages,
+patching changed ones, and archiving pages whose source row goes away.
 
 ## What it shows
 
@@ -20,32 +21,25 @@ what's declared this run.
 
 ## Setup
 
-1. **Create a Notion database** under any page your integration can see, with
-   the properties this example declares:
-
-   | Property | Type |
-   |---|---|
-   | `Name` | Title |
-   | `Email` | Email |
-   | `Role` | Select (`Engineer` / `Researcher` / `Designer`) |
-   | `Active` | Checkbox |
+1. **Create (or pick) a Notion page** to hold the database. CocoIndex creates
+   the database — titled `People`, with the `Name` / `Email` / `Role` /
+   `Active` properties this example declares — under it on the first run.
 
    The sandbox page used while developing this example looked like this:
 
    ![Sandbox parent page](https://cocoindex.io/blobs/docs/img/examples/notion_target_basics/test-sandbox-page.png)
 
-2. **Share the parent page** with your Notion integration: top-right `···` →
-   Connections → `+ Add connections` → select your integration. (Sharing the
-   database is not enough — Notion checks access at the parent-page level.)
+2. **Share the page** with your Notion integration: top-right `···` →
+   Connections → `+ Add connections` → select your integration. Every parent
+   page in the path must be shared — Notion checks access at the page level.
 
-3. **Grab the data source ID** from the database URL, or via
-   `GET /v1/databases/{id}/data_sources`.
+3. **Grab the page ID** from the page URL (the 32-char hex after the title).
 
 4. **Export tokens** and run:
 
    ```sh
    export NOTION_TOKEN=ntn_...
-   export NOTION_DATA_SOURCE_ID=<your-data-source-id>
+   export NOTION_PARENT_PAGE=<your-parent-page-id>
    cocoindex update main.py:NotionTargetBasics
    ```
 
@@ -79,9 +73,9 @@ Pass `on_delete=...` to change what happens when a row is removed:
 ```python
 target = await notion.mount_database_target(
     notion_client,
-    os.environ["NOTION_DATA_SOURCE_ID"],
-    schema,
-    managed_by="user",
+    schema=schema,
+    parent_page_id=os.environ["NOTION_PARENT_PAGE"],
+    title="People",
     on_delete=notion.OnDelete.HARD,    # send page to trash
     # on_delete=notion.OnDelete.IGNORE  # leave page alone
 )
