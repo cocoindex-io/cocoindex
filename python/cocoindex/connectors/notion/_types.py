@@ -46,6 +46,15 @@ class PropType:
         """Extract the Python value from a Notion property JSON body."""
         raise NotImplementedError
 
+    def to_notion_schema(self) -> dict[str, Any]:
+        """Return the schema body for this property when creating it via the
+        Notion API. Used by ``managed_by="system"`` mode at
+        ``POST /v1/databases`` (initial schema) and ``PATCH /v1/data_sources/{id}``
+        (additive new column). Returns just the type-config dict; the caller
+        wraps it as ``{name: schema}``.
+        """
+        return {self.notion_type: {}}
+
 
 @dataclass(frozen=True)
 class TitleProp(PropType):
@@ -111,6 +120,10 @@ class EmailProp(PropType):
 @dataclass(frozen=True)
 class SelectProp(PropType):
     notion_type: str = "select"
+    # Optional pre-declared options. Notion auto-creates options on write if
+    # they're not pre-declared, so this is only needed when you want to control
+    # the option color/order at managed_by="system" create time.
+    options: tuple[str, ...] = ()
 
     def encode(self, value: Any) -> dict[str, Any]:
         return {"select": None if value is None else {"name": str(value)}}
@@ -119,10 +132,14 @@ class SelectProp(PropType):
         sel = prop_json.get("select")
         return sel.get("name") if sel else None
 
+    def to_notion_schema(self) -> dict[str, Any]:
+        return {"select": {"options": [{"name": o} for o in self.options]}}
+
 
 @dataclass(frozen=True)
 class MultiSelectProp(PropType):
     notion_type: str = "multi_select"
+    options: tuple[str, ...] = ()
 
     def encode(self, value: Any) -> dict[str, Any]:
         items = list(value or [])
@@ -130,6 +147,9 @@ class MultiSelectProp(PropType):
 
     def decode(self, prop_json: dict[str, Any]) -> Any:
         return [opt.get("name") for opt in (prop_json.get("multi_select") or [])]
+
+    def to_notion_schema(self) -> dict[str, Any]:
+        return {"multi_select": {"options": [{"name": o} for o in self.options]}}
 
 
 @dataclass(frozen=True)
@@ -278,6 +298,34 @@ class DatabaseSchema(Generic[RowT]):
             for pk in self.primary_key
         )
 
+    def to_notion_properties(self) -> dict[str, dict[str, Any]]:
+        """Build the ``properties`` body for ``POST /v1/databases`` /
+        ``POST /v1/data_sources``. Keys are Notion property names, values are
+        the per-type schema configs (e.g. ``{"select": {"options": [...]}}``).
+        """
+        return {prop.name: prop.to_notion_schema() for _, prop in self.properties}
+
+    def diff_against(
+        self, notion_schema: dict[str, dict[str, Any]]
+    ) -> tuple[list[str], list[tuple[str, str, str]]]:
+        """Return ``(missing_property_names, type_mismatches)`` between the
+        declared schema and the live Notion data source. Used by both
+        :meth:`validate_against` (user-managed, both lists become errors) and
+        the system-managed reconcile path (missing → PATCH-add, mismatches →
+        reject unless ``allow_destructive``).
+        """
+        missing: list[str] = []
+        type_mismatch: list[tuple[str, str, str]] = []
+        for _, prop in self.properties:
+            notion_prop = notion_schema.get(prop.name)
+            if notion_prop is None:
+                missing.append(prop.name)
+                continue
+            actual_type = notion_prop.get("type")
+            if actual_type != prop.notion_type:
+                type_mismatch.append((prop.name, prop.notion_type, str(actual_type)))
+        return missing, type_mismatch
+
     def validate_against(self, notion_schema: dict[str, dict[str, Any]]) -> None:
         """Check the declared schema against the live Notion data source.
 
@@ -294,17 +342,7 @@ class DatabaseSchema(Generic[RowT]):
         Extra properties in Notion that the schema doesn't declare are left
         alone (extra-columns-on-target is fine — they aren't touched).
         """
-        missing: list[str] = []
-        type_mismatch: list[tuple[str, str, str]] = []
-        for _, prop in self.properties:
-            notion_prop = notion_schema.get(prop.name)
-            if notion_prop is None:
-                missing.append(prop.name)
-                continue
-            actual_type = notion_prop.get("type")
-            if actual_type != prop.notion_type:
-                type_mismatch.append((prop.name, prop.notion_type, str(actual_type)))
-
+        missing, type_mismatch = self.diff_against(notion_schema)
         if not missing and not type_mismatch:
             return
 

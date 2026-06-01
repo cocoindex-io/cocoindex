@@ -3,11 +3,17 @@
 Two-level structure that mirrors ``connectors.postgres`` /
 ``connectors.sqlite``:
 
-- ``_DatabaseHandler`` (root) owns the data source. MVP scope is
-  ``managed_by="user"``: on first apply it validates the data source is
-  reachable AND that the declared property schema (names + Notion types)
-  matches the live data source. Schema creation / evolution lands in a
-  follow-up (additive ``managed_by="system"``).
+- ``_DatabaseHandler`` (root) owns the data source. Supports two modes:
+
+  - ``managed_by="user"`` (default): the data source must already exist;
+    the connector validates that the declared property schema matches the
+    live data source on every apply.
+  - ``managed_by="system"``: the connector looks under the parent (page or
+    database) for a data source with the given title; creates it on first
+    run if missing, and PATCH-adds new properties on subsequent runs when
+    the dataclass grows. Destructive schema changes are rejected unless
+    ``allow_destructive=True``.
+
 - ``_RowHandler`` (child) reconciles individual pages against their
   fingerprints and applies upsert / archive actions.
 
@@ -28,7 +34,7 @@ import asyncio
 from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Generic, NamedTuple
+from typing import Any, Generic, Literal, NamedTuple
 
 from typing_extensions import TypeVar
 
@@ -240,25 +246,47 @@ class _RowHandler(coco.TargetHandler[_PageValue, _PageFingerprint]):
 # ---------------------------------------------------------------------------
 
 
+ManagedBy = Literal["user", "system"]
+
+
 @dataclass(frozen=True)
 class _DatabaseSpec:
-    """User-declared spec for a Notion database (data source) target."""
+    """User-declared spec for a Notion database (data source) target.
+
+    In ``user`` mode, ``data_source_id`` identifies a pre-existing data source.
+    In ``system`` mode, the connector creates (and additively evolves) the data
+    source under ``parent_page_id`` or ``parent_database_id`` with ``title``.
+    """
 
     schema: DatabaseSchema[Any]
     on_delete: OnDelete = OnDelete.ARCHIVE
+    managed_by: ManagedBy = "user"
+    # user mode:
+    data_source_id: str | None = None
+    # system mode:
+    parent_page_id: str | None = None
+    parent_database_id: str | None = None
+    title: str | None = None
+    allow_destructive: bool = False
 
 
 class _DatabaseKey(NamedTuple):
-    """Stable identity for a database target across runs."""
+    """Stable identity for a database target across runs.
+
+    For user mode: ``identity`` is the data_source_id.
+    For system mode: ``identity`` is ``"system:<parent_id>:<title>"`` —
+    derived from the (immutable, user-supplied) inputs so cocoindex tracking
+    records survive even before the data source has been created.
+    """
 
     client_key: str  # ContextKey.key for the NotionClient
-    data_source_id: str
+    identity: str
 
 
 class _DatabaseTracking(NamedTuple):
     """Persisted tracking record for a database target."""
 
-    data_source_id: str
+    identity: str
 
 
 class _DatabaseAction(NamedTuple):
@@ -266,6 +294,103 @@ class _DatabaseAction(NamedTuple):
 
     key: _DatabaseKey
     spec: _DatabaseSpec | coco.NonExistenceType
+
+
+def _system_identity(spec: _DatabaseSpec) -> str:
+    """Stable string identity for a system-managed target."""
+    parent = spec.parent_page_id or spec.parent_database_id or ""
+    return f"system:{parent}:{spec.title or ''}"
+
+
+def _read_notion_title(title_array: list[dict[str, Any]] | None) -> str:
+    """Extract plain text from a Notion ``title`` rich-text array."""
+    return "".join(p.get("plain_text", "") for p in (title_array or []))
+
+
+async def _find_or_create_data_source(client: NotionClient, spec: _DatabaseSpec) -> str:
+    """Resolve the data_source_id for a system-managed target.
+
+    Strategy: look under the parent for a database / data source with
+    matching title. If found, reuse it. If not, create it with the declared
+    schema. Returns the data_source_id.
+    """
+    assert spec.managed_by == "system"
+    assert spec.title is not None
+
+    if spec.parent_page_id is not None:
+        # Look through the page's children for a database with this title.
+        children = await client._request(
+            "GET", f"/blocks/{spec.parent_page_id}/children?page_size=100"
+        )
+        for child in children.get("results", []):
+            if child.get("type") != "child_database":
+                continue
+            try:
+                db = await client.get_database(child["id"])
+            except Exception:
+                continue
+            if _read_notion_title(db.get("title")) == spec.title:
+                data_sources = db.get("data_sources") or []
+                if data_sources:
+                    ds_id: str = data_sources[0]["id"]
+                    return ds_id
+        # Not found — create.
+        new_db = await client.create_database(
+            parent_page_id=spec.parent_page_id,
+            title=spec.title,
+            properties=spec.schema.to_notion_properties(),
+        )
+        created_id: str = (new_db.get("data_sources") or [{}])[0]["id"]
+        return created_id
+
+    if spec.parent_database_id is not None:
+        # Look for an existing data source with matching name on the database.
+        db = await client.get_database(spec.parent_database_id)
+        for ds_info in db.get("data_sources") or []:
+            if ds_info.get("name") == spec.title:
+                existing_id: str = ds_info["id"]
+                return existing_id
+        new_ds = await client.create_data_source(
+            parent_database_id=spec.parent_database_id,
+            title=spec.title,
+            properties=spec.schema.to_notion_properties(),
+        )
+        new_id: str = new_ds["id"]
+        return new_id
+
+    raise ValueError(
+        "managed_by='system' requires parent_page_id or parent_database_id."
+    )
+
+
+async def _evolve_schema_if_needed(
+    client: NotionClient, data_source_id: str, spec: _DatabaseSpec
+) -> None:
+    """For system mode: PATCH-add any properties the dataclass declares that
+    aren't yet on the live data source. Destructive changes (type mismatches)
+    are rejected unless ``allow_destructive=True``.
+    """
+    ds = await client.get_data_source(data_source_id)
+    notion_props = ds.get("properties") or {}
+    missing, type_mismatch = spec.schema.diff_against(notion_props)
+
+    if type_mismatch and not spec.allow_destructive:
+        details = ", ".join(
+            f"{name!r} declared {declared!r} but Notion has {actual!r}"
+            for name, declared, actual in type_mismatch
+        )
+        raise ValueError(
+            f"{spec.schema.record_type.__name__}: destructive schema change "
+            f"rejected ({details}). Either edit the schema in Notion's UI to "
+            "match, or pass allow_destructive=True to apply the change."
+        )
+
+    if missing:
+        prop_by_name = spec.schema.properties_by_notion_name
+        additions: dict[str, dict[str, Any] | None] = {
+            name: prop_by_name[name].to_notion_schema() for name in missing
+        }
+        await client.update_data_source_properties(data_source_id, additions)
 
 
 async def _apply_database_actions(
@@ -276,42 +401,41 @@ async def _apply_database_actions(
 
     for i, action in enumerate(actions):
         if coco.is_non_existence(action.spec):
-            # Database target was un-mounted. Per managed_by="user" semantics,
-            # we don't touch the data source itself — that's owned by the user.
-            # Known limitation: pages declared on prior runs are NOT archived
-            # automatically when the parent target goes away, because we drop
-            # the child handler here and the framework has nothing to route
-            # the row-level NON_EXISTENCE reconciles through. If you need
-            # cleanup, keep the target declared and stop declaring rows
-            # individually instead. Future managed_by="system" will own the
-            # full lifecycle and handle this.
+            # Target un-mounted. We don't touch the data source itself — even
+            # in system mode, the user may want to recover the data. Pages
+            # declared via this target on prior runs are not archived here
+            # because we drop the child handler; keep the target declared and
+            # stop declaring rows individually for that.
             outputs[i] = None
             continue
 
+        spec = action.spec
         client = context_provider.get(action.key.client_key, NotionClient)
 
-        # Validate the data source exists and the integration can see it.
-        # One GET per database per run — cheap and catches config errors loudly.
-        try:
-            ds = await client.get_data_source(action.key.data_source_id)
-        except Exception as e:
-            raise RuntimeError(
-                f"Notion data source {action.key.data_source_id!r} is not "
-                "accessible. Confirm the integration is shared with the "
-                "containing page in Notion (top-right ··· → Connections)."
-            ) from e
-
-        # Validate the declared schema against the live data source schema.
-        # Catches typos in property names and type mismatches at mount, instead
-        # of failing silently at write time (Notion ignores unknown properties).
-        action.spec.schema.validate_against(ds.get("properties") or {})
+        # Resolve the data source. In user mode, it's spec.data_source_id and
+        # must already exist. In system mode, we find-or-create it.
+        if spec.managed_by == "user":
+            assert spec.data_source_id is not None
+            data_source_id = spec.data_source_id
+            try:
+                ds = await client.get_data_source(data_source_id)
+            except Exception as e:
+                raise RuntimeError(
+                    f"Notion data source {data_source_id!r} is not "
+                    "accessible. Confirm the integration is shared with the "
+                    "containing page (top-right ··· → Connections)."
+                ) from e
+            spec.schema.validate_against(ds.get("properties") or {})
+        else:
+            data_source_id = await _find_or_create_data_source(client, spec)
+            await _evolve_schema_if_needed(client, data_source_id, spec)
 
         outputs[i] = coco.ChildTargetDef(
             handler=_RowHandler(
                 client=client,
-                data_source_id=action.key.data_source_id,
-                schema=action.spec.schema,
-                on_delete=action.spec.on_delete,
+                data_source_id=data_source_id,
+                schema=spec.schema,
+                on_delete=spec.on_delete,
             )
         )
 
@@ -341,7 +465,7 @@ class _DatabaseHandler(
     ):
         # StableKey -> _DatabaseKey
         if isinstance(key, tuple) and len(key) == 2:
-            db_key = _DatabaseKey(client_key=str(key[0]), data_source_id=str(key[1]))
+            db_key = _DatabaseKey(client_key=str(key[0]), identity=str(key[1]))
         elif isinstance(key, _DatabaseKey):
             db_key = key
         else:
@@ -356,7 +480,7 @@ class _DatabaseHandler(
                 tracking_record=coco.NON_EXISTENCE,
             )
 
-        tracking = _DatabaseTracking(data_source_id=db_key.data_source_id)
+        tracking = _DatabaseTracking(identity=db_key.identity)
         return coco.TargetReconcileOutput(
             action=_DatabaseAction(key=db_key, spec=desired_state),
             sink=_database_action_sink,
@@ -423,64 +547,173 @@ class DatabaseTarget(
         return key
 
 
+def _build_spec(
+    data_source_id: str | None,
+    schema: DatabaseSchema[RowT],
+    on_delete: OnDelete,
+    managed_by: ManagedBy,
+    parent_page_id: str | None,
+    parent_database_id: str | None,
+    title: str | None,
+    allow_destructive: bool,
+) -> tuple[str, _DatabaseSpec]:
+    """Validate the combination of args and return ``(identity, spec)``.
+
+    User mode requires ``data_source_id`` and forbids the system-mode kwargs.
+    System mode requires ``title`` plus exactly one of ``parent_page_id`` /
+    ``parent_database_id``.
+    """
+    if managed_by == "user":
+        if data_source_id is None:
+            raise ValueError(
+                "managed_by='user' requires data_source_id (the existing "
+                "Notion data source's ID)."
+            )
+        if any(v is not None for v in (parent_page_id, parent_database_id, title)):
+            raise ValueError(
+                "parent_page_id / parent_database_id / title are only valid "
+                "with managed_by='system'."
+            )
+        return data_source_id, _DatabaseSpec(
+            schema=schema,
+            on_delete=on_delete,
+            managed_by="user",
+            data_source_id=data_source_id,
+        )
+
+    # managed_by == "system"
+    if data_source_id is not None:
+        raise ValueError(
+            "managed_by='system' creates the data source; don't pass "
+            "data_source_id. Use parent_page_id or parent_database_id + title."
+        )
+    if title is None:
+        raise ValueError("managed_by='system' requires title.")
+    if (parent_page_id is None) == (parent_database_id is None):
+        raise ValueError(
+            "managed_by='system' requires exactly one of parent_page_id or "
+            "parent_database_id."
+        )
+    spec = _DatabaseSpec(
+        schema=schema,
+        on_delete=on_delete,
+        managed_by="system",
+        parent_page_id=parent_page_id,
+        parent_database_id=parent_database_id,
+        title=title,
+        allow_destructive=allow_destructive,
+    )
+    return _system_identity(spec), spec
+
+
 def database_target(
     client: ContextKey[NotionClient],
-    data_source_id: str,
-    schema: DatabaseSchema[RowT],
+    data_source_id: str | None = None,
+    schema: DatabaseSchema[RowT] | None = None,
     *,
+    managed_by: ManagedBy = "user",
+    parent_page_id: str | None = None,
+    parent_database_id: str | None = None,
+    title: str | None = None,
     on_delete: OnDelete = OnDelete.ARCHIVE,
+    allow_destructive: bool = False,
 ) -> "coco.TargetState[_RowHandler]":
-    """Create a TargetState for a Notion database target.
-
-    Use with :func:`coco.mount_target` to get a child provider, or use the
-    convenience wrappers :func:`declare_database_target` /
-    :func:`mount_database_target`.
+    """Create a TargetState for a Notion database target. Prefer the
+    :func:`mount_database_target` wrapper.
     """
-    key = _DatabaseKey(client_key=client.key, data_source_id=data_source_id)
-    spec = _DatabaseSpec(schema=schema, on_delete=on_delete)
+    if schema is None:
+        raise ValueError("schema is required.")
+    identity, spec = _build_spec(
+        data_source_id,
+        schema,
+        on_delete,
+        managed_by,
+        parent_page_id,
+        parent_database_id,
+        title,
+        allow_destructive,
+    )
+    key = _DatabaseKey(client_key=client.key, identity=identity)
     return _database_provider.target_state(key, spec)
 
 
 def declare_database_target(
     client: ContextKey[NotionClient],
-    data_source_id: str,
-    schema: DatabaseSchema[RowT],
+    data_source_id: str | None = None,
+    schema: DatabaseSchema[RowT] | None = None,
     *,
+    managed_by: ManagedBy = "user",
+    parent_page_id: str | None = None,
+    parent_database_id: str | None = None,
+    title: str | None = None,
     on_delete: OnDelete = OnDelete.ARCHIVE,
+    allow_destructive: bool = False,
 ) -> "DatabaseTarget[RowT, coco.PendingS]":
     """Declare a database target and return a ready-to-declare DatabaseTarget."""
+    if schema is None:
+        raise ValueError("schema is required.")
     provider = coco.declare_target_state_with_child(
-        database_target(client, data_source_id, schema, on_delete=on_delete)
+        database_target(
+            client,
+            data_source_id,
+            schema,
+            managed_by=managed_by,
+            parent_page_id=parent_page_id,
+            parent_database_id=parent_database_id,
+            title=title,
+            on_delete=on_delete,
+            allow_destructive=allow_destructive,
+        )
     )
     return DatabaseTarget(provider, schema)
 
 
 async def mount_database_target(
     client: ContextKey[NotionClient],
-    data_source_id: str,
-    schema: DatabaseSchema[RowT],
+    data_source_id: str | None = None,
+    schema: DatabaseSchema[RowT] | None = None,
     *,
+    managed_by: ManagedBy = "user",
+    parent_page_id: str | None = None,
+    parent_database_id: str | None = None,
+    title: str | None = None,
     on_delete: OnDelete = OnDelete.ARCHIVE,
+    allow_destructive: bool = False,
 ) -> "DatabaseTarget[RowT]":
     """Mount a Notion database target and return a ready-to-use DatabaseTarget.
 
-    Sugar over ``database_target()`` + ``coco.mount_target()``.
+    Two modes:
 
-    Args:
-        client: ContextKey for the :class:`NotionClient` (provided via lifespan).
-        data_source_id: Notion data source ID (a UUID, with or without dashes).
-        schema: :class:`DatabaseSchema` describing the row class and its mapping
-            onto Notion properties.
-        on_delete: Strategy for pages whose source row is no longer declared.
+    - ``managed_by="user"`` (default): pass an existing ``data_source_id``.
+      The connector validates that the live property schema matches.
+    - ``managed_by="system"``: pass ``parent_page_id`` or
+      ``parent_database_id`` plus ``title``. The connector creates the data
+      source on first run if it doesn't exist, and PATCH-adds new properties
+      on subsequent runs when the dataclass grows. Destructive changes
+      (existing property type changed) are rejected unless
+      ``allow_destructive=True``.
     """
+    if schema is None:
+        raise ValueError("schema is required.")
     provider = await coco.mount_target(
-        database_target(client, data_source_id, schema, on_delete=on_delete)
+        database_target(
+            client,
+            data_source_id,
+            schema,
+            managed_by=managed_by,
+            parent_page_id=parent_page_id,
+            parent_database_id=parent_database_id,
+            title=title,
+            on_delete=on_delete,
+            allow_destructive=allow_destructive,
+        )
     )
     return DatabaseTarget(provider, schema)
 
 
 __all__ = [
     "DatabaseTarget",
+    "ManagedBy",
     "OnDelete",
     "database_target",
     "declare_database_target",

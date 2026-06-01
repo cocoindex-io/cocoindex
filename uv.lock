@@ -586,7 +586,6 @@ all = [
     { name = "sentence-transformers" },
     { name = "sqlite-vec" },
     { name = "surrealdb" },
-    { name = "tenacity" },
     { name = "turbopuffer" },
 ]
 amazon-s3 = [
@@ -635,7 +634,6 @@ neo4j = [
 ]
 notion = [
     { name = "aiohttp" },
-    { name = "tenacity" },
 ]
 oci = [
     { name = "oci" },
@@ -781,8 +779,6 @@ requires-dist = [
     { name = "sqlite-vec", marker = "extra == 'sqlite'", specifier = ">=0.1.6" },
     { name = "surrealdb", marker = "extra == 'all'", specifier = ">=1.0.0" },
     { name = "surrealdb", marker = "extra == 'surrealdb'", specifier = ">=1.0.0" },
-    { name = "tenacity", marker = "extra == 'all'", specifier = ">=8.2.0" },
-    { name = "tenacity", marker = "extra == 'notion'", specifier = ">=8.2.0" },
     { name = "turbopuffer", marker = "extra == 'all'", specifier = ">=0.5.0" },
     { name = "turbopuffer", marker = "extra == 'turbopuffer'", specifier = ">=0.5.0" },
     { name = "typing-extensions", specifier = ">=4.12" },

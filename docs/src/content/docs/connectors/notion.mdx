@@ -21,13 +21,17 @@ from cocoindex.connectors import notion
 pip install cocoindex[notion]
 ```
 
-:::note[User-managed data source]
-The connector writes rows into a Notion data source that already exists and is
-shared with your integration. CocoIndex tracks each page it has written and
-keeps Notion in sync — creating new pages, patching changed ones, archiving
-pages whose source row goes away. Automatic schema creation and evolution
-(`managed_by="system"`) is planned for a follow-up.
-:::
+The connector supports two modes:
+
+- **`managed_by="user"`** (default) — you point it at an existing data source
+  and the connector keeps individual rows in sync. The declared property
+  schema is validated against the live data source at mount, and the
+  connector refuses to write if anything's mismatched.
+- **`managed_by="system"`** — you give the connector a parent (page or
+  database) and a title; it finds or creates the data source for you, and
+  PATCH-adds new properties as your row class grows. Destructive changes
+  (existing column's type changed) are rejected unless you opt in with
+  `allow_destructive=True`.
 
 ## Connection setup
 
@@ -97,33 +101,49 @@ get archived (or hard-deleted, or left alone — your choice).
 ```python
 async def mount_database_target(
     client: ContextKey[NotionClient],
-    data_source_id: str,
-    schema: DatabaseSchema[RowT],
+    data_source_id: str | None = None,
+    schema: DatabaseSchema[RowT] | None = None,
     *,
+    managed_by: Literal["user", "system"] = "user",
+    parent_page_id: str | None = None,
+    parent_database_id: str | None = None,
+    title: str | None = None,
     on_delete: OnDelete = OnDelete.ARCHIVE,
+    allow_destructive: bool = False,
 ) -> DatabaseTarget[RowT]
 ```
 
 **Parameters:**
 
 - `client` — A `ContextKey[NotionClient]` identifying the client to use.
-- `data_source_id` — Notion data source ID. Find it via the database URL or
-  `GET /v1/databases/{id}/data_sources`. Accepts UUIDs with or without dashes.
+- `data_source_id` — Required when `managed_by="user"`. Notion data source ID
+  (find it via the database URL or `GET /v1/databases/{id}/data_sources`).
 - `schema` — A `DatabaseSchema` describing the row class and its mapping onto
-  Notion properties (see [Database schema](#database-schema) below).
-- `on_delete` — What to do when a previously-declared row is no longer declared
-  on this run. See [Delete strategies](#delete-strategies).
+  Notion properties.
+- `managed_by` — `"user"` (default) reuses an existing data source; `"system"`
+  creates and evolves it.
+- `parent_page_id` / `parent_database_id` — Required in `system` mode, exactly
+  one of them. The data source is created (or found) under this parent.
+- `title` — Required in `system` mode. The Notion display name for the data
+  source, also used as the stable identifier across runs.
+- `on_delete` — Strategy for pages whose source row is no longer declared.
+- `allow_destructive` — In `system` mode, opt in to changes that would lose
+  data (e.g. changing an existing property's type). Default `False` — the
+  connector refuses such changes at mount.
 
 **Returns:** A ready-to-use `DatabaseTarget` for declaring rows.
 
-At mount the connector calls `GET /v1/data_sources/{id}` to verify the data
-source is reachable AND that the declared property names and Notion types
-match the live schema. Misnamed or type-mismatched fields fail loudly here
-instead of silently producing empty cells at write time.
+In `user` mode the connector calls `GET /v1/data_sources/{id}` at mount and
+fails loudly on missing properties or type mismatches. In `system` mode it
+queries the parent for an existing data source with the matching title — if
+none, it creates one via `POST /v1/databases` (page parent) or
+`POST /v1/data_sources` (database parent). New properties declared in the
+dataclass are added via `PATCH /v1/data_sources/{id}` on subsequent runs.
 
-There are also lower-level entry points if you need them — `database_target()`
-returns a `TargetState` for composition with `coco.mount_target()`, and
-`declare_database_target()` is the synchronous declaration variant.
+Lower-level entry points — `database_target()` returns a `TargetState` for
+composition with `coco.mount_target()`, and `declare_database_target()` is the
+synchronous declaration variant. Both have the same kwargs as
+`mount_database_target`.
 
 #### Rows (child states)
 
@@ -378,5 +398,25 @@ cocoindex update main.py:NotionTargetBasics
 Edit `PEOPLE` (add, remove, change) and re-run — CocoIndex syncs the diff,
 and any row you delete from the list gets archived in Notion on the next
 run.
+
+### System-managed variant
+
+To have the connector create and evolve the data source for you:
+
+```python
+target = await notion.mount_database_target(
+    NOTION,
+    schema=await notion.DatabaseSchema.from_class(Person, primary_key=["name"]),
+    managed_by="system",
+    parent_page_id=os.environ["NOTION_PARENT_PAGE"],
+    title="People",
+)
+```
+
+On the first run the connector creates a database titled "People" under the
+given page. On later runs, adding a new field with an `Annotated[T,
+notion.SomeProp("Foo")]` annotation triggers `PATCH /v1/data_sources/{id}` to
+add the new "Foo" property. Existing-property type changes are rejected
+unless you pass `allow_destructive=True`.
 
 Full source: [`examples/notion_target_basics`](https://github.com/cocoindex-io/cocoindex/tree/main/examples/notion_target_basics).

@@ -35,6 +35,7 @@ Quick start::
 from ._client import NotionClient, NOTION_API_VERSION
 from ._target import (
     DatabaseTarget,
+    ManagedBy,
     OnDelete,
     database_target,
     declare_database_target,
@@ -59,6 +60,7 @@ __all__ = [
     "DatabaseSchema",
     "DatabaseTarget",
     "DateProp",
+    "ManagedBy",
     "EmailProp",
     "MultiSelectProp",
     "NOTION_API_VERSION",

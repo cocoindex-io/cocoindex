@@ -90,7 +90,7 @@ falkordb = ["falkordb>=1.1.0"]
 neo4j = ["neo4j>=5.18.0"]
 kafka = ["confluent_kafka>=2.6"]
 iggy = ["apache-iggy>=0.8.0"]
-notion = ["aiohttp>=3.9.0", "tenacity>=8.2.0"]
+notion = ["aiohttp>=3.9.0"]
 oci = ["oci>=2.0"]
 entity_resolution = ["faiss-cpu>=1.7"]
 entity_resolution_llm = [
@@ -123,7 +123,6 @@ all = [
     "neo4j>=5.18.0",
     "confluent_kafka>=2.6",
     "apache-iggy>=0.8.0",
-    "tenacity>=8.2.0",
     "oci>=2.0",
     "faiss-cpu>=1.7",
     "instructor>=1.0",
@@ -201,8 +200,6 @@ module = [
     "sqlite_vec.*",
     "surrealdb",
     "surrealdb.*",
-    "tenacity",
-    "tenacity.*",
     "turbopuffer",
     "turbopuffer.*",
     "googleapiclient",
