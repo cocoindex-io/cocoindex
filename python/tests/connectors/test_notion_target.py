@@ -795,6 +795,77 @@ async def test_schema_validation_missing_property(
         await app.update()
 
 
+@requires_notion_env
+@pytest.mark.asyncio
+async def test_multiple_targets_in_one_app(
+    client: notion.NotionClient,
+    request: pytest.FixtureRequest,
+) -> None:
+    """Two ``mount_database_target`` calls in one app sync independently.
+
+    Catches the class of bug where per-target state (page_id cache, locks,
+    tracking record identity) would accidentally be shared across targets.
+    Verifies it both at insert time (each target gets its own row) and on
+    undeclare (dropping rows from one target doesn't affect the other).
+    """
+    assert NOTION_TEST_PARENT_PAGE is not None
+    title_a = _unique_title(request.node.name + "_a")
+    title_b = _unique_title(request.node.name + "_b")
+    ds_a = await _create_test_db(
+        client, NOTION_TEST_PARENT_PAGE, title_a, PERSON_SCHEMA_PROPS
+    )
+    ds_b = await _create_test_db(
+        client, NOTION_TEST_PARENT_PAGE, title_b, PERSON_SCHEMA_PROPS
+    )
+    try:
+        env = _make_env(client, request.node.name)
+        rows_a = [Person(name="A1", email="a1@x.com", role="Engineer", active=True)]
+        rows_b = [Person(name="B1", email="b1@x.com", role="Engineer", active=True)]
+
+        async def app_main() -> None:
+            schema = await notion.DatabaseSchema.from_class(
+                Person, primary_key=["name"]
+            )
+            target_a = await coco.use_mount(
+                coco.component_subpath("setup", "target_a"),
+                notion.declare_database_target,
+                NOTION_CK,
+                ds_a,
+                schema,
+            )
+            target_b = await coco.use_mount(
+                coco.component_subpath("setup", "target_b"),
+                notion.declare_database_target,
+                NOTION_CK,
+                ds_b,
+                schema,
+            )
+            for r in rows_a:
+                target_a.declare_row(row=r)
+            for r in rows_b:
+                target_b.declare_row(row=r)
+
+        app_name = "multitarget"
+
+        # Step 1: each target gets its own row.
+        await coco.App(
+            coco.AppConfig(name=app_name, environment=env), app_main
+        ).update()
+        assert {_title_of(p) for p in await _active_pages(client, ds_a)} == {"A1"}
+        assert {_title_of(p) for p in await _active_pages(client, ds_b)} == {"B1"}
+
+        # Step 2: drop A1 only. ds_a should empty out; ds_b should keep B1.
+        rows_a.clear()
+        await coco.App(
+            coco.AppConfig(name=app_name, environment=env), app_main
+        ).update()
+        assert {_title_of(p) for p in await _active_pages(client, ds_a)} == set()
+        assert {_title_of(p) for p in await _active_pages(client, ds_b)} == {"B1"}
+    finally:
+        await _archive_db(client, ds_a)
+        await _archive_db(client, ds_b)
+
+
 # ---------------------------------------------------------------------------
 # System mode
 # ---------------------------------------------------------------------------
