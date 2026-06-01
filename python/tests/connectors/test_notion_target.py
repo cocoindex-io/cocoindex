@@ -318,9 +318,7 @@ async def test_relation_prop_encode_decode() -> None:
         p.to_notion_schema()
 
     p_typed = notion.RelationProp("Account", target_data_source_id="ds-related")
-    assert p_typed.to_notion_schema() == {
-        "relation": {"data_source_id": "ds-related"}
-    }
+    assert p_typed.to_notion_schema() == {"relation": {"data_source_id": "ds-related"}}
 
 
 @pytest.mark.asyncio
