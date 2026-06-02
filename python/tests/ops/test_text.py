@@ -23,6 +23,31 @@ def test_detect_code_language_known_extensions() -> None:
     assert detect_code_language(filename="deploy.sh") == "bash"
     assert detect_code_language(filename="CMakeLists.cmake") == "cmake"
     assert detect_code_language(filename="main.tf") == "hcl"
+    assert detect_code_language(filename="main.go") == "go"
+    assert detect_code_language(filename="Main.java") == "java"
+    assert detect_code_language(filename="index.ts") == "typescript"
+    assert detect_code_language(filename="App.tsx") == "tsx"
+    assert detect_code_language(filename="Main.kt") == "kotlin"
+    assert detect_code_language(filename="script.rb") == "ruby"
+    assert detect_code_language(filename="main.swift") == "swift"
+    assert detect_code_language(filename="config.toml") == "toml"
+    assert detect_code_language(filename="config.yaml") == "yaml"
+    assert detect_code_language(filename="config.yml") == "yaml"
+    assert detect_code_language(filename="schema.sql") == "sql"
+    assert detect_code_language(filename="data.json") == "json"
+    assert detect_code_language(filename="page.xml") == "xml"
+    assert detect_code_language(filename="index.html") == "html"
+    assert detect_code_language(filename="main.cpp") == "cpp"
+    assert detect_code_language(filename="main.scala") == "scala"
+
+
+def test_detect_code_language_case_insensitive() -> None:
+    """Test that detect_code_language lookup is case-insensitive."""
+    assert detect_code_language(filename="main.PY") == "python"
+    assert detect_code_language(filename="app.RS") == "rust"
+    assert detect_code_language(filename="index.JS") == "javascript"
+    assert detect_code_language(filename="main.GO") == "go"
+    assert detect_code_language(filename="Main.Java") == "java"
 
 
 def test_detect_code_language_unknown_extension() -> None:
