@@ -120,7 +120,7 @@ fn cerror_to_pyerr(err: CError) -> PyErr {
     if let CError::Client { .. } = inner {
         return PyValueError::new_err(format!("{}", err));
     }
-    PyRuntimeError::new_err(format!("{:?}", err))
+    PyRuntimeError::new_err(format!("{}", err))
 }
 
 pub trait FromPyResult<T> {
