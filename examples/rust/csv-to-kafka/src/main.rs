@@ -58,11 +58,13 @@ async fn process_csv(_ctx: &Ctx, file: &FileEntry) -> Result<Vec<(String, String
         };
         let mut row = serde_json::Map::new();
         for (header, field) in headers.iter().zip(record.iter()) {
-            row.insert(header.to_string(), serde_json::Value::String(field.to_string()));
+            row.insert(
+                header.to_string(),
+                serde_json::Value::String(field.to_string()),
+            );
         }
         let key = format!("{label}/{first}");
-        let value =
-            serde_json::to_string(&row).map_err(|e| Error::engine(format!("json: {e}")))?;
+        let value = serde_json::to_string(&row).map_err(|e| Error::engine(format!("json: {e}")))?;
         out.push((key, value));
     }
     Ok(out)
@@ -164,7 +166,9 @@ async fn consume(brokers: &str, topic: &str) -> Result<()> {
 #[tokio::main]
 async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
-    let cmd = std::env::args().nth(1).unwrap_or_else(|| "index".to_string());
+    let cmd = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "index".to_string());
     let brokers = bootstrap_servers();
     let topic = topic_name();
 
