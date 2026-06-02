@@ -392,27 +392,46 @@ async fn main() -> Result<()> {
 
                 println!("Processing project: {project_name} ({} files)", files.len());
 
-                // Extract per-file info (memoized — unchanged files skip LLM)
-                let file_infos: Vec<CodebaseInfo> = ctx
-                    .mount_each(
-                        files,
-                        |f| format!("{project_name}/{}", f.key()),
-                        |child_ctx, file| async move { extract_file_info(&child_ctx, &file).await },
-                    )
-                    .await?;
+                ctx.scope(&format!("project/{project_name}"), {
+                    let project_name = project_name.clone();
+                    let output_dir = output_dir.clone();
+                    move |project_ctx| async move {
+                        // Extract per-file info (memoized — unchanged files skip LLM)
+                        let file_infos: Vec<CodebaseInfo> = project_ctx
+                            .mount_each(
+                                files,
+                                |f| f.key(),
+                                |child_ctx, file| async move {
+                                    extract_file_info(&child_ctx, &file).await
+                                },
+                            )
+                            .await?;
 
-                // Aggregate into project summary (memoized — unchanged projects skip LLM)
-                let project_info =
-                    aggregate_project_info(&ctx, project_name.clone(), file_infos.clone()).await?;
+                        // Aggregate into project summary (memoized — unchanged projects skip LLM)
+                        let project_info = aggregate_project_info(
+                            &project_ctx,
+                            project_name.clone(),
+                            file_infos.clone(),
+                        )
+                        .await?;
 
-                // Generate and write markdown
-                let markdown =
-                    generate_markdown(&ctx, project_name.clone(), project_info, file_infos).await?;
+                        // Generate and write markdown
+                        let markdown = generate_markdown(
+                            &project_ctx,
+                            project_name.clone(),
+                            project_info,
+                            file_infos,
+                        )
+                        .await?;
 
-                ctx.write_file(
-                    output_dir.join(format!("{project_name}.md")),
-                    markdown.as_bytes(),
-                )?;
+                        project_ctx.write_file(
+                            output_dir.join(format!("{project_name}.md")),
+                            markdown.as_bytes(),
+                        )?;
+                        Ok(())
+                    }
+                })
+                .await?;
                 println!("  Wrote {}/{project_name}.md", output_dir.display());
             }
 
