@@ -1,6 +1,6 @@
 //! Integration tests for the pipeline: App::update, memo::cached, sync API.
 
-use cocoindex::App;
+use cocoindex::{App, ContextKey};
 use tokio::time::{Duration, sleep};
 
 /// Helper: create an App with a temp LMDB directory (async tests).
@@ -78,11 +78,20 @@ fn update_blocking_missing_context_returns_typed_error() {
         let err = ctx.get_or_err::<MissingConfig>().unwrap_err();
         assert!(
             err.to_string()
-                .contains("type `pipeline::update_blocking_missing_context_returns_typed_error::MissingConfig` not provided")
+                .contains("`pipeline::update_blocking_missing_context_returns_typed_error::MissingConfig` not provided")
         );
         Ok(())
     })
     .unwrap();
+}
+
+#[test]
+fn update_blocking_returns_main_result() {
+    let (app, _dir) = temp_app_blocking("sync_return_value");
+    let result = app
+        .update_blocking(|_ctx| async move { Ok::<_, cocoindex::Error>("done".to_string()) })
+        .unwrap();
+    assert_eq!(result, "done");
 }
 
 // ---------------------------------------------------------------------------
@@ -106,6 +115,468 @@ async fn update_async_provides_pipeline_context() {
     .unwrap();
 }
 
+#[tokio::test]
+async fn update_async_returns_main_result() {
+    let (app, _dir) = temp_app("async_return_value").await;
+    let result = app
+        .update(|_ctx| async move { Ok::<_, cocoindex::Error>(42i32) })
+        .await
+        .unwrap();
+    assert_eq!(result, 42);
+}
+
+#[tokio::test]
+async fn start_update_handle_returns_main_result() {
+    let (app, _dir) = temp_app("async_handle_return_value").await;
+    let mut handle = app
+        .start_update(|_ctx| async move { Ok::<_, cocoindex::Error>(7i32) })
+        .unwrap();
+
+    loop {
+        if handle.changed().await.unwrap().is_done() {
+            break;
+        }
+    }
+
+    assert_eq!(handle.result().await.unwrap(), 7);
+}
+
+#[tokio::test]
+async fn start_update_handle_stats_snapshot_after_completion() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let (app, _dir) = temp_app("async_handle_stats_snapshot").await;
+    let call_count = Arc::new(AtomicUsize::new(0));
+
+    let count = call_count.clone();
+    app.update(|ctx| async move {
+        let _: i32 = ctx
+            .memo(&"stable", move |_ctx| {
+                let count = count.clone();
+                async move {
+                    count.fetch_add(1, Ordering::SeqCst);
+                    Ok(1)
+                }
+            })
+            .await?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+
+    let count = call_count.clone();
+    let mut handle = app
+        .start_update(|ctx| async move {
+            let value: i32 = ctx
+                .memo(&"stable", move |_ctx| {
+                    let count = count.clone();
+                    async move {
+                        count.fetch_add(1, Ordering::SeqCst);
+                        Ok(2)
+                    }
+                })
+                .await?;
+            Ok::<_, cocoindex::Error>(value)
+        })
+        .unwrap();
+
+    loop {
+        if handle.changed().await.unwrap().is_done() {
+            break;
+        }
+    }
+
+    let stats = handle.stats_snapshot();
+    assert!(
+        stats.processed + stats.skipped + stats.written + stats.deleted > 0,
+        "expected completed handle to expose non-empty stats, got {stats:?}"
+    );
+    assert_eq!(call_count.load(Ordering::SeqCst), 1);
+    assert_eq!(handle.result().await.unwrap(), 1);
+}
+
+#[tokio::test]
+async fn start_update_handle_result_propagates_errors() {
+    let (app, _dir) = temp_app("async_handle_error").await;
+    let handle = app
+        .start_update(|_ctx| async move { Err::<(), _>(cocoindex::Error::engine("handle boom")) })
+        .unwrap();
+
+    let err = handle.result().await.unwrap_err().to_string();
+    assert!(err.contains("handle boom"), "unexpected error: {err}");
+}
+
+#[tokio::test]
+async fn start_drop_state_handle_reports_termination() {
+    let (app, _dir) = temp_app("drop_handle_termination").await;
+    let mut handle = app.start_drop_state().unwrap();
+
+    loop {
+        if handle.changed().await.unwrap().is_done() {
+            break;
+        }
+    }
+
+    handle.result().await.unwrap();
+}
+
+#[tokio::test]
+async fn named_context_key_accepts_non_serializable_resource() {
+    struct Resource {
+        value: i32,
+    }
+
+    let key = ContextKey::<Resource>::new("pipeline/non_serializable_resource");
+    let dir = tempfile::tempdir().unwrap();
+    let app = App::builder("named_context_resource")
+        .db_path(dir.path().join("lmdb"))
+        .provide_key(&key, Resource { value: 123 })
+        .build()
+        .await
+        .unwrap();
+
+    app.update(move |ctx| async move {
+        assert_eq!(ctx.get_key(&key)?.value, 123);
+        Ok(())
+    })
+    .await
+    .unwrap();
+}
+
+#[test]
+fn duplicate_named_context_key_panics() {
+    let _first = ContextKey::<i32>::new("pipeline/duplicate_context_key");
+    let duplicate = std::panic::catch_unwind(|| {
+        let _second = ContextKey::<i32>::new("pipeline/duplicate_context_key");
+    });
+    assert!(duplicate.is_err());
+}
+
+#[test]
+fn context_key_exposes_stable_memo_identity_metadata() {
+    let key = ContextKey::<i32>::new("pipeline/context_key_identity");
+    let detect_change_key =
+        ContextKey::<String>::new_detect_change("pipeline/context_key_identity_detect_change");
+
+    assert_eq!(key.name(), "pipeline/context_key_identity");
+    assert!(!key.detect_change());
+    assert_eq!(
+        detect_change_key.name(),
+        "pipeline/context_key_identity_detect_change"
+    );
+    assert!(detect_change_key.detect_change());
+}
+
+#[tokio::test]
+async fn detect_change_context_key_invalidates_memo() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let key = ContextKey::<String>::new_detect_change("pipeline/detect_change_context");
+    let dir = tempfile::tempdir().unwrap();
+    let call_count = Arc::new(AtomicUsize::new(0));
+
+    let app = App::builder("context_change_invalidates_memo")
+        .db_path(dir.path().join("lmdb"))
+        .provide_key(&key, "v1".to_string())
+        .build()
+        .await
+        .unwrap();
+    let count = call_count.clone();
+    let key_for_first = key.clone();
+    app.update(move |ctx| async move {
+        let result: String = ctx
+            .memo(&"stable", move |ctx| {
+                let count = count.clone();
+                async move {
+                    count.fetch_add(1, Ordering::SeqCst);
+                    Ok(ctx.get_key(&key_for_first)?.clone())
+                }
+            })
+            .await?;
+        assert_eq!(result, "v1");
+        Ok(())
+    })
+    .await
+    .unwrap();
+    drop(app);
+
+    let app = App::builder("context_change_invalidates_memo")
+        .db_path(dir.path().join("lmdb"))
+        .provide_key(&key, "v2".to_string())
+        .build()
+        .await
+        .unwrap();
+    let count = call_count.clone();
+    let key_for_second = key.clone();
+    app.update(move |ctx| async move {
+        let result: String = ctx
+            .memo(&"stable", move |ctx| {
+                let count = count.clone();
+                async move {
+                    count.fetch_add(1, Ordering::SeqCst);
+                    Ok(ctx.get_key(&key_for_second)?.clone())
+                }
+            })
+            .await?;
+        assert_eq!(result, "v2");
+        Ok(())
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(call_count.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn no_detect_change_context_key_does_not_invalidate_memo() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let key = ContextKey::<String>::new("pipeline/no_detect_change_context");
+    let dir = tempfile::tempdir().unwrap();
+    let call_count = Arc::new(AtomicUsize::new(0));
+
+    let app = App::builder("context_no_change_does_not_invalidate_memo")
+        .db_path(dir.path().join("lmdb"))
+        .provide_key(&key, "v1".to_string())
+        .build()
+        .await
+        .unwrap();
+    let count = call_count.clone();
+    let key_for_first = key.clone();
+    app.update(move |ctx| async move {
+        let result: String = ctx
+            .memo(&"stable", move |ctx| {
+                let count = count.clone();
+                async move {
+                    count.fetch_add(1, Ordering::SeqCst);
+                    Ok(ctx.get_key(&key_for_first)?.clone())
+                }
+            })
+            .await?;
+        assert_eq!(result, "v1");
+        Ok(())
+    })
+    .await
+    .unwrap();
+    drop(app);
+
+    let app = App::builder("context_no_change_does_not_invalidate_memo")
+        .db_path(dir.path().join("lmdb"))
+        .provide_key(&key, "v2".to_string())
+        .build()
+        .await
+        .unwrap();
+    let count = call_count.clone();
+    let key_for_second = key.clone();
+    app.update(move |ctx| async move {
+        let result: String = ctx
+            .memo(&"stable", move |ctx| {
+                let count = count.clone();
+                async move {
+                    count.fetch_add(1, Ordering::SeqCst);
+                    Ok(ctx.get_key(&key_for_second)?.clone())
+                }
+            })
+            .await?;
+        assert_eq!(result, "v1");
+        Ok(())
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(call_count.load(Ordering::SeqCst), 1);
+}
+
+/// `ContextKey::new_with_state` (Rust analogue of Python's `__coco_memo_state__`):
+/// memo invalidation is driven by a *derived state*, not the whole value, and
+/// the value type need not be `Serialize`. Here the resource is non-serializable
+/// and only its `version` is the tracked state:
+///   - changing a non-state field (`_tag`) must NOT invalidate the memo,
+///   - changing the state field (`version`) MUST invalidate it.
+#[tokio::test]
+async fn state_fn_context_key_invalidates_on_state_change_only() {
+    use std::sync::OnceLock;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    // Deliberately NOT `Serialize` — proves new_with_state works for resources
+    // that cannot be fingerprinted directly.
+    struct Resource {
+        version: u64,
+        _tag: &'static str,
+    }
+
+    static KEY: OnceLock<ContextKey<Resource>> = OnceLock::new();
+    let key = KEY
+        .get_or_init(|| ContextKey::new_with_state("pipeline/state_fn", |r: &Resource| r.version));
+
+    let dir = tempfile::tempdir().unwrap();
+    let call_count = std::sync::Arc::new(AtomicUsize::new(0));
+
+    async fn run(
+        path: std::path::PathBuf,
+        key: ContextKey<Resource>,
+        version: u64,
+        tag: &'static str,
+        call_count: std::sync::Arc<AtomicUsize>,
+    ) -> u64 {
+        let app = App::builder("state_fn_context_key")
+            .db_path(path)
+            .provide_key(&key, Resource { version, _tag: tag })
+            .build()
+            .await
+            .unwrap();
+        let count = call_count.clone();
+        app.update(move |ctx| async move {
+            let v: u64 = ctx
+                .memo(&"stable", move |ctx| {
+                    let count = count.clone();
+                    async move {
+                        count.fetch_add(1, Ordering::SeqCst);
+                        Ok(ctx.get_key(&key)?.version)
+                    }
+                })
+                .await?;
+            Ok::<_, cocoindex::Error>(v)
+        })
+        .await
+        .unwrap()
+    }
+
+    let path = dir.path().join("lmdb");
+
+    // Run 1: version=1, tag="a" -> miss (executes).
+    assert_eq!(
+        run(path.clone(), key.clone(), 1, "a", call_count.clone()).await,
+        1
+    );
+    assert_eq!(call_count.load(Ordering::SeqCst), 1);
+
+    // Run 2: version=1, tag="b" -> state (version) unchanged -> cache HIT.
+    assert_eq!(
+        run(path.clone(), key.clone(), 1, "b", call_count.clone()).await,
+        1
+    );
+    assert_eq!(
+        call_count.load(Ordering::SeqCst),
+        1,
+        "changing a non-state field must not invalidate the memo"
+    );
+
+    // Run 3: version=2 -> state changed -> cache MISS (re-executes).
+    assert_eq!(run(path, key.clone(), 2, "b", call_count.clone()).await, 2);
+    assert_eq!(
+        call_count.load(Ordering::SeqCst),
+        2,
+        "changing the tracked state must invalidate the memo"
+    );
+}
+
+/// Regression test: two memo bodies running concurrently, each reading a
+/// *different* `detect_change` key, must each record their dependency against
+/// their own memo entry. A previous implementation tracked the "current"
+/// function-call context in a single shared slot, which races under
+/// concurrency and misattributes dependencies — so changing one key would
+/// fail to invalidate its memo (stale results). Here we change only key A and
+/// assert memo A re-runs while memo B stays cached.
+#[tokio::test(flavor = "current_thread")]
+async fn concurrent_detect_change_keys_invalidate_independently() {
+    use std::sync::Arc;
+    use std::sync::OnceLock;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static KEY_A: OnceLock<ContextKey<String>> = OnceLock::new();
+    static KEY_B: OnceLock<ContextKey<String>> = OnceLock::new();
+    let key_a = KEY_A.get_or_init(|| ContextKey::new_detect_change("pipeline/concurrent_A"));
+    let key_b = KEY_B.get_or_init(|| ContextKey::new_detect_change("pipeline/concurrent_B"));
+
+    let dir = tempfile::tempdir().unwrap();
+    let a_calls = Arc::new(AtomicUsize::new(0));
+    let b_calls = Arc::new(AtomicUsize::new(0));
+
+    // Drive one full update with the given key values; returns memo A's result.
+    async fn drive(
+        path: std::path::PathBuf,
+        key_a: ContextKey<String>,
+        key_b: ContextKey<String>,
+        a_val: &'static str,
+        b_val: &'static str,
+        a_calls: Arc<AtomicUsize>,
+        b_calls: Arc<AtomicUsize>,
+    ) -> String {
+        let app = App::builder("concurrent_detect_change")
+            .db_path(path)
+            .provide_key(&key_a, a_val.to_string())
+            .provide_key(&key_b, b_val.to_string())
+            .build()
+            .await
+            .unwrap();
+        let res = app
+            .update(move |ctx| async move {
+                let ka = key_a.clone();
+                let kb = key_b.clone();
+                // memo A yields BEFORE reading key A, so a shared "current" slot
+                // would have been overwritten by memo B by the time A reads it.
+                let fut_a = ctx.memo(&"memoA", move |ctx| async move {
+                    tokio::task::yield_now().await;
+                    a_calls.fetch_add(1, Ordering::SeqCst);
+                    Ok::<_, cocoindex::Error>(ctx.get_key(&ka)?.clone())
+                });
+                let fut_b = ctx.memo(&"memoB", move |ctx| async move {
+                    b_calls.fetch_add(1, Ordering::SeqCst);
+                    let v = ctx.get_key(&kb)?.clone();
+                    tokio::task::yield_now().await;
+                    Ok::<_, cocoindex::Error>(v)
+                });
+                let (ra, _rb): (String, String) = futures::future::try_join(fut_a, fut_b).await?;
+                Ok(ra)
+            })
+            .await
+            .unwrap();
+        res
+    }
+
+    let path = dir.path().join("lmdb");
+    let r1 = drive(
+        path.clone(),
+        key_a.clone(),
+        key_b.clone(),
+        "a1",
+        "b1",
+        a_calls.clone(),
+        b_calls.clone(),
+    )
+    .await;
+    assert_eq!(r1, "a1");
+    assert_eq!(a_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(b_calls.load(Ordering::SeqCst), 1);
+
+    // Change ONLY key A. Memo A must re-run (dependency correctly attributed),
+    // memo B must stay cached.
+    let r2 = drive(
+        path,
+        key_a.clone(),
+        key_b.clone(),
+        "a2",
+        "b1",
+        a_calls.clone(),
+        b_calls.clone(),
+    )
+    .await;
+    assert_eq!(
+        r2, "a2",
+        "memo A served a stale value — dependency misattributed"
+    );
+    assert_eq!(a_calls.load(Ordering::SeqCst), 2, "memo A should re-run");
+    assert_eq!(
+        b_calls.load(Ordering::SeqCst),
+        1,
+        "memo B should stay cached"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Memoization: cache hit / miss
 // ---------------------------------------------------------------------------
@@ -120,7 +591,7 @@ async fn memo_cached_executes_on_first_call() {
 
     let count = call_count.clone();
     app.update(|ctx| async move {
-        let _result: i32 = cocoindex::memo::cached(&ctx, &"key1", move || {
+        let _result: i32 = cocoindex::memo::cached(&ctx, &"key1", move |_ctx| {
             let count = count.clone();
             async move {
                 count.fetch_add(1, Ordering::SeqCst);
@@ -147,7 +618,7 @@ async fn memo_cached_returns_cached_on_second_run() {
     // First run: should execute the closure.
     let count = call_count.clone();
     app.update(|ctx| async move {
-        let result: i32 = cocoindex::memo::cached(&ctx, &"stable_key", move || {
+        let result: i32 = cocoindex::memo::cached(&ctx, &"stable_key", move |_ctx| {
             let count = count.clone();
             async move {
                 count.fetch_add(1, Ordering::SeqCst);
@@ -165,7 +636,7 @@ async fn memo_cached_returns_cached_on_second_run() {
     // Second run with same key: should return cached result.
     let count = call_count.clone();
     app.update(|ctx| async move {
-        let result: i32 = cocoindex::memo::cached(&ctx, &"stable_key", move || {
+        let result: i32 = cocoindex::memo::cached(&ctx, &"stable_key", move |_ctx| {
             let count = count.clone();
             async move {
                 count.fetch_add(1, Ordering::SeqCst);
@@ -182,6 +653,143 @@ async fn memo_cached_returns_cached_on_second_run() {
 }
 
 #[tokio::test]
+async fn update_with_options_full_reprocess_forces_memo_execution() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let (app, _dir) = temp_app("full_reprocess_forces_memo").await;
+    let call_count = Arc::new(AtomicUsize::new(0));
+
+    let count = call_count.clone();
+    app.update(|ctx| async move {
+        let _: i32 = ctx
+            .memo(&"stable_key", move |_ctx| {
+                let count = count.clone();
+                async move {
+                    count.fetch_add(1, Ordering::SeqCst);
+                    Ok(1)
+                }
+            })
+            .await?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+
+    let count = call_count.clone();
+    app.update_with_options(
+        cocoindex::UpdateOptions {
+            full_reprocess: true,
+            live: false,
+        },
+        |ctx| async move {
+            let result: i32 = ctx
+                .memo(&"stable_key", move |_ctx| {
+                    let count = count.clone();
+                    async move {
+                        count.fetch_add(1, Ordering::SeqCst);
+                        Ok(2)
+                    }
+                })
+                .await?;
+            assert_eq!(result, 2);
+            Ok(())
+        },
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(call_count.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn full_reprocess_forces_child_scope_memo_execution() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let (app, _dir) = temp_app("full_reprocess_child_scope_memo").await;
+    let call_count = Arc::new(AtomicUsize::new(0));
+
+    let count = call_count.clone();
+    app.update(|ctx| async move {
+        ctx.scope(&"child", move |child| {
+            let count = count.clone();
+            async move {
+                let result: i32 = child
+                    .memo(&"stable_child_key", move |_ctx| {
+                        let count = count.clone();
+                        async move {
+                            count.fetch_add(1, Ordering::SeqCst);
+                            Ok(10)
+                        }
+                    })
+                    .await?;
+                assert_eq!(result, 10);
+                Ok(())
+            }
+        })
+        .await
+    })
+    .await
+    .unwrap();
+
+    let count = call_count.clone();
+    app.update(|ctx| async move {
+        ctx.scope(&"child", move |child| {
+            let count = count.clone();
+            async move {
+                let result: i32 = child
+                    .memo(&"stable_child_key", move |_ctx| {
+                        let count = count.clone();
+                        async move {
+                            count.fetch_add(1, Ordering::SeqCst);
+                            Ok(999)
+                        }
+                    })
+                    .await?;
+                assert_eq!(result, 10);
+                Ok(())
+            }
+        })
+        .await
+    })
+    .await
+    .unwrap();
+    assert_eq!(call_count.load(Ordering::SeqCst), 1);
+
+    let count = call_count.clone();
+    app.update_with_options(
+        cocoindex::UpdateOptions {
+            full_reprocess: true,
+            live: false,
+        },
+        |ctx| async move {
+            ctx.scope(&"child", move |child| {
+                let count = count.clone();
+                async move {
+                    let result: i32 = child
+                        .memo(&"stable_child_key", move |_ctx| {
+                            let count = count.clone();
+                            async move {
+                                count.fetch_add(1, Ordering::SeqCst);
+                                Ok(20)
+                            }
+                        })
+                        .await?;
+                    assert_eq!(result, 20);
+                    Ok(())
+                }
+            })
+            .await
+        },
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(call_count.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
 async fn memo_cached_reexecutes_on_key_change() {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -192,7 +800,7 @@ async fn memo_cached_reexecutes_on_key_change() {
     // First run with key "v1".
     let count = call_count.clone();
     app.update(|ctx| async move {
-        let result: i32 = cocoindex::memo::cached(&ctx, &"v1", move || {
+        let result: i32 = cocoindex::memo::cached(&ctx, &"v1", move |_ctx| {
             let count = count.clone();
             async move {
                 count.fetch_add(1, Ordering::SeqCst);
@@ -210,7 +818,7 @@ async fn memo_cached_reexecutes_on_key_change() {
     // Second run with key "v2": different key means cache miss.
     let count = call_count.clone();
     app.update(|ctx| async move {
-        let result: i32 = cocoindex::memo::cached(&ctx, &"v2", move || {
+        let result: i32 = cocoindex::memo::cached(&ctx, &"v2", move |_ctx| {
             let count = count.clone();
             async move {
                 count.fetch_add(1, Ordering::SeqCst);
@@ -237,7 +845,7 @@ fn memo_cached_blocking() {
     // First run.
     let count = call_count.clone();
     app.update_blocking(|ctx| async move {
-        let result: String = cocoindex::memo::cached(&ctx, &("file.rs", 42u64), move || {
+        let result: String = cocoindex::memo::cached(&ctx, &("file.rs", 42u64), move |_ctx| {
             let count = count.clone();
             async move {
                 count.fetch_add(1, Ordering::SeqCst);
@@ -254,7 +862,7 @@ fn memo_cached_blocking() {
     // Second run with same key — should be cached.
     let count = call_count.clone();
     app.update_blocking(|ctx| async move {
-        let result: String = cocoindex::memo::cached(&ctx, &("file.rs", 42u64), move || {
+        let result: String = cocoindex::memo::cached(&ctx, &("file.rs", 42u64), move |_ctx| {
             let count = count.clone();
             async move {
                 count.fetch_add(1, Ordering::SeqCst);
@@ -284,7 +892,7 @@ fn drop_state_blocking_clears_memoization() {
     // First run: populate cache.
     let count = call_count.clone();
     app.update_blocking(|ctx| async move {
-        let _: i32 = cocoindex::memo::cached(&ctx, &"key", move || {
+        let _: i32 = cocoindex::memo::cached(&ctx, &"key", move |_ctx| {
             let count = count.clone();
             async move {
                 count.fetch_add(1, Ordering::SeqCst);
@@ -303,7 +911,7 @@ fn drop_state_blocking_clears_memoization() {
     // Third run: cache should be empty, closure re-executes.
     let count = call_count.clone();
     app.update_blocking(|ctx| async move {
-        let result: i32 = cocoindex::memo::cached(&ctx, &"key", move || {
+        let result: i32 = cocoindex::memo::cached(&ctx, &"key", move |_ctx| {
             let count = count.clone();
             async move {
                 count.fetch_add(1, Ordering::SeqCst);
@@ -327,7 +935,7 @@ async fn memo_cached_propagates_closure_error() {
     let (app, _dir) = temp_app("memo_error").await;
     let result = app
         .update(|ctx| async move {
-            let _: i32 = cocoindex::memo::cached(&ctx, &"key", || async {
+            let _: i32 = cocoindex::memo::cached(&ctx, &"key", |_ctx| async {
                 Err(cocoindex::Error::engine("test error"))
             })
             .await?;
@@ -364,7 +972,7 @@ async fn memo_cached_complex_types() {
 
     // Run 1: store complex type.
     app.update(|ctx| async move {
-        let entities: Vec<Entity> = cocoindex::memo::cached(&ctx, &"complex_key", || async {
+        let entities: Vec<Entity> = cocoindex::memo::cached(&ctx, &"complex_key", |_ctx| async {
             Ok(vec![
                 Entity {
                     name: "foo".into(),
@@ -386,7 +994,7 @@ async fn memo_cached_complex_types() {
 
     // Run 2: retrieve from cache.
     app.update(|ctx| async move {
-        let entities: Vec<Entity> = cocoindex::memo::cached(&ctx, &"complex_key", || async {
+        let entities: Vec<Entity> = cocoindex::memo::cached(&ctx, &"complex_key", |_ctx| async {
             panic!("should not be called — cache hit");
         })
         .await?;
@@ -448,7 +1056,7 @@ async fn ctx_memo_method() {
     let count = call_count.clone();
     app.update(|ctx| async move {
         let result: i32 = ctx
-            .memo(&"memo_key", move || {
+            .memo(&"memo_key", move |_ctx| {
                 let count = count.clone();
                 async move {
                     count.fetch_add(1, Ordering::SeqCst);
@@ -467,7 +1075,7 @@ async fn ctx_memo_method() {
     let count = call_count.clone();
     app.update(|ctx| async move {
         let result: i32 = ctx
-            .memo(&"memo_key", move || {
+            .memo(&"memo_key", move |_ctx| {
                 let count = count.clone();
                 async move {
                     count.fetch_add(1, Ordering::SeqCst);
@@ -563,6 +1171,24 @@ async fn bare_fn(ctx: &cocoindex::Ctx, _val: &str) -> cocoindex::Result<i32> {
     Ok(1)
 }
 
+#[cocoindex::function]
+async fn bare_logic_v1(_ctx: &cocoindex::Ctx) -> cocoindex::Result<i32> {
+    Ok(1)
+}
+
+#[cocoindex::function]
+async fn bare_logic_v2(_ctx: &cocoindex::Ctx) -> cocoindex::Result<i32> {
+    Ok(2)
+}
+
+#[cocoindex::function]
+async fn bare_read_context_key(
+    ctx: &cocoindex::Ctx,
+    key: &ContextKey<String>,
+) -> cocoindex::Result<String> {
+    Ok(ctx.get_key(key)?.clone())
+}
+
 #[tokio::test]
 async fn function_macro_bare() {
     // The macro should emit a code hash constant.
@@ -580,6 +1206,95 @@ async fn function_macro_bare() {
     .unwrap();
 }
 
+#[tokio::test]
+async fn bare_function_context_key_invalidates_manual_memo_callers() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let key = ContextKey::<String>::new_detect_change("pipeline/bare_context_transitive");
+    let dir = tempfile::tempdir().unwrap();
+    let call_count = Arc::new(AtomicUsize::new(0));
+
+    let app = App::builder("bare_context_key_invalidates_manual_memo")
+        .db_path(dir.path().join("lmdb"))
+        .provide_key(&key, "v1".to_string())
+        .build()
+        .await
+        .unwrap();
+    let count = call_count.clone();
+    let key_for_first = key.clone();
+    app.update(move |ctx| async move {
+        let result: String = ctx
+            .memo(&"stable", move |ctx| {
+                let count = count.clone();
+                async move {
+                    count.fetch_add(1, Ordering::SeqCst);
+                    bare_read_context_key(&ctx, &key_for_first).await
+                }
+            })
+            .await?;
+        assert_eq!(result, "v1");
+        Ok(())
+    })
+    .await
+    .unwrap();
+    drop(app);
+
+    let app = App::builder("bare_context_key_invalidates_manual_memo")
+        .db_path(dir.path().join("lmdb"))
+        .provide_key(&key, "v2".to_string())
+        .build()
+        .await
+        .unwrap();
+    let count = call_count.clone();
+    let key_for_second = key.clone();
+    app.update(move |ctx| async move {
+        let result: String = ctx
+            .memo(&"stable", move |ctx| {
+                let count = count.clone();
+                async move {
+                    count.fetch_add(1, Ordering::SeqCst);
+                    bare_read_context_key(&ctx, &key_for_second).await
+                }
+            })
+            .await?;
+        assert_eq!(result, "v2");
+        Ok(())
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(call_count.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn bare_function_logic_invalidates_manual_memo_callers() {
+    let (app, _dir) = temp_app("bare_logic_invalidates_manual_memo").await;
+
+    app.update(|ctx| async move {
+        let result: i32 = ctx
+            .memo(&"stable", |ctx| async move { bare_logic_v1(&ctx).await })
+            .await?;
+        assert_eq!(result, 1);
+        Ok(())
+    })
+    .await
+    .unwrap();
+
+    app.update(|ctx| async move {
+        let result: i32 = ctx
+            .memo(&"stable", |ctx| async move { bare_logic_v2(&ctx).await })
+            .await?;
+        assert_eq!(
+            result, 2,
+            "bare #[function] helper logic did not invalidate its memoized caller"
+        );
+        Ok(())
+    })
+    .await
+    .unwrap();
+}
+
 // ---------------------------------------------------------------------------
 // #[cocoindex::function(memo)] macro
 // ---------------------------------------------------------------------------
@@ -591,7 +1306,7 @@ mod memo_test_basic {
     static CALLS: AtomicUsize = AtomicUsize::new(0);
 
     #[cocoindex::function(memo)]
-    async fn the_fn(ctx: &cocoindex::Ctx, key: &String) -> cocoindex::Result<i32> {
+    async fn the_fn(_ctx: &cocoindex::Ctx, key: &String) -> cocoindex::Result<i32> {
         CALLS.fetch_add(1, Ordering::SeqCst);
         let _ = &key;
         Ok(42)
@@ -625,7 +1340,7 @@ mod memo_test_cache_hit {
     static CALLS: AtomicUsize = AtomicUsize::new(0);
 
     #[cocoindex::function(memo)]
-    async fn the_fn(ctx: &cocoindex::Ctx, key: &String) -> cocoindex::Result<i32> {
+    async fn the_fn(_ctx: &cocoindex::Ctx, key: &String) -> cocoindex::Result<i32> {
         CALLS.fetch_add(1, Ordering::SeqCst);
         let _ = &key;
         Ok(42)
@@ -660,12 +1375,12 @@ mod memo_test_cache_hit {
 
 // Two functions with same signature but different bodies produce different code hashes.
 #[cocoindex::function(memo)]
-async fn hash_fn_a(ctx: &cocoindex::Ctx, _key: &String) -> cocoindex::Result<i32> {
+async fn hash_fn_a(_ctx: &cocoindex::Ctx, _key: &String) -> cocoindex::Result<i32> {
     Ok(111)
 }
 
 #[cocoindex::function(memo)]
-async fn hash_fn_b(ctx: &cocoindex::Ctx, _key: &String) -> cocoindex::Result<i32> {
+async fn hash_fn_b(_ctx: &cocoindex::Ctx, _key: &String) -> cocoindex::Result<i32> {
     Ok(222)
 }
 
@@ -673,6 +1388,201 @@ async fn hash_fn_b(ctx: &cocoindex::Ctx, _key: &String) -> cocoindex::Result<i32
 fn function_macro_memo_code_hash_invalidation() {
     // Different function bodies must produce different code hashes.
     assert_ne!(__COCO_FN_HASH_HASH_FN_A, __COCO_FN_HASH_HASH_FN_B);
+}
+
+mod function_macro_identity_tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, OnceLock};
+
+    use cocoindex::{ContextKey, Ctx, Result};
+
+    fn calls_key() -> &'static ContextKey<Arc<AtomicUsize>> {
+        static KEY: OnceLock<ContextKey<Arc<AtomicUsize>>> = OnceLock::new();
+        KEY.get_or_init(|| ContextKey::new("pipeline/function_macro_identity_calls"))
+    }
+
+    #[cocoindex::function(memo)]
+    async fn first(ctx: &Ctx, input: &String) -> Result<String> {
+        ctx.get_key(calls_key())?.fetch_add(1, Ordering::SeqCst);
+        Ok(input.clone())
+    }
+
+    #[cocoindex::function(memo)]
+    async fn second(ctx: &Ctx, input: &String) -> Result<String> {
+        ctx.get_key(calls_key())?.fetch_add(1, Ordering::SeqCst);
+        Ok(input.clone())
+    }
+
+    #[tokio::test]
+    async fn identical_body_functions_do_not_share_memo_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let app = cocoindex::App::builder("function_identity_memo")
+            .db_path(dir.path().join("lmdb"))
+            .provide_key(calls_key(), calls.clone())
+            .build()
+            .await
+            .unwrap();
+
+        app.update(|ctx| async move {
+            let input = "same-key".to_string();
+            assert_eq!(first(&ctx, &input).await?, "same-key");
+            assert_eq!(second(&ctx, &input).await?, "same-key");
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+}
+
+mod function_macro_memo_key_tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, OnceLock};
+
+    use cocoindex::{ContextKey, Ctx, Result};
+    use serde::Serialize;
+
+    #[derive(Clone, Serialize)]
+    struct Entry {
+        name: String,
+        version: u32,
+        content: String,
+    }
+
+    fn calls_key() -> &'static ContextKey<Arc<AtomicUsize>> {
+        static KEY: OnceLock<ContextKey<Arc<AtomicUsize>>> = OnceLock::new();
+        KEY.get_or_init(|| ContextKey::new("pipeline/function_macro_memo_key_calls"))
+    }
+
+    fn entry_name_version(entry: &Entry) -> (String, u32) {
+        (entry.name.clone(), entry.version)
+    }
+
+    fn item_name_version(entry: &Entry) -> (String, u32) {
+        (entry.name.clone(), entry.version)
+    }
+
+    #[cocoindex::function(memo, memo_key(entry = entry_name_version, extra = skip))]
+    async fn transform_entry(ctx: &Ctx, entry: &Entry, extra: &String) -> Result<String> {
+        ctx.get_key(calls_key())?.fetch_add(1, Ordering::SeqCst);
+        Ok(format!("{}:{extra}", entry.content))
+    }
+
+    #[cocoindex::function(memo, batching, memo_key(item = item_name_version, extra = skip))]
+    async fn transform_batch(
+        ctx: &Ctx,
+        entries: Vec<Entry>,
+        extra: &String,
+    ) -> Result<Vec<String>> {
+        ctx.get_key(calls_key())?.fetch_add(1, Ordering::SeqCst);
+        Ok(entries
+            .into_iter()
+            .map(|entry| format!("{}:{extra}", entry.content))
+            .collect())
+    }
+
+    #[tokio::test]
+    async fn memo_key_transform_and_skip_for_function_macro() {
+        let dir = tempfile::tempdir().unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let app = cocoindex::App::builder("function_macro_memo_key")
+            .db_path(dir.path().join("lmdb"))
+            .provide_key(calls_key(), calls.clone())
+            .build()
+            .await
+            .unwrap();
+
+        app.update(|ctx| async move {
+            let first = Entry {
+                name: "A".into(),
+                version: 1,
+                content: "content-v1".into(),
+            };
+            let changed_unkeyed = Entry {
+                name: "A".into(),
+                version: 1,
+                content: "content-v1-changed".into(),
+            };
+            let changed_keyed = Entry {
+                name: "A".into(),
+                version: 2,
+                content: "content-v2".into(),
+            };
+
+            assert_eq!(
+                transform_entry(&ctx, &first, &"debug-a".to_string()).await?,
+                "content-v1:debug-a"
+            );
+            assert_eq!(
+                transform_entry(&ctx, &changed_unkeyed, &"debug-b".to_string()).await?,
+                "content-v1:debug-a"
+            );
+            assert_eq!(
+                transform_entry(&ctx, &changed_keyed, &"debug-c".to_string()).await?,
+                "content-v2:debug-c"
+            );
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn memo_key_transform_and_skip_for_batch_macro() {
+        let dir = tempfile::tempdir().unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let app = cocoindex::App::builder("function_macro_batch_memo_key")
+            .db_path(dir.path().join("lmdb"))
+            .provide_key(calls_key(), calls.clone())
+            .build()
+            .await
+            .unwrap();
+
+        app.update(|ctx| async move {
+            let initial = vec![
+                Entry {
+                    name: "A".into(),
+                    version: 1,
+                    content: "a1".into(),
+                },
+                Entry {
+                    name: "B".into(),
+                    version: 1,
+                    content: "b1".into(),
+                },
+            ];
+            assert_eq!(
+                transform_batch(&ctx, initial, &"first".to_string()).await?,
+                vec!["a1:first".to_string(), "b1:first".to_string()]
+            );
+
+            let changed = vec![
+                Entry {
+                    name: "A".into(),
+                    version: 1,
+                    content: "a1-changed".into(),
+                },
+                Entry {
+                    name: "B".into(),
+                    version: 2,
+                    content: "b2".into(),
+                },
+            ];
+            assert_eq!(
+                transform_batch(&ctx, changed, &"second".to_string()).await?,
+                vec!["a1:first".to_string(), "b2:second".to_string()]
+            );
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -739,7 +1649,7 @@ async fn ctx_mount_each_independent_memo() {
                         child_ctx
                             .memo(&name, {
                                 let count = count.clone();
-                                move || async move {
+                                move |_ctx| async move {
                                     count.fetch_add(1, Ordering::SeqCst);
                                     Ok(1i32)
                                 }
@@ -770,7 +1680,7 @@ async fn ctx_mount_each_independent_memo() {
                         child_ctx
                             .memo(&name, {
                                 let count = count.clone();
-                                move || async move {
+                                move |_ctx| async move {
                                     count.fetch_add(1, Ordering::SeqCst);
                                     Ok(999i32)
                                 }
@@ -810,6 +1720,210 @@ async fn ctx_mount_each_preserves_input_order_under_concurrency() {
     })
     .await
     .unwrap();
+}
+
+#[tokio::test]
+async fn ctx_stats_group_reports_scoped_child_stats() {
+    use std::sync::{Arc, Mutex};
+
+    let (app, _dir) = temp_app("stats_group_scoped_child_stats").await;
+    let group_handle_slot = Arc::new(Mutex::new(None));
+    let slot_for_update = group_handle_slot.clone();
+
+    app.update(move |ctx| async move {
+        let (sum, handle) = ctx
+            .stats_group("Indexing docs", |group_ctx, _handle| async move {
+                let values = group_ctx
+                    .mount_each(
+                        vec![1, 2],
+                        |item| *item,
+                        |child, item| async move {
+                            child
+                                .memo(&item, move |_ctx| async move { Ok(item * 10) })
+                                .await
+                        },
+                    )
+                    .await?;
+                Ok::<_, cocoindex::Error>(values.into_iter().sum::<i32>())
+            })
+            .await?;
+        assert_eq!(sum, 30);
+        *slot_for_update.lock().unwrap() = Some(handle);
+        Ok::<_, cocoindex::Error>(())
+    })
+    .await
+    .unwrap();
+
+    let mut group_handle = group_handle_slot.lock().unwrap().take().unwrap();
+    loop {
+        if group_handle.changed().await.unwrap().is_done() {
+            break;
+        }
+    }
+    let stats = group_handle.stats_snapshot();
+    assert!(
+        stats.processed > 0,
+        "expected scoped group to report processed work, got {stats:?}"
+    );
+}
+
+#[tokio::test]
+async fn ctx_stats_group_with_options_reports_scoped_child_stats() {
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    let (app, _dir) = temp_app("stats_group_with_options").await;
+    let group_handle_slot = Arc::new(Mutex::new(None));
+    let slot_for_update = group_handle_slot.clone();
+
+    app.update(move |ctx| async move {
+        let options = cocoindex::StatsGroupOptions {
+            report_to_stdout: true,
+            refresh_interval: Some(Duration::from_millis(50)),
+        };
+        let (sum, handle) = ctx
+            .stats_group_with_options(
+                "Indexing docs (reported)",
+                options,
+                |group_ctx, _h| async move {
+                    let values = group_ctx
+                        .mount_each(
+                            vec![1, 2, 3],
+                            |item| *item,
+                            |child, item| async move {
+                                child
+                                    .memo(&item, move |_ctx| async move { Ok(item * 10) })
+                                    .await
+                            },
+                        )
+                        .await?;
+                    Ok::<_, cocoindex::Error>(values.into_iter().sum::<i32>())
+                },
+            )
+            .await?;
+        assert_eq!(sum, 60);
+        *slot_for_update.lock().unwrap() = Some(handle);
+        Ok::<_, cocoindex::Error>(())
+    })
+    .await
+    .unwrap();
+
+    let mut group_handle = group_handle_slot.lock().unwrap().take().unwrap();
+    loop {
+        if group_handle.changed().await.unwrap().is_done() {
+            break;
+        }
+    }
+    let stats = group_handle.stats_snapshot();
+    assert!(
+        stats.processed > 0,
+        "expected reported group to process work, got {stats:?}"
+    );
+}
+
+#[tokio::test]
+async fn ctx_stats_group_terminates_when_body_errors() {
+    use std::sync::{Arc, Mutex};
+
+    let (app, _dir) = temp_app("stats_group_error_terminates").await;
+    let group_handle_slot = Arc::new(Mutex::new(None));
+    let slot_for_update = group_handle_slot.clone();
+
+    let result = app
+        .update(move |ctx| async move {
+            let _: ((), cocoindex::StatsGroupHandle) = ctx
+                .stats_group("Failing group", move |_group_ctx, handle| {
+                    let slot = slot_for_update.clone();
+                    async move {
+                        *slot.lock().unwrap() = Some(handle);
+                        Err::<(), _>(cocoindex::Error::engine("group failed"))
+                    }
+                })
+                .await?;
+            Ok::<_, cocoindex::Error>(())
+        })
+        .await;
+
+    assert!(result.unwrap_err().to_string().contains("group failed"));
+
+    let mut group_handle = group_handle_slot.lock().unwrap().take().unwrap();
+    loop {
+        if group_handle.changed().await.unwrap().is_done() {
+            break;
+        }
+    }
+}
+
+#[tokio::test]
+async fn ctx_auto_refresh_runs_once_in_catchup_mode() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let (app, _dir) = temp_app("auto_refresh_catchup").await;
+    let calls = Arc::new(AtomicUsize::new(0));
+    let calls_for_update = calls.clone();
+
+    app.update(move |ctx| async move {
+        ctx.auto_refresh(&"poller", Duration::from_millis(1), move |_ctx| {
+            let calls = calls_for_update.clone();
+            async move {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+        })
+        .await
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn ctx_auto_refresh_live_continues_after_post_ready_cycle_error() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::sync::Notify;
+
+    let (app, _dir) = temp_app("auto_refresh_live_error_continue").await;
+    let calls = Arc::new(AtomicUsize::new(0));
+    let third_call = Arc::new(Notify::new());
+    let calls_for_update = calls.clone();
+    let notify_for_update = third_call.clone();
+
+    let handle = app
+        .start_update_with_options(
+            cocoindex::UpdateOptions {
+                full_reprocess: false,
+                live: true,
+            },
+            move |ctx| async move {
+                ctx.auto_refresh(&"poller", Duration::from_millis(5), move |_ctx| {
+                    let calls = calls_for_update.clone();
+                    let notify = notify_for_update.clone();
+                    async move {
+                        let call = calls.fetch_add(1, Ordering::SeqCst) + 1;
+                        if call == 2 {
+                            return Err(cocoindex::Error::engine("cycle failed"));
+                        }
+                        if call >= 3 {
+                            notify.notify_waiters();
+                        }
+                        Ok(())
+                    }
+                })
+                .await
+            },
+        )
+        .unwrap();
+
+    tokio::time::timeout(Duration::from_secs(5), third_call.notified())
+        .await
+        .unwrap();
+    assert!(calls.load(Ordering::SeqCst) >= 3);
+
+    let _ = app.drop_state().await;
+    let _ = tokio::time::timeout(Duration::from_secs(5), handle.result()).await;
 }
 
 // ---------------------------------------------------------------------------
@@ -868,7 +1982,7 @@ async fn ctx_batch_all_miss() {
         let results: Vec<i32> = ctx
             .batch(items, |(key, _)| key.to_string(), {
                 let calls = calls.clone();
-                move |misses| async move {
+                move |_ctx, misses| async move {
                     calls.fetch_add(1, Ordering::SeqCst);
                     // Process all misses in one batch call
                     Ok(misses.iter().map(|(_, v)| v * 2).collect())
@@ -900,7 +2014,7 @@ async fn ctx_batch_cache_hit() {
         let results: Vec<i32> = ctx
             .batch(items, |(key, _)| key.to_string(), {
                 let calls = calls.clone();
-                move |misses| async move {
+                move |_ctx, misses| async move {
                     calls.fetch_add(1, Ordering::SeqCst);
                     Ok(misses.iter().map(|(_, v)| v * 100).collect())
                 }
@@ -920,7 +2034,7 @@ async fn ctx_batch_cache_hit() {
         let results: Vec<i32> = ctx
             .batch(items, |(key, _)| key.to_string(), {
                 let calls = calls.clone();
-                move |misses| async move {
+                move |_ctx, misses| async move {
                     calls.fetch_add(1, Ordering::SeqCst);
                     Ok(misses.iter().map(|(_, v)| v * 999).collect())
                 }
@@ -949,7 +2063,7 @@ async fn ctx_batch_partial_hit() {
         let results: Vec<i32> = ctx
             .batch(items, |(key, _)| key.to_string(), {
                 let calls = calls.clone();
-                move |misses| async move {
+                move |_ctx, misses| async move {
                     calls.fetch_add(1, Ordering::SeqCst);
                     Ok(misses.iter().map(|(_, v)| v * 10).collect())
                 }
@@ -969,7 +2083,7 @@ async fn ctx_batch_partial_hit() {
         let results: Vec<i32> = ctx
             .batch(items, |(key, _)| key.to_string(), {
                 let calls = calls.clone();
-                move |misses| async move {
+                move |_ctx, misses| async move {
                     calls.fetch_add(1, Ordering::SeqCst);
                     // Only "c" should be here.
                     assert_eq!(misses.len(), 1);
@@ -997,7 +2111,7 @@ async fn ctx_batch_error_propagation() {
                 .batch(
                     items,
                     |x| *x,
-                    |_misses| async move { Err(cocoindex::Error::engine("batch failed")) },
+                    |_ctx, _misses| async move { Err(cocoindex::Error::engine("batch failed")) },
                 )
                 .await?;
             Ok(())
@@ -1050,7 +2164,7 @@ async fn ctx_batch_serialization_error_clears_pending_memo() {
             let _: Vec<ItemValue> = ctx
                 .batch(items, |x| *x, {
                     let calls = first_calls_for_run.clone();
-                    move |misses| {
+                    move |_ctx, misses| {
                         calls.fetch_add(1, Ordering::SeqCst);
                         let out = misses
                             .into_iter()
@@ -1076,7 +2190,7 @@ async fn ctx_batch_serialization_error_clears_pending_memo() {
         let results: Vec<ItemValue> = ctx
             .batch(items, |x| *x, {
                 let calls = second_calls_for_run.clone();
-                move |misses| {
+                move |_ctx, misses| {
                     calls.fetch_add(1, Ordering::SeqCst);
                     let out = misses
                         .into_iter()
@@ -1104,7 +2218,7 @@ async fn ctx_batch_serialization_error_clears_pending_memo() {
         let results: Vec<ItemValue> = ctx
             .batch(items, |x| *x, {
                 let calls = cached_calls_for_run.clone();
-                move |misses| {
+                move |_ctx, misses| {
                     calls.fetch_add(1, Ordering::SeqCst);
                     let out = misses
                         .into_iter()
@@ -1171,7 +2285,7 @@ async fn ctx_batch_fingerprint_error_clears_pending_memo() {
             let _: Vec<i32> = ctx
                 .batch(items, |key| *key, {
                     let calls = first_calls_for_run.clone();
-                    move |misses| {
+                    move |_ctx, misses| {
                         calls.fetch_add(1, Ordering::SeqCst);
                         let out = misses.into_iter().map(|value| value.value * 2).collect();
                         async move { Ok(out) }
@@ -1194,7 +2308,7 @@ async fn ctx_batch_fingerprint_error_clears_pending_memo() {
         let values: Vec<i32> = ctx
             .batch(items, |key| *key, {
                 let calls = second_calls_for_run.clone();
-                move |misses| {
+                move |_ctx, misses| {
                     calls.fetch_add(1, Ordering::SeqCst);
                     let out = misses.into_iter().map(|value| value.value * 2).collect();
                     async move { Ok(out) }
@@ -1573,7 +2687,7 @@ mod mock_memo {
         let api = ctx.get_or_err::<MockApi>().unwrap().clone();
         let key = (__COCO_FN_HASH_ANALYZE, input.to_owned());
         let input = input.to_owned();
-        ctx.memo(&key, move || async move { api.call(&input).await })
+        ctx.memo(&key, move |_ctx| async move { api.call(&input).await })
             .await
     }
 
@@ -1799,7 +2913,7 @@ async fn ctx_batch_rejects_duplicate_keys() {
                 .batch(
                     items,
                     |&(name, _)| name.to_string(), // duplicate 'gamma' keys
-                    |_misses| async move { Ok(vec![1, 2]) },
+                    |_ctx, _misses| async move { Ok(vec![1, 2]) },
                 )
                 .await?;
             Ok(())

@@ -9,8 +9,11 @@ mod stats;
 mod typemap;
 
 // Flat re-exports — the public API surface
-pub use app::{App, AppBuilder};
-pub use ctx::Ctx;
+pub use app::{
+    App, AppBuilder, DropHandle, Progress, StatsGroupHandle, StatsGroupOptions, UpdateHandle,
+    UpdateOptions,
+};
+pub use ctx::{ContextKey, Ctx};
 pub use error::{Error, Result};
 pub use fs::{DirTarget, FileEntry, walk};
 pub use stats::RunStats;

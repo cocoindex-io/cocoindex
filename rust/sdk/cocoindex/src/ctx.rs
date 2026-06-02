@@ -1,42 +1,301 @@
 //! Pipeline context: scope, memo, write_file.
 
+use std::any::Any;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Display;
 use std::future::Future;
+use std::marker::PhantomData;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
 
 use cocoindex_core::engine::context::{ComponentProcessorContext, FnCallContext};
+use cocoindex_core::engine::environment::Environment;
+use cocoindex_core::engine::live_component::mount_live_prepare;
 use cocoindex_core::state::stable_path::StableKey;
+use cocoindex_utils::fingerprint::Fingerprint;
 use serde::{Deserialize, Serialize};
 
-use crate::app::AppInner;
+use crate::app::{AppInner, StatsGroupHandle, StatsGroupOptions};
 use crate::error::{Error, Result};
 use crate::profile::{BoxedProcessor, RustProfile, Value};
 
+type ContextFingerprinter<T> = Arc<dyn Fn(&str, &T) -> Result<Fingerprint> + Send + Sync>;
+
+/// A named context key, matching Python's `ContextKey[T]` model.
+///
+/// - [`ContextKey::new`] stores arbitrary `Send + Sync` resources (no change
+///   tracking).
+/// - [`ContextKey::new_detect_change`] tracks a serializable value: memoized
+///   work is invalidated when the whole value's fingerprint changes.
+/// - [`ContextKey::new_with_state`] tracks a *derived* state of an arbitrary
+///   (possibly non-serializable) value — the Rust analogue of Python's
+///   `__coco_memo_state__`. Only changes to the extracted state invalidate
+///   memoized work.
+pub struct ContextKey<T> {
+    name: Arc<str>,
+    detect_change: bool,
+    fingerprint_fn: Option<ContextFingerprinter<T>>,
+    _marker: PhantomData<fn() -> T>,
+}
+
+impl<T> Clone for ContextKey<T> {
+    fn clone(&self) -> Self {
+        Self {
+            name: self.name.clone(),
+            detect_change: self.detect_change,
+            fingerprint_fn: self.fingerprint_fn.clone(),
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<T> ContextKey<T> {
+    /// Create a named context key without memo change tracking.
+    ///
+    /// # Panics
+    /// Panics if the same key name has already been constructed in this
+    /// process, matching Python's duplicate-key guard.
+    pub fn new(name: impl Into<String>) -> Self {
+        Self::with_parts(name.into(), false, None)
+    }
+
+    /// The stable key name.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Whether values provided for this key participate in memo invalidation.
+    pub fn detect_change(&self) -> bool {
+        self.detect_change
+    }
+
+    fn with_parts(
+        name: String,
+        detect_change: bool,
+        fingerprint_fn: Option<ContextFingerprinter<T>>,
+    ) -> Self {
+        let used = USED_CONTEXT_KEYS.get_or_init(|| Mutex::new(HashSet::new()));
+        let duplicate = {
+            let mut used = used.lock().expect("context key registry poisoned");
+            !used.insert(name.clone())
+        };
+        assert!(!duplicate, "Context key {name} already used");
+        Self {
+            name: Arc::from(name),
+            detect_change,
+            fingerprint_fn,
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<T: Serialize> ContextKey<T> {
+    /// Create a named context key whose provided values invalidate memoized
+    /// work when their serialized fingerprint changes.
+    pub fn new_detect_change(name: impl Into<String>) -> Self {
+        let fingerprint_fn: ContextFingerprinter<T> = Arc::new(|name: &str, value: &T| {
+            Fingerprint::from(&("context_key", name, value))
+                .map_err(|e| Error::engine(format!("context key fingerprint error: {e}")))
+        });
+        Self::with_parts(name.into(), true, Some(fingerprint_fn))
+    }
+}
+
+impl<T> ContextKey<T> {
+    /// Create a named context key whose memo invalidation is driven by a
+    /// *derived state* rather than the whole value. `state_fn` extracts a
+    /// serializable state from the provided value; memoized work that reads
+    /// this key (via [`Ctx::get_key`]) is invalidated only when that state's
+    /// fingerprint changes.
+    ///
+    /// This is the Rust analogue of Python's `__coco_memo_state__`: use it for
+    /// resources that aren't themselves serializable (DB pools, clients) or
+    /// whose memo-relevant identity (e.g. a connection string or schema
+    /// version) is narrower than the whole value. The value type `T` need not
+    /// be `Serialize` — only the extracted state must be.
+    pub fn new_with_state<S, SF>(name: impl Into<String>, state_fn: SF) -> Self
+    where
+        S: Serialize,
+        SF: Fn(&T) -> S + Send + Sync + 'static,
+    {
+        let fingerprint_fn: ContextFingerprinter<T> = Arc::new(move |name: &str, value: &T| {
+            let state = state_fn(value);
+            Fingerprint::from(&("context_key", name, &state))
+                .map_err(|e| Error::engine(format!("context key state fingerprint error: {e}")))
+        });
+        Self::with_parts(name.into(), true, Some(fingerprint_fn))
+    }
+}
+
+static USED_CONTEXT_KEYS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+
+#[derive(Default)]
+pub(crate) struct ContextStore {
+    values: HashMap<Arc<str>, Arc<dyn Any + Send + Sync>>,
+    fingerprints: HashMap<Arc<str>, Fingerprint>,
+}
+
+impl ContextStore {
+    pub(crate) fn provide<T: Send + Sync + 'static>(
+        &mut self,
+        key: &ContextKey<T>,
+        value: T,
+    ) -> Result<()> {
+        if let Some(fingerprint_fn) = &key.fingerprint_fn {
+            let fp = fingerprint_fn(&key.name, &value)?;
+            self.fingerprints.insert(key.name.clone(), fp);
+        }
+        self.values.insert(key.name.clone(), Arc::new(value));
+        Ok(())
+    }
+
+    pub(crate) fn register_logic(&self, env: &Environment<RustProfile>) {
+        for fp in self.fingerprints.values() {
+            env.register_logic(*fp);
+        }
+    }
+
+    fn get<T: Send + Sync + 'static>(&self, key: &ContextKey<T>) -> Option<&T> {
+        self.values
+            .get(&key.name)
+            .and_then(|value| value.downcast_ref::<T>())
+    }
+
+    fn fingerprint<T>(&self, key: &ContextKey<T>) -> Option<Fingerprint> {
+        self.fingerprints.get(&key.name).copied()
+    }
+}
+
 /// Pipeline context passed to closures inside `App::update()` / `App::run()`.
+#[derive(Clone)]
 pub struct Ctx {
     /// The core component processor context. Some when running inside a
     /// pipeline (enables LMDB memoization), None for standalone usage.
     pub(crate) comp_ctx: Option<ComponentProcessorContext<RustProfile>>,
     pub(crate) state: Arc<AppInner>,
+    /// The function-call context this `Ctx` is scoped to. It is set when
+    /// entering a memoized body (`memo`/`batch`) or a child `scope`, so that
+    /// `get_key` records change-detection dependencies against the *correct*
+    /// memo entry. This is a plain owned value (not a shared slot): each
+    /// concurrent body receives its own scoped `Ctx`, mirroring Python's
+    /// per-task `contextvars`. `None` at the app root and in standalone use.
+    pub(crate) fn_ctx: Option<Arc<FnCallContext>>,
+}
+
+impl Ctx {
+    pub(crate) fn new(
+        comp_ctx: Option<ComponentProcessorContext<RustProfile>>,
+        state: Arc<AppInner>,
+    ) -> Self {
+        Self {
+            comp_ctx,
+            state,
+            fn_ctx: None,
+        }
+    }
+
+    fn child(&self, comp_ctx: Option<ComponentProcessorContext<RustProfile>>) -> Self {
+        Self {
+            comp_ctx,
+            state: self.state.clone(),
+            fn_ctx: None,
+        }
+    }
+
+    /// Return a clone of this `Ctx` scoped to `fn_ctx`, so `get_key` records
+    /// change-detection dependencies against that function call's memo entry.
+    pub(crate) fn with_fn_ctx(&self, fn_ctx: Arc<FnCallContext>) -> Self {
+        Self {
+            comp_ctx: self.comp_ctx.clone(),
+            state: self.state.clone(),
+            fn_ctx: Some(fn_ctx),
+        }
+    }
+
+    /// Execute a non-memoized `#[cocoindex::function]` body while recording
+    /// its logic and context dependencies into the surrounding function call.
+    #[doc(hidden)]
+    pub async fn __coco_tracked_fn<T, F, Fut>(
+        &self,
+        module_path: &'static str,
+        fn_name: &'static str,
+        code_hash: u64,
+        f: F,
+    ) -> Result<T>
+    where
+        F: FnOnce(Ctx) -> Fut,
+        Fut: Future<Output = Result<T>>,
+    {
+        let fp = Fingerprint::from(&("cocoindex_fn", module_path, fn_name, code_hash))
+            .map_err(|e| Error::engine(format!("function logic fingerprint error: {e}")))?;
+        let fn_ctx = Arc::new(FnCallContext::default());
+        fn_ctx.add_fn_logic_dep(fp);
+        let _guard = TrackedFnCallGuard {
+            comp_ctx: self.comp_ctx.clone(),
+            parent_fn_ctx: self.fn_ctx.clone(),
+            fn_ctx: fn_ctx.clone(),
+        };
+        f(self.with_fn_ctx(fn_ctx)).await
+    }
+}
+
+struct TrackedFnCallGuard {
+    comp_ctx: Option<ComponentProcessorContext<RustProfile>>,
+    parent_fn_ctx: Option<Arc<FnCallContext>>,
+    fn_ctx: Arc<FnCallContext>,
+}
+
+impl Drop for TrackedFnCallGuard {
+    fn drop(&mut self) {
+        if let Some(parent) = &self.parent_fn_ctx {
+            parent.join_child(&self.fn_ctx);
+        } else if let Some(comp_ctx) = &self.comp_ctx {
+            comp_ctx.join_fn_call(&self.fn_ctx);
+        }
+    }
 }
 
 pub(crate) struct FnCallGuard<'a> {
     comp_ctx: &'a ComponentProcessorContext<RustProfile>,
-    fn_ctx: &'a FnCallContext,
+    fn_ctx: Arc<FnCallContext>,
 }
 
 impl<'a> Drop for FnCallGuard<'a> {
     fn drop(&mut self) {
-        self.comp_ctx.join_fn_call(self.fn_ctx);
+        self.comp_ctx.join_fn_call(&self.fn_ctx);
     }
 }
 
 pub(crate) fn fn_call_guard<'a>(
     comp_ctx: &'a ComponentProcessorContext<RustProfile>,
-    fn_ctx: &'a FnCallContext,
+    fn_ctx: Arc<FnCallContext>,
 ) -> FnCallGuard<'a> {
     FnCallGuard { comp_ctx, fn_ctx }
+}
+
+struct StatsGroupEndGuard {
+    ctx: Option<ComponentProcessorContext<RustProfile>>,
+}
+
+impl StatsGroupEndGuard {
+    fn new(ctx: ComponentProcessorContext<RustProfile>) -> Self {
+        Self { ctx: Some(ctx) }
+    }
+
+    fn end(mut self) {
+        if let Some(ctx) = self.ctx.take() {
+            ctx.end_stats_group();
+        }
+    }
+}
+
+impl Drop for StatsGroupEndGuard {
+    fn drop(&mut self) {
+        if let Some(ctx) = self.ctx.take() {
+            ctx.end_stats_group();
+        }
+    }
 }
 
 impl Ctx {
@@ -50,7 +309,7 @@ impl Ctx {
         self.state
             .state
             .get::<T>()
-            .ok_or(Error::MissingContext(std::any::type_name::<T>()))
+            .ok_or_else(|| Error::MissingContext(std::any::type_name::<T>().to_string()))
     }
 
     /// Try to get a shared resource. Returns None if not provided.
@@ -58,10 +317,146 @@ impl Ctx {
         self.state.state.get::<T>()
     }
 
+    /// Try to get a shared resource by named [`ContextKey`].
+    ///
+    /// If the key was created with [`ContextKey::new_detect_change`], the
+    /// current memo/function call records a dependency on this value's
+    /// fingerprint.
+    pub fn get_key<T: Send + Sync + 'static>(&self, key: &ContextKey<T>) -> Result<&T> {
+        let value = self
+            .state
+            .context
+            .get(key)
+            .ok_or_else(|| Error::MissingContext(key.name().to_string()))?;
+        if key.detect_change()
+            && let Some(fp) = self.state.context.fingerprint(key)
+            && let Some(fn_ctx) = &self.fn_ctx
+        {
+            fn_ctx.add_context_change_dep(fp);
+        }
+        Ok(value)
+    }
+
     /// Returns true if this context has LMDB memoization available
     /// (i.e., running inside an `App::update()` pipeline).
     pub fn has_pipeline_context(&self) -> bool {
         self.comp_ctx.is_some()
+    }
+
+    /// Aggregate stats for components mounted inside `f` into a separate named
+    /// group. Returns the closure result and a handle for polling/watching the
+    /// group's stats.
+    ///
+    /// This does not print anything; use [`Ctx::stats_group_with_options`] to
+    /// enable stdout progress reporting for the group.
+    pub async fn stats_group<T, F, Fut>(
+        &self,
+        title: impl Into<String>,
+        f: F,
+    ) -> Result<(T, StatsGroupHandle)>
+    where
+        T: Send + 'static,
+        F: FnOnce(Ctx, StatsGroupHandle) -> Fut,
+        Fut: Future<Output = Result<T>>,
+    {
+        self.stats_group_with_options(title, StatsGroupOptions::default(), f)
+            .await
+    }
+
+    /// Like [`Ctx::stats_group`], but with explicit [`StatsGroupOptions`] — set
+    /// `report_to_stdout` to print the group's scoped progress, optionally with
+    /// a custom `refresh_interval`. Mirrors Python's
+    /// `coco.stats_group(title, report_to_stdout=...)`.
+    pub async fn stats_group_with_options<T, F, Fut>(
+        &self,
+        title: impl Into<String>,
+        options: StatsGroupOptions,
+        f: F,
+    ) -> Result<(T, StatsGroupHandle)>
+    where
+        T: Send + 'static,
+        F: FnOnce(Ctx, StatsGroupHandle) -> Fut,
+        Fut: Future<Output = Result<T>>,
+    {
+        let Some(comp_ctx) = &self.comp_ctx else {
+            return Err(Error::engine(
+                "stats_group requires an active pipeline context",
+            ));
+        };
+        let (derived, stats) = comp_ctx.begin_stats_group(
+            title.into(),
+            options.report_to_stdout,
+            options.refresh_interval.map(|d| d.as_secs_f64()),
+        );
+        let handle = StatsGroupHandle::new(stats);
+        let scoped_ctx = Ctx {
+            comp_ctx: Some(derived.clone()),
+            state: self.state.clone(),
+            fn_ctx: self.fn_ctx.clone(),
+        };
+        let group_guard = StatsGroupEndGuard::new(derived);
+        let result = f(scoped_ctx, handle.clone()).await;
+        group_guard.end();
+        Ok((result?, handle))
+    }
+
+    /// Mount a periodic refresh component under `key`.
+    ///
+    /// In catch-up mode this runs `f` once and returns. In live mode it runs
+    /// once, marks the component ready, then repeats after `interval` until the
+    /// app/live component is cancelled.
+    pub async fn auto_refresh<K, F, Fut>(&self, key: &K, interval: Duration, f: F) -> Result<()>
+    where
+        K: Display,
+        F: Fn(Ctx) -> Fut + Clone + Send + Sync + 'static,
+        Fut: Future<Output = Result<()>> + Send + 'static,
+    {
+        let Some(comp_ctx) = &self.comp_ctx else {
+            return f(self.clone()).await;
+        };
+
+        let key_str = key.to_string();
+        let child_stable_key = StableKey::Str(Arc::from(key_str.as_str()));
+        let child_path = comp_ctx.stable_path().concat_part(child_stable_key);
+        let fn_ctx = Arc::new(FnCallContext::default());
+        let pending = mount_live_prepare(comp_ctx, &fn_ctx, child_path, comp_ctx.live())
+            .map_err(|e| Error::engine(format!("{e}")))?;
+        let _guard = fn_call_guard(comp_ctx, fn_ctx);
+        let result = pending
+            .complete()
+            .await
+            .map_err(|e| Error::engine(format!("{e}")))?;
+        let controller = result.controller;
+        let readiness_handle = result.readiness_handle;
+        let state = self.state.clone();
+        let processor_name = format!("auto_refresh:{key_str}");
+        controller.start({
+            let controller = controller.clone();
+            async move {
+                let mut ready_marked = false;
+                loop {
+                    let processor =
+                        auto_refresh_processor(state.clone(), f.clone(), processor_name.clone());
+                    match controller.update_full(processor, None).await {
+                        Ok(()) => {
+                            controller.mark_ready().await;
+                            ready_marked = true;
+                        }
+                        Err(err) if ready_marked && !err.is_cancelled() => {
+                            tracing::error!(
+                                "auto_refresh cycle failed after readiness for `{key_str}`: {err:?}"
+                            );
+                        }
+                        Err(err) => return Err(err),
+                    }
+                    tokio::time::sleep(interval).await;
+                }
+            }
+        });
+        readiness_handle
+            .ready()
+            .await
+            .map_err(|e| Error::engine(format!("{e}")))
     }
 
     /// Named sub-component. Creates a child scope in the pipeline tree.
@@ -94,10 +489,7 @@ impl Ctx {
     {
         let Some(comp_ctx) = &self.comp_ctx else {
             // No pipeline context — just run the closure directly.
-            let child_ctx = Ctx {
-                comp_ctx: None,
-                state: self.state.clone(),
-            };
+            let child_ctx = self.child(None);
             return f(child_ctx).await;
         };
 
@@ -105,7 +497,7 @@ impl Ctx {
         let child_stable_key = StableKey::Str(Arc::from(key_str.as_str()));
         let child_path = comp_ctx.stable_path().concat_part(child_stable_key);
 
-        let fn_ctx = FnCallContext::default();
+        let fn_ctx = Arc::new(FnCallContext::default());
         let child_component = comp_ctx
             .component()
             .mount_child(&fn_ctx, child_path)
@@ -113,14 +505,16 @@ impl Ctx {
 
         // Guard to ensure `join_fn_call` is executed even if `f` panics or the future
         // is dropped/cancelled early.
-        let _guard = fn_call_guard(comp_ctx, &fn_ctx);
+        let _guard = fn_call_guard(comp_ctx, fn_ctx.clone());
 
         let state = self.state.clone();
+        let scope_fn_ctx = fn_ctx.clone();
         let processor = BoxedProcessor::new(
             move |child_comp_ctx| {
                 let ctx = Ctx {
                     comp_ctx: Some(child_comp_ctx),
                     state: state.clone(),
+                    fn_ctx: Some(scope_fn_ctx.clone()),
                 };
                 Box::pin(async move {
                     let result = f(ctx).await?;
@@ -156,13 +550,18 @@ impl Ctx {
     /// Cached computation. If `key` hasn't changed since the last run,
     /// returns the cached result from LMDB without executing `f`.
     ///
+    /// The closure receives a `Ctx` scoped to this memo call. Use *that* `Ctx`
+    /// (not a captured outer one) for `get_key` so change-detection
+    /// dependencies are attributed to this memo entry — this is what keeps
+    /// invalidation correct when memo bodies run concurrently.
+    ///
     /// # Examples
     ///
     /// ```no_run
     /// # use cocoindex::ctx::Ctx;
     /// # async fn doc(ctx: &Ctx, fingerprint: &str) -> cocoindex::error::Result<()> {
-    /// let processed = ctx.memo(&fingerprint, || async move {
-    ///     // ... expensive computation ...
+    /// let processed = ctx.memo(&fingerprint, |ctx| async move {
+    ///     // ... expensive computation, using `ctx` for `get_key` ...
     ///     Ok("result".to_string())
     /// }).await?;
     /// # Ok(())
@@ -177,7 +576,7 @@ impl Ctx {
     where
         K: Serialize,
         T: Serialize + for<'de> Deserialize<'de> + Send + 'static,
-        F: FnOnce() -> Fut + Send + 'static,
+        F: FnOnce(Ctx) -> Fut + Send + 'static,
         Fut: Future<Output = Result<T>> + Send + 'static,
     {
         crate::memo::cached(self, key, f).await
@@ -199,13 +598,17 @@ impl Ctx {
     /// let results = ctx.batch(
     ///     items,
     ///     |item| item.len(), // using length as cache key for demonstration
-    ///     |misses| async move {
+    ///     |_ctx, misses| async move {
     ///         Ok(misses.into_iter().map(|s| s.to_uppercase()).collect())
     ///     }
     /// ).await?;
     /// # Ok(())
     /// # }
     /// ```
+    ///
+    /// The closure receives a `Ctx` scoped to this batch's memo call (shared by
+    /// all miss items); use it for `get_key` so change-detection dependencies
+    /// are attributed correctly.
     ///
     /// # Errors
     ///
@@ -222,7 +625,7 @@ impl Ctx {
         I::Item: Send + 'static,
         K: Serialize,
         T: Serialize + for<'de> Deserialize<'de> + Send + 'static,
-        F: FnOnce(Vec<I::Item>) -> Fut + Send,
+        F: FnOnce(Ctx, Vec<I::Item>) -> Fut + Send,
         Fut: Future<Output = Result<Vec<T>>> + Send,
     {
         crate::memo::batch(self, items, move |item| Ok(key_fn(item)), f).await
@@ -345,4 +748,26 @@ impl Ctx {
         }
         std::fs::write(path, content).map_err(Error::Io)
     }
+}
+
+fn auto_refresh_processor<F, Fut>(
+    state: Arc<AppInner>,
+    f: F,
+    processor_name: String,
+) -> BoxedProcessor
+where
+    F: Fn(Ctx) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Result<()>> + Send + 'static,
+{
+    BoxedProcessor::new(
+        move |comp_ctx| {
+            let ctx = Ctx::new(Some(comp_ctx), state.clone());
+            Box::pin(async move {
+                f(ctx).await?;
+                Ok(Value::unit())
+            })
+        },
+        None,
+        processor_name,
+    )
 }

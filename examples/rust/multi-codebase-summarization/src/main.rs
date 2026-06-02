@@ -158,7 +158,7 @@ fn cleanup_stale_outputs(
 /// Extract structured info from a single Python file via LLM.
 /// `memo` caches results by file fingerprint — unchanged files are skipped.
 #[cocoindex::function(memo)]
-async fn extract_file_info(ctx: &Ctx, file: &FileEntry) -> Result<CodebaseInfo> {
+async fn extract_file_info(_ctx: &Ctx, file: &FileEntry) -> Result<CodebaseInfo> {
     let content = file.content_str()?;
     let file_path = file.key();
 

@@ -4,7 +4,8 @@ use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
 use syn::{
-    Error as SynError, FnArg, Ident, ItemFn, LitInt, PatType, Token, Type, TypeReference,
+    Error as SynError, Expr, FnArg, Ident, ItemFn, LitInt, PatType, Token, Type, TypeReference,
+    parenthesized,
     parse::{Parse, ParseStream},
     parse_macro_input,
 };
@@ -86,20 +87,18 @@ fn gen_clones(params: &[ParamInfo]) -> Vec<TokenStream2> {
 }
 
 /// Compute a compile-time code hash (FNV-1a) of the function body's token stream.
-/// If `version` is provided, it is mixed into the hash.
+/// If `version` is provided, it replaces the body hash as the canonical logic
+/// representation, matching Python's `@coco.fn(version=...)` behavior.
 fn compute_code_hash(block: &syn::Block, version: Option<u64>) -> u64 {
-    let tokens = block.to_token_stream().to_string();
+    let tokens = if let Some(version) = version {
+        format!("<version>({version})")
+    } else {
+        block.to_token_stream().to_string()
+    };
     let mut hash: u64 = 0xcbf29ce484222325; // FNV-1a offset basis
     for byte in tokens.as_bytes() {
         hash ^= *byte as u64;
         hash = hash.wrapping_mul(0x100000001b3); // FNV-1a prime
-    }
-    if let Some(v) = version {
-        // Mix in version
-        for byte in v.to_le_bytes() {
-            hash ^= byte as u64;
-            hash = hash.wrapping_mul(0x100000001b3);
-        }
     }
     hash
 }
@@ -122,6 +121,13 @@ struct FunctionArgs {
     memo: bool,
     batching: bool,
     version: Option<u64>,
+    memo_key: Vec<MemoKeyOverride>,
+}
+
+#[derive(Debug)]
+struct MemoKeyOverride {
+    ident: Ident,
+    expr: Expr,
 }
 
 impl FunctionArgs {
@@ -135,12 +141,30 @@ impl Parse for FunctionArgs {
         let mut memo = false;
         let mut batching = false;
         let mut version = None;
+        let mut memo_key = Vec::new();
 
         while !input.is_empty() {
             let name: Ident = input.parse()?;
             match name.to_string().as_str() {
                 "memo" => memo = true,
                 "batching" => batching = true,
+                "memo_key" => {
+                    let content;
+                    parenthesized!(content in input);
+                    while !content.is_empty() {
+                        let ident: Ident = content.parse()?;
+                        content.parse::<Token![=]>()?;
+                        let expr: Expr = content.parse()?;
+                        memo_key.push(MemoKeyOverride { ident, expr });
+                        if content.is_empty() {
+                            break;
+                        }
+                        content.parse::<Token![,]>()?;
+                        if content.is_empty() {
+                            break;
+                        }
+                    }
+                }
                 "version" => {
                     input.parse::<Token![=]>()?;
                     let version_literal: LitInt = input.parse()?;
@@ -175,7 +199,101 @@ impl Parse for FunctionArgs {
             memo,
             batching,
             version,
+            memo_key,
         })
+    }
+}
+
+fn is_skip_expr(expr: &Expr) -> bool {
+    if let Expr::Path(path) = expr
+        && path.qself.is_none()
+    {
+        return path
+            .path
+            .get_ident()
+            .is_some_and(|ident| ident == "skip" || ident == "none" || ident == "None");
+    }
+    false
+}
+
+fn memo_key_override<'a>(
+    overrides: &'a [MemoKeyOverride],
+    ident: &Ident,
+) -> Option<&'a MemoKeyOverride> {
+    overrides.iter().find(|override_| override_.ident == *ident)
+}
+
+fn validate_memo_key_overrides(
+    overrides: &[MemoKeyOverride],
+    allowed: impl IntoIterator<Item = String>,
+) -> syn::Result<()> {
+    let allowed: std::collections::HashSet<String> = allowed.into_iter().collect();
+    let mut seen = std::collections::HashSet::new();
+    for override_ in overrides {
+        let name = override_.ident.to_string();
+        if !seen.insert(name.clone()) {
+            return Err(SynError::new(
+                override_.ident.span(),
+                format!("duplicate memo_key override for `{name}`"),
+            ));
+        }
+        if !allowed.contains(&name) {
+            let mut allowed: Vec<_> = allowed.iter().cloned().collect();
+            allowed.sort();
+            return Err(SynError::new(
+                override_.ident.span(),
+                format!(
+                    "unknown memo_key parameter `{name}`. expected one of: {}",
+                    allowed.join(", ")
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// In a batching function the `item` is what identifies each cache entry, so
+/// `memo_key(item = skip)` would collapse every item into one key. Reject it at
+/// compile time with a clear message instead of failing at runtime with a
+/// confusing "duplicate cache keys" error.
+fn validate_batch_item_override(overrides: &[MemoKeyOverride]) -> syn::Result<()> {
+    if let Some(override_) = memo_key_override(overrides, &format_ident!("item"))
+        && is_skip_expr(&override_.expr)
+    {
+        return Err(SynError::new(
+            override_.ident.span(),
+            "`memo_key(item = skip)` is not allowed in a batching function: the item identifies \
+             each cache entry, so skipping it would collide every item into a single key. Use a \
+             transform `memo_key(item = ...)` to derive a stable key instead.",
+        ));
+    }
+    Ok(())
+}
+
+fn gen_key_write_for_param(
+    fingerprinter: &Ident,
+    param: &ParamInfo,
+    overrides: &[MemoKeyOverride],
+) -> Option<TokenStream2> {
+    let ident = &param.ident;
+    let default_arg = if param.is_ref {
+        quote! { #ident }
+    } else {
+        quote! { &#ident }
+    };
+    match memo_key_override(overrides, ident) {
+        Some(override_) if is_skip_expr(&override_.expr) => None,
+        Some(override_) => {
+            let expr = &override_.expr;
+            let temp = format_ident!("__coco_memo_key_{}", ident);
+            Some(quote! {
+                let #temp = (#expr)(#default_arg);
+                ::cocoindex::memo::write_key_fingerprint_part(&mut #fingerprinter, &#temp)?;
+            })
+        }
+        None => Some(quote! {
+            ::cocoindex::memo::write_key_fingerprint_part(&mut #fingerprinter, #default_arg)?;
+        }),
     }
 }
 
@@ -229,6 +347,16 @@ pub fn function(attr: TokenStream, item: TokenStream) -> TokenStream {
     let fn_name = &func.sig.ident;
     let hash_const_name = format_ident!("__COCO_FN_HASH_{}", fn_name.to_string().to_uppercase());
 
+    if !args.memo && !args.memo_key.is_empty() {
+        return TokenStream::from(
+            SynError::new(
+                func.sig.ident.span(),
+                "`memo_key(...)` requires `memo` because it customizes memoized inputs",
+            )
+            .to_compile_error(),
+        );
+    }
+
     if args.memo && args.batching {
         // memo + batching: wrap body in ctx.batch() with per-item memoization
         let (ctx_ident, params) = match parse_fn_params(&func) {
@@ -253,18 +381,34 @@ pub fn function(attr: TokenStream, item: TokenStream) -> TokenStream {
         // Remaining params are "extra" — cloned into closure, included in key.
         let extra_params = &params[1..];
         let clone_stmts = gen_clones(extra_params);
+        let mut allowed = vec!["item".to_string()];
+        allowed.extend(extra_params.iter().map(|p| p.ident.to_string()));
+        if let Err(err) = validate_memo_key_overrides(&args.memo_key, allowed) {
+            return TokenStream::from(err.to_compile_error());
+        }
 
         let extra_key_writes: Vec<TokenStream2> = extra_params
             .iter()
-            .map(|p| {
-                let ident = &p.ident;
-                if p.is_ref {
-                    quote! { ::cocoindex::memo::write_key_fingerprint_part(&mut __coco_key_prefix, #ident)?; }
-                } else {
-                    quote! { ::cocoindex::memo::write_key_fingerprint_part(&mut __coco_key_prefix, &#ident)?; }
-                }
+            .filter_map(|p| {
+                gen_key_write_for_param(&format_ident!("__coco_key_prefix"), p, &args.memo_key)
             })
             .collect();
+        if let Err(err) = validate_batch_item_override(&args.memo_key) {
+            return TokenStream::from(err.to_compile_error());
+        }
+        let item_override = memo_key_override(&args.memo_key, &format_ident!("item"));
+        let item_key_write = match item_override {
+            Some(override_) => {
+                let expr = &override_.expr;
+                quote! {
+                    let __coco_item_key = (#expr)(__coco_item);
+                    ::cocoindex::memo::write_key_fingerprint_part(&mut __coco_key, &__coco_item_key)?;
+                }
+            }
+            None => quote! {
+                ::cocoindex::memo::write_key_fingerprint_part(&mut __coco_key, __coco_item)?;
+            },
+        };
 
         let vis = &func.vis;
         let sig = &func.sig;
@@ -278,6 +422,9 @@ pub fn function(attr: TokenStream, item: TokenStream) -> TokenStream {
             #(#attrs)*
             #vis #sig {
                 let mut __coco_key_prefix = ::cocoindex::memo::new_key_fingerprinter();
+                ::cocoindex::memo::write_key_fingerprint_part(&mut __coco_key_prefix, &"cocoindex_fn")?;
+                ::cocoindex::memo::write_key_fingerprint_part(&mut __coco_key_prefix, &::core::module_path!())?;
+                ::cocoindex::memo::write_key_fingerprint_part(&mut __coco_key_prefix, &::core::stringify!(#fn_name))?;
                 ::cocoindex::memo::write_key_fingerprint_part(&mut __coco_key_prefix, &#hash_const_name)?;
                 #(#extra_key_writes)*
 
@@ -286,12 +433,12 @@ pub fn function(attr: TokenStream, item: TokenStream) -> TokenStream {
                     #items_ident,
                     |__coco_item| {
                         let mut __coco_key = __coco_key_prefix.clone();
-                        ::cocoindex::memo::write_key_fingerprint_part(&mut __coco_key, __coco_item)?;
+                        #item_key_write
                         Ok(::cocoindex::memo::finish_key_fingerprinter(__coco_key))
                     },
                     {
                         #(#clone_stmts)*
-                        move |#items_ident| async move #body
+                        move |#ctx_ident, #items_ident| async move #body
                     },
                 ).await
             }
@@ -309,16 +456,16 @@ pub fn function(attr: TokenStream, item: TokenStream) -> TokenStream {
         let attrs = &func.attrs;
         let body = &func.block;
         let clone_stmts = gen_clones(&params);
+        if let Err(err) =
+            validate_memo_key_overrides(&args.memo_key, params.iter().map(|p| p.ident.to_string()))
+        {
+            return TokenStream::from(err.to_compile_error());
+        }
 
         let key_writes: Vec<TokenStream2> = params
             .iter()
-            .map(|p| {
-                let ident = &p.ident;
-                if p.is_ref {
-                    quote! { ::cocoindex::memo::write_key_fingerprint_part(&mut __coco_key, #ident)?; }
-                } else {
-                    quote! { ::cocoindex::memo::write_key_fingerprint_part(&mut __coco_key, &#ident)?; }
-                }
+            .filter_map(|p| {
+                gen_key_write_for_param(&format_ident!("__coco_key"), p, &args.memo_key)
             })
             .collect();
 
@@ -330,6 +477,9 @@ pub fn function(attr: TokenStream, item: TokenStream) -> TokenStream {
             #vis #sig {
                 let __coco_key = {
                     let mut __coco_key = ::cocoindex::memo::new_key_fingerprinter();
+                    ::cocoindex::memo::write_key_fingerprint_part(&mut __coco_key, &"cocoindex_fn")?;
+                    ::cocoindex::memo::write_key_fingerprint_part(&mut __coco_key, &::core::module_path!())?;
+                    ::cocoindex::memo::write_key_fingerprint_part(&mut __coco_key, &::core::stringify!(#fn_name))?;
                     ::cocoindex::memo::write_key_fingerprint_part(&mut __coco_key, &#hash_const_name)?;
                     #(#key_writes)*
                     ::cocoindex::memo::finish_key_fingerprinter(__coco_key)
@@ -337,14 +487,20 @@ pub fn function(attr: TokenStream, item: TokenStream) -> TokenStream {
 
                 ::cocoindex::memo::cached_by_fingerprint(#ctx_ident, __coco_key, {
                     #(#clone_stmts)*
-                    move || async move #body
+                    move |#ctx_ident| async move #body
                 }).await
             }
         };
 
         expanded.into()
     } else {
-        // L0: emit hash constant + original function unchanged
+        // L0: change tracking only. The body still runs every time, but its
+        // logic fingerprint and nested context deps propagate to memoized
+        // callers, matching Python's `@coco.fn` without `memo=True`.
+        let (ctx_ident, _) = match parse_fn_params(&func) {
+            Ok(params) => params,
+            Err(err) => return TokenStream::from(err.to_compile_error()),
+        };
         let vis = &func.vis;
         let sig = &func.sig;
         let attrs = &func.attrs;
@@ -355,7 +511,17 @@ pub fn function(attr: TokenStream, item: TokenStream) -> TokenStream {
             pub const #hash_const_name: u64 = #code_hash;
 
             #(#attrs)*
-            #vis #sig #body
+            #vis #sig {
+                #ctx_ident.__coco_tracked_fn(
+                    ::core::module_path!(),
+                    ::core::stringify!(#fn_name),
+                    #hash_const_name,
+                    move |__coco_scoped_ctx| async move {
+                        let #ctx_ident = &__coco_scoped_ctx;
+                        #body
+                    },
+                ).await
+            }
         };
 
         expanded.into()
@@ -385,6 +551,26 @@ mod tests {
     }
 
     #[test]
+    fn parse_function_args_accepts_memo_key_overrides() {
+        let args = FunctionArgs::parse(quote!(
+            memo,
+            memo_key(entry = normalize_entry, debug = skip)
+        ))
+        .unwrap();
+        assert!(args.memo);
+        assert_eq!(args.memo_key.len(), 2);
+        assert_eq!(args.memo_key[0].ident, "entry");
+        assert_eq!(args.memo_key[1].ident, "debug");
+        assert!(is_skip_expr(&args.memo_key[1].expr));
+    }
+
+    #[test]
+    fn memo_key_skip_accepts_python_style_none_alias() {
+        let args = FunctionArgs::parse(quote!(memo, memo_key(debug = None))).unwrap();
+        assert!(is_skip_expr(&args.memo_key[0].expr));
+    }
+
+    #[test]
     fn parse_function_args_rejects_unknown_flag() {
         let err = FunctionArgs::parse(quote!(memo, unknown)).unwrap_err();
         assert!(
@@ -401,6 +587,41 @@ mod tests {
             msg.contains("integer") || msg.contains("digit"),
             "unexpected parse error: {msg}"
         );
+    }
+
+    #[test]
+    fn memo_key_validation_rejects_duplicate_override() {
+        let args = FunctionArgs::parse(quote!(memo, memo_key(entry = skip, entry = none))).unwrap();
+        let err = validate_memo_key_overrides(&args.memo_key, ["entry".to_string()]).unwrap_err();
+        assert!(err.to_string().contains("duplicate memo_key override"));
+    }
+
+    #[test]
+    fn batch_item_override_rejects_skip() {
+        let skip = FunctionArgs::parse(quote!(memo, batching, memo_key(item = skip))).unwrap();
+        let none = FunctionArgs::parse(quote!(memo, batching, memo_key(item = none))).unwrap();
+        for args in [skip, none] {
+            let err = validate_batch_item_override(&args.memo_key).unwrap_err();
+            assert!(
+                err.to_string().contains("memo_key(item = skip)"),
+                "unexpected error: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn batch_item_override_allows_transform() {
+        let args =
+            FunctionArgs::parse(quote!(memo, batching, memo_key(item = derive_key))).unwrap();
+        assert!(validate_batch_item_override(&args.memo_key).is_ok());
+    }
+
+    #[test]
+    fn memo_key_validation_rejects_unknown_parameter() {
+        let args =
+            FunctionArgs::parse(quote!(memo, memo_key(entry = skip, missing = skip))).unwrap();
+        let err = validate_memo_key_overrides(&args.memo_key, ["entry".to_string()]).unwrap_err();
+        assert!(err.to_string().contains("unknown memo_key parameter"));
     }
 
     #[test]
@@ -469,5 +690,32 @@ mod tests {
         )
         .unwrap();
         assert!(parse_fn_params(&func).is_err());
+    }
+
+    #[test]
+    fn explicit_version_replaces_body_hash() {
+        let first: ItemFn =
+            parse_str("async fn f(ctx: &Ctx) -> Result<i32, ()> { Ok(1) }").unwrap();
+        let second: ItemFn =
+            parse_str("async fn f(ctx: &Ctx) -> Result<i32, ()> { Ok(2) }").unwrap();
+
+        assert_ne!(
+            compute_code_hash(&first.block, None),
+            compute_code_hash(&second.block, None)
+        );
+        assert_eq!(
+            compute_code_hash(&first.block, Some(7)),
+            compute_code_hash(&second.block, Some(7))
+        );
+    }
+
+    #[test]
+    fn explicit_version_changes_hash_when_bumped() {
+        let func: ItemFn = parse_str("async fn f(ctx: &Ctx) -> Result<i32, ()> { Ok(1) }").unwrap();
+
+        assert_ne!(
+            compute_code_hash(&func.block, Some(7)),
+            compute_code_hash(&func.block, Some(8))
+        );
     }
 }

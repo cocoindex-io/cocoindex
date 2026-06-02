@@ -1,6 +1,7 @@
 //! Memoization: skip re-execution when inputs haven't changed.
 
 use std::future::Future;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use cocoindex_core::engine::context::{FnCallContext, MemoStatesPayload};
@@ -23,7 +24,7 @@ use crate::profile::{RustProfile, Value};
 ///
 /// # Examples
 /// ```ignore
-/// let html = memo::cached(&ctx, &file, || async {
+/// let html = memo::cached(&ctx, &file, |_ctx| async {
 ///     Ok(render_markdown(&file.read_text()?))
 /// }).await?;
 /// ```
@@ -31,7 +32,7 @@ pub async fn cached<K, T, F, Fut>(ctx: &Ctx, key: &K, f: F) -> Result<T>
 where
     K: Serialize,
     T: Serialize + for<'de> Deserialize<'de> + Send + 'static,
-    F: FnOnce() -> Fut + Send + 'static,
+    F: FnOnce(Ctx) -> Fut + Send + 'static,
     Fut: Future<Output = Result<T>> + Send + 'static,
 {
     let fp = key_fingerprint_result(key)?;
@@ -39,17 +40,20 @@ where
 }
 
 /// Fast path for generated macros that have already built the memo fingerprint.
+///
+/// `f` receives a `Ctx` scoped to this memo call; use it for `get_key` so
+/// change-detection dependencies attach to this memo entry.
 #[doc(hidden)]
 pub async fn cached_by_fingerprint<T, F, Fut>(ctx: &Ctx, fp: Fingerprint, f: F) -> Result<T>
 where
     T: Serialize + for<'de> Deserialize<'de> + Send + 'static,
-    F: FnOnce() -> Fut + Send + 'static,
+    F: FnOnce(Ctx) -> Fut + Send + 'static,
     Fut: Future<Output = Result<T>> + Send + 'static,
 {
     // If we have a pipeline context, use LMDB-backed memoization.
     let Some(comp_ctx) = &ctx.comp_ctx else {
         // No pipeline context — execute directly (standalone mode).
-        return f().await;
+        return f(ctx.clone()).await;
     };
 
     let guard = reserve_memoization(comp_ctx, fp)
@@ -63,13 +67,17 @@ where
     }
 
     // Cache miss (or memo disabled) — we are the resolver. Execute and commit.
-    let fn_ctx = FnCallContext::default();
-    let _guard = fn_call_guard(comp_ctx, &fn_ctx);
-    let result = f().await?;
+    let fn_ctx = Arc::new(FnCallContext::default());
+    let _guard = fn_call_guard(comp_ctx, fn_ctx.clone());
+    let result = f(ctx.with_fn_ctx(fn_ctx.clone())).await?;
     let value = Value::from_serializable(&result)
         .map_err(|e| Error::engine(format!("failed to serialize memo result: {e}")))?;
+    let memo_states = MemoStatesPayload {
+        positional: Vec::new(),
+        by_context_fp: fn_ctx.collect_context_initial_states(comp_ctx.app_ctx().env()),
+    };
     guard
-        .resolve(&fn_ctx, || value, MemoStatesPayload::default())
+        .resolve(&fn_ctx, || value, memo_states)
         .map_err(|e| Error::engine(format!("{e}")))?;
     Ok(result)
 }
@@ -166,7 +174,7 @@ where
     K: Serialize,
     T: Serialize + for<'de> Deserialize<'de> + Send + 'static,
     KF: Fn(&I::Item) -> Result<K>,
-    F: FnOnce(Vec<I::Item>) -> Fut + Send,
+    F: FnOnce(Ctx, Vec<I::Item>) -> Fut + Send,
     Fut: Future<Output = Result<Vec<T>>> + Send,
 {
     batch_by_fingerprint(
@@ -194,7 +202,7 @@ where
     I::Item: Send + 'static,
     T: Serialize + for<'de> Deserialize<'de> + Send + 'static,
     KF: Fn(&I::Item) -> Result<Fingerprint>,
-    F: FnOnce(Vec<I::Item>) -> Fut + Send,
+    F: FnOnce(Ctx, Vec<I::Item>) -> Fut + Send,
     Fut: Future<Output = Result<Vec<T>>> + Send,
 {
     let items: Vec<I::Item> = items.into_iter().collect();
@@ -202,7 +210,7 @@ where
 
     let Some(comp_ctx) = &ctx.comp_ctx else {
         // No pipeline context — execute all directly.
-        return f(items).await;
+        return f(ctx.clone(), items).await;
     };
 
     let mut results: Vec<Option<T>> = (0..total).map(|_| None).collect();
@@ -239,9 +247,9 @@ where
     }
 
     if !miss_items.is_empty() {
-        let fn_ctx = FnCallContext::default();
-        let _guard = fn_call_guard(comp_ctx, &fn_ctx);
-        let miss_results = f(miss_items).await?;
+        let fn_ctx = Arc::new(FnCallContext::default());
+        let _guard = fn_call_guard(comp_ctx, fn_ctx.clone());
+        let miss_results = f(ctx.with_fn_ctx(fn_ctx.clone()), miss_items).await?;
         if miss_results.len() != miss_indices.len() {
             return Err(Error::engine(format!(
                 "batch function returned {} results for {} items",
@@ -250,15 +258,17 @@ where
             )));
         }
 
-        for ((idx, miss_result), guard) in miss_indices
-            .into_iter()
-            .zip(miss_results.into_iter())
-            .zip(miss_guards.into_iter())
+        for ((idx, miss_result), guard) in
+            miss_indices.into_iter().zip(miss_results).zip(miss_guards)
         {
             let value = Value::from_serializable(&miss_result)
                 .map_err(|e| Error::engine(format!("failed to serialize memo result: {e}")))?;
+            let memo_states = MemoStatesPayload {
+                positional: Vec::new(),
+                by_context_fp: fn_ctx.collect_context_initial_states(comp_ctx.app_ctx().env()),
+            };
             guard
-                .resolve(&fn_ctx, || value, MemoStatesPayload::default())
+                .resolve(&fn_ctx, || value, memo_states)
                 .map_err(|e| Error::engine(format!("{e}")))?;
             results[idx] = Some(miss_result);
         }
