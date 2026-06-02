@@ -31,6 +31,10 @@ use serde_json::{Map, Value as JsonValue};
 use crate::ctx::Ctx;
 use crate::error::{Error, Result};
 use crate::profile::{Action, BoxedHandler, BoxedSink, RustProfile, Value};
+use crate::statediff::{
+    DiffAction, ManagedBy, ManagedTargetOptions, MutualTrackingRecord, diff,
+    resolve_system_transition,
+};
 
 // ---------------------------------------------------------------------------
 // LanceDatabase — connection handle (mirrors postgres::Database)
@@ -207,10 +211,27 @@ pub fn mount_table_target(
     table_name: impl Into<String>,
     table_schema: TableSchema,
 ) -> Result<LanceTableTarget> {
+    mount_table_target_with_options(
+        ctx,
+        db,
+        table_name,
+        table_schema,
+        ManagedTargetOptions::default(),
+    )
+}
+
+pub fn mount_table_target_with_options(
+    ctx: &Ctx,
+    db: &LanceDatabase,
+    table_name: impl Into<String>,
+    table_schema: TableSchema,
+    options: ManagedTargetOptions,
+) -> Result<LanceTableTarget> {
     let table_name = table_name.into();
     let spec = TableSpec {
         table_name: table_name.clone(),
         table_schema: table_schema.clone(),
+        managed_by: options.managed_by,
     };
     let table_root = ctx.register_root_target_provider(
         format!("cocoindex/lancedb/table/{}/{}", db.state_id(), table_name),
@@ -259,6 +280,8 @@ impl LanceTableTarget {
 struct TableSpec {
     table_name: String,
     table_schema: TableSchema,
+    #[serde(default)]
+    managed_by: ManagedBy,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -293,30 +316,21 @@ fn table_handler(db: LanceDatabase) -> BoxedHandler {
             .map(Value::deserialize::<TableSpec>)
             .transpose()
             .map_err(internal)?;
-        let prev_spec = prev
-            .iter()
-            .filter_map(|v| v.deserialize::<TableSpec>().ok())
-            .next();
-
-        let prev_same = match (&desired_spec, &prev_spec) {
-            (Some(d), Some(p)) => d == p,
-            _ => false,
-        };
-        if desired_spec.is_some() && prev_same && !prev_may_be_missing {
-            return Ok(None);
-        }
-        if desired_spec.is_none() && prev.is_empty() && !prev_may_be_missing {
-            return Ok(None);
-        }
+        let prev_records = prev_table_records(&prev);
 
         match desired_spec {
             Some(spec) => {
-                // Preserve existing tables on schema changes. The row write path
-                // will surface unsupported/incompatible schema drift instead of
-                // dropping user data.
-                let schema_changed = prev_spec
-                    .as_ref()
-                    .is_some_and(|p| p.table_schema != spec.table_schema);
+                let tracking_record = MutualTrackingRecord::new(spec.clone(), spec.managed_by);
+                let resolved = resolve_system_transition(
+                    Some(tracking_record.clone()),
+                    prev_records,
+                    prev_may_be_missing,
+                );
+                let main_action = diff(resolved.as_ref());
+                if main_action.is_none() && !spec.managed_by.is_user() {
+                    return Ok(None);
+                }
+                let schema_changed = matches!(main_action, Some(DiffAction::Replace));
                 let action = LanceAction::CreateTable {
                     spec: spec.clone(),
                     recreate: false,
@@ -324,13 +338,22 @@ fn table_handler(db: LanceDatabase) -> BoxedHandler {
                 Ok(Some(TargetReconcileOutput {
                     action: Action::Update(Value::from_serializable(&action).map_err(internal)?),
                     sink: sink.clone(),
-                    tracking_record: Some(Value::from_serializable(&spec).map_err(internal)?),
+                    tracking_record: Some(
+                        Value::from_serializable(&tracking_record).map_err(internal)?,
+                    ),
                     child_invalidation: schema_changed.then_some(ChildInvalidation::Lossy),
                 }))
             }
             None => {
-                let table_name = prev_spec
-                    .map(|p| p.table_name)
+                let resolved =
+                    resolve_system_transition(None, prev_records.clone(), prev_may_be_missing);
+                if resolved.is_none() {
+                    return Ok(None);
+                }
+                let table_name = prev_records
+                    .into_iter()
+                    .find(|p| p.managed_by.is_system())
+                    .map(|p| p.tracking_record.table_name)
                     .ok_or_else(|| internal_msg("cannot drop LanceDB table without prior spec"))?;
                 let action = LanceAction::DropTable { table_name };
                 Ok(Some(TargetReconcileOutput {
@@ -344,6 +367,19 @@ fn table_handler(db: LanceDatabase) -> BoxedHandler {
     })
 }
 
+fn prev_table_records(prev: &[Value]) -> Vec<MutualTrackingRecord<TableSpec>> {
+    prev.iter()
+        .filter_map(|v| {
+            v.deserialize::<MutualTrackingRecord<TableSpec>>()
+                .or_else(|_| {
+                    v.deserialize::<TableSpec>()
+                        .map(|spec| MutualTrackingRecord::new(spec, ManagedBy::System))
+                })
+                .ok()
+        })
+        .collect()
+}
+
 fn table_sink(db: LanceDatabase) -> BoxedSink {
     BoxedSink::new(move |actions| {
         let db = db.clone();
@@ -351,7 +387,9 @@ fn table_sink(db: LanceDatabase) -> BoxedSink {
             for action in actions {
                 match action_value(action)? {
                     LanceAction::CreateTable { spec, recreate } => {
-                        ensure_table(&db, &spec, recreate).await.map_err(internal)?;
+                        if spec.managed_by.is_system() {
+                            ensure_table(&db, &spec, recreate).await.map_err(internal)?;
+                        }
                     }
                     LanceAction::DropTable { table_name } => {
                         drop_table(&db, &table_name).await.map_err(internal)?;
@@ -528,8 +566,12 @@ async fn apply_rows(db: &LanceDatabase, actions: Vec<Action>) -> Result<()> {
     let Some(spec) = spec else {
         return Ok(());
     };
-    // Rows imply the table exists.
-    ensure_table(db, &spec, false).await?;
+    // Rows imply the table exists for system-managed targets. User-managed
+    // targets intentionally leave DDL to the caller and let open_table surface
+    // missing/incompatible tables.
+    if spec.managed_by.is_system() {
+        ensure_table(db, &spec, false).await?;
+    }
     let table = db
         .conn
         .open_table(&spec.table_name)

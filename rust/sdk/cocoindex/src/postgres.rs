@@ -19,6 +19,10 @@ use sqlx::postgres::PgPoolOptions;
 use crate::ctx::Ctx;
 use crate::error::{Error, Result};
 use crate::profile::{Action, BoxedHandler, BoxedSink, RustProfile, Value};
+use crate::statediff::{
+    DiffAction, ManagedBy, ManagedTargetOptions, MutualTrackingRecord, diff,
+    resolve_system_transition,
+};
 
 #[derive(Clone)]
 pub struct Database {
@@ -125,6 +129,7 @@ pub struct TableTarget {
     pg_schema_name: Option<Arc<str>>,
     table_name: Arc<str>,
     table_schema: TableSchema,
+    managed_by: ManagedBy,
     table_provider: cocoindex_core::engine::target_state::TargetStateProvider<RustProfile>,
     provider: cocoindex_core::engine::target_state::TargetStateProvider<RustProfile>,
 }
@@ -165,6 +170,7 @@ impl TableTarget {
             pg_schema_name: self.pg_schema_name.as_deref().map(str::to_string),
             table_name: self.table_name.to_string(),
             table_schema: self.table_schema.clone(),
+            managed_by: self.managed_by,
             name: name.clone(),
             column: column.to_string(),
             method: options.method.to_string(),
@@ -212,6 +218,24 @@ pub fn mount_table_target(
     table_schema: TableSchema,
     pg_schema_name: Option<&str>,
 ) -> Result<TableTarget> {
+    mount_table_target_with_options(
+        ctx,
+        db,
+        table_name,
+        table_schema,
+        pg_schema_name,
+        ManagedTargetOptions::default(),
+    )
+}
+
+pub fn mount_table_target_with_options(
+    ctx: &Ctx,
+    db: &Database,
+    table_name: impl Into<String>,
+    table_schema: TableSchema,
+    pg_schema_name: Option<&str>,
+    options: ManagedTargetOptions,
+) -> Result<TableTarget> {
     let table_name = table_name.into();
     validate_ident(&table_name, "table name")?;
     if let Some(schema) = pg_schema_name {
@@ -230,6 +254,7 @@ pub fn mount_table_target(
         pg_schema_name: pg_schema_name.map(str::to_string),
         table_name: table_name.clone(),
         table_schema: table_schema.clone(),
+        managed_by: options.managed_by,
     };
     ctx.declare_target_state(
         table_root.clone(),
@@ -249,6 +274,7 @@ pub fn mount_table_target(
         pg_schema_name: pg_schema_name.map(Arc::from),
         table_name: Arc::from(table_name),
         table_schema,
+        managed_by: options.managed_by,
         table_provider: table_root,
         provider,
     })
@@ -281,6 +307,8 @@ struct TableSpec {
     pg_schema_name: Option<String>,
     table_name: String,
     table_schema: TableSchema,
+    #[serde(default)]
+    managed_by: ManagedBy,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -312,6 +340,8 @@ struct VectorIndexSpec {
     pg_schema_name: Option<String>,
     table_name: String,
     table_schema: TableSchema,
+    #[serde(default)]
+    managed_by: ManagedBy,
     name: String,
     column: String,
     method: String,
@@ -330,55 +360,65 @@ fn table_handler(db: Database) -> BoxedHandler {
             .map(Value::deserialize::<TableSpec>)
             .transpose()
             .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?;
-        let prev_same = desired_spec.as_ref().is_some_and(|desired| {
-            prev.iter()
-                .filter_map(|v| v.deserialize::<TableSpec>().ok())
-                .any(|prev| &prev == desired)
-        });
-        // Unchanged: nothing to do (rows ensure the table exists when written).
-        if desired_spec.is_some() && prev_same && !prev_may_be_missing {
-            return Ok(None);
-        }
-        // Un-declared: drop the table if it previously existed. The table name
-        // comes from the previous tracking record (full TableSpec) since
-        // `desired` is None here.
-        if desired_spec.is_none() {
-            if prev.is_empty() && !prev_may_be_missing {
-                return Ok(None);
+        let prev_records = prev_table_records(&prev);
+        match desired_spec {
+            Some(spec) => {
+                let tracking_record = MutualTrackingRecord::new(spec.clone(), spec.managed_by);
+                let resolved = resolve_system_transition(
+                    Some(tracking_record.clone()),
+                    prev_records,
+                    prev_may_be_missing,
+                );
+                let main_action = diff(resolved.as_ref());
+                if main_action.is_none() && !spec.managed_by.is_user() {
+                    return Ok(None);
+                }
+                Ok(Some(TargetReconcileOutput {
+                    action: Action::Update(
+                        Value::from_serializable(&TargetAction::Table { spec: Some(spec) })
+                            .map_err(|e| {
+                                cocoindex_utils::error::Error::internal_msg(e.to_string())
+                            })?,
+                    ),
+                    sink: sink.clone(),
+                    tracking_record: Some(
+                        Value::from_serializable(&tracking_record).map_err(|e| {
+                            cocoindex_utils::error::Error::internal_msg(e.to_string())
+                        })?,
+                    ),
+                    child_invalidation: matches!(main_action, Some(DiffAction::Replace))
+                        .then_some(cocoindex_core::engine::target_state::ChildInvalidation::Lossy),
+                }))
             }
-            let Some(prev_spec) = prev
-                .iter()
-                .filter_map(|v| v.deserialize::<TableSpec>().ok())
-                .next()
-            else {
-                return Ok(None);
-            };
-            return Ok(Some(TargetReconcileOutput {
-                action: Action::Delete(
-                    Value::from_serializable(&TargetAction::DropTable {
-                        pg_schema_name: prev_spec.pg_schema_name,
-                        table_name: prev_spec.table_name,
-                    })
-                    .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?,
-                ),
-                sink: sink.clone(),
-                tracking_record: None,
-                child_invalidation: Some(
-                    cocoindex_core::engine::target_state::ChildInvalidation::Destructive,
-                ),
-            }));
+            None => {
+                let resolved =
+                    resolve_system_transition(None, prev_records.clone(), prev_may_be_missing);
+                if resolved.is_none() {
+                    return Ok(None);
+                }
+                let Some(prev_spec) = prev_records
+                    .into_iter()
+                    .find(|v| v.managed_by.is_system())
+                    .map(|v| v.tracking_record)
+                else {
+                    return Ok(None);
+                };
+                Ok(Some(TargetReconcileOutput {
+                    action: Action::Delete(
+                        Value::from_serializable(&TargetAction::DropTable {
+                            pg_schema_name: prev_spec.pg_schema_name,
+                            table_name: prev_spec.table_name,
+                        })
+                        .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?,
+                    ),
+                    sink: sink.clone(),
+                    tracking_record: None,
+                    child_invalidation: Some(
+                        cocoindex_core::engine::target_state::ChildInvalidation::Destructive,
+                    ),
+                }))
+            }
         }
-        // New or changed: (re)define the table. Tracking keeps the full spec so
-        // we can recover the table name on a future drop.
-        Ok(Some(TargetReconcileOutput {
-            action: Action::Update(
-                Value::from_serializable(&TargetAction::Table { spec: desired_spec })
-                    .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?,
-            ),
-            sink: sink.clone(),
-            tracking_record: desired.cloned(),
-            child_invalidation: None,
-        }))
     })
     .with_attachments(move || {
         Ok(vec![(
@@ -386,6 +426,19 @@ fn table_handler(db: Database) -> BoxedHandler {
             vector_index_handler(attachment_db.clone()),
         )])
     })
+}
+
+fn prev_table_records(prev: &[Value]) -> Vec<MutualTrackingRecord<TableSpec>> {
+    prev.iter()
+        .filter_map(|v| {
+            v.deserialize::<MutualTrackingRecord<TableSpec>>()
+                .or_else(|_| {
+                    v.deserialize::<TableSpec>()
+                        .map(|spec| MutualTrackingRecord::new(spec, ManagedBy::System))
+                })
+                .ok()
+        })
+        .collect()
 }
 
 fn row_handler(db: Database, spec: TableSpec) -> BoxedHandler {
@@ -541,6 +594,7 @@ fn vector_index_sink(db: Database) -> BoxedSink {
                                     pg_schema_name: spec.pg_schema_name.clone(),
                                     table_name: spec.table_name.clone(),
                                     table_schema: spec.table_schema.clone(),
+                                    managed_by: spec.managed_by,
                                 },
                             )
                             .await?;
@@ -564,6 +618,9 @@ fn action_value(action: Action) -> cocoindex_utils::error::Result<TargetAction> 
 }
 
 async fn define_table(db: &Database, spec: &TableSpec) -> cocoindex_utils::error::Result<()> {
+    if spec.managed_by.is_user() {
+        return Ok(());
+    }
     if let Some(schema) = &spec.pg_schema_name {
         sqlx::query(&format!(
             "CREATE SCHEMA IF NOT EXISTS {}",
@@ -634,7 +691,9 @@ async fn apply_rows(
     // Ensure the table exists before any row mutation. This keeps delete-only
     // reconciliation idempotent after a crash or external table cleanup.
     if let Some((spec, _, _)) = mutations.first() {
-        define_table(db, spec).await?;
+        if spec.managed_by.is_system() {
+            define_table(db, spec).await?;
+        }
     }
     // Apply the whole batch atomically.
     let mut tx = db.pool().begin().await.map_err(pg_internal)?;
@@ -1093,6 +1152,7 @@ mod tests {
             pg_schema_name: Some("coco_examples".to_string()),
             table_name: "code_embeddings".to_string(),
             table_schema: schema.clone(),
+            managed_by: ManagedBy::System,
         };
         let row = CodeRow {
             id: 42,
@@ -1123,6 +1183,7 @@ mod tests {
             pg_schema_name: Some("coco_examples".to_string()),
             table_name: "code_embeddings".to_string(),
             table_schema: schema,
+            managed_by: ManagedBy::System,
         };
         let sql = delete_sql(&spec, &[JsonValue::from(42)]).unwrap();
         assert_eq!(

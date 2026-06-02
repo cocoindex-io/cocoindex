@@ -43,29 +43,48 @@ provider is *ready* to declare child rows on immediately — matching Python's
 states declared inside components, `mount_target` child insert/delete, multiple
 mounted child targets from one provider, provider generation
 (destructive/lossy/none child invalidation), attachment create/cleanup, and
-ownership transfer between component scopes. The remaining parity work is Phase
-2: migrating existing connector implementations away from private `Ctx` helpers
-onto this public shape.
+ownership transfer between component scopes.
+
+**Phase 2 is now partially underway.** A `statediff` connectorkit module
+(flat-re-exported at the crate root) provides the shared managed-ownership/diff
+helpers — `ManagedBy`, `ManagedTargetOptions`, `MutualTrackingRecord`,
+`TrackingRecordTransition`, `DiffAction`, `resolve_system_transition`, and `diff`
+— the Rust analogue of Python's `connectorkits.statediff`/`target`. Five
+connectors are already built **on the public target-state facade** and honor
+`managed_by` via `ManagedTargetOptions`: `qdrant`, `turbopuffer`, `neo4j`,
+`falkordb`, and the shared `cypher_graph` backend. The remaining Phase-2 work is
+migrating the four older connectors that still use the private `profile`
+(`BoxedHandler`/`BoxedSink`) helpers — `postgres`, `surrealdb`, `kafka`, and
+`lancedb` (plus the `fs` dir target) — onto the public facade and `statediff`,
+and adding the Python constructor/declaration (`*_target`/`declare_*_target`)
+split that the facade connectors still lack.
 
 The top-level public API difference is visible immediately:
 
 - Python `cocoindex.__all__` re-exports the 76-name
   `python/cocoindex/_internal/api.py::__all__` surface.
-- Rust `rust/sdk/cocoindex/src/lib.rs` flat-reexports only the app/context,
-  entity resolution, error, fs, id, stats, and `#[function]` groups. Feature
-  connectors are public modules, but most Python runtime/resource/connectorkit
-  APIs have no top-level Rust counterpart.
+- Rust `rust/sdk/cocoindex/src/lib.rs` flat-reexports the app/context, entity
+  resolution, error, fs, id, **statediff** (`ManagedBy`/`ManagedTargetOptions`/…),
+  stats, **target_state** (`TargetState`/`TargetHandler`/`ChildTargetDef`/…), and
+  `#[function]` groups. Feature connectors are public modules. The generic
+  target-state and connectorkit (`statediff`) layers now have top-level Rust
+  counterparts; most Python runtime/resource APIs (default env, live components,
+  exception handlers, inspect, CLI) still do not.
 
 Test coverage is similarly uneven:
 
-- Python currently has 839 test functions under `python/tests`.
-- Rust SDK currently has 117 integration test functions under
-  `rust/sdk/cocoindex/tests`, and 168 SDK crate tests if unit tests under
-  `rust/sdk/cocoindex/src` are included.
-- Python connector tests alone account for 284 tests; Rust connector/source
-  tests account for 9 tests in `gdrive_source.rs`, `kafka_target.rs`,
-  `lancedb_target.rs`, `postgres_source.rs`, `postgres_target.rs`, and
-  `surrealdb_target.rs`.
+- Python currently has 839 test functions under `python/tests` (284 of them
+  connector tests).
+- Rust SDK currently has 119 integration test functions under
+  `rust/sdk/cocoindex/tests` (plus per-module unit tests in `src`). All 9
+  connector features pass the full sweep (default + every feature, and all
+  features combined: 198 passed / 0 failed).
+- Rust connector/source integration tests now span 8 files (~11 tests):
+  `gdrive_source.rs`, `kafka_target.rs`, `lancedb_target.rs`,
+  `postgres_source.rs`, `postgres_target.rs`, `surrealdb_target.rs`,
+  `qdrant_target.rs` (live vs. a Qdrant server), and `turbopuffer_target.rs`
+  (live vs. the hosted Turbopuffer service) — each skips gracefully when its
+  service/credentials are absent.
 
 ## Parity Status Legend
 
@@ -135,8 +154,8 @@ Test coverage is similarly uneven:
 | Doris target | 6 Python tests | none | Missing |
 | Neo4j target | 45 Python tests | shared Rust graph target unit tests plus example compile/e2e path | Partial |
 | FalkorDB target | 31 Python tests | shared Rust graph target unit tests plus example compile/e2e path | Partial |
-| Turbopuffer target | 19 Python tests | Rust target unit tests plus example compile path | Partial |
-| Qdrant | Python interface exists; no dedicated test file found | Rust target unit tests plus example compile path | Partial |
+| Turbopuffer target | 19 Python tests | Rust unit tests + `turbopuffer_target.rs` live integration test (upsert/skip-unchanged/search/update/orphan-delete vs. the hosted service) + validated example e2e | Partial |
+| Qdrant | Python interface exists; no dedicated test file found | Rust unit tests + `qdrant_target.rs` live integration test (collection create/upsert/skip/search/update/orphan-delete/schema-change recreate vs. a Qdrant server) + validated example e2e | Partial |
 | Google Drive | Python interface exists; no dedicated Python test family found | Rust unit tests plus mock integration tests | Partial |
 
 ## Packaging and Feature Parity Matrix
@@ -195,8 +214,8 @@ wrappers onto that common facade.
 | Family | Python semantic contract | Rust state | Required Rust parity work |
 | --- | --- | --- | --- |
 | Generic target lifecycle | `TargetState`, `TargetStateProvider`, `TargetHandler`, `TargetActionSink`, `TargetReconcileOutput`, `mount_target`, attachments | SDK exposes typed target states, child handler definitions, foreground mount readiness, attachments, and generic lifecycle tests | Refactor connectors onto the public facade and add connector-specific parity tests. |
-| Managed ownership | `target.ManagedBy`, `statediff.MutualTrackingRecord`, `resolve_system_transition` in table/vector/graph connectors | Rust exposes `ManagedBy`, `ManagedTargetOptions`, `MutualTrackingRecord`, `TrackingRecordTransition`, `resolve_system_transition`, and `diff`; Qdrant, Turbopuffer, Neo4j, and FalkorDB accept managed options | Refactor older Postgres/SurrealDB/LanceDB target implementations onto the shared helper so all target connectors consistently avoid user-managed DDL. |
-| Diff semantics | `statediff.diff` and `diff_composite` distinguish insert/upsert/replace/delete plus incomplete previous state | Rust handlers mostly hand-roll reconciliation | Add shared Rust diff helpers and port Python test cases from `connectorkits/statediff.py` behavior. |
+| Managed ownership | `target.ManagedBy`, `statediff.MutualTrackingRecord`, `resolve_system_transition` in table/vector/graph connectors | Rust exposes `ManagedBy`, `ManagedTargetOptions`, `MutualTrackingRecord`, `TrackingRecordTransition`, `resolve_system_transition`, and `diff`; Postgres, SurrealDB, LanceDB, Qdrant, Turbopuffer, Neo4j, and FalkorDB accept or use managed options | Add connector-specific managed-ownership parity tests beyond the current LanceDB regression and live smoke coverage. |
+| Diff semantics | `statediff.diff` and `diff_composite` distinguish insert/upsert/replace/delete plus incomplete previous state | Rust has shared transition/diff helpers now used by native table, graph, and vector target implementations | Port the remaining Python `connectorkits/statediff.py` edge-case tests, especially composite diff behavior. |
 | Table targets | Postgres, SQLite, Doris, LanceDB, SurrealDB, Neo4j, FalkorDB expose table constructors/declaration/mount; many support schema evolution | Rust has Postgres and SurrealDB mount-only helpers | Add constructor/declaration split and common lifecycle shape; implement SQLite next as proof the API generalizes beyond Postgres. |
 | Row/record writes | Python wrappers declare rows/records into child providers; handlers upsert/delete only changed desired state | Rust Postgres/SurrealDB/Kafka target wrappers declare rows/messages into providers | Existing Rust pattern is directionally right, but needs generic API and broader schema/change tests. |
 | Vector/index attachments | Postgres, SurrealDB, Neo4j, FalkorDB, Doris expose vector/inverted/index attachments or target-level index lifecycle | Rust Postgres vector index exists as internal attachment; SurrealDB graph/vector indexes missing | Public attachment API plus per-connector vector index tests. |
@@ -527,7 +546,7 @@ many connectors/examples depend on them.
 | Entity resolution ops | `CanonicalSide`, `PairDecision`, `ExistingCanonicalPolicy`, `PairResolver`, `ResolvedEntities`, `resolve_entities`; `LlmPairResolver` | Rust `entity_resolution` has core resolve API; no `LlmPairResolver` | Partial | Core Rust resolver is tested, but `resolve_entities` currently computes ordered `ResolutionEvent`s and drops them internally because there is no `on_resolution` callback/API. LLM convenience resolver is Python-only. |
 | LiteLLM ops | `LiteLLMEmbedder`, `LiteLLMTranscriber`, `litellm` helper | None | Missing | Rust examples hand-roll HTTP clients or use local `fastembed`; no SDK op parity. |
 | SentenceTransformer op | `SentenceTransformerEmbedder` | None | Missing/Different | Rust examples use `fastembed` directly. If accepted, document as idiomatic Rust replacement; otherwise add SDK wrapper. |
-| Connectorkit target utilities | `ManagedBy` plus statediff helpers | Rust exposes `statediff::{ManagedBy, ManagedTargetOptions, MutualTrackingRecord, TrackingRecordTransition, resolve_system_transition, diff}` | Partial/Good | The shared transition semantics now exist and are used by Qdrant, Turbopuffer, Neo4j, and FalkorDB. Older Postgres/SurrealDB/LanceDB targets still need refactoring onto the helper. |
+| Connectorkit target utilities | `ManagedBy` plus statediff helpers | Rust exposes `statediff::{ManagedBy, ManagedTargetOptions, MutualTrackingRecord, TrackingRecordTransition, resolve_system_transition, diff}` | Partial/Good | The shared transition semantics now exist and are used by Postgres, SurrealDB, LanceDB, Qdrant, Turbopuffer, Neo4j, and FalkorDB. Remaining parity work is broader edge-case testing and composite diff support. |
 | Connectorkit fingerprint utilities | `Fingerprint`, `fingerprint_bytes`, `fingerprint_str`, `fingerprint_object` | Rust memo key/fingerprint helpers in `memo.rs` | Partial | Rust has lower-level memo fingerprinting but no connector-facing equivalent module. |
 | Async adapters | `sync_to_async_iter`, `async_to_sync_iter` | None | Missing/Different | Rust async iterator ergonomics differ; source APIs should still define a consistent item-stream pattern. |
 
@@ -692,6 +711,7 @@ Current Rust integration-test evidence:
 | `tests/postgres_source.rs` | 1 | Live Postgres source read/process/reconcile path when Postgres is available. |
 | `tests/postgres_target.rs` | 2 | Live Postgres row target reconciliation and vector-index attachment reconciliation. |
 | `tests/surrealdb_target.rs` | 2 | Live SurrealDB record/relation reconciliation plus conversation graph write smoke test. |
+| `tests/lancedb_target.rs` | 2 | Hermetic LanceDB create/upsert/search/reconcile path plus user-managed no-DDL regression. |
 
 The Rust integration suite is dense, but much of Python's breadth is still only
 represented indirectly. The highest-risk missing test shape is generic

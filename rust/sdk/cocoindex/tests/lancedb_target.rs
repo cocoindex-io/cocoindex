@@ -9,7 +9,7 @@
 #![cfg(feature = "lancedb")]
 
 use cocoindex::lancedb::{self, ColumnDef, ColumnType, LanceDatabase, TableSchema};
-use cocoindex::{App, ContextKey, Result};
+use cocoindex::{App, ContextKey, ManagedTargetOptions, Result};
 use serde::Serialize;
 use std::sync::LazyLock;
 
@@ -70,6 +70,16 @@ async fn row_count(db: &LanceDatabase) -> usize {
         .count_rows(None)
         .await
         .unwrap()
+}
+
+async fn table_exists(db: &LanceDatabase, table_name: &str) -> bool {
+    db.connection()
+        .table_names()
+        .execute()
+        .await
+        .unwrap()
+        .iter()
+        .any(|name| name == table_name)
 }
 
 #[tokio::test]
@@ -200,5 +210,36 @@ async fn lancedb_target_creates_upserts_searches_and_reconciles() -> Result<()> 
     let hit = lancedb::vector_search(&db, TABLE, "embedding", vec![0.0, 1.0, 0.0], 1).await?;
     assert_eq!(hit[0]["summary"], "second");
 
+    Ok(())
+}
+
+#[tokio::test]
+async fn lancedb_user_managed_target_does_not_create_table() -> Result<()> {
+    let tempdir = tempfile::tempdir().unwrap();
+    let uri = tempdir.path().join("lancedb_data");
+    let db = LanceDatabase::connect(uri.to_str().unwrap()).await?;
+    let app = App::builder("LanceUserManagedTargetTest")
+        .db_path(tempdir.path().join(".cocoindex_db"))
+        .provide_key(&DB, db.clone())
+        .build()
+        .await?;
+
+    app.run(move |ctx| async move {
+        let db = ctx.get_key(&DB)?;
+        let _table = lancedb::mount_table_target_with_options(
+            &ctx,
+            db,
+            TABLE,
+            schema(),
+            ManagedTargetOptions::user_managed(),
+        )?;
+        Ok(())
+    })
+    .await?;
+
+    assert!(
+        !table_exists(&db, TABLE).await,
+        "user-managed LanceDB target should not create the table"
+    );
     Ok(())
 }

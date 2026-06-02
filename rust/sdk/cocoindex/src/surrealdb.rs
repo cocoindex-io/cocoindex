@@ -22,6 +22,10 @@ use surrealdb::types::RecordId;
 use crate::ctx::Ctx;
 use crate::error::{Error, Result};
 use crate::profile::{Action, BoxedHandler, BoxedSink, RustProfile, Value};
+use crate::statediff::{
+    DiffAction, ManagedBy, ManagedTargetOptions, MutualTrackingRecord, diff,
+    resolve_system_transition,
+};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ColumnDef {
@@ -314,7 +318,22 @@ pub fn mount_table_target(
     graph: &Graph,
     table_name: impl Into<String>,
 ) -> Result<TableTarget> {
-    mount_table_target_with_schema(ctx, graph, table_name, None)
+    mount_table_target_with_schema_and_options(
+        ctx,
+        graph,
+        table_name,
+        None,
+        ManagedTargetOptions::default(),
+    )
+}
+
+pub fn mount_table_target_with_options(
+    ctx: &Ctx,
+    graph: &Graph,
+    table_name: impl Into<String>,
+    options: ManagedTargetOptions,
+) -> Result<TableTarget> {
+    mount_table_target_with_schema_and_options(ctx, graph, table_name, None, options)
 }
 
 pub fn mount_table_target_with_schema(
@@ -323,12 +342,28 @@ pub fn mount_table_target_with_schema(
     table_name: impl Into<String>,
     table_schema: Option<TableSchema>,
 ) -> Result<TableTarget> {
+    mount_table_target_with_schema_and_options(
+        ctx,
+        graph,
+        table_name,
+        table_schema,
+        ManagedTargetOptions::default(),
+    )
+}
+
+pub fn mount_table_target_with_schema_and_options(
+    ctx: &Ctx,
+    graph: &Graph,
+    table_name: impl Into<String>,
+    table_schema: Option<TableSchema>,
+    options: ManagedTargetOptions,
+) -> Result<TableTarget> {
     let table_name = table_name.into();
     validate_ident(&table_name, "table name")?;
     let provider = mount_table_like(
         ctx,
         graph,
-        TableSpec::table(table_name.clone(), table_schema),
+        TableSpec::table(table_name.clone(), table_schema, options.managed_by),
     )?;
     Ok(TableTarget {
         table_name: Arc::from(table_name),
@@ -345,7 +380,36 @@ pub fn mount_relation_target(
 ) -> Result<RelationTarget> {
     let table_name = table_name.into();
     validate_ident(&table_name, "relation table name")?;
-    mount_relation_target_many(ctx, graph, table_name, &[from_table], &[to_table], None)
+    mount_relation_target_many_with_options(
+        ctx,
+        graph,
+        table_name,
+        &[from_table],
+        &[to_table],
+        None,
+        ManagedTargetOptions::default(),
+    )
+}
+
+pub fn mount_relation_target_with_options(
+    ctx: &Ctx,
+    graph: &Graph,
+    table_name: impl Into<String>,
+    from_table: &TableTarget,
+    to_table: &TableTarget,
+    options: ManagedTargetOptions,
+) -> Result<RelationTarget> {
+    let table_name = table_name.into();
+    validate_ident(&table_name, "relation table name")?;
+    mount_relation_target_many_with_options(
+        ctx,
+        graph,
+        table_name,
+        &[from_table],
+        &[to_table],
+        None,
+        options,
+    )
 }
 
 pub fn mount_relation_target_many(
@@ -355,6 +419,26 @@ pub fn mount_relation_target_many(
     from_tables: &[&TableTarget],
     to_tables: &[&TableTarget],
     table_schema: Option<TableSchema>,
+) -> Result<RelationTarget> {
+    mount_relation_target_many_with_options(
+        ctx,
+        graph,
+        table_name,
+        from_tables,
+        to_tables,
+        table_schema,
+        ManagedTargetOptions::default(),
+    )
+}
+
+pub fn mount_relation_target_many_with_options(
+    ctx: &Ctx,
+    graph: &Graph,
+    table_name: impl Into<String>,
+    from_tables: &[&TableTarget],
+    to_tables: &[&TableTarget],
+    table_schema: Option<TableSchema>,
+    options: ManagedTargetOptions,
 ) -> Result<RelationTarget> {
     let table_name = table_name.into();
     validate_ident(&table_name, "relation table name")?;
@@ -384,6 +468,7 @@ pub fn mount_relation_target_many(
             from_names.clone(),
             to_names.clone(),
             table_schema,
+            options.managed_by,
         ),
     )?;
     Ok(RelationTarget {
@@ -401,12 +486,32 @@ pub fn mount_relation_target_unconstrained(
     graph: &Graph,
     table_name: impl Into<String>,
 ) -> Result<RelationTarget> {
+    mount_relation_target_unconstrained_with_options(
+        ctx,
+        graph,
+        table_name,
+        ManagedTargetOptions::default(),
+    )
+}
+
+pub fn mount_relation_target_unconstrained_with_options(
+    ctx: &Ctx,
+    graph: &Graph,
+    table_name: impl Into<String>,
+    options: ManagedTargetOptions,
+) -> Result<RelationTarget> {
     let table_name = table_name.into();
     validate_ident(&table_name, "relation table name")?;
     let provider = mount_table_like(
         ctx,
         graph,
-        TableSpec::relation(table_name.clone(), Vec::new(), Vec::new(), None),
+        TableSpec::relation(
+            table_name.clone(),
+            Vec::new(),
+            Vec::new(),
+            None,
+            options.managed_by,
+        ),
     )?;
     Ok(RelationTarget {
         table_name: Arc::from(table_name),
@@ -446,16 +551,19 @@ struct TableSpec {
     is_relation: bool,
     from_tables: Vec<String>,
     to_tables: Vec<String>,
+    #[serde(default)]
+    managed_by: ManagedBy,
 }
 
 impl TableSpec {
-    fn table(table_name: String, table_schema: Option<TableSchema>) -> Self {
+    fn table(table_name: String, table_schema: Option<TableSchema>, managed_by: ManagedBy) -> Self {
         Self {
             table_name,
             table_schema,
             is_relation: false,
             from_tables: Vec::new(),
             to_tables: Vec::new(),
+            managed_by,
         }
     }
 
@@ -464,6 +572,7 @@ impl TableSpec {
         mut from_tables: Vec<String>,
         mut to_tables: Vec<String>,
         table_schema: Option<TableSchema>,
+        managed_by: ManagedBy,
     ) -> Self {
         from_tables.sort();
         from_tables.dedup();
@@ -475,6 +584,7 @@ impl TableSpec {
             is_relation: true,
             from_tables,
             to_tables,
+            managed_by,
         }
     }
 }
@@ -554,46 +664,72 @@ fn table_handler(graph: Graph) -> BoxedHandler {
             .map(Value::deserialize::<TableSpec>)
             .transpose()
             .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?;
+        let prev_records = prev_table_records(&prev);
         let table_name = desired_spec
             .as_ref()
             .map(|spec| Ok(spec.table_name.clone()))
+            .or_else(|| {
+                prev_records
+                    .iter()
+                    .find(|p| p.managed_by.is_system())
+                    .map(|p| Ok(p.tracking_record.table_name.clone()))
+            })
             .unwrap_or_else(|| table_name_from_key(&key))
             .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?;
-        let prev_same = desired_spec.as_ref().is_some_and(|desired| {
-            prev.iter()
-                .filter_map(|v| v.deserialize::<TableSpec>().ok())
-                .any(|prev| &prev == desired)
-        });
-        if desired_spec.is_some() && prev_same && !prev_may_be_missing {
-            return Ok(Some(TargetReconcileOutput {
-                action: Action::Update(
-                    Value::from_serializable(&TargetAction::Table {
-                        table_name,
-                        spec: desired_spec.clone(),
-                    })
-                    .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?,
-                ),
-                sink: sink.clone(),
-                tracking_record: desired.cloned(),
-                child_invalidation: None,
-            }));
+        let tracking_record = desired_spec
+            .as_ref()
+            .map(|spec| MutualTrackingRecord::new(spec.clone(), spec.managed_by));
+        let resolved =
+            resolve_system_transition(tracking_record.clone(), prev_records, prev_may_be_missing);
+        let main_action = diff(resolved.as_ref());
+        if desired_spec.is_none() && resolved.is_none() {
+            return Ok(None);
         }
-        if desired_spec.is_none() && prev.is_empty() && !prev_may_be_missing {
+        if desired_spec.is_some()
+            && main_action.is_none()
+            && desired_spec
+                .as_ref()
+                .is_none_or(|spec| spec.managed_by.is_system())
+        {
             return Ok(None);
         }
         Ok(Some(TargetReconcileOutput {
             action: Action::Update(
                 Value::from_serializable(&TargetAction::Table {
                     table_name,
-                    spec: desired_spec,
+                    spec: desired_spec.clone(),
                 })
                 .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?,
             ),
             sink: sink.clone(),
-            tracking_record: desired.cloned(),
-            child_invalidation: None,
+            tracking_record: tracking_record
+                .map(|record| Value::from_serializable(&record))
+                .transpose()
+                .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?,
+            child_invalidation: match (desired_spec, main_action) {
+                (None, Some(DiffAction::Delete)) => {
+                    Some(cocoindex_core::engine::target_state::ChildInvalidation::Destructive)
+                }
+                (Some(_), Some(DiffAction::Replace)) => {
+                    Some(cocoindex_core::engine::target_state::ChildInvalidation::Lossy)
+                }
+                _ => None,
+            },
         }))
     })
+}
+
+fn prev_table_records(prev: &[Value]) -> Vec<MutualTrackingRecord<TableSpec>> {
+    prev.iter()
+        .filter_map(|v| {
+            v.deserialize::<MutualTrackingRecord<TableSpec>>()
+                .or_else(|_| {
+                    v.deserialize::<TableSpec>()
+                        .map(|spec| MutualTrackingRecord::new(spec, ManagedBy::System))
+                })
+                .ok()
+        })
+        .collect()
 }
 
 fn record_handler(graph: Graph, spec: TableSpec) -> BoxedHandler {
@@ -723,6 +859,9 @@ fn action_value(action: Action) -> cocoindex_utils::error::Result<TargetAction> 
 }
 
 async fn define_table(graph: &Graph, spec: &TableSpec) -> cocoindex_utils::error::Result<()> {
+    if spec.managed_by.is_user() {
+        return Ok(());
+    }
     let schema_mode = if spec.table_schema.is_some() {
         "SCHEMAFULL"
     } else {
@@ -817,7 +956,9 @@ async fn apply_records(
         defined_tables.insert(mutation.table_name.clone(), mutation.spec.clone());
     }
     for spec in defined_tables.values() {
-        define_table(graph, spec).await?;
+        if spec.managed_by.is_system() {
+            define_table(graph, spec).await?;
+        }
     }
 
     let mut statements = String::from("BEGIN TRANSACTION;\n");
