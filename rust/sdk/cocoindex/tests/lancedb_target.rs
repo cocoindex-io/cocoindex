@@ -28,11 +28,32 @@ struct Row {
     embedding: Vec<f32>,
 }
 
+#[derive(Clone, Serialize)]
+struct RowV2 {
+    id: i64,
+    text: String,
+    summary: String,
+    embedding: Vec<f32>,
+}
+
 fn schema() -> TableSchema {
     TableSchema::new(
         [
             ("id", ColumnDef::new(ColumnType::Int64)),
             ("text", ColumnDef::new(ColumnType::Text)),
+            ("embedding", ColumnDef::new(ColumnType::Vector(3))),
+        ],
+        ["id"],
+    )
+    .unwrap()
+}
+
+fn schema_v2() -> TableSchema {
+    TableSchema::new(
+        [
+            ("id", ColumnDef::new(ColumnType::Int64)),
+            ("text", ColumnDef::new(ColumnType::Text)),
+            ("summary", ColumnDef::new(ColumnType::Text).nullable()),
             ("embedding", ColumnDef::new(ColumnType::Vector(3))),
         ],
         ["id"],
@@ -91,6 +112,12 @@ async fn lancedb_target_creates_upserts_searches_and_reconciles() -> Result<()> 
         text: text.to_string(),
         embedding: emb.to_vec(),
     };
+    let mk_v2 = |id: i64, text: &str, summary: &str, emb: [f32; 3]| RowV2 {
+        id,
+        text: text.to_string(),
+        summary: summary.to_string(),
+        embedding: emb.to_vec(),
+    };
 
     // --- Run 1: create table + insert 3 rows ---
     run(vec![
@@ -138,6 +165,40 @@ async fn lancedb_target_creates_upserts_searches_and_reconciles() -> Result<()> 
     ])
     .await;
     assert_eq!(row_count(&db).await, 2, "removed row is deleted");
+
+    // --- Run 5: add a scalar column → table is evolved, not rebuilt ---
+    let db_for_v2 = db.clone();
+    let coco_db_path_for_v2 = coco_db_path.clone();
+    let rows_v2 = vec![
+        mk_v2(1, "alpha-updated", "first", [1.0, 0.0, 0.0]),
+        mk_v2(2, "beta", "second", [0.0, 1.0, 0.0]),
+    ];
+    let app = App::builder("LanceTargetTest")
+        .db_path(&coco_db_path_for_v2)
+        .provide_key(&DB, db_for_v2)
+        .build()
+        .await
+        .unwrap();
+    app.run(move |ctx| {
+        let rows = rows_v2.clone();
+        async move {
+            let db = ctx.get_key(&DB)?;
+            let table = lancedb::mount_table_target(&ctx, db, TABLE, schema_v2())?;
+            for row in &rows {
+                table.declare_row(&ctx, row)?;
+            }
+            Ok(())
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        row_count(&db).await,
+        2,
+        "schema evolution preserves existing rows"
+    );
+    let hit = lancedb::vector_search(&db, TABLE, "embedding", vec![0.0, 1.0, 0.0], 1).await?;
+    assert_eq!(hit[0]["summary"], "second");
 
     Ok(())
 }

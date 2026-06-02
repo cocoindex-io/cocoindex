@@ -1159,6 +1159,7 @@ dependencies = [
  "cocoindex_macros",
  "cocoindex_utils",
  "criterion",
+ "encoding_rs",
  "futures",
  "glob",
  "globset",

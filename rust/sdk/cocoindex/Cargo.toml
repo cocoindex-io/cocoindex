@@ -25,6 +25,7 @@ futures = "0.3"
 tracing = "0.1"
 globset = "0.4"
 walkdir = "2"
+encoding_rs = "0.8"
 async-trait = "0.1"
 rustc-hash = "2.1.1"
 uuid = { workspace = true }

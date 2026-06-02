@@ -43,7 +43,10 @@ impl IntoStableKey for i64 {
 
 impl IntoStableKey for u64 {
     fn into_stable_key(self) -> StableKey {
-        StableKey::Int(self as i64)
+        StableKey::Array(Arc::from([
+            StableKey::Symbol(Arc::from("u64")),
+            StableKey::Str(Arc::from(self.to_string())),
+        ]))
     }
 }
 
@@ -71,6 +74,12 @@ impl<V> TargetStateProvider<V> {
         }
     }
 
+    /// Stable provider path string for memo dependencies.
+    ///
+    /// This intentionally exposes the provider path only. Connector authors
+    /// that need provider-generation/version dependencies should include those
+    /// values in their own memo keys until the Rust SDK grows the full Python
+    /// provider-generation facade.
     pub fn memo_key(&self) -> String {
         self.inner.target_state_path().to_string()
     }
@@ -138,6 +147,30 @@ impl From<TargetChildInvalidation> for ChildInvalidation {
     }
 }
 
+/// A child (or attachment) target handler definition.
+///
+/// Returned by a *container* target's sink (see
+/// [`TargetActionSink::from_async_fn_with_children`]) to fulfill the child
+/// provider obtained from [`declare_target_state_with_child`]/[`mount_target`],
+/// and by [`TargetHandler::attachments`] to define attachment handlers. It wraps
+/// a typed [`TargetHandler`] for the child/attachment value type.
+pub struct ChildTargetDef {
+    handler: BoxedHandler,
+}
+
+impl ChildTargetDef {
+    /// Wrap a typed child/attachment handler.
+    pub fn new<ChildV, H>(handler: H) -> Self
+    where
+        ChildV: Serialize + DeserializeOwned + Send + 'static,
+        H: TargetHandler<ChildV>,
+    {
+        Self {
+            handler: boxed_handler::<ChildV, H>(handler),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct TargetActionSink<A> {
     inner: BoxedSink,
@@ -175,6 +208,51 @@ where
             _action: PhantomData,
         }
     }
+
+    /// Build a sink for a *container* target whose actions each (optionally)
+    /// produce a child target handler.
+    ///
+    /// The returned `Vec` must contain exactly one entry per input action, **in
+    /// the same order**: `Some(child)` for an action whose target state was
+    /// declared via [`declare_target_state_with_child`]/[`mount_target`]
+    /// (typically a create/update), and `None` for an action that declared no
+    /// child (typically an orphan delete). This mirrors Python's table-handler
+    /// `_apply_actions` returning a `list[ChildTargetDef | None]`.
+    pub fn from_async_fn_with_children<F, Fut>(f: F) -> Self
+    where
+        F: Fn(Vec<TargetAction<A>>) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<Vec<Option<ChildTargetDef>>>> + Send + 'static,
+    {
+        let inner = BoxedSink::new(move |actions| {
+            let decoded = actions
+                .into_iter()
+                .map(decode_action::<A>)
+                .collect::<Result<Vec<_>>>();
+            let fut = match decoded {
+                Ok(actions) => Box::pin(f(actions))
+                    as Pin<Box<dyn Future<Output = Result<Vec<Option<ChildTargetDef>>>> + Send>>,
+                Err(err) => Box::pin(async move { Err(err) }),
+            };
+            Box::pin(async move {
+                let defs = fut
+                    .await
+                    .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?;
+                let mapped = defs
+                    .into_iter()
+                    .map(|d| {
+                        d.map(|d| cocoindex_core::engine::target_state::ChildTargetDef {
+                            handler: d.handler,
+                        })
+                    })
+                    .collect();
+                Ok(Some(mapped))
+            })
+        });
+        Self {
+            inner,
+            _action: PhantomData,
+        }
+    }
 }
 
 fn decode_action<A: DeserializeOwned>(action: Action) -> Result<TargetAction<A>> {
@@ -199,6 +277,16 @@ where
         prev_possible_records: Vec<Self::TrackingRecord>,
         prev_may_be_missing: bool,
     ) -> Result<Option<TargetReconcileOutput<Self::Action, Self::TrackingRecord>>>;
+
+    /// Attachment handlers this handler supports, keyed by attachment type name.
+    ///
+    /// The engine eagerly registers these so orphaned attachments are cleaned up
+    /// even when not declared in the current run. Obtain an attachment's provider
+    /// to declare states on via [`TargetStateProvider::attachment`]. Defaults to
+    /// no attachments.
+    fn attachments(&self) -> Result<Vec<(String, ChildTargetDef)>> {
+        Ok(Vec::new())
+    }
 }
 
 pub fn register_root_target_states_provider<V, H>(
@@ -241,6 +329,16 @@ where
     Ok(TargetStateProvider::new(provider))
 }
 
+/// Mount a parent (container) target and return a **ready** child target
+/// provider, mirroring Python's foreground `mount_target`/`use_mount`.
+///
+/// The parent target state is declared and committed inside a foreground child
+/// component, so the parent handler's sink runs and fulfills the child provider
+/// (via [`TargetActionSink::from_async_fn_with_children`]) before this returns.
+/// The returned provider is therefore ready to [`declare_target_state`] child
+/// rows on immediately, unlike the lower-level
+/// [`declare_target_state_with_child`] (whose child is only fulfilled when the
+/// enclosing component commits).
 pub async fn mount_target<V, ChildV>(
     ctx: &Ctx,
     target_state: TargetState<V>,
@@ -249,7 +347,31 @@ where
     V: Serialize + Send + 'static,
     ChildV: Serialize + DeserializeOwned + Send + 'static,
 {
-    declare_target_state_with_child::<V, ChildV>(ctx, target_state)
+    use std::sync::Mutex;
+
+    let provider_inner = target_state.provider.inner.clone();
+    let key = target_state.key;
+    let value = Value::from_serializable(&target_state.value)?;
+    let scope_key = format!(
+        "cocoindex/mount_target/{}",
+        target_state.provider.memo_key()
+    );
+
+    type CoreProvider = cocoindex_core::engine::target_state::TargetStateProvider<RustProfile>;
+    let slot: Arc<Mutex<Option<CoreProvider>>> = Arc::new(Mutex::new(None));
+    let slot_inner = slot.clone();
+
+    ctx.scope(&scope_key, move |child_ctx| async move {
+        let child = child_ctx.declare_target_state_with_child(provider_inner, key, value)?;
+        *slot_inner.lock().unwrap() = Some(child);
+        Ok::<(), crate::error::Error>(())
+    })
+    .await?;
+
+    let child = slot.lock().unwrap().take().ok_or_else(|| {
+        crate::error::Error::engine("mount_target: child provider was not produced")
+    })?;
+    Ok(TargetStateProvider::new(child))
 }
 
 fn boxed_handler<V, H>(handler: H) -> BoxedHandler
@@ -257,6 +379,8 @@ where
     V: Serialize + DeserializeOwned + Send + 'static,
     H: TargetHandler<V>,
 {
+    let handler = Arc::new(handler);
+    let attach_handler = handler.clone();
     BoxedHandler::new(move |key, desired, prev, prev_may_be_missing| {
         let desired = desired
             .map(Value::deserialize::<V>)
@@ -296,8 +420,36 @@ where
             },
         ))
     })
+    .with_attachments(move || {
+        let entries = attach_handler
+            .attachments()
+            .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?;
+        Ok(entries
+            .into_iter()
+            .map(|(name, def)| (Arc::from(name.as_str()), def.handler))
+            .collect())
+    })
 }
 
 fn internal(err: impl std::fmt::Display) -> cocoindex_utils::error::Error {
     cocoindex_utils::error::Error::internal_msg(err.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn u64_stable_key_is_tagged_and_non_lossy() {
+        let key = u64::MAX.into_stable_key();
+        assert_eq!(
+            key,
+            StableKey::Array(Arc::from([
+                StableKey::Symbol(Arc::from("u64")),
+                StableKey::Str(Arc::from(u64::MAX.to_string())),
+            ]))
+        );
+        assert_ne!(key, StableKey::Int(-1));
+        assert_ne!(key, StableKey::Str(Arc::from(u64::MAX.to_string())));
+    }
 }

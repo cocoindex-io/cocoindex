@@ -12,10 +12,9 @@
 use std::pin::Pin;
 use std::sync::Arc;
 
-use arrow_array::builder::Float32Builder;
+use arrow_array::builder::{FixedSizeListBuilder, Float32Builder};
 use arrow_array::{
-    Array, ArrayRef, FixedSizeListArray, Float32Array, Float64Array, Int64Array, RecordBatch,
-    RecordBatchIterator, StringArray,
+    Array, ArrayRef, Float64Array, Int64Array, RecordBatch, RecordBatchIterator, StringArray,
 };
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use cocoindex_core::engine::target_state::{
@@ -25,6 +24,7 @@ use cocoindex_core::state::stable_path::StableKey;
 use cocoindex_utils::fingerprint::Fingerprint;
 use lancedb::Connection;
 use lancedb::query::{ExecutableQuery, QueryBase};
+use lancedb::table::NewColumnTransform;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value as JsonValue};
 
@@ -94,6 +94,15 @@ impl ColumnType {
             ),
         }
     }
+
+    fn sql_null_type(&self) -> Option<&'static str> {
+        match self {
+            ColumnType::Int64 => Some("BIGINT"),
+            ColumnType::Float64 => Some("DOUBLE"),
+            ColumnType::Text => Some("STRING"),
+            ColumnType::Vector(_) => None,
+        }
+    }
 }
 
 /// A column definition: its type and nullability.
@@ -135,7 +144,17 @@ impl TableSchema {
         if primary_key.is_empty() {
             return Err(Error::engine("LanceDB table requires a primary key"));
         }
+        let mut seen = std::collections::HashSet::new();
+        for (name, _) in &columns {
+            validate_identifier(name)?;
+            if !seen.insert(name.as_str()) {
+                return Err(Error::engine(format!(
+                    "duplicate LanceDB table column: {name:?}"
+                )));
+            }
+        }
         for pk in &primary_key {
+            validate_identifier(pk)?;
             if !columns.iter().any(|(n, _)| n == pk) {
                 return Err(Error::engine(format!(
                     "primary key column {pk:?} is not in the table schema"
@@ -180,7 +199,8 @@ pub struct LanceTableTarget {
 
 /// Mount a declarative LanceDB table target. The table is created to match
 /// `table_schema`; declared rows are upserted; orphaned rows are deleted; when
-/// the table is no longer declared it is dropped.
+/// the table is no longer declared it is dropped. Existing tables are preserved
+/// on schema changes; missing scalar columns are added with `NULL` defaults.
 pub fn mount_table_target(
     ctx: &Ctx,
     db: &LanceDatabase,
@@ -291,19 +311,21 @@ fn table_handler(db: LanceDatabase) -> BoxedHandler {
 
         match desired_spec {
             Some(spec) => {
-                // A schema change means the table must be rebuilt — invalidate rows.
+                // Preserve existing tables on schema changes. The row write path
+                // will surface unsupported/incompatible schema drift instead of
+                // dropping user data.
                 let schema_changed = prev_spec
                     .as_ref()
                     .is_some_and(|p| p.table_schema != spec.table_schema);
                 let action = LanceAction::CreateTable {
                     spec: spec.clone(),
-                    recreate: schema_changed,
+                    recreate: false,
                 };
                 Ok(Some(TargetReconcileOutput {
                     action: Action::Update(Value::from_serializable(&action).map_err(internal)?),
                     sink: sink.clone(),
                     tracking_record: Some(Value::from_serializable(&spec).map_err(internal)?),
-                    child_invalidation: schema_changed.then_some(ChildInvalidation::Destructive),
+                    child_invalidation: schema_changed.then_some(ChildInvalidation::Lossy),
                 }))
             }
             None => {
@@ -361,6 +383,7 @@ async fn ensure_table(db: &LanceDatabase, spec: &TableSpec, recreate: bool) -> R
     if exists && recreate {
         drop_table(db, &spec.table_name).await?;
     } else if exists {
+        evolve_existing_table(db, spec).await?;
         return Ok(());
     }
     db.conn
@@ -368,6 +391,48 @@ async fn ensure_table(db: &LanceDatabase, spec: &TableSpec, recreate: bool) -> R
         .execute()
         .await
         .map_err(|e| Error::engine(format!("lancedb create table {:?}: {e}", spec.table_name)))?;
+    Ok(())
+}
+
+async fn evolve_existing_table(db: &LanceDatabase, spec: &TableSpec) -> Result<()> {
+    let table = db
+        .conn
+        .open_table(&spec.table_name)
+        .execute()
+        .await
+        .map_err(|e| Error::engine(format!("lancedb open table for schema check: {e}")))?;
+    let existing = table
+        .schema()
+        .await
+        .map_err(|e| Error::engine(format!("lancedb read schema: {e}")))?;
+    let mut add_exprs = Vec::new();
+    for (name, def) in &spec.table_schema.columns {
+        match existing.field_with_name(name) {
+            Ok(field) => {
+                if field.data_type() != &def.col_type.arrow_data_type() {
+                    return Err(Error::engine(format!(
+                        "existing LanceDB column {name:?} has type {:?}, expected {:?}",
+                        field.data_type(),
+                        def.col_type.arrow_data_type()
+                    )));
+                }
+            }
+            Err(_) => {
+                let Some(sql_type) = def.col_type.sql_null_type() else {
+                    return Err(Error::engine(format!(
+                        "cannot add LanceDB vector column {name:?} to existing table without rebuilding"
+                    )));
+                };
+                add_exprs.push((name.clone(), format!("CAST(NULL AS {sql_type})")));
+            }
+        }
+    }
+    if !add_exprs.is_empty() {
+        table
+            .add_columns(NewColumnTransform::SqlExpressions(add_exprs), None)
+            .await
+            .map_err(|e| Error::engine(format!("lancedb add columns: {e}")))?;
+    }
     Ok(())
 }
 
@@ -513,6 +578,7 @@ fn delete_predicate(primary_key: &[String], pk: &[JsonValue]) -> Result<String> 
                 )));
             }
         };
+        validate_identifier(name)?;
         parts.push(format!("{name} = {rhs}"));
     }
     Ok(parts.join(" AND "))
@@ -532,17 +598,21 @@ fn build_record_batch(
         let values = rows.iter().map(|r| r.get(name).unwrap_or(&JsonValue::Null));
         let array: ArrayRef = match &def.col_type {
             ColumnType::Int64 => Arc::new(Int64Array::from(
-                values.map(|v| v.as_i64()).collect::<Vec<_>>(),
+                values
+                    .map(|v| nullable_value(name, def, v).and_then(|v| Ok(v.as_i64())))
+                    .collect::<Result<Vec<_>>>()?,
             )),
             ColumnType::Float64 => Arc::new(Float64Array::from(
-                values.map(|v| v.as_f64()).collect::<Vec<_>>(),
+                values
+                    .map(|v| nullable_value(name, def, v).and_then(|v| Ok(v.as_f64())))
+                    .collect::<Result<Vec<_>>>()?,
             )),
             ColumnType::Text => Arc::new(StringArray::from(
                 values
-                    .map(|v| v.as_str().map(str::to_string))
-                    .collect::<Vec<_>>(),
+                    .map(|v| nullable_value(name, def, v).map(|v| v.as_str().map(str::to_string)))
+                    .collect::<Result<Vec<_>>>()?,
             )),
-            ColumnType::Vector(dim) => build_vector_array(name, *dim, values)?,
+            ColumnType::Vector(dim) => build_vector_array(name, *dim, def.nullable, values)?,
         };
         arrays.push(array);
     }
@@ -553,11 +623,26 @@ fn build_record_batch(
 fn build_vector_array<'a>(
     column: &str,
     dim: usize,
+    nullable: bool,
     values: impl Iterator<Item = &'a JsonValue>,
 ) -> Result<ArrayRef> {
-    let mut builder = Float32Builder::new();
+    let mut builder = FixedSizeListBuilder::new(Float32Builder::new(), dim as i32)
+        .with_field(Arc::new(Field::new("item", DataType::Float32, true)));
     let mut count = 0usize;
     for value in values {
+        if value.is_null() {
+            if !nullable {
+                return Err(Error::engine(format!(
+                    "non-nullable LanceDB column {column:?} is null"
+                )));
+            }
+            for _ in 0..dim {
+                builder.values().append_null();
+            }
+            builder.append(false);
+            count += 1;
+            continue;
+        }
         let arr = value
             .as_array()
             .ok_or_else(|| Error::engine(format!("column {column:?} must be a vector array")))?;
@@ -571,14 +656,12 @@ fn build_vector_array<'a>(
             let f = v.as_f64().ok_or_else(|| {
                 Error::engine(format!("column {column:?} has non-numeric vector element"))
             })?;
-            builder.append_value(f as f32);
+            builder.values().append_value(f as f32);
         }
+        builder.append(true);
         count += 1;
     }
-    let flat: Float32Array = builder.finish();
-    let field = Arc::new(Field::new("item", DataType::Float32, true));
-    let array = FixedSizeListArray::try_new(field, dim as i32, Arc::new(flat), None)
-        .map_err(|e| Error::engine(format!("build vector array for {column:?}: {e}")))?;
+    let array = builder.finish();
     debug_assert_eq!(array.len(), count);
     Ok(Arc::new(array))
 }
@@ -598,10 +681,42 @@ fn row_state<R: Serialize>(row: &R, schema: &TableSchema) -> Result<Map<String, 
     let names: std::collections::HashSet<&str> =
         schema.column_names().map(String::as_str).collect();
     fields.retain(|name, _| names.contains(name.as_str()));
-    for name in schema.column_names() {
-        fields.entry(name.clone()).or_insert(JsonValue::Null);
+    for (name, def) in &schema.columns {
+        let value = fields.entry(name.clone()).or_insert(JsonValue::Null);
+        if value.is_null() && !def.nullable {
+            return Err(Error::engine(format!(
+                "non-nullable LanceDB column {name:?} is missing or null"
+            )));
+        }
     }
     Ok(fields)
+}
+
+fn nullable_value<'a>(name: &str, def: &ColumnDef, value: &'a JsonValue) -> Result<&'a JsonValue> {
+    if value.is_null() && !def.nullable {
+        return Err(Error::engine(format!(
+            "non-nullable LanceDB column {name:?} is null"
+        )));
+    }
+    Ok(value)
+}
+
+fn validate_identifier(name: &str) -> Result<()> {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return Err(Error::engine("LanceDB identifier must not be empty"));
+    };
+    if !(first == '_' || first.is_ascii_alphabetic()) {
+        return Err(Error::engine(format!(
+            "invalid LanceDB identifier {name:?}: must start with a letter or '_'"
+        )));
+    }
+    if !chars.all(|c| c == '_' || c.is_ascii_alphanumeric()) {
+        return Err(Error::engine(format!(
+            "invalid LanceDB identifier {name:?}: only ASCII letters, digits, and '_' are supported"
+        )));
+    }
+    Ok(())
 }
 
 fn pk_stable_key(fields: &Map<String, JsonValue>, primary_key: &[String]) -> Result<StableKey> {
@@ -774,6 +889,24 @@ mod tests {
             )
             .is_err()
         );
+        assert!(TableSchema::new([("a", ColumnDef::new(ColumnType::Int64))], ["a"]).is_ok());
+        assert!(
+            TableSchema::new(
+                [
+                    ("a", ColumnDef::new(ColumnType::Int64)),
+                    ("a", ColumnDef::new(ColumnType::Text)),
+                ],
+                ["a"],
+            )
+            .is_err()
+        );
+        assert!(
+            TableSchema::new(
+                [("bad-name", ColumnDef::new(ColumnType::Int64))],
+                ["bad-name"]
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -789,26 +922,56 @@ mod tests {
     }
 
     #[test]
-    fn row_state_filters_and_fills() {
+    fn row_state_filters_and_fills_nullable_missing_values() {
         #[derive(serde::Serialize)]
         struct Row {
             id: i64,
             name: String,
             extra: i64,
         }
+        let schema = TableSchema::new(
+            [
+                ("id", ColumnDef::new(ColumnType::Int64)),
+                ("name", ColumnDef::new(ColumnType::Text)),
+                (
+                    "embedding",
+                    ColumnDef::new(ColumnType::Vector(3)).nullable(),
+                ),
+            ],
+            ["id"],
+        )
+        .unwrap();
         let fields = row_state(
             &Row {
                 id: 1,
                 name: "x".into(),
                 extra: 9,
             },
-            &schema(),
+            &schema,
         )
         .unwrap();
         assert!(fields.contains_key("id"));
         assert!(fields.contains_key("embedding")); // filled with null
         assert!(!fields.contains_key("extra")); // dropped
         assert_eq!(fields["embedding"], JsonValue::Null);
+    }
+
+    #[test]
+    fn row_state_rejects_missing_non_nullable_columns() {
+        #[derive(serde::Serialize)]
+        struct Row {
+            id: i64,
+            name: String,
+        }
+        let err = row_state(
+            &Row {
+                id: 1,
+                name: "x".into(),
+            },
+            &schema(),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("non-nullable LanceDB column"));
     }
 
     #[test]
@@ -825,6 +988,7 @@ mod tests {
 
         let pred = delete_predicate(&["name".to_string()], &[JsonValue::from("a'b")]).unwrap();
         assert_eq!(pred, "name = 'a''b'");
+        assert!(delete_predicate(&["bad-name".to_string()], &pk).is_err());
     }
 
     #[test]
@@ -838,5 +1002,27 @@ mod tests {
         let batch = build_record_batch(&s, &arrow, &[row]).unwrap();
         assert_eq!(batch.num_rows(), 1);
         assert_eq!(batch.num_columns(), 3);
+    }
+
+    #[test]
+    fn build_batch_with_nullable_vector() {
+        let s = TableSchema::new(
+            [
+                ("id", ColumnDef::new(ColumnType::Int64)),
+                (
+                    "embedding",
+                    ColumnDef::new(ColumnType::Vector(3)).nullable(),
+                ),
+            ],
+            ["id"],
+        )
+        .unwrap();
+        let arrow = s.arrow_schema();
+        let mut row = Map::new();
+        row.insert("id".into(), JsonValue::from(1));
+        row.insert("embedding".into(), JsonValue::Null);
+        let batch = build_record_batch(&s, &arrow, &[row]).unwrap();
+        assert_eq!(batch.num_rows(), 1);
+        assert!(batch.column(1).is_null(0));
     }
 }

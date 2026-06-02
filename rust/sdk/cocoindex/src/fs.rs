@@ -105,8 +105,9 @@ pub trait FileLike {
     fn read(&self) -> Result<Vec<u8>>;
 
     fn read_text(&self) -> Result<String> {
-        String::from_utf8(self.read()?)
-            .map_err(|e| Error::engine(format!("file is not valid UTF-8: {e}")))
+        let bytes = self.read()?;
+        let (text, _had_errors) = encoding_rs::UTF_8.decode_with_bom_removal(&bytes);
+        Ok(text.into_owned())
     }
 
     fn content_fingerprint(&self) -> Result<Fingerprint> {
@@ -315,10 +316,10 @@ impl FileEntry {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Io`] if the file cannot be read, or if it contains
-    /// invalid UTF-8 data.
+    /// Returns [`Error::Io`] if the file cannot be read. Invalid UTF-8 is
+    /// decoded with replacement characters, matching [`FileLike::read_text`].
     pub fn content_str(&self) -> Result<String> {
-        std::fs::read_to_string(self.path()).map_err(Error::Io)
+        <Self as FileLike>::read_text(self)
     }
 
     /// Stable key for component paths (relative path, forward slashes).
@@ -729,6 +730,20 @@ mod tests {
         assert_eq!(files[0].stem(), "test");
         assert_eq!(files[0].content_str().unwrap(), "hello world");
         assert_eq!(files[0].content().unwrap(), b"hello world");
+    }
+
+    #[test]
+    fn file_entry_text_decode_strips_utf8_bom_and_replaces_invalid_utf8() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("bom.txt"), b"\xEF\xBB\xBFhello").unwrap();
+        std::fs::write(dir.path().join("bad.txt"), b"a\xFFb").unwrap();
+        let files = walk(dir.path(), &["*.txt"]).unwrap();
+        let by_key = files
+            .iter()
+            .map(|file| (file.key(), file.content_str().unwrap()))
+            .collect::<std::collections::HashMap<_, _>>();
+        assert_eq!(by_key["bom.txt"], "hello");
+        assert_eq!(by_key["bad.txt"], "a\u{fffd}b");
     }
 
     #[test]

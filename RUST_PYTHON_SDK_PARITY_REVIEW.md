@@ -32,11 +32,18 @@ to Python's generic target-state API. Rust now exposes a first typed facade for:
 - `mount_target`
 
 Rust has core-level equivalents and now exposes these names at the SDK layer.
-The current Rust facade covers typed no-child target handlers/actions/tracking
-records and provider declarations. The remaining parity work is to make
-`mount_target` fully equivalent to Python's foreground `use_mount()` semantics
-for child-provider readiness, and then migrate connector implementations away
-from private `Ctx` helpers.
+**Phase 1 is now implemented**: in addition to the typed no-child facade, the
+Rust SDK now also exposes child-handler generation (`ChildTargetDef` +
+`TargetActionSink::from_async_fn_with_children`), public attachment handler
+definitions (`TargetHandler::attachments`), and a foreground `mount_target` that
+runs the parent target as a sub-component (via `use_mount`) so the returned child
+provider is *ready* to declare child rows on immediately — matching Python's
+`mount_target`/`use_mount` readiness boundary. A generic SDK-level test suite
+(`tests/target_state.rs`) covers flat insert/update/no-change/delete, target
+states declared inside components, `mount_target` child insert/delete, provider
+generation (destructive/lossy/none child invalidation), and attachment
+create/cleanup. The remaining parity work is Phase 2: migrating existing
+connector implementations away from private `Ctx` helpers onto this public shape.
 
 The top-level public API difference is visible immediately:
 
@@ -51,11 +58,12 @@ Test coverage is similarly uneven:
 
 - Python currently has 839 test functions under `python/tests`.
 - Rust SDK currently has 106 integration test functions under
-  `rust/sdk/cocoindex/tests`, and 153 SDK crate tests if unit tests under
+  `rust/sdk/cocoindex/tests`, and 157 SDK crate tests if unit tests under
   `rust/sdk/cocoindex/src` are included.
 - Python connector tests alone account for 284 tests; Rust connector/source
-  tests account for 8 tests in `gdrive_source.rs`, `kafka_target.rs`,
-  `postgres_source.rs`, `postgres_target.rs`, and `surrealdb_target.rs`.
+  tests account for 9 tests in `gdrive_source.rs`, `kafka_target.rs`,
+  `lancedb_target.rs`, `postgres_source.rs`, `postgres_target.rs`, and
+  `surrealdb_target.rs`.
 
 ## Parity Status Legend
 
@@ -73,8 +81,8 @@ Test coverage is similarly uneven:
 | App lifecycle | `App`, `AppConfig`, `UpdateHandle`, `DropHandle`, `show_progress` in `python/cocoindex/_internal/app.py` | `App`, `AppBuilder`, `UpdateHandle`, `DropHandle`, `Progress` in `rust/sdk/cocoindex/src/app.rs` | Partial | Rust has explicit app builder/open/update/drop. Missing Python default environment/lifespan shape. |
 | Default environment | `Environment`, `EnvironmentBuilder`, `default_env`, `start`, `stop`, `lifespan` | No public Rust default environment | Missing/Different | Rust examples use explicit `App`. If intentional, document as Rust-specific. |
 | Component mount | `use_mount`, `mount`, `mount_each`, `ComponentMountHandle.ready()` | `Ctx::scope`, `Ctx::mount_each`; lower-level core `Component::mount/use_mount` not SDK-public | Partial | Missing public background `mount` and foreground `use_mount` parity. |
-| Target state | `TargetState`, providers, handlers, sinks, root provider registration, child provider declaration | Core has machinery; SDK has `pub(crate)` access in `ctx.rs` | Missing at SDK level | Highest-priority blocker for connector parity. |
-| Attachments | Python target providers expose `.attachment(...)` and handlers expose attachments | Rust core supports attachments; SDK added internal handler attachment support | Partial | Works internally for Postgres vector indexes, but no public generic API. |
+| Target state | `TargetState`, providers, handlers, sinks, root provider registration, child provider declaration | `target_state.rs` exposes typed providers, states, handlers, sinks, root registration, declarations, and a declaration-only `mount_target` convenience | Partial | Public no-child target handlers/actions/tracking now work and are tested. Remaining gaps are Python-equivalent `use_mount` readiness, child handler generation, attachments on handlers, preview/ownership/generation semantics, and connector adoption. |
+| Attachments | Python target providers expose `.attachment(...)` and handlers expose attachments | Rust providers expose `attachment(...)`; handlers do not expose public attachment definitions | Partial | Works internally for Postgres vector indexes and provider attachment access exists, but generic handler attachment lifecycle is not public parity yet. |
 | Live components | `LiveComponent`, `LiveComponentOperator`, `LiveMapFeed`, `LiveMapView`, `LiveStream` | Core has live machinery; SDK exposes only `Ctx::auto_refresh` | Missing at SDK level | Blocks live localfs, Kafka/Iggy sources, OCI live object watching. |
 | Exception handlers | `exception_handler`, `ExceptionContext`, global/scoped background error routing | No comparable Rust SDK public API | Missing | Needed for parity with background/live component semantics. |
 | Context keys | `ContextKey`, `ContextProvider`, memo state hooks | `ContextKey::new`, `new_detect_change`, `new_with_state` | Good | Rust has idiomatic support and tests. |
@@ -91,7 +99,7 @@ Test coverage is similarly uneven:
 
 | Connector | Python public API | Rust public API | Status | Main gaps |
 | --- | --- | --- | --- | --- |
-| `localfs` | `FilePath`, `File`, `DirWalker`, `walk_dir`, `DirTarget`, `dir_target`, `declare_dir_target`, `mount_dir_target`, `declare_file`, live mode | `fs::FileEntry`, `fs::walk`, `fs::DirTarget`, `fs::mount_dir_target` | Partial | Missing `FilePath` abstraction, path matchers, `DirWalker.items()`, live watching, public `dir_target`/`declare_dir_target`. |
+| `localfs` | `FilePath`, `File`, `DirWalker`, `walk_dir`, `DirTarget`, `dir_target`, `declare_dir_target`, `mount_dir_target`, `declare_file`, live mode | `fs::FilePath`, `FileLike`, `FileEntry`, path matchers, `DirWalker`, `walk_dir`, `DirTarget`, `dir_target`, `declare_dir_target`, `mount_dir_target` | Partial/Good static path | Static walking/target APIs now exist with tests. Remaining gaps are `walk_dir(..., live=True)`, live map/view semantics, async cached `FileLike`, and full shared resource reuse across S3/OCI/GDrive. |
 | `postgres` | `PgTableSource`, `RowFetcher`, `PgSourceSpec`, `TableTarget`, `table_target`, `declare_table_target`, `mount_table_target`, vector index, SQL command attachment, `managed_by` | `postgres::Database`, `read_table`, `read_table_with_options`, `TableTarget`, `mount_table_target`, vector index | Partial | Missing generic target-state shape, `managed_by`, SQL command attachments, streaming/`items()` source, row factory ergonomics, snapshot cursor tests. |
 | `surrealdb` | `ConnectionFactory`, `TableSchema`, `TableTarget`, `RelationTarget`, `table_target`, `declare_table_target`, `mount_table_target`, relation target, vector index, `managed_by` | `Graph`, `TableSchema`, `TableTarget`, `RelationTarget`, `mount_table_target`, relation helpers | Partial | Missing vector indexes, `managed_by`, generic target-state shape, schema evolution tests, table drop tests, type mapping tests. |
 | `kafka` | `TopicStream`, `topic_as_stream`, `topic_as_map`, `KafkaTopicTarget`, `kafka_topic_target`, `declare_kafka_topic_target`, `mount_kafka_topic_target` | `KafkaProducer`, `KafkaTopicTarget`, `mount_kafka_topic_target` | Partial | Rust is target-only. Missing source stream/map APIs and public target-state style helpers. |
@@ -101,7 +109,7 @@ Test coverage is similarly uneven:
 | `google_drive` | package `__all__`: `DriveFileInfo`, `DriveFile`, `GoogleDriveSourceSpec`, `GoogleDriveSource`, `list_files`; `_source.py` also defines `DriveFilePath` | `gdrive::DriveFile`, `GoogleDriveClient`, `GoogleDriveSource` | Partial/in progress | Rust has service-account/static-token client, recursive listing, MIME filtering, export/download reads, and mock tests. Missing Python-style `DriveFileInfo`, top-level `list_files(spec)`, async `items()`, and shared file source abstraction; clarify whether `DriveFilePath` should be publicly exported in Python. |
 | `sqlite` | `ManagedConnection`, `Vec0TableDef`, `TableSchema`, `TableTarget`, target helpers, vec0 support, user/system managed | None | Missing | Large target connector. Python tests are extensive and should be ported if implemented. |
 | `doris` | `DorisConnectionConfig`, `ManagedConnection`, `TableSchema`, `DorisTableTarget`, vector/inverted indexes, retry config | None | Missing | Needs table target architecture and stream-load retry behavior. |
-| `lancedb` | `TableSchema`, `TableTarget`, target helpers, optimize behavior | None | Missing | Needs schema evolution and optimize behavior tests. |
+| `lancedb` | `TableSchema`, `TableTarget`, target helpers, optimize behavior | `lancedb::LanceDatabase`, `TableSchema`, `ColumnDef`, `LanceTableTarget`, `mount_table_target`, `vector_search` | Partial | Native target exists with hermetic e2e coverage for create/upsert/search/delete and additive scalar-column schema evolution. Missing Python optimize behavior, mutation-preservation/retry tests, full add-column edge cases, and constructor/declaration split. |
 | `qdrant` | `QdrantVectorDef`, `CollectionSchema`, `CollectionTarget`, target helpers | None | Missing | Vector collection target. |
 | `turbopuffer` | `VectorDef`, `NamespaceSchema`, `Row`, `NamespaceTarget`, target helpers | None | Missing | Vector namespace target. |
 | `neo4j` | `ConnectionFactory`, `TableTarget`, `RelationTarget`, Cypher builders, indexes, constraints, vector index | None | Missing | Graph target architecture overlaps with SurrealDB/FalkorDB. |
@@ -121,7 +129,7 @@ Test coverage is similarly uneven:
 | OCI object storage | 23 Python tests | none | Missing |
 | Amazon S3 | 24 Python tests | none | Missing |
 | SQLite target | 21 Python tests | none | Missing |
-| LanceDB target | 12 Python tests | none | Missing |
+| LanceDB target | 12 Python tests | 1 hermetic Rust e2e plus LanceDB unit tests | Partial |
 | Doris target | 6 Python tests | none | Missing |
 | Neo4j target | 45 Python tests | none | Missing |
 | FalkorDB target | 31 Python tests | none | Missing |
@@ -147,7 +155,7 @@ modules in `rust/sdk/cocoindex`.
 | `iggy` | `apache-iggy>=0.8.0` | none | Missing | Should mirror Kafka source/target shape after Kafka parity. |
 | `sqlite` | `sqlite-vec>=0.1.6` | none | Missing | Good next target after generic target-state API. |
 | `doris` | `aiohttp`, `pymysql`, `aiomysql` | none | Missing | Needs table target lifecycle, stream load, retry, vector/inverted index support. |
-| `lancedb` | `lancedb`, `pyarrow` | none | Missing | Needs table/vector target API plus optimize behavior. |
+| `lancedb` | `lancedb`, `pyarrow` | Cargo feature `lancedb` with `lancedb`, `arrow-array`, `arrow-schema` | Partial | Native target exists; optimize and fuller schema-evolution parity remain. |
 | `qdrant` | `qdrant-client>=1.6.0` | none | Missing | Needed for image search and vector collection examples. |
 | `turbopuffer` | `turbopuffer>=0.5.0` | none | Missing | Needs namespace target and named-vector schema support. |
 | `neo4j` | `neo4j>=5.18.0` | none | Missing | Graph target family; should share design with SurrealDB/FalkorDB. |
@@ -183,16 +191,16 @@ expose the shared contract publicly.
 
 | Family | Python semantic contract | Rust state | Required Rust parity work |
 | --- | --- | --- | --- |
-| Generic target lifecycle | `TargetState`, `TargetStateProvider`, `TargetHandler`, `TargetActionSink`, `TargetReconcileOutput`, `mount_target`, attachments | Core has equivalent machinery; SDK uses private `Ctx` helpers and connector-specific wrappers | Expose safe public Rust target-state API before adding more target connectors. |
+| Generic target lifecycle | `TargetState`, `TargetStateProvider`, `TargetHandler`, `TargetActionSink`, `TargetReconcileOutput`, `mount_target`, attachments | SDK exposes a first typed no-child facade; connectors still mostly use private `Ctx` helpers and connector-specific wrappers | Finish child-handler/attachment/mount semantics, then refactor connectors onto the public facade. |
 | Managed ownership | `target.ManagedBy`, `statediff.MutualTrackingRecord`, `resolve_system_transition` in table/vector/graph connectors | Not modeled in Rust connector public APIs | Add `ManagedBy` and shared transition helpers so user-managed resources are not dropped/altered. |
 | Diff semantics | `statediff.diff` and `diff_composite` distinguish insert/upsert/replace/delete plus incomplete previous state | Rust handlers mostly hand-roll reconciliation | Add shared Rust diff helpers and port Python test cases from `connectorkits/statediff.py` behavior. |
 | Table targets | Postgres, SQLite, Doris, LanceDB, SurrealDB, Neo4j, FalkorDB expose table constructors/declaration/mount; many support schema evolution | Rust has Postgres and SurrealDB mount-only helpers | Add constructor/declaration split and common lifecycle shape; implement SQLite next as proof the API generalizes beyond Postgres. |
 | Row/record writes | Python wrappers declare rows/records into child providers; handlers upsert/delete only changed desired state | Rust Postgres/SurrealDB/Kafka target wrappers declare rows/messages into providers | Existing Rust pattern is directionally right, but needs generic API and broader schema/change tests. |
 | Vector/index attachments | Postgres, SurrealDB, Neo4j, FalkorDB, Doris expose vector/inverted/index attachments or target-level index lifecycle | Rust Postgres vector index exists as internal attachment; SurrealDB graph/vector indexes missing | Public attachment API plus per-connector vector index tests. |
 | Graph relations | SurrealDB, Neo4j, FalkorDB expose `RelationTarget` with endpoint tables and relation rows | Rust SurrealDB has relation helpers; no Neo4j/FalkorDB | Generalize relation target concepts and add Cypher-specific escaping/index/constraint behavior. |
-| Vector stores | Qdrant `CollectionTarget`, Turbopuffer `NamespaceTarget`, LanceDB `TableTarget` | None | Avoid forcing these into relational table model; implement collection/namespace lifecycle and named-vector schemas. |
+| Vector stores | Qdrant `CollectionTarget`, Turbopuffer `NamespaceTarget`, LanceDB `TableTarget` | LanceDB table target exists; Qdrant/Turbopuffer missing | Avoid forcing all vector targets into one relational model; keep LanceDB table target, then implement collection/namespace lifecycle and named-vector schemas for the others. |
 | Stream targets/sources | Kafka/Iggy expose source stream/map and topic target with tombstones/delete values | Rust Kafka target only | Add stream/map source APIs, delete filters, offsets/readiness, and Iggy parity. |
-| File/object sources | LocalFS/S3/OCI/GDrive share `FilePath`, `FileLike`, `FileMetadata`, `items()`; OCI and localfs can be live | Rust has `fs::FileEntry` and partial `gdrive::DriveFile`; no shared file abstraction | Add shared file resource module, path matchers, memo key policy, content fingerprinting, and live source support. |
+| File/object sources | LocalFS/S3/OCI/GDrive share `FilePath`, `FileLike`, `FileMetadata`, `items()`; OCI and localfs can be live | LocalFS has `FilePath`/`FileLike`/matchers/`items()`; GDrive has separate `DriveFile`; no shared cross-connector file resource module | Promote or generalize the LocalFS file resource surface before adding S3/OCI parity; add live source support separately. |
 
 ## Implemented Connector Findings
 
@@ -473,7 +481,7 @@ is explicitly designed around live object events.
 | `test_function_batching.py` | Rust `Ctx::batch`; no Runner/GPU | Partial/Missing |
 | `test_component_memo.py` | Rust `scope` and `mount_each` tests | Partial |
 | `test_component_target_states.py` | Rust connector-specific target tests | Missing generic public API coverage |
-| `test_flat_target_states.py` | no public generic target-state API | Missing |
+| `test_flat_target_states.py` | `pipeline.rs::public_target_state_api_reconciles_typed_actions_and_tracking_records`, `target_state::tests` | Partial |
 | `test_attachment_target_states.py` | core/internal support, Postgres vector test | Missing public generic coverage |
 | `test_provider_generation.py` | core support, limited public tests | Missing/Partial |
 | `test_ownership_transfer.py` | core likely supports; no Rust SDK test family | Missing |
@@ -495,7 +503,7 @@ many connectors/examples depend on them.
 
 | Python public area | Python evidence | Rust evidence | Status | Notes |
 | --- | --- | --- | --- | --- |
-| File resources | `FileMetadata`, `FileLike`, `FilePath`, `FilePathMatcher`, `MatchAllFilePathMatcher`, `PatternFilePathMatcher` in `python/cocoindex/resources/file.py` | `fs::FileEntry`; no shared Rust file resource module | Missing/Partial | This is the main reason localfs/S3/OCI/GDrive cannot share the Python connector shape yet. Rust `FileEntry` is useful but is localfs-specific and does not model lazy metadata/content, content fingerprint, BOM-aware text decode, or path matcher semantics. |
+| File resources | `FileMetadata`, `FileLike`, `FilePath`, `FilePathMatcher`, `MatchAllFilePathMatcher`, `PatternFilePathMatcher` in `python/cocoindex/resources/file.py` | LocalFS exposes `FilePath`, `FileMetadata`, `FileLike`, matchers, `DirWalker.items()`; no shared cross-connector resource module | Partial | LocalFS now has the static resource shape and BOM-aware text decode. Remaining gaps are async/lazy cached reads, Python memo-state fallback semantics, live source support, and reuse by S3/OCI/GDrive. |
 | ID resources | `generate_id`, `generate_uuid`, `IdGenerator`, `UuidGenerator` in `python/cocoindex/resources/id.py` | `generate_id`, `generate_uuid`, `IdGenerator`, `UuidGenerator` in `rust/sdk/cocoindex/src/id.rs` | Good | Rust has tests for repeated identical deps, stability across runs, and constructor deps. |
 | Chunk resources | `TextPosition`, `Chunk` in `python/cocoindex/resources/chunk.py` | `cocoindex_ops_text::split::Chunk`, `OutputPosition`, `TextRange` | Partial/Different | Rust exposes this through `rust/ops_text`, not the main SDK. Rust chunks carry ranges and positions; callers slice the original text themselves. Python chunks include `text`, `location`, `start`, and `end`. |
 | Vector schema resources | `VectorSchema`, `MultiVectorSchema`, provider helpers in `python/cocoindex/resources/schema.py` | Per-connector vector column/index options only | Missing/Partial | Rust lacks a generic vector schema provider abstraction. |
@@ -598,9 +606,9 @@ behavior.
 | Python test family | Rust coverage | Status |
 | --- | --- | --- |
 | `resources/test_id.py` 12 tests | Rust `pipeline.rs` ID/UUID generator tests | Good |
-| `resources/test_file_path_matcher.py` 14 tests | no Rust matcher API | Missing |
-| `connectors/test_file_path.py` 7 tests | no shared Rust `FilePath` API | Missing |
-| `connectors/test_source_items.py` 3 tests | no shared Rust `items()` API | Missing |
+| `resources/test_file_path_matcher.py` 14 tests | LocalFS matcher unit tests | Partial |
+| `connectors/test_file_path.py` 7 tests | LocalFS `FilePath` base-key test | Partial |
+| `connectors/test_source_items.py` 3 tests | LocalFS `DirWalker.items()` tests | Partial |
 | `ops/test_text.py` 24 tests | Rust ops_text has implementation tests outside SDK framing; examples compile | Partial |
 | `ops/test_entity_resolution.py` 33 tests | Rust `entity_resolution.rs` has 7 tests covering core resolver paths | Partial/Good |
 | `ops/test_llm_pair_resolver.py` 6 tests | no Rust LLM pair resolver | Missing |
@@ -655,7 +663,7 @@ Recommended stance:
 | Ops | 67 | 7 entity-resolution SDK tests plus ops_text crate tests | Rust lacks LiteLLM, SentenceTransformer wrapper, and LLM pair resolver parity. |
 | Resources | 26 | ID plus LocalFS `FilePath`/matcher tests | Rust still lacks the full Python resource package surface. |
 | CLI | 44 | none | Rust SDK has no matching CLI surface. |
-| Total | 839 | 106 integration tests in `rust/sdk/cocoindex/tests`; 153 SDK crate tests including `src` unit tests | This is not a quality score, but it is a useful scale marker for parity work. |
+| Total | 839 | 106 integration tests in `rust/sdk/cocoindex/tests`; 157 SDK crate tests including `src` unit tests | This is not a quality score, but it is a useful scale marker for parity work. |
 
 Current Rust integration-test evidence:
 
@@ -677,29 +685,31 @@ currently tests behavior through specific connectors.
 
 ## Recommended Implementation Roadmap
 
-### Phase 1: Expose Rust Target-State Public API
+### Phase 1: Expose Rust Target-State Public API — DONE (except ownership transfer)
 
-Add SDK-level equivalents for:
+SDK-level equivalents now exist (`rust/sdk/cocoindex/src/target_state.rs`,
+re-exported from `lib.rs`):
 
-- `TargetState`
-- `TargetStateProvider`
-- `TargetHandler`
-- `TargetActionSink`
-- `TargetReconcileOutput`
-- `declare_target_state`
-- `declare_target_state_with_child`
-- `mount_target`
-- root provider registration
-- attachment provider access
+- [x] `TargetState`
+- [x] `TargetStateProvider`
+- [x] `TargetHandler` (now with a default `attachments()` method)
+- [x] `TargetActionSink` (+ `from_async_fn_with_children` for container targets)
+- [x] `TargetReconcileOutput`
+- [x] `ChildTargetDef` (child/attachment handler definition)
+- [x] `declare_target_state`
+- [x] `declare_target_state_with_child`
+- [x] `mount_target` (foreground child-provider readiness via `use_mount`)
+- [x] root provider registration (`register_root_target_states_provider`)
+- [x] attachment provider access (`TargetStateProvider::attachment`)
 
-Then add generic tests matching Python:
+Generic tests added in `tests/target_state.rs`:
 
-- flat target insert/update/delete/no-change
-- target state in components
-- mount target insert/delete
-- attachments lifecycle
-- provider generation destructive/lossy/no invalidation
-- ownership transfer
+- [x] flat target insert/update/delete/no-change
+- [x] target state in components (declared inside `mount_each`)
+- [x] mount target child insert/delete
+- [x] attachments lifecycle (create + orphan cleanup)
+- [x] provider generation destructive/lossy/no invalidation
+- [ ] ownership transfer — deferred to Phase 3 (needs `ManagedBy`/`statediff`)
 
 ### Phase 2: Refactor Existing Rust Connectors to the Public Shape
 
@@ -800,8 +810,8 @@ examples.
 | `examples/hn_trending_topics` | Postgres table target, web/API source, table rows | `examples/rust/hn-trending-topics` | Partial/close | Rust writes through `postgres::mount_table_target`; remaining direct `sqlx::query` usage is read/query UI. Add target lifecycle tests that mirror Python table target behavior. |
 | `examples/conversation_to_knowledge` | `localfs.walk_dir`, SurrealDB table/relation targets | `examples/rust/conversation-to-knowledge` | Partial | Rust has SurrealDB target/relation helpers, but still needs vector indexes, managed-by, richer schema tests, and closer target naming. |
 | `examples/entire_session_search` | `localfs.walk_dir(live=True)`, `PatternFilePathMatcher`, `RecursiveSplitter`, `SentenceTransformerEmbedder`, two Postgres table targets/vector index | none | Missing/overlaps | Connector coverage overlaps with `code-embedding`, but the live localfs source, two-table Postgres target shape, and exact query helper path are not ported. |
-| `examples/files_transform` | `localfs.walk_dir`, `localfs.dir_target`, `declare_file` | `examples/rust/files-transform` | Partial | Add Rust `FilePath`/matcher/live semantics before claiming localfs parity. |
-| `examples/multi_codebase_summarization` | LocalFS source plus generated file target | `examples/rust/multi-codebase-summarization` | Partial | Same localfs gaps: stable path abstraction, target constructor/declaration split, live mode. |
+| `examples/files_transform` | `localfs.walk_dir`, `localfs.dir_target`, `declare_file` | `examples/rust/files-transform` | Partial/close | Static LocalFS target/source shape exists; live mode remains missing. |
+| `examples/multi_codebase_summarization` | LocalFS source plus generated file target | `examples/rust/multi-codebase-summarization` | Partial | Static LocalFS pieces exist; live mode and exact source-resource shape remain different. |
 | `examples/csv_to_kafka` | Kafka topic target | `examples/rust/csv-to-kafka` | Partial | Rust has target only. Add Kafka source stream/map APIs and constructor/declaration split. |
 | `examples/code_embedding` | LocalFS source, Postgres table target/vector index | `examples/rust/code-embedding` | Partial | Postgres target is the right native direction. Remaining gaps are localfs source shape and Postgres target attachments/options. |
 | `examples/amazon_s3_embedding` | S3 object source, Postgres target | none | Missing | Needs Rust object-source abstraction and S3 connector. |
@@ -809,14 +819,14 @@ examples.
 | `examples/oci_object_storage_embedding` | OCI object source, Postgres target, live object semantics | none | Missing | Wait for Rust live source/map public API, then port OCI. |
 | `examples/image_search` | LocalFS image source, `FileLike`, `PatternFilePathMatcher`, `VectorSchema`, Qdrant collection target, CLIP embedding, FastAPI query path | none | Missing | Needs Rust Qdrant collection target plus shared file/image resource shape; frontend/API parity is example-level. |
 | `examples/image_search_colpali` | LocalFS image source, `MultiVectorSchema`, Qdrant multivector collection target, ColPali embedding, FastAPI query path | none | Missing | Needs Rust Qdrant multivector support and generic vector/multivector schema resources before example parity. |
-| `examples/code_embedding_lancedb` | LocalFS source, LanceDB target | none | Missing | Needs LanceDB table target. |
-| `examples/text_embedding_lancedb` | LocalFS source, LanceDB target | none | Missing | Same LanceDB target gap. |
+| `examples/code_embedding_lancedb` | LocalFS source, LanceDB target | none | Missing | LanceDB target exists; exact example still not ported. |
+| `examples/text_embedding_lancedb` | LocalFS source, LanceDB target | `examples/rust/text-embedding-lancedb` | Partial/close | Rust example exists with native LanceDB target; remaining gaps are live LocalFS and fuller LanceDB optimize/schema behavior. |
 | `examples/kafka_to_lancedb` | Kafka source, LanceDB target | none | Missing | Needs both Kafka source and LanceDB target. |
 | `examples/text_embedding_qdrant` | LocalFS source, Qdrant collection target | none | Missing | Needs Qdrant collection target. |
 | `examples/text_embedding_turbopuffer` | LocalFS source, Turbopuffer namespace target | none | Missing | Needs Turbopuffer namespace target. |
 | `examples/meeting_notes_graph_neo4j` | Google Drive source, Neo4j table/relation targets | none | Missing | Needs Google Drive source plus graph target family. |
 | `examples/meeting_notes_graph_falkordb` | Google Drive source, FalkorDB table/relation targets | none | Missing | Needs Google Drive source plus graph target family. |
-| `examples/text_embedding` | LocalFS source, Postgres target | none as Rust standalone | Missing/covered by code embedding | Add only if product wants exact example parity; connector coverage overlaps with `code-embedding`. |
+| `examples/text_embedding` | LocalFS source, Postgres target | `examples/rust/text-embedding` | Partial/close | Rust standalone example exists; remaining gaps are live LocalFS and exact Python resource/target constructor shape. |
 | `examples/pdf_embedding`, `examples/pdf_to_markdown` | LocalFS file resources plus PDF parsing targets | none | Missing | Connector parity depends on localfs file abstraction; transforms are example-level. |
 | `examples/audio_to_text` | External audio/transcription transforms plus target writes | none | Out of connector parity scope | Port after connector/runtime parity, unless product wants Rust examples for these flows. |
 | `examples/paper_metadata` | External paper metadata extraction plus target writes | none | Out of connector parity scope | Port after connector/runtime parity; likely depends more on transform/client parity than a new storage connector. |
@@ -835,7 +845,7 @@ Rust parity status.
 | Good/close | `App`, `DropHandle`, `UpdateHandle`, `ContextKey`, `StatsGroupHandle`, `fn` | Rust exposes `App`, `DropHandle`, `UpdateHandle`, `ContextKey`, `StatsGroupHandle`, and `#[cocoindex::function]`. Shape is Rust-idiomatic rather than Python-identical. |
 | Partial/different app surface | `AppConfig`, `show_progress`, `ComponentStats`, `UpdateSnapshot`, `UpdateStats`, `UpdateStatus` | Rust uses `AppBuilder`, `UpdateOptions`, `Progress`, `RunStats`, and handle snapshots. Needs mapping docs/tests if these are considered API parity requirements. |
 | Partial context/component surface | `stats_group`, `use_context`, `get_component_context`, `ComponentContext`, `ComponentSubpath`, `component_subpath`, `mount_each`, `map`, `auto_refresh` | Rust exposes `Ctx`, `Ctx::stats_group`, `Ctx::get_key`, `Ctx::mount_each`, `Ctx::map`, `Ctx::auto_refresh`; missing Python global function shape and component context/subpath API. |
-| Missing generic target-state surface | `ChildTargetDef`, `TargetState`, `TargetStateProvider`, `TargetReconcileOutput`, `TargetHandler`, `TargetActionSink`, `PendingTargetStateProvider`, `declare_target_state`, `declare_target_state_with_child`, `register_root_target_states_provider`, `mount_target` | Rust core has machinery, but SDK does not expose these publicly. This is the largest connector-parity blocker. |
+| Partial generic target-state surface | `ChildTargetDef`, `TargetState`, `TargetStateProvider`, `TargetReconcileOutput`, `TargetHandler`, `TargetActionSink`, `PendingTargetStateProvider`, `declare_target_state`, `declare_target_state_with_child`, `register_root_target_states_provider`, `mount_target` | Rust exposes `TargetState`, `TargetStateProvider`, `TargetReconcileOutput`, `TargetHandler`, `TargetActionSink`, declarations, root registration, and declaration-only `mount_target`; missing `ChildTargetDef`, pending provider shape, full Python mount readiness, and handler attachments. |
 | Missing/default environment surface | `Environment`, `EnvironmentBuilder`, `LifespanFn`, `lifespan`, `start`, `stop`, `start_blocking`, `stop_blocking`, `default_env`, `runtime` | Rust examples use explicit `App::builder`; no Python-style default env/lifespan API. |
 | Missing live/error surface | `LiveComponent`, `LiveComponentOperator`, `LiveMapFeed`, `LiveMapView`, `LiveMapSubscriber`, `ComponentMountHandle`, `mount`, `use_mount`, `ExceptionContext`, `ExceptionHandler`, `exception_handler` | Rust exposes only limited `auto_refresh`; no public live component, mount/use_mount, or scoped exception handler equivalents. |
 | Missing runner surface | `GPU`, `Runner` | Rust has batching helpers but no Runner/GPU/subprocess runner equivalent. |
@@ -942,7 +952,7 @@ This checklist is derived from the current Python test names under
 | `test_oci_object_storage.py` | prefix/matcher/max-size/pagination, `get_object`/`read`, `exists()` metadata caching and 404, live event cutoff/readiness/future/malformed/deleted/cross-bucket/transient-error/cancel behavior, path matcher, memo key, real `mount_each` scan | none | Medium/High after live API |
 | `test_google_drive` | No dedicated Python test file exists yet | `gdrive_source_lists_recursively_and_filters_mime_types`, `gdrive_client_reads_binary_and_exports_google_docs`; unit tests for JWT/list parsing/export mapping | Add Python parity tests or document Rust-only coverage |
 | `test_sqlite_target.py` | CRUD, schema types, drop table, no-change optimization, multiple tables, dict rows, user-managed table, vec0 basic/partition/aux columns/schema switch/validation/extension errors/column overrides, regular-vs-vec0 switch | none | High after target-state API |
-| `test_lancedb_target.py` | add columns preserving existing rows, nullable materialization for new non-null columns, optimize interval, optimize no-overlap, mutation preservation/retry after optimize failure, existing/new table optimize behavior, async add-columns API | none | Medium |
+| `test_lancedb_target.py` | add columns preserving existing rows, nullable materialization for new non-null columns, optimize interval, optimize no-overlap, mutation preservation/retry after optimize failure, existing/new table optimize behavior, async add-columns API | Rust e2e covers create/upsert/search/delete and additive scalar column preservation; unit tests cover schema validation, nullability, nullable vectors, predicates | Medium |
 | `test_doris_target.py` | CRUD, dict rows, vector index creation, no-change optimization | none | Medium |
 | `test_qdrant_target.py` | No dedicated Python test file currently found | none | Add tests when porting; cover collection lifecycle, named vectors, upsert/delete/no-change |
 | `test_turbopuffer_target.py` | insert/update/delete, named vectors, f32/f16, unsupported dtype, single vector list/ndarray/dict rejection, missing/non-dict named vectors, reserved attribute collisions, empty named vectors, schema construction | none | Medium |
@@ -960,7 +970,7 @@ tests, 67 ops tests, and 44 CLI tests.
 | --- | --- | --- | --- |
 | App lifecycle/drop/default env | `test_trivial_app.py`, `test_update_handle.py`, `test_app_drop.py`, `test_default_env.py`, `test_default_env_async.py`, `test_lazy_environment_lock.py` cover sync/async app forms, handles/watch/progress, drop cleanup/retry, default env startup and env vars | Rust `pipeline.rs` covers app run/open, update/drop handles, blocking/async updates, stats snapshots, drop state clears memoization | Medium/High; default environment is missing/different |
 | Concurrency control | `test_concurrency_control.py` covers max-inflight quota enforcement, nested-mount deadlock prevention, default limit, and `COCOINDEX_MAX_INFLIGHT_COMPONENTS` env fallback | Rust `pipeline.rs` now covers explicit `max_inflight_components` quota enforcement and nested scope no-deadlock behavior | Medium; default/env fallback remains missing because Rust has no default-env loader parity |
-| Generic target states | `test_flat_target_states.py`, `test_component_target_states.py`, `test_attachment_target_states.py`, `test_provider_generation.py`, `test_ownership_transfer.py`, `test_typed_serde_target.py` cover insert/upsert/delete/no-change, preview, components, mount target, attachments, destructive/lossy generation, ownership transfer, typed handler wrapping | Rust has connector-specific target tests and internal private helpers; no public generic target-state tests | Highest |
+| Generic target states | `test_flat_target_states.py`, `test_component_target_states.py`, `test_attachment_target_states.py`, `test_provider_generation.py`, `test_ownership_transfer.py`, `test_typed_serde_target.py` cover insert/upsert/delete/no-change, preview, components, mount target, attachments, destructive/lossy generation, ownership transfer, typed handler wrapping | Rust has one public typed no-child target-state test plus connector-specific target tests; no full child/attachment/provider-generation/ownership parity suite | Highest |
 | Live components and exception routing | `test_live_component.py`, `test_exception_handlers.py`, `test_auto_refresh.py`, `test_cancellation.py`, `test_component_submit_order.py` cover live catch-up/incremental delete/update, ready signaling, background errors, scoped/global handlers, cancellation, parent waits for child ready | Rust has `ctx_auto_refresh_*` tests only; no public live component or exception handler API | High |
 | Function memoization and logic tracking | `test_function_memo.py`, `test_logic_change_detection.py`, `test_component_memo.py`, `test_function_class_methods.py`, `test_function_misc.py`, `test_full_reprocess.py` cover memo with targets/components, nested calls, decorator/code/deps invalidation, bound/static/class methods, full reprocess semantics | Rust `pipeline.rs` has strong memo/macro/function hash/context dependency tests, but less class/method/dynamic logic-mode surface because Rust shape differs | Medium; document idiomatic differences. Python exposes `LogicTracking`; Rust has macro/hash behavior but no named `LogicTracking` type alias. |
 | Batching and runners | `test_function_batching.py` covers sync/async batching, max batch size, extra arg grouping, `Runner`, `GPU`, subprocess runner, memo with runner | Rust covers `Ctx::batch`, `memo::batch`, macro batch cache hits/errors, duplicate keys; no Runner/GPU/subprocess equivalent | Medium/High if Python Runner is product parity goal |
