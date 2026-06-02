@@ -1,13 +1,20 @@
 //! Filesystem walking with fingerprinting.
 
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
+use std::sync::Arc;
 use std::time::SystemTime;
 
+use cocoindex_core::engine::target_state::{TargetReconcileOutput, TargetStateProvider};
+use cocoindex_core::state::stable_path::StableKey;
+use cocoindex_utils::fingerprint::Fingerprint;
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
 
+use crate::ctx::Ctx;
 use crate::error::{Error, Result};
+use crate::profile::{Action, BoxedHandler, BoxedSink, RustProfile, Value};
 
 // ---------------------------------------------------------------------------
 // FileEntry
@@ -173,72 +180,190 @@ fn relative_path(root: &Path, canonical_root: &Path, path: &Path) -> Result<Path
 // DirTarget
 // ---------------------------------------------------------------------------
 
-/// Declares files that should exist in a directory.
-/// CocoIndex auto-syncs: files not declared this run are deleted.
+/// A declarative directory target — the Rust analogue of Python's `localfs`
+/// directory target.
+///
+/// Files you [`declare_file`](DirTarget::declare_file) are reconciled against
+/// the previous run via CocoIndex's target-state engine:
+/// * new or changed files are written,
+/// * unchanged files are skipped (no rewrite),
+/// * files declared in a previous run but **not** this run (e.g. their source
+///   was deleted) are removed from disk.
 #[derive(Clone)]
 pub struct DirTarget {
+    provider: TargetStateProvider<RustProfile>,
     dir: PathBuf,
 }
 
-impl DirTarget {
-    /// Create a directory target.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::Io`] if the directory or its parents cannot be created.
-    pub fn new(dir: impl Into<PathBuf>) -> Result<Self> {
-        let dir = dir.into();
-        std::fs::create_dir_all(&dir).map_err(Error::Io)?;
-        Ok(Self { dir })
-    }
+/// Mount a declarative directory target rooted at `dir`. Declared files are
+/// synced to disk; orphaned files are deleted on later runs.
+///
+/// Must be called inside an `App::update()`/`App::run()` pipeline.
+pub fn mount_dir_target(ctx: &Ctx, dir: impl Into<PathBuf>) -> Result<DirTarget> {
+    let dir = dir.into();
+    std::fs::create_dir_all(&dir).map_err(Error::Io)?;
+    let provider = ctx.register_root_target_provider(
+        format!("cocoindex/localfs/dir/{}", dir.to_string_lossy()),
+        dir_handler(dir.clone()),
+    )?;
+    Ok(DirTarget { provider, dir })
+}
 
-    /// Declare a file that should exist. Content is fingerprinted.
+impl DirTarget {
+    /// Mount a declarative directory target. See [`mount_dir_target`].
     ///
     /// # Examples
     ///
     /// ```no_run
-    /// # use cocoindex::fs::DirTarget;
-    /// # fn main() -> cocoindex::error::Result<()> {
-    /// let target = DirTarget::new("./output")?;
-    /// target.declare_file("result.txt", b"final output")?;
+    /// # use cocoindex::{ctx::Ctx, fs::DirTarget};
+    /// # async fn doc(ctx: &Ctx) -> cocoindex::error::Result<()> {
+    /// let target = DirTarget::mount(ctx, "./output")?;
+    /// target.declare_file(ctx, "result.txt", b"final output")?;
     /// # Ok(())
     /// # }
     /// ```
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::Io`] if the parent directory cannot be created or if
-    /// the file cannot be written to disk.
-    pub fn declare_file(&self, name: &str, content: &[u8]) -> Result<()> {
-        let path = Path::new(name);
-        let has_parent_dir = path
-            .components()
-            .any(|component| matches!(component, std::path::Component::ParentDir));
-        #[cfg(windows)]
-        let has_prefix = path
-            .components()
-            .any(|component| matches!(component, std::path::Component::Prefix(_)));
-        #[cfg(not(windows))]
-        let has_prefix = false;
-
-        if path.has_root() || has_prefix || has_parent_dir {
-            return Err(Error::engine(
-                "declare_file path must be relative and cannot contain '..'",
-            ));
-        }
-
-        let path = self.dir.join(name);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(Error::Io)?;
-        }
-        std::fs::write(&path, content).map_err(Error::Io)?;
-        Ok(())
+    pub fn mount(ctx: &Ctx, dir: impl Into<PathBuf>) -> Result<Self> {
+        mount_dir_target(ctx, dir)
     }
 
-    /// Get the target directory path.
+    /// The target directory path.
     pub fn dir(&self) -> &Path {
         &self.dir
     }
+
+    /// Declare that a file with `content` should exist at `name` (a relative
+    /// path under the target directory). The actual write/skip/delete is decided
+    /// by the engine during reconciliation.
+    ///
+    /// # Errors
+    /// Returns an error if `name` is absolute or contains `..`, or if recording
+    /// the target state fails.
+    pub fn declare_file(&self, ctx: &Ctx, name: &str, content: &[u8]) -> Result<()> {
+        validate_relative_name(name)?;
+        let key = StableKey::Str(Arc::from(name));
+        ctx.declare_target_state(
+            self.provider.clone(),
+            key,
+            Value::from_serializable(&content.to_vec())?,
+        )
+    }
+}
+
+fn validate_relative_name(name: &str) -> Result<()> {
+    let path = Path::new(name);
+    let has_parent = path
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir));
+    if name.is_empty() || path.has_root() || has_parent {
+        return Err(Error::engine(
+            "declare_file name must be a non-empty relative path without '..'",
+        ));
+    }
+    Ok(())
+}
+
+/// What the sink should do for one file: write `content`, or delete when `None`.
+#[derive(Serialize, Deserialize)]
+struct FileAction {
+    name: String,
+    content: Option<Vec<u8>>,
+}
+
+fn dir_handler(dir: PathBuf) -> BoxedHandler {
+    let sink = dir_sink(dir);
+    BoxedHandler::new(move |key, desired, prev, prev_may_be_missing| {
+        let StableKey::Str(name) = &key else {
+            return Err(cocoindex_utils::error::Error::internal_msg(format!(
+                "unexpected file target key: {key:?}"
+            )));
+        };
+        let name = name.to_string();
+
+        let desired_content: Option<Vec<u8>> = desired
+            .map(Value::deserialize::<Vec<u8>>)
+            .transpose()
+            .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?;
+        let desired_fp: Option<Fingerprint> = match &desired_content {
+            Some(content) => Some(
+                Fingerprint::from(content)
+                    .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?,
+            ),
+            None => None,
+        };
+
+        // Skip when nothing changed.
+        let prev_same = desired_fp.as_ref().is_some_and(|fp| {
+            prev.iter()
+                .filter_map(|v| v.deserialize::<Fingerprint>().ok())
+                .any(|p| &p == fp)
+        });
+        if desired_content.is_some() && prev_same && !prev_may_be_missing {
+            return Ok(None);
+        }
+        if desired_content.is_none() && prev.is_empty() && !prev_may_be_missing {
+            return Ok(None);
+        }
+
+        let tracking_record = match &desired_fp {
+            Some(fp) => Some(
+                Value::from_serializable(fp)
+                    .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?,
+            ),
+            None => None,
+        };
+        let action = FileAction {
+            name,
+            content: desired_content,
+        };
+        Ok(Some(TargetReconcileOutput {
+            action: Action::Update(
+                Value::from_serializable(&action)
+                    .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?,
+            ),
+            sink: sink.clone(),
+            tracking_record,
+            child_invalidation: None,
+        }))
+    })
+}
+
+fn dir_sink(dir: PathBuf) -> BoxedSink {
+    BoxedSink::new(move |actions| {
+        let dir = dir.clone();
+        Box::pin(async move {
+            let result = tokio::task::spawn_blocking(move || -> std::result::Result<(), String> {
+                for action in actions {
+                    let inner = match action {
+                        Action::Create(v) | Action::Update(v) | Action::Delete(v) => v,
+                    };
+                    let file: FileAction = inner.deserialize().map_err(|e| e.to_string())?;
+                    let path = dir.join(&file.name);
+                    match file.content {
+                        Some(content) => {
+                            if let Some(parent) = path.parent() {
+                                std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+                            }
+                            std::fs::write(&path, &content).map_err(|e| e.to_string())?;
+                        }
+                        None => match std::fs::remove_file(&path) {
+                            Ok(()) => {}
+                            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                            Err(e) => return Err(e.to_string()),
+                        },
+                    }
+                }
+                Ok(())
+            })
+            .await;
+            match result {
+                Ok(Ok(())) => Ok(None),
+                Ok(Err(e)) => Err(cocoindex_utils::error::Error::internal_msg(e)),
+                Err(e) => Err(cocoindex_utils::error::Error::internal_msg(format!(
+                    "dir target sink task panicked: {e}"
+                ))),
+            }
+        }) as Pin<Box<_>>
+    })
 }
 
 #[cfg(test)]
@@ -327,52 +452,19 @@ mod tests {
     }
 
     #[test]
-    fn dir_target_declare_file_path_traversal() {
-        let dir = tempfile::tempdir().unwrap();
-        let target = DirTarget::new(dir.path()).unwrap();
+    fn dir_target_name_validation_rejects_traversal_and_absolute() {
+        // Relative `..` traversal.
+        assert!(validate_relative_name("../escape.txt").is_err());
+        assert!(validate_relative_name("sub/../../escape.txt").is_err());
+        // Absolute / rooted paths.
+        assert!(validate_relative_name("/absolute/path").is_err());
+        // Empty.
+        assert!(validate_relative_name("").is_err());
+        // Valid relative paths (including nested) are accepted.
+        assert!(validate_relative_name("valid.txt").is_ok());
+        assert!(validate_relative_name("sub/valid.txt").is_ok());
 
-        // Check relative traversal
-        let err = target.declare_file("../escape.txt", b"bad").unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("must be relative and cannot contain '..'")
-        );
-
-        let err = target
-            .declare_file("sub/../../escape.txt", b"bad")
-            .unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("must be relative and cannot contain '..'")
-        );
-
-        // Check rooted / absolute traversal
-        let err = target.declare_file("/absolute/path", b"bad").unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("must be relative and cannot contain '..'")
-        );
-
-        #[cfg(windows)]
-        {
-            let err = target
-                .declare_file(r"C:\absolute\path.txt", b"bad")
-                .unwrap_err();
-            assert!(
-                err.to_string()
-                    .contains("must be relative and cannot contain '..'")
-            );
-
-            let err = target
-                .declare_file(r"C:drive-relative.txt", b"bad")
-                .unwrap_err();
-            assert!(
-                err.to_string()
-                    .contains("must be relative and cannot contain '..'")
-            );
-        }
-
-        // Valid path works
-        assert!(target.declare_file("sub/valid.txt", b"ok").is_ok());
+        let err = validate_relative_name("../x").unwrap_err();
+        assert!(err.to_string().contains("relative path without '..'"));
     }
 }

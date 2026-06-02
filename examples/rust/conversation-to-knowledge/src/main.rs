@@ -12,15 +12,13 @@
 //!
 //! What the Rust SDK provides vs. what this example hand-rolls:
 //!   - walk / memo / mount_each / map / ContextKey / IdGenerator  -> from `cocoindex`
+//!   - entity resolution (candidate search + pair resolver)        -> from `cocoindex`
+//!   - SurrealDB TableTarget / RelationTarget sync                 -> from `cocoindex`
 //!   - LLM structured extraction + entity-pair confirmation        -> `reqwest` -> OpenAI JSON
 //!   - audio download / diarized transcription                     -> `yt-dlp` + AssemblyAI REST
-//!   - entity resolution (embed -> cosine -> LLM -> union-find)    -> hand-rolled (`fastembed`)
-//!   - SurrealDB graph (nodes + RELATE edges)                      -> `surrealdb` crate
 //!
-//! Design note: the costly per-session fetch+LLM work is memoized; the graph is
-//! rebuilt idempotently each run (clear + recreate). Python uses declarative
-//! Table/Relation targets for fine-grained sync; here the incremental win comes
-//! from the memo, and the cheap graph rebuild keeps the output correct.
+//! Design note: costly per-session fetch+LLM work is memoized; graph writes are
+//! declared through SurrealDB targets and reconciled by CocoIndex target state.
 
 mod clients;
 mod models;
@@ -137,20 +135,9 @@ async fn app_main(ctx: Ctx, input_dir: PathBuf) -> Result<()> {
         dedups.insert(kind.to_string(), dedup);
     }
 
-    // Phase 3: build the knowledge graph (idempotent rebuild).
+    // Phase 3: declare the desired knowledge graph.
     create_knowledge_base(&ctx, &processed, &dedups).await?;
 
-    // Report.
-    let graph = ctx.get_key(&clients::GRAPH)?;
-    let stmts: usize = processed.iter().map(|p| p.statements.len()).sum();
-    println!(
-        "graph: {} sessions, {} statements, {} persons, {} techs, {} orgs",
-        graph.count("session").await?,
-        stmts,
-        graph.count(PERSON).await?,
-        graph.count(TECH).await?,
-        graph.count(ORG).await?,
-    );
     Ok(())
 }
 
@@ -184,11 +171,12 @@ async fn main() -> Result<()> {
     .await?;
     let llm = LlmClient::new(env_or("LLM_MODEL", "gpt-4o-mini"))?;
     let resolver_llm = LlmClient::new(env_or("RESOLUTION_LLM_MODEL", "gpt-4o-mini"))?;
-    let embedder =
-        tokio::task::spawn_blocking(|| Embedder::load("sentence-transformers/all-MiniLM-L6-v2"))
-            .await
-            .map_err(|e| Error::engine(format!("embedder load panicked: {e}")))??;
+    let embedding_model = env_or("EMBEDDING_MODEL", "Snowflake/snowflake-arctic-embed-xs");
+    let embedder = tokio::task::spawn_blocking(move || Embedder::load(&embedding_model))
+        .await
+        .map_err(|e| Error::engine(format!("embedder load panicked: {e}")))??;
 
+    let graph_for_report = graph.clone();
     let app = App::builder("ConversationToKnowledge")
         .db_path(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".cocoindex_db"))
         .provide_key(&clients::GRAPH, graph)
@@ -199,6 +187,14 @@ async fn main() -> Result<()> {
         .await?;
 
     let stats = app.run(move |ctx| app_main(ctx, input_dir)).await?;
+    println!(
+        "graph: {} sessions, {} statements, {} persons, {} techs, {} orgs",
+        graph_for_report.count("session").await?,
+        graph_for_report.count("statement").await?,
+        graph_for_report.count(PERSON).await?,
+        graph_for_report.count(TECH).await?,
+        graph_for_report.count(ORG).await?,
+    );
     println!("{stats}");
     Ok(())
 }

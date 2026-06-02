@@ -1,12 +1,17 @@
 pub mod app;
 pub mod ctx;
+pub mod entity_resolution;
 pub mod error;
 pub mod fs;
 pub mod id;
 pub mod memo;
+#[cfg(feature = "postgres")]
+pub mod postgres;
 pub mod prelude;
 pub(crate) mod profile;
 mod stats;
+#[cfg(feature = "surrealdb")]
+pub mod surrealdb;
 mod typemap;
 
 // Flat re-exports — the public API surface
@@ -15,8 +20,12 @@ pub use app::{
     UpdateOptions,
 };
 pub use ctx::{ContextKey, Ctx};
+pub use entity_resolution::{
+    CanonicalSide, EntityEmbedder, ExistingCanonicalPolicy, PairDecision, PairResolver,
+    ResolutionEvent, ResolveOptions, ResolvedEntities, resolve_entities,
+};
 pub use error::{Error, Result};
-pub use fs::{DirTarget, FileEntry, walk};
+pub use fs::{DirTarget, FileEntry, mount_dir_target, walk};
 pub use id::{
     IdGenerator, UuidGenerator, generate_id, generate_id_default, generate_uuid,
     generate_uuid_default,

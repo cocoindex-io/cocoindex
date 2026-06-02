@@ -2,14 +2,14 @@
 
 use std::collections::{HashMap, HashSet};
 
+use async_trait::async_trait;
+use cocoindex::entity_resolution;
 use cocoindex::prelude::*;
+use cocoindex::surrealdb;
 use serde::Deserialize;
-use surrealdb::types::RecordId;
 
-use crate::clients::{EMBEDDER, GRAPH, LLM, RESOLVER_LLM};
+use crate::clients::{EMBEDDER, Embedder, GRAPH, LLM, LlmClient, RESOLVER_LLM};
 use crate::models::*;
-
-const SIM_THRESHOLD: f32 = 0.72;
 
 // ---------------------------------------------------------------------------
 // Phase 1: per-session processing
@@ -108,7 +108,7 @@ pub fn format_transcript(
 
 /// Process one session end-to-end (fetch -> 2-pass extract -> assign ids).
 /// Memoized by source: unchanged sessions skip all fetch/LLM work. Graph writes
-/// happen later in `create_knowledge_base` (a full idempotent rebuild).
+/// happen later in `create_knowledge_base` through target-state declarations.
 #[cocoindex::function(memo)]
 pub async fn process_session(ctx: &Ctx, source: &SessionSource) -> Result<ProcessedSession> {
     let transcript = fetch_transcript(&ctx, &source).await?;
@@ -169,110 +169,107 @@ pub async fn resolve_entities(
     kind: &String,
     names: &Vec<String>,
 ) -> Result<HashMap<String, Option<String>>> {
-    let mut map: HashMap<String, Option<String>> =
-        names.iter().map(|n| (n.clone(), None)).collect();
-    if names.len() < 2 {
-        return Ok(map);
-    }
-
     let embedder = ctx.get_key(&EMBEDDER)?;
-    let embeddings = embedder.embed(names.clone()).await?;
-
-    // Candidate near-duplicate pairs by cosine similarity (vectors normalized).
-    let mut candidates: Vec<(usize, usize)> = Vec::new();
-    for i in 0..names.len() {
-        for j in (i + 1)..names.len() {
-            if cosine(&embeddings[i], &embeddings[j]) >= SIM_THRESHOLD {
-                candidates.push((i, j));
-            }
-        }
-    }
-    if candidates.is_empty() {
-        return Ok(map);
-    }
-
-    // LLM confirms which candidate pairs are the same real-world entity.
     let llm = ctx.get_key(&RESOLVER_LLM)?;
-    let confirmed = confirm_pairs(llm, &kind, &names, &candidates).await?;
-
-    // Union-find over confirmed pairs.
-    let mut parent: Vec<usize> = (0..names.len()).collect();
-    for (&(i, j), &same) in candidates.iter().zip(confirmed.iter()) {
-        if same {
-            let (ri, rj) = (find(&mut parent, i), find(&mut parent, j));
-            if ri != rj {
-                parent[ri] = rj;
-            }
-        }
-    }
-
-    // Canonical per cluster = the longest name (ties: lexicographically smallest).
-    let mut canonical_of: HashMap<usize, usize> = HashMap::new();
-    for idx in 0..names.len() {
-        let root = find(&mut parent, idx);
-        let entry = canonical_of.entry(root).or_insert(idx);
-        let better = (names[idx].len(), std::cmp::Reverse(&names[idx]))
-            > (names[*entry].len(), std::cmp::Reverse(&names[*entry]));
-        if better {
-            *entry = idx;
-        }
-    }
-    for idx in 0..names.len() {
-        let root = find(&mut parent, idx);
-        let canon = canonical_of[&root];
-        map.insert(
-            names[idx].clone(),
-            if canon == idx {
-                None
-            } else {
-                Some(names[canon].clone())
-            },
-        );
-    }
-    Ok(map)
-}
-
-fn cosine(a: &[f32], b: &[f32]) -> f32 {
-    a.iter().zip(b).map(|(x, y)| x * y).sum()
-}
-
-fn find(parent: &mut [usize], mut x: usize) -> usize {
-    while parent[x] != x {
-        parent[x] = parent[parent[x]];
-        x = parent[x];
-    }
-    x
+    let resolver = LlmEntityResolver {
+        llm: llm.clone(),
+        kind: kind.clone(),
+    };
+    let resolved = entity_resolution::resolve_entities(
+        names,
+        &EntityNameEmbedder {
+            embedder: embedder.clone(),
+        },
+        &resolver,
+        None,
+        entity_resolution::ResolveOptions::default(),
+    )
+    .await?;
+    Ok(resolved.to_map().into_iter().collect())
 }
 
 #[derive(Deserialize)]
-struct PairConfirm {
+struct PairResolution {
+    matched: Option<String>,
     #[serde(default)]
-    same: Vec<bool>,
+    canonical: Option<String>,
 }
 
-async fn confirm_pairs(
-    llm: &crate::clients::LlmClient,
-    kind: &str,
-    names: &[String],
-    candidates: &[(usize, usize)],
-) -> Result<Vec<bool>> {
-    let mut listing = String::new();
-    for (n, &(i, j)) in candidates.iter().enumerate() {
-        listing.push_str(&format!("{n}. \"{}\" <=> \"{}\"\n", names[i], names[j]));
+struct EntityNameEmbedder {
+    embedder: Embedder,
+}
+
+#[async_trait]
+impl entity_resolution::EntityEmbedder for EntityNameEmbedder {
+    async fn embed_entity(&self, entity: &str) -> Result<Vec<f32>> {
+        let mut embeddings = self.embedder.embed(vec![entity.to_string()]).await?;
+        embeddings
+            .pop()
+            .ok_or_else(|| Error::engine("embedder returned no vector"))
     }
-    let system = format!(
-        "You are resolving duplicate {kind} entities. For each numbered pair, decide whether the \
-         two names refer to the SAME real-world {kind}. Return JSON {{\"same\": [bool, ...]}} with \
-         one boolean per pair, in the same order. Be conservative: only mark true when confident."
-    );
-    let confirm: PairConfirm = llm.json(&system, &listing).await?;
-    let mut out = confirm.same;
-    out.resize(candidates.len(), false);
-    Ok(out)
+}
+
+struct LlmEntityResolver {
+    llm: LlmClient,
+    kind: String,
+}
+
+#[async_trait]
+impl entity_resolution::PairResolver for LlmEntityResolver {
+    async fn resolve_pair(
+        &self,
+        entity: &str,
+        candidates: &[String],
+    ) -> Result<entity_resolution::PairDecision> {
+        let candidate_lines = candidates
+            .iter()
+            .enumerate()
+            .map(|(idx, candidate)| format!("{idx}. {candidate}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let system = format!(
+            "You are resolving duplicate {kind} entities. Given one new entity and a candidate \
+             list of canonical entities, decide whether the new entity refers to exactly one of \
+             the candidates. Return JSON {{\"matched\": string|null, \"canonical\": \"matched\"|\"new\"}}. \
+             Use matched=null when none are the same real-world {kind}. Be conservative.",
+            kind = self.kind
+        );
+        let user = format!("Entity: {entity}\n\nCandidates:\n{candidate_lines}");
+        let response: PairResolution = self.llm.json(&system, &user).await?;
+        let canonical = match response.canonical.as_deref() {
+            Some("new") => entity_resolution::CanonicalSide::New,
+            _ => entity_resolution::CanonicalSide::Matched,
+        };
+        Ok(entity_resolution::PairDecision {
+            matched: response.matched,
+            canonical,
+        })
+    }
+}
+
+fn session_schema() -> Result<surrealdb::TableSchema> {
+    surrealdb::TableSchema::new([
+        ("youtube_id", surrealdb::ColumnDef::new("string")),
+        ("name", surrealdb::ColumnDef::new("string")),
+        (
+            "description",
+            surrealdb::ColumnDef::new("string").nullable(),
+        ),
+        ("transcript", surrealdb::ColumnDef::new("string")),
+        ("date", surrealdb::ColumnDef::new("string").nullable()),
+    ])
+}
+
+fn statement_schema() -> Result<surrealdb::TableSchema> {
+    surrealdb::TableSchema::new([("statement", surrealdb::ColumnDef::new("string"))])
+}
+
+fn entity_schema() -> Result<surrealdb::TableSchema> {
+    surrealdb::TableSchema::new([("name", surrealdb::ColumnDef::new("string"))])
 }
 
 // ---------------------------------------------------------------------------
-// Phase 3: build the knowledge graph (idempotent full rebuild)
+// Phase 3: declare the desired knowledge graph target state
 // ---------------------------------------------------------------------------
 
 pub async fn create_knowledge_base(
@@ -282,52 +279,77 @@ pub async fn create_knowledge_base(
 ) -> Result<()> {
     let graph = ctx.get_key(&GRAPH)?;
 
-    graph
-        .clear(&[
-            "session",
-            "statement",
-            PERSON,
-            TECH,
-            ORG,
-            "session_statement",
-            "person_session",
-            "person_statement",
-            "statement_mentions",
-        ])
-        .await?;
+    let session_target =
+        surrealdb::mount_table_target_with_schema(ctx, graph, "session", Some(session_schema()?))?;
+    let statement_target = surrealdb::mount_table_target_with_schema(
+        ctx,
+        graph,
+        "statement",
+        Some(statement_schema()?),
+    )?;
+    let person_target =
+        surrealdb::mount_table_target_with_schema(ctx, graph, PERSON, Some(entity_schema()?))?;
+    let tech_target =
+        surrealdb::mount_table_target_with_schema(ctx, graph, TECH, Some(entity_schema()?))?;
+    let org_target =
+        surrealdb::mount_table_target_with_schema(ctx, graph, ORG, Some(entity_schema()?))?;
+    let session_statement_target = surrealdb::mount_relation_target(
+        ctx,
+        graph,
+        "session_statement",
+        &session_target,
+        &statement_target,
+    )?;
+    let person_session_target = surrealdb::mount_relation_target(
+        ctx,
+        graph,
+        "person_session",
+        &person_target,
+        &session_target,
+    )?;
+    let person_statement_target = surrealdb::mount_relation_target(
+        ctx,
+        graph,
+        "person_statement",
+        &person_target,
+        &statement_target,
+    )?;
+    let statement_mentions_target = surrealdb::mount_relation_target_many(
+        ctx,
+        graph,
+        "statement_mentions",
+        &[&statement_target],
+        &[&person_target, &tech_target, &org_target],
+        None,
+    )?;
 
-    let session_rec = |id: i64| RecordId::new("session", id);
-    let statement_rec = |id: i64| RecordId::new("statement", id);
-    let entity_rec = |kind: &str, name: &str| RecordId::new(kind, name);
+    let entity_target = |kind: &str| match kind {
+        PERSON => &person_target,
+        TECH => &tech_target,
+        ORG => &org_target,
+        _ => unreachable!("unknown entity type"),
+    };
 
     // Sessions + statements + session_statement edges.
     for ps in processed {
-        graph
-            .upsert(
-                session_rec(ps.session_id),
-                serde_json::json!({
-                    "youtube_id": ps.youtube_id,
-                    "name": ps.name,
-                    "description": ps.description,
-                    "transcript": ps.transcript,
-                    "date": ps.date,
-                }),
-            )
-            .await?;
+        session_target.declare_record(
+            ctx,
+            ps.session_id,
+            &serde_json::json!({
+                "youtube_id": &ps.youtube_id,
+                "name": &ps.name,
+                "description": &ps.description,
+                "transcript": &ps.transcript,
+                "date": &ps.date,
+            }),
+        )?;
         for st in &ps.statements {
-            graph
-                .upsert(
-                    statement_rec(st.id),
-                    serde_json::json!({ "statement": st.raw.statement }),
-                )
-                .await?;
-            graph
-                .relate(
-                    session_rec(ps.session_id),
-                    "session_statement",
-                    statement_rec(st.id),
-                )
-                .await?;
+            statement_target.declare_record(
+                ctx,
+                st.id,
+                &serde_json::json!({ "statement": &st.raw.statement }),
+            )?;
+            session_statement_target.declare_relation(ctx, ps.session_id, st.id)?;
         }
     }
 
@@ -336,9 +358,11 @@ pub async fn create_knowledge_base(
         let dedup = dedups.get(*kind).cloned().unwrap_or_default();
         for (name, upstream) in &dedup {
             if upstream.is_none() {
-                graph
-                    .upsert(entity_rec(kind, name), serde_json::json!({ "name": name }))
-                    .await?;
+                entity_target(kind).declare_record(
+                    ctx,
+                    name,
+                    &serde_json::json!({ "name": name }),
+                )?;
             }
         }
     }
@@ -350,26 +374,14 @@ pub async fn create_knowledge_base(
     for ps in processed {
         for person in &ps.identified_persons {
             let canon = resolve_canonical(person, person_dedup);
-            graph
-                .relate(
-                    entity_rec(PERSON, &canon),
-                    "person_session",
-                    session_rec(ps.session_id),
-                )
-                .await?;
+            person_session_target.declare_relation(ctx, canon, ps.session_id)?;
         }
         for st in &ps.statements {
             let mut seen: HashSet<String> = HashSet::new();
             for speaker in &st.raw.speakers {
                 let canon = resolve_canonical(speaker, person_dedup);
                 if seen.insert(canon.clone()) {
-                    graph
-                        .relate(
-                            entity_rec(PERSON, &canon),
-                            "person_statement",
-                            statement_rec(st.id),
-                        )
-                        .await?;
+                    person_statement_target.declare_relation(ctx, canon, st.id)?;
                 }
             }
             for kind in ENTITY_TYPES {
@@ -381,13 +393,13 @@ pub async fn create_knowledge_base(
                     .map(|e| resolve_canonical(e, dedup))
                     .collect();
                 for canon in canons {
-                    graph
-                        .relate(
-                            statement_rec(st.id),
-                            "statement_mentions",
-                            entity_rec(kind, &canon),
-                        )
-                        .await?;
+                    statement_mentions_target.declare_relation_between(
+                        ctx,
+                        "statement",
+                        st.id,
+                        kind,
+                        canon,
+                    )?;
                 }
             }
         }
@@ -421,7 +433,7 @@ pub fn collect_raw(processed: &[ProcessedSession], kind: &str) -> Vec<String> {
 async fn fetch_youtube(youtube_id: &str) -> Result<SessionTranscript> {
     let url = format!("https://www.youtube.com/watch?v={youtube_id}");
     let dir = tempdir()?;
-    let out_tmpl = dir.join("audio.%(ext)s");
+    let out_tmpl = dir.path().join("audio.%(ext)s");
     let out_tmpl = out_tmpl.to_string_lossy().to_string();
 
     // 1. Download audio + metadata JSON via yt-dlp (blocking subprocess).
@@ -471,7 +483,7 @@ async fn fetch_youtube(youtube_id: &str) -> Result<SessionTranscript> {
         }
     });
 
-    let mp3 = dir.join("audio.mp3");
+    let mp3 = dir.path().join("audio.mp3");
     let audio = std::fs::read(&mp3)
         .map_err(|e| Error::engine(format!("missing yt-dlp mp3 output {mp3:?}: {e}")))?;
 
@@ -514,7 +526,7 @@ async fn assemblyai_transcribe(audio: Vec<u8>) -> Result<Vec<Utterance>> {
         .json(&serde_json::json!({
             "audio_url": audio_url,
             "speaker_labels": true,
-            "speech_model": "universal",
+            "speech_models": ["universal-3-pro"],
         }))
         .send()
         .await
@@ -570,8 +582,9 @@ async fn assemblyai_transcribe(audio: Vec<u8>) -> Result<Vec<Utterance>> {
     }
 }
 
-fn tempdir() -> Result<std::path::PathBuf> {
-    let base = std::env::temp_dir().join(format!("conv2k_{}", std::process::id()));
-    std::fs::create_dir_all(&base).map_err(Error::Io)?;
-    Ok(base)
+fn tempdir() -> Result<tempfile::TempDir> {
+    tempfile::Builder::new()
+        .prefix("conv2k_")
+        .tempdir()
+        .map_err(Error::Io)
 }

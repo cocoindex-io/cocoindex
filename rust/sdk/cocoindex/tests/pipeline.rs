@@ -3130,3 +3130,133 @@ async fn ctx_batch_rejects_duplicate_keys() {
             .contains("duplicate cache keys generated")
     );
 }
+
+// ---------------------------------------------------------------------------
+// DirTarget — declarative directory target (write / skip / orphan-delete)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn dir_target_writes_skips_unchanged_and_reconciles_orphans() {
+    use cocoindex::DirTarget;
+    use std::fs;
+    use std::time::Duration;
+
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("lmdb");
+    let out = dir.path().join("out");
+
+    // Run 1: declare a.txt and a nested sub/b.txt.
+    let app = App::builder("dir_target_test")
+        .db_path(&db)
+        .build()
+        .await
+        .unwrap();
+    let out1 = out.clone();
+    app.update(move |ctx| async move {
+        let t = DirTarget::mount(&ctx, &out1)?;
+        t.declare_file(&ctx, "a.txt", b"AAA")?;
+        t.declare_file(&ctx, "sub/b.txt", b"BBB")?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    assert_eq!(fs::read(out.join("a.txt")).unwrap(), b"AAA");
+    assert_eq!(fs::read(out.join("sub/b.txt")).unwrap(), b"BBB");
+    let a_mtime = fs::metadata(out.join("a.txt")).unwrap().modified().unwrap();
+    drop(app);
+
+    // Run 2: declare only a.txt (unchanged). b.txt is now orphaned → deleted;
+    // a.txt is unchanged → must NOT be rewritten (mtime preserved).
+    tokio::time::sleep(Duration::from_millis(40)).await;
+    let app = App::builder("dir_target_test")
+        .db_path(&db)
+        .build()
+        .await
+        .unwrap();
+    let out2 = out.clone();
+    app.update(move |ctx| async move {
+        let t = DirTarget::mount(&ctx, &out2)?;
+        t.declare_file(&ctx, "a.txt", b"AAA")?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    assert!(out.join("a.txt").exists(), "kept file should remain");
+    assert!(
+        !out.join("sub/b.txt").exists(),
+        "orphaned file (no longer declared) must be deleted"
+    );
+    let a_mtime2 = fs::metadata(out.join("a.txt")).unwrap().modified().unwrap();
+    assert_eq!(
+        a_mtime, a_mtime2,
+        "unchanged file must be skipped (not rewritten)"
+    );
+    drop(app);
+
+    // Run 3: change a.txt content → rewritten.
+    let app = App::builder("dir_target_test")
+        .db_path(&db)
+        .build()
+        .await
+        .unwrap();
+    let out3 = out.clone();
+    app.update(move |ctx| async move {
+        let t = DirTarget::mount(&ctx, &out3)?;
+        t.declare_file(&ctx, "a.txt", b"ZZZ")?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    assert_eq!(fs::read(out.join("a.txt")).unwrap(), b"ZZZ");
+}
+
+#[tokio::test]
+async fn dir_target_deletes_file_when_source_disappears_via_mount_each() {
+    use cocoindex::DirTarget;
+    use std::fs;
+
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("lmdb");
+    let out = dir.path().join("out");
+
+    // Helper run: declare one output file per input name via mount_each (mirrors
+    // the files-transform example: target mounted at root, declared in children).
+    async fn run(db: &std::path::Path, out: &std::path::Path, names: Vec<&'static str>) {
+        let app = App::builder("dir_target_mount_each")
+            .db_path(db)
+            .build()
+            .await
+            .unwrap();
+        let out = out.to_path_buf();
+        app.update(move |ctx| async move {
+            let t = DirTarget::mount(&ctx, &out)?;
+            ctx.mount_each(
+                names,
+                |n| n.to_string(),
+                move |child, n| {
+                    let t = t.clone();
+                    async move {
+                        t.declare_file(&child, &format!("{n}.out"), n.as_bytes())?;
+                        Ok(())
+                    }
+                },
+            )
+            .await?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    }
+
+    run(&db, &out, vec!["alpha", "beta"]).await;
+    assert!(out.join("alpha.out").exists());
+    assert!(out.join("beta.out").exists());
+
+    // Drop "beta" from the input set → beta.out must be reconciled away.
+    run(&db, &out, vec!["alpha"]).await;
+    assert!(out.join("alpha.out").exists());
+    assert!(
+        !out.join("beta.out").exists(),
+        "output for a removed source must be deleted"
+    );
+}

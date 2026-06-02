@@ -1,0 +1,216 @@
+#![cfg(feature = "surrealdb")]
+
+use std::sync::LazyLock;
+
+use cocoindex::prelude::*;
+use cocoindex::surrealdb::{self, ColumnDef, Graph, TableSchema};
+
+static GRAPH: LazyLock<ContextKey<Graph>> =
+    LazyLock::new(|| ContextKey::new("surrealdb_smoke_graph"));
+
+async fn try_graph(db_name: &str) -> Option<Graph> {
+    let url = std::env::var("SURREALDB_URL").unwrap_or_else(|_| "127.0.0.1:8787".to_string());
+    let ns = std::env::var("SURREALDB_NS").unwrap_or_else(|_| "cocoindex".to_string());
+    let user = std::env::var("SURREALDB_USER").unwrap_or_else(|_| "root".to_string());
+    let pass = std::env::var("SURREALDB_PASS").unwrap_or_else(|_| "root".to_string());
+    Graph::connect(&url, &ns, db_name, &user, &pass).await.ok()
+}
+
+#[tokio::test]
+async fn surrealdb_targets_reconcile_records_and_relations_when_available() {
+    let db_name = format!(
+        "rust_sdk_surrealdb_smoke_{}_{}",
+        std::process::id(),
+        chrono_like_timestamp()
+    );
+    let Some(graph) = try_graph(&db_name).await else {
+        eprintln!("skipping SurrealDB smoke test; no local SurrealDB connection");
+        return;
+    };
+
+    let dir = tempfile::tempdir().unwrap();
+    let app = App::builder("surrealdb_target_smoke")
+        .db_path(dir.path().join("lmdb"))
+        .provide_key(&GRAPH, graph.clone())
+        .build()
+        .await
+        .unwrap();
+
+    run_graph(&app, &["alice", "bob"]).await;
+    assert_eq!(graph.count("person").await.unwrap(), 2);
+    assert_eq!(graph.count("knows").await.unwrap(), 1);
+
+    run_graph(&app, &["alice"]).await;
+    assert_eq!(graph.count("person").await.unwrap(), 1);
+    assert_eq!(graph.count("knows").await.unwrap(), 0);
+}
+
+#[tokio::test]
+async fn surrealdb_targets_e2e_conversation_graph_write_when_available() {
+    let db_name = format!(
+        "rust_sdk_surrealdb_e2e_{}_{}",
+        std::process::id(),
+        chrono_like_timestamp()
+    );
+    let Some(graph) = try_graph(&db_name).await else {
+        eprintln!("skipping SurrealDB e2e test; no local SurrealDB connection");
+        return;
+    };
+
+    let dir = tempfile::tempdir().unwrap();
+    let app = App::builder("surrealdb_target_e2e")
+        .db_path(dir.path().join("lmdb"))
+        .provide_key(&GRAPH, graph.clone())
+        .build()
+        .await
+        .unwrap();
+
+    run_conversation_graph(&app, true).await;
+    assert_eq!(graph.count("session").await.unwrap(), 1);
+    assert_eq!(graph.count("statement").await.unwrap(), 1);
+    assert_eq!(graph.count("person").await.unwrap(), 1);
+    assert_eq!(graph.count("tech").await.unwrap(), 1);
+    assert_eq!(graph.count("org").await.unwrap(), 1);
+    assert_eq!(graph.count("session_statement").await.unwrap(), 1);
+    assert_eq!(graph.count("statement_mentions").await.unwrap(), 3);
+
+    run_conversation_graph(&app, false).await;
+    assert_eq!(graph.count("session").await.unwrap(), 1);
+    assert_eq!(graph.count("statement").await.unwrap(), 1);
+    assert_eq!(graph.count("person").await.unwrap(), 1);
+    assert_eq!(graph.count("tech").await.unwrap(), 0);
+    assert_eq!(graph.count("org").await.unwrap(), 0);
+    assert_eq!(graph.count("session_statement").await.unwrap(), 1);
+    assert_eq!(graph.count("statement_mentions").await.unwrap(), 1);
+}
+
+async fn run_graph(app: &App, people: &'static [&'static str]) {
+    app.run(move |ctx| async move {
+        let graph = ctx.get_key(&GRAPH)?;
+        let person_schema = TableSchema::new([("name", ColumnDef::new("string"))])?;
+        let person =
+            surrealdb::mount_table_target_with_schema(&ctx, graph, "person", Some(person_schema))?;
+        let knows = surrealdb::mount_relation_target(&ctx, graph, "knows", &person, &person)?;
+
+        for name in people {
+            person.declare_record(&ctx, *name, &serde_json::json!({ "name": name }))?;
+        }
+        if people.contains(&"alice") && people.contains(&"bob") {
+            knows.declare_relation(&ctx, "alice", "bob")?;
+        }
+        Ok(())
+    })
+    .await
+    .unwrap();
+}
+
+async fn run_conversation_graph(app: &App, include_all_entities: bool) {
+    app.run(move |ctx| async move {
+        let graph = ctx.get_key(&GRAPH)?;
+        let session_schema = TableSchema::new([
+            ("youtube_id", ColumnDef::new("string")),
+            ("name", ColumnDef::new("string")),
+        ])?;
+        let statement_schema = TableSchema::new([("statement", ColumnDef::new("string"))])?;
+        let entity_schema = TableSchema::new([("name", ColumnDef::new("string"))])?;
+
+        let session = surrealdb::mount_table_target_with_schema(
+            &ctx,
+            graph,
+            "session",
+            Some(session_schema),
+        )?;
+        let statement = surrealdb::mount_table_target_with_schema(
+            &ctx,
+            graph,
+            "statement",
+            Some(statement_schema),
+        )?;
+        let person = surrealdb::mount_table_target_with_schema(
+            &ctx,
+            graph,
+            "person",
+            Some(entity_schema.clone()),
+        )?;
+        let tech = surrealdb::mount_table_target_with_schema(
+            &ctx,
+            graph,
+            "tech",
+            Some(entity_schema.clone()),
+        )?;
+        let org =
+            surrealdb::mount_table_target_with_schema(&ctx, graph, "org", Some(entity_schema))?;
+        let session_statement = surrealdb::mount_relation_target(
+            &ctx,
+            graph,
+            "session_statement",
+            &session,
+            &statement,
+        )?;
+        let statement_mentions = surrealdb::mount_relation_target_many(
+            &ctx,
+            graph,
+            "statement_mentions",
+            &[&statement],
+            &[&person, &tech, &org],
+            None,
+        )?;
+
+        session.declare_record(
+            &ctx,
+            100_i64,
+            &serde_json::json!({ "youtube_id": "local-demo", "name": "Demo" }),
+        )?;
+        statement.declare_record(
+            &ctx,
+            200_i64,
+            &serde_json::json!({ "statement": "CocoIndex writes Rust targets" }),
+        )?;
+        person.declare_record(
+            &ctx,
+            "George He",
+            &serde_json::json!({ "name": "George He" }),
+        )?;
+        session_statement.declare_relation(&ctx, 100_i64, 200_i64)?;
+        statement_mentions.declare_relation_between(
+            &ctx,
+            "statement",
+            200_i64,
+            "person",
+            "George He",
+        )?;
+
+        if include_all_entities {
+            tech.declare_record(&ctx, "Rust", &serde_json::json!({ "name": "Rust" }))?;
+            org.declare_record(
+                &ctx,
+                "CocoIndex",
+                &serde_json::json!({ "name": "CocoIndex" }),
+            )?;
+            statement_mentions.declare_relation_between(
+                &ctx,
+                "statement",
+                200_i64,
+                "tech",
+                "Rust",
+            )?;
+            statement_mentions.declare_relation_between(
+                &ctx,
+                "statement",
+                200_i64,
+                "org",
+                "CocoIndex",
+            )?;
+        }
+        Ok(())
+    })
+    .await
+    .unwrap();
+}
+
+fn chrono_like_timestamp() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis()
+}

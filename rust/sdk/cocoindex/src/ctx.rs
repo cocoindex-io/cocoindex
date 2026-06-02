@@ -11,14 +11,16 @@ use std::time::Duration;
 
 use cocoindex_core::engine::context::{ComponentProcessorContext, FnCallContext};
 use cocoindex_core::engine::environment::Environment;
+use cocoindex_core::engine::execution;
 use cocoindex_core::engine::live_component::mount_live_prepare;
+use cocoindex_core::engine::target_state::TargetStateProvider;
 use cocoindex_core::state::stable_path::StableKey;
 use cocoindex_utils::fingerprint::Fingerprint;
 use serde::{Deserialize, Serialize};
 
 use crate::app::{AppInner, StatsGroupHandle, StatsGroupOptions};
 use crate::error::{Error, Result};
-use crate::profile::{BoxedProcessor, RustProfile, Value};
+use crate::profile::{BoxedHandler, BoxedProcessor, RustProfile, Value};
 
 type ContextFingerprinter<T> = Arc<dyn Fn(&str, &T) -> Result<Fingerprint> + Send + Sync>;
 
@@ -350,6 +352,39 @@ impl Ctx {
             ));
         };
         comp_ctx.app_ctx().next_id(None).await.map_err(Error::from)
+    }
+
+    pub(crate) fn register_root_target_provider(
+        &self,
+        name: impl Into<String>,
+        handler: BoxedHandler,
+    ) -> Result<TargetStateProvider<RustProfile>> {
+        let Some(comp_ctx) = &self.comp_ctx else {
+            return Err(Error::engine(
+                "target providers require an active pipeline context",
+            ));
+        };
+        execution::register_root_target_state_provider(comp_ctx, name.into(), handler)
+            .map_err(Error::from)
+    }
+
+    pub(crate) fn declare_target_state(
+        &self,
+        provider: TargetStateProvider<RustProfile>,
+        key: StableKey,
+        value: Value,
+    ) -> Result<()> {
+        let Some(comp_ctx) = &self.comp_ctx else {
+            return Err(Error::engine(
+                "target states require an active pipeline context",
+            ));
+        };
+        let fn_ctx = self
+            .fn_ctx
+            .clone()
+            .unwrap_or_else(|| Arc::new(FnCallContext::default()));
+        execution::declare_target_state(comp_ctx, &fn_ctx, provider, key, value)
+            .map_err(Error::from)
     }
 
     /// Aggregate stats for components mounted inside `f` into a separate named

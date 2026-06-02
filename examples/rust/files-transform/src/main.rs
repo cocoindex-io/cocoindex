@@ -1,18 +1,27 @@
 //! Files Transform — Rust equivalent of the Python localfs markdown example.
 //!
 //! Walk markdown files in a source directory, memoize markdown-to-HTML
-//! conversion per file, and write HTML outputs.
+//! conversion per file, and sync HTML outputs via a declarative `DirTarget`:
+//! files are written/updated, unchanged files are skipped, and outputs whose
+//! source markdown was deleted are removed automatically (like Python's
+//! `localfs` directory target).
 
 use cocoindex::prelude::*;
 use pulldown_cmark::{Options, Parser, html};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 #[cocoindex::function(memo)]
 async fn render_markdown(_ctx: &Ctx, file: &FileEntry) -> Result<String> {
     let markdown = file.content_str()?;
+    // GFM-leaning options, to track the Python example's MarkdownIt("gfm-like").
+    // Note: exact HTML parity isn't a goal — pulldown-cmark and markdown-it-py
+    // are different engines. The one notable gfm-like feature pulldown-cmark
+    // does NOT support is bare-URL "linkify" (autolinking `https://...`); only
+    // angle-bracket `<https://...>` autolinks are rendered.
     let mut options = Options::empty();
-    options.insert(Options::ENABLE_STRIKETHROUGH);
+    options.insert(Options::ENABLE_GFM);
     options.insert(Options::ENABLE_TABLES);
+    options.insert(Options::ENABLE_STRIKETHROUGH);
     options.insert(Options::ENABLE_TASKLISTS);
 
     let parser = Parser::new_ext(&markdown, options);
@@ -43,14 +52,9 @@ fn parse_args() -> (PathBuf, PathBuf) {
     (source_dir, output_dir)
 }
 
-fn ensure_dir(path: &Path) -> Result<()> {
-    std::fs::create_dir_all(path).map_err(cocoindex::Error::Io)
-}
-
 #[tokio::main]
 async fn main() -> Result<()> {
     let (source_dir, output_dir) = parse_args();
-    ensure_dir(&output_dir)?;
 
     let app = cocoindex::App::open("files_transform", ".cocoindex_db").await?;
     let stats = app
@@ -58,16 +62,24 @@ async fn main() -> Result<()> {
             let source_dir = source_dir.clone();
             let output_dir = output_dir.clone();
             async move {
-                let files = cocoindex::fs::walk(&source_dir, &["*.md", "**/*.md"])?;
+                // Declarative output: the engine reconciles these files against
+                // the previous run and deletes outputs whose source disappeared.
+                let target = DirTarget::mount(&ctx, &output_dir)?;
+                // Top-level `*.md` only (no `**`), matching the Python example,
+                // whose `walk_dir` defaults to `recursive=False`.
+                let files = cocoindex::fs::walk(&source_dir, &["*.md"])?;
 
                 ctx.mount_each(files, |file| file.key(), {
-                    let output_dir = output_dir.clone();
+                    let target = target.clone();
                     move |file_ctx, file| {
-                        let output_dir = output_dir.clone();
+                        let target = target.clone();
                         async move {
                             let html = render_markdown(&file_ctx, &file).await?;
-                            let output_path = output_dir.join(output_name_for(&file));
-                            file_ctx.write_file(output_path, html.as_bytes())?;
+                            target.declare_file(
+                                &file_ctx,
+                                &output_name_for(&file),
+                                html.as_bytes(),
+                            )?;
                             Ok(())
                         }
                     }

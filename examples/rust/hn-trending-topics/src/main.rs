@@ -54,13 +54,22 @@ struct TopicsResponse {
     topics: Vec<String>,
 }
 
+// Mirrors the topic-extraction guidance in the Python example (models.py).
 const TOPICS_PROMPT: &str = "Extract topics from the user's text. Return a JSON object \
-    {\"topics\": [string, ...]}. Each topic can be a product, technology, model, person, \
-    company, or business domain. Capitalize proper nouns/acronyms only; use the clearest \
-    standalone form; avoid obscure acronyms. Split combined phrases into multiple topics \
-    when useful (e.g. \"local Large Language Model\" -> \"local Large Language Model\", \
-    \"Large Language Model\"). For people use preferred + last name. When a thing has \
-    multiple common names, include each (e.g. \"John Kennedy\", \"JFK\").";
+    {\"topics\": [string, ...]}.\n\
+    Each topic can be a product name, technology, model, people, company name, business \
+    domain, etc. Capitalize for proper nouns and acronyms only. Use the form that is clear \
+    alone. Avoid acronyms unless very popular and unambiguous for common people even without \
+    context. Examples: \"Anthropic\" (not \"ANTHR\"); \"Claude\" (specific product name); \
+    \"React\" (well-known library); \"PostgreSQL\" (canonical database name).\n\
+    For topics that are a phrase combining multiple things, normalize into multiple topics \
+    if needed. Examples: \"books for autistic kids\" -> \"book\", \"autistic\", \
+    \"autistic kids\"; \"local Large Language Model\" -> \"local Large Language Model\", \
+    \"Large Language Model\".\n\
+    For people, use preferred name and last name. Example: \"Bill Clinton\" instead of \
+    \"William Jefferson Clinton\".\n\
+    When there are multiple common ways to refer to the same thing, use multiple topics. \
+    Example: \"John Kennedy\", \"JFK\".";
 
 impl LlmClient {
     fn new(model: String) -> Result<Self> {

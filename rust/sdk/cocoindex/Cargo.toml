@@ -5,6 +5,10 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[features]
+postgres = ["dep:serde_json", "dep:sqlx"]
+surrealdb = ["dep:serde_json", "dep:surrealdb"]
+
 [dependencies]
 cocoindex_macros = { path = "../cocoindex_macros" }
 cocoindex_core = { path = "../../core", package = "cocoindex_core" }
@@ -21,8 +25,16 @@ walkdir = "2"
 async-trait = "0.1"
 rustc-hash = "2.1.1"
 uuid = { workspace = true }
-
-
+serde_json = { version = "1", optional = true }
+sqlx = { version = "0.9", default-features = false, optional = true, features = [
+    "runtime-tokio",
+    "tls-rustls",
+    "postgres",
+] }
+surrealdb = { version = "3", default-features = false, optional = true, features = [
+    "protocol-ws",
+    "rustls",
+] }
 
 [dev-dependencies]
 tempfile = "3"

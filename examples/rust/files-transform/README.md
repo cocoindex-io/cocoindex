@@ -28,7 +28,14 @@ Defaults:
 
 ## Notes
 
-- The transform itself is memoized, so unchanged markdown files skip the HTML
-  render work.
-- The output write stays outside the memoized function so cached runs still
-  materialize the expected HTML files.
+- The markdown→HTML render is memoized, so unchanged inputs skip the work.
+- Output uses a **declarative `DirTarget`** (the Rust analogue of Python's
+  `localfs` directory target): files are written/updated, unchanged files are
+  skipped, and an output whose source markdown was **deleted is removed
+  automatically** on the next run.
+- Like the Python example (whose `walk_dir` defaults to `recursive=False`), only
+  **top-level** `*.md` files are processed.
+- Markdown rendering uses `pulldown-cmark` with GFM options (tables,
+  strikethrough, tasklists). It is not byte-identical to Python's
+  `markdown-it-py("gfm-like")` — notably, pulldown-cmark does not "linkify" bare
+  URLs (only angle-bracket `<https://…>` autolinks render).

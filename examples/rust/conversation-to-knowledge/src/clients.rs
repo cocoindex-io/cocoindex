@@ -1,15 +1,17 @@
 //! Shared clients (OpenAI LLM, fastembed embedder, SurrealDB graph) and the
 //! ContextKeys used to inject them into the pipeline.
 
+use std::path::PathBuf;
 use std::sync::{Arc, LazyLock};
 
 use cocoindex::prelude::*;
-use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
+pub use cocoindex::surrealdb::Graph;
+use fastembed::{
+    EmbeddingModel, InitOptions, InitOptionsUserDefined, Pooling, TextEmbedding, TokenizerFiles,
+    UserDefinedEmbeddingModel, read_file_to_bytes,
+};
+use hf_hub::api::sync::ApiBuilder;
 use serde::de::DeserializeOwned;
-use surrealdb::Surreal;
-use surrealdb::engine::remote::ws::{Client, Ws};
-use surrealdb::opt::auth::Root;
-use surrealdb::types::RecordId;
 
 // ---------------------------------------------------------------------------
 // Context keys
@@ -30,8 +32,10 @@ pub static RESOLVER_LLM: LazyLock<ContextKey<LlmClient>> = LazyLock::new(|| {
 pub static EMBEDDER: LazyLock<ContextKey<Embedder>> =
     LazyLock::new(|| ContextKey::new_with_state("embedder", |e: &Embedder| e.model_name.clone()));
 
-/// SurrealDB connection (not change-tracked).
-pub static GRAPH: LazyLock<ContextKey<Graph>> = LazyLock::new(|| ContextKey::new("surreal_db"));
+/// SurrealDB connection. State-tracked on the target endpoint so changing the
+/// external graph database invalidates local target-state reconciliation.
+pub static GRAPH: LazyLock<ContextKey<Graph>> =
+    LazyLock::new(|| ContextKey::new_with_state("surreal_db", |g: &Graph| g.state_id().to_string()));
 
 // ---------------------------------------------------------------------------
 // LLM client (OpenAI-compatible, JSON mode)
@@ -110,8 +114,18 @@ pub struct Embedder {
 
 impl Embedder {
     pub fn load(model_name: &str) -> Result<Self> {
-        let model = TextEmbedding::try_new(InitOptions::new(EmbeddingModel::AllMiniLML6V2))
-            .map_err(|e| Error::engine(format!("failed to load embedding model: {e}")))?;
+        let model = match model_name {
+            "Snowflake/snowflake-arctic-embed-xs" => load_snowflake_arctic_embed_xs()?,
+            "sentence-transformers/all-MiniLM-L6-v2" | "all-MiniLM-L6-v2" => {
+                TextEmbedding::try_new(InitOptions::new(EmbeddingModel::AllMiniLML6V2))
+                    .map_err(|e| Error::engine(format!("failed to load embedding model: {e}")))?
+            }
+            other => {
+                return Err(Error::engine(format!(
+                    "unsupported embedding model {other:?}; supported: Snowflake/snowflake-arctic-embed-xs, sentence-transformers/all-MiniLM-L6-v2"
+                )));
+            }
+        };
         Ok(Self {
             model: Arc::new(model),
             model_name: model_name.to_string(),
@@ -131,87 +145,39 @@ impl Embedder {
     }
 }
 
-// ---------------------------------------------------------------------------
-// SurrealDB graph
-// ---------------------------------------------------------------------------
+fn load_snowflake_arctic_embed_xs() -> Result<TextEmbedding> {
+    let cache_dir = std::env::var("HF_HOME")
+        .map(PathBuf::from)
+        .or_else(|_| std::env::var("FASTEMBED_CACHE_DIR").map(PathBuf::from))
+        .unwrap_or_else(|_| PathBuf::from(".fastembed_cache"));
+    let endpoint =
+        std::env::var("HF_ENDPOINT").unwrap_or_else(|_| "https://huggingface.co".to_string());
+    let repo = ApiBuilder::new()
+        .with_cache_dir(cache_dir)
+        .with_endpoint(endpoint)
+        .with_progress(true)
+        .build()
+        .map_err(|e| Error::engine(format!("failed to create Hugging Face client: {e}")))?
+        .model("Snowflake/snowflake-arctic-embed-xs".to_string());
 
-#[derive(Clone)]
-pub struct Graph {
-    db: Arc<Surreal<Client>>,
-}
+    let file = |path: &str| -> Result<Vec<u8>> {
+        let local_path = repo
+            .get(path)
+            .map_err(|e| Error::engine(format!("failed to download {path}: {e}")))?;
+        read_file_to_bytes(&local_path)
+            .map_err(|e| Error::engine(format!("failed to read {}: {e}", local_path.display())))
+    };
 
-fn surreal_err(e: surrealdb::Error) -> Error {
-    Error::engine(format!("surrealdb: {e}"))
-}
-
-impl Graph {
-    pub async fn connect(
-        url: &str,
-        ns: &str,
-        db_name: &str,
-        user: &str,
-        pass: &str,
-    ) -> Result<Self> {
-        let db = Surreal::new::<Ws>(url).await.map_err(surreal_err)?;
-        db.signin(Root {
-            username: user.to_string(),
-            password: pass.to_string(),
-        })
-        .await
-        .map_err(surreal_err)?;
-        db.use_ns(ns.to_string())
-            .use_db(db_name.to_string())
-            .await
-            .map_err(surreal_err)?;
-        Ok(Self { db: Arc::new(db) })
-    }
-
-    /// Delete all records in the given tables (idempotent full-rebuild support).
-    pub async fn clear(&self, tables: &[&str]) -> Result<()> {
-        for table in tables {
-            // Table names here are fixed constants, safe to interpolate.
-            self.db
-                .query(format!("DELETE {table}"))
-                .await
-                .map_err(surreal_err)?;
-        }
-        Ok(())
-    }
-
-    /// Upsert a node `table:id` with the given content fields.
-    pub async fn upsert(&self, id: RecordId, content: serde_json::Value) -> Result<()> {
-        self.db
-            .query("UPSERT $id CONTENT $data")
-            .bind(("id", id))
-            .bind(("data", content))
-            .await
-            .map_err(surreal_err)?
-            .check()
-            .map_err(surreal_err)?;
-        Ok(())
-    }
-
-    /// Create a `from -[edge]-> to` relation. `edge` is a fixed constant.
-    pub async fn relate(&self, from: RecordId, edge: &str, to: RecordId) -> Result<()> {
-        self.db
-            .query(format!("RELATE $f->{edge}->$t"))
-            .bind(("f", from))
-            .bind(("t", to))
-            .await
-            .map_err(surreal_err)?
-            .check()
-            .map_err(surreal_err)?;
-        Ok(())
-    }
-
-    /// Count records in a table (for tests / reporting).
-    pub async fn count(&self, table: &str) -> Result<usize> {
-        let mut res = self
-            .db
-            .query(format!("SELECT VALUE id FROM {table}"))
-            .await
-            .map_err(surreal_err)?;
-        let ids: Vec<RecordId> = res.take(0).map_err(surreal_err)?;
-        Ok(ids.len())
-    }
+    let model = UserDefinedEmbeddingModel::new(
+        file("onnx/model.onnx")?,
+        TokenizerFiles {
+            tokenizer_file: file("tokenizer.json")?,
+            config_file: file("config.json")?,
+            special_tokens_map_file: file("special_tokens_map.json")?,
+            tokenizer_config_file: file("tokenizer_config.json")?,
+        },
+    )
+    .with_pooling(Pooling::Cls);
+    TextEmbedding::try_new_from_user_defined(model, InitOptionsUserDefined::default())
+        .map_err(|e| Error::engine(format!("failed to load Snowflake embedding model: {e}")))
 }
