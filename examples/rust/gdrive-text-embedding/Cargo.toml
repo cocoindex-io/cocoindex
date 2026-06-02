@@ -1,0 +1,26 @@
+[workspace]
+
+[package]
+name = "gdrive-text-embedding"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# Google Drive source + Postgres/pgvector target both live in the SDK.
+cocoindex = { path = "../../../rust/sdk/cocoindex", features = [
+    "postgres",
+    "google_drive",
+] }
+# Recursive (markdown-aware) chunking lives in the engine's ops crate.
+cocoindex_ops_text = { path = "../../../rust/ops_text" }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+# Local embeddings (same all-MiniLM-L6-v2 model as the Python example).
+fastembed = "4"
+# Query path (pgvector similarity); target writes go through cocoindex::postgres.
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio",
+    "tls-rustls",
+    "postgres",
+] }
+dotenvy = "0.15"

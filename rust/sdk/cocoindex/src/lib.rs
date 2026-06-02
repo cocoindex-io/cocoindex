@@ -3,6 +3,8 @@ pub mod ctx;
 pub mod entity_resolution;
 pub mod error;
 pub mod fs;
+#[cfg(feature = "google_drive")]
+pub mod gdrive;
 pub mod id;
 #[cfg(feature = "kafka")]
 pub mod kafka;
