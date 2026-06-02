@@ -13,7 +13,7 @@
 //! - `#[cocoindex::function(memo)]` — project aggregation cached by project fingerprint
 //! - `#[cocoindex::function]` — markdown generation
 //! - `ctx.mount_each(...)` — concurrent per-file processing
-//! - `ctx.write_file(...)` — output file creation
+//! - `DirTarget` — declarative output file sync
 //!
 //! ## Usage
 //!
@@ -24,7 +24,6 @@
 
 use cocoindex::prelude::*;
 use serde::Deserialize;
-use std::collections::HashSet;
 use std::path::Component;
 use std::path::PathBuf;
 use std::sync::OnceLock;
@@ -118,37 +117,6 @@ fn should_skip_python_file(file: &FileEntry) -> bool {
             }
             _ => false,
         })
-}
-
-fn cleanup_stale_outputs(
-    output_dir: &std::path::Path,
-    active_projects: &HashSet<String>,
-) -> Result<()> {
-    if !output_dir.exists() {
-        return Ok(());
-    }
-
-    for entry in std::fs::read_dir(output_dir).map_err(cocoindex::Error::Io)? {
-        let entry = entry.map_err(cocoindex::Error::Io)?;
-        if !entry.file_type().map_err(cocoindex::Error::Io)?.is_file() {
-            continue;
-        }
-
-        let path = entry.path();
-        if path.extension().and_then(|ext| ext.to_str()) != Some("md") {
-            continue;
-        }
-
-        let Some(project_name) = path.file_stem().and_then(|stem| stem.to_str()) else {
-            continue;
-        };
-
-        if !active_projects.contains(project_name) {
-            std::fs::remove_file(&path).map_err(cocoindex::Error::Io)?;
-        }
-    }
-
-    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -368,8 +336,7 @@ async fn main() -> Result<()> {
                 })
                 .collect();
             entries.sort_by_key(|e| e.file_name());
-            std::fs::create_dir_all(&output_dir).map_err(cocoindex::Error::Io)?;
-            let mut active_projects = HashSet::new();
+            let target = DirTarget::mount(&ctx, &output_dir)?;
 
             for entry in entries {
                 let project_name = entry.file_name().to_string_lossy().to_string();
@@ -388,13 +355,12 @@ async fn main() -> Result<()> {
                 if files.is_empty() {
                     continue;
                 }
-                active_projects.insert(project_name.clone());
 
                 println!("Processing project: {project_name} ({} files)", files.len());
 
                 ctx.scope(&format!("project/{project_name}"), {
                     let project_name = project_name.clone();
-                    let output_dir = output_dir.clone();
+                    let target = target.clone();
                     move |project_ctx| async move {
                         // Extract per-file info (memoized — unchanged files skip LLM)
                         let file_infos: Vec<CodebaseInfo> = project_ctx
@@ -424,8 +390,9 @@ async fn main() -> Result<()> {
                         )
                         .await?;
 
-                        project_ctx.write_file(
-                            output_dir.join(format!("{project_name}.md")),
+                        target.declare_file(
+                            &project_ctx,
+                            &format!("{project_name}.md"),
                             markdown.as_bytes(),
                         )?;
                         Ok(())
@@ -435,7 +402,6 @@ async fn main() -> Result<()> {
                 println!("  Wrote {}/{project_name}.md", output_dir.display());
             }
 
-            cleanup_stale_outputs(&output_dir, &active_projects)?;
             Ok(())
         })
         .await?;

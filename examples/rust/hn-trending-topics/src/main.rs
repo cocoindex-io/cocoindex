@@ -11,7 +11,7 @@
 //! What the Rust SDK provides vs. what this example hand-rolls:
 //!   - mount_each / memo / ContextKey            -> from `cocoindex`
 //!   - HN scraping (Algolia API) + LLM topics    -> `reqwest` (OpenAI JSON mode)
-//!   - Postgres tables + incremental sync         -> hand-rolled `sqlx`
+//!   - Postgres TableTarget incremental sync      -> from `cocoindex`
 //!
 //! Notes vs. Python: Python defaults to `gemini-2.5-flash`; this uses OpenAI
 //! (`OPENAI_API_KEY`, default `gpt-4o-mini`). Per-thread work is memoized by
@@ -20,7 +20,8 @@
 use std::sync::LazyLock;
 
 use cocoindex::prelude::*;
-use serde::Deserialize;
+use cocoindex::postgres;
+use serde::{Deserialize, Serialize};
 use sqlx::Row;
 use sqlx::postgres::{PgPool, PgPoolOptions};
 
@@ -30,8 +31,9 @@ const MAX_TEXT: usize = 4000;
 
 static HTTP: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
 
-/// Shared Postgres pool.
-static PG: LazyLock<ContextKey<PgPool>> = LazyLock::new(|| ContextKey::new("hn_db"));
+/// Shared Postgres target database.
+static PG: LazyLock<ContextKey<postgres::Database>> =
+    LazyLock::new(|| ContextKey::new_with_state("hn_db", |db: &postgres::Database| db.state_id().to_string()));
 /// LLM client; state-tracked on the model so changing it invalidates memos.
 static LLM: LazyLock<ContextKey<LlmClient>> =
     LazyLock::new(|| ContextKey::new_with_state("llm_model", |c: &LlmClient| c.model.clone()));
@@ -145,6 +147,32 @@ struct Thread {
     messages: Vec<Message>, // [0] is the thread itself, rest are comments
 }
 
+#[derive(Clone, Serialize, Deserialize)]
+struct HnMessageRow {
+    id: String,
+    thread_id: String,
+    content_type: String,
+    author: Option<String>,
+    text: Option<String>,
+    url: Option<String>,
+    created_at: Option<String>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct HnTopicRow {
+    topic: String,
+    message_id: String,
+    thread_id: String,
+    content_type: String,
+    created_at: Option<String>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct ProcessedThread {
+    messages: Vec<HnMessageRow>,
+    topics: Vec<HnTopicRow>,
+}
+
 async fn fetch_thread_ids(max_threads: usize) -> Result<Vec<String>> {
     let v: serde_json::Value = HTTP
         .get("https://hn.algolia.com/api/v1/search_by_date")
@@ -236,76 +264,67 @@ fn max_comments() -> usize {
         .unwrap_or(usize::MAX)
 }
 
-/// Fetch one thread, extract topics for every message, and upsert rows.
-/// Memoized by thread id: re-runs skip already-processed threads.
+/// Fetch one thread and extract topics for every message.
+/// Memoized by thread id: re-runs skip already-processed threads, while target
+/// row declarations still happen in the active pipeline.
 #[cocoindex::function(memo)]
-async fn process_thread(ctx: &Ctx, thread_id: &String) -> Result<usize> {
-    let pool = ctx.get_key(&PG)?;
+async fn process_thread(ctx: &Ctx, thread_id: &String) -> Result<ProcessedThread> {
     let llm = ctx.get_key(&LLM)?;
     let thread = fetch_thread(&thread_id, max_comments()).await?;
+    let mut messages = Vec::with_capacity(thread.messages.len());
+    let mut topic_rows = Vec::new();
 
     for msg in &thread.messages {
         let topics = match &msg.text {
             Some(t) => llm.extract_topics(t).await?,
             None => Vec::new(),
         };
-        upsert_message(pool, &thread.id, msg).await?;
-        // Replace this message's topics.
-        sqlx::query("DELETE FROM coco_examples.hn_topics WHERE message_id = $1")
-            .bind(&msg.id)
-            .execute(pool)
-            .await
-            .map_err(db_err)?;
+        messages.push(HnMessageRow {
+            id: msg.id.clone(),
+            thread_id: thread.id.clone(),
+            content_type: msg.content_type.to_string(),
+            author: msg.author.clone(),
+            text: msg.text.clone(),
+            url: msg.url.clone(),
+            created_at: msg.created_at.clone(),
+        });
         for topic in topics {
-            sqlx::query(
-                "INSERT INTO coco_examples.hn_topics \
-                 (topic, message_id, thread_id, content_type, created_at) \
-                 VALUES ($1, $2, $3, $4, $5) ON CONFLICT (topic, message_id) DO NOTHING",
-            )
-            .bind(&topic)
-            .bind(&msg.id)
-            .bind(&thread.id)
-            .bind(msg.content_type)
-            .bind(&msg.created_at)
-            .execute(pool)
-            .await
-            .map_err(db_err)?;
+            topic_rows.push(HnTopicRow {
+                topic,
+                message_id: msg.id.clone(),
+                thread_id: thread.id.clone(),
+                content_type: msg.content_type.to_string(),
+                created_at: msg.created_at.clone(),
+            });
         }
     }
-    Ok(thread.messages.len())
-}
-
-async fn upsert_message(pool: &PgPool, thread_id: &str, msg: &Message) -> Result<()> {
-    sqlx::query(
-        "INSERT INTO coco_examples.hn_messages \
-         (id, thread_id, content_type, author, text, url, created_at) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7) \
-         ON CONFLICT (id) DO UPDATE SET \
-           thread_id = EXCLUDED.thread_id, content_type = EXCLUDED.content_type, \
-           author = EXCLUDED.author, text = EXCLUDED.text, url = EXCLUDED.url, \
-           created_at = EXCLUDED.created_at",
-    )
-    .bind(&msg.id)
-    .bind(thread_id)
-    .bind(msg.content_type)
-    .bind(&msg.author)
-    .bind(&msg.text)
-    .bind(&msg.url)
-    .bind(&msg.created_at)
-    .execute(pool)
-    .await
-    .map_err(db_err)?;
-    Ok(())
+    Ok(ProcessedThread {
+        messages,
+        topics: topic_rows,
+    })
 }
 
 async fn app_main(ctx: Ctx, max_threads: usize) -> Result<()> {
-    let pool = ctx.get_key(&PG)?;
-    ensure_schema(pool).await?;
+    let db = ctx.get_key(&PG)?;
+    let messages = postgres::mount_table_target(
+        &ctx,
+        db,
+        "hn_messages",
+        message_schema()?,
+        Some("coco_examples"),
+    )?;
+    let topics = postgres::mount_table_target(
+        &ctx,
+        db,
+        "hn_topics",
+        topic_schema()?,
+        Some("coco_examples"),
+    )?;
 
     let thread_ids = fetch_thread_ids(max_threads).await?;
     println!("fetched {} threads from HackerNews", thread_ids.len());
 
-    let counts = ctx
+    let processed = ctx
         .mount_each(
             thread_ids.clone(),
             |id| id.clone(),
@@ -313,22 +332,18 @@ async fn app_main(ctx: Ctx, max_threads: usize) -> Result<()> {
         )
         .await?;
 
-    // Reconcile: drop messages/topics for threads no longer in the latest list.
-    sqlx::query("DELETE FROM coco_examples.hn_topics WHERE thread_id <> ALL($1)")
-        .bind(&thread_ids)
-        .execute(pool)
-        .await
-        .map_err(db_err)?;
-    sqlx::query("DELETE FROM coco_examples.hn_messages WHERE thread_id <> ALL($1)")
-        .bind(&thread_ids)
-        .execute(pool)
-        .await
-        .map_err(db_err)?;
+    let mut count = 0usize;
+    for thread in &processed {
+        count += thread.messages.len();
+        for row in &thread.messages {
+            messages.declare_row(&ctx, row)?;
+        }
+        for row in &thread.topics {
+            topics.declare_row(&ctx, row)?;
+        }
+    }
 
-    println!(
-        "processed {} messages across threads",
-        counts.iter().sum::<usize>()
-    );
+    println!("processed {count} messages across threads");
     Ok(())
 }
 
@@ -336,19 +351,32 @@ async fn app_main(ctx: Ctx, max_threads: usize) -> Result<()> {
 // Schema + queries
 // ---------------------------------------------------------------------------
 
-async fn ensure_schema(pool: &PgPool) -> Result<()> {
-    for stmt in [
-        "CREATE SCHEMA IF NOT EXISTS coco_examples",
-        "CREATE TABLE IF NOT EXISTS coco_examples.hn_messages (\
-           id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, content_type TEXT NOT NULL, \
-           author TEXT, text TEXT, url TEXT, created_at TEXT)",
-        "CREATE TABLE IF NOT EXISTS coco_examples.hn_topics (\
-           topic TEXT NOT NULL, message_id TEXT NOT NULL, thread_id TEXT NOT NULL, \
-           content_type TEXT NOT NULL, created_at TEXT, PRIMARY KEY (topic, message_id))",
-    ] {
-        sqlx::query(stmt).execute(pool).await.map_err(db_err)?;
-    }
-    Ok(())
+fn message_schema() -> Result<postgres::TableSchema> {
+    postgres::TableSchema::new(
+        [
+            ("id", postgres::ColumnDef::new("text")),
+            ("thread_id", postgres::ColumnDef::new("text")),
+            ("content_type", postgres::ColumnDef::new("text")),
+            ("author", postgres::ColumnDef::new("text").nullable()),
+            ("text", postgres::ColumnDef::new("text").nullable()),
+            ("url", postgres::ColumnDef::new("text").nullable()),
+            ("created_at", postgres::ColumnDef::new("text").nullable()),
+        ],
+        ["id"],
+    )
+}
+
+fn topic_schema() -> Result<postgres::TableSchema> {
+    postgres::TableSchema::new(
+        [
+            ("topic", postgres::ColumnDef::new("text")),
+            ("message_id", postgres::ColumnDef::new("text")),
+            ("thread_id", postgres::ColumnDef::new("text")),
+            ("content_type", postgres::ColumnDef::new("text")),
+            ("created_at", postgres::ColumnDef::new("text").nullable()),
+        ],
+        ["topic", "message_id"],
+    )
 }
 
 async fn show_trending(pool: &PgPool, limit: i64) -> Result<()> {
@@ -435,6 +463,10 @@ async fn connect_pool() -> Result<PgPool> {
         .map_err(db_err)
 }
 
+async fn connect_target_db() -> Result<postgres::Database> {
+    postgres::Database::connect(&database_url()).await
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
@@ -460,13 +492,13 @@ async fn main() -> Result<()> {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(10usize);
-            let pool = connect_pool().await?;
+            let db = connect_target_db().await?;
             let llm = LlmClient::new(
                 std::env::var("LLM_MODEL").unwrap_or_else(|_| "gpt-4o-mini".into()),
             )?;
             let app = App::builder("HNTrendingTopics")
                 .db_path(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".cocoindex_db"))
-                .provide_key(&PG, pool)
+                .provide_key(&PG, db)
                 .provide_key(&LLM, llm)
                 .build()
                 .await?;

@@ -12,22 +12,18 @@
 //!   - walk / memo / mount_each / ContextKey      -> from `cocoindex`
 //!   - tree-sitter chunking + language detection  -> from `cocoindex_ops_text` (engine crate)
 //!   - embeddings (all-MiniLM-L6-v2, local ONNX)  -> `fastembed` (no Rust embedder in the SDK)
-//!   - Postgres/pgvector table + incremental sync -> hand-rolled via `sqlx` (no DB target in the SDK)
-//!
-//! Note on incremental deletes: the Python `TableTarget` auto-removes rows when a
-//! source disappears. The Rust SDK has no declarative table target, so we reconcile
-//! manually: per file we delete chunk-rows that vanished, and after the walk we
-//! delete rows for files that no longer exist.
+//!   - Postgres/pgvector TableTarget sync          -> from `cocoindex`
 
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock};
 
 use cocoindex::prelude::*;
+use cocoindex::postgres;
 use cocoindex::walk;
 use cocoindex_ops_text::prog_langs::detect_language;
 use cocoindex_ops_text::split::{RecursiveChunkConfig, RecursiveChunker, RecursiveSplitConfig};
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
-use pgvector::Vector;
+use serde::{Deserialize, Serialize};
 use sqlx::Row;
 use sqlx::postgres::{PgPool, PgPoolOptions};
 
@@ -39,8 +35,12 @@ const TOP_K: i64 = 5;
 
 const INCLUDE_PATTERNS: &[&str] = &["**/*.py", "**/*.rs", "**/*.toml", "**/*.md", "**/*.mdx"];
 
-/// Shared Postgres pool. Plain key (a pool is not change-tracked).
-static DB: LazyLock<ContextKey<PgPool>> = LazyLock::new(|| ContextKey::new("code_embedding_db"));
+/// Shared Postgres target database.
+static DB: LazyLock<ContextKey<postgres::Database>> = LazyLock::new(|| {
+    ContextKey::new_with_state("code_embedding_db", |db: &postgres::Database| {
+        db.state_id().to_string()
+    })
+});
 
 /// Shared embedder. `new_with_state` tracks the model name, so changing the model
 /// invalidates memoized files — the parity for Python's
@@ -81,15 +81,25 @@ impl Embedder {
     }
 }
 
+#[derive(Clone, Serialize, Deserialize)]
+struct CodeEmbeddingRow {
+    id: i64,
+    filename: String,
+    code: String,
+    embedding: Vec<f32>,
+    start_line: i32,
+    end_line: i32,
+}
+
 // ---------------------------------------------------------------------------
 // Pipeline
 // ---------------------------------------------------------------------------
 
-/// Process one file: chunk -> embed -> upsert rows, then drop rows for chunks
-/// that disappeared. Memoized by the file's fingerprint, so unchanged files are
-/// skipped entirely on later runs.
+/// Process one file into desired embedding rows. Memoized by the file's
+/// fingerprint, while target row declarations still happen in the active
+/// pipeline.
 #[cocoindex::function(memo)]
-async fn process_file(ctx: &Ctx, file: &FileEntry) -> Result<usize> {
+async fn process_file(ctx: &Ctx, file: &FileEntry) -> Result<Vec<CodeEmbeddingRow>> {
     let filename = file.key();
     let text = file.content_str()?;
 
@@ -106,11 +116,8 @@ async fn process_file(ctx: &Ctx, file: &FileEntry) -> Result<usize> {
         },
     );
 
-    let pool = ctx.get_key(&DB)?;
     if chunks.is_empty() {
-        // No chunks now — make sure no stale rows linger for this file.
-        delete_file_rows(pool, &filename).await?;
-        return Ok(0);
+        return Ok(Vec::new());
     }
 
     let embedder = ctx.get_key(&EMBEDDER)?;
@@ -125,61 +132,53 @@ async fn process_file(ctx: &Ctx, file: &FileEntry) -> Result<usize> {
     let embeddings = embedder.embed(codes.clone()).await?;
 
     let mut id_gen = IdGenerator::new();
-    let mut ids: Vec<i64> = Vec::with_capacity(chunks.len());
-    for ((chunk, code), embedding) in chunks.iter().zip(codes.iter()).zip(embeddings) {
-        let id = id_gen.next_id(&ctx, code).await?;
+    let mut rows = Vec::with_capacity(chunks.len());
+    for ((chunk, code), embedding) in chunks.iter().zip(codes.into_iter()).zip(embeddings) {
+        let id = id_gen.next_id(&ctx, &code).await?;
         let id =
             i64::try_from(id).map_err(|_| Error::engine("generated id does not fit in BIGINT"))?;
-        ids.push(id);
-        sqlx::query(sqlx::AssertSqlSafe(format!(
-            "INSERT INTO \"{PG_SCHEMA}\".\"{TABLE}\" \
-             (id, filename, code, embedding, start_line, end_line) \
-             VALUES ($1, $2, $3, $4, $5, $6) \
-             ON CONFLICT (id) DO UPDATE SET \
-               filename = EXCLUDED.filename, code = EXCLUDED.code, \
-               embedding = EXCLUDED.embedding, start_line = EXCLUDED.start_line, \
-               end_line = EXCLUDED.end_line"
-        )))
-        .bind(id)
-        .bind(&filename)
-        .bind(code)
-        .bind(Vector::from(embedding))
-        .bind(chunk.start.line as i32)
-        .bind(chunk.end.line as i32)
-        .execute(pool)
-        .await
-        .map_err(db_err)?;
+        rows.push(CodeEmbeddingRow {
+            id,
+            filename: filename.clone(),
+            code,
+            embedding,
+            start_line: chunk.start.line as i32,
+            end_line: chunk.end.line as i32,
+        });
     }
-
-    // Delete rows for chunks that no longer exist in this file.
-    sqlx::query(sqlx::AssertSqlSafe(format!(
-        "DELETE FROM \"{PG_SCHEMA}\".\"{TABLE}\" WHERE filename = $1 AND id <> ALL($2)"
-    )))
-    .bind(&filename)
-    .bind(&ids)
-    .execute(pool)
-    .await
-    .map_err(db_err)?;
-
-    Ok(chunks.len())
+    Ok(rows)
 }
 
 async fn app_main(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
-    let pool = ctx.get_key(&DB)?;
-    ensure_schema(pool).await?;
+    let db = ctx.get_key(&DB)?;
+    let table = postgres::mount_table_target(
+        &ctx,
+        db,
+        TABLE,
+        code_embedding_schema()?,
+        Some(PG_SCHEMA),
+    )?;
+    table.declare_vector_index(
+        &ctx,
+        "embedding",
+        postgres::VectorIndexOptions {
+            name: Some("embedding".to_string()),
+            method: "hnsw",
+            ..Default::default()
+        },
+    )?;
 
     let files: Vec<FileEntry> = walk(&sourcedir, INCLUDE_PATTERNS)?
         .into_iter()
         .filter(|f| !is_excluded(&f.key()))
         .collect();
-    let seen: Vec<String> = files.iter().map(FileEntry::key).collect();
     println!(
         "indexing {} files from {}",
         files.len(),
         sourcedir.display()
     );
 
-    let counts = ctx
+    let rows_by_file = ctx
         .mount_each(
             files,
             |f| f.key(),
@@ -187,17 +186,15 @@ async fn app_main(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
         )
         .await?;
 
-    // Reconcile: drop rows for files that no longer exist (the part Python's
-    // declarative TableTarget would do automatically).
-    sqlx::query(sqlx::AssertSqlSafe(format!(
-        "DELETE FROM \"{PG_SCHEMA}\".\"{TABLE}\" WHERE filename <> ALL($1)"
-    )))
-    .bind(&seen)
-    .execute(pool)
-    .await
-    .map_err(db_err)?;
+    let mut count = 0usize;
+    for rows in &rows_by_file {
+        count += rows.len();
+        for row in rows {
+            table.declare_row(&ctx, row)?;
+        }
+    }
 
-    println!("indexed {} chunks total", counts.iter().sum::<usize>());
+    println!("indexed {count} chunks total");
     Ok(())
 }
 
@@ -207,12 +204,12 @@ async fn app_main(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
 
 async fn query_once(pool: &PgPool, embedder: &Embedder, query: &str) -> Result<()> {
     let mut vecs = embedder.embed(vec![query.to_string()]).await?;
-    let query_vec = Vector::from(vecs.remove(0));
+    let query_vec = vector_param(&vecs.remove(0));
 
-    let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
-        "SELECT filename, code, start_line, end_line, embedding <=> $1 AS distance \
+    let rows = sqlx::query(&format!(
+        "SELECT filename, code, start_line, end_line, embedding <=> $1::vector AS distance \
          FROM \"{PG_SCHEMA}\".\"{TABLE}\" ORDER BY distance ASC LIMIT $2"
-    )))
+    ))
     .bind(query_vec)
     .bind(TOP_K)
     .fetch_all(pool)
@@ -238,41 +235,26 @@ async fn query_once(pool: &PgPool, embedder: &Embedder, query: &str) -> Result<(
 // Schema / helpers
 // ---------------------------------------------------------------------------
 
-async fn ensure_schema(pool: &PgPool) -> Result<()> {
-    for stmt in [
-        "CREATE EXTENSION IF NOT EXISTS vector".to_string(),
-        format!("CREATE SCHEMA IF NOT EXISTS \"{PG_SCHEMA}\""),
-        format!(
-            "CREATE TABLE IF NOT EXISTS \"{PG_SCHEMA}\".\"{TABLE}\" (\
-               id BIGINT PRIMARY KEY, \
-               filename TEXT NOT NULL, \
-               code TEXT NOT NULL, \
-               embedding vector({EMBED_DIM}) NOT NULL, \
-               start_line INT NOT NULL, \
-               end_line INT NOT NULL)"
-        ),
-        format!(
-            "CREATE INDEX IF NOT EXISTS {TABLE}_embedding_idx \
-             ON \"{PG_SCHEMA}\".\"{TABLE}\" USING hnsw (embedding vector_cosine_ops)"
-        ),
-    ] {
-        sqlx::query(sqlx::AssertSqlSafe(stmt))
-            .execute(pool)
-            .await
-            .map_err(db_err)?;
-    }
-    Ok(())
+fn code_embedding_schema() -> Result<postgres::TableSchema> {
+    postgres::TableSchema::new(
+        [
+            ("id", postgres::ColumnDef::new("bigint")),
+            ("filename", postgres::ColumnDef::new("text")),
+            ("code", postgres::ColumnDef::new("text")),
+            (
+                "embedding",
+                postgres::ColumnDef::new(format!("vector({EMBED_DIM})")),
+            ),
+            ("start_line", postgres::ColumnDef::new("integer")),
+            ("end_line", postgres::ColumnDef::new("integer")),
+        ],
+        ["id"],
+    )
 }
 
-async fn delete_file_rows(pool: &PgPool, filename: &str) -> Result<()> {
-    sqlx::query(sqlx::AssertSqlSafe(format!(
-        "DELETE FROM \"{PG_SCHEMA}\".\"{TABLE}\" WHERE filename = $1"
-    )))
-    .bind(filename)
-    .execute(pool)
-    .await
-    .map_err(db_err)?;
-    Ok(())
+fn vector_param(vec: &[f32]) -> String {
+    let values = vec.iter().map(f32::to_string).collect::<Vec<_>>();
+    format!("[{}]", values.join(","))
 }
 
 fn is_excluded(key: &str) -> bool {

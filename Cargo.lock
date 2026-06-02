@@ -770,6 +770,7 @@ dependencies = [
  "rustc-hash",
  "serde",
  "serde_json",
+ "sqlx",
  "surrealdb",
  "tempfile",
  "thiserror 2.0.18",

@@ -26,7 +26,7 @@ async-trait = "0.1"
 rustc-hash = "2.1.1"
 uuid = { workspace = true }
 serde_json = { version = "1", optional = true }
-sqlx = { version = "0.9", default-features = false, optional = true, features = [
+sqlx = { version = "0.8", default-features = false, optional = true, features = [
     "runtime-tokio",
     "tls-rustls",
     "postgres",
