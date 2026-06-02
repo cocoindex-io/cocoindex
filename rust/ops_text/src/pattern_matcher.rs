@@ -400,8 +400,7 @@ mod tests {
     #[test]
     fn test_negation_only_no_regular_exclusion() {
         // A negation without a corresponding exclusion is a no-op — nothing is excluded.
-        let matcher =
-            PatternMatcher::new(None, Some(vec!["!**/.github/**".to_string()])).unwrap();
+        let matcher = PatternMatcher::new(None, Some(vec!["!**/.github/**".to_string()])).unwrap();
         assert!(matcher.is_file_included(".git/config"));
         assert!(matcher.is_file_included(".github/workflows/ci.yml"));
         assert!(matcher.is_file_included("src/main.rs"));

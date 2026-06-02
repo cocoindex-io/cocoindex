@@ -127,11 +127,25 @@ matcher = PatternFilePathMatcher(
 **Parameters:**
 
 - `included_patterns` — Glob patterns ([globset](https://docs.rs/globset) syntax) for files to include. Use `**/*.ext` to match at any depth. If `None`, all files are included.
-- `excluded_patterns` — Glob patterns ([globset](https://docs.rs/globset) syntax) for files/directories to exclude. Excluded directories are not traversed.
+- `excluded_patterns` — Glob patterns ([globset](https://docs.rs/globset) syntax) for files/directories to exclude. Excluded directories are not traversed. A pattern prefixed with `!` negates the exclusion for matching paths (see below).
 
 :::note
 Patterns use [globset](https://docs.rs/globset) semantics: `*.py` matches only in the root directory; use `**/*.py` to match at any depth.
 :::
+
+**Gitignore-style negation.** Within `excluded_patterns`, a pattern beginning with `!` *un-excludes* paths that would otherwise be excluded by a preceding pattern. This lets you exclude broadly and then carve out exceptions, instead of enumerating every directory to exclude:
+
+```python
+# Exclude all dot-entries, but keep .github through
+matcher = PatternFilePathMatcher(
+    excluded_patterns=[
+        "**/.*",           # exclude all dot-files and dot-directories
+        "!**/.github/**",  # …except anything under .github
+    ]
+)
+```
+
+Directory traversal honors negations correctly: a directory excluded by a normal pattern is still traversed when a `!` pattern could match its contents, so the kept paths inside it are reachable.
 
 ## Chunk
 
