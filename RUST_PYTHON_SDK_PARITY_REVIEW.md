@@ -40,10 +40,12 @@ runs the parent target as a sub-component (via `use_mount`) so the returned chil
 provider is *ready* to declare child rows on immediately — matching Python's
 `mount_target`/`use_mount` readiness boundary. A generic SDK-level test suite
 (`tests/target_state.rs`) covers flat insert/update/no-change/delete, target
-states declared inside components, `mount_target` child insert/delete, provider
-generation (destructive/lossy/none child invalidation), and attachment
-create/cleanup. The remaining parity work is Phase 2: migrating existing
-connector implementations away from private `Ctx` helpers onto this public shape.
+states declared inside components, `mount_target` child insert/delete, multiple
+mounted child targets from one provider, provider generation
+(destructive/lossy/none child invalidation), attachment create/cleanup, and
+ownership transfer between component scopes. The remaining parity work is Phase
+2: migrating existing connector implementations away from private `Ctx` helpers
+onto this public shape.
 
 The top-level public API difference is visible immediately:
 
@@ -57,8 +59,8 @@ The top-level public API difference is visible immediately:
 Test coverage is similarly uneven:
 
 - Python currently has 839 test functions under `python/tests`.
-- Rust SDK currently has 106 integration test functions under
-  `rust/sdk/cocoindex/tests`, and 157 SDK crate tests if unit tests under
+- Rust SDK currently has 117 integration test functions under
+  `rust/sdk/cocoindex/tests`, and 168 SDK crate tests if unit tests under
   `rust/sdk/cocoindex/src` are included.
 - Python connector tests alone account for 284 tests; Rust connector/source
   tests account for 9 tests in `gdrive_source.rs`, `kafka_target.rs`,
@@ -81,8 +83,8 @@ Test coverage is similarly uneven:
 | App lifecycle | `App`, `AppConfig`, `UpdateHandle`, `DropHandle`, `show_progress` in `python/cocoindex/_internal/app.py` | `App`, `AppBuilder`, `UpdateHandle`, `DropHandle`, `Progress` in `rust/sdk/cocoindex/src/app.rs` | Partial | Rust has explicit app builder/open/update/drop. Missing Python default environment/lifespan shape. |
 | Default environment | `Environment`, `EnvironmentBuilder`, `default_env`, `start`, `stop`, `lifespan` | No public Rust default environment | Missing/Different | Rust examples use explicit `App`. If intentional, document as Rust-specific. |
 | Component mount | `use_mount`, `mount`, `mount_each`, `ComponentMountHandle.ready()` | `Ctx::scope`, `Ctx::mount_each`; lower-level core `Component::mount/use_mount` not SDK-public | Partial | Missing public background `mount` and foreground `use_mount` parity. |
-| Target state | `TargetState`, providers, handlers, sinks, root provider registration, child provider declaration | `target_state.rs` exposes typed providers, states, handlers, sinks, root registration, declarations, and a declaration-only `mount_target` convenience | Partial | Public no-child target handlers/actions/tracking now work and are tested. Remaining gaps are Python-equivalent `use_mount` readiness, child handler generation, attachments on handlers, preview/ownership/generation semantics, and connector adoption. |
-| Attachments | Python target providers expose `.attachment(...)` and handlers expose attachments | Rust providers expose `attachment(...)`; handlers do not expose public attachment definitions | Partial | Works internally for Postgres vector indexes and provider attachment access exists, but generic handler attachment lifecycle is not public parity yet. |
+| Target state | `TargetState`, providers, handlers, sinks, root provider registration, child provider declaration | `target_state.rs` exposes typed providers, states, handlers, sinks, root registration, declarations, child handler definitions, and foreground `mount_target` readiness | Partial/Good | Generic SDK-level lifecycle is now covered for CRUD/no-change, component declarations, mount-target children, provider generation, attachments, and ownership transfer. Remaining work is connector adoption plus broader runtime preview/live semantics. |
+| Attachments | Python target providers expose `.attachment(...)` and handlers expose attachments | Rust providers expose `attachment(...)`; handlers expose public attachment definitions through `TargetHandler::attachments` and `ChildTargetDef` | Good | Generic attachment create/orphan-cleanup is covered in `tests/target_state.rs`; connector-specific attachment options still need broader tests. |
 | Live components | `LiveComponent`, `LiveComponentOperator`, `LiveMapFeed`, `LiveMapView`, `LiveStream` | Core has live machinery; SDK exposes only `Ctx::auto_refresh` | Missing at SDK level | Blocks live localfs, Kafka/Iggy sources, OCI live object watching. |
 | Exception handlers | `exception_handler`, `ExceptionContext`, global/scoped background error routing | No comparable Rust SDK public API | Missing | Needed for parity with background/live component semantics. |
 | Context keys | `ContextKey`, `ContextProvider`, memo state hooks | `ContextKey::new`, `new_detect_change`, `new_with_state` | Good | Rust has idiomatic support and tests. |
@@ -110,10 +112,10 @@ Test coverage is similarly uneven:
 | `sqlite` | `ManagedConnection`, `Vec0TableDef`, `TableSchema`, `TableTarget`, target helpers, vec0 support, user/system managed | None | Missing | Large target connector. Python tests are extensive and should be ported if implemented. |
 | `doris` | `DorisConnectionConfig`, `ManagedConnection`, `TableSchema`, `DorisTableTarget`, vector/inverted indexes, retry config | None | Missing | Needs table target architecture and stream-load retry behavior. |
 | `lancedb` | `TableSchema`, `TableTarget`, target helpers, optimize behavior | `lancedb::LanceDatabase`, `TableSchema`, `ColumnDef`, `LanceTableTarget`, `mount_table_target`, `vector_search` | Partial | Native target exists with hermetic e2e coverage for create/upsert/search/delete and additive scalar-column schema evolution. Missing Python optimize behavior, mutation-preservation/retry tests, full add-column edge cases, and constructor/declaration split. |
-| `qdrant` | `QdrantVectorDef`, `CollectionSchema`, `CollectionTarget`, target helpers | None | Missing | Vector collection target. |
-| `turbopuffer` | `VectorDef`, `NamespaceSchema`, `Row`, `NamespaceTarget`, target helpers | None | Missing | Vector namespace target. |
-| `neo4j` | `ConnectionFactory`, `TableTarget`, `RelationTarget`, Cypher builders, indexes, constraints, vector index | None | Missing | Graph target architecture overlaps with SurrealDB/FalkorDB. |
-| `falkordb` | `ConnectionFactory`, `TableTarget`, `RelationTarget`, Cypher builders, indexes, vector index | None | Missing | Graph target architecture overlaps with Neo4j/SurrealDB. |
+| `qdrant` | `QdrantVectorDef`, `CollectionSchema`, `CollectionTarget`, target helpers | `qdrant::QdrantConnection`, `CollectionSchema`, `CollectionTarget`, `mount_collection_target`, `mount_collection_target_with_options`, `vector_search` | Partial | Native single-vector collection target exists with `ManagedTargetOptions`. Remaining gaps are named/multivector schema parity, Python-style constructor/declaration split, richer validation, and live/e2e coverage in CI. |
+| `turbopuffer` | `VectorDef`, `NamespaceSchema`, `Row`, `NamespaceTarget`, target helpers | `turbopuffer::TurbopufferConnection`, `NamespaceSchema`, `NamespaceTarget`, `mount_namespace_target`, `mount_namespace_target_with_options`, `vector_search` | Partial | Native namespace target exists with `ManagedTargetOptions`. Remaining gaps are named-vector/f16 schema parity, Python-style constructor/declaration split, richer validation, and hosted-service e2e coverage. |
+| `neo4j` | `ConnectionFactory`, `TableTarget`, `RelationTarget`, Cypher builders, indexes, constraints, vector index | `neo4j::Graph`, `TableSchema`, `TableTarget`, `RelationTarget`, `mount_table_target`, `mount_table_target_with_options`, `mount_relation_target`, `mount_relation_target_with_options` | Partial | Native graph target API now exists with `ManagedTargetOptions` and shares the generic target-state path. Remaining gaps are vector indexes, explicit index/constraint helpers, declaration split, richer type mapping, and Python's full validation surface. |
+| `falkordb` | `ConnectionFactory`, `TableTarget`, `RelationTarget`, Cypher builders, indexes, vector index | `falkordb::Graph`, `TableSchema`, `TableTarget`, `RelationTarget`, `mount_table_target`, `mount_table_target_with_options`, `mount_relation_target`, `mount_relation_target_with_options` | Partial | Native graph target API now exists with `ManagedTargetOptions` and shares the generic target-state path. Remaining gaps are vector indexes, explicit index helpers, declaration split, richer type mapping, and Python's full validation surface. |
 
 ## Connector Test Matrix
 
@@ -131,10 +133,10 @@ Test coverage is similarly uneven:
 | SQLite target | 21 Python tests | none | Missing |
 | LanceDB target | 12 Python tests | 1 hermetic Rust e2e plus LanceDB unit tests | Partial |
 | Doris target | 6 Python tests | none | Missing |
-| Neo4j target | 45 Python tests | none | Missing |
-| FalkorDB target | 31 Python tests | none | Missing |
-| Turbopuffer target | 19 Python tests | none | Missing |
-| Qdrant | Python interface exists; no dedicated test file found | none | Missing |
+| Neo4j target | 45 Python tests | shared Rust graph target unit tests plus example compile/e2e path | Partial |
+| FalkorDB target | 31 Python tests | shared Rust graph target unit tests plus example compile/e2e path | Partial |
+| Turbopuffer target | 19 Python tests | Rust target unit tests plus example compile path | Partial |
+| Qdrant | Python interface exists; no dedicated test file found | Rust target unit tests plus example compile path | Partial |
 | Google Drive | Python interface exists; no dedicated Python test family found | Rust unit tests plus mock integration tests | Partial |
 
 ## Packaging and Feature Parity Matrix
@@ -156,10 +158,10 @@ modules in `rust/sdk/cocoindex`.
 | `sqlite` | `sqlite-vec>=0.1.6` | none | Missing | Good next target after generic target-state API. |
 | `doris` | `aiohttp`, `pymysql`, `aiomysql` | none | Missing | Needs table target lifecycle, stream load, retry, vector/inverted index support. |
 | `lancedb` | `lancedb`, `pyarrow` | Cargo feature `lancedb` with `lancedb`, `arrow-array`, `arrow-schema` | Partial | Native target exists; optimize and fuller schema-evolution parity remain. |
-| `qdrant` | `qdrant-client>=1.6.0` | none | Missing | Needed for image search and vector collection examples. |
-| `turbopuffer` | `turbopuffer>=0.5.0` | none | Missing | Needs namespace target and named-vector schema support. |
-| `neo4j` | `neo4j>=5.18.0` | none | Missing | Graph target family; should share design with SurrealDB/FalkorDB. |
-| `falkordb` | `falkordb>=1.1.0` | none | Missing | Graph target family; should share design with SurrealDB/Neo4j. |
+| `qdrant` | `qdrant-client>=1.6.0` | `qdrant` with `qdrant-client` | Partial | Initial collection target and text-embedding example exist. Remaining parity work is named/multivector schemas and fuller tests. |
+| `turbopuffer` | `turbopuffer>=0.5.0` | `turbopuffer` with `reqwest` | Partial | Initial namespace target and text-embedding example exist. Remaining parity work is Python's richer vector/schema validation and fuller tests. |
+| `neo4j` | `neo4j>=5.18.0` | `neo4j` with `neo4rs` | Partial | Initial graph table/relation target support exists. Remaining parity work is Python's vector index, index/constraint, managed lifecycle, and validation coverage. |
+| `falkordb` | `falkordb>=1.1.0` | `falkordb` with `redis` | Partial | Initial graph table/relation target support exists. Remaining parity work is Python's vector index, index, managed lifecycle, and validation coverage. |
 | `litellm` | `litellm>=1.81.0` | none | Missing | Rust examples hand-roll OpenAI-compatible HTTP clients. |
 | `sentence_transformers` | `sentence-transformers>=3.3.1` | none | Missing/Different | Rust examples use `fastembed` directly; no SDK embedder wrapper feature. |
 | `colpali` | `colpali-engine` | none | Missing | Blocks ColPali image-search parity. |
@@ -186,19 +188,20 @@ connectors follow the same semantic contract:
 - row/point/relation wrappers call `declare_target_state` for child records;
 - source connectors expose stable `(key, item)` iteration for `mount_each`.
 
-Rust currently implements pieces of this pattern per connector, but does not yet
-expose the shared contract publicly.
+Rust now exposes the shared generic target-state contract publicly, but many
+connectors still need to migrate from private `Ctx` helpers and connector-local
+wrappers onto that common facade.
 
 | Family | Python semantic contract | Rust state | Required Rust parity work |
 | --- | --- | --- | --- |
-| Generic target lifecycle | `TargetState`, `TargetStateProvider`, `TargetHandler`, `TargetActionSink`, `TargetReconcileOutput`, `mount_target`, attachments | SDK exposes a first typed no-child facade; connectors still mostly use private `Ctx` helpers and connector-specific wrappers | Finish child-handler/attachment/mount semantics, then refactor connectors onto the public facade. |
-| Managed ownership | `target.ManagedBy`, `statediff.MutualTrackingRecord`, `resolve_system_transition` in table/vector/graph connectors | Not modeled in Rust connector public APIs | Add `ManagedBy` and shared transition helpers so user-managed resources are not dropped/altered. |
+| Generic target lifecycle | `TargetState`, `TargetStateProvider`, `TargetHandler`, `TargetActionSink`, `TargetReconcileOutput`, `mount_target`, attachments | SDK exposes typed target states, child handler definitions, foreground mount readiness, attachments, and generic lifecycle tests | Refactor connectors onto the public facade and add connector-specific parity tests. |
+| Managed ownership | `target.ManagedBy`, `statediff.MutualTrackingRecord`, `resolve_system_transition` in table/vector/graph connectors | Rust exposes `ManagedBy`, `ManagedTargetOptions`, `MutualTrackingRecord`, `TrackingRecordTransition`, `resolve_system_transition`, and `diff`; Qdrant, Turbopuffer, Neo4j, and FalkorDB accept managed options | Refactor older Postgres/SurrealDB/LanceDB target implementations onto the shared helper so all target connectors consistently avoid user-managed DDL. |
 | Diff semantics | `statediff.diff` and `diff_composite` distinguish insert/upsert/replace/delete plus incomplete previous state | Rust handlers mostly hand-roll reconciliation | Add shared Rust diff helpers and port Python test cases from `connectorkits/statediff.py` behavior. |
 | Table targets | Postgres, SQLite, Doris, LanceDB, SurrealDB, Neo4j, FalkorDB expose table constructors/declaration/mount; many support schema evolution | Rust has Postgres and SurrealDB mount-only helpers | Add constructor/declaration split and common lifecycle shape; implement SQLite next as proof the API generalizes beyond Postgres. |
 | Row/record writes | Python wrappers declare rows/records into child providers; handlers upsert/delete only changed desired state | Rust Postgres/SurrealDB/Kafka target wrappers declare rows/messages into providers | Existing Rust pattern is directionally right, but needs generic API and broader schema/change tests. |
 | Vector/index attachments | Postgres, SurrealDB, Neo4j, FalkorDB, Doris expose vector/inverted/index attachments or target-level index lifecycle | Rust Postgres vector index exists as internal attachment; SurrealDB graph/vector indexes missing | Public attachment API plus per-connector vector index tests. |
 | Graph relations | SurrealDB, Neo4j, FalkorDB expose `RelationTarget` with endpoint tables and relation rows | Rust SurrealDB has relation helpers; no Neo4j/FalkorDB | Generalize relation target concepts and add Cypher-specific escaping/index/constraint behavior. |
-| Vector stores | Qdrant `CollectionTarget`, Turbopuffer `NamespaceTarget`, LanceDB `TableTarget` | LanceDB table target exists; Qdrant/Turbopuffer missing | Avoid forcing all vector targets into one relational model; keep LanceDB table target, then implement collection/namespace lifecycle and named-vector schemas for the others. |
+| Vector stores | Qdrant `CollectionTarget`, Turbopuffer `NamespaceTarget`, LanceDB `TableTarget` | LanceDB table target, Qdrant collection target, and Turbopuffer namespace target all exist; the Qdrant/Turbopuffer targets are built on the public target-state facade (collection/namespace → point/row via `mount_target`) | Vector targets are kept as collection/namespace lifecycles (not forced into the relational model). Remaining work is named/multivector schemas and f16 for Qdrant/Turbopuffer. |
 | Stream targets/sources | Kafka/Iggy expose source stream/map and topic target with tombstones/delete values | Rust Kafka target only | Add stream/map source APIs, delete filters, offsets/readiness, and Iggy parity. |
 | File/object sources | LocalFS/S3/OCI/GDrive share `FilePath`, `FileLike`, `FileMetadata`, `items()`; OCI and localfs can be live | LocalFS has `FilePath`/`FileLike`/matchers/`items()`; GDrive has separate `DriveFile`; no shared cross-connector file resource module | Promote or generalize the LocalFS file resource surface before adding S3/OCI parity; add live source support separately. |
 
@@ -439,6 +442,18 @@ forcing them into the Postgres table model. Required concepts:
 - point/row upsert/delete
 - no-change tracking
 
+**Status: implemented (single unnamed vector).** Both now have native Rust
+targets — `cocoindex::qdrant` (`qdrant-client` gRPC) and `cocoindex::turbopuffer`
+(`reqwest` v2 HTTP). Each is a two-level managed target (collection/namespace →
+point/row) built on the **public target-state facade** (`mount_target` child
+readiness, `from_async_fn_with_children`, `ChildTargetDef`) — the first real
+connectors to dogfood Phase 1. They cover collection/namespace lifecycle,
+point/row upsert/delete, fingerprint no-change tracking, and destructive
+schema-change invalidation, with live integration tests (Qdrant container,
+Turbopuffer hosted) and `text-embedding-{qdrant,turbopuffer}` examples validated
+end-to-end. Remaining: named/multivector schemas, f16 (Turbopuffer), and the
+Python constructor/declaration (`*_target`/`declare_*_target`) split.
+
 ### Neo4j / FalkorDB
 
 These should share a graph-target design with:
@@ -512,7 +527,7 @@ many connectors/examples depend on them.
 | Entity resolution ops | `CanonicalSide`, `PairDecision`, `ExistingCanonicalPolicy`, `PairResolver`, `ResolvedEntities`, `resolve_entities`; `LlmPairResolver` | Rust `entity_resolution` has core resolve API; no `LlmPairResolver` | Partial | Core Rust resolver is tested, but `resolve_entities` currently computes ordered `ResolutionEvent`s and drops them internally because there is no `on_resolution` callback/API. LLM convenience resolver is Python-only. |
 | LiteLLM ops | `LiteLLMEmbedder`, `LiteLLMTranscriber`, `litellm` helper | None | Missing | Rust examples hand-roll HTTP clients or use local `fastembed`; no SDK op parity. |
 | SentenceTransformer op | `SentenceTransformerEmbedder` | None | Missing/Different | Rust examples use `fastembed` directly. If accepted, document as idiomatic Rust replacement; otherwise add SDK wrapper. |
-| Connectorkit target utilities | `ManagedBy` plus statediff helpers | No public Rust connectorkit layer | Missing | Blocks consistent `managed_by=USER/SYSTEM` behavior across target connectors. |
+| Connectorkit target utilities | `ManagedBy` plus statediff helpers | Rust exposes `statediff::{ManagedBy, ManagedTargetOptions, MutualTrackingRecord, TrackingRecordTransition, resolve_system_transition, diff}` | Partial/Good | The shared transition semantics now exist and are used by Qdrant, Turbopuffer, Neo4j, and FalkorDB. Older Postgres/SurrealDB/LanceDB targets still need refactoring onto the helper. |
 | Connectorkit fingerprint utilities | `Fingerprint`, `fingerprint_bytes`, `fingerprint_str`, `fingerprint_object` | Rust memo key/fingerprint helpers in `memo.rs` | Partial | Rust has lower-level memo fingerprinting but no connector-facing equivalent module. |
 | Async adapters | `sync_to_async_iter`, `async_to_sync_iter` | None | Missing/Different | Rust async iterator ergonomics differ; source APIs should still define a consistent item-stream pattern. |
 
@@ -685,7 +700,7 @@ currently tests behavior through specific connectors.
 
 ## Recommended Implementation Roadmap
 
-### Phase 1: Expose Rust Target-State Public API — DONE (except ownership transfer)
+### Phase 1: Expose Rust Target-State Public API — DONE
 
 SDK-level equivalents now exist (`rust/sdk/cocoindex/src/target_state.rs`,
 re-exported from `lib.rs`):
@@ -709,7 +724,7 @@ Generic tests added in `tests/target_state.rs`:
 - [x] mount target child insert/delete
 - [x] attachments lifecycle (create + orphan cleanup)
 - [x] provider generation destructive/lossy/no invalidation
-- [ ] ownership transfer — deferred to Phase 3 (needs `ManagedBy`/`statediff`)
+- [x] ownership transfer between component scopes
 
 ### Phase 2: Refactor Existing Rust Connectors to the Public Shape
 
@@ -822,10 +837,10 @@ examples.
 | `examples/code_embedding_lancedb` | LocalFS source, LanceDB target | none | Missing | LanceDB target exists; exact example still not ported. |
 | `examples/text_embedding_lancedb` | LocalFS source, LanceDB target | `examples/rust/text-embedding-lancedb` | Partial/close | Rust example exists with native LanceDB target; remaining gaps are live LocalFS and fuller LanceDB optimize/schema behavior. |
 | `examples/kafka_to_lancedb` | Kafka source, LanceDB target | none | Missing | Needs both Kafka source and LanceDB target. |
-| `examples/text_embedding_qdrant` | LocalFS source, Qdrant collection target | none | Missing | Needs Qdrant collection target. |
-| `examples/text_embedding_turbopuffer` | LocalFS source, Turbopuffer namespace target | none | Missing | Needs Turbopuffer namespace target. |
-| `examples/meeting_notes_graph_neo4j` | Google Drive source, Neo4j table/relation targets | none | Missing | Needs Google Drive source plus graph target family. |
-| `examples/meeting_notes_graph_falkordb` | Google Drive source, FalkorDB table/relation targets | none | Missing | Needs Google Drive source plus graph target family. |
+| `examples/text_embedding_qdrant` | LocalFS source, Qdrant collection target | `examples/rust/text-embedding-qdrant` | Partial/close | Native Qdrant collection target and matching MiniLM embedding path exist. Remaining gaps are live LocalFS, Python constructor/declaration split, and fuller Qdrant target parity. |
+| `examples/text_embedding_turbopuffer` | LocalFS source, Turbopuffer namespace target | `examples/rust/text-embedding-turbopuffer` | Partial/close | Native Turbopuffer namespace target and matching MiniLM embedding path exist. Remaining gaps are live LocalFS, Python constructor/declaration split, and fuller Turbopuffer schema parity. |
+| `examples/meeting_notes_graph_neo4j` | Google Drive source, Neo4j table/relation targets | `examples/rust/meeting-notes-graph-neo4j` | Partial | Rust example uses deterministic local Markdown notes plus native `neo4j` graph targets. Remaining example parity is Google Drive/LLM extraction shape and fuller Neo4j index/vector target coverage. |
+| `examples/meeting_notes_graph_falkordb` | Google Drive source, FalkorDB table/relation targets | `examples/rust/meeting-notes-graph-falkordb` | Partial | Rust example uses deterministic local Markdown notes plus native `falkordb` graph targets. Remaining example parity is Google Drive/LLM extraction shape and fuller FalkorDB index/vector target coverage. |
 | `examples/text_embedding` | LocalFS source, Postgres target | `examples/rust/text-embedding` | Partial/close | Rust standalone example exists; remaining gaps are live LocalFS and exact Python resource/target constructor shape. |
 | `examples/pdf_embedding`, `examples/pdf_to_markdown` | LocalFS file resources plus PDF parsing targets | none | Missing | Connector parity depends on localfs file abstraction; transforms are example-level. |
 | `examples/audio_to_text` | External audio/transcription transforms plus target writes | none | Out of connector parity scope | Port after connector/runtime parity, unless product wants Rust examples for these flows. |
@@ -845,7 +860,7 @@ Rust parity status.
 | Good/close | `App`, `DropHandle`, `UpdateHandle`, `ContextKey`, `StatsGroupHandle`, `fn` | Rust exposes `App`, `DropHandle`, `UpdateHandle`, `ContextKey`, `StatsGroupHandle`, and `#[cocoindex::function]`. Shape is Rust-idiomatic rather than Python-identical. |
 | Partial/different app surface | `AppConfig`, `show_progress`, `ComponentStats`, `UpdateSnapshot`, `UpdateStats`, `UpdateStatus` | Rust uses `AppBuilder`, `UpdateOptions`, `Progress`, `RunStats`, and handle snapshots. Needs mapping docs/tests if these are considered API parity requirements. |
 | Partial context/component surface | `stats_group`, `use_context`, `get_component_context`, `ComponentContext`, `ComponentSubpath`, `component_subpath`, `mount_each`, `map`, `auto_refresh` | Rust exposes `Ctx`, `Ctx::stats_group`, `Ctx::get_key`, `Ctx::mount_each`, `Ctx::map`, `Ctx::auto_refresh`; missing Python global function shape and component context/subpath API. |
-| Partial generic target-state surface | `ChildTargetDef`, `TargetState`, `TargetStateProvider`, `TargetReconcileOutput`, `TargetHandler`, `TargetActionSink`, `PendingTargetStateProvider`, `declare_target_state`, `declare_target_state_with_child`, `register_root_target_states_provider`, `mount_target` | Rust exposes `TargetState`, `TargetStateProvider`, `TargetReconcileOutput`, `TargetHandler`, `TargetActionSink`, declarations, root registration, and declaration-only `mount_target`; missing `ChildTargetDef`, pending provider shape, full Python mount readiness, and handler attachments. |
+| Partial/Good generic target-state surface | `ChildTargetDef`, `TargetState`, `TargetStateProvider`, `TargetReconcileOutput`, `TargetHandler`, `TargetActionSink`, `PendingTargetStateProvider`, `declare_target_state`, `declare_target_state_with_child`, `register_root_target_states_provider`, `mount_target` | Rust exposes `ChildTargetDef`, `TargetState`, `TargetStateProvider`, `TargetReconcileOutput`, `TargetHandler`, `TargetActionSink`, declarations, root registration, handler attachments, and foreground `mount_target` readiness. Python's explicit `PendingTargetStateProvider` type is represented Rust-idiomatically by typed child providers returned from declaration/mount calls. |
 | Missing/default environment surface | `Environment`, `EnvironmentBuilder`, `LifespanFn`, `lifespan`, `start`, `stop`, `start_blocking`, `stop_blocking`, `default_env`, `runtime` | Rust examples use explicit `App::builder`; no Python-style default env/lifespan API. |
 | Missing live/error surface | `LiveComponent`, `LiveComponentOperator`, `LiveMapFeed`, `LiveMapView`, `LiveMapSubscriber`, `ComponentMountHandle`, `mount`, `use_mount`, `ExceptionContext`, `ExceptionHandler`, `exception_handler` | Rust exposes only limited `auto_refresh`; no public live component, mount/use_mount, or scoped exception handler equivalents. |
 | Missing runner surface | `GPU`, `Runner` | Rust has batching helpers but no Runner/GPU/subprocess runner equivalent. |
@@ -854,9 +869,9 @@ Rust parity status.
 | Missing/different settings/stable symbols | `Settings`, `LmdbSettings`, `ROOT_PATH`, `StablePath`, `StableKey`, `Symbol` | Rust has `AppBuilder` db path and core stable keys internally; no public settings object or top-level stable path/symbol API. |
 | Missing/different typing sentinels | `NON_EXISTENCE`, `NonExistenceType`, `is_non_existence`, `MemoStateOutcome` | Rust represents state through typed results/core internals; no public Python-like sentinel surface. |
 
-Implication: even when a Rust connector exists, it cannot yet be designed the
-same way as Python because many Python connector helper types are top-level SDK
-APIs and are private or absent in Rust.
+Implication: generic target-state connector structure can now be designed the
+same way as Python, but many resource/connectorkit helper types are still absent
+or connector-local in Rust.
 
 ## Appendix B: Python Connector Public Surface
 
@@ -912,8 +927,13 @@ define the public SDK shape.
 | `id` | `generate_id`, `generate_id_default`, `generate_uuid`, `generate_uuid_default`, `IdGenerator` (`new`, `with_deps`, `next_id`, `next_id_default`), `UuidGenerator` (`new`, `with_deps`, `next_uuid`, `next_uuid_default`) |
 | `kafka` | `KafkaProducer` (`connect`, `state_id`, `ensure_topic`), `DeletionValueFn`, `KafkaTopicOptions`, `KafkaTopicTarget` (`topic`, `declare_message`), `mount_kafka_topic_target` |
 | `memo` | `cached`, `cached_by_fingerprint`, `key_bytes`, `key_bytes_result`, `key_fingerprint_result`, `new_key_fingerprinter`, `write_key_fingerprint_part`, `finish_key_fingerprinter`, `batch`, `batch_by_fingerprint` |
+| `neo4j` | `Graph` (`connect`, `state_id`), `ColumnDef`, `TableSchema` (`new`, `columns`, `primary_key`), `TableTarget` (`table_name`, `declare_record`), `RelationTarget` (`declare_relation`, `declare_relation_record`), `mount_table_target`, `mount_table_target_with_options`, `mount_relation_target`, `mount_relation_target_with_options` |
+| `falkordb` | `Graph` (`connect`, `state_id`), `ColumnDef`, `TableSchema` (`new`, `columns`, `primary_key`), `TableTarget` (`table_name`, `declare_record`), `RelationTarget` (`declare_relation`, `declare_relation_record`), `mount_table_target`, `mount_table_target_with_options`, `mount_relation_target`, `mount_relation_target_with_options` |
 | `postgres` | `Database` (`connect`, `from_pool`, `pool`, `state_id`), `ColumnDef`, `TableSchema` (`new`, `columns`, `primary_key`), `TableTarget` (`table_name`, `declare_row`, `declare_vector_index`), `VectorIndexOptions`, `mount_table_target`, `ReadTableOptions` (`new`, `pg_schema_name`, `columns`), `read_table`, `read_table_with_options` |
+| `qdrant` | `QdrantConnection` (`connect`, `state_id`, `client`), `Distance`, `CollectionSchema` (`new`), `CollectionTarget` (`collection_name`, `declare_point`), `mount_collection_target`, `mount_collection_target_with_options`, `vector_search` |
+| `statediff` | `ManagedBy`, `ManagedTargetOptions`, `MutualTrackingRecord`, `TrackingRecordTransition`, `DiffAction`, `resolve_system_transition`, `diff` |
 | `surrealdb` | `ColumnDef`, `TableSchema`, `IntoRecordId`, `Graph` (`connect`, `state_id`, `count`), `TableTarget` (`table_name`, `declare_record`), `RelationTarget` (`table_name`, `declare_relation`, `declare_relation_record`, `declare_relation_between`, `declare_relation_record_between`), `mount_table_target`, `mount_table_target_with_schema`, `mount_relation_target`, `mount_relation_target_many`, `mount_relation_target_unconstrained`, `RecordIdValue` |
+| `turbopuffer` | `TurbopufferConnection` (`new`, `with_base_url`, `state_id`, `delete_namespace`), `DistanceMetric`, `NamespaceSchema` (`new`), `NamespaceTarget` (`namespace`, `declare_row`), `mount_namespace_target`, `mount_namespace_target_with_options`, `vector_search` |
 | `cocoindex_ops_text` | `PatternMatcher`, `detect_language`, `SeparatorSplitter`, `RecursiveChunker`, `Chunk`, `TextRange`, `OutputPosition` |
 
 ## Appendix D: Test Families Rust Should Port
@@ -954,8 +974,8 @@ This checklist is derived from the current Python test names under
 | `test_sqlite_target.py` | CRUD, schema types, drop table, no-change optimization, multiple tables, dict rows, user-managed table, vec0 basic/partition/aux columns/schema switch/validation/extension errors/column overrides, regular-vs-vec0 switch | none | High after target-state API |
 | `test_lancedb_target.py` | add columns preserving existing rows, nullable materialization for new non-null columns, optimize interval, optimize no-overlap, mutation preservation/retry after optimize failure, existing/new table optimize behavior, async add-columns API | Rust e2e covers create/upsert/search/delete and additive scalar column preservation; unit tests cover schema validation, nullability, nullable vectors, predicates | Medium |
 | `test_doris_target.py` | CRUD, dict rows, vector index creation, no-change optimization | none | Medium |
-| `test_qdrant_target.py` | No dedicated Python test file currently found | none | Add tests when porting; cover collection lifecycle, named vectors, upsert/delete/no-change |
-| `test_turbopuffer_target.py` | insert/update/delete, named vectors, f32/f16, unsupported dtype, single vector list/ndarray/dict rejection, missing/non-dict named vectors, reserved attribute collisions, empty named vectors, schema construction | none | Medium |
+| `test_qdrant_target.py` | No dedicated Python test file currently found | `qdrant_target.rs` unit/live-when-available tests | Add Python parity tests or document Rust-only coverage; still needs named/multivector and schema-change coverage |
+| `test_turbopuffer_target.py` | insert/update/delete, named vectors, f32/f16, unsupported dtype, single vector list/ndarray/dict rejection, missing/non-dict named vectors, reserved attribute collisions, empty named vectors, schema construction | `turbopuffer_target.rs` unit/live-when-available tests | Medium; Rust still lacks Python's full named-vector/schema validation matrix |
 | `test_neo4j_target.py` | node CRUD/no-op, relationship endpoint merge/delete/no cascade, vector indexes, identifier/name builders, node/relationship index create/drop, uniqueness constraints, vector dimension validation, schema and target validation, connection factory validation, dataclass/custom PK | none | Medium/High for graph family |
 | `test_falkordb_target.py` | node CRUD/no-op, relationships, vector indexes, identifier validation, single/compound PK relations, endpoint merge/no cascade, node/relationship indexes, vector index create/drop naming, schema/target validation, dataclass/custom PK | none | Medium/High for graph family |
 
@@ -970,7 +990,7 @@ tests, 67 ops tests, and 44 CLI tests.
 | --- | --- | --- | --- |
 | App lifecycle/drop/default env | `test_trivial_app.py`, `test_update_handle.py`, `test_app_drop.py`, `test_default_env.py`, `test_default_env_async.py`, `test_lazy_environment_lock.py` cover sync/async app forms, handles/watch/progress, drop cleanup/retry, default env startup and env vars | Rust `pipeline.rs` covers app run/open, update/drop handles, blocking/async updates, stats snapshots, drop state clears memoization | Medium/High; default environment is missing/different |
 | Concurrency control | `test_concurrency_control.py` covers max-inflight quota enforcement, nested-mount deadlock prevention, default limit, and `COCOINDEX_MAX_INFLIGHT_COMPONENTS` env fallback | Rust `pipeline.rs` now covers explicit `max_inflight_components` quota enforcement and nested scope no-deadlock behavior | Medium; default/env fallback remains missing because Rust has no default-env loader parity |
-| Generic target states | `test_flat_target_states.py`, `test_component_target_states.py`, `test_attachment_target_states.py`, `test_provider_generation.py`, `test_ownership_transfer.py`, `test_typed_serde_target.py` cover insert/upsert/delete/no-change, preview, components, mount target, attachments, destructive/lossy generation, ownership transfer, typed handler wrapping | Rust has one public typed no-child target-state test plus connector-specific target tests; no full child/attachment/provider-generation/ownership parity suite | Highest |
+| Generic target states | `test_flat_target_states.py`, `test_component_target_states.py`, `test_attachment_target_states.py`, `test_provider_generation.py`, `test_ownership_transfer.py`, `test_typed_serde_target.py` cover insert/upsert/delete/no-change, preview, components, mount target, attachments, destructive/lossy generation, ownership transfer, typed handler wrapping | Rust `tests/target_state.rs` covers public typed CRUD/no-change, component declarations, mount-target children, multiple mounted child targets from one provider, attachments, destructive/lossy/no invalidation, and ownership transfer; preview-specific runtime coverage is still missing | Medium |
 | Live components and exception routing | `test_live_component.py`, `test_exception_handlers.py`, `test_auto_refresh.py`, `test_cancellation.py`, `test_component_submit_order.py` cover live catch-up/incremental delete/update, ready signaling, background errors, scoped/global handlers, cancellation, parent waits for child ready | Rust has `ctx_auto_refresh_*` tests only; no public live component or exception handler API | High |
 | Function memoization and logic tracking | `test_function_memo.py`, `test_logic_change_detection.py`, `test_component_memo.py`, `test_function_class_methods.py`, `test_function_misc.py`, `test_full_reprocess.py` cover memo with targets/components, nested calls, decorator/code/deps invalidation, bound/static/class methods, full reprocess semantics | Rust `pipeline.rs` has strong memo/macro/function hash/context dependency tests, but less class/method/dynamic logic-mode surface because Rust shape differs | Medium; document idiomatic differences. Python exposes `LogicTracking`; Rust has macro/hash behavior but no named `LogicTracking` type alias. |
 | Batching and runners | `test_function_batching.py` covers sync/async batching, max batch size, extra arg grouping, `Runner`, `GPU`, subprocess runner, memo with runner | Rust covers `Ctx::batch`, `memo::batch`, macro batch cache hits/errors, duplicate keys; no Runner/GPU/subprocess equivalent | Medium/High if Python Runner is product parity goal |

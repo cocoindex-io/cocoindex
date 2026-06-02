@@ -6,6 +6,7 @@
 //!
 //!   cargo test -p cocoindex --test target_state
 
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use cocoindex::{
@@ -404,6 +405,166 @@ async fn mount_target_child_rows_insert_and_delete() {
     .await;
     assert_eq!(drain_sorted(&table_log), vec!["ensure docs"]);
     assert_eq!(drain_sorted(&row_log), vec!["delete r2"]);
+}
+
+#[tokio::test]
+async fn mount_target_keys_from_same_provider_are_isolated() {
+    let (app, _dir) = temp_app("child_rows_two_mounts").await;
+    let table_log = new_log();
+    let row_log = new_log();
+
+    app.update({
+        let table_log = table_log.clone();
+        let row_log = row_log.clone();
+        move |ctx| {
+            let table_log = table_log.clone();
+            let row_log = row_log.clone();
+            async move {
+                let table_provider = register_root_target_states_provider(
+                    &ctx,
+                    "test/two-tables",
+                    TableHandler {
+                        sink: table_sink(table_log, row_log.clone()),
+                        invalidation: None,
+                    },
+                )?;
+
+                let docs: TargetStateProvider<String> = mount_target(
+                    &ctx,
+                    table_provider.target_state(
+                        "docs",
+                        TableSpec {
+                            generation: "g1".to_string(),
+                        },
+                    ),
+                )
+                .await?;
+                let chunks: TargetStateProvider<String> = mount_target(
+                    &ctx,
+                    table_provider.target_state(
+                        "chunks",
+                        TableSpec {
+                            generation: "g1".to_string(),
+                        },
+                    ),
+                )
+                .await?;
+
+                declare_target_state(&ctx, docs.target_state("r1", "doc".to_string()))?;
+                declare_target_state(&ctx, chunks.target_state("r1", "chunk".to_string()))?;
+                Ok(())
+            }
+        }
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(
+        drain_sorted(&table_log),
+        vec!["ensure chunks", "ensure docs"]
+    );
+    assert_eq!(
+        drain_sorted(&row_log),
+        vec!["create r1=chunk", "create r1=doc"]
+    );
+}
+
+async fn run_owned_components(
+    app: &App,
+    log: Log,
+    components: BTreeMap<&'static str, BTreeMap<&'static str, &'static str>>,
+) {
+    app.update(move |ctx| {
+        let log = log.clone();
+        let components = components.clone();
+        async move {
+            let provider = Arc::new(register_root_target_states_provider(
+                &ctx,
+                "test/ownership",
+                RowHandler {
+                    sink: recording_sink(log),
+                },
+            )?);
+            let items: Vec<_> = components.into_iter().collect();
+            ctx.mount_each(
+                items,
+                |(component, _)| (*component).to_string(),
+                move |child, (_component, rows)| {
+                    let provider = provider.clone();
+                    async move {
+                        for (k, v) in rows {
+                            declare_target_state(&child, provider.target_state(k, v.to_string()))?;
+                        }
+                        Ok::<(), cocoindex::Error>(())
+                    }
+                },
+            )
+            .await?;
+            Ok(())
+        }
+    })
+    .await
+    .unwrap();
+}
+
+fn components(
+    entries: &[(&'static str, &[(&'static str, &'static str)])],
+) -> BTreeMap<&'static str, BTreeMap<&'static str, &'static str>> {
+    entries
+        .iter()
+        .map(|(component, rows)| (*component, rows.iter().copied().collect()))
+        .collect()
+}
+
+#[tokio::test]
+async fn ownership_transfer_between_components_updates_without_delete() {
+    let (app, _dir) = temp_app("ownership_transfer_basic").await;
+    let log = new_log();
+
+    run_owned_components(&app, log.clone(), components(&[("C1", &[("x", "1")])])).await;
+    assert_eq!(drain_sorted(&log), vec!["create x=1"]);
+
+    run_owned_components(&app, log.clone(), components(&[("C2", &[("x", "2")])])).await;
+    assert_eq!(drain_sorted(&log), vec!["update x=2"]);
+}
+
+#[tokio::test]
+async fn ownership_transfer_same_value_is_noop() {
+    let (app, _dir) = temp_app("ownership_transfer_same_value").await;
+    let log = new_log();
+
+    run_owned_components(&app, log.clone(), components(&[("C1", &[("x", "1")])])).await;
+    assert_eq!(drain_sorted(&log), vec!["create x=1"]);
+
+    run_owned_components(&app, log.clone(), components(&[("C2", &[("x", "1")])])).await;
+    assert_eq!(drain_sorted(&log), Vec::<String>::new());
+}
+
+#[tokio::test]
+async fn ownership_transfer_multiple_keys_keeps_original_owner_rows() {
+    let (app, _dir) = temp_app("ownership_transfer_multiple_keys").await;
+    let log = new_log();
+
+    run_owned_components(
+        &app,
+        log.clone(),
+        components(&[("C1", &[("a", "1"), ("b", "2")])]),
+    )
+    .await;
+    assert_eq!(drain_sorted(&log), vec!["create a=1", "create b=2"]);
+
+    run_owned_components(
+        &app,
+        log.clone(),
+        components(&[("C1", &[("b", "2")]), ("C2", &[("a", "3")])]),
+    )
+    .await;
+    let effect = drain_sorted(&log);
+    assert!(
+        effect == vec!["update a=3"] || effect == vec!["create a=3", "delete a"],
+        "unexpected ownership-transfer effect: {effect:?}"
+    );
+    assert!(!effect.iter().any(|entry| entry == "delete b"));
 }
 
 // ---------------------------------------------------------------------------

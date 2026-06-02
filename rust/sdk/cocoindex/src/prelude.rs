@@ -11,11 +11,16 @@ pub use crate::id::{
     IdGenerator, UuidGenerator, generate_id, generate_id_default, generate_uuid,
     generate_uuid_default,
 };
+pub use crate::statediff::{
+    DiffAction, ManagedBy, ManagedTargetOptions, MutualTrackingRecord, TrackingRecordTransition,
+    diff, resolve_system_transition,
+};
 pub use crate::stats::RunStats;
 pub use crate::target_state::{
-    IntoStableKey, StableKey, TargetAction, TargetActionSink, TargetChildInvalidation,
-    TargetHandler, TargetReconcileOutput, TargetState, TargetStateProvider, declare_target_state,
-    declare_target_state_with_child, mount_target, register_root_target_states_provider,
+    ChildTargetDef, IntoStableKey, StableKey, TargetAction, TargetActionSink,
+    TargetChildInvalidation, TargetHandler, TargetReconcileOutput, TargetState,
+    TargetStateProvider, declare_target_state, declare_target_state_with_child, mount_target,
+    register_root_target_states_provider,
 };
 pub use crate::{
     App, ContextKey, DropHandle, Progress, StatsGroupHandle, StatsGroupOptions, UpdateHandle,

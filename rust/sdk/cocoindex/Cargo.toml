@@ -11,6 +11,10 @@ surrealdb = ["dep:serde_json", "dep:surrealdb"]
 kafka = ["dep:rskafka", "dep:chrono"]
 google_drive = ["dep:serde_json", "dep:reqwest", "dep:rsa", "dep:sha2", "dep:base64"]
 lancedb = ["dep:serde_json", "dep:lancedb", "dep:arrow-array", "dep:arrow-schema"]
+qdrant = ["dep:serde_json", "dep:qdrant-client"]
+turbopuffer = ["dep:serde_json", "dep:reqwest"]
+neo4j = ["dep:serde_json", "dep:neo4rs"]
+falkordb = ["dep:serde_json", "dep:redis"]
 
 [dependencies]
 cocoindex_macros = { path = "../cocoindex_macros" }
@@ -48,9 +52,16 @@ base64 = { version = "0.22", optional = true }
 lancedb = { version = "0.26", default-features = false, optional = true }
 arrow-array = { version = "57", optional = true }
 arrow-schema = { version = "57", optional = true }
+# Qdrant vector-store target (gRPC client; build needs `protoc`).
+qdrant-client = { version = "1.18", optional = true }
 surrealdb = { version = "3", default-features = false, optional = true, features = [
     "protocol-ws",
     "rustls",
+] }
+neo4rs = { version = "0.8.0", optional = true }
+redis = { version = "0.32.7", default-features = false, optional = true, features = [
+    "aio",
+    "tokio-comp",
 ] }
 
 [dev-dependencies]

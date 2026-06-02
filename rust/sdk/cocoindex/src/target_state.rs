@@ -350,12 +350,13 @@ where
     use std::sync::Mutex;
 
     let provider_inner = target_state.provider.inner.clone();
+    let scope_key = format!(
+        "cocoindex/mount_target/{}/{}",
+        target_state.provider.memo_key(),
+        target_state.key
+    );
     let key = target_state.key;
     let value = Value::from_serializable(&target_state.value)?;
-    let scope_key = format!(
-        "cocoindex/mount_target/{}",
-        target_state.provider.memo_key()
-    );
 
     type CoreProvider = cocoindex_core::engine::target_state::TargetStateProvider<RustProfile>;
     let slot: Arc<Mutex<Option<CoreProvider>>> = Arc::new(Mutex::new(None));

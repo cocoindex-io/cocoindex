@@ -1,0 +1,16 @@
+[workspace]
+
+[package]
+name = "text-embedding-turbopuffer"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+cocoindex = { path = "../../../rust/sdk/cocoindex", features = ["turbopuffer"] }
+cocoindex_ops_text = { path = "../../../rust/ops_text" }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Local embeddings (same all-MiniLM-L6-v2 model as the Python example).
+fastembed = "4"
+dotenvy = "0.15"

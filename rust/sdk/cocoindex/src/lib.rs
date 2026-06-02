@@ -1,7 +1,11 @@
 pub mod app;
 pub mod ctx;
+#[cfg(any(feature = "neo4j", feature = "falkordb"))]
+mod cypher_graph;
 pub mod entity_resolution;
 pub mod error;
+#[cfg(feature = "falkordb")]
+pub mod falkordb;
 pub mod fs;
 #[cfg(feature = "google_drive")]
 pub mod gdrive;
@@ -11,14 +15,21 @@ pub mod kafka;
 #[cfg(feature = "lancedb")]
 pub mod lancedb;
 pub mod memo;
+#[cfg(feature = "neo4j")]
+pub mod neo4j;
 #[cfg(feature = "postgres")]
 pub mod postgres;
 pub mod prelude;
 pub(crate) mod profile;
+#[cfg(feature = "qdrant")]
+pub mod qdrant;
+pub mod statediff;
 mod stats;
 #[cfg(feature = "surrealdb")]
 pub mod surrealdb;
 pub mod target_state;
+#[cfg(feature = "turbopuffer")]
+pub mod turbopuffer;
 mod typemap;
 
 // Flat re-exports — the public API surface
@@ -40,6 +51,10 @@ pub use fs::{
 pub use id::{
     IdGenerator, UuidGenerator, generate_id, generate_id_default, generate_uuid,
     generate_uuid_default,
+};
+pub use statediff::{
+    DiffAction, ManagedBy, ManagedTargetOptions, MutualTrackingRecord, TrackingRecordTransition,
+    diff, resolve_system_transition,
 };
 pub use stats::RunStats;
 pub use target_state::{
