@@ -157,7 +157,8 @@ async fn app_main(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
         TABLE,
         code_embedding_schema()?,
         Some(PG_SCHEMA),
-    )?;
+    )
+    .await?;
     table.declare_vector_index(
         &ctx,
         "embedding",

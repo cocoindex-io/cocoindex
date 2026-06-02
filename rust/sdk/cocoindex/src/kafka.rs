@@ -1,28 +1,30 @@
 //! Kafka target connector — the Rust analogue of Python's
 //! `cocoindex.connectors.kafka` target.
 //!
-//! A [`KafkaTopicTarget`] is a *declarative* target: messages you
+//! A two-level declarative managed target built **on the public target-state
+//! facade** ([`crate::target_state`]): a *topic* container (user-managed —
+//! CocoIndex never creates/drops it) whose child *messages* you
 //! [`declare_message`](KafkaTopicTarget::declare_message) are reconciled against
-//! the previous run by CocoIndex's target-state engine:
+//! the previous run:
 //! * new or changed messages are produced,
-//! * unchanged messages are skipped (nothing re-produced),
-//! * messages declared in a previous run but **not** this run (their source was
-//!   deleted) produce a *tombstone* (a record with a null value), or a custom
-//!   deletion value via [`KafkaTopicOptions::deletion_value_fn`].
+//! * unchanged messages are skipped (fingerprint tracking — nothing re-produced),
+//! * messages declared in a previous run but **not** this run produce a
+//!   *tombstone* (a record with a null value), or a custom deletion value via
+//!   [`KafkaTopicOptions::deletion_value_fn`].
 //!
-//! The topic itself is **user-managed** — like the Python connector, CocoIndex
-//! never creates or drops topics during reconciliation. [`KafkaProducer::ensure_topic`]
-//! is provided as an explicit, idempotent convenience (e.g. for examples/tests).
+//! Mirroring Python, the connector exposes the constructor/declaration/mount
+//! split: [`kafka_topic_target`] builds the (composable) [`TargetState`],
+//! [`declare_kafka_topic_target`] declares it in the current component, and
+//! [`mount_kafka_topic_target`] is the compatibility convenience for the same
+//! declaration path. [`KafkaProducer::ensure_topic`] is an explicit, idempotent
+//! topic-creation convenience (not part of reconciliation).
 //!
 //! Uses [`rskafka`] — a pure-Rust, async Kafka client with no `librdkafka`/C
 //! dependency.
 
 use std::collections::BTreeMap;
-use std::pin::Pin;
 use std::sync::Arc;
 
-use cocoindex_core::engine::target_state::{TargetReconcileOutput, TargetStateProvider};
-use cocoindex_core::state::stable_path::StableKey;
 use cocoindex_utils::fingerprint::Fingerprint;
 use rskafka::client::partition::{Compression, PartitionClient, UnknownTopicHandling};
 use rskafka::client::{Client, ClientBuilder};
@@ -32,7 +34,11 @@ use tokio::sync::OnceCell;
 
 use crate::ctx::Ctx;
 use crate::error::{Error, Result};
-use crate::profile::{Action, BoxedHandler, BoxedSink, RustProfile, Value};
+use crate::target_state::{
+    ChildTargetDef, StableKey, TargetAction, TargetActionSink, TargetHandler,
+    TargetReconcileOutput, TargetState, TargetStateProvider, declare_target_state,
+    register_root_target_states_provider,
+};
 
 // ---------------------------------------------------------------------------
 // KafkaProducer — a connection handle (mirrors `postgres::Database`)
@@ -114,13 +120,13 @@ impl KafkaProducer {
 }
 
 // ---------------------------------------------------------------------------
-// Public API: options + target
+// Public API: options + target + the constructor/declaration/mount split
 // ---------------------------------------------------------------------------
 
 /// Callback producing the value of a deletion record for a given message key.
 pub type DeletionValueFn = Arc<dyn Fn(&str) -> Vec<u8> + Send + Sync>;
 
-/// Options for [`mount_kafka_topic_target`].
+/// Options for the Kafka topic target.
 #[derive(Clone, Default)]
 pub struct KafkaTopicOptions {
     /// How to represent a deletion. `None` (default) produces a *tombstone* — a
@@ -129,17 +135,50 @@ pub struct KafkaTopicOptions {
     pub deletion_value_fn: Option<DeletionValueFn>,
 }
 
-/// A declarative Kafka topic target. See the [module docs](self).
+/// A declarative Kafka topic target — a handle to declare messages on. See the
+/// [module docs](self).
 #[derive(Clone)]
 pub struct KafkaTopicTarget {
-    provider: TargetStateProvider<RustProfile>,
+    messages: TargetStateProvider<Vec<u8>>,
     topic: Arc<str>,
 }
 
-/// Mount a declarative Kafka topic target. Declared messages are produced on
-/// commit; unchanged messages are skipped; orphaned messages produce tombstones.
-///
-/// Must be called inside an `App::update()`/`App::run()` pipeline.
+/// Build a composable [`TargetState`] for a Kafka topic (the spec constructor,
+/// analogous to Python's `kafka_topic_target`). Pass it to
+/// [`declare_kafka_topic_target`]/[`mount_kafka_topic_target`], or to the generic
+/// [`declare_target_state_with_child`]/[`mount_target`].
+pub fn kafka_topic_target(
+    ctx: &Ctx,
+    producer: &KafkaProducer,
+    topic: impl Into<String>,
+    options: KafkaTopicOptions,
+) -> Result<TargetState<TopicSpec>> {
+    let topic = topic.into();
+    let provider = register_root_target_states_provider(
+        ctx,
+        format!(
+            "cocoindex/kafka/topic_spec/{}/{}",
+            producer.state_id(),
+            topic
+        ),
+        TopicHandler::new(producer.client.clone(), options.deletion_value_fn),
+    )?;
+    Ok(provider.target_state("default", TopicSpec { topic }))
+}
+
+/// Declare a Kafka topic target in the **current** component (the message child
+/// provider is resolved when this component commits) and return a handle.
+pub fn declare_kafka_topic_target(
+    ctx: &Ctx,
+    producer: &KafkaProducer,
+    topic: impl Into<String>,
+    options: KafkaTopicOptions,
+) -> Result<KafkaTopicTarget> {
+    mount_kafka_topic_target(ctx, producer, topic, options)
+}
+
+/// Compatibility convenience for declaring a Kafka topic target in the current
+/// component and returning a handle for declaring messages.
 pub fn mount_kafka_topic_target(
     ctx: &Ctx,
     producer: &KafkaProducer,
@@ -147,16 +186,17 @@ pub fn mount_kafka_topic_target(
     options: KafkaTopicOptions,
 ) -> Result<KafkaTopicTarget> {
     let topic = topic.into();
-    let provider = ctx.register_root_target_provider(
+    let messages = register_root_target_states_provider(
+        ctx,
         format!("cocoindex/kafka/topic/{}/{}", producer.state_id(), topic),
-        message_handler(
+        MessageHandler::new(
             producer.client.clone(),
             topic.clone(),
             options.deletion_value_fn,
         ),
     )?;
     Ok(KafkaTopicTarget {
-        provider,
+        messages,
         topic: Arc::from(topic),
     })
 }
@@ -178,16 +218,107 @@ impl KafkaTopicTarget {
                 "kafka declare_message: key must be non-empty",
             ));
         }
-        ctx.declare_target_state(
-            self.provider.clone(),
-            StableKey::Str(Arc::from(key)),
-            Value::from_serializable(&value.as_ref().to_vec())?,
+        declare_target_state(
+            ctx,
+            self.messages.target_state(key, value.as_ref().to_vec()),
         )
     }
 }
 
 // ---------------------------------------------------------------------------
-// Reconcile logic (pure — unit-testable without a broker)
+// Topic container handler (root)
+// ---------------------------------------------------------------------------
+
+/// The topic container spec (the topic name). Tracking record + spec are the
+/// same: the topic is user-managed, so the container action never creates/drops.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TopicSpec {
+    topic: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct TopicAction {
+    topic: String,
+}
+
+struct TopicHandler {
+    client: Arc<Client>,
+    deletion_value_fn: Option<DeletionValueFn>,
+}
+
+impl TopicHandler {
+    fn new(client: Arc<Client>, deletion_value_fn: Option<DeletionValueFn>) -> Self {
+        Self {
+            client,
+            deletion_value_fn,
+        }
+    }
+}
+
+impl TargetHandler<TopicSpec> for TopicHandler {
+    type TrackingRecord = TopicSpec;
+    type Action = TopicAction;
+
+    fn reconcile(
+        &self,
+        _key: StableKey,
+        desired: Option<TopicSpec>,
+        _prev: Vec<TopicSpec>,
+        _prev_may_be_missing: bool,
+    ) -> Result<Option<TargetReconcileOutput<TopicAction, TopicSpec>>> {
+        // Always emit when the topic is declared, so the sink runs and fulfills
+        // the message child provider. The topic itself is user-managed (no
+        // create/drop), so there is nothing to do on un-declare.
+        let Some(spec) = desired else {
+            return Ok(None);
+        };
+        Ok(Some(TargetReconcileOutput {
+            action: TargetAction::Update(TopicAction {
+                topic: spec.topic.clone(),
+            }),
+            sink: self.topic_sink(),
+            tracking_record: Some(spec),
+            child_invalidation: None,
+        }))
+    }
+}
+
+impl TopicHandler {
+    /// Container sink: fulfills each declared topic with a fresh message child
+    /// handler bound to that topic.
+    fn topic_sink(&self) -> TargetActionSink<TopicAction> {
+        let client = self.client.clone();
+        let deletion_value_fn = self.deletion_value_fn.clone();
+        TargetActionSink::from_async_fn_with_children(
+            move |actions: Vec<TargetAction<TopicAction>>| {
+                let client = client.clone();
+                let deletion_value_fn = deletion_value_fn.clone();
+                async move {
+                    let mut out: Vec<Option<ChildTargetDef>> = Vec::with_capacity(actions.len());
+                    for action in actions {
+                        match action {
+                            TargetAction::Create(a) | TargetAction::Update(a) => {
+                                out.push(Some(ChildTargetDef::new::<Vec<u8>, _>(
+                                    MessageHandler::new(
+                                        client.clone(),
+                                        a.topic,
+                                        deletion_value_fn.clone(),
+                                    ),
+                                )));
+                            }
+                            // Topic un-declared: user-managed, nothing to drop.
+                            TargetAction::Delete(_) => out.push(None),
+                        }
+                    }
+                    Ok(out)
+                }
+            },
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Message handler (child)
 // ---------------------------------------------------------------------------
 
 /// What the sink should do for one message: produce a record with this value
@@ -198,8 +329,118 @@ struct MessageAction {
     value: Option<Vec<u8>>,
 }
 
-/// The reconcile outcome for a single message, independent of the SDK's
-/// `Value`/sink machinery so it can be unit-tested directly.
+struct MessageHandler {
+    client: Arc<Client>,
+    topic: String,
+    deletion_value_fn: Option<DeletionValueFn>,
+}
+
+impl MessageHandler {
+    fn new(client: Arc<Client>, topic: String, deletion_value_fn: Option<DeletionValueFn>) -> Self {
+        Self {
+            client,
+            topic,
+            deletion_value_fn,
+        }
+    }
+}
+
+impl TargetHandler<Vec<u8>> for MessageHandler {
+    type TrackingRecord = Fingerprint;
+    type Action = MessageAction;
+
+    fn reconcile(
+        &self,
+        key: StableKey,
+        desired: Option<Vec<u8>>,
+        prev: Vec<Fingerprint>,
+        prev_may_be_missing: bool,
+    ) -> Result<Option<TargetReconcileOutput<MessageAction, Fingerprint>>> {
+        let StableKey::Str(key) = &key else {
+            return Err(Error::engine(format!(
+                "unexpected kafka message key: {key:?}"
+            )));
+        };
+        let key = key.to_string();
+
+        let Some(decision) = decide_message(
+            &key,
+            desired.as_deref(),
+            &prev,
+            prev_may_be_missing,
+            self.deletion_value_fn.as_ref(),
+        )?
+        else {
+            return Ok(None);
+        };
+
+        let action = MessageAction {
+            key,
+            value: decision.value,
+        };
+        Ok(Some(TargetReconcileOutput {
+            action: TargetAction::Update(action),
+            sink: self.message_sink(),
+            tracking_record: decision.tracking,
+            child_invalidation: None,
+        }))
+    }
+}
+
+impl MessageHandler {
+    fn message_sink(&self) -> TargetActionSink<MessageAction> {
+        let client = self.client.clone();
+        let topic = self.topic.clone();
+        // One PartitionClient per sink, opened lazily on first apply.
+        let partition: Arc<OnceCell<Arc<PartitionClient>>> = Arc::new(OnceCell::new());
+        TargetActionSink::from_async_fn(move |actions: Vec<TargetAction<MessageAction>>| {
+            let client = client.clone();
+            let topic = topic.clone();
+            let partition = partition.clone();
+            async move {
+                if actions.is_empty() {
+                    return Ok(());
+                }
+                let pc = partition
+                    .get_or_try_init(|| async {
+                        client
+                            .partition_client(topic.clone(), 0, UnknownTopicHandling::Retry)
+                            .await
+                            .map(Arc::new)
+                    })
+                    .await
+                    .map_err(|e| Error::engine(format!("kafka partition_client: {e}")))?;
+
+                let timestamp = current_timestamp();
+                let mut records = Vec::with_capacity(actions.len());
+                for action in actions {
+                    let msg = match action {
+                        TargetAction::Create(m)
+                        | TargetAction::Update(m)
+                        | TargetAction::Delete(m) => m,
+                    };
+                    records.push(Record {
+                        key: Some(msg.key.into_bytes()),
+                        value: msg.value,
+                        headers: BTreeMap::new(),
+                        timestamp,
+                    });
+                }
+                pc.produce(records, Compression::NoCompression)
+                    .await
+                    .map_err(|e| Error::engine(format!("kafka produce: {e}")))?;
+                Ok(())
+            }
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Reconcile logic (pure — unit-testable without a broker)
+// ---------------------------------------------------------------------------
+
+/// The reconcile outcome for a single message, independent of the SDK machinery
+/// so it can be unit-tested directly.
 #[derive(Debug, PartialEq)]
 struct MessageDecision {
     /// Record value to produce: `Some(bytes)` for an upsert or a custom deletion
@@ -230,8 +471,6 @@ fn decide_message(
 
     // Upsert path.
     if let Some(value) = desired_value {
-        // Skip only when we are certain the message is present and every previous
-        // tracking record matches the desired fingerprint.
         let fp = desired_fp
             .as_ref()
             .expect("desired_fp set when value present");
@@ -253,116 +492,6 @@ fn decide_message(
         value,
         tracking: None,
     }))
-}
-
-fn message_handler(
-    client: Arc<Client>,
-    topic: String,
-    deletion_value_fn: Option<DeletionValueFn>,
-) -> BoxedHandler {
-    let sink = message_sink(client, topic);
-    BoxedHandler::new(move |key, desired, prev, prev_may_be_missing| {
-        let StableKey::Str(key) = &key else {
-            return Err(cocoindex_utils::error::Error::internal_msg(format!(
-                "unexpected kafka message key: {key:?}"
-            )));
-        };
-        let key = key.to_string();
-
-        let desired_value: Option<Vec<u8>> = desired
-            .map(Value::deserialize::<Vec<u8>>)
-            .transpose()
-            .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?;
-        let prev_fps: Vec<Fingerprint> = prev
-            .iter()
-            .filter_map(|v| v.deserialize::<Fingerprint>().ok())
-            .collect();
-
-        let decision = decide_message(
-            &key,
-            desired_value.as_deref(),
-            &prev_fps,
-            prev_may_be_missing,
-            deletion_value_fn.as_ref(),
-        )
-        .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?;
-
-        let Some(decision) = decision else {
-            return Ok(None);
-        };
-
-        let tracking_record = match &decision.tracking {
-            Some(fp) => Some(
-                Value::from_serializable(fp)
-                    .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?,
-            ),
-            None => None,
-        };
-        let action = MessageAction {
-            key,
-            value: decision.value,
-        };
-        Ok(Some(TargetReconcileOutput {
-            action: Action::Update(
-                Value::from_serializable(&action)
-                    .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?,
-            ),
-            sink: sink.clone(),
-            tracking_record,
-            child_invalidation: None,
-        }))
-    })
-}
-
-fn message_sink(client: Arc<Client>, topic: String) -> BoxedSink {
-    // One PartitionClient per sink, opened lazily on first apply.
-    let partition: Arc<OnceCell<Arc<PartitionClient>>> = Arc::new(OnceCell::new());
-    BoxedSink::new(move |actions| {
-        let client = client.clone();
-        let topic = topic.clone();
-        let partition = partition.clone();
-        Box::pin(async move {
-            if actions.is_empty() {
-                return Ok(None);
-            }
-            let pc = partition
-                .get_or_try_init(|| async {
-                    client
-                        .partition_client(topic.clone(), 0, UnknownTopicHandling::Retry)
-                        .await
-                        .map(Arc::new)
-                })
-                .await
-                .map_err(|e| {
-                    cocoindex_utils::error::Error::internal_msg(format!(
-                        "kafka partition_client: {e}"
-                    ))
-                })?;
-
-            let timestamp = current_timestamp();
-            let mut records = Vec::with_capacity(actions.len());
-            for action in actions {
-                let inner = match action {
-                    Action::Create(v) | Action::Update(v) | Action::Delete(v) => v,
-                };
-                let msg: MessageAction = inner
-                    .deserialize()
-                    .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?;
-                records.push(Record {
-                    key: Some(msg.key.into_bytes()),
-                    value: msg.value,
-                    headers: BTreeMap::new(),
-                    timestamp,
-                });
-            }
-            pc.produce(records, Compression::NoCompression)
-                .await
-                .map_err(|e| {
-                    cocoindex_utils::error::Error::internal_msg(format!("kafka produce: {e}"))
-                })?;
-            Ok(None)
-        }) as Pin<Box<_>>
-    })
 }
 
 /// Current wall-clock time as a chrono UTC timestamp, without requiring chrono's

@@ -13,8 +13,8 @@ use crate::statediff::{
 };
 use crate::target_state::{
     ChildTargetDef, IntoStableKey, StableKey, TargetAction, TargetActionSink, TargetHandler,
-    TargetReconcileOutput, TargetStateProvider, declare_target_state, mount_target,
-    register_root_target_states_provider,
+    TargetReconcileOutput, TargetState, TargetStateProvider, declare_target_state,
+    declare_target_state_with_child, mount_target, register_root_target_states_provider,
 };
 
 #[async_trait]
@@ -22,6 +22,16 @@ pub(crate) trait CypherExecutor: Clone + Send + Sync + 'static {
     fn dialect(&self) -> &'static str;
     fn state_id(&self) -> &str;
     async fn execute(&self, cypher: &str) -> Result<()>;
+
+    async fn execute_unique_constraint(
+        &self,
+        _op: &str,
+        _entity_kind: &str,
+        _label: &str,
+        _field: &str,
+    ) -> Result<()> {
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -162,8 +172,11 @@ struct TableEndpoint {
     primary_key: String,
 }
 
+/// Spec for a graph table/relation (the declared container value). Public so the
+/// `*_target` spec constructors can return a composable [`TargetState`]; fields
+/// are private.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-struct TableSpec {
+pub struct TableSpec {
     table_name: String,
     schema: Option<TableSchema>,
     primary_key: String,
@@ -236,6 +249,7 @@ impl KeyValue {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 enum TableAction {
     Ensure(TableSpec),
+    Replace { prev: TableSpec, next: TableSpec },
     Drop(TableSpec),
 }
 
@@ -246,13 +260,15 @@ struct RecordAction {
     state: Option<RecordState>,
 }
 
-pub(crate) async fn mount_table_target_with_options<C: CypherExecutor>(
+/// Build the composable [`TargetState`] for a graph table (registers the root
+/// container provider; the row child resolves when declared/mounted).
+pub(crate) fn table_target_state<C: CypherExecutor>(
     ctx: &Ctx,
     graph: &C,
     table_name: impl Into<String>,
     schema: TableSchema,
     options: ManagedTargetOptions,
-) -> Result<TableTarget> {
+) -> Result<TargetState<TableSpec>> {
     let table_name = table_name.into();
     validate_ident(&table_name, "table name")?;
     let spec = TableSpec::table(table_name.clone(), schema, options.managed_by);
@@ -268,32 +284,24 @@ pub(crate) async fn mount_table_target_with_options<C: CypherExecutor>(
             graph: graph.clone(),
         },
     )?;
-    let child: TargetStateProvider<RecordState> = mount_target(
-        ctx,
-        table_root.target_state(
-            StableKey::Array(Arc::from([
-                StableKey::Str(Arc::from(graph.state_id().to_string())),
-                StableKey::Str(Arc::from(table_name.clone())),
-            ])),
-            spec.clone(),
-        ),
-    )
-    .await?;
-    Ok(TableTarget {
-        table_name: Arc::from(table_name),
-        primary_key: Arc::from(spec.primary_key),
-        provider: child,
-    })
+    Ok(table_root.target_state(
+        StableKey::Array(Arc::from([
+            StableKey::Str(Arc::from(graph.state_id().to_string())),
+            StableKey::Str(Arc::from(table_name)),
+        ])),
+        spec,
+    ))
 }
 
-pub(crate) async fn mount_relation_target_with_options<C: CypherExecutor>(
+/// Build the composable [`TargetState`] for a graph relation.
+pub(crate) fn relation_target_state<C: CypherExecutor>(
     ctx: &Ctx,
     graph: &C,
     relation_name: impl Into<String>,
     from_table: &TableTarget,
     to_table: &TableTarget,
     options: ManagedTargetOptions,
-) -> Result<RelationTarget> {
+) -> Result<TargetState<TableSpec>> {
     let relation_name = relation_name.into();
     validate_ident(&relation_name, "relation name")?;
     let from_endpoint = TableEndpoint {
@@ -306,8 +314,8 @@ pub(crate) async fn mount_relation_target_with_options<C: CypherExecutor>(
     };
     let spec = TableSpec::relation(
         relation_name.clone(),
-        from_endpoint.clone(),
-        to_endpoint.clone(),
+        from_endpoint,
+        to_endpoint,
         options.managed_by,
     );
     let table_root = register_root_target_states_provider(
@@ -322,22 +330,86 @@ pub(crate) async fn mount_relation_target_with_options<C: CypherExecutor>(
             graph: graph.clone(),
         },
     )?;
-    let child: TargetStateProvider<RecordState> = mount_target(
-        ctx,
-        table_root.target_state(
-            StableKey::Array(Arc::from([
-                StableKey::Str(Arc::from(graph.state_id().to_string())),
-                StableKey::Str(Arc::from(relation_name.clone())),
-            ])),
-            spec,
-        ),
-    )
-    .await?;
-    Ok(RelationTarget {
-        from_table: from_endpoint,
-        to_table: to_endpoint,
+    Ok(table_root.target_state(
+        StableKey::Array(Arc::from([
+            StableKey::Str(Arc::from(graph.state_id().to_string())),
+            StableKey::Str(Arc::from(relation_name)),
+        ])),
+        spec,
+    ))
+}
+
+fn table_handle(spec: &TableSpec, child: TargetStateProvider<RecordState>) -> TableTarget {
+    TableTarget {
+        table_name: Arc::from(spec.table_name.clone()),
+        primary_key: Arc::from(spec.primary_key.clone()),
         provider: child,
-    })
+    }
+}
+
+fn relation_handle(spec: &TableSpec, child: TargetStateProvider<RecordState>) -> RelationTarget {
+    RelationTarget {
+        from_table: spec
+            .from_table
+            .clone()
+            .expect("relation spec has from_table"),
+        to_table: spec.to_table.clone().expect("relation spec has to_table"),
+        provider: child,
+    }
+}
+
+pub(crate) async fn mount_table_target_with_options<C: CypherExecutor>(
+    ctx: &Ctx,
+    graph: &C,
+    table_name: impl Into<String>,
+    schema: TableSchema,
+    options: ManagedTargetOptions,
+) -> Result<TableTarget> {
+    let ts = table_target_state(ctx, graph, table_name, schema, options)?;
+    let spec = ts.value().clone();
+    let child = mount_target(ctx, ts).await?;
+    Ok(table_handle(&spec, child))
+}
+
+pub(crate) fn declare_table_target_with_options<C: CypherExecutor>(
+    ctx: &Ctx,
+    graph: &C,
+    table_name: impl Into<String>,
+    schema: TableSchema,
+    options: ManagedTargetOptions,
+) -> Result<TableTarget> {
+    let ts = table_target_state(ctx, graph, table_name, schema, options)?;
+    let spec = ts.value().clone();
+    let child = declare_target_state_with_child::<TableSpec, RecordState>(ctx, ts)?;
+    Ok(table_handle(&spec, child))
+}
+
+pub(crate) async fn mount_relation_target_with_options<C: CypherExecutor>(
+    ctx: &Ctx,
+    graph: &C,
+    relation_name: impl Into<String>,
+    from_table: &TableTarget,
+    to_table: &TableTarget,
+    options: ManagedTargetOptions,
+) -> Result<RelationTarget> {
+    let ts = relation_target_state(ctx, graph, relation_name, from_table, to_table, options)?;
+    let spec = ts.value().clone();
+    let child = mount_target(ctx, ts).await?;
+    Ok(relation_handle(&spec, child))
+}
+
+pub(crate) fn declare_relation_target_with_options<C: CypherExecutor>(
+    ctx: &Ctx,
+    graph: &C,
+    relation_name: impl Into<String>,
+    from_table: &TableTarget,
+    to_table: &TableTarget,
+    options: ManagedTargetOptions,
+) -> Result<RelationTarget> {
+    let ts = relation_target_state(ctx, graph, relation_name, from_table, to_table, options)?;
+    let spec = ts.value().clone();
+    let child = declare_target_state_with_child::<TableSpec, RecordState>(ctx, ts)?;
+    Ok(relation_handle(&spec, child))
 }
 
 struct TableHandler<C> {
@@ -367,8 +439,23 @@ impl<C: CypherExecutor> TargetHandler<TableSpec> for TableHandler<C> {
                 );
                 let main_action = diff(resolved.as_ref());
                 let changed = matches!(main_action, Some(crate::statediff::DiffAction::Replace));
+                let prev_system_spec = resolved
+                    .as_ref()
+                    .and_then(|r| r.prev.iter().find(|p| *p != &spec))
+                    .cloned();
                 Ok(Some(TargetReconcileOutput {
-                    action: if prev_is_empty {
+                    action: if changed {
+                        if let Some(prev_spec) = prev_system_spec {
+                            TargetAction::Update(TableAction::Replace {
+                                prev: prev_spec,
+                                next: spec.clone(),
+                            })
+                        } else if prev_is_empty {
+                            TargetAction::Create(TableAction::Ensure(spec.clone()))
+                        } else {
+                            TargetAction::Update(TableAction::Ensure(spec.clone()))
+                        }
+                    } else if prev_is_empty {
                         TargetAction::Create(TableAction::Ensure(spec.clone()))
                     } else {
                         TargetAction::Update(TableAction::Ensure(spec.clone()))
@@ -376,7 +463,7 @@ impl<C: CypherExecutor> TargetHandler<TableSpec> for TableHandler<C> {
                     sink,
                     tracking_record: Some(tracking_record),
                     child_invalidation: changed
-                        .then_some(crate::target_state::TargetChildInvalidation::Lossy),
+                        .then_some(crate::target_state::TargetChildInvalidation::Destructive),
                 }))
             }
             None => {
@@ -468,8 +555,22 @@ fn table_sink<C: CypherExecutor>(graph: C) -> TargetActionSink<TableAction> {
                             spec,
                         })));
                     }
+                    TargetAction::Update(TableAction::Replace { prev, next })
+                    | TargetAction::Create(TableAction::Replace { prev, next }) => {
+                        drop_table(&graph, &prev).await?;
+                        ensure_table(&graph, &next).await?;
+                        out.push(Some(ChildTargetDef::new::<RecordState, _>(RecordHandler {
+                            graph: graph.clone(),
+                            spec: next,
+                        })));
+                    }
                     TargetAction::Delete(TableAction::Ensure(spec)) => {
                         drop_table(&graph, &spec).await?;
+                        out.push(None);
+                    }
+                    TargetAction::Delete(TableAction::Replace { prev, next }) => {
+                        drop_table(&graph, &prev).await?;
+                        drop_table(&graph, &next).await?;
                         out.push(None);
                     }
                     TargetAction::Delete(TableAction::Drop(spec))
@@ -504,23 +605,57 @@ async fn ensure_table<C: CypherExecutor>(graph: &C, spec: &TableSpec) -> Result<
     if spec.managed_by.is_user() {
         return Ok(());
     }
-    if graph.dialect() == "neo4j" && !spec.is_relation {
-        graph
-            .execute(&format!(
-                "CREATE CONSTRAINT `{}` IF NOT EXISTS FOR (n:`{}`) REQUIRE n.`{}` IS UNIQUE",
-                constraint_name(&spec.table_name, &spec.primary_key),
-                spec.table_name,
-                spec.primary_key
-            ))
-            .await?;
-    } else if graph.dialect() == "falkordb" && !spec.is_relation {
-        // FalkorDB returns an error if the index already exists; ignore DDL here.
-        let _ = graph
-            .execute(&format!(
-                "CREATE INDEX FOR (n:`{}`) ON (n.`{}`)",
-                spec.table_name, spec.primary_key
-            ))
-            .await;
+    match (graph.dialect(), spec.is_relation) {
+        ("neo4j", false) => {
+            graph
+                .execute(&format!(
+                    "CREATE CONSTRAINT `{}` IF NOT EXISTS FOR (n:`{}`) REQUIRE n.`{}` IS UNIQUE",
+                    constraint_name(&spec.table_name, &spec.primary_key),
+                    spec.table_name,
+                    spec.primary_key
+                ))
+                .await?;
+        }
+        ("neo4j", true) => {
+            graph
+                .execute(&format!(
+                    "CREATE INDEX `{}` IF NOT EXISTS FOR ()-[r:`{}`]-() ON (r.`{}`)",
+                    relation_index_name(&spec.table_name, &spec.primary_key),
+                    spec.table_name,
+                    spec.primary_key
+                ))
+                .await?;
+        }
+        ("falkordb", false) => {
+            // FalkorDB errors when an index/constraint already exists; match
+            // Python and treat artifact setup as best-effort.
+            let _ = graph
+                .execute(&format!(
+                    "CREATE INDEX FOR (e:`{}`) ON (e.`{}`)",
+                    spec.table_name, spec.primary_key
+                ))
+                .await;
+            let _ = graph
+                .execute_unique_constraint("CREATE", "NODE", &spec.table_name, &spec.primary_key)
+                .await;
+        }
+        ("falkordb", true) => {
+            let _ = graph
+                .execute(&format!(
+                    "CREATE INDEX FOR ()-[e:`{}`]-() ON (e.`{}`)",
+                    spec.table_name, spec.primary_key
+                ))
+                .await;
+            let _ = graph
+                .execute_unique_constraint(
+                    "CREATE",
+                    "RELATIONSHIP",
+                    &spec.table_name,
+                    &spec.primary_key,
+                )
+                .await;
+        }
+        _ => {}
     }
     Ok(())
 }
@@ -529,15 +664,53 @@ async fn drop_table<C: CypherExecutor>(graph: &C, spec: &TableSpec) -> Result<()
     if spec.managed_by.is_user() {
         return Ok(());
     }
-    if spec.is_relation {
-        graph
-            .execute(&format!("MATCH ()-[r:`{}`]->() DELETE r", spec.table_name))
-            .await
-    } else {
-        graph
-            .execute(&format!("MATCH (n:`{}`) DETACH DELETE n", spec.table_name))
-            .await
+    match (graph.dialect(), spec.is_relation) {
+        ("neo4j", false) => {
+            graph
+                .execute(&format!(
+                    "DROP CONSTRAINT `{}` IF EXISTS",
+                    constraint_name(&spec.table_name, &spec.primary_key)
+                ))
+                .await?;
+        }
+        ("neo4j", true) => {
+            graph
+                .execute(&format!(
+                    "DROP INDEX `{}` IF EXISTS",
+                    relation_index_name(&spec.table_name, &spec.primary_key)
+                ))
+                .await?;
+        }
+        ("falkordb", false) => {
+            let _ = graph
+                .execute_unique_constraint("DROP", "NODE", &spec.table_name, &spec.primary_key)
+                .await;
+            let _ = graph
+                .execute(&format!(
+                    "DROP INDEX FOR (e:`{}`) ON (e.`{}`)",
+                    spec.table_name, spec.primary_key
+                ))
+                .await;
+        }
+        ("falkordb", true) => {
+            let _ = graph
+                .execute_unique_constraint(
+                    "DROP",
+                    "RELATIONSHIP",
+                    &spec.table_name,
+                    &spec.primary_key,
+                )
+                .await;
+            let _ = graph
+                .execute(&format!(
+                    "DROP INDEX FOR ()-[e:`{}`]-() ON (e.`{}`)",
+                    spec.table_name, spec.primary_key
+                ))
+                .await;
+        }
+        _ => {}
     }
+    Ok(())
 }
 
 async fn apply_record<C: CypherExecutor>(graph: &C, action: &RecordAction) -> Result<()> {
@@ -708,6 +881,10 @@ fn constraint_name(table: &str, primary_key: &str) -> String {
     format!("coco_uniq_{table}__{primary_key}")
 }
 
+fn relation_index_name(table: &str, primary_key: &str) -> String {
+    format!("coco_idx_rel_{table}__{primary_key}")
+}
+
 pub(crate) fn validate_ident(name: &str, what: &str) -> Result<()> {
     if name.is_empty() {
         return Err(Error::engine(format!("Invalid {what}: empty identifier")));
@@ -745,6 +922,61 @@ mod tests {
         }
     }
 
+    #[derive(Clone)]
+    struct RecordingGraph {
+        dialect: &'static str,
+        statements: Arc<std::sync::Mutex<Vec<String>>>,
+        constraints: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    impl RecordingGraph {
+        fn new(dialect: &'static str) -> Self {
+            Self {
+                dialect,
+                statements: Arc::new(std::sync::Mutex::new(Vec::new())),
+                constraints: Arc::new(std::sync::Mutex::new(Vec::new())),
+            }
+        }
+
+        fn statements(&self) -> Vec<String> {
+            self.statements.lock().unwrap().clone()
+        }
+
+        fn constraints(&self) -> Vec<String> {
+            self.constraints.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait]
+    impl CypherExecutor for RecordingGraph {
+        fn dialect(&self) -> &'static str {
+            self.dialect
+        }
+
+        fn state_id(&self) -> &str {
+            "recording"
+        }
+
+        async fn execute(&self, cypher: &str) -> Result<()> {
+            self.statements.lock().unwrap().push(cypher.to_string());
+            Ok(())
+        }
+
+        async fn execute_unique_constraint(
+            &self,
+            op: &str,
+            entity_kind: &str,
+            label: &str,
+            field: &str,
+        ) -> Result<()> {
+            self.constraints
+                .lock()
+                .unwrap()
+                .push(format!("{op} {entity_kind} {label}.{field}"));
+            Ok(())
+        }
+    }
+
     #[test]
     fn cypher_literals_escape_strings() {
         assert_eq!(cypher_string("a'b\\c\n"), "'a\\'b\\\\c\\n'");
@@ -765,6 +997,214 @@ mod tests {
         assert!(validate_ident("bad-name", "table").is_err());
         assert!(validate_ident("1bad", "table").is_err());
         assert!(validate_ident("bad`name", "table").is_err());
+    }
+
+    #[tokio::test]
+    async fn neo4j_table_drop_drops_artifacts_not_data() {
+        let schema = TableSchema::new([("id", ColumnDef::new("INTEGER"))], "id").unwrap();
+        let spec = TableSpec::table(
+            "Meeting".to_string(),
+            schema,
+            crate::statediff::ManagedBy::System,
+        );
+        let graph = RecordingGraph::new("neo4j");
+
+        drop_table(&graph, &spec).await.unwrap();
+
+        assert_eq!(
+            graph.statements(),
+            vec!["DROP CONSTRAINT `coco_uniq_Meeting__id` IF EXISTS"]
+        );
+        assert!(
+            graph
+                .statements()
+                .iter()
+                .all(|stmt| !stmt.contains("DETACH DELETE") && !stmt.contains("DELETE r"))
+        );
+    }
+
+    #[tokio::test]
+    async fn neo4j_relation_artifacts_are_created_and_dropped() {
+        let endpoint = TableEndpoint {
+            table_name: "Person".to_string(),
+            primary_key: "id".to_string(),
+        };
+        let spec = TableSpec::relation(
+            "ATTENDED".to_string(),
+            endpoint.clone(),
+            endpoint,
+            crate::statediff::ManagedBy::System,
+        );
+        let graph = RecordingGraph::new("neo4j");
+
+        ensure_table(&graph, &spec).await.unwrap();
+        drop_table(&graph, &spec).await.unwrap();
+
+        assert_eq!(
+            graph.statements(),
+            vec![
+                "CREATE INDEX `coco_idx_rel_ATTENDED__id` IF NOT EXISTS FOR ()-[r:`ATTENDED`]-() ON (r.`id`)",
+                "DROP INDEX `coco_idx_rel_ATTENDED__id` IF EXISTS",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn neo4j_table_replace_drops_old_artifact_and_recreates_children() {
+        let old_schema = TableSchema::new([("id", ColumnDef::new("INTEGER"))], "id").unwrap();
+        let new_schema = TableSchema::new([("uuid", ColumnDef::new("STRING"))], "uuid").unwrap();
+        let old_spec = TableSpec::table(
+            "Meeting".to_string(),
+            old_schema,
+            crate::statediff::ManagedBy::System,
+        );
+        let new_spec = TableSpec::table(
+            "Meeting".to_string(),
+            new_schema,
+            crate::statediff::ManagedBy::System,
+        );
+        let graph = RecordingGraph::new("neo4j");
+        let handler = TableHandler {
+            graph: graph.clone(),
+        };
+
+        let out = handler
+            .reconcile(
+                StableKey::Str(Arc::from("Meeting")),
+                Some(new_spec),
+                vec![MutualTrackingRecord::new(
+                    old_spec,
+                    crate::statediff::ManagedBy::System,
+                )],
+                false,
+            )
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            out.child_invalidation,
+            Some(crate::target_state::TargetChildInvalidation::Destructive)
+        );
+        let children = out.sink.apply_for_test(vec![out.action]).await.unwrap();
+        assert_eq!(children.unwrap().len(), 1);
+
+        assert_eq!(
+            graph.statements(),
+            vec![
+                "DROP CONSTRAINT `coco_uniq_Meeting__id` IF EXISTS",
+                "CREATE CONSTRAINT `coco_uniq_Meeting__uuid` IF NOT EXISTS FOR (n:`Meeting`) REQUIRE n.`uuid` IS UNIQUE",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn falkordb_table_drop_drops_artifacts_not_data() {
+        let schema = TableSchema::new([("id", ColumnDef::new("INTEGER"))], "id").unwrap();
+        let spec = TableSpec::table(
+            "Meeting".to_string(),
+            schema,
+            crate::statediff::ManagedBy::System,
+        );
+        let graph = RecordingGraph::new("falkordb");
+
+        drop_table(&graph, &spec).await.unwrap();
+
+        assert_eq!(
+            graph.statements(),
+            vec!["DROP INDEX FOR (e:`Meeting`) ON (e.`id`)"]
+        );
+        assert_eq!(graph.constraints(), vec!["DROP NODE Meeting.id"]);
+        assert!(
+            graph
+                .statements()
+                .iter()
+                .all(|stmt| !stmt.contains("DETACH DELETE") && !stmt.contains("DELETE r"))
+        );
+    }
+
+    #[tokio::test]
+    async fn falkordb_relation_artifacts_are_created_and_dropped() {
+        let endpoint = TableEndpoint {
+            table_name: "Person".to_string(),
+            primary_key: "id".to_string(),
+        };
+        let spec = TableSpec::relation(
+            "ATTENDED".to_string(),
+            endpoint.clone(),
+            endpoint,
+            crate::statediff::ManagedBy::System,
+        );
+        let graph = RecordingGraph::new("falkordb");
+
+        ensure_table(&graph, &spec).await.unwrap();
+        drop_table(&graph, &spec).await.unwrap();
+
+        assert_eq!(
+            graph.statements(),
+            vec![
+                "CREATE INDEX FOR ()-[e:`ATTENDED`]-() ON (e.`id`)",
+                "DROP INDEX FOR ()-[e:`ATTENDED`]-() ON (e.`id`)",
+            ]
+        );
+        assert_eq!(
+            graph.constraints(),
+            vec![
+                "CREATE RELATIONSHIP ATTENDED.id",
+                "DROP RELATIONSHIP ATTENDED.id",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn falkordb_table_replace_drops_old_artifact_and_recreates_children() {
+        let old_schema = TableSchema::new([("id", ColumnDef::new("INTEGER"))], "id").unwrap();
+        let new_schema = TableSchema::new([("uuid", ColumnDef::new("STRING"))], "uuid").unwrap();
+        let old_spec = TableSpec::table(
+            "Meeting".to_string(),
+            old_schema,
+            crate::statediff::ManagedBy::System,
+        );
+        let new_spec = TableSpec::table(
+            "Meeting".to_string(),
+            new_schema,
+            crate::statediff::ManagedBy::System,
+        );
+        let graph = RecordingGraph::new("falkordb");
+        let handler = TableHandler {
+            graph: graph.clone(),
+        };
+
+        let out = handler
+            .reconcile(
+                StableKey::Str(Arc::from("Meeting")),
+                Some(new_spec),
+                vec![MutualTrackingRecord::new(
+                    old_spec,
+                    crate::statediff::ManagedBy::System,
+                )],
+                false,
+            )
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            out.child_invalidation,
+            Some(crate::target_state::TargetChildInvalidation::Destructive)
+        );
+        let children = out.sink.apply_for_test(vec![out.action]).await.unwrap();
+        assert_eq!(children.unwrap().len(), 1);
+
+        assert_eq!(
+            graph.statements(),
+            vec![
+                "DROP INDEX FOR (e:`Meeting`) ON (e.`id`)",
+                "CREATE INDEX FOR (e:`Meeting`) ON (e.`uuid`)",
+            ]
+        );
+        assert_eq!(
+            graph.constraints(),
+            vec!["DROP NODE Meeting.id", "CREATE NODE Meeting.uuid"]
+        );
     }
 
     #[test]

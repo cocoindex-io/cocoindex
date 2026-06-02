@@ -1,15 +1,20 @@
-//! Postgres target helpers.
+//! Postgres target + source connector.
 //!
-//! This mirrors the Python connector's core `TableTarget` shape: mount a table
-//! target, declare rows into it, and let CocoIndex target-state reconciliation
-//! upsert changed rows and delete rows that disappeared from the desired state.
+//! The target mirrors Python's `TableTarget` shape, built **on the public
+//! target-state facade** ([`crate::target_state`]): a *table* container
+//! (created/dropped to match the declared schema, with an optional vector-index
+//! *attachment*) containing *rows* you [`declare_row`](TableTarget::declare_row).
+//! Reconciliation upserts changed rows (in one transaction per batch), skips
+//! unchanged ones (fingerprint tracking), and deletes rows that disappeared.
+//! `managed_by` (via [`ManagedTargetOptions`]) controls whether CocoIndex owns
+//! the DDL. The constructor/declaration/mount split is exposed as
+//! [`table_target`] / [`declare_table_target`] / [`mount_table_target`].
+//!
+//! [`read_table`] is the source analogue of Python's `PgTableSource`.
 
 use std::collections::BTreeMap;
-use std::pin::Pin;
 use std::sync::Arc;
 
-use cocoindex_core::engine::target_state::TargetReconcileOutput;
-use cocoindex_core::state::stable_path::StableKey;
 use cocoindex_utils::fingerprint::Fingerprint;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value as JsonValue};
@@ -18,10 +23,14 @@ use sqlx::postgres::PgPoolOptions;
 
 use crate::ctx::Ctx;
 use crate::error::{Error, Result};
-use crate::profile::{Action, BoxedHandler, BoxedSink, RustProfile, Value};
 use crate::statediff::{
     DiffAction, ManagedBy, ManagedTargetOptions, MutualTrackingRecord, diff,
     resolve_system_transition,
+};
+use crate::target_state::{
+    ChildTargetDef, StableKey, TargetAction, TargetActionSink, TargetChildInvalidation,
+    TargetHandler, TargetReconcileOutput, TargetState, TargetStateProvider, declare_target_state,
+    declare_target_state_with_child, mount_target, register_root_target_states_provider,
 };
 
 #[derive(Clone)]
@@ -124,14 +133,143 @@ impl TableSchema {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Public target API: constructor / declaration / mount split
+// ---------------------------------------------------------------------------
+
+/// A declarative Postgres table target — a handle to declare rows (and a vector
+/// index) on. See the [module docs](self).
 #[derive(Clone)]
 pub struct TableTarget {
     pg_schema_name: Option<Arc<str>>,
     table_name: Arc<str>,
     table_schema: TableSchema,
     managed_by: ManagedBy,
-    table_provider: cocoindex_core::engine::target_state::TargetStateProvider<RustProfile>,
-    provider: cocoindex_core::engine::target_state::TargetStateProvider<RustProfile>,
+    table_provider: TargetStateProvider<TableSpec>,
+    rows: TargetStateProvider<RowState>,
+}
+
+/// Build a composable [`TargetState`] for a Postgres table (the spec
+/// constructor). System-managed. Pass it to
+/// [`declare_table_target`]/[`mount_table_target`] or the generic
+/// [`declare_target_state_with_child`]/[`mount_target`].
+pub fn table_target(
+    ctx: &Ctx,
+    db: &Database,
+    table_name: impl Into<String>,
+    table_schema: TableSchema,
+    pg_schema_name: Option<&str>,
+) -> Result<TargetState<TableSpec>> {
+    table_target_with_options(
+        ctx,
+        db,
+        table_name,
+        table_schema,
+        pg_schema_name,
+        ManagedTargetOptions::default(),
+    )
+}
+
+/// [`table_target`] with explicit [`ManagedTargetOptions`] (`managed_by`).
+pub fn table_target_with_options(
+    ctx: &Ctx,
+    db: &Database,
+    table_name: impl Into<String>,
+    table_schema: TableSchema,
+    pg_schema_name: Option<&str>,
+    options: ManagedTargetOptions,
+) -> Result<TargetState<TableSpec>> {
+    let table_name = table_name.into();
+    validate_ident(&table_name, "table name")?;
+    if let Some(schema) = pg_schema_name {
+        validate_ident(schema, "schema name")?;
+    }
+    let provider = register_root_target_states_provider(
+        ctx,
+        format!(
+            "cocoindex/postgres/table/{}/{}/{}",
+            db.state_id(),
+            pg_schema_name.unwrap_or("public"),
+            table_name
+        ),
+        TableHandler { db: db.clone() },
+    )?;
+    Ok(provider.target_state(
+        "default",
+        TableSpec {
+            pg_schema_name: pg_schema_name.map(str::to_string),
+            table_name,
+            table_schema,
+            managed_by: options.managed_by,
+        },
+    ))
+}
+
+/// Declare a Postgres table target in the **current** component (the row child
+/// provider resolves at this component's commit) and return a handle.
+pub fn declare_table_target(
+    ctx: &Ctx,
+    db: &Database,
+    table_name: impl Into<String>,
+    table_schema: TableSchema,
+    pg_schema_name: Option<&str>,
+) -> Result<TableTarget> {
+    let ts = table_target(ctx, db, table_name, table_schema, pg_schema_name)?;
+    let spec = ts.value().clone();
+    let table_provider = ts.provider().clone();
+    let rows = declare_target_state_with_child::<TableSpec, RowState>(ctx, ts)?;
+    Ok(table_target_handle(spec, table_provider, rows))
+}
+
+/// Mount a Postgres table target **foreground** (rows can be declared
+/// immediately) and return a handle. System-managed.
+pub async fn mount_table_target(
+    ctx: &Ctx,
+    db: &Database,
+    table_name: impl Into<String>,
+    table_schema: TableSchema,
+    pg_schema_name: Option<&str>,
+) -> Result<TableTarget> {
+    mount_table_target_with_options(
+        ctx,
+        db,
+        table_name,
+        table_schema,
+        pg_schema_name,
+        ManagedTargetOptions::default(),
+    )
+    .await
+}
+
+/// [`mount_table_target`] with explicit [`ManagedTargetOptions`] (`managed_by`).
+pub async fn mount_table_target_with_options(
+    ctx: &Ctx,
+    db: &Database,
+    table_name: impl Into<String>,
+    table_schema: TableSchema,
+    pg_schema_name: Option<&str>,
+    options: ManagedTargetOptions,
+) -> Result<TableTarget> {
+    let ts = table_target_with_options(ctx, db, table_name, table_schema, pg_schema_name, options)?;
+    let spec = ts.value().clone();
+    let table_provider = ts.provider().clone();
+    let rows = mount_target::<TableSpec, RowState>(ctx, ts).await?;
+    Ok(table_target_handle(spec, table_provider, rows))
+}
+
+fn table_target_handle(
+    spec: TableSpec,
+    table_provider: TargetStateProvider<TableSpec>,
+    rows: TargetStateProvider<RowState>,
+) -> TableTarget {
+    TableTarget {
+        pg_schema_name: spec.pg_schema_name.map(Arc::from),
+        table_name: Arc::from(spec.table_name),
+        table_schema: spec.table_schema,
+        managed_by: spec.managed_by,
+        table_provider,
+        rows,
+    }
 }
 
 impl TableTarget {
@@ -142,13 +280,11 @@ impl TableTarget {
     pub fn declare_row<R: Serialize>(&self, ctx: &Ctx, row: &R) -> Result<()> {
         let row = row_state(row, &self.table_schema)?;
         let key = pk_stable_key(&row, self.table_schema.primary_key())?;
-        ctx.declare_target_state(
-            self.provider.clone(),
-            key,
-            Value::from_serializable(&RowState { fields: row })?,
-        )
+        declare_target_state(ctx, self.rows.target_state(key, RowState { fields: row }))
     }
 
+    /// Declare a pgvector index on `column` as an attachment of this table. The
+    /// index is created/recreated/dropped to match the declared options.
     pub fn declare_vector_index(
         &self,
         ctx: &Ctx,
@@ -164,8 +300,8 @@ impl TableTarget {
         let op_class = pgvector_op_class(&col.pg_type, options.metric)?;
         let name = options.name.unwrap_or_else(|| column.to_string());
         validate_ident(&name, "vector index name")?;
-        let provider =
-            ctx.register_attachment_target_provider(&self.table_provider, "vector_index")?;
+        let provider: TargetStateProvider<VectorIndexSpec> =
+            self.table_provider.attachment(ctx, "vector_index")?;
         let spec = VectorIndexSpec {
             pg_schema_name: self.pg_schema_name.as_deref().map(str::to_string),
             table_name: self.table_name.to_string(),
@@ -180,10 +316,9 @@ impl TableTarget {
             m: options.m,
             ef_construction: options.ef_construction,
         };
-        ctx.declare_target_state(
-            provider,
-            StableKey::Str(Arc::from(name)),
-            Value::from_serializable(&spec)?,
+        declare_target_state(
+            ctx,
+            provider.target_state(StableKey::Str(Arc::from(name)), spec),
         )
     }
 }
@@ -211,75 +346,6 @@ impl Default for VectorIndexOptions {
     }
 }
 
-pub fn mount_table_target(
-    ctx: &Ctx,
-    db: &Database,
-    table_name: impl Into<String>,
-    table_schema: TableSchema,
-    pg_schema_name: Option<&str>,
-) -> Result<TableTarget> {
-    mount_table_target_with_options(
-        ctx,
-        db,
-        table_name,
-        table_schema,
-        pg_schema_name,
-        ManagedTargetOptions::default(),
-    )
-}
-
-pub fn mount_table_target_with_options(
-    ctx: &Ctx,
-    db: &Database,
-    table_name: impl Into<String>,
-    table_schema: TableSchema,
-    pg_schema_name: Option<&str>,
-    options: ManagedTargetOptions,
-) -> Result<TableTarget> {
-    let table_name = table_name.into();
-    validate_ident(&table_name, "table name")?;
-    if let Some(schema) = pg_schema_name {
-        validate_ident(schema, "schema name")?;
-    }
-    let table_root = ctx.register_root_target_provider(
-        format!(
-            "cocoindex/postgres/table/{}/{}/{}",
-            db.state_id(),
-            pg_schema_name.unwrap_or("public"),
-            table_name
-        ),
-        table_handler(db.clone()),
-    )?;
-    let spec = TableSpec {
-        pg_schema_name: pg_schema_name.map(str::to_string),
-        table_name: table_name.clone(),
-        table_schema: table_schema.clone(),
-        managed_by: options.managed_by,
-    };
-    ctx.declare_target_state(
-        table_root.clone(),
-        StableKey::Str(Arc::from("default")),
-        Value::from_serializable(&spec)?,
-    )?;
-    let provider = ctx.register_root_target_provider(
-        format!(
-            "cocoindex/postgres/row/{}/{}/{}",
-            db.state_id(),
-            pg_schema_name.unwrap_or("public"),
-            table_name
-        ),
-        row_handler(db.clone(), spec),
-    )?;
-    Ok(TableTarget {
-        pg_schema_name: pg_schema_name.map(Arc::from),
-        table_name: Arc::from(table_name),
-        table_schema,
-        managed_by: options.managed_by,
-        table_provider: table_root,
-        provider,
-    })
-}
-
 #[derive(Clone, Debug, Default)]
 pub struct ReadTableOptions {
     pub pg_schema_name: Option<String>,
@@ -302,8 +368,13 @@ impl ReadTableOptions {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Internal specs / actions
+// ---------------------------------------------------------------------------
+
+/// Spec for a Postgres table (the declared container value).
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-struct TableSpec {
+pub struct TableSpec {
     pg_schema_name: Option<String>,
     table_name: String,
     table_schema: TableSchema,
@@ -312,31 +383,37 @@ struct TableSpec {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-struct RowState {
+pub struct RowState {
     fields: Map<String, JsonValue>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-enum TargetAction {
-    Table {
-        spec: Option<TableSpec>,
-    },
-    DropTable {
-        pg_schema_name: Option<String>,
-        table_name: String,
-    },
-    Row {
-        spec: TableSpec,
-        pk: Vec<JsonValue>,
-        state: Option<RowState>,
-    },
-    VectorIndex {
-        spec: Option<VectorIndexSpec>,
-    },
+struct DropTarget {
+    pg_schema_name: Option<String>,
+    table_name: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct TableAction {
+    /// `Some` for a define (create/update), carrying the desired spec.
+    spec: Option<TableSpec>,
+    /// `Some` for a drop (orphaned table).
+    drop: Option<DropTarget>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct RowAction {
+    pk: Vec<JsonValue>,
+    state: Option<RowState>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct VectorIndexAction {
+    spec: VectorIndexSpec,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-struct VectorIndexSpec {
+pub struct VectorIndexSpec {
     pg_schema_name: Option<String>,
     table_name: String,
     table_schema: TableSchema,
@@ -352,51 +429,50 @@ struct VectorIndexSpec {
     ef_construction: Option<u32>,
 }
 
-fn table_handler(db: Database) -> BoxedHandler {
-    let attachment_db = db.clone();
-    let sink = table_sink(db);
-    BoxedHandler::new(move |_key, desired, prev, prev_may_be_missing| {
-        let desired_spec = desired
-            .map(Value::deserialize::<TableSpec>)
-            .transpose()
-            .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?;
-        let prev_records = prev_table_records(&prev);
-        match desired_spec {
+// ---------------------------------------------------------------------------
+// Table container handler (root) + sink yielding row children + vector-index
+// attachment
+// ---------------------------------------------------------------------------
+
+struct TableHandler {
+    db: Database,
+}
+
+impl TargetHandler<TableSpec> for TableHandler {
+    type TrackingRecord = MutualTrackingRecord<TableSpec>;
+    type Action = TableAction;
+
+    fn reconcile(
+        &self,
+        _key: StableKey,
+        desired: Option<TableSpec>,
+        prev: Vec<MutualTrackingRecord<TableSpec>>,
+        prev_may_be_missing: bool,
+    ) -> Result<Option<TargetReconcileOutput<TableAction, MutualTrackingRecord<TableSpec>>>> {
+        match desired {
+            // Always emit when declared so the sink fulfills the row child.
             Some(spec) => {
-                let tracking_record = MutualTrackingRecord::new(spec.clone(), spec.managed_by);
-                let resolved = resolve_system_transition(
-                    Some(tracking_record.clone()),
-                    prev_records,
-                    prev_may_be_missing,
-                );
+                let tracking = MutualTrackingRecord::new(spec.clone(), spec.managed_by);
+                let resolved =
+                    resolve_system_transition(Some(tracking.clone()), prev, prev_may_be_missing);
                 let main_action = diff(resolved.as_ref());
-                if main_action.is_none() && !spec.managed_by.is_user() {
-                    return Ok(None);
-                }
                 Ok(Some(TargetReconcileOutput {
-                    action: Action::Update(
-                        Value::from_serializable(&TargetAction::Table { spec: Some(spec) })
-                            .map_err(|e| {
-                                cocoindex_utils::error::Error::internal_msg(e.to_string())
-                            })?,
-                    ),
-                    sink: sink.clone(),
-                    tracking_record: Some(
-                        Value::from_serializable(&tracking_record).map_err(|e| {
-                            cocoindex_utils::error::Error::internal_msg(e.to_string())
-                        })?,
-                    ),
+                    action: TargetAction::Update(TableAction {
+                        spec: Some(spec),
+                        drop: None,
+                    }),
+                    sink: self.table_sink(),
+                    tracking_record: Some(tracking),
                     child_invalidation: matches!(main_action, Some(DiffAction::Replace))
-                        .then_some(cocoindex_core::engine::target_state::ChildInvalidation::Lossy),
+                        .then_some(TargetChildInvalidation::Lossy),
                 }))
             }
             None => {
-                let resolved =
-                    resolve_system_transition(None, prev_records.clone(), prev_may_be_missing);
+                let resolved = resolve_system_transition(None, prev.clone(), prev_may_be_missing);
                 if resolved.is_none() {
                     return Ok(None);
                 }
-                let Some(prev_spec) = prev_records
+                let Some(prev_spec) = prev
                     .into_iter()
                     .find(|v| v.managed_by.is_system())
                     .map(|v| v.tracking_record)
@@ -404,220 +480,222 @@ fn table_handler(db: Database) -> BoxedHandler {
                     return Ok(None);
                 };
                 Ok(Some(TargetReconcileOutput {
-                    action: Action::Delete(
-                        Value::from_serializable(&TargetAction::DropTable {
+                    action: TargetAction::Delete(TableAction {
+                        spec: None,
+                        drop: Some(DropTarget {
                             pg_schema_name: prev_spec.pg_schema_name,
                             table_name: prev_spec.table_name,
-                        })
-                        .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?,
-                    ),
-                    sink: sink.clone(),
+                        }),
+                    }),
+                    sink: self.table_sink(),
                     tracking_record: None,
-                    child_invalidation: Some(
-                        cocoindex_core::engine::target_state::ChildInvalidation::Destructive,
-                    ),
+                    child_invalidation: Some(TargetChildInvalidation::Destructive),
                 }))
             }
         }
-    })
-    .with_attachments(move || {
+    }
+
+    fn attachments(&self) -> Result<Vec<(String, ChildTargetDef)>> {
         Ok(vec![(
-            Arc::from("vector_index"),
-            vector_index_handler(attachment_db.clone()),
+            "vector_index".to_string(),
+            ChildTargetDef::new::<VectorIndexSpec, _>(VectorIndexHandler {
+                db: self.db.clone(),
+            }),
         )])
-    })
+    }
 }
 
-fn prev_table_records(prev: &[Value]) -> Vec<MutualTrackingRecord<TableSpec>> {
-    prev.iter()
-        .filter_map(|v| {
-            v.deserialize::<MutualTrackingRecord<TableSpec>>()
-                .or_else(|_| {
-                    v.deserialize::<TableSpec>()
-                        .map(|spec| MutualTrackingRecord::new(spec, ManagedBy::System))
-                })
-                .ok()
-        })
-        .collect()
-}
-
-fn row_handler(db: Database, spec: TableSpec) -> BoxedHandler {
-    let sink = row_sink(db);
-    BoxedHandler::new(move |key, desired, prev, prev_may_be_missing| {
-        let pk = stable_key_to_pk(&key)
-            .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?;
-        let desired_state = desired
-            .map(Value::deserialize::<RowState>)
-            .transpose()
-            .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?;
-        // Track a cheap fingerprint of the row state (not the full row) so
-        // unchanged rows are skipped without persisting every column to LMDB.
-        let desired_fp = match &desired_state {
-            Some(state) => Some(
-                Fingerprint::from(state)
-                    .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?,
-            ),
-            None => None,
-        };
-        let prev_same = desired_fp.as_ref().is_some_and(|fp| {
-            prev.iter()
-                .filter_map(|v| v.deserialize::<Fingerprint>().ok())
-                .any(|p| &p == fp)
-        });
-        if desired_state.is_some() && prev_same && !prev_may_be_missing {
-            return Ok(None);
-        }
-        if desired_state.is_none() && prev.is_empty() && !prev_may_be_missing {
-            return Ok(None);
-        }
-        let tracking_record = match &desired_fp {
-            Some(fp) => Some(
-                Value::from_serializable(fp)
-                    .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?,
-            ),
-            None => None,
-        };
-        Ok(Some(TargetReconcileOutput {
-            action: Action::Update(
-                Value::from_serializable(&TargetAction::Row {
-                    spec: spec.clone(),
-                    pk,
-                    state: desired_state,
-                })
-                .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?,
-            ),
-            sink: sink.clone(),
-            tracking_record,
-            child_invalidation: None,
-        }))
-    })
-}
-
-fn vector_index_handler(db: Database) -> BoxedHandler {
-    let sink = vector_index_sink(db);
-    BoxedHandler::new(move |_key, desired, prev, prev_may_be_missing| {
-        let desired_spec = desired
-            .map(Value::deserialize::<VectorIndexSpec>)
-            .transpose()
-            .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?;
-        let prev_spec = prev
-            .iter()
-            .filter_map(|v| v.deserialize::<VectorIndexSpec>().ok())
-            .next();
-        let prev_same = desired_spec
-            .as_ref()
-            .is_some_and(|desired| prev_spec.as_ref().is_some_and(|prev| prev == desired));
-        if desired_spec.is_some() && prev_same && !prev_may_be_missing {
-            return Ok(None);
-        }
-        if desired_spec.is_none() && prev.is_empty() && !prev_may_be_missing {
-            return Ok(None);
-        }
-        let action = if desired_spec.is_some() {
-            Action::Update(
-                Value::from_serializable(&TargetAction::VectorIndex { spec: desired_spec })
-                    .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?,
-            )
-        } else {
-            Action::Delete(
-                Value::from_serializable(&TargetAction::VectorIndex { spec: prev_spec })
-                    .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?,
-            )
-        };
-        Ok(Some(TargetReconcileOutput {
-            action,
-            sink: sink.clone(),
-            tracking_record: desired.cloned(),
-            child_invalidation: None,
-        }))
-    })
-}
-
-fn table_sink(db: Database) -> BoxedSink {
-    BoxedSink::new(move |actions| {
-        let db = db.clone();
-        Box::pin(async move {
-            for action in actions {
-                match action_value(action)? {
-                    TargetAction::Table { spec: Some(spec) } => {
-                        define_table(&db, &spec).await?;
-                    }
-                    TargetAction::Table { spec: None } => {}
-                    TargetAction::DropTable {
-                        pg_schema_name,
-                        table_name,
-                    } => {
-                        drop_table(&db, pg_schema_name.as_deref(), &table_name).await?;
-                    }
-                    _ => {
-                        return Err(cocoindex_utils::error::Error::internal_msg(
-                            "non-table action routed to Postgres table sink",
-                        ));
-                    }
-                }
-            }
-            Ok(None)
-        }) as Pin<Box<_>>
-    })
-}
-
-fn row_sink(db: Database) -> BoxedSink {
-    BoxedSink::new(move |actions| {
-        let db = db.clone();
-        Box::pin(async move {
-            let mut mutations = Vec::with_capacity(actions.len());
-            for action in actions {
-                if let TargetAction::Row { spec, pk, state } = action_value(action)? {
-                    mutations.push((spec, pk, state));
-                }
-            }
-            apply_rows(&db, mutations).await?;
-            Ok(None)
-        }) as Pin<Box<_>>
-    })
-}
-
-fn vector_index_sink(db: Database) -> BoxedSink {
-    BoxedSink::new(move |actions| {
-        let db = db.clone();
-        Box::pin(async move {
-            for action in actions {
-                let is_delete = matches!(&action, Action::Delete(_));
-                if let TargetAction::VectorIndex { spec } = action_value(action)? {
-                    if let Some(spec) = spec {
-                        if is_delete {
-                            drop_vector_index(&db, &spec).await?;
-                        } else {
-                            define_table(
-                                &db,
-                                &TableSpec {
-                                    pg_schema_name: spec.pg_schema_name.clone(),
-                                    table_name: spec.table_name.clone(),
-                                    table_schema: spec.table_schema.clone(),
-                                    managed_by: spec.managed_by,
-                                },
-                            )
-                            .await?;
-                            recreate_vector_index(&db, &spec).await?;
+impl TableHandler {
+    fn table_sink(&self) -> TargetActionSink<TableAction> {
+        let db = self.db.clone();
+        TargetActionSink::from_async_fn_with_children(
+            move |actions: Vec<TargetAction<TableAction>>| {
+                let db = db.clone();
+                async move {
+                    let mut out: Vec<Option<ChildTargetDef>> = Vec::with_capacity(actions.len());
+                    for action in actions {
+                        match action {
+                            TargetAction::Create(a) | TargetAction::Update(a) => {
+                                let spec = a.spec.ok_or_else(|| {
+                                    Error::engine("Postgres table action missing spec")
+                                })?;
+                                define_table(&db, &spec).await?;
+                                out.push(Some(ChildTargetDef::new::<RowState, _>(RowHandler {
+                                    db: db.clone(),
+                                    spec,
+                                })));
+                            }
+                            TargetAction::Delete(a) => {
+                                if let Some(d) = a.drop {
+                                    drop_table(&db, d.pg_schema_name.as_deref(), &d.table_name)
+                                        .await?;
+                                }
+                                out.push(None);
+                            }
                         }
                     }
+                    Ok(out)
                 }
+            },
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Row handler (child) + sink
+// ---------------------------------------------------------------------------
+
+struct RowHandler {
+    db: Database,
+    spec: TableSpec,
+}
+
+impl TargetHandler<RowState> for RowHandler {
+    type TrackingRecord = Fingerprint;
+    type Action = RowAction;
+
+    fn reconcile(
+        &self,
+        key: StableKey,
+        desired: Option<RowState>,
+        prev: Vec<Fingerprint>,
+        prev_may_be_missing: bool,
+    ) -> Result<Option<TargetReconcileOutput<RowAction, Fingerprint>>> {
+        let pk = stable_key_to_pk(&key)?;
+        // Track a cheap fingerprint of the row state (not the full row) so
+        // unchanged rows are skipped without persisting every column to LMDB.
+        let desired_fp = match &desired {
+            Some(state) => Some(Fingerprint::from(state).map_err(Error::from)?),
+            None => None,
+        };
+        let prev_same = desired_fp
+            .as_ref()
+            .is_some_and(|fp| prev.iter().any(|p| p == fp));
+        if desired.is_some() && prev_same && !prev_may_be_missing {
+            return Ok(None);
+        }
+        if desired.is_none() && prev.is_empty() && !prev_may_be_missing {
+            return Ok(None);
+        }
+        Ok(Some(TargetReconcileOutput {
+            action: TargetAction::Update(RowAction { pk, state: desired }),
+            sink: self.row_sink(),
+            tracking_record: desired_fp,
+            child_invalidation: None,
+        }))
+    }
+}
+
+impl RowHandler {
+    fn row_sink(&self) -> TargetActionSink<RowAction> {
+        let db = self.db.clone();
+        let spec = self.spec.clone();
+        TargetActionSink::from_async_fn(move |actions: Vec<TargetAction<RowAction>>| {
+            let db = db.clone();
+            let spec = spec.clone();
+            async move {
+                let mut mutations = Vec::with_capacity(actions.len());
+                for action in actions {
+                    let row = match action {
+                        TargetAction::Create(r)
+                        | TargetAction::Update(r)
+                        | TargetAction::Delete(r) => r,
+                    };
+                    mutations.push((row.pk, row.state));
+                }
+                apply_rows(&db, &spec, mutations).await
             }
-            Ok(None)
-        }) as Pin<Box<_>>
-    })
+        })
+    }
 }
 
-fn action_value(action: Action) -> cocoindex_utils::error::Result<TargetAction> {
-    let value = match action {
-        Action::Create(v) | Action::Update(v) | Action::Delete(v) => v,
-    };
-    value
-        .deserialize()
-        .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))
+// ---------------------------------------------------------------------------
+// Vector-index attachment handler + sink
+// ---------------------------------------------------------------------------
+
+struct VectorIndexHandler {
+    db: Database,
 }
 
-async fn define_table(db: &Database, spec: &TableSpec) -> cocoindex_utils::error::Result<()> {
+impl TargetHandler<VectorIndexSpec> for VectorIndexHandler {
+    type TrackingRecord = VectorIndexSpec;
+    type Action = VectorIndexAction;
+
+    fn reconcile(
+        &self,
+        _key: StableKey,
+        desired: Option<VectorIndexSpec>,
+        prev: Vec<VectorIndexSpec>,
+        prev_may_be_missing: bool,
+    ) -> Result<Option<TargetReconcileOutput<VectorIndexAction, VectorIndexSpec>>> {
+        let prev_spec = prev.into_iter().next();
+        let prev_same = desired
+            .as_ref()
+            .is_some_and(|d| prev_spec.as_ref() == Some(d));
+        if desired.is_some() && prev_same && !prev_may_be_missing {
+            return Ok(None);
+        }
+        if desired.is_none() && prev_spec.is_none() && !prev_may_be_missing {
+            return Ok(None);
+        }
+        match desired {
+            Some(spec) => Ok(Some(TargetReconcileOutput {
+                action: TargetAction::Update(VectorIndexAction { spec: spec.clone() }),
+                sink: self.vector_index_sink(),
+                tracking_record: Some(spec),
+                child_invalidation: None,
+            })),
+            None => {
+                let spec = prev_spec.expect("delete path implies a previous index spec");
+                Ok(Some(TargetReconcileOutput {
+                    action: TargetAction::Delete(VectorIndexAction { spec }),
+                    sink: self.vector_index_sink(),
+                    tracking_record: None,
+                    child_invalidation: None,
+                }))
+            }
+        }
+    }
+}
+
+impl VectorIndexHandler {
+    fn vector_index_sink(&self) -> TargetActionSink<VectorIndexAction> {
+        let db = self.db.clone();
+        TargetActionSink::from_async_fn(move |actions: Vec<TargetAction<VectorIndexAction>>| {
+            let db = db.clone();
+            async move {
+                for action in actions {
+                    let (is_delete, spec) = match action {
+                        TargetAction::Delete(a) => (true, a.spec),
+                        TargetAction::Create(a) | TargetAction::Update(a) => (false, a.spec),
+                    };
+                    if is_delete {
+                        drop_vector_index(&db, &spec).await?;
+                    } else {
+                        define_table(
+                            &db,
+                            &TableSpec {
+                                pg_schema_name: spec.pg_schema_name.clone(),
+                                table_name: spec.table_name.clone(),
+                                table_schema: spec.table_schema.clone(),
+                                managed_by: spec.managed_by,
+                            },
+                        )
+                        .await?;
+                        recreate_vector_index(&db, &spec).await?;
+                    }
+                }
+                Ok(())
+            }
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// DB I/O
+// ---------------------------------------------------------------------------
+
+async fn define_table(db: &Database, spec: &TableSpec) -> Result<()> {
     if spec.managed_by.is_user() {
         return Ok(());
     }
@@ -628,13 +706,13 @@ async fn define_table(db: &Database, spec: &TableSpec) -> cocoindex_utils::error
         ))
         .execute(db.pool())
         .await
-        .map_err(pg_internal)?;
+        .map_err(pg_err)?;
     }
     if schema_uses_pgvector(&spec.table_schema) {
         sqlx::query("CREATE EXTENSION IF NOT EXISTS vector")
             .execute(db.pool())
             .await
-            .map_err(pg_internal)?;
+            .map_err(pg_err)?;
     }
     let mut defs = Vec::new();
     for (name, col) in spec.table_schema.columns() {
@@ -658,71 +736,51 @@ async fn define_table(db: &Database, spec: &TableSpec) -> cocoindex_utils::error
         qualified_table_name(spec),
         defs.join(", ")
     );
-    sqlx::query(&sql)
-        .execute(db.pool())
-        .await
-        .map_err(pg_internal)?;
+    sqlx::query(&sql).execute(db.pool()).await.map_err(pg_err)?;
     Ok(())
 }
 
-async fn drop_table(
-    db: &Database,
-    pg_schema_name: Option<&str>,
-    table_name: &str,
-) -> cocoindex_utils::error::Result<()> {
+async fn drop_table(db: &Database, pg_schema_name: Option<&str>, table_name: &str) -> Result<()> {
     let sql = format!(
         "DROP TABLE IF EXISTS {}",
         qualified_table_name_from_parts(pg_schema_name, table_name)
     );
-    sqlx::query(&sql)
-        .execute(db.pool())
-        .await
-        .map_err(pg_internal)?;
+    sqlx::query(&sql).execute(db.pool()).await.map_err(pg_err)?;
     Ok(())
 }
 
 async fn apply_rows(
     db: &Database,
-    mutations: Vec<(TableSpec, Vec<JsonValue>, Option<RowState>)>,
-) -> cocoindex_utils::error::Result<()> {
+    spec: &TableSpec,
+    mutations: Vec<(Vec<JsonValue>, Option<RowState>)>,
+) -> Result<()> {
     if mutations.is_empty() {
         return Ok(());
     }
     // Ensure the table exists before any row mutation. This keeps delete-only
     // reconciliation idempotent after a crash or external table cleanup.
-    if let Some((spec, _, _)) = mutations.first() {
-        if spec.managed_by.is_system() {
-            define_table(db, spec).await?;
-        }
+    if spec.managed_by.is_system() {
+        define_table(db, spec).await?;
     }
     // Apply the whole batch atomically.
-    let mut tx = db.pool().begin().await.map_err(pg_internal)?;
-    for (spec, pk, state) in mutations {
+    let mut tx = db.pool().begin().await.map_err(pg_err)?;
+    for (pk, state) in mutations {
         match state {
             Some(state) => {
-                let sql = upsert_sql(&spec, &state.fields)?;
-                sqlx::query(&sql)
-                    .execute(&mut *tx)
-                    .await
-                    .map_err(pg_internal)?;
+                let sql = upsert_sql(spec, &state.fields)?;
+                sqlx::query(&sql).execute(&mut *tx).await.map_err(pg_err)?;
             }
             None => {
-                let sql = delete_sql(&spec, &pk)?;
-                sqlx::query(&sql)
-                    .execute(&mut *tx)
-                    .await
-                    .map_err(pg_internal)?;
+                let sql = delete_sql(spec, &pk)?;
+                sqlx::query(&sql).execute(&mut *tx).await.map_err(pg_err)?;
             }
         }
     }
-    tx.commit().await.map_err(pg_internal)?;
+    tx.commit().await.map_err(pg_err)?;
     Ok(())
 }
 
-async fn recreate_vector_index(
-    db: &Database,
-    spec: &VectorIndexSpec,
-) -> cocoindex_utils::error::Result<()> {
+async fn recreate_vector_index(db: &Database, spec: &VectorIndexSpec) -> Result<()> {
     drop_vector_index(db, spec).await?;
     let index_name = format!("{}__vector__{}", spec.table_name, spec.name);
     let mut with_parts = Vec::new();
@@ -749,17 +807,11 @@ async fn recreate_vector_index(
         spec.op_class,
         with_sql
     );
-    sqlx::query(&sql)
-        .execute(db.pool())
-        .await
-        .map_err(pg_internal)?;
+    sqlx::query(&sql).execute(db.pool()).await.map_err(pg_err)?;
     Ok(())
 }
 
-async fn drop_vector_index(
-    db: &Database,
-    spec: &VectorIndexSpec,
-) -> cocoindex_utils::error::Result<()> {
+async fn drop_vector_index(db: &Database, spec: &VectorIndexSpec) -> Result<()> {
     let index_name = format!("{}__vector__{}", spec.table_name, spec.name);
     sqlx::query(&format!(
         "DROP INDEX IF EXISTS {}",
@@ -767,14 +819,15 @@ async fn drop_vector_index(
     ))
     .execute(db.pool())
     .await
-    .map_err(pg_internal)?;
+    .map_err(pg_err)?;
     Ok(())
 }
 
-fn upsert_sql(
-    spec: &TableSpec,
-    fields: &Map<String, JsonValue>,
-) -> cocoindex_utils::error::Result<String> {
+// ---------------------------------------------------------------------------
+// SQL builders + helpers
+// ---------------------------------------------------------------------------
+
+fn upsert_sql(spec: &TableSpec, fields: &Map<String, JsonValue>) -> Result<String> {
     let cols = spec
         .table_schema
         .columns()
@@ -797,8 +850,7 @@ fn upsert_sql(
             let value = fields.get(name).unwrap_or(&JsonValue::Null);
             sql_literal(value, col)
         })
-        .collect::<Result<Vec<_>>>()
-        .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?
+        .collect::<Result<Vec<_>>>()?
         .join(", ");
     let pk_sql = spec
         .table_schema
@@ -823,9 +875,9 @@ fn upsert_sql(
     ))
 }
 
-fn delete_sql(spec: &TableSpec, pk: &[JsonValue]) -> cocoindex_utils::error::Result<String> {
+fn delete_sql(spec: &TableSpec, pk: &[JsonValue]) -> Result<String> {
     if pk.len() != spec.table_schema.primary_key().len() {
-        return Err(cocoindex_utils::error::Error::internal_msg(
+        return Err(Error::engine(
             "Postgres row target primary key length mismatch",
         ));
     }
@@ -835,8 +887,7 @@ fn delete_sql(spec: &TableSpec, pk: &[JsonValue]) -> cocoindex_utils::error::Res
         predicates.push(format!(
             "{} = {}",
             quote_ident(name),
-            sql_literal(&pk[idx], col)
-                .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?
+            sql_literal(&pk[idx], col)?
         ));
     }
     Ok(format!(
@@ -1103,10 +1154,6 @@ fn is_numeric_type(lower: &str) -> bool {
 
 fn pg_err(e: sqlx::Error) -> Error {
     Error::engine(format!("postgres: {e}"))
-}
-
-fn pg_internal(e: sqlx::Error) -> cocoindex_utils::error::Error {
-    cocoindex_utils::error::Error::internal_msg(format!("postgres: {e}"))
 }
 
 #[cfg(test)]

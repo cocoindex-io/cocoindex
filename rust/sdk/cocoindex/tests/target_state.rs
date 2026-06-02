@@ -713,3 +713,192 @@ async fn attachment_lifecycle_create_and_cleanup() {
     assert_eq!(drain_sorted(&main_log), Vec::<String>::new());
     assert_eq!(drain_sorted(&att_log), vec!["delete idx"]);
 }
+
+/// A main handler exposing two independent attachment types ("index", "tags").
+struct MultiAttachHandler {
+    sink: TargetActionSink<RowAction>,
+    index_log: Log,
+    tags_log: Log,
+}
+
+impl TargetHandler<String> for MultiAttachHandler {
+    type TrackingRecord = String;
+    type Action = RowAction;
+
+    fn reconcile(
+        &self,
+        key: StableKey,
+        desired: Option<String>,
+        prev: Vec<String>,
+        prev_may_be_missing: bool,
+    ) -> Result<Option<TargetReconcileOutput<RowAction, String>>> {
+        RowHandler {
+            sink: self.sink.clone(),
+        }
+        .reconcile(key, desired, prev, prev_may_be_missing)
+    }
+
+    fn attachments(&self) -> Result<Vec<(String, ChildTargetDef)>> {
+        Ok(vec![
+            (
+                "index".to_string(),
+                ChildTargetDef::new::<String, _>(RowHandler {
+                    sink: recording_sink(self.index_log.clone()),
+                }),
+            ),
+            (
+                "tags".to_string(),
+                ChildTargetDef::new::<String, _>(RowHandler {
+                    sink: recording_sink(self.tags_log.clone()),
+                }),
+            ),
+        ])
+    }
+}
+
+#[tokio::test]
+async fn attachment_providers_idempotent_and_independent_per_type() {
+    let (app, _dir) = temp_app("attachments_multi").await;
+    let main_log = new_log();
+    let index_log = new_log();
+    let tags_log = new_log();
+
+    app.update({
+        let main_log = main_log.clone();
+        let index_log = index_log.clone();
+        let tags_log = tags_log.clone();
+        move |ctx| {
+            let main_log = main_log.clone();
+            let index_log = index_log.clone();
+            let tags_log = tags_log.clone();
+            async move {
+                let provider = register_root_target_states_provider(
+                    &ctx,
+                    "test/multi-attach",
+                    MultiAttachHandler {
+                        sink: recording_sink(main_log),
+                        index_log,
+                        tags_log,
+                    },
+                )?;
+                declare_target_state(&ctx, provider.target_state("row", "v1".to_string()))?;
+
+                // Two independent attachment types under the same parent.
+                let index: TargetStateProvider<String> = provider.attachment(&ctx, "index")?;
+                let tags: TargetStateProvider<String> = provider.attachment(&ctx, "tags")?;
+                declare_target_state(&ctx, index.target_state("i1", "ispec".to_string()))?;
+                declare_target_state(&ctx, tags.target_state("t1", "tspec".to_string()))?;
+
+                // Idempotent: re-fetching the same attachment type yields a
+                // provider for the same target — a second declared key lands in
+                // the same ("index") sink.
+                let index_again: TargetStateProvider<String> =
+                    provider.attachment(&ctx, "index")?;
+                assert_eq!(index.memo_key(), index_again.memo_key());
+                declare_target_state(&ctx, index_again.target_state("i2", "ispec2".to_string()))?;
+                Ok(())
+            }
+        }
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(
+        drain_sorted(&index_log),
+        vec!["create i1=ispec", "create i2=ispec2"]
+    );
+    assert_eq!(drain_sorted(&tags_log), vec!["create t1=tspec"]);
+}
+
+// ---------------------------------------------------------------------------
+// Test 6: provider generation surfaces in `memo_key` (Python parity:
+// test_provider_generation's *_invalidates_memo / no-invalidation tests)
+// ---------------------------------------------------------------------------
+
+/// Mount a table child under a fresh provider, record the child provider's
+/// `memo_key`, and declare one (unchanged) row. Reused across two runs to
+/// observe how the child invalidation mode moves the provider generation.
+async fn capture_child_memo_key(
+    app: &App,
+    generation: &'static str,
+    invalidation: Option<TargetChildInvalidation>,
+    memo_out: Log,
+) {
+    let table_log = new_log();
+    let row_log = new_log();
+    app.update(move |ctx| {
+        let table_log = table_log.clone();
+        let row_log = row_log.clone();
+        let memo_out = memo_out.clone();
+        async move {
+            let table_provider = register_root_target_states_provider(
+                &ctx,
+                "test/memo-gen",
+                TableHandler {
+                    sink: table_sink(table_log, row_log),
+                    invalidation,
+                },
+            )?;
+            let child: TargetStateProvider<String> = mount_target(
+                &ctx,
+                table_provider.target_state(
+                    "docs",
+                    TableSpec {
+                        generation: generation.to_string(),
+                    },
+                ),
+            )
+            .await?;
+            memo_out.lock().unwrap().push(child.memo_key());
+            declare_target_state(&ctx, child.target_state("r1", "v1".to_string()))?;
+            Ok(())
+        }
+    })
+    .await
+    .unwrap();
+}
+
+async fn memo_keys_across_generation_bump(
+    name: &str,
+    invalidation: Option<TargetChildInvalidation>,
+) -> (String, String) {
+    let (app, _dir) = temp_app(name).await;
+    let memo = new_log();
+    capture_child_memo_key(&app, "g1", invalidation, memo.clone()).await;
+    capture_child_memo_key(&app, "g2", invalidation, memo.clone()).await;
+    let keys = std::mem::take(&mut *memo.lock().unwrap());
+    assert_eq!(keys.len(), 2, "expected one memo_key per run");
+    (keys[0].clone(), keys[1].clone())
+}
+
+#[tokio::test]
+async fn memo_key_stable_without_child_invalidation() {
+    // No invalidation: the child provider keeps its generation across a parent
+    // spec change → memo_key is stable → downstream memo is preserved.
+    let (first, second) = memo_keys_across_generation_bump("memo_none", None).await;
+    assert_eq!(first, second);
+}
+
+#[tokio::test]
+async fn memo_key_changes_on_destructive_invalidation() {
+    // Destructive: provider_id bumps → memo_key changes → downstream memo is
+    // invalidated (mirrors Python test_destructive_change_invalidates_memo).
+    let (first, second) = memo_keys_across_generation_bump(
+        "memo_destructive",
+        Some(TargetChildInvalidation::Destructive),
+    )
+    .await;
+    assert_ne!(
+        first, second,
+        "destructive invalidation must change memo_key"
+    );
+}
+
+#[tokio::test]
+async fn memo_key_changes_on_lossy_invalidation() {
+    // Lossy: provider_schema_version bumps → memo_key changes (mirrors Python
+    // test_lossy_change_invalidates_memo).
+    let (first, second) =
+        memo_keys_across_generation_bump("memo_lossy", Some(TargetChildInvalidation::Lossy)).await;
+    assert_ne!(first, second, "lossy invalidation must change memo_key");
+}

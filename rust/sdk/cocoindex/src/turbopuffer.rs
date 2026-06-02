@@ -24,8 +24,8 @@ use crate::statediff::{
 };
 use crate::target_state::{
     ChildTargetDef, StableKey, TargetAction, TargetActionSink, TargetChildInvalidation,
-    TargetHandler, TargetReconcileOutput, TargetStateProvider, mount_target,
-    register_root_target_states_provider,
+    TargetHandler, TargetReconcileOutput, TargetState, TargetStateProvider, declare_target_state,
+    declare_target_state_with_child, mount_target, register_root_target_states_provider,
 };
 
 // ---------------------------------------------------------------------------
@@ -235,6 +235,43 @@ pub async fn mount_namespace_target_with_options(
     schema: NamespaceSchema,
     options: ManagedTargetOptions,
 ) -> Result<NamespaceTarget> {
+    let ts = namespace_target_with_options(ctx, conn, namespace, schema, options)?;
+    let name = ts.value().namespace.clone();
+    let rows = mount_target::<NamespaceSpec, Row>(ctx, ts).await?;
+    Ok(NamespaceTarget {
+        namespace: Arc::from(name),
+        rows,
+    })
+}
+
+/// Build a composable [`TargetState`] for a Turbopuffer namespace (the spec
+/// constructor). Pass it to the generic
+/// [`mount_target`](crate::target_state::mount_target) /
+/// [`declare_target_state_with_child`](crate::target_state::declare_target_state_with_child),
+/// or use [`declare_namespace_target`]/[`mount_namespace_target`].
+pub fn namespace_target(
+    ctx: &Ctx,
+    conn: &TurbopufferConnection,
+    namespace: impl Into<String>,
+    schema: NamespaceSchema,
+) -> Result<TargetState<NamespaceSpec>> {
+    namespace_target_with_options(
+        ctx,
+        conn,
+        namespace,
+        schema,
+        ManagedTargetOptions::default(),
+    )
+}
+
+/// [`namespace_target`] with explicit [`ManagedTargetOptions`].
+pub fn namespace_target_with_options(
+    ctx: &Ctx,
+    conn: &TurbopufferConnection,
+    namespace: impl Into<String>,
+    schema: NamespaceSchema,
+    options: ManagedTargetOptions,
+) -> Result<TargetState<NamespaceSpec>> {
     let namespace = namespace.into();
     validate_namespace(&namespace)?;
     let provider = register_root_target_states_provider(
@@ -246,15 +283,46 @@ pub async fn mount_namespace_target_with_options(
         ),
         NamespaceHandler::new(conn.clone()),
     )?;
-    let spec = NamespaceSpec {
-        namespace: namespace.clone(),
+    Ok(provider.target_state(
+        "default",
+        NamespaceSpec {
+            namespace,
+            schema,
+            managed_by: options.managed_by,
+        },
+    ))
+}
+
+/// Declare a Turbopuffer namespace target in the **current** component (the row
+/// child resolves at this component's commit) and return a handle.
+pub fn declare_namespace_target(
+    ctx: &Ctx,
+    conn: &TurbopufferConnection,
+    namespace: impl Into<String>,
+    schema: NamespaceSchema,
+) -> Result<NamespaceTarget> {
+    declare_namespace_target_with_options(
+        ctx,
+        conn,
+        namespace,
         schema,
-        managed_by: options.managed_by,
-    };
-    let rows: TargetStateProvider<Row> =
-        mount_target(ctx, provider.target_state("default", spec)).await?;
+        ManagedTargetOptions::default(),
+    )
+}
+
+/// [`declare_namespace_target`] with explicit [`ManagedTargetOptions`].
+pub fn declare_namespace_target_with_options(
+    ctx: &Ctx,
+    conn: &TurbopufferConnection,
+    namespace: impl Into<String>,
+    schema: NamespaceSchema,
+    options: ManagedTargetOptions,
+) -> Result<NamespaceTarget> {
+    let ts = namespace_target_with_options(ctx, conn, namespace, schema, options)?;
+    let name = ts.value().namespace.clone();
+    let rows = declare_target_state_with_child::<NamespaceSpec, Row>(ctx, ts)?;
     Ok(NamespaceTarget {
-        namespace: Arc::from(namespace),
+        namespace: Arc::from(name),
         rows,
     })
 }
@@ -278,7 +346,7 @@ impl NamespaceTarget {
             vector,
             attributes,
         };
-        crate::target_state::declare_target_state(ctx, self.rows.target_state(id, row))
+        declare_target_state(ctx, self.rows.target_state(id, row))
     }
 }
 
@@ -300,8 +368,11 @@ fn validate_namespace(name: &str) -> Result<()> {
 // Namespace handler (container)
 // ---------------------------------------------------------------------------
 
+/// Spec for a Turbopuffer namespace (the declared container value). Public so
+/// [`namespace_target`] can return a composable [`TargetState`]; fields are
+/// private.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-struct NamespaceSpec {
+pub struct NamespaceSpec {
     namespace: String,
     schema: NamespaceSchema,
     managed_by: ManagedBy,

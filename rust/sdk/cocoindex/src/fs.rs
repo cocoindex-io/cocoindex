@@ -1,12 +1,9 @@
 //! Filesystem walking with fingerprinting.
 
 use std::path::{Path, PathBuf};
-use std::pin::Pin;
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use cocoindex_core::engine::target_state::{TargetReconcileOutput, TargetStateProvider};
-use cocoindex_core::state::stable_path::StableKey;
 use cocoindex_utils::fingerprint::Fingerprint;
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use serde::{Deserialize, Serialize};
@@ -14,7 +11,10 @@ use walkdir::WalkDir;
 
 use crate::ctx::Ctx;
 use crate::error::{Error, Result};
-use crate::profile::{Action, BoxedHandler, BoxedSink, RustProfile, Value};
+use crate::target_state::{
+    StableKey, TargetAction, TargetActionSink, TargetHandler, TargetReconcileOutput,
+    TargetStateProvider, declare_target_state, register_root_target_states_provider,
+};
 
 // ---------------------------------------------------------------------------
 // FilePath / FileLike / matchers
@@ -458,7 +458,7 @@ fn relative_path(root: &Path, canonical_root: &Path, path: &Path) -> Result<Path
 ///   was deleted) are removed from disk.
 #[derive(Clone)]
 pub struct DirTarget {
-    provider: TargetStateProvider<RustProfile>,
+    provider: TargetStateProvider<Vec<u8>>,
     dir: PathBuf,
 }
 
@@ -500,9 +500,10 @@ pub fn declare_dir_target(ctx: &Ctx, target: DirTargetState) -> Result<DirTarget
             dir.display()
         )));
     }
-    let provider = ctx.register_root_target_provider(
+    let provider = register_root_target_states_provider(
+        ctx,
         format!("cocoindex/localfs/dir/{}", dir.to_string_lossy()),
-        dir_handler(dir.clone()),
+        FileHandler { dir: dir.clone() },
     )?;
     Ok(DirTarget { provider, dir })
 }
@@ -538,12 +539,7 @@ impl DirTarget {
     /// the target state fails.
     pub fn declare_file(&self, ctx: &Ctx, name: &str, content: &[u8]) -> Result<()> {
         validate_relative_name(name)?;
-        let key = StableKey::Str(Arc::from(name));
-        ctx.declare_target_state(
-            self.provider.clone(),
-            key,
-            Value::from_serializable(&content.to_vec())?,
-        )
+        declare_target_state(ctx, self.provider.target_state(name, content.to_vec()))
     }
 }
 
@@ -570,101 +566,98 @@ struct FileAction {
     content: Option<Vec<u8>>,
 }
 
-fn dir_handler(dir: PathBuf) -> BoxedHandler {
-    let sink = dir_sink(dir);
-    BoxedHandler::new(move |key, desired, prev, prev_may_be_missing| {
+/// A declarative directory target handler (the file is the leaf target state;
+/// the directory is the single root provider). Built on the public target-state
+/// facade.
+struct FileHandler {
+    dir: PathBuf,
+}
+
+impl TargetHandler<Vec<u8>> for FileHandler {
+    type TrackingRecord = Fingerprint;
+    type Action = FileAction;
+
+    fn reconcile(
+        &self,
+        key: StableKey,
+        desired: Option<Vec<u8>>,
+        prev: Vec<Fingerprint>,
+        prev_may_be_missing: bool,
+    ) -> Result<Option<TargetReconcileOutput<FileAction, Fingerprint>>> {
         let StableKey::Str(name) = &key else {
-            return Err(cocoindex_utils::error::Error::internal_msg(format!(
+            return Err(Error::engine(format!(
                 "unexpected file target key: {key:?}"
             )));
         };
         let name = name.to_string();
 
-        let desired_content: Option<Vec<u8>> = desired
-            .map(Value::deserialize::<Vec<u8>>)
-            .transpose()
-            .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?;
-        let desired_fp: Option<Fingerprint> = match &desired_content {
-            Some(content) => Some(
-                Fingerprint::from(content)
-                    .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?,
-            ),
+        let desired_fp = match &desired {
+            Some(content) => Some(Fingerprint::from(content).map_err(Error::from)?),
             None => None,
         };
-
         // Skip when nothing changed.
-        let prev_same = desired_fp.as_ref().is_some_and(|fp| {
-            prev.iter()
-                .filter_map(|v| v.deserialize::<Fingerprint>().ok())
-                .any(|p| &p == fp)
-        });
-        if desired_content.is_some() && prev_same && !prev_may_be_missing {
+        let prev_same = desired_fp
+            .as_ref()
+            .is_some_and(|fp| prev.iter().any(|p| p == fp));
+        if desired.is_some() && prev_same && !prev_may_be_missing {
             return Ok(None);
         }
-        if desired_content.is_none() && prev.is_empty() && !prev_may_be_missing {
+        if desired.is_none() && prev.is_empty() && !prev_may_be_missing {
             return Ok(None);
         }
-
-        let tracking_record = match &desired_fp {
-            Some(fp) => Some(
-                Value::from_serializable(fp)
-                    .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?,
-            ),
-            None => None,
-        };
-        let action = FileAction {
-            name,
-            content: desired_content,
-        };
         Ok(Some(TargetReconcileOutput {
-            action: Action::Update(
-                Value::from_serializable(&action)
-                    .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?,
-            ),
-            sink: sink.clone(),
-            tracking_record,
+            action: TargetAction::Update(FileAction {
+                name,
+                content: desired,
+            }),
+            sink: self.dir_sink(),
+            tracking_record: desired_fp,
             child_invalidation: None,
         }))
-    })
+    }
 }
 
-fn dir_sink(dir: PathBuf) -> BoxedSink {
-    BoxedSink::new(move |actions| {
-        let dir = dir.clone();
-        Box::pin(async move {
-            let result = tokio::task::spawn_blocking(move || -> std::result::Result<(), String> {
-                for action in actions {
-                    let inner = match action {
-                        Action::Create(v) | Action::Update(v) | Action::Delete(v) => v,
-                    };
-                    let file: FileAction = inner.deserialize().map_err(|e| e.to_string())?;
-                    let path = dir.join(&file.name);
-                    match file.content {
-                        Some(content) => {
-                            if let Some(parent) = path.parent() {
-                                std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+impl FileHandler {
+    fn dir_sink(&self) -> TargetActionSink<FileAction> {
+        let dir = self.dir.clone();
+        TargetActionSink::from_async_fn(move |actions: Vec<TargetAction<FileAction>>| {
+            let dir = dir.clone();
+            async move {
+                let result =
+                    tokio::task::spawn_blocking(move || -> std::result::Result<(), String> {
+                        for action in actions {
+                            let file = match action {
+                                TargetAction::Create(f)
+                                | TargetAction::Update(f)
+                                | TargetAction::Delete(f) => f,
+                            };
+                            let path = dir.join(&file.name);
+                            match file.content {
+                                Some(content) => {
+                                    if let Some(parent) = path.parent() {
+                                        std::fs::create_dir_all(parent)
+                                            .map_err(|e| e.to_string())?;
+                                    }
+                                    std::fs::write(&path, &content).map_err(|e| e.to_string())?;
+                                }
+                                None => match std::fs::remove_file(&path) {
+                                    Ok(()) => {}
+                                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                                    Err(e) => return Err(e.to_string()),
+                                },
                             }
-                            std::fs::write(&path, &content).map_err(|e| e.to_string())?;
                         }
-                        None => match std::fs::remove_file(&path) {
-                            Ok(()) => {}
-                            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                            Err(e) => return Err(e.to_string()),
-                        },
-                    }
+                        Ok(())
+                    })
+                    .await;
+                match result {
+                    Ok(Ok(())) => Ok(()),
+                    Ok(Err(e)) => Err(Error::engine(e)),
+                    Err(e) => Err(Error::engine(format!("dir target sink task panicked: {e}"))),
                 }
-                Ok(())
-            })
-            .await;
-            match result {
-                Ok(Ok(())) => Ok(None),
-                Ok(Err(e)) => Err(cocoindex_utils::error::Error::internal_msg(e)),
-                Err(e) => Err(cocoindex_utils::error::Error::internal_msg(format!(
-                    "dir target sink task panicked: {e}"
-                ))),
             }
-        }) as Pin<Box<_>>
-    })
+        })
+    }
 }
 
 #[cfg(test)]

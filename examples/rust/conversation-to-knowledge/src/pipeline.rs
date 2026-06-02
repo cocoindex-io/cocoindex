@@ -280,40 +280,46 @@ pub async fn create_knowledge_base(
     let graph = ctx.get_key(&GRAPH)?;
 
     let session_target =
-        surrealdb::mount_table_target_with_schema(ctx, graph, "session", Some(session_schema()?))?;
+        surrealdb::mount_table_target_with_schema(ctx, graph, "session", Some(session_schema()?))
+            .await?;
     let statement_target = surrealdb::mount_table_target_with_schema(
         ctx,
         graph,
         "statement",
         Some(statement_schema()?),
-    )?;
+    )
+    .await?;
     let person_target =
-        surrealdb::mount_table_target_with_schema(ctx, graph, PERSON, Some(entity_schema()?))?;
+        surrealdb::mount_table_target_with_schema(ctx, graph, PERSON, Some(entity_schema()?))
+            .await?;
     let tech_target =
-        surrealdb::mount_table_target_with_schema(ctx, graph, TECH, Some(entity_schema()?))?;
+        surrealdb::mount_table_target_with_schema(ctx, graph, TECH, Some(entity_schema()?)).await?;
     let org_target =
-        surrealdb::mount_table_target_with_schema(ctx, graph, ORG, Some(entity_schema()?))?;
+        surrealdb::mount_table_target_with_schema(ctx, graph, ORG, Some(entity_schema()?)).await?;
     let session_statement_target = surrealdb::mount_relation_target(
         ctx,
         graph,
         "session_statement",
         &session_target,
         &statement_target,
-    )?;
+    )
+    .await?;
     let person_session_target = surrealdb::mount_relation_target(
         ctx,
         graph,
         "person_session",
         &person_target,
         &session_target,
-    )?;
+    )
+    .await?;
     let person_statement_target = surrealdb::mount_relation_target(
         ctx,
         graph,
         "person_statement",
         &person_target,
         &statement_target,
-    )?;
+    )
+    .await?;
     let statement_mentions_target = surrealdb::mount_relation_target_many(
         ctx,
         graph,
@@ -321,7 +327,8 @@ pub async fn create_knowledge_base(
         &[&statement_target],
         &[&person_target, &tech_target, &org_target],
         None,
-    )?;
+    )
+    .await?;
 
     let entity_target = |kind: &str| match kind {
         PERSON => &person_target,

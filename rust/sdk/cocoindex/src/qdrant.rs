@@ -30,8 +30,8 @@ use crate::statediff::{
 };
 use crate::target_state::{
     ChildTargetDef, StableKey, TargetAction, TargetActionSink, TargetChildInvalidation,
-    TargetHandler, TargetReconcileOutput, TargetStateProvider, mount_target,
-    register_root_target_states_provider,
+    TargetHandler, TargetReconcileOutput, TargetState, TargetStateProvider, declare_target_state,
+    declare_target_state_with_child, mount_target, register_root_target_states_provider,
 };
 
 // ---------------------------------------------------------------------------
@@ -151,6 +151,43 @@ pub async fn mount_collection_target_with_options(
     schema: CollectionSchema,
     options: ManagedTargetOptions,
 ) -> Result<CollectionTarget> {
+    let ts = collection_target_with_options(ctx, conn, collection_name, schema, options)?;
+    let name = ts.value().collection_name.clone();
+    let points = mount_target::<CollectionSpec, Point>(ctx, ts).await?;
+    Ok(CollectionTarget {
+        collection_name: Arc::from(name),
+        points,
+    })
+}
+
+/// Build a composable [`TargetState`] for a Qdrant collection (the spec
+/// constructor). Pass it to the generic
+/// [`mount_target`](crate::target_state::mount_target) /
+/// [`declare_target_state_with_child`](crate::target_state::declare_target_state_with_child),
+/// or use [`declare_collection_target`]/[`mount_collection_target`].
+pub fn collection_target(
+    ctx: &Ctx,
+    conn: &QdrantConnection,
+    collection_name: impl Into<String>,
+    schema: CollectionSchema,
+) -> Result<TargetState<CollectionSpec>> {
+    collection_target_with_options(
+        ctx,
+        conn,
+        collection_name,
+        schema,
+        ManagedTargetOptions::default(),
+    )
+}
+
+/// [`collection_target`] with explicit [`ManagedTargetOptions`].
+pub fn collection_target_with_options(
+    ctx: &Ctx,
+    conn: &QdrantConnection,
+    collection_name: impl Into<String>,
+    schema: CollectionSchema,
+    options: ManagedTargetOptions,
+) -> Result<TargetState<CollectionSpec>> {
     let collection_name = collection_name.into();
     let provider = register_root_target_states_provider(
         ctx,
@@ -161,15 +198,46 @@ pub async fn mount_collection_target_with_options(
         ),
         CollectionHandler::new(conn.client.clone()),
     )?;
-    let spec = CollectionSpec {
-        collection_name: collection_name.clone(),
+    Ok(provider.target_state(
+        "default",
+        CollectionSpec {
+            collection_name,
+            schema,
+            managed_by: options.managed_by,
+        },
+    ))
+}
+
+/// Declare a Qdrant collection target in the **current** component (the point
+/// child resolves at this component's commit) and return a handle.
+pub fn declare_collection_target(
+    ctx: &Ctx,
+    conn: &QdrantConnection,
+    collection_name: impl Into<String>,
+    schema: CollectionSchema,
+) -> Result<CollectionTarget> {
+    declare_collection_target_with_options(
+        ctx,
+        conn,
+        collection_name,
         schema,
-        managed_by: options.managed_by,
-    };
-    let points: TargetStateProvider<Point> =
-        mount_target(ctx, provider.target_state("default", spec)).await?;
+        ManagedTargetOptions::default(),
+    )
+}
+
+/// [`declare_collection_target`] with explicit [`ManagedTargetOptions`].
+pub fn declare_collection_target_with_options(
+    ctx: &Ctx,
+    conn: &QdrantConnection,
+    collection_name: impl Into<String>,
+    schema: CollectionSchema,
+    options: ManagedTargetOptions,
+) -> Result<CollectionTarget> {
+    let ts = collection_target_with_options(ctx, conn, collection_name, schema, options)?;
+    let name = ts.value().collection_name.clone();
+    let points = declare_target_state_with_child::<CollectionSpec, Point>(ctx, ts)?;
     Ok(CollectionTarget {
-        collection_name: Arc::from(collection_name),
+        collection_name: Arc::from(name),
         points,
     })
 }
@@ -192,10 +260,7 @@ impl CollectionTarget {
             vector,
             payload,
         };
-        crate::target_state::declare_target_state(
-            ctx,
-            self.points.target_state(id.to_string(), point),
-        )
+        declare_target_state(ctx, self.points.target_state(id.to_string(), point))
     }
 }
 
@@ -203,8 +268,11 @@ impl CollectionTarget {
 // Collection handler (container)
 // ---------------------------------------------------------------------------
 
+/// Spec for a Qdrant collection (the declared container value). Public so
+/// [`collection_target`] can return a composable [`TargetState`]; fields are
+/// private.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-struct CollectionSpec {
+pub struct CollectionSpec {
     collection_name: String,
     schema: CollectionSchema,
     managed_by: ManagedBy,

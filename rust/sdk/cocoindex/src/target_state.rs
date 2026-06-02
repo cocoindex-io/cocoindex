@@ -74,14 +74,22 @@ impl<V> TargetStateProvider<V> {
         }
     }
 
-    /// Stable provider path string for memo dependencies.
+    /// Memo key for this provider, mirroring Python's
+    /// `TargetStateProvider.memo_key` / `__coco_memo_key__`.
     ///
-    /// This intentionally exposes the provider path only. Connector authors
-    /// that need provider-generation/version dependencies should include those
-    /// values in their own memo keys until the Rust SDK grows the full Python
-    /// provider-generation facade.
+    /// It is the provider path, suffixed with the provider *generation*
+    /// (`[provider_id,schema_version]`) once the parent has committed and set
+    /// one. The generation changes when the parent reconciles with a
+    /// **destructive** (new `provider_id`) or **lossy** (new `schema_version`)
+    /// child invalidation, so a `#[function(memo)]` that takes this key as a
+    /// dependency re-executes when the target provider is recreated or its
+    /// schema changes — matching Python's provider-generation memoization.
     pub fn memo_key(&self) -> String {
-        self.inner.target_state_path().to_string()
+        let path = self.inner.target_state_path().to_string();
+        match self.inner.provider_generation() {
+            Some(g) => format!("{}[{},{}]", path, g.provider_id, g.provider_schema_version),
+            None => path,
+        }
     }
 
     pub fn stable_key_chain(&self) -> Vec<StableKey> {
@@ -115,6 +123,11 @@ impl<V> TargetState<V> {
 
     pub fn provider(&self) -> &TargetStateProvider<V> {
         &self.provider
+    }
+
+    /// The declared value (the spec) carried by this target state.
+    pub fn value(&self) -> &V {
+        &self.value
     }
 }
 
@@ -253,6 +266,44 @@ where
             _action: PhantomData,
         }
     }
+
+    #[cfg(test)]
+    pub(crate) async fn apply_for_test(
+        &self,
+        actions: Vec<TargetAction<A>>,
+    ) -> Result<Option<Vec<Option<ChildTargetDef>>>> {
+        use cocoindex_core::engine::target_state::TargetActionSink as _;
+
+        let actions = actions
+            .into_iter()
+            .map(|action| match action {
+                TargetAction::Create(value) => {
+                    Ok(Action::Create(Value::from_serializable(&value)?))
+                }
+                TargetAction::Update(value) => {
+                    Ok(Action::Update(Value::from_serializable(&value)?))
+                }
+                TargetAction::Delete(value) => {
+                    Ok(Action::Delete(Value::from_serializable(&value)?))
+                }
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let children = self
+            .inner
+            .apply(&(), Arc::new(()), actions)
+            .await
+            .map_err(|e| crate::error::Error::engine(e.to_string()))?;
+        Ok(children.map(|children| {
+            children
+                .into_iter()
+                .map(|child| {
+                    child.map(|child| ChildTargetDef {
+                        handler: child.handler,
+                    })
+                })
+                .collect()
+        }))
+    }
 }
 
 fn decode_action<A: DeserializeOwned>(action: Action) -> Result<TargetAction<A>> {
@@ -350,9 +401,12 @@ where
     use std::sync::Mutex;
 
     let provider_inner = target_state.provider.inner.clone();
+    // Use the stable provider *path* (not `memo_key`, which also encodes the
+    // mutable provider generation) so the mounted sub-component's path stays
+    // stable across destructive/lossy generation bumps and matches its prior run.
     let scope_key = format!(
         "cocoindex/mount_target/{}/{}",
-        target_state.provider.memo_key(),
+        provider_inner.target_state_path(),
         target_state.key
     );
     let key = target_state.key;

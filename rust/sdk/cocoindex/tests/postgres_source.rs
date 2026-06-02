@@ -235,7 +235,8 @@ async fn postgres_source_reads_processes_and_reconciles_when_available() -> Resu
                             "output",
                             out_schema(),
                             Some(&out_schema_name),
-                        )?;
+                        )
+                        .await?;
                         let rows: Vec<SourceRow> = postgres::read_table(db, &src_table).await?;
                         let outs = ctx
                             .mount_each(

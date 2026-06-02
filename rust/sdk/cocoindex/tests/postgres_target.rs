@@ -39,7 +39,8 @@ async fn declare_rows(ctx: Ctx, schema: String, rows: Vec<TestRow>) -> Result<()
             ["id"],
         )?,
         Some(&schema),
-    )?;
+    )
+    .await?;
     for row in &rows {
         table.declare_row(&ctx, row)?;
     }
@@ -60,7 +61,8 @@ async fn declare_vector_table(ctx: Ctx, schema: String, with_index: bool) -> Res
             ["id"],
         )?,
         Some(&schema),
-    )?;
+    )
+    .await?;
     if with_index {
         table.declare_vector_index(
             &ctx,

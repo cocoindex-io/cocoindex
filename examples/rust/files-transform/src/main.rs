@@ -65,9 +65,11 @@ async fn main() -> Result<()> {
                 // Declarative output: the engine reconciles these files against
                 // the previous run and deletes outputs whose source disappeared.
                 let target = DirTarget::mount(&ctx, &output_dir)?;
-                // Top-level `*.md` only (no `**`), matching the Python example,
-                // whose `walk_dir` defaults to `recursive=False`.
-                let files = cocoindex::fs::walk(&source_dir, &["*.md"])?;
+                // Recursive `**/*.md`, matching the Python example's
+                // `PatternFilePathMatcher(included_patterns=["**/*.md"])`.
+                // (Output names join the relative-path components with `__`, so
+                // nested files don't collide — see `output_name_for`.)
+                let files = cocoindex::fs::walk(&source_dir, &["**/*.md"])?;
 
                 ctx.mount_each(files, |file| file.key(), {
                     let target = target.clone();

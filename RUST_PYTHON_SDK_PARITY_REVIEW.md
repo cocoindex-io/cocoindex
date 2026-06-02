@@ -49,15 +49,28 @@ ownership transfer between component scopes.
 (flat-re-exported at the crate root) provides the shared managed-ownership/diff
 helpers — `ManagedBy`, `ManagedTargetOptions`, `MutualTrackingRecord`,
 `TrackingRecordTransition`, `DiffAction`, `resolve_system_transition`, and `diff`
-— the Rust analogue of Python's `connectorkits.statediff`/`target`. Five
-connectors are already built **on the public target-state facade** and honor
-`managed_by` via `ManagedTargetOptions`: `qdrant`, `turbopuffer`, `neo4j`,
-`falkordb`, and the shared `cypher_graph` backend. The remaining Phase-2 work is
-migrating the four older connectors that still use the private `profile`
-(`BoxedHandler`/`BoxedSink`) helpers — `postgres`, `surrealdb`, `kafka`, and
-`lancedb` (plus the `fs` dir target) — onto the public facade and `statediff`,
-and adding the Python constructor/declaration (`*_target`/`declare_*_target`)
-split that the facade connectors still lack.
+— the Rust analogue of Python's `connectorkits.statediff`/`target`. **All nine
+feature connectors are now built on the public target-state facade**: `qdrant`,
+`turbopuffer`, `neo4j`, `falkordb` (+ the shared `cypher_graph` backend), `kafka`
+(two-level topic → message), `lancedb` (table → row), `postgres` (table → row +
+vector-index attachment + transactions), `fs` (LocalFS dir → file), and
+`surrealdb` (table/relation → record). No connector remains on the private
+`profile` (`BoxedHandler`/`BoxedSink`) helpers. **Every container connector now
+exposes the full Python-style constructor/declaration/mount split** — a `*_target`
+spec constructor returning a composable `TargetState`, a `declare_*_target`
+pending declaration (child resolved at the current component's commit), and a
+foreground `mount_*` — for Kafka (`kafka_topic_target`), LanceDB / Postgres
+(`table_target`), SurrealDB
+(`table_target`/`relation_target_many`/`relation_target_unconstrained`), Qdrant
+(`collection_target`), Turbopuffer (`namespace_target`), and Neo4j / FalkorDB
+(`table_target`/`relation_target`, via the shared `cypher_graph` backend). Kafka
+and LanceDB keep sync `mount_*` compatibility for same-component declarations;
+Postgres and SurrealDB use async `mount_*` where they need foreground
+child-provider readiness. `fs` keeps its existing
+`dir_target`/`declare_dir_target`/`mount_dir_target` split (sync) on the public
+`TargetHandler`. With Qdrant, Turbopuffer, Neo4j, and FalkorDB now carrying the
+`*_target`/`declare_*_target` constructors too, **Phase 2 is complete** — every
+connector is on the facade with the full split.
 
 The top-level public API difference is visible immediately:
 
@@ -78,7 +91,7 @@ Test coverage is similarly uneven:
 - Rust SDK currently has 119 integration test functions under
   `rust/sdk/cocoindex/tests` (plus per-module unit tests in `src`). All 9
   connector features pass the full sweep (default + every feature, and all
-  features combined: 198 passed / 0 failed).
+  features combined: 211 passed / 0 failed).
 - Rust connector/source integration tests now span 8 files (~11 tests):
   `gdrive_source.rs`, `kafka_target.rs`, `lancedb_target.rs`,
   `postgres_source.rs`, `postgres_target.rs`, `surrealdb_target.rs`,
@@ -123,14 +136,14 @@ Test coverage is similarly uneven:
 | `localfs` | `FilePath`, `File`, `DirWalker`, `walk_dir`, `DirTarget`, `dir_target`, `declare_dir_target`, `mount_dir_target`, `declare_file`, live mode | `fs::FilePath`, `FileLike`, `FileEntry`, path matchers, `DirWalker`, `walk_dir`, `DirTarget`, `dir_target`, `declare_dir_target`, `mount_dir_target` | Partial/Good static path | Static walking/target APIs now exist with tests. Remaining gaps are `walk_dir(..., live=True)`, live map/view semantics, async cached `FileLike`, and full shared resource reuse across S3/OCI/GDrive. |
 | `postgres` | `PgTableSource`, `RowFetcher`, `PgSourceSpec`, `TableTarget`, `table_target`, `declare_table_target`, `mount_table_target`, vector index, SQL command attachment, `managed_by` | `postgres::Database`, `read_table`, `read_table_with_options`, `TableTarget`, `mount_table_target`, vector index | Partial | Missing generic target-state shape, `managed_by`, SQL command attachments, streaming/`items()` source, row factory ergonomics, snapshot cursor tests. |
 | `surrealdb` | `ConnectionFactory`, `TableSchema`, `TableTarget`, `RelationTarget`, `table_target`, `declare_table_target`, `mount_table_target`, relation target, vector index, `managed_by` | `Graph`, `TableSchema`, `TableTarget`, `RelationTarget`, `mount_table_target`, relation helpers | Partial | Missing vector indexes, `managed_by`, generic target-state shape, schema evolution tests, table drop tests, type mapping tests. |
-| `kafka` | `TopicStream`, `topic_as_stream`, `topic_as_map`, `KafkaTopicTarget`, `kafka_topic_target`, `declare_kafka_topic_target`, `mount_kafka_topic_target` | `KafkaProducer`, `KafkaTopicTarget`, `mount_kafka_topic_target` | Partial | Rust is target-only. Missing source stream/map APIs and public target-state style helpers. |
+| `kafka` | `TopicStream`, `topic_as_stream`, `topic_as_map`, `KafkaTopicTarget`, `kafka_topic_target`, `declare_kafka_topic_target`, `mount_kafka_topic_target` | `KafkaProducer`, `KafkaTopicTarget`, `kafka_topic_target`, `declare_kafka_topic_target`, `mount_kafka_topic_target` | Partial | Target migrated to the public target-state facade (two-level topic → message) with the full constructor/declaration/mount split. Missing source stream/map APIs. |
 | `iggy` | `TopicStream`, `topic_as_stream`, `topic_as_map`, `IggyTopicTarget`, target helpers | None | Missing | Should mirror Kafka pattern once Rust Kafka source/target shape is settled. |
 | `amazon_s3` | `S3FilePath`, `S3File`, `S3Walker`, `get_object`, `read`, `list_objects` | None | Missing | File source abstraction missing in Rust. |
 | `oci_object_storage` | `OCIFilePath`, `OCIFile`, `OCIWalker`, `get_object`, `read`, `list_objects`, live stream support | None | Missing | Requires live map/source framework first. |
 | `google_drive` | package `__all__`: `DriveFileInfo`, `DriveFile`, `GoogleDriveSourceSpec`, `GoogleDriveSource`, `list_files`; `_source.py` also defines `DriveFilePath` | `gdrive::DriveFile`, `GoogleDriveClient`, `GoogleDriveSource` | Partial/in progress | Rust has service-account/static-token client, recursive listing, MIME filtering, export/download reads, and mock tests. Missing Python-style `DriveFileInfo`, top-level `list_files(spec)`, async `items()`, and shared file source abstraction; clarify whether `DriveFilePath` should be publicly exported in Python. |
 | `sqlite` | `ManagedConnection`, `Vec0TableDef`, `TableSchema`, `TableTarget`, target helpers, vec0 support, user/system managed | None | Missing | Large target connector. Python tests are extensive and should be ported if implemented. |
 | `doris` | `DorisConnectionConfig`, `ManagedConnection`, `TableSchema`, `DorisTableTarget`, vector/inverted indexes, retry config | None | Missing | Needs table target architecture and stream-load retry behavior. |
-| `lancedb` | `TableSchema`, `TableTarget`, target helpers, optimize behavior | `lancedb::LanceDatabase`, `TableSchema`, `ColumnDef`, `LanceTableTarget`, `mount_table_target`, `vector_search` | Partial | Native target exists with hermetic e2e coverage for create/upsert/search/delete and additive scalar-column schema evolution. Missing Python optimize behavior, mutation-preservation/retry tests, full add-column edge cases, and constructor/declaration split. |
+| `lancedb` | `TableSchema`, `TableTarget`, target helpers, optimize behavior | `lancedb::LanceDatabase`, `TableSchema`, `ColumnDef`, `LanceTableTarget`, `table_target`, `declare_table_target`, `mount_table_target` (+`_with_options`), `vector_search` | Partial | Migrated to the public target-state facade (table → row, `managed_by`) with the full constructor/declaration/mount split; hermetic e2e coverage for create/upsert/search/delete + additive scalar-column schema evolution. Missing Python optimize behavior, mutation-preservation/retry tests, full add-column edge cases. |
 | `qdrant` | `QdrantVectorDef`, `CollectionSchema`, `CollectionTarget`, target helpers | `qdrant::QdrantConnection`, `CollectionSchema`, `CollectionTarget`, `mount_collection_target`, `mount_collection_target_with_options`, `vector_search` | Partial | Native single-vector collection target exists with `ManagedTargetOptions`. Remaining gaps are named/multivector schema parity, Python-style constructor/declaration split, richer validation, and live/e2e coverage in CI. |
 | `turbopuffer` | `VectorDef`, `NamespaceSchema`, `Row`, `NamespaceTarget`, target helpers | `turbopuffer::TurbopufferConnection`, `NamespaceSchema`, `NamespaceTarget`, `mount_namespace_target`, `mount_namespace_target_with_options`, `vector_search` | Partial | Native namespace target exists with `ManagedTargetOptions`. Remaining gaps are named-vector/f16 schema parity, Python-style constructor/declaration split, richer validation, and hosted-service e2e coverage. |
 | `neo4j` | `ConnectionFactory`, `TableTarget`, `RelationTarget`, Cypher builders, indexes, constraints, vector index | `neo4j::Graph`, `TableSchema`, `TableTarget`, `RelationTarget`, `mount_table_target`, `mount_table_target_with_options`, `mount_relation_target`, `mount_relation_target_with_options` | Partial | Native graph target API now exists with `ManagedTargetOptions` and shares the generic target-state path. Remaining gaps are vector indexes, explicit index/constraint helpers, declaration split, richer type mapping, and Python's full validation surface. |
@@ -216,7 +229,7 @@ wrappers onto that common facade.
 | Generic target lifecycle | `TargetState`, `TargetStateProvider`, `TargetHandler`, `TargetActionSink`, `TargetReconcileOutput`, `mount_target`, attachments | SDK exposes typed target states, child handler definitions, foreground mount readiness, attachments, and generic lifecycle tests | Refactor connectors onto the public facade and add connector-specific parity tests. |
 | Managed ownership | `target.ManagedBy`, `statediff.MutualTrackingRecord`, `resolve_system_transition` in table/vector/graph connectors | Rust exposes `ManagedBy`, `ManagedTargetOptions`, `MutualTrackingRecord`, `TrackingRecordTransition`, `resolve_system_transition`, and `diff`; Postgres, SurrealDB, LanceDB, Qdrant, Turbopuffer, Neo4j, and FalkorDB accept or use managed options | Add connector-specific managed-ownership parity tests beyond the current LanceDB regression and live smoke coverage. |
 | Diff semantics | `statediff.diff` and `diff_composite` distinguish insert/upsert/replace/delete plus incomplete previous state | Rust has shared transition/diff helpers now used by native table, graph, and vector target implementations | Port the remaining Python `connectorkits/statediff.py` edge-case tests, especially composite diff behavior. |
-| Table targets | Postgres, SQLite, Doris, LanceDB, SurrealDB, Neo4j, FalkorDB expose table constructors/declaration/mount; many support schema evolution | Rust has Postgres and SurrealDB mount-only helpers | Add constructor/declaration split and common lifecycle shape; implement SQLite next as proof the API generalizes beyond Postgres. |
+| Table targets | Postgres, SQLite, Doris, LanceDB, SurrealDB, Neo4j, FalkorDB expose table constructors/declaration/mount; many support schema evolution | Rust Postgres, LanceDB, SurrealDB, Qdrant, Turbopuffer, Neo4j, and FalkorDB all expose the full `*_target`/`declare_*_target`/`mount_*` split | Implement SQLite next as proof the API generalizes beyond Postgres. |
 | Row/record writes | Python wrappers declare rows/records into child providers; handlers upsert/delete only changed desired state | Rust Postgres/SurrealDB/Kafka target wrappers declare rows/messages into providers | Existing Rust pattern is directionally right, but needs generic API and broader schema/change tests. |
 | Vector/index attachments | Postgres, SurrealDB, Neo4j, FalkorDB, Doris expose vector/inverted/index attachments or target-level index lifecycle | Rust Postgres vector index exists as internal attachment; SurrealDB graph/vector indexes missing | Public attachment API plus per-connector vector index tests. |
 | Graph relations | SurrealDB, Neo4j, FalkorDB expose `RelationTarget` with endpoint tables and relation rows | Rust SurrealDB has relation helpers; no Neo4j/FalkorDB | Generalize relation target concepts and add Cypher-specific escaping/index/constraint behavior. |
@@ -514,11 +527,11 @@ is explicitly designed around live object events.
 | `test_function_memo.py` | Rust memo tests and macro tests | Partial |
 | `test_function_batching.py` | Rust `Ctx::batch`; no Runner/GPU | Partial/Missing |
 | `test_component_memo.py` | Rust `scope` and `mount_each` tests | Partial |
-| `test_component_target_states.py` | Rust connector-specific target tests | Missing generic public API coverage |
-| `test_flat_target_states.py` | `pipeline.rs::public_target_state_api_reconciles_typed_actions_and_tracking_records`, `target_state::tests` | Partial |
-| `test_attachment_target_states.py` | core/internal support, Postgres vector test | Missing public generic coverage |
-| `test_provider_generation.py` | core support, limited public tests | Missing/Partial |
-| `test_ownership_transfer.py` | core likely supports; no Rust SDK test family | Missing |
+| `test_component_target_states.py` | `tests/target_state.rs::target_states_declared_inside_components` (+ mount-target child tests) | Covered (generic public API); preview/failure-recovery paths still missing |
+| `test_flat_target_states.py` | `tests/target_state.rs::flat_target_insert_update_nochange_delete`, `pipeline.rs` | Covered (preview/exception-recovery still missing) |
+| `test_attachment_target_states.py` | `tests/target_state.rs::attachment_lifecycle_create_and_cleanup`, `attachment_providers_idempotent_and_independent_per_type` | Covered (generic public API) |
+| `test_provider_generation.py` | `tests/target_state.rs` child-invalidation (destructive/lossy/none) + `memo_key_*` generation tests | Covered (generic public API) |
+| `test_ownership_transfer.py` | `tests/target_state.rs::ownership_transfer_*` (3 tests) | Covered |
 | `test_full_reprocess.py` | memo full reprocess tests | Partial |
 | `test_app_drop.py` | drop state/memo tests | Partial |
 | `test_exception_handlers.py` | no public exception handler API | Missing |
@@ -736,26 +749,77 @@ re-exported from `lib.rs`):
 - [x] `mount_target` (foreground child-provider readiness via `use_mount`)
 - [x] root provider registration (`register_root_target_states_provider`)
 - [x] attachment provider access (`TargetStateProvider::attachment`)
+- [x] `TargetStateProvider::memo_key` now encodes the provider **generation**
+  (`path[provider_id,schema_version]`), matching Python's
+  `coco_memo_key()`/`__coco_memo_key__()` exactly — so a `#[function(memo)]` that
+  depends on the key re-executes when the target provider is recreated
+  (destructive) or its schema changes (lossy). (`mount_target`'s sub-component
+  scope key uses the stable provider *path* so generation bumps don't break
+  prior-run matching.)
 
 Generic tests added in `tests/target_state.rs`:
 
 - [x] flat target insert/update/delete/no-change
 - [x] target state in components (declared inside `mount_each`)
 - [x] mount target child insert/delete
+- [x] multiple mounted child targets from one provider (isolation)
 - [x] attachments lifecycle (create + orphan cleanup)
+- [x] attachment providers idempotent + independent per type
 - [x] provider generation destructive/lossy/no invalidation
+- [x] `memo_key` reflects provider generation (changes on destructive/lossy,
+  stable otherwise) — Python `test_provider_generation` memo parity
 - [x] ownership transfer between component scopes
 
-### Phase 2: Refactor Existing Rust Connectors to the Public Shape
+### Phase 2: Refactor Existing Rust Connectors to the Public Shape — DONE
 
-Refactor:
+On the public facade + `statediff`:
 
-- Postgres
-- SurrealDB
-- Kafka target
-- LocalFS target
+- [x] Qdrant (collection → point, `managed_by`; built on the facade from the
+  start) — now also exposes the `collection_target` / `declare_collection_target`
+  / `mount_collection_target` (+ `_with_options`) split.
+- [x] Turbopuffer (namespace → row, `managed_by`; built on the facade from the
+  start) — now also exposes the `namespace_target` / `declare_namespace_target` /
+  `mount_namespace_target` (+ `_with_options`) split.
+- [x] Neo4j (table/relation via shared `cypher_graph`, `managed_by`) — now also
+  exposes the `table_target`/`relation_target` / `declare_*` / `mount_*` split.
+- [x] FalkorDB (table/relation via shared `cypher_graph`, `managed_by`) — now also
+  exposes the `table_target`/`relation_target` / `declare_*` / `mount_*` split.
+- [x] **Kafka** — migrated to the facade as a two-level topic → message target,
+  with the full `kafka_topic_target` / `declare_kafka_topic_target` /
+  `mount_kafka_topic_target` split.
+- [x] **LanceDB** — migrated to the facade (table → row, `managed_by` preserved),
+  with the `table_target` / `declare_table_target` / `mount_table_target`
+  (+ `_with_options`) split.
+- [x] **Postgres** — migrated to the facade (table → row, plus the **vector-index
+  attachment** via `TargetHandler::attachments()` + `provider.attachment()`, and
+  transactional `apply_rows`). Full `table_target` / `declare_table_target` /
+  `mount_table_target` (+ `_with_options`) split; `managed_by` preserved.
+  (`mount_table_target` is now async.) Verified live (target incl. vector index,
+  source) — 155 passed.
+- [x] **LocalFS (`fs`)** — `BoxedHandler`/`BoxedSink` swapped for the public
+  `TargetHandler<Vec<u8>>` (`FileHandler`) + `from_async_fn` sink. Keeps the
+  existing `dir_target` / `declare_dir_target` / `mount_dir_target` split
+  (signatures unchanged — sync). Verified (13 unit + 2 dir_target).
+- [x] **SurrealDB** — migrated to the facade as a container → child target
+  (table/relation → record), replacing the old two-root + `BoxedHandler` shape.
+  `TableHandler` (`MutualTrackingRecord<TableSpec>`, statediff
+  `resolve_system_transition`/`diff`, Destructive/Lossy child invalidation) yields
+  a `RecordHandler` (fingerprint tracking) child; records/relations apply in one
+  transaction per batch (`apply_records`). `managed_by` preserved. Full split:
+  `table_target` / `relation_target_many` / `relation_target_unconstrained` (+
+  `_with_options`) spec constructors, `declare_*_target`, and the existing
+  `mount_*` variants (now async). Verified live (record + relation reconcile,
+  orphan delete) — 151 passed.
 
-Each should expose the same conceptual layers as Python:
+All five remaining connectors are migrated; **none stay on the private
+`profile`**.
+
+The constructor/declaration/mount split is now real for **every** container
+connector — Kafka (`kafka_topic_target`), LanceDB / Postgres (`table_target`),
+SurrealDB (`table_target`/`relation_target_*`), Qdrant (`collection_target`),
+Turbopuffer (`namespace_target`), Neo4j / FalkorDB (`table_target`/
+`relation_target`), and `fs` (`dir_target`). Each exposes the same conceptual
+layers as Python:
 
 - target spec constructor (`table_target`, `dir_target`, etc.)
 - pending declaration (`declare_*_target`)
@@ -791,14 +855,16 @@ LocalFS:
 ### Phase 4: Add Missing Connectors by Family
 
 1. File/object source family: shared file resource abstraction, then S3, OCI,
-   and full Google Drive parity.
-2. Embedded/local table target: SQLite.
-3. Vector stores: LanceDB, Qdrant, Turbopuffer.
-4. Warehouse target: Doris.
-5. Graph stores: Neo4j, FalkorDB.
-6. Iggy source/target.
+   and full Google Drive parity. (`google_drive` source exists; S3/OCI missing.)
+2. Embedded/local table target: SQLite. (Missing.)
+3. Vector stores: LanceDB, Qdrant, Turbopuffer. **(All three done — single
+   unnamed vector; named/multivector + f16 remain.)**
+4. Warehouse target: Doris. (Missing.)
+5. Graph stores: Neo4j, FalkorDB. **(Both done via shared `cypher_graph`; vector
+   indexes + index/constraint helpers remain.)**
+6. Iggy source/target. (Missing — should mirror the Kafka shape.)
 7. Ops/resource parity: SDK-facing text ops, embedder abstractions, and LLM
-   resolver/transcriber helpers where Rust should match Python.
+   resolver/transcriber helpers where Rust should match Python. (Missing.)
 
 ## Completion Criteria for True Parity
 
@@ -845,15 +911,15 @@ examples.
 | `examples/hn_trending_topics` | Postgres table target, web/API source, table rows | `examples/rust/hn-trending-topics` | Partial/close | Rust writes through `postgres::mount_table_target`; remaining direct `sqlx::query` usage is read/query UI. Add target lifecycle tests that mirror Python table target behavior. |
 | `examples/conversation_to_knowledge` | `localfs.walk_dir`, SurrealDB table/relation targets | `examples/rust/conversation-to-knowledge` | Partial | Rust has SurrealDB target/relation helpers, but still needs vector indexes, managed-by, richer schema tests, and closer target naming. |
 | `examples/entire_session_search` | `localfs.walk_dir(live=True)`, `PatternFilePathMatcher`, `RecursiveSplitter`, `SentenceTransformerEmbedder`, two Postgres table targets/vector index | none | Missing/overlaps | Connector coverage overlaps with `code-embedding`, but the live localfs source, two-table Postgres target shape, and exact query helper path are not ported. |
-| `examples/files_transform` | `localfs.walk_dir`, `localfs.dir_target`, `declare_file` | `examples/rust/files-transform` | Partial/close | Static LocalFS target/source shape exists; live mode remains missing. |
+| `examples/files_transform` | `localfs.walk_dir` (recursive `**/*.md`), `localfs.declare_file` | `examples/rust/files-transform` | Close | Recursive markdown walk + `DirTarget::declare_file`, e2e validated (render, incremental skip, orphan-delete reconciliation). Remaining gap: live mode and the free-function `declare_file` (Rust uses the mounted `DirTarget` equivalent). |
 | `examples/multi_codebase_summarization` | LocalFS source plus generated file target | `examples/rust/multi-codebase-summarization` | Partial | Static LocalFS pieces exist; live mode and exact source-resource shape remain different. |
 | `examples/csv_to_kafka` | Kafka topic target | `examples/rust/csv-to-kafka` | Partial | Rust has target only. Add Kafka source stream/map APIs and constructor/declaration split. |
 | `examples/code_embedding` | LocalFS source, Postgres table target/vector index | `examples/rust/code-embedding` | Partial | Postgres target is the right native direction. Remaining gaps are localfs source shape and Postgres target attachments/options. |
 | `examples/amazon_s3_embedding` | S3 object source, Postgres target | none | Missing | Needs Rust object-source abstraction and S3 connector. |
 | `examples/gdrive_text_embedding` | Google Drive source, Postgres target | `examples/rust/gdrive-text-embedding` | Partial/close | Rust example compiles and uses native Google Drive source plus Postgres target. Remaining gap is shared Python-style file path/items abstraction and live source semantics. |
 | `examples/oci_object_storage_embedding` | OCI object source, Postgres target, live object semantics | none | Missing | Wait for Rust live source/map public API, then port OCI. |
-| `examples/image_search` | LocalFS image source, `FileLike`, `PatternFilePathMatcher`, `VectorSchema`, Qdrant collection target, CLIP embedding, FastAPI query path | none | Missing | Needs Rust Qdrant collection target plus shared file/image resource shape; frontend/API parity is example-level. |
-| `examples/image_search_colpali` | LocalFS image source, `MultiVectorSchema`, Qdrant multivector collection target, ColPali embedding, FastAPI query path | none | Missing | Needs Rust Qdrant multivector support and generic vector/multivector schema resources before example parity. |
+| `examples/image_search` | LocalFS image source, `FileLike`, `PatternFilePathMatcher`, `VectorSchema`, Qdrant collection target, CLIP embedding, FastAPI query path | none | Missing | The Rust Qdrant collection target now exists; remaining blockers are an image/file resource shape and a CLIP embedder. Frontend/API parity is example-level. |
+| `examples/image_search_colpali` | LocalFS image source, `MultiVectorSchema`, Qdrant multivector collection target, ColPali embedding, FastAPI query path | none | Missing | Rust Qdrant target exists but only for a single unnamed vector; needs Qdrant multivector support and generic vector/multivector schema resources first. |
 | `examples/code_embedding_lancedb` | LocalFS source, LanceDB target | none | Missing | LanceDB target exists; exact example still not ported. |
 | `examples/text_embedding_lancedb` | LocalFS source, LanceDB target | `examples/rust/text-embedding-lancedb` | Partial/close | Rust example exists with native LanceDB target; remaining gaps are live LocalFS and fuller LanceDB optimize/schema behavior. |
 | `examples/kafka_to_lancedb` | Kafka source, LanceDB target | none | Missing | Needs both Kafka source and LanceDB target. |
@@ -863,8 +929,8 @@ examples.
 | `examples/meeting_notes_graph_falkordb` | Google Drive source, FalkorDB table/relation targets | `examples/rust/meeting-notes-graph-falkordb` | Partial | Rust example uses deterministic local Markdown notes plus native `falkordb` graph targets. Remaining example parity is Google Drive/LLM extraction shape and fuller FalkorDB index/vector target coverage. |
 | `examples/text_embedding` | LocalFS source, Postgres target | `examples/rust/text-embedding` | Partial/close | Rust standalone example exists; remaining gaps are live LocalFS and exact Python resource/target constructor shape. |
 | `examples/pdf_embedding`, `examples/pdf_to_markdown` | LocalFS file resources plus PDF parsing targets | none | Missing | Connector parity depends on localfs file abstraction; transforms are example-level. |
-| `examples/audio_to_text` | External audio/transcription transforms plus target writes | none | Out of connector parity scope | Port after connector/runtime parity, unless product wants Rust examples for these flows. |
-| `examples/paper_metadata` | External paper metadata extraction plus target writes | none | Out of connector parity scope | Port after connector/runtime parity; likely depends more on transform/client parity than a new storage connector. |
+| `examples/audio_to_text` | `localfs.walk_dir`, `LiteLLMTranscriber("whisper-1")`, `postgres.mount_table_target` | `examples/rust/audio-to-text` | Close | Ported and e2e validated (walk → Whisper REST transcription → Postgres table, keyed by filename; incremental memo-skip + orphan-delete confirmed). Transcription hand-rolls the OpenAI `/v1/audio/transcriptions` call — no SDK `LiteLLMTranscriber` op parity yet. |
+| `examples/paper_metadata` | `localfs.walk_dir`, `pypdf`, `openai` JSON extraction, `RecursiveSplitter`+`CustomLanguageConfig`, `SentenceTransformerEmbedder`, three `postgres.mount_table_target`s | `examples/rust/paper-metadata` | Close | Ported and e2e validated (PDF first-page text via `lopdf` → `gpt-4o` JSON extraction → `fastembed` MiniLM embeddings → 3 Postgres tables incl. jsonb authors + pgvector; query + incremental memo-skip confirmed). Deviations: deterministic `UuidGenerator` ids vs `uuid4`; LLM/transcription hand-rolled (no `litellm`/`sentence_transformers` SDK op parity). |
 | `examples/patient_intake_extraction_baml` | External BAML extraction plus target writes | none | Out of connector parity scope | Port only if Rust examples should cover BAML-style extraction; not a connector blocker. |
 | `examples/patient_intake_extraction_dspy` | External DSPy extraction plus target writes | none | Out of connector parity scope | Port only if Rust examples should cover DSPy-style extraction; not a connector blocker. |
 
@@ -925,10 +991,10 @@ than end-user connector entry points.
 | --- | --- | --- |
 | Connectorkit mount naming | `default_subpath_name` | Missing public helper; Rust uses closure/key functions directly. |
 | Connectorkit fingerprint | `Fingerprint`, `Fingerprintable`, `fingerprint_object`, `fingerprint_bytes`, `fingerprint_str` | Partial/different; Rust exposes memo key/fingerprint helpers in `memo.rs`, but no connectorkit module. |
-| Connectorkit statediff | `CompositeTrackingRecord`, `DiffAction`, `ManagedBy`, `MutualTrackingRecord`, `TrackingRecordTransition`, `diff`, `diff_composite`, `resolve_system_transition` | Missing public Rust connectorkit layer; this is a blocker for consistent target connector implementations. |
+| Connectorkit statediff | `CompositeTrackingRecord`, `DiffAction`, `ManagedBy`, `MutualTrackingRecord`, `TrackingRecordTransition`, `diff`, `diff_composite`, `resolve_system_transition` | Largely present: `cocoindex::statediff` exposes `ManagedBy`, `ManagedTargetOptions`, `MutualTrackingRecord`, `TrackingRecordTransition`, `DiffAction`, `resolve_system_transition`, and `diff` (flat-re-exported at the crate root). Still missing the *composite* layer (`CompositeTrackingRecord`/`diff_composite`) for column-level and attachment diffs. |
 | Resource schema helpers | `get_vector_schema`, `get_multi_vector_schema` | Missing generic Rust vector-schema provider helpers. |
-| Neo4j Cypher helpers | `IDENTIFIER_RE`, `build_constraint_create`, `build_constraint_drop`, `build_node_delete`, `build_node_index_create`, `build_node_index_drop`, `build_node_upsert`, `build_relationship_delete`, `build_relationship_index_create`, `build_relationship_index_drop`, `build_relationship_upsert`, `build_vector_index_create`, `build_vector_index_drop`, `constraint_name`, `index_name`, `validate_identifier`, `vector_index_name` | Missing until Rust Neo4j connector exists. |
-| FalkorDB Cypher helpers | `IDENTIFIER_RE`, `build_node_upsert`, `build_node_delete`, `build_relationship_upsert`, `build_relationship_delete`, `build_node_index_create`, `build_node_index_drop`, `build_relationship_index_create`, `build_relationship_index_drop`, `build_vector_index_create`, `build_vector_index_drop`, `validate_identifier` | Missing until Rust FalkorDB connector exists. |
+| Neo4j Cypher helpers | `IDENTIFIER_RE`, `build_constraint_create`, `build_constraint_drop`, `build_node_delete`, `build_node_index_create`, `build_node_index_drop`, `build_node_upsert`, `build_relationship_delete`, `build_relationship_index_create`, `build_relationship_index_drop`, `build_relationship_upsert`, `build_vector_index_create`, `build_vector_index_drop`, `constraint_name`, `index_name`, `validate_identifier`, `vector_index_name` | The Rust `neo4j` connector now exists (on the shared `cypher_graph` backend), but Cypher node/relationship upsert/delete + identifier escaping live inside `cypher_graph` as internal helpers; index/constraint/vector-index builders are not yet implemented or exposed as public helpers. |
+| FalkorDB Cypher helpers | `IDENTIFIER_RE`, `build_node_upsert`, `build_node_delete`, `build_relationship_upsert`, `build_relationship_delete`, `build_node_index_create`, `build_node_index_drop`, `build_relationship_index_create`, `build_relationship_index_drop`, `build_vector_index_create`, `build_vector_index_drop`, `validate_identifier` | The Rust `falkordb` connector now exists (shared `cypher_graph` backend); node/relationship upsert/delete + identifier handling are internal to `cypher_graph`; index/vector-index builders are not yet implemented or exposed. |
 
 ## Appendix C: Current Rust SDK Public Surface
 
@@ -945,7 +1011,7 @@ define the public SDK shape.
 | `fs` | `FileEntry` (`path`, `relative_path`, `stem`, `fingerprint`, `content`, `content_str`, `key`), `walk`, `DirTarget` (`mount`, `dir`, `declare_file`), `mount_dir_target` |
 | `gdrive` | `DriveFile` (`key`), `GoogleDriveClient` (`from_service_account_file`, `from_static_token`, `with_base_url`, `state_id`, `read`, `read_text`), `GoogleDriveSource` (`new`, `mime_types`, `client`, `list_files`) |
 | `id` | `generate_id`, `generate_id_default`, `generate_uuid`, `generate_uuid_default`, `IdGenerator` (`new`, `with_deps`, `next_id`, `next_id_default`), `UuidGenerator` (`new`, `with_deps`, `next_uuid`, `next_uuid_default`) |
-| `kafka` | `KafkaProducer` (`connect`, `state_id`, `ensure_topic`), `DeletionValueFn`, `KafkaTopicOptions`, `KafkaTopicTarget` (`topic`, `declare_message`), `mount_kafka_topic_target` |
+| `kafka` | `KafkaProducer` (`connect`, `state_id`, `ensure_topic`), `DeletionValueFn`, `KafkaTopicOptions`, `KafkaTopicTarget` (`topic`, `declare_message`), `kafka_topic_target`, `declare_kafka_topic_target`, `mount_kafka_topic_target` |
 | `memo` | `cached`, `cached_by_fingerprint`, `key_bytes`, `key_bytes_result`, `key_fingerprint_result`, `new_key_fingerprinter`, `write_key_fingerprint_part`, `finish_key_fingerprinter`, `batch`, `batch_by_fingerprint` |
 | `neo4j` | `Graph` (`connect`, `state_id`), `ColumnDef`, `TableSchema` (`new`, `columns`, `primary_key`), `TableTarget` (`table_name`, `declare_record`), `RelationTarget` (`declare_relation`, `declare_relation_record`), `mount_table_target`, `mount_table_target_with_options`, `mount_relation_target`, `mount_relation_target_with_options` |
 | `falkordb` | `Graph` (`connect`, `state_id`), `ColumnDef`, `TableSchema` (`new`, `columns`, `primary_key`), `TableTarget` (`table_name`, `declare_record`), `RelationTarget` (`declare_relation`, `declare_relation_record`), `mount_table_target`, `mount_table_target_with_options`, `mount_relation_target`, `mount_relation_target_with_options` |
@@ -1024,10 +1090,13 @@ tests, 67 ops tests, and 44 CLI tests.
 
 ## Appendix G: Concrete Fix Order
 
-1. Public Rust target-state API.
+1. Public Rust target-state API. **(done)**
 2. Refactor Postgres target to expose `table_target`, `declare_table_target`,
-   and `mount_table_target` using that API.
-3. Refactor SurrealDB and Kafka target to the same API shape.
+   and `mount_table_target` using that API. **(done — also Kafka, LanceDB, and
+   the `fs` dir target are now on the public facade.)**
+3. Refactor SurrealDB target to the same API shape. **(done — table/relation →
+   record on the facade, with the `table_target`/`relation_target_*` +
+   `declare_*`/`mount_*` split.)**
 4. Add public localfs source/target constructors and file path abstraction.
 5. Add Kafka source stream/map.
 6. Add SQLite as the next native table target.

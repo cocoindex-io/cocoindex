@@ -121,7 +121,7 @@ async fn process_file(ctx: &Ctx, file: &DriveFile) -> Result<Vec<DocEmbeddingRow
 async fn app_main(ctx: Ctx, root_folder_ids: Vec<String>) -> Result<()> {
     let db = ctx.get_key(&DB)?;
     let table =
-        postgres::mount_table_target(&ctx, db, TABLE, doc_embedding_schema()?, Some(PG_SCHEMA))?;
+        postgres::mount_table_target(&ctx, db, TABLE, doc_embedding_schema()?, Some(PG_SCHEMA)).await?;
     table.declare_vector_index(
         &ctx,
         "embedding",

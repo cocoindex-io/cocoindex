@@ -1,16 +1,20 @@
-//! SurrealDB target helpers.
+//! SurrealDB target connector.
 //!
-//! This first Rust SDK target surface mirrors the core Python API shape:
-//! mount a table/relation target, then declare records/relations into it. The
-//! implementation is schemaless for now, but it uses CocoIndex target-state
-//! reconciliation so stale records are deleted by the engine.
+//! Built **on the public target-state facade** ([`crate::target_state`]): a
+//! *table* (or *relation*) container — defined/removed to match the declared
+//! schema — containing *records* you declare via [`TableTarget::declare_record`]
+//! / [`RelationTarget::declare_relation`]. Reconciliation upserts changed records
+//! (one transaction per batch), skips unchanged ones (fingerprint tracking), and
+//! deletes records that disappeared. `managed_by` (via [`ManagedTargetOptions`])
+//! controls whether CocoIndex owns the DDL. Each kind exposes the
+//! constructor/declaration/mount split mirroring Python: a spec constructor
+//! ([`table_target`]/[`relation_target_many`]/[`relation_target_unconstrained`]),
+//! a pending declaration ([`declare_table_target`]/…), and a foreground
+//! [`mount_table_target`]/… (async).
 
 use std::collections::BTreeMap;
-use std::pin::Pin;
 use std::sync::Arc;
 
-use cocoindex_core::engine::target_state::{ChildTargetDef, TargetReconcileOutput};
-use cocoindex_core::state::stable_path::StableKey;
 use cocoindex_utils::fingerprint::Fingerprint;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value as JsonValue};
@@ -21,10 +25,14 @@ use surrealdb::types::RecordId;
 
 use crate::ctx::Ctx;
 use crate::error::{Error, Result};
-use crate::profile::{Action, BoxedHandler, BoxedSink, RustProfile, Value};
 use crate::statediff::{
     DiffAction, ManagedBy, ManagedTargetOptions, MutualTrackingRecord, diff,
     resolve_system_transition,
+};
+use crate::target_state::{
+    ChildTargetDef, StableKey, TargetAction, TargetActionSink, TargetChildInvalidation,
+    TargetHandler, TargetReconcileOutput, TargetState, TargetStateProvider, declare_target_state,
+    declare_target_state_with_child, mount_target, register_root_target_states_provider,
 };
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -159,10 +167,14 @@ impl Graph {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Target handles
+// ---------------------------------------------------------------------------
+
 #[derive(Clone)]
 pub struct TableTarget {
     table_name: Arc<str>,
-    provider: cocoindex_core::engine::target_state::TargetStateProvider<RustProfile>,
+    records: TargetStateProvider<RecordState>,
 }
 
 impl TableTarget {
@@ -177,11 +189,7 @@ impl TableTarget {
         row: &R,
     ) -> Result<()> {
         let value = record_state(row)?;
-        ctx.declare_target_state(
-            self.provider.clone(),
-            id.to_stable_key(),
-            Value::from_serializable(&value)?,
-        )
+        declare_target_state(ctx, self.records.target_state(id.to_stable_key(), value))
     }
 }
 
@@ -192,7 +200,7 @@ pub struct RelationTarget {
     to_tables: Arc<[String]>,
     from_table: Option<Arc<str>>,
     to_table: Option<Arc<str>>,
-    provider: cocoindex_core::engine::target_state::TargetStateProvider<RustProfile>,
+    records: TargetStateProvider<RecordState>,
 }
 
 impl RelationTarget {
@@ -301,10 +309,9 @@ impl RelationTarget {
                 to_id,
             }),
         };
-        ctx.declare_target_state(
-            self.provider.clone(),
-            record_id.stable_key(),
-            Value::from_serializable(&value)?,
+        declare_target_state(
+            ctx,
+            self.records.target_state(record_id.stable_key(), value),
         )
     }
 }
@@ -313,114 +320,91 @@ fn relation_key_part(value: &str) -> String {
     format!("{}:{value};", value.len())
 }
 
-pub fn mount_table_target(
-    ctx: &Ctx,
-    graph: &Graph,
-    table_name: impl Into<String>,
-) -> Result<TableTarget> {
-    mount_table_target_with_schema_and_options(
-        ctx,
-        graph,
-        table_name,
-        None,
-        ManagedTargetOptions::default(),
-    )
+fn table_handle(spec: TableSpec, records: TargetStateProvider<RecordState>) -> TableTarget {
+    TableTarget {
+        table_name: Arc::from(spec.table_name),
+        records,
+    }
 }
 
-pub fn mount_table_target_with_options(
-    ctx: &Ctx,
-    graph: &Graph,
-    table_name: impl Into<String>,
-    options: ManagedTargetOptions,
-) -> Result<TableTarget> {
-    mount_table_target_with_schema_and_options(ctx, graph, table_name, None, options)
+fn relation_handle(spec: TableSpec, records: TargetStateProvider<RecordState>) -> RelationTarget {
+    let from_names = spec.from_tables;
+    let to_names = spec.to_tables;
+    let from_table = (from_names.len() == 1).then(|| Arc::from(from_names[0].clone()));
+    let to_table = (to_names.len() == 1).then(|| Arc::from(to_names[0].clone()));
+    RelationTarget {
+        table_name: Arc::from(spec.table_name),
+        from_table,
+        to_table,
+        from_tables: Arc::from(from_names),
+        to_tables: Arc::from(to_names),
+        records,
+    }
 }
 
-pub fn mount_table_target_with_schema(
-    ctx: &Ctx,
-    graph: &Graph,
-    table_name: impl Into<String>,
-    table_schema: Option<TableSchema>,
-) -> Result<TableTarget> {
-    mount_table_target_with_schema_and_options(
-        ctx,
-        graph,
-        table_name,
-        table_schema,
-        ManagedTargetOptions::default(),
-    )
-}
+// ---------------------------------------------------------------------------
+// Spec constructors (the composable `TargetState<TableSpec>`)
+// ---------------------------------------------------------------------------
 
-pub fn mount_table_target_with_schema_and_options(
-    ctx: &Ctx,
-    graph: &Graph,
-    table_name: impl Into<String>,
-    table_schema: Option<TableSchema>,
-    options: ManagedTargetOptions,
-) -> Result<TableTarget> {
-    let table_name = table_name.into();
-    validate_ident(&table_name, "table name")?;
-    let provider = mount_table_like(
+fn table_target_state(ctx: &Ctx, graph: &Graph, spec: TableSpec) -> Result<TargetState<TableSpec>> {
+    validate_ident(&spec.table_name, "table name")?;
+    let provider = register_root_target_states_provider(
         ctx,
-        graph,
-        TableSpec::table(table_name.clone(), table_schema, options.managed_by),
+        format!(
+            "cocoindex/surrealdb/table/{}/{}",
+            graph.state_id(),
+            spec.table_name
+        ),
+        TableHandler {
+            graph: graph.clone(),
+        },
     )?;
-    Ok(TableTarget {
-        table_name: Arc::from(table_name),
-        provider,
-    })
+    Ok(provider.target_state("default", spec))
 }
 
-pub fn mount_relation_target(
+/// Build a composable [`TargetState`] for a SurrealDB table (schemaless,
+/// system-managed). Pass it to [`declare_table_target`]/[`mount_table_target`]
+/// or the generic facade helpers.
+pub fn table_target(
     ctx: &Ctx,
     graph: &Graph,
     table_name: impl Into<String>,
-    from_table: &TableTarget,
-    to_table: &TableTarget,
-) -> Result<RelationTarget> {
-    let table_name = table_name.into();
-    validate_ident(&table_name, "relation table name")?;
-    mount_relation_target_many_with_options(
+) -> Result<TargetState<TableSpec>> {
+    table_target_with_schema_and_options(
         ctx,
         graph,
         table_name,
-        &[from_table],
-        &[to_table],
         None,
         ManagedTargetOptions::default(),
     )
 }
 
-pub fn mount_relation_target_with_options(
+/// [`table_target`] with an explicit schema and [`ManagedTargetOptions`].
+pub fn table_target_with_schema_and_options(
     ctx: &Ctx,
     graph: &Graph,
     table_name: impl Into<String>,
-    from_table: &TableTarget,
-    to_table: &TableTarget,
+    table_schema: Option<TableSchema>,
     options: ManagedTargetOptions,
-) -> Result<RelationTarget> {
-    let table_name = table_name.into();
-    validate_ident(&table_name, "relation table name")?;
-    mount_relation_target_many_with_options(
+) -> Result<TargetState<TableSpec>> {
+    table_target_state(
         ctx,
         graph,
-        table_name,
-        &[from_table],
-        &[to_table],
-        None,
-        options,
+        TableSpec::table(table_name.into(), table_schema, options.managed_by),
     )
 }
 
-pub fn mount_relation_target_many(
+/// Build a composable [`TargetState`] for a SurrealDB relation table that may
+/// connect any of `from_tables` to any of `to_tables`.
+pub fn relation_target_many(
     ctx: &Ctx,
     graph: &Graph,
     table_name: impl Into<String>,
     from_tables: &[&TableTarget],
     to_tables: &[&TableTarget],
     table_schema: Option<TableSchema>,
-) -> Result<RelationTarget> {
-    mount_relation_target_many_with_options(
+) -> Result<TargetState<TableSpec>> {
+    relation_target_many_with_options(
         ctx,
         graph,
         table_name,
@@ -431,7 +415,8 @@ pub fn mount_relation_target_many(
     )
 }
 
-pub fn mount_relation_target_many_with_options(
+/// [`relation_target_many`] with explicit [`ManagedTargetOptions`].
+pub fn relation_target_many_with_options(
     ctx: &Ctx,
     graph: &Graph,
     table_name: impl Into<String>,
@@ -439,9 +424,7 @@ pub fn mount_relation_target_many_with_options(
     to_tables: &[&TableTarget],
     table_schema: Option<TableSchema>,
     options: ManagedTargetOptions,
-) -> Result<RelationTarget> {
-    let table_name = table_name.into();
-    validate_ident(&table_name, "relation table name")?;
+) -> Result<TargetState<TableSpec>> {
     let from_names: Vec<String> = from_tables
         .iter()
         .map(|table| table.table_name().to_string())
@@ -460,28 +443,299 @@ pub fn mount_relation_target_many_with_options(
             "relation target requires at least one to table",
         ));
     }
-    let provider = mount_table_like(
+    table_target_state(
         ctx,
         graph,
         TableSpec::relation(
-            table_name.clone(),
-            from_names.clone(),
-            to_names.clone(),
+            table_name.into(),
+            from_names,
+            to_names,
             table_schema,
             options.managed_by,
         ),
-    )?;
-    Ok(RelationTarget {
-        table_name: Arc::from(table_name),
-        from_tables: Arc::from(from_names.clone()),
-        to_tables: Arc::from(to_names.clone()),
-        from_table: (from_names.len() == 1).then(|| Arc::from(from_names[0].clone())),
-        to_table: (to_names.len() == 1).then(|| Arc::from(to_names[0].clone())),
-        provider,
-    })
+    )
 }
 
-pub fn mount_relation_target_unconstrained(
+/// Build a composable [`TargetState`] for an unconstrained SurrealDB relation
+/// table (no fixed `from`/`to` tables).
+pub fn relation_target_unconstrained(
+    ctx: &Ctx,
+    graph: &Graph,
+    table_name: impl Into<String>,
+) -> Result<TargetState<TableSpec>> {
+    relation_target_unconstrained_with_options(
+        ctx,
+        graph,
+        table_name,
+        ManagedTargetOptions::default(),
+    )
+}
+
+/// [`relation_target_unconstrained`] with explicit [`ManagedTargetOptions`].
+pub fn relation_target_unconstrained_with_options(
+    ctx: &Ctx,
+    graph: &Graph,
+    table_name: impl Into<String>,
+    options: ManagedTargetOptions,
+) -> Result<TargetState<TableSpec>> {
+    table_target_state(
+        ctx,
+        graph,
+        TableSpec::relation(
+            table_name.into(),
+            Vec::new(),
+            Vec::new(),
+            None,
+            options.managed_by,
+        ),
+    )
+}
+
+// ---------------------------------------------------------------------------
+// declare_* (pending declaration in the current component)
+// ---------------------------------------------------------------------------
+
+/// Declare a SurrealDB table target in the **current** component (the record
+/// child provider resolves at this component's commit) and return a handle.
+pub fn declare_table_target(
+    ctx: &Ctx,
+    graph: &Graph,
+    table_name: impl Into<String>,
+) -> Result<TableTarget> {
+    declare_table_target_with_schema_and_options(
+        ctx,
+        graph,
+        table_name,
+        None,
+        ManagedTargetOptions::default(),
+    )
+}
+
+/// [`declare_table_target`] with an explicit schema and [`ManagedTargetOptions`].
+pub fn declare_table_target_with_schema_and_options(
+    ctx: &Ctx,
+    graph: &Graph,
+    table_name: impl Into<String>,
+    table_schema: Option<TableSchema>,
+    options: ManagedTargetOptions,
+) -> Result<TableTarget> {
+    let ts = table_target_with_schema_and_options(ctx, graph, table_name, table_schema, options)?;
+    let spec = ts.value().clone();
+    let records = declare_target_state_with_child::<TableSpec, RecordState>(ctx, ts)?;
+    Ok(table_handle(spec, records))
+}
+
+/// Declare a SurrealDB relation target in the **current** component.
+pub fn declare_relation_target_many(
+    ctx: &Ctx,
+    graph: &Graph,
+    table_name: impl Into<String>,
+    from_tables: &[&TableTarget],
+    to_tables: &[&TableTarget],
+    table_schema: Option<TableSchema>,
+) -> Result<RelationTarget> {
+    declare_relation_target_many_with_options(
+        ctx,
+        graph,
+        table_name,
+        from_tables,
+        to_tables,
+        table_schema,
+        ManagedTargetOptions::default(),
+    )
+}
+
+/// [`declare_relation_target_many`] with explicit [`ManagedTargetOptions`].
+pub fn declare_relation_target_many_with_options(
+    ctx: &Ctx,
+    graph: &Graph,
+    table_name: impl Into<String>,
+    from_tables: &[&TableTarget],
+    to_tables: &[&TableTarget],
+    table_schema: Option<TableSchema>,
+    options: ManagedTargetOptions,
+) -> Result<RelationTarget> {
+    let ts = relation_target_many_with_options(
+        ctx,
+        graph,
+        table_name,
+        from_tables,
+        to_tables,
+        table_schema,
+        options,
+    )?;
+    let spec = ts.value().clone();
+    let records = declare_target_state_with_child::<TableSpec, RecordState>(ctx, ts)?;
+    Ok(relation_handle(spec, records))
+}
+
+/// Declare an unconstrained SurrealDB relation target in the current component.
+pub fn declare_relation_target_unconstrained(
+    ctx: &Ctx,
+    graph: &Graph,
+    table_name: impl Into<String>,
+) -> Result<RelationTarget> {
+    declare_relation_target_unconstrained_with_options(
+        ctx,
+        graph,
+        table_name,
+        ManagedTargetOptions::default(),
+    )
+}
+
+/// [`declare_relation_target_unconstrained`] with explicit [`ManagedTargetOptions`].
+pub fn declare_relation_target_unconstrained_with_options(
+    ctx: &Ctx,
+    graph: &Graph,
+    table_name: impl Into<String>,
+    options: ManagedTargetOptions,
+) -> Result<RelationTarget> {
+    let ts = relation_target_unconstrained_with_options(ctx, graph, table_name, options)?;
+    let spec = ts.value().clone();
+    let records = declare_target_state_with_child::<TableSpec, RecordState>(ctx, ts)?;
+    Ok(relation_handle(spec, records))
+}
+
+// ---------------------------------------------------------------------------
+// mount_* (foreground; records can be declared immediately)
+// ---------------------------------------------------------------------------
+
+pub async fn mount_table_target(
+    ctx: &Ctx,
+    graph: &Graph,
+    table_name: impl Into<String>,
+) -> Result<TableTarget> {
+    mount_table_target_with_schema_and_options(
+        ctx,
+        graph,
+        table_name,
+        None,
+        ManagedTargetOptions::default(),
+    )
+    .await
+}
+
+pub async fn mount_table_target_with_options(
+    ctx: &Ctx,
+    graph: &Graph,
+    table_name: impl Into<String>,
+    options: ManagedTargetOptions,
+) -> Result<TableTarget> {
+    mount_table_target_with_schema_and_options(ctx, graph, table_name, None, options).await
+}
+
+pub async fn mount_table_target_with_schema(
+    ctx: &Ctx,
+    graph: &Graph,
+    table_name: impl Into<String>,
+    table_schema: Option<TableSchema>,
+) -> Result<TableTarget> {
+    mount_table_target_with_schema_and_options(
+        ctx,
+        graph,
+        table_name,
+        table_schema,
+        ManagedTargetOptions::default(),
+    )
+    .await
+}
+
+pub async fn mount_table_target_with_schema_and_options(
+    ctx: &Ctx,
+    graph: &Graph,
+    table_name: impl Into<String>,
+    table_schema: Option<TableSchema>,
+    options: ManagedTargetOptions,
+) -> Result<TableTarget> {
+    let ts = table_target_with_schema_and_options(ctx, graph, table_name, table_schema, options)?;
+    let spec = ts.value().clone();
+    let records = mount_target::<TableSpec, RecordState>(ctx, ts).await?;
+    Ok(table_handle(spec, records))
+}
+
+pub async fn mount_relation_target(
+    ctx: &Ctx,
+    graph: &Graph,
+    table_name: impl Into<String>,
+    from_table: &TableTarget,
+    to_table: &TableTarget,
+) -> Result<RelationTarget> {
+    mount_relation_target_many_with_options(
+        ctx,
+        graph,
+        table_name,
+        &[from_table],
+        &[to_table],
+        None,
+        ManagedTargetOptions::default(),
+    )
+    .await
+}
+
+pub async fn mount_relation_target_with_options(
+    ctx: &Ctx,
+    graph: &Graph,
+    table_name: impl Into<String>,
+    from_table: &TableTarget,
+    to_table: &TableTarget,
+    options: ManagedTargetOptions,
+) -> Result<RelationTarget> {
+    mount_relation_target_many_with_options(
+        ctx,
+        graph,
+        table_name,
+        &[from_table],
+        &[to_table],
+        None,
+        options,
+    )
+    .await
+}
+
+pub async fn mount_relation_target_many(
+    ctx: &Ctx,
+    graph: &Graph,
+    table_name: impl Into<String>,
+    from_tables: &[&TableTarget],
+    to_tables: &[&TableTarget],
+    table_schema: Option<TableSchema>,
+) -> Result<RelationTarget> {
+    mount_relation_target_many_with_options(
+        ctx,
+        graph,
+        table_name,
+        from_tables,
+        to_tables,
+        table_schema,
+        ManagedTargetOptions::default(),
+    )
+    .await
+}
+
+pub async fn mount_relation_target_many_with_options(
+    ctx: &Ctx,
+    graph: &Graph,
+    table_name: impl Into<String>,
+    from_tables: &[&TableTarget],
+    to_tables: &[&TableTarget],
+    table_schema: Option<TableSchema>,
+    options: ManagedTargetOptions,
+) -> Result<RelationTarget> {
+    let ts = relation_target_many_with_options(
+        ctx,
+        graph,
+        table_name,
+        from_tables,
+        to_tables,
+        table_schema,
+        options,
+    )?;
+    let spec = ts.value().clone();
+    let records = mount_target::<TableSpec, RecordState>(ctx, ts).await?;
+    Ok(relation_handle(spec, records))
+}
+
+pub async fn mount_relation_target_unconstrained(
     ctx: &Ctx,
     graph: &Graph,
     table_name: impl Into<String>,
@@ -492,60 +746,28 @@ pub fn mount_relation_target_unconstrained(
         table_name,
         ManagedTargetOptions::default(),
     )
+    .await
 }
 
-pub fn mount_relation_target_unconstrained_with_options(
+pub async fn mount_relation_target_unconstrained_with_options(
     ctx: &Ctx,
     graph: &Graph,
     table_name: impl Into<String>,
     options: ManagedTargetOptions,
 ) -> Result<RelationTarget> {
-    let table_name = table_name.into();
-    validate_ident(&table_name, "relation table name")?;
-    let provider = mount_table_like(
-        ctx,
-        graph,
-        TableSpec::relation(
-            table_name.clone(),
-            Vec::new(),
-            Vec::new(),
-            None,
-            options.managed_by,
-        ),
-    )?;
-    Ok(RelationTarget {
-        table_name: Arc::from(table_name),
-        from_tables: Arc::from([]),
-        to_tables: Arc::from([]),
-        from_table: None,
-        to_table: None,
-        provider,
-    })
+    let ts = relation_target_unconstrained_with_options(ctx, graph, table_name, options)?;
+    let spec = ts.value().clone();
+    let records = mount_target::<TableSpec, RecordState>(ctx, ts).await?;
+    Ok(relation_handle(spec, records))
 }
 
-fn mount_table_like(
-    ctx: &Ctx,
-    graph: &Graph,
-    spec: TableSpec,
-) -> Result<cocoindex_core::engine::target_state::TargetStateProvider<RustProfile>> {
-    let table_root = ctx.register_root_target_provider(
-        format!("cocoindex/surrealdb/table/{}", spec.table_name),
-        table_handler(graph.clone()),
-    )?;
-    let key = StableKey::Array(Arc::from([
-        StableKey::Str(Arc::from("default")),
-        StableKey::Str(Arc::from(spec.table_name.clone())),
-    ]));
-    ctx.declare_target_state(table_root, key, Value::from_serializable(&spec)?)?;
+// ---------------------------------------------------------------------------
+// Internal specs / actions
+// ---------------------------------------------------------------------------
 
-    ctx.register_root_target_provider(
-        format!("cocoindex/surrealdb/record/{}", spec.table_name),
-        record_handler(graph.clone(), spec),
-    )
-}
-
+/// Spec for a SurrealDB table/relation (the declared container value).
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-struct TableSpec {
+pub struct TableSpec {
     table_name: String,
     table_schema: Option<TableSchema>,
     is_relation: bool,
@@ -590,7 +812,7 @@ impl TableSpec {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-struct RecordState {
+pub struct RecordState {
     fields: Map<String, JsonValue>,
     relation: Option<RelationEndpoints>,
 }
@@ -643,222 +865,197 @@ impl RecordIdValue {
     }
 }
 
+/// Action emitted by the table container handler.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-enum TargetAction {
-    Table {
-        table_name: String,
-        spec: Option<TableSpec>,
-    },
-    Record {
-        spec: TableSpec,
-        table_name: String,
-        record_id: RecordIdValue,
-        state: Option<RecordState>,
-    },
+struct TableAction {
+    /// `Some` for a define (create/update), carrying the desired spec.
+    spec: Option<TableSpec>,
+    /// `Some` for a removal (orphaned table), carrying the table name.
+    drop: Option<String>,
 }
 
-fn table_handler(graph: Graph) -> BoxedHandler {
-    let sink = table_sink(graph.clone());
-    BoxedHandler::new(move |key, desired, prev, prev_may_be_missing| {
-        let desired_spec = desired
-            .map(Value::deserialize::<TableSpec>)
-            .transpose()
-            .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?;
-        let prev_records = prev_table_records(&prev);
-        let table_name = desired_spec
-            .as_ref()
-            .map(|spec| Ok(spec.table_name.clone()))
-            .or_else(|| {
-                prev_records
-                    .iter()
-                    .find(|p| p.managed_by.is_system())
-                    .map(|p| Ok(p.tracking_record.table_name.clone()))
-            })
-            .unwrap_or_else(|| table_name_from_key(&key))
-            .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?;
-        let tracking_record = desired_spec
-            .as_ref()
-            .map(|spec| MutualTrackingRecord::new(spec.clone(), spec.managed_by));
-        let resolved =
-            resolve_system_transition(tracking_record.clone(), prev_records, prev_may_be_missing);
-        let main_action = diff(resolved.as_ref());
-        if desired_spec.is_none() && resolved.is_none() {
-            return Ok(None);
-        }
-        if desired_spec.is_some()
-            && main_action.is_none()
-            && desired_spec
-                .as_ref()
-                .is_none_or(|spec| spec.managed_by.is_system())
-        {
-            return Ok(None);
-        }
-        Ok(Some(TargetReconcileOutput {
-            action: Action::Update(
-                Value::from_serializable(&TargetAction::Table {
-                    table_name,
-                    spec: desired_spec.clone(),
-                })
-                .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?,
-            ),
-            sink: sink.clone(),
-            tracking_record: tracking_record
-                .map(|record| Value::from_serializable(&record))
-                .transpose()
-                .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?,
-            child_invalidation: match (desired_spec, main_action) {
-                (None, Some(DiffAction::Delete)) => {
-                    Some(cocoindex_core::engine::target_state::ChildInvalidation::Destructive)
+/// Action emitted by the record child handler.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct RecordAction {
+    record_id: RecordIdValue,
+    state: Option<RecordState>,
+}
+
+// ---------------------------------------------------------------------------
+// Table container handler (root) + sink yielding record children
+// ---------------------------------------------------------------------------
+
+struct TableHandler {
+    graph: Graph,
+}
+
+impl TargetHandler<TableSpec> for TableHandler {
+    type TrackingRecord = MutualTrackingRecord<TableSpec>;
+    type Action = TableAction;
+
+    fn reconcile(
+        &self,
+        _key: StableKey,
+        desired: Option<TableSpec>,
+        prev: Vec<MutualTrackingRecord<TableSpec>>,
+        prev_may_be_missing: bool,
+    ) -> Result<Option<TargetReconcileOutput<TableAction, MutualTrackingRecord<TableSpec>>>> {
+        match desired {
+            // Always emit when declared so the sink fulfills the record child.
+            Some(spec) => {
+                let tracking = MutualTrackingRecord::new(spec.clone(), spec.managed_by);
+                let resolved =
+                    resolve_system_transition(Some(tracking.clone()), prev, prev_may_be_missing);
+                let main_action = diff(resolved.as_ref());
+                Ok(Some(TargetReconcileOutput {
+                    action: TargetAction::Update(TableAction {
+                        spec: Some(spec),
+                        drop: None,
+                    }),
+                    sink: self.table_sink(),
+                    tracking_record: Some(tracking),
+                    child_invalidation: matches!(main_action, Some(DiffAction::Replace))
+                        .then_some(TargetChildInvalidation::Lossy),
+                }))
+            }
+            None => {
+                let resolved = resolve_system_transition(None, prev.clone(), prev_may_be_missing);
+                if resolved.is_none() {
+                    return Ok(None);
                 }
-                (Some(_), Some(DiffAction::Replace)) => {
-                    Some(cocoindex_core::engine::target_state::ChildInvalidation::Lossy)
+                let Some(prev_spec) = prev
+                    .into_iter()
+                    .find(|v| v.managed_by.is_system())
+                    .map(|v| v.tracking_record)
+                else {
+                    return Ok(None);
+                };
+                Ok(Some(TargetReconcileOutput {
+                    action: TargetAction::Delete(TableAction {
+                        spec: None,
+                        drop: Some(prev_spec.table_name),
+                    }),
+                    sink: self.table_sink(),
+                    tracking_record: None,
+                    child_invalidation: Some(TargetChildInvalidation::Destructive),
+                }))
+            }
+        }
+    }
+}
+
+impl TableHandler {
+    fn table_sink(&self) -> TargetActionSink<TableAction> {
+        let graph = self.graph.clone();
+        TargetActionSink::from_async_fn_with_children(
+            move |actions: Vec<TargetAction<TableAction>>| {
+                let graph = graph.clone();
+                async move {
+                    let mut out: Vec<Option<ChildTargetDef>> = Vec::with_capacity(actions.len());
+                    for action in actions {
+                        match action {
+                            TargetAction::Create(a) | TargetAction::Update(a) => {
+                                let spec = a.spec.ok_or_else(|| {
+                                    Error::engine("SurrealDB table action missing spec")
+                                })?;
+                                define_table(&graph, &spec).await?;
+                                out.push(Some(ChildTargetDef::new::<RecordState, _>(
+                                    RecordHandler {
+                                        graph: graph.clone(),
+                                        spec,
+                                    },
+                                )));
+                            }
+                            TargetAction::Delete(a) => {
+                                if let Some(table_name) = a.drop {
+                                    remove_table(&graph, &table_name).await?;
+                                }
+                                out.push(None);
+                            }
+                        }
+                    }
+                    Ok(out)
                 }
-                _ => None,
             },
-        }))
-    })
+        )
+    }
 }
 
-fn prev_table_records(prev: &[Value]) -> Vec<MutualTrackingRecord<TableSpec>> {
-    prev.iter()
-        .filter_map(|v| {
-            v.deserialize::<MutualTrackingRecord<TableSpec>>()
-                .or_else(|_| {
-                    v.deserialize::<TableSpec>()
-                        .map(|spec| MutualTrackingRecord::new(spec, ManagedBy::System))
-                })
-                .ok()
-        })
-        .collect()
+// ---------------------------------------------------------------------------
+// Record handler (child) + sink
+// ---------------------------------------------------------------------------
+
+struct RecordHandler {
+    graph: Graph,
+    spec: TableSpec,
 }
 
-fn record_handler(graph: Graph, spec: TableSpec) -> BoxedHandler {
-    let sink = record_sink(graph);
-    BoxedHandler::new(move |key, desired, prev, prev_may_be_missing| {
-        let record_id = stable_key_to_record_id(&key)
-            .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?;
-        let desired_state = desired
-            .map(Value::deserialize::<RecordState>)
-            .transpose()
-            .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?;
+impl TargetHandler<RecordState> for RecordHandler {
+    type TrackingRecord = Fingerprint;
+    type Action = RecordAction;
+
+    fn reconcile(
+        &self,
+        key: StableKey,
+        desired: Option<RecordState>,
+        prev: Vec<Fingerprint>,
+        prev_may_be_missing: bool,
+    ) -> Result<Option<TargetReconcileOutput<RecordAction, Fingerprint>>> {
+        let record_id = stable_key_to_record_id(&key)?;
         // Track a cheap fingerprint of the record state (not the full record).
-        let desired_fp = match &desired_state {
-            Some(state) => Some(
-                Fingerprint::from(state)
-                    .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?,
-            ),
+        let desired_fp = match &desired {
+            Some(state) => Some(Fingerprint::from(state).map_err(Error::from)?),
             None => None,
         };
-        let prev_same = desired_fp.as_ref().is_some_and(|fp| {
-            prev.iter()
-                .filter_map(|v| v.deserialize::<Fingerprint>().ok())
-                .any(|p| &p == fp)
-        });
-        if desired_state.is_some() && prev_same && !prev_may_be_missing {
+        let prev_same = desired_fp
+            .as_ref()
+            .is_some_and(|fp| prev.iter().any(|p| p == fp));
+        if desired.is_some() && prev_same && !prev_may_be_missing {
             return Ok(None);
         }
-        if desired_state.is_none() && prev.is_empty() && !prev_may_be_missing {
+        if desired.is_none() && prev.is_empty() && !prev_may_be_missing {
             return Ok(None);
         }
-        let tracking_record = match &desired_fp {
-            Some(fp) => Some(
-                Value::from_serializable(fp)
-                    .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?,
-            ),
-            None => None,
-        };
-        let action = TargetAction::Record {
-            spec: spec.clone(),
-            table_name: spec.table_name.clone(),
-            record_id,
-            state: desired_state,
-        };
         Ok(Some(TargetReconcileOutput {
-            action: Action::Update(
-                Value::from_serializable(&action)
-                    .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?,
-            ),
-            sink: sink.clone(),
-            tracking_record,
+            action: TargetAction::Update(RecordAction {
+                record_id,
+                state: desired,
+            }),
+            sink: self.record_sink(),
+            tracking_record: desired_fp,
             child_invalidation: None,
         }))
-    })
+    }
 }
 
-fn table_sink(graph: Graph) -> BoxedSink {
-    BoxedSink::new(move |actions| {
-        let graph = graph.clone();
-        Box::pin(async move {
-            let mut out = Vec::with_capacity(actions.len());
-            for action in actions {
-                let action = action_value(action)?;
-                match action {
-                    TargetAction::Table {
-                        table_name: _,
-                        spec: Some(spec),
-                    } => {
-                        define_table(&graph, &spec).await?;
-                        out.push(Some(ChildTargetDef {
-                            handler: record_handler(graph.clone(), spec),
-                        }));
-                    }
-                    TargetAction::Table {
-                        table_name,
-                        spec: None,
-                    } => {
-                        remove_table(&graph, &table_name).await?;
-                        out.push(None);
-                    }
-                    TargetAction::Record { .. } => {
-                        return Err(cocoindex_utils::error::Error::internal_msg(
-                            "record action routed to table sink",
-                        ));
-                    }
+impl RecordHandler {
+    fn record_sink(&self) -> TargetActionSink<RecordAction> {
+        let graph = self.graph.clone();
+        let spec = self.spec.clone();
+        TargetActionSink::from_async_fn(move |actions: Vec<TargetAction<RecordAction>>| {
+            let graph = graph.clone();
+            let spec = spec.clone();
+            async move {
+                let mut mutations = Vec::with_capacity(actions.len());
+                for action in actions {
+                    let record = match action {
+                        TargetAction::Create(r)
+                        | TargetAction::Update(r)
+                        | TargetAction::Delete(r) => r,
+                    };
+                    mutations.push((record.record_id, record.state));
                 }
+                apply_records(&graph, &spec, mutations).await
             }
-            Ok(Some(out))
-        }) as Pin<Box<_>>
-    })
+        })
+    }
 }
 
-fn record_sink(graph: Graph) -> BoxedSink {
-    BoxedSink::new(move |actions| {
-        let graph = graph.clone();
-        Box::pin(async move {
-            let mut mutations = Vec::with_capacity(actions.len());
-            for action in actions {
-                let action = action_value(action)?;
-                if let TargetAction::Record {
-                    spec,
-                    table_name,
-                    record_id,
-                    state,
-                } = action
-                {
-                    mutations.push(RecordMutation {
-                        spec,
-                        table_name,
-                        record_id,
-                        state,
-                    });
-                }
-            }
-            apply_records(&graph, mutations).await?;
-            Ok(None)
-        }) as Pin<Box<_>>
-    })
-}
+// ---------------------------------------------------------------------------
+// DB I/O
+// ---------------------------------------------------------------------------
 
-fn action_value(action: Action) -> cocoindex_utils::error::Result<TargetAction> {
-    let value = match action {
-        Action::Create(v) | Action::Update(v) | Action::Delete(v) => v,
-    };
-    value
-        .deserialize()
-        .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))
-}
-
-async fn define_table(graph: &Graph, spec: &TableSpec) -> cocoindex_utils::error::Result<()> {
+async fn define_table(graph: &Graph, spec: &TableSpec) -> Result<()> {
     if spec.managed_by.is_user() {
         return Ok(());
     }
@@ -891,9 +1088,9 @@ async fn define_table(graph: &Graph, spec: &TableSpec) -> cocoindex_utils::error
         .db
         .query(stmt)
         .await
-        .map_err(|e| cocoindex_utils::error::Error::internal_msg(format!("surrealdb: {e}")))?
+        .map_err(surreal_err)?
         .check()
-        .map_err(|e| cocoindex_utils::error::Error::internal_msg(format!("surrealdb: {e}")))?;
+        .map_err(surreal_err)?;
     if let Some(schema) = &spec.table_schema {
         for (name, column) in schema.columns() {
             if name == "id" {
@@ -911,70 +1108,50 @@ async fn define_table(graph: &Graph, spec: &TableSpec) -> cocoindex_utils::error
                     spec.table_name
                 ))
                 .await
-                .map_err(|e| {
-                    cocoindex_utils::error::Error::internal_msg(format!("surrealdb: {e}"))
-                })?
+                .map_err(surreal_err)?
                 .check()
-                .map_err(|e| {
-                    cocoindex_utils::error::Error::internal_msg(format!("surrealdb: {e}"))
-                })?;
+                .map_err(surreal_err)?;
         }
     }
     Ok(())
 }
 
-async fn remove_table(graph: &Graph, table_name: &str) -> cocoindex_utils::error::Result<()> {
-    validate_ident(table_name, "table name")
-        .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?;
+async fn remove_table(graph: &Graph, table_name: &str) -> Result<()> {
+    validate_ident(table_name, "table name")?;
     graph
         .db
         .query(format!("REMOVE TABLE IF EXISTS {table_name}"))
         .await
-        .map_err(|e| cocoindex_utils::error::Error::internal_msg(format!("surrealdb: {e}")))?
+        .map_err(surreal_err)?
         .check()
-        .map_err(|e| cocoindex_utils::error::Error::internal_msg(format!("surrealdb: {e}")))?;
+        .map_err(surreal_err)?;
     Ok(())
-}
-
-struct RecordMutation {
-    spec: TableSpec,
-    table_name: String,
-    record_id: RecordIdValue,
-    state: Option<RecordState>,
 }
 
 async fn apply_records(
     graph: &Graph,
-    mutations: Vec<RecordMutation>,
-) -> cocoindex_utils::error::Result<()> {
+    spec: &TableSpec,
+    mutations: Vec<(RecordIdValue, Option<RecordState>)>,
+) -> Result<()> {
     if mutations.is_empty() {
         return Ok(());
     }
-
-    let mut defined_tables = BTreeMap::new();
-    for mutation in &mutations {
-        defined_tables.insert(mutation.table_name.clone(), mutation.spec.clone());
+    // Ensure the table exists for system-managed targets (idempotent).
+    if spec.managed_by.is_system() {
+        define_table(graph, spec).await?;
     }
-    for spec in defined_tables.values() {
-        if spec.managed_by.is_system() {
-            define_table(graph, spec).await?;
-        }
-    }
+    validate_ident(&spec.table_name, "table name")?;
 
     let mut statements = String::from("BEGIN TRANSACTION;\n");
-    for mutation in mutations {
-        validate_ident(&mutation.table_name, "table name")
-            .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?;
-        let record_ref = format!("{}:{}", mutation.table_name, mutation.record_id.surrealql());
-        match mutation.state {
+    for (record_id, state) in mutations {
+        let record_ref = format!("{}:{}", spec.table_name, record_id.surrealql());
+        match state {
             Some(state) => {
                 let content = serde_json::to_string(&JsonValue::Object(state.fields))
-                    .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?;
+                    .map_err(|e| Error::engine(format!("serialize SurrealDB record: {e}")))?;
                 if let Some(rel) = state.relation {
-                    validate_ident(&rel.from_table, "relation from table name")
-                        .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?;
-                    validate_ident(&rel.to_table, "relation to table name")
-                        .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?;
+                    validate_ident(&rel.from_table, "relation from table name")?;
+                    validate_ident(&rel.to_table, "relation to table name")?;
                     let from_ref = format!("{}:{}", rel.from_table, rel.from_id.surrealql());
                     let to_ref = format!("{}:{}", rel.to_table, rel.to_id.surrealql());
                     statements.push_str(&format!(
@@ -995,11 +1172,15 @@ async fn apply_records(
         .db
         .query(statements)
         .await
-        .map_err(|e| cocoindex_utils::error::Error::internal_msg(format!("surrealdb: {e}")))?
+        .map_err(surreal_err)?
         .check()
-        .map_err(|e| cocoindex_utils::error::Error::internal_msg(format!("surrealdb: {e}")))?;
+        .map_err(surreal_err)?;
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
 fn record_state<R: Serialize>(row: &R) -> Result<RecordState> {
     let value = serde_json::to_value(row)
@@ -1031,24 +1212,6 @@ fn stable_key_to_record_id(key: &StableKey) -> Result<RecordIdValue> {
         other => Err(Error::engine(format!(
             "unsupported SurrealDB record key: {other:?}"
         ))),
-    }
-}
-
-fn stable_key_to_id(key: &StableKey) -> Result<String> {
-    match key {
-        StableKey::Str(s) | StableKey::Symbol(s) => Ok(s.to_string()),
-        StableKey::Int(i) => Ok(i.to_string()),
-        StableKey::Uuid(u) => Ok(u.to_string()),
-        other => Err(Error::engine(format!(
-            "unsupported SurrealDB record key: {other:?}"
-        ))),
-    }
-}
-
-fn table_name_from_key(key: &StableKey) -> Result<String> {
-    match key {
-        StableKey::Array(parts) if parts.len() == 2 => stable_key_to_id(&parts[1]),
-        _ => stable_key_to_id(key),
     }
 }
 

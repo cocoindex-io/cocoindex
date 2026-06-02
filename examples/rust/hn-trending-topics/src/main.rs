@@ -312,14 +312,16 @@ async fn app_main(ctx: Ctx, max_threads: usize) -> Result<()> {
         "hn_messages",
         message_schema()?,
         Some("coco_examples"),
-    )?;
+    )
+    .await?;
     let topics = postgres::mount_table_target(
         &ctx,
         db,
         "hn_topics",
         topic_schema()?,
         Some("coco_examples"),
-    )?;
+    )
+    .await?;
 
     let thread_ids = fetch_thread_ids(max_threads).await?;
     println!("fetched {} threads from HackerNews", thread_ids.len());

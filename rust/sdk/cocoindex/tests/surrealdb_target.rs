@@ -89,8 +89,10 @@ async fn run_graph(app: &App, people: &'static [&'static str]) {
         let graph = ctx.get_key(&GRAPH)?;
         let person_schema = TableSchema::new([("name", ColumnDef::new("string"))])?;
         let person =
-            surrealdb::mount_table_target_with_schema(&ctx, graph, "person", Some(person_schema))?;
-        let knows = surrealdb::mount_relation_target(&ctx, graph, "knows", &person, &person)?;
+            surrealdb::mount_table_target_with_schema(&ctx, graph, "person", Some(person_schema))
+                .await?;
+        let knows =
+            surrealdb::mount_relation_target(&ctx, graph, "knows", &person, &person).await?;
 
         for name in people {
             person.declare_record(&ctx, *name, &serde_json::json!({ "name": name }))?;
@@ -114,39 +116,41 @@ async fn run_conversation_graph(app: &App, include_all_entities: bool) {
         let statement_schema = TableSchema::new([("statement", ColumnDef::new("string"))])?;
         let entity_schema = TableSchema::new([("name", ColumnDef::new("string"))])?;
 
-        let session = surrealdb::mount_table_target_with_schema(
-            &ctx,
-            graph,
-            "session",
-            Some(session_schema),
-        )?;
+        let session =
+            surrealdb::mount_table_target_with_schema(&ctx, graph, "session", Some(session_schema))
+                .await?;
         let statement = surrealdb::mount_table_target_with_schema(
             &ctx,
             graph,
             "statement",
             Some(statement_schema),
-        )?;
+        )
+        .await?;
         let person = surrealdb::mount_table_target_with_schema(
             &ctx,
             graph,
             "person",
             Some(entity_schema.clone()),
-        )?;
+        )
+        .await?;
         let tech = surrealdb::mount_table_target_with_schema(
             &ctx,
             graph,
             "tech",
             Some(entity_schema.clone()),
-        )?;
+        )
+        .await?;
         let org =
-            surrealdb::mount_table_target_with_schema(&ctx, graph, "org", Some(entity_schema))?;
+            surrealdb::mount_table_target_with_schema(&ctx, graph, "org", Some(entity_schema))
+                .await?;
         let session_statement = surrealdb::mount_relation_target(
             &ctx,
             graph,
             "session_statement",
             &session,
             &statement,
-        )?;
+        )
+        .await?;
         let statement_mentions = surrealdb::mount_relation_target_many(
             &ctx,
             graph,
@@ -154,7 +158,8 @@ async fn run_conversation_graph(app: &App, include_all_entities: bool) {
             &[&statement],
             &[&person, &tech, &org],
             None,
-        )?;
+        )
+        .await?;
 
         session.declare_record(
             &ctx,
