@@ -402,6 +402,25 @@ impl Ctx {
             .map_err(Error::from)
     }
 
+    pub(crate) fn declare_target_state_with_child(
+        &self,
+        provider: TargetStateProvider<RustProfile>,
+        key: StableKey,
+        value: Value,
+    ) -> Result<TargetStateProvider<RustProfile>> {
+        let Some(comp_ctx) = &self.comp_ctx else {
+            return Err(Error::engine(
+                "target states require an active pipeline context",
+            ));
+        };
+        let fn_ctx = self
+            .fn_ctx
+            .clone()
+            .unwrap_or_else(|| Arc::new(FnCallContext::default()));
+        execution::declare_target_state_with_child(comp_ctx, &fn_ctx, provider, key, value)
+            .map_err(Error::from)
+    }
+
     /// Aggregate stats for components mounted inside `f` into a separate named
     /// group. Returns the closure result and a handle for polling/watching the
     /// group's stats.

@@ -14,6 +14,18 @@ async fn temp_app(name: &str) -> (App, tempfile::TempDir) {
     (app, dir)
 }
 
+/// Helper: create an App with a max-inflight component cap.
+async fn temp_app_with_max_inflight(name: &str, max_inflight: usize) -> (App, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    let app = App::builder(name)
+        .db_path(dir.path().join("lmdb"))
+        .max_inflight_components(max_inflight)
+        .build()
+        .await
+        .unwrap();
+    (app, dir)
+}
+
 /// Helper: create an App with a temp LMDB directory (sync tests). Uses
 /// the `_blocking` variant so it can be called from `#[test]` functions.
 fn temp_app_blocking(name: &str) -> (App, tempfile::TempDir) {
@@ -1925,6 +1937,194 @@ async fn ctx_mount_each_preserves_input_order_under_concurrency() {
 }
 
 #[tokio::test]
+async fn max_inflight_components_limits_mount_each_concurrency() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn record_peak(current: &AtomicUsize, peak: &AtomicUsize) {
+        let now = current.fetch_add(1, Ordering::SeqCst) + 1;
+        let mut observed = peak.load(Ordering::SeqCst);
+        while now > observed {
+            match peak.compare_exchange(observed, now, Ordering::SeqCst, Ordering::SeqCst) {
+                Ok(_) => break,
+                Err(next) => observed = next,
+            }
+        }
+    }
+
+    let (app, _dir) = temp_app_with_max_inflight("mount_each_max_inflight", 2).await;
+    let current = Arc::new(AtomicUsize::new(0));
+    let peak = Arc::new(AtomicUsize::new(0));
+    let total = Arc::new(AtomicUsize::new(0));
+
+    app.update({
+        let current = current.clone();
+        let peak = peak.clone();
+        let total = total.clone();
+        move |ctx| async move {
+            let items: Vec<usize> = (0..6).collect();
+            ctx.mount_each(items, |i| i.to_string(), {
+                let current = current.clone();
+                let peak = peak.clone();
+                let total = total.clone();
+                move |_child_ctx, _i| {
+                    let current = current.clone();
+                    let peak = peak.clone();
+                    let total = total.clone();
+                    async move {
+                        total.fetch_add(1, Ordering::SeqCst);
+                        record_peak(&current, &peak);
+                        sleep(Duration::from_millis(50)).await;
+                        current.fetch_sub(1, Ordering::SeqCst);
+                        Ok(())
+                    }
+                }
+            })
+            .await?;
+            Ok(())
+        }
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(total.load(Ordering::SeqCst), 6);
+    assert!(
+        peak.load(Ordering::SeqCst) <= 2,
+        "peak concurrency exceeded max_inflight_components"
+    );
+}
+
+#[tokio::test]
+async fn max_inflight_components_allows_nested_scope_with_single_permit() {
+    let (app, _dir) = temp_app_with_max_inflight("nested_scope_max_inflight_one", 1).await;
+
+    tokio::time::timeout(Duration::from_secs(3), async {
+        app.update(|ctx| async move {
+            for i in 0..4 {
+                let key = format!("child-{i}");
+                ctx.scope(&key, |child| async move {
+                    child
+                        .scope(&"grandchild", |_grandchild| async move { Ok(()) })
+                        .await?;
+                    Ok(())
+                })
+                .await?;
+            }
+            Ok(())
+        })
+        .await
+    })
+    .await
+    .expect("nested scopes should not deadlock with max_inflight_components=1")
+    .unwrap();
+}
+
+#[tokio::test]
+async fn public_target_state_api_reconciles_typed_actions_and_tracking_records() {
+    use cocoindex::{
+        StableKey, TargetAction, TargetActionSink, TargetHandler, TargetReconcileOutput,
+        declare_target_state, register_root_target_states_provider,
+    };
+    use serde::{Deserialize, Serialize};
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+    struct WriteAction {
+        key: String,
+        value: String,
+    }
+
+    #[derive(Clone)]
+    struct MemoryHandler {
+        sink: TargetActionSink<WriteAction>,
+    }
+
+    impl TargetHandler<String> for MemoryHandler {
+        type TrackingRecord = String;
+        type Action = WriteAction;
+
+        fn reconcile(
+            &self,
+            key: StableKey,
+            desired_target_state: Option<String>,
+            prev_possible_records: Vec<Self::TrackingRecord>,
+            _prev_may_be_missing: bool,
+        ) -> cocoindex::Result<Option<TargetReconcileOutput<Self::Action, Self::TrackingRecord>>>
+        {
+            let Some(value) = desired_target_state else {
+                return Ok(None);
+            };
+            if prev_possible_records.iter().any(|prev| prev == &value) {
+                return Ok(None);
+            }
+            Ok(Some(TargetReconcileOutput {
+                action: TargetAction::Update(WriteAction {
+                    key: key.to_string(),
+                    value: value.clone(),
+                }),
+                sink: self.sink.clone(),
+                tracking_record: Some(value),
+                child_invalidation: None,
+            }))
+        }
+    }
+
+    let (app, _dir) = temp_app("public_target_state_api").await;
+    let applied = Arc::new(Mutex::new(Vec::<WriteAction>::new()));
+
+    async fn run(
+        app: &App,
+        applied: Arc<Mutex<Vec<WriteAction>>>,
+        value: &'static str,
+    ) -> cocoindex::Result<()> {
+        app.update(move |ctx| {
+            let applied = applied.clone();
+            async move {
+                let sink = TargetActionSink::from_async_fn(move |actions| {
+                    let applied = applied.clone();
+                    async move {
+                        let mut applied = applied.lock().unwrap();
+                        for action in actions {
+                            if let TargetAction::Update(action) = action {
+                                applied.push(action);
+                            }
+                        }
+                        Ok(())
+                    }
+                });
+                let provider = register_root_target_states_provider(
+                    &ctx,
+                    "test/public_target_state_api",
+                    MemoryHandler { sink },
+                )?;
+                declare_target_state(&ctx, provider.target_state("row-1", value.to_string()))?;
+                Ok(())
+            }
+        })
+        .await
+    }
+
+    run(&app, applied.clone(), "v1").await.unwrap();
+    run(&app, applied.clone(), "v1").await.unwrap();
+    run(&app, applied.clone(), "v2").await.unwrap();
+
+    let applied = applied.lock().unwrap();
+    assert_eq!(
+        applied.as_slice(),
+        &[
+            WriteAction {
+                key: "\"row-1\"".to_string(),
+                value: "v1".to_string(),
+            },
+            WriteAction {
+                key: "\"row-1\"".to_string(),
+                value: "v2".to_string(),
+            },
+        ]
+    );
+}
+
+#[tokio::test]
 async fn ctx_stats_group_reports_scoped_child_stats() {
     use std::sync::{Arc, Mutex};
 
@@ -3213,7 +3413,6 @@ async fn dir_target_writes_skips_unchanged_and_reconciles_orphans() {
 #[tokio::test]
 async fn dir_target_deletes_file_when_source_disappears_via_mount_each() {
     use cocoindex::DirTarget;
-    use std::fs;
 
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("lmdb");

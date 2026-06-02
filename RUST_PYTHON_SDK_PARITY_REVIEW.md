@@ -19,8 +19,8 @@ Rust SDK is not yet Python SDK parity. The Rust core contains much of the
 underlying engine machinery, but the Rust SDK public surface is still much
 narrower than Python's public surface.
 
-The most important architectural gap is the lack of a public Rust equivalent to
-Python's generic target-state API:
+The most important architectural gap was the lack of a public Rust equivalent
+to Python's generic target-state API. Rust now exposes a first typed facade for:
 
 - `TargetState`
 - `TargetStateProvider`
@@ -31,10 +31,12 @@ Python's generic target-state API:
 - `register_root_target_states_provider`
 - `mount_target`
 
-Rust has core-level equivalents, but the SDK exposes only connector-specific
-helpers such as `postgres::mount_table_target` and
-`surrealdb::mount_table_target`. This makes connector implementations drift from
-Python's declarative pattern.
+Rust has core-level equivalents and now exposes these names at the SDK layer.
+The current Rust facade covers typed no-child target handlers/actions/tracking
+records and provider declarations. The remaining parity work is to make
+`mount_target` fully equivalent to Python's foreground `use_mount()` semantics
+for child-provider readiness, and then migrate connector implementations away
+from private `Ctx` helpers.
 
 The top-level public API difference is visible immediately:
 
@@ -48,8 +50,8 @@ The top-level public API difference is visible immediately:
 Test coverage is similarly uneven:
 
 - Python currently has 839 test functions under `python/tests`.
-- Rust SDK currently has 108 integration test functions under
-  `rust/sdk/cocoindex/tests`, and 146 SDK crate tests if unit tests under
+- Rust SDK currently has 106 integration test functions under
+  `rust/sdk/cocoindex/tests`, and 153 SDK crate tests if unit tests under
   `rust/sdk/cocoindex/src` are included.
 - Python connector tests alone account for 284 tests; Rust connector/source
   tests account for 8 tests in `gdrive_source.rs`, `kafka_target.rs`,
@@ -96,7 +98,7 @@ Test coverage is similarly uneven:
 | `iggy` | `TopicStream`, `topic_as_stream`, `topic_as_map`, `IggyTopicTarget`, target helpers | None | Missing | Should mirror Kafka pattern once Rust Kafka source/target shape is settled. |
 | `amazon_s3` | `S3FilePath`, `S3File`, `S3Walker`, `get_object`, `read`, `list_objects` | None | Missing | File source abstraction missing in Rust. |
 | `oci_object_storage` | `OCIFilePath`, `OCIFile`, `OCIWalker`, `get_object`, `read`, `list_objects`, live stream support | None | Missing | Requires live map/source framework first. |
-| `google_drive` | `DriveFilePath`, `DriveFileInfo`, `DriveFile`, `GoogleDriveSourceSpec`, `GoogleDriveSource`, `list_files` | `gdrive::DriveFile`, `GoogleDriveClient`, `GoogleDriveSource` | Partial/in progress | Rust has service-account/static-token client, recursive listing, MIME filtering, export/download reads, and mock tests. Missing Python-style `DriveFilePath`, `DriveFileInfo`, top-level `list_files(spec)`, async `items()`, and shared file source abstraction. |
+| `google_drive` | package `__all__`: `DriveFileInfo`, `DriveFile`, `GoogleDriveSourceSpec`, `GoogleDriveSource`, `list_files`; `_source.py` also defines `DriveFilePath` | `gdrive::DriveFile`, `GoogleDriveClient`, `GoogleDriveSource` | Partial/in progress | Rust has service-account/static-token client, recursive listing, MIME filtering, export/download reads, and mock tests. Missing Python-style `DriveFileInfo`, top-level `list_files(spec)`, async `items()`, and shared file source abstraction; clarify whether `DriveFilePath` should be publicly exported in Python. |
 | `sqlite` | `ManagedConnection`, `Vec0TableDef`, `TableSchema`, `TableTarget`, target helpers, vec0 support, user/system managed | None | Missing | Large target connector. Python tests are extensive and should be ported if implemented. |
 | `doris` | `DorisConnectionConfig`, `ManagedConnection`, `TableSchema`, `DorisTableTarget`, vector/inverted indexes, retry config | None | Missing | Needs table target architecture and stream-load retry behavior. |
 | `lancedb` | `TableSchema`, `TableTarget`, target helpers, optimize behavior | None | Missing | Needs schema evolution and optimize behavior tests. |
@@ -126,6 +128,40 @@ Test coverage is similarly uneven:
 | Turbopuffer target | 19 Python tests | none | Missing |
 | Qdrant | Python interface exists; no dedicated test file found | none | Missing |
 | Google Drive | Python interface exists; no dedicated Python test family found | Rust unit tests plus mock integration tests | Partial |
+
+## Packaging and Feature Parity Matrix
+
+Python connector availability is declared through `pyproject.toml` optional
+dependencies and connector package `__all__` exports. Rust connector
+availability is declared through Cargo features and `#[cfg(feature = "...")]`
+modules in `rust/sdk/cocoindex`.
+
+| Capability / extra | Python optional dependency | Rust Cargo feature | Status | Notes |
+| --- | --- | --- | --- | --- |
+| `postgres` | `asyncpg>=0.31.0` | `postgres` | Partial | Rust has source read helpers and table target, but fewer APIs/tests. |
+| `surrealdb` | `surrealdb>=1.0.0` | `surrealdb` | Partial | Rust has graph/table/relation helpers, but no vector index or managed-by parity. |
+| `kafka` | `confluent_kafka>=2.6` | `kafka` | Partial | Rust feature is target-only; Python extra includes source and target. |
+| `google_drive` | `google-api-python-client`, `google-auth`, `google-auth-httplib2`, `httplib2` | `google_drive` | Partial | Rust uses `reqwest` plus pure-Rust RS256 JWT signing instead of Google's Python client stack. |
+| `amazon_s3` | `aiobotocore>=2.0.0` | none | Missing | Requires shared Rust file/object source abstraction first. |
+| `oci` | `oci>=2.0` | none | Missing | Requires object source and live source/map API. |
+| `iggy` | `apache-iggy>=0.8.0` | none | Missing | Should mirror Kafka source/target shape after Kafka parity. |
+| `sqlite` | `sqlite-vec>=0.1.6` | none | Missing | Good next target after generic target-state API. |
+| `doris` | `aiohttp`, `pymysql`, `aiomysql` | none | Missing | Needs table target lifecycle, stream load, retry, vector/inverted index support. |
+| `lancedb` | `lancedb`, `pyarrow` | none | Missing | Needs table/vector target API plus optimize behavior. |
+| `qdrant` | `qdrant-client>=1.6.0` | none | Missing | Needed for image search and vector collection examples. |
+| `turbopuffer` | `turbopuffer>=0.5.0` | none | Missing | Needs namespace target and named-vector schema support. |
+| `neo4j` | `neo4j>=5.18.0` | none | Missing | Graph target family; should share design with SurrealDB/FalkorDB. |
+| `falkordb` | `falkordb>=1.1.0` | none | Missing | Graph target family; should share design with SurrealDB/Neo4j. |
+| `litellm` | `litellm>=1.81.0` | none | Missing | Rust examples hand-roll OpenAI-compatible HTTP clients. |
+| `sentence_transformers` | `sentence-transformers>=3.3.1` | none | Missing/Different | Rust examples use `fastembed` directly; no SDK embedder wrapper feature. |
+| `colpali` | `colpali-engine` | none | Missing | Blocks ColPali image-search parity. |
+| `entity_resolution` | `faiss-cpu>=1.7` | built into base Rust SDK | Different/Partial | Rust has `entity_resolution` module without feature gate and uses a simple in-memory candidate index rather than FAISS. |
+| `entity_resolution_llm` | `faiss-cpu`, `instructor`, `litellm` | none | Missing | Rust lacks `LlmPairResolver` and LiteLLM/instructor wrapper. |
+
+Packaging recommendation: when adding Rust connectors, add a matching Cargo
+feature even if the connector's public module is small. Keep feature names
+aligned with Python extras where practical (`amazon_s3`, `google_drive`,
+`surrealdb`, etc.) so examples and docs can talk about parity consistently.
 
 ## Connector Semantic Parity Matrix
 
@@ -165,27 +201,36 @@ expose the shared contract publicly.
 Rust has a useful static walker and target:
 
 - `fs::walk`
+- `walk_dir`
+- `FilePath`
 - `FileEntry`
+- `FileLike`
+- `MatchAllFilePathMatcher`
+- `PatternFilePathMatcher`
+- `DirWalker`
 - `DirTarget`
+- `dir_target`
+- `declare_dir_target`
 - `mount_dir_target`
 - `DirTarget::declare_file`
 
 Gaps against Python:
 
-- No `FilePath` / memo-key-preserving path abstraction.
-- No generic `FileLike` abstraction.
-- No `MatchAllFilePathMatcher` / `PatternFilePathMatcher`.
-- No `DirWalker.items()`.
 - No `walk_dir(..., live=True)`.
-- No live file watching.
-- No public `dir_target` and `declare_dir_target` split.
+- No live file watching / live map view.
+- Rust `FileLike` is synchronous today; Python's `FileLike` is async and caches
+  full reads/fingerprints.
+- Rust `FilePath` supports stable base keys and resolution, but not the full
+  Python `PurePath`-like method surface.
 
 Recommended Rust tests:
 
-- Path traversal and base-dir memo-key behavior.
-- Matcher behavior.
+- Path traversal and base-dir memo-key behavior now has coverage.
+- Matcher include/exclude and excluded-directory pruning now has coverage.
+- `DirWalker.items()` recursive/nonrecursive behavior now has coverage.
 - Live add/edit/delete once live map support exists.
-- Target removal and nested directory behavior already has partial coverage.
+- Target removal, nested directory behavior, and `declare_dir_target` missing-dir
+  behavior now have coverage.
 
 ### Postgres
 
@@ -420,7 +465,8 @@ is explicitly designed around live object events.
 | `test_trivial_app.py` | Rust `pipeline.rs` app/update tests | Good |
 | `test_update_handle.py` | Rust update handle tests | Partial/Good |
 | `test_settings.py` | Rust builder tests only | Partial |
-| `test_default_env*.py` | no default env | Missing/Different |
+| `test_default_env.py`, `test_default_env_async.py` | no default env | Missing/Different |
+| `test_concurrency_control.py` | `AppBuilder::max_inflight_components`, `mount_each` order tests, quota peak enforcement, nested-scope no-deadlock test | Partial/Good | Rust now directly covers quota enforcement and nested scope behavior. Remaining Python-only behavior is default-limit/env fallback (`COCOINDEX_MAX_INFLIGHT_COMPONENTS`), because Rust has no default-env loader parity. |
 | `test_context_tracked_key.py` | Rust context key tests | Good |
 | `test_context_tracked_state_validation.py` | partial via `new_with_state` | Partial |
 | `test_function_memo.py` | Rust memo tests and macro tests | Partial |
@@ -604,12 +650,30 @@ Recommended stance:
 | Test area | Python test functions | Rust SDK test functions | Notes |
 | --- | ---: | ---: | --- |
 | Connectors | 284 | 8 | Rust count includes Google Drive, Kafka target, Postgres source/target, and SurrealDB target. |
-| Core/runtime | 374 | mostly in `pipeline.rs` 90 | Rust core tests are dense but do not cover many Python public APIs such as default env, exceptions, live components, target-state generics, serde/type checker. |
+| Core/runtime | 374 | mostly in `pipeline.rs` 87 | Rust core tests are dense but do not cover many Python public APIs such as default env, exceptions, live components, full child target-state mount parity, serde/type checker. |
 | Internal helpers | 44 | partly in `pipeline.rs` / `memo_batch_regressions.rs` | Python has dedicated memo fingerprint and type hint extraction tests. |
 | Ops | 67 | 7 entity-resolution SDK tests plus ops_text crate tests | Rust lacks LiteLLM, SentenceTransformer wrapper, and LLM pair resolver parity. |
-| Resources | 26 | ID tests only | Rust lacks file path/matcher resources. |
+| Resources | 26 | ID plus LocalFS `FilePath`/matcher tests | Rust still lacks the full Python resource package surface. |
 | CLI | 44 | none | Rust SDK has no matching CLI surface. |
-| Total | 839 | 108 integration tests in `rust/sdk/cocoindex/tests`; 146 SDK crate tests including `src` unit tests | This is not a quality score, but it is a useful scale marker for parity work. |
+| Total | 839 | 106 integration tests in `rust/sdk/cocoindex/tests`; 153 SDK crate tests including `src` unit tests | This is not a quality score, but it is a useful scale marker for parity work. |
+
+Current Rust integration-test evidence:
+
+| Rust test file | Count | Main coverage |
+| --- | ---: | --- |
+| `tests/pipeline.rs` | 87 | App/update/drop handles, context keys, memo, function macro, batching, `mount_each`, `max_inflight_components`, public target-state facade, stats groups, auto-refresh, localfs walk, dir target reconciliation. |
+| `tests/entity_resolution.rs` | 7 | Empty input, candidate matching, top-N, existing-canonical policies, invalid resolver matches. |
+| `tests/memo_batch_regressions.rs` | 3 | Pending-entry cleanup after batch serialization/fingerprint/count errors. |
+| `tests/gdrive_source.rs` | 2 | Mocked recursive listing/MIME filtering and read/export behavior. |
+| `tests/kafka_target.rs` | 1 | Live Kafka target insert/skip/update/tombstone behavior when Kafka is available. |
+| `tests/postgres_source.rs` | 1 | Live Postgres source read/process/reconcile path when Postgres is available. |
+| `tests/postgres_target.rs` | 2 | Live Postgres row target reconciliation and vector-index attachment reconciliation. |
+| `tests/surrealdb_target.rs` | 2 | Live SurrealDB record/relation reconciliation plus conversation graph write smoke test. |
+
+The Rust integration suite is dense, but much of Python's breadth is still only
+represented indirectly. The highest-risk missing test shape is generic
+target-state behavior because Python tests it once at the SDK layer while Rust
+currently tests behavior through specific connectors.
 
 ## Recommended Implementation Roadmap
 
@@ -712,6 +776,24 @@ The Rust SDK should not be called Python-parity until:
 This matrix is the practical "does the SDK feel the same?" layer. It compares
 the checked-in examples, not just connector modules.
 
+Current Rust example scan:
+
+- Postgres-writing examples (`code-embedding`, `gdrive-text-embedding`,
+  `hn-trending-topics`, `postgres-source`) declare rows through
+  `postgres::mount_table_target`; their direct `sqlx::query` calls are query or
+  readback paths, not manual target writes.
+- SurrealDB-writing example (`conversation-to-knowledge`) declares records and
+  relations through `cocoindex::surrealdb` targets.
+- Kafka-writing example (`csv-to-kafka`) declares messages through
+  `KafkaTopicTarget`.
+- File-output examples (`files-transform`, `multi-codebase-summarization`) use
+  `DirTarget::declare_file`.
+
+So the remaining example gap is mostly missing SDK interface parity
+(`FileLike`, live sources, target constructor/declaration split, vector stores,
+graph stores), not a large amount of manual write code in existing Rust
+examples.
+
 | Python example | Python connector/API shape | Rust counterpart | Status | Action |
 | --- | --- | --- | --- | --- |
 | `examples/postgres_source` | `postgres.PgTableSource`, `postgres.mount_table_target` | `examples/rust/postgres-source` | Partial/close | Keep Rust typed read APIs, but add source-object/iterator parity or explicitly document Rust's typed `read_table` replacement. |
@@ -736,7 +818,10 @@ the checked-in examples, not just connector modules.
 | `examples/meeting_notes_graph_falkordb` | Google Drive source, FalkorDB table/relation targets | none | Missing | Needs Google Drive source plus graph target family. |
 | `examples/text_embedding` | LocalFS source, Postgres target | none as Rust standalone | Missing/covered by code embedding | Add only if product wants exact example parity; connector coverage overlaps with `code-embedding`. |
 | `examples/pdf_embedding`, `examples/pdf_to_markdown` | LocalFS file resources plus PDF parsing targets | none | Missing | Connector parity depends on localfs file abstraction; transforms are example-level. |
-| `examples/audio_to_text`, `paper_metadata`, `patient_intake_*` | External AI/service transforms plus targets | none | Out of connector parity scope | Port after connector/runtime parity, unless product wants Rust examples for these flows. |
+| `examples/audio_to_text` | External audio/transcription transforms plus target writes | none | Out of connector parity scope | Port after connector/runtime parity, unless product wants Rust examples for these flows. |
+| `examples/paper_metadata` | External paper metadata extraction plus target writes | none | Out of connector parity scope | Port after connector/runtime parity; likely depends more on transform/client parity than a new storage connector. |
+| `examples/patient_intake_extraction_baml` | External BAML extraction plus target writes | none | Out of connector parity scope | Port only if Rust examples should cover BAML-style extraction; not a connector blocker. |
+| `examples/patient_intake_extraction_dspy` | External DSPy extraction plus target writes | none | Out of connector parity scope | Port only if Rust examples should cover DSPy-style extraction; not a connector blocker. |
 
 ## Appendix A: Top-Level Python API Mapping
 
@@ -777,29 +862,48 @@ documented Rust-native equivalent.
 | `iggy` | `TopicStream`, `topic_as_stream`, `topic_as_map`, `IsDeleteFn`, `KeyFn`, `IggyTopicTarget`, `iggy_topic_target`, `declare_iggy_topic_target`, `mount_iggy_topic_target`, `DeletionValueFn` |
 | `amazon_s3` | `S3FilePath`, `S3File`, `get_object`, `read`, `S3Walker`, `list_objects` |
 | `oci_object_storage` | `OCIFilePath`, `OCIFile`, `get_object`, `read`, `OCIWalker`, `list_objects` |
-| `google_drive` | `DriveFilePath`, `DriveFileInfo`, `DriveFile`, `GoogleDriveSourceSpec`, `GoogleDriveSource`, `list_files` |
+| `google_drive` | Package export: `DriveFileInfo`, `DriveFile`, `GoogleDriveSourceSpec`, `GoogleDriveSource`, `list_files`; `_source.py` also defines non-`__all__` `DriveFilePath` |
 | `sqlite` | `ManagedConnection`, `Vec0TableDef`, `SqliteType`, `ColumnDef`, `TableSchema`, `TableTarget`, `table_target`, `declare_table_target`, `mount_table_target`, `connect`, `managed_connection`, `ValueEncoder` |
 | `doris` | `DorisError`, `DorisConnectionError`, `DorisAuthError`, `DorisStreamLoadError`, `DorisSchemaError`, `RetryConfig`, `DorisType`, `ColumnDef`, `TableSchema`, `DorisConnectionConfig`, `ManagedConnection`, `connect`, `VectorIndexDef`, `InvertedIndexDef`, `DorisTableTarget`, `table_target`, `declare_table_target`, `mount_table_target`, `connect_async`, `build_vector_search_query` |
-| `lancedb` | `LanceType`, `ColumnDef`, `TableSchema`, `TableTarget`, `table_target`, `declare_table_target`, `mount_table_target`, `connect_async`, `connect` |
+| `lancedb` | `LanceType`, `ColumnDef`, `TableSchema`, `TableTarget`, `table_target`, `declare_table_target`, `mount_table_target`, `connect_async`, `connect`, `LanceAsyncConnection` |
 | `qdrant` | `QdrantVectorDef`, `CollectionSchema`, `create_client`, `CollectionTarget`, `collection_target`, `declare_collection_target`, `mount_collection_target`, `PointStruct` |
 | `turbopuffer` | `VectorDef`, `NamespaceSchema`, `Row`, `NamespaceTarget`, `namespace_target`, `declare_namespace_target`, `mount_namespace_target`, `AsyncTurbopuffer`, `DistanceMetric` |
 | `neo4j` | `ConnectionFactory`, `Neo4jType`, `ColumnDef`, `TableSchema`, `TableTarget`, `RelationTarget`, `table_target`, `declare_table_target`, `mount_table_target`, `relation_target`, `declare_relation_target`, `mount_relation_target`, `ValueEncoder`, Cypher builder helpers |
 | `falkordb` | `ConnectionFactory`, `FalkorType`, `ColumnDef`, `TableSchema`, `TableTarget`, `RelationTarget`, `table_target`, `declare_table_target`, `mount_table_target`, `relation_target`, `declare_relation_target`, `mount_relation_target`, `ValueEncoder`, Cypher builder helpers |
 
+### Lower-Level Python Helper Exports
+
+These are public exports, but they are connector/framework helper APIs rather
+than end-user connector entry points.
+
+| Area | Exact Python exports | Rust status |
+| --- | --- | --- |
+| Connectorkit mount naming | `default_subpath_name` | Missing public helper; Rust uses closure/key functions directly. |
+| Connectorkit fingerprint | `Fingerprint`, `Fingerprintable`, `fingerprint_object`, `fingerprint_bytes`, `fingerprint_str` | Partial/different; Rust exposes memo key/fingerprint helpers in `memo.rs`, but no connectorkit module. |
+| Connectorkit statediff | `CompositeTrackingRecord`, `DiffAction`, `ManagedBy`, `MutualTrackingRecord`, `TrackingRecordTransition`, `diff`, `diff_composite`, `resolve_system_transition` | Missing public Rust connectorkit layer; this is a blocker for consistent target connector implementations. |
+| Resource schema helpers | `get_vector_schema`, `get_multi_vector_schema` | Missing generic Rust vector-schema provider helpers. |
+| Neo4j Cypher helpers | `IDENTIFIER_RE`, `build_constraint_create`, `build_constraint_drop`, `build_node_delete`, `build_node_index_create`, `build_node_index_drop`, `build_node_upsert`, `build_relationship_delete`, `build_relationship_index_create`, `build_relationship_index_drop`, `build_relationship_upsert`, `build_vector_index_create`, `build_vector_index_drop`, `constraint_name`, `index_name`, `validate_identifier`, `vector_index_name` | Missing until Rust Neo4j connector exists. |
+| FalkorDB Cypher helpers | `IDENTIFIER_RE`, `build_node_upsert`, `build_node_delete`, `build_relationship_upsert`, `build_relationship_delete`, `build_node_index_create`, `build_node_index_drop`, `build_relationship_index_create`, `build_relationship_index_drop`, `build_vector_index_create`, `build_vector_index_drop`, `validate_identifier` | Missing until Rust FalkorDB connector exists. |
+
 ## Appendix C: Current Rust SDK Public Surface
+
+The table below groups method-heavy Rust modules rather than listing every
+method in the top-level matrix. Method names are included when they materially
+define the public SDK shape.
 
 | Rust module | Public surface |
 | --- | --- |
-| `app` | `AppBuilder`, `App`, `UpdateOptions`, `StatsGroupOptions`, `Progress`, `UpdateHandle`, `DropHandle`, `StatsGroupHandle` |
-| `ctx` | `ContextKey`, `Ctx` |
-| `entity_resolution` | `CanonicalSide`, `ExistingCanonicalPolicy`, `PairDecision`, `ResolutionEvent`, `ResolvedEntities`, `EntityEmbedder`, `PairResolver`, `ResolveOptions`, `resolve_entities` |
-| `fs` | `FileEntry`, `walk`, `DirTarget`, `mount_dir_target` |
-| `gdrive` | `DriveFile`, `GoogleDriveClient`, `GoogleDriveSource` |
-| `id` | `generate_id`, `generate_id_default`, `generate_uuid`, `generate_uuid_default`, `IdGenerator`, `UuidGenerator` |
-| `kafka` | `KafkaProducer`, `KafkaTopicOptions`, `KafkaTopicTarget`, `mount_kafka_topic_target` |
-| `memo` | `cached`, `cached_by_fingerprint`, fingerprint/key helpers, `batch`, `batch_by_fingerprint` |
-| `postgres` | `Database`, `ColumnDef`, `TableSchema`, `TableTarget`, `VectorIndexOptions`, `mount_table_target`, `ReadTableOptions`, `read_table`, `read_table_with_options` |
-| `surrealdb` | `ColumnDef`, `TableSchema`, `IntoRecordId`, `Graph`, `TableTarget`, `RelationTarget`, table/relation mount helpers, `RecordIdValue` |
+| `app` | `AppBuilder` (`db_path`, `lmdb_max_dbs`, `lmdb_map_size`, `max_inflight_components`, `provide`, `provide_key`, `build`, `build_blocking`), `App` (`open`, `open_blocking`, `builder`, `run`, `update`, `update_with_options`, `start_update`, `start_update_with_options`, `update_blocking`, `update_blocking_with_options`, `start_drop_state`, `drop_state`, `drop_state_blocking`, `name`), `UpdateOptions`, `StatsGroupOptions`, `Progress::is_done`, `UpdateHandle`/`DropHandle`/`StatsGroupHandle` (`stats_snapshot`, `changed`, `result`) |
+| `ctx` | `ContextKey` (`new`, `new_detect_change`, `new_with_state`, `name`, `detect_change`), `Ctx` (`get_or_err`, `try_get`, `get_key`, `has_pipeline_context`, `stats_group`, `stats_group_with_options`, `auto_refresh`, `scope`, `memo`, `batch`, `mount_each`, `map`, `write_file`); internal macro hook `__coco_tracked_fn` is public only for generated macro code |
+| `entity_resolution` | `CanonicalSide`, `ExistingCanonicalPolicy`, `PairDecision` (`no_match`, `matched`, `matched_with`), `ResolutionEvent`, `ResolvedEntities` (`canonical_of`, `canonicals`, `groups`, `to_map`), `EntityEmbedder`, `PairResolver`, `ResolveOptions`, `resolve_entities` |
+| `error` | `Error`, `Result` |
+| `fs` | `FileEntry` (`path`, `relative_path`, `stem`, `fingerprint`, `content`, `content_str`, `key`), `walk`, `DirTarget` (`mount`, `dir`, `declare_file`), `mount_dir_target` |
+| `gdrive` | `DriveFile` (`key`), `GoogleDriveClient` (`from_service_account_file`, `from_static_token`, `with_base_url`, `state_id`, `read`, `read_text`), `GoogleDriveSource` (`new`, `mime_types`, `client`, `list_files`) |
+| `id` | `generate_id`, `generate_id_default`, `generate_uuid`, `generate_uuid_default`, `IdGenerator` (`new`, `with_deps`, `next_id`, `next_id_default`), `UuidGenerator` (`new`, `with_deps`, `next_uuid`, `next_uuid_default`) |
+| `kafka` | `KafkaProducer` (`connect`, `state_id`, `ensure_topic`), `DeletionValueFn`, `KafkaTopicOptions`, `KafkaTopicTarget` (`topic`, `declare_message`), `mount_kafka_topic_target` |
+| `memo` | `cached`, `cached_by_fingerprint`, `key_bytes`, `key_bytes_result`, `key_fingerprint_result`, `new_key_fingerprinter`, `write_key_fingerprint_part`, `finish_key_fingerprinter`, `batch`, `batch_by_fingerprint` |
+| `postgres` | `Database` (`connect`, `from_pool`, `pool`, `state_id`), `ColumnDef`, `TableSchema` (`new`, `columns`, `primary_key`), `TableTarget` (`table_name`, `declare_row`, `declare_vector_index`), `VectorIndexOptions`, `mount_table_target`, `ReadTableOptions` (`new`, `pg_schema_name`, `columns`), `read_table`, `read_table_with_options` |
+| `surrealdb` | `ColumnDef`, `TableSchema`, `IntoRecordId`, `Graph` (`connect`, `state_id`, `count`), `TableTarget` (`table_name`, `declare_record`), `RelationTarget` (`table_name`, `declare_relation`, `declare_relation_record`, `declare_relation_between`, `declare_relation_record_between`), `mount_table_target`, `mount_table_target_with_schema`, `mount_relation_target`, `mount_relation_target_many`, `mount_relation_target_unconstrained`, `RecordIdValue` |
 | `cocoindex_ops_text` | `PatternMatcher`, `detect_language`, `SeparatorSplitter`, `RecursiveChunker`, `Chunk`, `TextRange`, `OutputPosition` |
 
 ## Appendix D: Test Families Rust Should Port
@@ -854,10 +958,11 @@ tests, 67 ops tests, and 44 CLI tests.
 
 | Python test family | Python behaviors to port or explicitly reject | Current Rust coverage | Priority |
 | --- | --- | --- | --- |
-| App lifecycle/drop/default env | `test_trivial_app.py`, `test_update_handle.py`, `test_app_drop.py`, `test_default_env*.py`, `test_lazy_environment_lock.py` cover sync/async app forms, handles/watch/progress, drop cleanup/retry, default env startup and env vars | Rust `pipeline.rs` covers app run/open, update/drop handles, blocking/async updates, stats snapshots, drop state clears memoization | Medium/High; default environment is missing/different |
+| App lifecycle/drop/default env | `test_trivial_app.py`, `test_update_handle.py`, `test_app_drop.py`, `test_default_env.py`, `test_default_env_async.py`, `test_lazy_environment_lock.py` cover sync/async app forms, handles/watch/progress, drop cleanup/retry, default env startup and env vars | Rust `pipeline.rs` covers app run/open, update/drop handles, blocking/async updates, stats snapshots, drop state clears memoization | Medium/High; default environment is missing/different |
+| Concurrency control | `test_concurrency_control.py` covers max-inflight quota enforcement, nested-mount deadlock prevention, default limit, and `COCOINDEX_MAX_INFLIGHT_COMPONENTS` env fallback | Rust `pipeline.rs` now covers explicit `max_inflight_components` quota enforcement and nested scope no-deadlock behavior | Medium; default/env fallback remains missing because Rust has no default-env loader parity |
 | Generic target states | `test_flat_target_states.py`, `test_component_target_states.py`, `test_attachment_target_states.py`, `test_provider_generation.py`, `test_ownership_transfer.py`, `test_typed_serde_target.py` cover insert/upsert/delete/no-change, preview, components, mount target, attachments, destructive/lossy generation, ownership transfer, typed handler wrapping | Rust has connector-specific target tests and internal private helpers; no public generic target-state tests | Highest |
 | Live components and exception routing | `test_live_component.py`, `test_exception_handlers.py`, `test_auto_refresh.py`, `test_cancellation.py`, `test_component_submit_order.py` cover live catch-up/incremental delete/update, ready signaling, background errors, scoped/global handlers, cancellation, parent waits for child ready | Rust has `ctx_auto_refresh_*` tests only; no public live component or exception handler API | High |
-| Function memoization and logic tracking | `test_function_memo.py`, `test_logic_change_detection.py`, `test_component_memo.py`, `test_function_class_methods.py`, `test_function_misc.py`, `test_full_reprocess.py` cover memo with targets/components, nested calls, decorator/code/deps invalidation, bound/static/class methods, full reprocess semantics | Rust `pipeline.rs` has strong memo/macro/function hash/context dependency tests, but less class/method/dynamic logic-mode surface because Rust shape differs | Medium; document idiomatic differences |
+| Function memoization and logic tracking | `test_function_memo.py`, `test_logic_change_detection.py`, `test_component_memo.py`, `test_function_class_methods.py`, `test_function_misc.py`, `test_full_reprocess.py` cover memo with targets/components, nested calls, decorator/code/deps invalidation, bound/static/class methods, full reprocess semantics | Rust `pipeline.rs` has strong memo/macro/function hash/context dependency tests, but less class/method/dynamic logic-mode surface because Rust shape differs | Medium; document idiomatic differences. Python exposes `LogicTracking`; Rust has macro/hash behavior but no named `LogicTracking` type alias. |
 | Batching and runners | `test_function_batching.py` covers sync/async batching, max batch size, extra arg grouping, `Runner`, `GPU`, subprocess runner, memo with runner | Rust covers `Ctx::batch`, `memo::batch`, macro batch cache hits/errors, duplicate keys; no Runner/GPU/subprocess equivalent | Medium/High if Python Runner is product parity goal |
 | Context keys and memo state validation | `test_context_tracked_key.py`, `test_context_tracked_state_validation.py`, `test_memo_state_validation.py`, `test_memo_state_use_context.py`, internal `test_context_keys.py` | Rust has context key state/memo invalidation tests and missing-resource errors | Medium; add validation edge cases and transitive invalidation parity |
 | Serialization, datatype, type checking | `test_serde.py`, `test_safe_unpickle.py`, `test_datatype.py`, `test_type_checker.py`, `test_typed_serde_memo.py`, internal `test_type_hint_extraction.py` | Rust uses serde/compile-time types; has memo complex type tests but no dynamic Python type checker/unpickle equivalent | Different; document non-goals and add serde boundary tests for connector schemas |

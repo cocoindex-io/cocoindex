@@ -17,13 +17,241 @@ use crate::error::{Error, Result};
 use crate::profile::{Action, BoxedHandler, BoxedSink, RustProfile, Value};
 
 // ---------------------------------------------------------------------------
+// FilePath / FileLike / matchers
+// ---------------------------------------------------------------------------
+
+/// Local filesystem path with an optional stable base key.
+///
+/// This is the Rust analogue of Python localfs `FilePath`: the resolved
+/// location may move, while [`FilePath::memo_key`] can stay stable when callers
+/// supply the same logical base key.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct FilePath {
+    base_key: Option<Arc<str>>,
+    base_dir: Option<PathBuf>,
+    path: PathBuf,
+}
+
+impl FilePath {
+    pub fn new(path: impl Into<PathBuf>) -> Self {
+        Self {
+            base_key: None,
+            base_dir: None,
+            path: path.into(),
+        }
+    }
+
+    pub fn with_base_dir(
+        base_key: impl Into<Arc<str>>,
+        base_dir: impl Into<PathBuf>,
+        path: impl Into<PathBuf>,
+    ) -> Self {
+        Self {
+            base_key: Some(base_key.into()),
+            base_dir: Some(base_dir.into()),
+            path: path.into(),
+        }
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn base_key(&self) -> Option<&str> {
+        self.base_key.as_deref()
+    }
+
+    pub fn resolve(&self) -> PathBuf {
+        match &self.base_dir {
+            Some(base) => base.join(&self.path),
+            None => self.path.clone(),
+        }
+    }
+
+    pub fn join(&self, child: impl AsRef<Path>) -> Self {
+        Self {
+            base_key: self.base_key.clone(),
+            base_dir: self.base_dir.clone(),
+            path: self.path.join(child),
+        }
+    }
+
+    pub fn memo_key(&self) -> impl Serialize + '_ {
+        (
+            self.base_key.as_deref().unwrap_or(""),
+            self.path.to_string_lossy().replace('\\', "/"),
+        )
+    }
+}
+
+impl<P: Into<PathBuf>> From<P> for FilePath {
+    fn from(path: P) -> Self {
+        Self::new(path)
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct FileMetadata {
+    pub size: u64,
+    #[serde(with = "system_time_serde")]
+    pub modified: SystemTime,
+    pub content_fingerprint: Option<Fingerprint>,
+}
+
+/// Common local file-like behavior used by filesystem sources.
+pub trait FileLike {
+    fn file_path(&self) -> FilePath;
+    fn metadata(&self) -> Result<FileMetadata>;
+    fn read(&self) -> Result<Vec<u8>>;
+
+    fn read_text(&self) -> Result<String> {
+        String::from_utf8(self.read()?)
+            .map_err(|e| Error::engine(format!("file is not valid UTF-8: {e}")))
+    }
+
+    fn content_fingerprint(&self) -> Result<Fingerprint> {
+        let metadata = self.metadata()?;
+        match metadata.content_fingerprint {
+            Some(fp) => Ok(fp),
+            None => Fingerprint::from(&self.read()?)
+                .map_err(|e| Error::engine(format!("file fingerprint error: {e}"))),
+        }
+    }
+}
+
+pub trait FilePathMatcher: Send + Sync {
+    fn is_dir_included(&self, _path: &Path) -> bool {
+        true
+    }
+
+    fn is_file_included(&self, path: &Path) -> bool;
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct MatchAllFilePathMatcher;
+
+impl FilePathMatcher for MatchAllFilePathMatcher {
+    fn is_file_included(&self, _path: &Path) -> bool {
+        true
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct PatternFilePathMatcher {
+    included: Option<GlobSet>,
+    excluded: GlobSet,
+}
+
+impl PatternFilePathMatcher {
+    pub fn new<I, E>(included_patterns: I, excluded_patterns: E) -> Result<Self>
+    where
+        I: IntoIterator,
+        I::Item: AsRef<str>,
+        E: IntoIterator,
+        E::Item: AsRef<str>,
+    {
+        let mut included_builder = GlobSetBuilder::new();
+        let mut has_included = false;
+        for pattern in included_patterns {
+            included_builder.add(build_glob(pattern.as_ref())?);
+            has_included = true;
+        }
+        let included = if has_included {
+            Some(
+                included_builder
+                    .build()
+                    .map_err(|e| Error::engine(format!("invalid glob set: {e}")))?,
+            )
+        } else {
+            None
+        };
+
+        let mut excluded_builder = GlobSetBuilder::new();
+        for pattern in excluded_patterns {
+            excluded_builder.add(build_glob(pattern.as_ref())?);
+        }
+        let excluded = excluded_builder
+            .build()
+            .map_err(|e| Error::engine(format!("invalid glob set: {e}")))?;
+
+        Ok(Self { included, excluded })
+    }
+
+    pub fn include<I>(included_patterns: I) -> Result<Self>
+    where
+        I: IntoIterator,
+        I::Item: AsRef<str>,
+    {
+        Self::new(included_patterns, std::iter::empty::<&str>())
+    }
+}
+
+impl FilePathMatcher for PatternFilePathMatcher {
+    fn is_dir_included(&self, path: &Path) -> bool {
+        !self.excluded.is_match(path_key(path))
+    }
+
+    fn is_file_included(&self, path: &Path) -> bool {
+        let key = path_key(path);
+        !self.excluded.is_match(&key)
+            && self
+                .included
+                .as_ref()
+                .is_none_or(|included| included.is_match(key))
+    }
+}
+
+#[derive(Clone)]
+pub struct DirWalker {
+    root: FilePath,
+    recursive: bool,
+    matcher: Arc<dyn FilePathMatcher>,
+}
+
+impl DirWalker {
+    pub fn new(path: impl Into<FilePath>) -> Self {
+        Self {
+            root: path.into(),
+            recursive: false,
+            matcher: Arc::new(MatchAllFilePathMatcher),
+        }
+    }
+
+    pub fn recursive(mut self, recursive: bool) -> Self {
+        self.recursive = recursive;
+        self
+    }
+
+    pub fn path_matcher(mut self, matcher: impl FilePathMatcher + 'static) -> Self {
+        self.matcher = Arc::new(matcher);
+        self
+    }
+
+    pub fn items(&self) -> Result<Vec<(String, FileEntry)>> {
+        Ok(self
+            .walk()?
+            .into_iter()
+            .map(|file| (file.key(), file))
+            .collect())
+    }
+
+    pub fn walk(&self) -> Result<Vec<FileEntry>> {
+        walk_internal(&self.root, self.recursive, self.matcher.as_ref())
+    }
+}
+
+pub fn walk_dir(path: impl Into<FilePath>) -> DirWalker {
+    DirWalker::new(path)
+}
+
+// ---------------------------------------------------------------------------
 // FileEntry
 // ---------------------------------------------------------------------------
 
 /// A walked file with eager fingerprint and lazy content.
 #[derive(Clone, Serialize)]
 pub struct FileEntry {
-    root: PathBuf,
+    root: FilePath,
     relative: PathBuf,
     size: u64,
     #[serde(with = "system_time_serde")]
@@ -45,7 +273,7 @@ mod system_time_serde {
 impl FileEntry {
     /// Full filesystem path.
     pub fn path(&self) -> PathBuf {
-        self.root.join(&self.relative)
+        self.root.join(&self.relative).resolve()
     }
 
     /// Relative path from walk root.
@@ -99,6 +327,24 @@ impl FileEntry {
     }
 }
 
+impl FileLike for FileEntry {
+    fn file_path(&self) -> FilePath {
+        self.root.join(&self.relative)
+    }
+
+    fn metadata(&self) -> Result<FileMetadata> {
+        Ok(FileMetadata {
+            size: self.size,
+            modified: self.modified,
+            content_fingerprint: None,
+        })
+    }
+
+    fn read(&self) -> Result<Vec<u8>> {
+        self.content()
+    }
+}
+
 /// Walk a directory matching multiple glob patterns. Returns all matching files
 /// sorted by relative path.
 ///
@@ -107,16 +353,39 @@ impl FileEntry {
 /// let files = cocoindex::fs::walk("./src", &["**/*.rs", "**/*.toml"])?;
 /// ```
 pub fn walk(dir: impl AsRef<Path>, patterns: &[&str]) -> Result<Vec<FileEntry>> {
-    let dir = dir.as_ref();
+    let matcher = PatternFilePathMatcher::include(patterns.iter().copied())?;
+    walk_internal(&FilePath::new(dir.as_ref()), true, &matcher)
+}
+
+fn walk_internal(
+    root: &FilePath,
+    recursive: bool,
+    matcher: &dyn FilePathMatcher,
+) -> Result<Vec<FileEntry>> {
+    let dir = root.resolve();
+    let dir = dir.as_path();
     let canonical_dir = match std::fs::canonicalize(dir) {
         Ok(path) => path,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(err) => return Err(Error::Io(err)),
     };
-    let matcher = compile_globset(patterns)?;
     let mut files = Vec::new();
 
-    for entry in WalkDir::new(dir) {
+    let walker = if recursive {
+        WalkDir::new(dir)
+    } else {
+        WalkDir::new(dir).max_depth(1)
+    };
+    for entry in walker.into_iter().filter_entry(|entry| {
+        if entry.depth() == 0 || !entry.file_type().is_dir() {
+            return true;
+        }
+        let path = entry.path();
+        let relative = path
+            .strip_prefix(dir)
+            .or_else(|_| path.strip_prefix(&canonical_dir));
+        relative.is_ok_and(|relative| matcher.is_dir_included(relative))
+    }) {
         let entry = entry.map_err(|err| {
             let message = err.to_string();
             match err.into_io_error() {
@@ -126,18 +395,19 @@ pub fn walk(dir: impl AsRef<Path>, patterns: &[&str]) -> Result<Vec<FileEntry>> 
         })?;
         let path = entry.path();
         let relative = relative_path(dir, &canonical_dir, path)?;
-        let relative_key = relative.to_string_lossy().replace('\\', "/");
-        if !matcher.is_match(&relative_key) {
+        let metadata = std::fs::metadata(path).map_err(Error::Io)?;
+        if metadata.is_dir() {
             continue;
         }
-
-        let metadata = std::fs::metadata(path).map_err(Error::Io)?;
         if !metadata.is_file() {
+            continue;
+        }
+        if !matcher.is_file_included(&relative) {
             continue;
         }
 
         files.push(FileEntry {
-            root: dir.to_path_buf(),
+            root: root.clone(),
             relative,
             size: metadata.len(),
             modified: metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
@@ -148,19 +418,15 @@ pub fn walk(dir: impl AsRef<Path>, patterns: &[&str]) -> Result<Vec<FileEntry>> 
     Ok(files)
 }
 
-fn compile_globset(patterns: &[&str]) -> Result<GlobSet> {
-    let mut builder = GlobSetBuilder::new();
-    for pattern in patterns {
-        let glob = GlobBuilder::new(pattern)
-            .literal_separator(true)
-            .build()
-            .map_err(|e| Error::engine(format!("invalid glob: {e}")))?;
-        builder.add(glob);
-    }
-
-    builder
+fn build_glob(pattern: &str) -> Result<globset::Glob> {
+    GlobBuilder::new(pattern)
+        .literal_separator(true)
         .build()
-        .map_err(|e| Error::engine(format!("invalid glob set: {e}")))
+        .map_err(|e| Error::engine(format!("invalid glob: {e}")))
+}
+
+fn path_key(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
 }
 
 fn relative_path(root: &Path, canonical_root: &Path, path: &Path) -> Result<PathBuf> {
@@ -195,13 +461,44 @@ pub struct DirTarget {
     dir: PathBuf,
 }
 
+#[derive(Clone, Debug)]
+pub struct DirTargetState {
+    dir: PathBuf,
+    create_parent_dirs: bool,
+}
+
+pub fn dir_target(dir: impl Into<PathBuf>) -> DirTargetState {
+    DirTargetState {
+        dir: dir.into(),
+        create_parent_dirs: true,
+    }
+}
+
+impl DirTargetState {
+    pub fn create_parent_dirs(mut self, create_parent_dirs: bool) -> Self {
+        self.create_parent_dirs = create_parent_dirs;
+        self
+    }
+}
+
 /// Mount a declarative directory target rooted at `dir`. Declared files are
 /// synced to disk; orphaned files are deleted on later runs.
 ///
 /// Must be called inside an `App::update()`/`App::run()` pipeline.
 pub fn mount_dir_target(ctx: &Ctx, dir: impl Into<PathBuf>) -> Result<DirTarget> {
-    let dir = dir.into();
-    std::fs::create_dir_all(&dir).map_err(Error::Io)?;
+    declare_dir_target(ctx, dir_target(dir))
+}
+
+pub fn declare_dir_target(ctx: &Ctx, target: DirTargetState) -> Result<DirTarget> {
+    let dir = target.dir;
+    if target.create_parent_dirs {
+        std::fs::create_dir_all(&dir).map_err(Error::Io)?;
+    } else if !dir.is_dir() {
+        return Err(Error::engine(format!(
+            "directory target does not exist: {}",
+            dir.display()
+        )));
+    }
     let provider = ctx.register_root_target_provider(
         format!("cocoindex/localfs/dir/{}", dir.to_string_lossy()),
         dir_handler(dir.clone()),
@@ -452,6 +749,85 @@ mod tests {
         let missing = dir.path().join("missing");
         let files = walk(missing, &["**/*.txt"]).unwrap();
         assert!(files.is_empty());
+    }
+
+    #[test]
+    fn file_path_memo_key_is_stable_across_base_dir_moves() {
+        let old = tempfile::tempdir().unwrap();
+        let new = tempfile::tempdir().unwrap();
+        let old_path = FilePath::with_base_dir("docs", old.path(), "guide/index.md");
+        let new_path = FilePath::with_base_dir("docs", new.path(), "guide/index.md");
+
+        let old_key = rmp_serde::to_vec(&old_path.memo_key()).unwrap();
+        let new_key = rmp_serde::to_vec(&new_path.memo_key()).unwrap();
+        assert_eq!(old_key, new_key);
+        assert_ne!(old_path.resolve(), new_path.resolve());
+    }
+
+    #[test]
+    fn pattern_file_path_matcher_includes_and_excludes_files_and_dirs() {
+        let matcher =
+            PatternFilePathMatcher::new(["**/*.rs", "*.toml"], ["target/**", "**/*.gen.rs"])
+                .unwrap();
+
+        assert!(matcher.is_file_included(Path::new("src/lib.rs")));
+        assert!(matcher.is_file_included(Path::new("Cargo.toml")));
+        assert!(!matcher.is_file_included(Path::new("src/generated.gen.rs")));
+        assert!(!matcher.is_file_included(Path::new("target/debug/build.rs")));
+        assert!(!matcher.is_dir_included(Path::new("target/debug")));
+    }
+
+    #[test]
+    fn dir_walker_items_respects_recursive_and_matcher_options() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("root.rs"), "").unwrap();
+        std::fs::write(dir.path().join("root.txt"), "").unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src/lib.rs"), "").unwrap();
+        std::fs::create_dir_all(dir.path().join("target/debug")).unwrap();
+        std::fs::write(dir.path().join("target/debug/generated.rs"), "").unwrap();
+
+        let nonrecursive = walk_dir(dir.path())
+            .path_matcher(PatternFilePathMatcher::include(["**/*.rs"]).unwrap())
+            .items()
+            .unwrap();
+        assert_eq!(
+            nonrecursive
+                .iter()
+                .map(|(key, _)| key.as_str())
+                .collect::<Vec<_>>(),
+            vec!["root.rs"]
+        );
+
+        let recursive = walk_dir(dir.path())
+            .recursive(true)
+            .path_matcher(PatternFilePathMatcher::new(["**/*.rs"], ["target/**"]).unwrap())
+            .items()
+            .unwrap();
+        assert_eq!(
+            recursive
+                .iter()
+                .map(|(key, _)| key.as_str())
+                .collect::<Vec<_>>(),
+            vec!["root.rs", "src/lib.rs"]
+        );
+    }
+
+    #[test]
+    fn declare_dir_target_requires_existing_dir_when_parent_creation_disabled() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = crate::App::builder("declare_dir_target_existing_check")
+            .db_path(dir.path().join("lmdb"))
+            .build_blocking()
+            .unwrap();
+        let missing = dir.path().join("missing").join("out");
+        let err = app
+            .update_blocking(move |ctx| async move {
+                declare_dir_target(&ctx, dir_target(&missing).create_parent_dirs(false))?;
+                Ok(())
+            })
+            .unwrap_err();
+        assert!(err.to_string().contains("directory target does not exist"));
     }
 
     #[test]
