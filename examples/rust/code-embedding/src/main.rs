@@ -124,9 +124,12 @@ async fn process_file(ctx: &Ctx, file: &FileEntry) -> Result<usize> {
         .collect();
     let embeddings = embedder.embed(codes.clone()).await?;
 
+    let mut id_gen = IdGenerator::new();
     let mut ids: Vec<i64> = Vec::with_capacity(chunks.len());
     for ((chunk, code), embedding) in chunks.iter().zip(codes.iter()).zip(embeddings) {
-        let id = stable_id(&filename, code);
+        let id = id_gen.next_id(&ctx, code).await?;
+        let id =
+            i64::try_from(id).map_err(|_| Error::engine("generated id does not fit in BIGINT"))?;
         ids.push(id);
         sqlx::query(sqlx::AssertSqlSafe(format!(
             "INSERT INTO \"{PG_SCHEMA}\".\"{TABLE}\" \
@@ -270,15 +273,6 @@ async fn delete_file_rows(pool: &PgPool, filename: &str) -> Result<()> {
     .await
     .map_err(db_err)?;
     Ok(())
-}
-
-/// Stable, content-derived row id (mirrors Python's `IdGenerator.next_id(chunk.text)`).
-fn stable_id(filename: &str, code: &str) -> i64 {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    filename.hash(&mut hasher);
-    code.hash(&mut hasher);
-    hasher.finish() as i64
 }
 
 fn is_excluded(key: &str) -> bool {

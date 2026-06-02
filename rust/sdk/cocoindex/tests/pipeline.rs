@@ -1,6 +1,6 @@
 //! Integration tests for the pipeline: App::update, memo::cached, sync API.
 
-use cocoindex::{App, ContextKey};
+use cocoindex::{App, ContextKey, IdGenerator, UuidGenerator, generate_id, generate_uuid};
 use tokio::time::{Duration, sleep};
 
 /// Helper: create an App with a temp LMDB directory (async tests).
@@ -219,6 +219,208 @@ async fn start_drop_state_handle_reports_termination() {
     }
 
     handle.result().await.unwrap();
+}
+
+#[tokio::test]
+async fn generate_id_returns_same_id_for_same_dep_across_runs() {
+    let (app, _dir) = temp_app("generate_id_stable").await;
+
+    async fn generate(app: &App) -> Vec<u64> {
+        app.update(|ctx| async move {
+            Ok::<_, cocoindex::Error>(vec![
+                generate_id(&ctx, &"A").await?,
+                generate_id(&ctx, &"B").await?,
+                generate_id(&ctx, &"A").await?,
+            ])
+        })
+        .await
+        .unwrap()
+    }
+
+    let first = generate(&app).await;
+    let second = generate(&app).await;
+    assert_eq!(first, second);
+    assert_eq!(first[0], first[2]);
+    assert_ne!(first[0], first[1]);
+}
+
+#[tokio::test]
+async fn generate_uuid_returns_same_uuid_for_same_dep_across_runs() {
+    let (app, _dir) = temp_app("generate_uuid_stable").await;
+
+    async fn generate(app: &App) -> Vec<uuid::Uuid> {
+        app.update(|ctx| async move {
+            Ok::<_, cocoindex::Error>(vec![
+                generate_uuid(&ctx, &"A").await?,
+                generate_uuid(&ctx, &"B").await?,
+                generate_uuid(&ctx, &"A").await?,
+            ])
+        })
+        .await
+        .unwrap()
+    }
+
+    let first = generate(&app).await;
+    let second = generate(&app).await;
+    assert_eq!(first, second);
+    assert_eq!(first[0], first[2]);
+    assert_ne!(first[0], first[1]);
+}
+
+#[tokio::test]
+async fn id_generator_returns_distinct_ids_for_repeated_dep() {
+    let (app, _dir) = temp_app("id_generator_distinct_repeated_dep").await;
+
+    let ids = app
+        .update(|ctx| async move {
+            let mut id_gen = IdGenerator::new();
+            let mut ids = Vec::new();
+            for _ in 0..5 {
+                ids.push(id_gen.next_id(&ctx, &"same").await?);
+            }
+            Ok::<_, cocoindex::Error>(ids)
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(ids.len(), 5);
+    assert_eq!(
+        ids.iter().collect::<std::collections::HashSet<_>>().len(),
+        5
+    );
+}
+
+#[tokio::test]
+async fn id_generator_is_stable_across_runs() {
+    let (app, _dir) = temp_app("id_generator_stable").await;
+
+    async fn generate(app: &App) -> Vec<(String, Vec<u64>)> {
+        app.update(|ctx| async move {
+            let mut results = Vec::new();
+            for dep in ["A", "B"] {
+                let mut id_gen = IdGenerator::new();
+                let mut ids = Vec::new();
+                for _ in 0..3 {
+                    ids.push(id_gen.next_id(&ctx, &dep).await?);
+                }
+                results.push((dep.to_string(), ids));
+            }
+            Ok::<_, cocoindex::Error>(results)
+        })
+        .await
+        .unwrap()
+    }
+
+    let first = generate(&app).await;
+    let second = generate(&app).await;
+    assert_eq!(first, second);
+    assert_eq!(first[0].1.len(), 3);
+    assert_eq!(first[1].1.len(), 3);
+    assert!(first[0].1.iter().all(|id| !first[1].1.contains(id)));
+}
+
+#[tokio::test]
+async fn id_generator_constructor_deps_split_sequences() {
+    let (app, _dir) = temp_app("id_generator_constructor_deps").await;
+
+    async fn generate(app: &App) -> Vec<(String, Vec<u64>)> {
+        app.update(|ctx| async move {
+            let mut results = Vec::new();
+            for dep in ["A", "B"] {
+                let mut id_gen = IdGenerator::with_deps(&dep)?;
+                let mut ids = Vec::new();
+                for _ in 0..3 {
+                    ids.push(id_gen.next_id_default(&ctx).await?);
+                }
+                results.push((dep.to_string(), ids));
+            }
+            Ok::<_, cocoindex::Error>(results)
+        })
+        .await
+        .unwrap()
+    }
+
+    let first = generate(&app).await;
+    let second = generate(&app).await;
+    assert_eq!(first, second);
+    assert!(first[0].1.iter().all(|id| !first[1].1.contains(id)));
+}
+
+#[tokio::test]
+async fn uuid_generator_returns_distinct_uuids_for_repeated_dep() {
+    let (app, _dir) = temp_app("uuid_generator_distinct_repeated_dep").await;
+
+    let uuids = app
+        .update(|ctx| async move {
+            let mut uuid_gen = UuidGenerator::new();
+            let mut uuids = Vec::new();
+            for _ in 0..5 {
+                uuids.push(uuid_gen.next_uuid(&ctx, &"same").await?);
+            }
+            Ok::<_, cocoindex::Error>(uuids)
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(uuids.len(), 5);
+    assert_eq!(
+        uuids.iter().collect::<std::collections::HashSet<_>>().len(),
+        5
+    );
+}
+
+#[tokio::test]
+async fn uuid_generator_is_stable_across_runs() {
+    let (app, _dir) = temp_app("uuid_generator_stable").await;
+
+    async fn generate(app: &App) -> Vec<(String, Vec<uuid::Uuid>)> {
+        app.update(|ctx| async move {
+            let mut results = Vec::new();
+            for dep in ["A", "B"] {
+                let mut uuid_gen = UuidGenerator::new();
+                let mut uuids = Vec::new();
+                for _ in 0..3 {
+                    uuids.push(uuid_gen.next_uuid(&ctx, &dep).await?);
+                }
+                results.push((dep.to_string(), uuids));
+            }
+            Ok::<_, cocoindex::Error>(results)
+        })
+        .await
+        .unwrap()
+    }
+
+    let first = generate(&app).await;
+    let second = generate(&app).await;
+    assert_eq!(first, second);
+    assert!(first[0].1.iter().all(|uuid| !first[1].1.contains(uuid)));
+}
+
+#[tokio::test]
+async fn uuid_generator_constructor_deps_split_sequences() {
+    let (app, _dir) = temp_app("uuid_generator_constructor_deps").await;
+
+    async fn generate(app: &App) -> Vec<(String, Vec<uuid::Uuid>)> {
+        app.update(|ctx| async move {
+            let mut results = Vec::new();
+            for dep in ["A", "B"] {
+                let mut uuid_gen = UuidGenerator::with_deps(&dep)?;
+                let mut uuids = Vec::new();
+                for _ in 0..3 {
+                    uuids.push(uuid_gen.next_uuid_default(&ctx).await?);
+                }
+                results.push((dep.to_string(), uuids));
+            }
+            Ok::<_, cocoindex::Error>(results)
+        })
+        .await
+        .unwrap()
+    }
+
+    let first = generate(&app).await;
+    let second = generate(&app).await;
+    assert_eq!(first, second);
+    assert!(first[0].1.iter().all(|uuid| !first[1].1.contains(uuid)));
 }
 
 #[tokio::test]

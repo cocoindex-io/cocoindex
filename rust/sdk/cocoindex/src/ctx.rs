@@ -343,6 +343,15 @@ impl Ctx {
         self.comp_ctx.is_some()
     }
 
+    pub(crate) async fn next_raw_id(&self) -> Result<u64> {
+        let Some(comp_ctx) = &self.comp_ctx else {
+            return Err(Error::engine(
+                "IdGenerator requires an active pipeline context",
+            ));
+        };
+        comp_ctx.app_ctx().next_id(None).await.map_err(Error::from)
+    }
+
     /// Aggregate stats for components mounted inside `f` into a separate named
     /// group. Returns the closure result and a handle for polling/watching the
     /// group's stats.

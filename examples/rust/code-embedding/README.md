@@ -15,7 +15,7 @@ Pipeline: **walk → detect language → tree-sitter chunk → embed → store i
 | Embeddings | `SentenceTransformerEmbedder` (all-MiniLM-L6-v2) | `fastembed` `AllMiniLML6V2` — **the same model**, local ONNX |
 | Embedder change-detection | `ContextKey(..., detect_change=True)` | `ContextKey::new_with_state("embedder", \|e\| e.model_name)` |
 | Vector store | `postgres.TableTarget` + `declare_vector_index` | hand-rolled `sqlx` + `pgvector` (HNSW index) |
-| Stable row ids | `IdGenerator.next_id(chunk.text)` | content hash (`stable_id`) |
+| Stable row ids | `IdGenerator.next_id(chunk.text)` | `IdGenerator::next_id(ctx, chunk_text)` |
 | Query | pgvector `<=>` | pgvector `<=>` |
 
 ### Why some parts are hand-rolled

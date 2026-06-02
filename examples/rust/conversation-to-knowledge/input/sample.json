@@ -1,0 +1,19 @@
+{
+  "id": "demo-altman-interview",
+  "title": "Lex Fridman Podcast: Sam Altman on the future of AI",
+  "channel": "Lex Fridman",
+  "description": "Lex Fridman interviews Sam Altman, CEO of OpenAI, about large language models, AGI, and the AI industry.",
+  "date": "2024-03-18",
+  "utterances": [
+    { "speaker": "A", "text": "Welcome back to the podcast. I'm Lex Fridman, and today I'm here with Sam Altman, the CEO of OpenAI. Sam, thanks for joining me again." },
+    { "speaker": "B", "text": "Thanks for having me, Lex. It's always great to be here." },
+    { "speaker": "A", "text": "Let's start with large language models. How do you think about their trajectory?" },
+    { "speaker": "B", "text": "Large language models like the ones behind ChatGPT have improved dramatically. At OpenAI we believe scaling laws still have a lot of room to run, and that's a big part of the path toward AGI." },
+    { "speaker": "A", "text": "Some people, like Yann LeCun at Meta, argue that autoregressive models are a dead end. What's your view?" },
+    { "speaker": "B", "text": "I have a lot of respect for Yann LeCun. I think Meta's work on open models is valuable, but I disagree that large language models are a dead end. Open AI's research shows they keep getting better with scale." },
+    { "speaker": "A", "text": "Google DeepMind has also been pushing hard, with people like Demis Hassabis leading the charge." },
+    { "speaker": "B", "text": "Demis Hassabis is brilliant. Google DeepMind and DeepMind have done incredible work on reinforcement learning and protein folding with AlphaFold. The competition pushes everyone forward." },
+    { "speaker": "A", "text": "What about the role of regulation? You've testified before the US Congress." },
+    { "speaker": "B", "text": "Yes, I think thoughtful AI regulation matters. Samuel Altman, that's me, has argued that the US government and bodies like the US Congress should focus on the most capable frontier models rather than small startups." }
+  ]
+}
