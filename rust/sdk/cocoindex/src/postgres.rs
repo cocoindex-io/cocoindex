@@ -122,10 +122,10 @@ impl TableSchema {
 
 #[derive(Clone)]
 pub struct TableTarget {
-    db: Database,
     pg_schema_name: Option<Arc<str>>,
     table_name: Arc<str>,
     table_schema: TableSchema,
+    table_provider: cocoindex_core::engine::target_state::TargetStateProvider<RustProfile>,
     provider: cocoindex_core::engine::target_state::TargetStateProvider<RustProfile>,
 }
 
@@ -159,15 +159,8 @@ impl TableTarget {
         let op_class = pgvector_op_class(&col.pg_type, options.metric)?;
         let name = options.name.unwrap_or_else(|| column.to_string());
         validate_ident(&name, "vector index name")?;
-        let provider = ctx.register_root_target_provider(
-            format!(
-                "cocoindex/postgres/vector_index/{}/{}/{}",
-                self.db.state_id(),
-                self.pg_schema_name.as_deref().unwrap_or("public"),
-                self.table_name
-            ),
-            vector_index_handler(self.db.clone()),
-        )?;
+        let provider =
+            ctx.register_attachment_target_provider(&self.table_provider, "vector_index")?;
         let spec = VectorIndexSpec {
             pg_schema_name: self.pg_schema_name.as_deref().map(str::to_string),
             table_name: self.table_name.to_string(),
@@ -239,7 +232,7 @@ pub fn mount_table_target(
         table_schema: table_schema.clone(),
     };
     ctx.declare_target_state(
-        table_root,
+        table_root.clone(),
         StableKey::Str(Arc::from("default")),
         Value::from_serializable(&spec)?,
     )?;
@@ -253,12 +246,34 @@ pub fn mount_table_target(
         row_handler(db.clone(), spec),
     )?;
     Ok(TableTarget {
-        db: db.clone(),
         pg_schema_name: pg_schema_name.map(Arc::from),
         table_name: Arc::from(table_name),
         table_schema,
+        table_provider: table_root,
         provider,
     })
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ReadTableOptions {
+    pub pg_schema_name: Option<String>,
+    pub columns: Option<Vec<String>>,
+}
+
+impl ReadTableOptions {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn pg_schema_name(mut self, schema: impl Into<String>) -> Self {
+        self.pg_schema_name = Some(schema.into());
+        self
+    }
+
+    pub fn columns(mut self, columns: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.columns = Some(columns.into_iter().map(Into::into).collect());
+        self
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -308,6 +323,7 @@ struct VectorIndexSpec {
 }
 
 fn table_handler(db: Database) -> BoxedHandler {
+    let attachment_db = db.clone();
     let sink = table_sink(db);
     BoxedHandler::new(move |_key, desired, prev, prev_may_be_missing| {
         let desired_spec = desired
@@ -363,6 +379,12 @@ fn table_handler(db: Database) -> BoxedHandler {
             tracking_record: desired.cloned(),
             child_invalidation: None,
         }))
+    })
+    .with_attachments(move || {
+        Ok(vec![(
+            Arc::from("vector_index"),
+            vector_index_handler(attachment_db.clone()),
+        )])
     })
 }
 
@@ -609,8 +631,9 @@ async fn apply_rows(
     if mutations.is_empty() {
         return Ok(());
     }
-    // Ensure the table exists once if we are going to upsert.
-    if let Some((spec, _, _)) = mutations.iter().find(|(_, _, state)| state.is_some()) {
+    // Ensure the table exists before any row mutation. This keeps delete-only
+    // reconciliation idempotent after a crash or external table cleanup.
+    if let Some((spec, _, _)) = mutations.first() {
         define_table(db, spec).await?;
     }
     // Apply the whole batch atomically.
@@ -1138,11 +1161,41 @@ pub async fn read_table<T: serde::de::DeserializeOwned>(
     db: &Database,
     table_name: &str,
 ) -> Result<Vec<T>> {
+    read_table_with_options(db, table_name, ReadTableOptions::default()).await
+}
+
+pub async fn read_table_with_options<T: serde::de::DeserializeOwned>(
+    db: &Database,
+    table_name: &str,
+    options: ReadTableOptions,
+) -> Result<Vec<T>> {
     validate_ident(table_name, "table name")?;
-    let rows = sqlx::query(&format!("SELECT * FROM {}", quote_ident(table_name)))
-        .fetch_all(db.pool())
-        .await
-        .map_err(|e| Error::engine(format!("postgres source read failed: {e}")))?;
+    if let Some(schema) = &options.pg_schema_name {
+        validate_ident(schema, "schema name")?;
+    }
+    let select_list = match &options.columns {
+        Some(columns) => {
+            if columns.is_empty() {
+                return Err(Error::engine("Postgres source columns cannot be empty"));
+            }
+            columns
+                .iter()
+                .map(|column| {
+                    validate_ident(column, "column name")?;
+                    Ok(quote_ident(column))
+                })
+                .collect::<Result<Vec<_>>>()?
+                .join(", ")
+        }
+        None => "*".to_string(),
+    };
+    let rows = sqlx::query(&format!(
+        "SELECT {select_list} FROM {}",
+        qualified_table_name_from_parts(options.pg_schema_name.as_deref(), table_name)
+    ))
+    .fetch_all(db.pool())
+    .await
+    .map_err(|e| Error::engine(format!("postgres source read failed: {e}")))?;
     let mut out = Vec::with_capacity(rows.len());
     for row in &rows {
         let json = pg_row_to_json(row)?;
@@ -1195,10 +1248,10 @@ fn pg_col_to_json(
         "DATE" => {
             get!(chrono::NaiveDate).map_or(JsonValue::Null, |d| JsonValue::String(d.to_string()))
         }
-        // Best-effort fallback: render as text if possible, else null.
-        _ => row
-            .try_get::<Option<String>, _>(i)
-            .map(|o| o.map_or(JsonValue::Null, JsonValue::String))
-            .unwrap_or(JsonValue::Null),
+        _ => {
+            return Err(cocoindex_utils::error::Error::internal_msg(format!(
+                "unsupported Postgres source column type {ty:?}"
+            )));
+        }
     })
 }

@@ -4,6 +4,8 @@ pub mod entity_resolution;
 pub mod error;
 pub mod fs;
 pub mod id;
+#[cfg(feature = "kafka")]
+pub mod kafka;
 pub mod memo;
 #[cfg(feature = "postgres")]
 pub mod postgres;

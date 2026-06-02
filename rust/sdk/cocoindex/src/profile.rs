@@ -167,6 +167,7 @@ pub(crate) enum Action {
 
 pub(crate) struct BoxedHandler {
     reconcile_fn: Arc<ReconcileFn>,
+    attachments_fn: Arc<AttachmentsFn>,
 }
 
 type ReconcileFn = dyn Fn(
@@ -177,6 +178,9 @@ type ReconcileFn = dyn Fn(
     ) -> cocoindex_utils::error::Result<Option<TargetReconcileOutput<RustProfile>>>
     + Send
     + Sync;
+
+type AttachmentsFn =
+    dyn Fn() -> cocoindex_utils::error::Result<Vec<(Arc<str>, BoxedHandler)>> + Send + Sync;
 
 impl BoxedHandler {
     pub(crate) fn new(
@@ -193,7 +197,19 @@ impl BoxedHandler {
     ) -> Self {
         Self {
             reconcile_fn: Arc::new(f),
+            attachments_fn: Arc::new(|| Ok(vec![])),
         }
+    }
+
+    pub(crate) fn with_attachments(
+        mut self,
+        f: impl Fn() -> cocoindex_utils::error::Result<Vec<(Arc<str>, BoxedHandler)>>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        self.attachments_fn = Arc::new(f);
+        self
     }
 }
 
@@ -211,6 +227,10 @@ impl TargetHandler<RustProfile> for BoxedHandler {
             prev_possible_states,
             prev_may_be_missing,
         )
+    }
+
+    fn attachments(&self) -> cocoindex_utils::error::Result<Vec<(Arc<str>, BoxedHandler)>> {
+        (self.attachments_fn)()
     }
 }
 

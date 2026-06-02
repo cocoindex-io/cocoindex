@@ -11,7 +11,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use cocoindex::{App, ContextKey, Ctx, Result, postgres};
 use serde::{Deserialize, Serialize};
-use sqlx::Row as _;
 
 static DB: LazyLock<ContextKey<postgres::Database>> = LazyLock::new(|| {
     ContextKey::new_with_state("postgres_source_test_db", |db: &postgres::Database| {
@@ -33,6 +32,11 @@ struct OutputRow {
     category: String,
     name: String,
     total_value: f64,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+struct SourceNameOnly {
+    name: String,
 }
 
 /// Memoized per-row compute (the parity for `@coco.fn(memo=True) process_product`).
@@ -108,6 +112,96 @@ async fn postgres_source_reads_processes_and_reconciles_when_available() -> Resu
         assert_eq!(rows[0].name, "Headphones");
         assert_eq!(rows[0].price, 100.0);
         assert_eq!(rows[0].amount, 2);
+    }
+    {
+        let mut rows: Vec<SourceNameOnly> = postgres::read_table_with_options(
+            &db,
+            &src_table,
+            postgres::ReadTableOptions::new().columns(["name"]),
+        )
+        .await?;
+        rows.sort_by(|a, b| a.name.cmp(&b.name));
+        assert_eq!(
+            rows,
+            vec![
+                SourceNameOnly {
+                    name: "Headphones".to_string()
+                },
+                SourceNameOnly {
+                    name: "Rust Book".to_string()
+                }
+            ]
+        );
+    }
+    {
+        let src_schema = format!("cocoindex_src_schema_{nonce}");
+        sqlx::query(&format!("DROP SCHEMA IF EXISTS \"{src_schema}\" CASCADE"))
+            .execute(db.pool())
+            .await
+            .map_err(pe)?;
+        sqlx::query(&format!("CREATE SCHEMA \"{src_schema}\""))
+            .execute(db.pool())
+            .await
+            .map_err(pe)?;
+        sqlx::query(&format!(
+            "CREATE TABLE \"{src_schema}\".\"source_names\" (name text PRIMARY KEY)"
+        ))
+        .execute(db.pool())
+        .await
+        .map_err(pe)?;
+        sqlx::query(&format!(
+            "INSERT INTO \"{src_schema}\".\"source_names\" (name) VALUES ('Schema Row')"
+        ))
+        .execute(db.pool())
+        .await
+        .map_err(pe)?;
+        let rows: Vec<SourceNameOnly> = postgres::read_table_with_options(
+            &db,
+            "source_names",
+            postgres::ReadTableOptions::new().pg_schema_name(src_schema.clone()),
+        )
+        .await?;
+        assert_eq!(
+            rows,
+            vec![SourceNameOnly {
+                name: "Schema Row".to_string()
+            }]
+        );
+        sqlx::query(&format!("DROP SCHEMA IF EXISTS \"{src_schema}\" CASCADE"))
+            .execute(db.pool())
+            .await
+            .map_err(pe)?;
+    }
+    {
+        let unsupported_table = format!("src_unsupported_{nonce}");
+        sqlx::query(&format!("DROP TABLE IF EXISTS \"{unsupported_table}\""))
+            .execute(db.pool())
+            .await
+            .map_err(pe)?;
+        sqlx::query(&format!(
+            "CREATE TABLE \"{unsupported_table}\" (id integer PRIMARY KEY, payload jsonb)"
+        ))
+        .execute(db.pool())
+        .await
+        .map_err(pe)?;
+        sqlx::query(&format!(
+            "INSERT INTO \"{unsupported_table}\" (id, payload) VALUES (1, '{{\"x\": 1}}')"
+        ))
+        .execute(db.pool())
+        .await
+        .map_err(pe)?;
+        let err = postgres::read_table::<serde_json::Value>(&db, &unsupported_table)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("unsupported Postgres source column type"),
+            "{err}"
+        );
+        sqlx::query(&format!("DROP TABLE IF EXISTS \"{unsupported_table}\""))
+            .execute(db.pool())
+            .await
+            .map_err(pe)?;
     }
 
     let tempdir = tempfile::tempdir().unwrap();

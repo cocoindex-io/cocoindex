@@ -433,16 +433,25 @@ fn cosine(a: &[f32], b: &[f32]) -> f32 {
 }
 
 fn chain_walk(dedup: &BTreeMap<String, Option<String>>, name: &str) -> String {
+    let mut seen = std::collections::BTreeSet::new();
     let mut current = name;
     // Bound the walk by the map size: the dedup chain is acyclic by
     // construction, but guard against an unexpected cycle rather than hang.
     for _ in 0..=dedup.len() {
+        if !seen.insert(current.to_string()) {
+            return seen
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| current.to_string());
+        }
         match dedup.get(current) {
             Some(Some(next)) => current = next,
             _ => return current.to_string(),
         }
     }
-    current.to_string()
+    seen.into_iter()
+        .next()
+        .unwrap_or_else(|| current.to_string())
 }
 
 fn deliver_events(mut events: Vec<ComponentEvents>) -> Vec<ResolutionEvent> {
@@ -482,7 +491,6 @@ mod tests {
         let mut m = BTreeMap::new();
         m.insert("a".to_string(), Some("b".to_string()));
         m.insert("b".to_string(), Some("a".to_string()));
-        let result = chain_walk(&m, "a");
-        assert!(result == "a" || result == "b");
+        assert_eq!(chain_walk(&m, "a"), "a");
     }
 }

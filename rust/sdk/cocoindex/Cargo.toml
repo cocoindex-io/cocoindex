@@ -8,6 +8,7 @@ license.workspace = true
 [features]
 postgres = ["dep:serde_json", "dep:sqlx", "dep:chrono"]
 surrealdb = ["dep:serde_json", "dep:surrealdb"]
+kafka = ["dep:rskafka", "dep:chrono"]
 
 [dependencies]
 cocoindex_macros = { path = "../cocoindex_macros" }
@@ -33,6 +34,7 @@ sqlx = { version = "0.8", default-features = false, optional = true, features = 
     "chrono",
 ] }
 chrono = { version = "0.4", default-features = false, optional = true }
+rskafka = { version = "0.6", default-features = false, optional = true }
 surrealdb = { version = "3", default-features = false, optional = true, features = [
     "protocol-ws",
     "rustls",
@@ -44,6 +46,8 @@ serde_json = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 criterion = "0.5"
 glob = "0.3"
+# Used by the live Kafka integration test to consume produced records back.
+rskafka = { version = "0.6", default-features = false }
 
 [[bench]]
 name = "sdk_microbench"

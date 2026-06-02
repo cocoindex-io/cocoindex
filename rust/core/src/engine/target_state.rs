@@ -215,14 +215,7 @@ impl<Prof: EngineProfile> TargetStateProvider<Prof> {
         let symbol_key = StableKey::Symbol(att_type.into());
         let target_state_path = self.target_state_path().concat(&symbol_key);
 
-        let provider_generation = self
-            .provider_generation()
-            .ok_or_else(|| {
-                internal_error!(
-                    "Parent provider generation must be set before registering attachment"
-                )
-            })?
-            .clone();
+        let provider_generation = self.provider_generation().cloned().unwrap_or_default();
 
         let provider = TargetStateProvider {
             inner: Arc::new(TargetStateProviderInner {
@@ -300,6 +293,7 @@ impl<Prof: EngineProfile> TargetStateProviderRegistry<Prof> {
             }),
         };
         self.add(target_state_path, provider.clone())?;
+        provider.register_all_attachment_providers(self)?;
         Ok(provider)
     }
 

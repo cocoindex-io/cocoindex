@@ -368,6 +368,21 @@ impl Ctx {
             .map_err(Error::from)
     }
 
+    pub(crate) fn register_attachment_target_provider(
+        &self,
+        parent: &TargetStateProvider<RustProfile>,
+        att_type: &str,
+    ) -> Result<TargetStateProvider<RustProfile>> {
+        let Some(comp_ctx) = &self.comp_ctx else {
+            return Err(Error::engine(
+                "target providers require an active pipeline context",
+            ));
+        };
+        parent
+            .register_attachment_provider(comp_ctx, att_type)
+            .map_err(Error::from)
+    }
+
     pub(crate) fn declare_target_state(
         &self,
         provider: TargetStateProvider<RustProfile>,
