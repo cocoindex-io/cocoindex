@@ -14,15 +14,9 @@ Pipeline: **walk → detect language → tree-sitter chunk → embed → store i
 | Chunking | `RecursiveSplitter` | `cocoindex_ops_text::split::RecursiveChunker` |
 | Embeddings | `SentenceTransformerEmbedder` (all-MiniLM-L6-v2) | `fastembed` `AllMiniLML6V2` — **the same model**, local ONNX |
 | Embedder change-detection | `ContextKey(..., detect_change=True)` | `ContextKey::new_with_state("embedder", \|e\| e.model_name)` |
-| Vector store | `postgres.TableTarget` + `declare_vector_index` | hand-rolled `sqlx` + `pgvector` (HNSW index) |
+| Vector store | `postgres.TableTarget` + `declare_vector_index` | `cocoindex::postgres` `TableTarget` + `declare_vector_index` |
 | Stable row ids | `IdGenerator.next_id(chunk.text)` | `IdGenerator::next_id(ctx, chunk_text)` |
 | Query | pgvector `<=>` | pgvector `<=>` |
-
-### Why some parts are hand-rolled
-
-The Rust SDK doesn't (yet) expose a declarative database **target** like Python's `TableTarget`. With Python, rows for a deleted source file are cleaned up automatically. Here we reconcile manually:
-- per file, delete chunk-rows that disappeared since the last run;
-- after the walk, delete rows for files that no longer exist.
 
 Chunking and language detection *do* exist in the engine (`cocoindex_ops_text`) but aren't re-exported by the `cocoindex` SDK crate, so we depend on that crate directly.
 
@@ -48,4 +42,4 @@ cargo run -- query "how is memoization implemented"
 ```
 
 Re-running `index` after editing a file re-embeds only that file; deleting a file
-removes its rows on the next `index`.
+removes its rows on the next `index` through target reconciliation.

@@ -288,6 +288,10 @@ async fn connect_pool() -> Result<PgPool> {
         .map_err(db_err)
 }
 
+async fn connect_target_db() -> Result<postgres::Database> {
+    postgres::Database::connect(&database_url()).await
+}
+
 async fn load_embedder() -> Result<Embedder> {
     tokio::task::spawn_blocking(|| Embedder::load(EMBED_MODEL))
         .await
@@ -319,11 +323,11 @@ async fn main() -> Result<()> {
             }
             .unwrap_or_else(default_sourcedir);
 
-            let pool = connect_pool().await?;
+            let db = connect_target_db().await?;
             let embedder = load_embedder().await?;
             let app = App::builder("CodeEmbeddingRust")
                 .db_path(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".cocoindex_db"))
-                .provide_key(&DB, pool)
+                .provide_key(&DB, db)
                 .provide_key(&EMBEDDER, embedder)
                 .build()
                 .await?;

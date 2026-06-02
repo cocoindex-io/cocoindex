@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use cocoindex_core::engine::target_state::{ChildTargetDef, TargetReconcileOutput};
 use cocoindex_core::state::stable_path::StableKey;
+use cocoindex_utils::fingerprint::Fingerprint;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value as JsonValue};
 use surrealdb::Surreal;
@@ -280,11 +281,11 @@ impl RelationTarget {
             .and_then(|v| RecordIdValue::from_json_scalar(&v))
             .unwrap_or_else(|| {
                 RecordIdValue::String(format!(
-                    "{}_{}_{}_{}",
-                    from_table,
-                    from_id.key_fragment(),
-                    to_table,
-                    to_id.key_fragment()
+                    "{}{}{}{}",
+                    relation_key_part(from_table),
+                    relation_key_part(&from_id.key_fragment()),
+                    relation_key_part(to_table),
+                    relation_key_part(&to_id.key_fragment())
                 ))
             });
         let value = RecordState {
@@ -302,6 +303,10 @@ impl RelationTarget {
             Value::from_serializable(&value)?,
         )
     }
+}
+
+fn relation_key_part(value: &str) -> String {
+    format!("{}:{value};", value.len())
 }
 
 pub fn mount_table_target(
@@ -600,10 +605,18 @@ fn record_handler(graph: Graph, spec: TableSpec) -> BoxedHandler {
             .map(Value::deserialize::<RecordState>)
             .transpose()
             .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?;
-        let prev_same = desired_state.as_ref().is_some_and(|desired| {
+        // Track a cheap fingerprint of the record state (not the full record).
+        let desired_fp = match &desired_state {
+            Some(state) => Some(
+                Fingerprint::from(state)
+                    .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?,
+            ),
+            None => None,
+        };
+        let prev_same = desired_fp.as_ref().is_some_and(|fp| {
             prev.iter()
-                .filter_map(|v| v.deserialize::<RecordState>().ok())
-                .any(|prev| &prev == desired)
+                .filter_map(|v| v.deserialize::<Fingerprint>().ok())
+                .any(|p| &p == fp)
         });
         if desired_state.is_some() && prev_same && !prev_may_be_missing {
             return Ok(None);
@@ -611,6 +624,13 @@ fn record_handler(graph: Graph, spec: TableSpec) -> BoxedHandler {
         if desired_state.is_none() && prev.is_empty() && !prev_may_be_missing {
             return Ok(None);
         }
+        let tracking_record = match &desired_fp {
+            Some(fp) => Some(
+                Value::from_serializable(fp)
+                    .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?,
+            ),
+            None => None,
+        };
         let action = TargetAction::Record {
             spec: spec.clone(),
             table_name: spec.table_name.clone(),
@@ -623,7 +643,7 @@ fn record_handler(graph: Graph, spec: TableSpec) -> BoxedHandler {
                     .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?,
             ),
             sink: sink.clone(),
-            tracking_record: desired.cloned(),
+            tracking_record,
             child_invalidation: None,
         }))
     })
@@ -903,4 +923,18 @@ fn validate_ident(value: &str, label: &str) -> Result<()> {
         return Err(Error::engine(format!("invalid {label}: {value}")));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn relation_key_parts_are_unambiguous() {
+        let first = format!("{}{}", relation_key_part("ab"), relation_key_part("c"));
+        let second = format!("{}{}", relation_key_part("a"), relation_key_part("bc"));
+        assert_ne!(first, second);
+        assert_eq!(first, "2:ab;1:c;");
+        assert_eq!(second, "1:a;2:bc;");
+    }
 }

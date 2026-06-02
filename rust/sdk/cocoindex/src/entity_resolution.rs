@@ -434,12 +434,15 @@ fn cosine(a: &[f32], b: &[f32]) -> f32 {
 
 fn chain_walk(dedup: &BTreeMap<String, Option<String>>, name: &str) -> String {
     let mut current = name;
-    loop {
+    // Bound the walk by the map size: the dedup chain is acyclic by
+    // construction, but guard against an unexpected cycle rather than hang.
+    for _ in 0..=dedup.len() {
         match dedup.get(current) {
             Some(Some(next)) => current = next,
             _ => return current.to_string(),
         }
     }
+    current.to_string()
 }
 
 fn deliver_events(mut events: Vec<ComponentEvents>) -> Vec<ResolutionEvent> {
@@ -455,4 +458,31 @@ fn deliver_events(mut events: Vec<ComponentEvents>) -> Vec<ResolutionEvent> {
     pass_2.sort_by(|a, b| a.entity.cmp(&b.entity));
     pass_1.extend(pass_2);
     pass_1
+}
+
+#[cfg(test)]
+mod tests {
+    use super::chain_walk;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn chain_walk_follows_to_canonical() {
+        let mut m = BTreeMap::new();
+        m.insert("a".to_string(), Some("b".to_string()));
+        m.insert("b".to_string(), Some("c".to_string()));
+        m.insert("c".to_string(), None);
+        assert_eq!(chain_walk(&m, "a"), "c");
+        assert_eq!(chain_walk(&m, "c"), "c");
+        assert_eq!(chain_walk(&m, "unknown"), "unknown");
+    }
+
+    #[test]
+    fn chain_walk_terminates_on_cycle() {
+        // Defensive: a malformed cyclic map must not hang.
+        let mut m = BTreeMap::new();
+        m.insert("a".to_string(), Some("b".to_string()));
+        m.insert("b".to_string(), Some("a".to_string()));
+        let result = chain_walk(&m, "a");
+        assert!(result == "a" || result == "b");
+    }
 }

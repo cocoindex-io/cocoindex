@@ -254,7 +254,10 @@ fn validate_relative_name(name: &str) -> Result<()> {
     let has_parent = path
         .components()
         .any(|c| matches!(c, std::path::Component::ParentDir));
-    if name.is_empty() || path.has_root() || has_parent {
+    let has_prefix = path
+        .components()
+        .any(|c| matches!(c, std::path::Component::Prefix(_)));
+    if name.is_empty() || path.has_root() || has_prefix || has_parent {
         return Err(Error::engine(
             "declare_file name must be a non-empty relative path without '..'",
         ));

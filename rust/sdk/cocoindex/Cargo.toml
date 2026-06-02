@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [features]
-postgres = ["dep:serde_json", "dep:sqlx"]
+postgres = ["dep:serde_json", "dep:sqlx", "dep:chrono"]
 surrealdb = ["dep:serde_json", "dep:surrealdb"]
 
 [dependencies]
@@ -30,7 +30,9 @@ sqlx = { version = "0.8", default-features = false, optional = true, features = 
     "runtime-tokio",
     "tls-rustls",
     "postgres",
+    "chrono",
 ] }
+chrono = { version = "0.4", default-features = false, optional = true }
 surrealdb = { version = "3", default-features = false, optional = true, features = [
     "protocol-ws",
     "rustls",

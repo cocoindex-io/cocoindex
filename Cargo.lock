@@ -759,6 +759,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "bytes",
+ "chrono",
  "cocoindex_core",
  "cocoindex_macros",
  "cocoindex_utils",

@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use cocoindex_core::engine::target_state::TargetReconcileOutput;
 use cocoindex_core::state::stable_path::StableKey;
+use cocoindex_utils::fingerprint::Fingerprint;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value as JsonValue};
 use sqlx::PgPool;
@@ -92,10 +93,7 @@ impl TableSchema {
             validate_pg_type(&def.pg_type)?;
             out.insert(name, def);
         }
-        let primary_key: Vec<String> = primary_key
-            .into_iter()
-            .map(Into::into)
-            .collect::<Vec<_>>();
+        let primary_key: Vec<String> = primary_key.into_iter().map(Into::into).collect::<Vec<_>>();
         if primary_key.is_empty() {
             return Err(Error::engine("Postgres table primary key cannot be empty"));
         }
@@ -280,6 +278,10 @@ enum TargetAction {
     Table {
         spec: Option<TableSpec>,
     },
+    DropTable {
+        pg_schema_name: Option<String>,
+        table_name: String,
+    },
     Row {
         spec: TableSpec,
         pk: Vec<JsonValue>,
@@ -317,22 +319,41 @@ fn table_handler(db: Database) -> BoxedHandler {
                 .filter_map(|v| v.deserialize::<TableSpec>().ok())
                 .any(|prev| &prev == desired)
         });
+        // Unchanged: nothing to do (rows ensure the table exists when written).
         if desired_spec.is_some() && prev_same && !prev_may_be_missing {
+            return Ok(None);
+        }
+        // Un-declared: drop the table if it previously existed. The table name
+        // comes from the previous tracking record (full TableSpec) since
+        // `desired` is None here.
+        if desired_spec.is_none() {
+            if prev.is_empty() && !prev_may_be_missing {
+                return Ok(None);
+            }
+            let Some(prev_spec) = prev
+                .iter()
+                .filter_map(|v| v.deserialize::<TableSpec>().ok())
+                .next()
+            else {
+                return Ok(None);
+            };
             return Ok(Some(TargetReconcileOutput {
-                action: Action::Update(
-                    Value::from_serializable(&TargetAction::Table {
-                        spec: desired_spec.clone(),
+                action: Action::Delete(
+                    Value::from_serializable(&TargetAction::DropTable {
+                        pg_schema_name: prev_spec.pg_schema_name,
+                        table_name: prev_spec.table_name,
                     })
                     .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?,
                 ),
                 sink: sink.clone(),
-                tracking_record: desired.cloned(),
-                child_invalidation: None,
+                tracking_record: None,
+                child_invalidation: Some(
+                    cocoindex_core::engine::target_state::ChildInvalidation::Destructive,
+                ),
             }));
         }
-        if desired_spec.is_none() && prev.is_empty() && !prev_may_be_missing {
-            return Ok(None);
-        }
+        // New or changed: (re)define the table. Tracking keeps the full spec so
+        // we can recover the table name on a future drop.
         Ok(Some(TargetReconcileOutput {
             action: Action::Update(
                 Value::from_serializable(&TargetAction::Table { spec: desired_spec })
@@ -354,10 +375,19 @@ fn row_handler(db: Database, spec: TableSpec) -> BoxedHandler {
             .map(Value::deserialize::<RowState>)
             .transpose()
             .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?;
-        let prev_same = desired_state.as_ref().is_some_and(|desired| {
+        // Track a cheap fingerprint of the row state (not the full row) so
+        // unchanged rows are skipped without persisting every column to LMDB.
+        let desired_fp = match &desired_state {
+            Some(state) => Some(
+                Fingerprint::from(state)
+                    .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?,
+            ),
+            None => None,
+        };
+        let prev_same = desired_fp.as_ref().is_some_and(|fp| {
             prev.iter()
-                .filter_map(|v| v.deserialize::<RowState>().ok())
-                .any(|prev| &prev == desired)
+                .filter_map(|v| v.deserialize::<Fingerprint>().ok())
+                .any(|p| &p == fp)
         });
         if desired_state.is_some() && prev_same && !prev_may_be_missing {
             return Ok(None);
@@ -365,6 +395,13 @@ fn row_handler(db: Database, spec: TableSpec) -> BoxedHandler {
         if desired_state.is_none() && prev.is_empty() && !prev_may_be_missing {
             return Ok(None);
         }
+        let tracking_record = match &desired_fp {
+            Some(fp) => Some(
+                Value::from_serializable(fp)
+                    .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?,
+            ),
+            None => None,
+        };
         Ok(Some(TargetReconcileOutput {
             action: Action::Update(
                 Value::from_serializable(&TargetAction::Row {
@@ -375,7 +412,7 @@ fn row_handler(db: Database, spec: TableSpec) -> BoxedHandler {
                 .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?,
             ),
             sink: sink.clone(),
-            tracking_record: desired.cloned(),
+            tracking_record,
             child_invalidation: None,
         }))
     })
@@ -388,22 +425,32 @@ fn vector_index_handler(db: Database) -> BoxedHandler {
             .map(Value::deserialize::<VectorIndexSpec>)
             .transpose()
             .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?;
-        let prev_same = desired_spec.as_ref().is_some_and(|desired| {
-            prev.iter()
-                .filter_map(|v| v.deserialize::<VectorIndexSpec>().ok())
-                .any(|prev| &prev == desired)
-        });
+        let prev_spec = prev
+            .iter()
+            .filter_map(|v| v.deserialize::<VectorIndexSpec>().ok())
+            .next();
+        let prev_same = desired_spec
+            .as_ref()
+            .is_some_and(|desired| prev_spec.as_ref().is_some_and(|prev| prev == desired));
         if desired_spec.is_some() && prev_same && !prev_may_be_missing {
             return Ok(None);
         }
         if desired_spec.is_none() && prev.is_empty() && !prev_may_be_missing {
             return Ok(None);
         }
-        Ok(Some(TargetReconcileOutput {
-            action: Action::Update(
+        let action = if desired_spec.is_some() {
+            Action::Update(
                 Value::from_serializable(&TargetAction::VectorIndex { spec: desired_spec })
                     .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?,
-            ),
+            )
+        } else {
+            Action::Delete(
+                Value::from_serializable(&TargetAction::VectorIndex { spec: prev_spec })
+                    .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?,
+            )
+        };
+        Ok(Some(TargetReconcileOutput {
+            action,
             sink: sink.clone(),
             tracking_record: desired.cloned(),
             child_invalidation: None,
@@ -421,6 +468,12 @@ fn table_sink(db: Database) -> BoxedSink {
                         define_table(&db, &spec).await?;
                     }
                     TargetAction::Table { spec: None } => {}
+                    TargetAction::DropTable {
+                        pg_schema_name,
+                        table_name,
+                    } => {
+                        drop_table(&db, pg_schema_name.as_deref(), &table_name).await?;
+                    }
                     _ => {
                         return Err(cocoindex_utils::error::Error::internal_msg(
                             "non-table action routed to Postgres table sink",
@@ -454,18 +507,23 @@ fn vector_index_sink(db: Database) -> BoxedSink {
         let db = db.clone();
         Box::pin(async move {
             for action in actions {
+                let is_delete = matches!(&action, Action::Delete(_));
                 if let TargetAction::VectorIndex { spec } = action_value(action)? {
                     if let Some(spec) = spec {
-                        define_table(
-                            &db,
-                            &TableSpec {
-                                pg_schema_name: spec.pg_schema_name.clone(),
-                                table_name: spec.table_name.clone(),
-                                table_schema: spec.table_schema.clone(),
-                            },
-                        )
-                        .await?;
-                        recreate_vector_index(&db, &spec).await?;
+                        if is_delete {
+                            drop_vector_index(&db, &spec).await?;
+                        } else {
+                            define_table(
+                                &db,
+                                &TableSpec {
+                                    pg_schema_name: spec.pg_schema_name.clone(),
+                                    table_name: spec.table_name.clone(),
+                                    table_schema: spec.table_schema.clone(),
+                                },
+                            )
+                            .await?;
+                            recreate_vector_index(&db, &spec).await?;
+                        }
                     }
                 }
             }
@@ -489,9 +547,9 @@ async fn define_table(db: &Database, spec: &TableSpec) -> cocoindex_utils::error
             "CREATE SCHEMA IF NOT EXISTS {}",
             quote_ident(schema)
         ))
-            .execute(db.pool())
-            .await
-            .map_err(pg_internal)?;
+        .execute(db.pool())
+        .await
+        .map_err(pg_internal)?;
     }
     if schema_uses_pgvector(&spec.table_schema) {
         sqlx::query("CREATE EXTENSION IF NOT EXISTS vector")
@@ -506,12 +564,7 @@ async fn define_table(db: &Database, spec: &TableSpec) -> cocoindex_utils::error
         } else {
             " NOT NULL"
         };
-        defs.push(format!(
-            "{} {}{}",
-            quote_ident(name),
-            col.pg_type,
-            nullable
-        ));
+        defs.push(format!("{} {}{}", quote_ident(name), col.pg_type, nullable));
     }
     let pk = spec
         .table_schema
@@ -533,29 +586,54 @@ async fn define_table(db: &Database, spec: &TableSpec) -> cocoindex_utils::error
     Ok(())
 }
 
+async fn drop_table(
+    db: &Database,
+    pg_schema_name: Option<&str>,
+    table_name: &str,
+) -> cocoindex_utils::error::Result<()> {
+    let sql = format!(
+        "DROP TABLE IF EXISTS {}",
+        qualified_table_name_from_parts(pg_schema_name, table_name)
+    );
+    sqlx::query(&sql)
+        .execute(db.pool())
+        .await
+        .map_err(pg_internal)?;
+    Ok(())
+}
+
 async fn apply_rows(
     db: &Database,
     mutations: Vec<(TableSpec, Vec<JsonValue>, Option<RowState>)>,
 ) -> cocoindex_utils::error::Result<()> {
+    if mutations.is_empty() {
+        return Ok(());
+    }
+    // Ensure the table exists once if we are going to upsert.
+    if let Some((spec, _, _)) = mutations.iter().find(|(_, _, state)| state.is_some()) {
+        define_table(db, spec).await?;
+    }
+    // Apply the whole batch atomically.
+    let mut tx = db.pool().begin().await.map_err(pg_internal)?;
     for (spec, pk, state) in mutations {
-        define_table(db, &spec).await?;
         match state {
             Some(state) => {
                 let sql = upsert_sql(&spec, &state.fields)?;
                 sqlx::query(&sql)
-                    .execute(db.pool())
+                    .execute(&mut *tx)
                     .await
                     .map_err(pg_internal)?;
             }
             None => {
                 let sql = delete_sql(&spec, &pk)?;
                 sqlx::query(&sql)
-                    .execute(db.pool())
+                    .execute(&mut *tx)
                     .await
                     .map_err(pg_internal)?;
             }
         }
     }
+    tx.commit().await.map_err(pg_internal)?;
     Ok(())
 }
 
@@ -563,14 +641,8 @@ async fn recreate_vector_index(
     db: &Database,
     spec: &VectorIndexSpec,
 ) -> cocoindex_utils::error::Result<()> {
+    drop_vector_index(db, spec).await?;
     let index_name = format!("{}__vector__{}", spec.table_name, spec.name);
-    sqlx::query(&format!(
-        "DROP INDEX IF EXISTS {}",
-        qualified_index_name(spec.pg_schema_name.as_deref(), &index_name)
-    ))
-    .execute(db.pool())
-    .await
-    .map_err(pg_internal)?;
     let mut with_parts = Vec::new();
     if let Some(lists) = spec.lists {
         with_parts.push(format!("lists = {lists}"));
@@ -602,7 +674,25 @@ async fn recreate_vector_index(
     Ok(())
 }
 
-fn upsert_sql(spec: &TableSpec, fields: &Map<String, JsonValue>) -> cocoindex_utils::error::Result<String> {
+async fn drop_vector_index(
+    db: &Database,
+    spec: &VectorIndexSpec,
+) -> cocoindex_utils::error::Result<()> {
+    let index_name = format!("{}__vector__{}", spec.table_name, spec.name);
+    sqlx::query(&format!(
+        "DROP INDEX IF EXISTS {}",
+        qualified_index_name(spec.pg_schema_name.as_deref(), &index_name)
+    ))
+    .execute(db.pool())
+    .await
+    .map_err(pg_internal)?;
+    Ok(())
+}
+
+fn upsert_sql(
+    spec: &TableSpec,
+    fields: &Map<String, JsonValue>,
+) -> cocoindex_utils::error::Result<String> {
     let cols = spec
         .table_schema
         .columns()
@@ -617,7 +707,11 @@ fn upsert_sql(spec: &TableSpec, fields: &Map<String, JsonValue>) -> cocoindex_ut
     let values = cols
         .iter()
         .map(|name| {
-            let col = spec.table_schema.columns().get(name).expect("schema column");
+            let col = spec
+                .table_schema
+                .columns()
+                .get(name)
+                .expect("schema column");
             let value = fields.get(name).unwrap_or(&JsonValue::Null);
             sql_literal(value, col)
         })
@@ -656,7 +750,12 @@ fn delete_sql(spec: &TableSpec, pk: &[JsonValue]) -> cocoindex_utils::error::Res
     let mut predicates = Vec::with_capacity(pk.len());
     for (idx, name) in spec.table_schema.primary_key().iter().enumerate() {
         let col = spec.table_schema.columns().get(name).expect("pk column");
-        predicates.push(format!("{} = {}", quote_ident(name), sql_literal(&pk[idx], col).map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?));
+        predicates.push(format!(
+            "{} = {}",
+            quote_ident(name),
+            sql_literal(&pk[idx], col)
+                .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?
+        ));
     }
     Ok(format!(
         "DELETE FROM {} WHERE {}",
@@ -669,7 +768,9 @@ fn row_state<R: Serialize>(row: &R, schema: &TableSchema) -> Result<Map<String, 
     let value = serde_json::to_value(row)
         .map_err(|e| Error::engine(format!("serialize Postgres target row: {e}")))?;
     let JsonValue::Object(mut fields) = value else {
-        return Err(Error::engine("Postgres target row must serialize to an object"));
+        return Err(Error::engine(
+            "Postgres target row must serialize to an object",
+        ));
     };
     fields.retain(|name, _| schema.columns().contains_key(name));
     for name in schema.columns().keys() {
@@ -705,7 +806,9 @@ fn stable_key_to_json(key: &StableKey) -> Result<JsonValue> {
         StableKey::Int(i) => Ok(JsonValue::from(*i)),
         StableKey::Str(s) | StableKey::Symbol(s) => Ok(JsonValue::from(s.to_string())),
         StableKey::Uuid(u) => Ok(JsonValue::from(u.to_string())),
-        other => Err(Error::engine(format!("unsupported Postgres row key: {other:?}"))),
+        other => Err(Error::engine(format!(
+            "unsupported Postgres row key: {other:?}"
+        ))),
     }
 }
 
@@ -758,7 +861,11 @@ fn sql_literal(value: &JsonValue, col: &ColumnDef) -> Result<String> {
         return vector_literal(value, &col.pg_type);
     }
     if lower == "json" || lower == "jsonb" {
-        return Ok(format!("{}::{}", quote_string(value.to_string()), col.pg_type));
+        return Ok(format!(
+            "{}::{}",
+            quote_string(value.to_string()),
+            col.pg_type
+        ));
     }
     match value {
         JsonValue::String(s) => Ok(format!("{}::{}", quote_string(s), col.pg_type)),
@@ -768,7 +875,11 @@ fn sql_literal(value: &JsonValue, col: &ColumnDef) -> Result<String> {
             if *b { "TRUE" } else { "FALSE" },
             col.pg_type
         )),
-        _ => Ok(format!("{}::{}", quote_string(value.to_string()), col.pg_type)),
+        _ => Ok(format!(
+            "{}::{}",
+            quote_string(value.to_string()),
+            col.pg_type
+        )),
     }
 }
 
@@ -792,7 +903,11 @@ fn vector_literal(value: &JsonValue, pg_type: &str) -> Result<String> {
         }
         parts.push(n.to_string());
     }
-    Ok(format!("{}::{}", quote_string(format!("[{}]", parts.join(","))), pg_type))
+    Ok(format!(
+        "{}::{}",
+        quote_string(format!("[{}]", parts.join(","))),
+        pg_type
+    ))
 }
 
 fn quote_string(value: impl AsRef<str>) -> String {
@@ -910,4 +1025,180 @@ fn pg_err(e: sqlx::Error) -> Error {
 
 fn pg_internal(e: sqlx::Error) -> cocoindex_utils::error::Error {
     cocoindex_utils::error::Error::internal_msg(format!("postgres: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde::Serialize;
+
+    #[derive(Serialize)]
+    struct CodeRow {
+        id: i64,
+        filename: String,
+        code: String,
+        embedding: Vec<f32>,
+        start_line: i32,
+        end_line: i32,
+    }
+
+    fn code_schema() -> TableSchema {
+        TableSchema::new(
+            [
+                ("id", ColumnDef::new("bigint")),
+                ("filename", ColumnDef::new("text")),
+                ("code", ColumnDef::new("text")),
+                ("embedding", ColumnDef::new("vector(3)")),
+                ("start_line", ColumnDef::new("integer")),
+                ("end_line", ColumnDef::new("integer")),
+            ],
+            ["id"],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn table_schema_rejects_unknown_primary_key() {
+        let err = TableSchema::new([("id", ColumnDef::new("bigint"))], ["missing"]).unwrap_err();
+        assert!(err.to_string().contains("primary key column"));
+    }
+
+    #[test]
+    fn row_state_generates_primary_key_and_upsert_sql() {
+        let schema = code_schema();
+        let spec = TableSpec {
+            pg_schema_name: Some("coco_examples".to_string()),
+            table_name: "code_embeddings".to_string(),
+            table_schema: schema.clone(),
+        };
+        let row = CodeRow {
+            id: 42,
+            filename: "src/lib.rs".to_string(),
+            code: "fn answer() -> i32 { 42 }".to_string(),
+            embedding: vec![0.1, 0.2, 0.3],
+            start_line: 1,
+            end_line: 3,
+        };
+
+        let fields = row_state(&row, &schema).unwrap();
+        assert_eq!(
+            pk_stable_key(&fields, schema.primary_key()).unwrap(),
+            StableKey::Int(42)
+        );
+
+        let sql = upsert_sql(&spec, &fields).unwrap();
+        assert!(sql.contains("INSERT INTO \"coco_examples\".\"code_embeddings\""));
+        assert!(sql.contains("'["));
+        assert!(sql.contains("]'::vector(3)"));
+        assert!(sql.contains("ON CONFLICT (\"id\") DO UPDATE SET"));
+    }
+
+    #[test]
+    fn delete_sql_uses_typed_primary_key_literal() {
+        let schema = code_schema();
+        let spec = TableSpec {
+            pg_schema_name: Some("coco_examples".to_string()),
+            table_name: "code_embeddings".to_string(),
+            table_schema: schema,
+        };
+        let sql = delete_sql(&spec, &[JsonValue::from(42)]).unwrap();
+        assert_eq!(
+            sql,
+            "DELETE FROM \"coco_examples\".\"code_embeddings\" WHERE \"id\" = 42"
+        );
+    }
+
+    #[test]
+    fn vector_index_options_select_pgvector_op_class() {
+        assert_eq!(
+            pgvector_op_class("vector(384)", "cosine").unwrap(),
+            "vector_cosine_ops"
+        );
+        assert_eq!(
+            pgvector_op_class("halfvec(384)", "l2").unwrap(),
+            "halfvec_l2_ops"
+        );
+        assert!(pgvector_op_class("text", "cosine").is_err());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Source: read rows from a Postgres table (parallel to Python's PgTableSource)
+// ---------------------------------------------------------------------------
+
+/// Read every row of `table_name` (in the connection's default search path) as
+/// `T`. This is the source analogue of Python's `PgTableSource(...).fetch_rows()`.
+///
+/// `T` must be `Deserialize` (column names map to struct fields; unknown columns
+/// are ignored) and is usually also `Serialize` so each row can key memoized
+/// per-row work via `ctx.mount_each`. Incrementality comes from memoization
+/// (unchanged rows skip processing) plus target-state reconciliation (rows that
+/// disappear from the source have their derived target states deleted).
+pub async fn read_table<T: serde::de::DeserializeOwned>(
+    db: &Database,
+    table_name: &str,
+) -> Result<Vec<T>> {
+    validate_ident(table_name, "table name")?;
+    let rows = sqlx::query(&format!("SELECT * FROM {}", quote_ident(table_name)))
+        .fetch_all(db.pool())
+        .await
+        .map_err(|e| Error::engine(format!("postgres source read failed: {e}")))?;
+    let mut out = Vec::with_capacity(rows.len());
+    for row in &rows {
+        let json = pg_row_to_json(row)?;
+        out.push(serde_json::from_value(json).map_err(|e| {
+            Error::engine(format!("postgres source row does not match row type: {e}"))
+        })?);
+    }
+    Ok(out)
+}
+
+fn pg_row_to_json(row: &sqlx::postgres::PgRow) -> Result<JsonValue> {
+    use sqlx::{Column, Row, TypeInfo};
+    let mut map = Map::new();
+    for (i, col) in row.columns().iter().enumerate() {
+        let ty = col.type_info().name().to_uppercase();
+        let value = pg_col_to_json(row, i, &ty)
+            .map_err(|e| Error::engine(format!("postgres source column {}: {e}", col.name())))?;
+        map.insert(col.name().to_string(), value);
+    }
+    Ok(JsonValue::Object(map))
+}
+
+fn pg_col_to_json(
+    row: &sqlx::postgres::PgRow,
+    i: usize,
+    ty: &str,
+) -> cocoindex_utils::error::Result<JsonValue> {
+    use sqlx::Row;
+    macro_rules! get {
+        ($t:ty) => {
+            row.try_get::<Option<$t>, _>(i)
+                .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?
+        };
+    }
+    let num = |v: f64| serde_json::Number::from_f64(v).map_or(JsonValue::Null, JsonValue::Number);
+    Ok(match ty {
+        "BOOL" => get!(bool).map_or(JsonValue::Null, JsonValue::Bool),
+        "INT2" => get!(i16).map_or(JsonValue::Null, JsonValue::from),
+        "INT4" => get!(i32).map_or(JsonValue::Null, JsonValue::from),
+        "INT8" => get!(i64).map_or(JsonValue::Null, JsonValue::from),
+        "FLOAT4" => get!(f32).map_or(JsonValue::Null, |v| num(v as f64)),
+        "FLOAT8" => get!(f64).map_or(JsonValue::Null, num),
+        "TEXT" | "VARCHAR" | "BPCHAR" | "NAME" | "CHAR" | "CITEXT" => {
+            get!(String).map_or(JsonValue::Null, JsonValue::String)
+        }
+        "TIMESTAMP" => get!(chrono::NaiveDateTime)
+            .map_or(JsonValue::Null, |d| JsonValue::String(d.to_string())),
+        "TIMESTAMPTZ" => get!(chrono::DateTime<chrono::Utc>)
+            .map_or(JsonValue::Null, |d| JsonValue::String(d.to_rfc3339())),
+        "DATE" => {
+            get!(chrono::NaiveDate).map_or(JsonValue::Null, |d| JsonValue::String(d.to_string()))
+        }
+        // Best-effort fallback: render as text if possible, else null.
+        _ => row
+            .try_get::<Option<String>, _>(i)
+            .map(|o| o.map_or(JsonValue::Null, JsonValue::String))
+            .unwrap_or(JsonValue::Null),
+    })
 }

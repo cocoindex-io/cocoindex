@@ -11,10 +11,10 @@ Scrapes recent HackerNews threads + comments via the public [Algolia HN API](htt
 | Fetch threads/comments | `aiohttp` + Algolia HN API | `reqwest` + Algolia HN API (no key) |
 | Per-thread incremental skip | component memo | `#[cocoindex::function(memo)]` on `process_thread` |
 | Topic extraction | `litellm` (`gemini-2.5-flash`) | `reqwest` → OpenAI JSON (`gpt-4o-mini`) |
-| Store | `postgres.TableTarget` (`hn_messages`, `hn_topics`) | hand-rolled `sqlx` (same two tables) |
+| Store | `postgres.TableTarget` (`hn_messages`, `hn_topics`) | `cocoindex::postgres` `TableTarget` (same two tables) |
 | Trending / search | SQL | SQL (same scoring: thread mention = 5, comment = 1) |
 
-**Differences:** Python defaults to Gemini; this uses OpenAI (`OPENAI_API_KEY`). The Rust SDK has no declarative Postgres target, so rows are upserted and a reconcile pass drops threads that fall out of the latest list (the incremental win is the per-thread memo).
+**Differences:** Python defaults to Gemini; this uses OpenAI (`OPENAI_API_KEY`). Target writes are declarative in both SDKs; the incremental win is the per-thread memo plus target-state reconciliation.
 
 ## Prerequisites
 
