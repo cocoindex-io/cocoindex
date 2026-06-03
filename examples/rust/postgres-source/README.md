@@ -30,9 +30,10 @@ Start a Postgres with pgvector and point `POSTGRES_URL` at it:
 
 ```bash
 export POSTGRES_URL="postgres://cocoindex:cocoindex@localhost/cocoindex"
+export SOURCE_DATABASE_URL="$POSTGRES_URL"  # optional; defaults to POSTGRES_URL
 
 # 1. Create + seed the source table
-psql "$POSTGRES_URL" -f prepare_source_data.sql
+psql "$SOURCE_DATABASE_URL" -f prepare_source_data.sql
 
 # 2. Read source -> embed -> write output table (incremental on re-run)
 cargo run -- index

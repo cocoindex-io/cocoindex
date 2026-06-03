@@ -251,8 +251,9 @@ pub fn table_target_with_options(
     ))
 }
 
-/// Declare a LanceDB table target in the **current** component (the row child
-/// provider resolves at this component's commit) and return a handle.
+/// Declare a LanceDB table target and return a ready same-component handle.
+/// Kept synchronous for compatibility; internally this uses the same immediate
+/// provider path as [`mount_table_target`].
 pub fn declare_table_target(
     ctx: &Ctx,
     db: &LanceDatabase,

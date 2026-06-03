@@ -4,7 +4,7 @@ use std::sync::LazyLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use cocoindex::{App, ContextKey, Ctx, Result, postgres};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sqlx::Row as _;
 
 static PG: LazyLock<ContextKey<postgres::Database>> = LazyLock::new(|| {
@@ -78,6 +78,44 @@ async fn declare_vector_table(ctx: Ctx, schema: String, with_index: bool) -> Res
         &EmbeddingRow {
             id: 1,
             embedding: vec![0.0, 1.0, 0.0],
+        },
+    )?;
+    Ok(())
+}
+
+async fn declare_rows_with_sql_command(
+    ctx: Ctx,
+    schema: String,
+    with_attachment: bool,
+) -> Result<()> {
+    let db = ctx.get_key(&PG)?;
+    let table = postgres::mount_table_target(
+        &ctx,
+        db,
+        "rows",
+        postgres::TableSchema::new(
+            [
+                ("id", postgres::ColumnDef::new("bigint")),
+                ("label", postgres::ColumnDef::new("text")),
+            ],
+            ["id"],
+        )?,
+        Some(&schema),
+    )
+    .await?;
+    if with_attachment {
+        table.declare_sql_command_attachment(
+            &ctx,
+            "label_index",
+            format!("CREATE INDEX IF NOT EXISTS rows_label_idx ON \"{schema}\".\"rows\" (label)"),
+            Some(format!("DROP INDEX IF EXISTS \"{schema}\".rows_label_idx")),
+        )?;
+    }
+    table.declare_row(
+        &ctx,
+        &TestRow {
+            id: 1,
+            label: "one".to_string(),
         },
     )?;
     Ok(())
@@ -221,6 +259,106 @@ async fn postgres_table_target_reconciles_rows_when_available() -> Result<()> {
         .execute(db.pool())
         .await
         .map_err(|e| cocoindex::Error::engine(format!("postgres cleanup: {e}")))?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn postgres_sql_command_attachment_runs_setup_and_teardown_when_available() -> Result<()> {
+    let Ok(url) = std::env::var("POSTGRES_URL") else {
+        eprintln!("skipping live Postgres SQL-command-attachment test; POSTGRES_URL is not set");
+        return Ok(());
+    };
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let schema = format!("cocoindex_rust_sqlcmd_test_{nonce}");
+    let db = postgres::Database::connect(&url).await?;
+    sqlx::query(&format!("DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"))
+        .execute(db.pool())
+        .await
+        .map_err(|e| cocoindex::Error::engine(format!("postgres cleanup: {e}")))?;
+
+    let tempdir = tempfile::tempdir().unwrap();
+    let app = App::builder("PostgresSqlCommandE2ETest")
+        .db_path(tempdir.path().join(".cocoindex_db"))
+        .provide_key(&PG, db.clone())
+        .build()
+        .await?;
+
+    // Declare the attachment → setup SQL creates the index.
+    app.run({
+        let schema = schema.clone();
+        move |ctx| declare_rows_with_sql_command(ctx, schema, true)
+    })
+    .await?;
+    assert!(
+        index_exists(&db, &schema, "rows_label_idx").await?,
+        "setup_sql should create the index"
+    );
+
+    // Stop declaring it → teardown SQL drops the index (eager attachment cleanup).
+    app.run({
+        let schema = schema.clone();
+        move |ctx| declare_rows_with_sql_command(ctx, schema, false)
+    })
+    .await?;
+    assert!(
+        !index_exists(&db, &schema, "rows_label_idx").await?,
+        "teardown_sql should drop the index when the attachment is removed"
+    );
+
+    sqlx::query(&format!("DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"))
+        .execute(db.pool())
+        .await
+        .map_err(|e| cocoindex::Error::engine(format!("postgres cleanup: {e}")))?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn postgres_read_table_items_keys_rows_when_available() -> Result<()> {
+    let Ok(url) = std::env::var("POSTGRES_URL") else {
+        eprintln!("skipping live Postgres source-items test; POSTGRES_URL is not set");
+        return Ok(());
+    };
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let table = format!("src_items_{nonce}");
+    let db = postgres::Database::connect(&url).await?;
+    sqlx::query(&format!(
+        "CREATE TABLE \"{table}\" (id bigint primary key, name text)"
+    ))
+    .execute(db.pool())
+    .await
+    .map_err(|e| cocoindex::Error::engine(format!("postgres create source table: {e}")))?;
+    sqlx::query(&format!(
+        "INSERT INTO \"{table}\" (id, name) VALUES (1, 'a'), (2, 'b')"
+    ))
+    .execute(db.pool())
+    .await
+    .map_err(|e| cocoindex::Error::engine(format!("postgres insert: {e}")))?;
+
+    #[derive(Deserialize)]
+    struct SrcRow {
+        id: i64,
+        name: String,
+    }
+
+    let mut items: Vec<(cocoindex::StableKey, SrcRow)> =
+        postgres::read_table_items(&db, &table, |row: &SrcRow| row.id).await?;
+    items.sort_by_key(|(_, row)| row.id);
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0].0, cocoindex::StableKey::Int(1));
+    assert_eq!(items[0].1.name, "a");
+    assert_eq!(items[1].0, cocoindex::StableKey::Int(2));
+    assert_eq!(items[1].1.name, "b");
+
+    sqlx::query(&format!("DROP TABLE \"{table}\""))
+        .execute(db.pool())
+        .await
+        .map_err(|e| cocoindex::Error::engine(format!("postgres drop source table: {e}")))?;
     Ok(())
 }
 

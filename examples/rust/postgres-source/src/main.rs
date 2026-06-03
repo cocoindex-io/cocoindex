@@ -31,9 +31,16 @@ const PG_SCHEMA: &str = "coco_examples_v1";
 const TABLE: &str = "output";
 const TOP_K: i64 = 5;
 
-/// Source + target database (same DB, like the Python example).
+/// Target database.
 static DB: LazyLock<ContextKey<postgres::Database>> = LazyLock::new(|| {
     ContextKey::new_with_state("postgres_source_db", |db: &postgres::Database| {
+        db.state_id().to_string()
+    })
+});
+/// Source database. Defaults to the target URL, but can point elsewhere via
+/// `SOURCE_DATABASE_URL`, matching the Python example.
+static SOURCE_DB: LazyLock<ContextKey<postgres::Database>> = LazyLock::new(|| {
+    ContextKey::new_with_state("source_pool", |db: &postgres::Database| {
         db.state_id().to_string()
     })
 });
@@ -153,7 +160,8 @@ async fn app_main(ctx: Ctx) -> Result<()> {
         },
     )?;
 
-    let products: Vec<SourceProduct> = postgres::read_table(db, "source_products").await?;
+    let source_db = ctx.get_key(&SOURCE_DB)?;
+    let products: Vec<SourceProduct> = postgres::read_table(source_db, "source_products").await?;
     println!("read {} source product(s)", products.len());
 
     let outputs = ctx
@@ -222,6 +230,10 @@ fn database_url() -> String {
         .unwrap_or_else(|_| "postgres://cocoindex:cocoindex@localhost/cocoindex".to_string())
 }
 
+fn source_database_url() -> String {
+    std::env::var("SOURCE_DATABASE_URL").unwrap_or_else(|_| database_url())
+}
+
 fn db_err(e: sqlx::Error) -> Error {
     Error::engine(format!("postgres: {e}"))
 }
@@ -247,10 +259,12 @@ async fn main() -> Result<()> {
         }
         _ => {
             let db = postgres::Database::connect(&database_url()).await?;
+            let source_db = postgres::Database::connect(&source_database_url()).await?;
             let embedder = load_embedder().await?;
             let app = App::builder("PostgresSourceRust")
                 .db_path(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".cocoindex_db"))
                 .provide_key(&DB, db)
+                .provide_key(&SOURCE_DB, source_db)
                 .provide_key(&EMBEDDER, embedder)
                 .build()
                 .await?;

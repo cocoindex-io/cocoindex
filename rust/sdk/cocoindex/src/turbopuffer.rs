@@ -293,8 +293,10 @@ pub fn namespace_target_with_options(
     ))
 }
 
-/// Declare a Turbopuffer namespace target in the **current** component (the row
-/// child resolves at this component's commit) and return a handle.
+/// Declare a Turbopuffer namespace target in the **current** component and
+/// return a pending handle. The row child provider resolves when this component
+/// commits; use [`mount_namespace_target`] when rows must be declared
+/// immediately.
 pub fn declare_namespace_target(
     ctx: &Ctx,
     conn: &TurbopufferConnection,

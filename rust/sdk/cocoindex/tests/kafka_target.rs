@@ -15,6 +15,7 @@
 //!   T4 stop declaring 1 msg  -> 4 total; latest record for that key = tombstone
 #![cfg(feature = "kafka")]
 
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use cocoindex::{App, Result, kafka};
@@ -152,6 +153,78 @@ async fn kafka_target_produces_skips_updates_and_tombstones_when_available() -> 
         latest(&records, "k1"),
         Some(None),
         "removed message's latest record is a tombstone (null value)"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn kafka_target_custom_delete_value_when_available() -> Result<()> {
+    let Ok(brokers) = std::env::var("KAFKA_BOOTSTRAP_SERVERS") else {
+        eprintln!("skipping live Kafka custom-delete test; KAFKA_BOOTSTRAP_SERVERS is not set");
+        return Ok(());
+    };
+    let broker_refs: Vec<&str> = brokers.split(',').collect();
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let topic = format!("cocoindex_kafka_delval_test_{nonce}");
+
+    let producer = kafka::KafkaProducer::connect(&broker_refs).await?;
+    producer.ensure_topic(&topic, 1).await?;
+    let consumer = ClientBuilder::new(broker_refs.iter().map(|s| s.to_string()).collect())
+        .build()
+        .await
+        .map_err(|e| cocoindex::Error::engine(format!("consumer connect: {e}")))?;
+
+    let tempdir = tempfile::tempdir().unwrap();
+    let db_path = tempdir.path().join(".cocoindex_db");
+
+    // A delete emits `deleted:<key>` as the value instead of a null tombstone.
+    let run = |messages: Vec<(String, String)>| {
+        let producer = producer.clone();
+        let topic = topic.clone();
+        let db_path = db_path.clone();
+        async move {
+            let app = App::builder("KafkaCustomDeleteTest")
+                .db_path(&db_path)
+                .build()
+                .await
+                .unwrap();
+            app.run(move |ctx| {
+                let producer = producer.clone();
+                let topic = topic.clone();
+                let messages = messages.clone();
+                async move {
+                    let options = kafka::KafkaTopicOptions {
+                        deletion_value_fn: Some(Arc::new(|key: &str| {
+                            format!("deleted:{key}").into_bytes()
+                        })),
+                        ..Default::default()
+                    };
+                    let target = kafka::mount_kafka_topic_target(&ctx, &producer, topic, options)?;
+                    for (k, v) in &messages {
+                        target.declare_message(&ctx, k, v)?;
+                    }
+                    Ok(())
+                }
+            })
+            .await
+            .unwrap();
+        }
+    };
+
+    let msg = |k: &str, v: &str| (k.to_string(), v.to_string());
+
+    run(vec![msg("k1", "v1")]).await;
+    // Stop declaring k1 -> a delete is produced using the custom value, not null.
+    run(vec![]).await;
+    let (records, _hw) = consume_all(&consumer, &topic).await;
+    assert_eq!(
+        latest(&records, "k1"),
+        Some(Some("deleted:k1".to_string())),
+        "removed message's latest record uses the custom deletion value"
     );
 
     Ok(())

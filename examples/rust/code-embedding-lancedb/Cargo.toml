@@ -1,0 +1,16 @@
+[workspace]
+
+[package]
+name = "code-embedding-lancedb"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+cocoindex = { path = "../../../rust/sdk/cocoindex", features = ["lancedb"] }
+# Tree-sitter chunking + language detection live in the engine's ops crate.
+cocoindex_ops_text = { path = "../../../rust/ops_text" }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+# Local embeddings (same all-MiniLM-L6-v2 model as the Python example).
+fastembed = "4"
+dotenvy = "0.15"

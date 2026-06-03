@@ -2,7 +2,8 @@
 //!
 //! Reads local CSV files, converts each row to a JSON object (header row as
 //! keys), and publishes one Kafka message per row via CocoIndex's declarative
-//! `KafkaTopicTarget`. Each message is keyed `{relative_path}/{first_column}`.
+//! `KafkaTopicTarget`. Each message is keyed by the first CSV column, matching
+//! the Python example.
 //!
 //!   cargo run -- index                 # read ./data/*.csv -> produce changed rows
 //!   cargo run -- consume               # print all messages currently on the topic
@@ -48,8 +49,6 @@ async fn process_csv(_ctx: &Ctx, file: &FileEntry) -> Result<Vec<(String, String
     if headers.is_empty() {
         return Ok(Vec::new());
     }
-    let label = file.relative_path().to_string_lossy().to_string();
-
     let mut out = Vec::new();
     for record in reader.records() {
         let record = record.map_err(|e| Error::engine(format!("csv record: {e}")))?;
@@ -63,7 +62,7 @@ async fn process_csv(_ctx: &Ctx, file: &FileEntry) -> Result<Vec<(String, String
                 serde_json::Value::String(field.to_string()),
             );
         }
-        let key = format!("{label}/{first}");
+        let key = first.to_string();
         let value = serde_json::to_string(&row).map_err(|e| Error::engine(format!("json: {e}")))?;
         out.push((key, value));
     }

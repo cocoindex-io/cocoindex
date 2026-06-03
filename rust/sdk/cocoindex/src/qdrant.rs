@@ -208,8 +208,10 @@ pub fn collection_target_with_options(
     ))
 }
 
-/// Declare a Qdrant collection target in the **current** component (the point
-/// child resolves at this component's commit) and return a handle.
+/// Declare a Qdrant collection target in the **current** component and return a
+/// pending handle. The point child provider resolves when this component
+/// commits; use [`mount_collection_target`] when points must be declared
+/// immediately.
 pub fn declare_collection_target(
     ctx: &Ctx,
     conn: &QdrantConnection,

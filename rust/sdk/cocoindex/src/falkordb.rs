@@ -273,8 +273,10 @@ pub fn relation_target_with_options(
     )
 }
 
-/// Declare a FalkorDB node table target in the **current** component (the record
-/// child resolves at this component's commit) and return a handle.
+/// Declare a FalkorDB node table target in the **current** component and return
+/// a pending handle. The record child provider resolves when this component
+/// commits; use [`mount_table_target`] when records must be declared
+/// immediately.
 pub fn declare_table_target(
     ctx: &Ctx,
     graph: &Graph,
@@ -303,7 +305,9 @@ pub fn declare_table_target_with_options(
     ))
 }
 
-/// Declare a FalkorDB relation target in the **current** component.
+/// Declare a FalkorDB relation target in the **current** component and return a
+/// pending handle. Use [`mount_relation_target`] when relation records must be
+/// declared immediately.
 pub fn declare_relation_target(
     ctx: &Ctx,
     graph: &Graph,

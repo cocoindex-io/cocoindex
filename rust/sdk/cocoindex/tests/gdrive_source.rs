@@ -11,6 +11,7 @@ fn drive_file(file_id: &str, name: &str, mime_type: &str) -> DriveFile {
     DriveFile {
         file_id: file_id.to_string(),
         name: name.to_string(),
+        path: name.to_string(),
         mime_type: mime_type.to_string(),
         size: 12,
         modified_time: "2026-01-02T03:04:05Z".to_string(),
@@ -82,7 +83,9 @@ async fn gdrive_source_lists_recursively_and_filters_mime_types() {
     let ids: Vec<&str> = files.iter().map(|f| f.file_id.as_str()).collect();
     assert_eq!(ids, vec!["txt-1", "doc-1"]);
     assert_eq!(files[0].key(), "txt-1");
+    assert_eq!(files[0].path(), "root.txt");
     assert_eq!(files[0].size, 7);
+    assert_eq!(files[1].path(), "nested/nested-doc");
     assert_eq!(files[1].size, 0);
 }
 

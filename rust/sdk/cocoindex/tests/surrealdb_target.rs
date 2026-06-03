@@ -3,7 +3,7 @@
 use std::sync::LazyLock;
 
 use cocoindex::prelude::*;
-use cocoindex::surrealdb::{self, ColumnDef, Graph, TableSchema};
+use cocoindex::surrealdb::{self, ColumnDef, Graph, TableSchema, VectorIndexOptions};
 
 static GRAPH: LazyLock<ContextKey<Graph>> =
     LazyLock::new(|| ContextKey::new("surrealdb_smoke_graph"));
@@ -218,4 +218,186 @@ fn chrono_like_timestamp() -> u128 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_millis()
+}
+
+async fn temp_app(graph: &Graph, name: &str) -> (App, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    let app = App::builder(name)
+        .db_path(dir.path().join("lmdb"))
+        .provide_key(&GRAPH, graph.clone())
+        .build()
+        .await
+        .unwrap();
+    (app, dir)
+}
+
+// ---------------------------------------------------------------------------
+// Vector index attachment: create -> change metric (recreate) -> orphan remove
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn surrealdb_vector_index_attachment_lifecycle_when_available() {
+    let db_name = format!(
+        "rust_sdk_surrealdb_vidx_{}_{}",
+        std::process::id(),
+        chrono_like_timestamp()
+    );
+    let Some(graph) = try_graph(&db_name).await else {
+        eprintln!("skipping SurrealDB vector-index test; no local SurrealDB connection");
+        return;
+    };
+    let (app, _dir) = temp_app(&graph, "surrealdb_vector_index").await;
+
+    async fn run(app: &App, metric: &'static str, declare_index: bool) {
+        app.run(move |ctx| async move {
+            let graph = ctx.get_key(&GRAPH)?;
+            let docs = surrealdb::mount_table_target(&ctx, graph, "doc").await?;
+            if declare_index {
+                docs.declare_vector_index(
+                    &ctx,
+                    "embedding",
+                    3,
+                    VectorIndexOptions {
+                        metric,
+                        method: "hnsw",
+                        ..Default::default()
+                    },
+                )?;
+            }
+            docs.declare_record(
+                &ctx,
+                "d1",
+                &serde_json::json!({ "name": "a", "embedding": [1.0, 2.0, 3.0] }),
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    }
+
+    let idx = "idx_doc__embedding".to_string();
+
+    // Create the index.
+    run(&app, "cosine", true).await;
+    assert!(graph.index_names("doc").await.unwrap().contains(&idx));
+
+    // Change the metric → drop + recreate; still present.
+    run(&app, "euclidean", true).await;
+    assert!(graph.index_names("doc").await.unwrap().contains(&idx));
+
+    // Stop declaring the index → orphan-removed.
+    run(&app, "euclidean", false).await;
+    assert!(!graph.index_names("doc").await.unwrap().contains(&idx));
+}
+
+// ---------------------------------------------------------------------------
+// Schema evolution: adding a column defines the new field on re-run
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn surrealdb_schema_evolution_adds_field_when_available() {
+    let db_name = format!(
+        "rust_sdk_surrealdb_schema_{}_{}",
+        std::process::id(),
+        chrono_like_timestamp()
+    );
+    let Some(graph) = try_graph(&db_name).await else {
+        eprintln!("skipping SurrealDB schema-evolution test; no local SurrealDB connection");
+        return;
+    };
+    let (app, _dir) = temp_app(&graph, "surrealdb_schema_evolution").await;
+
+    async fn run(app: &App, with_email: bool) {
+        app.run(move |ctx| async move {
+            let graph = ctx.get_key(&GRAPH)?;
+            let columns: Vec<(&str, ColumnDef)> = if with_email {
+                vec![
+                    ("name", ColumnDef::new("string")),
+                    ("email", ColumnDef::new("string")),
+                ]
+            } else {
+                vec![("name", ColumnDef::new("string"))]
+            };
+            let schema = TableSchema::new(columns)?;
+            let person =
+                surrealdb::mount_table_target_with_schema(&ctx, graph, "member", Some(schema))
+                    .await?;
+            if with_email {
+                person.declare_record(
+                    &ctx,
+                    "p1",
+                    &serde_json::json!({ "name": "Ann", "email": "ann@example.com" }),
+                )?;
+            } else {
+                person.declare_record(&ctx, "p1", &serde_json::json!({ "name": "Ann" }))?;
+            }
+            Ok(())
+        })
+        .await
+        .unwrap();
+    }
+
+    run(&app, false).await;
+    let fields = graph.field_names("member").await.unwrap();
+    assert!(fields.contains(&"name".to_string()));
+    assert!(!fields.contains(&"email".to_string()));
+
+    // Re-run with an added column → the new field is defined; records still reconcile.
+    run(&app, true).await;
+    let fields = graph.field_names("member").await.unwrap();
+    assert!(fields.contains(&"name".to_string()));
+    assert!(fields.contains(&"email".to_string()));
+    assert_eq!(graph.count("member").await.unwrap(), 1);
+}
+
+// ---------------------------------------------------------------------------
+// Table drop: a table no longer declared on re-run is removed
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn surrealdb_table_dropped_when_no_longer_declared_when_available() {
+    let db_name = format!(
+        "rust_sdk_surrealdb_drop_{}_{}",
+        std::process::id(),
+        chrono_like_timestamp()
+    );
+    let Some(graph) = try_graph(&db_name).await else {
+        eprintln!("skipping SurrealDB table-drop test; no local SurrealDB connection");
+        return;
+    };
+    let (app, _dir) = temp_app(&graph, "surrealdb_table_drop").await;
+
+    // Declare the table + a record.
+    app.run(|ctx| async move {
+        let graph = ctx.get_key(&GRAPH)?;
+        let widget = surrealdb::mount_table_target(&ctx, graph, "widget").await?;
+        widget.declare_record(&ctx, "w1", &serde_json::json!({ "name": "gear" }))?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    assert!(
+        graph
+            .table_names()
+            .await
+            .unwrap()
+            .contains(&"widget".to_string())
+    );
+    assert_eq!(graph.count("widget").await.unwrap(), 1);
+
+    // Re-register the table provider but declare nothing on it: the table state
+    // declared in the previous run is now orphaned, so the system-managed table
+    // is dropped (`REMOVE TABLE`) and its rows go with it.
+    app.run(|ctx| async move {
+        let graph = ctx.get_key(&GRAPH)?;
+        let _ = surrealdb::table_target(&ctx, graph, "widget")?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    let after = graph.table_names().await.unwrap();
+    assert!(
+        !after.contains(&"widget".to_string()),
+        "after orphaning the table: tables={after:?}"
+    );
 }

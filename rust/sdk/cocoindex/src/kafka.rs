@@ -166,8 +166,9 @@ pub fn kafka_topic_target(
     Ok(provider.target_state("default", TopicSpec { topic }))
 }
 
-/// Declare a Kafka topic target in the **current** component (the message child
-/// provider is resolved when this component commits) and return a handle.
+/// Declare a Kafka topic target and return a ready same-component handle.
+/// Kept synchronous for compatibility; internally this uses the same immediate
+/// provider path as [`mount_kafka_topic_target`].
 pub fn declare_kafka_topic_target(
     ctx: &Ctx,
     producer: &KafkaProducer,

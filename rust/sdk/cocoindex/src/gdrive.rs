@@ -60,6 +60,11 @@ fn export_mime_for(mime_type: &str) -> Option<&'static str> {
 pub struct DriveFile {
     pub file_id: String,
     pub name: String,
+    /// Path relative to the configured Drive root folder. This is display/user
+    /// metadata; `key()` remains the Drive file id to avoid duplicate-key
+    /// collisions when files in different folders share a name.
+    #[serde(default)]
+    pub path: String,
     pub mime_type: String,
     pub size: u64,
     /// RFC 3339 timestamp string as returned by the Drive API.
@@ -72,6 +77,14 @@ impl DriveFile {
     /// files in different folders share a name.
     pub fn key(&self) -> String {
         self.file_id.clone()
+    }
+
+    pub fn path(&self) -> &str {
+        if self.path.is_empty() {
+            &self.name
+        } else {
+            &self.path
+        }
     }
 
     fn is_folder(&self) -> bool {
@@ -113,6 +126,7 @@ fn parse_file_list(json: &serde_json::Value) -> Result<(Vec<DriveFile>, Option<S
             files.push(DriveFile {
                 file_id,
                 name,
+                path: String::new(),
                 mime_type,
                 size,
                 modified_time,
@@ -465,17 +479,26 @@ impl GoogleDriveSource {
     /// List all (non-folder) files under the root folders, recursing into
     /// subfolders (breadth-first). Honors the optional MIME-type filter.
     pub async fn list_files(&self) -> Result<Vec<DriveFile>> {
-        let mut pending: std::collections::VecDeque<String> =
-            self.root_folder_ids.iter().cloned().collect();
+        let mut pending: std::collections::VecDeque<(String, String)> = self
+            .root_folder_ids
+            .iter()
+            .cloned()
+            .map(|id| (id, String::new()))
+            .collect();
         let mut seen_folders = std::collections::HashSet::new();
         let mut out = Vec::new();
-        while let Some(folder_id) = pending.pop_front() {
+        while let Some((folder_id, prefix)) = pending.pop_front() {
             if !seen_folders.insert(folder_id.clone()) {
                 continue; // guard against cycles / shortcuts
             }
-            for file in self.client.list_children(&folder_id).await? {
+            for mut file in self.client.list_children(&folder_id).await? {
+                let path = if prefix.is_empty() {
+                    file.name.clone()
+                } else {
+                    format!("{prefix}/{}", file.name)
+                };
                 if file.is_folder() {
-                    pending.push_back(file.file_id);
+                    pending.push_back((file.file_id, path));
                     continue;
                 }
                 if let Some(allowed) = &self.mime_types {
@@ -483,6 +506,7 @@ impl GoogleDriveSource {
                         continue;
                     }
                 }
+                file.path = path;
                 out.push(file);
             }
         }
@@ -528,6 +552,7 @@ mod tests {
         assert_eq!(files[0].file_id, "a");
         assert_eq!(files[0].size, 42);
         assert_eq!(files[0].key(), "a");
+        assert_eq!(files[0].path(), "doc.md");
         assert!(!files[0].is_folder());
         assert_eq!(files[1].size, 0); // folder omits size
         assert!(files[1].is_folder());

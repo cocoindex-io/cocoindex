@@ -1,0 +1,12 @@
+[workspace]
+
+[package]
+name = "pdf-to-markdown"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+cocoindex = { path = "../../../rust/sdk/cocoindex" }
+tokio = { version = "1", features = ["full"] }
+# PDF text extraction (Rust-native stand-in for Python's docling converter).
+lopdf = "0.40"

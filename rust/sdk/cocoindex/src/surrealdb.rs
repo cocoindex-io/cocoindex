@@ -165,6 +165,47 @@ impl Graph {
         let ids: Vec<RecordId> = res.take(0).map_err(surreal_err)?;
         Ok(ids.len())
     }
+
+    /// The names of the tables defined in the database (`INFO FOR DB`).
+    pub async fn table_names(&self) -> Result<Vec<String>> {
+        let mut res = self.db.query("INFO FOR DB").await.map_err(surreal_err)?;
+        let info: Option<JsonValue> = res.take(0).map_err(surreal_err)?;
+        Ok(json_object_keys(info.as_ref(), "tables"))
+    }
+
+    /// The names of the indexes defined on `table` (`INFO FOR TABLE`).
+    pub async fn index_names(&self, table: &str) -> Result<Vec<String>> {
+        Ok(json_object_keys(
+            self.info_for_table(table).await?.as_ref(),
+            "indexes",
+        ))
+    }
+
+    /// The names of the fields defined on `table` (`INFO FOR TABLE`).
+    pub async fn field_names(&self, table: &str) -> Result<Vec<String>> {
+        Ok(json_object_keys(
+            self.info_for_table(table).await?.as_ref(),
+            "fields",
+        ))
+    }
+
+    async fn info_for_table(&self, table: &str) -> Result<Option<JsonValue>> {
+        validate_ident(table, "table name")?;
+        let mut res = self
+            .db
+            .query(format!("INFO FOR TABLE {table}"))
+            .await
+            .map_err(surreal_err)?;
+        res.take(0).map_err(surreal_err)
+    }
+}
+
+/// Collect the keys of the object at `info[field]` (used to parse `INFO FOR …`).
+fn json_object_keys(info: Option<&JsonValue>, field: &str) -> Vec<String> {
+    info.and_then(|v| v.get(field))
+        .and_then(|v| v.as_object())
+        .map(|m| m.keys().cloned().collect())
+        .unwrap_or_default()
 }
 
 // ---------------------------------------------------------------------------
@@ -174,6 +215,8 @@ impl Graph {
 #[derive(Clone)]
 pub struct TableTarget {
     table_name: Arc<str>,
+    managed_by: ManagedBy,
+    table_provider: TargetStateProvider<TableSpec>,
     records: TargetStateProvider<RecordState>,
 }
 
@@ -190,6 +233,63 @@ impl TableTarget {
     ) -> Result<()> {
         let value = record_state(row)?;
         declare_target_state(ctx, self.records.target_state(id.to_stable_key(), value))
+    }
+
+    /// Declare a vector index on `field` as an attachment of this table. The
+    /// index is created/recreated/dropped to match the declared options
+    /// (`DEFINE INDEX … <METHOD> DIMENSION … DIST … TYPE …`).
+    pub fn declare_vector_index(
+        &self,
+        ctx: &Ctx,
+        field: &str,
+        dimension: usize,
+        options: VectorIndexOptions,
+    ) -> Result<()> {
+        validate_ident(field, "vector index field")?;
+        let name = options
+            .name
+            .unwrap_or_else(|| format!("idx_{}__{}", self.table_name, field));
+        validate_ident(&name, "vector index name")?;
+        let provider: TargetStateProvider<VectorIndexSpec> =
+            self.table_provider.attachment(ctx, "vector_index")?;
+        let spec = VectorIndexSpec {
+            table_name: self.table_name.to_string(),
+            name: name.clone(),
+            field: field.to_string(),
+            metric: options.metric.to_string(),
+            method: options.method.to_string(),
+            dimension,
+            vector_type: options.vector_type.to_string(),
+            managed_by: self.managed_by,
+        };
+        declare_target_state(
+            ctx,
+            provider.target_state(StableKey::Str(Arc::from(name)), spec),
+        )
+    }
+}
+
+/// Options for [`TableTarget::declare_vector_index`].
+#[derive(Clone, Debug)]
+pub struct VectorIndexOptions {
+    /// Index name; defaults to `idx_<table>__<field>`.
+    pub name: Option<String>,
+    /// Distance metric: `"cosine"`, `"euclidean"`, or `"manhattan"`.
+    pub metric: &'static str,
+    /// Index method: `"mtree"` or `"hnsw"`.
+    pub method: &'static str,
+    /// Vector element type: `"f32"`, `"f64"`, `"i16"`, `"i32"`, or `"i64"`.
+    pub vector_type: &'static str,
+}
+
+impl Default for VectorIndexOptions {
+    fn default() -> Self {
+        Self {
+            name: None,
+            metric: "cosine",
+            method: "mtree",
+            vector_type: "f32",
+        }
     }
 }
 
@@ -320,9 +420,15 @@ fn relation_key_part(value: &str) -> String {
     format!("{}:{value};", value.len())
 }
 
-fn table_handle(spec: TableSpec, records: TargetStateProvider<RecordState>) -> TableTarget {
+fn table_handle(
+    spec: TableSpec,
+    table_provider: TargetStateProvider<TableSpec>,
+    records: TargetStateProvider<RecordState>,
+) -> TableTarget {
     TableTarget {
         table_name: Arc::from(spec.table_name),
+        managed_by: spec.managed_by,
+        table_provider,
         records,
     }
 }
@@ -495,8 +601,10 @@ pub fn relation_target_unconstrained_with_options(
 // declare_* (pending declaration in the current component)
 // ---------------------------------------------------------------------------
 
-/// Declare a SurrealDB table target in the **current** component (the record
-/// child provider resolves at this component's commit) and return a handle.
+/// Declare a SurrealDB table target in the **current** component and return a
+/// pending handle. The record child provider resolves when this component
+/// commits; use [`mount_table_target`] when records must be declared
+/// immediately.
 pub fn declare_table_target(
     ctx: &Ctx,
     graph: &Graph,
@@ -521,11 +629,14 @@ pub fn declare_table_target_with_schema_and_options(
 ) -> Result<TableTarget> {
     let ts = table_target_with_schema_and_options(ctx, graph, table_name, table_schema, options)?;
     let spec = ts.value().clone();
+    let table_provider = ts.provider().clone();
     let records = declare_target_state_with_child::<TableSpec, RecordState>(ctx, ts)?;
-    Ok(table_handle(spec, records))
+    Ok(table_handle(spec, table_provider, records))
 }
 
-/// Declare a SurrealDB relation target in the **current** component.
+/// Declare a SurrealDB relation target in the **current** component and return
+/// a pending handle. Use [`mount_relation_target`] when relation records must
+/// be declared immediately.
 pub fn declare_relation_target_many(
     ctx: &Ctx,
     graph: &Graph,
@@ -649,8 +760,9 @@ pub async fn mount_table_target_with_schema_and_options(
 ) -> Result<TableTarget> {
     let ts = table_target_with_schema_and_options(ctx, graph, table_name, table_schema, options)?;
     let spec = ts.value().clone();
+    let table_provider = ts.provider().clone();
     let records = mount_target::<TableSpec, RecordState>(ctx, ts).await?;
-    Ok(table_handle(spec, records))
+    Ok(table_handle(spec, table_provider, records))
 }
 
 pub async fn mount_relation_target(
@@ -942,6 +1054,15 @@ impl TargetHandler<TableSpec> for TableHandler {
             }
         }
     }
+
+    fn attachments(&self) -> Result<Vec<(String, ChildTargetDef)>> {
+        Ok(vec![(
+            "vector_index".to_string(),
+            ChildTargetDef::new::<VectorIndexSpec, _>(VectorIndexHandler {
+                graph: self.graph.clone(),
+            }),
+        )])
+    }
 }
 
 impl TableHandler {
@@ -1049,6 +1170,155 @@ impl RecordHandler {
             }
         })
     }
+}
+
+// ---------------------------------------------------------------------------
+// Vector-index attachment handler + sink
+// ---------------------------------------------------------------------------
+
+/// Spec for a SurrealDB vector index (an attachment of a table). Used as both
+/// the declared value and the tracking record (equality = no change).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct VectorIndexSpec {
+    table_name: String,
+    name: String,
+    field: String,
+    metric: String,
+    method: String,
+    dimension: usize,
+    vector_type: String,
+    #[serde(default)]
+    managed_by: ManagedBy,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct VectorIndexAction {
+    name: String,
+    table_name: String,
+    /// `Some` to (re)create the index, `None` to remove it.
+    spec: Option<VectorIndexSpec>,
+}
+
+struct VectorIndexHandler {
+    graph: Graph,
+}
+
+impl TargetHandler<VectorIndexSpec> for VectorIndexHandler {
+    type TrackingRecord = VectorIndexSpec;
+    type Action = VectorIndexAction;
+
+    fn reconcile(
+        &self,
+        key: StableKey,
+        desired: Option<VectorIndexSpec>,
+        prev: Vec<VectorIndexSpec>,
+        prev_may_be_missing: bool,
+    ) -> Result<Option<TargetReconcileOutput<VectorIndexAction, VectorIndexSpec>>> {
+        let name = match &key {
+            StableKey::Str(s) | StableKey::Symbol(s) => s.to_string(),
+            other => {
+                return Err(Error::engine(format!(
+                    "unsupported vector index key: {other:?}"
+                )));
+            }
+        };
+        let prev_same = desired
+            .as_ref()
+            .is_some_and(|d| prev.iter().any(|p| p == d));
+        if desired.is_some() && prev_same && !prev_may_be_missing {
+            return Ok(None);
+        }
+        if desired.is_none() && prev.is_empty() && !prev_may_be_missing {
+            return Ok(None);
+        }
+        let table_name = desired
+            .as_ref()
+            .map(|s| s.table_name.clone())
+            .or_else(|| prev.first().map(|p| p.table_name.clone()))
+            .unwrap_or_default();
+        Ok(Some(TargetReconcileOutput {
+            action: TargetAction::Update(VectorIndexAction {
+                name,
+                table_name,
+                spec: desired.clone(),
+            }),
+            sink: self.vector_index_sink(),
+            tracking_record: desired,
+            child_invalidation: None,
+        }))
+    }
+}
+
+impl VectorIndexHandler {
+    fn vector_index_sink(&self) -> TargetActionSink<VectorIndexAction> {
+        let graph = self.graph.clone();
+        TargetActionSink::from_async_fn(move |actions: Vec<TargetAction<VectorIndexAction>>| {
+            let graph = graph.clone();
+            async move {
+                for action in actions {
+                    let action = match action {
+                        TargetAction::Create(a)
+                        | TargetAction::Update(a)
+                        | TargetAction::Delete(a) => a,
+                    };
+                    apply_vector_index(&graph, action).await?;
+                }
+                Ok(())
+            }
+        })
+    }
+}
+
+async fn apply_vector_index(graph: &Graph, action: VectorIndexAction) -> Result<()> {
+    validate_ident(&action.name, "vector index name")?;
+    validate_ident(&action.table_name, "table name")?;
+    match action.spec {
+        // User-managed indexes: CocoIndex does not own the DDL.
+        Some(spec) if spec.managed_by.is_user() => Ok(()),
+        Some(spec) => {
+            validate_ident(&spec.field, "vector index field")?;
+            run_query(
+                graph,
+                &format!(
+                    "REMOVE INDEX IF EXISTS {} ON TABLE {}",
+                    action.name, action.table_name
+                ),
+            )
+            .await?;
+            let stmt = format!(
+                "DEFINE INDEX {} ON {} FIELDS {} {} DIMENSION {} DIST {} TYPE {}",
+                action.name,
+                action.table_name,
+                spec.field,
+                spec.method.to_uppercase(),
+                spec.dimension,
+                spec.metric.to_uppercase(),
+                spec.vector_type.to_uppercase(),
+            );
+            run_query(graph, &stmt).await
+        }
+        None => {
+            run_query(
+                graph,
+                &format!(
+                    "REMOVE INDEX IF EXISTS {} ON TABLE {}",
+                    action.name, action.table_name
+                ),
+            )
+            .await
+        }
+    }
+}
+
+async fn run_query(graph: &Graph, stmt: &str) -> Result<()> {
+    graph
+        .db
+        .query(stmt)
+        .await
+        .map_err(surreal_err)?
+        .check()
+        .map_err(surreal_err)?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

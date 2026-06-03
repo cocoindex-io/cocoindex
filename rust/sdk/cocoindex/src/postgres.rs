@@ -205,8 +205,9 @@ pub fn table_target_with_options(
     ))
 }
 
-/// Declare a Postgres table target in the **current** component (the row child
-/// provider resolves at this component's commit) and return a handle.
+/// Declare a Postgres table target in the **current** component and return a
+/// pending handle. The row child provider resolves when this component commits;
+/// use [`mount_table_target`] when rows must be declared immediately.
 pub fn declare_table_target(
     ctx: &Ctx,
     db: &Database,
@@ -315,6 +316,30 @@ impl TableTarget {
             lists: options.lists,
             m: options.m,
             ef_construction: options.ef_construction,
+        };
+        declare_target_state(
+            ctx,
+            provider.target_state(StableKey::Str(Arc::from(name)), spec),
+        )
+    }
+
+    /// Declare a SQL command attachment on this table. `setup_sql` runs when the
+    /// attachment is created or changed; `teardown_sql` (if given) runs when it
+    /// is removed, and before re-running setup on a change. Mirrors Python's
+    /// `declare_sql_command_attachment`.
+    pub fn declare_sql_command_attachment(
+        &self,
+        ctx: &Ctx,
+        name: &str,
+        setup_sql: impl Into<String>,
+        teardown_sql: Option<String>,
+    ) -> Result<()> {
+        let provider: TargetStateProvider<SqlCommandSpec> = self
+            .table_provider
+            .attachment(ctx, "sql_command_attachment")?;
+        let spec = SqlCommandSpec {
+            setup_sql: setup_sql.into(),
+            teardown_sql,
         };
         declare_target_state(
             ctx,
@@ -496,12 +521,20 @@ impl TargetHandler<TableSpec> for TableHandler {
     }
 
     fn attachments(&self) -> Result<Vec<(String, ChildTargetDef)>> {
-        Ok(vec![(
-            "vector_index".to_string(),
-            ChildTargetDef::new::<VectorIndexSpec, _>(VectorIndexHandler {
-                db: self.db.clone(),
-            }),
-        )])
+        Ok(vec![
+            (
+                "vector_index".to_string(),
+                ChildTargetDef::new::<VectorIndexSpec, _>(VectorIndexHandler {
+                    db: self.db.clone(),
+                }),
+            ),
+            (
+                "sql_command_attachment".to_string(),
+                ChildTargetDef::new::<SqlCommandSpec, _>(SqlCommandHandler {
+                    db: self.db.clone(),
+                }),
+            ),
+        ])
     }
 }
 
@@ -683,6 +716,114 @@ impl VectorIndexHandler {
                         )
                         .await?;
                         recreate_vector_index(&db, &spec).await?;
+                    }
+                }
+                Ok(())
+            }
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SQL command attachment handler + sink
+// ---------------------------------------------------------------------------
+
+/// Spec for a SQL command attachment (an attachment of a table). Used as both
+/// the declared value and the tracking record (equality = no change).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SqlCommandSpec {
+    setup_sql: String,
+    teardown_sql: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct SqlCommandAction {
+    /// `Some` to (re)run setup, `None` to remove.
+    spec: Option<SqlCommandSpec>,
+    /// Teardown SQL from the previous state, run before setup-on-change / on remove.
+    prev_teardown_sql: Option<String>,
+}
+
+/// First non-None teardown SQL among the previous states.
+fn collect_teardown_sql(prev: &[SqlCommandSpec]) -> Option<String> {
+    prev.iter().find_map(|p| p.teardown_sql.clone())
+}
+
+struct SqlCommandHandler {
+    db: Database,
+}
+
+impl TargetHandler<SqlCommandSpec> for SqlCommandHandler {
+    type TrackingRecord = SqlCommandSpec;
+    type Action = SqlCommandAction;
+
+    fn reconcile(
+        &self,
+        _key: StableKey,
+        desired: Option<SqlCommandSpec>,
+        prev: Vec<SqlCommandSpec>,
+        prev_may_be_missing: bool,
+    ) -> Result<Option<TargetReconcileOutput<SqlCommandAction, SqlCommandSpec>>> {
+        match desired {
+            None => {
+                if prev.is_empty() && !prev_may_be_missing {
+                    return Ok(None);
+                }
+                let prev_teardown_sql = collect_teardown_sql(&prev);
+                Ok(Some(TargetReconcileOutput {
+                    action: TargetAction::Delete(SqlCommandAction {
+                        spec: None,
+                        prev_teardown_sql,
+                    }),
+                    sink: self.sql_command_sink(),
+                    tracking_record: None,
+                    child_invalidation: None,
+                }))
+            }
+            Some(spec) => {
+                let unchanged = !prev_may_be_missing && prev.iter().all(|p| *p == spec);
+                if !prev.is_empty() && unchanged {
+                    return Ok(None);
+                }
+                let prev_teardown_sql = collect_teardown_sql(&prev);
+                Ok(Some(TargetReconcileOutput {
+                    action: TargetAction::Update(SqlCommandAction {
+                        spec: Some(spec.clone()),
+                        prev_teardown_sql,
+                    }),
+                    sink: self.sql_command_sink(),
+                    tracking_record: Some(spec),
+                    child_invalidation: None,
+                }))
+            }
+        }
+    }
+}
+
+impl SqlCommandHandler {
+    fn sql_command_sink(&self) -> TargetActionSink<SqlCommandAction> {
+        let db = self.db.clone();
+        TargetActionSink::from_async_fn(move |actions: Vec<TargetAction<SqlCommandAction>>| {
+            let db = db.clone();
+            async move {
+                for action in actions {
+                    let action = match action {
+                        TargetAction::Create(a)
+                        | TargetAction::Update(a)
+                        | TargetAction::Delete(a) => a,
+                    };
+                    // Run previous teardown first (on change or removal), then setup.
+                    if let Some(teardown) = action.prev_teardown_sql {
+                        sqlx::query(&teardown)
+                            .execute(db.pool())
+                            .await
+                            .map_err(pg_err)?;
+                    }
+                    if let Some(spec) = action.spec {
+                        sqlx::query(&spec.setup_sql)
+                            .execute(db.pool())
+                            .await
+                            .map_err(pg_err)?;
                     }
                 }
                 Ok(())
@@ -1297,13 +1438,22 @@ pub async fn read_table_with_options<T: serde::de::DeserializeOwned>(
         }
         None => "*".to_string(),
     };
-    let rows = sqlx::query(&format!(
+    let sql = format!(
         "SELECT {select_list} FROM {}",
         qualified_table_name_from_parts(options.pg_schema_name.as_deref(), table_name)
-    ))
-    .fetch_all(db.pool())
-    .await
-    .map_err(|e| Error::engine(format!("postgres source read failed: {e}")))?;
+    );
+    // Read inside a REPEATABLE READ, READ ONLY transaction so the whole table is
+    // observed as one consistent snapshot (mirrors Python's `repeatable_read`).
+    let mut tx = db.pool().begin().await.map_err(pg_err)?;
+    sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+        .execute(&mut *tx)
+        .await
+        .map_err(pg_err)?;
+    let rows = sqlx::query(&sql)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| Error::engine(format!("postgres source read failed: {e}")))?;
+    tx.commit().await.map_err(pg_err)?;
     let mut out = Vec::with_capacity(rows.len());
     for row in &rows {
         let json = pg_row_to_json(row)?;
@@ -1312,6 +1462,45 @@ pub async fn read_table_with_options<T: serde::de::DeserializeOwned>(
         })?);
     }
     Ok(out)
+}
+
+/// Read every row paired with a stable key derived by `key_fn` — the source
+/// analogue of Python's `PgTableSource(...).fetch_rows().items(key=…)`, ready to
+/// feed [`Ctx::mount_each`](crate::Ctx::mount_each). Reads use the same
+/// repeatable-read snapshot as [`read_table`].
+pub async fn read_table_items<T, K, S>(
+    db: &Database,
+    table_name: &str,
+    key_fn: K,
+) -> Result<Vec<(StableKey, T)>>
+where
+    T: serde::de::DeserializeOwned,
+    K: Fn(&T) -> S,
+    S: crate::target_state::IntoStableKey,
+{
+    read_table_items_with_options(db, table_name, ReadTableOptions::default(), key_fn).await
+}
+
+/// [`read_table_items`] with explicit [`ReadTableOptions`].
+pub async fn read_table_items_with_options<T, K, S>(
+    db: &Database,
+    table_name: &str,
+    options: ReadTableOptions,
+    key_fn: K,
+) -> Result<Vec<(StableKey, T)>>
+where
+    T: serde::de::DeserializeOwned,
+    K: Fn(&T) -> S,
+    S: crate::target_state::IntoStableKey,
+{
+    let rows: Vec<T> = read_table_with_options(db, table_name, options).await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| {
+            let key = key_fn(&row).into_stable_key();
+            (key, row)
+        })
+        .collect())
 }
 
 fn pg_row_to_json(row: &sqlx::postgres::PgRow) -> Result<JsonValue> {

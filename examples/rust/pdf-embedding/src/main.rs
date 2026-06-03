@@ -1,39 +1,42 @@
-//! Google Drive Text Embedding — Rust port of the Python `gdrive_text_embedding`
-//! example.
+//! PDF Embedding — Rust port of the Python `pdf_embedding` example.
 //!
-//! Pipeline: list Drive files -> read/export text -> chunk -> embed -> store in
+//! Pipeline: walk local PDFs -> extract text -> chunk -> embed -> store in
 //! Postgres/pgvector.
+//!
+//!   cargo run -- index [PDF_DIR]       # incremental (unchanged PDFs memo-skipped)
+//!   cargo run -- query "your query"    # pgvector similarity search (no index)
+//!
+//! Parity note: the Python example converts PDFs to Markdown with `docling`
+//! (a heavy ML pipeline). There is no Rust equivalent, so this port extracts
+//! plain text with `lopdf` and chunks it with the markdown splitter — the same
+//! Rust-native PDF approach used by the `paper-metadata` example. Everything
+//! downstream (chunking 2000/500, MiniLM embeddings, Postgres target, query)
+//! mirrors Python.
 
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock};
 
-use cocoindex::gdrive::{DriveFile, GoogleDriveClient, GoogleDriveSource};
 use cocoindex::postgres;
 use cocoindex::prelude::*;
+use cocoindex::walk;
 use cocoindex_ops_text::split::{RecursiveChunkConfig, RecursiveChunker, RecursiveSplitConfig};
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
-use serde::{Deserialize, Serialize};
 use sqlx::Row;
 use sqlx::postgres::{PgPool, PgPoolOptions};
 
 const EMBED_MODEL: &str = "sentence-transformers/all-MiniLM-L6-v2";
 const EMBED_DIM: usize = 384;
-const PG_SCHEMA: &str = "coco_examples_v1";
-const TABLE: &str = "doc_embeddings";
+const PG_SCHEMA: &str = "coco_examples";
+const TABLE: &str = "pdf_embeddings";
 const TOP_K: i64 = 5;
+const CHUNK_SIZE: usize = 2000;
+const CHUNK_OVERLAP: usize = 500;
 
 static DB: LazyLock<ContextKey<postgres::Database>> = LazyLock::new(|| {
-    ContextKey::new_with_state("gdrive_text_embedding_db", |db: &postgres::Database| {
+    ContextKey::new_with_state("pdf_embedding_db", |db: &postgres::Database| {
         db.state_id().to_string()
     })
 });
-
-static GDRIVE: LazyLock<ContextKey<GoogleDriveClient>> = LazyLock::new(|| {
-    ContextKey::new_with_state("gdrive_client", |client: &GoogleDriveClient| {
-        client.state_id().to_string()
-    })
-});
-
 static EMBEDDER: LazyLock<ContextKey<Embedder>> =
     LazyLock::new(|| ContextKey::new_with_state("embedder", |e: &Embedder| e.model_name.clone()));
 
@@ -45,7 +48,7 @@ struct Embedder {
 impl Embedder {
     fn load(model_name: &str) -> Result<Self> {
         let model = TextEmbedding::try_new(InitOptions::new(EmbeddingModel::AllMiniLML6V2))
-            .map_err(|e| Error::engine(format!("failed to load embedding model: {e}")))?;
+            .map_err(|e| Error::engine(format!("load embedding model: {e}")))?;
         Ok(Self {
             model: Arc::new(model),
             model_name: model_name.to_string(),
@@ -65,29 +68,46 @@ impl Embedder {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
-struct DocEmbeddingRow {
+struct PdfEmbedding {
     id: i64,
     filename: String,
+    chunk_start: i32,
+    chunk_end: i32,
     text: String,
     embedding: Vec<f32>,
 }
 
+/// Extract all text from a PDF (Rust-native stand-in for `docling` markdown).
+fn pdf_to_text(content: &[u8]) -> Result<String> {
+    let doc = lopdf::Document::load_mem(content)
+        .map_err(|e| Error::engine(format!("failed to parse PDF: {e}")))?;
+    let pages: Vec<u32> = doc.get_pages().keys().copied().collect();
+    if pages.is_empty() {
+        return Ok(String::new());
+    }
+    doc.extract_text(&pages)
+        .map_err(|e| Error::engine(format!("failed to extract PDF text: {e}")))
+}
+
 #[cocoindex::function(memo)]
-async fn process_file(ctx: &Ctx, file: &DriveFile) -> Result<Vec<DocEmbeddingRow>> {
-    let client = ctx.get_key(&GDRIVE)?;
-    let text = client.read_text(&file).await?;
+async fn process_file(ctx: &Ctx, file: &FileEntry) -> Result<Vec<PdfEmbedding>> {
+    let filename = file.key();
+    let content = file.content()?;
+    let text = tokio::task::spawn_blocking(move || pdf_to_text(&content))
+        .await
+        .map_err(|e| Error::engine(format!("PDF parse task panicked: {e}")))??;
+
     let chunker = RecursiveChunker::new(RecursiveSplitConfig::default())
         .map_err(|e| Error::engine(format!("chunker init: {e}")))?;
     let chunks = chunker.split(
         &text,
         RecursiveChunkConfig {
-            chunk_size: 2000,
+            chunk_size: CHUNK_SIZE,
             min_chunk_size: None,
-            chunk_overlap: Some(500),
+            chunk_overlap: Some(CHUNK_OVERLAP),
             language: Some("markdown".to_string()),
         },
     );
-
     if chunks.is_empty() {
         return Ok(Vec::new());
     }
@@ -104,13 +124,15 @@ async fn process_file(ctx: &Ctx, file: &DriveFile) -> Result<Vec<DocEmbeddingRow
 
     let mut id_gen = IdGenerator::new();
     let mut rows = Vec::with_capacity(texts.len());
-    for (chunk_text, embedding) in texts.into_iter().zip(embeddings) {
+    for ((chunk, chunk_text), embedding) in chunks.iter().zip(texts).zip(embeddings) {
         let id = id_gen.next_id(&ctx, &chunk_text).await?;
         let id =
             i64::try_from(id).map_err(|_| Error::engine("generated id does not fit in BIGINT"))?;
-        rows.push(DocEmbeddingRow {
+        rows.push(PdfEmbedding {
             id,
-            filename: file.path().to_string(),
+            filename: filename.clone(),
+            chunk_start: chunk.start.char_offset as i32,
+            chunk_end: chunk.end.char_offset as i32,
             text: chunk_text,
             embedding,
         });
@@ -118,28 +140,36 @@ async fn process_file(ctx: &Ctx, file: &DriveFile) -> Result<Vec<DocEmbeddingRow
     Ok(rows)
 }
 
-async fn app_main(ctx: Ctx, root_folder_ids: Vec<String>) -> Result<()> {
+fn pdf_embedding_schema() -> Result<postgres::TableSchema> {
+    postgres::TableSchema::new(
+        [
+            ("id", postgres::ColumnDef::new("bigint")),
+            ("filename", postgres::ColumnDef::new("text")),
+            ("chunk_start", postgres::ColumnDef::new("integer")),
+            ("chunk_end", postgres::ColumnDef::new("integer")),
+            ("text", postgres::ColumnDef::new("text")),
+            (
+                "embedding",
+                postgres::ColumnDef::new(format!("vector({EMBED_DIM})")),
+            ),
+        ],
+        ["id"],
+    )
+}
+
+async fn app_main(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
     let db = ctx.get_key(&DB)?;
     let table =
-        postgres::mount_table_target(&ctx, db, TABLE, doc_embedding_schema()?, Some(PG_SCHEMA)).await?;
-    table.declare_vector_index(
-        &ctx,
-        "embedding",
-        postgres::VectorIndexOptions {
-            name: Some("embedding".to_string()),
-            method: "hnsw",
-            ..Default::default()
-        },
-    )?;
+        postgres::mount_table_target(&ctx, db, TABLE, pdf_embedding_schema()?, Some(PG_SCHEMA))
+            .await?;
 
-    let source = GoogleDriveSource::new(ctx.get_key(&GDRIVE)?.clone(), root_folder_ids);
-    let files = source.list_files().await?;
-    println!("indexing {} Google Drive files", files.len());
+    let files: Vec<FileEntry> = walk(&sourcedir, &["**/*.pdf"])?;
+    println!("indexing {} PDF(s) from {}", files.len(), sourcedir.display());
 
     let rows_by_file = ctx
         .mount_each(
             files,
-            |file| file.key(),
+            |f| f.key(),
             |child, file| async move { process_file(&child, &file).await },
         )
         .await?;
@@ -151,15 +181,13 @@ async fn app_main(ctx: Ctx, root_folder_ids: Vec<String>) -> Result<()> {
             table.declare_row(&ctx, row)?;
         }
     }
-
-    println!("indexed {count} chunks total");
+    println!("indexed {count} chunk(s) total");
     Ok(())
 }
 
 async fn query_once(pool: &PgPool, embedder: &Embedder, query: &str) -> Result<()> {
     let mut vecs = embedder.embed(vec![query.to_string()]).await?;
     let query_vec = vector_param(&vecs.remove(0));
-
     let rows = sqlx::query(&format!(
         "SELECT filename, text, embedding <=> $1::vector AS distance \
          FROM \"{PG_SCHEMA}\".\"{TABLE}\" ORDER BY distance ASC LIMIT $2"
@@ -174,84 +202,37 @@ async fn query_once(pool: &PgPool, embedder: &Embedder, query: &str) -> Result<(
         let filename: String = row.try_get("filename").map_err(db_err)?;
         let text: String = row.try_get("text").map_err(db_err)?;
         let distance: f64 = row.try_get("distance").map_err(db_err)?;
-        let score = 1.0 - distance;
-        println!("[{score:.3}] {filename}");
-        let snippet: String = text.chars().take(300).collect();
+        println!("[{:.3}] {filename}", 1.0 - distance);
+        let snippet: String = text.chars().take(200).collect();
         println!("    {}", snippet.replace('\n', "\n    "));
         println!("---");
     }
     Ok(())
 }
 
-fn doc_embedding_schema() -> Result<postgres::TableSchema> {
-    postgres::TableSchema::new(
-        [
-            ("id", postgres::ColumnDef::new("bigint")),
-            ("filename", postgres::ColumnDef::new("text")),
-            ("text", postgres::ColumnDef::new("text")),
-            (
-                "embedding",
-                postgres::ColumnDef::new(format!("vector({EMBED_DIM})")),
-            ),
-        ],
-        ["id"],
-    )
-}
-
 fn vector_param(vec: &[f32]) -> String {
-    let values = vec.iter().map(f32::to_string).collect::<Vec<_>>();
-    format!("[{}]", values.join(","))
+    format!(
+        "[{}]",
+        vec.iter().map(f32::to_string).collect::<Vec<_>>().join(",")
+    )
 }
 
 fn db_err(e: sqlx::Error) -> Error {
     Error::engine(format!("postgres: {e}"))
 }
 
-fn database_url() -> String {
-    std::env::var("POSTGRES_URL")
-        .unwrap_or_else(|_| "postgres://cocoindex:cocoindex@localhost/cocoindex".to_string())
+fn database_url() -> Result<String> {
+    std::env::var("POSTGRES_URL").map_err(|_| Error::engine("POSTGRES_URL is not set"))
 }
 
-fn root_folder_ids() -> Result<Vec<String>> {
-    let raw = std::env::var("GOOGLE_DRIVE_ROOT_FOLDER_IDS")
-        .map_err(|_| Error::engine("GOOGLE_DRIVE_ROOT_FOLDER_IDS is required"))?;
-    let ids: Vec<String> = raw
-        .split(',')
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .collect();
-    if ids.is_empty() {
-        Err(Error::engine(
-            "GOOGLE_DRIVE_ROOT_FOLDER_IDS must contain at least one folder id",
-        ))
-    } else {
-        Ok(ids)
-    }
-}
-
-async fn connect_pool() -> Result<PgPool> {
-    PgPoolOptions::new()
-        .max_connections(8)
-        .connect(&database_url())
-        .await
-        .map_err(db_err)
-}
-
-async fn connect_target_db() -> Result<postgres::Database> {
-    postgres::Database::connect(&database_url()).await
+fn default_sourcedir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("pdf_files")
 }
 
 async fn load_embedder() -> Result<Embedder> {
     tokio::task::spawn_blocking(|| Embedder::load(EMBED_MODEL))
         .await
         .map_err(|e| Error::engine(format!("embedder load task panicked: {e}")))?
-}
-
-fn load_gdrive_client() -> Result<GoogleDriveClient> {
-    let credential_path = std::env::var("GOOGLE_SERVICE_ACCOUNT_CREDENTIAL")
-        .map_err(|_| Error::engine("GOOGLE_SERVICE_ACCOUNT_CREDENTIAL is required"))?;
-    GoogleDriveClient::from_service_account_file(credential_path)
 }
 
 #[tokio::main]
@@ -266,29 +247,30 @@ async fn main() -> Result<()> {
                 eprintln!("usage: cargo run -- query \"your search text\"");
                 std::process::exit(2);
             }
-            let pool = connect_pool().await?;
+            let pool = PgPoolOptions::new()
+                .connect(&database_url()?)
+                .await
+                .map_err(db_err)?;
             let embedder = load_embedder().await?;
             query_once(&pool, &embedder, &q).await?;
         }
         sub => {
-            if let Some(other) = sub
-                && other != "index"
-            {
-                eprintln!("usage: cargo run -- [index] | cargo run -- query \"your search text\"");
-                std::process::exit(2);
+            let dir = match sub {
+                Some("index") => args.get(1).map(PathBuf::from),
+                Some(other) => Some(PathBuf::from(other)),
+                None => None,
             }
-            let db = connect_target_db().await?;
+            .unwrap_or_else(default_sourcedir);
+
+            let db = postgres::Database::connect(&database_url()?).await?;
             let embedder = load_embedder().await?;
-            let gdrive = load_gdrive_client()?;
-            let root_folder_ids = root_folder_ids()?;
-            let app = App::builder("GoogleDriveTextEmbeddingRust")
+            let app = App::builder("PdfEmbeddingV1")
                 .db_path(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".cocoindex_db"))
                 .provide_key(&DB, db)
                 .provide_key(&EMBEDDER, embedder)
-                .provide_key(&GDRIVE, gdrive)
                 .build()
                 .await?;
-            let stats = app.run(move |ctx| app_main(ctx, root_folder_ids)).await?;
+            let stats = app.run(move |ctx| app_main(ctx, dir)).await?;
             println!("{stats}");
         }
     }

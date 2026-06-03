@@ -4,8 +4,8 @@ Rust port of the Python [`csv_to_kafka`](../../csv_to_kafka) example.
 
 It reads local CSV files, converts each row to a JSON object (using the header
 row as keys), and publishes one Kafka message per row through CocoIndex's
-declarative `KafkaTopicTarget`. Each message is keyed `{relative_path}/{first_column}`
-(e.g. `products.csv/SKU001`).
+declarative `KafkaTopicTarget`. Each message is keyed by the first CSV column,
+matching the Python example.
 
 ## Parallel to the Python example
 
