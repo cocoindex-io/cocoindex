@@ -10,7 +10,7 @@ use crate::error::{Error, Result};
 use crate::statediff::ManagedTargetOptions;
 use crate::target_state::TargetState;
 
-pub use cypher_graph::{ColumnDef, TableSchema, TableSpec};
+pub use cypher_graph::{ColumnDef, TableSchema, TableSpec, VectorMetric};
 
 #[derive(Clone)]
 pub struct Graph {
@@ -84,6 +84,19 @@ impl TableTarget {
         row: &R,
     ) -> Result<()> {
         self.0.declare_record(ctx, id, row)
+    }
+
+    /// Declare a vector index on `field` (Neo4j `CREATE VECTOR INDEX`). Requires
+    /// Neo4j 5.18+. The index is created/recreated/dropped to match the
+    /// declaration.
+    pub fn declare_vector_index(
+        &self,
+        ctx: &Ctx,
+        field: &str,
+        dimension: u32,
+        metric: VectorMetric,
+    ) -> Result<()> {
+        self.0.declare_vector_index(ctx, field, dimension, metric)
     }
 }
 

@@ -1,224 +1,269 @@
-# Rust SDK vs Python SDK Parity — Action List
+# Rust SDK vs Python SDK Parity
 
-Branch: `rust-sync` · Last reviewed: 2026-06-02 (verified against the worktree).
+Branch: `rust-sync`
 
-This is an **action-oriented** audit. Areas that are already at parity are
-collapsed into the "Done" section below; everything else is an open item with a
-concrete next step. Source of truth:
+Last reviewed: 2026-06-02 against the local worktree.
 
-- Python: `python/cocoindex` (`_internal/api.py::__all__` is the 76-name top-level
-  surface; connectors under `connectors/`, ops under `ops/`, resources under
-  `resources/`, helpers under `connectorkits/`).
-- Rust: `rust/sdk/cocoindex/src` (flat re-exports in `lib.rs`); tests under
-  `rust/sdk/cocoindex/tests` + `src` unit tests; examples under `examples/rust`.
+This is an action plan, not a changelog. It compares the current Rust SDK in
+`rust/sdk/cocoindex/src` with the Python SDK in `python/cocoindex`, using
+Python's public exports, connector implementations, tests, and examples as the
+reference behavior.
 
-Scale marker (not a quality score): **Python 839 test fns** (284 connector, 374
-core, 67 ops, 44 internal, 44 CLI, 26 resources) vs **Rust 203** (127 integration
-+ 76 `src` unit). Most Rust connector integration tests are live/gated (skip when
-the service/credential is absent).
+Current scale marker:
 
----
+- Python tests: 839 test functions across connectors, core, ops, resources,
+  CLI, and internals.
+- Rust SDK tests: 143 integration tests plus 100 source-unit test annotations.
+- Rust connector e2e tests are often gated by external services; skipped live
+  tests are expected when credentials or services are not available.
 
-## ✅ Done — at parity, no action needed
+## CocoIndex Concepts To Keep Aligned
 
-These are intentionally removed from the action list below.
+These are the SDK contracts that matter most for parity.
 
-- **Generic target-state public API** (`target_state.rs`): `TargetState`,
-  `TargetStateProvider`, `TargetHandler` (+ `attachments()`), `TargetActionSink`
-  (+ `from_async_fn_with_children`), `ChildTargetDef`, `declare_target_state`,
-  `declare_target_state_with_child`, `register_root_target_states_provider`,
-  foreground `mount_target`, provider-generation `memo_key`. Covered by
-  `tests/target_state.rs` (CRUD/no-change, in-component declarations, mount-target
-  children, attachments create/cleanup, destructive/lossy generation, ownership
-  transfer).
-- **All 11 implemented connectors are on the facade** with the full
-  constructor/declaration/mount split (`*_target` / `declare_*_target` /
-  `mount_*_target` [+ `_with_options`]): postgres, surrealdb, kafka, iggy, lancedb,
-  qdrant, turbopuffer, neo4j, falkordb, fs(localfs), and the gdrive source. None
-  remain on the private `profile` helpers.
-- **`managed_by` / `ManagedTargetOptions`** on every target connector except Kafka
-  and Iggy (stream targets) and fs (always system-managed).
-- **`statediff` core**: `ManagedBy`, `MutualTrackingRecord`,
-  `TrackingRecordTransition`, `DiffAction`, `resolve_system_transition`, `diff`,
-  plus the **composite layer** (`CompositeTrackingRecord`, `diff_composite`) for
-  column-/attachment-level diffs. Covered by `statediff.rs` unit tests mirroring
-  the Python SQLite scenarios (create, no-change, add/drop/retype column, drop
-  table, full replace, partial/ambiguous prev grouping).
-- **Live components & exception handlers (SDK)**: `LiveComponent` (`process` /
-  `process_live`), `LiveComponentOperator` (`update_full` / `update` / `delete`
-  / `mark_ready`), `LiveMapFeed` / `LiveMapView` / `LiveMapSubscriber`, and
-  `Ctx::mount_live` / `mount_live_with_handler` / `mount_each_live`. Background
-  error routing via `ExceptionHandler` + `ExceptionContext` (`MountKind`), with
-  the "return = swallow, raise = propagate" contract threaded through
-  `update_full` / `update` / `delete`. Covered by `tests/live_component.rs`
-  (catch-up full pass, target-state declaration, incremental delete, handler
-  swallow/propagate, `mount_each_live` catch-up scan + live streaming).
-- **Postgres**: table target + **vector-index attachment** + **SQL-command
-  attachment** (`declare_sql_command_attachment`) + transactional row apply.
-  Source reads (`read_table` / `read_table_items`) use a **REPEATABLE READ,
-  READ ONLY snapshot**; `read_table_items` keys rows for `Ctx::mount_each`.
-- **SurrealDB**: table + relation (`relation_target_many` /
-  `relation_target_unconstrained`) + **vector-index attachment**
-  (`declare_vector_index`).
-- **Iggy** (`iggy` feature): Apache Iggy stream target (`IggyProducer`,
-  `iggy_topic_target`/`declare_iggy_topic_target`/`mount_iggy_topic_target`,
-  two-level topic → message on the facade, partition option). Iggy has no
-  tombstone, so deletes use a required `deletion_value_fn` (mirrors Python).
-  Re-exports `iggy::prelude` so callers manage the user-owned stream/topic
-  without depending on the `iggy` crate. 8 unit (decide/skip/update/delete,
-  state-id sanitize) + 2 live e2e (send/skip/update, custom delete value).
-  Example: `examples/rust/csv-to-iggy`. Source (`topic_as_stream`/`map`) is
-  blocked on the live-components API (see P1).
-- **SQLite** (`sqlite` feature): embedded table target (`Database`,
-  `TableSchema`/`ColumnDef`, `table_target`/`declare_table_target`/
-  `mount_table_target` [+ `_with_options`], `managed_by`) + `Vec0TableDef`
-  (`sqlite-vec` virtual-table DDL + validation). 11 tests (6 unit DDL/vec0 +
-  5 embedded e2e: insert/update/delete/no-change, drop, user-managed, multiple
-  tables, mount_each). Example: `examples/rust/files-to-sqlite`.
-- **Context keys** (`new` / `new_detect_change` / `new_with_state`), **id/uuid
-  generators**, **entity-resolution core** (`resolve_entities`, policies,
-  candidate matching), **app lifecycle** (builder/open/run/update/drop, blocking
-  + async, stats groups, `max_inflight_components` quota), **`Ctx::auto_refresh`**.
-- **Examples**: text/code embedding (pg + lancedb + qdrant + turbopuffer),
-  postgres-source, hn-trending, gdrive, meeting-notes (neo4j/falkordb),
-  conversation-to-knowledge, csv-to-kafka, csv-to-iggy, files-transform,
-  multi-codebase-summarization, audio-to-text, paper-metadata, pdf-embedding,
-  pdf-to-markdown, code-embedding-lancedb — all build + e2e-validated.
+- **Components and memoization:** user code runs in scoped components. Stable
+  paths, context-key fingerprints, logic hashes, and explicit memo keys decide
+  what can be reused.
+- **Sources:** Python sources generally expose iterable items, often as
+  `(stable_key, item)` pairs. File-like sources also provide stable path keys,
+  lazy metadata, cached full reads, and content fingerprints.
+- **Targets:** targets are declarative. A run declares desired target states;
+  reconciliation inserts/updates changed states, skips unchanged states, and
+  deletes orphaned states. Container targets can expose child target providers
+  and attachments.
+- **Managed ownership:** `managed_by=system` lets CocoIndex create/drop backing
+  resources. `managed_by=user` leaves DDL and destructive changes to the caller
+  while still reconciling child rows/messages where appropriate.
+- **Live components:** live connectors feed changes into the same component and
+  target-state model, with exception handlers deciding whether background
+  failures are swallowed or propagated.
+- **Ops/resources:** Python provides reusable text chunking, embedders,
+  vector-schema providers, file resources, and ID generators. Rust has some of
+  these, but examples still hand-roll several common pieces.
 
----
+## Done
 
-## 🔴 P1 — Missing connectors & the abstractions that gate them
+Do not spend parity time here unless tests fail or Python behavior changes.
 
-### Connectors with no Rust equivalent
-
-| Python connector | Python public surface | Note |
-| --- | --- | --- |
-| `doris` | `DorisConnectionConfig`, `RetryConfig`, `DorisTableTarget`, `VectorIndexDef`, `InvertedIndexDef`, stream-load | Needs stream-load + retry + vector/inverted index. 6 Python tests. (Needs a live Doris server for e2e.) |
-| `amazon_s3` | `S3FilePath`, `S3File`, `S3Walker`, `get_object`, `read`, `list_objects` | **Blocked on shared file/object source abstraction** (below). 24 Python tests. |
-| `oci_object_storage` | `OCIFilePath`, `OCIFile`, `OCIWalker`, live object events | **Blocked on file source + live source** (below). 23 Python tests. |
-| `notion` | (empty in Python too) | No-op until Python ships it. |
-
-### Shared abstractions that block the above
-
-- **Shared file/object source resource** — Rust has `fs::FileEntry` (sync) and a
-  separate `gdrive::DriveFile`; Python has one `FileLike`/`FilePath`/`FileMetadata`/
-  `items()` shape reused by localfs/S3/OCI/GDrive. **Action:** promote a shared Rust
-  file-resource module (stable `FilePath`, lazy metadata + content fingerprint,
-  `(key, item)` iteration, matchers) before adding S3/OCI.
-- **Kafka & Iggy sources** — both targets are done; the sources
-  (`TopicStream` / `topic_as_stream` / `topic_as_map` / payload filtering) are
-  missing and depend on the live-components API below (Kafka: 14 Python source
-  tests, 0 Rust; Iggy: 7 Python tests cover target+source).
-- **Live components SDK API** — ✅ **done** (see Done section). `LiveComponent` /
-  `LiveComponentOperator` / `LiveMapFeed` / `LiveMapView` / `LiveMapSubscriber`
-  and `Ctx::mount_live` / `mount_each_live` now wrap the core machinery. The
-  remaining work for live localfs (`walk_dir(live=True)`), Kafka/Iggy sources,
-  and OCI live watching is to implement *connectors* that produce a
-  `LiveMapView` / `LiveMapFeed`; the SDK abstraction they plug into exists.
-- **Exception handlers** — ✅ **done**. `ExceptionHandler` + `ExceptionContext`
-  (`MountKind`) route background/live failures through `Ctx::mount_live_with_handler`.
-
----
-
-## 🟠 P2 — Existing connectors missing features
-
-| Connector | Missing vs Python | Action |
-| --- | --- | --- |
-| Neo4j / FalkorDB | **vector index**; secondary node/relationship **index** builders; user-facing index/constraint helpers (Python exposes `build_*_index_*`, `vector_index_name`, …). PK **uniqueness constraints** are already auto-created by `cypher_graph` (Neo4j `CREATE CONSTRAINT` / FalkorDB `GRAPH.CONSTRAINT`). | Add vector-index + secondary-index attachments on the shared `cypher_graph` backend. |
-| Qdrant / Turbopuffer | named / **multivector** schemas; f16 (Turbopuffer) | Currently single unnamed vector only. Blocks `image_search_colpali`. |
-| Google Drive | `DriveFilePath` (display path + id), `DriveFileInfo`, top-level `list_files(spec)`, async `items()`; live change notifications | Fold into the shared file-resource work above. |
-| LocalFS | live watching; async lazy-cached `FileLike` (Rust `FileLike` is sync) | Pairs with the live-components API. |
-| SurrealDB | `declare_row` alias (only `declare_record` today) | Minor ergonomic alias. |
-
----
-
-## 🟠 P2 — Ops & resource parity (Rust SDK has none of these)
-
-The Rust SDK crate has **no `ops` module** and no shared embedder/vector-schema
-abstractions; examples hand-roll HTTP clients and use `fastembed`/`cocoindex_ops_text`
-directly. Python exposes these as first-class SDK surface.
-
-- **`cocoindex::ops::text` facade** — wrap `cocoindex_ops_text` and give chunks a
-  `chunk.text(source)` helper instead of forcing every example to slice ranges.
-- **General `Embedder` trait + `VectorSchema`/`MultiVectorSchema` providers** —
-  Python's common contract for vector targets/embedders; Rust only has the
-  narrower `entity_resolution::EntityEmbedder`.
-- **`SentenceTransformerEmbedder`, `LiteLLMEmbedder`, `LiteLLMTranscriber`** —
-  no SDK wrappers (audio-to-text/paper-metadata hand-roll the OpenAI calls).
-- **Entity resolution**: no `on_resolution` callback (the `ResolutionEvent`s are
-  computed then dropped) and no `LlmPairResolver`.
-
----
-
-## 🟡 P3 — Product decisions (build, or document as an intentional non-goal)
-
-These are language/runtime-shape differences, not connector blockers. Each needs
-an explicit decision; if kept as a non-goal, say so in the docs.
-
-- **CLI** (`cocoindex` ls/show/update/drop/init) + **user-app loader** — 44 Python
-  CLI tests; Rust runs examples via `cargo run`.
-- **Inspect / stable-path API** (`iter_stable_paths`, `list_stable_paths*`) — core
-  has the machinery; no public SDK wrapper.
-- **Default environment / lifespan** (`Environment`, `EnvironmentBuilder`,
-  `default_env`, `start`/`stop`, `COCOINDEX_MAX_INFLIGHT_COMPONENTS` fallback) —
-  Rust uses explicit `App::builder`.
-- **`Settings` / `LmdbSettings` + env loader** — Rust has `AppBuilder` knobs only.
-- **`Runner` / `GPU` / subprocess runner** — Rust has `Ctx::batch`/`memo::batch`
-  but no runner abstraction.
-- **Dynamic-typing APIs** (`datatype`, `type_checker`, `unpickle_safe`,
-  `serialize_by_pickle`, `memo_fingerprint` registry/`NotMemoKeyable`,
-  pending/sentinel markers) — likely Rust non-goals; instead add Rust tests for the
-  replacement invariants (deterministic serde memo keys, connector-schema
-  serialization, persisted-state backward compat).
-
----
-
-## 📋 Test-coverage gaps (highest-value Python families to port)
-
-Even where the Rust API exists, behavior coverage lags. Port these first because
-they lock down SDK semantics rather than examples:
-
-| Area | Python tests | Rust today | Priority |
-| --- | ---: | --- | --- |
-| Neo4j target | 45 | shared graph unit tests + example e2e | High (graph family) |
-| SurrealDB target | 37 | 5 live (incl. vector index, schema-evolution, table-drop) | Medium |
-| FalkorDB target | 31 | shared graph unit tests + example e2e | High |
-| Amazon S3 source | 24 | none | After file-source abstraction |
-| OCI source | 23 | none | After live source API |
-| SQLite target | 21 | 11 (6 unit + 5 embedded e2e) | Regular tables covered; live vec0 needs the `sqlite-vec` extension |
-| Turbopuffer target | 19 | 1 live + unit | Medium (named-vector/f16 gaps) |
-| Kafka source | 14 | none | High (no Rust source) |
-| LanceDB target | 12 | 2 hermetic + unit | Medium (optimize/retry untested) |
-| Postgres source | 9 | 2 live (snapshot + `read_table_items` covered) | Low (streaming/iterator gated on live source) |
-| Postgres target | 8 | 4 live (rows, vector index, SQL-command attachment) | Medium (NUL/halfvec/column-drop-retry) |
-| Kafka target | 17 | 2 live (incl. custom delete value) | Mostly covered |
-| CLI / settings / inspect | 44 / 12 / — | none | Gated on the P3 decisions above |
-
-Recommended order: ~~(1) SQLite~~ **(done — `sqlite` feature + e2e + example)** →
-**(2)** Kafka source + live-components API → **(3)** shared file source →
-S3/OCI/GDrive parity → **(4)** graph index/constraint + vector targets
-named/multivector → **(5)** ops & embedder wrappers.
-
----
-
-## 🧩 Examples still not ported
-
-| Python example | Blocker |
+| Area | Rust status |
 | --- | --- |
-| `image_search` | image/file resource shape + CLIP embedder (Qdrant target exists). |
-| `image_search_colpali` | Qdrant multivector + `MultiVectorSchema` + ColPali. |
-| `amazon_s3_embedding` | S3 source. |
-| `oci_object_storage_embedding` | OCI source + live API. |
-| `kafka_to_lancedb` | Kafka source. |
-| `entire_session_search` | overlaps `code-embedding`; live localfs + two-table shape (de-scoped). |
-| `patient_intake_extraction_baml` / `_dspy` | BAML/DSPy — out of connector-parity scope. |
+| Target-state API | Public `TargetState`, `TargetStateProvider`, `TargetHandler`, `TargetActionSink`, `ChildTargetDef`, `declare_target_state`, `declare_target_state_with_child`, `mount_target`, root-provider registration, attachments, provider-generation `memo_key`. Covered by `tests/target_state.rs`. |
+| Managed target helpers | `ManagedBy`, `ManagedTargetOptions`, `MutualTrackingRecord`, `diff`, `resolve_system_transition`, `CompositeTrackingRecord`, `diff_composite`. |
+| Live SDK API | `LiveComponent`, `LiveComponentOperator`, `LiveMapFeed`, `LiveMapView`, `LiveMapSubscriber`, `Ctx::mount_live`, `mount_live_with_handler`, `mount_each_live`, `ExceptionHandler`, `ExceptionContext`. Covered by `tests/live_component.rs`. |
+| Core app/context API | `App`, run/update/drop handles, blocking and async update paths, stats groups, `ContextKey::{new,new_detect_change,new_with_state}`, `Ctx::memo`, `batch`, `map`, `scope`, `mount_each`, `auto_refresh`, `max_inflight_components`. |
+| Stable IDs | `generate_id`, `generate_uuid`, `IdGenerator`, `UuidGenerator`; repeated identical deps get occurrence-distinct generator IDs. |
+| Shared file source API | Public `file` module with `FilePath`, `FileMetadata`, `FileContentCache`, async `FileLike`, `FileSourceItem`, `FilePathMatcher`, `MatchAllFilePathMatcher`, and `PatternFilePathMatcher`. LocalFS, Google Drive, and S3 use this shared contract for lazy metadata, cached reads, content fingerprints, Python-style path memo keys, mtime/content-fingerprint memo states, path matchers, and stable `(key, item)` iteration. |
+| Implemented target connectors | Postgres, SQLite, SurrealDB, Kafka target, Iggy target, LanceDB, Qdrant, Turbopuffer, Neo4j, FalkorDB, and LocalFS directory target use the public target-state API and expose constructor/declare/mount style helpers where applicable. |
+| Implemented sources | LocalFS static walk, Google Drive listing/download/export, Postgres table reads, Amazon S3 (`amazon_s3`: `list_objects`/`get_object`/`read` over `aws-sdk-s3`, MinIO-compatible), OCI Object Storage (`oci_object_storage`: native REST + RSA-SHA256 HTTP Signature signing, `~/.oci/config` auth, `list_objects`/`get_object`/`read`/`read_range` on the shared `file` contract). |
+| Entity resolution core | Rust has `resolve_entities`, embedder/resolver traits, policies, resolution events, and tests. |
 
----
+## P1: Build These Next
 
-## Completion criteria for "Rust SDK at parity"
+These are the highest-value gaps because they block multiple Python connectors
+or examples.
 
-- Every Python connector has a Rust connector or a documented intentional non-goal.
-- Every Python connector test family has a Rust family or a documented gated skip.
-- Live source semantics exist for connectors that need them.
-- Ops/resource contracts (text ops facade, embedder trait, vector schema) exist so
-  examples stop hand-rolling them.
+### 1. Remaining File Source Work
+
+The connector-neutral Rust `file` module now matches Python's base file
+resource contract for LocalFS, Google Drive, and S3. Remaining parity work is
+connector breadth and live behavior:
+
+1. Add `walk_dir(..., live=true)` / live map support for LocalFS.
+2. **S3 source — ✅ done.** `amazon_s3` (`feature = "amazon_s3"`): `S3Client`
+   (`connect` reads standard AWS env incl. `AWS_ENDPOINT_URL` for MinIO),
+   `S3FilePath`/`S3File`, `list_objects` → `S3Walker` (`list`/`items`, prefix +
+   shared `PatternFilePathMatcher` + `max_file_size`, dir-marker skip),
+   `get_object`/`get_object_uri`/`read`/`read_text`/`read_range`. 7 unit + 3 live
+   MinIO e2e tests (`tests/amazon_s3_source.rs`: list/prefix/matcher/max-size/
+   dir-marker/items/read/range/URI/nonexistent, empty bucket, `mount_each`
+   pipeline). `S3File` implements the shared async `FileLike` while skipping its
+   clone-cheap client/cache from serde, like Google Drive.
+3. **OCI Object Storage source — ✅ done.** `oci_object_storage`
+   (`feature = "oci_object_storage"`): no official Oracle Rust SDK, so it talks
+   to the Object Storage REST API directly and implements OCI's RSA-SHA256 HTTP
+   Signature signing (reusing the `google_drive` `rsa`/`sha2`/`base64`/`reqwest`
+   crates). `OciClient::connect` reads an `~/.oci/config` profile
+   (`OCI_CONFIG_FILE`/`OCI_PROFILE` overrides); `OciFilePath`/`OciFile`,
+   `list_objects` → `OciWalker` (`list`/`items`, `fields=name,size,md5,...`,
+   `start`/`nextStartWith` pagination, prefix + shared `PatternFilePathMatcher` +
+   `max_file_size`, dir-marker skip), `get_object`/`get_object_uri`/`read`/
+   `read_text`/`read_range`. `OciFile` implements the shared async `FileLike` and
+   skips its client/cache from serde, like S3/Google Drive. 15 inline unit tests
+   (INI/config parse, signing-string canonical form, RSA sign+verify round-trip,
+   percent-encoding, URI parse, date parse, relative-key strip, memo keys,
+   matcher). Not yet: live bucket events, pass-phrase-encrypted keys.
+4. Keep source items consistently exposed as stable `(key, item)` pairs.
+
+Tests to port next:
+
+- Python LocalFS live add/edit/delete tests.
+- File memo-state regression coverage is in `tests/pipeline.rs`; expand with S3
+  and Google Drive live/mock cases if their metadata behavior changes.
+- `python/tests/connectors/test_source_items.py` for OCI once implemented.
+
+### 2. Kafka And Iggy Sources
+
+- **Kafka source — ✅ done.** `kafka::KafkaConsumer` + `topic_as_map` /
+  `topic_as_map_with_options` produce a `LiveMapView<String, Vec<u8>>` over a
+  topic, fed to `Ctx::mount_each_live`. `scan()` reads the log to the
+  high-watermark (compacted to the latest value per key, tombstones removed);
+  `watch()` tails new records from there. Custom delete filtering via
+  `KafkaSourceOptions::is_deletion` (defaults to tombstone). 2 live e2e tests
+  (`tests/kafka_source.rs`: catch-up compaction, live tailing). Current scope:
+  single partition (partition 0); multi-partition + a keyless `topic_as_stream`
+  remain.
+- **Iggy source — remaining.** Mirror the Kafka source shape on the live-
+  components API once it settles; keep the target deletion semantics distinct
+  (Kafka tombstones are native; Iggy requires `deletion_value_fn`).
+
+Tests to port:
+
+- `python/tests/connectors/test_kafka_source.py` (partial: compaction + tail
+  covered; multi-partition offset/rebalance not yet)
+- `python/tests/connectors/test_iggy_source.py`
+
+### 3. Ops And Resource Facades — DONE
+
+Python examples use first-class SDK resources and ops; Rust examples used
+`fastembed`, `cocoindex_ops_text`, and custom HTTP clients directly. The SDK now
+ships the facades below (heavy deps gated behind features so the default build is
+unaffected):
+
+1. `cocoindex::ops::text` (feature `text`): `detect_code_language`,
+   `SeparatorSplitter`, `RecursiveSplitter`, and `CustomLanguageConfig`,
+   returning `resources::chunk::Chunk` with ergonomic `Chunk::text(source)`
+   access (the chunk keeps only the byte range, slicing the source on demand).
+2. `cocoindex::resources::schema`: `VectorSchema`, `VectorSchemaProvider`,
+   `MultiVectorSchema`, `MultiVectorSchemaProvider` (element type carried by the
+   `VectorElementType` enum — `f32`/`f16` — in place of NumPy's `dtype`).
+3. SDK embedders/transcribers, each implementing `VectorSchemaProvider` where
+   applicable:
+   - `cocoindex::ops::sentence_transformers::SentenceTransformerEmbedder`
+     (feature `fastembed`) — Rust-native equivalent of Python's
+     `SentenceTransformerEmbedder`, backed by `fastembed`/ONNX.
+   - `cocoindex::ops::api::{ApiEmbedder, ApiTranscriber}` (feature `embed_api`)
+     — Rust-native equivalent of Python's `LiteLLMEmbedder`/`LiteLLMTranscriber`,
+     talking to an OpenAI-compatible HTTP API via `reqwest` (there is no Rust
+     `litellm` router; point them at any compatible base URL).
+4. **All embedding/transcription examples now use the SDK facades** instead of
+   hand-rolling `cocoindex_ops_text`/`fastembed`/HTTP: `text-embedding`,
+   `text-embedding-{lancedb,qdrant,turbopuffer}`, `code-embedding`,
+   `code-embedding-lancedb`, `pdf-embedding`, `gdrive-text-embedding`,
+   `amazon-s3-embedding`, `postgres-source`, and `paper-metadata` use
+   `ops::text::{RecursiveSplitter, detect_code_language}` +
+   `ops::sentence_transformers::SentenceTransformerEmbedder`; `audio-to-text`
+   uses `ops::api::ApiTranscriber`. All build; e2e-revalidated:
+   `text-embedding`, `text-embedding-lancedb`, `code-embedding`, `pdf-embedding`,
+   `paper-metadata`, and `audio-to-text`. **Exception:** `conversation-to-knowledge`
+   keeps its hand-rolled clients — its default embedder is
+   `Snowflake/snowflake-arctic-embed-xs` (not in fastembed's built-in registry, so
+   it loads via hf-hub `UserDefinedEmbeddingModel`), and it uses a chat-completion
+   LLM + AssemblyAI transcription, neither of which the current embedder/transcriber
+   facades cover.
+
+Tests ported (Rust integration tests under `rust/sdk/cocoindex/tests/`):
+
+- `python/tests/ops/test_text.py` → `tests/ops_text.rs`
+- `python/tests/ops/test_embedder_refactor.py` → `tests/ops_api.rs`
+- `python/tests/ops/test_litellm_transcriber.py` → `tests/ops_api.rs`
+  (mock HTTP server via wiremock)
+
+## P2: Connector Feature Gaps
+
+These are narrower gaps in connectors Rust already has.
+
+| Connector | Rust status | Action |
+| --- | --- | --- |
+| Neo4j / FalkorDB | Table/relation targets, PK artifacts, **and node-table vector-index attachments** (`TableTarget::declare_vector_index(field, dimension, VectorMetric)`, per-dialect `CREATE/DROP VECTOR INDEX` via the `CypherExecutor` trait; `VectorMetric` = cosine/euclidean/inner-product, the last FalkorDB-only). Covered by cypher_graph unit tests (exact per-dialect Cypher) + `tests/graph_vector_index.rs` live e2e (create→drop on real Neo4j + FalkorDB). | Remaining: exported node/relationship **index + uniqueness-constraint** builder helpers (`build_*_index_*`, `build_constraint_*`). |
+| Qdrant | Rust supports one unnamed vector per collection. Python supports `QdrantVectorDef`, named vectors, and multivectors. | Add vector schema resources first, then named and multivector collection schemas. |
+| Turbopuffer | Rust supports one unnamed `f32` vector. Python supports `VectorDef`, named vectors, and `f16`/`f32`. | Add vector schema resources first, then named vectors and `f16`. |
+| Google Drive | Rust lists files, reads/exports content, exposes `DriveFilePath`, `DriveFileInfo`, top-level `list_files(spec)`, `GoogleDriveSource::items()`, and shared async `FileLike`. It still lacks live notifications. | Add live notifications only after the live source API is generalized. |
+| LocalFS | Rust has static walk, shared path matchers, async cached `FileLike`, `DirWalker.items()`, and directory target. Python also has live watching. | Implement live `walk_dir(..., live=true)`. |
+| Postgres | Target/source basics, vector index, SQL command attachment, and repeatable-read source snapshot exist. | Add edge-case tests for NUL strings, halfvec, column-drop/retype retries, and broader source iterator behavior if a streaming source API lands. |
+| SQLite | Regular table, `managed_by`, vec0 DDL, validation, embedded e2e, and example exist. | Add live vec0 e2e when `sqlite-vec` is available in CI. |
+| LanceDB | Table target and hermetic e2e exist. | Add tests for optimize/retry/error paths if Rust exposes those features. |
+
+## P3: Missing Connectors
+
+| Python connector | Why it matters | Next step |
+| --- | --- | --- |
+| Doris | Native Python target supports stream-load, retry config, vector indexes, and inverted indexes. | Implement after vector-schema resources; port `test_doris_target.py` with live Doris gating. |
+| OCI Object Storage | Python source uses shared file resources and live object events. | **✅ Source done** (`oci_object_storage`, native REST + signing — see P1 §1). Remaining: live object events after the live source API is generalized. |
+| Notion | Python connector is currently empty. | No Rust work until Python ships a real connector. |
+
+## P4: Product Decisions
+
+These are not connector blockers. Decide whether Rust should match Python or
+document them as intentional non-goals.
+
+| Python surface | Rust status | Decision needed |
+| --- | --- | --- |
+| CLI and user app loader | Rust examples run via `cargo run`; no SDK CLI. | Build a Rust CLI only if Rust apps are meant to be first-class deployed CocoIndex apps. |
+| Default environment and lifespan | Rust uses explicit `App::builder`; no `default_env`, `EnvironmentBuilder`, or lifespan hooks. | Decide whether implicit global environments fit Rust style. |
+| Settings/env loader | Rust has builder knobs, not Python `Settings`/`LmdbSettings` env loading. | Add only if CLI/default-env work is accepted. |
+| Inspect/stable-path API | Core machinery exists; no public Rust wrapper. | Add lightweight wrappers if Rust users need state introspection. |
+| Runner/GPU/subprocess runner | Rust has memo/batch, not Python runner abstractions. | Likely defer unless ops wrappers need it. |
+| Python dynamic typing internals | Rust uses serde and static types. | Treat pickle/safe-unpickle/type-checker APIs as non-goals; test Rust replacement invariants instead. |
+
+## Test Backlog
+
+Use this order. It moves from shared semantics to connector-specific behavior.
+
+1. Remaining file-source tests:
+   LocalFS live tests and `test_source_items.py` for S3/OCI once implemented.
+2. Kafka/Iggy source tests:
+   `test_kafka_source.py`, `test_iggy_source.py`.
+3. Ops/resource tests:
+   `test_text.py`, `test_embedder_refactor.py`, `test_litellm_transcriber.py`,
+   `test_llm_pair_resolver.py`.
+4. Graph feature tests:
+   vector-index lifecycle from Neo4j/FalkorDB target tests.
+5. Qdrant/Turbopuffer named-vector and multivector tests.
+6. Doris connector tests once its Rust connector exists; S3/OCI live e2e tests
+   gated on real credentials (S3 has MinIO e2e; OCI has inline unit tests).
+7. Product-decision tests only after deciding to build CLI/default-env/settings.
+
+## Example Parity
+
+Rust examples currently cover most non-source-blocked Python examples:
+
+- text/code embedding across Postgres, LanceDB, Qdrant, and Turbopuffer
+- Postgres source
+- HN trending topics
+- Google Drive text embedding
+- meeting-notes graph examples for Neo4j and FalkorDB
+- conversation-to-knowledge
+- CSV to Kafka and Iggy
+- files-transform
+- files-to-SQLite
+- multi-codebase summarization
+- audio-to-text
+- paper metadata
+- PDF embedding and PDF-to-Markdown
+- Amazon S3 embedding (`amazon-s3-embedding`, validated against MinIO + Postgres)
+- OCI Object Storage embedding (`oci-object-storage-embedding`; one-shot, builds
+  against the native `oci_object_storage` source — live OCI run needs real
+  `~/.oci/config` credentials)
+
+Examples still blocked or intentionally deferred:
+
+| Python example | Status |
+| --- | --- |
+| `kafka_to_lancedb` | blocked on Kafka source |
+| `entire_session_search` | intentionally de-scoped for Rust; overlaps code embedding and needs live LocalFS/two-table source shape |
+| `patient_intake_extraction_baml`, `patient_intake_extraction_dspy` | BAML/DSPy integration, outside current Rust SDK parity scope |
+| `notion_target_basics` | Python connector is empty; no Rust parity target yet |
+
+## Definition Of Parity
+
+Rust SDK parity means:
+
+1. Every non-empty Python connector has a Rust equivalent or a documented
+   intentional non-goal.
+2. Every implemented Rust connector follows the same declarative target/source
+   semantics as Python.
+3. Shared file, vector, text, and embedder resources exist so examples do not
+   hand-roll common SDK behavior.
+4. Live source semantics exist for connectors that need them.
+5. Each Python connector test family has a Rust family, with live tests gated
+   only by explicit external-service requirements.

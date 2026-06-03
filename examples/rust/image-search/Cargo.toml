@@ -1,0 +1,16 @@
+[workspace]
+
+[package]
+name = "image-search"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+cocoindex = { path = "../../../rust/sdk/cocoindex", features = [
+    "qdrant",
+    "fastembed",
+] }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+dotenvy = "0.15"

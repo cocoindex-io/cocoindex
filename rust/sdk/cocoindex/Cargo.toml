@@ -6,12 +6,38 @@ rust-version.workspace = true
 license.workspace = true
 
 [features]
+# Text splitting / language detection facade (`ops::text`).
+text = ["dep:cocoindex_ops_text"]
+# Local sentence-transformer embeddings via fastembed (`ops::sentence_transformers`).
+fastembed = ["dep:fastembed"]
+# Remote embeddings / transcription over an OpenAI-compatible HTTP API (`ops::api`).
+embed_api = ["dep:serde_json", "dep:reqwest", "reqwest/multipart"]
 postgres = ["dep:serde_json", "dep:sqlx", "dep:chrono"]
 sqlite = ["dep:serde_json", "dep:sqlx", "sqlx/sqlite"]
 surrealdb = ["dep:serde_json", "dep:surrealdb"]
 kafka = ["dep:rskafka", "dep:chrono"]
 iggy = ["dep:iggy"]
-google_drive = ["dep:serde_json", "dep:reqwest", "dep:rsa", "dep:sha2", "dep:base64"]
+amazon_s3 = ["dep:aws-config", "dep:aws-sdk-s3"]
+google_drive = [
+    "dep:serde_json",
+    "dep:reqwest",
+    "dep:rsa",
+    "dep:sha2",
+    "dep:base64",
+    "dep:chrono",
+]
+# OCI Object Storage source: REST API + RSA-SHA256 HTTP Signature request
+# signing (no official Oracle Rust SDK). Reuses the google_drive crypto/HTTP
+# crates; `chrono/clock` provides the request `date` header + timestamp parsing.
+oci_object_storage = [
+    "dep:serde_json",
+    "dep:reqwest",
+    "dep:rsa",
+    "dep:sha2",
+    "dep:base64",
+    "dep:chrono",
+    "chrono/clock",
+]
 lancedb = ["dep:serde_json", "dep:lancedb", "dep:arrow-array", "dep:arrow-schema"]
 qdrant = ["dep:serde_json", "dep:qdrant-client"]
 turbopuffer = ["dep:serde_json", "dep:reqwest"]
@@ -22,6 +48,11 @@ falkordb = ["dep:serde_json", "dep:redis"]
 cocoindex_macros = { path = "../cocoindex_macros" }
 cocoindex_core = { path = "../../core", package = "cocoindex_core" }
 cocoindex_utils = { path = "../../utils", package = "cocoindex_utils" }
+# Text splitting / language detection (`ops::text`).
+cocoindex_ops_text = { path = "../../ops_text", optional = true }
+# Local sentence-transformer embeddings (`ops::sentence_transformers`); pulls in
+# the ONNX runtime, so it is gated behind the `fastembed` feature.
+fastembed = { version = "4", optional = true }
 thiserror = "2"
 bytes = "1"
 serde = { version = "1", features = ["derive"] }
@@ -46,6 +77,9 @@ chrono = { version = "0.4", default-features = false, optional = true }
 rskafka = { version = "0.6", default-features = false, optional = true }
 # Apache Iggy message-streaming target (pure-Rust client; TCP/QUIC/HTTP).
 iggy = { version = "0.10", optional = true }
+# Amazon S3 (and S3-compatible, e.g. MinIO) object source.
+aws-config = { version = "1", optional = true }
+aws-sdk-s3 = { version = "1", optional = true }
 # Google Drive source: HTTP (native-tls = macOS Security.framework, no cmake)
 # + pure-Rust RS256 JWT signing for service-account auth.
 reqwest = { version = "0.12", features = ["json"], optional = true }
@@ -78,6 +112,8 @@ glob = "0.3"
 rskafka = { version = "0.6", default-features = false }
 # Hermetic mock HTTP server for the Google Drive source integration test.
 wiremock = "0.6"
+# Generate an ephemeral RSA key for the OCI signing unit test.
+rand = "0.8"
 
 [[bench]]
 name = "sdk_microbench"

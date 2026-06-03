@@ -1,205 +1,24 @@
-//! Filesystem walking with fingerprinting.
+//! Filesystem walking with shared file resources.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::SystemTime;
 
+use async_trait::async_trait;
 use cocoindex_utils::fingerprint::Fingerprint;
-use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
 
 use crate::ctx::Ctx;
 use crate::error::{Error, Result};
+pub use crate::file::{
+    FileContentCache, FileLike, FileMetadata, FilePath, FilePathMatcher, FileSourceItem,
+    MatchAllFilePathMatcher, PatternFilePathMatcher, decode_bytes,
+};
 use crate::target_state::{
     StableKey, TargetAction, TargetActionSink, TargetHandler, TargetReconcileOutput,
     TargetStateProvider, declare_target_state, register_root_target_states_provider,
 };
-
-// ---------------------------------------------------------------------------
-// FilePath / FileLike / matchers
-// ---------------------------------------------------------------------------
-
-/// Local filesystem path with an optional stable base key.
-///
-/// The resolved location may move, while [`FilePath::memo_key`] stays stable
-/// when callers supply the same logical base key.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct FilePath {
-    base_key: Option<Arc<str>>,
-    base_dir: Option<PathBuf>,
-    path: PathBuf,
-}
-
-impl FilePath {
-    pub fn new(path: impl Into<PathBuf>) -> Self {
-        Self {
-            base_key: None,
-            base_dir: None,
-            path: path.into(),
-        }
-    }
-
-    pub fn with_base_dir(
-        base_key: impl Into<Arc<str>>,
-        base_dir: impl Into<PathBuf>,
-        path: impl Into<PathBuf>,
-    ) -> Self {
-        Self {
-            base_key: Some(base_key.into()),
-            base_dir: Some(base_dir.into()),
-            path: path.into(),
-        }
-    }
-
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-
-    pub fn base_key(&self) -> Option<&str> {
-        self.base_key.as_deref()
-    }
-
-    pub fn resolve(&self) -> PathBuf {
-        match &self.base_dir {
-            Some(base) => base.join(&self.path),
-            None => self.path.clone(),
-        }
-    }
-
-    pub fn join(&self, child: impl AsRef<Path>) -> Self {
-        Self {
-            base_key: self.base_key.clone(),
-            base_dir: self.base_dir.clone(),
-            path: self.path.join(child),
-        }
-    }
-
-    pub fn memo_key(&self) -> impl Serialize + '_ {
-        (
-            self.base_key.as_deref().unwrap_or(""),
-            self.path.to_string_lossy().replace('\\', "/"),
-        )
-    }
-}
-
-impl<P: Into<PathBuf>> From<P> for FilePath {
-    fn from(path: P) -> Self {
-        Self::new(path)
-    }
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct FileMetadata {
-    pub size: u64,
-    #[serde(with = "system_time_serde")]
-    pub modified: SystemTime,
-    pub content_fingerprint: Option<Fingerprint>,
-}
-
-/// Common local file-like behavior used by filesystem sources.
-pub trait FileLike {
-    fn file_path(&self) -> FilePath;
-    fn metadata(&self) -> Result<FileMetadata>;
-    fn read(&self) -> Result<Vec<u8>>;
-
-    fn read_text(&self) -> Result<String> {
-        let bytes = self.read()?;
-        let (text, _had_errors) = encoding_rs::UTF_8.decode_with_bom_removal(&bytes);
-        Ok(text.into_owned())
-    }
-
-    fn content_fingerprint(&self) -> Result<Fingerprint> {
-        let metadata = self.metadata()?;
-        match metadata.content_fingerprint {
-            Some(fp) => Ok(fp),
-            None => Fingerprint::from(&self.read()?)
-                .map_err(|e| Error::engine(format!("file fingerprint error: {e}"))),
-        }
-    }
-}
-
-pub trait FilePathMatcher: Send + Sync {
-    fn is_dir_included(&self, _path: &Path) -> bool {
-        true
-    }
-
-    fn is_file_included(&self, path: &Path) -> bool;
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct MatchAllFilePathMatcher;
-
-impl FilePathMatcher for MatchAllFilePathMatcher {
-    fn is_file_included(&self, _path: &Path) -> bool {
-        true
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct PatternFilePathMatcher {
-    included: Option<GlobSet>,
-    excluded: GlobSet,
-}
-
-impl PatternFilePathMatcher {
-    pub fn new<I, E>(included_patterns: I, excluded_patterns: E) -> Result<Self>
-    where
-        I: IntoIterator,
-        I::Item: AsRef<str>,
-        E: IntoIterator,
-        E::Item: AsRef<str>,
-    {
-        let mut included_builder = GlobSetBuilder::new();
-        let mut has_included = false;
-        for pattern in included_patterns {
-            included_builder.add(build_glob(pattern.as_ref())?);
-            has_included = true;
-        }
-        let included = if has_included {
-            Some(
-                included_builder
-                    .build()
-                    .map_err(|e| Error::engine(format!("invalid glob set: {e}")))?,
-            )
-        } else {
-            None
-        };
-
-        let mut excluded_builder = GlobSetBuilder::new();
-        for pattern in excluded_patterns {
-            excluded_builder.add(build_glob(pattern.as_ref())?);
-        }
-        let excluded = excluded_builder
-            .build()
-            .map_err(|e| Error::engine(format!("invalid glob set: {e}")))?;
-
-        Ok(Self { included, excluded })
-    }
-
-    pub fn include<I>(included_patterns: I) -> Result<Self>
-    where
-        I: IntoIterator,
-        I::Item: AsRef<str>,
-    {
-        Self::new(included_patterns, std::iter::empty::<&str>())
-    }
-}
-
-impl FilePathMatcher for PatternFilePathMatcher {
-    fn is_dir_included(&self, path: &Path) -> bool {
-        !self.excluded.is_match(path_key(path))
-    }
-
-    fn is_file_included(&self, path: &Path) -> bool {
-        let key = path_key(path);
-        !self.excluded.is_match(&key)
-            && self
-                .included
-                .as_ref()
-                .is_none_or(|included| included.is_match(key))
-    }
-}
 
 #[derive(Clone)]
 pub struct DirWalker {
@@ -248,32 +67,27 @@ pub fn walk_dir(path: impl Into<FilePath>) -> DirWalker {
 // FileEntry
 // ---------------------------------------------------------------------------
 
-/// A walked file with eager fingerprint and lazy content.
+/// A walked file with stable path metadata and lazy content.
 #[derive(Clone, Serialize)]
 pub struct FileEntry {
     root: FilePath,
     relative: PathBuf,
     size: u64,
-    #[serde(with = "system_time_serde")]
+    #[serde(with = "crate::file::system_time_serde")]
     modified: SystemTime,
-}
-
-mod system_time_serde {
-    use serde::{Serialize, Serializer};
-    use std::time::SystemTime;
-
-    pub fn serialize<S: Serializer>(time: &SystemTime, ser: S) -> Result<S::Ok, S::Error> {
-        let duration = time
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap_or_default();
-        (duration.as_secs(), duration.subsec_nanos()).serialize(ser)
-    }
+    #[serde(skip)]
+    cache: Arc<FileContentCache>,
 }
 
 impl FileEntry {
+    /// Logical file path for this entry.
+    pub fn file_path(&self) -> FilePath {
+        self.root.join(&self.relative)
+    }
+
     /// Full filesystem path.
     pub fn path(&self) -> PathBuf {
-        self.root.join(&self.relative).resolve()
+        self.file_path().resolve()
     }
 
     /// Relative path from walk root.
@@ -289,8 +103,7 @@ impl FileEntry {
             .unwrap_or("")
     }
 
-    /// Fingerprint for memoization keys (size + mtime).
-    /// Returns a serializable value suitable as a cache key.
+    /// Lightweight change fingerprint based on relative path, size, and mtime.
     pub fn fingerprint(&self) -> impl Serialize + '_ {
         (
             self.relative.to_string_lossy(),
@@ -318,7 +131,7 @@ impl FileEntry {
     /// Returns [`Error::Io`] if the file cannot be read. Invalid UTF-8 is
     /// decoded with replacement characters, matching [`FileLike::read_text`].
     pub fn content_str(&self) -> Result<String> {
-        <Self as FileLike>::read_text(self)
+        Ok(decode_bytes(&self.content()?))
     }
 
     /// Stable key for component paths (relative path, forward slashes).
@@ -327,23 +140,43 @@ impl FileEntry {
     }
 }
 
+#[async_trait]
 impl FileLike for FileEntry {
     fn file_path(&self) -> FilePath {
-        self.root.join(&self.relative)
+        FileEntry::file_path(self)
     }
 
-    fn metadata(&self) -> Result<FileMetadata> {
+    fn cache(&self) -> &FileContentCache {
+        &self.cache
+    }
+
+    async fn fetch_metadata(&self) -> Result<FileMetadata> {
+        let metadata = tokio::fs::metadata(self.path()).await.map_err(Error::Io)?;
         Ok(FileMetadata {
-            size: self.size,
-            modified: self.modified,
+            size: metadata.len(),
+            modified: metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
             content_fingerprint: None,
         })
     }
 
-    fn read(&self) -> Result<Vec<u8>> {
-        self.content()
+    async fn read_impl(&self, size: Option<usize>) -> Result<Vec<u8>> {
+        match size {
+            None => tokio::fs::read(self.path()).await.map_err(Error::Io),
+            Some(size) => {
+                use tokio::io::AsyncReadExt;
+                let mut file = tokio::fs::File::open(self.path())
+                    .await
+                    .map_err(Error::Io)?;
+                let mut buf = vec![0; size];
+                let read = file.read(&mut buf).await.map_err(Error::Io)?;
+                buf.truncate(read);
+                Ok(buf)
+            }
+        }
     }
 }
+
+impl FileSourceItem for FileEntry {}
 
 /// Walk a directory matching multiple glob patterns. Returns all matching files
 /// sorted by relative path.
@@ -411,22 +244,16 @@ fn walk_internal(
             relative,
             size: metadata.len(),
             modified: metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
+            cache: Arc::new(FileContentCache::with_metadata(FileMetadata {
+                size: metadata.len(),
+                modified: metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
+                content_fingerprint: None,
+            })),
         });
     }
 
     files.sort_by(|a, b| a.relative.cmp(&b.relative));
     Ok(files)
-}
-
-fn build_glob(pattern: &str) -> Result<globset::Glob> {
-    GlobBuilder::new(pattern)
-        .literal_separator(true)
-        .build()
-        .map_err(|e| Error::engine(format!("invalid glob: {e}")))
-}
-
-fn path_key(path: &Path) -> String {
-    path.to_string_lossy().replace('\\', "/")
 }
 
 fn relative_path(root: &Path, canonical_root: &Path, path: &Path) -> Result<PathBuf> {
@@ -726,6 +553,7 @@ mod tests {
     fn file_entry_text_decode_strips_utf8_bom_and_replaces_invalid_utf8() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("bom.txt"), b"\xEF\xBB\xBFhello").unwrap();
+        std::fs::write(dir.path().join("utf16.txt"), b"\xFF\xFEh\0i\0").unwrap();
         std::fs::write(dir.path().join("bad.txt"), b"a\xFFb").unwrap();
         let files = walk(dir.path(), &["*.txt"]).unwrap();
         let by_key = files
@@ -733,7 +561,37 @@ mod tests {
             .map(|file| (file.key(), file.content_str().unwrap()))
             .collect::<std::collections::HashMap<_, _>>();
         assert_eq!(by_key["bom.txt"], "hello");
+        assert_eq!(by_key["utf16.txt"], "hi");
         assert_eq!(by_key["bad.txt"], "a\u{fffd}b");
+    }
+
+    #[tokio::test]
+    async fn file_entry_uses_shared_async_filelike_api() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("test.txt"), "hello world").unwrap();
+        let file = walk_dir(FilePath::with_base_dir(
+            "source",
+            dir.path(),
+            PathBuf::new(),
+        ))
+        .path_matcher(PatternFilePathMatcher::include(["*.txt"]).unwrap())
+        .walk()
+        .unwrap()
+        .pop()
+        .unwrap();
+
+        assert_eq!(file.file_path().path(), Path::new("test.txt"));
+        assert_eq!(file.file_path().resolve(), dir.path().join("test.txt"));
+        assert_eq!(FileSourceItem::key(&file), "test.txt");
+        assert_eq!(FileLike::metadata(&file).await.unwrap().size, 11);
+        assert_eq!(FileLike::read_size(&file, 5).await.unwrap(), b"hello");
+        assert_eq!(FileLike::read(&file).await.unwrap(), b"hello world");
+        assert_eq!(FileLike::read_size(&file, 5).await.unwrap(), b"hello");
+        assert_eq!(FileLike::read_text(&file).await.unwrap(), "hello world");
+        assert_eq!(
+            FileLike::content_fingerprint(&file).await.unwrap(),
+            FileLike::content_fingerprint(&file).await.unwrap()
+        );
     }
 
     #[test]

@@ -30,6 +30,7 @@ use tokio::sync::OnceCell;
 
 use crate::ctx::Ctx;
 use crate::error::{Error, Result};
+use crate::live_component::{LiveMapFeed, LiveMapSubscriber, LiveMapView};
 use crate::target_state::{
     ChildTargetDef, StableKey, TargetAction, TargetActionSink, TargetHandler,
     TargetReconcileOutput, TargetState, TargetStateProvider, declare_target_state,
@@ -497,6 +498,177 @@ fn current_timestamp() -> chrono::DateTime<chrono::Utc> {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
     chrono::DateTime::from_timestamp(now.as_secs() as i64, now.subsec_nanos()).unwrap_or_default()
+}
+
+// ---------------------------------------------------------------------------
+// Kafka source — a live map feed over a topic (the Rust analogue of Python's
+// `topic_as_map`).
+// ---------------------------------------------------------------------------
+
+/// A Kafka consumer handle. Clone-cheap (the underlying client is shared).
+#[derive(Clone)]
+pub struct KafkaConsumer {
+    client: Arc<Client>,
+    state_id: Arc<str>,
+}
+
+impl KafkaConsumer {
+    /// Connect to a Kafka (or Redpanda) cluster given its bootstrap servers.
+    pub async fn connect(bootstrap_servers: &[&str]) -> Result<Self> {
+        let boot: Vec<String> = bootstrap_servers.iter().map(|s| s.to_string()).collect();
+        if boot.is_empty() {
+            return Err(Error::engine(
+                "kafka: at least one bootstrap server is required",
+            ));
+        }
+        let state_id = boot.join(",");
+        let client = ClientBuilder::new(boot)
+            .build()
+            .await
+            .map_err(|e| Error::engine(format!("kafka connect: {e}")))?;
+        Ok(Self {
+            client: Arc::new(client),
+            state_id: Arc::from(state_id),
+        })
+    }
+
+    /// Stable identity (the bootstrap-server list).
+    pub fn state_id(&self) -> &str {
+        &self.state_id
+    }
+}
+
+/// Decides whether a consumed record is a *deletion* for its key. Receives the
+/// key bytes and the value (`None` for a tombstone). The default treats a
+/// `None` value (tombstone) as a deletion.
+pub type IsDeletionFn = Arc<dyn Fn(&[u8], Option<&[u8]>) -> bool + Send + Sync>;
+
+/// Options for [`topic_as_map_with_options`].
+#[derive(Clone, Default)]
+pub struct KafkaSourceOptions {
+    /// Custom deletion predicate; defaults to "value is a tombstone (`None`)".
+    pub is_deletion: Option<IsDeletionFn>,
+}
+
+/// A keyed change feed over a Kafka topic's **partition 0**: the latest value
+/// per key, with tombstones (or [`KafkaSourceOptions::is_deletion`]) removing
+/// keys. The Rust analogue of Python's `topic_as_map`.
+///
+/// As a [`LiveMapView`], [`scan`](LiveMapView::scan) reads the log up to the
+/// current high-watermark (the catch-up snapshot, compacted to the latest value
+/// per key) and [`watch`](LiveMapFeed::watch) tails new records from there.
+/// Feed it to [`Ctx::mount_each_live`](crate::Ctx::mount_each_live). Multi-
+/// partition consumption is not yet implemented (single partition only).
+pub struct KafkaTopicMap {
+    client: Arc<Client>,
+    topic: String,
+    is_deletion: Option<IsDeletionFn>,
+    /// Offset `watch` resumes from — set to the high-watermark reached by the
+    /// most recent `scan` so the tail neither gaps nor double-reads.
+    watch_start: Arc<tokio::sync::Mutex<i64>>,
+}
+
+/// Build a [`KafkaTopicMap`] over `topic` (tombstone deletes).
+pub fn topic_as_map(consumer: &KafkaConsumer, topic: impl Into<String>) -> KafkaTopicMap {
+    topic_as_map_with_options(consumer, topic, KafkaSourceOptions::default())
+}
+
+/// [`topic_as_map`] with a custom deletion predicate.
+pub fn topic_as_map_with_options(
+    consumer: &KafkaConsumer,
+    topic: impl Into<String>,
+    options: KafkaSourceOptions,
+) -> KafkaTopicMap {
+    KafkaTopicMap {
+        client: consumer.client.clone(),
+        topic: topic.into(),
+        is_deletion: options.is_deletion,
+        watch_start: Arc::new(tokio::sync::Mutex::new(0)),
+    }
+}
+
+impl KafkaTopicMap {
+    async fn partition(&self) -> Result<PartitionClient> {
+        self.client
+            .partition_client(self.topic.clone(), 0, UnknownTopicHandling::Retry)
+            .await
+            .map_err(|e| Error::engine(format!("kafka partition_client {:?}: {e}", self.topic)))
+    }
+
+    /// Classify a record into `(key, Some(value))` upsert or `(key, None)`
+    /// delete. Returns `None` for a record with no key (skipped, as in Python).
+    fn classify(&self, record: &Record) -> Option<(String, Option<Vec<u8>>)> {
+        let key_bytes = record.key.as_ref()?;
+        let key = String::from_utf8_lossy(key_bytes).into_owned();
+        let is_delete = match &self.is_deletion {
+            Some(f) => f(key_bytes, record.value.as_deref()),
+            None => record.value.is_none(),
+        };
+        if is_delete {
+            Some((key, None))
+        } else {
+            Some((key, record.value.clone()))
+        }
+    }
+}
+
+#[crate::async_trait]
+impl LiveMapFeed<String, Vec<u8>> for KafkaTopicMap {
+    async fn watch(&self, subscriber: LiveMapSubscriber<String, Vec<u8>>) -> Result<()> {
+        let pc = self.partition().await?;
+        let mut offset = *self.watch_start.lock().await;
+        loop {
+            // Long-poll: wait up to 1s for new records from `offset`.
+            let (records, _hwm) = pc
+                .fetch_records(offset, 1..1_000_000, 1_000)
+                .await
+                .map_err(|e| Error::engine(format!("kafka fetch_records: {e}")))?;
+            for r in &records {
+                offset = r.offset + 1;
+                let Some((key, value)) = self.classify(&r.record) else {
+                    continue;
+                };
+                match value {
+                    Some(v) => subscriber.update(key, v).await?,
+                    None => subscriber.delete(key).await?,
+                }
+            }
+        }
+    }
+}
+
+#[crate::async_trait]
+impl LiveMapView<String, Vec<u8>> for KafkaTopicMap {
+    async fn scan(&self) -> Result<Vec<(String, Vec<u8>)>> {
+        let pc = self.partition().await?;
+        let mut latest: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+        let mut offset = 0i64;
+        loop {
+            let (records, hwm) = pc
+                .fetch_records(offset, 1..1_000_000, 500)
+                .await
+                .map_err(|e| Error::engine(format!("kafka fetch_records: {e}")))?;
+            for r in &records {
+                offset = r.offset + 1;
+                if let Some((key, value)) = self.classify(&r.record) {
+                    match value {
+                        Some(v) => {
+                            latest.insert(key, v);
+                        }
+                        None => {
+                            latest.remove(&key);
+                        }
+                    }
+                }
+            }
+            if records.is_empty() || offset >= hwm {
+                break;
+            }
+        }
+        // `watch` resumes exactly where this snapshot ended.
+        *self.watch_start.lock().await = offset;
+        Ok(latest.into_iter().collect())
+    }
 }
 
 #[cfg(test)]

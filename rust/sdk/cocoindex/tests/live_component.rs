@@ -285,8 +285,11 @@ async fn mount_live_incremental_delete_removes_child_state() {
                 async move {
                     // Register the provider at the root so it's captured into the
                     // live component's provider set and available at delete time.
-                    let provider =
-                        register_root_target_states_provider(&ctx, "live/items", RowHandler { sink })?;
+                    let provider = register_root_target_states_provider(
+                        &ctx,
+                        "live/items",
+                        RowHandler { sink },
+                    )?;
                     ctx.mount_live(
                         &"comp",
                         DirectDelete {
@@ -406,7 +409,11 @@ async fn mount_each_live_catch_up_scans_all_items() {
         let processed = processed_for_update.clone();
         async move {
             let view = MemView {
-                items: vec![("a".to_string(), 1), ("b".to_string(), 2), ("c".to_string(), 3)],
+                items: vec![
+                    ("a".to_string(), 1),
+                    ("b".to_string(), 2),
+                    ("c".to_string(), 3),
+                ],
             };
             ctx.mount_each_live(&"each", view, move |_ctx, value: i64| {
                 let processed = processed.clone();

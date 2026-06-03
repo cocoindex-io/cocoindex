@@ -5,13 +5,13 @@
 //! Postgres/pgvector.
 
 use std::path::PathBuf;
-use std::sync::{Arc, LazyLock};
+use std::sync::LazyLock;
 
 use cocoindex::gdrive::{DriveFile, GoogleDriveClient, GoogleDriveSource};
+use cocoindex::ops::sentence_transformers::SentenceTransformerEmbedder;
+use cocoindex::ops::text::{RecursiveChunkConfig, RecursiveSplitter};
 use cocoindex::postgres;
 use cocoindex::prelude::*;
-use cocoindex_ops_text::split::{RecursiveChunkConfig, RecursiveChunker, RecursiveSplitConfig};
-use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
 use sqlx::postgres::{PgPool, PgPoolOptions};
@@ -34,35 +34,11 @@ static GDRIVE: LazyLock<ContextKey<GoogleDriveClient>> = LazyLock::new(|| {
     })
 });
 
-static EMBEDDER: LazyLock<ContextKey<Embedder>> =
-    LazyLock::new(|| ContextKey::new_with_state("embedder", |e: &Embedder| e.model_name.clone()));
-
-struct Embedder {
-    model: Arc<TextEmbedding>,
-    model_name: String,
-}
-
-impl Embedder {
-    fn load(model_name: &str) -> Result<Self> {
-        let model = TextEmbedding::try_new(InitOptions::new(EmbeddingModel::AllMiniLML6V2))
-            .map_err(|e| Error::engine(format!("failed to load embedding model: {e}")))?;
-        Ok(Self {
-            model: Arc::new(model),
-            model_name: model_name.to_string(),
-        })
-    }
-
-    async fn embed(&self, texts: Vec<String>) -> Result<Vec<Vec<f32>>> {
-        if texts.is_empty() {
-            return Ok(Vec::new());
-        }
-        let model = self.model.clone();
-        tokio::task::spawn_blocking(move || model.embed(texts, None))
-            .await
-            .map_err(|e| Error::engine(format!("embedding task panicked: {e}")))?
-            .map_err(|e| Error::engine(format!("embedding failed: {e}")))
-    }
-}
+static EMBEDDER: LazyLock<ContextKey<SentenceTransformerEmbedder>> = LazyLock::new(|| {
+    ContextKey::new_with_state("embedder", |e: &SentenceTransformerEmbedder| {
+        e.model_name().to_string()
+    })
+});
 
 #[derive(Clone, Serialize, Deserialize)]
 struct DocEmbeddingRow {
@@ -76,9 +52,8 @@ struct DocEmbeddingRow {
 async fn process_file(ctx: &Ctx, file: &DriveFile) -> Result<Vec<DocEmbeddingRow>> {
     let client = ctx.get_key(&GDRIVE)?;
     let text = client.read_text(&file).await?;
-    let chunker = RecursiveChunker::new(RecursiveSplitConfig::default())
-        .map_err(|e| Error::engine(format!("chunker init: {e}")))?;
-    let chunks = chunker.split(
+    let splitter = RecursiveSplitter::new()?;
+    let chunks = splitter.split_with(
         &text,
         RecursiveChunkConfig {
             chunk_size: 2000,
@@ -92,15 +67,8 @@ async fn process_file(ctx: &Ctx, file: &DriveFile) -> Result<Vec<DocEmbeddingRow
         return Ok(Vec::new());
     }
 
-    let texts: Vec<String> = chunks
-        .iter()
-        .map(|c| {
-            text.get(c.range.start..c.range.end)
-                .unwrap_or("")
-                .to_string()
-        })
-        .collect();
-    let embeddings = ctx.get_key(&EMBEDDER)?.embed(texts.clone()).await?;
+    let texts: Vec<String> = chunks.iter().map(|c| c.text(&text).to_string()).collect();
+    let embeddings = ctx.get_key(&EMBEDDER)?.embed_batch(texts.clone()).await?;
 
     let mut id_gen = IdGenerator::new();
     let mut rows = Vec::with_capacity(texts.len());
@@ -156,9 +124,12 @@ async fn app_main(ctx: Ctx, root_folder_ids: Vec<String>) -> Result<()> {
     Ok(())
 }
 
-async fn query_once(pool: &PgPool, embedder: &Embedder, query: &str) -> Result<()> {
-    let mut vecs = embedder.embed(vec![query.to_string()]).await?;
-    let query_vec = vector_param(&vecs.remove(0));
+async fn query_once(
+    pool: &PgPool,
+    embedder: &SentenceTransformerEmbedder,
+    query: &str,
+) -> Result<()> {
+    let query_vec = vector_param(&embedder.embed(query).await?);
 
     let rows = sqlx::query(&format!(
         "SELECT filename, text, embedding <=> $1::vector AS distance \
@@ -242,10 +213,8 @@ async fn connect_target_db() -> Result<postgres::Database> {
     postgres::Database::connect(&database_url()).await
 }
 
-async fn load_embedder() -> Result<Embedder> {
-    tokio::task::spawn_blocking(|| Embedder::load(EMBED_MODEL))
-        .await
-        .map_err(|e| Error::engine(format!("embedder load task panicked: {e}")))?
+async fn load_embedder() -> Result<SentenceTransformerEmbedder> {
+    SentenceTransformerEmbedder::load(EMBED_MODEL).await
 }
 
 fn load_gdrive_client() -> Result<GoogleDriveClient> {

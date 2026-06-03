@@ -1,0 +1,11 @@
+[workspace]
+
+[package]
+name = "kafka-consume"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+cocoindex = { path = "../../../rust/sdk/cocoindex", features = ["kafka"] }
+tokio = { version = "1", features = ["full"] }
+dotenvy = "0.15"

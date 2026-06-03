@@ -467,8 +467,10 @@ dependencies = [
  "chrono",
  "cocoindex_core",
  "cocoindex_macros",
+ "cocoindex_ops_text",
  "cocoindex_utils",
  "encoding_rs",
+ "fastembed",
  "futures",
  "globset",
  "reqwest",
@@ -1303,9 +1305,7 @@ name = "gdrive-text-embedding"
 version = "0.1.0"
 dependencies = [
  "cocoindex",
- "cocoindex_ops_text",
  "dotenvy",
- "fastembed",
  "serde",
  "sqlx",
  "tokio",

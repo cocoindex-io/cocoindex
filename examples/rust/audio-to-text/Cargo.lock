@@ -123,9 +123,7 @@ version = "0.1.0"
 dependencies = [
  "cocoindex",
  "dotenvy",
- "reqwest",
  "serde",
- "serde_json",
  "tokio",
 ]
 
@@ -319,6 +317,7 @@ dependencies = [
  "encoding_rs",
  "futures",
  "globset",
+ "reqwest",
  "rmp-serde",
  "rustc-hash",
  "serde",

@@ -1,3 +1,5 @@
+#[cfg(feature = "amazon_s3")]
+pub mod amazon_s3;
 pub mod app;
 pub mod ctx;
 #[cfg(any(feature = "neo4j", feature = "falkordb"))]
@@ -6,6 +8,7 @@ pub mod entity_resolution;
 pub mod error;
 #[cfg(feature = "falkordb")]
 pub mod falkordb;
+pub mod file;
 pub mod fs;
 #[cfg(feature = "google_drive")]
 pub mod gdrive;
@@ -20,12 +23,16 @@ pub mod live_component;
 pub mod memo;
 #[cfg(feature = "neo4j")]
 pub mod neo4j;
+#[cfg(feature = "oci_object_storage")]
+pub mod oci_object_storage;
+pub mod ops;
 #[cfg(feature = "postgres")]
 pub mod postgres;
 pub mod prelude;
 pub(crate) mod profile;
 #[cfg(feature = "qdrant")]
 pub mod qdrant;
+pub mod resources;
 #[cfg(feature = "sqlite")]
 pub mod sqlite;
 pub mod statediff;
@@ -48,10 +55,13 @@ pub use entity_resolution::{
     ResolutionEvent, ResolveOptions, ResolvedEntities, resolve_entities,
 };
 pub use error::{Error, Result};
+pub use file::{
+    FileContentCache, FileLike, FileMetadata, FilePath, FilePathMatcher, FileSourceItem,
+    MatchAllFilePathMatcher, PatternFilePathMatcher,
+};
 pub use fs::{
-    DirTarget, DirTargetState, DirWalker, FileEntry, FileLike, FileMetadata, FilePath,
-    FilePathMatcher, MatchAllFilePathMatcher, PatternFilePathMatcher, declare_dir_target,
-    dir_target, mount_dir_target, walk, walk_dir,
+    DirTarget, DirTargetState, DirWalker, FileEntry, declare_dir_target, dir_target,
+    mount_dir_target, walk, walk_dir,
 };
 pub use id::{
     IdGenerator, UuidGenerator, generate_id, generate_id_default, generate_uuid,
@@ -60,6 +70,11 @@ pub use id::{
 pub use live_component::{
     ExceptionContext, ExceptionHandler, LiveComponent, LiveComponentOperator, LiveMapFeed,
     LiveMapSubscriber, LiveMapView, MountKind,
+};
+pub use resources::chunk::{Chunk, TextPosition};
+pub use resources::schema::{
+    MultiVectorSchema, MultiVectorSchemaProvider, VectorElementType, VectorSchema,
+    VectorSchemaProvider,
 };
 pub use statediff::{
     CompositeTrackingRecord, DiffAction, ManagedBy, ManagedTargetOptions, MutualTrackingRecord,

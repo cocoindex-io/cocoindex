@@ -15,6 +15,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use async_trait::async_trait;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use rsa::RsaPrivateKey;
@@ -25,6 +26,9 @@ use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 
 use crate::error::{Error, Result};
+use crate::file::{
+    FileContentCache, FileLike, FileMetadata, FilePath, FileSourceItem, decode_bytes,
+};
 
 const DRIVE_SCOPE: &str = "https://www.googleapis.com/auth/drive.readonly";
 const DEFAULT_BASE_URL: &str = "https://www.googleapis.com/drive/v3";
@@ -42,33 +46,105 @@ fn export_mime_for(mime_type: &str) -> Option<&'static str> {
 }
 
 // ---------------------------------------------------------------------------
-// DriveFile — a source item (pure metadata, so `mount_each` + memo work)
+// DriveFile — a source item
 // ---------------------------------------------------------------------------
 
-/// A file discovered in Google Drive. Pure metadata: `Serialize` so the memo
-/// engine fingerprints it (a changed `modified_time`/`size` invalidates the
-/// cached processing of that file).
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct DriveFilePath {
+    path: FilePath,
+    file_id: String,
+}
+
+impl DriveFilePath {
+    pub fn new(path: impl Into<std::path::PathBuf>, file_id: impl Into<String>) -> Self {
+        Self {
+            path: FilePath::new(path),
+            file_id: file_id.into(),
+        }
+    }
+
+    pub fn path(&self) -> &std::path::Path {
+        self.path.path()
+    }
+
+    pub fn file_id(&self) -> &str {
+        &self.file_id
+    }
+
+    pub fn resolve(&self) -> &str {
+        &self.file_id
+    }
+
+    pub fn as_file_path(&self) -> FilePath {
+        self.path.clone()
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DriveFileInfo {
+    pub file_id: String,
+    pub name: String,
+    pub path: String,
+    pub mime_type: String,
+    pub size: u64,
+    pub modified_time: String,
+}
+
+/// A file discovered in Google Drive.
+///
+/// The serializable fields are stable source metadata. Files returned by
+/// [`GoogleDriveSource::list_files`] also carry a clone-cheap client so they can
+/// be read through the shared [`FileLike`] API.
+#[derive(Clone, Serialize, Deserialize)]
 pub struct DriveFile {
     pub file_id: String,
     pub name: String,
-    /// Path relative to the configured Drive root folder. This is display/user
-    /// metadata; `key()` remains the Drive file id to avoid duplicate-key
-    /// collisions when files in different folders share a name.
+    /// Path relative to the configured Drive root folder. `key()` uses this
+    /// path, matching Python's Google Drive source item keys.
     #[serde(default)]
     pub path: String,
     pub mime_type: String,
     pub size: u64,
     /// RFC 3339 timestamp string as returned by the Drive API.
     pub modified_time: String,
+    #[serde(skip)]
+    client: Option<GoogleDriveClient>,
+    #[serde(skip, default = "default_file_cache")]
+    cache: Arc<FileContentCache>,
 }
 
 impl DriveFile {
-    /// Stable, globally-unique key for `mount_each` (the Drive file id). Using
-    /// the id rather than the name avoids duplicate-key collisions when two
-    /// files in different folders share a name.
+    pub fn new(info: DriveFileInfo) -> Self {
+        Self::from_info(None, info)
+    }
+
+    fn from_info(client: Option<GoogleDriveClient>, info: DriveFileInfo) -> Self {
+        let metadata = FileMetadata {
+            size: info.size,
+            modified: parse_modified_time(&info.modified_time),
+            content_fingerprint: None,
+        };
+        Self {
+            file_id: info.file_id,
+            name: info.name,
+            path: info.path,
+            mime_type: info.mime_type,
+            size: info.size,
+            modified_time: info.modified_time,
+            client,
+            cache: Arc::new(FileContentCache::with_metadata(metadata)),
+        }
+    }
+
+    pub fn with_client(mut self, client: GoogleDriveClient) -> Self {
+        self.client = Some(client);
+        self
+    }
+
+    /// Stable key for `mount_each`, matching Python's Google Drive source:
+    /// the file's path under the configured Drive root.
     pub fn key(&self) -> String {
-        self.file_id.clone()
+        self.path().to_string()
     }
 
     pub fn path(&self) -> &str {
@@ -79,9 +155,73 @@ impl DriveFile {
         }
     }
 
+    pub fn file_path(&self) -> DriveFilePath {
+        DriveFilePath::new(self.path(), self.file_id.clone())
+    }
+
+    pub async fn read(&self) -> Result<Vec<u8>> {
+        <Self as FileLike>::read(self).await
+    }
+
+    pub async fn read_text(&self) -> Result<String> {
+        <Self as FileLike>::read_text(self).await
+    }
+
+    pub fn info(&self) -> DriveFileInfo {
+        DriveFileInfo {
+            file_id: self.file_id.clone(),
+            name: self.name.clone(),
+            path: self.path().to_string(),
+            mime_type: self.mime_type.clone(),
+            size: self.size,
+            modified_time: self.modified_time.clone(),
+        }
+    }
+
     fn is_folder(&self) -> bool {
         self.mime_type == FOLDER_MIME
     }
+}
+
+#[async_trait]
+impl FileLike for DriveFile {
+    fn file_path(&self) -> FilePath {
+        DriveFile::file_path(self).as_file_path()
+    }
+
+    fn cache(&self) -> &FileContentCache {
+        &self.cache
+    }
+
+    async fn fetch_metadata(&self) -> Result<FileMetadata> {
+        Ok(FileMetadata {
+            size: self.size,
+            modified: parse_modified_time(&self.modified_time),
+            content_fingerprint: None,
+        })
+    }
+
+    async fn read_impl(&self, size: Option<usize>) -> Result<Vec<u8>> {
+        if size.is_some() {
+            return Err(Error::engine(
+                "partial reads are not supported for Google Drive files",
+            ));
+        }
+        let client = self.client.as_ref().ok_or_else(|| {
+            Error::engine("Google Drive file is not attached to a GoogleDriveClient")
+        })?;
+        client.read_file_bytes(self).await
+    }
+}
+
+impl FileSourceItem for DriveFile {
+    fn key(&self) -> String {
+        DriveFile::key(self)
+    }
+}
+
+fn default_file_cache() -> Arc<FileContentCache> {
+    Arc::new(FileContentCache::new())
 }
 
 /// Parse a Drive `files.list` response into its files and the next page token.
@@ -115,14 +255,14 @@ fn parse_file_list(json: &serde_json::Value) -> Result<(Vec<DriveFile>, Option<S
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
-            files.push(DriveFile {
-                file_id,
+            files.push(DriveFile::new(DriveFileInfo {
+                file_id: file_id.clone(),
                 name,
                 path: String::new(),
                 mime_type,
                 size,
                 modified_time,
-            });
+            }));
         }
     }
     let next = json
@@ -148,6 +288,21 @@ fn validate_drive_id(kind: &str, id: &str) -> Result<()> {
 
 fn validate_folder_id(id: &str) -> Result<()> {
     validate_drive_id("Google Drive folder id", id)
+}
+
+fn parse_modified_time(value: &str) -> SystemTime {
+    chrono::DateTime::parse_from_rfc3339(value)
+        .map(|dt| {
+            let seconds = dt.timestamp();
+            if seconds >= 0 {
+                UNIX_EPOCH
+                    + Duration::from_secs(seconds as u64)
+                    + Duration::from_nanos(dt.timestamp_subsec_nanos() as u64)
+            } else {
+                UNIX_EPOCH
+            }
+        })
+        .unwrap_or(UNIX_EPOCH)
 }
 
 // ---------------------------------------------------------------------------
@@ -396,7 +551,7 @@ impl GoogleDriveClient {
 
     /// Download a file's raw bytes — exporting Google-native docs to text, or
     /// fetching binary content via `alt=media`.
-    pub async fn read(&self, file: &DriveFile) -> Result<Vec<u8>> {
+    async fn read_file_bytes(&self, file: &DriveFile) -> Result<Vec<u8>> {
         validate_drive_id("Google Drive file id", &file.file_id)?;
         let token = self.token().await?;
         let req = match export_mime_for(&file.mime_type) {
@@ -428,11 +583,33 @@ impl GoogleDriveClient {
         Ok(bytes.to_vec())
     }
 
+    /// Download a file's raw bytes. Prefer [`DriveFile::read`] for files
+    /// returned by [`GoogleDriveSource`], because it caches full reads.
+    pub async fn read(&self, file: &DriveFile) -> Result<Vec<u8>> {
+        self.read_file_bytes(file).await
+    }
+
     /// Download a file and decode it as UTF-8 (lossless on valid UTF-8).
     pub async fn read_text(&self, file: &DriveFile) -> Result<String> {
-        let bytes = self.read(file).await?;
-        String::from_utf8(bytes).map_err(|e| Error::engine(format!("drive file not UTF-8: {e}")))
+        Ok(decode_bytes(&self.read(file).await?))
     }
+}
+
+#[derive(Clone)]
+pub struct GoogleDriveSourceSpec {
+    pub client: GoogleDriveClient,
+    pub root_folder_ids: Vec<String>,
+    pub mime_types: Option<Vec<String>>,
+}
+
+pub async fn list_files(spec: GoogleDriveSourceSpec) -> Result<Vec<DriveFile>> {
+    GoogleDriveSource {
+        client: spec.client,
+        root_folder_ids: spec.root_folder_ids,
+        mime_types: spec.mime_types,
+    }
+    .list_files()
+    .await
 }
 
 // ---------------------------------------------------------------------------
@@ -499,10 +676,19 @@ impl GoogleDriveSource {
                     }
                 }
                 file.path = path;
-                out.push(file);
+                out.push(file.with_client(self.client.clone()));
             }
         }
         Ok(out)
+    }
+
+    pub async fn items(&self) -> Result<Vec<(String, DriveFile)>> {
+        Ok(self
+            .list_files()
+            .await?
+            .into_iter()
+            .map(|file| (file.key(), file))
+            .collect())
     }
 }
 
@@ -543,7 +729,7 @@ mod tests {
         assert_eq!(files.len(), 2);
         assert_eq!(files[0].file_id, "a");
         assert_eq!(files[0].size, 42);
-        assert_eq!(files[0].key(), "a");
+        assert_eq!(files[0].key(), "doc.md");
         assert_eq!(files[0].path(), "doc.md");
         assert!(!files[0].is_folder());
         assert_eq!(files[1].size, 0); // folder omits size

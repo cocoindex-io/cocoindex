@@ -1586,6 +1586,202 @@ mod memo_test_cache_hit {
     }
 }
 
+mod memo_test_file_state {
+    use super::*;
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, OnceLock};
+    use std::time::Duration;
+
+    use cocoindex::fs::{FileEntry, FilePath, walk_dir};
+    use cocoindex::{ContextKey, Ctx, FileLike, Result};
+
+    fn calls_key() -> &'static ContextKey<Arc<AtomicUsize>> {
+        static KEY: OnceLock<ContextKey<Arc<AtomicUsize>>> = OnceLock::new();
+        KEY.get_or_init(|| ContextKey::new("pipeline/file_memo_state_calls"))
+    }
+
+    fn read_source_file(root: &Path) -> FileEntry {
+        walk_dir(FilePath::with_base_dir(
+            "docs",
+            root.to_path_buf(),
+            PathBuf::new(),
+        ))
+        .recursive(true)
+        .walk()
+        .unwrap()
+        .into_iter()
+        .find(|file| file.key() == "note.txt")
+        .unwrap()
+    }
+
+    fn read_source_files(root: &Path) -> Vec<FileEntry> {
+        walk_dir(FilePath::with_base_dir(
+            "docs",
+            root.to_path_buf(),
+            PathBuf::new(),
+        ))
+        .recursive(true)
+        .walk()
+        .unwrap()
+    }
+
+    #[cocoindex::function(memo)]
+    async fn read_file(ctx: &Ctx, file: &FileEntry) -> Result<String> {
+        ctx.get_key(calls_key())?.fetch_add(1, Ordering::SeqCst);
+        file.read_text().await
+    }
+
+    #[cocoindex::function(memo, batching)]
+    async fn read_files(ctx: &Ctx, files: Vec<FileEntry>) -> Result<Vec<String>> {
+        ctx.get_key(calls_key())?
+            .fetch_add(files.len(), Ordering::SeqCst);
+        let mut out = Vec::with_capacity(files.len());
+        for file in files {
+            out.push(file.read_text().await?);
+        }
+        Ok(out)
+    }
+
+    #[tokio::test]
+    async fn file_memo_state_reuses_cache_when_mtime_changes_but_content_is_same() {
+        let source = tempfile::tempdir().unwrap();
+        let source_path = source.path().to_path_buf();
+        let file_path = source_path.join("note.txt");
+        std::fs::write(&file_path, "same").unwrap();
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let dir = tempfile::tempdir().unwrap();
+        let app = App::builder("file_memo_state_reuses_same_content")
+            .db_path(dir.path().join("lmdb"))
+            .provide_key(calls_key(), calls.clone())
+            .build()
+            .await
+            .unwrap();
+
+        app.update({
+            let source_path = source_path.clone();
+            |ctx| async move {
+                let file = read_source_file(&source_path);
+                assert_eq!(read_file(&ctx, &file).await?, "same");
+                Ok(())
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        std::fs::write(&file_path, "same").unwrap();
+        app.update({
+            let source_path = source_path.clone();
+            |ctx| async move {
+                let file = read_source_file(&source_path);
+                assert_eq!(read_file(&ctx, &file).await?, "same");
+                Ok(())
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "same content with a new mtime should reuse cached work"
+        );
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        std::fs::write(&file_path, "changed").unwrap();
+        app.update({
+            let source_path = source_path.clone();
+            |ctx| async move {
+                let file = read_source_file(&source_path);
+                assert_eq!(read_file(&ctx, &file).await?, "changed");
+                Ok(())
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "changed content must invalidate the memoized result"
+        );
+    }
+
+    #[tokio::test]
+    async fn batch_file_memo_state_reuses_cache_when_mtime_changes_but_content_is_same() {
+        let source = tempfile::tempdir().unwrap();
+        let source_path = source.path().to_path_buf();
+        let a_path = source_path.join("a.txt");
+        let b_path = source_path.join("b.txt");
+        std::fs::write(&a_path, "same").unwrap();
+        std::fs::write(&b_path, "other").unwrap();
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let dir = tempfile::tempdir().unwrap();
+        let app = App::builder("batch_file_memo_state_reuses_same_content")
+            .db_path(dir.path().join("lmdb"))
+            .provide_key(calls_key(), calls.clone())
+            .build()
+            .await
+            .unwrap();
+
+        app.update({
+            let source_path = source_path.clone();
+            |ctx| async move {
+                assert_eq!(
+                    read_files(&ctx, read_source_files(&source_path)).await?,
+                    vec!["same".to_string(), "other".to_string()]
+                );
+                Ok(())
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        std::fs::write(&a_path, "same").unwrap();
+        app.update({
+            let source_path = source_path.clone();
+            |ctx| async move {
+                assert_eq!(
+                    read_files(&ctx, read_source_files(&source_path)).await?,
+                    vec!["same".to_string(), "other".to_string()]
+                );
+                Ok(())
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "same content with a new mtime should not be a batch miss"
+        );
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        std::fs::write(&a_path, "changed").unwrap();
+        app.update({
+            let source_path = source_path.clone();
+            |ctx| async move {
+                assert_eq!(
+                    read_files(&ctx, read_source_files(&source_path)).await?,
+                    vec!["changed".to_string(), "other".to_string()]
+                );
+                Ok(())
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            3,
+            "only the changed file should be a batch miss"
+        );
+    }
+}
+
 // Two functions with same signature but different bodies produce different code hashes.
 #[cocoindex::function(memo)]
 async fn hash_fn_a(_ctx: &cocoindex::Ctx, _key: &String) -> cocoindex::Result<i32> {

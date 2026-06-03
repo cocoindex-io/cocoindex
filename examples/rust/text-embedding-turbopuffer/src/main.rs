@@ -17,13 +17,13 @@
 //!   TURBOPUFFER_NAMESPACE default `TextEmbedding`
 
 use std::path::PathBuf;
-use std::sync::{Arc, LazyLock};
+use std::sync::LazyLock;
 
+use cocoindex::ops::sentence_transformers::SentenceTransformerEmbedder;
+use cocoindex::ops::text::{RecursiveChunkConfig, RecursiveSplitter};
 use cocoindex::prelude::*;
 use cocoindex::turbopuffer::{self, DistanceMetric, NamespaceSchema, TurbopufferConnection};
 use cocoindex::walk;
-use cocoindex_ops_text::split::{RecursiveChunkConfig, RecursiveChunker, RecursiveSplitConfig};
-use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
 use serde_json::json;
 
 const EMBED_MODEL: &str = "sentence-transformers/all-MiniLM-L6-v2";
@@ -38,35 +38,11 @@ static DB: LazyLock<ContextKey<TurbopufferConnection>> = LazyLock::new(|| {
         |c: &TurbopufferConnection| c.state_id().to_string(),
     )
 });
-static EMBEDDER: LazyLock<ContextKey<Embedder>> =
-    LazyLock::new(|| ContextKey::new_with_state("embedder", |e: &Embedder| e.model_name.clone()));
-
-struct Embedder {
-    model: Arc<TextEmbedding>,
-    model_name: String,
-}
-
-impl Embedder {
-    fn load(model_name: &str) -> Result<Self> {
-        let model = TextEmbedding::try_new(InitOptions::new(EmbeddingModel::AllMiniLML6V2))
-            .map_err(|e| Error::engine(format!("load embedding model: {e}")))?;
-        Ok(Self {
-            model: Arc::new(model),
-            model_name: model_name.to_string(),
-        })
-    }
-
-    async fn embed(&self, texts: Vec<String>) -> Result<Vec<Vec<f32>>> {
-        if texts.is_empty() {
-            return Ok(Vec::new());
-        }
-        let model = self.model.clone();
-        tokio::task::spawn_blocking(move || model.embed(texts, None))
-            .await
-            .map_err(|e| Error::engine(format!("embedding task panicked: {e}")))?
-            .map_err(|e| Error::engine(format!("embedding failed: {e}")))
-    }
-}
+static EMBEDDER: LazyLock<ContextKey<SentenceTransformerEmbedder>> = LazyLock::new(|| {
+    ContextKey::new_with_state("embedder", |e: &SentenceTransformerEmbedder| {
+        e.model_name().to_string()
+    })
+});
 
 #[derive(Clone, Serialize, Deserialize)]
 struct RowData {
@@ -83,9 +59,8 @@ async fn process_file(ctx: &Ctx, file: &FileEntry) -> Result<Vec<RowData>> {
     let filename = file.key();
     let text = file.content_str()?;
 
-    let chunker = RecursiveChunker::new(RecursiveSplitConfig::default())
-        .map_err(|e| Error::engine(format!("chunker init: {e}")))?;
-    let chunks = chunker.split(
+    let splitter = RecursiveSplitter::new()?;
+    let chunks = splitter.split_with(
         &text,
         RecursiveChunkConfig {
             chunk_size: CHUNK_SIZE,
@@ -98,15 +73,8 @@ async fn process_file(ctx: &Ctx, file: &FileEntry) -> Result<Vec<RowData>> {
         return Ok(Vec::new());
     }
 
-    let texts: Vec<String> = chunks
-        .iter()
-        .map(|c| {
-            text.get(c.range.start..c.range.end)
-                .unwrap_or("")
-                .to_string()
-        })
-        .collect();
-    let embeddings = ctx.get_key(&EMBEDDER)?.embed(texts.clone()).await?;
+    let texts: Vec<String> = chunks.iter().map(|c| c.text(&text).to_string()).collect();
+    let embeddings = ctx.get_key(&EMBEDDER)?.embed_batch(texts.clone()).await?;
 
     let mut id_gen = IdGenerator::new();
     let mut rows = Vec::with_capacity(texts.len());
@@ -171,12 +139,12 @@ async fn app_main(ctx: Ctx, sourcedir: PathBuf, namespace: String) -> Result<()>
 
 async fn query_once(
     conn: &TurbopufferConnection,
-    embedder: &Embedder,
+    embedder: &SentenceTransformerEmbedder,
     namespace: &str,
     query: &str,
 ) -> Result<()> {
-    let mut vecs = embedder.embed(vec![query.to_string()]).await?;
-    let hits = turbopuffer::vector_search(conn, namespace, vecs.remove(0), TOP_K).await?;
+    let query_vec = embedder.embed(query).await?;
+    let hits = turbopuffer::vector_search(conn, namespace, query_vec, TOP_K).await?;
     for hit in hits {
         let filename = hit
             .attributes
@@ -211,10 +179,8 @@ fn default_sourcedir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("markdown_files")
 }
 
-async fn load_embedder() -> Result<Embedder> {
-    tokio::task::spawn_blocking(|| Embedder::load(EMBED_MODEL))
-        .await
-        .map_err(|e| Error::engine(format!("embedder load task panicked: {e}")))?
+async fn load_embedder() -> Result<SentenceTransformerEmbedder> {
+    SentenceTransformerEmbedder::load(EMBED_MODEL).await
 }
 
 #[tokio::main]

@@ -892,8 +892,10 @@ dependencies = [
  "bytes",
  "cocoindex_core",
  "cocoindex_macros",
+ "cocoindex_ops_text",
  "cocoindex_utils",
  "encoding_rs",
+ "fastembed",
  "futures",
  "globset",
  "lancedb",
@@ -1024,9 +1026,7 @@ name = "code-embedding-lancedb"
 version = "0.1.0"
 dependencies = [
  "cocoindex",
- "cocoindex_ops_text",
  "dotenvy",
- "fastembed",
  "serde",
  "tokio",
 ]

@@ -12,7 +12,7 @@
 //! created with `CREATE VIRTUAL TABLE … USING vec0(…)`); this requires the
 //! `vec0` extension to be available in the SQLite build at runtime.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use cocoindex_utils::fingerprint::Fingerprint;
@@ -24,7 +24,8 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use crate::ctx::Ctx;
 use crate::error::{Error, Result};
 use crate::statediff::{
-    DiffAction, ManagedBy, MutualTrackingRecord, diff, resolve_system_transition,
+    CompositeTrackingRecord, DiffAction, ManagedBy, MutualTrackingRecord, diff, diff_composite,
+    resolve_system_transition,
 };
 use crate::target_state::{
     ChildTargetDef, StableKey, TargetAction, TargetActionSink, TargetChildInvalidation,
@@ -331,12 +332,99 @@ pub struct RowState {
     fields: Map<String, JsonValue>,
 }
 
+// ---------------------------------------------------------------------------
+// Composite schema tracking (mirrors Python `connectors/sqlite/_target.py`)
+//
+// A table's tracking record is split into a `main` record (table name + PK
+// columns + virtual-table config) and one `sub` record per non-PK column
+// (type + nullability). `diff_composite` then tells a structural change that
+// requires DROP+CREATE (main changed) apart from an incremental
+// `ALTER TABLE ADD/DROP COLUMN` (main unchanged, individual subs changed).
+// ---------------------------------------------------------------------------
+
+/// Sub-key prefix for a non-PK column's tracking record. Mirrors Python's
+/// `_COL_SUBKEY_PREFIX`.
+const COL_SUBKEY_PREFIX: &str = "col:";
+
+fn col_subkey(col_name: &str) -> String {
+    format!("{COL_SUBKEY_PREFIX}{col_name}")
+}
+
+/// The `main` half of a table's composite tracking record. A change here (PK
+/// columns, their types, the virtual-table config, or the table identity)
+/// forces a full table rewrite.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+struct TablePrimaryTrackingRecord {
+    /// Table identity. (Python derives this from the target-state key; the Rust
+    /// provider keys on `"default"`, so we carry it here — it also gives the
+    /// delete path the name to drop.)
+    table_name: String,
+    primary_key_columns: Vec<PkColumnInfo>,
+    virtual_table_def: Option<Vec0TableDef>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+struct PkColumnInfo {
+    name: String,
+    sqlite_type: String,
+}
+
+/// The `sub` half: one per non-PK column.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+struct NonPkColumnTrackingRecord {
+    sqlite_type: String,
+    nullable: bool,
+}
+
+type TableCompositeRecord =
+    CompositeTrackingRecord<TablePrimaryTrackingRecord, String, NonPkColumnTrackingRecord>;
+
+type TableTrackingRecord = MutualTrackingRecord<TableCompositeRecord>;
+
+fn table_composite_record(spec: &TableSpec) -> TableCompositeRecord {
+    let schema = &spec.table_schema;
+    let pk: std::collections::HashSet<&String> = schema.primary_key().iter().collect();
+    let main = TablePrimaryTrackingRecord {
+        table_name: spec.table_name.clone(),
+        primary_key_columns: schema
+            .primary_key()
+            .iter()
+            .map(|name| PkColumnInfo {
+                name: name.clone(),
+                sqlite_type: schema.columns()[name].sqlite_type.clone(),
+            })
+            .collect(),
+        virtual_table_def: spec.virtual_table_def.clone(),
+    };
+    let sub: HashMap<String, NonPkColumnTrackingRecord> = schema
+        .columns()
+        .iter()
+        .filter(|(name, _)| !pk.contains(*name))
+        .map(|(name, col)| {
+            (
+                col_subkey(name),
+                NonPkColumnTrackingRecord {
+                    sqlite_type: col.sqlite_type.clone(),
+                    nullable: col.nullable,
+                },
+            )
+        })
+        .collect();
+    CompositeTrackingRecord::new(main, sub)
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct TableAction {
     /// `Some` for a create/update (carrying the desired spec).
     spec: Option<TableSpec>,
     /// `Some` for a drop (orphaned table name).
     drop: Option<String>,
+    /// Structural action for the table itself (`None` = no structural change,
+    /// reconcile columns incrementally instead).
+    main_action: Option<DiffAction>,
+    /// Per-column actions (keyed by `col:<name>`), applied only when
+    /// `main_action` is `None`.
+    column_actions: BTreeMap<String, DiffAction>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -354,32 +442,61 @@ struct TableHandler {
 }
 
 impl TargetHandler<TableSpec> for TableHandler {
-    type TrackingRecord = MutualTrackingRecord<TableSpec>;
+    type TrackingRecord = TableTrackingRecord;
     type Action = TableAction;
 
     fn reconcile(
         &self,
         _key: StableKey,
         desired: Option<TableSpec>,
-        prev: Vec<MutualTrackingRecord<TableSpec>>,
+        prev: Vec<TableTrackingRecord>,
         prev_may_be_missing: bool,
-    ) -> Result<Option<TargetReconcileOutput<TableAction, MutualTrackingRecord<TableSpec>>>> {
+    ) -> Result<Option<TargetReconcileOutput<TableAction, TableTrackingRecord>>> {
         match desired {
             // Always emit when declared so the sink fulfills the row child.
             Some(spec) => {
-                let tracking = MutualTrackingRecord::new(spec.clone(), spec.managed_by);
+                let tracking =
+                    MutualTrackingRecord::new(table_composite_record(&spec), spec.managed_by);
                 let resolved =
                     resolve_system_transition(Some(tracking.clone()), prev, prev_may_be_missing);
-                let main_action = diff(resolved.as_ref());
+                // Split the diff into a structural (main) action plus per-column
+                // transitions. Per-column actions only apply when the table
+                // itself is unchanged — a main rewrite recreates every column.
+                let (main_action, column_transitions) = diff_composite(resolved.as_ref());
+                let mut column_actions = BTreeMap::new();
+                if main_action.is_none() {
+                    for (sub_key, transition) in &column_transitions {
+                        if let Some(action) = diff(Some(transition)) {
+                            column_actions.insert(sub_key.clone(), action);
+                        }
+                    }
+                }
+
+                // Mirror Python's child-invalidation contract:
+                //   - main replace  → table dropped & recreated → destructive.
+                //   - column change other than a pure add → may lose data → lossy.
+                let child_invalidation = if matches!(main_action, Some(DiffAction::Replace)) {
+                    Some(TargetChildInvalidation::Destructive)
+                } else if main_action.is_none()
+                    && column_actions
+                        .values()
+                        .any(|a| !matches!(a, DiffAction::Insert))
+                {
+                    Some(TargetChildInvalidation::Lossy)
+                } else {
+                    None
+                };
+
                 Ok(Some(TargetReconcileOutput {
                     action: TargetAction::Update(TableAction {
                         spec: Some(spec),
                         drop: None,
+                        main_action,
+                        column_actions,
                     }),
                     sink: self.table_sink(),
                     tracking_record: Some(tracking),
-                    child_invalidation: matches!(main_action, Some(DiffAction::Replace))
-                        .then_some(TargetChildInvalidation::Lossy),
+                    child_invalidation,
                 }))
             }
             None => {
@@ -387,17 +504,15 @@ impl TargetHandler<TableSpec> for TableHandler {
                 if resolved.is_none() {
                     return Ok(None);
                 }
-                let Some(prev_spec) = prev
-                    .into_iter()
-                    .find(|v| v.managed_by.is_system())
-                    .map(|v| v.tracking_record)
-                else {
+                let Some(prev_record) = prev.into_iter().find(|v| v.managed_by.is_system()) else {
                     return Ok(None);
                 };
                 Ok(Some(TargetReconcileOutput {
                     action: TargetAction::Delete(TableAction {
                         spec: None,
-                        drop: Some(prev_spec.table_name),
+                        drop: Some(prev_record.tracking_record.main.table_name),
+                        main_action: Some(DiffAction::Delete),
+                        column_actions: BTreeMap::new(),
                     }),
                     sink: self.table_sink(),
                     tracking_record: None,
@@ -417,30 +532,75 @@ impl TableHandler {
                 async move {
                     let mut out: Vec<Option<ChildTargetDef>> = Vec::with_capacity(actions.len());
                     for action in actions {
-                        match action {
-                            TargetAction::Create(a) | TargetAction::Update(a) => {
-                                let spec = a.spec.ok_or_else(|| {
-                                    Error::engine("SQLite table action missing spec")
-                                })?;
-                                create_table(&db, &spec).await?;
-                                out.push(Some(ChildTargetDef::new::<RowState, _>(RowHandler {
-                                    db: db.clone(),
-                                    spec,
-                                })));
-                            }
-                            TargetAction::Delete(a) => {
-                                if let Some(table_name) = a.drop {
-                                    drop_table(&db, &table_name).await?;
-                                }
-                                out.push(None);
-                            }
-                        }
+                        let a = match action {
+                            TargetAction::Create(a)
+                            | TargetAction::Update(a)
+                            | TargetAction::Delete(a) => a,
+                        };
+                        out.push(apply_table_action(&db, a).await?);
                     }
                     Ok(out)
                 }
             },
         )
     }
+}
+
+/// Apply one resolved table action and return the row child provider (or
+/// `None` for a drop). Mirrors Python's `_apply_table_actions` decision tree.
+async fn apply_table_action(db: &Database, action: TableAction) -> Result<Option<ChildTargetDef>> {
+    let TableAction {
+        spec,
+        drop,
+        mut main_action,
+        mut column_actions,
+    } = action;
+
+    // Virtual (vec0) tables can't use ALTER TABLE — any column change is
+    // upgraded to a full DROP+CREATE, matching Python.
+    let is_virtual = spec.as_ref().is_some_and(|s| s.virtual_table_def.is_some());
+    if is_virtual && main_action.is_none() && !column_actions.is_empty() {
+        main_action = Some(DiffAction::Replace);
+        column_actions.clear();
+    }
+
+    // A structural rewrite or a drop removes the existing table first.
+    if matches!(
+        main_action,
+        Some(DiffAction::Replace) | Some(DiffAction::Delete)
+    ) {
+        let table_name = spec
+            .as_ref()
+            .map(|s| s.table_name.clone())
+            .or(drop)
+            .ok_or_else(|| Error::engine("SQLite drop action missing table name"))?;
+        drop_table(db, &table_name).await?;
+    }
+
+    let Some(spec) = spec else {
+        // Pure drop — no row child to provide.
+        return Ok(None);
+    };
+
+    match main_action {
+        Some(DiffAction::Insert | DiffAction::Upsert | DiffAction::Replace) => {
+            // (Re)create the whole table. `create_table` uses `IF NOT EXISTS`,
+            // so an `upsert` against an already-present table is a no-op.
+            create_table(db, &spec).await?;
+        }
+        _ => {
+            // No structural change: reconcile non-PK columns incrementally,
+            // preserving existing rows. (Virtual tables never reach here.)
+            if !column_actions.is_empty() {
+                apply_column_actions(db, &spec, &column_actions).await?;
+            }
+        }
+    }
+
+    Ok(Some(ChildTargetDef::new::<RowState, _>(RowHandler {
+        db: db.clone(),
+        spec,
+    })))
 }
 
 // ---------------------------------------------------------------------------
@@ -535,6 +695,91 @@ async fn drop_table(db: &Database, table_name: &str) -> Result<()> {
         .await
         .map_err(sqlite_err)?;
     Ok(())
+}
+
+/// Apply per-column changes to an existing table via `ALTER TABLE`, preserving
+/// rows. Mirrors Python's `_apply_column_actions`:
+///   - `insert` / `upsert` → `ALTER TABLE … ADD COLUMN`
+///   - `delete`            → `ALTER TABLE … DROP COLUMN` (SQLite ≥ 3.35)
+///   - `replace`           → `DROP COLUMN` then `ADD COLUMN` (no in-place
+///     type change in SQLite)
+///
+/// Statements that SQLite can't honor (e.g. `DROP COLUMN` on old builds, or a
+/// re-`ADD` of an existing column on an `upsert`) are tolerated — like Python's
+/// per-statement `OperationalError` swallow — so a best-effort schema sync
+/// doesn't abort the whole reconcile. PK columns are never altered here.
+async fn apply_column_actions(
+    db: &Database,
+    spec: &TableSpec,
+    column_actions: &BTreeMap<String, DiffAction>,
+) -> Result<()> {
+    // User-managed tables: never touch DDL, only rows.
+    if spec.managed_by.is_user() {
+        return Ok(());
+    }
+    let table = quote_ident(&spec.table_name);
+    let schema = &spec.table_schema;
+    let pk: std::collections::HashSet<&str> =
+        schema.primary_key().iter().map(String::as_str).collect();
+
+    for (sub_key, action) in column_actions {
+        let Some(col_name) = sub_key.strip_prefix(COL_SUBKEY_PREFIX) else {
+            return Err(Error::engine(format!(
+                "SQLite column action has unexpected sub-key {sub_key:?}"
+            )));
+        };
+        // Defensive: PK columns belong to the `main` record and are handled by
+        // DROP+CREATE, never by ALTER.
+        if pk.contains(col_name) {
+            continue;
+        }
+        let col_ident = quote_ident(col_name);
+
+        match action {
+            DiffAction::Delete => {
+                run_best_effort(db, &format!("ALTER TABLE {table} DROP COLUMN {col_ident}")).await;
+            }
+            DiffAction::Insert | DiffAction::Upsert => {
+                if let Some(col) = schema.columns().get(col_name) {
+                    let null = if col.nullable { "" } else { " NOT NULL" };
+                    run_best_effort(
+                        db,
+                        &format!(
+                            "ALTER TABLE {table} ADD COLUMN {col_ident} {}{null}",
+                            col.sqlite_type
+                        ),
+                    )
+                    .await;
+                }
+            }
+            DiffAction::Replace => {
+                // SQLite has no `ALTER COLUMN TYPE`; drop then re-add.
+                if let Some(col) = schema.columns().get(col_name) {
+                    run_best_effort(db, &format!("ALTER TABLE {table} DROP COLUMN {col_ident}"))
+                        .await;
+                    let null = if col.nullable { "" } else { " NOT NULL" };
+                    run_best_effort(
+                        db,
+                        &format!(
+                            "ALTER TABLE {table} ADD COLUMN {col_ident} {}{null}",
+                            col.sqlite_type
+                        ),
+                    )
+                    .await;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Run a DDL statement, tolerating failure (logged at debug). Used for
+/// best-effort `ALTER TABLE` column syncing where SQLite version limits or an
+/// already-applied change make a hard error the wrong outcome.
+async fn run_best_effort(db: &Database, sql: &str) {
+    if let Err(e) = sqlx::query(sql).execute(db.pool()).await {
+        tracing::debug!("sqlite best-effort DDL skipped ({sql:?}): {e}");
+    }
 }
 
 async fn apply_rows(

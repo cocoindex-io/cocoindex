@@ -468,6 +468,7 @@ dependencies = [
  "cocoindex_macros",
  "cocoindex_utils",
  "encoding_rs",
+ "fastembed",
  "futures",
  "globset",
  "rmp-serde",
@@ -2652,7 +2653,6 @@ version = "0.1.0"
 dependencies = [
  "cocoindex",
  "dotenvy",
- "fastembed",
  "serde",
  "sqlx",
  "tokio",

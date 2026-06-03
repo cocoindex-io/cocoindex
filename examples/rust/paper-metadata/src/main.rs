@@ -12,10 +12,11 @@
 //!   - per-file compute  : `#[cocoindex::function(memo)]` (cf. `@coco.fn(memo=True)`)
 //!   - PDF parsing       : `lopdf` (cf. `pypdf` first-page text + page count)
 //!   - LLM extraction    : OpenAI chat completions, JSON mode (cf. `openai` client)
-//!   - chunking          : `cocoindex_ops_text` RecursiveChunker w/ a custom
+//!   - chunking          : `cocoindex::ops::text::RecursiveSplitter` w/ a custom
 //!                         "abstract" language (cf. `RecursiveSplitter` +
 //!                         `CustomLanguageConfig`)
-//!   - embeddings        : `fastembed` all-MiniLM-L6-v2 (same model as Python)
+//!   - embeddings        : `cocoindex::ops::sentence_transformers` all-MiniLM-L6-v2
+//!                         (same model as Python)
 //!   - targets           : three `postgres::TableTarget`s (cf. three
 //!                         `postgres.mount_table_target`s)
 //!
@@ -25,16 +26,14 @@
 //! created (the query demo does a sequential cosine scan).
 
 use std::path::PathBuf;
-use std::sync::{Arc, LazyLock};
+use std::sync::LazyLock;
 
 use cocoindex::id::UuidGenerator;
+use cocoindex::ops::sentence_transformers::SentenceTransformerEmbedder;
+use cocoindex::ops::text::{CustomLanguageConfig, RecursiveChunkConfig, RecursiveSplitter};
 use cocoindex::postgres;
 use cocoindex::prelude::*;
 use cocoindex::walk;
-use cocoindex_ops_text::split::{
-    CustomLanguageConfig, RecursiveChunkConfig, RecursiveChunker, RecursiveSplitConfig,
-};
-use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
 use serde::de::DeserializeOwned;
 use sqlx::Row;
 use sqlx::postgres::{PgPool, PgPoolOptions};
@@ -58,49 +57,17 @@ static DB: LazyLock<ContextKey<postgres::Database>> = LazyLock::new(|| {
         db.state_id().to_string()
     })
 });
-static EMBEDDER: LazyLock<ContextKey<Embedder>> =
-    LazyLock::new(|| ContextKey::new_with_state("embedder", |e: &Embedder| e.model_name.clone()));
+static EMBEDDER: LazyLock<ContextKey<SentenceTransformerEmbedder>> = LazyLock::new(|| {
+    ContextKey::new_with_state("embedder", |e: &SentenceTransformerEmbedder| {
+        e.model_name().to_string()
+    })
+});
 static LLM: LazyLock<ContextKey<LlmClient>> =
     LazyLock::new(|| ContextKey::new_with_state("llm_model", |c: &LlmClient| c.model.clone()));
 
 // ---------------------------------------------------------------------------
-// Clients: embedder (fastembed) + LLM (OpenAI JSON mode)
+// Clients: LLM (OpenAI JSON mode); embedder is `SentenceTransformerEmbedder`
 // ---------------------------------------------------------------------------
-
-#[derive(Clone)]
-struct Embedder {
-    model: Arc<TextEmbedding>,
-    model_name: String,
-}
-
-impl Embedder {
-    fn load(model_name: &str) -> Result<Self> {
-        let model = TextEmbedding::try_new(InitOptions::new(EmbeddingModel::AllMiniLML6V2))
-            .map_err(|e| Error::engine(format!("load embedding model: {e}")))?;
-        Ok(Self {
-            model: Arc::new(model),
-            model_name: model_name.to_string(),
-        })
-    }
-
-    async fn embed(&self, texts: Vec<String>) -> Result<Vec<Vec<f32>>> {
-        if texts.is_empty() {
-            return Ok(Vec::new());
-        }
-        let model = self.model.clone();
-        tokio::task::spawn_blocking(move || model.embed(texts, None))
-            .await
-            .map_err(|e| Error::engine(format!("embedding task panicked: {e}")))?
-            .map_err(|e| Error::engine(format!("embedding failed: {e}")))
-    }
-
-    async fn embed_one(&self, text: String) -> Result<Vec<f32>> {
-        self.embed(vec![text])
-            .await?
-            .pop()
-            .ok_or_else(|| Error::engine("embedder returned no vector"))
-    }
-}
 
 #[derive(Clone)]
 struct LlmClient {
@@ -241,20 +208,17 @@ fn pdf_first_page_text_and_pages(content: &[u8]) -> Result<(String, i32)> {
     Ok((text, num_pages))
 }
 
-fn abstract_chunker() -> Result<RecursiveChunker> {
-    RecursiveChunker::new(RecursiveSplitConfig {
-        custom_languages: vec![CustomLanguageConfig {
-            language_name: "abstract".to_string(),
-            aliases: vec![],
-            separators_regex: vec![
-                r"[.?!]+\s+".to_string(),
-                r"[:;]\s+".to_string(),
-                r",\s+".to_string(),
-                r"\s+".to_string(),
-            ],
-        }],
-    })
-    .map_err(|e| Error::engine(format!("chunker init: {e}")))
+fn abstract_chunker() -> Result<RecursiveSplitter> {
+    RecursiveSplitter::with_custom_languages(vec![CustomLanguageConfig {
+        language_name: "abstract".to_string(),
+        aliases: vec![],
+        separators_regex: vec![
+            r"[.?!]+\s+".to_string(),
+            r"[:;]\s+".to_string(),
+            r",\s+".to_string(),
+            r"\s+".to_string(),
+        ],
+    }])
 }
 
 async fn extract_metadata(llm: &LlmClient, first_page_text: &str) -> Result<PaperMetadataModel> {
@@ -297,7 +261,7 @@ async fn process_file(ctx: &Ctx, file: &FileEntry) -> Result<ProcessedPaper> {
     let mut embeddings = Vec::new();
 
     // Title embedding (one row).
-    let title_vec = embedder.embed_one(metadata.title.clone()).await?;
+    let title_vec = embedder.embed(&metadata.title).await?;
     let title_id = uuid_gen
         .next_uuid(&ctx, &("title", &metadata.title))
         .await?
@@ -312,7 +276,7 @@ async fn process_file(ctx: &Ctx, file: &FileEntry) -> Result<ProcessedPaper> {
 
     // Abstract chunks (one row each).
     let chunker = abstract_chunker()?;
-    let chunks = chunker.split(
+    let chunks = chunker.split_with(
         &metadata.abstract_text,
         RecursiveChunkConfig {
             chunk_size: ABSTRACT_CHUNK_SIZE,
@@ -323,16 +287,10 @@ async fn process_file(ctx: &Ctx, file: &FileEntry) -> Result<ProcessedPaper> {
     );
     let chunk_texts: Vec<String> = chunks
         .iter()
-        .map(|c| {
-            metadata
-                .abstract_text
-                .get(c.range.start..c.range.end)
-                .unwrap_or("")
-                .to_string()
-        })
+        .map(|c| c.text(&metadata.abstract_text).to_string())
         .collect();
     if !chunk_texts.is_empty() {
-        let vecs = embedder.embed(chunk_texts.clone()).await?;
+        let vecs = embedder.embed_batch(chunk_texts.clone()).await?;
         for (text, embedding) in chunk_texts.into_iter().zip(vecs) {
             let id = uuid_gen.next_uuid(&ctx, &("abstract", &text)).await?.to_string();
             embeddings.push(MetadataEmbeddingRow {
@@ -464,8 +422,8 @@ async fn app_main(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
 // Query demo (no vector index — sequential cosine scan, like Python)
 // ---------------------------------------------------------------------------
 
-async fn query_once(pool: &PgPool, embedder: &Embedder, query: &str) -> Result<()> {
-    let query_vec = vector_param(&embedder.embed_one(query.to_string()).await?);
+async fn query_once(pool: &PgPool, embedder: &SentenceTransformerEmbedder, query: &str) -> Result<()> {
+    let query_vec = vector_param(&embedder.embed(query).await?);
     let rows = sqlx::query(&format!(
         "SELECT filename, location, text, embedding <=> $1::vector AS distance \
          FROM \"{PG_SCHEMA}\".\"{TABLE_EMBEDDINGS}\" ORDER BY distance ASC LIMIT $2"
@@ -511,10 +469,8 @@ fn default_sourcedir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("papers")
 }
 
-async fn load_embedder() -> Result<Embedder> {
-    tokio::task::spawn_blocking(|| Embedder::load(EMBED_MODEL))
-        .await
-        .map_err(|e| Error::engine(format!("embedder load task panicked: {e}")))?
+async fn load_embedder() -> Result<SentenceTransformerEmbedder> {
+    SentenceTransformerEmbedder::load(EMBED_MODEL).await
 }
 
 #[tokio::main]

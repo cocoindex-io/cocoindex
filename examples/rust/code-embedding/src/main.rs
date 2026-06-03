@@ -8,21 +8,20 @@
 //! Query the index:
 //!     cargo run -- query "your query"
 //!
-//! What the Rust SDK provides vs. what this example hand-rolls:
+//! What the Rust SDK provides:
 //!   - walk / memo / mount_each / ContextKey      -> from `cocoindex`
-//!   - tree-sitter chunking + language detection  -> from `cocoindex_ops_text` (engine crate)
-//!   - embeddings (all-MiniLM-L6-v2, local ONNX)  -> `fastembed` (no Rust embedder in the SDK)
+//!   - tree-sitter chunking + language detection  -> `cocoindex::ops::text`
+//!   - embeddings (all-MiniLM-L6-v2, local ONNX)  -> `cocoindex::ops::sentence_transformers`
 //!   - Postgres/pgvector TableTarget sync          -> from `cocoindex`
 
 use std::path::PathBuf;
-use std::sync::{Arc, LazyLock};
+use std::sync::LazyLock;
 
+use cocoindex::ops::sentence_transformers::SentenceTransformerEmbedder;
+use cocoindex::ops::text::{RecursiveChunkConfig, RecursiveSplitter, detect_code_language};
 use cocoindex::prelude::*;
 use cocoindex::postgres;
 use cocoindex::walk;
-use cocoindex_ops_text::prog_langs::detect_language;
-use cocoindex_ops_text::split::{RecursiveChunkConfig, RecursiveChunker, RecursiveSplitConfig};
-use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
 use sqlx::postgres::{PgPool, PgPoolOptions};
@@ -45,41 +44,11 @@ static DB: LazyLock<ContextKey<postgres::Database>> = LazyLock::new(|| {
 /// Shared embedder. `new_with_state` tracks the model name, so changing the model
 /// invalidates memoized files — the parity for Python's
 /// `ContextKey(..., detect_change=True)` + `Annotated[NDArray, EMBEDDER]`.
-static EMBEDDER: LazyLock<ContextKey<Embedder>> =
-    LazyLock::new(|| ContextKey::new_with_state("embedder", |e: &Embedder| e.model_name.clone()));
-
-// ---------------------------------------------------------------------------
-// Embedder (local fastembed model)
-// ---------------------------------------------------------------------------
-
-struct Embedder {
-    model: Arc<TextEmbedding>,
-    model_name: String,
-}
-
-impl Embedder {
-    fn load(model_name: &str) -> Result<Self> {
-        let model = TextEmbedding::try_new(InitOptions::new(EmbeddingModel::AllMiniLML6V2))
-            .map_err(|e| Error::engine(format!("failed to load embedding model: {e}")))?;
-        Ok(Self {
-            model: Arc::new(model),
-            model_name: model_name.to_string(),
-        })
-    }
-
-    /// Embed a batch of texts in one call (fastembed batches internally). The
-    /// blocking ONNX work runs off the async runtime.
-    async fn embed(&self, texts: Vec<String>) -> Result<Vec<Vec<f32>>> {
-        if texts.is_empty() {
-            return Ok(Vec::new());
-        }
-        let model = self.model.clone();
-        tokio::task::spawn_blocking(move || model.embed(texts, None))
-            .await
-            .map_err(|e| Error::engine(format!("embedding task panicked: {e}")))?
-            .map_err(|e| Error::engine(format!("embedding failed: {e}")))
-    }
-}
+static EMBEDDER: LazyLock<ContextKey<SentenceTransformerEmbedder>> = LazyLock::new(|| {
+    ContextKey::new_with_state("embedder", |e: &SentenceTransformerEmbedder| {
+        e.model_name().to_string()
+    })
+});
 
 #[derive(Clone, Serialize, Deserialize)]
 struct CodeEmbeddingRow {
@@ -103,10 +72,9 @@ async fn process_file(ctx: &Ctx, file: &FileEntry) -> Result<Vec<CodeEmbeddingRo
     let filename = file.key();
     let text = file.content_str()?;
 
-    let language = detect_language(&filename).map(str::to_string);
-    let chunker = RecursiveChunker::new(RecursiveSplitConfig::default())
-        .map_err(|e| Error::engine(format!("chunker init: {e}")))?;
-    let chunks = chunker.split(
+    let language = detect_code_language(&filename);
+    let splitter = RecursiveSplitter::new()?;
+    let chunks = splitter.split_with(
         &text,
         RecursiveChunkConfig {
             chunk_size: 1000,
@@ -121,15 +89,8 @@ async fn process_file(ctx: &Ctx, file: &FileEntry) -> Result<Vec<CodeEmbeddingRo
     }
 
     let embedder = ctx.get_key(&EMBEDDER)?;
-    let codes: Vec<String> = chunks
-        .iter()
-        .map(|c| {
-            text.get(c.range.start..c.range.end)
-                .unwrap_or("")
-                .to_string()
-        })
-        .collect();
-    let embeddings = embedder.embed(codes.clone()).await?;
+    let codes: Vec<String> = chunks.iter().map(|c| c.text(&text).to_string()).collect();
+    let embeddings = embedder.embed_batch(codes.clone()).await?;
 
     let mut id_gen = IdGenerator::new();
     let mut rows = Vec::with_capacity(chunks.len());
@@ -203,9 +164,8 @@ async fn app_main(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
 // Query
 // ---------------------------------------------------------------------------
 
-async fn query_once(pool: &PgPool, embedder: &Embedder, query: &str) -> Result<()> {
-    let mut vecs = embedder.embed(vec![query.to_string()]).await?;
-    let query_vec = vector_param(&vecs.remove(0));
+async fn query_once(pool: &PgPool, embedder: &SentenceTransformerEmbedder, query: &str) -> Result<()> {
+    let query_vec = vector_param(&embedder.embed(query).await?);
 
     let rows = sqlx::query(&format!(
         "SELECT filename, code, start_line, end_line, embedding <=> $1::vector AS distance \
@@ -293,10 +253,8 @@ async fn connect_target_db() -> Result<postgres::Database> {
     postgres::Database::connect(&database_url()).await
 }
 
-async fn load_embedder() -> Result<Embedder> {
-    tokio::task::spawn_blocking(|| Embedder::load(EMBED_MODEL))
-        .await
-        .map_err(|e| Error::engine(format!("embedder load task panicked: {e}")))?
+async fn load_embedder() -> Result<SentenceTransformerEmbedder> {
+    SentenceTransformerEmbedder::load(EMBED_MODEL).await
 }
 
 #[tokio::main]

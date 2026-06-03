@@ -11,12 +11,13 @@
 //! Parallels the Python example:
 //!   - source        : `cocoindex::fs::walk` (cf. `localfs.walk_dir`)
 //!   - per-file work : `#[cocoindex::function(memo)]` (cf. `@coco.fn(memo=True)`)
-//!   - transcription : OpenAI `/v1/audio/transcriptions` (cf. `LiteLLMTranscriber("whisper-1")`)
+//!   - transcription : `cocoindex::ops::api::ApiTranscriber` (cf. `LiteLLMTranscriber("whisper-1")`)
 //!   - target        : `postgres::TableTarget` (cf. `postgres.mount_table_target`)
 
 use std::path::PathBuf;
 use std::sync::LazyLock;
 
+use cocoindex::ops::api::ApiTranscriber;
 use cocoindex::postgres;
 use cocoindex::prelude::*;
 use cocoindex::walk;
@@ -59,8 +60,9 @@ fn transcription_schema() -> Result<postgres::TableSchema> {
     )
 }
 
-/// Transcribe one audio file with OpenAI Whisper. Memoized so the expensive
-/// API call only runs when the file's content changes (or is first seen).
+/// Transcribe one audio file with OpenAI Whisper via the SDK's
+/// `ApiTranscriber`. Memoized so the expensive API call only runs when the
+/// file's content changes (or is first seen).
 #[cocoindex::function(memo)]
 async fn transcribe(_ctx: &Ctx, file: &FileEntry) -> Result<String> {
     let bytes = file.content()?;
@@ -72,41 +74,13 @@ async fn transcribe(_ctx: &Ctx, file: &FileEntry) -> Result<String> {
         .and_then(|n| n.to_str())
         .unwrap_or("audio")
         .to_string();
-    transcribe_audio(bytes, name).await
-}
-
-async fn transcribe_audio(bytes: Vec<u8>, filename: String) -> Result<String> {
-    let api_key =
-        std::env::var("OPENAI_API_KEY").map_err(|_| Error::engine("set OPENAI_API_KEY"))?;
-    let base_url =
-        std::env::var("OPENAI_BASE_URL").unwrap_or_else(|_| "https://api.openai.com/v1".into());
-
-    let part = reqwest::multipart::Part::bytes(bytes).file_name(filename);
-    let form = reqwest::multipart::Form::new()
-        .text("model", TRANSCRIBE_MODEL)
-        .part("file", part);
-
-    let resp = reqwest::Client::new()
-        .post(format!("{base_url}/audio/transcriptions"))
-        .bearer_auth(&api_key)
-        .multipart(form)
-        .send()
-        .await
-        .map_err(|e| Error::engine(format!("transcription request failed: {e}")))?;
-    let status = resp.status();
-    let text = resp
-        .text()
-        .await
-        .map_err(|e| Error::engine(format!("transcription response read failed: {e}")))?;
-    if !status.is_success() {
-        return Err(Error::engine(format!("Whisper HTTP {status}: {text}")));
+    // `ApiTranscriber::new` defaults to the OpenAI base URL + `OPENAI_API_KEY`;
+    // honor `OPENAI_BASE_URL` for OpenAI-compatible endpoints.
+    let mut transcriber = ApiTranscriber::new(TRANSCRIBE_MODEL);
+    if let Ok(base_url) = std::env::var("OPENAI_BASE_URL") {
+        transcriber = transcriber.with_base_url(base_url);
     }
-    let envelope: serde_json::Value = serde_json::from_str(&text)
-        .map_err(|e| Error::engine(format!("transcription response not JSON: {e}: {text}")))?;
-    envelope["text"]
-        .as_str()
-        .map(str::to_string)
-        .ok_or_else(|| Error::engine(format!("transcription response missing `text`: {text}")))
+    transcriber.transcribe_bytes(bytes, name).await
 }
 
 async fn app_main(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {

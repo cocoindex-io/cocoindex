@@ -99,7 +99,8 @@ fn build_on_error(handler: &Option<ExceptionHandler>, ctx: ExceptionContext) -> 
         Box::pin(async move {
             let sdk_err = engine_err(err);
             handler(&sdk_err, &ctx).map_err(to_core_error)
-        }) as Pin<Box<dyn Future<Output = cocoindex_utils::error::Result<()>> + Send + 'static>>
+        })
+            as Pin<Box<dyn Future<Output = cocoindex_utils::error::Result<()>> + Send + 'static>>
     }))
 }
 

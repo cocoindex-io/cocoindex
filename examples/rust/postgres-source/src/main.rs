@@ -12,16 +12,16 @@
 //!     (parity for Python's `PgTableSource(...).fetch_rows()`)
 //!   - per-row compute (memo) : `#[cocoindex::function(memo)]` (skips unchanged rows)
 //!   - output store           : `postgres::TableTarget` + `declare_vector_index`
-//!   - embeddings             : `fastembed` all-MiniLM-L6-v2 (same model as Python)
+//!   - embeddings             : `SentenceTransformerEmbedder` all-MiniLM-L6-v2 (same model as Python)
 //!
 //! Incrementality: unchanged source rows are memo-skipped; rows deleted from the
 //! source have their derived output rows reconciled away automatically.
 
-use std::sync::{Arc, LazyLock};
+use std::sync::LazyLock;
 
+use cocoindex::ops::sentence_transformers::SentenceTransformerEmbedder;
 use cocoindex::postgres;
 use cocoindex::prelude::*;
-use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
 use sqlx::Row;
 use sqlx::postgres::{PgPool, PgPoolOptions};
 
@@ -44,8 +44,11 @@ static SOURCE_DB: LazyLock<ContextKey<postgres::Database>> = LazyLock::new(|| {
         db.state_id().to_string()
     })
 });
-static EMBEDDER: LazyLock<ContextKey<Embedder>> =
-    LazyLock::new(|| ContextKey::new_with_state("embedder", |e: &Embedder| e.model_name.clone()));
+static EMBEDDER: LazyLock<ContextKey<SentenceTransformerEmbedder>> = LazyLock::new(|| {
+    ContextKey::new_with_state("embedder", |e: &SentenceTransformerEmbedder| {
+        e.model_name().to_string()
+    })
+});
 
 // ---------------------------------------------------------------------------
 // Data models
@@ -74,38 +77,6 @@ struct OutputProduct {
 }
 
 // ---------------------------------------------------------------------------
-// Embedder (local fastembed model)
-// ---------------------------------------------------------------------------
-
-#[derive(Clone)]
-struct Embedder {
-    model: Arc<TextEmbedding>,
-    model_name: String,
-}
-
-impl Embedder {
-    fn load(model_name: &str) -> Result<Self> {
-        let model = TextEmbedding::try_new(InitOptions::new(EmbeddingModel::AllMiniLML6V2))
-            .map_err(|e| Error::engine(format!("load embedding model: {e}")))?;
-        Ok(Self {
-            model: Arc::new(model),
-            model_name: model_name.to_string(),
-        })
-    }
-
-    async fn embed(&self, text: String) -> Result<Vec<f32>> {
-        let model = self.model.clone();
-        let out = tokio::task::spawn_blocking(move || model.embed(vec![text], None))
-            .await
-            .map_err(|e| Error::engine(format!("embed task: {e}")))?
-            .map_err(|e| Error::engine(format!("embed: {e}")))?;
-        out.into_iter()
-            .next()
-            .ok_or_else(|| Error::engine("no embedding produced"))
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Pipeline
 // ---------------------------------------------------------------------------
 
@@ -118,7 +89,7 @@ async fn process_product(ctx: &Ctx, product: &SourceProduct) -> Result<OutputPro
         product.product_category, product.product_name, product.description
     );
     let total_value = product.price * product.amount as f64;
-    let embedding = ctx.get_key(&EMBEDDER)?.embed(full_description).await?;
+    let embedding = ctx.get_key(&EMBEDDER)?.embed(&full_description).await?;
     Ok(OutputProduct {
         product_category: product.product_category.clone(),
         product_name: product.product_name.clone(),
@@ -183,8 +154,8 @@ async fn app_main(ctx: Ctx) -> Result<()> {
 // Query (pgvector similarity)
 // ---------------------------------------------------------------------------
 
-async fn query(pool: &PgPool, embedder: &Embedder, q: &str) -> Result<()> {
-    let vec = embedder.embed(q.to_string()).await?;
+async fn query(pool: &PgPool, embedder: &SentenceTransformerEmbedder, q: &str) -> Result<()> {
+    let vec = embedder.embed(q).await?;
     let vec_lit = format!(
         "[{}]",
         vec.iter()
@@ -275,8 +246,6 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn load_embedder() -> Result<Embedder> {
-    tokio::task::spawn_blocking(|| Embedder::load(EMBED_MODEL))
-        .await
-        .map_err(|e| Error::engine(format!("embedder load task: {e}")))?
+async fn load_embedder() -> Result<SentenceTransformerEmbedder> {
+    SentenceTransformerEmbedder::load(EMBED_MODEL).await
 }

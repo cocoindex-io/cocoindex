@@ -2,14 +2,22 @@
 
 pub use crate::ctx::Ctx;
 pub use crate::error::{Error, Result};
+pub use crate::file::{
+    FileContentCache, FileLike, FileMetadata, FilePath, FilePathMatcher, FileSourceItem,
+    MatchAllFilePathMatcher, PatternFilePathMatcher,
+};
 pub use crate::fs::{
-    DirTarget, DirTargetState, DirWalker, FileEntry, FileLike, FileMetadata, FilePath,
-    FilePathMatcher, MatchAllFilePathMatcher, PatternFilePathMatcher, declare_dir_target,
-    dir_target, mount_dir_target, walk_dir,
+    DirTarget, DirTargetState, DirWalker, FileEntry, declare_dir_target, dir_target,
+    mount_dir_target, walk_dir,
 };
 pub use crate::id::{
     IdGenerator, UuidGenerator, generate_id, generate_id_default, generate_uuid,
     generate_uuid_default,
+};
+pub use crate::resources::chunk::{Chunk, TextPosition};
+pub use crate::resources::schema::{
+    MultiVectorSchema, MultiVectorSchemaProvider, VectorElementType, VectorSchema,
+    VectorSchemaProvider,
 };
 pub use crate::statediff::{
     DiffAction, ManagedBy, ManagedTargetOptions, MutualTrackingRecord, TrackingRecordTransition,

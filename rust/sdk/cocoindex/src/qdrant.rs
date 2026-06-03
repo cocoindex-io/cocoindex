@@ -12,8 +12,9 @@ use std::sync::Arc;
 use qdrant_client::Payload;
 use qdrant_client::Qdrant;
 use qdrant_client::qdrant::{
-    CreateCollectionBuilder, DeletePointsBuilder, Distance as QdrantDistance, PointStruct,
-    PointsIdsList, QueryPointsBuilder, UpsertPointsBuilder, VectorParamsBuilder, value::Kind,
+    CreateCollectionBuilder, DeletePointsBuilder, Distance as QdrantDistance,
+    MultiVectorComparator, MultiVectorConfigBuilder, PointStruct, PointsIdsList,
+    QueryPointsBuilder, UpsertPointsBuilder, Vector, VectorInput, VectorParamsBuilder, value::Kind,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value as JsonValue};
@@ -86,18 +87,38 @@ impl Distance {
     }
 }
 
-/// Schema for a Qdrant collection: a single (unnamed) vector field.
+/// Schema for a Qdrant collection's single (unnamed) vector field.
+///
+/// When `multivector` is set, each point stores a *list* of equal-length
+/// vectors and the collection scores them with the MAX_SIM late-interaction
+/// comparator — the shape ColPali-style models need. See
+/// [`CollectionSchema::multivector`].
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CollectionSchema {
     pub vector_size: u64,
     pub distance: Distance,
+    /// Store a list of vectors per point, compared with MAX_SIM.
+    #[serde(default)]
+    pub multivector: bool,
 }
 
 impl CollectionSchema {
+    /// A single dense vector per point.
     pub fn new(vector_size: u64, distance: Distance) -> Self {
         Self {
             vector_size,
             distance,
+            multivector: false,
+        }
+    }
+
+    /// A multi-vector (late-interaction) collection: each point holds a list of
+    /// `vector_size`-dimensional vectors, scored with MAX_SIM.
+    pub fn multivector(vector_size: u64, distance: Distance) -> Self {
+        Self {
+            vector_size,
+            distance,
+            multivector: true,
         }
     }
 }
@@ -106,11 +127,19 @@ impl CollectionSchema {
 // Public target API
 // ---------------------------------------------------------------------------
 
-/// A point declared into a collection: an id, its vector, and a JSON payload.
+/// A point's vector data: a single dense vector, or a list of vectors for a
+/// multi-vector (MAX_SIM) collection.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+enum PointVector {
+    Single(Vec<f32>),
+    Multi(Vec<Vec<f32>>),
+}
+
+/// A point declared into a collection: an id, its vector(s), and a JSON payload.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 struct Point {
     id: u64,
-    vector: Vec<f32>,
+    vector: PointVector,
     payload: Map<String, JsonValue>,
 }
 
@@ -245,7 +274,7 @@ impl CollectionTarget {
         &self.collection_name
     }
 
-    /// Declare a point (id + vector + JSON payload) to upsert into the collection.
+    /// Declare a single-vector point (id + vector + JSON payload) to upsert.
     pub fn declare_point(
         &self,
         ctx: &Ctx,
@@ -255,7 +284,25 @@ impl CollectionTarget {
     ) -> Result<()> {
         let point = Point {
             id,
-            vector,
+            vector: PointVector::Single(vector),
+            payload,
+        };
+        declare_target_state(ctx, self.points.target_state(id.to_string(), point))
+    }
+
+    /// Declare a multi-vector point (a list of equal-length vectors) for a
+    /// collection created with [`CollectionSchema::multivector`]. Scored with
+    /// MAX_SIM at query time.
+    pub fn declare_multivector_point(
+        &self,
+        ctx: &Ctx,
+        id: u64,
+        vectors: Vec<Vec<f32>>,
+        payload: Map<String, JsonValue>,
+    ) -> Result<()> {
+        let point = Point {
+            id,
+            vector: PointVector::Multi(vectors),
             payload,
         };
         declare_target_state(ctx, self.points.target_state(id.to_string(), point))
@@ -409,14 +456,17 @@ async fn ensure_collection(client: &Qdrant, action: &CollectionAction) -> Result
     } else if exists {
         return Ok(());
     }
+    let mut vectors = VectorParamsBuilder::new(
+        action.schema.vector_size,
+        action.schema.distance.to_qdrant(),
+    );
+    if action.schema.multivector {
+        vectors = vectors
+            .multivector_config(MultiVectorConfigBuilder::new(MultiVectorComparator::MaxSim));
+    }
     client
         .create_collection(
-            CreateCollectionBuilder::new(action.name.clone()).vectors_config(
-                VectorParamsBuilder::new(
-                    action.schema.vector_size,
-                    action.schema.distance.to_qdrant(),
-                ),
-            ),
+            CreateCollectionBuilder::new(action.name.clone()).vectors_config(vectors),
         )
         .await
         .map_err(|e| Error::engine(format!("qdrant create_collection {:?}: {e}", action.name)))?;
@@ -539,7 +589,14 @@ fn point_sink(client: Arc<Qdrant>, collection_name: String) -> TargetActionSink<
                     TargetAction::Create(a) | TargetAction::Update(a) => {
                         if let Some(point) = a.point {
                             let payload: Payload = point.payload.into();
-                            upserts.push(PointStruct::new(point.id, point.vector, payload));
+                            let id = point.id;
+                            let struct_ = match point.vector {
+                                PointVector::Single(v) => PointStruct::new(id, v, payload),
+                                PointVector::Multi(v) => {
+                                    PointStruct::new(id, Vector::new_multi(v), payload)
+                                }
+                            };
+                            upserts.push(struct_);
                         }
                     }
                     TargetAction::Delete(a) => deletes.push(a.id.into()),
@@ -606,6 +663,39 @@ pub async fn vector_search(
         .collect())
 }
 
+/// Run a multi-vector (MAX_SIM) similarity search against a collection created
+/// with [`CollectionSchema::multivector`], returning the top-`k` hits. `query`
+/// is the list of query vectors (e.g. a ColPali query's token embeddings).
+pub async fn multivector_search(
+    conn: &QdrantConnection,
+    collection_name: &str,
+    query: Vec<Vec<f32>>,
+    top_k: u64,
+) -> Result<Vec<QdrantHit>> {
+    let response = conn
+        .client
+        .query(
+            QueryPointsBuilder::new(collection_name)
+                .query(VectorInput::new_multi(query))
+                .limit(top_k)
+                .with_payload(true),
+        )
+        .await
+        .map_err(|e| Error::engine(format!("qdrant multivector query: {e}")))?;
+    Ok(response
+        .result
+        .into_iter()
+        .map(|p| QdrantHit {
+            score: p.score,
+            payload: p
+                .payload
+                .into_iter()
+                .map(|(k, v)| (k, qdrant_value_to_json(v)))
+                .collect(),
+        })
+        .collect())
+}
+
 fn qdrant_value_to_json(value: qdrant_client::qdrant::Value) -> JsonValue {
     match value.kind {
         Some(Kind::StringValue(s)) => JsonValue::from(s),
@@ -634,11 +724,11 @@ mod tests {
         payload.insert("text".into(), JsonValue::from("hello"));
         let p1 = Point {
             id: 1,
-            vector: vec![0.1, 0.2],
+            vector: PointVector::Single(vec![0.1, 0.2]),
             payload: payload.clone(),
         };
         let mut p2 = p1.clone();
-        p2.vector = vec![0.1, 0.3];
+        p2.vector = PointVector::Single(vec![0.1, 0.3]);
         let mut p3 = p1.clone();
         p3.payload.insert("text".into(), JsonValue::from("world"));
         assert_eq!(point_fingerprint(&p1), point_fingerprint(&p1.clone()));
@@ -651,5 +741,28 @@ mod tests {
         assert_eq!(Distance::Cosine.to_qdrant(), QdrantDistance::Cosine);
         assert_eq!(Distance::Dot.to_qdrant(), QdrantDistance::Dot);
         assert_eq!(Distance::Euclid.to_qdrant(), QdrantDistance::Euclid);
+    }
+
+    #[test]
+    fn collection_schema_multivector_flag() {
+        assert!(!CollectionSchema::new(512, Distance::Cosine).multivector);
+        assert!(CollectionSchema::multivector(128, Distance::Cosine).multivector);
+    }
+
+    #[test]
+    fn point_fingerprint_distinguishes_single_and_multi() {
+        let payload = Map::new();
+        let single = Point {
+            id: 1,
+            vector: PointVector::Single(vec![0.1, 0.2]),
+            payload: payload.clone(),
+        };
+        let multi = Point {
+            id: 1,
+            vector: PointVector::Multi(vec![vec![0.1, 0.2]]),
+            payload,
+        };
+        // A single vector and a one-element multi-vector are distinct points.
+        assert_ne!(point_fingerprint(&single), point_fingerprint(&multi));
     }
 }

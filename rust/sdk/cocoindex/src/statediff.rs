@@ -73,7 +73,8 @@ pub struct TrackingRecordTransition<T> {
     pub prev_may_be_missing: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum DiffAction {
     Insert,
     Upsert,
@@ -213,7 +214,10 @@ where
     let main_action = diff(Some(&main_transition));
 
     let sub_prev_may_be_missing = t.prev_may_be_missing
-        || matches!(main_action, Some(DiffAction::Replace) | Some(DiffAction::Delete));
+        || matches!(
+            main_action,
+            Some(DiffAction::Replace) | Some(DiffAction::Delete)
+        );
 
     let prev_count = t.prev.len();
     let mut grouped: HashMap<K, GroupedStates<S>> = HashMap::new();

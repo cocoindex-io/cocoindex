@@ -6,15 +6,16 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-cocoindex = { path = "../../../rust/sdk/cocoindex", features = ["postgres"] }
-# Tree-sitter chunking + language detection live in the engine's ops crate.
-# The Rust SDK doesn't re-export them yet, so we depend on it directly.
-cocoindex_ops_text = { path = "../../../rust/ops_text" }
+# `text` + `fastembed` pull in the SDK ops facades (RecursiveSplitter +
+# language detection, and the SentenceTransformerEmbedder) so this example no
+# longer depends on the engine ops crate or fastembed directly.
+cocoindex = { path = "../../../rust/sdk/cocoindex", features = [
+    "postgres",
+    "text",
+    "fastembed",
+] }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
-# Local embeddings — fastembed's AllMiniLML6V2 IS sentence-transformers/all-MiniLM-L6-v2
-# (the same 384-dim model the Python example uses), run as quantized ONNX.
-fastembed = "4"
 # Postgres query path. Target writes go through cocoindex::postgres.
 sqlx = { version = "0.8", default-features = false, features = [
     "runtime-tokio",

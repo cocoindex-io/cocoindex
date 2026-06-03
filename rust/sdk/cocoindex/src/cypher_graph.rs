@@ -32,6 +32,89 @@ pub(crate) trait CypherExecutor: Clone + Send + Sync + 'static {
     ) -> Result<()> {
         Ok(())
     }
+
+    /// Create (or replace) a vector index on `label`.`field`. The Cypher differs
+    /// by dialect (resolved via [`dialect`](Self::dialect)); the default covers
+    /// Neo4j (`CREATE VECTOR INDEX … OPTIONS {indexConfig: …}`, named) and
+    /// FalkorDB (`CREATE VECTOR INDEX FOR … OPTIONS {dimension, similarityFunction}`).
+    async fn create_vector_index(
+        &self,
+        label: &str,
+        field: &str,
+        dimension: u32,
+        metric: VectorMetric,
+    ) -> Result<()> {
+        let cypher = match self.dialect() {
+            "neo4j" => format!(
+                "CREATE VECTOR INDEX `{name}` IF NOT EXISTS FOR (n:`{label}`) ON n.`{field}` \
+                 OPTIONS {{ indexConfig: {{ `vector.dimensions`: {dimension}, \
+                 `vector.similarity_function`: '{metric}' }} }}",
+                name = vector_index_name(label, field),
+                metric = metric.neo4j()?,
+            ),
+            "falkordb" => format!(
+                "CREATE VECTOR INDEX FOR (e:`{label}`) ON (e.`{field}`) \
+                 OPTIONS {{dimension: {dimension}, similarityFunction: '{}'}}",
+                metric.falkordb(),
+            ),
+            other => {
+                return Err(Error::engine(format!(
+                    "vector index not supported for dialect {other:?}"
+                )));
+            }
+        };
+        self.execute(&cypher).await
+    }
+
+    /// Drop the vector index on `label`.`field` (Neo4j drops by name, FalkorDB by
+    /// `(label, field)`).
+    async fn drop_vector_index(&self, label: &str, field: &str) -> Result<()> {
+        let cypher = match self.dialect() {
+            "neo4j" => format!("DROP INDEX `{}` IF EXISTS", vector_index_name(label, field)),
+            "falkordb" => format!("DROP VECTOR INDEX FOR (e:`{label}`) ON (e.`{field}`)"),
+            other => {
+                return Err(Error::engine(format!(
+                    "vector index not supported for dialect {other:?}"
+                )));
+            }
+        };
+        self.execute(&cypher).await
+    }
+}
+
+/// Distance metric for a graph vector index.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum VectorMetric {
+    Cosine,
+    Euclidean,
+    /// Inner product (FalkorDB only).
+    InnerProduct,
+}
+
+impl VectorMetric {
+    fn neo4j(self) -> Result<&'static str> {
+        match self {
+            VectorMetric::Cosine => Ok("cosine"),
+            VectorMetric::Euclidean => Ok("euclidean"),
+            VectorMetric::InnerProduct => Err(Error::engine(
+                "Neo4j vector index does not support the inner-product metric",
+            )),
+        }
+    }
+
+    fn falkordb(self) -> &'static str {
+        match self {
+            VectorMetric::Cosine => "cosine",
+            VectorMetric::Euclidean => "euclidean",
+            VectorMetric::InnerProduct => "ip",
+        }
+    }
+}
+
+/// Deterministic vector-index name for a `(label, field)` pair (Neo4j names its
+/// indexes; FalkorDB identifies them by `(label, field)` instead).
+pub(crate) fn vector_index_name(label: &str, field: &str) -> String {
+    format!("coco_vec_{label}__{field}")
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -93,6 +176,7 @@ impl TableSchema {
 pub(crate) struct TableTarget {
     table_name: Arc<str>,
     primary_key: Arc<str>,
+    table_provider: TargetStateProvider<TableSpec>,
     provider: TargetStateProvider<RecordState>,
 }
 
@@ -112,6 +196,30 @@ impl TableTarget {
         row: &R,
     ) -> Result<()> {
         declare_target_state(ctx, self.provider.target_state(id, record_state(row)?))
+    }
+
+    /// Declare a vector index on `field` as an attachment of this node table.
+    pub(crate) fn declare_vector_index(
+        &self,
+        ctx: &Ctx,
+        field: &str,
+        dimension: u32,
+        metric: VectorMetric,
+    ) -> Result<()> {
+        validate_ident(field, "vector index field")?;
+        let provider: TargetStateProvider<VectorIndexSpec> =
+            self.table_provider.attachment(ctx, "vector_index")?;
+        let key = vector_index_name(&self.table_name, field);
+        let spec = VectorIndexSpec {
+            label: self.table_name.to_string(),
+            field: field.to_string(),
+            metric,
+            dimension,
+        };
+        declare_target_state(
+            ctx,
+            provider.target_state(StableKey::Str(Arc::from(key.as_str())), spec),
+        )
     }
 }
 
@@ -339,10 +447,15 @@ pub(crate) fn relation_target_state<C: CypherExecutor>(
     ))
 }
 
-fn table_handle(spec: &TableSpec, child: TargetStateProvider<RecordState>) -> TableTarget {
+fn table_handle(
+    spec: &TableSpec,
+    table_provider: TargetStateProvider<TableSpec>,
+    child: TargetStateProvider<RecordState>,
+) -> TableTarget {
     TableTarget {
         table_name: Arc::from(spec.table_name.clone()),
         primary_key: Arc::from(spec.primary_key.clone()),
+        table_provider,
         provider: child,
     }
 }
@@ -367,8 +480,9 @@ pub(crate) async fn mount_table_target_with_options<C: CypherExecutor>(
 ) -> Result<TableTarget> {
     let ts = table_target_state(ctx, graph, table_name, schema, options)?;
     let spec = ts.value().clone();
+    let table_provider = ts.provider().clone();
     let child = mount_target(ctx, ts).await?;
-    Ok(table_handle(&spec, child))
+    Ok(table_handle(&spec, table_provider, child))
 }
 
 pub(crate) fn declare_table_target_with_options<C: CypherExecutor>(
@@ -380,8 +494,9 @@ pub(crate) fn declare_table_target_with_options<C: CypherExecutor>(
 ) -> Result<TableTarget> {
     let ts = table_target_state(ctx, graph, table_name, schema, options)?;
     let spec = ts.value().clone();
+    let table_provider = ts.provider().clone();
     let child = declare_target_state_with_child::<TableSpec, RecordState>(ctx, ts)?;
-    Ok(table_handle(&spec, child))
+    Ok(table_handle(&spec, table_provider, child))
 }
 
 pub(crate) async fn mount_relation_target_with_options<C: CypherExecutor>(
@@ -489,6 +604,118 @@ impl<C: CypherExecutor> TargetHandler<TableSpec> for TableHandler<C> {
             }
         }
     }
+
+    fn attachments(&self) -> Result<Vec<(String, ChildTargetDef)>> {
+        Ok(vec![(
+            "vector_index".to_string(),
+            ChildTargetDef::new::<VectorIndexSpec, _>(VectorIndexHandler {
+                graph: self.graph.clone(),
+            }),
+        )])
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Vector-index attachment (node tables) — per-dialect Cypher via CypherExecutor
+// ---------------------------------------------------------------------------
+
+/// Spec for a graph vector index (an attachment of a node table). Also the
+/// tracking record (equality = no change).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct VectorIndexSpec {
+    label: String,
+    field: String,
+    metric: VectorMetric,
+    dimension: u32,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct VectorIndexAction {
+    label: String,
+    field: String,
+    /// `Some` to (re)create the index, `None` to drop it.
+    spec: Option<VectorIndexSpec>,
+}
+
+struct VectorIndexHandler<C> {
+    graph: C,
+}
+
+impl<C: CypherExecutor> TargetHandler<VectorIndexSpec> for VectorIndexHandler<C> {
+    type TrackingRecord = VectorIndexSpec;
+    type Action = VectorIndexAction;
+
+    fn reconcile(
+        &self,
+        key: StableKey,
+        desired: Option<VectorIndexSpec>,
+        prev: Vec<VectorIndexSpec>,
+        prev_may_be_missing: bool,
+    ) -> Result<Option<TargetReconcileOutput<VectorIndexAction, VectorIndexSpec>>> {
+        let prev_same = desired
+            .as_ref()
+            .is_some_and(|d| prev.iter().any(|p| p == d));
+        if desired.is_some() && prev_same && !prev_may_be_missing {
+            return Ok(None);
+        }
+        if desired.is_none() && prev.is_empty() && !prev_may_be_missing {
+            return Ok(None);
+        }
+        let (label, field) = match (&desired, prev.first()) {
+            (Some(d), _) => (d.label.clone(), d.field.clone()),
+            (None, Some(p)) => (p.label.clone(), p.field.clone()),
+            (None, None) => {
+                return Err(Error::engine(format!(
+                    "vector index {key:?} has neither desired nor previous state"
+                )));
+            }
+        };
+        Ok(Some(TargetReconcileOutput {
+            action: TargetAction::Update(VectorIndexAction {
+                label,
+                field,
+                spec: desired.clone(),
+            }),
+            sink: vector_index_sink(self.graph.clone()),
+            tracking_record: desired,
+            child_invalidation: None,
+        }))
+    }
+}
+
+fn vector_index_sink<C: CypherExecutor>(graph: C) -> TargetActionSink<VectorIndexAction> {
+    TargetActionSink::from_async_fn(move |actions: Vec<TargetAction<VectorIndexAction>>| {
+        let graph = graph.clone();
+        async move {
+            for action in actions {
+                let action = match action {
+                    TargetAction::Create(a) | TargetAction::Update(a) | TargetAction::Delete(a) => {
+                        a
+                    }
+                };
+                match action.spec {
+                    Some(spec) => {
+                        // Drop-then-create so a metric/dimension change is applied.
+                        let _ = graph.drop_vector_index(&action.label, &action.field).await;
+                        graph
+                            .create_vector_index(
+                                &action.label,
+                                &action.field,
+                                spec.dimension,
+                                spec.metric,
+                            )
+                            .await?;
+                    }
+                    None => {
+                        graph
+                            .drop_vector_index(&action.label, &action.field)
+                            .await?;
+                    }
+                }
+            }
+            Ok(())
+        }
+    })
 }
 
 struct RecordHandler<C> {
@@ -997,6 +1224,69 @@ mod tests {
         assert!(validate_ident("bad-name", "table").is_err());
         assert!(validate_ident("1bad", "table").is_err());
         assert!(validate_ident("bad`name", "table").is_err());
+    }
+
+    #[test]
+    fn vector_index_name_is_deterministic() {
+        assert_eq!(
+            vector_index_name("Doc", "embedding"),
+            "coco_vec_Doc__embedding"
+        );
+    }
+
+    #[tokio::test]
+    async fn neo4j_vector_index_cypher() {
+        let graph = RecordingGraph::new("neo4j");
+        graph
+            .create_vector_index("Doc", "embedding", 384, VectorMetric::Cosine)
+            .await
+            .unwrap();
+        graph.drop_vector_index("Doc", "embedding").await.unwrap();
+        assert_eq!(
+            graph.statements(),
+            vec![
+                "CREATE VECTOR INDEX `coco_vec_Doc__embedding` IF NOT EXISTS FOR (n:`Doc`) ON n.`embedding` \
+                 OPTIONS { indexConfig: { `vector.dimensions`: 384, `vector.similarity_function`: 'cosine' } }",
+                "DROP INDEX `coco_vec_Doc__embedding` IF EXISTS",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn falkordb_vector_index_cypher() {
+        let graph = RecordingGraph::new("falkordb");
+        graph
+            .create_vector_index("Doc", "embedding", 8, VectorMetric::Euclidean)
+            .await
+            .unwrap();
+        graph.drop_vector_index("Doc", "embedding").await.unwrap();
+        assert_eq!(
+            graph.statements(),
+            vec![
+                "CREATE VECTOR INDEX FOR (e:`Doc`) ON (e.`embedding`) \
+                 OPTIONS {dimension: 8, similarityFunction: 'euclidean'}",
+                "DROP VECTOR INDEX FOR (e:`Doc`) ON (e.`embedding`)",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn falkordb_supports_inner_product_but_neo4j_does_not() {
+        let falkor = RecordingGraph::new("falkordb");
+        falkor
+            .create_vector_index("Doc", "v", 4, VectorMetric::InnerProduct)
+            .await
+            .unwrap();
+        assert!(falkor.statements()[0].contains("similarityFunction: 'ip'"));
+
+        let neo4j = RecordingGraph::new("neo4j");
+        assert!(
+            neo4j
+                .create_vector_index("Doc", "v", 4, VectorMetric::InnerProduct)
+                .await
+                .is_err(),
+            "Neo4j must reject the inner-product metric"
+        );
     }
 
     #[tokio::test]

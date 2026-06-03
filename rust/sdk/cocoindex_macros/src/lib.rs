@@ -292,8 +292,29 @@ fn gen_key_write_for_param(
             })
         }
         None => Some(quote! {
-            ::cocoindex::memo::write_key_fingerprint_part(&mut #fingerprinter, #default_arg)?;
+            ::cocoindex::memo::write_key_fingerprint_part_for_arg(&mut #fingerprinter, #default_arg)?;
         }),
+    }
+}
+
+fn gen_state_collect_for_param(
+    states_ident: &Ident,
+    state_idx_ident: &Ident,
+    prev_states_ident: &Ident,
+    param: &ParamInfo,
+) -> TokenStream2 {
+    let ident = &param.ident;
+    let default_arg = quote! { &#ident };
+    quote! {
+        let __coco_prev_state = #prev_states_ident
+            .as_ref()
+            .and_then(|__coco_states| __coco_states.get(#state_idx_ident));
+        if let Some(__coco_state) =
+            ::cocoindex::memo::collect_memo_arg_state(#default_arg, __coco_prev_state).await?
+        {
+            #states_ident.push(__coco_state);
+            #state_idx_ident += 1;
+        }
     }
 }
 
@@ -406,8 +427,15 @@ pub fn function(attr: TokenStream, item: TokenStream) -> TokenStream {
                 }
             }
             None => quote! {
-                ::cocoindex::memo::write_key_fingerprint_part(&mut __coco_key, __coco_item)?;
+                ::cocoindex::memo::write_key_fingerprint_part_for_arg(&mut __coco_key, __coco_item)?;
             },
+        };
+        let item_state_collect = quote! {
+            if let Some(__coco_state) =
+                ::cocoindex::memo::collect_memo_arg_state(__coco_item, __coco_prev_state).await?
+            {
+                __coco_states.push(__coco_state);
+            }
         };
 
         let vis = &func.vis;
@@ -428,13 +456,23 @@ pub fn function(attr: TokenStream, item: TokenStream) -> TokenStream {
                 ::cocoindex::memo::write_key_fingerprint_part(&mut __coco_key_prefix, &#hash_const_name)?;
                 #(#extra_key_writes)*
 
-                ::cocoindex::memo::batch_by_fingerprint(
+                ::cocoindex::memo::batch_by_fingerprint_with_state(
                     #ctx_ident,
                     #items_ident,
                     |__coco_item| {
                         let mut __coco_key = __coco_key_prefix.clone();
                         #item_key_write
                         Ok(::cocoindex::memo::finish_key_fingerprinter(__coco_key))
+                    },
+                    |__coco_item, __coco_prev_states| {
+                        ::std::boxed::Box::pin(async move {
+                            let mut __coco_states = Vec::new();
+                            let __coco_prev_state = __coco_prev_states
+                                .as_ref()
+                                .and_then(|__coco_states| __coco_states.get(0));
+                            #item_state_collect
+                            Ok(__coco_states)
+                        })
                     },
                     {
                         #(#clone_stmts)*
@@ -468,6 +506,17 @@ pub fn function(attr: TokenStream, item: TokenStream) -> TokenStream {
                 gen_key_write_for_param(&format_ident!("__coco_key"), p, &args.memo_key)
             })
             .collect();
+        let state_collects: Vec<TokenStream2> = params
+            .iter()
+            .map(|p| {
+                gen_state_collect_for_param(
+                    &format_ident!("__coco_states"),
+                    &format_ident!("__coco_state_idx"),
+                    &format_ident!("__coco_prev_states"),
+                    p,
+                )
+            })
+            .collect();
 
         let expanded = quote! {
             #[doc(hidden)]
@@ -485,7 +534,15 @@ pub fn function(attr: TokenStream, item: TokenStream) -> TokenStream {
                     ::cocoindex::memo::finish_key_fingerprinter(__coco_key)
                 };
 
-                ::cocoindex::memo::cached_by_fingerprint(#ctx_ident, __coco_key, {
+                ::cocoindex::memo::cached_by_fingerprint_with_state(#ctx_ident, __coco_key, {
+                    #(#clone_stmts)*
+                    move |__coco_prev_states| async move {
+                        let mut __coco_states = Vec::new();
+                        let mut __coco_state_idx = 0usize;
+                        #(#state_collects)*
+                        Ok(__coco_states)
+                    }
+                }, {
                     #(#clone_stmts)*
                     move |#ctx_ident| async move #body
                 }).await
