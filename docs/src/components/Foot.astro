@@ -1,0 +1,90 @@
+---
+// Site footer — mirrors Foot.astro in cocoindex-io.github.io (markup, class
+// names, styles) so the docs share the same footer as the home page. Links
+// point at absolute cocoindex.io URLs since the docs live under /docs.
+import { SITE_MAIN, SITE_BLOG, SITE_EXAMPLES, GITHUB_REPO, DISCORD_URL } from '../consts';
+
+const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+const ENTERPRISE = `${SITE_MAIN}/enterprise`;
+---
+
+<footer class="it-foot">
+  <div class="foot-grid">
+    <div class="foot-brand">
+      <a class="logo" href={SITE_MAIN} style="gap: 12px">
+        <img src={`${base}/images/coconut.svg`} alt="" width="36" height="36" style="width: 36px; height: auto" />
+        <span>CocoIndex</span>
+      </a>
+      <p>The open-source, incremental data framework that keeps your AI agents grounded in fresh, structured context.</p>
+    </div>
+    <div class="foot-col">
+      <h6>Resources</h6>
+      <a href={SITE_BLOG}>Blog</a>
+      <a href={`${base}/`}>Documentation</a>
+      <a href="https://www.youtube.com/@cocoindex-io">YouTube</a>
+      <a href={SITE_EXAMPLES}>Examples</a>
+    </div>
+    <div class="foot-col">
+      <h6>Community</h6>
+      <a href={GITHUB_REPO}>GitHub</a>
+      <a href={DISCORD_URL}>Discord</a>
+      <a href="https://x.com/cocoindex_io">Twitter</a>
+      <a href="https://www.linkedin.com/company/cocoindex">LinkedIn</a>
+    </div>
+    <div class="foot-col">
+      <h6>Company</h6>
+      <a href={ENTERPRISE}>Enterprise</a>
+      <a href={`${SITE_MAIN}/careers`}>Careers</a>
+      <a href={`${SITE_MAIN}/brand`}>Brand &amp; press kit</a>
+      <a href={`${SITE_MAIN}/privacy-policy`}>Privacy policy</a>
+      <a href={`${SITE_MAIN}/terms-of-use`}>Terms of use</a>
+      <a href="mailto:hi@cocoindex.io">hi@cocoindex.io</a>
+    </div>
+  </div>
+  <div class="colo">
+    <span>© 2026 CocoIndex</span>
+  </div>
+</footer>
+
+<style>
+  footer.it-foot {
+    padding: 72px 24px 36px;
+    border-top: 1px solid var(--rule);
+    max-width: 1480px;
+    margin: 0 auto;
+  }
+  .foot-grid {
+    display: grid;
+    grid-template-columns: 2fr 1fr 1fr 1fr;
+    gap: 24px;
+    padding-bottom: 48px;
+  }
+  .foot-brand { display: flex; flex-direction: column; gap: 16px; max-width: 38ch; }
+  .foot-brand .logo { font-family: var(--sans); font-size: 18px; font-weight: 600; letter-spacing: -0.02em; }
+  .foot-brand p { color: var(--muted); margin: 0; font-size: 14px; }
+  .foot-col h6 {
+    font-family: var(--mono); font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--muted); margin: 0 0 14px; font-weight: 500;
+  }
+  .foot-col a {
+    display: block; text-decoration: none; color: var(--maroon-ink);
+    padding: 5px 0; font-size: 14px;
+  }
+  .foot-col a:hover { color: var(--coral); }
+  .colo {
+    padding-top: 20px;
+    display: flex; justify-content: space-between; align-items: center;
+    font-family: var(--mono); font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase;
+    color: var(--muted);
+    flex-wrap: wrap; gap: 8px;
+  }
+
+  @media (max-width: 820px) {
+    footer.it-foot { padding: 56px 24px 32px; }
+    .foot-grid { grid-template-columns: 1fr 1fr; gap: 32px 24px; }
+    .foot-brand { grid-column: 1 / -1; }
+  }
+  @media (max-width: 520px) {
+    .foot-grid { grid-template-columns: 1fr; }
+  }
+</style>
