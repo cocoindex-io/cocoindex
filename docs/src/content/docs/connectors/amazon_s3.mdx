@@ -2,11 +2,11 @@
 title: "*Amazon S3* connector"
 toc_max_heading_level: 4
 description: >
-  Read objects from Amazon S3 buckets and S3-compatible services (e.g. MinIO) —
+  Read objects from Amazon S3 buckets and S3-compatible services (e.g. MinIO, Tigris) —
   with prefix filters, path matchers, size limits, and stable S3FilePath for
   memoization.
 ---
-The `amazon_s3` connector provides utilities for reading objects from Amazon S3 buckets and S3-compatible services (e.g. MinIO).
+The `amazon_s3` connector provides utilities for reading objects from Amazon S3 buckets and S3-compatible services (e.g. MinIO, Tigris).
 
 ```python
 from cocoindex.connectors import amazon_s3
@@ -40,6 +40,16 @@ async with session.create_client("s3") as client:
 
 # For S3-compatible services:
 async with session.create_client("s3", endpoint_url="http://localhost:9000") as client:
+    ...
+
+# For Tigris — single global endpoint, no region selection.
+# Pass region_name="auto"; boto3 requires a region for SigV4 signing
+# but Tigris ignores the value.
+async with session.create_client(
+    "s3",
+    endpoint_url="https://t3.storage.dev",
+    region_name="auto",
+) as client:
     ...
 ```
 
