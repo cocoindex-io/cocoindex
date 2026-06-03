@@ -390,3 +390,86 @@ async fn lancedb_user_managed_target_does_not_create_table() -> Result<()> {
     );
     Ok(())
 }
+
+#[derive(Clone, Serialize)]
+struct RowTwoVec {
+    id: i64,
+    text: String,
+    embedding: Vec<f32>,
+    embedding2: Vec<f32>,
+}
+
+fn schema_two_vec() -> TableSchema {
+    TableSchema::new(
+        [
+            ("id", ColumnDef::new(ColumnType::Int64)),
+            ("text", ColumnDef::new(ColumnType::Text)),
+            ("embedding", ColumnDef::new(ColumnType::Vector(3))),
+            ("embedding2", ColumnDef::new(ColumnType::Vector(2)).nullable()),
+        ],
+        ["id"],
+    )
+    .unwrap()
+}
+
+/// Adding a new vector column must evolve the table additively (via `AllNulls`),
+/// not trigger a destructive rebuild — and the rows + new vector column work.
+#[tokio::test]
+async fn lancedb_adds_vector_column_additively() -> Result<()> {
+    let tempdir = tempfile::tempdir().unwrap();
+    let uri = tempdir.path().join("lancedb_data");
+    let db = LanceDatabase::connect(uri.to_str().unwrap()).await?;
+    let coco_db_path = tempdir.path().join(".cocoindex_db");
+
+    // v1: single vector column.
+    {
+        let app = App::builder("LanceAddVecTest")
+            .db_path(&coco_db_path)
+            .provide_key(&DB, db.clone())
+            .build()
+            .await?;
+        app.run(move |ctx| async move {
+            let db = ctx.get_key(&DB)?;
+            let table = lancedb::mount_table_target(&ctx, db, TABLE, schema()).await?;
+            table.declare_row(&ctx, &Row { id: 1, text: "a".into(), embedding: vec![1.0, 0.0, 0.0] })?;
+            table.declare_row(&ctx, &Row { id: 2, text: "b".into(), embedding: vec![0.0, 1.0, 0.0] })?;
+            Ok(())
+        })
+        .await?;
+    }
+    assert_eq!(row_count(&db).await, 2);
+
+    // v2: add a second (nullable) vector column. Additive evolution.
+    {
+        let app = App::builder("LanceAddVecTest")
+            .db_path(&coco_db_path)
+            .provide_key(&DB, db.clone())
+            .build()
+            .await?;
+        app.run(move |ctx| async move {
+            let db = ctx.get_key(&DB)?;
+            let table = lancedb::mount_table_target(&ctx, db, TABLE, schema_two_vec()).await?;
+            table.declare_row(&ctx, &RowTwoVec {
+                id: 1,
+                text: "a".into(),
+                embedding: vec![1.0, 0.0, 0.0],
+                embedding2: vec![0.5, 0.5],
+            })?;
+            table.declare_row(&ctx, &RowTwoVec {
+                id: 2,
+                text: "b".into(),
+                embedding: vec![0.0, 1.0, 0.0],
+                embedding2: vec![0.1, 0.9],
+            })?;
+            Ok(())
+        })
+        .await?;
+    }
+    assert_eq!(row_count(&db).await, 2, "vector-column add preserves rows");
+    // Both the original and the new vector column are searchable.
+    let h1 = lancedb::vector_search(&db, TABLE, "embedding", vec![1.0, 0.0, 0.0], 1).await?;
+    assert_eq!(h1[0]["text"], "a");
+    let h2 = lancedb::vector_search(&db, TABLE, "embedding2", vec![0.1, 0.9], 1).await?;
+    assert_eq!(h2[0]["text"], "b", "the added vector column is queryable");
+    Ok(())
+}

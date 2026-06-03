@@ -100,14 +100,6 @@ impl ColumnType {
         }
     }
 
-    fn sql_null_type(&self) -> Option<&'static str> {
-        match self {
-            ColumnType::Int64 => Some("BIGINT"),
-            ColumnType::Float64 => Some("DOUBLE"),
-            ColumnType::Text => Some("STRING"),
-            ColumnType::Vector(_) => None,
-        }
-    }
 }
 
 /// A column definition: its type and nullability.
@@ -428,21 +420,18 @@ impl TargetHandler<TableSpec> for TableHandler {
                     resolve_system_transition(Some(tracking.clone()), prev, prev_may_be_missing);
                 let (main_action, column_transitions) = diff_composite(resolved.as_ref());
                 let check_column_actions = matches!(main_action, None | Some(DiffAction::Upsert));
+                // A pure column *add* is additive (a nullable column added via
+                // `add_columns`, including vectors — see `evolve_existing_table`),
+                // so it never recreates. A column *retype* or *drop* can't be done
+                // in place in LanceDB, so it forces a destructive recreate (matches
+                // Python, which upgrades non-add column actions to a replace).
                 let recreate = matches!(main_action, Some(DiffAction::Replace))
                     || (check_column_actions
-                        && column_transitions.into_iter().any(|(name, transition)| {
-                            let Some(action) = diff(Some(&transition)) else {
-                                return false;
-                            };
-                            match action {
-                                DiffAction::Insert | DiffAction::Upsert => spec
-                                    .table_schema
-                                    .columns
-                                    .iter()
-                                    .find(|(col_name, _)| col_name == &name)
-                                    .is_some_and(|(_, def)| def.col_type.sql_null_type().is_none()),
-                                DiffAction::Replace | DiffAction::Delete => true,
-                            }
+                        && column_transitions.into_iter().any(|(_name, transition)| {
+                            matches!(
+                                diff(Some(&transition)),
+                                Some(DiffAction::Replace | DiffAction::Delete)
+                            )
                         }));
                 Ok(Some(TargetReconcileOutput {
                     action: TargetAction::Update(TableAction {
@@ -559,25 +548,29 @@ async fn evolve_existing_table(db: &LanceDatabase, spec: &TableSpec) -> Result<T
         .schema()
         .await
         .map_err(|e| Error::engine(format!("lancedb read schema: {e}")))?;
-    let mut add_exprs = Vec::new();
+    let mut add_fields = Vec::new();
     for (name, def) in &spec.table_schema.columns {
         match existing.field_with_name(name) {
             Ok(field) => {
+                // An in-place type change isn't supported by LanceDB schema
+                // evolution — fall back to a destructive recreate.
                 if field.data_type() != &def.col_type.arrow_data_type() {
                     return Ok(TableEvolution::Recreate);
                 }
             }
             Err(_) => {
-                let Some(sql_type) = def.col_type.sql_null_type() else {
-                    return Ok(TableEvolution::Recreate);
-                };
-                add_exprs.push((name.clone(), format!("CAST(NULL AS {sql_type})")));
+                // Add the new column as a nullable, all-null column. `AllNulls`
+                // (rather than a SQL `CAST(NULL AS ..)` expression) supports every
+                // type, including fixed-size-list vector columns — so adding a
+                // vector column is additive instead of wiping the table.
+                add_fields.push(Field::new(name, def.col_type.arrow_data_type(), true));
             }
         }
     }
-    if !add_exprs.is_empty() {
+    if !add_fields.is_empty() {
+        let add_schema = Arc::new(Schema::new(add_fields));
         table
-            .add_columns(NewColumnTransform::SqlExpressions(add_exprs), None)
+            .add_columns(NewColumnTransform::AllNulls(add_schema), None)
             .await
             .map_err(|e| Error::engine(format!("lancedb add columns: {e}")))?;
     }

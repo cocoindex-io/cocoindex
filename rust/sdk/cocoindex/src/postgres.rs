@@ -22,8 +22,7 @@ use sqlx::postgres::PgPoolOptions;
 use crate::ctx::Ctx;
 use crate::error::{Error, Result};
 use crate::statediff::{
-    DiffAction, ManagedBy, ManagedTargetOptions, MutualTrackingRecord, diff,
-    resolve_system_transition,
+    ManagedBy, ManagedTargetOptions, MutualTrackingRecord, resolve_system_transition,
 };
 use crate::target_state::{
     ChildTargetDef, StableKey, TargetAction, TargetActionSink, TargetChildInvalidation,
@@ -468,6 +467,13 @@ struct TableAction {
     spec: Option<TableSpec>,
     /// `Some` for a drop (orphaned table).
     drop: Option<DropTarget>,
+    /// The primary-key signature changed: drop and recreate the table.
+    #[serde(default)]
+    recreate: bool,
+    /// Non-PK columns whose declared type changed since the last run; retype
+    /// them (preserving rows where the cast allows).
+    #[serde(default)]
+    retype_cols: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -522,18 +528,65 @@ impl TargetHandler<TableSpec> for TableHandler {
             // Always emit when declared so the sink fulfills the row child.
             Some(spec) => {
                 let tracking = MutualTrackingRecord::new(spec.clone(), spec.managed_by);
-                let resolved =
+                // The previous system-managed spec (if any) drives the schema-
+                // evolution decision: a PK-signature change forces a destructive
+                // drop+recreate; a non-PK column type change is an in-place
+                // retype; a column drop is lossy. (`reconcile_columns` in the
+                // sink still handles plain add/drop against `information_schema`.)
+                let prev_spec = prev
+                    .iter()
+                    .find(|v| v.managed_by.is_system())
+                    .map(|v| v.tracking_record.clone());
+                let _resolved =
                     resolve_system_transition(Some(tracking.clone()), prev, prev_may_be_missing);
-                let main_action = diff(resolved.as_ref());
+
+                let mut recreate = false;
+                let mut retype_cols: Vec<String> = Vec::new();
+                let mut dropped_col = false;
+                if spec.managed_by.is_system()
+                    && let Some(prev_spec) = &prev_spec
+                {
+                    if pk_signature(prev_spec) != pk_signature(&spec) {
+                        recreate = true;
+                    } else {
+                        let pk: std::collections::HashSet<&String> =
+                            spec.table_schema.primary_key().iter().collect();
+                        for (name, col) in spec.table_schema.columns() {
+                            if pk.contains(name) {
+                                continue;
+                            }
+                            if let Some(prev_col) = prev_spec.table_schema.columns().get(name)
+                                && prev_col.pg_type != col.pg_type
+                            {
+                                retype_cols.push(name.clone());
+                            }
+                        }
+                        dropped_col = prev_spec
+                            .table_schema
+                            .columns()
+                            .keys()
+                            .any(|name| !spec.table_schema.columns().contains_key(name));
+                    }
+                }
+
+                let child_invalidation = if recreate {
+                    Some(TargetChildInvalidation::Destructive)
+                } else if dropped_col || !retype_cols.is_empty() {
+                    Some(TargetChildInvalidation::Lossy)
+                } else {
+                    None
+                };
+
                 Ok(Some(TargetReconcileOutput {
                     action: TargetAction::Update(TableAction {
                         spec: Some(spec),
                         drop: None,
+                        recreate,
+                        retype_cols,
                     }),
                     sink: self.table_sink(),
                     tracking_record: Some(tracking),
-                    child_invalidation: matches!(main_action, Some(DiffAction::Replace))
-                        .then_some(TargetChildInvalidation::Lossy),
+                    child_invalidation,
                 }))
             }
             None => {
@@ -555,6 +608,8 @@ impl TargetHandler<TableSpec> for TableHandler {
                             pg_schema_name: prev_spec.pg_schema_name,
                             table_name: prev_spec.table_name,
                         }),
+                        recreate: false,
+                        retype_cols: Vec::new(),
                     }),
                     sink: self.table_sink(),
                     tracking_record: None,
@@ -596,7 +651,17 @@ impl TableHandler {
                                 let spec = a.spec.ok_or_else(|| {
                                     Error::engine("Postgres table action missing spec")
                                 })?;
+                                // A PK-signature change can't be applied in place;
+                                // drop and recreate the table (rows are replayed via
+                                // the Destructive child invalidation set at reconcile).
+                                if a.recreate && spec.managed_by.is_system() {
+                                    drop_table(&db, spec.pg_schema_name.as_deref(), &spec.table_name)
+                                        .await?;
+                                }
                                 define_table(&db, &spec).await?;
+                                if !a.retype_cols.is_empty() {
+                                    apply_retypes(&db, &spec, &a.retype_cols).await?;
+                                }
                                 out.push(Some(ChildTargetDef::new::<RowState, _>(RowHandler {
                                     db: db.clone(),
                                     spec,
@@ -647,7 +712,7 @@ impl TargetHandler<RowState> for RowHandler {
         };
         let prev_same = desired_fp
             .as_ref()
-            .is_some_and(|fp| prev.iter().any(|p| p == fp));
+            .is_some_and(|fp| !prev.is_empty() && prev.iter().all(|p| p == fp));
         if desired.is_some() && prev_same && !prev_may_be_missing {
             return Ok(None);
         }
@@ -976,6 +1041,61 @@ async fn reconcile_columns(db: &Database, spec: &TableSpec) -> Result<()> {
                 quote_ident(name),
             );
             sqlx::query(&sql).execute(db.pool()).await.map_err(pg_err)?;
+        }
+    }
+    Ok(())
+}
+
+/// The primary-key signature `(column, pg_type)*` used to detect a PK change
+/// that requires a destructive table rebuild.
+fn pk_signature(spec: &TableSpec) -> Vec<(String, String)> {
+    spec.table_schema
+        .primary_key()
+        .iter()
+        .map(|name| {
+            let ty = spec
+                .table_schema
+                .columns()
+                .get(name)
+                .map(|c| c.pg_type.clone())
+                .unwrap_or_default();
+            (name.clone(), ty)
+        })
+        .collect()
+}
+
+/// Apply in-place type changes to existing non-PK columns. Tries
+/// `ALTER COLUMN ... TYPE` (preserves rows when the cast is valid); on failure
+/// (an incompatible cast) it drops and re-adds the column — mirroring Python's
+/// drop-retry on `_apply_column_actions`. PK columns are never retyped here (a PK
+/// change is handled by a full recreate).
+async fn apply_retypes(db: &Database, spec: &TableSpec, cols: &[String]) -> Result<()> {
+    if spec.managed_by.is_user() {
+        return Ok(());
+    }
+    let table = qualified_table_name(spec);
+    for name in cols {
+        let Some(col) = spec.table_schema.columns().get(name) else {
+            continue;
+        };
+        let ident = quote_ident(name);
+        let alter = format!("ALTER TABLE {table} ALTER COLUMN {ident} TYPE {}", col.pg_type);
+        if sqlx::query(&alter).execute(db.pool()).await.is_err() {
+            // Incompatible cast: drop and re-add (best-effort, column data lost —
+            // rows are repopulated by the Lossy child invalidation).
+            sqlx::query(&format!(
+                "ALTER TABLE {table} DROP COLUMN IF EXISTS {ident}"
+            ))
+            .execute(db.pool())
+            .await
+            .map_err(pg_err)?;
+            sqlx::query(&format!(
+                "ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {ident} {}",
+                col.pg_type
+            ))
+            .execute(db.pool())
+            .await
+            .map_err(pg_err)?;
         }
     }
     Ok(())

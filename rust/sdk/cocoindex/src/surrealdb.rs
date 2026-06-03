@@ -25,8 +25,7 @@ use crate::ctx::Ctx;
 use crate::error::{Error, Result};
 use crate::sql_ident::validate_ident;
 use crate::statediff::{
-    DiffAction, ManagedBy, ManagedTargetOptions, MutualTrackingRecord, diff,
-    resolve_system_transition,
+    ManagedBy, ManagedTargetOptions, MutualTrackingRecord, resolve_system_transition,
 };
 use crate::target_state::{
     ChildTargetDef, StableKey, TargetAction, TargetActionSink, TargetChildInvalidation,
@@ -1001,6 +1000,16 @@ struct TableAction {
     spec: Option<TableSpec>,
     /// `Some` for a removal (orphaned table), carrying the table name.
     drop: Option<String>,
+    /// The table's "main" signature (relation/schema-mode/from-to) changed:
+    /// `REMOVE TABLE` and redefine.
+    #[serde(default)]
+    recreate: bool,
+    /// Fields no longer declared — `REMOVE FIELD`.
+    #[serde(default)]
+    drop_fields: Vec<String>,
+    /// Fields whose declared type/nullability changed — `DEFINE FIELD OVERWRITE`.
+    #[serde(default)]
+    retype_fields: Vec<String>,
 }
 
 /// Action emitted by the record child handler.
@@ -1033,18 +1042,71 @@ impl TargetHandler<TableSpec> for TableHandler {
             // Always emit when declared so the sink fulfills the record child.
             Some(spec) => {
                 let tracking = MutualTrackingRecord::new(spec.clone(), spec.managed_by);
-                let resolved =
+                // The previous system spec drives schema evolution: a change to the
+                // table's "main" shape (relation flag, schemafull/schemaless, or the
+                // relation from/to tables) forces a destructive `REMOVE TABLE` +
+                // redefine; otherwise individual fields are dropped (`REMOVE FIELD`)
+                // or retyped (`DEFINE FIELD OVERWRITE`) in place.
+                let prev_spec = prev
+                    .iter()
+                    .find(|v| v.managed_by.is_system())
+                    .map(|v| v.tracking_record.clone());
+                let _resolved =
                     resolve_system_transition(Some(tracking.clone()), prev, prev_may_be_missing);
-                let main_action = diff(resolved.as_ref());
+
+                let mut recreate = false;
+                let mut drop_fields: Vec<String> = Vec::new();
+                let mut retype_fields: Vec<String> = Vec::new();
+                if spec.managed_by.is_system()
+                    && let Some(prev_spec) = &prev_spec
+                {
+                    let main_changed = prev_spec.is_relation != spec.is_relation
+                        || prev_spec.table_schema.is_some() != spec.table_schema.is_some()
+                        || prev_spec.from_tables != spec.from_tables
+                        || prev_spec.to_tables != spec.to_tables;
+                    if main_changed {
+                        recreate = true;
+                    } else if let (Some(prev_schema), Some(desired_schema)) =
+                        (&prev_spec.table_schema, &spec.table_schema)
+                    {
+                        for (name, col) in desired_schema.columns() {
+                            if name == "id" {
+                                continue;
+                            }
+                            if let Some(prev_col) = prev_schema.columns().get(name)
+                                && (prev_col.surreal_type != col.surreal_type
+                                    || prev_col.nullable != col.nullable)
+                            {
+                                retype_fields.push(name.clone());
+                            }
+                        }
+                        for name in prev_schema.columns().keys() {
+                            if name != "id" && !desired_schema.columns().contains_key(name) {
+                                drop_fields.push(name.clone());
+                            }
+                        }
+                    }
+                }
+
+                let child_invalidation = if recreate {
+                    Some(TargetChildInvalidation::Destructive)
+                } else if !drop_fields.is_empty() || !retype_fields.is_empty() {
+                    Some(TargetChildInvalidation::Lossy)
+                } else {
+                    None
+                };
+
                 Ok(Some(TargetReconcileOutput {
                     action: TargetAction::Update(TableAction {
                         spec: Some(spec),
                         drop: None,
+                        recreate,
+                        drop_fields,
+                        retype_fields,
                     }),
                     sink: self.table_sink(),
                     tracking_record: Some(tracking),
-                    child_invalidation: matches!(main_action, Some(DiffAction::Replace))
-                        .then_some(TargetChildInvalidation::Lossy),
+                    child_invalidation,
                 }))
             }
             None => {
@@ -1063,6 +1125,9 @@ impl TargetHandler<TableSpec> for TableHandler {
                     action: TargetAction::Delete(TableAction {
                         spec: None,
                         drop: Some(prev_spec.table_name),
+                        recreate: false,
+                        drop_fields: Vec::new(),
+                        retype_fields: Vec::new(),
                     }),
                     sink: self.table_sink(),
                     tracking_record: None,
@@ -1096,7 +1161,22 @@ impl TableHandler {
                                 let spec = a.spec.ok_or_else(|| {
                                     Error::engine("SurrealDB table action missing spec")
                                 })?;
+                                // A "main"-shape change can't be applied in place;
+                                // remove and redefine (records replayed via the
+                                // Destructive child invalidation set at reconcile).
+                                if a.recreate && spec.managed_by.is_system() {
+                                    remove_table(&graph, &spec.table_name).await?;
+                                }
                                 define_table(&graph, &spec).await?;
+                                if !a.drop_fields.is_empty() || !a.retype_fields.is_empty() {
+                                    apply_field_changes(
+                                        &graph,
+                                        &spec,
+                                        &a.drop_fields,
+                                        &a.retype_fields,
+                                    )
+                                    .await?;
+                                }
                                 out.push(Some(ChildTargetDef::new::<RecordState, _>(
                                     RecordHandler {
                                         graph: graph.clone(),
@@ -1147,7 +1227,7 @@ impl TargetHandler<RecordState> for RecordHandler {
         };
         let prev_same = desired_fp
             .as_ref()
-            .is_some_and(|fp| prev.iter().any(|p| p == fp));
+            .is_some_and(|fp| !prev.is_empty() && prev.iter().all(|p| p == fp));
         if desired.is_some() && prev_same && !prev_may_be_missing {
             return Ok(None);
         }
@@ -1403,6 +1483,56 @@ async fn define_table(graph: &Graph, spec: &TableSpec) -> Result<()> {
     Ok(())
 }
 
+/// Apply incremental field changes to an existing system-managed table: drop
+/// undeclared fields and overwrite the type of changed ones. (Added fields are
+/// handled by `DEFINE FIELD IF NOT EXISTS` in `define_table`.) The `id` field is
+/// never altered here.
+async fn apply_field_changes(
+    graph: &Graph,
+    spec: &TableSpec,
+    drop_fields: &[String],
+    retype_fields: &[String],
+) -> Result<()> {
+    if spec.managed_by.is_user() {
+        return Ok(());
+    }
+    let Some(schema) = &spec.table_schema else {
+        return Ok(());
+    };
+    for name in drop_fields {
+        graph
+            .db
+            .query(format!(
+                "REMOVE FIELD IF EXISTS {name} ON {}",
+                spec.table_name
+            ))
+            .await
+            .map_err(surreal_err)?
+            .check()
+            .map_err(surreal_err)?;
+    }
+    for name in retype_fields {
+        if let Some(col) = schema.columns().get(name) {
+            let type_expr = if col.nullable {
+                format!("option<{}>", col.surreal_type)
+            } else {
+                col.surreal_type.clone()
+            };
+            graph
+                .db
+                .query(format!(
+                    "DEFINE FIELD OVERWRITE {name} ON {} TYPE {type_expr}",
+                    spec.table_name
+                ))
+                .await
+                .map_err(surreal_err)?
+                .check()
+                .map_err(surreal_err)?;
+        }
+    }
+    Ok(())
+}
+
 async fn remove_table(graph: &Graph, table_name: &str) -> Result<()> {
     validate_ident(table_name, "table name")?;
     graph
@@ -1434,9 +1564,17 @@ async fn apply_records(
         let record_ref = format!("{}:{}", spec.table_name, record_id.surrealql());
         match state {
             Some(state) => {
-                let content = serde_json::to_string(&JsonValue::Object(state.fields))
+                // The record id is carried by `record_ref` (`table:id`); strip any
+                // `id` field from CONTENT so it isn't written into the body (matches
+                // Python, which excludes `id` from the upsert content).
+                let RecordState {
+                    mut fields,
+                    relation,
+                } = state;
+                fields.remove("id");
+                let content = serde_json::to_string(&JsonValue::Object(fields))
                     .map_err(|e| Error::engine(format!("serialize SurrealDB record: {e}")))?;
-                if let Some(rel) = state.relation {
+                if let Some(rel) = relation {
                     validate_ident(&rel.from_table, "relation from table name")?;
                     validate_ident(&rel.to_table, "relation to table name")?;
                     let from_ref = format!("{}:{}", rel.from_table, rel.from_id.surrealql());

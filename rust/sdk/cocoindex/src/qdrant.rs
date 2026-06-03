@@ -182,9 +182,12 @@ impl QdrantVectorDef {
 
     fn to_params(&self) -> VectorParams {
         let mut params = VectorParamsBuilder::new(self.vector_size(), self.distance.to_qdrant());
-        // Map the SDK element type to Qdrant's stored datatype (cf. Python's
-        // `VectorParams(datatype=...)`). Float32 is Qdrant's default, so only
-        // f16 needs an explicit datatype.
+        // Map the SDK element type to Qdrant's stored datatype. Float32 is
+        // Qdrant's default, so only f16 needs an explicit datatype. NOTE: the
+        // Python connector currently does *not* forward the schema dtype to
+        // `VectorParams(datatype=...)` — a latent Python bug that silently stores
+        // an f16 schema as f32. Rust honors the requested f16; Python should be
+        // fixed to match (tracked in the parity review).
         if self.element_type() == VectorElementType::Float16 {
             params = params.datatype(QdrantDatatype::Float16);
         }
@@ -397,9 +400,61 @@ impl NamedPointVector {
 }
 
 /// A point declared into a collection: an id, its vector(s), and a JSON payload.
+/// A Qdrant point id — an unsigned integer or a UUID string (Qdrant's two
+/// supported id types). Constructible from `u64`, `String`, or `&str`, so
+/// `declare_point(ctx, 7u64, ..)` and `declare_point(ctx, "uuid", ..)` both work.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum QdrantPointId {
+    Num(u64),
+    Uuid(String),
+}
+
+impl From<u64> for QdrantPointId {
+    fn from(v: u64) -> Self {
+        Self::Num(v)
+    }
+}
+impl From<String> for QdrantPointId {
+    fn from(v: String) -> Self {
+        Self::Uuid(v)
+    }
+}
+impl From<&str> for QdrantPointId {
+    fn from(v: &str) -> Self {
+        Self::Uuid(v.to_string())
+    }
+}
+
+impl QdrantPointId {
+    /// The stable target-state key (a string for both variants, preserving the
+    /// full `u64` range without an `i64` round-trip).
+    fn stable_key(&self) -> StableKey {
+        match self {
+            Self::Num(n) => StableKey::Str(Arc::from(n.to_string())),
+            Self::Uuid(s) => StableKey::Str(Arc::from(s.as_str())),
+        }
+    }
+
+    fn to_qdrant(&self) -> qdrant_client::qdrant::PointId {
+        match self {
+            Self::Num(n) => (*n).into(),
+            Self::Uuid(s) => s.clone().into(),
+        }
+    }
+}
+
+impl std::fmt::Display for QdrantPointId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Num(n) => write!(f, "{n}"),
+            Self::Uuid(s) => write!(f, "{s}"),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 struct Point {
-    id: u64,
+    id: QdrantPointId,
     vector: PointVector,
     payload: Map<String, JsonValue>,
 }
@@ -613,17 +668,19 @@ impl CollectionTarget {
     pub fn declare_point(
         &self,
         ctx: &Ctx,
-        id: u64,
+        id: impl Into<QdrantPointId>,
         vector: Vec<f32>,
         payload: Map<String, JsonValue>,
     ) -> Result<()> {
+        let id = id.into();
+        let key = id.stable_key();
         let point = Point {
             id,
             vector: PointVector::Single(vector),
             payload,
         };
         point.to_qdrant_vectors(&self.schema)?;
-        declare_target_state(ctx, self.points.target_state(id.to_string(), point))
+        declare_target_state(ctx, self.points.target_state(key, point))
     }
 
     /// Declare a multi-vector point (a list of equal-length vectors) for a
@@ -632,17 +689,19 @@ impl CollectionTarget {
     pub fn declare_multivector_point(
         &self,
         ctx: &Ctx,
-        id: u64,
+        id: impl Into<QdrantPointId>,
         vectors: Vec<Vec<f32>>,
         payload: Map<String, JsonValue>,
     ) -> Result<()> {
+        let id = id.into();
+        let key = id.stable_key();
         let point = Point {
             id,
             vector: PointVector::Multi(vectors),
             payload,
         };
         point.to_qdrant_vectors(&self.schema)?;
-        declare_target_state(ctx, self.points.target_state(id.to_string(), point))
+        declare_target_state(ctx, self.points.target_state(key, point))
     }
 
     /// Declare a point for a named-vector collection. Each map value may be a
@@ -650,7 +709,7 @@ impl CollectionTarget {
     pub fn declare_named_vectors_point<I, K>(
         &self,
         ctx: &Ctx,
-        id: u64,
+        id: impl Into<QdrantPointId>,
         vectors: I,
         payload: Map<String, JsonValue>,
     ) -> Result<()>
@@ -658,6 +717,8 @@ impl CollectionTarget {
         I: IntoIterator<Item = (K, NamedPointVector)>,
         K: Into<String>,
     {
+        let id = id.into();
+        let key = id.stable_key();
         let point = Point {
             id,
             vector: PointVector::Named(
@@ -669,7 +730,7 @@ impl CollectionTarget {
             payload,
         };
         point.to_qdrant_vectors(&self.schema)?;
-        declare_target_state(ctx, self.points.target_state(id.to_string(), point))
+        declare_target_state(ctx, self.points.target_state(key, point))
     }
 }
 
@@ -852,7 +913,7 @@ async fn drop_collection(client: &Qdrant, name: &str) -> Result<()> {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct PointAction {
-    id: u64,
+    id: QdrantPointId,
     point: Option<Point>,
 }
 
@@ -913,14 +974,17 @@ impl TargetHandler<Point> for PointHandler {
     }
 }
 
-fn point_id(key: &StableKey) -> Result<u64> {
+fn point_id(key: &StableKey) -> Result<QdrantPointId> {
     match key {
-        StableKey::Str(s) => s
-            .parse::<u64>()
-            .map_err(|_| Error::engine(format!("invalid qdrant point id: {s:?}"))),
-        StableKey::Int(i) => {
-            u64::try_from(*i).map_err(|_| Error::engine("negative qdrant point id"))
-        }
+        // A numeric string is a `u64` id; any other string is treated as a UUID
+        // id (Qdrant validates the UUID format at upsert time).
+        StableKey::Str(s) => Ok(match s.parse::<u64>() {
+            Ok(n) => QdrantPointId::Num(n),
+            Err(_) => QdrantPointId::Uuid(s.to_string()),
+        }),
+        StableKey::Int(i) => u64::try_from(*i)
+            .map(QdrantPointId::Num)
+            .map_err(|_| Error::engine("negative qdrant point id")),
         other => Err(Error::engine(format!(
             "unsupported qdrant point key: {other:?}"
         ))),
@@ -951,14 +1015,14 @@ fn point_sink(
                 match action {
                     TargetAction::Create(a) | TargetAction::Update(a) => {
                         if let Some(point) = a.point {
-                            let id = point.id;
+                            let id = point.id.to_qdrant();
                             let vectors = point.to_qdrant_vectors(&schema)?;
                             let payload: Payload = point.payload.into();
                             let struct_ = PointStruct::new(id, vectors, payload);
                             upserts.push(struct_);
                         }
                     }
-                    TargetAction::Delete(a) => deletes.push(a.id.into()),
+                    TargetAction::Delete(a) => deletes.push(a.id.to_qdrant()),
                 }
             }
             if !upserts.is_empty() {
@@ -1118,10 +1182,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn point_id_parses_string_and_int_keys() {
-        assert_eq!(point_id(&StableKey::Str(Arc::from("42"))).unwrap(), 42);
-        assert_eq!(point_id(&StableKey::Int(7)).unwrap(), 7);
-        assert!(point_id(&StableKey::Str(Arc::from("x"))).is_err());
+    fn point_id_parses_numeric_uuid_and_int_keys() {
+        assert_eq!(
+            point_id(&StableKey::Str(Arc::from("42"))).unwrap(),
+            QdrantPointId::Num(42)
+        );
+        assert_eq!(
+            point_id(&StableKey::Int(7)).unwrap(),
+            QdrantPointId::Num(7)
+        );
+        // A non-numeric string is taken as a UUID id (Qdrant validates later).
+        assert_eq!(
+            point_id(&StableKey::Str(Arc::from("9b2e...-uuid"))).unwrap(),
+            QdrantPointId::Uuid("9b2e...-uuid".to_string())
+        );
         assert!(point_id(&StableKey::Int(-1)).is_err());
     }
 
@@ -1130,7 +1204,7 @@ mod tests {
         let mut payload = Map::new();
         payload.insert("text".into(), JsonValue::from("hello"));
         let p1 = Point {
-            id: 1,
+            id: QdrantPointId::Num(1),
             vector: PointVector::Single(vec![0.1, 0.2]),
             payload: payload.clone(),
         };
@@ -1315,7 +1389,7 @@ mod tests {
         ])
         .unwrap();
         let point = Point {
-            id: 1,
+            id: QdrantPointId::Num(1),
             vector: PointVector::Named(BTreeMap::from([
                 (
                     "text".to_string(),
@@ -1339,7 +1413,7 @@ mod tests {
         ])
         .unwrap();
         let missing = Point {
-            id: 1,
+            id: QdrantPointId::Num(1),
             vector: PointVector::Named(BTreeMap::from([(
                 "text".to_string(),
                 NamedPointVector::Single(vec![1.0, 2.0, 3.0]),
@@ -1349,7 +1423,7 @@ mod tests {
         assert!(missing.to_qdrant_vectors(&schema).is_err());
 
         let wrong_shape = Point {
-            id: 1,
+            id: QdrantPointId::Num(1),
             vector: PointVector::Named(BTreeMap::from([
                 (
                     "text".to_string(),
@@ -1369,12 +1443,12 @@ mod tests {
     fn point_fingerprint_distinguishes_single_and_multi() {
         let payload = Map::new();
         let single = Point {
-            id: 1,
+            id: QdrantPointId::Num(1),
             vector: PointVector::Single(vec![0.1, 0.2]),
             payload: payload.clone(),
         };
         let multi = Point {
-            id: 1,
+            id: QdrantPointId::Num(1),
             vector: PointVector::Multi(vec![vec![0.1, 0.2]]),
             payload,
         };

@@ -796,3 +796,156 @@ async fn postgres_bytea_round_trips_byte_arrays_when_available() -> Result<()> {
         .map_err(|e| cocoindex::Error::engine(format!("postgres cleanup: {e}")))?;
     Ok(())
 }
+
+async fn declare_evo_table(
+    ctx: Ctx,
+    schema: String,
+    cols: Vec<(&'static str, &'static str)>,
+    pk: Vec<&'static str>,
+    rows: Vec<serde_json::Value>,
+) -> Result<()> {
+    let db = ctx.get_key(&PG)?;
+    let table = postgres::mount_table_target(
+        &ctx,
+        db,
+        "evo",
+        postgres::TableSchema::new(
+            cols.into_iter()
+                .map(|(n, t)| (n.to_string(), postgres::ColumnDef::new(t))),
+            pk.into_iter().map(|s| s.to_string()),
+        )?,
+        Some(&schema),
+    )
+    .await?;
+    for r in &rows {
+        table.declare_row(&ctx, r)?;
+    }
+    Ok(())
+}
+
+async fn pg_col_type(db: &postgres::Database, schema: &str, col: &str) -> Option<String> {
+    sqlx::query_scalar(
+        "SELECT data_type FROM information_schema.columns \
+         WHERE table_schema = $1 AND table_name = 'evo' AND column_name = $2",
+    )
+    .bind(schema)
+    .bind(col)
+    .fetch_optional(db.pool())
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn postgres_schema_evolution_retype_and_pk_change_when_available() -> Result<()> {
+    let Ok(url) = std::env::var("POSTGRES_URL") else {
+        eprintln!("skipping live Postgres schema-evolution test; POSTGRES_URL is not set");
+        return Ok(());
+    };
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let schema = format!("cocoindex_rust_evo_{nonce}");
+    let db = postgres::Database::connect(&url).await?;
+    sqlx::query(&format!("DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"))
+        .execute(db.pool())
+        .await
+        .map_err(|e| cocoindex::Error::engine(format!("postgres cleanup: {e}")))?;
+
+    let tempdir = tempfile::tempdir().unwrap();
+    let app = App::builder("PostgresEvoTest")
+        .db_path(tempdir.path().join(".cocoindex_db"))
+        .provide_key(&PG, db.clone())
+        .build()
+        .await?;
+
+    // v1: score is bigint.
+    app.run({
+        let schema = schema.clone();
+        move |ctx| {
+            declare_evo_table(
+                ctx,
+                schema,
+                vec![("id", "bigint"), ("name", "text"), ("score", "bigint")],
+                vec!["id"],
+                vec![
+                    serde_json::json!({"id": 1, "name": "a", "score": 10}),
+                    serde_json::json!({"id": 2, "name": "b", "score": 20}),
+                ],
+            )
+        }
+    })
+    .await?;
+    assert_eq!(pg_col_type(&db, &schema, "score").await.as_deref(), Some("bigint"));
+
+    // v2: retype score bigint -> double precision (in-place ALTER, rows preserved).
+    app.run({
+        let schema = schema.clone();
+        move |ctx| {
+            declare_evo_table(
+                ctx,
+                schema,
+                vec![("id", "bigint"), ("name", "text"), ("score", "double precision")],
+                vec!["id"],
+                vec![
+                    serde_json::json!({"id": 1, "name": "a", "score": 10.0}),
+                    serde_json::json!({"id": 2, "name": "b", "score": 20.0}),
+                ],
+            )
+        }
+    })
+    .await?;
+    assert_eq!(
+        pg_col_type(&db, &schema, "score").await.as_deref(),
+        Some("double precision"),
+        "score column should be retyped in place"
+    );
+    let scores: Vec<f64> = sqlx::query_scalar(&format!(
+        "SELECT score FROM \"{schema}\".\"evo\" ORDER BY id"
+    ))
+    .fetch_all(db.pool())
+    .await
+    .unwrap();
+    assert_eq!(scores, vec![10.0, 20.0], "retype must preserve row data");
+
+    // v3: change the primary key id -> name. This forces a destructive recreate;
+    // rows are replayed via the Destructive child invalidation.
+    app.run({
+        let schema = schema.clone();
+        move |ctx| {
+            declare_evo_table(
+                ctx,
+                schema,
+                vec![("id", "bigint"), ("name", "text"), ("score", "double precision")],
+                vec!["name"],
+                vec![
+                    serde_json::json!({"id": 1, "name": "a", "score": 10.0}),
+                    serde_json::json!({"id": 2, "name": "b", "score": 20.0}),
+                ],
+            )
+        }
+    })
+    .await?;
+    // The PK is now `name` (table was dropped + recreated), and rows are present.
+    let pk_col: Option<String> = sqlx::query_scalar(
+        "SELECT a.attname FROM pg_index i \
+         JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey) \
+         WHERE i.indrelid = ($1 || '.evo')::regclass AND i.indisprimary",
+    )
+    .bind(&schema)
+    .fetch_optional(db.pool())
+    .await
+    .unwrap();
+    assert_eq!(pk_col.as_deref(), Some("name"), "primary key should now be `name`");
+    let count: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM \"{schema}\".\"evo\""))
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
+    assert_eq!(count, 2, "rows should be replayed after the destructive recreate");
+
+    sqlx::query(&format!("DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"))
+        .execute(db.pool())
+        .await
+        .map_err(|e| cocoindex::Error::engine(format!("postgres cleanup: {e}")))?;
+    Ok(())
+}

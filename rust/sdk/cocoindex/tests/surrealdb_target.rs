@@ -427,3 +427,64 @@ async fn surrealdb_table_dropped_when_no_longer_declared_when_available() {
         "after orphaning the table: tables={after:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Schema evolution: a field no longer declared is REMOVEd (was silently kept
+// before — DEFINE FIELD IF NOT EXISTS can't drop)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn surrealdb_schema_evolution_drops_field_when_available() {
+    let db_name = format!(
+        "rust_sdk_surrealdb_dropfield_{}_{}",
+        std::process::id(),
+        chrono_like_timestamp()
+    );
+    let Some(graph) = try_graph(&db_name).await else {
+        eprintln!("skipping SurrealDB field-drop test; no local SurrealDB connection");
+        return;
+    };
+    let (app, _dir) = temp_app(&graph, "surrealdb_drop_field").await;
+
+    // v1: name + email.
+    app.run(|ctx| async move {
+        let graph = ctx.get_key(&GRAPH)?;
+        let schema = TableSchema::new(vec![
+            ("name", ColumnDef::new("string")),
+            ("email", ColumnDef::new("string")),
+        ])?;
+        let t = surrealdb::mount_table_target_with_schema(&ctx, graph, "acct", Some(schema)).await?;
+        t.declare_record(
+            &ctx,
+            "p1",
+            &serde_json::json!({ "name": "Ann", "email": "a@x.com" }),
+        )?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    assert!(
+        graph
+            .field_names("acct")
+            .await
+            .unwrap()
+            .contains(&"email".to_string())
+    );
+
+    // v2: drop the email field. The undeclared field must be REMOVEd.
+    app.run(|ctx| async move {
+        let graph = ctx.get_key(&GRAPH)?;
+        let schema = TableSchema::new(vec![("name", ColumnDef::new("string"))])?;
+        let t = surrealdb::mount_table_target_with_schema(&ctx, graph, "acct", Some(schema)).await?;
+        t.declare_record(&ctx, "p1", &serde_json::json!({ "name": "Ann" }))?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    let fields = graph.field_names("acct").await.unwrap();
+    assert!(
+        !fields.contains(&"email".to_string()),
+        "the undeclared email field should be dropped; fields={fields:?}"
+    );
+    assert!(fields.contains(&"name".to_string()));
+}

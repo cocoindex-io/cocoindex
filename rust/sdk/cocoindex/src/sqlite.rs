@@ -665,7 +665,7 @@ impl TargetHandler<RowState> for RowHandler {
         };
         let prev_same = desired_fp
             .as_ref()
-            .is_some_and(|fp| prev.iter().any(|p| p == fp));
+            .is_some_and(|fp| !prev.is_empty() && prev.iter().all(|p| p == fp));
         if desired.is_some() && prev_same && !prev_may_be_missing {
             return Ok(None);
         }
