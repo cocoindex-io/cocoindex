@@ -1,19 +1,12 @@
-//! LanceDB target connector — the Rust analogue of Python's
-//! `cocoindex.connectors.lancedb` target.
+//! LanceDB table target connector.
 //!
-//! A declarative, two-level managed target built **on the public target-state
-//! facade** ([`crate::target_state`]): a *table* (created/dropped to match the
-//! declared schema) containing *rows* you
-//! [`declare_row`](LanceTableTarget::declare_row). Reconciliation upserts changed
-//! rows, skips unchanged ones (fingerprint tracking), and deletes rows that are
-//! no longer declared.
+//! Table targets reconcile declared rows against the previous run: changed rows
+//! are upserted, unchanged rows are skipped, and rows no longer declared are
+//! deleted. `managed_by` controls whether CocoIndex owns table DDL.
 //!
-//! Like Python, it exposes the constructor/declaration/mount split:
-//! [`table_target`] builds the composable [`TargetState`],
-//! [`declare_table_target`] declares it in the current component, and
-//! [`mount_table_target`] is the compatibility convenience for the same
-//! declaration path. `managed_by` (via [`ManagedTargetOptions`]) controls whether
-//! CocoIndex owns the table DDL.
+//! Use [`table_target`] to build a composable target state, or
+//! [`declare_table_target`] / [`mount_table_target`] to get a handle for
+//! declaring rows.
 //!
 //! Built on the native Rust `lancedb` crate (LanceDB's core is Rust) + Arrow.
 
@@ -44,7 +37,7 @@ use crate::target_state::{
 };
 
 // ---------------------------------------------------------------------------
-// LanceDatabase — connection handle (mirrors postgres::Database)
+// LanceDatabase — connection handle
 // ---------------------------------------------------------------------------
 
 /// A LanceDB connection. Clone-cheap (the underlying connection is shared).
@@ -252,8 +245,8 @@ pub fn table_target_with_options(
 }
 
 /// Declare a LanceDB table target and return a ready same-component handle.
-/// Kept synchronous for compatibility; internally this uses the same immediate
-/// provider path as [`mount_table_target`].
+/// No external setup is needed, so this uses the same immediate provider path as
+/// [`mount_table_target`].
 pub fn declare_table_target(
     ctx: &Ctx,
     db: &LanceDatabase,
@@ -263,10 +256,9 @@ pub fn declare_table_target(
     mount_table_target(ctx, db, table_name, table_schema)
 }
 
-/// Compatibility convenience for declaring a LanceDB table target in the current
-/// component and returning a handle for declaring rows. Existing tables are
-/// preserved on schema changes; missing scalar columns are added with `NULL`
-/// defaults. System-managed.
+/// Declare a LanceDB table target in the current component and return a handle
+/// for declaring rows. Existing tables are preserved on schema changes; missing
+/// scalar columns are added with `NULL` defaults. System-managed.
 pub fn mount_table_target(
     ctx: &Ctx,
     db: &LanceDatabase,

@@ -604,10 +604,9 @@ async fn no_detect_change_context_key_does_not_invalidate_memo() {
     assert_eq!(call_count.load(Ordering::SeqCst), 1);
 }
 
-/// `ContextKey::new_with_state` (Rust analogue of Python's `__coco_memo_state__`):
-/// memo invalidation is driven by a *derived state*, not the whole value, and
-/// the value type need not be `Serialize`. Here the resource is non-serializable
-/// and only its `version` is the tracked state:
+/// `ContextKey::new_with_state` drives memo invalidation from a derived state,
+/// not the whole value. Here the resource is non-serializable and only its
+/// `version` is tracked:
 ///   - changing a non-state field (`_tag`) must NOT invalidate the memo,
 ///   - changing the state field (`version`) MUST invalidate it.
 #[tokio::test]
@@ -3418,8 +3417,8 @@ async fn dir_target_deletes_file_when_source_disappears_via_mount_each() {
     let db = dir.path().join("lmdb");
     let out = dir.path().join("out");
 
-    // Helper run: declare one output file per input name via mount_each (mirrors
-    // the files-transform example: target mounted at root, declared in children).
+    // Helper run: mount the target at the root and declare one output file per
+    // input from child components.
     async fn run(db: &std::path::Path, out: &std::path::Path, names: Vec<&'static str>) {
         let app = App::builder("dir_target_mount_each")
             .db_path(db)

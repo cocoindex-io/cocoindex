@@ -24,16 +24,14 @@ use crate::profile::{BoxedHandler, BoxedProcessor, RustProfile, Value};
 
 type ContextFingerprinter<T> = Arc<dyn Fn(&str, &T) -> Result<Fingerprint> + Send + Sync>;
 
-/// A named context key, matching Python's `ContextKey[T]` model.
+/// A named context key for app-provided resources.
 ///
 /// - [`ContextKey::new`] stores arbitrary `Send + Sync` resources (no change
 ///   tracking).
 /// - [`ContextKey::new_detect_change`] tracks a serializable value: memoized
 ///   work is invalidated when the whole value's fingerprint changes.
-/// - [`ContextKey::new_with_state`] tracks a *derived* state of an arbitrary
-///   (possibly non-serializable) value — the Rust analogue of Python's
-///   `__coco_memo_state__`. Only changes to the extracted state invalidate
-///   memoized work.
+/// - [`ContextKey::new_with_state`] tracks a derived state of an arbitrary
+///   value. Only changes to the extracted state invalidate memoized work.
 pub struct ContextKey<T> {
     name: Arc<str>,
     detect_change: bool,
@@ -57,7 +55,7 @@ impl<T> ContextKey<T> {
     ///
     /// # Panics
     /// Panics if the same key name has already been constructed in this
-    /// process, matching Python's duplicate-key guard.
+    /// process.
     pub fn new(name: impl Into<String>) -> Self {
         Self::with_parts(name.into(), false, None)
     }
@@ -111,11 +109,10 @@ impl<T> ContextKey<T> {
     /// this key (via [`Ctx::get_key`]) is invalidated only when that state's
     /// fingerprint changes.
     ///
-    /// This is the Rust analogue of Python's `__coco_memo_state__`: use it for
-    /// resources that aren't themselves serializable (DB pools, clients) or
-    /// whose memo-relevant identity (e.g. a connection string or schema
-    /// version) is narrower than the whole value. The value type `T` need not
-    /// be `Serialize` — only the extracted state must be.
+    /// Use this for resources that are not serializable, such as DB pools or
+    /// clients, or when only a narrow identity like a connection string or
+    /// schema version should affect memoization. The value type `T` need not be
+    /// `Serialize`; only the extracted state must be.
     pub fn new_with_state<S, SF>(name: impl Into<String>, state_fn: SF) -> Self
     where
         S: Serialize,
@@ -180,8 +177,8 @@ pub struct Ctx {
     /// entering a memoized body (`memo`/`batch`) or a child `scope`, so that
     /// `get_key` records change-detection dependencies against the *correct*
     /// memo entry. This is a plain owned value (not a shared slot): each
-    /// concurrent body receives its own scoped `Ctx`, mirroring Python's
-    /// per-task `contextvars`. `None` at the app root and in standalone use.
+    /// concurrent body receives its own scoped `Ctx`. `None` at the app root
+    /// and in standalone use.
     pub(crate) fn_ctx: Option<Arc<FnCallContext>>,
 }
 
@@ -441,10 +438,9 @@ impl Ctx {
             .await
     }
 
-    /// Like [`Ctx::stats_group`], but with explicit [`StatsGroupOptions`] — set
-    /// `report_to_stdout` to print the group's scoped progress, optionally with
-    /// a custom `refresh_interval`. Mirrors Python's
-    /// `coco.stats_group(title, report_to_stdout=...)`.
+    /// Like [`Ctx::stats_group`], but with explicit [`StatsGroupOptions`]. Set
+    /// `report_to_stdout` to print scoped progress, optionally with a custom
+    /// `refresh_interval`.
     pub async fn stats_group_with_options<T, F, Fut>(
         &self,
         title: impl Into<String>,

@@ -39,7 +39,7 @@ struct SourceNameOnly {
     name: String,
 }
 
-/// Memoized per-row compute (the parity for `@coco.fn(memo=True) process_product`).
+/// Memoized per-row compute.
 #[cocoindex::function(memo)]
 async fn process(_ctx: &Ctx, row: &SourceRow) -> Result<OutputRow> {
     CALLS.fetch_add(1, Ordering::SeqCst);

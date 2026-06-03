@@ -75,8 +75,7 @@ impl AppBuilder {
 
     /// Inject a shared resource by named [`ContextKey`].
     ///
-    /// Named keys mirror Python's `ContextKey[T]` API and are useful when
-    /// multiple resources share the same Rust type.
+    /// Named keys are useful when multiple resources share the same Rust type.
     ///
     /// # Panics
     /// Panics if a change-tracked key cannot fingerprint the provided value.

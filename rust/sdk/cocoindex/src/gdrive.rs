@@ -1,20 +1,12 @@
-//! Google Drive source connector — the Rust analogue of Python's
-//! `cocoindex.connectors.google_drive` source.
+//! Google Drive source connector.
 //!
-//! Carries the cocoindex "source" essence: there is no special Source trait — a
-//! source is just a function that returns items (cf. [`fs::walk`](crate::fs::walk)).
-//! [`GoogleDriveSource::list_files`] returns a `Vec<DriveFile>`; you then
-//! `mount_each` over them and let **memoization** (per-file, fingerprinted by the
-//! file's metadata) + **target reconciliation** (rows no longer declared are
-//! deleted) provide incrementality. Deleting a Drive file makes its derived rows
-//! reconcile away on the next run.
+//! [`GoogleDriveSource::list_files`] recursively lists files under configured
+//! root folders. Use each [`DriveFile::key`] with `Ctx::mount_each` so per-file
+//! memoization handles edits and target reconciliation removes derived rows for
+//! deleted files.
 //!
-//! Mirrors the Python source:
-//! * service-account auth (`drive.readonly` scope),
-//! * recursive listing under root folder ids (BFS into subfolders),
-//! * Google-native docs are *exported* (Docs→Markdown, Sheets→CSV, Slides→text),
-//!   other files are downloaded as-is,
-//! * an optional MIME-type filter.
+//! The connector supports service-account auth, optional MIME-type filtering,
+//! Google-native export formats, and binary downloads for non-native files.
 //!
 //! No C build dependencies: the service-account JWT is signed (RS256) with the
 //! pure-Rust `rsa`/`sha2` crates, and HTTP uses `reqwest`. The Drive base URL and

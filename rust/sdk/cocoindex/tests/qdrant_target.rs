@@ -5,7 +5,7 @@
 //!     cargo test -p cocoindex --features qdrant --test qdrant_target
 //!
 //! Exercises the full managed-target reconcile path over the public target-state
-//! facade: collection create, point upsert, skip-unchanged, vector search,
+//! collection create, point upsert, skip-unchanged, vector search,
 //! in-place update, orphan delete, and schema-change collection recreate.
 #![cfg(feature = "qdrant")]
 

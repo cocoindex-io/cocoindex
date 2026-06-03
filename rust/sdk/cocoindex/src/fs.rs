@@ -22,9 +22,8 @@ use crate::target_state::{
 
 /// Local filesystem path with an optional stable base key.
 ///
-/// This is the Rust analogue of Python localfs `FilePath`: the resolved
-/// location may move, while [`FilePath::memo_key`] can stay stable when callers
-/// supply the same logical base key.
+/// The resolved location may move, while [`FilePath::memo_key`] stays stable
+/// when callers supply the same logical base key.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct FilePath {
     base_key: Option<Arc<str>>,
@@ -447,8 +446,7 @@ fn relative_path(root: &Path, canonical_root: &Path, path: &Path) -> Result<Path
 // DirTarget
 // ---------------------------------------------------------------------------
 
-/// A declarative directory target — the Rust analogue of Python's `localfs`
-/// directory target.
+/// A declarative directory target.
 ///
 /// Files you [`declare_file`](DirTarget::declare_file) are reconciled against
 /// the previous run via CocoIndex's target-state engine:
@@ -566,9 +564,8 @@ struct FileAction {
     content: Option<Vec<u8>>,
 }
 
-/// A declarative directory target handler (the file is the leaf target state;
-/// the directory is the single root provider). Built on the public target-state
-/// facade.
+/// Directory target handler. Each file is one leaf target state under the
+/// directory root provider.
 struct FileHandler {
     dir: PathBuf,
 }

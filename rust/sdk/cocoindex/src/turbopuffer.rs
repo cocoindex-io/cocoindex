@@ -1,12 +1,8 @@
-//! Turbopuffer vector-store target connector — the Rust analogue of Python's
-//! `cocoindex.connectors.turbopuffer` target.
+//! Turbopuffer vector-store target connector.
 //!
-//! A declarative, two-level managed target built **on the public target-state
-//! facade** ([`crate::target_state`]): a *namespace* (cleared/rebuilt to match
-//! the declared vector schema) containing *rows* you
-//! [`declare_row`](NamespaceTarget::declare_row). Reconciliation upserts changed
-//! rows, skips unchanged ones (fingerprint tracking), deletes orphaned rows, and
-//! clears the namespace when the vector schema changes.
+//! Namespace targets reconcile declared rows against the previous run: changed
+//! rows are upserted, unchanged rows are skipped, and orphaned rows are deleted.
+//! System-managed namespaces are cleared when the vector schema changes.
 //!
 //! Turbopuffer is a hosted service; this talks to its v2 HTTP API via `reqwest`
 //! (no native crate). Namespaces are created implicitly on first write.

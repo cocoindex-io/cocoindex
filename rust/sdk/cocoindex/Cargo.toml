@@ -7,6 +7,7 @@ license.workspace = true
 
 [features]
 postgres = ["dep:serde_json", "dep:sqlx", "dep:chrono"]
+sqlite = ["dep:serde_json", "dep:sqlx", "sqlx/sqlite"]
 surrealdb = ["dep:serde_json", "dep:surrealdb"]
 kafka = ["dep:rskafka", "dep:chrono"]
 google_drive = ["dep:serde_json", "dep:reqwest", "dep:rsa", "dep:sha2", "dep:base64"]

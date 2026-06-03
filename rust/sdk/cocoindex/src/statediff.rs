@@ -1,7 +1,8 @@
 //! Small diff helpers for managed connector targets.
 //!
-//! These mirror the Python `cocoindex.connectorkits.target/statediff` contract
-//! for resources that can be owned either by CocoIndex or by the user.
+//! These helpers model resources that can be owned either by CocoIndex or by
+//! the user, and decide whether reconciliation should insert, update, replace,
+//! delete, or skip a target.
 
 use serde::{Deserialize, Serialize};
 

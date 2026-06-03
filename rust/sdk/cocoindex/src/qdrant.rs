@@ -1,13 +1,9 @@
-//! Qdrant vector-store target connector — the Rust analogue of Python's
-//! `cocoindex.connectors.qdrant` target.
+//! Qdrant vector-store target connector.
 //!
-//! A declarative, two-level managed target built **on the public target-state
-//! facade** ([`crate::target_state`]): a *collection* (created/dropped to match
-//! the declared vector schema) containing *points* you
-//! [`declare_point`](CollectionTarget::declare_point). Reconciliation upserts
-//! changed points, skips unchanged ones (fingerprint tracking), deletes orphaned
-//! points, and recreates the collection (invalidating its points) when the
-//! vector schema changes.
+//! Collection targets reconcile declared points against the previous run:
+//! changed points are upserted, unchanged points are skipped, and orphaned
+//! points are deleted. System-managed collections are recreated when the vector
+//! schema changes.
 //!
 //! Uses the native Rust `qdrant-client` (gRPC).
 

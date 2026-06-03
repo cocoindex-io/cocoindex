@@ -1,23 +1,19 @@
-//! Kafka target connector — the Rust analogue of Python's
-//! `cocoindex.connectors.kafka` target.
+//! Kafka topic target connector.
 //!
-//! A two-level declarative managed target built **on the public target-state
-//! facade** ([`crate::target_state`]): a *topic* container (user-managed —
-//! CocoIndex never creates/drops it) whose child *messages* you
+//! Topics are user-managed: CocoIndex never creates or drops them during target
+//! reconciliation. Messages declared with
 //! [`declare_message`](KafkaTopicTarget::declare_message) are reconciled against
 //! the previous run:
 //! * new or changed messages are produced,
-//! * unchanged messages are skipped (fingerprint tracking — nothing re-produced),
-//! * messages declared in a previous run but **not** this run produce a
-//!   *tombstone* (a record with a null value), or a custom deletion value via
+//! * unchanged messages are skipped,
+//! * messages declared in a previous run but not this run produce a tombstone
+//!   record, or a custom deletion value via
 //!   [`KafkaTopicOptions::deletion_value_fn`].
 //!
-//! Mirroring Python, the connector exposes the constructor/declaration/mount
-//! split: [`kafka_topic_target`] builds the (composable) [`TargetState`],
-//! [`declare_kafka_topic_target`] declares it in the current component, and
-//! [`mount_kafka_topic_target`] is the compatibility convenience for the same
-//! declaration path. [`KafkaProducer::ensure_topic`] is an explicit, idempotent
-//! topic-creation convenience (not part of reconciliation).
+//! Use [`kafka_topic_target`] to build a composable target state, or
+//! [`declare_kafka_topic_target`] / [`mount_kafka_topic_target`] to get a handle
+//! for declaring messages. [`KafkaProducer::ensure_topic`] is an explicit,
+//! idempotent topic-creation helper outside reconciliation.
 //!
 //! Uses [`rskafka`] — a pure-Rust, async Kafka client with no `librdkafka`/C
 //! dependency.
@@ -41,7 +37,7 @@ use crate::target_state::{
 };
 
 // ---------------------------------------------------------------------------
-// KafkaProducer — a connection handle (mirrors `postgres::Database`)
+// KafkaProducer — connection handle
 // ---------------------------------------------------------------------------
 
 /// A Kafka connection handle. Clone-cheap (the underlying client is shared).
@@ -143,10 +139,9 @@ pub struct KafkaTopicTarget {
     topic: Arc<str>,
 }
 
-/// Build a composable [`TargetState`] for a Kafka topic (the spec constructor,
-/// analogous to Python's `kafka_topic_target`). Pass it to
-/// [`declare_kafka_topic_target`]/[`mount_kafka_topic_target`], or to the generic
-/// [`declare_target_state_with_child`]/[`mount_target`].
+/// Build a composable [`TargetState`] for a Kafka topic. Pass it to
+/// [`declare_kafka_topic_target`]/[`mount_kafka_topic_target`], or to the
+/// generic [`declare_target_state_with_child`]/[`mount_target`].
 pub fn kafka_topic_target(
     ctx: &Ctx,
     producer: &KafkaProducer,
@@ -167,8 +162,8 @@ pub fn kafka_topic_target(
 }
 
 /// Declare a Kafka topic target and return a ready same-component handle.
-/// Kept synchronous for compatibility; internally this uses the same immediate
-/// provider path as [`mount_kafka_topic_target`].
+/// No external setup is needed, so this uses the same immediate provider path as
+/// [`mount_kafka_topic_target`].
 pub fn declare_kafka_topic_target(
     ctx: &Ctx,
     producer: &KafkaProducer,
@@ -178,8 +173,8 @@ pub fn declare_kafka_topic_target(
     mount_kafka_topic_target(ctx, producer, topic, options)
 }
 
-/// Compatibility convenience for declaring a Kafka topic target in the current
-/// component and returning a handle for declaring messages.
+/// Declare a Kafka topic target in the current component and return a handle
+/// for declaring messages.
 pub fn mount_kafka_topic_target(
     ctx: &Ctx,
     producer: &KafkaProducer,
@@ -453,11 +448,11 @@ struct MessageDecision {
 
 /// Decide whether (and how) to act on one message. Returns `None` to skip.
 ///
-/// Mirrors the Python `_MessageHandler.reconcile` semantics:
-/// * unchanged (all prev fingerprints match, and prev is known-present) → skip
-/// * upsert (new/changed) → produce the value, track its fingerprint
-/// * delete with no previous record and prev known-present → skip
-/// * delete otherwise → tombstone (or `deletion_value_fn(key)`), no tracking
+/// Reconcile one message:
+/// * unchanged known-present values are skipped,
+/// * new or changed values are produced and fingerprinted,
+/// * known-absent deletes are skipped,
+/// * other deletes produce a tombstone or `deletion_value_fn(key)`.
 fn decide_message(
     key: &str,
     desired_value: Option<&[u8]>,

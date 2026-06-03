@@ -43,10 +43,9 @@ pub async fn generate_uuid_default(ctx: &Ctx) -> Result<Uuid> {
 
 /// Generator for stable unique IDs.
 ///
-/// Like Python's `cocoindex.resources.id.IdGenerator`, repeated calls with the
-/// same dependency return distinct IDs in deterministic order. The generated
-/// IDs are stable across runs because the actual allocation is wrapped in
-/// CocoIndex memoization keyed by `(generator deps, dep, occurrence ordinal)`.
+/// Repeated calls with the same dependency return distinct IDs in deterministic
+/// order. IDs stay stable across runs because allocation is memoized by
+/// `(generator deps, dep, occurrence ordinal)`.
 #[derive(Debug, Clone)]
 pub struct IdGenerator {
     deps_fp: Fingerprint,
@@ -104,8 +103,8 @@ impl IdGenerator {
 
 /// Generator for stable unique UUIDs.
 ///
-/// Like Python's `cocoindex.resources.id.UuidGenerator`, repeated calls with
-/// the same dependency return distinct UUIDs in deterministic order.
+/// Repeated calls with the same dependency return distinct UUIDs in
+/// deterministic order.
 #[derive(Debug, Clone)]
 pub struct UuidGenerator {
     deps_fp: Fingerprint,

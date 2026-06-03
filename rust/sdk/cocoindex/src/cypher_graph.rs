@@ -627,8 +627,8 @@ async fn ensure_table<C: CypherExecutor>(graph: &C, spec: &TableSpec) -> Result<
                 .await?;
         }
         ("falkordb", false) => {
-            // FalkorDB errors when an index/constraint already exists; match
-            // Python and treat artifact setup as best-effort.
+            // FalkorDB errors when an index/constraint already exists, so setup
+            // is best-effort.
             let _ = graph
                 .execute(&format!(
                     "CREATE INDEX FOR (e:`{}`) ON (e.`{}`)",

@@ -1,4 +1,4 @@
-//! Public target-state facade for connector authors.
+//! Public target-state API for connector authors.
 
 use std::future::Future;
 use std::marker::PhantomData;
@@ -74,16 +74,13 @@ impl<V> TargetStateProvider<V> {
         }
     }
 
-    /// Memo key for this provider, mirroring Python's
-    /// `TargetStateProvider.memo_key` / `__coco_memo_key__`.
+    /// Memo key for this provider.
     ///
-    /// It is the provider path, suffixed with the provider *generation*
-    /// (`[provider_id,schema_version]`) once the parent has committed and set
-    /// one. The generation changes when the parent reconciles with a
-    /// **destructive** (new `provider_id`) or **lossy** (new `schema_version`)
-    /// child invalidation, so a `#[function(memo)]` that takes this key as a
-    /// dependency re-executes when the target provider is recreated or its
-    /// schema changes — matching Python's provider-generation memoization.
+    /// The key is the provider path plus its generation once the parent has
+    /// committed. Destructive invalidation changes the provider id; lossy
+    /// invalidation changes the schema version. Use this key as a memo
+    /// dependency when work should rerun after the target provider is recreated
+    /// or its schema changes.
     pub fn memo_key(&self) -> String {
         let path = self.inner.target_state_path().to_string();
         match self.inner.provider_generation() {
@@ -225,12 +222,10 @@ where
     /// Build a sink for a *container* target whose actions each (optionally)
     /// produce a child target handler.
     ///
-    /// The returned `Vec` must contain exactly one entry per input action, **in
-    /// the same order**: `Some(child)` for an action whose target state was
-    /// declared via [`declare_target_state_with_child`]/[`mount_target`]
-    /// (typically a create/update), and `None` for an action that declared no
-    /// child (typically an orphan delete). This mirrors Python's table-handler
-    /// `_apply_actions` returning a `list[ChildTargetDef | None]`.
+    /// The returned `Vec` must contain exactly one entry per input action, in
+    /// the same order: `Some(child)` for an action whose target state declared a
+    /// child provider, and `None` for an action without a child provider
+    /// (typically an orphan delete).
     pub fn from_async_fn_with_children<F, Fut>(f: F) -> Self
     where
         F: Fn(Vec<TargetAction<A>>) -> Fut + Send + Sync + 'static,
@@ -380,16 +375,14 @@ where
     Ok(TargetStateProvider::new(provider))
 }
 
-/// Mount a parent (container) target and return a **ready** child target
-/// provider, mirroring Python's foreground `mount_target`/`use_mount`.
+/// Mount a parent target and return a ready child target provider.
 ///
 /// The parent target state is declared and committed inside a foreground child
 /// component, so the parent handler's sink runs and fulfills the child provider
 /// (via [`TargetActionSink::from_async_fn_with_children`]) before this returns.
-/// The returned provider is therefore ready to [`declare_target_state`] child
-/// rows on immediately, unlike the lower-level
-/// [`declare_target_state_with_child`] (whose child is only fulfilled when the
-/// enclosing component commits).
+/// The returned provider is ready for immediate child declarations. Use
+/// [`declare_target_state_with_child`] when the child provider can be fulfilled
+/// when the enclosing component commits.
 pub async fn mount_target<V, ChildV>(
     ctx: &Ctx,
     target_state: TargetState<V>,

@@ -94,7 +94,7 @@ These are intentionally removed from the action list below.
 
 | Connector | Missing vs Python | Action |
 | --- | --- | --- |
-| Neo4j / FalkorDB | vector index; explicit node/relationship **index + constraint** builders (Python exposes `build_*_index_*`, `build_constraint_*`, `vector_index_name`, …) | Add index/constraint/vector-index attachments on the shared `cypher_graph` backend. |
+| Neo4j / FalkorDB | **vector index**; secondary node/relationship **index** builders; user-facing index/constraint helpers (Python exposes `build_*_index_*`, `vector_index_name`, …). PK **uniqueness constraints** are already auto-created by `cypher_graph` (Neo4j `CREATE CONSTRAINT` / FalkorDB `GRAPH.CONSTRAINT`). | Add vector-index + secondary-index attachments on the shared `cypher_graph` backend. |
 | Qdrant / Turbopuffer | named / **multivector** schemas; f16 (Turbopuffer) | Currently single unnamed vector only. Blocks `image_search_colpali`. |
 | `statediff` | **composite** layer: `CompositeTrackingRecord`, `diff_composite` | Needed for column-level / attachment-level diffs; Python has it. |
 | Google Drive | `DriveFilePath` (display path + id), `DriveFileInfo`, top-level `list_files(spec)`, async `items()`; live change notifications | Fold into the shared file-resource work above. |

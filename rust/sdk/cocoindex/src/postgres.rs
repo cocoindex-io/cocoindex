@@ -1,16 +1,14 @@
-//! Postgres target + source connector.
+//! Postgres source and target helpers.
 //!
-//! The target mirrors Python's `TableTarget` shape, built **on the public
-//! target-state facade** ([`crate::target_state`]): a *table* container
-//! (created/dropped to match the declared schema, with an optional vector-index
-//! *attachment*) containing *rows* you [`declare_row`](TableTarget::declare_row).
-//! Reconciliation upserts changed rows (in one transaction per batch), skips
-//! unchanged ones (fingerprint tracking), and deletes rows that disappeared.
-//! `managed_by` (via [`ManagedTargetOptions`]) controls whether CocoIndex owns
-//! the DDL. The constructor/declaration/mount split is exposed as
-//! [`table_target`] / [`declare_table_target`] / [`mount_table_target`].
+//! Table targets reconcile declared rows against the previous run: changed rows
+//! are upserted, unchanged rows are skipped, and rows no longer declared are
+//! deleted. System-managed targets also create/drop table DDL and attachments
+//! such as vector indexes and SQL setup commands.
 //!
-//! [`read_table`] is the source analogue of Python's `PgTableSource`.
+//! Use [`table_target`] to build a composable target state, [`declare_table_target`]
+//! inside the current component, or [`mount_table_target`] when rows must be
+//! declared immediately. [`read_table`] and [`read_table_items`] read source rows
+//! for use with `Ctx::mount_each`.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -325,8 +323,7 @@ impl TableTarget {
 
     /// Declare a SQL command attachment on this table. `setup_sql` runs when the
     /// attachment is created or changed; `teardown_sql` (if given) runs when it
-    /// is removed, and before re-running setup on a change. Mirrors Python's
-    /// `declare_sql_command_attachment`.
+    /// is removed, and before re-running setup on a change.
     pub fn declare_sql_command_attachment(
         &self,
         ctx: &Ctx,
@@ -1395,11 +1392,11 @@ mod tests {
 }
 
 // ---------------------------------------------------------------------------
-// Source: read rows from a Postgres table (parallel to Python's PgTableSource)
+// Source: read rows from a Postgres table
 // ---------------------------------------------------------------------------
 
 /// Read every row of `table_name` (in the connection's default search path) as
-/// `T`. This is the source analogue of Python's `PgTableSource(...).fetch_rows()`.
+/// `T`.
 ///
 /// `T` must be `Deserialize` (column names map to struct fields; unknown columns
 /// are ignored) and is usually also `Serialize` so each row can key memoized
@@ -1443,7 +1440,7 @@ pub async fn read_table_with_options<T: serde::de::DeserializeOwned>(
         qualified_table_name_from_parts(options.pg_schema_name.as_deref(), table_name)
     );
     // Read inside a REPEATABLE READ, READ ONLY transaction so the whole table is
-    // observed as one consistent snapshot (mirrors Python's `repeatable_read`).
+    // observed as one consistent snapshot.
     let mut tx = db.pool().begin().await.map_err(pg_err)?;
     sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
         .execute(&mut *tx)
@@ -1464,9 +1461,8 @@ pub async fn read_table_with_options<T: serde::de::DeserializeOwned>(
     Ok(out)
 }
 
-/// Read every row paired with a stable key derived by `key_fn` — the source
-/// analogue of Python's `PgTableSource(...).fetch_rows().items(key=…)`, ready to
-/// feed [`Ctx::mount_each`](crate::Ctx::mount_each). Reads use the same
+/// Read every row paired with a stable key derived by `key_fn`, ready to feed
+/// [`Ctx::mount_each`](crate::Ctx::mount_each). Reads use the same
 /// repeatable-read snapshot as [`read_table`].
 pub async fn read_table_items<T, K, S>(
     db: &Database,

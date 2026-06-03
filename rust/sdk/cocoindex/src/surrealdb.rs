@@ -1,16 +1,14 @@
 //! SurrealDB target connector.
 //!
-//! Built **on the public target-state facade** ([`crate::target_state`]): a
-//! *table* (or *relation*) container — defined/removed to match the declared
-//! schema — containing *records* you declare via [`TableTarget::declare_record`]
-//! / [`RelationTarget::declare_relation`]. Reconciliation upserts changed records
-//! (one transaction per batch), skips unchanged ones (fingerprint tracking), and
-//! deletes records that disappeared. `managed_by` (via [`ManagedTargetOptions`])
-//! controls whether CocoIndex owns the DDL. Each kind exposes the
-//! constructor/declaration/mount split mirroring Python: a spec constructor
-//! ([`table_target`]/[`relation_target_many`]/[`relation_target_unconstrained`]),
-//! a pending declaration ([`declare_table_target`]/…), and a foreground
-//! [`mount_table_target`]/… (async).
+//! Table and relation targets reconcile declared records against the previous
+//! run: changed records are upserted, unchanged records are skipped, and records
+//! no longer declared are deleted. `managed_by` controls whether CocoIndex owns
+//! schema DDL.
+//!
+//! Use the target constructors ([`table_target`], [`relation_target_many`],
+//! [`relation_target_unconstrained`]) for composition, `declare_*` helpers inside
+//! the current component, or async `mount_*` helpers when records must be
+//! declared immediately.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -468,9 +466,9 @@ fn table_target_state(ctx: &Ctx, graph: &Graph, spec: TableSpec) -> Result<Targe
     Ok(provider.target_state("default", spec))
 }
 
-/// Build a composable [`TargetState`] for a SurrealDB table (schemaless,
-/// system-managed). Pass it to [`declare_table_target`]/[`mount_table_target`]
-/// or the generic facade helpers.
+/// Build a composable [`TargetState`] for a schemaless, system-managed
+/// SurrealDB table. Pass it to [`declare_table_target`]/[`mount_table_target`]
+/// or the generic target-state helpers.
 pub fn table_target(
     ctx: &Ctx,
     graph: &Graph,

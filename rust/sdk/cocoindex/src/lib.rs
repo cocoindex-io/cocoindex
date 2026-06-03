@@ -23,6 +23,8 @@ pub mod prelude;
 pub(crate) mod profile;
 #[cfg(feature = "qdrant")]
 pub mod qdrant;
+#[cfg(feature = "sqlite")]
+pub mod sqlite;
 pub mod statediff;
 mod stats;
 #[cfg(feature = "surrealdb")]

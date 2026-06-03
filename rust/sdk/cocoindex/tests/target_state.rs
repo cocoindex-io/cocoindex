@@ -1,8 +1,8 @@
-//! Generic public target-state API tests (Phase 1 of the Rust/Python parity
-//! roadmap). These exercise the SDK-level target-state facade directly — no
-//! external services — mirroring the Python `test_flat_target_states.py`,
-//! `test_component_target_states.py`, `test_attachment_target_states.py`, and
-//! `test_provider_generation.py` families.
+//! Generic public target-state API tests.
+//!
+//! These exercise flat target states, component-scoped target states,
+//! attachments, provider generations, and mounted targets without external
+//! services.
 //!
 //!   cargo test -p cocoindex --test target_state
 
@@ -277,7 +277,7 @@ impl TargetHandler<TableSpec> for TableHandler {
         let name = key_str(&key);
         match desired {
             // Always emit an output when the table is declared, so the sink runs
-            // and fulfills the child provider (mirrors Python's table handler).
+            // and fulfills the child provider.
             Some(spec) => {
                 let changed = !prev.is_empty() && !prev.iter().any(|p| *p == spec);
                 let action = if prev.is_empty() {
@@ -811,8 +811,7 @@ async fn attachment_providers_idempotent_and_independent_per_type() {
 }
 
 // ---------------------------------------------------------------------------
-// Test 6: provider generation surfaces in `memo_key` (Python parity:
-// test_provider_generation's *_invalidates_memo / no-invalidation tests)
+// Test 6: provider generation surfaces in `memo_key`.
 // ---------------------------------------------------------------------------
 
 /// Mount a table child under a fresh provider, record the child provider's
@@ -882,7 +881,7 @@ async fn memo_key_stable_without_child_invalidation() {
 #[tokio::test]
 async fn memo_key_changes_on_destructive_invalidation() {
     // Destructive: provider_id bumps → memo_key changes → downstream memo is
-    // invalidated (mirrors Python test_destructive_change_invalidates_memo).
+    // invalidated.
     let (first, second) = memo_keys_across_generation_bump(
         "memo_destructive",
         Some(TargetChildInvalidation::Destructive),
@@ -896,8 +895,7 @@ async fn memo_key_changes_on_destructive_invalidation() {
 
 #[tokio::test]
 async fn memo_key_changes_on_lossy_invalidation() {
-    // Lossy: provider_schema_version bumps → memo_key changes (mirrors Python
-    // test_lossy_change_invalidates_memo).
+    // Lossy: provider_schema_version bumps → memo_key changes.
     let (first, second) =
         memo_keys_across_generation_bump("memo_lossy", Some(TargetChildInvalidation::Lossy)).await;
     assert_ne!(first, second, "lossy invalidation must change memo_key");
