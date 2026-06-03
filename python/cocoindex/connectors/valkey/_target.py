@@ -728,7 +728,7 @@ def create_client_config(
     *,
     password: str | None = None,
     use_tls: bool = False,
-    client_name: str | None = None,
+    client_name: str | None = "cocoindex_vector_store",
     **kwargs: Any,
 ) -> "GlideClientConfiguration":
     """Create a GlideClientConfiguration for connecting to Valkey.
@@ -741,7 +741,8 @@ def create_client_config(
         port: Valkey server port.
         password: Optional authentication password.
         use_tls: Whether to use TLS for the connection.
-        client_name: Optional client name for the connection.
+        client_name: Client name for the connection, visible in CLIENT LIST
+            and monitoring dashboards. Pass ``None`` to disable.
         **kwargs: Additional keyword arguments passed to GlideClientConfiguration.
 
     Returns:
