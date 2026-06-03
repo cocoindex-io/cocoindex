@@ -10,10 +10,13 @@ pub mod fs;
 #[cfg(feature = "google_drive")]
 pub mod gdrive;
 pub mod id;
+#[cfg(feature = "iggy")]
+pub mod iggy;
 #[cfg(feature = "kafka")]
 pub mod kafka;
 #[cfg(feature = "lancedb")]
 pub mod lancedb;
+pub mod live_component;
 pub mod memo;
 #[cfg(feature = "neo4j")]
 pub mod neo4j;
@@ -54,9 +57,13 @@ pub use id::{
     IdGenerator, UuidGenerator, generate_id, generate_id_default, generate_uuid,
     generate_uuid_default,
 };
+pub use live_component::{
+    ExceptionContext, ExceptionHandler, LiveComponent, LiveComponentOperator, LiveMapFeed,
+    LiveMapSubscriber, LiveMapView, MountKind,
+};
 pub use statediff::{
-    DiffAction, ManagedBy, ManagedTargetOptions, MutualTrackingRecord, TrackingRecordTransition,
-    diff, resolve_system_transition,
+    CompositeTrackingRecord, DiffAction, ManagedBy, ManagedTargetOptions, MutualTrackingRecord,
+    TrackingRecordTransition, diff, diff_composite, resolve_system_transition,
 };
 pub use stats::RunStats;
 pub use target_state::{
@@ -68,3 +75,8 @@ pub use target_state::{
 
 // Re-export proc macros
 pub use cocoindex_macros::function;
+
+// Re-exported so users can implement the async `LiveComponent` / `LiveMapFeed`
+// / `LiveMapView` traits as `#[cocoindex::async_trait]` without taking their own
+// dependency on `async-trait`.
+pub use async_trait::async_trait;

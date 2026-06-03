@@ -31,15 +31,28 @@ These are intentionally removed from the action list below.
   `tests/target_state.rs` (CRUD/no-change, in-component declarations, mount-target
   children, attachments create/cleanup, destructive/lossy generation, ownership
   transfer).
-- **All 10 implemented connectors are on the facade** with the full
+- **All 11 implemented connectors are on the facade** with the full
   constructor/declaration/mount split (`*_target` / `declare_*_target` /
-  `mount_*_target` [+ `_with_options`]): postgres, surrealdb, kafka, lancedb,
+  `mount_*_target` [+ `_with_options`]): postgres, surrealdb, kafka, iggy, lancedb,
   qdrant, turbopuffer, neo4j, falkordb, fs(localfs), and the gdrive source. None
   remain on the private `profile` helpers.
 - **`managed_by` / `ManagedTargetOptions`** on every target connector except Kafka
-  (stream target) and fs (always system-managed).
+  and Iggy (stream targets) and fs (always system-managed).
 - **`statediff` core**: `ManagedBy`, `MutualTrackingRecord`,
-  `TrackingRecordTransition`, `DiffAction`, `resolve_system_transition`, `diff`.
+  `TrackingRecordTransition`, `DiffAction`, `resolve_system_transition`, `diff`,
+  plus the **composite layer** (`CompositeTrackingRecord`, `diff_composite`) for
+  column-/attachment-level diffs. Covered by `statediff.rs` unit tests mirroring
+  the Python SQLite scenarios (create, no-change, add/drop/retype column, drop
+  table, full replace, partial/ambiguous prev grouping).
+- **Live components & exception handlers (SDK)**: `LiveComponent` (`process` /
+  `process_live`), `LiveComponentOperator` (`update_full` / `update` / `delete`
+  / `mark_ready`), `LiveMapFeed` / `LiveMapView` / `LiveMapSubscriber`, and
+  `Ctx::mount_live` / `mount_live_with_handler` / `mount_each_live`. Background
+  error routing via `ExceptionHandler` + `ExceptionContext` (`MountKind`), with
+  the "return = swallow, raise = propagate" contract threaded through
+  `update_full` / `update` / `delete`. Covered by `tests/live_component.rs`
+  (catch-up full pass, target-state declaration, incremental delete, handler
+  swallow/propagate, `mount_each_live` catch-up scan + live streaming).
 - **Postgres**: table target + **vector-index attachment** + **SQL-command
   attachment** (`declare_sql_command_attachment`) + transactional row apply.
   Source reads (`read_table` / `read_table_items`) use a **REPEATABLE READ,
@@ -47,13 +60,28 @@ These are intentionally removed from the action list below.
 - **SurrealDB**: table + relation (`relation_target_many` /
   `relation_target_unconstrained`) + **vector-index attachment**
   (`declare_vector_index`).
+- **Iggy** (`iggy` feature): Apache Iggy stream target (`IggyProducer`,
+  `iggy_topic_target`/`declare_iggy_topic_target`/`mount_iggy_topic_target`,
+  two-level topic → message on the facade, partition option). Iggy has no
+  tombstone, so deletes use a required `deletion_value_fn` (mirrors Python).
+  Re-exports `iggy::prelude` so callers manage the user-owned stream/topic
+  without depending on the `iggy` crate. 8 unit (decide/skip/update/delete,
+  state-id sanitize) + 2 live e2e (send/skip/update, custom delete value).
+  Example: `examples/rust/csv-to-iggy`. Source (`topic_as_stream`/`map`) is
+  blocked on the live-components API (see P1).
+- **SQLite** (`sqlite` feature): embedded table target (`Database`,
+  `TableSchema`/`ColumnDef`, `table_target`/`declare_table_target`/
+  `mount_table_target` [+ `_with_options`], `managed_by`) + `Vec0TableDef`
+  (`sqlite-vec` virtual-table DDL + validation). 11 tests (6 unit DDL/vec0 +
+  5 embedded e2e: insert/update/delete/no-change, drop, user-managed, multiple
+  tables, mount_each). Example: `examples/rust/files-to-sqlite`.
 - **Context keys** (`new` / `new_detect_change` / `new_with_state`), **id/uuid
   generators**, **entity-resolution core** (`resolve_entities`, policies,
   candidate matching), **app lifecycle** (builder/open/run/update/drop, blocking
   + async, stats groups, `max_inflight_components` quota), **`Ctx::auto_refresh`**.
 - **Examples**: text/code embedding (pg + lancedb + qdrant + turbopuffer),
   postgres-source, hn-trending, gdrive, meeting-notes (neo4j/falkordb),
-  conversation-to-knowledge, csv-to-kafka, files-transform,
+  conversation-to-knowledge, csv-to-kafka, csv-to-iggy, files-transform,
   multi-codebase-summarization, audio-to-text, paper-metadata, pdf-embedding,
   pdf-to-markdown, code-embedding-lancedb — all build + e2e-validated.
 
@@ -65,11 +93,9 @@ These are intentionally removed from the action list below.
 
 | Python connector | Python public surface | Note |
 | --- | --- | --- |
-| `sqlite` | `ManagedConnection`, `Vec0TableDef`, `TableSchema`, `TableTarget`, `table_target`/`declare`/`mount`, vec0 | Best next table target — proves the facade generalizes beyond Postgres. 21 Python tests. |
-| `doris` | `DorisConnectionConfig`, `RetryConfig`, `DorisTableTarget`, `VectorIndexDef`, `InvertedIndexDef`, stream-load | Needs stream-load + retry + vector/inverted index. 6 Python tests. |
+| `doris` | `DorisConnectionConfig`, `RetryConfig`, `DorisTableTarget`, `VectorIndexDef`, `InvertedIndexDef`, stream-load | Needs stream-load + retry + vector/inverted index. 6 Python tests. (Needs a live Doris server for e2e.) |
 | `amazon_s3` | `S3FilePath`, `S3File`, `S3Walker`, `get_object`, `read`, `list_objects` | **Blocked on shared file/object source abstraction** (below). 24 Python tests. |
 | `oci_object_storage` | `OCIFilePath`, `OCIFile`, `OCIWalker`, live object events | **Blocked on file source + live source** (below). 23 Python tests. |
-| `iggy` | `TopicStream`, `topic_as_stream`/`map`, `IggyTopicTarget` + split | Should mirror Kafka shape once Kafka source lands. 7 Python tests. |
 | `notion` | (empty in Python too) | No-op until Python ships it. |
 
 ### Shared abstractions that block the above
@@ -79,14 +105,18 @@ These are intentionally removed from the action list below.
   `items()` shape reused by localfs/S3/OCI/GDrive. **Action:** promote a shared Rust
   file-resource module (stable `FilePath`, lazy metadata + content fingerprint,
   `(key, item)` iteration, matchers) before adding S3/OCI.
-- **Kafka source** — target is done; `TopicStream` / `topic_as_stream` /
-  `topic_as_map` / payload filtering are missing (14 Python source tests, 0 Rust).
-- **Live components SDK API** — core has the machinery; the SDK exposes only
-  `Ctx::auto_refresh`. Missing `LiveComponent`/`LiveMapFeed`/`LiveMapView`/
-  `LiveMapSubscriber`. **Blocks** live localfs (`walk_dir(live=True)`), Kafka/Iggy
-  sources, and OCI live object watching.
-- **Exception handlers** — no `exception_handler`/`ExceptionContext` equivalent;
-  needed for background/live error routing.
+- **Kafka & Iggy sources** — both targets are done; the sources
+  (`TopicStream` / `topic_as_stream` / `topic_as_map` / payload filtering) are
+  missing and depend on the live-components API below (Kafka: 14 Python source
+  tests, 0 Rust; Iggy: 7 Python tests cover target+source).
+- **Live components SDK API** — ✅ **done** (see Done section). `LiveComponent` /
+  `LiveComponentOperator` / `LiveMapFeed` / `LiveMapView` / `LiveMapSubscriber`
+  and `Ctx::mount_live` / `mount_each_live` now wrap the core machinery. The
+  remaining work for live localfs (`walk_dir(live=True)`), Kafka/Iggy sources,
+  and OCI live watching is to implement *connectors* that produce a
+  `LiveMapView` / `LiveMapFeed`; the SDK abstraction they plug into exists.
+- **Exception handlers** — ✅ **done**. `ExceptionHandler` + `ExceptionContext`
+  (`MountKind`) route background/live failures through `Ctx::mount_live_with_handler`.
 
 ---
 
@@ -96,7 +126,6 @@ These are intentionally removed from the action list below.
 | --- | --- | --- |
 | Neo4j / FalkorDB | **vector index**; secondary node/relationship **index** builders; user-facing index/constraint helpers (Python exposes `build_*_index_*`, `vector_index_name`, …). PK **uniqueness constraints** are already auto-created by `cypher_graph` (Neo4j `CREATE CONSTRAINT` / FalkorDB `GRAPH.CONSTRAINT`). | Add vector-index + secondary-index attachments on the shared `cypher_graph` backend. |
 | Qdrant / Turbopuffer | named / **multivector** schemas; f16 (Turbopuffer) | Currently single unnamed vector only. Blocks `image_search_colpali`. |
-| `statediff` | **composite** layer: `CompositeTrackingRecord`, `diff_composite` | Needed for column-level / attachment-level diffs; Python has it. |
 | Google Drive | `DriveFilePath` (display path + id), `DriveFileInfo`, top-level `list_files(spec)`, async `items()`; live change notifications | Fold into the shared file-resource work above. |
 | LocalFS | live watching; async lazy-cached `FileLike` (Rust `FileLike` is sync) | Pairs with the live-components API. |
 | SurrealDB | `declare_row` alias (only `declare_record` today) | Minor ergonomic alias. |
@@ -156,7 +185,7 @@ they lock down SDK semantics rather than examples:
 | FalkorDB target | 31 | shared graph unit tests + example e2e | High |
 | Amazon S3 source | 24 | none | After file-source abstraction |
 | OCI source | 23 | none | After live source API |
-| SQLite target | 21 | none | High (next connector) |
+| SQLite target | 21 | 11 (6 unit + 5 embedded e2e) | Regular tables covered; live vec0 needs the `sqlite-vec` extension |
 | Turbopuffer target | 19 | 1 live + unit | Medium (named-vector/f16 gaps) |
 | Kafka source | 14 | none | High (no Rust source) |
 | LanceDB target | 12 | 2 hermetic + unit | Medium (optimize/retry untested) |
@@ -165,10 +194,10 @@ they lock down SDK semantics rather than examples:
 | Kafka target | 17 | 2 live (incl. custom delete value) | Mostly covered |
 | CLI / settings / inspect | 44 / 12 / — | none | Gated on the P3 decisions above |
 
-Recommended order: **(1)** SQLite (proves the facade generalizes) → **(2)** Kafka
-source + live-components API → **(3)** shared file source → S3/OCI/GDrive parity →
-**(4)** graph index/constraint + vector targets named/multivector → **(5)** ops &
-embedder wrappers.
+Recommended order: ~~(1) SQLite~~ **(done — `sqlite` feature + e2e + example)** →
+**(2)** Kafka source + live-components API → **(3)** shared file source →
+S3/OCI/GDrive parity → **(4)** graph index/constraint + vector targets
+named/multivector → **(5)** ops & embedder wrappers.
 
 ---
 

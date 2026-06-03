@@ -10,6 +10,7 @@ postgres = ["dep:serde_json", "dep:sqlx", "dep:chrono"]
 sqlite = ["dep:serde_json", "dep:sqlx", "sqlx/sqlite"]
 surrealdb = ["dep:serde_json", "dep:surrealdb"]
 kafka = ["dep:rskafka", "dep:chrono"]
+iggy = ["dep:iggy"]
 google_drive = ["dep:serde_json", "dep:reqwest", "dep:rsa", "dep:sha2", "dep:base64"]
 lancedb = ["dep:serde_json", "dep:lancedb", "dep:arrow-array", "dep:arrow-schema"]
 qdrant = ["dep:serde_json", "dep:qdrant-client"]
@@ -43,6 +44,8 @@ sqlx = { version = "0.8", default-features = false, optional = true, features = 
 ] }
 chrono = { version = "0.4", default-features = false, optional = true }
 rskafka = { version = "0.6", default-features = false, optional = true }
+# Apache Iggy message-streaming target (pure-Rust client; TCP/QUIC/HTTP).
+iggy = { version = "0.10", optional = true }
 # Google Drive source: HTTP (native-tls = macOS Security.framework, no cmake)
 # + pure-Rust RS256 JWT signing for service-account auth.
 reqwest = { version = "0.12", features = ["json"], optional = true }

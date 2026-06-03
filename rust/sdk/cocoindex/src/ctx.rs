@@ -20,6 +20,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::app::{AppInner, StatsGroupHandle, StatsGroupOptions};
 use crate::error::{Error, Result};
+use crate::live_component::{
+    ExceptionContext, ExceptionHandler, LiveComponent, LiveMapView, MountEachLiveComponent,
+    new_operator, start_process_live,
+};
 use crate::profile::{BoxedHandler, BoxedProcessor, RustProfile, Value};
 
 type ContextFingerprinter<T> = Arc<dyn Fn(&str, &T) -> Result<Fingerprint> + Send + Sync>;
@@ -527,6 +531,103 @@ impl Ctx {
                 }
             }
         });
+        readiness_handle
+            .ready()
+            .await
+            .map_err(|e| Error::engine(format!("{e}")))
+    }
+
+    /// Mount a [`LiveComponent`] under `key`.
+    ///
+    /// The framework runs the component's `process_live` body once, on its own
+    /// task, and returns when the component marks itself ready. In catch-up
+    /// (non-live) mode the default body runs a single full pass; in live mode it
+    /// keeps reacting to its source in the background until the app is dropped.
+    pub async fn mount_live<K, C>(&self, key: &K, component: C) -> Result<()>
+    where
+        K: Display,
+        C: LiveComponent,
+    {
+        self.mount_live_impl(key.to_string(), Arc::new(component), None)
+            .await
+    }
+
+    /// Like [`Ctx::mount_live`], but routes background failures (full-pass and
+    /// incremental update/delete) through `handler`. The handler returns
+    /// `Ok(())` to swallow a failure or `Err(_)` to propagate it.
+    pub async fn mount_live_with_handler<K, C, H>(
+        &self,
+        key: &K,
+        component: C,
+        handler: H,
+    ) -> Result<()>
+    where
+        K: Display,
+        C: LiveComponent,
+        H: Fn(&Error, &ExceptionContext) -> Result<()> + Send + Sync + 'static,
+    {
+        let handler: ExceptionHandler = Arc::new(handler);
+        self.mount_live_impl(key.to_string(), Arc::new(component), Some(handler))
+            .await
+    }
+
+    /// Mount one child component per item from a live change feed, keyed by the
+    /// feed's key. In catch-up mode the feed is scanned once; in live mode the
+    /// feed streams incremental adds/removes that mount/delete children
+    /// individually. The analogue of [`Ctx::mount_each`] for live sources.
+    pub async fn mount_each_live<Key, K, V, Feed, F, Fut>(
+        &self,
+        key: &Key,
+        feed: Feed,
+        process_fn: F,
+    ) -> Result<()>
+    where
+        Key: Display,
+        K: Display + Send + Sync + 'static,
+        V: Send + Sync + 'static,
+        Feed: LiveMapView<K, V>,
+        F: Fn(Ctx, V) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<()>> + Send + 'static,
+    {
+        let component = MountEachLiveComponent::<K, V, Feed>::new(feed, process_fn);
+        self.mount_live(key, component).await
+    }
+
+    async fn mount_live_impl(
+        &self,
+        key_str: String,
+        instance: Arc<dyn LiveComponent>,
+        handler: Option<ExceptionHandler>,
+    ) -> Result<()> {
+        let Some(comp_ctx) = &self.comp_ctx else {
+            // No pipeline context — run a single full pass directly, matching
+            // `auto_refresh`'s standalone behavior.
+            return instance.process(self.clone()).await;
+        };
+
+        let child_stable_key = StableKey::Str(Arc::from(key_str.as_str()));
+        let child_path = comp_ctx.stable_path().concat_part(child_stable_key);
+        let fn_ctx = Arc::new(FnCallContext::default());
+        let pending = mount_live_prepare(comp_ctx, &fn_ctx, child_path.clone(), comp_ctx.live())
+            .map_err(|e| Error::engine(format!("{e}")))?;
+        let _guard = fn_call_guard(comp_ctx, fn_ctx);
+        let result = pending
+            .complete()
+            .await
+            .map_err(|e| Error::engine(format!("{e}")))?;
+        let controller = result.controller;
+        let readiness_handle = result.readiness_handle;
+
+        let operator = new_operator(
+            controller.clone(),
+            self.state.clone(),
+            child_path,
+            instance.clone(),
+            handler,
+            format!("live:{key_str}"),
+        );
+        start_process_live(&controller, instance, operator);
+
         readiness_handle
             .ready()
             .await
