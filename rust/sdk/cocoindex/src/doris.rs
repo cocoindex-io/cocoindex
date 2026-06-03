@@ -330,6 +330,47 @@ impl TableSchema {
     pub fn primary_key(&self) -> &[String] {
         &self.primary_key
     }
+
+    /// Derive a schema from a `#[derive(SchemaFields)]` row type (the Rust
+    /// analogue of Python's `TableSchema.from_class`). Each field maps to a Doris
+    /// column via the same leaf-type table as Python's `doris` `from_class`.
+    pub fn from_row<T: crate::row_schema::SchemaFields>(
+        primary_key: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Result<Self> {
+        let columns = T::schema_fields()
+            .into_iter()
+            .map(|f| (f.name.clone(), doris_column_def(&f)));
+        Self::new(columns, primary_key)
+    }
+}
+
+/// Map a connector-agnostic [`SchemaField`](crate::row_schema::SchemaField) to a
+/// Doris [`ColumnDef`], mirroring Python's `doris` `_LEAF_TYPE_MAPPINGS`.
+fn doris_column_def(field: &crate::row_schema::SchemaField) -> ColumnDef {
+    use crate::row_schema::LogicalType as L;
+    if let L::Vector { dim, .. } = field.logical_type {
+        // Doris vectors are `ARRAY<FLOAT>` and always NOT NULL.
+        return ColumnDef::vector(dim);
+    }
+    let doris_type = match &field.logical_type {
+        L::Bool => "BOOLEAN",
+        // Doris `from_class` maps Python `int` to BIGINT (no width variants).
+        L::Int16 | L::Int32 | L::Int64 | L::Duration => "BIGINT",
+        L::Float32 | L::Float64 => "DOUBLE",
+        L::Decimal => "TEXT",
+        L::Text => "TEXT",
+        L::Bytes => "STRING",
+        L::Uuid => "VARCHAR(36)",
+        L::Date => "DATE",
+        L::Time => "VARCHAR(20)",
+        L::DateTime => "DATETIME(6)",
+        L::Json => "JSON",
+        L::Custom(s) => s.as_str(),
+        L::Vector { .. } => unreachable!("handled above"),
+    };
+    let mut def = ColumnDef::new(doris_type);
+    def.nullable = field.nullable;
+    def
 }
 
 /// A vector (ANN) index. Mirrors Python's `VectorIndexDef`.
@@ -852,9 +893,12 @@ impl TargetHandler<RowState> for RowHandler {
             Some(state) => Some(Fingerprint::from(state).map_err(Error::from)?),
             None => None,
         };
+        // Skip only when every previous fingerprint matches (mirrors the Kafka /
+        // Iggy row handlers and Python's `all(prev == target_fp ...)`); `any`
+        // would wrongly skip a row whose previous records disagree.
         let prev_same = desired_fp
             .as_ref()
-            .is_some_and(|fp| prev.iter().any(|p| p == fp));
+            .is_some_and(|fp| !prev.is_empty() && prev.iter().all(|p| p == fp));
         if desired.is_some() && prev_same && !prev_may_be_missing {
             return Ok(None);
         }

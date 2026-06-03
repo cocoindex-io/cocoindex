@@ -176,9 +176,11 @@ pub(crate) fn vector_index_name(label: &str, field: &str) -> String {
     format!("coco_vec_{label}__{field}")
 }
 
-/// Deterministic node-index name for a `(label, fields)` pair.
+/// Deterministic node-index name for a `(label, fields)` pair. Fields are joined
+/// with `__` to match Python's `index_name` (`"__".join(fields)`), so both SDKs
+/// mint the same multi-field index name.
 pub(crate) fn node_index_name(label: &str, fields: &[String]) -> String {
-    format!("coco_idx_node_{label}__{}", fields.join("_"))
+    format!("coco_idx_node_{label}__{}", fields.join("__"))
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -1937,8 +1939,8 @@ mod tests {
         assert_eq!(
             graph.statements(),
             vec![
-                "CREATE INDEX `coco_idx_node_Doc__name_year` IF NOT EXISTS FOR (n:`Doc`) ON (n.`name`, n.`year`)",
-                "DROP INDEX `coco_idx_node_Doc__name_year` IF EXISTS",
+                "CREATE INDEX `coco_idx_node_Doc__name__year` IF NOT EXISTS FOR (n:`Doc`) ON (n.`name`, n.`year`)",
+                "DROP INDEX `coco_idx_node_Doc__name__year` IF EXISTS",
             ]
         );
     }

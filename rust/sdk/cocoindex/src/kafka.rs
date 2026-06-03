@@ -10,10 +10,9 @@
 //!   record, or a custom deletion value via
 //!   [`KafkaTopicOptions::deletion_value_fn`].
 //!
-//! Use [`kafka_topic_target`] to build a composable target state, or
-//! [`declare_kafka_topic_target`] / [`mount_kafka_topic_target`] to get a handle
-//! for declaring messages. [`KafkaProducer::ensure_topic`] is an explicit,
-//! idempotent topic-creation helper outside reconciliation.
+//! Use [`declare_kafka_topic_target`] / [`mount_kafka_topic_target`] to get a
+//! handle for declaring messages. [`KafkaProducer::ensure_topic`] is an
+//! explicit, idempotent topic-creation helper outside reconciliation.
 //!
 //! Uses [`rskafka`] — a pure-Rust, async Kafka client with no `librdkafka`/C
 //! dependency.
@@ -32,9 +31,8 @@ use crate::ctx::Ctx;
 use crate::error::{Error, Result};
 use crate::live_component::{LiveMapFeed, LiveMapSubscriber, LiveMapView};
 use crate::target_state::{
-    ChildTargetDef, StableKey, TargetAction, TargetActionSink, TargetHandler,
-    TargetReconcileOutput, TargetState, TargetStateProvider, declare_target_state,
-    register_root_target_states_provider,
+    StableKey, TargetAction, TargetActionSink, TargetHandler, TargetReconcileOutput,
+    TargetStateProvider, declare_target_state, register_root_target_states_provider,
 };
 
 // ---------------------------------------------------------------------------
@@ -140,28 +138,6 @@ pub struct KafkaTopicTarget {
     topic: Arc<str>,
 }
 
-/// Build a composable [`TargetState`] for a Kafka topic. Pass it to
-/// [`declare_kafka_topic_target`]/[`mount_kafka_topic_target`], or to the
-/// generic [`declare_target_state_with_child`]/[`mount_target`].
-pub fn kafka_topic_target(
-    ctx: &Ctx,
-    producer: &KafkaProducer,
-    topic: impl Into<String>,
-    options: KafkaTopicOptions,
-) -> Result<TargetState<TopicSpec>> {
-    let topic = topic.into();
-    let provider = register_root_target_states_provider(
-        ctx,
-        format!(
-            "cocoindex/kafka/topic_spec/{}/{}",
-            producer.state_id(),
-            topic
-        ),
-        TopicHandler::new(producer.client.clone(), options.deletion_value_fn),
-    )?;
-    Ok(provider.target_state("default", TopicSpec { topic }))
-}
-
 /// Declare a Kafka topic target and return a ready same-component handle.
 /// No external setup is needed, so this uses the same immediate provider path as
 /// [`mount_kafka_topic_target`].
@@ -223,99 +199,7 @@ impl KafkaTopicTarget {
 }
 
 // ---------------------------------------------------------------------------
-// Topic container handler (root)
-// ---------------------------------------------------------------------------
-
-/// The topic container spec (the topic name). Tracking record + spec are the
-/// same: the topic is user-managed, so the container action never creates/drops.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct TopicSpec {
-    topic: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct TopicAction {
-    topic: String,
-}
-
-struct TopicHandler {
-    client: Arc<Client>,
-    deletion_value_fn: Option<DeletionValueFn>,
-}
-
-impl TopicHandler {
-    fn new(client: Arc<Client>, deletion_value_fn: Option<DeletionValueFn>) -> Self {
-        Self {
-            client,
-            deletion_value_fn,
-        }
-    }
-}
-
-impl TargetHandler<TopicSpec> for TopicHandler {
-    type TrackingRecord = TopicSpec;
-    type Action = TopicAction;
-
-    fn reconcile(
-        &self,
-        _key: StableKey,
-        desired: Option<TopicSpec>,
-        _prev: Vec<TopicSpec>,
-        _prev_may_be_missing: bool,
-    ) -> Result<Option<TargetReconcileOutput<TopicAction, TopicSpec>>> {
-        // Always emit when the topic is declared, so the sink runs and fulfills
-        // the message child provider. The topic itself is user-managed (no
-        // create/drop), so there is nothing to do on un-declare.
-        let Some(spec) = desired else {
-            return Ok(None);
-        };
-        Ok(Some(TargetReconcileOutput {
-            action: TargetAction::Update(TopicAction {
-                topic: spec.topic.clone(),
-            }),
-            sink: self.topic_sink(),
-            tracking_record: Some(spec),
-            child_invalidation: None,
-        }))
-    }
-}
-
-impl TopicHandler {
-    /// Container sink: fulfills each declared topic with a fresh message child
-    /// handler bound to that topic.
-    fn topic_sink(&self) -> TargetActionSink<TopicAction> {
-        let client = self.client.clone();
-        let deletion_value_fn = self.deletion_value_fn.clone();
-        TargetActionSink::from_async_fn_with_children(
-            move |actions: Vec<TargetAction<TopicAction>>| {
-                let client = client.clone();
-                let deletion_value_fn = deletion_value_fn.clone();
-                async move {
-                    let mut out: Vec<Option<ChildTargetDef>> = Vec::with_capacity(actions.len());
-                    for action in actions {
-                        match action {
-                            TargetAction::Create(a) | TargetAction::Update(a) => {
-                                out.push(Some(ChildTargetDef::new::<Vec<u8>, _>(
-                                    MessageHandler::new(
-                                        client.clone(),
-                                        a.topic,
-                                        deletion_value_fn.clone(),
-                                    ),
-                                )));
-                            }
-                            // Topic un-declared: user-managed, nothing to drop.
-                            TargetAction::Delete(_) => out.push(None),
-                        }
-                    }
-                    Ok(out)
-                }
-            },
-        )
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Message handler (child)
+// Message handler (root)
 // ---------------------------------------------------------------------------
 
 /// What the sink should do for one message: produce a record with this value

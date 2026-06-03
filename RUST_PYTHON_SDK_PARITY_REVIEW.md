@@ -1,7 +1,7 @@
 # Rust SDK vs Python SDK Parity Review
 
 Branch: `rust-sync`
-Last reviewed: 2026-06-03 against the local worktree and `origin/main`.
+Last reviewed: 2026-06-02 against the local worktree and `origin/main`.
 
 Reference model:
 
@@ -11,38 +11,39 @@ Reference model:
 - Python remains the behavior reference; Rust does not need identical syntax when
   Rust types make a different surface clearer.
 
-Current scale marker:
+Scale marker:
 
-- Python tests: 839 `test_*` functions under `python/tests`.
-- Rust SDK tests: 376 Rust test annotations: 204 integration tests and 172
-  SDK source-unit tests. Macro behavior is covered by the SDK integration
-  suite.
-- Many connector e2e tests are gated by service credentials. That is fine, but
-  each connector still needs unit coverage for planning/reconcile behavior.
+- Python: 839 `test_*` functions under `python/tests`.
+- Rust SDK: 213 integration + 170 source-unit + 19 macro tests. Many connector
+  e2e tests are gated by service credentials (run when the service is up).
 
 ## Summary
 
-Rust SDK parity is much better than the old review implied, but it is not done.
-The core SDK shape is now in place: `App`, `Ctx`, `#[function]`, memoization,
-target state, live components, shared file resources, ID/schema/chunk resources,
-and several native target/source connectors.
+Connector and source parity is **functionally complete**: every non-empty Python
+connector has a Rust equivalent (the only Python connector without one is
+`notion`, an empty stub in Python too), and the implemented connectors use the
+same declarative source/target semantics. The core SDK shape — `App`, `Ctx`,
+`#[function]`, memoization, target state, live components, shared file
+resources, ID/schema/chunk resources, `#[derive(SchemaFields)]` schema
+derivation — is in place.
 
-The remaining gaps are concentrated in connector breadth and connector-specific
-feature depth:
+What remains is **not** missing behavior; it is external-dependency-gated
+coverage, a few explicit product decisions, and optional polish:
 
-1. Doris target is implemented (table target, Stream Load ingestion, SQL
-   deletes, inverted index, retry). `USING ANN` vector indexes need Doris 3.x
-   for a live test; the DDL is unit-covered.
-2. Iggy source has keyed-map parity and single-partition keyless payload-stream
-   parity; multi-partition readiness remains.
-3. Kafka source has all-partition keyed-map parity and all-partition keyless
-   payload-stream parity; consumer-group rebalance handling remains.
-4. OCI source has the live bucket-event view (`list_objects_live`); deeper
-   cancellation/scan-failure edge tests remain.
-5. Several database/graph connectors still use explicit Rust schemas where
-   Python has `from_class`/annotation-driven schema construction.
-6. CLI/default environment/settings/runner APIs are still product decisions, not
-   connector blockers.
+1. **Service/version-gated tests** — Doris `USING ANN` vector index (needs Doris
+   3.x; DDL unit-covered) and hosted named-vector e2e for Qdrant/Turbopuffer
+   (need credentials). Python gates these the same way.
+2. **One framework edge test** — OCI live blocked-ready cancellation.
+3. **Optional extensions** — apply `#[derive(SchemaFields)]` to graph/vector
+   connectors; example symmetry (see [Example Parity](#python--rust-example-parity)).
+4. **Product decisions** — CLI / default-environment / settings / runner APIs
+   (deliberately deferred; see [P3](#p3-product-level-python-apis)).
+
+Items that were investigated and are **N/A by design** (do not re-open): Kafka
+consumer-group rebalance (the Rust source consumes all partitions directly, no
+group membership), and the Iggy keyed `topic_as_map` being per-partition
+(matches Python's per-partition keyed consumption; the keyless `topic_as_stream`
+reads all partitions).
 
 ## Aligned SDK Concepts
 
@@ -78,27 +79,29 @@ Current status:
   rows through a pending provider the way Python can. Prefer async
   `mount_table_target` when parity semantics matter.
 
-Action:
-
-- Decide whether to make LanceDB declaration fully async or add first-class Rust
-  pending child-provider support.
+Decision (2026-06-02): **async `mount_table_target` is the canonical, Python-
+consistent path** — Python's SDK is async-first, so the async mount matches its
+semantics. The sync `declare_table_target` stays as a same-component convenience
+with its documented schema-keyed-provider caveat; first-class pending
+child-provider support is deferred until a concrete need appears (it is an
+internal-ergonomics nicety, not a parity gap).
 
 ### P1: Missing Or Incomplete Sources
 
-| Source | Python behavior | Rust status | Action |
-| --- | --- | --- | --- |
-| Iggy | `topic_as_stream`, payload stream, keyed map, offset readiness, multi-partition safeguards | **Keyed map + keyless payload stream done** — `IggyConsumer` + `topic_as_map`/`_with_options` give a `LiveMapView<String, Vec<u8>>` over one partition (`scan` compacts to latest-payload-per-key via the required `key_fn`; `watch` tails), with `IggySourceOptions::is_deletion`. `topic_as_stream` gives an append-only offset-keyed payload view. 3 live e2e (`tests/iggy_source.rs`: compaction, live tail, keyless stream). | Remaining: multi-partition readiness. |
-| Kafka | stream, payload stream, keyed map, partition assignment/rebalance, safe offset readiness | `topic_as_map` over **all partitions** (per-partition offset tracking; `scan` compacts across partitions, `watch` round-robins) with tombstone/custom delete semantics. `topic_as_stream` reads keyless payloads over all partitions using stable `partition:offset` child keys. 4 live e2e (`tests/kafka_source.rs`: compaction, live tail, all-partitions read, keyless stream). | Remaining: consumer-group rebalance (the SDK consumes the topic directly, no group assignment). |
-| OCI Object Storage | shared file source plus live bucket events fed by a stream | **Done** — static list/read/range source plus `list_objects_live(client, ns, bucket, options, events)` returning a `LiveMapView<String, OciFile>`: `scan` lists matching objects (snapshotting an `eventTime` cutoff), `watch` turns an event stream (`OciEventStream`) into per-object updates/deletes, re-reading each via `HEAD` (live state wins over event type), filtered by envelope/namespace/bucket/cutoff/prefix/matcher/max-size. `OciClient::with_base_url` adds a mock seam. 1 hermetic e2e (`tests/oci_live.rs`, wiremock: scan + create/delete/old-cutoff/cross-bucket/malformed). | Remaining: cancellation-while-blocked and scan-failure-propagation edge tests. |
-| Google Drive | static file listing/read/export | Static source exists | No live work unless Python adds live Google Drive support. |
-| S3 | static file listing/read/range | Static source exists with MinIO e2e | No live work unless Python adds S3 live behavior. |
+| Source | Rust status | Remaining |
+| --- | --- | --- |
+| Iggy | Keyed map (`topic_as_map`, per-partition `LiveMapView<String, Vec<u8>>`, `scan` compaction + `watch` tail, `is_deletion`) and keyless `topic_as_stream` over **all partitions** (`partition:offset` child keys, enumerated via `get_topic`). 4 live e2e incl. 3-partition read. | Keyed map is per-partition by design (matches Python). |
+| Kafka | Keyed map over **all partitions** (per-partition offsets, tombstone/custom deletes) and keyless `topic_as_stream` with `partition:offset` child keys. 4 live e2e. | Consumer-group rebalance is N/A — the SDK consumes all partitions directly, no group membership to rebalance. |
+| OCI Object Storage | Static list/read/range plus live `list_objects_live` → `LiveMapView<String, OciFile>` (scan with `eventTime` cutoff, event-stream watch, `HEAD` re-read, full filter chain). 7 hermetic e2e (`tests/oci_live.rs`: scan/create/delete/cutoff/cross-bucket/malformed, max-size, path-matcher, scan-failure). | Blocked-ready cancellation edge test. |
+| Google Drive | Static file listing/read/export. | No live work unless Python adds live Google Drive support. |
+| S3 | Static file listing/read/range, MinIO e2e. | No live work unless Python adds S3 live behavior. |
 
 ### P1: Missing Connector
 
-| Connector | Python status | Rust status | Action |
-| --- | --- | --- | --- |
-| Doris | Native target with stream load, retries, vector indexes, inverted indexes, and schema/type mapping | **Done** — `doris::{DorisConnection, DorisConfig, TableSchema, ColumnDef, VectorIndexDef, InvertedIndexDef}` with the `table_target`/`declare_*`/`mount_*` split and composite (PK + per-column) tracking. DDL/DELETE over the MySQL protocol (`sqlx`, unprepared text protocol — Doris only prepares point-query SELECT/INSERT), row ingestion via Stream Load (HTTP `PUT`, manual FE→BE `307` redirect with optional `be_load_host`, retry/backoff), DUPLICATE KEY model with delete-before-insert upserts. 8 unit + 6 live e2e (`tests/doris_target.rs`: create/insert, update, delete, map rows, no-change-no-dup, inverted index — verified vs a Dockerized `apache/doris:doris-all-in-one-2.1.0`). | Remaining: live `USING ANN` vector-index test (needs Doris 3.x — 2.1 rejects the syntax; DDL generation is unit-tested). |
-| Notion | Empty Python connector | Missing | No Rust work until Python has a real connector. |
+| Connector | Rust status | Remaining |
+| --- | --- | --- |
+| Doris | **Done** — `doris::{DorisConnection, DorisConfig, TableSchema, ColumnDef, VectorIndexDef, InvertedIndexDef}` with `table_target`/`declare_*`/`mount_*`, composite (PK + per-column) tracking, DDL/DELETE over the MySQL protocol, Stream Load ingestion (FE→BE `307` redirect, retry/backoff), DUPLICATE KEY delete-before-insert upserts. 8 unit + 6 live e2e vs Dockerized `apache/doris:doris-all-in-one-2.1.0`. | Live `USING ANN` vector-index test (needs Doris 3.x — 2.1 rejects the syntax; DDL is unit-tested). |
+| Notion | Absent — Python connector is an empty stub (`connectors/notion/` has no source on this branch). | No Rust work until Python ships a real connector. |
 
 ### P2: Vector Store Parity
 
@@ -110,19 +113,25 @@ Action:
 
 ### P2: Database And Graph Schema Ergonomics
 
-Python often builds connector schemas from dataclasses and annotations:
-`TableSchema.from_class`, column overrides, `PgType`, vector schema providers,
-and graph/SQL type mapping. Rust mostly asks users to spell out `ColumnDef`
-values explicitly.
+Python builds connector schemas from dataclasses and annotations
+(`TableSchema.from_class`, column overrides, vector schema providers).
 
-This is acceptable as a Rust-first API, but examples should stay concise and
-the behavior must be equivalent once a schema is declared.
+**Done for the table connectors:** `#[derive(SchemaFields)]`
+([`cocoindex_macros`]) + `TableSchema::from_row::<T>(primary_key)` on Postgres,
+SQLite, and Doris derive a schema from a Rust row struct, mapping each field via
+the same leaf-type table as Python's per-connector `from_class`
+(`row_schema::LogicalType` is the connector-agnostic intermediate). `Option<T>`
+→ nullable; `#[coco(vector = N[, half])]`, `#[coco(type = "…")]`,
+`#[coco(json)]`, and `#[coco(rename = "…")]` are the field attributes (the Rust
+analogues of `VectorSchema` / `PgType`/`SqliteType`/`DorisType`). The explicit
+`ColumnDef` API stays the stable low-level path. Tests:
+`tests/schema_from_row.rs` (per-connector schema equality + SQLite/Doris
+round-trip).
 
-Action:
+Remaining:
 
-- Add helper builders where they remove real repetition, for example
-  `*_schema_from_row::<T>()` only if it can be type-safe and unsurprising.
-- Keep explicit schemas as the stable low-level API.
+- Extend the same derive to graph (Neo4j/FalkorDB) and vector-store (Qdrant /
+  Turbopuffer / LanceDB) connectors if their schema shapes warrant it.
 - Add tests that compare generated DDL/reconcile behavior to Python for:
   Postgres type changes/drop retries, graph PK constraints/indexes, SurrealDB
   vector indexes, SQLite vec0, and LanceDB destructive replacement.
@@ -158,35 +167,119 @@ These are not connector blockers. Decide explicitly before implementing.
 | Inspect/stable path wrappers | Python exposes public inspection helpers | Add lightweight Rust wrappers if users need debugging/state inspection. |
 | Runner/GPU/pickle/dynamic typing | Python-specific runtime support | Treat as non-goals unless an SDK feature requires them. |
 
-## Test Backlog
+## Test Backlog (remaining only)
 
-Use this order:
+Kafka, Iggy, OCI, Doris, Postgres, SQLite, SurrealDB, Neo4j, and FalkorDB all
+have live/hermetic e2e plus unit coverage; the items below are the only gaps.
 
-1. Iggy source tests: offset readiness, duplicate offsets, delete predicate,
-   and multi-partition guard. Keyed-map compaction, live tail, and keyless
-   payload stream are covered.
-2. Kafka source tests: consumer-group rebalance behavior. Keyed-map compaction,
-   live tail, tombstone deletes, all-partition catch-up, and keyless payload
-   stream are covered.
-3. OCI live source tests: event cutoff, malformed events, cross-bucket filters,
-   and the create/delete re-read are covered (`tests/oci_live.rs`, hermetic).
-   Remaining: max-size/path-matcher live filters, blocked-ready cancellation,
-   scan failure propagation.
-4. Doris target tests: create/update/delete, map rows, inverted index, and
-   no-change behavior are covered live. Remaining: `USING ANN` vector index
-   (needs Doris 3.x).
-5. Qdrant/Turbopuffer tests: add hosted named-vector e2e coverage when service
-   credentials are available.
-6. Database/graph schema tests: Postgres destructive schema retries, graph
-   constraints/indexes, SurrealDB vector-index lifecycle, SQLite vec0 e2e when
-   CI has `sqlite-vec`.
-7. Product API tests only after deciding to build CLI/default-env/settings.
+1. OCI live source: blocked-ready cancellation edge test.
+2. Doris target: `USING ANN` vector index (needs Doris 3.x).
+3. Qdrant/Turbopuffer: hosted named-vector / multivector e2e (needs credentials).
+4. SQLite vec0 e2e gated on the `sqlite-vec` extension being present in CI.
+5. Product API tests only after deciding to build CLI/default-env/settings.
 
-## Example Notes
+## Per-Connector Behavioral Audit (2026-06-02)
 
-The LanceDB examples use the async `mount_table_target` API. Do not add back
-`examples/rust/entire-session-search`; it remains de-scoped for Rust because it
-overlaps code embedding and depends on source shapes that are still evolving.
+Each connector's generated DDL / reconcile / value-encoding was diffed against its
+Python reference. Most categories match (CREATE TABLE/upsert/vector-index DDL,
+metric mappings, fingerprint reconcile, managed_by gating, delete semantics).
+
+### Fixed in this pass (contained correctness bugs, tested)
+
+| Connector | Bug | Fix |
+| --- | --- | --- |
+| Doris | `RowHandler::reconcile` used `prev.iter().any(== fp)` — skipped a row whose previous fingerprints disagree | now `!prev.is_empty() && prev.iter().all(== fp)`, matching Kafka/Iggy/Python (`doris.rs`) |
+| SQLite | `CREATE TABLE` did not force `NOT NULL` on PK columns (Python does) — non-rowid PKs could hold NULL | PK columns now `NOT NULL` (`sqlite.rs` `create_table_sql`) |
+| Neo4j/FalkorDB | multi-field node-index name joined fields with `_` vs Python's `__` → divergent index names | `node_index_name` now joins with `__` (`cypher_graph.rs`) |
+| Postgres | `bytea` column with a `Vec<u8>` produced invalid `'[104,105]'::bytea` | hex `'\x..'::bytea` encoder (`postgres.rs` `bytea_literal`); round-trip e2e added |
+
+### Open findings (real divergences, not yet fixed — larger refactors / Python-side)
+
+Priority order. Each is a genuine behavioral divergence; none is a missing connector.
+
+1. **Postgres reconcile (high):** `TableHandler` tracks the whole `TableSpec` + plain
+   `diff` (`postgres.rs` ~`reconcile`), so it never emits `Destructive` child
+   invalidation and a **primary-key change is silently ignored** (`CREATE TABLE IF
+   NOT EXISTS` never alters the PK). `reconcile_columns` (information_schema) adds/drops
+   columns but **never retypes** (no `ALTER COLUMN TYPE` / drop-retry). Python uses
+   composite tracking (`diff_composite`) for exact retype + PK-change→drop+recreate.
+   Fix: adopt the composite pattern already used by `sqlite.rs`/`doris.rs`, or extend
+   `reconcile_columns` with type comparison (note: information_schema type
+   normalization is fragile — composite tracking is the cleaner route).
+2. **SurrealDB reconcile (high):** same whole-`TableSpec` + `DEFINE TABLE/FIELD IF
+   NOT EXISTS` shape (`surrealdb.rs`) → column drop/retype silently not applied; no
+   incremental `DEFINE/REMOVE FIELD`. Also: `child_invalidation` is `Lossy` on a
+   table replace where Python uses `destructive` (and Rust never issues `REMOVE
+   TABLE` on replace); the normal-table UPSERT `CONTENT` does not strip the `id`
+   field (the relation path does); relation auto-id uses a length-prefixed scheme
+   vs Python's underscore-join (cross-SDK id mismatch — Rust's is collision-safe).
+   Fix: composite tracking + per-field DEFINE/REMOVE; align `child_invalidation`;
+   strip `id` from CONTENT; pick one canonical relation-id scheme.
+3. **LanceDB additive evolution (high, data-loss):** adding a **vector** column
+   triggers a destructive table recreate (`sql_null_type()` is `None` for vectors,
+   `lancedb.rs`) — existing rows are wiped — whereas Python adds a nullable vector
+   column additively (`add_columns`). Fix: evolve vector columns via the Arrow
+   field `add_columns` API instead of a SQL `NULL` cast. Also: sync
+   `declare_table_target` uses a schema-fingerprint-keyed *root* row provider
+   instead of a child provider (diverges from Python and from Rust SQLite); and
+   there is no background `optimize` / `num_transactions_before_optimize` option.
+4. **Qdrant (medium):** f16 — Rust sets `Datatype::Float16` but Python ignores the
+   schema `dtype` (a latent Python bug; the Rust comment falsely claims parity).
+   Point ids are `u64`-only in Rust while Python accepts `str`/UUID (capability gap
+   + cross-SDK key incompatibility). Fix: make Python honor f16; widen the Rust
+   point id to int-or-UUID.
+
+### Acceptable by design (not bugs — do not "fix")
+
+- **Literal value encoding vs Python's bound parameters** (postgres/sqlite/doris build
+  SQL literals; Python binds). Equivalent results; the one real gap (postgres `bytea`)
+  is fixed above. SQLite `quote_string` strips `\0` from text (an inline-literal
+  limitation) where Python's bind preserves it — documented, low impact.
+- **No per-connector `encoder` layer** (Doris/SurrealDB/Postgres): the Rust row's
+  `Serialize` impl is the single source of truth, replacing Python's `ColumnDef.encoder`.
+- **Kafka/Iggy `is_deletion`/`key_fn` receive raw payload bytes** in Rust vs the full
+  message object in Python; live-map values are `Vec<u8>` not the message. Idiomatic.
+- **Container-delete `child_invalidation`** is `Destructive` in Rust vs `None` in
+  Python (Qdrant/Turbopuffer) — cosmetic (the container is dropped regardless).
+- **Rust-only search helpers** (Qdrant/Turbopuffer/LanceDB) and **stricter quoting**
+  (LanceDB/Doris delete predicates escape quotes; Python has a latent quoting bug).
+
+## Python ↔ Rust Example Parity
+
+Verified 2026-06-02. 23 examples have matched Python (`examples/<name>`) and Rust
+(`examples/rust/<name>`) pairs:
+
+`amazon_s3_embedding`, `audio_to_text`, `code_embedding`, `code_embedding_lancedb`,
+`conversation_to_knowledge`, `csv_to_kafka`, `files_transform`,
+`gdrive_text_embedding`, `hn_trending_topics`, `image_search`,
+`image_search_colpali`, `meeting_notes_graph_falkordb`,
+`meeting_notes_graph_neo4j`, `multi_codebase_summarization`,
+`oci_object_storage_embedding`, `paper_metadata`, `pdf_embedding`,
+`pdf_to_markdown`, `postgres_source`, `text_embedding`, `text_embedding_lancedb`,
+`text_embedding_qdrant`, `text_embedding_turbopuffer`.
+
+### Python-only examples (no Rust counterpart)
+
+| Example | Reason | Action |
+| --- | --- | --- |
+| `entire_session_search` | De-scoped for Rust — overlaps code embedding and depends on source shapes that are still evolving. | Non-goal; do not re-add `examples/rust/entire-session-search`. |
+| `patient_intake_extraction_baml` | Depends on BAML (Python-only library). | Non-goal unless a Rust equivalent appears. |
+| `patient_intake_extraction_dspy` | Depends on DSPy (Python-only framework). | Non-goal unless a Rust equivalent appears. |
+| `kafka_to_lancedb` | Rust covers Kafka consumption via `kafka-consume` (live-map), not a LanceDB-sink variant. | Optional: add a Rust Kafka→LanceDB example, or leave `kafka-consume` as the canonical Kafka demo. |
+
+`notion_target_basics` was removed 2026-06-02 — it had no committed source, only
+stale `.venv`/`__pycache__`/`cocoindex.db` artifacts (the Notion connector is an
+empty stub). Restore it if/when a real Notion connector lands.
+
+### Rust-only examples (no Python counterpart)
+
+| Example | What it is | Action |
+| --- | --- | --- |
+| `csv-to-iggy` | CSV → Iggy producer (Python only has `csv_to_kafka`). | Optional: add a Python `csv_to_iggy` for symmetry. |
+| `files-to-sqlite` | SQLite target demo (Python has the `sqlite` connector but no example). | Optional: add a Python `files_to_sqlite` to exercise the connector. |
+| `kafka-consume` | Kafka live-map consume demo (Python's analogue is `kafka_to_lancedb`). | Keep; pairs conceptually with the Python Kafka example. |
+
+The LanceDB examples use the async `mount_table_target` API.
 
 ## Definition Of Done
 

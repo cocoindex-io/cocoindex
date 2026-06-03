@@ -702,3 +702,97 @@ async fn postgres_column_drop_retries_after_failed_attempt_when_available() -> R
         .map_err(|e| cocoindex::Error::engine(format!("postgres cleanup: {e}")))?;
     Ok(())
 }
+
+#[derive(Clone, Serialize)]
+struct BlobRow {
+    id: i64,
+    data: Vec<u8>,
+}
+
+async fn declare_blobs(ctx: Ctx, schema: String, rows: Vec<BlobRow>) -> Result<()> {
+    let db = ctx.get_key(&PG)?;
+    let table = postgres::mount_table_target(
+        &ctx,
+        db,
+        "blobs",
+        postgres::TableSchema::new(
+            [
+                ("id", postgres::ColumnDef::new("bigint")),
+                ("data", postgres::ColumnDef::new("bytea")),
+            ],
+            ["id"],
+        )?,
+        Some(&schema),
+    )
+    .await?;
+    for row in &rows {
+        table.declare_row(&ctx, row)?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn postgres_bytea_round_trips_byte_arrays_when_available() -> Result<()> {
+    let Ok(url) = std::env::var("POSTGRES_URL") else {
+        eprintln!("skipping live Postgres bytea test; POSTGRES_URL is not set");
+        return Ok(());
+    };
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let schema = format!("cocoindex_rust_bytea_{nonce}");
+    let db = postgres::Database::connect(&url).await?;
+    sqlx::query(&format!("DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"))
+        .execute(db.pool())
+        .await
+        .map_err(|e| cocoindex::Error::engine(format!("postgres cleanup: {e}")))?;
+
+    let tempdir = tempfile::tempdir().unwrap();
+    let app = App::builder("PostgresByteaTest")
+        .db_path(tempdir.path().join(".cocoindex_db"))
+        .provide_key(&PG, db.clone())
+        .build()
+        .await?;
+
+    app.run({
+        let schema = schema.clone();
+        move |ctx| {
+            declare_blobs(
+                ctx,
+                schema,
+                vec![
+                    BlobRow { id: 1, data: vec![0u8, 1, 2, 255, 104, 105] },
+                    BlobRow { id: 2, data: Vec::new() },
+                ],
+            )
+        }
+    })
+    .await?;
+
+    let rows = sqlx::query(&format!(
+        "SELECT id, data FROM \"{schema}\".\"blobs\" ORDER BY id"
+    ))
+    .fetch_all(db.pool())
+    .await
+    .map_err(|e| cocoindex::Error::engine(format!("postgres query: {e}")))?;
+    let actual = rows
+        .into_iter()
+        .map(|row| {
+            let id: i64 = row.try_get("id").unwrap();
+            let data: Vec<u8> = row.try_get("data").unwrap();
+            (id, data)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        actual,
+        vec![(1, vec![0u8, 1, 2, 255, 104, 105]), (2, Vec::new())],
+        "bytea byte arrays must round-trip exactly (hex-encoded literal)"
+    );
+
+    sqlx::query(&format!("DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"))
+        .execute(db.pool())
+        .await
+        .map_err(|e| cocoindex::Error::engine(format!("postgres cleanup: {e}")))?;
+    Ok(())
+}

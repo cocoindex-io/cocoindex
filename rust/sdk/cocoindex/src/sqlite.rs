@@ -151,6 +151,40 @@ impl TableSchema {
     pub fn primary_key(&self) -> &[String] {
         &self.primary_key
     }
+
+    /// Derive a schema from a `#[derive(SchemaFields)]` row type (the Rust
+    /// analogue of Python's `TableSchema.from_class`). Each field maps to a
+    /// SQLite column via the same leaf-type table as Python's `sqlite`
+    /// `from_class`. A `#[coco(vector = N)]` field becomes a `float[N]` column
+    /// (for `sqlite-vec` / [`Vec0TableDef`]).
+    pub fn from_row<T: crate::row_schema::SchemaFields>(
+        primary_key: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Result<Self> {
+        let columns = T::schema_fields()
+            .into_iter()
+            .map(|f| (f.name.clone(), sqlite_column_def(&f)));
+        Self::new(columns, primary_key)
+    }
+}
+
+/// Map a connector-agnostic [`SchemaField`](crate::row_schema::SchemaField) to a
+/// SQLite [`ColumnDef`], mirroring Python's `sqlite` `_LEAF_TYPE_MAPPINGS`.
+fn sqlite_column_def(field: &crate::row_schema::SchemaField) -> ColumnDef {
+    use crate::row_schema::LogicalType as L;
+    let sqlite_type = match &field.logical_type {
+        L::Bool | L::Int16 | L::Int32 | L::Int64 => "INTEGER".to_string(),
+        L::Float32 | L::Float64 | L::Duration => "REAL".to_string(),
+        L::Decimal | L::Text | L::Uuid | L::Date | L::Time | L::DateTime | L::Json => {
+            "TEXT".to_string()
+        }
+        L::Bytes => "BLOB".to_string(),
+        // `sqlite-vec` vector columns are `float[N]`.
+        L::Vector { dim, .. } => format!("float[{dim}]"),
+        L::Custom(s) => s.clone(),
+    };
+    let mut def = ColumnDef::new(sqlite_type);
+    def.nullable = field.nullable;
+    def
 }
 
 /// `sqlite-vec` virtual-table configuration. When present, the table is created
@@ -818,7 +852,11 @@ async fn apply_rows(
 fn create_table_sql(spec: &TableSpec) -> String {
     let mut cols = Vec::new();
     for (name, col) in spec.table_schema.columns() {
-        let null = if col.nullable { "" } else { " NOT NULL" };
+        // PK columns are always NOT NULL (matches Python's `_create_table`,
+        // which forces NOT NULL on primary-key columns regardless of the
+        // declared nullability — a SQLite non-rowid PK otherwise permits NULL).
+        let is_pk = spec.table_schema.primary_key().contains(name);
+        let null = if col.nullable && !is_pk { "" } else { " NOT NULL" };
         cols.push(format!("{} {}{}", quote_ident(name), col.sqlite_type, null));
     }
     let pk = spec
@@ -1203,7 +1241,7 @@ mod tests {
         let sql = create_table_sql(&spec(schema()));
         assert_eq!(
             sql,
-            "CREATE TABLE IF NOT EXISTS \"items\" (\"id\" INTEGER, \"name\" TEXT, \"score\" REAL, PRIMARY KEY (\"id\"))"
+            "CREATE TABLE IF NOT EXISTS \"items\" (\"id\" INTEGER NOT NULL, \"name\" TEXT, \"score\" REAL, PRIMARY KEY (\"id\"))"
         );
     }
 

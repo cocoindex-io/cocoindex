@@ -339,3 +339,124 @@ async fn iggy_source_stream_reads_all_payloads_keyless() -> Result<()> {
     );
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn iggy_source_stream_reads_all_partitions() -> Result<()> {
+    let Ok(conn) = std::env::var("IGGY_CONNECTION_STRING") else {
+        eprintln!("skipping live Iggy multi-partition test; IGGY_CONNECTION_STRING is not set");
+        return Ok(());
+    };
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let stream = format!("coco_src_mpart_{nonce}");
+    let topic = "rows";
+
+    // Create a 3-partition topic and discover its actual partition IDs.
+    let producer = IggyProducer::connect(&conn).await?;
+    let client = producer.client();
+    let _ = client.create_stream(&stream).await;
+    let stream_id = Identifier::from_str_value(&stream).unwrap();
+    let _ = client
+        .create_topic(
+            &stream_id,
+            topic,
+            3,
+            CompressionAlgorithm::None,
+            None,
+            IggyExpiry::NeverExpire,
+            MaxTopicSize::ServerDefault,
+        )
+        .await;
+    let topic_id = Identifier::from_str_value(topic).unwrap();
+    let details = client
+        .get_topic(&stream_id, &topic_id)
+        .await
+        .unwrap()
+        .expect("topic exists");
+    let pids: Vec<u32> = if details.partitions.is_empty() {
+        (1..=details.partitions_count).collect()
+    } else {
+        details.partitions.iter().map(|p| p.id).collect()
+    };
+    assert!(pids.len() >= 2, "expected a multi-partition topic, got {pids:?}");
+
+    // Produce one message to each discovered partition via the target.
+    let tmp = tempfile::tempdir().unwrap();
+    let mut expected = Vec::new();
+    for (i, pid) in pids.iter().enumerate() {
+        let value = format!("p{pid}msg{i}");
+        expected.push(value.clone());
+        let producer = producer.clone();
+        let stream = stream.clone();
+        let pid = *pid;
+        let app = App::builder("IggyMpartPopulate")
+            .db_path(tmp.path().join(format!("pop_{i}")))
+            .build()
+            .await?;
+        app.run(move |ctx| {
+            let producer = producer.clone();
+            let stream = stream.clone();
+            let value = value.clone();
+            async move {
+                let target = iggy::mount_iggy_topic_target(
+                    &ctx,
+                    &producer,
+                    stream,
+                    topic,
+                    iggy::IggyTopicOptions {
+                        partition: pid,
+                        ..Default::default()
+                    },
+                )?;
+                target.declare_message(&ctx, &format!("k{i}"), &value)?;
+                Ok(())
+            }
+        })
+        .await?;
+    }
+
+    // The keyless stream must read messages from every partition.
+    let consumer = IggyConsumer::connect(&conn).await?;
+    let processed: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let app = App::builder("IggyMpartStream")
+        .db_path(tmp.path().join("source_db"))
+        .build()
+        .await?;
+    app.run({
+        let processed = processed.clone();
+        let consumer = consumer.clone();
+        let stream = stream.clone();
+        move |ctx| {
+            let processed = processed.clone();
+            let consumer = consumer.clone();
+            let stream = stream.clone();
+            async move {
+                let feed = iggy::topic_as_stream(&consumer, stream, topic);
+                ctx.mount_each_live(&"stream", feed, move |_ctx, value: Vec<u8>| {
+                    let processed = processed.clone();
+                    async move {
+                        processed
+                            .lock()
+                            .unwrap()
+                            .push(String::from_utf8_lossy(&value).into_owned());
+                        Ok(())
+                    }
+                })
+                .await
+            }
+        }
+    })
+    .await?;
+
+    let mut got = processed.lock().unwrap().clone();
+    got.sort();
+    expected.sort();
+    assert_eq!(
+        got, expected,
+        "the keyless stream should read one message from each of the {} partitions",
+        pids.len()
+    );
+    Ok(())
+}

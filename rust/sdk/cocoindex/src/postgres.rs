@@ -129,6 +129,53 @@ impl TableSchema {
     pub fn primary_key(&self) -> &[String] {
         &self.primary_key
     }
+
+    /// Derive a schema from a `#[derive(SchemaFields)]` row type (the Rust
+    /// analogue of Python's `TableSchema.from_class`). Each field maps to a
+    /// Postgres column via the same leaf-type table as Python's `postgres`
+    /// `from_class`. A `#[coco(vector = N)]` field becomes `vector(N)` (or
+    /// `halfvec(N)` with `#[coco(vector = N, half)]`) for `pgvector`.
+    pub fn from_row<T: crate::row_schema::SchemaFields>(
+        primary_key: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Result<Self> {
+        let columns = T::schema_fields()
+            .into_iter()
+            .map(|f| (f.name.clone(), postgres_column_def(&f)));
+        Self::new(columns, primary_key)
+    }
+}
+
+/// Map a connector-agnostic [`SchemaField`](crate::row_schema::SchemaField) to a
+/// Postgres [`ColumnDef`], mirroring Python's `postgres` `_LEAF_TYPE_MAPPINGS`.
+fn postgres_column_def(field: &crate::row_schema::SchemaField) -> ColumnDef {
+    use crate::row_schema::LogicalType as L;
+    let pg_type = match &field.logical_type {
+        L::Bool => "boolean".to_string(),
+        L::Int16 => "smallint".to_string(),
+        L::Int32 => "integer".to_string(),
+        L::Int64 => "bigint".to_string(),
+        L::Float32 => "real".to_string(),
+        L::Float64 => "double precision".to_string(),
+        L::Decimal => "numeric".to_string(),
+        L::Text => "text".to_string(),
+        L::Bytes => "bytea".to_string(),
+        L::Uuid => "uuid".to_string(),
+        L::Date => "date".to_string(),
+        L::Time => "time with time zone".to_string(),
+        L::DateTime => "timestamp with time zone".to_string(),
+        L::Duration => "interval".to_string(),
+        L::Json => "jsonb".to_string(),
+        L::Vector { dim, half } => {
+            if *half {
+                format!("halfvec({dim})")
+            } else {
+                format!("vector({dim})")
+            }
+        }
+        L::Custom(s) => s.clone(),
+    };
+    let def = ColumnDef::new(pg_type);
+    if field.nullable { def.nullable() } else { def }
 }
 
 // ---------------------------------------------------------------------------
@@ -1173,6 +1220,12 @@ fn sql_literal(value: &JsonValue, col: &ColumnDef) -> Result<String> {
     if _is_pgvector_type(&lower) {
         return vector_literal(value, &col.pg_type);
     }
+    if lower == "bytea" {
+        // A Rust `Vec<u8>` serializes to a JSON array of byte values; encode it
+        // as Postgres hex bytea (`'\x..'::bytea`). The fallback `'[104,105]'`
+        // would be invalid bytea input.
+        return bytea_literal(value);
+    }
     if lower == "json" || lower == "jsonb" {
         // Postgres rejects U+0000 in json/jsonb on parse, and serde serializes a
         // NUL inside a nested string/key as the ` ` escape (which
@@ -1204,6 +1257,34 @@ fn value_to_string(value: &JsonValue) -> Result<&str> {
     value
         .as_str()
         .ok_or_else(|| Error::engine("text column requires string JSON value"))
+}
+
+/// Encode a JSON value as a Postgres hex `bytea` literal. Accepts a byte array
+/// (the serde default for `Vec<u8>`) or a string (encoded as its UTF-8 bytes).
+fn bytea_literal(value: &JsonValue) -> Result<String> {
+    let bytes: Vec<u8> = match value {
+        JsonValue::Array(arr) => arr
+            .iter()
+            .map(|v| {
+                v.as_u64()
+                    .filter(|n| *n <= 255)
+                    .map(|n| n as u8)
+                    .ok_or_else(|| Error::engine("bytea array elements must be integers 0..=255"))
+            })
+            .collect::<Result<Vec<u8>>>()?,
+        JsonValue::String(s) => s.as_bytes().to_vec(),
+        _ => {
+            return Err(Error::engine(
+                "bytea column requires a byte array or string JSON value",
+            ));
+        }
+    };
+    let mut hex = String::with_capacity(2 + bytes.len() * 2);
+    hex.push_str("\\x");
+    for b in &bytes {
+        hex.push_str(&format!("{b:02x}"));
+    }
+    Ok(format!("{}::bytea", quote_string(hex)))
 }
 
 fn vector_literal(value: &JsonValue, pg_type: &str) -> Result<String> {

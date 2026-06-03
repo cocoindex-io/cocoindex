@@ -612,6 +612,181 @@ pub fn function(attr: TokenStream, item: TokenStream) -> TokenStream {
     }
 }
 
+// ===========================================================================
+// #[derive(SchemaFields)] — connector-agnostic table-schema derivation, the
+// Rust analogue of Python's `TableSchema.from_class`.
+// ===========================================================================
+
+/// Per-field `#[coco(...)]` options.
+#[derive(Default)]
+struct SchemaFieldAttr {
+    rename: Option<String>,
+    custom_type: Option<String>,
+    vector_dim: Option<u32>,
+    vector_half: bool,
+    force_json: bool,
+}
+
+fn parse_schema_field_attr(attrs: &[syn::Attribute]) -> syn::Result<SchemaFieldAttr> {
+    let mut out = SchemaFieldAttr::default();
+    for attr in attrs {
+        if !attr.path().is_ident("coco") {
+            continue;
+        }
+        attr.parse_nested_meta(|meta| {
+            if meta.path.is_ident("rename") {
+                let v: syn::LitStr = meta.value()?.parse()?;
+                out.rename = Some(v.value());
+            } else if meta.path.is_ident("type") {
+                let v: syn::LitStr = meta.value()?.parse()?;
+                out.custom_type = Some(v.value());
+            } else if meta.path.is_ident("vector") {
+                let v: LitInt = meta.value()?.parse()?;
+                out.vector_dim = Some(v.base10_parse()?);
+            } else if meta.path.is_ident("half") {
+                out.vector_half = true;
+            } else if meta.path.is_ident("json") {
+                out.force_json = true;
+            } else {
+                return Err(meta.error("unknown #[coco(...)] option"));
+            }
+            Ok(())
+        })?;
+    }
+    Ok(out)
+}
+
+/// If `ty` is `Option<T>`, return `Some(T)`; otherwise `None`.
+fn option_inner(ty: &Type) -> Option<&Type> {
+    let Type::Path(tp) = ty else { return None };
+    let seg = tp.path.segments.last()?;
+    if seg.ident != "Option" {
+        return None;
+    }
+    let syn::PathArguments::AngleBracketed(args) = &seg.arguments else {
+        return None;
+    };
+    args.args.iter().find_map(|a| match a {
+        syn::GenericArgument::Type(t) => Some(t),
+        _ => None,
+    })
+}
+
+/// The last path-segment identifier of a type, e.g. `i64`, `String`, `Vec`.
+fn type_ident(ty: &Type) -> Option<String> {
+    let Type::Path(tp) = ty else { return None };
+    Some(tp.path.segments.last()?.ident.to_string())
+}
+
+/// The single generic argument's identifier, e.g. `u8` for `Vec<u8>`.
+fn first_generic_ident(ty: &Type) -> Option<String> {
+    let Type::Path(tp) = ty else { return None };
+    let seg = tp.path.segments.last()?;
+    let syn::PathArguments::AngleBracketed(args) = &seg.arguments else {
+        return None;
+    };
+    args.args.iter().find_map(|a| match a {
+        syn::GenericArgument::Type(t) => type_ident(t),
+        _ => None,
+    })
+}
+
+/// Map a (non-`Option`) Rust type to a `LogicalType` token expression, honoring
+/// `#[coco(...)]` overrides. Mirrors the leaf-type dispatch in Python's
+/// per-connector `_LEAF_TYPE_MAPPINGS`.
+fn logical_type_tokens(ty: &Type, attr: &SchemaFieldAttr) -> TokenStream2 {
+    if let Some(t) = &attr.custom_type {
+        return quote! { ::cocoindex::LogicalType::Custom(::std::string::String::from(#t)) };
+    }
+    if let Some(dim) = attr.vector_dim {
+        let half = attr.vector_half;
+        return quote! { ::cocoindex::LogicalType::Vector { dim: #dim, half: #half } };
+    }
+    if attr.force_json {
+        return quote! { ::cocoindex::LogicalType::Json };
+    }
+    let variant = match type_ident(ty).as_deref() {
+        Some("bool") => quote! { Bool },
+        Some("i8" | "i16") => quote! { Int16 },
+        Some("i32") => quote! { Int32 },
+        Some("i64" | "isize") => quote! { Int64 },
+        Some("u8" | "u16") => quote! { Int32 },
+        Some("u32" | "u64" | "usize") => quote! { Int64 },
+        Some("f32") => quote! { Float32 },
+        Some("f64") => quote! { Float64 },
+        Some("String" | "str") => quote! { Text },
+        Some("Uuid") => quote! { Uuid },
+        Some("NaiveDate") => quote! { Date },
+        Some("NaiveTime") => quote! { Time },
+        Some("NaiveDateTime" | "DateTime") => quote! { DateTime },
+        Some("Decimal") => quote! { Decimal },
+        // `Vec<u8>` is bytes; any other `Vec<_>` falls through to JSON.
+        Some("Vec") if first_generic_ident(ty).as_deref() == Some("u8") => quote! { Bytes },
+        // Everything else (collections, maps, nested structs, enums) → JSON.
+        _ => quote! { Json },
+    };
+    quote! { ::cocoindex::LogicalType::#variant }
+}
+
+/// `#[derive(SchemaFields)]` — derive a connector-agnostic table schema from a
+/// row struct, the Rust analogue of Python's `TableSchema.from_class`. Pass the
+/// type to a connector's `TableSchema::from_row::<T>(primary_key)`.
+///
+/// `Option<T>` fields become nullable columns; everything else is `NOT NULL`.
+/// See [`cocoindex::row_schema`] for the `#[coco(...)]` field attributes.
+#[proc_macro_derive(SchemaFields, attributes(coco))]
+pub fn derive_schema_fields(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as syn::DeriveInput);
+    let name = &input.ident;
+    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
+
+    let syn::Data::Struct(data) = &input.data else {
+        return SynError::new_spanned(&input, "SchemaFields can only be derived for structs")
+            .to_compile_error()
+            .into();
+    };
+    let syn::Fields::Named(fields) = &data.fields else {
+        return SynError::new_spanned(
+            &data.fields,
+            "SchemaFields requires a struct with named fields",
+        )
+        .to_compile_error()
+        .into();
+    };
+
+    let mut entries = Vec::new();
+    for field in &fields.named {
+        let attr = match parse_schema_field_attr(&field.attrs) {
+            Ok(a) => a,
+            Err(e) => return e.to_compile_error().into(),
+        };
+        let ident = field.ident.as_ref().expect("named field");
+        let name_str = attr.rename.clone().unwrap_or_else(|| ident.to_string());
+
+        let (base_ty, nullable) = match option_inner(&field.ty) {
+            Some(inner) => (inner, true),
+            None => (&field.ty, false),
+        };
+        let logical = logical_type_tokens(base_ty, &attr);
+        entries.push(quote! {
+            ::cocoindex::SchemaField {
+                name: ::std::string::String::from(#name_str),
+                logical_type: #logical,
+                nullable: #nullable,
+            }
+        });
+    }
+
+    quote! {
+        impl #impl_generics ::cocoindex::SchemaFields for #name #ty_generics #where_clause {
+            fn schema_fields() -> ::std::vec::Vec<::cocoindex::SchemaField> {
+                ::std::vec![ #(#entries),* ]
+            }
+        }
+    }
+    .into()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

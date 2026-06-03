@@ -35,6 +35,7 @@ pub(crate) mod profile;
 #[cfg(feature = "qdrant")]
 pub mod qdrant;
 pub mod resources;
+pub mod row_schema;
 #[cfg(feature = "sqlite")]
 pub mod sqlite;
 #[cfg(any(feature = "doris", feature = "sqlite", feature = "surrealdb"))]
@@ -95,7 +96,8 @@ pub use target_state::{
 };
 
 // Re-export proc macros
-pub use cocoindex_macros::function;
+pub use cocoindex_macros::{SchemaFields, function};
+pub use row_schema::{LogicalType, SchemaField, SchemaFields};
 
 // Re-exported so users can implement the async `LiveComponent` / `LiveMapFeed`
 // / `LiveMapView` traits as `#[cocoindex::async_trait]` without taking their own

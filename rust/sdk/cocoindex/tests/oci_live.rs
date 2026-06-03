@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 use cocoindex::oci_object_storage::{
     ListOptions, OciClient, OciConfig, OciFile, list_objects_live,
 };
-use cocoindex::{App, Result, UpdateOptions};
+use cocoindex::{App, LiveMapView, PatternFilePathMatcher, Result, UpdateOptions};
 use rsa::RsaPrivateKey;
 use rsa::pkcs8::{EncodePrivateKey, LineEnding};
 use serde_json::json;
@@ -207,6 +207,206 @@ async fn oci_live_view_scan_then_events() -> Result<()> {
         vec!["a.txt".to_string(), "new.txt".to_string()],
         "only the scanned object and the in-window create event should be processed \
          (old/cross-bucket/malformed dropped, delete is a no-op)"
+    );
+    Ok(())
+}
+
+/// Run a live view (empty scan) over `events`, waiting until `sentinel` is
+/// processed, then return everything processed. Because the watch loop handles
+/// events in order on a single task, once a later sentinel event is seen, every
+/// earlier event has already been handled — so absence of an earlier key is a
+/// deterministic assertion (it was filtered, not merely not-yet-seen).
+async fn run_live_until(
+    client: &OciClient,
+    options: ListOptions,
+    events: Vec<Vec<u8>>,
+    sentinel: &str,
+    db_path: &std::path::Path,
+) -> Vec<String> {
+    let processed: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let app = App::builder("OciLiveEdge")
+        .db_path(db_path)
+        .build()
+        .await
+        .unwrap();
+    let handle = app
+        .start_update_with_options(
+            UpdateOptions {
+                full_reprocess: false,
+                live: true,
+                ..UpdateOptions::default()
+            },
+            {
+                let processed = processed.clone();
+                let client = client.clone();
+                move |ctx| {
+                    let processed = processed.clone();
+                    let client = client.clone();
+                    let events = events.clone();
+                    async move {
+                        let feed = list_objects_live(
+                            &client,
+                            "ns",
+                            "bucket",
+                            options,
+                            futures::stream::iter(events),
+                        );
+                        ctx.mount_each_live(&"objects", feed, move |_ctx, file: OciFile| {
+                            let processed = processed.clone();
+                            async move {
+                                processed
+                                    .lock()
+                                    .unwrap()
+                                    .push(file.file_path().path().to_string());
+                                Ok(())
+                            }
+                        })
+                        .await
+                    }
+                }
+            },
+        )
+        .unwrap();
+
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        if processed.lock().unwrap().iter().any(|k| k == sentinel) {
+            break;
+        }
+        if Instant::now() > deadline {
+            let got = processed.lock().unwrap().clone();
+            panic!("live view did not process sentinel {sentinel:?} in time; got={got:?}");
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let _ = app.drop_state().await;
+    let _ = tokio::time::timeout(Duration::from_secs(10), handle.result()).await;
+    let out = processed.lock().unwrap().clone();
+    out
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn oci_live_view_max_file_size_filters_after_head() -> Result<()> {
+    let server = MockServer::start().await;
+    // Empty scan.
+    Mock::given(method("GET"))
+        .and(path("/n/ns/b/bucket/o"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "objects": [] })))
+        .mount(&server)
+        .await;
+    // "big.txt" exists but exceeds the size cap; "ok.txt" is within it.
+    Mock::given(method("HEAD"))
+        .and(path("/n/ns/b/bucket/o/big.txt"))
+        .respond_with(ResponseTemplate::new(200).insert_header("content-length", "100"))
+        .mount(&server)
+        .await;
+    Mock::given(method("HEAD"))
+        .and(path("/n/ns/b/bucket/o/ok.txt"))
+        .respond_with(ResponseTemplate::new(200).insert_header("content-length", "5"))
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let client = client_for(&server.uri(), &tmp.path().join("key.pem"));
+    let options = ListOptions {
+        max_file_size: Some(10),
+        ..Default::default()
+    };
+    let events = vec![
+        event(
+            "com.oraclecloud.objectstorage.createobject",
+            "2099-01-01T00:00:00Z",
+            "ns",
+            "bucket",
+            "big.txt",
+        ),
+        event(
+            "com.oraclecloud.objectstorage.createobject",
+            "2099-01-01T00:00:00Z",
+            "ns",
+            "bucket",
+            "ok.txt",
+        ),
+    ];
+    let got = run_live_until(&client, options, events, "ok.txt", &tmp.path().join("db")).await;
+    assert!(
+        !got.iter().any(|k| k == "big.txt"),
+        "an object exceeding max_file_size must be filtered after the HEAD; got={got:?}"
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn oci_live_view_path_matcher_filters_before_head() -> Result<()> {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/n/ns/b/bucket/o"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "objects": [] })))
+        .mount(&server)
+        .await;
+    // Only "keep.txt" is mocked; "skip.log" must be filtered by the matcher
+    // *before* any HEAD (so its absence here would 404 → no-op anyway).
+    Mock::given(method("HEAD"))
+        .and(path("/n/ns/b/bucket/o/keep.txt"))
+        .respond_with(ResponseTemplate::new(200).insert_header("content-length", "3"))
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let client = client_for(&server.uri(), &tmp.path().join("key.pem"));
+    let options = ListOptions {
+        path_matcher: Some(Arc::new(PatternFilePathMatcher::include(["*.txt"]).unwrap())),
+        ..Default::default()
+    };
+    let events = vec![
+        event(
+            "com.oraclecloud.objectstorage.createobject",
+            "2099-01-01T00:00:00Z",
+            "ns",
+            "bucket",
+            "skip.log",
+        ),
+        event(
+            "com.oraclecloud.objectstorage.createobject",
+            "2099-01-01T00:00:00Z",
+            "ns",
+            "bucket",
+            "keep.txt",
+        ),
+    ];
+    let got = run_live_until(&client, options, events, "keep.txt", &tmp.path().join("db")).await;
+    assert!(
+        !got.iter().any(|k| k == "skip.log"),
+        "an object excluded by the path matcher must be dropped; got={got:?}"
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn oci_live_view_scan_failure_propagates() -> Result<()> {
+    let server = MockServer::start().await;
+    // ListObjects fails — the initial scan must surface the error.
+    Mock::given(method("GET"))
+        .and(path("/n/ns/b/bucket/o"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let client = client_for(&server.uri(), &tmp.path().join("key.pem"));
+    // The catch-up `scan` (which the live component runs first) must surface the
+    // ListObjects failure rather than silently yielding an empty snapshot.
+    let feed = list_objects_live(
+        &client,
+        "ns",
+        "bucket",
+        ListOptions::default(),
+        futures::stream::empty::<Vec<u8>>(),
+    );
+    let result = feed.scan().await;
+    assert!(
+        result.is_err(),
+        "a failed ListObjects scan should propagate as an error, got {result:?}"
     );
     Ok(())
 }

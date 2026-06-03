@@ -13,8 +13,7 @@
 //! requires a `deletion_value_fn`; deleting a declared message without one is an
 //! error (mirroring the Python `iggy` connector).
 //!
-//! Use [`iggy_topic_target`] to build a composable target state, or
-//! [`declare_iggy_topic_target`] / [`mount_iggy_topic_target`] to get a handle
+//! Use [`declare_iggy_topic_target`] / [`mount_iggy_topic_target`] to get a handle
 //! for declaring messages.
 //!
 //! This is the Rust analogue of Python's `cocoindex.connectors.iggy` target,
@@ -27,7 +26,7 @@ use bytes::Bytes;
 use cocoindex_utils::fingerprint::Fingerprint;
 use iggy::prelude::{
     Client, Consumer, Identifier, IggyClient, IggyMessage, MessageClient, Partitioning,
-    PollingStrategy,
+    PollingStrategy, TopicClient,
 };
 use serde::{Deserialize, Serialize};
 
@@ -41,9 +40,8 @@ use crate::ctx::Ctx;
 use crate::error::{Error, Result};
 use crate::live_component::{LiveMapFeed, LiveMapSubscriber, LiveMapView};
 use crate::target_state::{
-    ChildTargetDef, StableKey, TargetAction, TargetActionSink, TargetHandler,
-    TargetReconcileOutput, TargetState, TargetStateProvider, declare_target_state,
-    register_root_target_states_provider,
+    StableKey, TargetAction, TargetActionSink, TargetHandler, TargetReconcileOutput,
+    TargetStateProvider, declare_target_state, register_root_target_states_provider,
 };
 
 // ---------------------------------------------------------------------------
@@ -141,39 +139,6 @@ pub struct IggyTopicTarget {
     topic: Arc<str>,
 }
 
-/// Build a composable [`TargetState`] for an Iggy stream/topic. Pass it to
-/// [`declare_iggy_topic_target`]/[`mount_iggy_topic_target`], or to the generic
-/// [`crate::target_state::declare_target_state_with_child`]/`mount_target`.
-pub fn iggy_topic_target(
-    ctx: &Ctx,
-    producer: &IggyProducer,
-    stream: impl Into<String>,
-    topic: impl Into<String>,
-    options: IggyTopicOptions,
-) -> Result<TargetState<TopicSpec>> {
-    let stream = stream.into();
-    let topic = topic.into();
-    let provider = register_root_target_states_provider(
-        ctx,
-        format!(
-            "cocoindex/iggy/topic_spec/{}/{}/{}/{}",
-            producer.state_id(),
-            stream,
-            topic,
-            options.partition
-        ),
-        TopicHandler::new(producer.client.clone(), options.clone()),
-    )?;
-    Ok(provider.target_state(
-        "default",
-        TopicSpec {
-            stream,
-            topic,
-            partition: options.partition,
-        },
-    ))
-}
-
 /// Declare an Iggy topic target and return a ready same-component handle.
 /// No external setup is needed, so this uses the same immediate provider path as
 /// [`mount_iggy_topic_target`].
@@ -250,107 +215,7 @@ impl IggyTopicTarget {
 }
 
 // ---------------------------------------------------------------------------
-// Topic container handler (root)
-// ---------------------------------------------------------------------------
-
-/// The topic container spec (stream/topic/partition). Tracking record + spec are
-/// the same: the stream/topic are user-managed, so this never creates/drops.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub struct TopicSpec {
-    stream: String,
-    topic: String,
-    partition: u32,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct TopicAction {
-    stream: String,
-    topic: String,
-    partition: u32,
-}
-
-struct TopicHandler {
-    client: Arc<IggyClient>,
-    deletion_value_fn: Option<DeletionValueFn>,
-}
-
-impl TopicHandler {
-    fn new(client: Arc<IggyClient>, options: IggyTopicOptions) -> Self {
-        Self {
-            client,
-            deletion_value_fn: options.deletion_value_fn,
-        }
-    }
-}
-
-impl TargetHandler<TopicSpec> for TopicHandler {
-    type TrackingRecord = TopicSpec;
-    type Action = TopicAction;
-
-    fn reconcile(
-        &self,
-        _key: StableKey,
-        desired: Option<TopicSpec>,
-        _prev: Vec<TopicSpec>,
-        _prev_may_be_missing: bool,
-    ) -> Result<Option<TargetReconcileOutput<TopicAction, TopicSpec>>> {
-        // Always emit when the topic is declared, so the sink runs and fulfills
-        // the message child provider. The stream/topic are user-managed (no
-        // create/drop), so there is nothing to do on un-declare.
-        let Some(spec) = desired else {
-            return Ok(None);
-        };
-        Ok(Some(TargetReconcileOutput {
-            action: TargetAction::Update(TopicAction {
-                stream: spec.stream.clone(),
-                topic: spec.topic.clone(),
-                partition: spec.partition,
-            }),
-            sink: self.topic_sink(),
-            tracking_record: Some(spec),
-            child_invalidation: None,
-        }))
-    }
-}
-
-impl TopicHandler {
-    /// Container sink: fulfills each declared topic with a fresh message child
-    /// handler bound to that stream/topic/partition.
-    fn topic_sink(&self) -> TargetActionSink<TopicAction> {
-        let client = self.client.clone();
-        let deletion_value_fn = self.deletion_value_fn.clone();
-        TargetActionSink::from_async_fn_with_children(
-            move |actions: Vec<TargetAction<TopicAction>>| {
-                let client = client.clone();
-                let deletion_value_fn = deletion_value_fn.clone();
-                async move {
-                    let mut out: Vec<Option<ChildTargetDef>> = Vec::with_capacity(actions.len());
-                    for action in actions {
-                        match action {
-                            TargetAction::Create(a) | TargetAction::Update(a) => {
-                                out.push(Some(ChildTargetDef::new::<Vec<u8>, _>(
-                                    MessageHandler::new(
-                                        client.clone(),
-                                        a.stream,
-                                        a.topic,
-                                        a.partition,
-                                        deletion_value_fn.clone(),
-                                    ),
-                                )));
-                            }
-                            // Topic un-declared: user-managed, nothing to drop.
-                            TargetAction::Delete(_) => out.push(None),
-                        }
-                    }
-                    Ok(out)
-                }
-            },
-        )
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Message handler (child)
+// Message handler (root)
 // ---------------------------------------------------------------------------
 
 /// What the sink should send for one message: a record with this value.
@@ -748,26 +613,30 @@ impl LiveMapFeed<String, Vec<u8>> for IggyTopicMap {
 // `topic_as_stream(...).payloads()`).
 // ---------------------------------------------------------------------------
 
-/// A **keyless, append-only** payload feed over one Iggy topic partition — the
-/// Rust analogue of Python's `topic_as_stream(...).payloads()`.
+/// A **keyless, append-only** payload feed over **all partitions** of an Iggy
+/// topic — the Rust analogue of Python's `topic_as_stream(...).payloads()`,
+/// extended to read every partition (like the Rust Kafka stream) instead of one.
 ///
-/// Unlike [`IggyTopicMap`], no key function or deletion predicate is needed and
-/// nothing is compacted: every message is delivered exactly once, keyed by its
-/// offset, so each becomes a distinct child under
+/// Unlike [`IggyTopicMap`] (which is keyed and per-partition), no key function or
+/// deletion predicate is needed and nothing is compacted: every message is
+/// delivered exactly once, keyed by its `"{partition}:{offset}"` position, so
+/// each becomes a distinct child under
 /// [`Ctx::mount_each_live`](crate::Ctx::mount_each_live).
 ///
-/// As a [`LiveMapView`], [`scan`](LiveMapView::scan) reads the partition log up
-/// to its current offset and [`watch`](LiveMapFeed::watch) tails new messages
-/// from there. Re-running is idempotent: offset keys are stable. Single-partition.
+/// As a [`LiveMapView`], [`scan`](LiveMapView::scan) reads every partition up to
+/// its current offset (so readiness reflects all partitions being caught up) and
+/// [`watch`](LiveMapFeed::watch) round-robins new messages across partitions.
+/// Re-running is idempotent: the `partition:offset` keys are stable.
 pub struct IggyTopicStream {
     client: Arc<IggyClient>,
     stream: String,
     topic: String,
-    partition: u32,
-    watch_start: Arc<tokio::sync::Mutex<u64>>,
+    /// Per-partition offset `watch` resumes from — the offset `scan` reached for
+    /// each partition.
+    watch_start: Arc<tokio::sync::Mutex<BTreeMap<u32, u64>>>,
 }
 
-/// Build an [`IggyTopicStream`] over `stream`/`topic` partition `0` (keyless
+/// Build an [`IggyTopicStream`] over all partitions of `stream`/`topic` (keyless
 /// payload stream).
 pub fn topic_as_stream(
     consumer: &IggyConsumer,
@@ -778,8 +647,7 @@ pub fn topic_as_stream(
         client: consumer.client.clone(),
         stream: stream.into(),
         topic: topic.into(),
-        partition: 0,
-        watch_start: Arc::new(tokio::sync::Mutex::new(0)),
+        watch_start: Arc::new(tokio::sync::Mutex::new(BTreeMap::new())),
     }
 }
 
@@ -792,18 +660,48 @@ impl IggyTopicStream {
         Ok((stream, topic))
     }
 
+    /// The topic's partition IDs (from topic details).
+    async fn partition_ids(&self, stream: &Identifier, topic: &Identifier) -> Result<Vec<u32>> {
+        let details = self
+            .client
+            .get_topic(stream, topic)
+            .await
+            .map_err(|e| Error::engine(format!("iggy get_topic: {e}")))?
+            .ok_or_else(|| {
+                Error::engine(format!(
+                    "iggy topic {:?}/{:?} not found",
+                    self.stream, self.topic
+                ))
+            })?;
+        let mut ids: Vec<u32> = details.partitions.iter().map(|p| p.id).collect();
+        // Some servers report `partitions_count` without enumerating partitions;
+        // fall back to the conventional 1..=count range.
+        if ids.is_empty() && details.partitions_count > 0 {
+            ids = (1..=details.partitions_count).collect();
+        }
+        if ids.is_empty() {
+            return Err(Error::engine(format!(
+                "iggy topic {:?}/{:?} has no partitions",
+                self.stream, self.topic
+            )));
+        }
+        ids.sort_unstable();
+        Ok(ids)
+    }
+
     async fn poll_from(
         &self,
         stream: &Identifier,
         topic: &Identifier,
         consumer: &Consumer,
+        partition: u32,
         offset: u64,
     ) -> Result<iggy::prelude::PolledMessages> {
         self.client
             .poll_messages(
                 stream,
                 topic,
-                Some(self.partition),
+                Some(partition),
                 consumer,
                 &PollingStrategy::offset(offset),
                 1000,
@@ -819,23 +717,28 @@ impl LiveMapView<String, Vec<u8>> for IggyTopicStream {
     async fn scan(&self) -> Result<Vec<(String, Vec<u8>)>> {
         let (stream, topic) = self.ids()?;
         let consumer = IggyTopicMap::consumer()?;
+        let ids = self.partition_ids(&stream, &topic).await?;
         let mut out: Vec<(String, Vec<u8>)> = Vec::new();
-        let mut offset = 0u64;
-        loop {
-            let polled = self.poll_from(&stream, &topic, &consumer, offset).await?;
-            if polled.messages.is_empty() {
-                break;
+        let mut ends: BTreeMap<u32, u64> = BTreeMap::new();
+        for pid in ids {
+            let mut offset = 0u64;
+            loop {
+                let polled = self.poll_from(&stream, &topic, &consumer, pid, offset).await?;
+                if polled.messages.is_empty() {
+                    break;
+                }
+                let hwm = polled.current_offset;
+                for m in &polled.messages {
+                    offset = m.header.offset + 1;
+                    out.push((format!("{pid}:{}", m.header.offset), m.payload.to_vec()));
+                }
+                if offset > hwm {
+                    break;
+                }
             }
-            let hwm = polled.current_offset;
-            for m in &polled.messages {
-                offset = m.header.offset + 1;
-                out.push((m.header.offset.to_string(), m.payload.to_vec()));
-            }
-            if offset > hwm {
-                break;
-            }
+            ends.insert(pid, offset);
         }
-        *self.watch_start.lock().await = offset;
+        *self.watch_start.lock().await = ends;
         Ok(out)
     }
 }
@@ -845,18 +748,23 @@ impl LiveMapFeed<String, Vec<u8>> for IggyTopicStream {
     async fn watch(&self, subscriber: LiveMapSubscriber<String, Vec<u8>>) -> Result<()> {
         let (stream, topic) = self.ids()?;
         let consumer = IggyTopicMap::consumer()?;
-        let mut offset = *self.watch_start.lock().await;
+        let mut offsets = self.watch_start.lock().await.clone();
+        let ids = self.partition_ids(&stream, &topic).await?;
         loop {
-            let polled = self.poll_from(&stream, &topic, &consumer, offset).await?;
-            if polled.messages.is_empty() {
-                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-                continue;
+            let mut got_any = false;
+            for &pid in &ids {
+                let offset = *offsets.get(&pid).unwrap_or(&0);
+                let polled = self.poll_from(&stream, &topic, &consumer, pid, offset).await?;
+                for m in &polled.messages {
+                    got_any = true;
+                    offsets.insert(pid, m.header.offset + 1);
+                    subscriber
+                        .update(format!("{pid}:{}", m.header.offset), m.payload.to_vec())
+                        .await?;
+                }
             }
-            for m in &polled.messages {
-                offset = m.header.offset + 1;
-                subscriber
-                    .update(m.header.offset.to_string(), m.payload.to_vec())
-                    .await?;
+            if !got_any {
+                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
             }
         }
     }
