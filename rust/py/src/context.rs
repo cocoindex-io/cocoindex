@@ -6,6 +6,7 @@ use crate::stable_path::PyStableKey;
 use crate::app::PyStatsGroupHandle;
 use crate::{environment::PyEnvironment, stable_path::PyStablePath};
 use cocoindex_core::engine::context::{ComponentProcessorContext, FnCallContext};
+use cocoindex_core::state::stable_path::StableKey;
 use pyo3::types::PyDict;
 use pyo3_async_runtimes::tokio::future_into_py;
 
@@ -95,6 +96,26 @@ impl PyComponentProcessorContext {
                 .into_py_result()?;
             Ok(id)
         })
+    }
+
+    /// Declare a persistent state key for this component build.
+    ///
+    /// Returns the previously stored bytes for `key` if available, otherwise
+    /// `initial_value`. Raises if the same key is declared more than once
+    /// within the same component run.
+    fn use_state(&self, key: String, initial_value: Vec<u8>) -> PyResult<Vec<u8>> {
+        let stable_key = StableKey::Symbol(key.into());
+        self.0.use_state(stable_key, initial_value).into_py_result()
+    }
+
+    /// Update the value for an already-declared state key.
+    ///
+    /// Raises if `key` was not declared via `use_state` in this component run.
+    fn update_user_state(&self, key: String, value: Vec<u8>) -> PyResult<()> {
+        let stable_key = StableKey::Symbol(key.into());
+        self.0
+            .update_user_state(&stable_key, value)
+            .into_py_result()
     }
 }
 

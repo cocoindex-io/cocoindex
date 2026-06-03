@@ -99,6 +99,8 @@ class ComponentProcessorContext:
         refresh_interval_secs: float | None = None,
     ) -> tuple[ComponentProcessorContext, StatsGroupHandle]: ...
     def end_stats_group(self) -> None: ...
+    def use_state(self, key: str, initial_value: bytes) -> bytes: ...
+    def update_user_state(self, key: str, value: bytes) -> None: ...
 
 # --- FnCallContext ---
 class FnCallContext:
@@ -530,3 +532,22 @@ class Batcher(Generic[T, R_co]):
         async_ctx: AsyncContext,
     ) -> "Batcher[T, R_co]": ...
     def run(self, input: T) -> Coroutine[Any, Any, R_co]: ...
+
+########################################################
+# Rate limiting
+########################################################
+
+# --- RateLimiter ---
+class RateLimiter:
+    """Token-bucket rate limiter (governor-based).
+
+    ``acquire(n)`` waits until ``n`` tokens are available; concurrent
+    callers are served in FIFO order. ``burst_window_secs`` sets how many
+    seconds' worth of tokens (``max_rows_per_second * burst_window_secs``)
+    may accumulate while idle.
+    """
+
+    def __new__(
+        cls, max_rows_per_second: float, burst_window_secs: float = 1.0
+    ) -> "RateLimiter": ...
+    def acquire(self, n: int = 1) -> Coroutine[Any, Any, None]: ...

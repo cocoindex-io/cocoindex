@@ -331,6 +331,10 @@ pub struct CommitPlan {
     pub fn_memo_clear_all_first: bool,
     pub fn_memo_writes: Vec<(Fingerprint, Vec<u8>)>,
     pub fn_memo_deletes: Vec<Fingerprint>,
+    /// If true, prefix-delete all user-state rows for self before writing.
+    pub user_state_clear_all_first: bool,
+    pub user_state_writes: Vec<(StableKey, Vec<u8>)>,
+    pub user_state_deletes: Vec<StableKey>,
     /// In-memory child tree after this build. AppStore feeds it to
     /// `existence_reconciler` (see [`AppStore::commit`]) inside its
     /// commit txn, so the children-`__cex` read + tombstone writes
@@ -351,8 +355,13 @@ pub struct CommitPlan {
 /// `&'a mut WriteTxn<'env>` borrow is bounded by the callback's await
 /// suspension scope. The body's future is `'a`-tied so it can't outlive
 /// the borrow.
+///
+/// `Fn` (not `FnOnce`) so a backend that re-runs its commit txn can
+/// invoke the reconciler more than once; it therefore clones or
+/// `Arc`-shares its captures rather than moving them in. The LMDB
+/// AppStore invokes it exactly once.
 pub type ExistenceReconciler =
-    Box<dyn for<'a, 'env> FnOnce(&'a mut WriteTxn<'env>) -> BoxFuture<'a, Result<()>> + Send>;
+    Box<dyn for<'a, 'env> Fn(&'a mut WriteTxn<'env>) -> BoxFuture<'a, Result<()>> + Send + Sync>;
 
 // ---------------------------------------------------------------------------
 // AppStore methods — Phase 2 driver + Phase 4 commit / cleanup
@@ -475,6 +484,21 @@ impl AppStore {
                     for (fp, bytes) in plan.fn_memo_writes {
                         app_store
                             .write_fn_memo_raw(wtxn, &component_path, fp, &bytes)
+                            .await?;
+                    }
+                    if plan.user_state_clear_all_first {
+                        app_store
+                            .delete_all_user_states(wtxn, &component_path)
+                            .await?;
+                    }
+                    for key in plan.user_state_deletes {
+                        app_store
+                            .delete_user_state(wtxn, &component_path, &key)
+                            .await?;
+                    }
+                    for (key, bytes) in plan.user_state_writes {
+                        app_store
+                            .write_user_state(wtxn, &component_path, &key, &bytes)
                             .await?;
                     }
                     existence_reconciler(wtxn).await?;

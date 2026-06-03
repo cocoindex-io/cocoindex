@@ -65,6 +65,17 @@ repos:
           files: ^(rust/|Cargo\.toml)
           pass_filenames: false
 
+        - id: update-rust-extern-locks
+          name: update Cargo.lock (rust examples + benchmarks)
+          entry: ./dev/update_rust_extern_locks.sh
+          language: system
+          # Any rust/ change can shift the cocoindex SDK's transitive deps and
+          # stale these external lockfiles, so trigger on the whole rust tree.
+          # Ordered before cargo-test-rust-externs so a refresh in the same run
+          # satisfies its `--locked` check.
+          files: ^(rust/|examples/rust/|benchmarks/.*/rust/|Cargo\.toml)
+          pass_filenames: false
+
         - id: cargo-test-rust-externs
           name: cargo test (rust examples + benchmarks)
           entry: ./dev/run_cargo_test_rust_externs.sh
