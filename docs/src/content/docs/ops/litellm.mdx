@@ -1,14 +1,14 @@
 ---
-title: "*LiteLLM* embeddings"
+title: "*LiteLLM* embeddings & speech-to-text"
 description: >
-  Embed text through LiteLLM's unified API across 100+ providers (OpenAI, Azure,
-  Vertex AI, Bedrock, Cohere, and more) — with VectorSchemaProvider for
-  automatic vector column configuration.
+  Embed text and transcribe audio through LiteLLM's unified API across 100+
+  providers (OpenAI, Azure, Vertex AI, Bedrock, Cohere, and more) — with
+  VectorSchemaProvider for automatic vector column configuration.
 ---
-The `cocoindex.ops.litellm` module provides integration with the [LiteLLM](https://docs.litellm.ai/) library for text embeddings.
+The `cocoindex.ops.litellm` module provides integration with the [LiteLLM](https://docs.litellm.ai/) library for text embeddings (`LiteLLMEmbedder`) and speech-to-text transcription (`LiteLLMTranscriber`).
 
 ```python
-from cocoindex.ops.litellm import LiteLLMEmbedder
+from cocoindex.ops.litellm import LiteLLMEmbedder, LiteLLMTranscriber
 ```
 
 :::note[Dependencies]
@@ -100,6 +100,52 @@ target_table = await postgres.mount_table_target(
 ```
 
 The connector automatically creates the appropriate `vector(N)` column. See the [Connectors](../connectors/postgres) docs for other supported backends (LanceDB, Qdrant, SQLite).
+
+## Speech-to-text
+
+The `LiteLLMTranscriber` class is a wrapper around LiteLLM's transcription API that turns audio into text through any LiteLLM-supported speech-to-text provider (OpenAI Whisper, ElevenLabs, Groq, and more) using a unified interface.
+
+### Creating a transcriber
+
+All extra keyword arguments are passed through to every `litellm.atranscription` call (e.g., `api_key`, `api_base`, `language`, `extra_body`).
+
+```python
+from cocoindex.ops.litellm import LiteLLMTranscriber
+
+transcriber = LiteLLMTranscriber("whisper-1")
+
+# With an explicit API key
+transcriber = LiteLLMTranscriber("whisper-1", api_key="sk-...")
+
+# With a default language hint applied to every call
+transcriber = LiteLLMTranscriber("whisper-1", language="en")
+```
+
+### Transcribing audio
+
+The `transcribe()` method takes a `FileLike` object (such as a `localfs.File`) containing audio data and returns the transcribed text as a `str`. It's an async method — use `await` when calling it. Per-call keyword arguments override the defaults provided at construction time:
+
+```python
+# In a CocoIndex function, `file` is a FileLike (e.g. localfs.File)
+transcript = await transcriber.transcribe(file)
+
+# Override or add per-call options
+transcript = await transcriber.transcribe(file, response_format="verbose_json")
+```
+
+A complete pipeline that walks local audio files, transcribes each one, and stores the transcripts in Postgres is available in the [`audio_to_text` example](https://github.com/cocoindex-io/cocoindex/tree/main/examples/audio_to_text).
+
+### Supported transcription providers
+
+`LiteLLMTranscriber` accepts any model string supported by LiteLLM's transcription API. A few common examples:
+
+| Model | Model string | Environment variables |
+|-------|-------------|-----------------------|
+| OpenAI Whisper | `whisper-1` | `OPENAI_API_KEY` |
+| ElevenLabs Scribe | `elevenlabs/scribe_v1` | `ELEVENLABS_API_KEY` |
+| Groq Whisper Large V3 | `groq/whisper-large-v3` | `GROQ_API_KEY` |
+
+See the [LiteLLM audio transcription docs](https://docs.litellm.ai/docs/audio_transcription) for the full list of providers and model strings.
 
 ## Supported providers
 
