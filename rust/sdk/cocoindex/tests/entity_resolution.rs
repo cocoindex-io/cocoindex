@@ -4,7 +4,7 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 use cocoindex::{
     CanonicalSide, EntityEmbedder, ExistingCanonicalPolicy, PairDecision, PairResolver,
-    ResolveOptions, resolve_entities,
+    ResolutionEvent, ResolveOptions, resolve_entities, resolve_entities_with_events,
 };
 
 #[derive(Default)]
@@ -222,4 +222,55 @@ async fn invalid_resolver_match_is_rejected() {
     .await
     .unwrap_err();
     assert!(err.to_string().contains("not in candidates"));
+}
+
+#[tokio::test]
+async fn on_resolution_delivers_one_event_per_entity_in_order() {
+    // Two same-component aliases (A,B near each other) and one isolated entity
+    // (C, far away). B matches A; C seeds on its own.
+    let embedder = embedder(&[("A", &[1.0, 0.0]), ("B", &[0.99, 0.01]), ("C", &[0.0, 1.0])]);
+    let resolver = ScriptedResolver {
+        decisions: HashMap::from([(
+            ("B".to_string(), vec!["A".to_string()]),
+            PairDecision::matched("A"),
+        )]),
+        calls: Mutex::new(Vec::new()),
+    };
+
+    let collected: Mutex<Vec<ResolutionEvent>> = Mutex::new(Vec::new());
+    let cb = |event: &ResolutionEvent| collected.lock().unwrap().push(event.clone());
+
+    let result = resolve_entities_with_events(
+        ["C", "B", "A"],
+        &embedder,
+        &resolver,
+        None,
+        ResolveOptions::default(),
+        Some(&cb),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(result.canonical_of("B").unwrap(), "A");
+    assert_eq!(result.canonical_of("C").unwrap(), "C");
+
+    let events = collected.into_inner().unwrap();
+    // One event per distinct entity, delivered sorted by entity name.
+    let names: Vec<&str> = events.iter().map(|e| e.entity.as_str()).collect();
+    assert_eq!(names, ["A", "B", "C"]);
+
+    // B is the only entity that triggered a resolver call (it had a candidate).
+    let b = events.iter().find(|e| e.entity == "B").unwrap();
+    assert_eq!(b.candidates, vec!["A".to_string()]);
+    assert_eq!(b.canonical, "A");
+    assert!(b.decision.is_some());
+    assert!(!b.seeded);
+
+    // A and C seeded as canonicals with no resolver call.
+    for canon in ["A", "C"] {
+        let e = events.iter().find(|e| e.entity == canon).unwrap();
+        assert_eq!(e.canonical, canon);
+        assert!(e.candidates.is_empty());
+        assert!(e.decision.is_none());
+    }
 }

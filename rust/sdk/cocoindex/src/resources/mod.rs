@@ -4,4 +4,5 @@
 //! dependencies and are always available.
 
 pub mod chunk;
+pub mod embedder;
 pub mod schema;

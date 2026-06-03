@@ -57,6 +57,7 @@ async fn localfs_live_watch_reacts_to_create_and_delete() {
             UpdateOptions {
                 full_reprocess: false,
                 live: true,
+                ..UpdateOptions::default()
             },
             {
                 let seen = seen.clone();

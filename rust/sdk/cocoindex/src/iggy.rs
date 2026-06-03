@@ -17,9 +17,8 @@
 //! [`declare_iggy_topic_target`] / [`mount_iggy_topic_target`] to get a handle
 //! for declaring messages.
 //!
-//! This is the Rust analogue of Python's `cocoindex.connectors.iggy` **target**.
-//! The matching Iggy source (`topic_as_stream` / `topic_as_map`) is still a
-//! parity follow-up.
+//! This is the Rust analogue of Python's `cocoindex.connectors.iggy` target,
+//! plus a keyed-map source over one topic partition.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;

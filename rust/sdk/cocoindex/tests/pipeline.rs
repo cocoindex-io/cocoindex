@@ -892,6 +892,7 @@ async fn update_with_options_full_reprocess_forces_memo_execution() {
         cocoindex::UpdateOptions {
             full_reprocess: true,
             live: false,
+            ..cocoindex::UpdateOptions::default()
         },
         |ctx| async move {
             let result: i32 = ctx
@@ -973,6 +974,7 @@ async fn full_reprocess_forces_child_scope_memo_execution() {
         cocoindex::UpdateOptions {
             full_reprocess: true,
             live: false,
+            ..cocoindex::UpdateOptions::default()
         },
         |ctx| async move {
             ctx.scope(&"child", move |child| {
@@ -2525,6 +2527,7 @@ async fn ctx_auto_refresh_live_continues_after_post_ready_cycle_error() {
             cocoindex::UpdateOptions {
                 full_reprocess: false,
                 live: true,
+                ..cocoindex::UpdateOptions::default()
             },
             move |ctx| async move {
                 ctx.auto_refresh(&"poller", Duration::from_millis(5), move |_ctx| {

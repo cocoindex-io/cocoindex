@@ -62,6 +62,7 @@ async fn main() -> cocoindex::Result<()> {
             UpdateOptions {
                 full_reprocess: false,
                 live: true,
+                ..UpdateOptions::default()
             },
             body,
         )?;

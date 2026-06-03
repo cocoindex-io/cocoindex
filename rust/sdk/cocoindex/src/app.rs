@@ -7,14 +7,16 @@ use std::time::{Duration, Instant};
 
 use cocoindex_core::engine::app::{App as CoreApp, AppOpHandle, AppUpdateOptions};
 use cocoindex_core::engine::environment::{Environment, EnvironmentSettings};
+use cocoindex_core::engine::progress_display::{ProgressDisplayOptions, show_progress};
 use cocoindex_core::engine::stats::{ProcessingStats, TERMINATED_VERSION};
 use cocoindex_core::engine::target_state::TargetStateProviderRegistry;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 
 use crate::ctx::{ContextKey, ContextStore, Ctx};
 use crate::error::{Error, Result};
-use crate::profile::{BoxedProcessor, RustProfile, Value};
+use crate::profile::{Action, BoxedProcessor, RustProfile, Value};
 use crate::stats::RunStats;
 use crate::typemap::TypeMap;
 
@@ -305,8 +307,49 @@ impl App {
     {
         let handle = self.start_update_with_options(options, f)?;
         let processing_stats = handle.core.stats().clone();
-        let result = handle.result().await?;
+        let result = if options.report_to_stdout {
+            let value = show_progress(
+                handle.into_core(),
+                ProgressDisplayOptions::from_refresh_secs(
+                    options.progress_refresh_interval.map(|d| d.as_secs_f64()),
+                ),
+            )
+            .await
+            .map_err(|e| Error::engine(format!("{e}")))?;
+            value.deserialize()?
+        } else {
+            handle.result().await?
+        };
         Ok((result, processing_stats))
+    }
+
+    /// Run the pipeline in preview mode: compute the target actions that would
+    /// be applied, without applying them. Returns the collected actions (cf.
+    /// Python's `App.update(preview=True)`).
+    pub async fn preview<F, Fut, T>(&self, f: F) -> Result<Vec<PreviewAction>>
+    where
+        F: FnOnce(Ctx) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<T>> + Send + 'static,
+        T: Serialize + for<'de> Deserialize<'de> + Send + 'static,
+    {
+        let options = UpdateOptions {
+            preview: true,
+            ..UpdateOptions::default()
+        };
+        let handle = self.start_update_with_options::<F, Fut, T>(options, f)?;
+        handle.preview_actions().await
+    }
+
+    /// Run the pipeline in preview mode (blocking). Convenience for sync callers.
+    pub fn preview_blocking<F, Fut, T>(&self, f: F) -> Result<Vec<PreviewAction>>
+    where
+        F: FnOnce(Ctx) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<T>> + Send + 'static,
+        T: Serialize + for<'de> Deserialize<'de> + Send + 'static,
+    {
+        let rt = tokio::runtime::Runtime::new()
+            .map_err(|e| Error::engine(format!("failed to create tokio runtime: {e}")))?;
+        rt.block_on(self.preview(f))
     }
 
     /// Start an update and return a handle for progress/stat polling.
@@ -349,13 +392,22 @@ impl App {
             live: options.live,
         };
 
-        let (core, _preview_collector) = self
+        // In preview mode the engine collects target actions into this shared
+        // buffer instead of applying them. The element type (`Action`) is
+        // inferred from the `update` call below — the core's collector alias is
+        // crate-private, but the underlying `Arc<Mutex<Vec<_>>>` is not.
+        let preview_collector: Option<Arc<std::sync::Mutex<Vec<Action>>>> = options
+            .preview
+            .then(|| Arc::new(std::sync::Mutex::new(Vec::new())));
+
+        let (core, preview_collector) = self
             .inner
             .core_app
-            .update(processor, core_options, Arc::new(()), None)
+            .update(processor, core_options, Arc::new(()), preview_collector)
             .map_err(|e| Error::engine(format!("{e}")))?;
         Ok(UpdateHandle {
             core,
+            preview_collector,
             _marker: std::marker::PhantomData,
         })
     }
@@ -434,6 +486,17 @@ impl App {
 pub struct UpdateOptions {
     pub full_reprocess: bool,
     pub live: bool,
+    /// Compute target actions without applying them to external systems. The
+    /// planned actions are collected and retrievable via
+    /// [`UpdateHandle::preview_actions`] / [`App::preview`] (cf. Python's
+    /// `App.update(preview=True)`).
+    pub preview: bool,
+    /// Periodically print processing progress to stdout while the update runs
+    /// (cf. Python's `update_blocking(report_to_stdout=True)`).
+    pub report_to_stdout: bool,
+    /// When `report_to_stdout` is set, refresh the stdout display at this
+    /// interval. `None` uses the engine's default cadence.
+    pub progress_refresh_interval: Option<Duration>,
 }
 
 /// Options for [`Ctx::stats_group_with_options`](crate::Ctx::stats_group_with_options).
@@ -472,9 +535,53 @@ impl Progress {
     }
 }
 
+/// A target-state change computed during a [preview](App::preview) run but not
+/// applied to any external system.
+pub enum PreviewAction {
+    /// A target state that would be created.
+    Create(PreviewValue),
+    /// A target state that would be updated.
+    Update(PreviewValue),
+    /// A target state that would be deleted.
+    Delete(PreviewValue),
+}
+
+/// The serialized payload of a [`PreviewAction`]. Decode it to the concrete
+/// target-state type with [`PreviewValue::decode`].
+pub struct PreviewValue(Value);
+
+impl PreviewValue {
+    /// Decode the payload into the target-state type that produced it.
+    pub fn decode<V: DeserializeOwned>(&self) -> Result<V> {
+        self.0.deserialize()
+    }
+}
+
+impl PreviewAction {
+    fn from_action(action: Action) -> Self {
+        match action {
+            Action::Create(v) => PreviewAction::Create(PreviewValue(v)),
+            Action::Update(v) => PreviewAction::Update(PreviewValue(v)),
+            Action::Delete(v) => PreviewAction::Delete(PreviewValue(v)),
+        }
+    }
+}
+
+impl std::fmt::Debug for PreviewAction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let kind = match self {
+            PreviewAction::Create(_) => "Create",
+            PreviewAction::Update(_) => "Update",
+            PreviewAction::Delete(_) => "Delete",
+        };
+        write!(f, "PreviewAction::{kind}")
+    }
+}
+
 /// Handle returned by [`App::start_update`].
 pub struct UpdateHandle<T> {
     core: AppOpHandle<Value>,
+    preview_collector: Option<Arc<std::sync::Mutex<Vec<Action>>>>,
     _marker: std::marker::PhantomData<T>,
 }
 
@@ -482,6 +589,29 @@ impl<T> UpdateHandle<T>
 where
     T: for<'de> Deserialize<'de> + Send + 'static,
 {
+    pub(crate) fn into_core(self) -> AppOpHandle<Value> {
+        self.core
+    }
+
+    /// Drive the (preview) update to completion and return the planned target
+    /// actions. Only meaningful when the update was started with
+    /// [`UpdateOptions::preview`] set; otherwise returns an empty list.
+    pub async fn preview_actions(self) -> Result<Vec<PreviewAction>> {
+        let collector = self.preview_collector.clone();
+        // Run the pipeline to completion (the app result is discarded — preview
+        // callers want the actions, not the return value).
+        self.core
+            .result()
+            .await
+            .map_err(|e| Error::engine(format!("{e}")))?;
+        let actions = collector
+            .map(|c| std::mem::take(&mut *c.lock().unwrap()))
+            .unwrap_or_default();
+        Ok(actions
+            .into_iter()
+            .map(PreviewAction::from_action)
+            .collect())
+    }
     /// A point-in-time snapshot of processing statistics for live progress.
     ///
     /// Note: [`RunStats::elapsed`] is not populated for in-flight snapshots

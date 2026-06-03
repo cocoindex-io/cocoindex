@@ -278,6 +278,7 @@ async fn mount_live_incremental_delete_removes_child_state() {
             UpdateOptions {
                 full_reprocess: false,
                 live: true,
+                ..UpdateOptions::default()
             },
             move |ctx| {
                 let sink = sink.clone();
@@ -472,6 +473,7 @@ async fn mount_each_live_streams_incremental_updates() {
             UpdateOptions {
                 full_reprocess: false,
                 live: true,
+                ..UpdateOptions::default()
             },
             move |ctx| {
                 let processed = processed_for_update.clone();

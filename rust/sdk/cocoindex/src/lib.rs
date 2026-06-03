@@ -4,6 +4,8 @@ pub mod app;
 pub mod ctx;
 #[cfg(any(feature = "neo4j", feature = "falkordb"))]
 mod cypher_graph;
+#[cfg(feature = "doris")]
+pub mod doris;
 pub mod entity_resolution;
 pub mod error;
 #[cfg(feature = "falkordb")]
@@ -46,13 +48,14 @@ mod typemap;
 
 // Flat re-exports — the public API surface
 pub use app::{
-    App, AppBuilder, DropHandle, Progress, StatsGroupHandle, StatsGroupOptions, UpdateHandle,
-    UpdateOptions,
+    App, AppBuilder, DropHandle, PreviewAction, PreviewValue, Progress, StatsGroupHandle,
+    StatsGroupOptions, UpdateHandle, UpdateOptions,
 };
 pub use ctx::{ContextKey, Ctx};
 pub use entity_resolution::{
     CanonicalSide, EntityEmbedder, ExistingCanonicalPolicy, PairDecision, PairResolver,
     ResolutionEvent, ResolveOptions, ResolvedEntities, resolve_entities,
+    resolve_entities_with_events,
 };
 pub use error::{Error, Result};
 pub use file::{
@@ -72,6 +75,7 @@ pub use live_component::{
     LiveMapSubscriber, LiveMapView, MountKind,
 };
 pub use resources::chunk::{Chunk, TextPosition};
+pub use resources::embedder::Embedder;
 pub use resources::schema::{
     MultiVectorSchema, MultiVectorSchemaProvider, VectorElementType, VectorSchema,
     VectorSchemaProvider,

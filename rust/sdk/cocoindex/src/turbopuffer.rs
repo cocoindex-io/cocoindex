@@ -184,7 +184,10 @@ enum VectorFields {
 /// Schema for a Turbopuffer namespace.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct NamespaceSchema {
-    vectors: VectorFields,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    vectors: Option<VectorFields>,
+    /// Kept for compatibility with the original single-vector Rust schema.
+    pub vector_size: usize,
     pub distance: DistanceMetric,
 }
 
@@ -193,9 +196,10 @@ impl NamespaceSchema {
     /// field. This is the common path and matches the older Rust API.
     pub fn new(vector_size: usize, distance: DistanceMetric) -> Self {
         Self {
-            vectors: VectorFields::Single(VectorDef {
+            vectors: Some(VectorFields::Single(VectorDef {
                 schema: VectorSchema::f32(vector_size),
-            }),
+            })),
+            vector_size,
             distance,
         }
     }
@@ -203,7 +207,8 @@ impl NamespaceSchema {
     /// Create a single unnamed vector schema from an explicit vector schema.
     pub fn from_vector_schema(schema: VectorSchema, distance: DistanceMetric) -> Result<Self> {
         Ok(Self {
-            vectors: VectorFields::Single(VectorDef::new(schema)?),
+            vectors: Some(VectorFields::Single(VectorDef::new(schema)?)),
+            vector_size: schema.size,
             distance,
         })
     }
@@ -214,8 +219,10 @@ impl NamespaceSchema {
         provider: &(impl VectorSchemaProvider + ?Sized),
         distance: DistanceMetric,
     ) -> Result<Self> {
+        let def = VectorDef::from_provider(provider).await?;
         Ok(Self {
-            vectors: VectorFields::Single(VectorDef::from_provider(provider).await?),
+            vector_size: def.schema.size,
+            vectors: Some(VectorFields::Single(def)),
             distance,
         })
     }
@@ -241,8 +248,14 @@ impl NamespaceSchema {
                 "named turbopuffer vector schema must declare at least one vector field",
             ));
         }
+        let vector_size = resolved
+            .values()
+            .next()
+            .map(|def| def.schema.size)
+            .unwrap_or(0);
         Ok(Self {
-            vectors: VectorFields::Named(resolved),
+            vectors: Some(VectorFields::Named(resolved)),
+            vector_size,
             distance,
         })
     }
@@ -250,7 +263,7 @@ impl NamespaceSchema {
     /// The `schema` payload Turbopuffer's write API expects.
     fn write_schema(&self) -> Result<JsonValue> {
         let mut fields = Map::new();
-        match &self.vectors {
+        match self.vector_fields() {
             VectorFields::Single(def) => {
                 fields.insert(
                     DEFAULT_VECTOR_FIELD.into(),
@@ -259,7 +272,7 @@ impl NamespaceSchema {
             }
             VectorFields::Named(vectors) => {
                 for (name, def) in vectors {
-                    fields.insert(name.clone(), vector_schema_entry(&def.schema)?);
+                    fields.insert(name, vector_schema_entry(&def.schema)?);
                 }
             }
         }
@@ -267,10 +280,18 @@ impl NamespaceSchema {
     }
 
     fn vector_field_names(&self) -> Vec<String> {
-        match &self.vectors {
+        match self.vector_fields() {
             VectorFields::Single(_) => vec![DEFAULT_VECTOR_FIELD.to_string()],
-            VectorFields::Named(vectors) => vectors.keys().cloned().collect(),
+            VectorFields::Named(vectors) => vectors.into_keys().collect(),
         }
+    }
+
+    fn vector_fields(&self) -> VectorFields {
+        self.vectors.clone().unwrap_or_else(|| {
+            VectorFields::Single(VectorDef {
+                schema: VectorSchema::f32(self.vector_size),
+            })
+        })
     }
 }
 
@@ -332,7 +353,8 @@ impl Row {
         let mut obj = Map::new();
         obj.insert("id".into(), JsonValue::from(self.id.clone()));
 
-        let reserved = match (&schema.vectors, &self.vector) {
+        let vector_fields = schema.vector_fields();
+        let reserved = match (&vector_fields, &self.vector) {
             (VectorFields::Single(_), RowVector::Single(vector)) => {
                 obj.insert(DEFAULT_VECTOR_FIELD.into(), json!(vector));
                 schema.vector_field_names()
@@ -921,6 +943,19 @@ mod tests {
         let s = NamespaceSchema::new(384, DistanceMetric::CosineDistance);
         assert_eq!(
             s.write_schema().unwrap(),
+            json!({ "vector": { "type": "[384]f32", "ann": true } })
+        );
+    }
+
+    #[test]
+    fn namespace_schema_reads_legacy_single_vector_state() {
+        let schema: NamespaceSchema = serde_json::from_value(json!({
+            "vector_size": 384,
+            "distance": "CosineDistance"
+        }))
+        .unwrap();
+        assert_eq!(
+            schema.write_schema().unwrap(),
             json!({ "vector": { "type": "[384]f32", "ann": true } })
         );
     }

@@ -206,6 +206,7 @@ async fn iggy_source_live_watch_tails_new_messages() -> Result<()> {
             UpdateOptions {
                 full_reprocess: false,
                 live: true,
+                ..UpdateOptions::default()
             },
             {
                 let processed = processed.clone();

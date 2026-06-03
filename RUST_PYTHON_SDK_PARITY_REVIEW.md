@@ -30,14 +30,14 @@ The remaining gaps are concentrated in connector breadth and connector-specific
 feature depth:
 
 1. Doris target is missing.
-2. Iggy source: keyed map (`topic_as_map`) done + live-tested; keyless stream + multi-partition remain.
-3. Kafka source is map-only and single-partition; Python has stream/payload
-   views and partition/rebalance handling.
+2. Iggy source has keyed-map parity; keyless stream/payload and multi-partition
+   readiness remain.
+3. Kafka source has all-partition keyed-map parity; keyless stream/payload and
+   consumer-group rebalance handling remain.
 4. OCI source lacks Python's live bucket-event view.
-5. Qdrant needs named-vector/schema-provider parity.
-6. Several database/graph connectors still use explicit Rust schemas where
+5. Several database/graph connectors still use explicit Rust schemas where
    Python has `from_class`/annotation-driven schema construction.
-7. CLI/default environment/settings/runner APIs are still product decisions, not
+6. CLI/default environment/settings/runner APIs are still product decisions, not
    connector blockers.
 
 ## Aligned SDK Concepts
@@ -84,7 +84,7 @@ Action:
 | Source | Python behavior | Rust status | Action |
 | --- | --- | --- | --- |
 | Iggy | `topic_as_stream`, payload stream, keyed map, offset readiness, multi-partition safeguards | **Keyed map done** — `IggyConsumer` + `topic_as_map`/`_with_options` give a `LiveMapView<String, Vec<u8>>` over a partition (`scan` compacts to latest-payload-per-key via the required `key_fn`; `watch` tails), with `IggySourceOptions::is_deletion`. 2 live e2e (`tests/iggy_source.rs`: compaction + live tail, verified vs a Dockerized Apache Iggy server). | Remaining: keyless `topic_as_stream`/payload view and multi-partition readiness. |
-| Kafka | stream, payload stream, keyed map, partition assignment/rebalance, safe offset readiness | `topic_as_map` over one partition with scan/watch and tombstone/custom delete semantics | Add `topic_as_stream`, payload view, multi-partition/rebalance readiness, and tests from `test_kafka_source.py`. |
+| Kafka | stream, payload stream, keyed map, partition assignment/rebalance, safe offset readiness | `topic_as_map` over **all partitions** (per-partition offset tracking; `scan` compacts across partitions, `watch` round-robins) with tombstone/custom delete semantics. 3 live e2e (`tests/kafka_source.rs`: compaction, live tail, all-partitions read). | Remaining: keyless `topic_as_stream`/payload view; consumer-group rebalance (the SDK consumes the topic directly, no group assignment). |
 | OCI Object Storage | shared file source plus live bucket events fed by a stream | Static list/read/range source exists; no live event view | Port Python's live event adapter/filtering tests from `test_oci_object_storage.py`. |
 | Google Drive | static file listing/read/export | Static source exists | No live work unless Python adds live Google Drive support. |
 | S3 | static file listing/read/range | Static source exists with MinIO e2e | No live work unless Python adds S3 live behavior. |
@@ -100,7 +100,7 @@ Action:
 
 | Connector | Rust status | Python delta | Action |
 | --- | --- | --- | --- |
-| Qdrant | Collection target, unnamed dense vector, unnamed multivector, search helpers | Python accepts `QdrantVectorDef`, `VectorSchemaProvider`/`MultiVectorSchemaProvider`, and named vectors | Add provider-based schema creation and named vectors. Keep existing simple constructors as convenience. |
+| Qdrant | Collection target, provider-based schema constructors, unnamed/named dense vectors, unnamed/named multivectors, search helpers | Rust coverage is unit-level plus gated live unnamed-vector e2e | Add hosted e2e coverage for named vectors/multivectors when a Qdrant service is available. |
 | Turbopuffer | Namespace target, provider-based schema constructors, unnamed/named vector fields, `f32`/`f16` schema rendering, named-field search helper | Rust coverage is unit-level plus gated live unnamed-vector e2e | Add hosted e2e coverage for named-vector writes/search when service credentials are available. |
 | LanceDB | Table target, vector columns, search, additive scalar evolution, destructive replacement with row replay on async mount | Python has optimize/retry knobs and richer schema construction | Add optimize/retry/error-path coverage only when Rust exposes those knobs. |
 
@@ -152,16 +152,17 @@ These are not connector blockers. Decide explicitly before implementing.
 
 Use this order:
 
-1. Iggy source tests: offset readiness, duplicate offsets, payload stream, map
-   view, delete predicate, multi-partition guard.
-2. Kafka source tests: stream/payload APIs, multi-partition catch-up readiness,
-   rebalance behavior, keyed-map deletion.
+1. Iggy source tests: keyless stream/payload APIs, offset readiness, duplicate
+   offsets, delete predicate, and multi-partition guard.
+2. Kafka source tests: keyless stream/payload APIs and consumer-group rebalance
+   behavior. Keyed-map compaction, live tail, tombstone deletes, and
+   all-partition catch-up are covered.
 3. OCI live source tests: event cutoff, malformed events, cross-bucket filters,
    max-size/path filters, blocked-ready cancellation, scan failure propagation.
 4. Doris target tests: create/update/delete, dict rows, vector index, inverted
    index, retry/no-change behavior.
-5. Qdrant tests: named vectors, schema providers, and multivector search where
-   applicable. Turbopuffer still needs hosted named-vector e2e coverage.
+5. Qdrant/Turbopuffer tests: add hosted named-vector e2e coverage when service
+   credentials are available.
 6. Database/graph schema tests: Postgres destructive schema retries, graph
    constraints/indexes, SurrealDB vector-index lifecycle, SQLite vec0 e2e when
    CI has `sqlite-vec`.

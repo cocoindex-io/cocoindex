@@ -550,22 +550,23 @@ pub struct KafkaSourceOptions {
     pub is_deletion: Option<IsDeletionFn>,
 }
 
-/// A keyed change feed over a Kafka topic's **partition 0**: the latest value
-/// per key, with tombstones (or [`KafkaSourceOptions::is_deletion`]) removing
-/// keys. The Rust analogue of Python's `topic_as_map`.
+/// A keyed change feed over **all partitions** of a Kafka topic: the latest
+/// value per key, with tombstones (or [`KafkaSourceOptions::is_deletion`])
+/// removing keys. The Rust analogue of Python's `topic_as_map`.
 ///
-/// As a [`LiveMapView`], [`scan`](LiveMapView::scan) reads the log up to the
-/// current high-watermark (the catch-up snapshot, compacted to the latest value
-/// per key) and [`watch`](LiveMapFeed::watch) tails new records from there.
-/// Feed it to [`Ctx::mount_each_live`](crate::Ctx::mount_each_live). Multi-
-/// partition consumption is not yet implemented (single partition only).
+/// As a [`LiveMapView`], [`scan`](LiveMapView::scan) reads every partition up to
+/// its high-watermark (the catch-up snapshot, compacted per key) and
+/// [`watch`](LiveMapFeed::watch) tails new records across partitions from there.
+/// Feed it to [`Ctx::mount_each_live`](crate::Ctx::mount_each_live). Offsets are
+/// tracked per partition, so readiness reflects every partition being caught up.
 pub struct KafkaTopicMap {
     client: Arc<Client>,
     topic: String,
     is_deletion: Option<IsDeletionFn>,
-    /// Offset `watch` resumes from — set to the high-watermark reached by the
-    /// most recent `scan` so the tail neither gaps nor double-reads.
-    watch_start: Arc<tokio::sync::Mutex<i64>>,
+    /// Per-partition offset `watch` resumes from — set to each partition's
+    /// high-watermark reached by the most recent `scan`, so the tail neither
+    /// gaps nor double-reads.
+    watch_start: Arc<tokio::sync::Mutex<BTreeMap<i32, i64>>>,
 }
 
 /// Build a [`KafkaTopicMap`] over `topic` (tombstone deletes).
@@ -583,16 +584,37 @@ pub fn topic_as_map_with_options(
         client: consumer.client.clone(),
         topic: topic.into(),
         is_deletion: options.is_deletion,
-        watch_start: Arc::new(tokio::sync::Mutex::new(0)),
+        watch_start: Arc::new(tokio::sync::Mutex::new(BTreeMap::new())),
     }
 }
 
 impl KafkaTopicMap {
-    async fn partition(&self) -> Result<PartitionClient> {
-        self.client
-            .partition_client(self.topic.clone(), 0, UnknownTopicHandling::Retry)
+    /// The topic's partition IDs (from cluster metadata).
+    async fn partition_ids(&self) -> Result<Vec<i32>> {
+        let topics = self
+            .client
+            .list_topics()
             .await
-            .map_err(|e| Error::engine(format!("kafka partition_client {:?}: {e}", self.topic)))
+            .map_err(|e| Error::engine(format!("kafka list_topics: {e}")))?;
+        let topic = topics
+            .into_iter()
+            .find(|t| t.name == self.topic)
+            .ok_or_else(|| Error::engine(format!("kafka topic {:?} not found", self.topic)))?;
+        let ids: Vec<i32> = topic.partitions.into_iter().collect();
+        if ids.is_empty() {
+            return Err(Error::engine(format!(
+                "kafka topic {:?} has no partitions",
+                self.topic
+            )));
+        }
+        Ok(ids)
+    }
+
+    async fn partition_client(&self, id: i32) -> Result<PartitionClient> {
+        self.client
+            .partition_client(self.topic.clone(), id, UnknownTopicHandling::Retry)
+            .await
+            .map_err(|e| Error::engine(format!("kafka partition_client {}/{id}: {e}", self.topic)))
     }
 
     /// Classify a record into `(key, Some(value))` upsert or `(key, None)`
@@ -615,23 +637,37 @@ impl KafkaTopicMap {
 #[crate::async_trait]
 impl LiveMapFeed<String, Vec<u8>> for KafkaTopicMap {
     async fn watch(&self, subscriber: LiveMapSubscriber<String, Vec<u8>>) -> Result<()> {
-        let pc = self.partition().await?;
-        let mut offset = *self.watch_start.lock().await;
+        let mut offsets = self.watch_start.lock().await.clone();
+        let ids = self.partition_ids().await?;
+        let mut clients = Vec::with_capacity(ids.len());
+        for id in &ids {
+            clients.push((*id, self.partition_client(*id).await?));
+        }
+        // Round-robin all partitions on one loop (one subscriber, used
+        // sequentially). Each partition fetch uses a short max-wait so the
+        // cycle stays responsive; an empty full cycle backs off briefly.
         loop {
-            // Long-poll: wait up to 1s for new records from `offset`.
-            let (records, _hwm) = pc
-                .fetch_records(offset, 1..1_000_000, 1_000)
-                .await
-                .map_err(|e| Error::engine(format!("kafka fetch_records: {e}")))?;
-            for r in &records {
-                offset = r.offset + 1;
-                let Some((key, value)) = self.classify(&r.record) else {
-                    continue;
-                };
-                match value {
-                    Some(v) => subscriber.update(key, v).await?,
-                    None => subscriber.delete(key).await?,
+            let mut got_any = false;
+            for (id, pc) in &clients {
+                let offset = *offsets.get(id).unwrap_or(&0);
+                let (records, _hwm) = pc
+                    .fetch_records(offset, 1..1_000_000, 250)
+                    .await
+                    .map_err(|e| Error::engine(format!("kafka fetch_records: {e}")))?;
+                for r in &records {
+                    got_any = true;
+                    offsets.insert(*id, r.offset + 1);
+                    let Some((key, value)) = self.classify(&r.record) else {
+                        continue;
+                    };
+                    match value {
+                        Some(v) => subscriber.update(key, v).await?,
+                        None => subscriber.delete(key).await?,
+                    }
                 }
+            }
+            if !got_any {
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
             }
         }
     }
@@ -640,33 +676,38 @@ impl LiveMapFeed<String, Vec<u8>> for KafkaTopicMap {
 #[crate::async_trait]
 impl LiveMapView<String, Vec<u8>> for KafkaTopicMap {
     async fn scan(&self) -> Result<Vec<(String, Vec<u8>)>> {
-        let pc = self.partition().await?;
+        let ids = self.partition_ids().await?;
         let mut latest: BTreeMap<String, Vec<u8>> = BTreeMap::new();
-        let mut offset = 0i64;
-        loop {
-            let (records, hwm) = pc
-                .fetch_records(offset, 1..1_000_000, 500)
-                .await
-                .map_err(|e| Error::engine(format!("kafka fetch_records: {e}")))?;
-            for r in &records {
-                offset = r.offset + 1;
-                if let Some((key, value)) = self.classify(&r.record) {
-                    match value {
-                        Some(v) => {
-                            latest.insert(key, v);
-                        }
-                        None => {
-                            latest.remove(&key);
+        let mut ends: BTreeMap<i32, i64> = BTreeMap::new();
+        for id in ids {
+            let pc = self.partition_client(id).await?;
+            let mut offset = 0i64;
+            loop {
+                let (records, hwm) = pc
+                    .fetch_records(offset, 1..1_000_000, 500)
+                    .await
+                    .map_err(|e| Error::engine(format!("kafka fetch_records: {e}")))?;
+                for r in &records {
+                    offset = r.offset + 1;
+                    if let Some((key, value)) = self.classify(&r.record) {
+                        match value {
+                            Some(v) => {
+                                latest.insert(key, v);
+                            }
+                            None => {
+                                latest.remove(&key);
+                            }
                         }
                     }
                 }
+                if records.is_empty() || offset >= hwm {
+                    break;
+                }
             }
-            if records.is_empty() || offset >= hwm {
-                break;
-            }
+            ends.insert(id, offset);
         }
-        // `watch` resumes exactly where this snapshot ended.
-        *self.watch_start.lock().await = offset;
+        // `watch` resumes exactly where this per-partition snapshot ended.
+        *self.watch_start.lock().await = ends;
         Ok(latest.into_iter().collect())
     }
 }

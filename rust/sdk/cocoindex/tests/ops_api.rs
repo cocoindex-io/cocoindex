@@ -7,16 +7,30 @@
 //! Run with: `cargo test -p cocoindex --features embed_api --test ops_api`.
 #![cfg(feature = "embed_api")]
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::SystemTime;
 
-use cocoindex::ops::api::{ApiEmbedder, ApiTranscriber};
+use cocoindex::ops::api::{ApiEmbedder, ApiTranscriber, LlmPairResolver};
 use cocoindex::prelude::{FileContentCache, FileLike, FileMetadata, FilePath};
+use cocoindex::{CanonicalSide, PairResolver};
 use serde_json::json;
 use wiremock::matchers::{method, path};
-use wiremock::{Mock, MockServer, ResponseTemplate};
+use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
-async fn embedding_server() -> MockServer {
-    let server = MockServer::start().await;
+async fn mock_server() -> Option<MockServer> {
+    let listener = match std::net::TcpListener::bind("127.0.0.1:0") {
+        Ok(listener) => listener,
+        Err(err) => {
+            eprintln!("skipping ops_api mock-server test; cannot bind localhost: {err}");
+            return None;
+        }
+    };
+    Some(MockServer::builder().listener(listener).start().await)
+}
+
+async fn embedding_server() -> Option<MockServer> {
+    let server = mock_server().await?;
     Mock::given(method("POST"))
         .and(path("/embeddings"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -24,12 +38,14 @@ async fn embedding_server() -> MockServer {
         })))
         .mount(&server)
         .await;
-    server
+    Some(server)
 }
 
 #[tokio::test]
 async fn api_embedder_single_text_api() {
-    let server = embedding_server().await;
+    let Some(server) = embedding_server().await else {
+        return;
+    };
     let embedder = ApiEmbedder::new("fake-model")
         .with_base_url(server.uri())
         .with_api_key("k");
@@ -50,7 +66,9 @@ async fn api_embedder_single_text_api() {
 
 #[tokio::test]
 async fn api_embedder_vector_schema() {
-    let server = embedding_server().await;
+    let Some(server) = embedding_server().await else {
+        return;
+    };
     let embedder = ApiEmbedder::new("fake-model").with_base_url(server.uri());
 
     use cocoindex::VectorSchemaProvider;
@@ -70,7 +88,9 @@ async fn api_embedder_encoding_format_gated_by_provider() {
         ("bedrock/amazon.titan-embed-text-v2:0", false),
     ];
     for (model, expects_float) in cases {
-        let server = embedding_server().await;
+        let Some(server) = embedding_server().await else {
+            return;
+        };
         let embedder = ApiEmbedder::new(*model).with_base_url(server.uri());
         embedder.embed("hello").await.unwrap();
 
@@ -123,7 +143,9 @@ impl FileLike for InMemoryFile {
 
 #[tokio::test]
 async fn api_transcriber_reads_file_and_sends_fields() {
-    let server = MockServer::start().await;
+    let Some(server) = mock_server().await else {
+        return;
+    };
     Mock::given(method("POST"))
         .and(path("/audio/transcriptions"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"text": "hello world"})))
@@ -152,4 +174,149 @@ async fn api_transcriber_reads_file_and_sends_fields() {
     assert!(body.contains("segment.mp3"), "missing filename in body");
     assert!(body.contains("en"), "missing language in body");
     assert!(body.contains("fake-audio"), "missing audio bytes in body");
+}
+
+// ---------------------------------------------------------------------------
+// LlmPairResolver — port of `python/tests/.../test_llm_resolver.py`. Python
+// mocks `litellm`/`instructor`; here we stand up a mock `/chat/completions`
+// endpoint and point the resolver's chat client at it.
+// ---------------------------------------------------------------------------
+
+/// A `/chat/completions` response whose assistant message content is `content`
+/// (the JSON decision string the resolver parses).
+fn chat_response(content: &str) -> ResponseTemplate {
+    ResponseTemplate::new(200).set_body_json(json!({
+        "choices": [{"message": {"role": "assistant", "content": content}}]
+    }))
+}
+
+#[tokio::test]
+async fn llm_pair_resolver_parses_matched_and_canonical_new() {
+    let Some(server) = mock_server().await else {
+        return;
+    };
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(chat_response(
+            r#"{"matched": "OpenAI Inc", "canonical": "new"}"#,
+        ))
+        .mount(&server)
+        .await;
+
+    let resolver = LlmPairResolver::new("fake-model")
+        .with_base_url(server.uri())
+        .with_api_key("k")
+        .with_entity_type("organization");
+    let decision = resolver
+        .resolve_pair(
+            "OpenAI, Inc.",
+            &["OpenAI Inc".to_string(), "Anthropic".to_string()],
+        )
+        .await
+        .unwrap();
+    assert_eq!(decision.matched.as_deref(), Some("OpenAI Inc"));
+    assert_eq!(decision.canonical, CanonicalSide::New);
+
+    let reqs = server.received_requests().await.unwrap();
+    assert_eq!(reqs.len(), 1);
+    let body: serde_json::Value = serde_json::from_slice(&reqs[0].body).unwrap();
+    assert_eq!(body["model"], json!("fake-model"));
+    assert_eq!(body["response_format"]["type"], json!("json_object"));
+    let messages = body["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 2);
+    // Entity-type hint woven into the system prompt.
+    assert!(
+        messages[0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("organization")
+    );
+}
+
+#[tokio::test]
+async fn llm_pair_resolver_null_match_returns_no_match() {
+    let Some(server) = mock_server().await else {
+        return;
+    };
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(chat_response(r#"{"matched": null}"#))
+        .mount(&server)
+        .await;
+
+    let resolver = LlmPairResolver::new("fake-model").with_base_url(server.uri());
+    let decision = resolver
+        .resolve_pair("Foo", &["Bar".to_string()])
+        .await
+        .unwrap();
+    assert!(decision.matched.is_none());
+    assert_eq!(decision.canonical, CanonicalSide::Matched);
+}
+
+#[tokio::test]
+async fn llm_pair_resolver_retries_on_invalid_candidate() {
+    // First response names a candidate not in the list; the resolver retries,
+    // and the second (valid) response wins.
+    struct Sequenced {
+        calls: Arc<AtomicUsize>,
+    }
+    impl Respond for Sequenced {
+        fn respond(&self, _req: &Request) -> ResponseTemplate {
+            let n = self.calls.fetch_add(1, Ordering::SeqCst);
+            let content = if n == 0 {
+                r#"{"matched": "Nonexistent"}"#
+            } else {
+                r#"{"matched": "Acme Corp", "canonical": "matched"}"#
+            };
+            ResponseTemplate::new(200).set_body_json(json!({
+                "choices": [{"message": {"role": "assistant", "content": content}}]
+            }))
+        }
+    }
+    let calls = Arc::new(AtomicUsize::new(0));
+    let Some(server) = mock_server().await else {
+        return;
+    };
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(Sequenced {
+            calls: calls.clone(),
+        })
+        .mount(&server)
+        .await;
+
+    let resolver = LlmPairResolver::new("fake-model")
+        .with_base_url(server.uri())
+        .with_retries(3);
+    let decision = resolver
+        .resolve_pair("ACME", &["Acme Corp".to_string()])
+        .await
+        .unwrap();
+    assert_eq!(decision.matched.as_deref(), Some("Acme Corp"));
+    assert_eq!(calls.load(Ordering::SeqCst), 2, "should have retried once");
+}
+
+#[tokio::test]
+async fn llm_pair_resolver_gives_up_after_retries() {
+    // Always-invalid responses: exhaust retries, fall back to no-match.
+    let Some(server) = mock_server().await else {
+        return;
+    };
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(chat_response(r#"{"matched": "Nope"}"#))
+        .mount(&server)
+        .await;
+
+    let resolver = LlmPairResolver::new("fake-model")
+        .with_base_url(server.uri())
+        .with_retries(2);
+    let decision = resolver
+        .resolve_pair("X", &["Y".to_string()])
+        .await
+        .unwrap();
+    assert!(decision.matched.is_none());
+    // 1 initial attempt + 2 retries = 3 calls.
+    let reqs = server.received_requests().await.unwrap();
+    assert_eq!(reqs.len(), 3);
 }

@@ -42,6 +42,15 @@ impl VectorSchema {
             size,
         }
     }
+
+    /// Convenience constructor for an `f16` (half-precision) vector of the
+    /// given dimension.
+    pub fn f16(size: usize) -> Self {
+        Self {
+            element_type: VectorElementType::Float16,
+            size,
+        }
+    }
 }
 
 /// Something that can describe the vector column it produces — typically an

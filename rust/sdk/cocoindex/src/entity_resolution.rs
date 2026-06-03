@@ -157,6 +157,35 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<str>,
 {
+    resolve_entities_with_events(
+        entities,
+        embedder,
+        resolve_pair,
+        is_existing_canonical,
+        options,
+        None,
+    )
+    .await
+}
+
+/// Like [`resolve_entities`], but also invokes `on_resolution` once per entity
+/// after all components finish, in canonical-delivery order (cf. Python's
+/// `resolve_entities(on_resolution=...)`): pass-1 seeded canonicals first
+/// (sorted by name), then pass-2 entities (sorted by name).
+pub async fn resolve_entities_with_events<E, R, I, S>(
+    entities: I,
+    embedder: &E,
+    resolve_pair: &R,
+    is_existing_canonical: Option<&(dyn Fn(&str) -> bool + Sync)>,
+    options: ResolveOptions,
+    on_resolution: Option<&(dyn Fn(&ResolutionEvent) + Sync)>,
+) -> Result<ResolvedEntities>
+where
+    E: EntityEmbedder + Sync,
+    R: PairResolver + Sync,
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
     let entity_list: Vec<String> = entities
         .into_iter()
         .map(|s| s.as_ref().to_string())
@@ -182,32 +211,48 @@ where
         .iter()
         .map(|info| (info.name.clone(), info.clone()))
         .collect();
-    let mut dedup = BTreeMap::new();
-    let mut all_events = Vec::with_capacity(components.len());
 
-    for component in components {
-        let mut component_dedup = BTreeMap::new();
-        let mut candidate_index = CandidateIndex::new(options.max_distance, options.top_n);
-        let mut events = ComponentEvents::default();
+    // Components are disjoint and never reference each other's entities, so
+    // resolve them concurrently (cf. Python's `asyncio.gather`). Each component
+    // owns its local dedup/candidate-index/events and borrows the shared,
+    // immutable `entity_map` and `resolve_pair`.
+    let entity_map_ref = &entity_map;
+    let component_futures = components.into_iter().map(|component| {
         let component_infos: Vec<EntityInfo> = component
             .into_iter()
             .map(|idx| infos[idx].clone())
             .collect();
-        resolve_component(
-            &component_infos,
-            &entity_map,
-            &mut component_dedup,
-            &mut candidate_index,
-            options.existing_policy,
-            resolve_pair,
-            &mut events,
-        )
-        .await?;
+        async move {
+            let mut component_dedup = BTreeMap::new();
+            let mut candidate_index = CandidateIndex::new(options.max_distance, options.top_n);
+            let mut events = ComponentEvents::default();
+            resolve_component(
+                &component_infos,
+                entity_map_ref,
+                &mut component_dedup,
+                &mut candidate_index,
+                options.existing_policy,
+                resolve_pair,
+                &mut events,
+            )
+            .await?;
+            Ok::<_, Error>((component_dedup, events))
+        }
+    });
+    let results = futures::future::try_join_all(component_futures).await?;
+
+    let mut dedup = BTreeMap::new();
+    let mut all_events = Vec::with_capacity(results.len());
+    for (component_dedup, events) in results {
         dedup.extend(component_dedup);
         all_events.push(events);
     }
 
-    let _events = deliver_events(all_events);
+    if let Some(on_resolution) = on_resolution {
+        for event in &deliver_events(all_events) {
+            on_resolution(event);
+        }
+    }
     Ok(ResolvedEntities { dedup })
 }
 

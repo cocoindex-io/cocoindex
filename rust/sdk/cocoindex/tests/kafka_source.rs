@@ -13,10 +13,14 @@
 //!   * live (`watch`) tails new records produced after the source started.
 #![cfg(feature = "kafka")]
 
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use cocoindex::{App, Result, UpdateOptions, kafka};
+use rskafka::client::ClientBuilder;
+use rskafka::client::partition::{Compression, UnknownTopicHandling};
+use rskafka::record::Record;
 
 fn brokers() -> Option<Vec<String>> {
     let raw = std::env::var("KAFKA_BOOTSTRAP_SERVERS").ok()?;
@@ -162,6 +166,7 @@ async fn kafka_source_live_watch_tails_new_records() -> Result<()> {
             UpdateOptions {
                 full_reprocess: false,
                 live: true,
+                ..UpdateOptions::default()
             },
             {
                 let processed = processed.clone();
@@ -211,5 +216,82 @@ async fn kafka_source_live_watch_tails_new_records() -> Result<()> {
 
     let _ = app.drop_state().await;
     let _ = tokio::time::timeout(Duration::from_secs(10), handle.result()).await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn kafka_source_reads_all_partitions() -> Result<()> {
+    let Some(brokers) = brokers() else {
+        eprintln!("skipping live Kafka multi-partition test; KAFKA_BOOTSTRAP_SERVERS is not set");
+        return Ok(());
+    };
+    let broker_refs: Vec<&str> = brokers.iter().map(String::as_str).collect();
+    let topic = unique_topic("multipart");
+
+    // A 3-partition topic, with one keyed record produced directly to each
+    // partition (so the source must read all partitions, not just partition 0).
+    let producer = kafka::KafkaProducer::connect(&broker_refs).await?;
+    producer.ensure_topic(&topic, 3).await?;
+
+    let raw = ClientBuilder::new(brokers.clone())
+        .build()
+        .await
+        .map_err(|e| cocoindex::Error::engine(format!("client: {e}")))?;
+    for (pid, key, val) in [(0, "k0", "v0"), (1, "k1", "v1"), (2, "k2", "v2")] {
+        let pc = raw
+            .partition_client(topic.clone(), pid, UnknownTopicHandling::Retry)
+            .await
+            .map_err(|e| cocoindex::Error::engine(format!("partition_client: {e}")))?;
+        let record = Record {
+            key: Some(key.as_bytes().to_vec()),
+            value: Some(val.as_bytes().to_vec()),
+            headers: BTreeMap::new(),
+            timestamp: rskafka::chrono::DateTime::from_timestamp(0, 0).unwrap(),
+        };
+        pc.produce(vec![record], Compression::NoCompression)
+            .await
+            .map_err(|e| cocoindex::Error::engine(format!("produce p{pid}: {e}")))?;
+    }
+
+    let consumer = kafka::KafkaConsumer::connect(&broker_refs).await?;
+    let processed: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let tmp = tempfile::tempdir().unwrap();
+    let app = App::builder("KafkaSourceMultiPart")
+        .db_path(tmp.path().join("db"))
+        .build()
+        .await?;
+    app.run({
+        let processed = processed.clone();
+        let consumer = consumer.clone();
+        let topic = topic.clone();
+        move |ctx| {
+            let processed = processed.clone();
+            let consumer = consumer.clone();
+            let topic = topic.clone();
+            async move {
+                let feed = kafka::topic_as_map(&consumer, topic);
+                ctx.mount_each_live(&"messages", feed, move |_ctx, value: Vec<u8>| {
+                    let processed = processed.clone();
+                    async move {
+                        processed
+                            .lock()
+                            .unwrap()
+                            .push(String::from_utf8_lossy(&value).into_owned());
+                        Ok(())
+                    }
+                })
+                .await
+            }
+        }
+    })
+    .await?;
+
+    let mut got = processed.lock().unwrap().clone();
+    got.sort();
+    assert_eq!(
+        got,
+        vec!["v0".to_string(), "v1".to_string(), "v2".to_string()],
+        "the catch-up scan should read records from all three partitions"
+    );
     Ok(())
 }

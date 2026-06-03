@@ -107,3 +107,15 @@ impl VectorSchemaProvider for SentenceTransformerEmbedder {
         })
     }
 }
+
+#[async_trait]
+impl crate::resources::embedder::Embedder for SentenceTransformerEmbedder {
+    // Delegate to the inherent methods (method-call resolution prefers inherent,
+    // so these don't recurse).
+    async fn embed(&self, text: &str) -> Result<Vec<f32>> {
+        self.embed(text).await
+    }
+    async fn embed_batch(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        self.embed_batch(texts.to_vec()).await
+    }
+}

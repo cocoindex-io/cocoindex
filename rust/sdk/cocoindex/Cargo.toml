@@ -17,6 +17,9 @@ fastembed = ["dep:fastembed"]
 embed_api = ["dep:serde_json", "dep:reqwest", "reqwest/multipart"]
 postgres = ["dep:serde_json", "dep:sqlx", "dep:chrono"]
 sqlite = ["dep:serde_json", "dep:sqlx", "sqlx/sqlite"]
+# Apache Doris target: MySQL protocol (DDL/DELETE) via sqlx + Stream Load (row
+# ingestion) over HTTP via reqwest.
+doris = ["dep:serde_json", "dep:sqlx", "sqlx/mysql", "dep:reqwest"]
 surrealdb = ["dep:serde_json", "dep:surrealdb"]
 kafka = ["dep:rskafka", "dep:chrono"]
 iggy = ["dep:iggy"]

@@ -598,9 +598,15 @@ mod tests {
     #[test]
     fn decode_bytes_detects_utf32_before_utf16() {
         // UTF-32LE BOM is FF FE 00 00 — must not be mistaken for UTF-16LE (FF FE).
-        assert_eq!(decode_bytes(b"\xFF\xFE\x00\x00h\x00\x00\x00i\x00\x00\x00"), "hi");
+        assert_eq!(
+            decode_bytes(b"\xFF\xFE\x00\x00h\x00\x00\x00i\x00\x00\x00"),
+            "hi"
+        );
         // UTF-32BE BOM is 00 00 FE FF.
-        assert_eq!(decode_bytes(b"\x00\x00\xFE\xFF\x00\x00\x00h\x00\x00\x00i"), "hi");
+        assert_eq!(
+            decode_bytes(b"\x00\x00\xFE\xFF\x00\x00\x00h\x00\x00\x00i"),
+            "hi"
+        );
     }
 
     #[test]
@@ -615,10 +621,7 @@ mod tests {
         assert_eq!(p.with_name("x.md").as_posix(), "docs/a/x.md");
         assert_eq!(p.with_suffix(".md").as_posix(), "docs/a/report.tar.md");
         assert_eq!(p.with_stem("final").as_posix(), "docs/a/final.gz");
-        assert_eq!(
-            p.relative_to("docs").unwrap().as_posix(),
-            "a/report.tar.gz"
-        );
+        assert_eq!(p.relative_to("docs").unwrap().as_posix(), "a/report.tar.gz");
         assert!(p.relative_to("other").is_none());
         // A bare filename has no parent; a hidden file has no suffixes.
         assert!(FilePath::new("file.txt").parent().is_none());

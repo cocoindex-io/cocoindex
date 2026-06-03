@@ -7,20 +7,28 @@
 //!
 //! Uses the native Rust `qdrant-client` (gRPC).
 
-use std::sync::Arc;
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::Arc,
+};
 
 use qdrant_client::Payload;
 use qdrant_client::Qdrant;
 use qdrant_client::qdrant::{
-    CreateCollectionBuilder, DeletePointsBuilder, Distance as QdrantDistance,
-    MultiVectorComparator, MultiVectorConfigBuilder, PointStruct, PointsIdsList,
-    QueryPointsBuilder, UpsertPointsBuilder, Vector, VectorInput, VectorParamsBuilder, value::Kind,
+    CreateCollectionBuilder, Datatype as QdrantDatatype, DeletePointsBuilder,
+    Distance as QdrantDistance, MultiVectorComparator, MultiVectorConfigBuilder, NamedVectors,
+    PointStruct, PointsIdsList, QueryPointsBuilder, UpsertPointsBuilder, Vector, VectorInput,
+    VectorParams, VectorParamsBuilder, Vectors, VectorsConfigBuilder, value::Kind,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value as JsonValue};
 
 use crate::ctx::Ctx;
 use crate::error::{Error, Result};
+use crate::resources::schema::{
+    MultiVectorSchema, MultiVectorSchemaProvider, VectorElementType, VectorSchema,
+    VectorSchemaProvider,
+};
 use crate::statediff::{
     DiffAction, ManagedBy, ManagedTargetOptions, MutualTrackingRecord, diff,
     resolve_system_transition,
@@ -87,17 +95,126 @@ impl Distance {
     }
 }
 
-/// Schema for a Qdrant collection's single (unnamed) vector field.
+/// Multivector comparator.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum MultivectorComparator {
+    MaxSim,
+}
+
+impl MultivectorComparator {
+    fn to_qdrant(self) -> MultiVectorComparator {
+        match self {
+            MultivectorComparator::MaxSim => MultiVectorComparator::MaxSim,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+enum QdrantVectorSchema {
+    Dense(VectorSchema),
+    Multi(MultiVectorSchema),
+}
+
+/// Vector definition for one Qdrant vector field.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct QdrantVectorDef {
+    schema: QdrantVectorSchema,
+    pub distance: Distance,
+    pub multivector_comparator: MultivectorComparator,
+}
+
+impl QdrantVectorDef {
+    pub fn new(schema: VectorSchema, distance: Distance) -> Result<Self> {
+        validate_vector_size(schema.size)?;
+        Ok(Self {
+            schema: QdrantVectorSchema::Dense(schema),
+            distance,
+            multivector_comparator: MultivectorComparator::MaxSim,
+        })
+    }
+
+    pub fn f32(size: u64, distance: Distance) -> Result<Self> {
+        let size = usize::try_from(size)
+            .map_err(|_| Error::engine("qdrant vector size does not fit usize"))?;
+        Self::new(VectorSchema::f32(size), distance)
+    }
+
+    pub async fn from_vector_provider(
+        provider: &(impl VectorSchemaProvider + ?Sized),
+        distance: Distance,
+    ) -> Result<Self> {
+        Self::new(provider.vector_schema().await?, distance)
+    }
+
+    pub fn multivector(schema: MultiVectorSchema, distance: Distance) -> Result<Self> {
+        validate_vector_size(schema.vector_schema.size)?;
+        Ok(Self {
+            schema: QdrantVectorSchema::Multi(schema),
+            distance,
+            multivector_comparator: MultivectorComparator::MaxSim,
+        })
+    }
+
+    pub async fn from_multivector_provider(
+        provider: &(impl MultiVectorSchemaProvider + ?Sized),
+        distance: Distance,
+    ) -> Result<Self> {
+        Self::multivector(provider.multi_vector_schema().await?, distance)
+    }
+
+    fn is_multivector(&self) -> bool {
+        matches!(self.schema, QdrantVectorSchema::Multi(_))
+    }
+
+    fn vector_size(&self) -> u64 {
+        match &self.schema {
+            QdrantVectorSchema::Dense(schema) => schema.size as u64,
+            QdrantVectorSchema::Multi(schema) => schema.vector_schema.size as u64,
+        }
+    }
+
+    fn element_type(&self) -> VectorElementType {
+        match &self.schema {
+            QdrantVectorSchema::Dense(schema) => schema.element_type,
+            QdrantVectorSchema::Multi(schema) => schema.vector_schema.element_type,
+        }
+    }
+
+    fn to_params(&self) -> VectorParams {
+        let mut params = VectorParamsBuilder::new(self.vector_size(), self.distance.to_qdrant());
+        // Map the SDK element type to Qdrant's stored datatype (cf. Python's
+        // `VectorParams(datatype=...)`). Float32 is Qdrant's default, so only
+        // f16 needs an explicit datatype.
+        if self.element_type() == VectorElementType::Float16 {
+            params = params.datatype(QdrantDatatype::Float16);
+        }
+        if self.is_multivector() {
+            params = params.multivector_config(MultiVectorConfigBuilder::new(
+                self.multivector_comparator.to_qdrant(),
+            ));
+        }
+        params.into()
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+enum VectorFields {
+    Single(QdrantVectorDef),
+    Named(BTreeMap<String, QdrantVectorDef>),
+}
+
+/// Schema for a Qdrant collection.
 ///
-/// When `multivector` is set, each point stores a *list* of equal-length
-/// vectors and the collection scores them with the MAX_SIM late-interaction
-/// comparator — the shape ColPali-style models need. See
-/// [`CollectionSchema::multivector`].
+/// `new` and `multivector` keep the simple single-vector API. Use
+/// [`CollectionSchema::named`] for Python-style named vectors.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CollectionSchema {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    vectors: Option<VectorFields>,
+    /// Kept for compatibility with the simple single-vector constructors.
     pub vector_size: u64,
     pub distance: Distance,
-    /// Store a list of vectors per point, compared with MAX_SIM.
+    /// Kept for compatibility with the simple single-vector constructors.
     #[serde(default)]
     pub multivector: bool,
 }
@@ -106,6 +223,11 @@ impl CollectionSchema {
     /// A single dense vector per point.
     pub fn new(vector_size: u64, distance: Distance) -> Self {
         Self {
+            vectors: Some(VectorFields::Single(QdrantVectorDef {
+                schema: QdrantVectorSchema::Dense(VectorSchema::f32(vector_size as usize)),
+                distance,
+                multivector_comparator: MultivectorComparator::MaxSim,
+            })),
             vector_size,
             distance,
             multivector: false,
@@ -116,11 +238,129 @@ impl CollectionSchema {
     /// `vector_size`-dimensional vectors, scored with MAX_SIM.
     pub fn multivector(vector_size: u64, distance: Distance) -> Self {
         Self {
+            vectors: Some(VectorFields::Single(QdrantVectorDef {
+                schema: QdrantVectorSchema::Multi(MultiVectorSchema {
+                    vector_schema: VectorSchema::f32(vector_size as usize),
+                }),
+                distance,
+                multivector_comparator: MultivectorComparator::MaxSim,
+            })),
             vector_size,
             distance,
             multivector: true,
         }
     }
+
+    pub fn from_vector_schema(schema: VectorSchema, distance: Distance) -> Result<Self> {
+        let def = QdrantVectorDef::new(schema, distance)?;
+        Ok(Self {
+            vector_size: def.vector_size(),
+            distance,
+            multivector: false,
+            vectors: Some(VectorFields::Single(def)),
+        })
+    }
+
+    pub async fn from_vector_provider(
+        provider: &(impl VectorSchemaProvider + ?Sized),
+        distance: Distance,
+    ) -> Result<Self> {
+        Self::from_vector_schema(provider.vector_schema().await?, distance)
+    }
+
+    pub fn from_multivector_schema(schema: MultiVectorSchema, distance: Distance) -> Result<Self> {
+        let def = QdrantVectorDef::multivector(schema, distance)?;
+        Ok(Self {
+            vector_size: def.vector_size(),
+            distance,
+            multivector: true,
+            vectors: Some(VectorFields::Single(def)),
+        })
+    }
+
+    pub async fn from_multivector_provider(
+        provider: &(impl MultiVectorSchemaProvider + ?Sized),
+        distance: Distance,
+    ) -> Result<Self> {
+        Self::from_multivector_schema(provider.multi_vector_schema().await?, distance)
+    }
+
+    pub fn named<I, K>(vectors: I) -> Result<Self>
+    where
+        I: IntoIterator<Item = (K, QdrantVectorDef)>,
+        K: Into<String>,
+    {
+        let mut resolved = BTreeMap::new();
+        for (name, def) in vectors {
+            let name = name.into();
+            validate_vector_name(&name)?;
+            if resolved.insert(name.clone(), def).is_some() {
+                return Err(Error::engine(format!(
+                    "duplicate qdrant vector name: {name:?}"
+                )));
+            }
+        }
+        if resolved.is_empty() {
+            return Err(Error::engine(
+                "named qdrant schema must declare at least one vector field",
+            ));
+        }
+        let first = resolved.values().next().expect("non-empty").clone();
+        Ok(Self {
+            vector_size: first.vector_size(),
+            distance: first.distance,
+            multivector: first.is_multivector(),
+            vectors: Some(VectorFields::Named(resolved)),
+        })
+    }
+
+    fn vectors_config(&self) -> VectorsConfigBuilder {
+        let mut builder = VectorsConfigBuilder::default();
+        match self.vector_fields() {
+            VectorFields::Single(def) => {
+                builder.add_vector_params(def.to_params());
+            }
+            VectorFields::Named(vectors) => {
+                for (name, def) in vectors {
+                    builder.add_named_vector_params(name, def.to_params());
+                }
+            }
+        }
+        builder
+    }
+
+    fn vector_fields(&self) -> VectorFields {
+        self.vectors.clone().unwrap_or_else(|| {
+            let schema = if self.multivector {
+                QdrantVectorSchema::Multi(MultiVectorSchema {
+                    vector_schema: VectorSchema::f32(self.vector_size as usize),
+                })
+            } else {
+                QdrantVectorSchema::Dense(VectorSchema::f32(self.vector_size as usize))
+            };
+            VectorFields::Single(QdrantVectorDef {
+                schema,
+                distance: self.distance,
+                multivector_comparator: MultivectorComparator::MaxSim,
+            })
+        })
+    }
+}
+
+fn validate_vector_size(size: usize) -> Result<()> {
+    if size == 0 {
+        return Err(Error::engine(
+            "qdrant vector size must be greater than zero",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_vector_name(name: &str) -> Result<()> {
+    if name.is_empty() {
+        return Err(Error::engine("qdrant vector name must not be empty"));
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -133,6 +373,27 @@ impl CollectionSchema {
 enum PointVector {
     Single(Vec<f32>),
     Multi(Vec<Vec<f32>>),
+    Named(BTreeMap<String, NamedPointVector>),
+}
+
+/// Vector data for one named Qdrant vector field.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub enum NamedPointVector {
+    Single(Vec<f32>),
+    Multi(Vec<Vec<f32>>),
+}
+
+impl NamedPointVector {
+    fn is_multivector(&self) -> bool {
+        matches!(self, NamedPointVector::Multi(_))
+    }
+
+    fn into_vector(self) -> Vector {
+        match self {
+            NamedPointVector::Single(v) => Vector::new_dense(v),
+            NamedPointVector::Multi(v) => Vector::new_multi(v),
+        }
+    }
 }
 
 /// A point declared into a collection: an id, its vector(s), and a JSON payload.
@@ -143,10 +404,80 @@ struct Point {
     payload: Map<String, JsonValue>,
 }
 
+impl Point {
+    fn to_qdrant_vectors(&self, schema: &CollectionSchema) -> Result<Vectors> {
+        let vector_fields = schema.vector_fields();
+        match (&vector_fields, &self.vector) {
+            (VectorFields::Single(def), PointVector::Single(v)) => {
+                if def.is_multivector() {
+                    return Err(Error::engine(format!(
+                        "qdrant point {}: collection expects a multivector",
+                        self.id
+                    )));
+                }
+                Ok(Vector::new_dense(v.clone()).into())
+            }
+            (VectorFields::Single(def), PointVector::Multi(v)) => {
+                if !def.is_multivector() {
+                    return Err(Error::engine(format!(
+                        "qdrant point {}: collection expects a single vector",
+                        self.id
+                    )));
+                }
+                Ok(Vector::new_multi(v.clone()).into())
+            }
+            (VectorFields::Single(_), PointVector::Named(_)) => Err(Error::engine(format!(
+                "qdrant point {}: collection uses an unnamed vector but point has named vectors",
+                self.id
+            ))),
+            (VectorFields::Named(vectors), PointVector::Named(point_vectors)) => {
+                let missing: Vec<_> = vectors
+                    .keys()
+                    .filter(|name| !point_vectors.contains_key(*name))
+                    .cloned()
+                    .collect();
+                if !missing.is_empty() {
+                    return Err(Error::engine(format!(
+                        "qdrant point {}: missing vector fields {:?}",
+                        self.id, missing
+                    )));
+                }
+
+                let mut named = HashMap::new();
+                for (name, point_vector) in point_vectors {
+                    let Some(def) = vectors.get(name) else {
+                        return Err(Error::engine(format!(
+                            "qdrant point {}: unexpected vector field {:?}",
+                            self.id, name
+                        )));
+                    };
+                    if def.is_multivector() != point_vector.is_multivector() {
+                        return Err(Error::engine(format!(
+                            "qdrant point {}: vector field {:?} has the wrong vector shape",
+                            self.id, name
+                        )));
+                    }
+                    named.insert(name.clone(), point_vector.clone().into_vector());
+                }
+                Ok(NamedVectors { vectors: named }.into())
+            }
+            (VectorFields::Named(vectors), PointVector::Single(_))
+            | (VectorFields::Named(vectors), PointVector::Multi(_)) => {
+                let names: Vec<_> = vectors.keys().cloned().collect();
+                Err(Error::engine(format!(
+                    "qdrant point {}: collection declares named vectors {:?}",
+                    self.id, names
+                )))
+            }
+        }
+    }
+}
+
 /// A declarative Qdrant collection target. See the [module docs](self).
 #[derive(Clone)]
 pub struct CollectionTarget {
     collection_name: Arc<str>,
+    schema: CollectionSchema,
     points: TargetStateProvider<Point>,
 }
 
@@ -178,9 +509,11 @@ pub async fn mount_collection_target_with_options(
 ) -> Result<CollectionTarget> {
     let ts = collection_target_with_options(ctx, conn, collection_name, schema, options)?;
     let name = ts.value().collection_name.clone();
+    let schema = ts.value().schema.clone();
     let points = mount_target::<CollectionSpec, Point>(ctx, ts).await?;
     Ok(CollectionTarget {
         collection_name: Arc::from(name),
+        schema,
         points,
     })
 }
@@ -262,9 +595,11 @@ pub fn declare_collection_target_with_options(
 ) -> Result<CollectionTarget> {
     let ts = collection_target_with_options(ctx, conn, collection_name, schema, options)?;
     let name = ts.value().collection_name.clone();
+    let schema = ts.value().schema.clone();
     let points = declare_target_state_with_child::<CollectionSpec, Point>(ctx, ts)?;
     Ok(CollectionTarget {
         collection_name: Arc::from(name),
+        schema,
         points,
     })
 }
@@ -287,6 +622,7 @@ impl CollectionTarget {
             vector: PointVector::Single(vector),
             payload,
         };
+        point.to_qdrant_vectors(&self.schema)?;
         declare_target_state(ctx, self.points.target_state(id.to_string(), point))
     }
 
@@ -305,6 +641,34 @@ impl CollectionTarget {
             vector: PointVector::Multi(vectors),
             payload,
         };
+        point.to_qdrant_vectors(&self.schema)?;
+        declare_target_state(ctx, self.points.target_state(id.to_string(), point))
+    }
+
+    /// Declare a point for a named-vector collection. Each map value may be a
+    /// single vector or a multivector, depending on the field schema.
+    pub fn declare_named_vectors_point<I, K>(
+        &self,
+        ctx: &Ctx,
+        id: u64,
+        vectors: I,
+        payload: Map<String, JsonValue>,
+    ) -> Result<()>
+    where
+        I: IntoIterator<Item = (K, NamedPointVector)>,
+        K: Into<String>,
+    {
+        let point = Point {
+            id,
+            vector: PointVector::Named(
+                vectors
+                    .into_iter()
+                    .map(|(name, vector)| (name.into(), vector))
+                    .collect(),
+            ),
+            payload,
+        };
+        point.to_qdrant_vectors(&self.schema)?;
         declare_target_state(ctx, self.points.target_state(id.to_string(), point))
     }
 }
@@ -429,6 +793,7 @@ fn collection_sink(client: Arc<Qdrant>) -> TargetActionSink<CollectionAction> {
                             out.push(Some(ChildTargetDef::new::<Point, _>(PointHandler::new(
                                 client.clone(),
                                 a.name,
+                                a.schema,
                             ))));
                         }
                         TargetAction::Delete(a) => {
@@ -456,17 +821,10 @@ async fn ensure_collection(client: &Qdrant, action: &CollectionAction) -> Result
     } else if exists {
         return Ok(());
     }
-    let mut vectors = VectorParamsBuilder::new(
-        action.schema.vector_size,
-        action.schema.distance.to_qdrant(),
-    );
-    if action.schema.multivector {
-        vectors = vectors
-            .multivector_config(MultiVectorConfigBuilder::new(MultiVectorComparator::MaxSim));
-    }
     client
         .create_collection(
-            CreateCollectionBuilder::new(action.name.clone()).vectors_config(vectors),
+            CreateCollectionBuilder::new(action.name.clone())
+                .vectors_config(action.schema.vectors_config()),
         )
         .await
         .map_err(|e| Error::engine(format!("qdrant create_collection {:?}: {e}", action.name)))?;
@@ -503,9 +861,9 @@ struct PointHandler {
 }
 
 impl PointHandler {
-    fn new(client: Arc<Qdrant>, collection_name: String) -> Self {
+    fn new(client: Arc<Qdrant>, collection_name: String, schema: CollectionSchema) -> Self {
         Self {
-            sink: point_sink(client, collection_name),
+            sink: point_sink(client, collection_name, schema),
         }
     }
 }
@@ -577,10 +935,15 @@ fn point_fingerprint(point: &Point) -> String {
     format!("{fp:?}")
 }
 
-fn point_sink(client: Arc<Qdrant>, collection_name: String) -> TargetActionSink<PointAction> {
+fn point_sink(
+    client: Arc<Qdrant>,
+    collection_name: String,
+    schema: CollectionSchema,
+) -> TargetActionSink<PointAction> {
     TargetActionSink::from_async_fn(move |actions: Vec<TargetAction<PointAction>>| {
         let client = client.clone();
         let collection_name = collection_name.clone();
+        let schema = schema.clone();
         async move {
             let mut upserts: Vec<PointStruct> = Vec::new();
             let mut deletes: Vec<qdrant_client::qdrant::PointId> = Vec::new();
@@ -588,14 +951,10 @@ fn point_sink(client: Arc<Qdrant>, collection_name: String) -> TargetActionSink<
                 match action {
                     TargetAction::Create(a) | TargetAction::Update(a) => {
                         if let Some(point) = a.point {
-                            let payload: Payload = point.payload.into();
                             let id = point.id;
-                            let struct_ = match point.vector {
-                                PointVector::Single(v) => PointStruct::new(id, v, payload),
-                                PointVector::Multi(v) => {
-                                    PointStruct::new(id, Vector::new_multi(v), payload)
-                                }
-                            };
+                            let vectors = point.to_qdrant_vectors(&schema)?;
+                            let payload: Payload = point.payload.into();
+                            let struct_ = PointStruct::new(id, vectors, payload);
                             upserts.push(struct_);
                         }
                     }
@@ -639,14 +998,38 @@ pub async fn vector_search(
     query: Vec<f32>,
     top_k: u64,
 ) -> Result<Vec<QdrantHit>> {
+    vector_search_by_field(conn, collection_name, None, query, top_k).await
+}
+
+/// Run a vector search against a named Qdrant vector field.
+pub async fn named_vector_search(
+    conn: &QdrantConnection,
+    collection_name: &str,
+    vector_name: &str,
+    query: Vec<f32>,
+    top_k: u64,
+) -> Result<Vec<QdrantHit>> {
+    validate_vector_name(vector_name)?;
+    vector_search_by_field(conn, collection_name, Some(vector_name), query, top_k).await
+}
+
+async fn vector_search_by_field(
+    conn: &QdrantConnection,
+    collection_name: &str,
+    vector_name: Option<&str>,
+    query: Vec<f32>,
+    top_k: u64,
+) -> Result<Vec<QdrantHit>> {
+    let mut builder = QueryPointsBuilder::new(collection_name)
+        .query(query)
+        .limit(top_k)
+        .with_payload(true);
+    if let Some(vector_name) = vector_name {
+        builder = builder.using(vector_name);
+    }
     let response = conn
         .client
-        .query(
-            QueryPointsBuilder::new(collection_name)
-                .query(query)
-                .limit(top_k)
-                .with_payload(true),
-        )
+        .query(builder)
         .await
         .map_err(|e| Error::engine(format!("qdrant query: {e}")))?;
     Ok(response
@@ -672,14 +1055,38 @@ pub async fn multivector_search(
     query: Vec<Vec<f32>>,
     top_k: u64,
 ) -> Result<Vec<QdrantHit>> {
+    multivector_search_by_field(conn, collection_name, None, query, top_k).await
+}
+
+/// Run a multivector search against a named Qdrant vector field.
+pub async fn named_multivector_search(
+    conn: &QdrantConnection,
+    collection_name: &str,
+    vector_name: &str,
+    query: Vec<Vec<f32>>,
+    top_k: u64,
+) -> Result<Vec<QdrantHit>> {
+    validate_vector_name(vector_name)?;
+    multivector_search_by_field(conn, collection_name, Some(vector_name), query, top_k).await
+}
+
+async fn multivector_search_by_field(
+    conn: &QdrantConnection,
+    collection_name: &str,
+    vector_name: Option<&str>,
+    query: Vec<Vec<f32>>,
+    top_k: u64,
+) -> Result<Vec<QdrantHit>> {
+    let mut builder = QueryPointsBuilder::new(collection_name)
+        .query(VectorInput::new_multi(query))
+        .limit(top_k)
+        .with_payload(true);
+    if let Some(vector_name) = vector_name {
+        builder = builder.using(vector_name);
+    }
     let response = conn
         .client
-        .query(
-            QueryPointsBuilder::new(collection_name)
-                .query(VectorInput::new_multi(query))
-                .limit(top_k)
-                .with_payload(true),
-        )
+        .query(builder)
         .await
         .map_err(|e| Error::engine(format!("qdrant multivector query: {e}")))?;
     Ok(response
@@ -747,6 +1154,212 @@ mod tests {
     fn collection_schema_multivector_flag() {
         assert!(!CollectionSchema::new(512, Distance::Cosine).multivector);
         assert!(CollectionSchema::multivector(128, Distance::Cosine).multivector);
+    }
+
+    #[test]
+    fn collection_schema_reads_legacy_single_vector_state() {
+        let schema: CollectionSchema = serde_json::from_value(serde_json::json!({
+            "vector_size": 512,
+            "distance": "Cosine",
+            "multivector": false
+        }))
+        .unwrap();
+        let config: qdrant_client::qdrant::VectorsConfig = schema.vectors_config().into();
+        let Some(qdrant_client::qdrant::vectors_config::Config::Params(params)) = config.config
+        else {
+            panic!("expected unnamed vector params");
+        };
+        assert_eq!(params.size, 512);
+    }
+
+    #[test]
+    fn collection_schema_reads_legacy_multivector_state() {
+        let schema: CollectionSchema = serde_json::from_value(serde_json::json!({
+            "vector_size": 128,
+            "distance": "Dot",
+            "multivector": true
+        }))
+        .unwrap();
+        let config: qdrant_client::qdrant::VectorsConfig = schema.vectors_config().into();
+        let Some(qdrant_client::qdrant::vectors_config::Config::Params(params)) = config.config
+        else {
+            panic!("expected unnamed vector params");
+        };
+        assert_eq!(params.size, 128);
+        assert!(params.multivector_config.is_some());
+    }
+
+    #[test]
+    fn collection_schema_named_vectors_config() {
+        let schema = CollectionSchema::named([
+            ("text", QdrantVectorDef::f32(384, Distance::Cosine).unwrap()),
+            (
+                "image",
+                QdrantVectorDef::multivector(
+                    MultiVectorSchema {
+                        vector_schema: VectorSchema::f32(128),
+                    },
+                    Distance::Dot,
+                )
+                .unwrap(),
+            ),
+        ])
+        .unwrap();
+        let config: qdrant_client::qdrant::VectorsConfig = schema.vectors_config().into();
+        let Some(qdrant_client::qdrant::vectors_config::Config::ParamsMap(map)) = config.config
+        else {
+            panic!("expected named vector params map");
+        };
+        assert_eq!(map.map["text"].size, 384);
+        assert_eq!(map.map["image"].size, 128);
+        assert!(map.map["image"].multivector_config.is_some());
+    }
+
+    #[test]
+    fn vector_datatype_reflects_element_type() {
+        // f32 vectors leave datatype unset (Qdrant's default); f16 vectors set
+        // datatype = Float16. Mirrors Python's `VectorParams(datatype=...)`.
+        let schema = CollectionSchema::named([
+            ("f32v", QdrantVectorDef::f32(8, Distance::Cosine).unwrap()),
+            (
+                "f16v",
+                QdrantVectorDef::new(VectorSchema::f16(8), Distance::Cosine).unwrap(),
+            ),
+        ])
+        .unwrap();
+        let config: qdrant_client::qdrant::VectorsConfig = schema.vectors_config().into();
+        let Some(qdrant_client::qdrant::vectors_config::Config::ParamsMap(map)) = config.config
+        else {
+            panic!("expected named vector params map");
+        };
+        assert_eq!(map.map["f32v"].datatype, None);
+        assert_eq!(map.map["f16v"].datatype, Some(QdrantDatatype::Float16 as i32));
+    }
+
+    #[test]
+    fn single_f16_schema_sets_datatype() {
+        let schema =
+            CollectionSchema::from_vector_schema(VectorSchema::f16(16), Distance::Dot).unwrap();
+        let config: qdrant_client::qdrant::VectorsConfig = schema.vectors_config().into();
+        let Some(qdrant_client::qdrant::vectors_config::Config::Params(params)) = config.config
+        else {
+            panic!("expected unnamed vector params");
+        };
+        assert_eq!(params.datatype, Some(QdrantDatatype::Float16 as i32));
+    }
+
+    #[test]
+    fn named_schema_rejects_empty_fields() {
+        assert!(
+            CollectionSchema::named([("", QdrantVectorDef::f32(3, Distance::Cosine).unwrap())])
+                .is_err()
+        );
+        let empty: Vec<(String, QdrantVectorDef)> = Vec::new();
+        assert!(CollectionSchema::named(empty).is_err());
+    }
+
+    struct StaticVectorProvider(VectorSchema);
+
+    #[async_trait::async_trait]
+    impl VectorSchemaProvider for StaticVectorProvider {
+        async fn vector_schema(&self) -> Result<VectorSchema> {
+            Ok(self.0)
+        }
+    }
+
+    struct StaticMultiVectorProvider(MultiVectorSchema);
+
+    #[async_trait::async_trait]
+    impl MultiVectorSchemaProvider for StaticMultiVectorProvider {
+        async fn multi_vector_schema(&self) -> Result<MultiVectorSchema> {
+            Ok(self.0)
+        }
+    }
+
+    #[tokio::test]
+    async fn collection_schema_from_providers() {
+        let dense = StaticVectorProvider(VectorSchema::f32(256));
+        let schema = CollectionSchema::from_vector_provider(&dense, Distance::Euclid)
+            .await
+            .unwrap();
+        assert_eq!(schema.vector_size, 256);
+        assert!(!schema.multivector);
+
+        let multi = StaticMultiVectorProvider(MultiVectorSchema {
+            vector_schema: VectorSchema::f32(64),
+        });
+        let schema = CollectionSchema::from_multivector_provider(&multi, Distance::Cosine)
+            .await
+            .unwrap();
+        assert_eq!(schema.vector_size, 64);
+        assert!(schema.multivector);
+    }
+
+    #[test]
+    fn point_vectors_validate_named_schema() {
+        let schema = CollectionSchema::named([
+            ("text", QdrantVectorDef::f32(3, Distance::Cosine).unwrap()),
+            (
+                "tokens",
+                QdrantVectorDef::multivector(
+                    MultiVectorSchema {
+                        vector_schema: VectorSchema::f32(2),
+                    },
+                    Distance::Cosine,
+                )
+                .unwrap(),
+            ),
+        ])
+        .unwrap();
+        let point = Point {
+            id: 1,
+            vector: PointVector::Named(BTreeMap::from([
+                (
+                    "text".to_string(),
+                    NamedPointVector::Single(vec![1.0, 2.0, 3.0]),
+                ),
+                (
+                    "tokens".to_string(),
+                    NamedPointVector::Multi(vec![vec![0.5, 0.5]]),
+                ),
+            ])),
+            payload: Map::new(),
+        };
+        assert!(point.to_qdrant_vectors(&schema).is_ok());
+    }
+
+    #[test]
+    fn point_vectors_reject_named_mismatches() {
+        let schema = CollectionSchema::named([
+            ("text", QdrantVectorDef::f32(3, Distance::Cosine).unwrap()),
+            ("image", QdrantVectorDef::f32(2, Distance::Cosine).unwrap()),
+        ])
+        .unwrap();
+        let missing = Point {
+            id: 1,
+            vector: PointVector::Named(BTreeMap::from([(
+                "text".to_string(),
+                NamedPointVector::Single(vec![1.0, 2.0, 3.0]),
+            )])),
+            payload: Map::new(),
+        };
+        assert!(missing.to_qdrant_vectors(&schema).is_err());
+
+        let wrong_shape = Point {
+            id: 1,
+            vector: PointVector::Named(BTreeMap::from([
+                (
+                    "text".to_string(),
+                    NamedPointVector::Single(vec![1.0, 2.0, 3.0]),
+                ),
+                (
+                    "image".to_string(),
+                    NamedPointVector::Multi(vec![vec![0.5, 0.5]]),
+                ),
+            ])),
+            payload: Map::new(),
+        };
+        assert!(wrong_shape.to_qdrant_vectors(&schema).is_err());
     }
 
     #[test]
