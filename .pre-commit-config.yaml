@@ -12,6 +12,11 @@ repos:
         exclude: ".*(.github.*)$"
       - id: detect-private-key
         # Checks for the existence of private keys.
+        # gdrive.rs holds a throwaway test-only RSA key (RS256 JWT signing test);
+        # oci_object_storage.rs only references the PEM key header in doc comments.
+        # (This comment must avoid the literal key-header phrase, or the hook would
+        # flag its own config file.)
+        exclude: "^rust/sdk/cocoindex/src/(gdrive|oci_object_storage)\\.rs$"
       - id: end-of-file-fixer
         # Makes sure files end in a newline and only a newline.
         exclude: ".*(data.*|licenses.*|_static.*|\\.ya?ml|\\.jpe?g|\\.png|\\.svg|\\.webp)$"

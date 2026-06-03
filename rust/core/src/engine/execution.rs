@@ -275,6 +275,19 @@ pub fn declare_target_state<Prof: EngineProfile>(
     Ok(())
 }
 
+pub fn register_root_target_state_provider<Prof: EngineProfile>(
+    comp_ctx: &ComponentProcessorContext<Prof>,
+    name: String,
+    handler: Prof::TargetHdl,
+) -> Result<TargetStateProvider<Prof>> {
+    comp_ctx.update_building_state(|building_state| {
+        building_state
+            .target_states
+            .provider_registry
+            .register_root(name, handler)
+    })
+}
+
 pub fn declare_target_state_with_child<Prof: EngineProfile>(
     comp_ctx: &ComponentProcessorContext<Prof>,
     fn_ctx: &FnCallContext,

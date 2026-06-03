@@ -54,5 +54,6 @@ This example demonstrates:
 | `#[cocoindex::function(memo)]` | `extract_file_info` — LLM call cached per file fingerprint |
 | `#[cocoindex::function(memo)]` | `aggregate_project_info` — LLM call cached until any file summary changes |
 | `#[cocoindex::function]` | `generate_markdown` — pure transform, no caching needed |
+| `ctx.scope(...)` | Mirror Python's per-project `coco.mount(...)` component |
 | `ctx.mount_each(...)` | Process all files concurrently within each project |
 | `OnceLock<LlmClient>` | Access a process-wide shared LLM client |

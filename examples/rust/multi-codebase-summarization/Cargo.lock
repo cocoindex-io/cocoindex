@@ -279,6 +279,7 @@ dependencies = [
  "cocoindex_core",
  "cocoindex_macros",
  "cocoindex_utils",
+ "encoding_rs",
  "futures",
  "globset",
  "rmp-serde",
@@ -287,6 +288,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
+ "uuid",
  "walkdir",
 ]
 

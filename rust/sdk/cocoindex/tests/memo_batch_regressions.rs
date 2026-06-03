@@ -55,7 +55,7 @@ async fn batch_serialization_error_releases_previous_pending_entries() {
             let _: Vec<ItemValue> = ctx
                 .batch(items, |x| *x, {
                     let calls = first_calls_for_run.clone();
-                    move |misses| {
+                    move |_ctx, misses| {
                         calls.fetch_add(1, Ordering::SeqCst);
                         let out = misses
                             .into_iter()
@@ -81,7 +81,7 @@ async fn batch_serialization_error_releases_previous_pending_entries() {
         let results: Vec<ItemValue> = ctx
             .batch(items, |x| *x, {
                 let calls = second_calls_for_run.clone();
-                move |misses| {
+                move |_ctx, misses| {
                     calls.fetch_add(1, Ordering::SeqCst);
                     let out = misses
                         .into_iter()
@@ -109,7 +109,7 @@ async fn batch_serialization_error_releases_previous_pending_entries() {
         let results: Vec<ItemValue> = ctx
             .batch(items, |x| *x, {
                 let calls = cached_calls_for_run.clone();
-                move |misses| {
+                move |_ctx, misses| {
                     calls.fetch_add(1, Ordering::SeqCst);
                     let out = misses
                         .into_iter()
@@ -172,7 +172,7 @@ async fn batch_fingerprint_error_releases_previous_pending_entries() {
             let _: Vec<i32> = ctx
                 .batch(items, |key| *key, {
                     let calls = first_calls_for_run.clone();
-                    move |misses| {
+                    move |_ctx, misses| {
                         calls.fetch_add(1, Ordering::SeqCst);
                         let out = misses.into_iter().map(|value| value.value * 2).collect();
                         async move { Ok(out) }
@@ -195,7 +195,7 @@ async fn batch_fingerprint_error_releases_previous_pending_entries() {
         let values: Vec<i32> = ctx
             .batch(items, |key| *key, {
                 let calls = second_calls_for_run.clone();
-                move |misses| {
+                move |_ctx, misses| {
                     calls.fetch_add(1, Ordering::SeqCst);
                     let out = misses.into_iter().map(|value| value.value * 2).collect();
                     async move { Ok(out) }
@@ -220,7 +220,7 @@ async fn batch_returns_error_when_mismatch_count() {
                 .batch(
                     items,
                     |x| *x,
-                    |misses| {
+                    |_ctx, misses| {
                         let out = misses.into_iter().take(2).map(|v| v * 2).collect();
                         async move { Ok(out) }
                     },
