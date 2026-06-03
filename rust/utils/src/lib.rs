@@ -5,6 +5,7 @@ pub mod deser;
 pub mod error;
 pub mod fingerprint;
 pub mod immutable;
+pub mod ratelimit;
 pub mod retryable;
 pub mod slow_warn;
 
