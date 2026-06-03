@@ -5,17 +5,18 @@ use std::time::Duration;
 
 /// Statistics returned by `App::run()`.
 ///
-/// Contains information about the number of items processed, skipped (due to
-/// memoization), or written/deleted from the filesystem.
+/// `processed` is the **total** number of target states handled this run; it is
+/// the sum of the three disjoint outcome buckets `written + skipped + deleted`
+/// (so `processed == written + skipped + deleted` always holds).
 #[derive(Debug, Clone)]
 pub struct RunStats {
-    /// Number of items explicitly processed by the pipeline logic.
+    /// Total target states handled this run (= `written + skipped + deleted`).
     pub processed: u64,
-    /// Number of items skipped due to memoization (cache hit).
+    /// Of those, the count left unchanged due to memoization / no-change tracking.
     pub skipped: u64,
-    /// Number of new or modified files written to the output directory.
+    /// Of those, the count created or updated (inserts + reprocesses).
     pub written: u64,
-    /// Number of stale files deleted from the output directory during sync.
+    /// Of those, the count deleted during reconciliation (orphaned states).
     pub deleted: u64,
     /// Total elapsed time of the pipeline execution.
     pub elapsed: Duration,

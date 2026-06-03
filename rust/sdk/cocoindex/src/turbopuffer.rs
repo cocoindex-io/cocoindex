@@ -7,13 +7,14 @@
 //! Turbopuffer is a hosted service; this talks to its v2 HTTP API via `reqwest`
 //! (no native crate). Namespaces are created implicitly on first write.
 
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value as JsonValue, json};
 
 use crate::ctx::Ctx;
 use crate::error::{Error, Result};
+use crate::resources::schema::{VectorElementType, VectorSchema, VectorSchemaProvider};
 use crate::statediff::{
     DiffAction, ManagedBy, ManagedTargetOptions, MutualTrackingRecord, diff,
     resolve_system_transition,
@@ -153,49 +154,243 @@ impl DistanceMetric {
     }
 }
 
-/// Schema for a Turbopuffer namespace: a single (unnamed) `vector` field.
+/// Vector definition for a Turbopuffer namespace field.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct VectorDef {
+    pub schema: VectorSchema,
+}
+
+impl VectorDef {
+    pub fn new(schema: VectorSchema) -> Result<Self> {
+        vector_type_str(&schema)?;
+        Ok(Self { schema })
+    }
+
+    pub fn f32(size: usize) -> Result<Self> {
+        Self::new(VectorSchema::f32(size))
+    }
+
+    pub async fn from_provider(provider: &(impl VectorSchemaProvider + ?Sized)) -> Result<Self> {
+        Self::new(provider.vector_schema().await?)
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+enum VectorFields {
+    Single(VectorDef),
+    Named(BTreeMap<String, VectorDef>),
+}
+
+/// Schema for a Turbopuffer namespace.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct NamespaceSchema {
-    pub vector_size: usize,
+    vectors: VectorFields,
     pub distance: DistanceMetric,
 }
 
 impl NamespaceSchema {
+    /// Create a single unnamed f32 vector schema under Turbopuffer's `vector`
+    /// field. This is the common path and matches the older Rust API.
     pub fn new(vector_size: usize, distance: DistanceMetric) -> Self {
         Self {
-            vector_size,
+            vectors: VectorFields::Single(VectorDef {
+                schema: VectorSchema::f32(vector_size),
+            }),
             distance,
         }
     }
 
-    /// The `schema` payload turbopuffer's write API expects (`[N]f32` ann field).
-    fn write_schema(&self) -> JsonValue {
-        json!({ "vector": { "type": format!("[{}]f32", self.vector_size), "ann": true } })
+    /// Create a single unnamed vector schema from an explicit vector schema.
+    pub fn from_vector_schema(schema: VectorSchema, distance: DistanceMetric) -> Result<Self> {
+        Ok(Self {
+            vectors: VectorFields::Single(VectorDef::new(schema)?),
+            distance,
+        })
     }
+
+    /// Create a single unnamed vector schema from a provider, such as an
+    /// embedder.
+    pub async fn from_vector_provider(
+        provider: &(impl VectorSchemaProvider + ?Sized),
+        distance: DistanceMetric,
+    ) -> Result<Self> {
+        Ok(Self {
+            vectors: VectorFields::Single(VectorDef::from_provider(provider).await?),
+            distance,
+        })
+    }
+
+    /// Create a named-vector schema.
+    pub fn named<I, K>(vectors: I, distance: DistanceMetric) -> Result<Self>
+    where
+        I: IntoIterator<Item = (K, VectorDef)>,
+        K: Into<String>,
+    {
+        let mut resolved = BTreeMap::new();
+        for (name, def) in vectors {
+            let name = name.into();
+            validate_vector_field_name(&name)?;
+            if resolved.insert(name.clone(), def).is_some() {
+                return Err(Error::engine(format!(
+                    "duplicate turbopuffer vector field name: {name:?}"
+                )));
+            }
+        }
+        if resolved.is_empty() {
+            return Err(Error::engine(
+                "named turbopuffer vector schema must declare at least one vector field",
+            ));
+        }
+        Ok(Self {
+            vectors: VectorFields::Named(resolved),
+            distance,
+        })
+    }
+
+    /// The `schema` payload Turbopuffer's write API expects.
+    fn write_schema(&self) -> Result<JsonValue> {
+        let mut fields = Map::new();
+        match &self.vectors {
+            VectorFields::Single(def) => {
+                fields.insert(
+                    DEFAULT_VECTOR_FIELD.into(),
+                    vector_schema_entry(&def.schema)?,
+                );
+            }
+            VectorFields::Named(vectors) => {
+                for (name, def) in vectors {
+                    fields.insert(name.clone(), vector_schema_entry(&def.schema)?);
+                }
+            }
+        }
+        Ok(JsonValue::Object(fields))
+    }
+
+    fn vector_field_names(&self) -> Vec<String> {
+        match &self.vectors {
+            VectorFields::Single(_) => vec![DEFAULT_VECTOR_FIELD.to_string()],
+            VectorFields::Named(vectors) => vectors.keys().cloned().collect(),
+        }
+    }
+}
+
+const DEFAULT_VECTOR_FIELD: &str = "vector";
+
+fn validate_vector_field_name(name: &str) -> Result<()> {
+    if name.is_empty() {
+        return Err(Error::engine(
+            "turbopuffer vector field name must not be empty",
+        ));
+    }
+    if name == "id" {
+        return Err(Error::engine(
+            "turbopuffer vector field name \"id\" is reserved",
+        ));
+    }
+    Ok(())
+}
+
+fn vector_type_str(schema: &VectorSchema) -> Result<String> {
+    if schema.size == 0 {
+        return Err(Error::engine(
+            "turbopuffer vector size must be greater than zero",
+        ));
+    }
+    let suffix = match schema.element_type {
+        VectorElementType::Float32 => "f32",
+        VectorElementType::Float16 => "f16",
+    };
+    Ok(format!("[{}]{suffix}", schema.size))
+}
+
+fn vector_schema_entry(schema: &VectorSchema) -> Result<JsonValue> {
+    Ok(json!({ "type": vector_type_str(schema)?, "ann": true }))
 }
 
 // ---------------------------------------------------------------------------
 // Public target API
 // ---------------------------------------------------------------------------
 
-/// A row declared into a namespace: id + vector + attribute fields.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+enum RowVector {
+    Single(Vec<f32>),
+    Named(BTreeMap<String, Vec<f32>>),
+}
+
+/// A row declared into a namespace: id + vector(s) + attribute fields.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 struct Row {
     id: String,
-    vector: Vec<f32>,
+    vector: RowVector,
     attributes: Map<String, JsonValue>,
 }
 
 impl Row {
-    /// The wire shape turbopuffer expects: `{id, vector, ...attributes}`.
-    fn to_upsert(&self) -> JsonValue {
+    /// The wire shape Turbopuffer expects: `{id, vector, ...attributes}` or
+    /// `{id, text_vector, image_vector, ...attributes}`.
+    fn to_upsert(&self, schema: &NamespaceSchema) -> Result<JsonValue> {
         let mut obj = Map::new();
         obj.insert("id".into(), JsonValue::from(self.id.clone()));
-        obj.insert("vector".into(), json!(self.vector));
+
+        let reserved = match (&schema.vectors, &self.vector) {
+            (VectorFields::Single(_), RowVector::Single(vector)) => {
+                obj.insert(DEFAULT_VECTOR_FIELD.into(), json!(vector));
+                schema.vector_field_names()
+            }
+            (VectorFields::Single(_), RowVector::Named(_)) => {
+                return Err(Error::engine(format!(
+                    "turbopuffer row {:?}: schema declares a single unnamed vector but row uses named vectors",
+                    self.id
+                )));
+            }
+            (VectorFields::Named(vectors), RowVector::Named(row_vectors)) => {
+                let missing: Vec<_> = vectors
+                    .keys()
+                    .filter(|name| !row_vectors.contains_key(*name))
+                    .cloned()
+                    .collect();
+                if !missing.is_empty() {
+                    return Err(Error::engine(format!(
+                        "turbopuffer row {:?}: missing vector fields {:?}",
+                        self.id, missing
+                    )));
+                }
+                for (name, vector) in row_vectors {
+                    if !vectors.contains_key(name) {
+                        return Err(Error::engine(format!(
+                            "turbopuffer row {:?}: unexpected vector field {:?}",
+                            self.id, name
+                        )));
+                    }
+                    obj.insert(name.clone(), json!(vector));
+                }
+                schema.vector_field_names()
+            }
+            (VectorFields::Named(vectors), RowVector::Single(_)) => {
+                let names: Vec<_> = vectors.keys().cloned().collect();
+                return Err(Error::engine(format!(
+                    "turbopuffer row {:?}: schema declares named vectors {:?} but row uses a single vector",
+                    self.id, names
+                )));
+            }
+        };
+
+        if self.attributes.contains_key("id") {
+            return Err(Error::engine(format!(
+                "turbopuffer row {:?}: attribute name \"id\" is reserved",
+                self.id
+            )));
+        }
         for (k, v) in &self.attributes {
+            if reserved.iter().any(|field| field == k) {
+                return Err(Error::engine(format!(
+                    "turbopuffer row {:?}: attribute name {:?} is reserved",
+                    self.id, k
+                )));
+            }
             obj.insert(k.clone(), v.clone());
         }
-        JsonValue::Object(obj)
+        Ok(JsonValue::Object(obj))
     }
 }
 
@@ -203,6 +398,7 @@ impl Row {
 #[derive(Clone)]
 pub struct NamespaceTarget {
     namespace: Arc<str>,
+    schema: NamespaceSchema,
     rows: TargetStateProvider<Row>,
 }
 
@@ -233,9 +429,11 @@ pub async fn mount_namespace_target_with_options(
 ) -> Result<NamespaceTarget> {
     let ts = namespace_target_with_options(ctx, conn, namespace, schema, options)?;
     let name = ts.value().namespace.clone();
+    let schema = ts.value().schema.clone();
     let rows = mount_target::<NamespaceSpec, Row>(ctx, ts).await?;
     Ok(NamespaceTarget {
         namespace: Arc::from(name),
+        schema,
         rows,
     })
 }
@@ -318,9 +516,11 @@ pub fn declare_namespace_target_with_options(
 ) -> Result<NamespaceTarget> {
     let ts = namespace_target_with_options(ctx, conn, namespace, schema, options)?;
     let name = ts.value().namespace.clone();
+    let schema = ts.value().schema.clone();
     let rows = declare_target_state_with_child::<NamespaceSpec, Row>(ctx, ts)?;
     Ok(NamespaceTarget {
         namespace: Arc::from(name),
+        schema,
         rows,
     })
 }
@@ -341,9 +541,37 @@ impl NamespaceTarget {
         let id = id.into();
         let row = Row {
             id: id.clone(),
-            vector,
+            vector: RowVector::Single(vector),
             attributes,
         };
+        row.to_upsert(&self.schema)?;
+        declare_target_state(ctx, self.rows.target_state(id, row))
+    }
+
+    /// Declare a row for a named-vector namespace.
+    pub fn declare_named_row<I, K>(
+        &self,
+        ctx: &Ctx,
+        id: impl Into<String>,
+        vectors: I,
+        attributes: Map<String, JsonValue>,
+    ) -> Result<()>
+    where
+        I: IntoIterator<Item = (K, Vec<f32>)>,
+        K: Into<String>,
+    {
+        let id = id.into();
+        let row = Row {
+            id: id.clone(),
+            vector: RowVector::Named(
+                vectors
+                    .into_iter()
+                    .map(|(name, vector)| (name.into(), vector))
+                    .collect(),
+            ),
+            attributes,
+        };
+        row.to_upsert(&self.schema)?;
         declare_target_state(ctx, self.rows.target_state(id, row))
     }
 }
@@ -595,7 +823,7 @@ fn row_sink(
                 match action {
                     TargetAction::Create(a) | TargetAction::Update(a) => {
                         if let Some(row) = a.row {
-                            upserts.push(row.to_upsert());
+                            upserts.push(row.to_upsert(&schema)?);
                         }
                     }
                     TargetAction::Delete(a) => deletes.push(JsonValue::from(a.id)),
@@ -609,7 +837,7 @@ fn row_sink(
                 "distance_metric".into(),
                 JsonValue::from(schema.distance.as_str()),
             );
-            body.insert("schema".into(), schema.write_schema());
+            body.insert("schema".into(), schema.write_schema()?);
             if !upserts.is_empty() {
                 body.insert("upsert_rows".into(), JsonValue::Array(upserts));
             }
@@ -638,8 +866,20 @@ pub async fn vector_search(
     query: Vec<f32>,
     top_k: usize,
 ) -> Result<Vec<TurbopufferHit>> {
+    vector_search_by_field(conn, namespace, DEFAULT_VECTOR_FIELD, query, top_k).await
+}
+
+/// Run a vector similarity search against a named vector field.
+pub async fn vector_search_by_field(
+    conn: &TurbopufferConnection,
+    namespace: &str,
+    field: &str,
+    query: Vec<f32>,
+    top_k: usize,
+) -> Result<Vec<TurbopufferHit>> {
+    validate_vector_field_name(field)?;
     let body = json!({
-        "rank_by": ["vector", "ANN", query],
+        "rank_by": [field, "ANN", query],
         "top_k": top_k,
         "include_attributes": true,
     });
@@ -651,9 +891,7 @@ pub async fn vector_search(
             let distance = obj.get("$dist").and_then(|v| v.as_f64()).unwrap_or(0.0);
             let attributes: Map<String, JsonValue> = obj
                 .iter()
-                .filter(|(k, _)| {
-                    k.as_str() != "$dist" && k.as_str() != "id" && k.as_str() != "vector"
-                })
+                .filter(|(k, _)| k.as_str() != "$dist" && k.as_str() != "id" && k.as_str() != field)
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect();
             hits.push(TurbopufferHit {
@@ -682,8 +920,41 @@ mod tests {
     fn write_schema_shape() {
         let s = NamespaceSchema::new(384, DistanceMetric::CosineDistance);
         assert_eq!(
-            s.write_schema(),
+            s.write_schema().unwrap(),
             json!({ "vector": { "type": "[384]f32", "ann": true } })
+        );
+    }
+
+    #[test]
+    fn write_schema_named_and_f16() {
+        let schema = NamespaceSchema::named(
+            [
+                (
+                    "text",
+                    VectorDef::new(VectorSchema {
+                        element_type: VectorElementType::Float32,
+                        size: 4,
+                    })
+                    .unwrap(),
+                ),
+                (
+                    "image",
+                    VectorDef::new(VectorSchema {
+                        element_type: VectorElementType::Float16,
+                        size: 16,
+                    })
+                    .unwrap(),
+                ),
+            ],
+            DistanceMetric::EuclideanSquared,
+        )
+        .unwrap();
+        assert_eq!(
+            schema.write_schema().unwrap(),
+            json!({
+                "image": { "type": "[16]f16", "ann": true },
+                "text": { "type": "[4]f32", "ann": true },
+            })
         );
     }
 
@@ -693,24 +964,177 @@ mod tests {
         attrs.insert("text".into(), JsonValue::from("hi"));
         let row = Row {
             id: "x".into(),
-            vector: vec![0.1, 0.2],
+            vector: RowVector::Single(vec![0.1, 0.2]),
             attributes: attrs,
         };
-        let up = row.to_upsert();
+        let schema = NamespaceSchema::new(2, DistanceMetric::CosineDistance);
+        let up = row.to_upsert(&schema).unwrap();
         assert_eq!(up["id"], "x");
         assert_eq!(up["text"], "hi");
         assert_eq!(up["vector"].as_array().unwrap().len(), 2);
     }
 
     #[test]
+    fn row_to_upsert_rejects_reserved_single_attrs() {
+        let schema = NamespaceSchema::new(3, DistanceMetric::CosineDistance);
+        for reserved in ["id", "vector"] {
+            let mut attrs = Map::new();
+            attrs.insert(reserved.into(), JsonValue::from("shadow"));
+            let row = Row {
+                id: "x".into(),
+                vector: RowVector::Single(vec![1.0, 2.0, 3.0]),
+                attributes: attrs,
+            };
+            assert!(row.to_upsert(&schema).is_err());
+        }
+    }
+
+    #[test]
+    fn named_row_to_upsert() {
+        let schema = NamespaceSchema::named(
+            [
+                ("text", VectorDef::f32(3).unwrap()),
+                ("image", VectorDef::f32(2).unwrap()),
+            ],
+            DistanceMetric::CosineDistance,
+        )
+        .unwrap();
+        let mut attrs = Map::new();
+        attrs.insert("title".into(), JsonValue::from("T"));
+        let row = Row {
+            id: "a".into(),
+            vector: RowVector::Named(BTreeMap::from([
+                ("text".to_string(), vec![1.0, 2.0, 3.0]),
+                ("image".to_string(), vec![0.5, 0.5]),
+            ])),
+            attributes: attrs,
+        };
+        assert_eq!(
+            row.to_upsert(&schema).unwrap(),
+            json!({
+                "id": "a",
+                "text": [1.0, 2.0, 3.0],
+                "image": [0.5, 0.5],
+                "title": "T",
+            })
+        );
+    }
+
+    #[test]
+    fn named_row_rejects_missing_and_unexpected_fields() {
+        let schema = NamespaceSchema::named(
+            [
+                ("text", VectorDef::f32(3).unwrap()),
+                ("image", VectorDef::f32(2).unwrap()),
+            ],
+            DistanceMetric::CosineDistance,
+        )
+        .unwrap();
+        let missing = Row {
+            id: "a".into(),
+            vector: RowVector::Named(BTreeMap::from([("text".to_string(), vec![1.0, 2.0, 3.0])])),
+            attributes: Map::new(),
+        };
+        assert!(missing.to_upsert(&schema).is_err());
+
+        let unexpected = Row {
+            id: "a".into(),
+            vector: RowVector::Named(BTreeMap::from([
+                ("text".to_string(), vec![1.0, 2.0, 3.0]),
+                ("image".to_string(), vec![0.5, 0.5]),
+                ("extra".to_string(), vec![0.0]),
+            ])),
+            attributes: Map::new(),
+        };
+        assert!(unexpected.to_upsert(&schema).is_err());
+    }
+
+    #[test]
+    fn named_row_rejects_non_dict_and_attribute_collision() {
+        let schema = NamespaceSchema::named(
+            [("text", VectorDef::f32(3).unwrap())],
+            DistanceMetric::CosineDistance,
+        )
+        .unwrap();
+        let single = Row {
+            id: "a".into(),
+            vector: RowVector::Single(vec![1.0, 2.0, 3.0]),
+            attributes: Map::new(),
+        };
+        assert!(single.to_upsert(&schema).is_err());
+
+        let mut attrs = Map::new();
+        attrs.insert("text".into(), JsonValue::from("shadow"));
+        let collision = Row {
+            id: "a".into(),
+            vector: RowVector::Named(BTreeMap::from([("text".to_string(), vec![1.0, 2.0, 3.0])])),
+            attributes: attrs,
+        };
+        assert!(collision.to_upsert(&schema).is_err());
+    }
+
+    #[test]
+    fn named_schema_rejects_reserved_and_empty_fields() {
+        assert!(
+            NamespaceSchema::named(
+                [("id", VectorDef::f32(3).unwrap())],
+                DistanceMetric::CosineDistance
+            )
+            .is_err()
+        );
+        let empty: Vec<(String, VectorDef)> = Vec::new();
+        assert!(NamespaceSchema::named(empty, DistanceMetric::CosineDistance).is_err());
+    }
+
+    #[test]
+    fn vector_def_rejects_zero_size() {
+        assert!(VectorDef::f32(0).is_err());
+        assert!(
+            NamespaceSchema::from_vector_schema(
+                VectorSchema {
+                    element_type: VectorElementType::Float16,
+                    size: 0,
+                },
+                DistanceMetric::CosineDistance,
+            )
+            .is_err()
+        );
+    }
+
+    struct StaticVectorSchemaProvider(VectorSchema);
+
+    #[async_trait::async_trait]
+    impl VectorSchemaProvider for StaticVectorSchemaProvider {
+        async fn vector_schema(&self) -> Result<VectorSchema> {
+            Ok(self.0)
+        }
+    }
+
+    #[tokio::test]
+    async fn namespace_schema_from_provider() {
+        let provider = StaticVectorSchemaProvider(VectorSchema {
+            element_type: VectorElementType::Float16,
+            size: 128,
+        });
+        let schema =
+            NamespaceSchema::from_vector_provider(&provider, DistanceMetric::EuclideanSquared)
+                .await
+                .unwrap();
+        assert_eq!(
+            schema.write_schema().unwrap(),
+            json!({ "vector": { "type": "[128]f16", "ann": true } })
+        );
+    }
+
+    #[test]
     fn row_fingerprint_changes_with_content() {
         let row = Row {
             id: "x".into(),
-            vector: vec![0.1, 0.2],
+            vector: RowVector::Single(vec![0.1, 0.2]),
             attributes: Map::new(),
         };
         let mut row2 = row.clone();
-        row2.vector = vec![0.1, 0.3];
+        row2.vector = RowVector::Single(vec![0.1, 0.3]);
         assert_eq!(row_fingerprint(&row), row_fingerprint(&row.clone()));
         assert_ne!(row_fingerprint(&row), row_fingerprint(&row2));
     }

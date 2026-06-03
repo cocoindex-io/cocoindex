@@ -63,6 +63,106 @@ pub fn walk_dir(path: impl Into<FilePath>) -> DirWalker {
     DirWalker::new(path)
 }
 
+#[cfg(feature = "fs_live")]
+pub use live::LiveDirWalker;
+
+#[cfg(feature = "fs_live")]
+mod live {
+    use super::{DirWalker, FileEntry};
+    use crate::error::{Error, Result};
+    use crate::live_component::{LiveMapFeed, LiveMapSubscriber, LiveMapView};
+    use async_trait::async_trait;
+    use notify::{RecursiveMode, Watcher};
+    use std::path::PathBuf;
+
+    /// A live directory feed: a [`LiveMapView`] over a directory that re-scans on
+    /// filesystem changes. Build it with [`DirWalker::live`] and feed it to
+    /// [`Ctx::mount_each_live`](crate::Ctx::mount_each_live) — the catch-up scan
+    /// walks the directory once, then each filesystem change triggers a re-scan
+    /// so files are mounted/removed as they appear and disappear (the Rust
+    /// analogue of Python's `walk_dir(..., live=True)`).
+    pub struct LiveDirWalker {
+        walker: DirWalker,
+        watch_root: PathBuf,
+        recursive: bool,
+        poll_interval: std::time::Duration,
+    }
+
+    impl DirWalker {
+        /// Turn this walker into a live [`LiveDirWalker`] that watches its root
+        /// directory (default poll interval: 1s — see
+        /// [`LiveDirWalker::poll_interval`]).
+        pub fn live(self) -> LiveDirWalker {
+            let resolved = self.root.resolve();
+            // Canonicalize so the watcher matches event paths (e.g. macOS
+            // FSEvents reports `/private/tmp/…` for a `/tmp/…` symlink).
+            let watch_root = std::fs::canonicalize(&resolved).unwrap_or(resolved);
+            let recursive = self.recursive;
+            LiveDirWalker {
+                walker: self,
+                watch_root,
+                recursive,
+                poll_interval: std::time::Duration::from_secs(1),
+            }
+        }
+    }
+
+    impl LiveDirWalker {
+        /// Set how often the directory is polled for changes (default 1s).
+        pub fn poll_interval(mut self, interval: std::time::Duration) -> Self {
+            self.poll_interval = interval;
+            self
+        }
+    }
+
+    #[async_trait]
+    impl LiveMapView<String, FileEntry> for LiveDirWalker {
+        async fn scan(&self) -> Result<Vec<(String, FileEntry)>> {
+            self.walker.items()
+        }
+    }
+
+    #[async_trait]
+    impl LiveMapFeed<String, FileEntry> for LiveDirWalker {
+        async fn watch(&self, subscriber: LiveMapSubscriber<String, FileEntry>) -> Result<()> {
+            use notify::{Config, PollWatcher};
+
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+            // A polling watcher (rather than the OS-native backend) so live
+            // watching works uniformly across platforms and on filesystems where
+            // FSEvents/inotify are unavailable (containers, network/Docker
+            // volumes, sandboxes). The poll interval bounds change latency.
+            let config = Config::default().with_poll_interval(self.poll_interval);
+            let mut watcher = PollWatcher::new(
+                move |res: notify::Result<notify::Event>| {
+                    if res.is_ok() {
+                        let _ = tx.send(());
+                    }
+                },
+                config,
+            )
+            .map_err(|e| Error::engine(format!("fs watcher: {e}")))?;
+            let mode = if self.recursive {
+                RecursiveMode::Recursive
+            } else {
+                RecursiveMode::NonRecursive
+            };
+            watcher
+                .watch(&self.watch_root, mode)
+                .map_err(|e| Error::engine(format!("fs watch {:?}: {e}", self.watch_root)))?;
+            // Re-scan on each (coalesced) batch of filesystem events: the live
+            // component's `update_all` re-runs `scan`, and `mount_each`
+            // reconciles added/removed files. The watcher is kept alive for the
+            // duration of this loop; dropping the future stops watching.
+            while rx.recv().await.is_some() {
+                while rx.try_recv().is_ok() {}
+                subscriber.update_all().await?;
+            }
+            Ok(())
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // FileEntry
 // ---------------------------------------------------------------------------

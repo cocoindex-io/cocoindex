@@ -61,6 +61,30 @@ fn schema_v2() -> TableSchema {
     .unwrap()
 }
 
+fn schema_dim4() -> TableSchema {
+    TableSchema::new(
+        [
+            ("id", ColumnDef::new(ColumnType::Int64)),
+            ("text", ColumnDef::new(ColumnType::Text)),
+            ("embedding", ColumnDef::new(ColumnType::Vector(4))),
+        ],
+        ["id"],
+    )
+    .unwrap()
+}
+
+fn schema_nullable_text() -> TableSchema {
+    TableSchema::new(
+        [
+            ("id", ColumnDef::new(ColumnType::Int64)),
+            ("text", ColumnDef::new(ColumnType::Text).nullable()),
+            ("embedding", ColumnDef::new(ColumnType::Vector(3))),
+        ],
+        ["id"],
+    )
+    .unwrap()
+}
+
 async fn row_count(db: &LanceDatabase) -> usize {
     db.connection()
         .open_table(TABLE)
@@ -105,7 +129,7 @@ async fn lancedb_target_creates_upserts_searches_and_reconciles() -> Result<()> 
                 let rows = rows.clone();
                 async move {
                     let db = ctx.get_key(&DB)?;
-                    let table = lancedb::mount_table_target(&ctx, db, TABLE, schema())?;
+                    let table = lancedb::mount_table_target(&ctx, db, TABLE, schema()).await?;
                     for row in &rows {
                         table.declare_row(&ctx, row)?;
                     }
@@ -193,7 +217,7 @@ async fn lancedb_target_creates_upserts_searches_and_reconciles() -> Result<()> 
         let rows = rows_v2.clone();
         async move {
             let db = ctx.get_key(&DB)?;
-            let table = lancedb::mount_table_target(&ctx, db, TABLE, schema_v2())?;
+            let table = lancedb::mount_table_target(&ctx, db, TABLE, schema_v2()).await?;
             for row in &rows {
                 table.declare_row(&ctx, row)?;
             }
@@ -210,6 +234,128 @@ async fn lancedb_target_creates_upserts_searches_and_reconciles() -> Result<()> 
     let hit = lancedb::vector_search(&db, TABLE, "embedding", vec![0.0, 1.0, 0.0], 1).await?;
     assert_eq!(hit[0]["summary"], "second");
 
+    Ok(())
+}
+
+#[tokio::test]
+async fn lancedb_replays_unchanged_rows_after_destructive_schema_change() -> Result<()> {
+    let tempdir = tempfile::tempdir().unwrap();
+    let uri = tempdir.path().join("lancedb_data");
+    let db = LanceDatabase::connect(uri.to_str().unwrap()).await?;
+    let coco_db_path = tempdir.path().join(".cocoindex_db");
+    let rows = vec![Row {
+        id: 1,
+        text: "same".to_string(),
+        embedding: vec![1.0, 0.0, 0.0],
+    }];
+
+    let run = |schema: TableSchema| {
+        let db = db.clone();
+        let coco_db_path = coco_db_path.clone();
+        let rows = rows.clone();
+        async move {
+            let app = App::builder("LanceTargetReplayRowsTest")
+                .db_path(&coco_db_path)
+                .provide_key(&DB, db)
+                .build()
+                .await?;
+            app.run(move |ctx| {
+                let rows = rows.clone();
+                let schema = schema.clone();
+                async move {
+                    let db = ctx.get_key(&DB)?;
+                    let table = lancedb::mount_table_target(&ctx, db, TABLE, schema).await?;
+                    for row in &rows {
+                        table.declare_row(&ctx, row)?;
+                    }
+                    Ok(())
+                }
+            })
+            .await
+        }
+    };
+
+    run(schema()).await?;
+    assert_eq!(row_count(&db).await, 1);
+
+    run(schema_nullable_text()).await?;
+    assert_eq!(
+        row_count(&db).await,
+        1,
+        "destructive table replacement must replay unchanged child rows"
+    );
+    let hits = lancedb::vector_search(&db, TABLE, "embedding", vec![1.0, 0.0, 0.0], 1).await?;
+    assert_eq!(hits[0]["text"], "same");
+    Ok(())
+}
+
+#[tokio::test]
+async fn lancedb_replaces_table_on_destructive_schema_change() -> Result<()> {
+    let tempdir = tempfile::tempdir().unwrap();
+    let uri = tempdir.path().join("lancedb_data");
+    let db = LanceDatabase::connect(uri.to_str().unwrap()).await?;
+    let coco_db_path = tempdir.path().join(".cocoindex_db");
+
+    let run = |schema: TableSchema, rows: Vec<Row>| {
+        let db = db.clone();
+        let coco_db_path = coco_db_path.clone();
+        async move {
+            let app = App::builder("LanceTargetReplaceTest")
+                .db_path(&coco_db_path)
+                .provide_key(&DB, db)
+                .build()
+                .await?;
+            app.run(move |ctx| {
+                let rows = rows.clone();
+                let schema = schema.clone();
+                async move {
+                    let db = ctx.get_key(&DB)?;
+                    let table = lancedb::mount_table_target(&ctx, db, TABLE, schema).await?;
+                    for row in &rows {
+                        table.declare_row(&ctx, row)?;
+                    }
+                    Ok(())
+                }
+            })
+            .await
+        }
+    };
+
+    run(
+        schema(),
+        vec![
+            Row {
+                id: 1,
+                text: "old".to_string(),
+                embedding: vec![1.0, 0.0, 0.0],
+            },
+            Row {
+                id: 2,
+                text: "removed".to_string(),
+                embedding: vec![0.0, 1.0, 0.0],
+            },
+        ],
+    )
+    .await?;
+    assert_eq!(row_count(&db).await, 2);
+
+    run(
+        schema_dim4(),
+        vec![Row {
+            id: 1,
+            text: "new".to_string(),
+            embedding: vec![1.0, 0.0, 0.0, 0.0],
+        }],
+    )
+    .await?;
+
+    assert_eq!(
+        row_count(&db).await,
+        1,
+        "destructive table replacement should rebuild only declared rows"
+    );
+    let hits = lancedb::vector_search(&db, TABLE, "embedding", vec![1.0, 0.0, 0.0, 0.0], 1).await?;
+    assert_eq!(hits[0]["text"], "new");
     Ok(())
 }
 
@@ -232,7 +378,8 @@ async fn lancedb_user_managed_target_does_not_create_table() -> Result<()> {
             TABLE,
             schema(),
             ManagedTargetOptions::user_managed(),
-        )?;
+        )
+        .await?;
         Ok(())
     })
     .await?;

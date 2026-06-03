@@ -53,6 +53,7 @@ async fn neo4j_vector_index_create_then_drop_when_available() {
         TableSchema::new(
             [
                 ("id", ColumnDef::new("INTEGER")),
+                ("name", ColumnDef::new("STRING")),
                 ("embedding", ColumnDef::new("LIST")),
             ],
             "id",
@@ -68,10 +69,11 @@ async fn neo4j_vector_index_create_then_drop_when_available() {
                 let g = ctx.get_key(&G)?;
                 let table = neo4j::mount_table_target(&ctx, g, label, schema()?).await?;
                 table.declare_vector_index(&ctx, "embedding", 3, VectorMetric::Cosine)?;
+                table.declare_node_index(&ctx, &["name"])?;
                 table.declare_record(
                     &ctx,
                     1_i64,
-                    &serde_json::json!({ "id": 1, "embedding": [0.1, 0.2, 0.3] }),
+                    &serde_json::json!({ "id": 1, "name": "doc-1", "embedding": [0.1, 0.2, 0.3] }),
                 )?;
                 Ok(())
             }
@@ -91,7 +93,7 @@ async fn neo4j_vector_index_create_then_drop_when_available() {
                 table.declare_record(
                     &ctx,
                     1_i64,
-                    &serde_json::json!({ "id": 1, "embedding": [0.1, 0.2, 0.3] }),
+                    &serde_json::json!({ "id": 1, "name": "doc-1", "embedding": [0.1, 0.2, 0.3] }),
                 )?;
                 Ok(())
             }
@@ -138,6 +140,7 @@ async fn falkordb_vector_index_create_then_drop_when_available() {
         TableSchema::new(
             [
                 ("id", ColumnDef::new("INTEGER")),
+                ("name", ColumnDef::new("STRING")),
                 ("embedding", ColumnDef::new("VECTOR")),
             ],
             "id",
@@ -149,10 +152,11 @@ async fn falkordb_vector_index_create_then_drop_when_available() {
         let g = ctx.get_key(&G)?;
         let table = falkordb::mount_table_target(&ctx, g, "Doc", schema()?).await?;
         table.declare_vector_index(&ctx, "embedding", 3, VectorMetric::Cosine)?;
+        table.declare_node_index(&ctx, &["name"])?;
         table.declare_record(
             &ctx,
             1_i64,
-            &serde_json::json!({ "id": 1, "embedding": [0.1, 0.2, 0.3] }),
+            &serde_json::json!({ "id": 1, "name": "doc-1", "embedding": [0.1, 0.2, 0.3] }),
         )?;
         Ok(())
     })
@@ -166,7 +170,7 @@ async fn falkordb_vector_index_create_then_drop_when_available() {
         table.declare_record(
             &ctx,
             1_i64,
-            &serde_json::json!({ "id": 1, "embedding": [0.1, 0.2, 0.3] }),
+            &serde_json::json!({ "id": 1, "name": "doc-1", "embedding": [0.1, 0.2, 0.3] }),
         )?;
         Ok(())
     })

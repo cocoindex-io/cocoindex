@@ -1085,6 +1085,38 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn oci_file_is_recognized_by_memo_arg_helpers() {
+        let file = OciFile::new(
+            None,
+            OciFilePath {
+                namespace: "ns".to_string(),
+                bucket: "bucket".to_string(),
+                relative_path: "docs/a.md".to_string(),
+                object_name: "prefix/docs/a.md".to_string(),
+            },
+            42,
+            Some(123),
+            Some("md5-1".to_string()),
+            None,
+        );
+
+        let mut file_key = cocoindex_utils::fingerprint::Fingerprinter::default();
+        crate::memo::write_key_fingerprint_part_for_arg(&mut file_key, &file).unwrap();
+
+        let mut expected_key = cocoindex_utils::fingerprint::Fingerprinter::default();
+        let path = FileLike::file_path(&file);
+        crate::memo::write_key_fingerprint_part(&mut expected_key, &path.memo_key()).unwrap();
+
+        assert_eq!(file_key.into_fingerprint(), expected_key.into_fingerprint());
+        assert!(
+            crate::memo::collect_memo_arg_state(&file, None)
+                .await
+                .unwrap()
+                .is_some()
+        );
+    }
+
     #[test]
     fn file_path_accessors_and_memo_key() {
         let fp = OciFilePath {

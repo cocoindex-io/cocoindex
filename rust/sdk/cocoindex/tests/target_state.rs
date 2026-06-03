@@ -279,7 +279,7 @@ impl TargetHandler<TableSpec> for TableHandler {
             // Always emit an output when the table is declared, so the sink runs
             // and fulfills the child provider.
             Some(spec) => {
-                let changed = !prev.is_empty() && !prev.iter().any(|p| *p == spec);
+                let changed = !prev.is_empty() && !prev.contains(&spec);
                 let action = if prev.is_empty() {
                     TargetAction::Create(TableAction { name, drop: false })
                 } else {

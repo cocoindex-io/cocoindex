@@ -10,6 +10,7 @@
 //!
 //! Built on the native Rust `lancedb` crate (LanceDB's core is Rust) + Arrow.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use arrow_array::builder::{FixedSizeListBuilder, Float32Builder};
@@ -27,13 +28,13 @@ use serde_json::{Map, Value as JsonValue};
 use crate::ctx::Ctx;
 use crate::error::{Error, Result};
 use crate::statediff::{
-    DiffAction, ManagedBy, ManagedTargetOptions, MutualTrackingRecord, diff,
-    resolve_system_transition,
+    CompositeTrackingRecord, DiffAction, ManagedBy, ManagedTargetOptions, MutualTrackingRecord,
+    diff, diff_composite, resolve_system_transition,
 };
 use crate::target_state::{
     ChildTargetDef, StableKey, TargetAction, TargetActionSink, TargetChildInvalidation,
     TargetHandler, TargetReconcileOutput, TargetState, TargetStateProvider, declare_target_state,
-    register_root_target_states_provider,
+    mount_target, register_root_target_states_provider,
 };
 
 // ---------------------------------------------------------------------------
@@ -244,22 +245,54 @@ pub fn table_target_with_options(
     ))
 }
 
-/// Declare a LanceDB table target and return a ready same-component handle.
-/// No external setup is needed, so this uses the same immediate provider path as
-/// [`mount_table_target`].
+/// Declare a LanceDB table target and return a same-component handle.
+///
+/// Prefer [`mount_table_target`] when rows can be declared from async code: that
+/// path uses CocoIndex's child-provider invalidation directly. This sync helper
+/// keeps same-component declaration ergonomic and keys its row provider by the
+/// table schema so destructive schema changes do not skip unchanged rows.
 pub fn declare_table_target(
     ctx: &Ctx,
     db: &LanceDatabase,
     table_name: impl Into<String>,
     table_schema: TableSchema,
 ) -> Result<LanceTableTarget> {
-    mount_table_target(ctx, db, table_name, table_schema)
+    let table_name = table_name.into();
+    let target_state = table_target_with_options(
+        ctx,
+        db,
+        table_name.clone(),
+        table_schema,
+        ManagedTargetOptions::default(),
+    )?;
+    let spec = target_state.value().clone();
+    let schema_fp = Fingerprint::from(&table_tracking_record(&spec)).map_err(Error::from)?;
+    declare_target_state(ctx, target_state)?;
+    let rows = register_root_target_states_provider(
+        ctx,
+        format!(
+            "cocoindex/lancedb/row/{}/{}/{}",
+            db.state_id(),
+            table_name,
+            schema_fp
+        ),
+        RowHandler {
+            db: db.clone(),
+            spec: spec.clone(),
+        },
+    )?;
+    Ok(LanceTableTarget {
+        table_name: Arc::from(table_name),
+        table_schema: spec.table_schema,
+        rows,
+    })
 }
 
 /// Declare a LanceDB table target in the current component and return a handle
-/// for declaring rows. Existing tables are preserved on schema changes; missing
-/// scalar columns are added with `NULL` defaults. System-managed.
-pub fn mount_table_target(
+/// for declaring rows. Existing tables are preserved on compatible schema
+/// changes; incompatible system-managed schema changes recreate the table and
+/// invalidate child rows.
+pub async fn mount_table_target(
     ctx: &Ctx,
     db: &LanceDatabase,
     table_name: impl Into<String>,
@@ -272,10 +305,11 @@ pub fn mount_table_target(
         table_schema,
         ManagedTargetOptions::default(),
     )
+    .await
 }
 
 /// [`mount_table_target`] with explicit [`ManagedTargetOptions`] (`managed_by`).
-pub fn mount_table_target_with_options(
+pub async fn mount_table_target_with_options(
     ctx: &Ctx,
     db: &LanceDatabase,
     table_name: impl Into<String>,
@@ -286,15 +320,7 @@ pub fn mount_table_target_with_options(
     let target_state =
         table_target_with_options(ctx, db, table_name.clone(), table_schema.clone(), options)?;
     let spec = target_state.value().clone();
-    declare_target_state(ctx, target_state)?;
-    let rows = register_root_target_states_provider(
-        ctx,
-        format!("cocoindex/lancedb/row/{}/{}", db.state_id(), table_name),
-        RowHandler {
-            db: db.clone(),
-            spec: spec.clone(),
-        },
-    )?;
+    let rows = mount_target::<TableSpec, RowState>(ctx, target_state).await?;
     Ok(LanceTableTarget {
         table_name: Arc::from(table_name),
         table_schema: spec.table_schema,
@@ -337,38 +363,96 @@ struct TableAction {
     recreate: bool,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+struct TableMainState {
+    table_name: String,
+    primary_key: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+struct ColumnState {
+    col_type: ColumnType,
+    nullable: bool,
+}
+
+type TableTrackingRecord =
+    MutualTrackingRecord<CompositeTrackingRecord<TableMainState, String, ColumnState>>;
+
+fn table_tracking_record(
+    spec: &TableSpec,
+) -> CompositeTrackingRecord<TableMainState, String, ColumnState> {
+    let sub = spec
+        .table_schema
+        .columns
+        .iter()
+        .map(|(name, def)| {
+            (
+                name.clone(),
+                ColumnState {
+                    col_type: def.col_type.clone(),
+                    nullable: def.nullable,
+                },
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    CompositeTrackingRecord::new(
+        TableMainState {
+            table_name: spec.table_name.clone(),
+            primary_key: spec.table_schema.primary_key.clone(),
+        },
+        sub,
+    )
+}
+
 struct TableHandler {
     db: LanceDatabase,
 }
 
 impl TargetHandler<TableSpec> for TableHandler {
-    type TrackingRecord = MutualTrackingRecord<TableSpec>;
+    type TrackingRecord = TableTrackingRecord;
     type Action = TableAction;
 
     fn reconcile(
         &self,
         _key: StableKey,
         desired: Option<TableSpec>,
-        prev: Vec<MutualTrackingRecord<TableSpec>>,
+        prev: Vec<TableTrackingRecord>,
         prev_may_be_missing: bool,
-    ) -> Result<Option<TargetReconcileOutput<TableAction, MutualTrackingRecord<TableSpec>>>> {
+    ) -> Result<Option<TargetReconcileOutput<TableAction, TableTrackingRecord>>> {
         match desired {
             // Always emit when declared so the sink fulfills the row child.
             Some(spec) => {
-                let tracking = MutualTrackingRecord::new(spec.clone(), spec.managed_by);
+                let tracking =
+                    MutualTrackingRecord::new(table_tracking_record(&spec), spec.managed_by);
                 let resolved =
                     resolve_system_transition(Some(tracking.clone()), prev, prev_may_be_missing);
-                let main_action = diff(resolved.as_ref());
-                let recreate = matches!(main_action, Some(DiffAction::Replace));
+                let (main_action, column_transitions) = diff_composite(resolved.as_ref());
+                let check_column_actions = matches!(main_action, None | Some(DiffAction::Upsert));
+                let recreate = matches!(main_action, Some(DiffAction::Replace))
+                    || (check_column_actions
+                        && column_transitions.into_iter().any(|(name, transition)| {
+                            let Some(action) = diff(Some(&transition)) else {
+                                return false;
+                            };
+                            match action {
+                                DiffAction::Insert | DiffAction::Upsert => spec
+                                    .table_schema
+                                    .columns
+                                    .iter()
+                                    .find(|(col_name, _)| col_name == &name)
+                                    .is_some_and(|(_, def)| def.col_type.sql_null_type().is_none()),
+                                DiffAction::Replace | DiffAction::Delete => true,
+                            }
+                        }));
                 Ok(Some(TargetReconcileOutput {
                     action: TargetAction::Update(TableAction {
                         table_name: spec.table_name.clone(),
                         spec: Some(spec),
-                        recreate: false,
+                        recreate,
                     }),
                     sink: self.table_sink(),
                     tracking_record: Some(tracking),
-                    child_invalidation: recreate.then_some(TargetChildInvalidation::Lossy),
+                    child_invalidation: recreate.then_some(TargetChildInvalidation::Destructive),
                 }))
             }
             None => {
@@ -379,7 +463,7 @@ impl TargetHandler<TableSpec> for TableHandler {
                 let table_name = prev
                     .into_iter()
                     .find(|p| p.managed_by.is_system())
-                    .map(|p| p.tracking_record.table_name)
+                    .map(|p| p.tracking_record.main.table_name)
                     .ok_or_else(|| Error::engine("cannot drop LanceDB table without prior spec"))?;
                 Ok(Some(TargetReconcileOutput {
                     action: TargetAction::Delete(TableAction {
@@ -446,8 +530,10 @@ async fn ensure_table(db: &LanceDatabase, spec: &TableSpec, recreate: bool) -> R
     if exists && recreate {
         drop_table(db, &spec.table_name).await?;
     } else if exists {
-        evolve_existing_table(db, spec).await?;
-        return Ok(());
+        match evolve_existing_table(db, spec).await? {
+            TableEvolution::Done => return Ok(()),
+            TableEvolution::Recreate => drop_table(db, &spec.table_name).await?,
+        }
     }
     db.conn
         .create_empty_table(&spec.table_name, spec.table_schema.arrow_schema())
@@ -457,7 +543,12 @@ async fn ensure_table(db: &LanceDatabase, spec: &TableSpec, recreate: bool) -> R
     Ok(())
 }
 
-async fn evolve_existing_table(db: &LanceDatabase, spec: &TableSpec) -> Result<()> {
+enum TableEvolution {
+    Done,
+    Recreate,
+}
+
+async fn evolve_existing_table(db: &LanceDatabase, spec: &TableSpec) -> Result<TableEvolution> {
     let table = db
         .conn
         .open_table(&spec.table_name)
@@ -473,18 +564,12 @@ async fn evolve_existing_table(db: &LanceDatabase, spec: &TableSpec) -> Result<(
         match existing.field_with_name(name) {
             Ok(field) => {
                 if field.data_type() != &def.col_type.arrow_data_type() {
-                    return Err(Error::engine(format!(
-                        "existing LanceDB column {name:?} has type {:?}, expected {:?}",
-                        field.data_type(),
-                        def.col_type.arrow_data_type()
-                    )));
+                    return Ok(TableEvolution::Recreate);
                 }
             }
             Err(_) => {
                 let Some(sql_type) = def.col_type.sql_null_type() else {
-                    return Err(Error::engine(format!(
-                        "cannot add LanceDB vector column {name:?} to existing table without rebuilding"
-                    )));
+                    return Ok(TableEvolution::Recreate);
                 };
                 add_exprs.push((name.clone(), format!("CAST(NULL AS {sql_type})")));
             }
@@ -496,7 +581,7 @@ async fn evolve_existing_table(db: &LanceDatabase, spec: &TableSpec) -> Result<(
             .await
             .map_err(|e| Error::engine(format!("lancedb add columns: {e}")))?;
     }
-    Ok(())
+    Ok(TableEvolution::Done)
 }
 
 async fn drop_table(db: &LanceDatabase, table_name: &str) -> Result<()> {

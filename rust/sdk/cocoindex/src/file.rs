@@ -90,6 +90,69 @@ impl FilePath {
         path_key(&self.path)
     }
 
+    /// The path's components as strings (cf. Python `PurePath.parts`).
+    pub fn parts(&self) -> Vec<String> {
+        self.path
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+            .collect()
+    }
+
+    /// The logical parent path, preserving the base key/dir (cf. `PurePath.parent`).
+    /// `None` at the root / for a bare filename.
+    pub fn parent(&self) -> Option<FilePath> {
+        let parent = self.path.parent()?;
+        if parent.as_os_str().is_empty() {
+            return None;
+        }
+        Some(self.with_path(parent.to_path_buf()))
+    }
+
+    /// All file-name suffixes, e.g. `a.tar.gz` -> `[".tar", ".gz"]` (cf.
+    /// `PurePath.suffixes`). Leading dots (hidden files) are ignored.
+    pub fn suffixes(&self) -> Vec<String> {
+        let name = self.name().trim_start_matches('.');
+        if !name.contains('.') {
+            return Vec::new();
+        }
+        name.split('.').skip(1).map(|s| format!(".{s}")).collect()
+    }
+
+    /// A new path with the final component replaced (cf. `PurePath.with_name`).
+    pub fn with_name(&self, name: impl AsRef<str>) -> FilePath {
+        let base = self.path.parent().unwrap_or_else(|| Path::new(""));
+        self.with_path(base.join(name.as_ref()))
+    }
+
+    /// A new path with the file stem replaced, keeping the suffix (cf.
+    /// `PurePath.with_stem`).
+    pub fn with_stem(&self, stem: impl AsRef<str>) -> FilePath {
+        self.with_name(format!("{}{}", stem.as_ref(), self.suffix()))
+    }
+
+    /// A new path with the final suffix replaced (empty `suffix` removes it; a
+    /// non-empty `suffix` should start with `.`). Cf. `PurePath.with_suffix`.
+    pub fn with_suffix(&self, suffix: impl AsRef<str>) -> FilePath {
+        self.with_name(format!("{}{}", self.stem(), suffix.as_ref()))
+    }
+
+    /// This path relative to `base`, preserving the base key/dir, or `None` if
+    /// it is not under `base` (cf. `PurePath.relative_to`).
+    pub fn relative_to(&self, base: impl AsRef<Path>) -> Option<FilePath> {
+        self.path
+            .strip_prefix(base.as_ref())
+            .ok()
+            .map(|p| self.with_path(p.to_path_buf()))
+    }
+
+    fn with_path(&self, path: PathBuf) -> FilePath {
+        FilePath {
+            base_key: self.base_key.clone(),
+            base_dir: self.base_dir.clone(),
+            path,
+        }
+    }
+
     pub fn memo_key(&self) -> impl Serialize + '_ {
         match self.base_key.as_deref() {
             Some(base_key) => FilePathMemoKey::Base {
@@ -335,6 +398,15 @@ pub fn decode_bytes(bytes: &[u8]) -> String {
         let (text, _had_errors) = encoding_rs::UTF_8.decode_with_bom_removal(bytes);
         return text.into_owned();
     }
+    // UTF-32 must be checked BEFORE UTF-16: a UTF-32LE BOM (FF FE 00 00) starts
+    // with the UTF-16LE BOM (FF FE). `encoding_rs` has no UTF-32 decoder, so
+    // decode it by hand.
+    if bytes.starts_with(&[0xFF, 0xFE, 0x00, 0x00]) {
+        return decode_utf32(&bytes[4..], false);
+    }
+    if bytes.starts_with(&[0x00, 0x00, 0xFE, 0xFF]) {
+        return decode_utf32(&bytes[4..], true);
+    }
     if bytes.starts_with(&[0xFF, 0xFE]) {
         let (text, _had_errors) = encoding_rs::UTF_16LE.decode_with_bom_removal(bytes);
         return text.into_owned();
@@ -345,6 +417,25 @@ pub fn decode_bytes(bytes: &[u8]) -> String {
     }
     let (text, _encoding, _had_errors) = encoding_rs::UTF_8.decode(bytes);
     text.into_owned()
+}
+
+/// Decode UTF-32 (BOM already stripped) into a `String`, replacing invalid code
+/// points with U+FFFD (mirrors lossy decoding of the other encodings).
+fn decode_utf32(bytes: &[u8], big_endian: bool) -> String {
+    bytes
+        .chunks(4)
+        .map(|chunk| {
+            if chunk.len() < 4 {
+                return '\u{FFFD}';
+            }
+            let code = if big_endian {
+                u32::from_be_bytes([chunk[0], chunk[1], chunk[2], chunk[3]])
+            } else {
+                u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]])
+            };
+            char::from_u32(code).unwrap_or('\u{FFFD}')
+        })
+        .collect()
 }
 
 fn build_glob(pattern: &str) -> Result<globset::Glob> {
@@ -502,5 +593,42 @@ mod tests {
         assert_eq!(decode_bytes(b"\xEF\xBB\xBFhello"), "hello");
         assert_eq!(decode_bytes(b"\xFF\xFEh\0i\0"), "hi");
         assert_eq!(decode_bytes(b"a\xFFb"), "a\u{fffd}b");
+    }
+
+    #[test]
+    fn decode_bytes_detects_utf32_before_utf16() {
+        // UTF-32LE BOM is FF FE 00 00 — must not be mistaken for UTF-16LE (FF FE).
+        assert_eq!(decode_bytes(b"\xFF\xFE\x00\x00h\x00\x00\x00i\x00\x00\x00"), "hi");
+        // UTF-32BE BOM is 00 00 FE FF.
+        assert_eq!(decode_bytes(b"\x00\x00\xFE\xFF\x00\x00\x00h\x00\x00\x00i"), "hi");
+    }
+
+    #[test]
+    fn file_path_surface_methods() {
+        let p = FilePath::new("docs/a/report.tar.gz");
+        assert_eq!(p.parts(), vec!["docs", "a", "report.tar.gz"]);
+        assert_eq!(p.name(), "report.tar.gz");
+        assert_eq!(p.suffix(), ".gz");
+        assert_eq!(p.suffixes(), vec![".tar", ".gz"]);
+        assert_eq!(p.parent().unwrap().as_posix(), "docs/a");
+        assert_eq!(p.parent().unwrap().parent().unwrap().as_posix(), "docs");
+        assert_eq!(p.with_name("x.md").as_posix(), "docs/a/x.md");
+        assert_eq!(p.with_suffix(".md").as_posix(), "docs/a/report.tar.md");
+        assert_eq!(p.with_stem("final").as_posix(), "docs/a/final.gz");
+        assert_eq!(
+            p.relative_to("docs").unwrap().as_posix(),
+            "a/report.tar.gz"
+        );
+        assert!(p.relative_to("other").is_none());
+        // A bare filename has no parent; a hidden file has no suffixes.
+        assert!(FilePath::new("file.txt").parent().is_none());
+        assert!(FilePath::new(".bashrc").suffixes().is_empty());
+    }
+
+    #[test]
+    fn file_path_surface_preserves_base_key() {
+        let p = FilePath::with_base_dir("docs", "/tmp/root", "a/b.md");
+        assert_eq!(p.parent().unwrap().base_key(), Some("docs"));
+        assert_eq!(p.with_suffix(".txt").base_key(), Some("docs"));
     }
 }

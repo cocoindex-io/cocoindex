@@ -6,6 +6,9 @@ rust-version.workspace = true
 license.workspace = true
 
 [features]
+# Live LocalFS directory watching (`fs::DirWalker::live`), via the `notify`
+# filesystem-watcher crate.
+fs_live = ["dep:notify"]
 # Text splitting / language detection facade (`ops::text`).
 text = ["dep:cocoindex_ops_text"]
 # Local sentence-transformer embeddings via fastembed (`ops::sentence_transformers`).
@@ -64,6 +67,8 @@ globset = "0.4"
 walkdir = "2"
 encoding_rs = "0.8"
 async-trait = "0.1"
+# Filesystem watcher for live LocalFS sources (feature `fs_live`).
+notify = { version = "8", optional = true }
 rustc-hash = "2.1.1"
 uuid = { workspace = true }
 serde_json = { version = "1", optional = true }

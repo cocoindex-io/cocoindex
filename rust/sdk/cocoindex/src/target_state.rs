@@ -262,7 +262,10 @@ where
         }
     }
 
-    #[cfg(test)]
+    // Only the graph-target tests (`cypher_graph`) use this helper, and those are
+    // gated behind the neo4j/falkordb features; matching the gate keeps it from
+    // tripping dead-code warnings in builds without those features.
+    #[cfg(all(test, any(feature = "neo4j", feature = "falkordb")))]
     pub(crate) async fn apply_for_test(
         &self,
         actions: Vec<TargetAction<A>>,

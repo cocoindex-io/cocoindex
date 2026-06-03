@@ -258,6 +258,10 @@ fn as_file_like(value: &dyn Any) -> Option<&dyn FileLike> {
     if let Some(file) = value.downcast_ref::<crate::gdrive::DriveFile>() {
         return Some(file);
     }
+    #[cfg(feature = "oci_object_storage")]
+    if let Some(file) = value.downcast_ref::<crate::oci_object_storage::OciFile>() {
+        return Some(file);
+    }
     None
 }
 

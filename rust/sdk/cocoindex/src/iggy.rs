@@ -18,14 +18,18 @@
 //! for declaring messages.
 //!
 //! This is the Rust analogue of Python's `cocoindex.connectors.iggy` **target**.
-//! The Iggy *source* (`topic_as_stream` / `topic_as_map`) depends on the live
-//! source/map runtime, which the Rust SDK does not expose yet.
+//! The matching Iggy source (`topic_as_stream` / `topic_as_map`) is still a
+//! parity follow-up.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use bytes::Bytes;
 use cocoindex_utils::fingerprint::Fingerprint;
-use iggy::prelude::{Client, Identifier, IggyClient, IggyMessage, MessageClient, Partitioning};
+use iggy::prelude::{
+    Client, Consumer, Identifier, IggyClient, IggyMessage, MessageClient, Partitioning,
+    PollingStrategy,
+};
 use serde::{Deserialize, Serialize};
 
 /// Re-export of the upstream [`iggy`] crate prelude. Streams and topics are
@@ -36,6 +40,7 @@ pub use ::iggy::prelude;
 
 use crate::ctx::Ctx;
 use crate::error::{Error, Result};
+use crate::live_component::{LiveMapFeed, LiveMapSubscriber, LiveMapView};
 use crate::target_state::{
     ChildTargetDef, StableKey, TargetAction, TargetActionSink, TargetHandler,
     TargetReconcileOutput, TargetState, TargetStateProvider, declare_target_state,
@@ -519,6 +524,224 @@ fn decide_message(
         value: deletion_value_fn(key),
         tracking: None,
     }))
+}
+
+// ---------------------------------------------------------------------------
+// Iggy source — a live map feed over a topic partition (the Rust analogue of
+// Python's `topic_as_map`).
+// ---------------------------------------------------------------------------
+
+/// An Iggy consumer handle. Clone-cheap (the underlying client is shared).
+#[derive(Clone)]
+pub struct IggyConsumer {
+    client: Arc<IggyClient>,
+    state_id: Arc<str>,
+}
+
+impl IggyConsumer {
+    /// Connect to an Iggy server from a connection string, e.g.
+    /// `iggy://iggy:iggy@localhost:8090`.
+    pub async fn connect(connection_string: &str) -> Result<Self> {
+        let client = IggyClient::from_connection_string(connection_string)
+            .map_err(|e| Error::engine(format!("iggy connection string: {e}")))?;
+        client
+            .connect()
+            .await
+            .map_err(|e| Error::engine(format!("iggy connect: {e}")))?;
+        Ok(Self {
+            client: Arc::new(client),
+            state_id: Arc::from(sanitize_state_id(connection_string)),
+        })
+    }
+
+    /// Stable identity (the server address, credentials stripped).
+    pub fn state_id(&self) -> &str {
+        &self.state_id
+    }
+}
+
+/// Extracts a map key from a message payload. Iggy messages have no native key,
+/// so a key function is required (returning `None` skips the message).
+pub type IggyKeyFn = Arc<dyn Fn(&[u8]) -> Option<String> + Send + Sync>;
+
+/// Decides whether a message payload represents a *deletion* of its key
+/// (defaults to "never" — Iggy has no tombstone).
+pub type IggyIsDeletionFn = Arc<dyn Fn(&[u8]) -> bool + Send + Sync>;
+
+/// Options for [`topic_as_map_with_options`].
+#[derive(Clone, Default)]
+pub struct IggySourceOptions {
+    /// Partition to consume (default `0`).
+    pub partition: u32,
+    /// Custom deletion predicate over the payload (default: never delete).
+    pub is_deletion: Option<IggyIsDeletionFn>,
+}
+
+/// A keyed change feed over an Iggy topic partition: the latest payload per key
+/// (as derived by the key function), with [`IggySourceOptions::is_deletion`]
+/// removing keys. The Rust analogue of Python's `topic_as_map`.
+///
+/// As a [`LiveMapView`], [`scan`](LiveMapView::scan) reads the partition log up
+/// to its current offset (compacted to the latest payload per key) and
+/// [`watch`](LiveMapFeed::watch) tails new messages from there. Feed it to
+/// [`Ctx::mount_each_live`](crate::Ctx::mount_each_live). Single-partition only.
+pub struct IggyTopicMap {
+    client: Arc<IggyClient>,
+    stream: String,
+    topic: String,
+    partition: u32,
+    key_fn: IggyKeyFn,
+    is_deletion: Option<IggyIsDeletionFn>,
+    /// Offset `watch` resumes from — the offset `scan` reached.
+    watch_start: Arc<tokio::sync::Mutex<u64>>,
+}
+
+/// Build an [`IggyTopicMap`] over `stream`/`topic` keyed by `key_fn`.
+pub fn topic_as_map(
+    consumer: &IggyConsumer,
+    stream: impl Into<String>,
+    topic: impl Into<String>,
+    key_fn: IggyKeyFn,
+) -> IggyTopicMap {
+    topic_as_map_with_options(
+        consumer,
+        stream,
+        topic,
+        key_fn,
+        IggySourceOptions::default(),
+    )
+}
+
+/// [`topic_as_map`] with explicit [`IggySourceOptions`] (partition, deletion).
+pub fn topic_as_map_with_options(
+    consumer: &IggyConsumer,
+    stream: impl Into<String>,
+    topic: impl Into<String>,
+    key_fn: IggyKeyFn,
+    options: IggySourceOptions,
+) -> IggyTopicMap {
+    IggyTopicMap {
+        client: consumer.client.clone(),
+        stream: stream.into(),
+        topic: topic.into(),
+        partition: options.partition,
+        key_fn,
+        is_deletion: options.is_deletion,
+        watch_start: Arc::new(tokio::sync::Mutex::new(0)),
+    }
+}
+
+impl IggyTopicMap {
+    fn ids(&self) -> Result<(Identifier, Identifier)> {
+        let stream = Identifier::from_str_value(&self.stream)
+            .map_err(|e| Error::engine(format!("iggy stream id {:?}: {e}", self.stream)))?;
+        let topic = Identifier::from_str_value(&self.topic)
+            .map_err(|e| Error::engine(format!("iggy topic id {:?}: {e}", self.topic)))?;
+        Ok((stream, topic))
+    }
+
+    fn consumer() -> Result<Consumer> {
+        let id = Identifier::from_str_value("cocoindex")
+            .map_err(|e| Error::engine(format!("iggy consumer id: {e}")))?;
+        Ok(Consumer::new(id))
+    }
+
+    /// Classify a payload into `(key, Some(value))` upsert or `(key, None)`
+    /// delete; `None` when `key_fn` yields no key (message skipped).
+    fn classify(&self, payload: &[u8]) -> Option<(String, Option<Vec<u8>>)> {
+        let key = (self.key_fn)(payload)?;
+        let is_delete = self.is_deletion.as_ref().is_some_and(|f| f(payload));
+        Some((
+            key,
+            if is_delete {
+                None
+            } else {
+                Some(payload.to_vec())
+            },
+        ))
+    }
+
+    async fn poll_from(
+        &self,
+        stream: &Identifier,
+        topic: &Identifier,
+        consumer: &Consumer,
+        offset: u64,
+    ) -> Result<iggy::prelude::PolledMessages> {
+        self.client
+            .poll_messages(
+                stream,
+                topic,
+                Some(self.partition),
+                consumer,
+                &PollingStrategy::offset(offset),
+                1000,
+                false,
+            )
+            .await
+            .map_err(|e| Error::engine(format!("iggy poll_messages: {e}")))
+    }
+}
+
+#[crate::async_trait]
+impl LiveMapView<String, Vec<u8>> for IggyTopicMap {
+    async fn scan(&self) -> Result<Vec<(String, Vec<u8>)>> {
+        let (stream, topic) = self.ids()?;
+        let consumer = Self::consumer()?;
+        let mut latest: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+        let mut offset = 0u64;
+        loop {
+            let polled = self.poll_from(&stream, &topic, &consumer, offset).await?;
+            if polled.messages.is_empty() {
+                break;
+            }
+            let hwm = polled.current_offset;
+            for m in &polled.messages {
+                offset = m.header.offset + 1;
+                if let Some((key, value)) = self.classify(m.payload.as_ref()) {
+                    match value {
+                        Some(v) => {
+                            latest.insert(key, v);
+                        }
+                        None => {
+                            latest.remove(&key);
+                        }
+                    }
+                }
+            }
+            if offset > hwm {
+                break;
+            }
+        }
+        *self.watch_start.lock().await = offset;
+        Ok(latest.into_iter().collect())
+    }
+}
+
+#[crate::async_trait]
+impl LiveMapFeed<String, Vec<u8>> for IggyTopicMap {
+    async fn watch(&self, subscriber: LiveMapSubscriber<String, Vec<u8>>) -> Result<()> {
+        let (stream, topic) = self.ids()?;
+        let consumer = Self::consumer()?;
+        let mut offset = *self.watch_start.lock().await;
+        loop {
+            let polled = self.poll_from(&stream, &topic, &consumer, offset).await?;
+            if polled.messages.is_empty() {
+                // Iggy poll returns immediately; sleep to avoid a busy loop.
+                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                continue;
+            }
+            for m in &polled.messages {
+                offset = m.header.offset + 1;
+                if let Some((key, value)) = self.classify(m.payload.as_ref()) {
+                    match value {
+                        Some(v) => subscriber.update(key, v).await?,
+                        None => subscriber.delete(key).await?,
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]

@@ -875,6 +875,62 @@ async fn define_table(db: &Database, spec: &TableSpec) -> Result<()> {
         defs.join(", ")
     );
     sqlx::query(&sql).execute(db.pool()).await.map_err(pg_err)?;
+    // Reconcile an already-existing table's columns to the declared schema.
+    reconcile_columns(db, spec).await?;
+    Ok(())
+}
+
+/// Bring an existing system-managed table's columns in line with the declared
+/// schema: add columns that are missing and drop columns that are no longer
+/// declared. Reconciling against the live `information_schema` (rather than a
+/// stored schema history) is idempotent and self-healing — a column drop that
+/// fails (e.g. a dependent view) simply surfaces as an error and is retried on
+/// the next run once the dependency is gone.
+async fn reconcile_columns(db: &Database, spec: &TableSpec) -> Result<()> {
+    let schema_name = spec.pg_schema_name.as_deref().unwrap_or("public");
+    let existing: Vec<String> = sqlx::query_scalar(
+        "SELECT column_name FROM information_schema.columns \
+         WHERE table_schema = $1 AND table_name = $2",
+    )
+    .bind(schema_name)
+    .bind(&spec.table_name)
+    .fetch_all(db.pool())
+    .await
+    .map_err(pg_err)?;
+    let existing: std::collections::BTreeSet<String> = existing.into_iter().collect();
+
+    // Add declared columns the table is missing. Added columns are nullable
+    // (a NOT NULL add would fail against existing rows) — the PK columns are
+    // fixed at CREATE time and never added here.
+    for (name, col) in spec.table_schema.columns() {
+        if !existing.contains(name) {
+            let sql = format!(
+                "ALTER TABLE {} ADD COLUMN IF NOT EXISTS {} {}",
+                qualified_table_name(spec),
+                quote_ident(name),
+                col.pg_type,
+            );
+            sqlx::query(&sql).execute(db.pool()).await.map_err(pg_err)?;
+        }
+    }
+
+    // Drop columns that are no longer declared.
+    let desired: std::collections::BTreeSet<&str> = spec
+        .table_schema
+        .columns()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    for name in &existing {
+        if !desired.contains(name.as_str()) {
+            let sql = format!(
+                "ALTER TABLE {} DROP COLUMN IF EXISTS {}",
+                qualified_table_name(spec),
+                quote_ident(name),
+            );
+            sqlx::query(&sql).execute(db.pool()).await.map_err(pg_err)?;
+        }
+    }
     Ok(())
 }
 
@@ -921,21 +977,7 @@ async fn apply_rows(
 async fn recreate_vector_index(db: &Database, spec: &VectorIndexSpec) -> Result<()> {
     drop_vector_index(db, spec).await?;
     let index_name = format!("{}__vector__{}", spec.table_name, spec.name);
-    let mut with_parts = Vec::new();
-    if let Some(lists) = spec.lists {
-        with_parts.push(format!("lists = {lists}"));
-    }
-    if let Some(m) = spec.m {
-        with_parts.push(format!("m = {m}"));
-    }
-    if let Some(ef) = spec.ef_construction {
-        with_parts.push(format!("ef_construction = {ef}"));
-    }
-    let with_sql = if with_parts.is_empty() {
-        String::new()
-    } else {
-        format!(" WITH ({})", with_parts.join(", "))
-    };
+    let with_sql = vector_index_with_clause(&spec.method, spec.lists, spec.m, spec.ef_construction);
     let sql = format!(
         "CREATE INDEX {} ON {} USING {} ({} {}){}",
         quote_ident(&index_name),
@@ -1132,9 +1174,13 @@ fn sql_literal(value: &JsonValue, col: &ColumnDef) -> Result<String> {
         return vector_literal(value, &col.pg_type);
     }
     if lower == "json" || lower == "jsonb" {
+        // Postgres rejects U+0000 in json/jsonb on parse, and serde serializes a
+        // NUL inside a nested string/key as the ` ` escape (which
+        // `quote_string`'s byte-level strip can't catch). Remove NULs from every
+        // string and object key before serializing.
         return Ok(format!(
             "{}::{}",
-            quote_string(value.to_string()),
+            quote_string(sanitize_json_nul(value).to_string()),
             col.pg_type
         ));
     }
@@ -1184,6 +1230,55 @@ fn vector_literal(value: &JsonValue, pg_type: &str) -> Result<String> {
 fn quote_string(value: impl AsRef<str>) -> String {
     let value = value.as_ref().replace('\0', "").replace('\'', "''");
     format!("'{value}'")
+}
+
+/// Build the pgvector index `WITH (...)` clause, gating each parameter by the
+/// index method: `lists` is only valid for `ivfflat`, `m`/`ef_construction` only
+/// for `hnsw`. Emitting a param for the wrong method produces invalid DDL.
+fn vector_index_with_clause(
+    method: &str,
+    lists: Option<u32>,
+    m: Option<u32>,
+    ef_construction: Option<u32>,
+) -> String {
+    let mut parts = Vec::new();
+    match method.to_ascii_lowercase().as_str() {
+        "ivfflat" => {
+            if let Some(lists) = lists {
+                parts.push(format!("lists = {lists}"));
+            }
+        }
+        "hnsw" => {
+            if let Some(m) = m {
+                parts.push(format!("m = {m}"));
+            }
+            if let Some(ef) = ef_construction {
+                parts.push(format!("ef_construction = {ef}"));
+            }
+        }
+        _ => {}
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!(" WITH ({})", parts.join(", "))
+    }
+}
+
+/// Recursively strip NUL (U+0000) from all strings and object keys in a JSON
+/// value, so it can be stored in a Postgres `json`/`jsonb` column (which rejects
+/// U+0000 on parse).
+fn sanitize_json_nul(value: &JsonValue) -> JsonValue {
+    match value {
+        JsonValue::String(s) if s.contains('\0') => JsonValue::String(s.replace('\0', "")),
+        JsonValue::Array(items) => JsonValue::Array(items.iter().map(sanitize_json_nul).collect()),
+        JsonValue::Object(map) => JsonValue::Object(
+            map.iter()
+                .map(|(k, v)| (k.replace('\0', ""), sanitize_json_nul(v)))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
 }
 
 fn validate_ident(value: &str, label: &str) -> Result<()> {
@@ -1389,6 +1484,14 @@ mod tests {
         );
         assert!(pgvector_op_class("text", "cosine").is_err());
     }
+
+    #[test]
+    fn quote_string_strips_nul_and_escapes_quotes() {
+        // Postgres text/jsonb reject U+0000; it must be stripped, and single
+        // quotes doubled.
+        assert_eq!(quote_string("a\0b'c"), "'ab''c'");
+        assert_eq!(quote_string("plain"), "'plain'");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1547,4 +1650,64 @@ fn pg_col_to_json(
             )));
         }
     })
+}
+
+#[cfg(test)]
+mod review_fix_tests {
+    use super::*;
+
+    // --- vector index WITH-clause gating (pgvector) ---
+
+    #[test]
+    fn ivfflat_emits_only_lists() {
+        assert_eq!(
+            vector_index_with_clause("ivfflat", Some(100), Some(16), Some(64)),
+            " WITH (lists = 100)"
+        );
+    }
+
+    #[test]
+    fn hnsw_emits_only_m_and_ef() {
+        assert_eq!(
+            vector_index_with_clause("hnsw", Some(100), Some(16), Some(64)),
+            " WITH (m = 16, ef_construction = 64)"
+        );
+    }
+
+    #[test]
+    fn hnsw_ignores_lists() {
+        // Regression: `lists` set on an hnsw index used to leak into the DDL.
+        assert_eq!(vector_index_with_clause("HNSW", Some(100), None, None), "");
+    }
+
+    #[test]
+    fn no_params_no_clause() {
+        assert_eq!(vector_index_with_clause("ivfflat", None, None, None), "");
+        assert_eq!(vector_index_with_clause("hnsw", None, None, None), "");
+    }
+
+    // --- jsonb NUL sanitization ---
+
+    #[test]
+    fn jsonb_literal_strips_nul_in_nested_strings_and_keys() {
+        let value = serde_json::json!({
+            "na\0me": "al\0ice",
+            "tags": ["a\0b", {"k\0": "v\0"}],
+        });
+        let lit = sql_literal(&value, &ColumnDef::new("jsonb")).unwrap();
+        assert!(!lit.contains('\0'), "raw NUL leaked: {lit}");
+        assert!(!lit.contains("\\u0000"), "escaped NUL leaked: {lit}");
+        assert!(lit.ends_with("::jsonb"));
+        let inner = lit.trim_start_matches('\'').trim_end_matches("'::jsonb");
+        let parsed: JsonValue = serde_json::from_str(&inner.replace("''", "'")).unwrap();
+        assert_eq!(parsed["name"], serde_json::json!("alice"));
+        assert_eq!(parsed["tags"][0], serde_json::json!("ab"));
+        assert_eq!(parsed["tags"][1]["k"], serde_json::json!("v"));
+    }
+
+    #[test]
+    fn sanitize_json_nul_leaves_clean_values_untouched() {
+        let value = serde_json::json!({"a": [1, 2], "b": "ok"});
+        assert_eq!(sanitize_json_nul(&value), value);
+    }
 }

@@ -14,6 +14,7 @@ use syn::{
 struct ParamInfo {
     ident: syn::Ident,
     is_ref: bool,
+    is_str_ref: bool,
 }
 
 /// Parse an async fn and extract the ctx parameter name + non-ctx parameter info.
@@ -43,7 +44,12 @@ fn parse_fn_params(func: &ItemFn) -> syn::Result<(syn::Ident, Vec<ParamInfo>)> {
         }
 
         let is_ref = matches!(ty.as_ref(), Type::Reference(_));
-        params.push(ParamInfo { ident, is_ref });
+        let is_str_ref = is_str_ref_type(ty);
+        params.push(ParamInfo {
+            ident,
+            is_ref,
+            is_str_ref,
+        });
     }
 
     let ctx_ident = ctx_ident.ok_or_else(|| {
@@ -53,6 +59,19 @@ fn parse_fn_params(func: &ItemFn) -> syn::Result<(syn::Ident, Vec<ParamInfo>)> {
         )
     })?;
     Ok((ctx_ident, params))
+}
+
+fn is_str_ref_type(ty: &Type) -> bool {
+    if let Type::Reference(TypeReference { elem, .. }) = ty
+        && let Type::Path(type_path) = elem.as_ref()
+    {
+        return type_path
+            .path
+            .segments
+            .last()
+            .is_some_and(|seg| seg.ident == "str");
+    }
+    false
 }
 
 /// Check if a type is a `&Ctx` reference.
@@ -75,7 +94,9 @@ fn gen_clones(params: &[ParamInfo]) -> Vec<TokenStream2> {
         .iter()
         .map(|p| {
             let ident = &p.ident;
-            if p.is_ref {
+            if p.is_str_ref {
+                quote! { let #ident = #ident.to_string(); }
+            } else if p.is_ref {
                 // For &T params, Clone::clone(param) gives T (owned)
                 quote! { let #ident = ::core::clone::Clone::clone(#ident); }
             } else {
@@ -291,6 +312,9 @@ fn gen_key_write_for_param(
                 ::cocoindex::memo::write_key_fingerprint_part(&mut #fingerprinter, &#temp)?;
             })
         }
+        None if param.is_str_ref => Some(quote! {
+            ::cocoindex::memo::write_key_fingerprint_part(&mut #fingerprinter, #default_arg)?;
+        }),
         None => Some(quote! {
             ::cocoindex::memo::write_key_fingerprint_part_for_arg(&mut #fingerprinter, #default_arg)?;
         }),
@@ -303,6 +327,9 @@ fn gen_state_collect_for_param(
     prev_states_ident: &Ident,
     param: &ParamInfo,
 ) -> TokenStream2 {
+    if param.is_str_ref {
+        return quote! {};
+    }
     let ident = &param.ident;
     let default_arg = quote! { &#ident };
     quote! {

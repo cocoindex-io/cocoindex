@@ -98,6 +98,12 @@ impl TableTarget {
     ) -> Result<()> {
         self.0.declare_vector_index(ctx, field, dimension, metric)
     }
+
+    /// Declare a (non-vector) secondary index on `fields` (Neo4j `CREATE INDEX`),
+    /// created/dropped to match the declaration.
+    pub fn declare_node_index(&self, ctx: &Ctx, fields: &[&str]) -> Result<()> {
+        self.0.declare_node_index(ctx, fields)
+    }
 }
 
 #[derive(Clone)]

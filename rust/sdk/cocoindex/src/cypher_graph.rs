@@ -80,6 +80,53 @@ pub(crate) trait CypherExecutor: Clone + Send + Sync + 'static {
         };
         self.execute(&cypher).await
     }
+
+    /// Create a (non-vector) node-property index on `label` over `fields`. Neo4j
+    /// names the index; FalkorDB identifies it by `(label, fields)`.
+    async fn create_node_index(&self, label: &str, fields: &[String]) -> Result<()> {
+        let on_neo4j = fields
+            .iter()
+            .map(|f| format!("n.`{f}`"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let on_falkor = fields
+            .iter()
+            .map(|f| format!("e.`{f}`"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let cypher = match self.dialect() {
+            "neo4j" => format!(
+                "CREATE INDEX `{}` IF NOT EXISTS FOR (n:`{label}`) ON ({on_neo4j})",
+                node_index_name(label, fields),
+            ),
+            "falkordb" => format!("CREATE INDEX FOR (e:`{label}`) ON ({on_falkor})"),
+            other => {
+                return Err(Error::engine(format!(
+                    "node index not supported for dialect {other:?}"
+                )));
+            }
+        };
+        self.execute(&cypher).await
+    }
+
+    /// Drop the node-property index on `label` over `fields`.
+    async fn drop_node_index(&self, label: &str, fields: &[String]) -> Result<()> {
+        let on_falkor = fields
+            .iter()
+            .map(|f| format!("e.`{f}`"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let cypher = match self.dialect() {
+            "neo4j" => format!("DROP INDEX `{}` IF EXISTS", node_index_name(label, fields)),
+            "falkordb" => format!("DROP INDEX FOR (e:`{label}`) ON ({on_falkor})"),
+            other => {
+                return Err(Error::engine(format!(
+                    "node index not supported for dialect {other:?}"
+                )));
+            }
+        };
+        self.execute(&cypher).await
+    }
 }
 
 /// Distance metric for a graph vector index.
@@ -115,6 +162,11 @@ impl VectorMetric {
 /// indexes; FalkorDB identifies them by `(label, field)` instead).
 pub(crate) fn vector_index_name(label: &str, field: &str) -> String {
     format!("coco_vec_{label}__{field}")
+}
+
+/// Deterministic node-index name for a `(label, fields)` pair.
+pub(crate) fn node_index_name(label: &str, fields: &[String]) -> String {
+    format!("coco_idx_node_{label}__{}", fields.join("_"))
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -215,6 +267,31 @@ impl TableTarget {
             field: field.to_string(),
             metric,
             dimension,
+        };
+        declare_target_state(
+            ctx,
+            provider.target_state(StableKey::Str(Arc::from(key.as_str())), spec),
+        )
+    }
+
+    /// Declare a (non-vector) secondary index on `fields` for this node table.
+    pub(crate) fn declare_node_index(&self, ctx: &Ctx, fields: &[&str]) -> Result<()> {
+        if fields.is_empty() {
+            return Err(Error::engine("node index requires at least one field"));
+        }
+        let fields: Vec<String> = fields
+            .iter()
+            .map(|f| {
+                validate_ident(f, "node index field")?;
+                Ok((*f).to_string())
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let provider: TargetStateProvider<NodeIndexSpec> =
+            self.table_provider.attachment(ctx, "node_index")?;
+        let key = node_index_name(&self.table_name, &fields);
+        let spec = NodeIndexSpec {
+            label: self.table_name.to_string(),
+            fields,
         };
         declare_target_state(
             ctx,
@@ -606,12 +683,20 @@ impl<C: CypherExecutor> TargetHandler<TableSpec> for TableHandler<C> {
     }
 
     fn attachments(&self) -> Result<Vec<(String, ChildTargetDef)>> {
-        Ok(vec![(
-            "vector_index".to_string(),
-            ChildTargetDef::new::<VectorIndexSpec, _>(VectorIndexHandler {
-                graph: self.graph.clone(),
-            }),
-        )])
+        Ok(vec![
+            (
+                "vector_index".to_string(),
+                ChildTargetDef::new::<VectorIndexSpec, _>(VectorIndexHandler {
+                    graph: self.graph.clone(),
+                }),
+            ),
+            (
+                "node_index".to_string(),
+                ChildTargetDef::new::<NodeIndexSpec, _>(NodeIndexHandler {
+                    graph: self.graph.clone(),
+                }),
+            ),
+        ])
     }
 }
 
@@ -711,6 +796,97 @@ fn vector_index_sink<C: CypherExecutor>(graph: C) -> TargetActionSink<VectorInde
                             .drop_vector_index(&action.label, &action.field)
                             .await?;
                     }
+                }
+            }
+            Ok(())
+        }
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Node-property index attachment (non-vector secondary index)
+// ---------------------------------------------------------------------------
+
+/// Spec for a node-property index (an attachment of a node table). Also the
+/// tracking record (equality = no change).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NodeIndexSpec {
+    label: String,
+    fields: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct NodeIndexAction {
+    label: String,
+    fields: Vec<String>,
+    /// `true` to create the index, `false` to drop it.
+    present: bool,
+}
+
+struct NodeIndexHandler<C> {
+    graph: C,
+}
+
+impl<C: CypherExecutor> TargetHandler<NodeIndexSpec> for NodeIndexHandler<C> {
+    type TrackingRecord = NodeIndexSpec;
+    type Action = NodeIndexAction;
+
+    fn reconcile(
+        &self,
+        key: StableKey,
+        desired: Option<NodeIndexSpec>,
+        prev: Vec<NodeIndexSpec>,
+        prev_may_be_missing: bool,
+    ) -> Result<Option<TargetReconcileOutput<NodeIndexAction, NodeIndexSpec>>> {
+        let prev_same = desired
+            .as_ref()
+            .is_some_and(|d| prev.iter().any(|p| p == d));
+        if desired.is_some() && prev_same && !prev_may_be_missing {
+            return Ok(None);
+        }
+        if desired.is_none() && prev.is_empty() && !prev_may_be_missing {
+            return Ok(None);
+        }
+        let (label, fields, present) = match (&desired, prev.first()) {
+            (Some(d), _) => (d.label.clone(), d.fields.clone(), true),
+            (None, Some(p)) => (p.label.clone(), p.fields.clone(), false),
+            (None, None) => {
+                return Err(Error::engine(format!(
+                    "node index {key:?} has neither desired nor previous state"
+                )));
+            }
+        };
+        Ok(Some(TargetReconcileOutput {
+            action: TargetAction::Update(NodeIndexAction {
+                label,
+                fields,
+                present,
+            }),
+            sink: node_index_sink(self.graph.clone()),
+            tracking_record: desired,
+            child_invalidation: None,
+        }))
+    }
+}
+
+fn node_index_sink<C: CypherExecutor>(graph: C) -> TargetActionSink<NodeIndexAction> {
+    TargetActionSink::from_async_fn(move |actions: Vec<TargetAction<NodeIndexAction>>| {
+        let graph = graph.clone();
+        async move {
+            for action in actions {
+                let action = match action {
+                    TargetAction::Create(a) | TargetAction::Update(a) | TargetAction::Delete(a) => {
+                        a
+                    }
+                };
+                if action.present {
+                    // Drop-then-create so a field-set change is applied cleanly.
+                    let _ = graph.drop_node_index(&action.label, &action.fields).await;
+                    graph
+                        .create_node_index(&action.label, &action.fields)
+                        .await?;
+                } else {
+                    graph.drop_node_index(&action.label, &action.fields).await?;
                 }
             }
             Ok(())
@@ -1286,6 +1462,36 @@ mod tests {
                 .await
                 .is_err(),
             "Neo4j must reject the inner-product metric"
+        );
+    }
+
+    #[tokio::test]
+    async fn neo4j_node_index_cypher() {
+        let graph = RecordingGraph::new("neo4j");
+        let fields = vec!["name".to_string(), "year".to_string()];
+        graph.create_node_index("Doc", &fields).await.unwrap();
+        graph.drop_node_index("Doc", &fields).await.unwrap();
+        assert_eq!(
+            graph.statements(),
+            vec![
+                "CREATE INDEX `coco_idx_node_Doc__name_year` IF NOT EXISTS FOR (n:`Doc`) ON (n.`name`, n.`year`)",
+                "DROP INDEX `coco_idx_node_Doc__name_year` IF EXISTS",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn falkordb_node_index_cypher() {
+        let graph = RecordingGraph::new("falkordb");
+        let fields = vec!["name".to_string()];
+        graph.create_node_index("Doc", &fields).await.unwrap();
+        graph.drop_node_index("Doc", &fields).await.unwrap();
+        assert_eq!(
+            graph.statements(),
+            vec![
+                "CREATE INDEX FOR (e:`Doc`) ON (e.`name`)",
+                "DROP INDEX FOR (e:`Doc`) ON (e.`name`)",
+            ]
         );
     }
 

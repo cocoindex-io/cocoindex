@@ -220,6 +220,32 @@ fn chrono_like_timestamp() -> u128 {
         .as_millis()
 }
 
+#[tokio::test]
+async fn surrealdb_declare_row_derives_id_from_row_when_available() {
+    let db_name = format!(
+        "rust_sdk_surrealdb_declrow_{}_{}",
+        std::process::id(),
+        chrono_like_timestamp()
+    );
+    let Some(graph) = try_graph(&db_name).await else {
+        eprintln!("skipping SurrealDB declare_row test; no local SurrealDB connection");
+        return;
+    };
+    let (app, _dir) = temp_app(&graph, "surrealdb_declare_row").await;
+
+    app.run(|ctx| async move {
+        let graph = ctx.get_key(&GRAPH)?;
+        let people = surrealdb::mount_table_target(&ctx, graph, "human").await?;
+        // `declare_row` takes the record id from the row's own `id` field.
+        people.declare_row(&ctx, &serde_json::json!({ "id": "alice", "age": 30 }))?;
+        people.declare_row(&ctx, &serde_json::json!({ "id": "bob", "age": 41 }))?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    assert_eq!(graph.count("human").await.unwrap(), 2);
+}
+
 async fn temp_app(graph: &Graph, name: &str) -> (App, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
     let app = App::builder(name)

@@ -795,14 +795,16 @@ async fn apply_rows(
     }
     let mut tx = db.pool().begin().await.map_err(sqlite_err)?;
     for (pk, state) in mutations {
-        let sql = match state {
+        let stmts = match state {
             Some(state) => upsert_sql(spec, &state.fields)?,
-            None => delete_sql(spec, &pk)?,
+            None => vec![delete_sql(spec, &pk)?],
         };
-        sqlx::query(&sql)
-            .execute(&mut *tx)
-            .await
-            .map_err(sqlite_err)?;
+        for sql in stmts {
+            sqlx::query(&sql)
+                .execute(&mut *tx)
+                .await
+                .map_err(sqlite_err)?;
+        }
     }
     tx.commit().await.map_err(sqlite_err)?;
     Ok(())
@@ -862,7 +864,11 @@ fn create_vec0_sql(spec: &TableSpec, def: &Vec0TableDef) -> String {
     )
 }
 
-fn upsert_sql(spec: &TableSpec, fields: &Map<String, JsonValue>) -> Result<String> {
+/// Build the statement(s) that upsert one row. Regular tables get a single
+/// `INSERT … ON CONFLICT` statement; vec0 virtual tables (which don't support
+/// UPSERT) get two statements — a `DELETE` then an `INSERT` — that the caller
+/// must execute separately (a single `sqlx::query` only runs the first).
+fn upsert_sql(spec: &TableSpec, fields: &Map<String, JsonValue>) -> Result<Vec<String>> {
     let cols: Vec<&String> = spec.table_schema.columns().keys().collect();
     let col_sql = cols
         .iter()
@@ -882,13 +888,15 @@ fn upsert_sql(spec: &TableSpec, fields: &Map<String, JsonValue>) -> Result<Strin
         })
         .collect::<Result<Vec<_>>>()?
         .join(", ");
-    // vec0 virtual tables do not support UPSERT; delete-then-insert per row.
+    // vec0 virtual tables do not support UPSERT; delete-then-insert per row, as
+    // two separate statements (one `sqlx::query` only executes the first).
     if spec.virtual_table_def.is_some() {
+        let table = quote_ident(&spec.table_name);
         let pk_predicate = pk_predicate(spec, fields)?;
-        return Ok(format!(
-            "DELETE FROM {table} WHERE {pk_predicate}; INSERT INTO {table} ({col_sql}) VALUES ({values})",
-            table = quote_ident(&spec.table_name),
-        ));
+        return Ok(vec![
+            format!("DELETE FROM {table} WHERE {pk_predicate}"),
+            format!("INSERT INTO {table} ({col_sql}) VALUES ({values})"),
+        ]);
     }
     let pk_sql = spec
         .table_schema
@@ -907,10 +915,10 @@ fn upsert_sql(spec: &TableSpec, fields: &Map<String, JsonValue>) -> Result<Strin
     } else {
         format!("ON CONFLICT ({pk_sql}) DO UPDATE SET {}", non_pk.join(", "))
     };
-    Ok(format!(
+    Ok(vec![format!(
         "INSERT INTO {} ({col_sql}) VALUES ({values}) {conflict}",
         quote_ident(&spec.table_name)
-    ))
+    )])
 }
 
 fn delete_sql(spec: &TableSpec, pk: &[JsonValue]) -> Result<String> {
@@ -1218,12 +1226,36 @@ mod tests {
         fields.insert("id".into(), JsonValue::from(7));
         fields.insert("name".into(), JsonValue::from("a'b"));
         fields.insert("score".into(), JsonValue::from(1.5));
-        let sql = upsert_sql(&spec(schema()), &fields).unwrap();
+        let stmts = upsert_sql(&spec(schema()), &fields).unwrap();
+        // Regular tables: a single ON CONFLICT upsert statement.
+        assert_eq!(stmts.len(), 1);
         assert_eq!(
-            sql,
+            stmts[0],
             "INSERT INTO \"items\" (\"id\", \"name\", \"score\") VALUES (7, 'a''b', 1.5) \
              ON CONFLICT (\"id\") DO UPDATE SET \"name\" = excluded.\"name\", \"score\" = excluded.\"score\""
         );
+    }
+
+    #[test]
+    fn vec0_upsert_emits_separate_delete_and_insert() {
+        // Regression: vec0 has no UPSERT, so it must produce a DELETE then an
+        // INSERT as two statements (a single `sqlx::query` runs only the first,
+        // which silently dropped the INSERT → lost rows).
+        let mut spec = spec(schema());
+        spec.virtual_table_def = Some(Vec0TableDef::default());
+        let mut fields = Map::new();
+        fields.insert("id".into(), JsonValue::from(7));
+        fields.insert("name".into(), JsonValue::from("a"));
+        fields.insert("score".into(), JsonValue::from(1.5));
+        let stmts = upsert_sql(&spec, &fields).unwrap();
+        assert_eq!(stmts.len(), 2, "vec0 upsert must be two statements");
+        assert!(
+            stmts[0].starts_with("DELETE FROM \"items\" WHERE"),
+            "{stmts:?}"
+        );
+        assert!(stmts[1].starts_with("INSERT INTO \"items\""), "{stmts:?}");
+        // Neither statement contains a `;` separator (so each runs on its own).
+        assert!(stmts.iter().all(|s| !s.contains(';')), "{stmts:?}");
     }
 
     #[test]
@@ -1237,8 +1269,9 @@ mod tests {
         let schema = TableSchema::new([("id", ColumnDef::new("INTEGER"))], ["id"]).unwrap();
         let mut fields = Map::new();
         fields.insert("id".into(), JsonValue::from(1));
-        let sql = upsert_sql(&spec(schema), &fields).unwrap();
-        assert!(sql.ends_with("ON CONFLICT (\"id\") DO NOTHING"));
+        let stmts = upsert_sql(&spec(schema), &fields).unwrap();
+        assert_eq!(stmts.len(), 1);
+        assert!(stmts[0].ends_with("ON CONFLICT (\"id\") DO NOTHING"));
     }
 
     #[test]

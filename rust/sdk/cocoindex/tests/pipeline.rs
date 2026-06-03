@@ -726,29 +726,27 @@ async fn concurrent_detect_change_keys_invalidate_independently() {
             .build()
             .await
             .unwrap();
-        let res = app
-            .update(move |ctx| async move {
-                let ka = key_a.clone();
-                let kb = key_b.clone();
-                // memo A yields BEFORE reading key A, so a shared "current" slot
-                // would have been overwritten by memo B by the time A reads it.
-                let fut_a = ctx.memo(&"memoA", move |ctx| async move {
-                    tokio::task::yield_now().await;
-                    a_calls.fetch_add(1, Ordering::SeqCst);
-                    Ok::<_, cocoindex::Error>(ctx.get_key(&ka)?.clone())
-                });
-                let fut_b = ctx.memo(&"memoB", move |ctx| async move {
-                    b_calls.fetch_add(1, Ordering::SeqCst);
-                    let v = ctx.get_key(&kb)?.clone();
-                    tokio::task::yield_now().await;
-                    Ok::<_, cocoindex::Error>(v)
-                });
-                let (ra, _rb): (String, String) = futures::future::try_join(fut_a, fut_b).await?;
-                Ok(ra)
-            })
-            .await
-            .unwrap();
-        res
+        app.update(move |ctx| async move {
+            let ka = key_a.clone();
+            let kb = key_b.clone();
+            // memo A yields BEFORE reading key A, so a shared "current" slot
+            // would have been overwritten by memo B by the time A reads it.
+            let fut_a = ctx.memo(&"memoA", move |ctx| async move {
+                tokio::task::yield_now().await;
+                a_calls.fetch_add(1, Ordering::SeqCst);
+                Ok::<_, cocoindex::Error>(ctx.get_key(&ka)?.clone())
+            });
+            let fut_b = ctx.memo(&"memoB", move |ctx| async move {
+                b_calls.fetch_add(1, Ordering::SeqCst);
+                let v = ctx.get_key(&kb)?.clone();
+                tokio::task::yield_now().await;
+                Ok::<_, cocoindex::Error>(v)
+            });
+            let (ra, _rb): (String, String) = futures::future::try_join(fut_a, fut_b).await?;
+            Ok(ra)
+        })
+        .await
+        .unwrap()
     }
 
     let path = dir.path().join("lmdb");
@@ -1583,6 +1581,40 @@ mod memo_test_cache_hit {
         .await
         .unwrap();
         assert_eq!(CALLS.load(Ordering::SeqCst), 1); // Not called again.
+    }
+}
+
+mod memo_test_borrowed_str {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static CALLS: AtomicUsize = AtomicUsize::new(0);
+
+    #[cocoindex::function(memo)]
+    async fn len(_ctx: &cocoindex::Ctx, _input: &str) -> cocoindex::Result<usize> {
+        CALLS.fetch_add(1, Ordering::SeqCst);
+        Ok(_input.len())
+    }
+
+    #[tokio::test]
+    async fn function_macro_memo_accepts_borrowed_str() {
+        CALLS.store(0, Ordering::SeqCst);
+        let (app, _dir) = temp_app("fn_memo_borrowed_str").await;
+
+        app.update(|ctx| async move {
+            assert_eq!(len(&ctx, "same").await?, 4);
+            Ok(())
+        })
+        .await
+        .unwrap();
+        app.update(|ctx| async move {
+            assert_eq!(len(&ctx, "same").await?, 4);
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(CALLS.load(Ordering::SeqCst), 1);
     }
 }
 

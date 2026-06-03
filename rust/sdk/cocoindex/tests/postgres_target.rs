@@ -418,3 +418,287 @@ async fn postgres_vector_index_target_reconciles_when_available() -> Result<()> 
         .map_err(|e| cocoindex::Error::engine(format!("postgres cleanup: {e}")))?;
     Ok(())
 }
+
+#[tokio::test]
+async fn postgres_strips_nul_from_text_when_available() -> Result<()> {
+    let Ok(url) = std::env::var("POSTGRES_URL") else {
+        eprintln!("skipping live Postgres NUL test; POSTGRES_URL is not set");
+        return Ok(());
+    };
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let schema = format!("cocoindex_rust_nul_test_{nonce}");
+    let db = postgres::Database::connect(&url).await?;
+    sqlx::query(&format!("DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"))
+        .execute(db.pool())
+        .await
+        .map_err(|e| cocoindex::Error::engine(format!("postgres cleanup: {e}")))?;
+
+    let tempdir = tempfile::tempdir().unwrap();
+    let app = App::builder("PostgresNulE2ETest")
+        .db_path(tempdir.path().join(".cocoindex_db"))
+        .provide_key(&PG, db.clone())
+        .build()
+        .await?;
+
+    // A label containing a U+0000 NUL — Postgres `text` cannot store it, so it
+    // must be stripped before insert (otherwise the write errors).
+    app.run({
+        let schema = schema.clone();
+        move |ctx| {
+            declare_rows(
+                ctx,
+                schema,
+                vec![TestRow {
+                    id: 1,
+                    label: "a\u{0}b".to_string(),
+                }],
+            )
+        }
+    })
+    .await?;
+
+    let label: String = sqlx::query_scalar(&format!(
+        "SELECT label FROM \"{schema}\".\"rows\" WHERE id = 1"
+    ))
+    .fetch_one(db.pool())
+    .await
+    .map_err(|e| cocoindex::Error::engine(format!("postgres query: {e}")))?;
+    assert_eq!(label, "ab", "NUL should be stripped from the stored text");
+
+    sqlx::query(&format!("DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"))
+        .execute(db.pool())
+        .await
+        .map_err(|e| cocoindex::Error::engine(format!("postgres cleanup: {e}")))?;
+    Ok(())
+}
+
+async fn declare_cols(
+    ctx: Ctx,
+    schema_ns: String,
+    columns: Vec<(String, String)>,
+    row: serde_json::Value,
+) -> Result<()> {
+    let db = ctx.get_key(&PG)?;
+    let cols: Vec<(String, postgres::ColumnDef)> = columns
+        .into_iter()
+        .map(|(n, t)| (n, postgres::ColumnDef::new(t)))
+        .collect();
+    let table = postgres::mount_table_target(
+        &ctx,
+        db,
+        "rows",
+        postgres::TableSchema::new(cols, ["id"])?,
+        Some(&schema_ns),
+    )
+    .await?;
+    table.declare_row(&ctx, &row)?;
+    Ok(())
+}
+
+async fn column_exists(
+    db: &postgres::Database,
+    schema: &str,
+    table: &str,
+    col: &str,
+) -> Result<bool> {
+    let count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM information_schema.columns \
+         WHERE table_schema = $1 AND table_name = $2 AND column_name = $3",
+    )
+    .bind(schema)
+    .bind(table)
+    .bind(col)
+    .fetch_one(db.pool())
+    .await
+    .map_err(|e| cocoindex::Error::engine(format!("postgres column lookup: {e}")))?;
+    Ok(count > 0)
+}
+
+fn cols(names: &[(&str, &str)]) -> Vec<(String, String)> {
+    names
+        .iter()
+        .map(|(n, t)| (n.to_string(), t.to_string()))
+        .collect()
+}
+
+#[tokio::test]
+async fn postgres_adds_and_drops_columns_when_available() -> Result<()> {
+    let Ok(url) = std::env::var("POSTGRES_URL") else {
+        eprintln!("skipping live Postgres schema-evolution test; POSTGRES_URL is not set");
+        return Ok(());
+    };
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let schema = format!("cocoindex_rust_evolve_test_{nonce}");
+    let db = postgres::Database::connect(&url).await?;
+    sqlx::query(&format!("DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"))
+        .execute(db.pool())
+        .await
+        .map_err(|e| cocoindex::Error::engine(format!("postgres cleanup: {e}")))?;
+    let tempdir = tempfile::tempdir().unwrap();
+    let app = App::builder("PostgresEvolveE2ETest")
+        .db_path(tempdir.path().join(".cocoindex_db"))
+        .provide_key(&PG, db.clone())
+        .build()
+        .await?;
+
+    // v1: (id, label)
+    app.run({
+        let schema = schema.clone();
+        move |ctx| {
+            declare_cols(
+                ctx,
+                schema,
+                cols(&[("id", "bigint"), ("label", "text")]),
+                serde_json::json!({ "id": 1, "label": "a" }),
+            )
+        }
+    })
+    .await?;
+    assert!(!column_exists(&db, &schema, "rows", "extra").await?);
+
+    // v2: add the `extra` column.
+    app.run({
+        let schema = schema.clone();
+        move |ctx| {
+            declare_cols(
+                ctx,
+                schema,
+                cols(&[("id", "bigint"), ("label", "text"), ("extra", "text")]),
+                serde_json::json!({ "id": 1, "label": "a", "extra": "x" }),
+            )
+        }
+    })
+    .await?;
+    assert!(column_exists(&db, &schema, "rows", "extra").await?);
+    let extra: Option<String> = sqlx::query_scalar(&format!(
+        "SELECT extra FROM \"{schema}\".\"rows\" WHERE id = 1"
+    ))
+    .fetch_one(db.pool())
+    .await
+    .map_err(|e| cocoindex::Error::engine(format!("postgres query: {e}")))?;
+    assert_eq!(extra.as_deref(), Some("x"));
+
+    // v3: drop the `extra` column.
+    app.run({
+        let schema = schema.clone();
+        move |ctx| {
+            declare_cols(
+                ctx,
+                schema,
+                cols(&[("id", "bigint"), ("label", "text")]),
+                serde_json::json!({ "id": 1, "label": "a" }),
+            )
+        }
+    })
+    .await?;
+    assert!(!column_exists(&db, &schema, "rows", "extra").await?);
+
+    sqlx::query(&format!("DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"))
+        .execute(db.pool())
+        .await
+        .map_err(|e| cocoindex::Error::engine(format!("postgres cleanup: {e}")))?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn postgres_column_drop_retries_after_failed_attempt_when_available() -> Result<()> {
+    let Ok(url) = std::env::var("POSTGRES_URL") else {
+        eprintln!("skipping live Postgres column-drop-retry test; POSTGRES_URL is not set");
+        return Ok(());
+    };
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let schema = format!("cocoindex_rust_dropretry_test_{nonce}");
+    let db = postgres::Database::connect(&url).await?;
+    sqlx::query(&format!("DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"))
+        .execute(db.pool())
+        .await
+        .map_err(|e| cocoindex::Error::engine(format!("postgres cleanup: {e}")))?;
+    let tempdir = tempfile::tempdir().unwrap();
+    let app = App::builder("PostgresDropRetryE2ETest")
+        .db_path(tempdir.path().join(".cocoindex_db"))
+        .provide_key(&PG, db.clone())
+        .build()
+        .await?;
+
+    // v1: table with (id, label, extra).
+    app.run({
+        let schema = schema.clone();
+        move |ctx| {
+            declare_cols(
+                ctx,
+                schema,
+                cols(&[("id", "bigint"), ("label", "text"), ("extra", "text")]),
+                serde_json::json!({ "id": 1, "label": "a", "extra": "x" }),
+            )
+        }
+    })
+    .await?;
+
+    // A view that depends on `extra` — this blocks DROP COLUMN.
+    sqlx::query(&format!(
+        "CREATE VIEW \"{schema}\".\"dep\" AS SELECT id, extra FROM \"{schema}\".\"rows\""
+    ))
+    .execute(db.pool())
+    .await
+    .map_err(|e| cocoindex::Error::engine(format!("postgres create view: {e}")))?;
+
+    // v2: drop `extra` — fails because the view depends on it.
+    let failed = app
+        .run({
+            let schema = schema.clone();
+            move |ctx| {
+                declare_cols(
+                    ctx,
+                    schema,
+                    cols(&[("id", "bigint"), ("label", "text")]),
+                    serde_json::json!({ "id": 1, "label": "a" }),
+                )
+            }
+        })
+        .await;
+    assert!(
+        failed.is_err(),
+        "DROP COLUMN blocked by a view should error"
+    );
+    assert!(
+        column_exists(&db, &schema, "rows", "extra").await?,
+        "the column must still exist after the failed drop"
+    );
+
+    // Remove the dependency, then retry — the drop now succeeds.
+    sqlx::query(&format!("DROP VIEW \"{schema}\".\"dep\""))
+        .execute(db.pool())
+        .await
+        .map_err(|e| cocoindex::Error::engine(format!("postgres drop view: {e}")))?;
+    app.run({
+        let schema = schema.clone();
+        move |ctx| {
+            declare_cols(
+                ctx,
+                schema,
+                cols(&[("id", "bigint"), ("label", "text")]),
+                serde_json::json!({ "id": 1, "label": "a" }),
+            )
+        }
+    })
+    .await?;
+    assert!(
+        !column_exists(&db, &schema, "rows", "extra").await?,
+        "retry after removing the dependency should drop the column"
+    );
+
+    sqlx::query(&format!("DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"))
+        .execute(db.pool())
+        .await
+        .map_err(|e| cocoindex::Error::engine(format!("postgres cleanup: {e}")))?;
+    Ok(())
+}

@@ -233,6 +233,24 @@ impl TableTarget {
         declare_target_state(ctx, self.records.target_state(id.to_stable_key(), value))
     }
 
+    /// Declare a record whose id is taken from the row's own scalar `id` field
+    /// (the analogue of Python's `declare_row`). Use [`declare_record`] to pass
+    /// the id separately.
+    pub fn declare_row<R: Serialize>(&self, ctx: &Ctx, row: &R) -> Result<()> {
+        let value = record_state(row)?;
+        let id = value
+            .fields
+            .get("id")
+            .and_then(RecordIdValue::from_json_scalar)
+            .ok_or_else(|| {
+                Error::engine(
+                    "declare_row requires the row to have a scalar `id` field; \
+                     use declare_record to pass an explicit id",
+                )
+            })?;
+        declare_target_state(ctx, self.records.target_state(id.stable_key(), value))
+    }
+
     /// Declare a vector index on `field` as an attachment of this table. The
     /// index is created/recreated/dropped to match the declared options
     /// (`DEFINE INDEX … <METHOD> DIMENSION … DIST … TYPE …`).

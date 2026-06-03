@@ -109,7 +109,7 @@ fn is_excluded(key: &str) -> bool {
 
 async fn app_main(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
     let db = ctx.get_key(&DB)?;
-    let table = lancedb::mount_table_target(&ctx, db, TABLE, code_embedding_schema()?)?;
+    let table = lancedb::mount_table_target(&ctx, db, TABLE, code_embedding_schema()?).await?;
 
     let files: Vec<FileEntry> = walk(&sourcedir, INCLUDE_PATTERNS)?
         .into_iter()
@@ -140,7 +140,11 @@ async fn app_main(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
     Ok(())
 }
 
-async fn query_once(db: &LanceDatabase, embedder: &SentenceTransformerEmbedder, query: &str) -> Result<()> {
+async fn query_once(
+    db: &LanceDatabase,
+    embedder: &SentenceTransformerEmbedder,
+    query: &str,
+) -> Result<()> {
     let query_vec = embedder.embed(query).await?;
     let results = lancedb::vector_search(db, TABLE, "embedding", query_vec, TOP_K).await?;
     for r in results {
@@ -149,7 +153,10 @@ async fn query_once(db: &LanceDatabase, embedder: &SentenceTransformerEmbedder, 
         let start_line = r.get("start_line").and_then(|v| v.as_i64()).unwrap_or(0);
         let end_line = r.get("end_line").and_then(|v| v.as_i64()).unwrap_or(0);
         let distance = r.get("_distance").and_then(|v| v.as_f64()).unwrap_or(0.0);
-        println!("[{:.3}] {filename} (L{start_line}-L{end_line})", 1.0 - distance);
+        println!(
+            "[{:.3}] {filename} (L{start_line}-L{end_line})",
+            1.0 - distance
+        );
         let snippet: String = code.chars().take(200).collect();
         println!("    {}", snippet.replace('\n', "\n    "));
         println!("---");
