@@ -53,6 +53,14 @@ jobs:
 
         - run: rustup toolchain install stable --profile minimal
 
+        # `protoc` is needed to build the Rust examples that enable the LanceDB
+        # (`lance-encoding`) and Qdrant (`qdrant-client`) features, which compile
+        # protobufs via `prost-build`. Cross-platform across the test matrix.
+        - name: Install protoc
+          uses: arduino/setup-protoc@v3
+          with:
+            repo-token: ${{ secrets.GITHUB_TOKEN }}
+
         - uses: actions/setup-python@v6
           id: setup_python
           with:
