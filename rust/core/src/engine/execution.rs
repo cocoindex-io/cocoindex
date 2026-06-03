@@ -389,7 +389,13 @@ impl<Prof: EngineProfile> Committer<Prof> {
         let app_store = self.app_store.clone();
         let component_path = self.component_path.clone();
         let cps = child_path_set;
+        // `Fn` (not `FnOnce`) so a backend that re-runs its commit txn can
+        // re-invoke it — clone the (cheap, `Arc`/owned) captures per call
+        // rather than moving them into the future.
         let reconciler: ExistenceReconciler = Box::new(move |wtxn| {
+            let app_store = app_store.clone();
+            let component_path = component_path.clone();
+            let cps = cps.clone();
             Box::pin(async move {
                 reconcile_child_existence(wtxn, &app_store, &component_path, cps.as_deref()).await
             })
