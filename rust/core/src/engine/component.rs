@@ -953,6 +953,7 @@ impl<Prof: EngineProfile> Component<Prof> {
                     // delete mode (no `ComponentBuildingState`); see the cache
                     // flush logic for how those cases are handled at commit time.
                     processor_context.prefetch_fn_memos().await?;
+                    processor_context.prefetch_user_states().await?;
 
                     if memo_fp_to_store.is_some() {
                         *self.inner.last_memo_fp.lock().unwrap() = memo_fp_to_store;
