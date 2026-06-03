@@ -264,3 +264,78 @@ async fn iggy_source_live_watch_tails_new_messages() -> Result<()> {
     let _ = tokio::time::timeout(Duration::from_secs(10), handle.result()).await;
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn iggy_source_stream_reads_all_payloads_keyless() -> Result<()> {
+    let Ok(conn) = std::env::var("IGGY_CONNECTION_STRING") else {
+        eprintln!("skipping live Iggy stream test; IGGY_CONNECTION_STRING is not set");
+        return Ok(());
+    };
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let stream = format!("coco_src_stream_{nonce}");
+    let topic = "rows";
+
+    let producer = IggyProducer::connect(&conn).await?;
+    ensure_stream_topic(&producer, &stream, topic).await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let pop_db = tmp.path().join("populate_db");
+    // Three distinct payloads; the keyless stream reads all (no key_fn needed).
+    declare(
+        &producer,
+        &pop_db,
+        &stream,
+        topic,
+        vec![("k1", "v1"), ("k2", "v2"), ("k3", "v3")],
+    )
+    .await;
+
+    let consumer = IggyConsumer::connect(&conn).await?;
+    let processed: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+
+    let app = App::builder("IggySourceStream")
+        .db_path(tmp.path().join("source_db"))
+        .build()
+        .await?;
+    app.run({
+        let processed = processed.clone();
+        let consumer = consumer.clone();
+        let stream = stream.clone();
+        move |ctx| {
+            let processed = processed.clone();
+            let consumer = consumer.clone();
+            let stream = stream.clone();
+            async move {
+                let feed = iggy::topic_as_stream(&consumer, stream, topic);
+                ctx.mount_each_live(&"stream", feed, move |_ctx, value: Vec<u8>| {
+                    let processed = processed.clone();
+                    async move {
+                        processed
+                            .lock()
+                            .unwrap()
+                            .push(String::from_utf8_lossy(&value).into_owned());
+                        Ok(())
+                    }
+                })
+                .await
+            }
+        }
+    })
+    .await?;
+
+    let mut got = processed.lock().unwrap().clone();
+    got.sort();
+    assert_eq!(
+        got,
+        vec![
+            "k1=v1".to_string(),
+            "k2=v2".to_string(),
+            "k3=v3".to_string()
+        ],
+        "the keyless stream should read every payload in offset order"
+    );
+    Ok(())
+}

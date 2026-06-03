@@ -14,8 +14,9 @@ Reference model:
 Current scale marker:
 
 - Python tests: 839 `test_*` functions under `python/tests`.
-- Rust SDK tests: 334 Rust test annotations: 179 integration tests, 136 SDK
-  source-unit tests, and 19 macro tests.
+- Rust SDK tests: 376 Rust test annotations: 204 integration tests and 172
+  SDK source-unit tests. Macro behavior is covered by the SDK integration
+  suite.
 - Many connector e2e tests are gated by service credentials. That is fine, but
   each connector still needs unit coverage for planning/reconcile behavior.
 
@@ -29,12 +30,15 @@ and several native target/source connectors.
 The remaining gaps are concentrated in connector breadth and connector-specific
 feature depth:
 
-1. Doris target is missing.
-2. Iggy source has keyed-map parity; keyless stream/payload and multi-partition
-   readiness remain.
-3. Kafka source has all-partition keyed-map parity; keyless stream/payload and
-   consumer-group rebalance handling remain.
-4. OCI source lacks Python's live bucket-event view.
+1. Doris target is implemented (table target, Stream Load ingestion, SQL
+   deletes, inverted index, retry). `USING ANN` vector indexes need Doris 3.x
+   for a live test; the DDL is unit-covered.
+2. Iggy source has keyed-map parity and single-partition keyless payload-stream
+   parity; multi-partition readiness remains.
+3. Kafka source has all-partition keyed-map parity and all-partition keyless
+   payload-stream parity; consumer-group rebalance handling remains.
+4. OCI source has the live bucket-event view (`list_objects_live`); deeper
+   cancellation/scan-failure edge tests remain.
 5. Several database/graph connectors still use explicit Rust schemas where
    Python has `from_class`/annotation-driven schema construction.
 6. CLI/default environment/settings/runner APIs are still product decisions, not
@@ -83,9 +87,9 @@ Action:
 
 | Source | Python behavior | Rust status | Action |
 | --- | --- | --- | --- |
-| Iggy | `topic_as_stream`, payload stream, keyed map, offset readiness, multi-partition safeguards | **Keyed map done** — `IggyConsumer` + `topic_as_map`/`_with_options` give a `LiveMapView<String, Vec<u8>>` over a partition (`scan` compacts to latest-payload-per-key via the required `key_fn`; `watch` tails), with `IggySourceOptions::is_deletion`. 2 live e2e (`tests/iggy_source.rs`: compaction + live tail, verified vs a Dockerized Apache Iggy server). | Remaining: keyless `topic_as_stream`/payload view and multi-partition readiness. |
-| Kafka | stream, payload stream, keyed map, partition assignment/rebalance, safe offset readiness | `topic_as_map` over **all partitions** (per-partition offset tracking; `scan` compacts across partitions, `watch` round-robins) with tombstone/custom delete semantics. 3 live e2e (`tests/kafka_source.rs`: compaction, live tail, all-partitions read). | Remaining: keyless `topic_as_stream`/payload view; consumer-group rebalance (the SDK consumes the topic directly, no group assignment). |
-| OCI Object Storage | shared file source plus live bucket events fed by a stream | Static list/read/range source exists; no live event view | Port Python's live event adapter/filtering tests from `test_oci_object_storage.py`. |
+| Iggy | `topic_as_stream`, payload stream, keyed map, offset readiness, multi-partition safeguards | **Keyed map + keyless payload stream done** — `IggyConsumer` + `topic_as_map`/`_with_options` give a `LiveMapView<String, Vec<u8>>` over one partition (`scan` compacts to latest-payload-per-key via the required `key_fn`; `watch` tails), with `IggySourceOptions::is_deletion`. `topic_as_stream` gives an append-only offset-keyed payload view. 3 live e2e (`tests/iggy_source.rs`: compaction, live tail, keyless stream). | Remaining: multi-partition readiness. |
+| Kafka | stream, payload stream, keyed map, partition assignment/rebalance, safe offset readiness | `topic_as_map` over **all partitions** (per-partition offset tracking; `scan` compacts across partitions, `watch` round-robins) with tombstone/custom delete semantics. `topic_as_stream` reads keyless payloads over all partitions using stable `partition:offset` child keys. 4 live e2e (`tests/kafka_source.rs`: compaction, live tail, all-partitions read, keyless stream). | Remaining: consumer-group rebalance (the SDK consumes the topic directly, no group assignment). |
+| OCI Object Storage | shared file source plus live bucket events fed by a stream | **Done** — static list/read/range source plus `list_objects_live(client, ns, bucket, options, events)` returning a `LiveMapView<String, OciFile>`: `scan` lists matching objects (snapshotting an `eventTime` cutoff), `watch` turns an event stream (`OciEventStream`) into per-object updates/deletes, re-reading each via `HEAD` (live state wins over event type), filtered by envelope/namespace/bucket/cutoff/prefix/matcher/max-size. `OciClient::with_base_url` adds a mock seam. 1 hermetic e2e (`tests/oci_live.rs`, wiremock: scan + create/delete/old-cutoff/cross-bucket/malformed). | Remaining: cancellation-while-blocked and scan-failure-propagation edge tests. |
 | Google Drive | static file listing/read/export | Static source exists | No live work unless Python adds live Google Drive support. |
 | S3 | static file listing/read/range | Static source exists with MinIO e2e | No live work unless Python adds S3 live behavior. |
 
@@ -93,14 +97,14 @@ Action:
 
 | Connector | Python status | Rust status | Action |
 | --- | --- | --- | --- |
-| Doris | Native target with stream load, retries, vector indexes, inverted indexes, and schema/type mapping | Missing | Implement `doris` target after vector-schema-provider parity is settled; port `test_doris_target.py`. |
+| Doris | Native target with stream load, retries, vector indexes, inverted indexes, and schema/type mapping | **Done** — `doris::{DorisConnection, DorisConfig, TableSchema, ColumnDef, VectorIndexDef, InvertedIndexDef}` with the `table_target`/`declare_*`/`mount_*` split and composite (PK + per-column) tracking. DDL/DELETE over the MySQL protocol (`sqlx`, unprepared text protocol — Doris only prepares point-query SELECT/INSERT), row ingestion via Stream Load (HTTP `PUT`, manual FE→BE `307` redirect with optional `be_load_host`, retry/backoff), DUPLICATE KEY model with delete-before-insert upserts. 8 unit + 6 live e2e (`tests/doris_target.rs`: create/insert, update, delete, map rows, no-change-no-dup, inverted index — verified vs a Dockerized `apache/doris:doris-all-in-one-2.1.0`). | Remaining: live `USING ANN` vector-index test (needs Doris 3.x — 2.1 rejects the syntax; DDL generation is unit-tested). |
 | Notion | Empty Python connector | Missing | No Rust work until Python has a real connector. |
 
 ### P2: Vector Store Parity
 
 | Connector | Rust status | Python delta | Action |
 | --- | --- | --- | --- |
-| Qdrant | Collection target, provider-based schema constructors, unnamed/named dense vectors, unnamed/named multivectors, search helpers | Rust coverage is unit-level plus gated live unnamed-vector e2e | Add hosted e2e coverage for named vectors/multivectors when a Qdrant service is available. |
+| Qdrant | Collection target, provider-based schema constructors, unnamed/named dense vectors, unnamed/named multivectors, **`f16` datatype** (`Datatype::Float16` from `VectorSchema::f16`), search helpers | Rust coverage is unit-level (incl. f16 datatype mapping) plus gated live unnamed-vector e2e | Add hosted e2e coverage for named vectors/multivectors when a Qdrant service is available. |
 | Turbopuffer | Namespace target, provider-based schema constructors, unnamed/named vector fields, `f32`/`f16` schema rendering, named-field search helper | Rust coverage is unit-level plus gated live unnamed-vector e2e | Add hosted e2e coverage for named-vector writes/search when service credentials are available. |
 | LanceDB | Table target, vector columns, search, additive scalar evolution, destructive replacement with row replay on async mount | Python has optimize/retry knobs and richer schema construction | Add optimize/retry/error-path coverage only when Rust exposes those knobs. |
 
@@ -129,6 +133,12 @@ Neo4j and FalkorDB now have table/relation targets, automatic PK
 constraints/indexes, relation PK indexes, vector-index attachments, and node
 property index attachments.
 
+Record writes are now **parameter-bound**: `apply_record` emits `$param`
+placeholders + a params map via `CypherExecutor::execute_with_params` (neo4j
+binds Bolt params through `json_to_bolt`; falkordb uses the `CYPHER name=value`
+header), so user values are never interpolated into the query body. Validated by
+unit tests plus live neo4j/falkordb record-write e2e.
+
 Remaining decision:
 
 - Python exposes pure Cypher builder helpers for unit-testable DDL strings.
@@ -152,15 +162,19 @@ These are not connector blockers. Decide explicitly before implementing.
 
 Use this order:
 
-1. Iggy source tests: keyless stream/payload APIs, offset readiness, duplicate
-   offsets, delete predicate, and multi-partition guard.
-2. Kafka source tests: keyless stream/payload APIs and consumer-group rebalance
-   behavior. Keyed-map compaction, live tail, tombstone deletes, and
-   all-partition catch-up are covered.
+1. Iggy source tests: offset readiness, duplicate offsets, delete predicate,
+   and multi-partition guard. Keyed-map compaction, live tail, and keyless
+   payload stream are covered.
+2. Kafka source tests: consumer-group rebalance behavior. Keyed-map compaction,
+   live tail, tombstone deletes, all-partition catch-up, and keyless payload
+   stream are covered.
 3. OCI live source tests: event cutoff, malformed events, cross-bucket filters,
-   max-size/path filters, blocked-ready cancellation, scan failure propagation.
-4. Doris target tests: create/update/delete, dict rows, vector index, inverted
-   index, retry/no-change behavior.
+   and the create/delete re-read are covered (`tests/oci_live.rs`, hermetic).
+   Remaining: max-size/path-matcher live filters, blocked-ready cancellation,
+   scan failure propagation.
+4. Doris target tests: create/update/delete, map rows, inverted index, and
+   no-change behavior are covered live. Remaining: `USING ANN` vector index
+   (needs Doris 3.x).
 5. Qdrant/Turbopuffer tests: add hosted named-vector e2e coverage when service
    credentials are available.
 6. Database/graph schema tests: Postgres destructive schema retries, graph

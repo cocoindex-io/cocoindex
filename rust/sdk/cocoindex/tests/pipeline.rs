@@ -544,6 +544,53 @@ async fn detect_change_context_key_invalidates_memo() {
 }
 
 #[tokio::test]
+async fn detect_change_context_key_read_outside_memo_invalidates_component() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let key = ContextKey::<String>::new_detect_change("pipeline/detect_change_component");
+    let dir = tempfile::tempdir().unwrap();
+    let call_count = Arc::new(AtomicUsize::new(0));
+
+    let app = App::builder("context_change_component")
+        .db_path(dir.path().join("lmdb"))
+        .provide_key(&key, "v1".to_string())
+        .build()
+        .await
+        .unwrap();
+    let count = call_count.clone();
+    let key_for_first = key.clone();
+    app.update(move |ctx| async move {
+        let value = ctx.get_key(&key_for_first)?.clone();
+        count.fetch_add(1, Ordering::SeqCst);
+        assert_eq!(value, "v1");
+        Ok(())
+    })
+    .await
+    .unwrap();
+    drop(app);
+
+    let app = App::builder("context_change_component")
+        .db_path(dir.path().join("lmdb"))
+        .provide_key(&key, "v2".to_string())
+        .build()
+        .await
+        .unwrap();
+    let count = call_count.clone();
+    let key_for_second = key.clone();
+    app.update(move |ctx| async move {
+        let value = ctx.get_key(&key_for_second)?.clone();
+        count.fetch_add(1, Ordering::SeqCst);
+        assert_eq!(value, "v2");
+        Ok(())
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(call_count.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
 async fn no_detect_change_context_key_does_not_invalidate_memo() {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};

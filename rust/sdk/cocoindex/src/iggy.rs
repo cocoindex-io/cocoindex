@@ -743,6 +743,125 @@ impl LiveMapFeed<String, Vec<u8>> for IggyTopicMap {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Keyless payload stream (the Rust analogue of Python's
+// `topic_as_stream(...).payloads()`).
+// ---------------------------------------------------------------------------
+
+/// A **keyless, append-only** payload feed over one Iggy topic partition — the
+/// Rust analogue of Python's `topic_as_stream(...).payloads()`.
+///
+/// Unlike [`IggyTopicMap`], no key function or deletion predicate is needed and
+/// nothing is compacted: every message is delivered exactly once, keyed by its
+/// offset, so each becomes a distinct child under
+/// [`Ctx::mount_each_live`](crate::Ctx::mount_each_live).
+///
+/// As a [`LiveMapView`], [`scan`](LiveMapView::scan) reads the partition log up
+/// to its current offset and [`watch`](LiveMapFeed::watch) tails new messages
+/// from there. Re-running is idempotent: offset keys are stable. Single-partition.
+pub struct IggyTopicStream {
+    client: Arc<IggyClient>,
+    stream: String,
+    topic: String,
+    partition: u32,
+    watch_start: Arc<tokio::sync::Mutex<u64>>,
+}
+
+/// Build an [`IggyTopicStream`] over `stream`/`topic` partition `0` (keyless
+/// payload stream).
+pub fn topic_as_stream(
+    consumer: &IggyConsumer,
+    stream: impl Into<String>,
+    topic: impl Into<String>,
+) -> IggyTopicStream {
+    IggyTopicStream {
+        client: consumer.client.clone(),
+        stream: stream.into(),
+        topic: topic.into(),
+        partition: 0,
+        watch_start: Arc::new(tokio::sync::Mutex::new(0)),
+    }
+}
+
+impl IggyTopicStream {
+    fn ids(&self) -> Result<(Identifier, Identifier)> {
+        let stream = Identifier::from_str_value(&self.stream)
+            .map_err(|e| Error::engine(format!("iggy stream id {:?}: {e}", self.stream)))?;
+        let topic = Identifier::from_str_value(&self.topic)
+            .map_err(|e| Error::engine(format!("iggy topic id {:?}: {e}", self.topic)))?;
+        Ok((stream, topic))
+    }
+
+    async fn poll_from(
+        &self,
+        stream: &Identifier,
+        topic: &Identifier,
+        consumer: &Consumer,
+        offset: u64,
+    ) -> Result<iggy::prelude::PolledMessages> {
+        self.client
+            .poll_messages(
+                stream,
+                topic,
+                Some(self.partition),
+                consumer,
+                &PollingStrategy::offset(offset),
+                1000,
+                false,
+            )
+            .await
+            .map_err(|e| Error::engine(format!("iggy poll_messages: {e}")))
+    }
+}
+
+#[crate::async_trait]
+impl LiveMapView<String, Vec<u8>> for IggyTopicStream {
+    async fn scan(&self) -> Result<Vec<(String, Vec<u8>)>> {
+        let (stream, topic) = self.ids()?;
+        let consumer = IggyTopicMap::consumer()?;
+        let mut out: Vec<(String, Vec<u8>)> = Vec::new();
+        let mut offset = 0u64;
+        loop {
+            let polled = self.poll_from(&stream, &topic, &consumer, offset).await?;
+            if polled.messages.is_empty() {
+                break;
+            }
+            let hwm = polled.current_offset;
+            for m in &polled.messages {
+                offset = m.header.offset + 1;
+                out.push((m.header.offset.to_string(), m.payload.to_vec()));
+            }
+            if offset > hwm {
+                break;
+            }
+        }
+        *self.watch_start.lock().await = offset;
+        Ok(out)
+    }
+}
+
+#[crate::async_trait]
+impl LiveMapFeed<String, Vec<u8>> for IggyTopicStream {
+    async fn watch(&self, subscriber: LiveMapSubscriber<String, Vec<u8>>) -> Result<()> {
+        let (stream, topic) = self.ids()?;
+        let consumer = IggyTopicMap::consumer()?;
+        let mut offset = *self.watch_start.lock().await;
+        loop {
+            let polled = self.poll_from(&stream, &topic, &consumer, offset).await?;
+            if polled.messages.is_empty() {
+                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                continue;
+            }
+            for m in &polled.messages {
+                offset = m.header.offset + 1;
+                subscriber
+                    .update(m.header.offset.to_string(), m.payload.to_vec())
+                    .await?;
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

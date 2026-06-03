@@ -5,11 +5,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use tokio::sync::Mutex;
 
-use crate::ctx::Ctx;
 use crate::cypher_graph;
 use crate::error::{Error, Result};
-use crate::statediff::ManagedTargetOptions;
-use crate::target_state::TargetState;
 
 pub use cypher_graph::{ColumnDef, TableSchema, TableSpec, VectorMetric};
 
@@ -68,6 +65,28 @@ impl cypher_graph::CypherExecutor for Graph {
         Ok(())
     }
 
+    async fn execute_with_params(
+        &self,
+        cypher: &str,
+        params: &cypher_graph::CypherParams,
+    ) -> Result<()> {
+        // FalkorDB binds parameters via a `CYPHER name=value ...` header
+        // prefixed to the query, keeping user values out of the query body.
+        let full = if params.is_empty() {
+            cypher.to_string()
+        } else {
+            let mut header = String::from("CYPHER ");
+            for (name, value) in params {
+                header.push_str(name);
+                header.push('=');
+                header.push_str(&cypher_graph::cypher_literal(value)?);
+                header.push(' ');
+            }
+            format!("{header}{cypher}")
+        };
+        self.execute(&full).await
+    }
+
     async fn execute_unique_constraint(
         &self,
         op: &str,
@@ -96,273 +115,11 @@ impl cypher_graph::CypherExecutor for Graph {
     }
 }
 
-#[derive(Clone)]
-pub struct TableTarget(cypher_graph::TableTarget);
-
-impl TableTarget {
-    pub fn table_name(&self) -> &str {
-        self.0.table_name()
-    }
-
-    pub fn declare_record<R: serde::Serialize>(
-        &self,
-        ctx: &Ctx,
-        id: impl crate::target_state::IntoStableKey,
-        row: &R,
-    ) -> Result<()> {
-        self.0.declare_record(ctx, id, row)
-    }
-
-    /// Declare a vector index on `field` (FalkorDB `CREATE VECTOR INDEX`). The
-    /// index is created/recreated/dropped to match the declaration.
-    pub fn declare_vector_index(
-        &self,
-        ctx: &Ctx,
-        field: &str,
-        dimension: u32,
-        metric: VectorMetric,
-    ) -> Result<()> {
-        self.0.declare_vector_index(ctx, field, dimension, metric)
-    }
-
-    /// Declare a (non-vector) secondary index on `fields` (FalkorDB
-    /// `CREATE INDEX`), created/dropped to match the declaration.
-    pub fn declare_node_index(&self, ctx: &Ctx, fields: &[&str]) -> Result<()> {
-        self.0.declare_node_index(ctx, fields)
-    }
-}
-
-#[derive(Clone)]
-pub struct RelationTarget(cypher_graph::RelationTarget);
-
-impl RelationTarget {
-    pub fn declare_relation(
-        &self,
-        ctx: &Ctx,
-        from_id: impl crate::target_state::IntoStableKey,
-        to_id: impl crate::target_state::IntoStableKey,
-    ) -> Result<()> {
-        self.0.declare_relation(ctx, from_id, to_id)
-    }
-
-    pub fn declare_relation_record<R: serde::Serialize>(
-        &self,
-        ctx: &Ctx,
-        from_id: impl crate::target_state::IntoStableKey,
-        to_id: impl crate::target_state::IntoStableKey,
-        record: &R,
-    ) -> Result<()> {
-        self.0.declare_relation_record(ctx, from_id, to_id, record)
-    }
-}
-
-pub async fn mount_table_target(
-    ctx: &Ctx,
-    graph: &Graph,
-    table_name: impl Into<String>,
-    schema: TableSchema,
-) -> Result<TableTarget> {
-    mount_table_target_with_options(
-        ctx,
-        graph,
-        table_name,
-        schema,
-        ManagedTargetOptions::default(),
-    )
-    .await
-}
-
-pub async fn mount_table_target_with_options(
-    ctx: &Ctx,
-    graph: &Graph,
-    table_name: impl Into<String>,
-    schema: TableSchema,
-    options: ManagedTargetOptions,
-) -> Result<TableTarget> {
-    Ok(TableTarget(
-        cypher_graph::mount_table_target_with_options(ctx, graph, table_name, schema, options)
-            .await?,
-    ))
-}
-
-pub async fn mount_relation_target(
-    ctx: &Ctx,
-    graph: &Graph,
-    relation_name: impl Into<String>,
-    from_table: &TableTarget,
-    to_table: &TableTarget,
-) -> Result<RelationTarget> {
-    mount_relation_target_with_options(
-        ctx,
-        graph,
-        relation_name,
-        from_table,
-        to_table,
-        ManagedTargetOptions::default(),
-    )
-    .await
-}
-
-pub async fn mount_relation_target_with_options(
-    ctx: &Ctx,
-    graph: &Graph,
-    relation_name: impl Into<String>,
-    from_table: &TableTarget,
-    to_table: &TableTarget,
-    options: ManagedTargetOptions,
-) -> Result<RelationTarget> {
-    Ok(RelationTarget(
-        cypher_graph::mount_relation_target_with_options(
-            ctx,
-            graph,
-            relation_name,
-            &from_table.0,
-            &to_table.0,
-            options,
-        )
-        .await?,
-    ))
-}
-
-/// Build a composable [`TargetState`] for a FalkorDB node table. Pass it to the
-/// generic [`mount_target`](crate::target_state::mount_target) /
-/// [`declare_target_state_with_child`](crate::target_state::declare_target_state_with_child),
-/// or use [`declare_table_target`]/[`mount_table_target`].
-pub fn table_target(
-    ctx: &Ctx,
-    graph: &Graph,
-    table_name: impl Into<String>,
-    schema: TableSchema,
-) -> Result<TargetState<TableSpec>> {
-    table_target_with_options(
-        ctx,
-        graph,
-        table_name,
-        schema,
-        ManagedTargetOptions::default(),
-    )
-}
-
-/// [`table_target`] with explicit [`ManagedTargetOptions`].
-pub fn table_target_with_options(
-    ctx: &Ctx,
-    graph: &Graph,
-    table_name: impl Into<String>,
-    schema: TableSchema,
-    options: ManagedTargetOptions,
-) -> Result<TargetState<TableSpec>> {
-    cypher_graph::table_target_state(ctx, graph, table_name, schema, options)
-}
-
-/// Build a composable [`TargetState`] for a FalkorDB relation.
-pub fn relation_target(
-    ctx: &Ctx,
-    graph: &Graph,
-    relation_name: impl Into<String>,
-    from_table: &TableTarget,
-    to_table: &TableTarget,
-) -> Result<TargetState<TableSpec>> {
-    relation_target_with_options(
-        ctx,
-        graph,
-        relation_name,
-        from_table,
-        to_table,
-        ManagedTargetOptions::default(),
-    )
-}
-
-/// [`relation_target`] with explicit [`ManagedTargetOptions`].
-pub fn relation_target_with_options(
-    ctx: &Ctx,
-    graph: &Graph,
-    relation_name: impl Into<String>,
-    from_table: &TableTarget,
-    to_table: &TableTarget,
-    options: ManagedTargetOptions,
-) -> Result<TargetState<TableSpec>> {
-    cypher_graph::relation_target_state(
-        ctx,
-        graph,
-        relation_name,
-        &from_table.0,
-        &to_table.0,
-        options,
-    )
-}
-
-/// Declare a FalkorDB node table target in the **current** component and return
-/// a pending handle. The record child provider resolves when this component
-/// commits; use [`mount_table_target`] when records must be declared
-/// immediately.
-pub fn declare_table_target(
-    ctx: &Ctx,
-    graph: &Graph,
-    table_name: impl Into<String>,
-    schema: TableSchema,
-) -> Result<TableTarget> {
-    declare_table_target_with_options(
-        ctx,
-        graph,
-        table_name,
-        schema,
-        ManagedTargetOptions::default(),
-    )
-}
-
-/// [`declare_table_target`] with explicit [`ManagedTargetOptions`].
-pub fn declare_table_target_with_options(
-    ctx: &Ctx,
-    graph: &Graph,
-    table_name: impl Into<String>,
-    schema: TableSchema,
-    options: ManagedTargetOptions,
-) -> Result<TableTarget> {
-    Ok(TableTarget(
-        cypher_graph::declare_table_target_with_options(ctx, graph, table_name, schema, options)?,
-    ))
-}
-
-/// Declare a FalkorDB relation target in the **current** component and return a
-/// pending handle. Use [`mount_relation_target`] when relation records must be
-/// declared immediately.
-pub fn declare_relation_target(
-    ctx: &Ctx,
-    graph: &Graph,
-    relation_name: impl Into<String>,
-    from_table: &TableTarget,
-    to_table: &TableTarget,
-) -> Result<RelationTarget> {
-    declare_relation_target_with_options(
-        ctx,
-        graph,
-        relation_name,
-        from_table,
-        to_table,
-        ManagedTargetOptions::default(),
-    )
-}
-
-/// [`declare_relation_target`] with explicit [`ManagedTargetOptions`].
-pub fn declare_relation_target_with_options(
-    ctx: &Ctx,
-    graph: &Graph,
-    relation_name: impl Into<String>,
-    from_table: &TableTarget,
-    to_table: &TableTarget,
-    options: ManagedTargetOptions,
-) -> Result<RelationTarget> {
-    Ok(RelationTarget(
-        cypher_graph::declare_relation_target_with_options(
-            ctx,
-            graph,
-            relation_name,
-            &from_table.0,
-            &to_table.0,
-            options,
-        )?,
-    ))
-}
+// The FalkorDB node-table / relation target surface (`TableTarget`,
+// `RelationTarget`, and the `mount_*`/`declare_*`/`*_target` functions) is
+// generated from the shared macro — it is identical to Neo4j's modulo the
+// `Graph` executor type.
+cypher_graph::graph_target_api!(Graph);
 
 #[cfg(test)]
 mod tests {

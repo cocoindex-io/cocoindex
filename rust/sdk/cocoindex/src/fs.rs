@@ -203,18 +203,6 @@ impl FileEntry {
             .unwrap_or("")
     }
 
-    /// Lightweight change fingerprint based on relative path, size, and mtime.
-    pub fn fingerprint(&self) -> impl Serialize + '_ {
-        (
-            self.relative.to_string_lossy(),
-            self.size,
-            self.modified
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos(),
-        )
-    }
-
     /// Read file contents as bytes.
     ///
     /// # Errors

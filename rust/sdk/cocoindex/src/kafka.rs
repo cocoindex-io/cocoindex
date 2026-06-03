@@ -712,6 +712,136 @@ impl LiveMapView<String, Vec<u8>> for KafkaTopicMap {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Keyless payload stream (the Rust analogue of Python's
+// `topic_as_stream(...).payloads()`).
+// ---------------------------------------------------------------------------
+
+/// A **keyless, append-only** payload feed over **all partitions** of a Kafka
+/// topic — the Rust analogue of Python's `topic_as_stream(...).payloads()`.
+///
+/// Unlike [`KafkaTopicMap`], nothing is compacted or deleted: every record is
+/// delivered exactly once, keyed by its `"{partition}:{offset}"` position, so
+/// each message becomes a distinct child under
+/// [`Ctx::mount_each_live`](crate::Ctx::mount_each_live). Records with a `None`
+/// value (tombstones) are skipped, matching Python's payloads view. No message
+/// key or deletion predicate is needed.
+///
+/// As a [`LiveMapView`], [`scan`](LiveMapView::scan) reads every partition up to
+/// its high-watermark and [`watch`](LiveMapFeed::watch) tails new records from
+/// there. Re-running is idempotent: the offset keys are stable, so a replayed
+/// catch-up reconciles to no-ops.
+pub struct KafkaTopicStream {
+    client: Arc<Client>,
+    topic: String,
+    /// Per-partition offset `watch` resumes from (the high-watermark `scan`
+    /// reached), mirroring [`KafkaTopicMap`].
+    watch_start: Arc<tokio::sync::Mutex<BTreeMap<i32, i64>>>,
+}
+
+/// Build a [`KafkaTopicStream`] over `topic` (keyless payload stream).
+pub fn topic_as_stream(consumer: &KafkaConsumer, topic: impl Into<String>) -> KafkaTopicStream {
+    KafkaTopicStream {
+        client: consumer.client.clone(),
+        topic: topic.into(),
+        watch_start: Arc::new(tokio::sync::Mutex::new(BTreeMap::new())),
+    }
+}
+
+impl KafkaTopicStream {
+    async fn partition_ids(&self) -> Result<Vec<i32>> {
+        let topics = self
+            .client
+            .list_topics()
+            .await
+            .map_err(|e| Error::engine(format!("kafka list_topics: {e}")))?;
+        let topic = topics
+            .into_iter()
+            .find(|t| t.name == self.topic)
+            .ok_or_else(|| Error::engine(format!("kafka topic {:?} not found", self.topic)))?;
+        let ids: Vec<i32> = topic.partitions.into_iter().collect();
+        if ids.is_empty() {
+            return Err(Error::engine(format!(
+                "kafka topic {:?} has no partitions",
+                self.topic
+            )));
+        }
+        Ok(ids)
+    }
+
+    async fn partition_client(&self, id: i32) -> Result<PartitionClient> {
+        self.client
+            .partition_client(self.topic.clone(), id, UnknownTopicHandling::Retry)
+            .await
+            .map_err(|e| Error::engine(format!("kafka partition_client {}/{id}: {e}", self.topic)))
+    }
+}
+
+#[crate::async_trait]
+impl LiveMapView<String, Vec<u8>> for KafkaTopicStream {
+    async fn scan(&self) -> Result<Vec<(String, Vec<u8>)>> {
+        let ids = self.partition_ids().await?;
+        let mut out: Vec<(String, Vec<u8>)> = Vec::new();
+        let mut ends: BTreeMap<i32, i64> = BTreeMap::new();
+        for id in ids {
+            let pc = self.partition_client(id).await?;
+            let mut offset = 0i64;
+            loop {
+                let (records, hwm) = pc
+                    .fetch_records(offset, 1..1_000_000, 500)
+                    .await
+                    .map_err(|e| Error::engine(format!("kafka fetch_records: {e}")))?;
+                for r in &records {
+                    offset = r.offset + 1;
+                    if let Some(v) = &r.record.value {
+                        out.push((format!("{id}:{}", r.offset), v.clone()));
+                    }
+                }
+                if records.is_empty() || offset >= hwm {
+                    break;
+                }
+            }
+            ends.insert(id, offset);
+        }
+        *self.watch_start.lock().await = ends;
+        Ok(out)
+    }
+}
+
+#[crate::async_trait]
+impl LiveMapFeed<String, Vec<u8>> for KafkaTopicStream {
+    async fn watch(&self, subscriber: LiveMapSubscriber<String, Vec<u8>>) -> Result<()> {
+        let mut offsets = self.watch_start.lock().await.clone();
+        let ids = self.partition_ids().await?;
+        let mut clients = Vec::with_capacity(ids.len());
+        for id in &ids {
+            clients.push((*id, self.partition_client(*id).await?));
+        }
+        loop {
+            let mut got_any = false;
+            for (id, pc) in &clients {
+                let offset = *offsets.get(id).unwrap_or(&0);
+                let (records, _hwm) = pc
+                    .fetch_records(offset, 1..1_000_000, 250)
+                    .await
+                    .map_err(|e| Error::engine(format!("kafka fetch_records: {e}")))?;
+                for r in &records {
+                    got_any = true;
+                    offsets.insert(*id, r.offset + 1);
+                    if let Some(v) = &r.record.value {
+                        subscriber
+                            .update(format!("{id}:{}", r.offset), v.clone())
+                            .await?;
+                    }
+                }
+            }
+            if !got_any {
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

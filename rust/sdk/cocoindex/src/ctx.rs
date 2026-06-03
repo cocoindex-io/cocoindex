@@ -22,7 +22,7 @@ use crate::app::{AppInner, StatsGroupHandle, StatsGroupOptions};
 use crate::error::{Error, Result};
 use crate::live_component::{
     ExceptionContext, ExceptionHandler, LiveComponent, LiveMapView, MountEachLiveComponent,
-    new_operator, start_process_live,
+    MountKind, build_chained_on_error, new_operator, start_process_live,
 };
 use crate::profile::{BoxedHandler, BoxedProcessor, RustProfile, Value};
 
@@ -184,6 +184,11 @@ pub struct Ctx {
     /// concurrent body receives its own scoped `Ctx`. `None` at the app root
     /// and in standalone use.
     pub(crate) fn_ctx: Option<Arc<FnCallContext>>,
+    /// Exception handlers in scope for background work mounted from this `Ctx`,
+    /// ordered outermost→innermost. Empty at the root; extended by
+    /// `mount_live_with_handler` so nested live components inherit ancestors'
+    /// handlers (the Python handler chain).
+    pub(crate) handler_chain: Arc<Vec<crate::live_component::ExceptionHandler>>,
 }
 
 impl Ctx {
@@ -195,6 +200,20 @@ impl Ctx {
             comp_ctx,
             state,
             fn_ctx: None,
+            handler_chain: Arc::new(Vec::new()),
+        }
+    }
+
+    pub(crate) fn new_with_handlers(
+        comp_ctx: Option<ComponentProcessorContext<RustProfile>>,
+        state: Arc<AppInner>,
+        handler_chain: Arc<Vec<crate::live_component::ExceptionHandler>>,
+    ) -> Self {
+        Self {
+            comp_ctx,
+            state,
+            fn_ctx: None,
+            handler_chain,
         }
     }
 
@@ -203,6 +222,7 @@ impl Ctx {
             comp_ctx,
             state: self.state.clone(),
             fn_ctx: None,
+            handler_chain: self.handler_chain.clone(),
         }
     }
 
@@ -213,6 +233,7 @@ impl Ctx {
             comp_ctx: self.comp_ctx.clone(),
             state: self.state.clone(),
             fn_ctx: Some(fn_ctx),
+            handler_chain: self.handler_chain.clone(),
         }
     }
 
@@ -333,9 +354,14 @@ impl Ctx {
             .ok_or_else(|| Error::MissingContext(key.name().to_string()))?;
         if key.detect_change()
             && let Some(fp) = self.state.context.fingerprint(key)
-            && let Some(fn_ctx) = &self.fn_ctx
         {
-            fn_ctx.add_context_change_dep(fp);
+            if let Some(fn_ctx) = &self.fn_ctx {
+                fn_ctx.add_context_change_dep(fp);
+            } else if let Some(comp_ctx) = &self.comp_ctx {
+                let fn_ctx = FnCallContext::default();
+                fn_ctx.add_context_change_dep(fp);
+                comp_ctx.join_fn_call(&fn_ctx);
+            }
         }
         Ok(value)
     }
@@ -471,6 +497,7 @@ impl Ctx {
             comp_ctx: Some(derived.clone()),
             state: self.state.clone(),
             fn_ctx: self.fn_ctx.clone(),
+            handler_chain: self.handler_chain.clone(),
         };
         let group_guard = StatsGroupEndGuard::new(derived);
         let result = f(scoped_ctx, handle.clone()).await;
@@ -496,6 +523,7 @@ impl Ctx {
         let key_str = key.to_string();
         let child_stable_key = StableKey::Str(Arc::from(key_str.as_str()));
         let child_path = comp_ctx.stable_path().concat_part(child_stable_key);
+        let stable_path = child_path.to_string();
         let fn_ctx = Arc::new(FnCallContext::default());
         let pending = mount_live_prepare(comp_ctx, &fn_ctx, child_path, comp_ctx.live())
             .map_err(|e| Error::engine(format!("{e}")))?;
@@ -508,6 +536,8 @@ impl Ctx {
         let readiness_handle = result.readiness_handle;
         let state = self.state.clone();
         let processor_name = format!("auto_refresh:{key_str}");
+        let handler_chain = self.handler_chain.clone();
+        let env_name = self.state.name.clone();
         controller.start({
             let controller = controller.clone();
             async move {
@@ -515,7 +545,18 @@ impl Ctx {
                 loop {
                     let processor =
                         auto_refresh_processor(state.clone(), f.clone(), processor_name.clone());
-                    match controller.update_full(processor, None).await {
+                    let on_error = build_chained_on_error(
+                        &handler_chain,
+                        ExceptionContext {
+                            env_name: env_name.clone(),
+                            stable_path: stable_path.clone(),
+                            parent_stable_path: None,
+                            processor_name: Some(processor_name.clone()),
+                            mount_kind: MountKind::UpdateFull,
+                            is_background: ready_marked && controller.is_live(),
+                        },
+                    );
+                    match controller.update_full(processor, on_error).await {
                         Ok(()) => {
                             controller.mark_ready().await;
                             ready_marked = true;
@@ -618,12 +659,23 @@ impl Ctx {
         let controller = result.controller;
         let readiness_handle = result.readiness_handle;
 
+        // Inherit ancestors' handlers and append this component's own, so an
+        // unswallowed failure walks outward through the chain.
+        let handler_chain = match handler {
+            Some(handler) => {
+                let mut chain = (*self.handler_chain).clone();
+                chain.push(handler);
+                Arc::new(chain)
+            }
+            None => self.handler_chain.clone(),
+        };
+
         let operator = new_operator(
             controller.clone(),
             self.state.clone(),
             child_path,
             instance.clone(),
-            handler,
+            handler_chain,
             format!("live:{key_str}"),
         );
         start_process_live(&controller, instance, operator);
@@ -684,12 +736,14 @@ impl Ctx {
 
         let state = self.state.clone();
         let scope_fn_ctx = fn_ctx.clone();
+        let scope_handler_chain = self.handler_chain.clone();
         let processor = BoxedProcessor::new(
             move |child_comp_ctx| {
                 let ctx = Ctx {
                     comp_ctx: Some(child_comp_ctx),
                     state: state.clone(),
                     fn_ctx: Some(scope_fn_ctx.clone()),
+                    handler_chain: scope_handler_chain.clone(),
                 };
                 Box::pin(async move {
                     let result = f(ctx).await?;

@@ -29,56 +29,99 @@ Postgres **incremental column evolution**, **column-drop retry**, and **text NUL
 stripping** now exist (live tests `postgres_adds_and_drops_columns_*`,
 `postgres_column_drop_retries_*`, `postgres_strips_nul_from_text_*`).
 
-## ⏭ Real but deferred (need a design decision or are feature-sized)
+## ✅ Previously deferred semantics — now fixed
 
-- **qdrant/turbopuffer fingerprint `.expect()`** — serialization of `(vec, json map)` is
-  effectively infallible; low value to churn two volatile files. Best folded into a shared
-  `reconcile_by_fingerprint` helper (see refactors).
-- **`auto_refresh` swallows post-ready errors** (`ctx.rs`); **`get_key` skips the
-  context-change dep when called outside a memo/scope** (`ctx.rs`) — both real, need an
-  exception/runtime decision.
-- **entity-resolution `on_resolution`** — the `ResolutionEvent`/`deliver_events` machinery
-  is genuinely dead (`let _events = …`); fix is an API addition *or* a deletion — maintainer's call.
+- ✅ **entity-resolution `on_resolution`** — resolved: added `resolve_entities_with_events`
+  with an `on_resolution` callback (one event per entity, canonical delivery order); the
+  `ResolutionEvent`/`deliver_events` machinery is now live and tested.
+- **qdrant/turbopuffer fingerprint `.expect()`** — *intentionally kept.* Serialization of
+  `(vec, json map)` is infallible; the `.expect("fingerprint …")` documents that invariant
+  (same class as the adjacent `.expect("non-empty")`). Right home is a shared
+  `reconcile_by_fingerprint` helper (see refactors), not a standalone churn of two files.
+- ✅ **`auto_refresh` exception routing** — fixed: each cycle now passes the
+  inherited handler chain into `update_full`; a swallowed post-ready failure is
+  reported and the loop continues. Regression test:
+  `auto_refresh_cycle_failure_uses_inherited_handler_and_continues`.
+- ✅ **`get_key` outside memo/scope** — fixed: tracked context keys read at the
+  component body level now record a component-level dependency when no
+  function-call context is active. Regression test:
+  `detect_change_context_key_read_outside_memo_invalidates_component`.
 
-## 🔭 P1 parity gaps (feature-sized; recommend dedicated PRs)
+## 🔭 P1 parity gaps
 
-1. **File memo-state** (mtime fast-path + content-fingerprint fallback) — biggest gap: any
-   mtime/LastModified bump reprocesses even with identical content; the correct stable keys
-   (`FilePath::memo_key`, `S3FilePath::memo_key`) exist but are **dead** (not used as the key).
-2. **General `Embedder` trait** + `get_vector_schema`/`get_multi_vector_schema` resolvers.
-3. **Exception-handler chaining** + richer `ExceptionContext`; **`preview` mode** + root
-   `report_to_stdout` (`UpdateOptions` discards `_preview_collector`).
-4. **`LlmPairResolver`** + concurrent (per-component) entity resolution (currently sequential, O(n²) partition).
-5. **Cypher value parameter binding** (neo4j/falkordb inline-escape values incl. big vectors).
-6. **Vector breadth**: named vectors / f16 (qdrant, turbopuffer), UUID point ids (qdrant);
-   LanceDB `optimize()` + f16/narrow types; neo4j/falkordb vector index + compound PK.
-7. **Kafka multi-partition** + keyless `topic_as_stream`; **Iggy source**.
-8. **`FilePath` method surface** (`parts`, `parent`, `suffixes`, `with_*`, …).
-9. **`decode_bytes` UTF-32** mis-detected as UTF-16 (`encoding_rs` has no UTF-32 decoder; rare).
+All implemented + tested this pass (see per-item status):
 
-## 🧹 P2 dead code
+1. ✅ **File memo-state** (mtime fast-path + content-fingerprint fallback) — verified already
+   wired: the `#[function(memo)]` macro fingerprints `file_path().memo_key()` as the key while
+   mtime+content live in the memo *state* via `cached_by_fingerprint_with_state` /
+   `file_memo_state` (`memo.rs`). 2 tests pass.
+2. ✅ **General `Embedder` trait** (`resources::embedder::Embedder`, `#[async_trait]`) with a
+   default `embed_batch` fan-out and a blanket `impl<E: Embedder> EntityEmbedder for E`;
+   implemented for `SentenceTransformerEmbedder` + `ApiEmbedder`. 2 tests + impls compile.
+3. ✅ **Exception-handler chaining** (`Ctx.handler_chain`, nearest-first, swallow/re-raise) +
+   richer `ExceptionContext` (env_name, stable_path, parent_stable_path, processor_name,
+   mount_kind, is_background) using Rust's stable `MountKind` variants
+   (`UpdateFull`, `Update`, `Delete`).
+   ✅ **`preview` mode** (`UpdateOptions.preview`, `App::preview` → `Vec<PreviewAction>`) +
+   `UpdateOptions.report_to_stdout` (wired to core `show_progress`). 8 + 2 tests pass.
+4. ✅ **`LlmPairResolver`** + `ApiChatClient` (`ops::api`, OpenAI-compatible `/chat/completions`,
+   retry-on-invalid-candidate) + concurrent per-component entity resolution (`try_join_all`) +
+   `resolve_entities_with_events` `on_resolution` callback. 16 tests pass.
+5. ✅ **Cypher value parameter binding** — `apply_record` now emits `$param` placeholders +
+   a params map via `CypherExecutor::execute_with_params`; neo4j binds Bolt params
+   (`json_to_bolt`), falkordb uses the `CYPHER name=value` header. 20 unit tests + live
+   neo4j/falkordb record-write tests pass.
+6. ✅ **Vector breadth**: named vectors already present (qdrant `CollectionSchema::named`,
+   turbopuffer `NamespaceSchema::named`); added **f16** datatype mapping for qdrant
+   (`Datatype::Float16`) — turbopuffer `[N]f16` already supported. `VectorSchema::f16`
+   constructor added. 14 qdrant tests + turbopuffer `write_schema_named_and_f16`.
+   (LanceDB `optimize()` / compound-PK breadth remain out of scope — separate items.)
+7. ✅ **Kafka source** (keyed map across all partitions, plus keyless
+   `topic_as_stream` payloads across all partitions) + **Iggy source** (keyed
+   map, plus single-partition keyless `topic_as_stream` payloads). Both have
+   live integration tests.
+8. ✅ **`FilePath` method surface** (`parts`, `parent`, `suffixes`, `with_name`, `with_stem`,
+   `with_suffix`, `relative_to`) — preserve base_key/base_dir. Tests pass.
+9. ✅ **`decode_bytes` UTF-32** — BOM checked before UTF-16; manual `decode_utf32` (encoding_rs
+   has no UTF-32 decoder). Test pass.
 
-- Dead "stable memo key" methods unless wired into memo-state (P1.1).
-- `FileEntry` duplicate **sync** API (`content`/`content_str`, uncached) parallel to async
-  `FileLike`; `FileEntry::fingerprint()` (3rd scheme, no callers); `FileEntry::key()`
-  (relative) disagrees with `FileSourceItem::key()` (full posix).
-- `profile.rs` blanket `#![allow(dead_code)]`; SurrealDB unused `pub index_names`/`field_names`;
-  `lib.rs` vs `prelude.rs` export drift.
+## 🧹 P2 dead code — cleaned up this pass
 
-## 🔁 P3 refactors (high value, large)
+- ✅ **`FileEntry::fingerprint()`** deleted — zero callers, a redundant 3rd fingerprint
+  scheme (connectors fingerprint via `FileLike`/content; the path+size+mtime variant had no
+  users).
+- ✅ **`profile.rs` blanket `#![allow(dead_code)]`** removed — every type is now reachable
+  (preview wires up `Action`); the crate builds warning-free across all 18 features.
+- ✅ **`lib.rs` ↔ `prelude.rs` drift** closed — the prelude now re-exports the always-available
+  public surface lib.rs added (`Embedder`, `PreviewAction`/`PreviewValue`, the
+  `entity_resolution` and `live_component` types), so `use cocoindex::prelude::*` matches.
+- *Kept, with reason:* `FileEntry::{content,content_str,key}` are used across examples/tests
+  (not dead); `FileEntry::key()` (relative) vs `FileSourceItem::key()` (full posix) serve
+  different layers (component path vs source identity) — not a bug. SurrealDB
+  `index_names`/`field_names` are used by the integration tests (table-introspection helpers).
 
-- **neo4j.rs ↔ falkordb.rs ~75% copy-paste** (~250 lines/file) → make `cypher_graph`
-  target generic or a `graph_connector!` macro.
-- **Relational SQL helpers duplicated 3×** (postgres/sqlite/lancedb): `pk_stable_key`,
-  `row_state`, `quote_ident`, `quote_string`, `validate_ident`, `vector_literal`, and the
-  no-change reconcile body → shared `sql_target` util (would also kill the
-  qdrant/turbopuffer `.expect()` divergence).
-- **kafka.rs ↔ iggy.rs** stream-target scaffolding (~150 lines) → parameterize by sink +
-  delete-behavior. 3 copies of `validate_ident`; `declare_X == mount_X` aliases.
+## 🔁 P3 refactors (high value, large — deferred)
+
+These consolidate **working, tested** connectors; doing them in a cleanup sweep risks
+regressions, so they remain dedicated-PR work with their own test deltas:
+
+- **neo4j.rs ↔ falkordb.rs ~75% copy-paste** → generic `cypher_graph` target / a
+  `graph_connector!` macro. (The record-write path is already shared via
+  `CypherExecutor::execute_with_params`; the remaining dup is the public wrapper surface.)
+- **Relational SQL helpers duplicated 3×** (postgres/sqlite/lancedb) → shared `sql_target`
+  util (would also fold the qdrant/turbopuffer fingerprint `.expect()` into one helper).
+- **kafka.rs ↔ iggy.rs** stream-target scaffolding → parameterize by sink + delete-behavior.
 
 ## API consistency nits
 
-- `lancedb::mount_table_target` is **sync** while other mounts are async.
-- kafka/iggy: the composable `*_topic_target` path registers a **different root-provider
-  key** than `mount_*` (`topic_spec/` vs `topic/`) — mixing the two for one topic is a trap.
-- `AppBuilder::provide` panics on duplicate while most paths return `Result` (Python replaces).
+- ✅ `lancedb::mount_table_target` — already **async** (stale finding; no longer a nit).
+- *Kept, with reason:* kafka/iggy expose **two** paths — the composable `*_topic_target`
+  (a `TopicHandler` container whose child is the message handler: the generic
+  target-state-conformant path) and the `mount_*` shortcut (registers the message handler as
+  a root directly). They register different provider keys by design; the composable path is
+  currently unused but is the architecturally-correct one, so it is kept (deleting it would
+  drop the generic-pattern path and break public API). Documented so the two are not mixed
+  for one topic.
+- *Kept, with reason:* `AppBuilder::provide`/`provide_key` **panic** on a duplicate — this is
+  fail-fast on a builder-construction programming error (not a runtime condition), is
+  covered by a test, and is consistent across both `provide` methods.

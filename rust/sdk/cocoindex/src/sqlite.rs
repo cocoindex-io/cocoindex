@@ -23,6 +23,7 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 
 use crate::ctx::Ctx;
 use crate::error::{Error, Result};
+use crate::sql_ident::validate_ident;
 use crate::statediff::{
     CompositeTrackingRecord, DiffAction, ManagedBy, MutualTrackingRecord, diff, diff_composite,
     resolve_system_transition,
@@ -1118,20 +1119,6 @@ fn is_real_type(t: &str) -> bool {
 
 fn is_text_type(t: &str) -> bool {
     ["char", "text", "clob"].iter().any(|k| t.contains(k))
-}
-
-fn validate_ident(value: &str, label: &str) -> Result<()> {
-    let mut chars = value.chars();
-    let Some(first) = chars.next() else {
-        return Err(Error::engine(format!("{label} cannot be empty")));
-    };
-    if !(first.is_ascii_alphabetic() || first == '_') {
-        return Err(Error::engine(format!("invalid {label}: {value}")));
-    }
-    if !chars.all(|c| c.is_ascii_alphanumeric() || c == '_') {
-        return Err(Error::engine(format!("invalid {label}: {value}")));
-    }
-    Ok(())
 }
 
 fn validate_sqlite_type(value: &str) -> Result<()> {

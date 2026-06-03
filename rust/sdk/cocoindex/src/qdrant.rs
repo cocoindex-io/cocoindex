@@ -1233,7 +1233,10 @@ mod tests {
             panic!("expected named vector params map");
         };
         assert_eq!(map.map["f32v"].datatype, None);
-        assert_eq!(map.map["f16v"].datatype, Some(QdrantDatatype::Float16 as i32));
+        assert_eq!(
+            map.map["f16v"].datatype,
+            Some(QdrantDatatype::Float16 as i32)
+        );
     }
 
     #[test]

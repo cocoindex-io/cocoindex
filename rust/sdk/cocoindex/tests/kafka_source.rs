@@ -295,3 +295,79 @@ async fn kafka_source_reads_all_partitions() -> Result<()> {
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn kafka_source_stream_reads_all_payloads_keyless() -> Result<()> {
+    let Some(brokers) = brokers() else {
+        eprintln!("skipping live Kafka stream test; KAFKA_BOOTSTRAP_SERVERS is not set");
+        return Ok(());
+    };
+    let broker_refs: Vec<&str> = brokers.iter().map(String::as_str).collect();
+    let topic = unique_topic("stream");
+
+    // Produce NULL-KEY records across two partitions. `topic_as_map` would skip
+    // these (no key); the keyless `topic_as_stream` must read every one.
+    let producer = kafka::KafkaProducer::connect(&broker_refs).await?;
+    producer.ensure_topic(&topic, 2).await?;
+    let raw = ClientBuilder::new(brokers.clone())
+        .build()
+        .await
+        .map_err(|e| cocoindex::Error::engine(format!("client: {e}")))?;
+    for (pid, val) in [(0, "a"), (0, "b"), (1, "c")] {
+        let pc = raw
+            .partition_client(topic.clone(), pid, UnknownTopicHandling::Retry)
+            .await
+            .map_err(|e| cocoindex::Error::engine(format!("partition_client: {e}")))?;
+        let record = Record {
+            key: None,
+            value: Some(val.as_bytes().to_vec()),
+            headers: BTreeMap::new(),
+            timestamp: rskafka::chrono::DateTime::from_timestamp(0, 0).unwrap(),
+        };
+        pc.produce(vec![record], Compression::NoCompression)
+            .await
+            .map_err(|e| cocoindex::Error::engine(format!("produce p{pid}: {e}")))?;
+    }
+
+    let consumer = kafka::KafkaConsumer::connect(&broker_refs).await?;
+    let processed: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let tmp = tempfile::tempdir().unwrap();
+    let app = App::builder("KafkaSourceStream")
+        .db_path(tmp.path().join("db"))
+        .build()
+        .await?;
+    app.run({
+        let processed = processed.clone();
+        let consumer = consumer.clone();
+        let topic = topic.clone();
+        move |ctx| {
+            let processed = processed.clone();
+            let consumer = consumer.clone();
+            let topic = topic.clone();
+            async move {
+                let feed = kafka::topic_as_stream(&consumer, topic);
+                ctx.mount_each_live(&"stream", feed, move |_ctx, value: Vec<u8>| {
+                    let processed = processed.clone();
+                    async move {
+                        processed
+                            .lock()
+                            .unwrap()
+                            .push(String::from_utf8_lossy(&value).into_owned());
+                        Ok(())
+                    }
+                })
+                .await
+            }
+        }
+    })
+    .await?;
+
+    let mut got = processed.lock().unwrap().clone();
+    got.sort();
+    assert_eq!(
+        got,
+        vec!["a".to_string(), "b".to_string(), "c".to_string()],
+        "the keyless stream should read every payload across partitions, including null-key records"
+    );
+    Ok(())
+}

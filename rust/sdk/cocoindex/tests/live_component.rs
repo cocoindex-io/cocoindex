@@ -356,6 +356,134 @@ async fn mount_live_exception_handler_swallows_failure() {
     assert_eq!(*seen, vec![MountKind::UpdateFull]);
 }
 
+/// A live component that mounts a nested live child (which always fails) under
+/// its own `process`. Used to exercise handler chaining.
+struct ParentMountingFailingChild;
+
+#[async_trait]
+impl LiveComponent for ParentMountingFailingChild {
+    async fn process(&self, ctx: Ctx) -> Result<()> {
+        // The nested child has NO handler of its own; its failure must walk up
+        // to the parent's handler via the inherited chain.
+        ctx.mount_live(&"child", Failing).await
+    }
+}
+
+#[tokio::test]
+async fn exception_handler_chain_inherited_by_nested_components() {
+    let (app, _dir) = temp_app("live_handler_chain").await;
+    let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let seen_for_update = seen.clone();
+
+    // Only the PARENT installs a handler. The nested child's failure should
+    // still reach it through the inherited handler chain (and be swallowed).
+    app.update(move |ctx| {
+        let seen = seen_for_update.clone();
+        async move {
+            ctx.mount_live_with_handler(&"parent", ParentMountingFailingChild, move |err, exc| {
+                seen.lock()
+                    .unwrap()
+                    .push(format!("{}|{err}", exc.stable_path));
+                Ok(())
+            })
+            .await
+        }
+    })
+    .await
+    .expect("parent handler should swallow the nested child's failure");
+
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), 1, "parent handler should fire exactly once");
+    // The failure is attributed to the nested child's path, surfaced to the
+    // ancestor handler.
+    assert!(
+        seen[0].contains("child") && seen[0].contains("process boom"),
+        "unexpected handler context: {:?}",
+        seen[0]
+    );
+}
+
+struct AutoRefreshFailingCycle {
+    calls: Arc<AtomicUsize>,
+    third_call: Arc<Notify>,
+}
+
+#[async_trait]
+impl LiveComponent for AutoRefreshFailingCycle {
+    async fn process(&self, ctx: Ctx) -> Result<()> {
+        let calls = self.calls.clone();
+        let third_call = self.third_call.clone();
+        ctx.auto_refresh(&"poller", Duration::from_millis(5), move |_ctx| {
+            let calls = calls.clone();
+            let third_call = third_call.clone();
+            async move {
+                let call = calls.fetch_add(1, Ordering::SeqCst) + 1;
+                if call == 2 {
+                    return Err(Error::engine("cycle failed"));
+                }
+                if call >= 3 {
+                    third_call.notify_waiters();
+                }
+                Ok(())
+            }
+        })
+        .await
+    }
+}
+
+#[tokio::test]
+async fn auto_refresh_cycle_failure_uses_inherited_handler_and_continues() {
+    let (app, _dir) = temp_app("auto_refresh_handler_chain").await;
+    let calls = Arc::new(AtomicUsize::new(0));
+    let third_call = Arc::new(Notify::new());
+    let reports: Arc<Mutex<Vec<(MountKind, bool, String, String)>>> =
+        Arc::new(Mutex::new(Vec::new()));
+
+    let component = AutoRefreshFailingCycle {
+        calls: calls.clone(),
+        third_call: third_call.clone(),
+    };
+    let reports_for_handler = reports.clone();
+    let handle = app
+        .start_update_with_options(
+            UpdateOptions {
+                live: true,
+                ..UpdateOptions::default()
+            },
+            move |ctx| async move {
+                ctx.mount_live_with_handler(&"parent", component, move |err, exc| {
+                    reports_for_handler.lock().unwrap().push((
+                        exc.mount_kind,
+                        exc.is_background,
+                        exc.stable_path.clone(),
+                        err.to_string(),
+                    ));
+                    Ok(())
+                })
+                .await
+            },
+        )
+        .unwrap();
+
+    tokio::time::timeout(Duration::from_secs(5), third_call.notified())
+        .await
+        .unwrap();
+    assert!(calls.load(Ordering::SeqCst) >= 3);
+    let reports = reports.lock().unwrap();
+    assert!(
+        reports.iter().any(|(kind, background, path, err)| {
+            *kind == MountKind::UpdateFull
+                && *background
+                && path.contains("poller")
+                && err.contains("cycle failed")
+        }),
+        "auto_refresh cycle failure was not routed through the inherited handler: {reports:?}"
+    );
+
+    let _ = app.drop_state().await;
+    let _ = tokio::time::timeout(Duration::from_secs(5), handle.result()).await;
+}
+
 #[tokio::test]
 async fn mount_live_exception_handler_propagates_failure() {
     let (app, _dir) = temp_app("live_handler_propagate").await;

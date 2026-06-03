@@ -1,6 +1,11 @@
 //! Convenience re-exports for cocoindex pipelines.
 
 pub use crate::ctx::Ctx;
+pub use crate::entity_resolution::{
+    CanonicalSide, EntityEmbedder, ExistingCanonicalPolicy, PairDecision, PairResolver,
+    ResolutionEvent, ResolveOptions, ResolvedEntities, resolve_entities,
+    resolve_entities_with_events,
+};
 pub use crate::error::{Error, Result};
 pub use crate::file::{
     FileContentCache, FileLike, FileMetadata, FilePath, FilePathMatcher, FileSourceItem,
@@ -14,7 +19,12 @@ pub use crate::id::{
     IdGenerator, UuidGenerator, generate_id, generate_id_default, generate_uuid,
     generate_uuid_default,
 };
+pub use crate::live_component::{
+    ExceptionContext, ExceptionHandler, LiveComponent, LiveComponentOperator, LiveMapFeed,
+    LiveMapSubscriber, LiveMapView, MountKind,
+};
 pub use crate::resources::chunk::{Chunk, TextPosition};
+pub use crate::resources::embedder::Embedder;
 pub use crate::resources::schema::{
     MultiVectorSchema, MultiVectorSchemaProvider, VectorElementType, VectorSchema,
     VectorSchemaProvider,
@@ -31,8 +41,8 @@ pub use crate::target_state::{
     register_root_target_states_provider,
 };
 pub use crate::{
-    App, ContextKey, DropHandle, Progress, StatsGroupHandle, StatsGroupOptions, UpdateHandle,
-    UpdateOptions,
+    App, ContextKey, DropHandle, PreviewAction, PreviewValue, Progress, StatsGroupHandle,
+    StatsGroupOptions, UpdateHandle, UpdateOptions,
 };
 
 pub use serde::{Deserialize, Serialize};

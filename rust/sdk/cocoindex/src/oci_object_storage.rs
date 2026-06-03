@@ -50,6 +50,7 @@ use crate::file::{
     FileContentCache, FileLike, FileMetadata, FilePath, FilePathMatcher, FileSourceItem,
     MatchAllFilePathMatcher, decode_bytes,
 };
+use crate::live_component::{LiveMapFeed, LiveMapSubscriber, LiveMapView};
 
 /// Object metadata fields requested from the ListObjects API.
 const LIST_FIELDS: &str = "name,size,md5,timeModified,etag";
@@ -433,10 +434,79 @@ impl OciClient {
         })
     }
 
+    /// Override the Object Storage base URL (default the public OCI endpoint).
+    /// Mainly for pointing the client at a mock server in tests; the signed
+    /// `host` header is left unchanged.
+    pub fn with_base_url(self, base_url: impl Into<String>) -> Self {
+        let base_url = base_url.into().trim_end_matches('/').to_string();
+        let inner = self.inner.as_ref();
+        Self {
+            inner: Arc::new(OciClientInner {
+                http: inner.http.clone(),
+                host: inner.host.clone(),
+                base_url,
+                key_id: inner.key_id.clone(),
+                signing_key: inner.signing_key.clone(),
+                state_id: inner.state_id.clone(),
+            }),
+        }
+    }
+
     /// Stable identity (for use as a `ContextKey` state id / memo dependency).
     /// Derived from the region; never the credentials.
     pub fn state_id(&self) -> &str {
         &self.inner.state_id
+    }
+
+    /// `HEAD` an object, returning its metadata, or `None` if it no longer
+    /// exists (`404`). Used by the live view to confirm an event's object (the
+    /// re-read is authoritative over the event type).
+    async fn head_object_if_exists(
+        &self,
+        namespace: &str,
+        bucket: &str,
+        object_name: &str,
+    ) -> Result<Option<ObjectHead>> {
+        let path = object_path(namespace, bucket, object_name);
+        let date = http_date_now();
+        let authorization = build_authorization(
+            &self.inner.signing_key,
+            &self.inner.key_id,
+            "HEAD",
+            &path,
+            &self.inner.host,
+            &date,
+        )?;
+        let url = format!("{}{}", self.inner.base_url, path);
+        let resp = self
+            .inner
+            .http
+            .request(reqwest::Method::HEAD, &url)
+            .header(reqwest::header::DATE, date)
+            .header(reqwest::header::AUTHORIZATION, authorization)
+            .send()
+            .await
+            .map_err(|e| Error::engine(format!("oci head {path}: {e}")))?;
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        if !resp.status().is_success() {
+            return Err(Error::engine(format!(
+                "oci head {path} failed: {}",
+                resp.status()
+            )));
+        }
+        let headers = resp.headers();
+        Ok(Some(ObjectHead {
+            size: header_str(headers, "content-length")
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(0),
+            modified_secs: header_str(headers, "last-modified").and_then(parse_http_date_secs),
+            md5: header_str(headers, "opc-content-md5")
+                .or_else(|| header_str(headers, "content-md5"))
+                .map(str::to_string),
+            etag: header_str(headers, "etag").map(str::to_string),
+        }))
     }
 
     /// Fetch a single object's metadata as an [`OciFile`] (via a `HEAD`). Its
@@ -877,6 +947,227 @@ fn relative_key(prefix: &str, name: &str) -> Option<String> {
         None
     } else {
         Some(relative.to_string())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Live bucket-event view (the Rust analogue of Python's
+// `list_objects(..., live_stream=...)`).
+// ---------------------------------------------------------------------------
+
+/// Object metadata returned by a `HEAD`, used to (re)build an [`OciFile`] for a
+/// live event.
+struct ObjectHead {
+    size: u64,
+    modified_secs: Option<i64>,
+    md5: Option<String>,
+    etag: Option<String>,
+}
+
+/// Clock-skew tolerance (seconds): live events whose `eventTime` precedes the
+/// scan snapshot by more than this are dropped as already-covered by the scan.
+/// Matches Python's `_SKEW_TOLERANCE`.
+const OCI_LIVE_SKEW_SECS: i64 = 5;
+
+/// The OCI Object Storage event envelope (`com.oraclecloud.objectstorage.*`).
+#[derive(Deserialize)]
+struct OciEvent {
+    #[serde(rename = "eventType", default)]
+    event_type: Option<String>,
+    #[serde(rename = "eventTime", default)]
+    event_time: Option<String>,
+    #[serde(default)]
+    data: Option<OciEventData>,
+}
+
+#[derive(Deserialize, Default)]
+struct OciEventData {
+    #[serde(rename = "resourceName", default)]
+    resource_name: Option<String>,
+    #[serde(rename = "additionalDetails", default)]
+    additional_details: Option<OciEventDetails>,
+}
+
+#[derive(Deserialize, Default)]
+struct OciEventDetails {
+    #[serde(default)]
+    namespace: Option<String>,
+    #[serde(rename = "bucketName", default)]
+    bucket_name: Option<String>,
+}
+
+/// A boxed event source: a stream of raw OCI event JSON payloads (one event per
+/// item). The caller wires this to its event delivery mechanism (an OCI
+/// Streaming/queue subscription, a webhook fan-in, …).
+pub type OciEventStream = futures::stream::BoxStream<'static, Vec<u8>>;
+
+/// A live view over an OCI bucket: an initial [`scan`](LiveMapView::scan) of
+/// matching objects plus a [`watch`](LiveMapFeed::watch) that turns bucket
+/// events into per-object updates/deletes. The Rust analogue of Python's
+/// `list_objects(..., live_stream=...)`.
+///
+/// Each event is re-read with a `HEAD` (the live object state is authoritative
+/// over the event type): a present object becomes an `update`, a `404` a
+/// `delete`. Events are filtered by envelope type, namespace/bucket, the
+/// prefix + path matcher, and an `eventTime` cutoff (snapshot time minus
+/// [`OCI_LIVE_SKEW_SECS`]; missing/unparseable/future times pass through).
+/// Feed it to [`Ctx::mount_each_live`](crate::Ctx::mount_each_live).
+pub struct OciLiveWalker {
+    client: OciClient,
+    namespace: String,
+    bucket: String,
+    prefix: String,
+    path_matcher: Arc<dyn FilePathMatcher>,
+    max_file_size: Option<u64>,
+    events: tokio::sync::Mutex<Option<OciEventStream>>,
+    /// `eventTime` cutoff (Unix seconds), set at `scan` time.
+    cutoff: tokio::sync::Mutex<i64>,
+}
+
+/// Build a live view over an OCI bucket, driven by `events` (a stream of raw OCI
+/// event JSON payloads). See [`OciLiveWalker`].
+pub fn list_objects_live(
+    client: &OciClient,
+    namespace: impl Into<String>,
+    bucket: impl Into<String>,
+    options: ListOptions,
+    events: impl futures::Stream<Item = Vec<u8>> + Send + 'static,
+) -> OciLiveWalker {
+    OciLiveWalker {
+        client: client.clone(),
+        namespace: namespace.into(),
+        bucket: bucket.into(),
+        prefix: options.prefix,
+        path_matcher: options
+            .path_matcher
+            .unwrap_or_else(|| Arc::new(MatchAllFilePathMatcher)),
+        max_file_size: options.max_file_size,
+        events: tokio::sync::Mutex::new(Some(Box::pin(events))),
+        cutoff: tokio::sync::Mutex::new(0),
+    }
+}
+
+impl OciLiveWalker {
+    /// Process one event payload, dispatching an update/delete to `subscriber`.
+    /// Returns `Ok(())` for skipped/filtered/transient events (never aborts the
+    /// watch loop over a single bad event), matching Python's per-event
+    /// resilience.
+    async fn handle_event(
+        &self,
+        bytes: &[u8],
+        cutoff: i64,
+        subscriber: &LiveMapSubscriber<String, OciFile>,
+    ) -> Result<()> {
+        let Ok(event) = serde_json::from_slice::<OciEvent>(bytes) else {
+            tracing::debug!("oci live: skipping malformed event payload");
+            return Ok(());
+        };
+        // Envelope filter.
+        let event_type = event.event_type.unwrap_or_default();
+        if !event_type.starts_with("com.oraclecloud.objectstorage.") {
+            return Ok(());
+        }
+        let Some(data) = event.data else {
+            return Ok(());
+        };
+        let Some(object_name) = data.resource_name else {
+            return Ok(());
+        };
+        // Namespace + bucket filter (drop cross-bucket events without a HEAD).
+        let details = data.additional_details.unwrap_or_default();
+        if details.namespace.as_deref() != Some(self.namespace.as_str())
+            || details.bucket_name.as_deref() != Some(self.bucket.as_str())
+        {
+            return Ok(());
+        }
+        // Event-time cutoff: drop events that precede the scan snapshot. A
+        // missing / unparseable / future-dated time falls through.
+        if let Some(secs) = event.event_time.as_deref().and_then(parse_rfc3339_secs)
+            && secs < cutoff
+        {
+            return Ok(());
+        }
+        // Prefix + path-matcher filter.
+        let Some(relative_key) = relative_key(&self.prefix, &object_name) else {
+            return Ok(());
+        };
+        if !self
+            .path_matcher
+            .is_file_included(&PathBuf::from(&relative_key))
+        {
+            return Ok(());
+        }
+        // Re-read: the live object state wins over the event type.
+        match self
+            .client
+            .head_object_if_exists(&self.namespace, &self.bucket, &object_name)
+            .await
+        {
+            Ok(Some(head)) => {
+                if self.max_file_size.is_some_and(|max| head.size > max) {
+                    return Ok(());
+                }
+                let file = OciFile::new(
+                    Some(self.client.clone()),
+                    OciFilePath {
+                        namespace: self.namespace.clone(),
+                        bucket: self.bucket.clone(),
+                        relative_path: relative_key.clone(),
+                        object_name,
+                    },
+                    head.size,
+                    head.modified_secs,
+                    head.md5,
+                    head.etag,
+                );
+                subscriber.update(relative_key, file).await?;
+            }
+            Ok(None) => {
+                subscriber.delete(relative_key).await?;
+            }
+            Err(e) => {
+                tracing::warn!("oci live: HEAD {object_name} failed, skipping event: {e}");
+            }
+        }
+        Ok(())
+    }
+}
+
+#[crate::async_trait]
+impl LiveMapView<String, OciFile> for OciLiveWalker {
+    async fn scan(&self) -> Result<Vec<(String, OciFile)>> {
+        // Snapshot the cutoff before listing so live events overlapping the scan
+        // are reconciled rather than dropped.
+        *self.cutoff.lock().await = chrono::Utc::now().timestamp() - OCI_LIVE_SKEW_SECS;
+        let walker = list_objects(
+            &self.client,
+            self.namespace.clone(),
+            self.bucket.clone(),
+            ListOptions {
+                prefix: self.prefix.clone(),
+                path_matcher: Some(self.path_matcher.clone()),
+                max_file_size: self.max_file_size,
+            },
+        );
+        walker.items().await
+    }
+}
+
+#[crate::async_trait]
+impl LiveMapFeed<String, OciFile> for OciLiveWalker {
+    async fn watch(&self, subscriber: LiveMapSubscriber<String, OciFile>) -> Result<()> {
+        use futures::StreamExt;
+        let mut events = self
+            .events
+            .lock()
+            .await
+            .take()
+            .ok_or_else(|| Error::engine("oci live event stream already consumed"))?;
+        let cutoff = *self.cutoff.lock().await;
+        while let Some(bytes) = events.next().await {
+            self.handle_event(&bytes, cutoff, &subscriber).await?;
+        }
+        Ok(())
     }
 }
 

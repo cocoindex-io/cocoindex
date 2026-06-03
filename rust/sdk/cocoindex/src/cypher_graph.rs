@@ -17,11 +17,23 @@ use crate::target_state::{
     declare_target_state_with_child, mount_target, register_root_target_states_provider,
 };
 
+/// Named parameters bound to a parameterized Cypher statement. Values are JSON
+/// (the connector maps them to Bolt types / FalkorDB `CYPHER` header literals).
+pub(crate) type CypherParams = BTreeMap<String, JsonValue>;
+
 #[async_trait]
 pub(crate) trait CypherExecutor: Clone + Send + Sync + 'static {
     fn dialect(&self) -> &'static str;
     fn state_id(&self) -> &str;
+
+    /// Execute a statement with no bound parameters (DDL: indexes/constraints,
+    /// built only from validated identifiers).
     async fn execute(&self, cypher: &str) -> Result<()>;
+
+    /// Execute a data-bearing statement with bound parameters. Record writes go
+    /// through here so user values are never interpolated into the query body
+    /// (Neo4j binds Bolt params; FalkorDB uses the `CYPHER name=value` header).
+    async fn execute_with_params(&self, cypher: &str, params: &CypherParams) -> Result<()>;
 
     async fn execute_unique_constraint(
         &self,
@@ -1121,29 +1133,35 @@ async fn apply_record<C: CypherExecutor>(graph: &C, action: &RecordAction) -> Re
         (Some(state), false) => {
             let mut props = state.fields.clone();
             props.remove(&action.spec.primary_key);
+            let mut params = CypherParams::new();
+            params.insert("key".to_string(), key_json(&action.record_id));
             let set_clause = if props.is_empty() {
                 String::new()
             } else {
-                format!(" SET n += {}", cypher_map(&props)?)
+                params.insert("props".to_string(), JsonValue::Object(props));
+                " SET n += $props".to_string()
             };
             graph
-                .execute(&format!(
-                    "MERGE (n:`{}` {{`{}`: {}}}){}",
-                    action.spec.table_name,
-                    action.spec.primary_key,
-                    cypher_key(&action.record_id),
-                    set_clause
-                ))
+                .execute_with_params(
+                    &format!(
+                        "MERGE (n:`{}` {{`{}`: $key}}){}",
+                        action.spec.table_name, action.spec.primary_key, set_clause
+                    ),
+                    &params,
+                )
                 .await
         }
         (None, false) => {
+            let mut params = CypherParams::new();
+            params.insert("key".to_string(), key_json(&action.record_id));
             graph
-                .execute(&format!(
-                    "MATCH (n:`{}` {{`{}`: {}}}) DETACH DELETE n",
-                    action.spec.table_name,
-                    action.spec.primary_key,
-                    cypher_key(&action.record_id)
-                ))
+                .execute_with_params(
+                    &format!(
+                        "MATCH (n:`{}` {{`{}`: $key}}) DETACH DELETE n",
+                        action.spec.table_name, action.spec.primary_key
+                    ),
+                    &params,
+                )
                 .await
         }
         (Some(state), true) => {
@@ -1151,33 +1169,42 @@ async fn apply_record<C: CypherExecutor>(graph: &C, action: &RecordAction) -> Re
                 .relation
                 .as_ref()
                 .ok_or_else(|| Error::engine("relation record missing endpoints"))?;
+            let mut params = CypherParams::new();
+            params.insert("from_id".to_string(), key_json(&rel.from_id));
+            params.insert("to_id".to_string(), key_json(&rel.to_id));
+            params.insert("rel_id".to_string(), key_json(&action.record_id));
             let set_clause = if state.fields.is_empty() {
                 String::new()
             } else {
-                format!(" SET r += {}", cypher_map(&state.fields)?)
+                params.insert("props".to_string(), JsonValue::Object(state.fields.clone()));
+                " SET r += $props".to_string()
             };
             graph
-                .execute(&format!(
-                    "MERGE (s:`{}` {{`{}`: {}}}) MERGE (t:`{}` {{`{}`: {}}}) MERGE (s)-[r:`{}` {{`id`: {}}}]->(t){}",
-                    rel.from_table.table_name,
-                    rel.from_table.primary_key,
-                    cypher_key(&rel.from_id),
-                    rel.to_table.table_name,
-                    rel.to_table.primary_key,
-                    cypher_key(&rel.to_id),
-                    action.spec.table_name,
-                    cypher_key(&action.record_id),
-                    set_clause
-                ))
+                .execute_with_params(
+                    &format!(
+                        "MERGE (s:`{}` {{`{}`: $from_id}}) MERGE (t:`{}` {{`{}`: $to_id}}) MERGE (s)-[r:`{}` {{`id`: $rel_id}}]->(t){}",
+                        rel.from_table.table_name,
+                        rel.from_table.primary_key,
+                        rel.to_table.table_name,
+                        rel.to_table.primary_key,
+                        action.spec.table_name,
+                        set_clause
+                    ),
+                    &params,
+                )
                 .await
         }
         (None, true) => {
+            let mut params = CypherParams::new();
+            params.insert("rel_id".to_string(), key_json(&action.record_id));
             graph
-                .execute(&format!(
-                    "MATCH ()-[r:`{}` {{`id`: {}}}]->() DELETE r",
-                    action.spec.table_name,
-                    cypher_key(&action.record_id)
-                ))
+                .execute_with_params(
+                    &format!(
+                        "MATCH ()-[r:`{}` {{`id`: $rel_id}}]->() DELETE r",
+                        action.spec.table_name
+                    ),
+                    &params,
+                )
                 .await
         }
     }
@@ -1209,13 +1236,22 @@ fn key_value(key: StableKey) -> Result<KeyValue> {
     }
 }
 
-fn cypher_key(key: &KeyValue) -> String {
+/// A key value as JSON, for binding as a Cypher parameter.
+fn key_json(key: &KeyValue) -> JsonValue {
     match key {
-        KeyValue::Int(i) => i.to_string(),
-        KeyValue::Str(s) => cypher_string(s),
+        KeyValue::Int(i) => JsonValue::from(*i),
+        KeyValue::Str(s) => JsonValue::from(s.clone()),
     }
 }
 
+/// Render a JSON value as a Cypher literal — used by FalkorDB to build the
+/// `CYPHER name=value` parameter header (Neo4j binds Bolt params instead).
+#[cfg(feature = "falkordb")]
+pub(crate) fn cypher_literal(value: &JsonValue) -> Result<String> {
+    cypher_value(value)
+}
+
+#[cfg(feature = "falkordb")]
 fn cypher_map(map: &Map<String, JsonValue>) -> Result<String> {
     let mut out = String::from("{");
     for (idx, (key, value)) in map.iter().enumerate() {
@@ -1232,6 +1268,7 @@ fn cypher_map(map: &Map<String, JsonValue>) -> Result<String> {
     Ok(out)
 }
 
+#[cfg(feature = "falkordb")]
 fn cypher_value(value: &JsonValue) -> Result<String> {
     Ok(match value {
         JsonValue::Null => "null".to_string(),
@@ -1250,6 +1287,7 @@ fn cypher_value(value: &JsonValue) -> Result<String> {
     })
 }
 
+#[cfg(feature = "falkordb")]
 fn cypher_string(value: &str) -> String {
     let mut out = String::from("'");
     for ch in value.chars() {
@@ -1303,6 +1341,313 @@ pub(crate) fn validate_ident(name: &str, what: &str) -> Result<()> {
     Ok(())
 }
 
+/// Generate a graph connector's public table/relation target surface for a
+/// given `$graph` executor type. The neo4j and falkordb connectors differ only
+/// in their `Graph`/`CypherExecutor`; this macro is the single source of truth
+/// for the identical `TableTarget`/`RelationTarget` newtypes and the
+/// `mount_*`/`declare_*`/`*_target` free functions that wrap [`cypher_graph`].
+macro_rules! graph_target_api {
+    ($graph:ty) => {
+        /// A node-table target. Cheap to clone.
+        #[derive(Clone)]
+        pub struct TableTarget($crate::cypher_graph::TableTarget);
+
+        impl TableTarget {
+            /// The table/label name.
+            pub fn table_name(&self) -> &str {
+                self.0.table_name()
+            }
+
+            /// Declare a node record keyed by `id`.
+            pub fn declare_record<R: ::serde::Serialize>(
+                &self,
+                ctx: &$crate::ctx::Ctx,
+                id: impl $crate::target_state::IntoStableKey,
+                row: &R,
+            ) -> $crate::error::Result<()> {
+                self.0.declare_record(ctx, id, row)
+            }
+
+            /// Declare a vector index on `field`, created/recreated/dropped to
+            /// match the declaration.
+            pub fn declare_vector_index(
+                &self,
+                ctx: &$crate::ctx::Ctx,
+                field: &str,
+                dimension: u32,
+                metric: $crate::cypher_graph::VectorMetric,
+            ) -> $crate::error::Result<()> {
+                self.0.declare_vector_index(ctx, field, dimension, metric)
+            }
+
+            /// Declare a (non-vector) secondary index on `fields`,
+            /// created/dropped to match the declaration.
+            pub fn declare_node_index(
+                &self,
+                ctx: &$crate::ctx::Ctx,
+                fields: &[&str],
+            ) -> $crate::error::Result<()> {
+                self.0.declare_node_index(ctx, fields)
+            }
+        }
+
+        /// A relation target. Cheap to clone.
+        #[derive(Clone)]
+        pub struct RelationTarget($crate::cypher_graph::RelationTarget);
+
+        impl RelationTarget {
+            /// Declare a relation (no properties) from `from_id` to `to_id`.
+            pub fn declare_relation(
+                &self,
+                ctx: &$crate::ctx::Ctx,
+                from_id: impl $crate::target_state::IntoStableKey,
+                to_id: impl $crate::target_state::IntoStableKey,
+            ) -> $crate::error::Result<()> {
+                self.0.declare_relation(ctx, from_id, to_id)
+            }
+
+            /// Declare a relation carrying `record` properties.
+            pub fn declare_relation_record<R: ::serde::Serialize>(
+                &self,
+                ctx: &$crate::ctx::Ctx,
+                from_id: impl $crate::target_state::IntoStableKey,
+                to_id: impl $crate::target_state::IntoStableKey,
+                record: &R,
+            ) -> $crate::error::Result<()> {
+                self.0.declare_relation_record(ctx, from_id, to_id, record)
+            }
+        }
+
+        /// Mount a node-table target (record children resolve immediately).
+        pub async fn mount_table_target(
+            ctx: &$crate::ctx::Ctx,
+            graph: &$graph,
+            table_name: impl Into<String>,
+            schema: $crate::cypher_graph::TableSchema,
+        ) -> $crate::error::Result<TableTarget> {
+            mount_table_target_with_options(
+                ctx,
+                graph,
+                table_name,
+                schema,
+                $crate::statediff::ManagedTargetOptions::default(),
+            )
+            .await
+        }
+
+        /// [`mount_table_target`] with explicit options.
+        pub async fn mount_table_target_with_options(
+            ctx: &$crate::ctx::Ctx,
+            graph: &$graph,
+            table_name: impl Into<String>,
+            schema: $crate::cypher_graph::TableSchema,
+            options: $crate::statediff::ManagedTargetOptions,
+        ) -> $crate::error::Result<TableTarget> {
+            Ok(TableTarget(
+                $crate::cypher_graph::mount_table_target_with_options(
+                    ctx, graph, table_name, schema, options,
+                )
+                .await?,
+            ))
+        }
+
+        /// Mount a relation target (relation records resolve immediately).
+        pub async fn mount_relation_target(
+            ctx: &$crate::ctx::Ctx,
+            graph: &$graph,
+            relation_name: impl Into<String>,
+            from_table: &TableTarget,
+            to_table: &TableTarget,
+        ) -> $crate::error::Result<RelationTarget> {
+            mount_relation_target_with_options(
+                ctx,
+                graph,
+                relation_name,
+                from_table,
+                to_table,
+                $crate::statediff::ManagedTargetOptions::default(),
+            )
+            .await
+        }
+
+        /// [`mount_relation_target`] with explicit options.
+        pub async fn mount_relation_target_with_options(
+            ctx: &$crate::ctx::Ctx,
+            graph: &$graph,
+            relation_name: impl Into<String>,
+            from_table: &TableTarget,
+            to_table: &TableTarget,
+            options: $crate::statediff::ManagedTargetOptions,
+        ) -> $crate::error::Result<RelationTarget> {
+            Ok(RelationTarget(
+                $crate::cypher_graph::mount_relation_target_with_options(
+                    ctx,
+                    graph,
+                    relation_name,
+                    &from_table.0,
+                    &to_table.0,
+                    options,
+                )
+                .await?,
+            ))
+        }
+
+        /// Build a composable
+        /// [`TargetState`](crate::target_state::TargetState) for a node table.
+        /// Pass it to the generic
+        /// [`mount_target`](crate::target_state::mount_target) /
+        /// [`declare_target_state_with_child`](crate::target_state::declare_target_state_with_child),
+        /// or use [`declare_table_target`]/[`mount_table_target`].
+        pub fn table_target(
+            ctx: &$crate::ctx::Ctx,
+            graph: &$graph,
+            table_name: impl Into<String>,
+            schema: $crate::cypher_graph::TableSchema,
+        ) -> $crate::error::Result<
+            $crate::target_state::TargetState<$crate::cypher_graph::TableSpec>,
+        > {
+            table_target_with_options(
+                ctx,
+                graph,
+                table_name,
+                schema,
+                $crate::statediff::ManagedTargetOptions::default(),
+            )
+        }
+
+        /// [`table_target`] with explicit options.
+        pub fn table_target_with_options(
+            ctx: &$crate::ctx::Ctx,
+            graph: &$graph,
+            table_name: impl Into<String>,
+            schema: $crate::cypher_graph::TableSchema,
+            options: $crate::statediff::ManagedTargetOptions,
+        ) -> $crate::error::Result<
+            $crate::target_state::TargetState<$crate::cypher_graph::TableSpec>,
+        > {
+            $crate::cypher_graph::table_target_state(ctx, graph, table_name, schema, options)
+        }
+
+        /// Build a composable
+        /// [`TargetState`](crate::target_state::TargetState) for a relation.
+        pub fn relation_target(
+            ctx: &$crate::ctx::Ctx,
+            graph: &$graph,
+            relation_name: impl Into<String>,
+            from_table: &TableTarget,
+            to_table: &TableTarget,
+        ) -> $crate::error::Result<
+            $crate::target_state::TargetState<$crate::cypher_graph::TableSpec>,
+        > {
+            relation_target_with_options(
+                ctx,
+                graph,
+                relation_name,
+                from_table,
+                to_table,
+                $crate::statediff::ManagedTargetOptions::default(),
+            )
+        }
+
+        /// [`relation_target`] with explicit options.
+        pub fn relation_target_with_options(
+            ctx: &$crate::ctx::Ctx,
+            graph: &$graph,
+            relation_name: impl Into<String>,
+            from_table: &TableTarget,
+            to_table: &TableTarget,
+            options: $crate::statediff::ManagedTargetOptions,
+        ) -> $crate::error::Result<
+            $crate::target_state::TargetState<$crate::cypher_graph::TableSpec>,
+        > {
+            $crate::cypher_graph::relation_target_state(
+                ctx,
+                graph,
+                relation_name,
+                &from_table.0,
+                &to_table.0,
+                options,
+            )
+        }
+
+        /// Declare a node-table target in the **current** component (the record
+        /// child provider resolves when this component commits). Use
+        /// [`mount_table_target`] when records must be declared immediately.
+        pub fn declare_table_target(
+            ctx: &$crate::ctx::Ctx,
+            graph: &$graph,
+            table_name: impl Into<String>,
+            schema: $crate::cypher_graph::TableSchema,
+        ) -> $crate::error::Result<TableTarget> {
+            declare_table_target_with_options(
+                ctx,
+                graph,
+                table_name,
+                schema,
+                $crate::statediff::ManagedTargetOptions::default(),
+            )
+        }
+
+        /// [`declare_table_target`] with explicit options.
+        pub fn declare_table_target_with_options(
+            ctx: &$crate::ctx::Ctx,
+            graph: &$graph,
+            table_name: impl Into<String>,
+            schema: $crate::cypher_graph::TableSchema,
+            options: $crate::statediff::ManagedTargetOptions,
+        ) -> $crate::error::Result<TableTarget> {
+            Ok(TableTarget(
+                $crate::cypher_graph::declare_table_target_with_options(
+                    ctx, graph, table_name, schema, options,
+                )?,
+            ))
+        }
+
+        /// Declare a relation target in the **current** component. Use
+        /// [`mount_relation_target`] when relation records must be declared
+        /// immediately.
+        pub fn declare_relation_target(
+            ctx: &$crate::ctx::Ctx,
+            graph: &$graph,
+            relation_name: impl Into<String>,
+            from_table: &TableTarget,
+            to_table: &TableTarget,
+        ) -> $crate::error::Result<RelationTarget> {
+            declare_relation_target_with_options(
+                ctx,
+                graph,
+                relation_name,
+                from_table,
+                to_table,
+                $crate::statediff::ManagedTargetOptions::default(),
+            )
+        }
+
+        /// [`declare_relation_target`] with explicit options.
+        pub fn declare_relation_target_with_options(
+            ctx: &$crate::ctx::Ctx,
+            graph: &$graph,
+            relation_name: impl Into<String>,
+            from_table: &TableTarget,
+            to_table: &TableTarget,
+            options: $crate::statediff::ManagedTargetOptions,
+        ) -> $crate::error::Result<RelationTarget> {
+            Ok(RelationTarget(
+                $crate::cypher_graph::declare_relation_target_with_options(
+                    ctx,
+                    graph,
+                    relation_name,
+                    &from_table.0,
+                    &to_table.0,
+                    options,
+                )?,
+            ))
+        }
+    };
+}
+
+pub(crate) use graph_target_api;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1323,6 +1668,10 @@ mod tests {
         async fn execute(&self, _cypher: &str) -> Result<()> {
             Ok(())
         }
+
+        async fn execute_with_params(&self, _cypher: &str, _params: &CypherParams) -> Result<()> {
+            Ok(())
+        }
     }
 
     #[derive(Clone)]
@@ -1330,6 +1679,7 @@ mod tests {
         dialect: &'static str,
         statements: Arc<std::sync::Mutex<Vec<String>>>,
         constraints: Arc<std::sync::Mutex<Vec<String>>>,
+        param_calls: Arc<std::sync::Mutex<Vec<(String, CypherParams)>>>,
     }
 
     impl RecordingGraph {
@@ -1338,6 +1688,7 @@ mod tests {
                 dialect,
                 statements: Arc::new(std::sync::Mutex::new(Vec::new())),
                 constraints: Arc::new(std::sync::Mutex::new(Vec::new())),
+                param_calls: Arc::new(std::sync::Mutex::new(Vec::new())),
             }
         }
 
@@ -1347,6 +1698,10 @@ mod tests {
 
         fn constraints(&self) -> Vec<String> {
             self.constraints.lock().unwrap().clone()
+        }
+
+        fn param_calls(&self) -> Vec<(String, CypherParams)> {
+            self.param_calls.lock().unwrap().clone()
         }
     }
 
@@ -1365,6 +1720,14 @@ mod tests {
             Ok(())
         }
 
+        async fn execute_with_params(&self, cypher: &str, params: &CypherParams) -> Result<()> {
+            self.param_calls
+                .lock()
+                .unwrap()
+                .push((cypher.to_string(), params.clone()));
+            Ok(())
+        }
+
         async fn execute_unique_constraint(
             &self,
             op: &str,
@@ -1380,9 +1743,109 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "falkordb")]
     #[test]
     fn cypher_literals_escape_strings() {
         assert_eq!(cypher_string("a'b\\c\n"), "'a\\'b\\\\c\\n'");
+    }
+
+    #[tokio::test]
+    async fn node_record_upsert_uses_bound_params() {
+        // A record write must bind user values as parameters, not interpolate
+        // them into the query body.
+        let graph = RecordingGraph::new("neo4j");
+        let mut fields = Map::new();
+        fields.insert("id".to_string(), JsonValue::from("p1"));
+        fields.insert("name".to_string(), JsonValue::from("O'Brien"));
+        let action = RecordAction {
+            spec: TableSpec::table(
+                "Person".to_string(),
+                TableSchema::new([("id", ColumnDef::new("STRING"))], "id").unwrap(),
+                crate::statediff::ManagedBy::System,
+            ),
+            record_id: KeyValue::Str("p1".to_string()),
+            state: Some(RecordState {
+                fields,
+                relation: None,
+            }),
+        };
+
+        apply_record(&graph, &action).await.unwrap();
+
+        let calls = graph.param_calls();
+        assert_eq!(calls.len(), 1);
+        let (cypher, params) = &calls[0];
+        assert_eq!(cypher, "MERGE (n:`Person` {`id`: $key}) SET n += $props");
+        // The injection-prone value travels as a param, never in the query text.
+        assert!(!cypher.contains("O'Brien"));
+        assert_eq!(params["key"], JsonValue::from("p1"));
+        // The primary key is stripped from the SET props.
+        assert_eq!(params["props"], serde_json::json!({ "name": "O'Brien" }));
+    }
+
+    #[tokio::test]
+    async fn node_record_delete_binds_key_param() {
+        let graph = RecordingGraph::new("neo4j");
+        let action = RecordAction {
+            spec: TableSpec::table(
+                "Person".to_string(),
+                TableSchema::new([("id", ColumnDef::new("INTEGER"))], "id").unwrap(),
+                crate::statediff::ManagedBy::System,
+            ),
+            record_id: KeyValue::Int(42),
+            state: None,
+        };
+
+        apply_record(&graph, &action).await.unwrap();
+
+        let calls = graph.param_calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(
+            calls[0].0,
+            "MATCH (n:`Person` {`id`: $key}) DETACH DELETE n"
+        );
+        assert_eq!(calls[0].1["key"], JsonValue::from(42));
+    }
+
+    #[tokio::test]
+    async fn relation_record_upsert_binds_endpoint_and_id_params() {
+        let graph = RecordingGraph::new("neo4j");
+        let endpoint = |name: &str| TableEndpoint {
+            table_name: name.to_string(),
+            primary_key: "id".to_string(),
+        };
+        let action = RecordAction {
+            spec: TableSpec::relation(
+                "ATTENDED".to_string(),
+                endpoint("Person"),
+                endpoint("Event"),
+                crate::statediff::ManagedBy::System,
+            ),
+            record_id: KeyValue::Str("rel-1".to_string()),
+            state: Some(RecordState {
+                fields: Map::new(),
+                relation: Some(RelationEndpoints {
+                    from_table: endpoint("Person"),
+                    from_id: KeyValue::Str("p1".to_string()),
+                    to_table: endpoint("Event"),
+                    to_id: KeyValue::Int(9),
+                }),
+            }),
+        };
+
+        apply_record(&graph, &action).await.unwrap();
+
+        let calls = graph.param_calls();
+        assert_eq!(calls.len(), 1);
+        let (cypher, params) = &calls[0];
+        assert_eq!(
+            cypher,
+            "MERGE (s:`Person` {`id`: $from_id}) MERGE (t:`Event` {`id`: $to_id}) \
+             MERGE (s)-[r:`ATTENDED` {`id`: $rel_id}]->(t)"
+        );
+        assert_eq!(params["from_id"], JsonValue::from("p1"));
+        assert_eq!(params["to_id"], JsonValue::from(9));
+        assert_eq!(params["rel_id"], JsonValue::from("rel-1"));
     }
 
     #[test]

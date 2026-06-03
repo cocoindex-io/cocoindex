@@ -23,6 +23,7 @@ use surrealdb::types::RecordId;
 
 use crate::ctx::Ctx;
 use crate::error::{Error, Result};
+use crate::sql_ident::validate_ident;
 use crate::statediff::{
     DiffAction, ManagedBy, ManagedTargetOptions, MutualTrackingRecord, diff,
     resolve_system_transition,
@@ -1499,20 +1500,6 @@ fn stable_key_to_record_id(key: &StableKey) -> Result<RecordIdValue> {
             "unsupported SurrealDB record key: {other:?}"
         ))),
     }
-}
-
-fn validate_ident(value: &str, label: &str) -> Result<()> {
-    let mut chars = value.chars();
-    let Some(first) = chars.next() else {
-        return Err(Error::engine(format!("{label} cannot be empty")));
-    };
-    if !(first.is_ascii_alphabetic() || first == '_') {
-        return Err(Error::engine(format!("invalid {label}: {value}")));
-    }
-    if !chars.all(|c| c.is_ascii_alphanumeric() || c == '_') {
-        return Err(Error::engine(format!("invalid {label}: {value}")));
-    }
-    Ok(())
 }
 
 #[cfg(test)]

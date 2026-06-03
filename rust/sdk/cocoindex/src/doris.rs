@@ -29,10 +29,11 @@ use cocoindex_utils::fingerprint::Fingerprint;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value as JsonValue};
 use sqlx::MySqlPool;
-use sqlx::mysql::MySqlPoolOptions;
+use sqlx::mysql::{MySqlConnectOptions, MySqlPoolOptions};
 
 use crate::ctx::Ctx;
 use crate::error::{Error, Result};
+use crate::sql_ident::validate_ident;
 use crate::statediff::{
     CompositeTrackingRecord, DiffAction, ManagedBy, MutualTrackingRecord, diff, diff_composite,
     resolve_system_transition,
@@ -181,17 +182,28 @@ impl DorisConnection {
     /// port (used for DDL/DELETE) and builds an HTTP client for Stream Load. The
     /// `database` must already exist.
     pub async fn connect(config: DorisConfig) -> Result<Self> {
-        let dsn = format!(
-            "mysql://{}:{}@{}:{}/{}",
-            config.username,
-            config.password,
-            config.fe_host,
-            config.query_port,
-            config.database,
-        );
+        // Doris speaks the MySQL wire protocol but rejects the `SET
+        // sql_mode=CONCAT(@@sql_mode, …)` and timezone statements sqlx issues on
+        // connect ("Set statement doesn't support non-constant expr"). Disable
+        // those handshake options so only constant SETs (if any) are sent.
+        let mut options = MySqlConnectOptions::new()
+            .host(&config.fe_host)
+            .port(config.query_port)
+            .username(&config.username)
+            .database(&config.database)
+            .pipes_as_concat(false)
+            .no_engine_substitution(false)
+            .timezone(None)
+            .set_names(false);
+        // Only send a password when one is set; an empty `.password("")` makes
+        // sqlx authenticate "using password: YES", which a no-password Doris
+        // root rejects.
+        if !config.password.is_empty() {
+            options = options.password(&config.password);
+        }
         let pool = MySqlPoolOptions::new()
             .max_connections(4)
-            .connect(&dsn)
+            .connect_with(options)
             .await
             .map_err(mysql_err)?;
         let http = reqwest::Client::builder()
@@ -616,10 +628,18 @@ fn table_composite_record(spec: &TableSpec) -> TableCompositeRecord {
                 doris_type: schema.columns()[name].doris_type.clone(),
             })
             .collect(),
-        vector_indexes: (!spec.vector_indexes.is_empty())
-            .then(|| spec.vector_indexes.iter().map(|v| v.field_name.clone()).collect()),
-        inverted_indexes: (!spec.inverted_indexes.is_empty())
-            .then(|| spec.inverted_indexes.iter().map(|v| v.field_name.clone()).collect()),
+        vector_indexes: (!spec.vector_indexes.is_empty()).then(|| {
+            spec.vector_indexes
+                .iter()
+                .map(|v| v.field_name.clone())
+                .collect()
+        }),
+        inverted_indexes: (!spec.inverted_indexes.is_empty()).then(|| {
+            spec.inverted_indexes
+                .iter()
+                .map(|v| v.field_name.clone())
+                .collect()
+        }),
     };
     let sub: HashMap<String, NonPkColumnTrackingRecord> = schema
         .columns()
@@ -882,7 +902,7 @@ async fn create_table(conn: &DorisConnection, spec: &TableSpec) -> Result<()> {
         return Ok(());
     }
     let sql = create_table_sql(&conn.config, spec);
-    sqlx::query(&sql)
+    sqlx::raw_sql(&sql)
         .execute(conn.pool())
         .await
         .map_err(mysql_err)?;
@@ -895,7 +915,7 @@ async fn drop_table(conn: &DorisConnection, table_name: &str) -> Result<()> {
         "DROP TABLE IF EXISTS `{}`.`{}`",
         conn.config.database, table_name
     );
-    sqlx::query(&sql)
+    sqlx::raw_sql(&sql)
         .execute(conn.pool())
         .await
         .map_err(mysql_err)?;
@@ -977,7 +997,7 @@ async fn apply_column_actions(
 }
 
 async fn run_best_effort(conn: &DorisConnection, sql: &str) {
-    if let Err(e) = sqlx::query(sql).execute(conn.pool()).await {
+    if let Err(e) = sqlx::raw_sql(sql).execute(conn.pool()).await {
         tracing::debug!("doris best-effort DDL skipped ({sql:?}): {e}");
     }
 }
@@ -1057,7 +1077,7 @@ async fn execute_delete(
         table_name,
         groups.join(" OR ")
     );
-    sqlx::query(&sql)
+    sqlx::raw_sql(&sql)
         .execute(conn.pool())
         .await
         .map_err(mysql_err)?;
@@ -1267,11 +1287,18 @@ fn create_table_sql(config: &DorisConfig, spec: &TableSpec) -> String {
     let pk: std::collections::HashSet<&String> = schema.primary_key().iter().collect();
     let mut col_defs: Vec<String> = Vec::new();
 
+    // Doris requires key (PK) columns to be an ordered prefix of the column
+    // list, so emit them first (in primary-key order), then the rest.
+    for name in schema.primary_key() {
+        let col = &schema.columns()[name];
+        let ty = key_column_type(&col.doris_type);
+        col_defs.push(format!("    `{name}` {ty} NOT NULL"));
+    }
     for (name, col) in schema.columns() {
         if pk.contains(name) {
-            let ty = key_column_type(&col.doris_type);
-            col_defs.push(format!("    `{name}` {ty} NOT NULL"));
-        } else if col.is_vector {
+            continue;
+        }
+        if col.is_vector {
             col_defs.push(format!("    `{name}` {} NOT NULL", col.doris_type));
         } else {
             let null = if col.nullable { "NULL" } else { "NOT NULL" };
@@ -1285,7 +1312,11 @@ fn create_table_sql(config: &DorisConfig, spec: &TableSpec) -> String {
             format!("\"index_type\" = \"{}\"", idx.index_type.to_lowercase()),
             format!("\"metric_type\" = \"{}\"", idx.metric_type.to_lowercase()),
         ];
-        if let Some(dim) = schema.columns().get(&idx.field_name).and_then(|c| c.vector_dimension) {
+        if let Some(dim) = schema
+            .columns()
+            .get(&idx.field_name)
+            .and_then(|c| c.vector_dimension)
+        {
             props.push(format!("\"dim\" = \"{dim}\""));
         }
         if let Some(v) = idx.max_degree {
@@ -1352,7 +1383,9 @@ fn row_state<R: Serialize>(row: &R, schema: &TableSchema) -> Result<Map<String, 
     let value = serde_json::to_value(row)
         .map_err(|e| Error::engine(format!("serialize Doris target row: {e}")))?;
     let JsonValue::Object(mut fields) = value else {
-        return Err(Error::engine("Doris target row must serialize to an object"));
+        return Err(Error::engine(
+            "Doris target row must serialize to an object",
+        ));
     };
     fields.retain(|name, _| schema.columns().contains_key(name));
     for name in schema.columns().keys() {
@@ -1400,7 +1433,9 @@ fn stable_key_to_json(key: &StableKey) -> Result<JsonValue> {
         StableKey::Int(i) => Ok(JsonValue::from(*i)),
         StableKey::Str(s) | StableKey::Symbol(s) => Ok(JsonValue::from(s.to_string())),
         StableKey::Uuid(u) => Ok(JsonValue::from(u.to_string())),
-        other => Err(Error::engine(format!("unsupported Doris row key: {other:?}"))),
+        other => Err(Error::engine(format!(
+            "unsupported Doris row key: {other:?}"
+        ))),
     }
 }
 
@@ -1442,24 +1477,11 @@ fn sql_value_literal(value: &JsonValue) -> String {
 // Validation
 // ---------------------------------------------------------------------------
 
-fn validate_ident(value: &str, label: &str) -> Result<()> {
-    let mut chars = value.chars();
-    let Some(first) = chars.next() else {
-        return Err(Error::engine(format!("{label} cannot be empty")));
-    };
-    if !(first.is_ascii_alphabetic() || first == '_') {
-        return Err(Error::engine(format!("invalid {label}: {value}")));
-    }
-    if !chars.all(|c| c.is_ascii_alphanumeric() || c == '_') {
-        return Err(Error::engine(format!("invalid {label}: {value}")));
-    }
-    Ok(())
-}
-
 fn validate_doris_type(value: &str) -> Result<()> {
     if value.is_empty()
         || !value.chars().all(|c| {
-            c.is_ascii_alphanumeric() || matches!(c, '_' | '[' | ']' | '(' | ')' | ',' | '<' | '>' | ' ')
+            c.is_ascii_alphanumeric()
+                || matches!(c, '_' | '[' | ']' | '(' | ')' | ',' | '<' | '>' | ' ')
         })
     {
         return Err(Error::engine(format!("invalid Doris type: {value}")));
@@ -1522,14 +1544,20 @@ mod tests {
     #[test]
     fn create_table_sql_uses_duplicate_key_and_narrows_text_pk() {
         let sql = create_table_sql(&config(), &spec(schema()));
-        assert!(sql.contains("CREATE TABLE IF NOT EXISTS `testdb`.`items`"), "{sql}");
+        assert!(
+            sql.contains("CREATE TABLE IF NOT EXISTS `testdb`.`items`"),
+            "{sql}"
+        );
         // The TEXT primary key is narrowed to VARCHAR(512) NOT NULL.
         assert!(sql.contains("`id` VARCHAR(512) NOT NULL"), "{sql}");
         // Non-PK TEXT stays TEXT and nullable.
         assert!(sql.contains("`name` TEXT NULL"), "{sql}");
         assert!(sql.contains("`value` BIGINT NULL"), "{sql}");
         assert!(sql.contains("DUPLICATE KEY(`id`)"), "{sql}");
-        assert!(sql.contains("DISTRIBUTED BY HASH(`id`) BUCKETS AUTO"), "{sql}");
+        assert!(
+            sql.contains("DISTRIBUTED BY HASH(`id`) BUCKETS AUTO"),
+            "{sql}"
+        );
         assert!(sql.contains("\"replication_num\" = \"1\""), "{sql}");
     }
 
@@ -1573,7 +1601,10 @@ mod tests {
 
     #[test]
     fn rewrite_redirect_replaces_host_keeps_port_and_path() {
-        let got = rewrite_redirect("http://10.0.0.5:8040/api/db/t/_stream_load", Some("localhost"));
+        let got = rewrite_redirect(
+            "http://10.0.0.5:8040/api/db/t/_stream_load",
+            Some("localhost"),
+        );
         assert_eq!(got, "http://localhost:8040/api/db/t/_stream_load");
         // Without be_load_host the location is unchanged.
         let same = rewrite_redirect("http://10.0.0.5:8040/x", None);

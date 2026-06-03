@@ -60,45 +60,72 @@ fn to_core_error(e: Error) -> CoreError {
 /// Which background operation raised the error routed to an [`ExceptionHandler`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MountKind {
-    /// A full `process()` cycle ([`LiveComponentOperator::update_full`]).
+    /// A full `process_live`/`process()` cycle
+    /// ([`LiveComponentOperator::update_full`]).
     UpdateFull,
     /// An incremental child mount ([`LiveComponentOperator::update`]).
     Update,
-    /// An incremental child delete ([`LiveComponentOperator::delete`]).
+    /// An incremental, background child delete
+    /// ([`LiveComponentOperator::delete`]).
     Delete,
 }
 
 /// Metadata describing the failed background operation, passed to an
-/// [`ExceptionHandler`]. Mirrors the Python `ExceptionContext` (trimmed to the
+/// [`ExceptionHandler`]. Mirrors the Python `ExceptionContext` (carrying the
 /// fields the Rust SDK can populate).
 #[derive(Clone, Debug)]
 pub struct ExceptionContext {
+    /// Name of the app/environment the failing component runs under.
+    pub env_name: String,
     /// Stable path of the live component the failure is attributed to.
     pub stable_path: String,
+    /// Stable path of the parent component, if the failure is attributed to a
+    /// child mount/delete.
+    pub parent_stable_path: Option<String>,
     /// Name of the processor that failed, if known.
     pub processor_name: Option<String>,
     /// Which operation raised the error.
     pub mount_kind: MountKind,
+    /// Whether the failure occurred in background work (a post-ready incremental
+    /// update/delete in live mode) rather than the foreground catch-up pass.
+    pub is_background: bool,
 }
 
 /// A handler for failures of background work owned by a live component.
 ///
 /// Returning `Ok(())` **swallows** the failure (the operation's handle resolves
-/// `Ok`); returning `Err(_)` **propagates** it (the handle resolves `Err`).
-/// This is the Rust expression of the Python handler chain's
-/// "return = swallow, raise = propagate" rule.
+/// `Ok`); returning `Err(_)` **re-raises** it — propagating to the next outer
+/// handler in the chain, or to the operation's handle if none remain. This is
+/// the Rust expression of the Python handler chain's "return = swallow, raise =
+/// propagate" rule.
 pub type ExceptionHandler =
     Arc<dyn Fn(&Error, &ExceptionContext) -> Result<()> + Send + Sync + 'static>;
 
-/// Wrap an [`ExceptionHandler`] (plus its static context) as a core `OnError`.
-fn build_on_error(handler: &Option<ExceptionHandler>, ctx: ExceptionContext) -> Option<OnError> {
-    let handler = handler.clone()?;
+/// Wrap a chain of [`ExceptionHandler`]s (innermost component last) plus the
+/// failure's static context as a core `OnError`. Handlers run nearest-first;
+/// the first to return `Ok` swallows the error, otherwise the (possibly
+/// rewritten) error propagates to the next outer handler and finally out.
+pub(crate) fn build_chained_on_error(
+    chain: &[ExceptionHandler],
+    ctx: ExceptionContext,
+) -> Option<OnError> {
+    if chain.is_empty() {
+        return None;
+    }
+    let chain: Vec<ExceptionHandler> = chain.to_vec();
     Some(Arc::new(move |err: CoreError| {
-        let handler = handler.clone();
+        let chain = chain.clone();
         let ctx = ctx.clone();
         Box::pin(async move {
-            let sdk_err = engine_err(err);
-            handler(&sdk_err, &ctx).map_err(to_core_error)
+            let mut current = engine_err(err);
+            // Chain is stored outer→inner; run nearest (innermost) first.
+            for handler in chain.iter().rev() {
+                match handler(&current, &ctx) {
+                    Ok(()) => return Ok(()),
+                    Err(next) => current = next,
+                }
+            }
+            Err(to_core_error(current))
         })
             as Pin<Box<dyn Future<Output = cocoindex_utils::error::Result<()>> + Send + 'static>>
     }))
@@ -138,7 +165,9 @@ pub struct LiveComponentOperator {
     state: Arc<AppInner>,
     component_path: StablePath,
     instance: Arc<dyn LiveComponent>,
-    handler: Option<ExceptionHandler>,
+    /// Exception handlers in scope, ordered outermost→innermost; the innermost
+    /// (this component's own handler, if any) runs first.
+    handler_chain: Arc<Vec<ExceptionHandler>>,
     name: String,
 }
 
@@ -148,11 +177,28 @@ impl LiveComponentOperator {
         self.component_path.concat_part(key)
     }
 
+    /// Context for a failure on this component's own full pass.
     fn exc_ctx(&self, mount_kind: MountKind) -> ExceptionContext {
         ExceptionContext {
+            env_name: self.state.name.clone(),
             stable_path: self.component_path.to_string(),
+            parent_stable_path: None,
             processor_name: Some(self.name.clone()),
             mount_kind,
+            is_background: false,
+        }
+    }
+
+    /// Context for a failure on a child mount/delete: the failing path is the
+    /// child, and this component is its parent.
+    fn child_exc_ctx(&self, mount_kind: MountKind, child_path: &StablePath) -> ExceptionContext {
+        ExceptionContext {
+            env_name: self.state.name.clone(),
+            stable_path: child_path.to_string(),
+            parent_stable_path: Some(self.component_path.to_string()),
+            processor_name: Some(self.name.clone()),
+            mount_kind,
+            is_background: self.controller.is_live(),
         }
     }
 
@@ -163,9 +209,10 @@ impl LiveComponentOperator {
     pub async fn update_full(&self) -> Result<()> {
         let instance = self.instance.clone();
         let state = self.state.clone();
+        let chain = self.handler_chain.clone();
         let processor = BoxedProcessor::new(
             move |comp_ctx| {
-                let ctx = Ctx::new(Some(comp_ctx), state.clone());
+                let ctx = Ctx::new_with_handlers(Some(comp_ctx), state.clone(), chain.clone());
                 let instance = instance.clone();
                 Box::pin(async move {
                     instance.process(ctx).await?;
@@ -175,7 +222,8 @@ impl LiveComponentOperator {
             None,
             format!("{}:process", self.name),
         );
-        let on_error = build_on_error(&self.handler, self.exc_ctx(MountKind::UpdateFull));
+        let on_error =
+            build_chained_on_error(&self.handler_chain, self.exc_ctx(MountKind::UpdateFull));
         self.controller
             .update_full(processor, on_error)
             .await
@@ -193,9 +241,10 @@ impl LiveComponentOperator {
     {
         let child_path = self.child_path(&key);
         let state = self.state.clone();
+        let chain = self.handler_chain.clone();
         let processor = BoxedProcessor::new(
             move |comp_ctx| {
-                let ctx = Ctx::new(Some(comp_ctx), state.clone());
+                let ctx = Ctx::new_with_handlers(Some(comp_ctx), state.clone(), chain.clone());
                 Box::pin(async move {
                     f(ctx).await?;
                     Ok(Value::unit())
@@ -204,7 +253,10 @@ impl LiveComponentOperator {
             None,
             format!("{}:update", self.name),
         );
-        let on_error = build_on_error(&self.handler, self.exc_ctx(MountKind::Update));
+        let on_error = build_chained_on_error(
+            &self.handler_chain,
+            self.child_exc_ctx(MountKind::Update, &child_path),
+        );
         let handle = self
             .controller
             .update(child_path, processor, on_error)
@@ -217,7 +269,10 @@ impl LiveComponentOperator {
     /// target states. Awaits until the deletion has synced.
     pub async fn delete<K: Display>(&self, key: K) -> Result<()> {
         let child_path = self.child_path(&key);
-        let on_error = build_on_error(&self.handler, self.exc_ctx(MountKind::Delete));
+        let on_error = build_chained_on_error(
+            &self.handler_chain,
+            self.child_exc_ctx(MountKind::Delete, &child_path),
+        );
         let handle = self
             .controller
             .delete(child_path, on_error)
@@ -246,7 +301,7 @@ pub(crate) fn new_operator(
     state: Arc<AppInner>,
     component_path: StablePath,
     instance: Arc<dyn LiveComponent>,
-    handler: Option<ExceptionHandler>,
+    handler_chain: Arc<Vec<ExceptionHandler>>,
     name: String,
 ) -> LiveComponentOperator {
     LiveComponentOperator {
@@ -254,7 +309,7 @@ pub(crate) fn new_operator(
         state,
         component_path,
         instance,
-        handler,
+        handler_chain,
         name,
     }
 }

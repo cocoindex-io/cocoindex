@@ -1,8 +1,6 @@
 //! Sealed `RustProfile` implementing `EngineProfile`.
 //! All types here are `pub(crate)` — users never see this module.
 
-#![allow(dead_code)]
-
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
