@@ -135,8 +135,16 @@ async fn sqlite_from_row_round_trips_a_row() -> cocoindex::Result<()> {
     let db = Database::connect(db_file.to_str().unwrap()).await?;
 
     let rows = vec![
-        Item { id: 1, name: "a".into(), score: 1.5 },
-        Item { id: 2, name: "b".into(), score: 2.5 },
+        Item {
+            id: 1,
+            name: "a".into(),
+            score: 1.5,
+        },
+        Item {
+            id: 2,
+            name: "b".into(),
+            score: 2.5,
+        },
     ];
 
     let app = App::builder("SqliteFromRow")
@@ -164,7 +172,13 @@ async fn sqlite_from_row_round_trips_a_row() -> cocoindex::Result<()> {
         .unwrap();
     let got: Vec<(i64, String, f64)> = fetched
         .iter()
-        .map(|r| (r.get::<i64, _>("id"), r.get::<String, _>("name"), r.get::<f64, _>("score")))
+        .map(|r| {
+            (
+                r.get::<i64, _>("id"),
+                r.get::<String, _>("name"),
+                r.get::<f64, _>("score"),
+            )
+        })
         .collect();
     assert_eq!(
         got,
@@ -186,8 +200,7 @@ async fn doris_from_row_round_trips_a_row() -> cocoindex::Result<()> {
         eprintln!("skipping live Doris from_row test; DORIS_FE_HOST is not set");
         return Ok(());
     };
-    let database =
-        std::env::var("DORIS_DATABASE").unwrap_or_else(|_| "cocoindex_test".to_string());
+    let database = std::env::var("DORIS_DATABASE").unwrap_or_else(|_| "cocoindex_test".to_string());
     let cfg = DorisConfig::new(fe_host, database.clone())
         .fe_http_port(
             std::env::var("DORIS_HTTP_PORT")
@@ -217,8 +230,16 @@ async fn doris_from_row_round_trips_a_row() -> cocoindex::Result<()> {
     let table = format!("coco_fromrow_{nonce}");
 
     let rows = vec![
-        Doc { id: "1".into(), title: Some("hi".into()), views: 10 },
-        Doc { id: "2".into(), title: None, views: 20 },
+        Doc {
+            id: "1".into(),
+            title: Some("hi".into()),
+            views: 10,
+        },
+        Doc {
+            id: "2".into(),
+            title: None,
+            views: 20,
+        },
     ];
 
     let tmp = tempfile::tempdir().unwrap();

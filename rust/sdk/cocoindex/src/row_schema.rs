@@ -49,7 +49,10 @@ pub enum LogicalType {
     /// A complex value (collection / map / nested struct / `Any`) stored as JSON.
     Json,
     /// A dense float vector of fixed dimension (`half` → 16-bit element type).
-    Vector { dim: u32, half: bool },
+    Vector {
+        dim: u32,
+        half: bool,
+    },
     /// A raw, connector-specific SQL type string (`#[coco(type = "…")]`), used
     /// verbatim by each connector.
     Custom(String),

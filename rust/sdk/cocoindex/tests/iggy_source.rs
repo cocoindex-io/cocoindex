@@ -380,7 +380,10 @@ async fn iggy_source_stream_reads_all_partitions() -> Result<()> {
     } else {
         details.partitions.iter().map(|p| p.id).collect()
     };
-    assert!(pids.len() >= 2, "expected a multi-partition topic, got {pids:?}");
+    assert!(
+        pids.len() >= 2,
+        "expected a multi-partition topic, got {pids:?}"
+    );
 
     // Produce one message to each discovered partition via the target.
     let tmp = tempfile::tempdir().unwrap();
@@ -454,7 +457,8 @@ async fn iggy_source_stream_reads_all_partitions() -> Result<()> {
     got.sort();
     expected.sort();
     assert_eq!(
-        got, expected,
+        got,
+        expected,
         "the keyless stream should read one message from each of the {} partitions",
         pids.len()
     );

@@ -723,7 +723,9 @@ impl LiveMapView<String, Vec<u8>> for IggyTopicStream {
         for pid in ids {
             let mut offset = 0u64;
             loop {
-                let polled = self.poll_from(&stream, &topic, &consumer, pid, offset).await?;
+                let polled = self
+                    .poll_from(&stream, &topic, &consumer, pid, offset)
+                    .await?;
                 if polled.messages.is_empty() {
                     break;
                 }
@@ -754,7 +756,9 @@ impl LiveMapFeed<String, Vec<u8>> for IggyTopicStream {
             let mut got_any = false;
             for &pid in &ids {
                 let offset = *offsets.get(&pid).unwrap_or(&0);
-                let polled = self.poll_from(&stream, &topic, &consumer, pid, offset).await?;
+                let polled = self
+                    .poll_from(&stream, &topic, &consumer, pid, offset)
+                    .await?;
                 for m in &polled.messages {
                     got_any = true;
                     offsets.insert(pid, m.header.offset + 1);

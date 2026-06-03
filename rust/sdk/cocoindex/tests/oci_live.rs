@@ -355,7 +355,9 @@ async fn oci_live_view_path_matcher_filters_before_head() -> Result<()> {
     let tmp = tempfile::tempdir().unwrap();
     let client = client_for(&server.uri(), &tmp.path().join("key.pem"));
     let options = ListOptions {
-        path_matcher: Some(Arc::new(PatternFilePathMatcher::include(["*.txt"]).unwrap())),
+        path_matcher: Some(Arc::new(
+            PatternFilePathMatcher::include(["*.txt"]).unwrap(),
+        )),
         ..Default::default()
     };
     let events = vec![

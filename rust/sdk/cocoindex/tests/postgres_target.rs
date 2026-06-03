@@ -762,8 +762,14 @@ async fn postgres_bytea_round_trips_byte_arrays_when_available() -> Result<()> {
                 ctx,
                 schema,
                 vec![
-                    BlobRow { id: 1, data: vec![0u8, 1, 2, 255, 104, 105] },
-                    BlobRow { id: 2, data: Vec::new() },
+                    BlobRow {
+                        id: 1,
+                        data: vec![0u8, 1, 2, 255, 104, 105],
+                    },
+                    BlobRow {
+                        id: 2,
+                        data: Vec::new(),
+                    },
                 ],
             )
         }
@@ -876,7 +882,10 @@ async fn postgres_schema_evolution_retype_and_pk_change_when_available() -> Resu
         }
     })
     .await?;
-    assert_eq!(pg_col_type(&db, &schema, "score").await.as_deref(), Some("bigint"));
+    assert_eq!(
+        pg_col_type(&db, &schema, "score").await.as_deref(),
+        Some("bigint")
+    );
 
     // v2: retype score bigint -> double precision (in-place ALTER, rows preserved).
     app.run({
@@ -885,7 +894,11 @@ async fn postgres_schema_evolution_retype_and_pk_change_when_available() -> Resu
             declare_evo_table(
                 ctx,
                 schema,
-                vec![("id", "bigint"), ("name", "text"), ("score", "double precision")],
+                vec![
+                    ("id", "bigint"),
+                    ("name", "text"),
+                    ("score", "double precision"),
+                ],
                 vec!["id"],
                 vec![
                     serde_json::json!({"id": 1, "name": "a", "score": 10.0}),
@@ -916,7 +929,11 @@ async fn postgres_schema_evolution_retype_and_pk_change_when_available() -> Resu
             declare_evo_table(
                 ctx,
                 schema,
-                vec![("id", "bigint"), ("name", "text"), ("score", "double precision")],
+                vec![
+                    ("id", "bigint"),
+                    ("name", "text"),
+                    ("score", "double precision"),
+                ],
                 vec!["name"],
                 vec![
                     serde_json::json!({"id": 1, "name": "a", "score": 10.0}),
@@ -936,12 +953,19 @@ async fn postgres_schema_evolution_retype_and_pk_change_when_available() -> Resu
     .fetch_optional(db.pool())
     .await
     .unwrap();
-    assert_eq!(pk_col.as_deref(), Some("name"), "primary key should now be `name`");
+    assert_eq!(
+        pk_col.as_deref(),
+        Some("name"),
+        "primary key should now be `name`"
+    );
     let count: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM \"{schema}\".\"evo\""))
         .fetch_one(db.pool())
         .await
         .unwrap();
-    assert_eq!(count, 2, "rows should be replayed after the destructive recreate");
+    assert_eq!(
+        count, 2,
+        "rows should be replayed after the destructive recreate"
+    );
 
     sqlx::query(&format!("DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"))
         .execute(db.pool())

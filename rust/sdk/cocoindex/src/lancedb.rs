@@ -99,7 +99,6 @@ impl ColumnType {
             ),
         }
     }
-
 }
 
 /// A column definition: its type and nullability.

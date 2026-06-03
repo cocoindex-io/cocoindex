@@ -196,7 +196,11 @@ async fn qdrant_target_supports_uuid_point_ids() -> Result<()> {
                     )
                     .await?;
                     for (i, id) in ids.iter().enumerate() {
-                        let v = if i == 0 { vec![1.0, 0.0, 0.0] } else { vec![0.0, 1.0, 0.0] };
+                        let v = if i == 0 {
+                            vec![1.0, 0.0, 0.0]
+                        } else {
+                            vec![0.0, 1.0, 0.0]
+                        };
                         // String/UUID point id (via From<&str>).
                         target.declare_point(&ctx, *id, v, payload("f.md", id))?;
                     }
@@ -221,9 +225,16 @@ async fn qdrant_target_supports_uuid_point_ids() -> Result<()> {
 
     // Upsert two UUID-keyed points.
     run(vec![uuid_a, uuid_b]).await;
-    assert_eq!(count(conn.clone(), collection.clone()).await, 2, "two UUID points");
+    assert_eq!(
+        count(conn.clone(), collection.clone()).await,
+        2,
+        "two UUID points"
+    );
     let hits = qdrant::vector_search(&conn, &collection, vec![1.0, 0.0, 0.0], 1).await?;
-    assert_eq!(hits[0].payload["text"], uuid_a, "UUID-keyed point is searchable");
+    assert_eq!(
+        hits[0].payload["text"], uuid_a,
+        "UUID-keyed point is searchable"
+    );
 
     // Drop one UUID point → orphan reconciled away by UUID id.
     run(vec![uuid_a]).await;

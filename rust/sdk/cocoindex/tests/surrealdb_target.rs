@@ -453,7 +453,8 @@ async fn surrealdb_schema_evolution_drops_field_when_available() {
             ("name", ColumnDef::new("string")),
             ("email", ColumnDef::new("string")),
         ])?;
-        let t = surrealdb::mount_table_target_with_schema(&ctx, graph, "acct", Some(schema)).await?;
+        let t =
+            surrealdb::mount_table_target_with_schema(&ctx, graph, "acct", Some(schema)).await?;
         t.declare_record(
             &ctx,
             "p1",
@@ -475,7 +476,8 @@ async fn surrealdb_schema_evolution_drops_field_when_available() {
     app.run(|ctx| async move {
         let graph = ctx.get_key(&GRAPH)?;
         let schema = TableSchema::new(vec![("name", ColumnDef::new("string"))])?;
-        let t = surrealdb::mount_table_target_with_schema(&ctx, graph, "acct", Some(schema)).await?;
+        let t =
+            surrealdb::mount_table_target_with_schema(&ctx, graph, "acct", Some(schema)).await?;
         t.declare_record(&ctx, "p1", &serde_json::json!({ "name": "Ann" }))?;
         Ok(())
     })

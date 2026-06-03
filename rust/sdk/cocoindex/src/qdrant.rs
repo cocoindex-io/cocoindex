@@ -1187,10 +1187,7 @@ mod tests {
             point_id(&StableKey::Str(Arc::from("42"))).unwrap(),
             QdrantPointId::Num(42)
         );
-        assert_eq!(
-            point_id(&StableKey::Int(7)).unwrap(),
-            QdrantPointId::Num(7)
-        );
+        assert_eq!(point_id(&StableKey::Int(7)).unwrap(), QdrantPointId::Num(7));
         // A non-numeric string is taken as a UUID id (Qdrant validates later).
         assert_eq!(
             point_id(&StableKey::Str(Arc::from("9b2e...-uuid"))).unwrap(),

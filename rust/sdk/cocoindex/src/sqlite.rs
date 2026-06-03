@@ -856,7 +856,11 @@ fn create_table_sql(spec: &TableSpec) -> String {
         // which forces NOT NULL on primary-key columns regardless of the
         // declared nullability — a SQLite non-rowid PK otherwise permits NULL).
         let is_pk = spec.table_schema.primary_key().contains(name);
-        let null = if col.nullable && !is_pk { "" } else { " NOT NULL" };
+        let null = if col.nullable && !is_pk {
+            ""
+        } else {
+            " NOT NULL"
+        };
         cols.push(format!("{} {}{}", quote_ident(name), col.sqlite_type, null));
     }
     let pk = spec

@@ -405,7 +405,10 @@ fn schema_two_vec() -> TableSchema {
             ("id", ColumnDef::new(ColumnType::Int64)),
             ("text", ColumnDef::new(ColumnType::Text)),
             ("embedding", ColumnDef::new(ColumnType::Vector(3))),
-            ("embedding2", ColumnDef::new(ColumnType::Vector(2)).nullable()),
+            (
+                "embedding2",
+                ColumnDef::new(ColumnType::Vector(2)).nullable(),
+            ),
         ],
         ["id"],
     )
@@ -431,8 +434,22 @@ async fn lancedb_adds_vector_column_additively() -> Result<()> {
         app.run(move |ctx| async move {
             let db = ctx.get_key(&DB)?;
             let table = lancedb::mount_table_target(&ctx, db, TABLE, schema()).await?;
-            table.declare_row(&ctx, &Row { id: 1, text: "a".into(), embedding: vec![1.0, 0.0, 0.0] })?;
-            table.declare_row(&ctx, &Row { id: 2, text: "b".into(), embedding: vec![0.0, 1.0, 0.0] })?;
+            table.declare_row(
+                &ctx,
+                &Row {
+                    id: 1,
+                    text: "a".into(),
+                    embedding: vec![1.0, 0.0, 0.0],
+                },
+            )?;
+            table.declare_row(
+                &ctx,
+                &Row {
+                    id: 2,
+                    text: "b".into(),
+                    embedding: vec![0.0, 1.0, 0.0],
+                },
+            )?;
             Ok(())
         })
         .await?;
@@ -449,18 +466,24 @@ async fn lancedb_adds_vector_column_additively() -> Result<()> {
         app.run(move |ctx| async move {
             let db = ctx.get_key(&DB)?;
             let table = lancedb::mount_table_target(&ctx, db, TABLE, schema_two_vec()).await?;
-            table.declare_row(&ctx, &RowTwoVec {
-                id: 1,
-                text: "a".into(),
-                embedding: vec![1.0, 0.0, 0.0],
-                embedding2: vec![0.5, 0.5],
-            })?;
-            table.declare_row(&ctx, &RowTwoVec {
-                id: 2,
-                text: "b".into(),
-                embedding: vec![0.0, 1.0, 0.0],
-                embedding2: vec![0.1, 0.9],
-            })?;
+            table.declare_row(
+                &ctx,
+                &RowTwoVec {
+                    id: 1,
+                    text: "a".into(),
+                    embedding: vec![1.0, 0.0, 0.0],
+                    embedding2: vec![0.5, 0.5],
+                },
+            )?;
+            table.declare_row(
+                &ctx,
+                &RowTwoVec {
+                    id: 2,
+                    text: "b".into(),
+                    embedding: vec![0.0, 1.0, 0.0],
+                    embedding2: vec![0.1, 0.9],
+                },
+            )?;
             Ok(())
         })
         .await?;

@@ -655,8 +655,12 @@ impl TableHandler {
                                 // drop and recreate the table (rows are replayed via
                                 // the Destructive child invalidation set at reconcile).
                                 if a.recreate && spec.managed_by.is_system() {
-                                    drop_table(&db, spec.pg_schema_name.as_deref(), &spec.table_name)
-                                        .await?;
+                                    drop_table(
+                                        &db,
+                                        spec.pg_schema_name.as_deref(),
+                                        &spec.table_name,
+                                    )
+                                    .await?;
                                 }
                                 define_table(&db, &spec).await?;
                                 if !a.retype_cols.is_empty() {
@@ -1079,7 +1083,10 @@ async fn apply_retypes(db: &Database, spec: &TableSpec, cols: &[String]) -> Resu
             continue;
         };
         let ident = quote_ident(name);
-        let alter = format!("ALTER TABLE {table} ALTER COLUMN {ident} TYPE {}", col.pg_type);
+        let alter = format!(
+            "ALTER TABLE {table} ALTER COLUMN {ident} TYPE {}",
+            col.pg_type
+        );
         if sqlx::query(&alter).execute(db.pool()).await.is_err() {
             // Incompatible cast: drop and re-add (best-effort, column data lost —
             // rows are repopulated by the Lossy child invalidation).

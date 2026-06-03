@@ -36,10 +36,10 @@ pub(crate) mod profile;
 pub mod qdrant;
 pub mod resources;
 pub mod row_schema;
-#[cfg(feature = "sqlite")]
-pub mod sqlite;
 #[cfg(any(feature = "doris", feature = "sqlite", feature = "surrealdb"))]
 pub(crate) mod sql_ident;
+#[cfg(feature = "sqlite")]
+pub mod sqlite;
 pub mod statediff;
 mod stats;
 #[cfg(feature = "surrealdb")]
