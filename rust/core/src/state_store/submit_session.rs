@@ -351,8 +351,13 @@ pub struct CommitPlan {
 /// `&'a mut WriteTxn<'env>` borrow is bounded by the callback's await
 /// suspension scope. The body's future is `'a`-tied so it can't outlive
 /// the borrow.
+///
+/// `Fn` (not `FnOnce`) so a backend that re-runs its commit txn can
+/// invoke the reconciler more than once; it therefore clones or
+/// `Arc`-shares its captures rather than moving them in. The LMDB
+/// AppStore invokes it exactly once.
 pub type ExistenceReconciler =
-    Box<dyn for<'a, 'env> FnOnce(&'a mut WriteTxn<'env>) -> BoxFuture<'a, Result<()>> + Send>;
+    Box<dyn for<'a, 'env> Fn(&'a mut WriteTxn<'env>) -> BoxFuture<'a, Result<()>> + Send + Sync>;
 
 // ---------------------------------------------------------------------------
 // AppStore methods — Phase 2 driver + Phase 4 commit / cleanup
