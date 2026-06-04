@@ -21,7 +21,7 @@ def _install_testcontainers_reaper_retry() -> None:
     ryuk container between attempts so we don't leak it.
     """
     try:
-        from testcontainers.core.container import Reaper  # type: ignore[import-untyped]
+        from testcontainers.core.container import Reaper  # type: ignore[import-not-found, import-untyped]
     except ImportError:
         return
 

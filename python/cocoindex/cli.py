@@ -803,17 +803,11 @@ async def _print_long_format(
     items: list[Any],
     app: App[Any, Any] | None = None,
 ) -> None:
-    """Print stable paths in table format with detailed info."""
+    """Print stable paths in a detailed multi-line format."""
     if not items:
         click.echo("Stable paths:")
         click.echo("  (none)")
         return
-
-    # Table header
-    click.echo(
-        f"{'PATH':<35} | {'TYPE':<10} | {'VERSION':<8} | {'PROCESSOR':<20} | {'TARGETS':<8} | {'MEMO':<5}"
-    )
-    click.echo("-" * 100)
 
     # Fetch detailed info from LMDB if app is available
     details_map: dict[str, Any] = {}
@@ -826,6 +820,7 @@ async def _print_long_format(
             if detail:
                 details_map[str(path)] = detail
 
+    click.echo("Stable paths:")
     for item in items:
         path = StablePath(item.path)
         path_str = str(path)
@@ -834,23 +829,43 @@ async def _print_long_format(
             if item.node_type == _core.StablePathNodeType.component()
             else "directory"
         )
+        click.echo(f"  PATH: {path_str}")
+        click.echo(f"    type: {node_type}")
 
-        # Get actual LMDB data if available
         detail = details_map.get(path_str)
         if detail:
-            version = str(detail.version)
-            processor = detail.processor_name[:20] if detail.processor_name else "-"
-            target_count = str(detail.target_state_count)
-            has_memo = "true" if detail.has_memoization else "false"
+            click.echo(f"    version: {detail.version}")
+            click.echo(
+                f"    processor: {detail.processor_name if detail.processor_name else '-'}"
+            )
+            click.echo(f"    target_state_count: {detail.target_state_count}")
+            click.echo(
+                f"    has_memoization: {'true' if detail.has_memoization else 'false'}"
+            )
+            if getattr(detail, "target_state_items", None):
+                click.echo("    target_state_items:")
+                for item_summary in detail.target_state_items:
+                    provider_generation = (
+                        f"{item_summary.provider_generation[0]}.{item_summary.provider_generation[1]}"
+                        if item_summary.provider_generation is not None
+                        else "None"
+                    )
+                    states = ", ".join(
+                        f"{version}:{state}" for version, state in item_summary.states
+                    )
+                    click.echo(
+                        f"      - target_state_path: {item_summary.target_state_path}"
+                    )
+                    click.echo(f"        key: {item_summary.key}")
+                    click.echo(f"        states: {states if states else '-'}")
+                    click.echo(
+                        f"        provider_schema_version: {item_summary.provider_schema_version}"
+                    )
+                    click.echo(f"        provider_generation: {provider_generation}")
         else:
-            version = "-"
-            processor = "-"
-            target_count = "-"
-            has_memo = "-"
+            click.echo("    details: not available")
 
-        click.echo(
-            f"{path_str:<35} | {node_type:<10} | {version:<8} | {processor:<20} | {target_count:<8} | {has_memo:<5}"
-        )
+        click.echo("")
 
 
 async def _stop_all_environments() -> None:

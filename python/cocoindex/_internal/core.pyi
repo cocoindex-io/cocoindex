@@ -183,6 +183,13 @@ class StablePathInfoAsyncIterator:
     def __aiter__(self) -> StablePathInfoAsyncIterator: ...
     def __anext__(self) -> Awaitable[StablePathInfo]: ...
 
+class TargetStateInfoItemSummary:
+    target_state_path: str
+    key: str
+    states: list[tuple[int, int]]
+    provider_schema_version: int
+    provider_generation: tuple[int, int] | None
+
 class StablePathDetail:
     """Detailed information about a stable path from LMDB."""
 
@@ -192,6 +199,7 @@ class StablePathDetail:
     processor_name: str
     target_state_count: int
     has_memoization: bool
+    target_state_items: list[TargetStateInfoItemSummary]
 
 def get_stable_path_detail(app: App, path: StablePath) -> StablePathDetail | None: ...
 

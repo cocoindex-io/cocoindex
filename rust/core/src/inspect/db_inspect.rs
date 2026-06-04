@@ -1,3 +1,4 @@
+use std::io::Cursor;
 use std::pin::Pin;
 
 use crate::prelude::*;
@@ -5,7 +6,7 @@ use crate::prelude::*;
 use crate::engine::environment::Environment;
 use crate::engine::{app::App, profile::EngineProfile};
 use crate::state::db_schema::{self, DbEntryKey};
-use crate::state::stable_path::{StablePath, StablePathPrefix, StablePathRef};
+use crate::state::stable_path::{StableKey, StablePath, StablePathPrefix, StablePathRef};
 use cocoindex_utils::deser::from_msgpack_slice;
 use futures::stream::Stream;
 use heed::types::{DecodeIgnore, Str};
@@ -174,6 +175,65 @@ pub fn list_app_names<Prof: EngineProfile>(env: &Environment<Prof>) -> Result<Ve
     Ok(names)
 }
 
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct TargetStateInfoItemSummary {
+    pub target_state_path: String,
+    pub key: String,
+    pub states: Vec<(u64, String)>,
+    pub provider_schema_version: u64,
+    pub provider_generation: Option<(u64, u64)>,
+}
+
+fn decode_target_state_key(key_bytes: &[u8]) -> String {
+    match storekey::decode::<Cursor<&[u8]>, StableKey>(Cursor::new(key_bytes)) {
+        Ok(key) => key.to_string(),
+        Err(_) => {
+            let mut hex_string = String::from("0x");
+            for byte in key_bytes {
+                hex_string.push_str(&format!("{:02x}", byte));
+            }
+            hex_string
+        }
+    }
+}
+
+fn summarize_target_state_items(
+    target_state_items: &std::collections::BTreeMap<
+        crate::state::target_state_path::TargetStatePathWithProviderId,
+        db_schema::TargetStateInfoItem,
+    >,
+) -> Vec<TargetStateInfoItemSummary> {
+    target_state_items
+        .iter()
+        .map(|(path_with_pid, item)| {
+            let key = decode_target_state_key(item.key.as_ref());
+            let states = item
+                .states
+                .iter()
+                .map(|(version, state)| {
+                    let state_name = match state {
+                        db_schema::TargetStateInfoItemState::Deleted => "Deleted".to_string(),
+                        db_schema::TargetStateInfoItemState::Existing(_) => "Existing".to_string(),
+                    };
+                    (*version, state_name)
+                })
+                .collect();
+            let provider_generation = item
+                .provider_generation
+                .as_ref()
+                .map(|generation| (generation.provider_id, generation.provider_schema_version));
+
+            TargetStateInfoItemSummary {
+                target_state_path: path_with_pid.to_string(),
+                key,
+                states,
+                provider_schema_version: item.provider_schema_version,
+                provider_generation,
+            }
+        })
+        .collect()
+}
+
 /// Detailed information about a single stable path stored in LMDB
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct StablePathDetail {
@@ -183,15 +243,15 @@ pub struct StablePathDetail {
     pub processor_name: String,
     pub target_state_count: usize,
     pub has_memoization: bool,
+    pub target_state_items: Vec<TargetStateInfoItemSummary>,
 }
 
-/// Get detailed information about a single stable path from LMDB
-pub fn get_stable_path_detail<Prof: EngineProfile>(
-    app: &App<Prof>,
+fn get_stable_path_detail_in_db(
+    db: &db_schema::Database,
+    db_env: heed::Env<heed::WithoutTls>,
     path: &StablePath,
 ) -> Result<Option<StablePathDetail>> {
-    let db = app.app_ctx().db();
-    let txn = app.app_ctx().env().db_env().read_txn()?;
+    let txn = db_env.read_txn()?;
 
     // Get TrackingInfo (version, processor_name, target_state_items)
     let tracking_key = db_schema::DbEntryKey::StablePath(
@@ -200,16 +260,17 @@ pub fn get_stable_path_detail<Prof: EngineProfile>(
     )
     .encode()?;
 
-    let (version, processor_name, target_state_count) =
+    let (version, processor_name, target_state_count, target_state_items) =
         if let Some(value) = db.get(&txn, tracking_key.as_slice())? {
             let info: db_schema::StablePathEntryTrackingInfo = from_msgpack_slice(value)?;
             (
                 info.version,
                 info.processor_name.to_string(),
                 info.target_state_items.len(),
+                summarize_target_state_items(&info.target_state_items),
             )
         } else {
-            (0, String::new(), 0)
+            (0, String::new(), 0, Vec::new())
         };
 
     // Check for ComponentMemoization (has memoization)
@@ -241,5 +302,34 @@ pub fn get_stable_path_detail<Prof: EngineProfile>(
         processor_name,
         target_state_count,
         has_memoization,
+        target_state_items,
     }))
+}
+
+/// Get detailed information about a single stable path from LMDB
+pub fn get_stable_path_detail<Prof: EngineProfile>(
+    app: &App<Prof>,
+    path: &StablePath,
+) -> Result<Option<StablePathDetail>> {
+    let db = app.app_ctx().db();
+    let db_env = app.app_ctx().env().db_env().clone();
+    get_stable_path_detail_in_db(&db, db_env, path)
+}
+
+pub fn get_stable_path_detail_by_name<Prof: EngineProfile>(
+    env: &Environment<Prof>,
+    app_name: &str,
+    path: &StablePath,
+) -> Result<Option<StablePathDetail>> {
+    let db_env = env.db_env();
+    let rtxn = db_env.read_txn()?;
+    let db = match db_env
+        .open_database::<heed::types::Bytes, heed::types::Bytes>(&rtxn, Some(app_name))?
+    {
+        Some(db) => db,
+        None => return Ok(None),
+    };
+    drop(rtxn);
+
+    get_stable_path_detail_in_db(&db, db_env.clone(), path)
 }

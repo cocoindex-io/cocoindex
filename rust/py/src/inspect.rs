@@ -140,6 +140,21 @@ pub fn list_app_names(env: &PyEnvironment) -> PyResult<Vec<String>> {
     db_inspect::list_app_names(&env.0).into_py_result()
 }
 
+#[pyclass(name = "TargetStateInfoItemSummary")]
+#[derive(Clone)]
+pub struct PyTargetStateInfoItemSummary {
+    #[pyo3(get)]
+    pub target_state_path: String,
+    #[pyo3(get)]
+    pub key: String,
+    #[pyo3(get)]
+    pub states: Vec<(u64, String)>,
+    #[pyo3(get)]
+    pub provider_schema_version: u64,
+    #[pyo3(get)]
+    pub provider_generation: Option<(u64, u64)>,
+}
+
 #[pyclass(name = "StablePathDetail")]
 #[derive(Clone)]
 pub struct PyStablePathDetail {
@@ -155,6 +170,8 @@ pub struct PyStablePathDetail {
     pub target_state_count: usize,
     #[pyo3(get)]
     pub has_memoization: bool,
+    #[pyo3(get)]
+    pub target_state_items: Vec<PyTargetStateInfoItemSummary>,
 }
 
 #[pyfunction]
@@ -170,5 +187,45 @@ pub fn get_stable_path_detail(
         processor_name: d.processor_name,
         target_state_count: d.target_state_count,
         has_memoization: d.has_memoization,
+        target_state_items: d
+            .target_state_items
+            .into_iter()
+            .map(|item| PyTargetStateInfoItemSummary {
+                target_state_path: item.target_state_path,
+                key: item.key,
+                states: item.states,
+                provider_schema_version: item.provider_schema_version,
+                provider_generation: item.provider_generation,
+            })
+            .collect(),
+    }))
+}
+
+#[pyfunction]
+pub fn get_stable_path_detail_by_name(
+    env: &PyEnvironment,
+    app_name: &str,
+    path: &PyStablePath,
+) -> PyResult<Option<PyStablePathDetail>> {
+    let detail =
+        db_inspect::get_stable_path_detail_by_name(&env.0, app_name, &path.0).into_py_result()?;
+    Ok(detail.map(|d| PyStablePathDetail {
+        path: PyStablePath(d.path),
+        node_type: PyStablePathNodeType(d.node_type),
+        version: d.version,
+        processor_name: d.processor_name,
+        target_state_count: d.target_state_count,
+        has_memoization: d.has_memoization,
+        target_state_items: d
+            .target_state_items
+            .into_iter()
+            .map(|item| PyTargetStateInfoItemSummary {
+                target_state_path: item.target_state_path,
+                key: item.key,
+                states: item.states,
+                provider_schema_version: item.provider_schema_version,
+                provider_generation: item.provider_generation,
+            })
+            .collect(),
     }))
 }
