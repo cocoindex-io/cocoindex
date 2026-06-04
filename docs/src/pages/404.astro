@@ -4,6 +4,7 @@
 // "coconut rolled off the tree" experience across the two sites.
 import '../styles/globals.css';
 import Topbar from '../components/Topbar.astro';
+import MobileSheet from '../components/MobileSheet.astro';
 import { SITE_MAIN, SITE_BLOG, SITE_EXAMPLES } from '../consts';
 
 const base = import.meta.env.BASE_URL.replace(/\/$/, '') || '/';
@@ -28,7 +29,8 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, '') || '/';
     />
   </head>
   <body>
-    <Topbar />
+    <Topbar mobileSheetId="mobileSheet" />
+    <MobileSheet sidebarItems={null} />
     <main class="nf">
       <section class="nf-hero">
         <div class="wrap nf-grid">

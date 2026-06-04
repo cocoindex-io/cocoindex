@@ -6,7 +6,7 @@ description: >
   environment variable, and understand how CocoIndex avoids deadlocks in
   nested mount scenarios.
 ---
-CocoIndex executes each [processing component](../programming_guide/processing_component.md) as a unit of concurrent work. By default, up to **1024** processing components can be in flight per app. When components perform resource-intensive work (e.g., calling external APIs, running ML models), you may want a tighter limit.
+CocoIndex executes each [processing component](../programming_guide/processing_component) as a unit of concurrent work. By default, up to **1024** processing components can be in flight per app. When components perform resource-intensive work (e.g., calling external APIs, running ML models), you may want a tighter limit.
 
 ## Setting the limit
 

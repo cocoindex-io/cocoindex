@@ -11,8 +11,10 @@ from __future__ import annotations
 import dataclasses
 import functools
 import math
+import os
 import pickle
 import struct
+import sys
 import typing
 
 from . import core
@@ -88,6 +90,34 @@ def _make_state_fn_entry(
     return StateFnEntry(deserialize_prev=_deserialize_prev, call=state_fn)
 
 
+def canonical_module_name(obj: typing.Any) -> str:
+    """Return ``obj.__module__``, mapping ``"__main__"`` to the entry script's basename.
+
+    Why: ``fn.__module__`` is part of memoization keys, but the same script
+    produces different module names depending on how it's invoked:
+
+    * ``python main.py``           -> ``__main__``
+    * ``cocoindex update main.py`` -> ``main`` (basename, set by the loader)
+    * ``cocoindex update main``    -> ``main`` (importlib's module name)
+
+    Canonicalizing ``__main__`` to the script's basename collapses all three to
+    the same identity so memo caches are shared across them.
+
+    Callers must pass an object that has ``__module__`` (classes, regular
+    functions, lambdas, callable instances). If you're passing something looser
+    like a bound method or ``functools.partial`` produced by user code, wrap
+    with ``getattr(..., '__module__', None)`` at the call site instead.
+    """
+    mod: str = obj.__module__
+    if mod == "__main__":
+        main_mod = sys.modules.get("__main__")
+        if main_mod is not None:
+            main_file: str | None = getattr(main_mod, "__file__", None)
+            if main_file:
+                return os.path.splitext(os.path.basename(main_file))[0]
+    return mod
+
+
 def _is_dataclass_instance(obj: object) -> bool:
     """Check if obj is a dataclass instance (not a class)."""
     return dataclasses.is_dataclass(obj) and not isinstance(obj, type)
@@ -98,7 +128,11 @@ def _is_pydantic_model(obj: object) -> bool:
     return hasattr(obj, "__pydantic_fields__") and not isinstance(obj, type)  # type: ignore[attr-defined]
 
 
-def _canonicalize_dataclass(obj: object, _seen: dict[int, int]) -> Fingerprintable:
+def _canonicalize_dataclass(
+    obj: object,
+    _seen: dict[int, int],
+    state_methods: list[StateFnEntry],
+) -> Fingerprintable:
     """Canonicalize a dataclass instance.
 
     Preserves field definition order and includes all fields.
@@ -108,16 +142,20 @@ def _canonicalize_dataclass(obj: object, _seen: dict[int, int]) -> Fingerprintab
     fields = dataclasses.fields(obj)  # type: ignore[arg-type]
     return (
         "dataclass",
-        typ.__module__,
+        canonical_module_name(typ),
         typ.__qualname__,
         tuple(
-            (field.name, _canonicalize(getattr(obj, field.name), _seen))
+            (field.name, _canonicalize(getattr(obj, field.name), _seen, state_methods))
             for field in fields
         ),
     )
 
 
-def _canonicalize_pydantic(obj: object, _seen: dict[int, int]) -> Fingerprintable:
+def _canonicalize_pydantic(
+    obj: object,
+    _seen: dict[int, int],
+    state_methods: list[StateFnEntry],
+) -> Fingerprintable:
     """Canonicalize a Pydantic v2 model instance.
 
     Includes all fields (set and unset) to ensure determinism.
@@ -127,9 +165,12 @@ def _canonicalize_pydantic(obj: object, _seen: dict[int, int]) -> Fingerprintabl
     field_names = obj.__pydantic_fields__.keys()  # type: ignore[attr-defined]
     return (
         "pydantic",
-        typ.__module__,
+        canonical_module_name(typ),
         typ.__qualname__,
-        tuple((name, _canonicalize(getattr(obj, name), _seen)) for name in field_names),
+        tuple(
+            (name, _canonicalize(getattr(obj, name), _seen, state_methods))
+            for name in field_names
+        ),
     )
 
 
@@ -227,7 +268,7 @@ def _stable_sort_key(v: Fingerprintable) -> tuple[typing.Any, ...]:
 def _canonicalize(
     obj: object,
     _seen: dict[int, int] | None,
-    state_methods: list[StateFnEntry] | None = None,
+    state_methods: list[StateFnEntry],
 ) -> Fingerprintable:
     # 0) Cycle / shared-reference tracking for containers
     if _seen is None:
@@ -251,13 +292,12 @@ def _canonicalize(
         state_hook = getattr(obj, "__coco_memo_state__", None)
         if state_hook is not None and callable(state_hook):
             tag = "shook"
-            if state_methods is not None:
-                # raw function for type hint extraction (unbound method on class)
-                raw_fn = getattr(typ, "__coco_memo_state__")
-                state_methods.append(_make_state_fn_entry(state_hook, raw_fn))
+            # raw function for type hint extraction (unbound method on class)
+            raw_fn = getattr(typ, "__coco_memo_state__")
+            state_methods.append(_make_state_fn_entry(state_hook, raw_fn))
         return (
             tag,
-            typ.__module__,
+            canonical_module_name(typ),
             typ.__qualname__,
             _canonicalize(k, _seen, state_methods),
         )
@@ -269,12 +309,11 @@ def _canonicalize(
             tag = "hook"
             if memo.state_fn is not None:
                 tag = "shook"
-                if state_methods is not None:
-                    bound = functools.partial(memo.state_fn, obj)
-                    state_methods.append(_make_state_fn_entry(bound, memo.state_fn))
+                bound = functools.partial(memo.state_fn, obj)
+                state_methods.append(_make_state_fn_entry(bound, memo.state_fn))
             return (
                 tag,
-                base.__module__,
+                canonical_module_name(base),
                 base.__qualname__,
                 _canonicalize(k, _seen, state_methods),
             )
@@ -312,11 +351,11 @@ def _canonicalize(
 
     # 5) Dataclass instances
     if _is_dataclass_instance(obj):
-        return _canonicalize_dataclass(obj, _seen)
+        return _canonicalize_dataclass(obj, _seen, state_methods)
 
     # 6) Pydantic v2 models
     if _is_pydantic_model(obj):
-        return _canonicalize_pydantic(obj, _seen)
+        return _canonicalize_pydantic(obj, _seen, state_methods)
 
     # 7) Fallback
     try:
@@ -334,15 +373,19 @@ def _make_call_canonical(
     func: typing.Callable[..., object],
     args: tuple[object, ...],
     kwargs: dict[str, object],
+    state_methods: list[StateFnEntry],
     *,
     version: str | int | None = None,
-    state_methods: list[StateFnEntry] | None = None,
+    prefix_args: tuple[object, ...] = (),
 ) -> Fingerprintable:
     function_identity = (
-        getattr(func, "__module__", None),
+        canonical_module_name(func),
         getattr(func, "__qualname__", None),
     )
     canonical_args = tuple(
+        _canonicalize(a, _seen=None, state_methods=state_methods) for a in prefix_args
+    )
+    canonical_args = canonical_args + tuple(
         _canonicalize(a, _seen=None, state_methods=state_methods) for a in args
     )
     canonical_kwargs = tuple(
@@ -359,33 +402,39 @@ def _make_call_canonical(
 
 
 def memo_fingerprint(obj: object) -> core.Fingerprint:
-    return core.fingerprint_simple_object(_canonicalize(obj, _seen=None))
+    # State methods are meaningless for an object-only fingerprint; collect
+    # into a throwaway list so the canonicalizer signature stays uniform.
+    return core.fingerprint_simple_object(
+        _canonicalize(obj, _seen=None, state_methods=[])
+    )
 
 
 def fingerprint_call(
     func: typing.Callable[..., object],
     args: tuple[object, ...],
     kwargs: dict[str, object],
+    state_methods: list[StateFnEntry],
     *,
     version: str | int | None = None,
-    state_methods: list[StateFnEntry] | None = None,
+    prefix_args: tuple[object, ...] = (),
 ) -> core.Fingerprint:
     """Compute the deterministic fingerprint for a function call.
 
     Returns a `cocoindex._internal.core.Fingerprint` object (Python wrapper around a
     stable 16-byte digest). Use `bytes(fp)` or `fp.as_bytes()` to get raw bytes.
 
-    If *state_methods* is provided, any state methods discovered during
-    canonicalization are appended to it (used by the execution layer for memo
-    state validation).
+    Any state methods discovered during canonicalization are appended to
+    *state_methods* (used by the execution layer for memo state validation).
+    Pass an empty list when state methods aren't needed.
     """
 
     call_key_obj = _make_call_canonical(
         func,
         args,
         kwargs,
+        state_methods,
         version=version,
-        state_methods=state_methods,
+        prefix_args=prefix_args,
     )
     # One Python -> Rust call.
     return core.fingerprint_simple_object(call_key_obj)
@@ -394,7 +443,7 @@ def fingerprint_call(
 # Register memo key for class types.
 register_memo_key_function(
     type,
-    lambda cls: (getattr(cls, "__module__", None), getattr(cls, "__qualname__", None)),
+    lambda cls: (canonical_module_name(cls), getattr(cls, "__qualname__", None)),
 )
 
 

@@ -1,0 +1,27 @@
+[workspace]
+
+[package]
+name = "gdrive-text-embedding"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# Google Drive source + Postgres/pgvector target both live in the SDK.
+# `text` + `fastembed` pull in the SDK ops facades (RecursiveSplitter and the
+# SentenceTransformerEmbedder) so this example no longer hand-rolls chunking or
+# the fastembed plumbing.
+cocoindex = { path = "../../../rust/sdk/cocoindex", features = [
+    "postgres",
+    "google_drive",
+    "text",
+    "fastembed",
+] }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+# Query path (pgvector similarity); target writes go through cocoindex::postgres.
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio",
+    "tls-rustls",
+    "postgres",
+] }
+dotenvy = "0.15"

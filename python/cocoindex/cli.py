@@ -1,3 +1,4 @@
+import logging
 import os
 import signal
 import sys
@@ -23,6 +24,25 @@ from cocoindex._internal.environment import (
 from cocoindex._internal.setting import get_default_db_path
 from cocoindex.inspect import iter_stable_paths, iter_stable_paths_by_name
 from cocoindex._internal.stable_path import StablePath
+
+
+# ---------------------------------------------------------------------------
+# Logging setup
+# ---------------------------------------------------------------------------
+
+
+def _setup_logging() -> None:
+    """Configure Python's root logger for CLI use.
+
+    Level is taken from the ``COCOINDEX_LOG_LEVEL`` env var (default ``WARNING``).
+    Uses ``force=True`` so re-invocation (e.g. tests) replaces any prior config.
+    """
+    level = os.environ.get("COCOINDEX_LOG_LEVEL", "WARNING").upper()
+    logging.basicConfig(
+        format="%(asctime)s %(levelname)-5s %(name)s: %(message)s",
+        level=level,
+        force=True,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -417,9 +437,6 @@ requires-python = ">=3.11"
 dependencies = [
     "cocoindex>={coco.__version__}",
 ]
-
-[tool.uv]
-prerelease = "explicit"
 """
     (project_path / "pyproject.toml").write_text(pyproject_toml_content)
 
@@ -504,6 +521,8 @@ async def _print_tree_streaming(
 )
 def cli(env_file: str | None = None, app_dir: str | None = "") -> None:
     """CLI for CocoIndex."""
+    _setup_logging()
+
     dotenv_path = env_file or find_dotenv(usecwd=True)
 
     if load_dotenv(dotenv_path=dotenv_path):
@@ -915,6 +934,13 @@ async def _stop_all_environments() -> None:
     default=False,
     help="Run in live mode (live components continue processing after initial update).",
 )
+@click.option(
+    "--preview",
+    is_flag=True,
+    show_default=True,
+    default=False,
+    help="Compute target actions without applying them. Prints planned actions.",
+)
 def update(
     app_target: str,
     force: bool,
@@ -922,12 +948,18 @@ def update(
     reset: bool,
     full_reprocess: bool,
     live: bool,
+    preview: bool,
 ) -> None:
     """
     Run an app in catch-up mode. With --live, run in live mode.
 
     `APP_TARGET`: `path/to/app.py`, `module`, `path/to/app.py:app_name`, or `module:app_name`.
     """
+    if preview and reset:
+        raise click.UsageError("--preview and --reset cannot be used together.")
+    if preview and live:
+        raise click.UsageError("--preview and --live cannot be used together.")
+
     app = _load_app(app_target)
 
     async def _do(cancelled: Any) -> None:
@@ -939,6 +971,20 @@ def update(
                 print(
                     f"Running app '{app._name}' from environment '{env.name}' (db path: {env.settings.db_path})"
                 )
+
+            if preview:
+                handle = app.update(
+                    full_reprocess=full_reprocess,
+                    preview=True,
+                )
+                actions: list[Any] = await handle.result()
+                click.echo("Preview: planned target actions")
+                if actions:
+                    for action in actions:
+                        click.echo(f"  {action!r}")
+                else:
+                    click.echo("  No target actions planned.")
+                return
 
             # --reset: drop existing state first (equivalent to `cocoindex drop ...`)
             if reset:

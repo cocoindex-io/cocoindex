@@ -1,10 +1,13 @@
 """
 PostgreSQL Source (v1) - CocoIndex pipeline example.
 
-- Read product rows from a source PostgreSQL table
-- Compute derived fields and embeddings
-- Store results into a target PostgreSQL table with pgvector
-- Query demo using pgvector cosine distance (<=>)
+Index (one-shot catch-up; live mode is not supported for the postgres source):
+    cocoindex update main
+
+Query the index:
+    python main.py "your query"
+
+Pipeline: read product rows -> compute derived fields + embeddings -> store in pgvector.
 """
 
 from __future__ import annotations
@@ -13,9 +16,11 @@ import asyncio
 import os
 import sys
 from dataclasses import dataclass
+from dotenv import load_dotenv
 from typing import Annotated, AsyncIterator
 
 import asyncpg
+from pgvector.asyncpg import register_vector
 from numpy.typing import NDArray
 
 import cocoindex as coco
@@ -62,10 +67,9 @@ class OutputProduct:
 async def coco_lifespan(
     builder: coco.EnvironmentBuilder,
 ) -> AsyncIterator[None]:
-    # Provide resources needed across the CocoIndex environment
     async with (
-        await asyncpg.create_pool(DATABASE_URL) as target_pool,
-        await asyncpg.create_pool(SOURCE_DATABASE_URL) as source_pool,
+        asyncpg.create_pool(DATABASE_URL) as target_pool,
+        asyncpg.create_pool(SOURCE_DATABASE_URL) as source_pool,
     ):
         builder.provide(PG_DB, target_pool)
         builder.provide(SOURCE_POOL, source_pool)
@@ -160,16 +164,21 @@ async def query_once(
         print("---")
 
 
-async def query() -> None:
+async def query(initial_query: str | None = None) -> None:
     embedder = SentenceTransformerEmbedder(EMBED_MODEL)
-    async with await asyncpg.create_pool(DATABASE_URL) as pool:
-        if len(sys.argv) > 2:
-            q = " ".join(sys.argv[2:])
-            await query_once(pool, embedder, q)
+    async with asyncpg.create_pool(DATABASE_URL, init=register_vector) as pool:
+        if initial_query is not None:
+            await query_once(pool, embedder, initial_query)
             return
-        print('Usage: python main.py query "your search query"')
+
+        while True:
+            q = input("Enter search query (or Enter to quit): ").strip()
+            if not q:
+                break
+            await query_once(pool, embedder, q)
 
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "query":
-        asyncio.run(query())
+    load_dotenv()
+    initial = " ".join(sys.argv[1:]) if len(sys.argv) > 1 else None
+    asyncio.run(query(initial))

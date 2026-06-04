@@ -1,0 +1,41 @@
+<script>
+  const renderMermaidDiagrams = async () => {
+    const nodes = Array.from(document.querySelectorAll('.mermaid:not([data-processed="true"])'));
+    if (nodes.length === 0) return;
+
+    const { default: mermaid } = await import('mermaid');
+    const styles = getComputedStyle(document.documentElement);
+    const cssVar = (name) => styles.getPropertyValue(name).trim();
+
+    mermaid.initialize({
+      startOnLoad: false,
+      securityLevel: 'strict',
+      theme: 'base',
+      themeVariables: {
+        background: cssVar('--paper'),
+        primaryColor: cssVar('--cream'),
+        primaryTextColor: cssVar('--maroon-ink'),
+        primaryBorderColor: cssVar('--maroon'),
+        lineColor: cssVar('--coral'),
+        secondaryColor: cssVar('--cream-soft'),
+        tertiaryColor: cssVar('--paper'),
+        noteBkgColor: cssVar('--cream'),
+        noteTextColor: cssVar('--maroon-ink'),
+        noteBorderColor: cssVar('--coral'),
+      },
+    });
+
+    try {
+      await mermaid.run({ nodes });
+    } catch (error) {
+      console.error('Failed to render Mermaid diagram', error);
+      nodes.forEach((node) => node.closest('.mermaid-figure')?.classList.add('mermaid-figure-error'));
+    }
+  };
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', renderMermaidDiagrams, { once: true });
+  } else {
+    renderMermaidDiagrams();
+  }
+</script>

@@ -75,8 +75,19 @@ static LANGUAGE_INFO_BY_NAME: LazyLock<
     add("apex", &[".cls", ".trigger"], None);
     add("arduino", &[".ino"], None);
     add("asm", &[".asm", ".a51", ".i", ".nas", ".nasm", ".s"], None);
-    add("astro", &[".astro"], None);
-    add("bash", &[".sh", ".bash"], None);
+    add(
+        "astro",
+        &[".astro"],
+        Some(TreeSitterLanguageInfo::new(
+            tree_sitter_astro_next::LANGUAGE,
+            [],
+        )),
+    );
+    add(
+        "bash",
+        &[".sh", ".bash"],
+        Some(TreeSitterLanguageInfo::new(tree_sitter_bash::LANGUAGE, [])),
+    );
     add("beancount", &[".beancount"], None);
     add("bibtex", &[".bib", ".bibtex"], None);
     add("bicep", &[".bicep", ".bicepparam"], None);
@@ -97,7 +108,11 @@ static LANGUAGE_INFO_BY_NAME: LazyLock<
         ],
         None,
     );
-    add("cmake", &[".cmake", ".cmake.in"], None);
+    add(
+        "cmake",
+        &[".cmake", ".cmake.in"],
+        Some(TreeSitterLanguageInfo::new(tree_sitter_cmake::LANGUAGE, [])),
+    );
     add(
         "commonlisp",
         &[
@@ -142,7 +157,11 @@ static LANGUAGE_INFO_BY_NAME: LazyLock<
     );
     add("elisp", &[".el"], None);
     add("elixir", &[".ex", ".exs"], None);
-    add("elm", &[".elm"], None);
+    add(
+        "elm",
+        &[".elm"],
+        Some(TreeSitterLanguageInfo::new(tree_sitter_elm::LANGUAGE, [])),
+    );
     add("embeddedtemplate", &[".ets"], None);
     add(
         "erlang",
@@ -187,7 +206,11 @@ static LANGUAGE_INFO_BY_NAME: LazyLock<
     add("hare", &[".ha"], None);
     add("haskell", &[".hs", ".hs-boot", ".hsc"], None);
     add("haxe", &[".hx"], None);
-    add("hcl", &[".hcl", ".tf"], None);
+    add(
+        "hcl",
+        &[".hcl", ".tf"],
+        Some(TreeSitterLanguageInfo::new(tree_sitter_hcl::LANGUAGE, [])),
+    );
     add("heex", &[".heex"], None);
     add("hlsl", &[".hlsl"], None);
     add(
@@ -266,7 +289,11 @@ static LANGUAGE_INFO_BY_NAME: LazyLock<
         Some(TreeSitterLanguageInfo::new(tree_sitter_json::LANGUAGE, [])),
     );
     add("jsonnet", &[".jsonnet"], None);
-    add("julia", &[".jl"], None);
+    add(
+        "julia",
+        &[".jl"],
+        Some(TreeSitterLanguageInfo::new(tree_sitter_julia::LANGUAGE, [])),
+    );
     add("kdl", &[".kdl"], None);
     add(
         "kotlin",
@@ -427,7 +454,14 @@ static LANGUAGE_INFO_BY_NAME: LazyLock<
     );
     add("squirrel", &[".nut"], None);
     add("starlark", &[".star", ".bzl"], None);
-    add("svelte", &[".svelte"], None);
+    add(
+        "svelte",
+        &[".svelte"],
+        Some(TreeSitterLanguageInfo::new(
+            tree_sitter_svelte_ng::LANGUAGE,
+            [],
+        )),
+    );
     add(
         "swift",
         &[".swift"],
@@ -469,7 +503,14 @@ static LANGUAGE_INFO_BY_NAME: LazyLock<
     add("verilog", &[".vh"], None);
     add("vhdl", &[".vhd", ".vhdl"], None);
     add("vim", &[".vim"], None);
-    add("vue", &[".vue"], None);
+    add(
+        "vue",
+        &[".vue"],
+        Some(TreeSitterLanguageInfo::new(
+            tree_sitter_vue_next::LANGUAGE,
+            [],
+        )),
+    );
     add("wast", &[".wast"], None);
     add("wat", &[".wat"], None);
     add("wgsl", &[".wgsl"], None);
@@ -538,7 +579,35 @@ mod tests {
         assert_eq!(detect_language("test.rs"), Some("rust"));
         assert_eq!(detect_language("main.py"), Some("python"));
         assert_eq!(detect_language("app.js"), Some("javascript"));
+        assert_eq!(detect_language("App.svelte"), Some("svelte"));
+        assert_eq!(detect_language("App.vue"), Some("vue"));
+        assert_eq!(detect_language("script.jl"), Some("julia"));
         assert_eq!(detect_language("noextension"), None);
         assert_eq!(detect_language("unknown.xyz"), None);
+    }
+
+    #[test]
+    fn test_svelte_and_vue_have_treesitter() {
+        let svelte = get_language_info(".svelte").unwrap();
+        assert_eq!(svelte.name.as_ref(), "svelte");
+        assert!(svelte.treesitter_info.is_some());
+
+        let vue = get_language_info(".vue").unwrap();
+        assert_eq!(vue.name.as_ref(), "vue");
+        assert!(vue.treesitter_info.is_some());
+    }
+
+    #[test]
+    fn test_julia_has_treesitter() {
+        let julia = get_language_info(".jl").unwrap();
+        assert_eq!(julia.name.as_ref(), "julia");
+        assert!(julia.treesitter_info.is_some());
+    }
+
+    #[test]
+    fn test_astro_has_treesitter() {
+        let astro = get_language_info(".astro").unwrap();
+        assert_eq!(astro.name.as_ref(), "astro");
+        assert!(astro.treesitter_info.is_some());
     }
 }

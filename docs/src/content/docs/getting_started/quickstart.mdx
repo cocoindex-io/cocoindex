@@ -29,10 +29,10 @@ When your source data is updated, or your processing logic is changed (for examp
 
 ## Setup
 
-1. Install CocoIndex (see [Installation](./installation.md) for other package managers) and the Docling dependency:
+1. Install CocoIndex (see [Installation](./installation) for other package managers) and the Docling dependency:
 
     ```bash
-    pip install -U --pre cocoindex docling
+    pip install -U cocoindex docling
     ```
 
 2. Create a new directory for your project:
@@ -47,7 +47,7 @@ When your source data is updated, or your processing logic is changed (for examp
     ```bash
     mkdir pdf_files
     ```
-    You can download sample PDF files from the [git repo](https://github.com/cocoindex-io/cocoindex/tree/v1/examples/pdf_to_markdown).
+    You can download sample PDF files from the [git repo](https://github.com/cocoindex-io/cocoindex/tree/main/examples/pdf_to_markdown).
 
 4. Create a `.env` file to configure the database path:
 
@@ -71,9 +71,19 @@ import pathlib
 import cocoindex as coco
 from cocoindex.connectors import localfs
 from cocoindex.resources.file import PatternFilePathMatcher
-from docling.document_converter import DocumentConverter
+from docling.datamodel.accelerator_options import AcceleratorDevice, AcceleratorOptions
+from docling.datamodel.base_models import InputFormat
+from docling.datamodel.pipeline_options import PdfPipelineOptions
+from docling.document_converter import DocumentConverter, PdfFormatOption
 
-_converter = DocumentConverter()
+_pipeline_options = PdfPipelineOptions(
+    accelerator_options=AcceleratorOptions(device=AcceleratorDevice.CPU)
+)
+_converter = DocumentConverter(
+    format_options={
+        InputFormat.PDF: PdfFormatOption(pipeline_options=_pipeline_options)
+    }
+)
 
 @coco.fn(memo=True)
 def process_file(
@@ -87,9 +97,9 @@ def process_file(
     localfs.declare_file(outdir / outname, markdown, create_parent_dirs=True)
 ```
 
-- **`localfs.File`** — A file object returned by `localfs.walk_dir()`, implementing the [`FileLike`](../common_resources/data_types.md#filelike) base class. See the [localfs connector](../connectors/localfs.md) for full details.
+- **`localfs.File`** — A file object returned by `localfs.walk_dir()`, implementing the [`FileLike`](../common_resources/data_types#filelike) base class. See the [localfs connector](../connectors/localfs) for full details.
 - **`memo=True`** — Caches results; unchanged files are skipped on re-runs
-- **`localfs.declare_file()`** — Declares a file [target state](../programming_guide/target_state.md); auto-deleted if source is removed. See [localfs as target](../connectors/localfs.md#as-target) for the full API.
+- **`localfs.declare_file()`** — Declares a file [target state](../programming_guide/target_state); auto-deleted if source is removed. See [localfs as target](../connectors/localfs#as-target) for the full API.
 
 
 
@@ -186,6 +196,6 @@ The corresponding Markdown file is automatically removed.
 
 ## Next steps
 
-- Read [Core Concepts](../programming_guide/core_concepts.mdx) to understand the mental model — state-driven programming, processing components, and memoization
-- Dive into the [Programming Guide](../programming_guide/app.md), starting with Apps, to learn how to build more complex pipelines
-- Browse more [examples](https://github.com/cocoindex-io/cocoindex/tree/v1/examples) for real-world patterns (text embedding, RAG, knowledge graphs)
+- Read [Core Concepts](../programming_guide/core_concepts) to understand the mental model — state-driven programming, processing components, and memoization
+- Dive into the [Programming Guide](../programming_guide/app), starting with Apps, to learn how to build more complex pipelines
+- Browse more [examples](https://github.com/cocoindex-io/cocoindex/tree/main/examples) for real-world patterns (text embedding, RAG, knowledge graphs)

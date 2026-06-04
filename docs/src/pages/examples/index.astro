@@ -6,6 +6,7 @@
 // file and the card appears in its category automatically.
 import '../../styles/globals.css';
 import Topbar from '../../components/Topbar.astro';
+import MobileSheet from '../../components/MobileSheet.astro';
 import { GITHUB_REPO, DISCORD_URL, SITE_URL, titleMarkup } from '../../consts';
 import {
   examples,
@@ -19,6 +20,8 @@ import {
   featuredSlug,
   type Category,
 } from '../../data/examples';
+import { titleText } from '../../consts';
+import type { SidebarItem } from '../../data/docs-sidebar';
 
 const base = import.meta.env.BASE_URL.replace(/\/$/, '') || '';
 const exampleHref = (slug: string) => `${base}/examples/${slug}`;
@@ -27,6 +30,26 @@ const featured = findExample(featuredSlug)!;
 // Category order and counts, computed from the data.
 const CAT_ORDER: Category[] = ['search', 'ingest', 'llm', 'agents', 'image'];
 const catCount = (c: Category) => examples.filter((e) => e.category === c).length;
+
+// Phone drawer mirror of the inline `.side-nav` browse aside. The aside
+// becomes a horizontal flex pill row at ≤1180px which is fine on tablet,
+// but on phones we hide it entirely and surface the same tree inside
+// MobileSheet — that's where the user already goes for navigation.
+const examplesSidebar: SidebarItem[] = CAT_ORDER
+  .map((c) => ({
+    cat: c,
+    items: examples.filter((e) => e.category === c),
+  }))
+  .filter((g) => g.items.length > 0)
+  .map((g) => ({
+    type: 'category',
+    label: `${titleText(CATEGORY_META[g.cat].label)}${CATEGORY_META[g.cat].em ?? ''}`,
+    items: g.items.map((it) => ({
+      type: 'doc',
+      slug: `examples/${it.slug}`,
+      label: titleText(it.title),
+    })),
+  }));
 
 const total = examples.length;
 const fullTitle = `Examples · CocoIndex Docs`;
@@ -52,7 +75,8 @@ const canonical = new URL(`${base}/examples`, SITE_URL).toString();
     />
   </head>
   <body class="ex-listing">
-    <Topbar />
+    <Topbar mobileSheetId="mobileSheet" />
+    <MobileSheet sidebarItems={examplesSidebar} />
 
     <div class="ex-wrap">
       <!-- ═══════════ HERO ═══════════ -->
@@ -681,6 +705,13 @@ const canonical = new URL(`${base}/examples`, SITE_URL).toString();
 
       @media (max-width: 1180px) {
         body.ex-listing .doc { grid-template-columns: 1fr; gap: 0; }
+        /* Reset the desktop grid-column/grid-row pinning. Without these,
+           .side-nav (grid-column: 2) forces an implicit second column on
+           a single-column grid, squeezing .col-main to half the viewport
+           and shredding word wrap on long copy (Bug: cta-end h3/p
+           wrapping one word per line on phone). */
+        body.ex-listing .doc > .side-nav,
+        body.ex-listing .doc > .col-main { grid-column: auto; grid-row: auto; }
         body.ex-listing .side-nav {
           position: static; top: auto; max-height: none;
           padding: 16px; border: 1px solid var(--rule); border-radius: 10px;
@@ -701,6 +732,15 @@ const canonical = new URL(`${base}/examples`, SITE_URL).toString();
         body.ex-listing .cat-grid { grid-template-columns: 1fr; }
         body.ex-listing .hero-top { flex-wrap: wrap; }
         body.ex-listing .hero-top .stats { order: 3; width: 100%; }
+      }
+
+      /* On phones the cross-example browse rail moves into the menu
+         drawer — same data, fewer chrome elements competing with the
+         hero. Hides .side-nav entirely below 820px (matches the docs
+         site's phone breakpoint). */
+      @media (max-width: 820px) {
+        body.ex-listing .side-nav { display: none; }
+        body.ex-listing .doc { padding-top: 16px; }
       }
     </style>
   </body>

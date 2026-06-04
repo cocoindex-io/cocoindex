@@ -10,9 +10,7 @@ class FunctionInfo(BaseModel):
     signature: str = Field(
         description="Function signature, e.g. 'async def foo(x: int) -> str'"
     )
-    is_coco_function: bool = Field(
-        description="Whether decorated with @coco.fn or @cocoindex.function"
-    )
+    is_coco_function: bool = Field(description="Whether decorated with @coco.fn")
     summary: str = Field(description="Brief summary of what the function does")
 
 

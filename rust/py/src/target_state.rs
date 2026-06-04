@@ -108,7 +108,7 @@ impl TargetHandler<PyEngineProfile> for PyTargetHandler {
     fn reconcile(
         &self,
         key: cocoindex_core::state::stable_path::StableKey,
-        desired_effect: Option<Py<PyAny>>,
+        desired_effect: Option<&Py<PyAny>>,
         prev_possible_records: &[PyStoredValue],
         prev_may_be_missing: bool,
     ) -> Result<Option<TargetReconcileOutput<PyEngineProfile>>> {
@@ -120,12 +120,16 @@ impl TargetHandler<PyEngineProfile> for PyTargetHandler {
                     .map(|s| Py::new(py, s.clone()).unwrap()),
             )?;
             let non_existence = &python_objects().non_existence;
+            // `desired_effect` is a borrow from the engine's MutexGuard;
+            // PyO3's `.bind(py)` takes a reference, so no clone needed
+            // here. If Python retains the object across the call, its
+            // own refcounting handles the lifetime.
             let py_output = self.0.call_method(
                 py,
                 "reconcile",
                 (
                     PyStableKey(key),
-                    desired_effect.as_ref().unwrap_or(non_existence).bind(py),
+                    desired_effect.unwrap_or(non_existence).bind(py),
                     prev_possible_records,
                     prev_may_be_missing,
                 ),

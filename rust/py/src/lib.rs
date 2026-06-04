@@ -12,6 +12,7 @@ mod memo_fingerprint;
 mod ops;
 mod prelude;
 mod profile;
+mod ratelimit;
 mod runtime;
 mod rwlock;
 mod stable_path;
@@ -33,6 +34,7 @@ fn core_module(m: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()>
     m.add_class::<app::PyApp>()?;
     m.add_class::<app::PyUpdateHandle>()?;
     m.add_class::<app::PyDropHandle>()?;
+    m.add_class::<app::PyStatsGroupHandle>()?;
     m.add_function(wrap_pyfunction!(app::show_progress, m)?)?;
 
     m.add_class::<component::PyComponentProcessorInfo>()?;
@@ -130,6 +132,9 @@ fn core_module(m: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()>
     m.add_class::<batching::PyBatchingOptions>()?;
     m.add_class::<batching::PyBatchQueue>()?;
     m.add_class::<batching::PyBatcher>()?;
+
+    // Rate limiting
+    m.add_class::<ratelimit::PyRateLimiter>()?;
 
     Ok(())
 }

@@ -16,6 +16,7 @@ base64 = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 futures = { workspace = true }
+governor = { workspace = true }
 blake2 = { workspace = true }
 itertools = { workspace = true }
 indexmap = { workspace = true }

@@ -1,12 +1,18 @@
 """
 FastAPI wrapper for the v1 ColPali image search pipeline.
+
+Runs the index in live mode in the background, so the FastAPI server keeps
+the Qdrant collection in sync with `img/` while serving search requests.
 """
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -15,15 +21,11 @@ from qdrant_client import QdrantClient
 import cocoindex as coco
 from cocoindex.connectors import qdrant
 
-try:
-    from . import main as image_search
-except ImportError:
-    import importlib
+import pipeline
 
-    image_search = importlib.import_module("main")
+load_dotenv()
 
 
-# Module-level client reference for API endpoints
 _client: QdrantClient | None = None
 
 
@@ -31,11 +33,23 @@ _client: QdrantClient | None = None
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # type: ignore[override]
     global _client
     async with coco.runtime():
-        # Initialize client for API endpoints
-        _client = qdrant.create_client(image_search.QDRANT_URL, prefer_grpc=True)
-        await coco.show_progress(image_search.app.update())
-        yield
-        _client = None
+        _client = qdrant.create_client(pipeline.qdrant_url(), prefer_grpc=True)
+
+        # Start a live update; block startup until the initial sweep finishes so
+        # the collection is queryable, then keep it running in the background.
+        update_handle = pipeline.app.update(live=True)
+        async for snap in update_handle.watch():
+            if snap.status is coco.UpdateStatus.READY:
+                break
+        update_task = asyncio.create_task(update_handle.result())
+
+        try:
+            yield
+        finally:
+            update_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await update_task
+            _client = None
 
 
 app = FastAPI(lifespan=lifespan)
@@ -57,14 +71,14 @@ async def search(
     q: str = Query(..., description="Search query"),
     limit: int = Query(5, description="Number of results"),
 ) -> dict[str, Any]:
-    query_embedding = image_search.embed_query(q)
+    query_embedding = pipeline.embed_query(q)
 
     if _client is None:
         raise RuntimeError("Qdrant client is not initialized.")
 
-    results = image_search._qdrant_search(
+    results = pipeline._qdrant_search(
         _client,
-        image_search.QDRANT_COLLECTION,
+        pipeline.QDRANT_COLLECTION,
         query_embedding,
         limit,
     )

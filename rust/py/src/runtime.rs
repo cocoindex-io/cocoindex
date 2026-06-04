@@ -145,3 +145,48 @@ impl PyCallback {
         Ok(boxed_fut.map(|r| r.from_py_result()))
     }
 }
+
+/// Wrap an optional Python async callback `(err_str) -> Awaitable[None]`
+/// as the Rust `OnError` closure expected by `Component::run_in_background`,
+/// `Component::delete`, and the live-component controller.
+///
+/// Shared by `mount_async` (single-shot background mount), `update_full_async`,
+/// `update_async`, and `delete_async` (live-component ops). The propagation
+/// semantics are uniform across all of them:
+///
+/// - Coroutine returns normally (handler chain swallows) → `Ok(())` →
+///   spawned task swallows.
+/// - Coroutine raises (chain exhausted via raises) → `Err(...)` → spawned
+///   task propagates via `handle.ready()`. Lets the Python exception
+///   handler chain control propagation.
+/// - Dispatch-level failures (couldn't schedule the coroutine) are logged
+///   and converted to `Err` so they surface rather than disappearing.
+pub fn build_on_error(
+    host_runtime_ctx: PyAsyncContext,
+    handler_callback: Option<Py<PyAny>>,
+) -> Option<cocoindex_core::engine::component::OnError> {
+    let handler_callback = handler_callback?;
+    let cb = PyCallback::Async(Arc::new(handler_callback));
+    Some(Arc::new(move |err: cocoindex_utils::prelude::Error| {
+        let cb = cb.clone();
+        let host_runtime_ctx = host_runtime_ctx.clone();
+        Box::pin(async move {
+            let err_str = format!("{err:?}");
+            let fut = match cb.call(&host_runtime_ctx, (err_str,)) {
+                Ok(fut) => fut,
+                Err(e) => {
+                    error!("exception handler dispatch failed:\n{e:?}");
+                    return Err(cocoindex_utils::prelude::Error::internal_msg(format!(
+                        "exception handler dispatch failed: {e:?}"
+                    )));
+                }
+            };
+            match fut.await {
+                Ok(_) => Ok(()),
+                Err(e) => Err(cocoindex_utils::prelude::Error::internal_msg(format!(
+                    "{e:?}"
+                ))),
+            }
+        })
+    }))
+}

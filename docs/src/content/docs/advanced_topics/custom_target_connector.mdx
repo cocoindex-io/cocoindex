@@ -68,7 +68,7 @@ The `reconcile()` method must be **non-blocking**. It should only compare states
 :::
 
 :::info[Type annotations]
-Annotate the `prev_possible_records` parameter with `Collection[YourTrackingRecord]` so CocoIndex can properly reconstruct stored tracking records during deserialization. See [Serialization](../programming_guide/serialization.md) for details on supported types.
+Annotate the `prev_possible_records` parameter with `Collection[YourTrackingRecord]` so CocoIndex can properly reconstruct stored tracking records during deserialization. See [Serialization](../programming_guide/serialization) for details on supported types.
 :::
 
 ### Tracking record *(you define)*
@@ -592,7 +592,7 @@ pool = context_provider.get(key.db_key, asyncpg.Pool)
 
 This way, changing a password, switching replicas, or rotating credentials won't invalidate tracked states or break reconciliation.
 
-See `_TableKey` in [`cocoindex/connectors/postgres/_target.py`](https://github.com/cocoindex-io/cocoindex/blob/v1/python/cocoindex/connectors/postgres/_target.py) and [`cocoindex/connectors/surrealdb/_target.py`](https://github.com/cocoindex-io/cocoindex/blob/v1/python/cocoindex/connectors/surrealdb/_target.py) for reference implementations.
+See `_TableKey` in [`cocoindex/connectors/postgres/_target.py`](https://github.com/cocoindex-io/cocoindex/blob/main/python/cocoindex/connectors/postgres/_target.py) and [`cocoindex/connectors/surrealdb/_target.py`](https://github.com/cocoindex-io/cocoindex/blob/main/python/cocoindex/connectors/surrealdb/_target.py) for reference implementations.
 
 ### Idempotent actions
 
@@ -740,5 +740,5 @@ class _FileHandler(coco.TargetHandler[_FileContent, _FileTrackingRecord]):
 
 See the full implementations in:
 
-- [`cocoindex/connectors/localfs/target.py`](https://github.com/cocoindex-io/cocoindex/blob/v1/python/cocoindex/connectors/localfs/_target.py) — File system targets
-- [`cocoindex/connectors/postgres/target.py`](https://github.com/cocoindex-io/cocoindex/blob/v1/python/cocoindex/connectors/postgres/_target.py) — PostgreSQL tables and rows
+- [`cocoindex/connectors/localfs/target.py`](https://github.com/cocoindex-io/cocoindex/blob/main/python/cocoindex/connectors/localfs/_target.py) — File system targets
+- [`cocoindex/connectors/postgres/target.py`](https://github.com/cocoindex-io/cocoindex/blob/main/python/cocoindex/connectors/postgres/_target.py) — PostgreSQL tables and rows

@@ -8,7 +8,12 @@ We appreciate a star ⭐ at [CocoIndex Github](https://github.com/cocoindex-io/c
 
 ## Prerequisites
 
-- [Install Postgres](https://cocoindex.io/docs/getting_started/installation#-install-postgres)
+- A running Postgres with the pgvector extension. If you don't have one, start a local instance with the compose file in this repo:
+
+  ```sh
+  docker compose -f ../../dev/postgres.yaml up -d
+  ```
+
 - Set `OPENAI_API_KEY` for metadata extraction
 - Set `POSTGRES_URL` for Postgres access
 
@@ -29,16 +34,24 @@ export POSTGRES_URL="postgres://cocoindex:cocoindex@localhost/cocoindex"
 
 This example uses the `coco_examples_v1` schema by default to avoid clashing with the legacy example tables.
 
-Build/update the index:
+Build/update the index (writes rows into Postgres). Pick one of the two modes:
 
-```sh
-cocoindex update main.py
-```
+- **Catch-up run** — scan sources, sync changes, exit:
+
+  ```sh
+  cocoindex update main
+  ```
+
+- **Live run** — catch up, then keep watching for file changes (the source declares `live=True` in `main.py`):
+
+  ```sh
+  cocoindex update -L main
+  ```
 
 Query:
 
 ```sh
-python main.py query "graph neural networks"
+python main.py "graph neural networks"
 ```
 
 Note: this example **does not create a vector index**; queries will do a sequential scan.

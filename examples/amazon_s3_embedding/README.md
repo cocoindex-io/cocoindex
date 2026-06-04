@@ -4,7 +4,12 @@ This example embeds markdown files from an S3 bucket, stores the chunks + embedd
 
 ## Prerequisites
 
-- A running Postgres with the pgvector extension available
+- A running Postgres with the pgvector extension. If you don't have one, start a local instance with the compose file in this repo:
+
+  ```sh
+  docker compose -f ../../dev/postgres.yaml up -d
+  ```
+
 - An S3 bucket (or S3-compatible service like MinIO) with markdown files
 - AWS credentials configured (e.g. via `aws configure`, env vars, or IAM role)
 
@@ -22,16 +27,16 @@ Install deps:
 pip install -e .
 ```
 
-Build/update the index (writes rows into Postgres):
+Build/update the index (one-shot catch-up; the amazon_s3 source does not support live mode):
 
 ```sh
-cocoindex update main.py
+cocoindex update main
 ```
 
 Query:
 
 ```sh
-python main.py query "what is self-attention?"
+python main.py "what is self-attention?"
 ```
 
 Note: this example **does not create a vector index**; queries will do a sequential scan.

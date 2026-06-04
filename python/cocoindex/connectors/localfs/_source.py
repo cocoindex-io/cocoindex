@@ -183,52 +183,115 @@ class _LiveDirItems:
             yield pair
 
     async def watch(self, subscriber: LiveMapSubscriber[str, File]) -> None:
-        import watchfiles
+        from watchdog.events import (
+            EVENT_TYPE_CREATED,
+            EVENT_TYPE_DELETED,
+            EVENT_TYPE_MODIFIED,
+            EVENT_TYPE_MOVED,
+            FileSystemEvent,
+            FileSystemEventHandler,
+        )
+        from watchdog.observers import Observer
 
-        # Initial full scan and readiness signal
-        await subscriber.update_all()
-        await subscriber.mark_ready()
-
-        # Incremental changes
         root_resolved = self._resolved_root
+        loop = asyncio.get_running_loop()
+        # Watchdog dispatches events from a background thread; we forward
+        # them into this asyncio.Queue via call_soon_threadsafe.
+        events_queue: asyncio.Queue[FileSystemEvent] = asyncio.Queue()
 
-        async for changes in watchfiles.awatch(
-            root_resolved,
-            recursive=self._walker._recursive,
-            watch_filter=None,
-        ):
-            for change_type, changed_path_str in changes:
-                changed_path = Path(changed_path_str)
+        class _Handler(FileSystemEventHandler):
+            def on_any_event(self, event: FileSystemEvent) -> None:
+                loop.call_soon_threadsafe(events_queue.put_nowait, event)
+
+        observer = Observer()
+        observer.schedule(
+            _Handler(), str(root_resolved), recursive=self._walker._recursive
+        )
+        # Observer.start() is synchronous and arms the OS-level watch
+        # (e.g. inotify) before returning, so the initial scan that
+        # follows cannot miss events that occur after this point.
+        observer.start()
+        try:
+            await subscriber.update_all()
+            await subscriber.mark_ready()
+
+            while True:
+                event = await events_queue.get()
+                # On a move event with a dest_path, treat as
+                # delete(src) + create(dest). All other events carry the
+                # affected path in src_path. src_path/dest_path are typed
+                # as bytes | str — normalize via fsdecode.
+                src_path = os.fsdecode(event.src_path)
+                if event.event_type == EVENT_TYPE_MOVED and event.dest_path:
+                    paths: list[tuple[str, str]] = [
+                        (EVENT_TYPE_DELETED, src_path),
+                        (EVENT_TYPE_CREATED, os.fsdecode(event.dest_path)),
+                    ]
+                else:
+                    paths = [(event.event_type, src_path)]
+
+                for kind, raw_path in paths:
+                    changed_path = Path(raw_path)
+                    try:
+                        relative = changed_path.relative_to(root_resolved)
+                    except ValueError:
+                        continue
+
+                    key = relative.as_posix()
+
+                    if kind == EVENT_TYPE_DELETED:
+                        if event.is_directory:
+                            # Directory deletes/moves: individual file
+                            # events are emitted on most platforms, but
+                            # not all. Trigger a rescan as a safety net.
+                            await subscriber.update_all()
+                            continue
+                        if self._walker._path_matcher.is_file_included(relative):
+                            handle = await subscriber.delete(key)
+                            await handle.ready()
+                        continue
+
+                    if kind not in (EVENT_TYPE_CREATED, EVENT_TYPE_MODIFIED):
+                        continue
+                    if event.is_directory:
+                        continue
+                    if not self._walker._path_matcher.is_file_included(relative):
+                        continue
+
+                    file_path = self._walker._root_path / relative
+                    try:
+                        stat = changed_path.stat()
+                    except OSError:
+                        continue
+                    file = File(file_path, _stat=stat)
+                    handle = await subscriber.update(key, file)
+                    await handle.ready()
+        finally:
+            # During interpreter shutdown, watchdog's platform observer
+            # may already have its C-library globals torn down, so
+            # `observer.stop()` can raise a `TypeError` from inside
+            # watchdog (e.g. macOS FSEvents trying to call a function
+            # that's been GC'd to None). Suppress that specific case
+            # only — we're already exiting, the OS will reclaim the
+            # watcher. Real bugs (AttributeError etc.) still propagate.
+            try:
+                observer.stop()
+            except TypeError:
+                pass
+            # Wait for the observer thread to exit. Prefer the
+            # non-blocking thread-pool path; during interpreter shutdown
+            # the asyncio default executor may already be closed
+            # ("cannot schedule new futures after shutdown"), in which
+            # case fall back to a bounded synchronous join (also wrapped
+            # in TypeError-suppression for the same FSEvents-teardown
+            # reason).
+            try:
+                await asyncio.to_thread(observer.join)
+            except RuntimeError:
                 try:
-                    relative = changed_path.relative_to(root_resolved)
-                except ValueError:
-                    continue
-
-                key = relative.as_posix()
-
-                if change_type == watchfiles.Change.deleted:
-                    if self._walker._path_matcher.is_file_included(relative):
-                        handle = await subscriber.delete(key)
-                        await handle.ready()
-                    # Directory move: watchfiles may not decompose into
-                    # individual file events, so trigger a full rescan.
-                    elif not changed_path.exists():
-                        await subscriber.update_all()
-                    continue
-
-                if changed_path.is_dir():
-                    continue
-                if not self._walker._path_matcher.is_file_included(relative):
-                    continue
-
-                file_path = self._walker._root_path / relative
-                try:
-                    stat = changed_path.stat()
-                except OSError:
-                    continue
-                file = File(file_path, _stat=stat)
-                handle = await subscriber.update(key, file)
-                await handle.ready()
+                    observer.join(timeout=5.0)
+                except TypeError:
+                    pass
 
 
 def walk_dir(

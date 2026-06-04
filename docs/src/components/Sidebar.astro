@@ -1,5 +1,6 @@
 ---
 import { sidebar, type SidebarItem } from '../data/docs-sidebar';
+import Search from './Search.astro';
 
 export interface Props {
   /** Slug of the currently-rendered doc, e.g. `getting_started/quickstart`. */
@@ -10,11 +11,14 @@ const { currentSlug } = Astro.props;
 const base = import.meta.env.BASE_URL.replace(/\/$/, '');
 
 function href(slug: string): string {
-  return `${base}/${slug}`;
+  // Trailing slash matches the canonical URL Astro emits under
+  // `build.format: 'directory'` — saves a 301 round-trip per click.
+  return `${base}/${slug}/`;
 }
 ---
 
 <aside class="side">
+  <Search />
   {sidebar.map((item) => (
     item.type === 'doc' ? (
       <div class="side-group">

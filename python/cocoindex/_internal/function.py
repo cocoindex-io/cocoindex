@@ -19,6 +19,7 @@ from typing import (
     Coroutine,
     Generic,
     Literal,
+    Mapping,
     NamedTuple,
     ParamSpec,
     Protocol,
@@ -37,7 +38,12 @@ from .component_ctx import (
     get_context_from_ctx,
 )
 from .context_keys import resolve_awaitables_sync
-from .memo_fingerprint import StateFnEntry, fingerprint_call, memo_fingerprint
+from .memo_fingerprint import (
+    StateFnEntry,
+    canonical_module_name,
+    fingerprint_call,
+    memo_fingerprint,
+)
 from .runner import Runner
 from .runner import in_subprocess as _in_subprocess
 from .serde import (
@@ -46,7 +52,7 @@ from .serde import (
     qualified_name,
     unwrap_element_type,
 )
-from .typing import NON_EXISTENCE
+from .typing import NOT_SET, NON_EXISTENCE, NotSetType, is_not_set
 
 P = ParamSpec("P")
 R = TypeVar("R")
@@ -63,6 +69,17 @@ AsyncCallable: TypeAlias = Callable[P, Coroutine[Any, Any, R_co]]
 AnyCallable: TypeAlias = AsyncCallable[P, R_co] | Callable[P, R_co]
 
 LogicTracking: TypeAlias = Literal["full", "self"] | None
+MemoKeyTransform: TypeAlias = Callable[[Any], Any]
+MemoKeySpec: TypeAlias = Mapping[str, MemoKeyTransform | None] | None
+
+
+class PreparedMemoKeySpec(NamedTuple):
+    """Precompiled memo-key plan for fast runtime application."""
+
+    positional_specs: tuple[MemoKeyTransform | None | NotSetType, ...]
+    keyword_specs: dict[str, MemoKeyTransform | None]
+    varargs_override: MemoKeyTransform | None | NotSetType
+    varkw_override: MemoKeyTransform | None | NotSetType
 
 
 # ============================================================================
@@ -398,6 +415,141 @@ def _has_self_parameter(fn: Callable[..., Any]) -> bool:
     )
 
 
+def _apply_memo_key(
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+    memo_key_plan: PreparedMemoKeySpec | None,
+) -> tuple[tuple[Any, ...], dict[str, Any]]:
+    """Apply precompiled per-parameter memo-key overrides before fingerprinting.
+
+    Positional arguments remain positional, and keyword arguments remain keyword
+    arguments. Parameters absent from *memo_key_plan* pass through unchanged.
+    Parameters mapped to ``None`` are excluded from the fingerprint input, and
+    parameters mapped to a callable are transformed by that callable.
+    """
+    if memo_key_plan is None:
+        return args, kwargs
+
+    num_fixed = len(memo_key_plan.positional_specs)
+
+    # Separate fixed positional args from varargs
+    fixed_args = args[:num_fixed] if len(args) >= num_fixed else args
+    varargs = args[num_fixed:] if len(args) > num_fixed else ()
+
+    # Process fixed positional args (may exclude or transform)
+    new_fixed_args: list[Any] = []
+    for i, arg in enumerate(fixed_args):
+        key_fn = memo_key_plan.positional_specs[i]
+        if is_not_set(key_fn):
+            new_fixed_args.append(arg)
+        elif key_fn is None:
+            continue  # Exclude this positional arg
+        else:
+            new_fixed_args.append(key_fn(arg))
+
+    # Apply varargs override if present (whole *args parameter)
+    if not is_not_set(memo_key_plan.varargs_override):
+        if memo_key_plan.varargs_override is None:
+            # Exclude entire *args
+            varargs = ()
+        else:
+            # Transform entire *args tuple
+            varargs = memo_key_plan.varargs_override(varargs)
+            if not isinstance(varargs, tuple):
+                raise TypeError(
+                    f"memo_key transform for *args must return tuple, "
+                    f"got {type(varargs).__name__}"
+                )
+
+    # Combine fixed args and varargs
+    final_args = tuple(new_fixed_args) + varargs
+
+    # Process kwargs: separate matched (keyword-only/POSITIONAL_OR_KEYWORD passed as kwarg)
+    # from unmatched (extra **kwargs)
+    new_kwargs: dict[str, Any] = {}
+    unmatched_kwargs: dict[str, Any] = {}
+
+    for key, value in kwargs.items():
+        if key in memo_key_plan.keyword_specs:
+            key_fn = memo_key_plan.keyword_specs[key]
+            if key_fn is None:
+                continue  # Exclude this kwarg
+            new_kwargs[key] = key_fn(value)
+        else:
+            unmatched_kwargs[key] = value
+
+    # Apply varkw override if present (whole **kwargs parameter)
+    if not is_not_set(memo_key_plan.varkw_override):
+        if memo_key_plan.varkw_override is None:
+            # Exclude entire **kwargs
+            unmatched_kwargs = {}
+        else:
+            # Transform entire unmatched kwargs dict
+            transformed = memo_key_plan.varkw_override(unmatched_kwargs)
+            if not isinstance(transformed, dict):
+                raise TypeError(
+                    f"memo_key transform for **kwargs must return dict, "
+                    f"got {type(transformed).__name__}"
+                )
+            unmatched_kwargs = transformed
+
+    # Merge matched and unmatched kwargs
+    new_kwargs.update(unmatched_kwargs)
+
+    return final_args, new_kwargs
+
+
+def _normalize_memo_key(
+    fn: Callable[..., Any], memo_key: MemoKeySpec
+) -> PreparedMemoKeySpec | None:
+    """Validate and compile per-parameter memo-key overrides once."""
+    if memo_key is None:
+        return None
+
+    normalized = dict(memo_key)
+    if not normalized:
+        return None
+
+    sig = inspect.signature(fn)
+    param_names = {param.name for param in sig.parameters.values()}
+    unknown = sorted(name for name in normalized if name not in param_names)
+    if unknown:
+        raise ValueError(
+            f"Unknown memo_key parameter(s) for {qualified_name(fn)}(): "
+            + ", ".join(unknown)
+        )
+
+    for name, transform in normalized.items():
+        if transform is not None and not callable(transform):
+            raise TypeError(
+                f"memo_key[{name!r}] for {qualified_name(fn)}() must be a callable or None"
+            )
+
+    positional: list[MemoKeyTransform | None | NotSetType] = []
+    varargs_override: MemoKeyTransform | None | NotSetType = NOT_SET
+    varkw_override: MemoKeyTransform | None | NotSetType = NOT_SET
+
+    for param in sig.parameters.values():
+        if param.kind in (
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        ):
+            if param.name in normalized:
+                positional.append(normalized[param.name])
+            else:
+                positional.append(NOT_SET)
+        elif param.kind == inspect.Parameter.VAR_POSITIONAL:
+            if param.name in normalized:
+                varargs_override = normalized[param.name]
+        elif param.kind == inspect.Parameter.VAR_KEYWORD:
+            if param.name in normalized:
+                varkw_override = normalized[param.name]
+
+    return PreparedMemoKeySpec(
+        tuple(positional), normalized, varargs_override, varkw_override
+    )
+
+
 # ============================================================================
 # Sync Function
 # ============================================================================
@@ -476,7 +628,7 @@ def _compute_logic_fingerprint(
             canonical = ast.dump(tree, include_attributes=False, annotate_fields=True)
         except (OSError, SyntaxError):
             canonical = f"<bytecode>{hashlib.sha256(fn.__code__.co_code).hexdigest()}"
-    payload = f"{fn.__module__}.{fn.__qualname__}\n{canonical}"
+    payload = f"{canonical_module_name(fn)}.{fn.__qualname__}\n{canonical}"
     if deps is not None:
         # Use an explicit stable encoding (hex of the 16-byte digest) rather
         # than Fingerprint.__str__ — the deps fingerprint ends up embedded in
@@ -498,6 +650,7 @@ class SyncFunction(Function[P, R_co]):
     __slots__ = (
         "_fn",
         "_memo",
+        "_memo_key",
         "_processor_info",
         "_logic_fp",
         "_logic_tracking",
@@ -507,6 +660,7 @@ class SyncFunction(Function[P, R_co]):
 
     _fn: Callable[P, R_co]
     _memo: bool
+    _memo_key: PreparedMemoKeySpec | None
     _processor_info: core.ComponentProcessorInfo
     _logic_fp: core.Fingerprint | None
     _logic_tracking: LogicTracking
@@ -518,6 +672,7 @@ class SyncFunction(Function[P, R_co]):
         fn: Callable[P, R_co],
         *,
         memo: bool,
+        memo_key: MemoKeySpec = None,
         version: int | None = None,
         logic_tracking: LogicTracking = "full",
         deps: Any = None,
@@ -530,6 +685,7 @@ class SyncFunction(Function[P, R_co]):
             )
         self._fn = fn
         self._memo = memo
+        self._memo_key = _normalize_memo_key(fn, memo_key)
         self._processor_info = core.ComponentProcessorInfo(fn.__qualname__)
         self._logic_tracking = logic_tracking
         self._return_deserializer = None
@@ -586,8 +742,10 @@ class SyncFunction(Function[P, R_co]):
         if parent_ctx is None:
             return self._fn(*args, **kwargs)
 
-        def _call_in_context(ctx: core.FnCallContext) -> R_co:
-            context = parent_ctx._with_fn_call_ctx(ctx)
+        def _call_in_context(
+            ctx: core.FnCallContext, *, in_memo_fn: bool = False
+        ) -> R_co:
+            context = parent_ctx._with_fn_call_ctx(ctx, in_memo_fn=in_memo_fn)
             tok = _context_var.set(context)
             try:
                 return self._fn(*args, **kwargs)
@@ -599,8 +757,14 @@ class SyncFunction(Function[P, R_co]):
         try:
             if self._memo:
                 state_methods: list[StateFnEntry] = []
+                memo_args: tuple[Any, ...] = args  # type: ignore[assignment]
+                memo_kwargs: dict[str, Any] = kwargs  # type: ignore[assignment]
+                if self._memo_key:
+                    memo_args, memo_kwargs = _apply_memo_key(
+                        memo_args, memo_kwargs, self._memo_key
+                    )
                 memo_fp = fingerprint_call(
-                    self._fn, args, kwargs, state_methods=state_methods
+                    self._fn, memo_args, memo_kwargs, state_methods=state_methods
                 )
                 guard = core.reserve_memoization(
                     parent_ctx._core_processor_ctx, memo_fp
@@ -654,7 +818,7 @@ class SyncFunction(Function[P, R_co]):
                     fn_ctx = core.FnCallContext(propagate_children_fn_logic=propagate)
                     if self._logic_fp is not None:
                         fn_ctx.add_fn_logic_dep(self._logic_fp)
-                    ret = _call_in_context(fn_ctx)
+                    ret = _call_in_context(fn_ctx, in_memo_fn=True)
                     # Positional: collect only if not already set (cache-miss path).
                     # Context: look up eager initial states from the Rust
                     # registry in a single call — no state fn calls on cache
@@ -682,7 +846,7 @@ class SyncFunction(Function[P, R_co]):
                 fn_ctx = core.FnCallContext(propagate_children_fn_logic=propagate)
                 if self._logic_fp is not None:
                     fn_ctx.add_fn_logic_dep(self._logic_fp)
-                return _call_in_context(fn_ctx)
+                return _call_in_context(fn_ctx, in_memo_fn=parent_ctx._in_memo_fn)
         finally:
             if fn_ctx is not None:
                 parent_ctx._core_fn_call_ctx.join_child(fn_ctx)
@@ -699,11 +863,20 @@ class SyncFunction(Function[P, R_co]):
         **kwargs: P0.kwargs,
     ) -> core.ComponentProcessor[R_co]:
         state_methods: list[StateFnEntry] = []
-        memo_fp = (
-            fingerprint_call(self._fn, args, kwargs, state_methods=state_methods)
-            if self._memo
-            else None
-        )
+        memo_fp: core.Fingerprint | None = None
+        if self._memo:
+            memo_args: tuple[Any, ...] = args  # type: ignore[assignment]
+            memo_kwargs: dict[str, Any] = kwargs  # type: ignore[assignment]
+            if self._memo_key:
+                memo_args, memo_kwargs = _apply_memo_key(
+                    memo_args, memo_kwargs, self._memo_key
+                )
+            memo_fp = fingerprint_call(
+                self._fn,
+                memo_args,
+                memo_kwargs,
+                state_methods=state_methods,
+            )
         # Attach the component-level state handler only if there's something
         # for it to do. Two triggers:
         # 1. Positional state methods collected from argument canonicalization.
@@ -900,6 +1073,27 @@ class _BoundAsyncMethod(Generic[SelfT]):
         return _BoundAsyncMethod(func, self_obj)
 
 
+class _BatcherSlot(Generic[R]):
+    """A batcher plus a count of in-flight calls currently sharing it.
+
+    A batcher is kept in `_batchers` only while at least one call is in flight,
+    so concurrent calls with the same key batch together. Once the last call
+    drains (see `_release_batcher`), the slot is removed. This keeps idle
+    batchers from accumulating, and — since the key embeds `id(self_obj)` —
+    avoids reusing a stale batcher for a new object that happens to land on the
+    same `id` after the previous one was garbage-collected.
+    """
+
+    __slots__ = ("batcher", "in_flight")
+
+    batcher: core.Batcher[Any, R]
+    in_flight: int
+
+    def __init__(self, batcher: core.Batcher[Any, R]) -> None:
+        self.batcher = batcher
+        self.in_flight = 0
+
+
 class AsyncFunction(Function[P, R_co]):
     """Async function with optional memoization and batching/runner support."""
 
@@ -908,6 +1102,7 @@ class AsyncFunction(Function[P, R_co]):
         "_orig_sync_fn",
         "_fn_is_async",
         "_memo",
+        "_memo_key",
         "_processor_info",
         "_logic_fp",
         "_logic_tracking",
@@ -915,7 +1110,6 @@ class AsyncFunction(Function[P, R_co]):
         "_max_batch_size",
         "_runner",
         "_has_self",
-        "_queues",
         "_batchers",
         "_batchers_lock",
         "_return_deserializer",
@@ -925,6 +1119,7 @@ class AsyncFunction(Function[P, R_co]):
     _orig_async_fn: AsyncCallable[..., Any] | None
     _orig_sync_fn: Callable[..., Any] | None
     _memo: bool
+    _memo_key: PreparedMemoKeySpec | None
     _processor_info: core.ComponentProcessorInfo
     _logic_fp: core.Fingerprint | None
     _logic_tracking: LogicTracking
@@ -932,11 +1127,10 @@ class AsyncFunction(Function[P, R_co]):
     _max_batch_size: int | None
     _runner: Runner | None
     _has_self: bool
-    _queues: dict[object, core.BatchQueue]
     _return_deserializer: DeserializeFn | None
     _return_deserializer_lock: threading.Lock
 
-    _batchers: dict[object, core.Batcher[Any, R_co]]
+    _batchers: dict[object, _BatcherSlot[R_co]]
     _batchers_lock: threading.Lock
 
     def __init__(
@@ -945,6 +1139,7 @@ class AsyncFunction(Function[P, R_co]):
         sync_fn: Callable[..., Any] | None,
         *,
         memo: bool,
+        memo_key: MemoKeySpec = None,
         batching: bool = False,
         max_batch_size: int | None = None,
         runner: Runner | None = None,
@@ -964,6 +1159,7 @@ class AsyncFunction(Function[P, R_co]):
         self._orig_async_fn = async_fn
         self._orig_sync_fn = sync_fn
         self._memo = memo
+        self._memo_key = _normalize_memo_key(fn, memo_key)
         self._processor_info = core.ComponentProcessorInfo(fn.__qualname__)
         self._logic_tracking = logic_tracking
         self._return_deserializer = None
@@ -978,7 +1174,6 @@ class AsyncFunction(Function[P, R_co]):
         self._max_batch_size = max_batch_size
         self._runner = runner
         self._has_self = _has_self_parameter(fn) if (batching or runner) else False
-        self._queues = {}
         self._batchers = {}
         self._batchers_lock = threading.Lock()
 
@@ -1068,8 +1263,17 @@ class AsyncFunction(Function[P, R_co]):
             context_states_for_resolve: dict[core.Fingerprint, list[Any]] | None = None
             if self._memo and parent_ctx is not None:
                 env = parent_ctx._env
+                async_memo_args: tuple[Any, ...] = args  # type: ignore[assignment]
+                async_memo_kwargs: dict[str, Any] = kwargs  # type: ignore[assignment]
+                if self._memo_key:
+                    async_memo_args, async_memo_kwargs = _apply_memo_key(
+                        async_memo_args, async_memo_kwargs, self._memo_key
+                    )
                 memo_fp = fingerprint_call(
-                    self._any_fn, args, kwargs, state_methods=state_methods
+                    self._any_fn,
+                    async_memo_args,
+                    async_memo_kwargs,
+                    state_methods=state_methods,
                 )
                 guard = await core.reserve_memoization_async(
                     parent_ctx._core_processor_ctx, memo_fp
@@ -1114,7 +1318,9 @@ class AsyncFunction(Function[P, R_co]):
                 async_ctx = core.AsyncContext(get_event_loop_or_default())
                 result = await self._execute(async_ctx, *args, **kwargs)
             else:
-                comp_ctx = parent_ctx._with_fn_call_ctx(fn_ctx)
+                comp_ctx = parent_ctx._with_fn_call_ctx(
+                    fn_ctx, in_memo_fn=guard is not None or parent_ctx._in_memo_fn
+                )
                 tok = _context_var.set(comp_ctx)
                 try:
                     result = await self._execute(
@@ -1189,10 +1395,13 @@ class AsyncFunction(Function[P, R_co]):
             extra_args = ()
             extra_kwargs = {}
 
-        batcher = self._get_or_create_batcher(
+        batcher_key, batcher = self._acquire_batcher(
             async_ctx, self_obj, extra_args, extra_kwargs
         )
-        return await batcher.run(input_val)
+        try:
+            return await batcher.run(input_val)
+        finally:
+            self._release_batcher(batcher_key)
 
     async def _execute_orig_async_fn(self, *args: Any, **kwargs: Any) -> Any:
         assert self._orig_async_fn is not None
@@ -1287,53 +1496,72 @@ class AsyncFunction(Function[P, R_co]):
         else:
             return (id(self._any_fn), extra_args, extra_kwargs)
 
-    def _get_or_create_batcher(
+    def _acquire_batcher(
         self,
         async_ctx: core.AsyncContext,
         self_obj: Any,
         extra_args: tuple[Any, ...] = (),
         extra_kwargs: dict[str, Any] | None = None,
-    ) -> core.Batcher[Any, R_co]:
-        """Get or create batcher for this function/self combination."""
+    ) -> tuple[object, core.Batcher[Any, R_co]]:
+        """Get or create the batcher for this function/self combination, and
+        mark one more in-flight call against it.
+
+        The caller MUST pair this with `_release_batcher(batcher_key)` once its
+        `batcher.run()` completes, so the batcher is dropped when idle.
+        """
         if extra_kwargs is None:
             extra_kwargs = {}
         extra_kwargs_key = tuple(sorted(extra_kwargs.items()))
         batcher_key = self._get_batcher_key(self_obj, extra_args, extra_kwargs_key)
         with self._batchers_lock:
-            if (batcher := self._batchers.get(batcher_key, None)) is not None:
-                return batcher
-
-            batch_runner_fn = self._create_batch_runner_fn(
-                self_obj, extra_args, extra_kwargs
-            )
-
-            # Get queue: from runner (if present) or owned by this function
-            if self._runner is not None:
-                queue = self._runner.get_queue()
-            else:
-                if batcher_key not in self._queues:
-                    self._queues[batcher_key] = core.BatchQueue()
-                queue = self._queues[batcher_key]
-
-            # When runner is specified without batching, use max_batch_size=1
-            # to process items individually through the shared queue.
-            options = core.BatchingOptions(
-                max_batch_size=self._max_batch_size if self._batching else 1
-            )
-            if inspect.iscoroutinefunction(batch_runner_fn):
-                batcher = core.Batcher.new_async(
-                    queue, options, batch_runner_fn, async_ctx
+            slot = self._batchers.get(batcher_key, None)
+            if slot is None:
+                slot = _BatcherSlot(
+                    self._create_batcher(async_ctx, self_obj, extra_args, extra_kwargs)
                 )
-            else:
-                batcher = core.Batcher.new_sync(
-                    queue,
-                    options,
-                    batch_runner_fn,  # type: ignore[arg-type]
-                    async_ctx,
-                )
+                self._batchers[batcher_key] = slot
+            slot.in_flight += 1
+            return batcher_key, slot.batcher
 
-            self._batchers[batcher_key] = batcher
-            return batcher
+    def _release_batcher(self, batcher_key: object) -> None:
+        """Mark one in-flight call done; drop the batcher once it goes idle."""
+        with self._batchers_lock:
+            slot = self._batchers[batcher_key]
+            slot.in_flight -= 1
+            if slot.in_flight == 0:
+                del self._batchers[batcher_key]
+
+    def _create_batcher(
+        self,
+        async_ctx: core.AsyncContext,
+        self_obj: Any,
+        extra_args: tuple[Any, ...],
+        extra_kwargs: dict[str, Any],
+    ) -> core.Batcher[Any, R_co]:
+        batch_runner_fn = self._create_batch_runner_fn(
+            self_obj, extra_args, extra_kwargs
+        )
+
+        # Get queue: shared from the runner (if present), or a fresh one owned
+        # by this batcher otherwise.
+        queue = (
+            self._runner.get_queue() if self._runner is not None else core.BatchQueue()
+        )
+
+        # When runner is specified without batching, use max_batch_size=1
+        # to process items individually through the shared queue.
+        options = core.BatchingOptions(
+            max_batch_size=self._max_batch_size if self._batching else 1
+        )
+        if inspect.iscoroutinefunction(batch_runner_fn):
+            return core.Batcher.new_async(queue, options, batch_runner_fn, async_ctx)
+        else:
+            return core.Batcher.new_sync(
+                queue,
+                options,
+                batch_runner_fn,  # type: ignore[arg-type]
+                async_ctx,
+            )
 
     def _core_processor(
         self,
@@ -1343,16 +1571,21 @@ class AsyncFunction(Function[P, R_co]):
         **kwargs: P.kwargs,
     ) -> core.ComponentProcessor[R_co]:
         state_methods: list[StateFnEntry] = []
-        memo_fp = (
-            fingerprint_call(
+        memo_fp: core.Fingerprint | None = None
+        if self._memo:
+            async_proc_args: tuple[Any, ...] = args  # type: ignore[assignment]
+            async_proc_kwargs: dict[str, Any] = kwargs  # type: ignore[assignment]
+            if self._memo_key:
+                async_proc_args, async_proc_kwargs = _apply_memo_key(
+                    async_proc_args, async_proc_kwargs, self._memo_key
+                )
+            memo_fp = fingerprint_call(
                 self._any_fn,
-                (path, *args),
-                kwargs,
+                async_proc_args,
+                async_proc_kwargs,
                 state_methods=state_methods,
+                prefix_args=(path,),
             )
-            if self._memo
-            else None
-        )
 
         # See SyncFunction._core_processor for rationale on the attachment
         # condition — avoids a Python callback round-trip on every cache miss
@@ -1460,6 +1693,7 @@ class _GenericFunctionBuilder:
         self,
         *,
         memo: bool = False,
+        memo_key: MemoKeySpec = None,
         batching: bool = False,
         max_batch_size: int | None = None,
         runner: Runner | None = None,
@@ -1468,6 +1702,7 @@ class _GenericFunctionBuilder:
         deps: Any = None,
     ) -> None:
         self._memo = memo
+        self._memo_key = memo_key
         self._batching = batching
         self._max_batch_size = max_batch_size
         self._runner = runner
@@ -1484,6 +1719,7 @@ class _GenericFunctionBuilder:
         wrapper = SyncFunction(
             fn,
             memo=self._memo,
+            memo_key=self._memo_key,
             version=self._version,
             logic_tracking=self._logic_tracking,
             deps=self._deps,
@@ -1502,6 +1738,7 @@ class _GenericFunctionBuilder:
             async_fn,
             sync_fn,
             memo=self._memo,
+            memo_key=self._memo_key,
             batching=self._batching,
             max_batch_size=self._max_batch_size,
             runner=self._runner,
@@ -1531,12 +1768,14 @@ class _AutoFunctionBuilder(_GenericFunctionBuilder):
         self,
         *,
         memo: bool = False,
+        memo_key: MemoKeySpec = None,
         version: int | None = None,
         logic_tracking: LogicTracking = "full",
         deps: Any = None,
     ) -> None:
         super().__init__(
             memo=memo,
+            memo_key=memo_key,
             version=version,
             logic_tracking=logic_tracking,
             deps=deps,
@@ -1586,6 +1825,7 @@ class _FunctionDecorator:
         self,
         *,
         memo: bool = False,
+        memo_key: MemoKeySpec = None,
         version: int | None = None,
         logic_tracking: LogicTracking = "full",
         deps: Any = None,
@@ -1596,6 +1836,7 @@ class _FunctionDecorator:
         self,
         *,
         memo: bool = False,
+        memo_key: MemoKeySpec = None,
         batching: Literal[True],
         max_batch_size: int | None = None,
         runner: Runner | None = None,
@@ -1609,6 +1850,7 @@ class _FunctionDecorator:
         self,
         *,
         memo: bool = False,
+        memo_key: MemoKeySpec = None,
         batching: Literal[False] = False,
         max_batch_size: int | None = None,
         runner: Runner | None = None,
@@ -1629,6 +1871,7 @@ class _FunctionDecorator:
         /,
         *,
         memo: bool = False,
+        memo_key: MemoKeySpec = None,
         batching: bool = False,
         max_batch_size: int | None = None,
         runner: Runner | None = None,
@@ -1645,6 +1888,10 @@ class _FunctionDecorator:
         Args:
             fn: The function to decorate (optional, for use without parentheses)
             memo: Enable memoization (skip execution when inputs unchanged)
+            memo_key: Optional per-parameter memoization key overrides. For a
+                parameter name, ``None`` excludes that argument from the memo
+                key and a callable maps the runtime value to the value that
+                should be fingerprinted for memoization.
             batching: Enable batching (function receives list[T], returns list[R])
             max_batch_size: Maximum batch size (only with batching=True)
             runner: Runner to execute the function (e.g., GPU for subprocess)
@@ -1690,6 +1937,7 @@ class _FunctionDecorator:
         builder = (
             _SyncFunctionBuilder(
                 memo=memo,
+                memo_key=memo_key,
                 batching=batching,
                 max_batch_size=max_batch_size,
                 runner=runner,
@@ -1700,6 +1948,7 @@ class _FunctionDecorator:
             if batching or runner or max_batch_size is not None
             else _AutoFunctionBuilder(
                 memo=memo,
+                memo_key=memo_key,
                 version=version,
                 logic_tracking=logic_tracking,
                 deps=deps,
@@ -1718,6 +1967,7 @@ class _FunctionDecorator:
         self,
         *,
         memo: bool = False,
+        memo_key: MemoKeySpec = None,
         batching: Literal[True],
         max_batch_size: int | None = None,
         runner: Runner | None = None,
@@ -1731,6 +1981,7 @@ class _FunctionDecorator:
         self,
         *,
         memo: bool = False,
+        memo_key: MemoKeySpec = None,
         batching: Literal[False] = False,
         max_batch_size: int | None = None,
         runner: Runner | None = None,
@@ -1757,6 +2008,7 @@ class _FunctionDecorator:
         /,
         *,
         memo: bool = False,
+        memo_key: MemoKeySpec = None,
         batching: bool = False,
         max_batch_size: int | None = None,
         runner: Runner | None = None,
@@ -1795,6 +2047,7 @@ class _FunctionDecorator:
         """
         builder = _AsyncFunctionBuilder(
             memo=memo,
+            memo_key=memo_key,
             batching=batching,
             max_batch_size=max_batch_size,
             runner=runner,

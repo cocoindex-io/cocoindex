@@ -1,32 +1,35 @@
 """
 PDF Embedding (v1) - CocoIndex pipeline example.
 
-- Walk local PDF files
-- Convert PDFs to markdown
-- Chunk text (RecursiveSplitter)
-- Embed chunks (SentenceTransformers)
-- Store into Postgres with pgvector column (no vector index)
-- Query demo using pgvector cosine distance (<=>)
+Index (use `-L` for live mode, omit for one-shot catch-up):
+    cocoindex update main
+    cocoindex update -L main
+
+Query the index:
+    python main.py "your query"
+
+Pipeline: walk local PDFs -> convert to markdown -> chunk -> embed -> store in Postgres pgvector.
 """
 
 from __future__ import annotations
 
 import asyncio
 import functools
+import io
 import os
 import pathlib
 import sys
-import tempfile
 from dataclasses import dataclass
 from typing import AsyncIterator, Annotated
 
 from dotenv import load_dotenv
-from marker.config.parser import ConfigParser
-from marker.converters.pdf import PdfConverter
-from marker.models import create_model_dict
-from marker.output import text_from_rendered
+from docling.datamodel.accelerator_options import AcceleratorDevice, AcceleratorOptions
+from docling.datamodel.base_models import DocumentStream, InputFormat
+from docling.datamodel.pipeline_options import PdfPipelineOptions
+from docling.document_converter import DocumentConverter, PdfFormatOption
 from numpy.typing import NDArray
 import asyncpg
+from pgvector.asyncpg import register_vector
 
 import cocoindex as coco
 from cocoindex.connectors import localfs, postgres
@@ -50,20 +53,21 @@ _splitter = RecursiveSplitter()
 
 
 @functools.cache
-def pdf_converter() -> PdfConverter:
-    config_parser = ConfigParser({})
-    return PdfConverter(
-        create_model_dict(), config=config_parser.generate_config_dict()
+def pdf_converter() -> DocumentConverter:
+    pipeline_options = PdfPipelineOptions(
+        accelerator_options=AcceleratorOptions(device=AcceleratorDevice.CPU)
+    )
+    return DocumentConverter(
+        format_options={
+            InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)
+        }
     )
 
 
+@coco.fn.as_async(runner=coco.GPU)
 def pdf_to_markdown(content: bytes) -> str:
-    converter = pdf_converter()
-    with tempfile.NamedTemporaryFile(delete=True, suffix=".pdf") as temp_file:
-        temp_file.write(content)
-        temp_file.flush()
-        text_any, _, _ = text_from_rendered(converter(temp_file.name))
-        return text_any
+    source = DocumentStream(name="input.pdf", stream=io.BytesIO(content))
+    return pdf_converter().convert(source).document.export_to_markdown()
 
 
 @dataclass
@@ -80,12 +84,11 @@ class PdfEmbedding:
 async def coco_lifespan(
     builder: coco.EnvironmentBuilder,
 ) -> AsyncIterator[None]:
-    # Provide resources needed across the CocoIndex environment
     database_url = os.getenv("POSTGRES_URL")
     if not database_url:
         raise ValueError("POSTGRES_URL is not set")
 
-    async with await asyncpg.create_pool(database_url) as pool:
+    async with asyncpg.create_pool(database_url) as pool:
         builder.provide(PG_DB, pool)
         builder.provide(EMBEDDER, SentenceTransformerEmbedder(EMBED_MODEL))
         yield
@@ -115,8 +118,7 @@ async def process_file(
     file: FileLike,
     table: postgres.TableTarget[PdfEmbedding],
 ) -> None:
-    content = await file.read()
-    markdown = pdf_to_markdown(content)
+    markdown = await pdf_to_markdown(await file.read())
     chunks = _splitter.split(
         markdown, chunk_size=2000, chunk_overlap=500, language="markdown"
     )
@@ -140,6 +142,7 @@ async def app_main(sourcedir: pathlib.Path) -> None:
         sourcedir,
         recursive=True,
         path_matcher=PatternFilePathMatcher(included_patterns=["**/*.pdf"]),
+        live=True,  # source supports live watch; pass -L to `cocoindex update` to actually run live
     )
     await coco.mount_each(process_file, files.items(), target_table)
 
@@ -186,16 +189,15 @@ async def query_once(
         print("---")
 
 
-async def query() -> None:
+async def query(initial_query: str | None = None) -> None:
     database_url = os.getenv("POSTGRES_URL")
     if not database_url:
         raise ValueError("POSTGRES_URL is not set")
 
     embedder = SentenceTransformerEmbedder(EMBED_MODEL)
-    async with await asyncpg.create_pool(database_url) as pool:
-        if len(sys.argv) > 2:
-            q = " ".join(sys.argv[2:])
-            await query_once(pool, embedder, q)
+    async with asyncpg.create_pool(database_url, init=register_vector) as pool:
+        if initial_query is not None:
+            await query_once(pool, embedder, initial_query)
             return
 
         while True:
@@ -205,8 +207,7 @@ async def query() -> None:
             await query_once(pool, embedder, q)
 
 
-load_dotenv()
-
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "query":
-        asyncio.run(query())
+    load_dotenv()
+    initial = " ".join(sys.argv[1:]) if len(sys.argv) > 1 else None
+    asyncio.run(query(initial))

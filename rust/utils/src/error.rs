@@ -18,12 +18,52 @@ pub trait HostError: Any + StdError + Send + Sync + 'static {
     fn is_cancelled(&self) -> bool {
         false
     }
+
+    /// Produce a fresh boxed copy of this host error, when the host
+    /// representation supports cloning. Used by the batcher to fan a single
+    /// failure out to every recipient of a batch *without* flattening the
+    /// structural error — e.g. a Python `PyErr` keeps its exception type and
+    /// traceback, so all batched callers (not just the first) can `except`
+    /// it by type. Default `None` falls back to a string-only
+    /// [`ResidualError`].
+    fn try_clone(&self) -> Option<Box<dyn HostError>> {
+        None
+    }
+}
+
+/// Concrete `HostError` representing a host-language-agnostic cancellation.
+/// Constructed via [`Error::cancelled`]; recognized by `Error::is_cancelled`
+/// and converted to `asyncio.CancelledError` at the PyO3 boundary.
+#[derive(Debug)]
+pub struct CancelledError;
+
+impl Display for CancelledError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("operation cancelled")
+    }
+}
+
+impl StdError for CancelledError {}
+
+impl HostError for CancelledError {
+    fn is_cancelled(&self) -> bool {
+        true
+    }
+
+    fn try_clone(&self) -> Option<Box<dyn HostError>> {
+        // Unit struct — cloning keeps cancellation flavor on batch residuals
+        // (otherwise a residual would flatten to a non-cancellation error).
+        Some(Box::new(CancelledError))
+    }
 }
 
 pub enum Error {
     Context { msg: String, source: Box<SError> },
     HostLang(Box<dyn HostError>),
-    Client { msg: String, bt: Backtrace },
+    // `bt` is shared via `Arc` so `Error::replica` can clone a `Client` error
+    // while keeping the original capture site (capturing afresh would point
+    // at the replica call instead).
+    Client { msg: String, bt: Arc<Backtrace> },
     Internal(anyhow::Error),
 }
 
@@ -64,7 +104,7 @@ impl Error {
     pub fn client(msg: impl Into<String>) -> Self {
         Self::Client {
             msg: msg.into(),
-            bt: Backtrace::capture(),
+            bt: Arc::new(Backtrace::capture()),
         }
     }
 
@@ -76,9 +116,20 @@ impl Error {
         Self::Internal(anyhow::anyhow!("{}", msg.into()))
     }
 
+    /// Construct a cancellation-flavored error.
+    ///
+    /// Recognizable via [`Error::is_cancelled`] from any layer (e.g. drain
+    /// task reclassification logic, host-language conversion). At the PyO3
+    /// boundary, errors with `is_cancelled() == true` are converted to
+    /// Python's `asyncio.CancelledError` so callers can `except` it
+    /// idiomatically without string-matching.
+    pub fn cancelled() -> Self {
+        Self::HostLang(Box::new(CancelledError))
+    }
+
     pub fn backtrace(&self) -> Option<&Backtrace> {
         match self {
-            Error::Client { bt, .. } => Some(bt),
+            Error::Client { bt, .. } => Some(bt.as_ref()),
             Error::Internal(e) => Some(e.backtrace()),
             Error::Context { source, .. } => source.0.backtrace(),
             Error::HostLang(_) => None,
@@ -99,6 +150,42 @@ impl Error {
             return host_err.is_cancelled();
         }
         false
+    }
+
+    /// Produce a best-effort independent copy of this error.
+    ///
+    /// `Error` isn't `Clone` — `anyhow::Error` and `Backtrace` aren't — but
+    /// several places need to report one failure to multiple consumers: the
+    /// batcher fans a single error out to every member of a batch, and
+    /// [`SharedError`] hands the same failure to every awaiter of a component
+    /// result. This does the next best thing:
+    ///
+    /// - A host-language error that can clone itself ([`HostError::try_clone`],
+    ///   e.g. a Python `PyErr`) is cloned faithfully — preserving its
+    ///   exception type, payload, traceback, and cancellation flavor.
+    /// - `Context` layers are preserved, recursively replicating the source so
+    ///   a clonable host error wrapped in context is still cloned faithfully.
+    /// - `Client` errors keep their variant (so request-vs-internal
+    ///   classification survives), sharing the original backtrace via `Arc`.
+    /// - An `Internal` (`anyhow`) error — which can't be cloned — flattens to a
+    ///   [`ResidualError`] capturing its rendered `Display` + `Debug` text.
+    pub fn replica(&self) -> Error {
+        match self {
+            Error::Context { msg, source } => Error::Context {
+                msg: msg.clone(),
+                source: Box::new(SError(source.0.replica())),
+            },
+            Error::HostLang(host) => match host.try_clone() {
+                Some(cloned) => Error::HostLang(cloned),
+                None => Error::internal(ResidualError::new(self)),
+            },
+            Error::Client { msg, bt } => Error::Client {
+                msg: msg.clone(),
+                // Share the original capture site rather than re-capturing here.
+                bt: bt.clone(),
+            },
+            Error::Internal(_) => Error::internal(ResidualError::new(self)),
+        }
     }
 
     pub fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
@@ -270,7 +357,11 @@ impl ResidualError {
     pub fn new<Err: Display + Debug>(err: &Err) -> Self {
         Self(Arc::new(ResidualErrorData {
             message: err.to_string(),
-            debug: err.to_string(),
+            // Capture Debug so the richer form survives the flatten. (Host
+            // errors that can clone themselves — e.g. a Python `PyErr` — skip
+            // this path entirely; see `HostError::try_clone` and the batcher.
+            // This is the fallback for errors that can't be cloned.)
+            debug: format!("{:?}", err),
         }))
     }
 }
@@ -290,8 +381,11 @@ impl Debug for ResidualError {
 impl StdError for ResidualError {}
 
 enum SharedErrorState {
+    /// The original error — handed to the first extractor.
     Error(Error),
-    ResidualErrorMessage(ResidualError),
+    /// A [`Error::replica`] left behind after the original was extracted;
+    /// every later extractor gets a fresh replica of it.
+    Replica(Error),
 }
 
 #[derive(Clone)]
@@ -304,22 +398,15 @@ impl SharedError {
 
     fn extract_error(&self) -> Error {
         let mut state = self.0.lock().unwrap();
-        let mut_state = &mut *state;
-
-        let residual_err = match mut_state {
-            SharedErrorState::ResidualErrorMessage(err) => {
-                // Already extracted; return a generic internal error with the residual message.
-                return Error::internal(err.clone());
-            }
-            SharedErrorState::Error(err) => ResidualError::new(err),
+        // Build the replacement first (immutable borrow), then swap it in.
+        let replacement = match &*state {
+            // First extraction: leave a replica behind, hand out the original.
+            SharedErrorState::Error(err) => SharedErrorState::Replica(err.replica()),
+            // Already extracted: hand out a fresh replica, leave state as-is.
+            SharedErrorState::Replica(err) => return err.replica(),
         };
-
-        let orig_state = std::mem::replace(
-            mut_state,
-            SharedErrorState::ResidualErrorMessage(residual_err),
-        );
-        let SharedErrorState::Error(err) = orig_state else {
-            panic!("Expected shared error state to hold Error");
+        let SharedErrorState::Error(err) = std::mem::replace(&mut *state, replacement) else {
+            unreachable!("matched SharedErrorState::Error above")
         };
         err
     }
@@ -329,8 +416,7 @@ impl Debug for SharedError {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         let state = self.0.lock().unwrap();
         match &*state {
-            SharedErrorState::Error(err) => Debug::fmt(err, f),
-            SharedErrorState::ResidualErrorMessage(err) => Debug::fmt(err, f),
+            SharedErrorState::Error(err) | SharedErrorState::Replica(err) => Debug::fmt(err, f),
         }
     }
 }
@@ -339,8 +425,7 @@ impl Display for SharedError {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         let state = self.0.lock().unwrap();
         match &*state {
-            SharedErrorState::Error(err) => Display::fmt(err, f),
-            SharedErrorState::ResidualErrorMessage(err) => Display::fmt(err, f),
+            SharedErrorState::Error(err) | SharedErrorState::Replica(err) => Display::fmt(err, f),
         }
     }
 }
@@ -486,6 +571,24 @@ mod tests {
     impl StdError for MockHostError {}
     impl HostError for MockHostError {}
 
+    /// Host error that supports `try_clone` — stands in for a Python `PyErr`
+    /// in `replica` tests without needing a Python interpreter.
+    #[derive(Debug)]
+    struct CloneableMockHostError(String);
+
+    impl Display for CloneableMockHostError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "CloneableMockHostError: {}", self.0)
+        }
+    }
+
+    impl StdError for CloneableMockHostError {}
+    impl HostError for CloneableMockHostError {
+        fn try_clone(&self) -> Option<Box<dyn HostError>> {
+            Some(Box::new(CloneableMockHostError(self.0.clone())))
+        }
+    }
+
     #[test]
     fn test_client_error_creation() {
         let err = Error::client("invalid input");
@@ -521,6 +624,68 @@ mod tests {
         } else {
             panic!("Expected HostLang variant");
         }
+    }
+
+    #[test]
+    fn test_replica_preserves_cloneable_host_error() {
+        let err = Error::host(CloneableMockHostError("boom".to_string()));
+        let replica = err.replica();
+        let Error::HostLang(host) = replica.without_contexts() else {
+            panic!("expected HostLang");
+        };
+        let any: &dyn Any = host.as_ref();
+        assert_eq!(
+            any.downcast_ref::<CloneableMockHostError>().unwrap().0,
+            "boom"
+        );
+    }
+
+    #[test]
+    fn test_replica_flattens_non_cloneable_host_error() {
+        // MockHostError uses the default try_clone() == None.
+        let err = Error::host(MockHostError("boom".to_string()));
+        let replica = err.replica();
+        assert!(matches!(replica, Error::Internal(_)));
+        assert_eq!(replica.to_string(), "MockHostError: boom");
+    }
+
+    #[test]
+    fn test_replica_preserves_client_variant() {
+        let replica = Error::client("bad request").replica();
+        assert!(matches!(&replica, Error::Client { msg, .. } if msg == "bad request"));
+    }
+
+    #[test]
+    fn test_replica_flattens_internal_error() {
+        let replica = Error::internal_msg("kaboom").replica();
+        assert!(matches!(replica, Error::Internal(_)));
+        assert_eq!(replica.to_string(), "kaboom");
+    }
+
+    #[test]
+    fn test_replica_preserves_context_and_inner_host_error() {
+        let err = Error::host(CloneableMockHostError("deep".to_string()))
+            .context("layer 1")
+            .context("layer 2");
+        let replica = err.replica();
+        // Context structure preserved...
+        assert!(matches!(&replica, Error::Context { msg, .. } if msg == "layer 2"));
+        // ...and the inner host error is still cloned through the contexts.
+        let Error::HostLang(host) = replica.without_contexts() else {
+            panic!("expected HostLang under context");
+        };
+        let any: &dyn Any = host.as_ref();
+        assert_eq!(
+            any.downcast_ref::<CloneableMockHostError>().unwrap().0,
+            "deep"
+        );
+    }
+
+    #[test]
+    fn test_replica_preserves_cancellation() {
+        let err = Error::cancelled();
+        assert!(err.is_cancelled());
+        assert!(err.replica().is_cancelled());
     }
 
     #[test]

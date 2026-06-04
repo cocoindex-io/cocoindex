@@ -38,7 +38,7 @@ CocoIndex detects a live component by checking if the class has both `process` a
 
 ## LiveComponentOperator
 
-The `operator` passed to `process_live()` provides four methods:
+The `operator` passed to `process_live()` provides five methods:
 
 | Method | Description |
 |--------|-------------|
@@ -46,10 +46,13 @@ The `operator` passed to `process_live()` provides four methods:
 | `await operator.update(subpath, fn, *args, **kwargs)` | Mount a child component incrementally. |
 | `await operator.delete(subpath)` | Delete a child component. |
 | `await operator.mark_ready()` | Signal that processing has caught up to the time `process_live()` was called. |
+| `await operator.report_exception(exc)` | Surface a `process_live`-body exception through the parent's exception handler chain. |
 
 ### `update_full()`
 
 Triggers a full processing cycle: calls `process()`, submits target states, waits for all children to be ready, and garbage-collects children that are no longer mounted. This is the same mechanism as a traditional component's update cycle.
+
+Exceptions raised inside `process()` (or its descendants) are routed through the parent's [exception handler chain](./exception_handlers#exception-handlers) — same as background `coco.mount()` failures — and **do not propagate** to the caller. This lets long-running `process_live` loops (such as periodic refreshers) keep going across transient cycle failures while still surfacing the failure to operators.
 
 ### `update()` and `delete()`
 
@@ -57,9 +60,32 @@ Mount or delete individual child components without a full scan. These are concu
 
 When multiple operations target the same subpath, only the latest one (by invocation order) takes effect.
 
+Failures in the mounted child (or in the delete itself) are routed through the parent's [exception handler chain](./exception_handlers#exception-handlers) with `mount_kind="process_live"` and `stable_path` set to the *child's* path — same shape as background `coco.mount` failures, never propagated to `handle.ready()`. The live loop is unaffected by child failures.
+
 ### `mark_ready()`
 
 Signals to the parent that the live component has caught up. The parent's `await handle.ready()` returns when `mark_ready()` is called. If `process_live()` returns without calling `mark_ready()`, it is called automatically.
+
+### `report_exception()`
+
+Routes an exception raised somewhere in `process_live`'s body — but **outside** an `update_full` / `update` / `delete` call — through the parent's [exception handler chain](./exception_handlers#exception-handlers). Use it for failures the framework can't see on its own, such as an external watcher emitting a malformed event:
+
+```python
+async def process_live(self, operator):
+    await operator.update_full()
+    await operator.mark_ready()
+    async for event in watcher.events():
+        try:
+            subpath, value = parse_event(event)
+        except ParseError as exc:
+            await operator.report_exception(exc)
+            continue
+        await operator.update(subpath, process_one, value)
+```
+
+The handler receives an `ExceptionContext` with `mount_kind="process_live"` and `stable_path` set to the live component's own path. The full Python traceback is preserved (when `exc.__traceback__` is set — i.e. for caught exceptions). Falls back to ERROR-level logging if no handler is registered.
+
+You **don't** need `report_exception` around `update_full` / `update` / `delete` themselves — those route their own errors automatically.
 
 ## Example: file system watcher
 
@@ -144,9 +170,39 @@ class ProcessAll:
 
 The key difference: the LiveComponent version can later be extended to handle incremental changes in `process_live()` without changing `process()`.
 
+## Example: periodic refresh with `coco.auto_refresh`
+
+A common pattern is "run a regular processor on a fixed schedule." `coco.auto_refresh` wraps any processor function as a LiveComponent that re-runs it on an interval — no need to write `process_live` yourself.
+
+```python
+import datetime
+import cocoindex as coco
+
+async def sync_users(db, target) -> None:
+    rows = await db.fetch_all_users()
+    for row in rows:
+        target.declare_row(row=UserRow(...))
+
+@coco.fn
+async def app_main(db, target) -> None:
+    await coco.mount(
+        coco.auto_refresh(sync_users, interval=datetime.timedelta(minutes=5)),
+        db, target,
+    )
+```
+
+Behavior:
+- The first cycle runs immediately, then `mark_ready` is signaled to the parent.
+- In live mode, the loop continues: `sleep(interval) → run process_fn → ...` with a **fixed delay** between cycles (cycles never overlap; a slow cycle just stretches the gap).
+- In catch-up mode, the first cycle runs and `auto_refresh` terminates — observationally identical to mounting `process_fn` directly. The interval is ignored.
+- Cycle failures are routed through the parent's [exception handler chain](./exception_handlers#exception-handlers) (see `update_full()` above); the loop keeps going.
+- **Each cycle reconciles target states against the previous cycle.** If `process_fn` no longer declares some target state (e.g. a row that vanished from your source table), CocoIndex automatically deletes the corresponding target — same garbage-collection model as a regular `coco.mount` re-run. You write the function as if processing from scratch each time; the framework handles the diff. See [Target State](../programming_guide/target_state) for the underlying model.
+
+The returned class's `__init__` accepts the same positional and keyword arguments as `process_fn` — anything you'd pass to `coco.mount(process_fn, ...)` you can pass to `coco.mount(coco.auto_refresh(process_fn, interval=...), ...)`.
+
 ## LiveMapFeed and LiveMapView
 :::tip
-For a user-facing introduction to live mode and when to use it, see [Live Mode](../programming_guide/live_mode.md). This section covers the protocol details for connector authors and advanced use cases.
+For a user-facing introduction to live mode and when to use it, see [Live Mode](../programming_guide/live_mode). This section covers the protocol details for connector authors and advanced use cases.
 :::
 
 Two protocols represent live keyed collections that `mount_each()` can consume. Choose based on whether your source can enumerate its current state:
@@ -191,12 +247,39 @@ async def watch(self, subscriber: LiveMapSubscriber[K, V]) -> None:
 
 To add live support to a source connector, make your source return an object that implements `LiveMapView` (if the source has scannable state) or `LiveMapFeed` (if it only streams changes):
 
-- **`LiveMapView` example**: The [`localfs`](../connectors/localfs.md) connector's `DirWalker` — `walk_dir(..., live=True).items()` returns a `LiveMapView` backed by `watchfiles`.
-- **`LiveMapFeed` example**: The [`kafka`](../connectors/kafka.md) connector — `topic_as_map()` returns a `LiveMapFeed` that consumes messages from Kafka topics.
+- **`LiveMapView` example**: The [`localfs`](../connectors/localfs) connector's `DirWalker` — `walk_dir(..., live=True).items()` returns a `LiveMapView` backed by `watchfiles`.
+- **`LiveMapFeed` example**: The [`kafka`](../connectors/kafka) connector — `topic_as_map()` returns a `LiveMapFeed` that consumes messages from Kafka topics.
+
+## LiveStream
+
+Some change sources are not naturally keyed maps — they deliver opaque event payloads (e.g. cloud-storage event notifications, raw message buses) that the consuming connector translates into map updates on its own terms. For these, CocoIndex provides **`LiveStream`**: a keyless sibling of `LiveMapFeed` — an unkeyed sequence of messages without any "key" or "delete" semantics. Connectors typically wrap a user-supplied `LiveStream` into their own `LiveMapView` (or `LiveMapFeed`) by translating each event into the appropriate key-level operation.
+
+```python
+class LiveStream(Protocol[M]):
+    async def watch(self, subscriber: LiveStreamSubscriber[M]) -> None: ...
+
+class LiveStreamSubscriber(Protocol[M]):
+    async def send(self, message: M) -> ReadyAwaitable: ...
+    async def mark_ready(self) -> None: ...
+```
+
+`send()` is awaited by the producer to obtain a `ReadyAwaitable` handle; the handle's `ready()` is then awaited later (often by an internal offset/commit tracker) to signal that the message has been fully processed. The stream awaits each `send()` inline, so a slow subscriber naturally throttles the producer — at most one message is in flight per stream, bounding adapter memory regardless of producer rate.
+
+`mark_ready()` must return promptly — it is awaited inline in the producer's loop. Subscribers that need to wait on additional preconditions (e.g. a pending scan) should spawn a background task and return.
+
+### Implementing a LiveStream-based connector
+
+A connector built on `LiveStream` typically:
+
+1. Accepts a user-supplied `LiveStream[...]` as a constructor argument — the user wires up the underlying transport.
+2. Wraps the stream into a `LiveMapView` (or `LiveMapFeed`): `__aiter__()` runs an initial scan if the source has scannable state; `watch()` subscribes to the stream and translates each event into `subscriber.update(key, value)` / `subscriber.delete(key)`.
+3. Lets the underlying `LiveStream` handle offset commits, readiness signaling, and back-pressure.
+
+**Example**: The [`oci_object_storage`](../connectors/oci_object_storage#live-bucket-watching) connector takes a `LiveStream[bytes]` (typically [`kafka.topic_as_stream(...).payloads()`](../connectors/kafka#as-a-live-stream)) and translates OCI Object Storage events into bucket-keyed updates. The Kafka connector exposes `topic_as_stream()` precisely so that downstream connectors like this one can plug into Kafka without inheriting the keyed-map semantics of `topic_as_map()`.
 
 ## Live mode vs catch-up mode
 
-See [Live Mode](../programming_guide/live_mode.md) for how the two modes are enabled at the app level and an overview of how they work.
+See [Live Mode](../programming_guide/live_mode) for how the two modes are enabled at the app level and an overview of how they work.
 
 For a manual `LiveComponent`, the mode controls whether `process_live()` continues running after `mark_ready()`:
 
@@ -216,7 +299,7 @@ This lets you use the same `LiveComponent` class in both modes without code chan
 LiveComponent classes can only be used with `coco.mount()` and `operator.update()`. Passing a LiveComponent class to `coco.use_mount()` raises a `TypeError`.
 
 :::tip
-While LiveComponent classes cannot be passed to `mount_each()`, you can get live watching behavior more easily using a [`LiveMapFeed` or `LiveMapView`](#live-map) — `mount_each()` automatically creates an internal LiveComponent when it detects one.
+While LiveComponent classes cannot be passed to `mount_each()`, you can get live watching behavior more easily using a [`LiveMapFeed` or `LiveMapView`](#livemapfeed-and-livemapview) — `mount_each()` automatically creates an internal LiveComponent when it detects one.
 :::
 
 ## Readiness

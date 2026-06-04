@@ -624,7 +624,7 @@ examples/conversation_to_knowledge/
 ```toml
 [project]
 dependencies = [
-    "cocoindex>=1.0.0a1",
+    "cocoindex>=1.0.0",
     "yt-dlp",
     "openai",
     "instructor",

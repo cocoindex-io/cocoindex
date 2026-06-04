@@ -9,7 +9,7 @@ fi
 
 rm -f "$FLAG"
 
-cd "$CLAUDE_PROJECT_DIR" && uv run mypy 2>&1
+"$CLAUDE_PROJECT_DIR/dev/agent-checks/py-typecheck-run.sh"
 MYPY_EXIT=$?
 if [ $MYPY_EXIT -ne 0 ]; then
   echo "mypy typecheck failed" >&2

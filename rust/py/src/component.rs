@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use crate::{
     function::{build_memo_states_payload, context_memo_states_to_pydict},
     prelude::*,
-    runtime::{PyAsyncContext, PyCallback},
+    runtime::{PyAsyncContext, PyCallback, build_on_error},
     stable_path::PyStablePath,
     value::PyStoredValue,
 };
@@ -189,6 +189,9 @@ pub fn use_mount_async<'py>(
         .component()
         .mount_child(&fn_ctx.0, stable_path.0)
         .into_py_result()?;
+    // Register as an active member of any enclosing stats group(s) before the
+    // run starts, so the group's liveness tracking can't miss it.
+    comp_ctx.0.push_active_member(&child);
     future_into_py(py, async move {
         let handle = child
             .use_mount(&comp_ctx.0, processor)
@@ -213,39 +216,12 @@ pub fn mount_async<'py>(
         .component()
         .mount_child(&fn_ctx.0, stable_path.0)
         .into_py_result()?;
+    // Register as an active member of any enclosing stats group(s) before the
+    // run starts, so the group's liveness tracking can't miss it.
+    comp_ctx.0.push_active_member(&child);
 
-    let on_error = handler_callback.map(|handler_callback| {
-        // Capture host runtime context so we can run an async Python callback.
-        let host_runtime_ctx = comp_ctx.0.app_ctx().env().host_runtime_ctx().clone();
-        let cb = PyCallback::Async(Arc::new(handler_callback));
-
-        let on_error: Arc<
-            dyn Fn(
-                    Error,
-                )
-                    -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>>
-                + Send
-                + Sync
-                + 'static,
-        > = Arc::new(move |err: Error| {
-            let cb = cb.clone();
-            let host_runtime_ctx = host_runtime_ctx.clone();
-            Box::pin(async move {
-                let err_str = format!("{err:?}");
-                let fut = match cb.call(&host_runtime_ctx, (err_str,)) {
-                    Ok(fut) => fut,
-                    Err(e) => {
-                        error!("exception handler dispatch failed:\n{e:?}");
-                        return;
-                    }
-                };
-                if let Err(e) = fut.await {
-                    error!("exception handler failed:\n{e:?}");
-                };
-            })
-        });
-        on_error
-    });
+    let host_runtime_ctx = comp_ctx.0.app_ctx().env().host_runtime_ctx().clone();
+    let on_error = build_on_error(host_runtime_ctx, handler_callback);
 
     future_into_py(py, async move {
         let handle = child

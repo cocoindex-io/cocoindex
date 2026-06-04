@@ -5,6 +5,16 @@
 // React + a client bundle just to render one number.
 import { SITE_MAIN, SITE_BLOG, GITHUB_REPO } from '../consts';
 
+interface Props {
+  /** When set, renders the phone hamburger and wires `aria-controls` to
+   *  the given sheet id. Layouts that ship a phone drawer (DocsLayout)
+   *  set this; pages that have no off-canvas sheet (404, listing pages)
+   *  leave it off so no orphan burger appears on phones. */
+  mobileSheetId?: string;
+}
+
+const { mobileSheetId } = Astro.props as Props;
+
 const base = import.meta.env.BASE_URL.replace(/\/$/, '') || '/';
 const CODE = `${SITE_MAIN}/cocoindex-code`;
 const DOCS = base;
@@ -66,6 +76,19 @@ const ENTERPRISE = `${SITE_MAIN}/enterprise`;
         </svg>
         <span class="count" aria-label="GitHub stars">—</span>
       </a>
+      {mobileSheetId && (
+        <button
+          class="menu-btn"
+          id="menuBtn"
+          type="button"
+          aria-label="Open menu"
+          aria-expanded="false"
+          aria-controls={mobileSheetId}
+          data-mobile-toggle={mobileSheetId}
+        >
+          <span class="bar"></span>
+        </button>
+      )}
     </div>
   </div>
 </nav>

@@ -1,16 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
-import logging
 from collections.abc import AsyncIterable, Coroutine
 from typing import (
     Any,
-    Awaitable,
-    Concatenate,
     Callable,
+    Concatenate,
+    Generic,
     Iterable,
-    Literal,
     ParamSpec,
     TypeVar,
     overload,
@@ -18,69 +15,23 @@ from typing import (
 
 from . import core, environment
 from .app import App, AppConfig, DropHandle, UpdateHandle, show_progress
-from .update_stats import ComponentStats, UpdateSnapshot, UpdateStats, UpdateStatus
+from .update_stats import (
+    ComponentStats,
+    StatsGroupHandle,
+    UpdateSnapshot,
+    UpdateStats,
+    UpdateStatus,
+)
 from .pending_marker import ResolvesTo
 from .component_ctx import (
     ComponentSubpath,
     ExceptionContext,
     ExceptionHandler,
-    ExceptionHandlerChain,
-    MountKind,
     build_child_path,
     get_context_from_ctx,
     exception_handler,
+    stats_group,
 )
-
-_logger = logging.getLogger(__name__)
-
-
-def _resolve_handler(
-    handler_chain: ExceptionHandlerChain,
-    *,
-    env_name: str,
-    stable_path: str,
-    processor_name: str | None,
-    mount_kind: MountKind,
-    parent_stable_path: str | None,
-) -> Callable[[str], Awaitable[None]]:
-    """
-    Wrap a handler chain into a single async callable invoked by Rust.
-
-    The returned callable takes a stringified error (from Rust) and runs:
-    - innermost handler first (head of the chain)
-    - if a handler raises, calls the next outer handler with the new exception
-    - if all handlers raise, logs the original component error (built-in fallback)
-    """
-
-    async def _run(err_str: str) -> None:
-        original_exc: BaseException = RuntimeError(err_str)
-        current_exc: BaseException = original_exc
-        source: Literal["component", "handler"] = "component"
-        node: ExceptionHandlerChain | None = handler_chain
-        while node is not None:
-            ctx = ExceptionContext(
-                env_name=env_name,
-                stable_path=stable_path,
-                processor_name=processor_name,
-                mount_kind=mount_kind,
-                parent_stable_path=parent_stable_path,
-                is_background=True,
-                source=source,
-                original_exception=None if source == "component" else original_exc,
-            )
-            try:
-                ret = node.handler(current_exc, ctx)
-                if inspect.isawaitable(ret):
-                    await ret
-                return
-            except BaseException as handler_exc:
-                current_exc = handler_exc
-                source = "handler"
-                node = node.base
-        # All handlers raised — fall back to built-in log, matching the no-handler path.
-        _logger.error("component build failed:\n%s", err_str, exc_info=current_exc)
-
-    return _run
 
 
 from .stable_path import StableKey
@@ -106,8 +57,11 @@ from .live_component import (
     LiveMapView,
     LiveMapSubscriber,
     _MountEachLiveComponent,
+    auto_refresh,
+    check_not_in_process_live,
     is_live_component_class,
 )
+from cocoindex.connectorkits import default_subpath_name as _default_subpath_name
 
 # ============================================================================
 # Re-exports from internal modules (shared types)
@@ -135,7 +89,12 @@ from .memo_fingerprint import (
     NotMemoKeyable,
 )
 
-from .serde import unpickle_safe, serialize_by_pickle
+from .serde import (
+    unpickle_safe,
+    serialize_by_pickle,
+    serialize as _serialize,
+    deserialize as _deserialize,
+)
 
 from .pending_marker import PendingS, ResolvedS, MaybePendingS
 
@@ -146,7 +105,7 @@ from .component_ctx import (
     get_component_context,
 )
 
-from .setting import Settings
+from .setting import Settings, LmdbSettings
 
 from .stable_path import ROOT_PATH, StablePath
 
@@ -278,13 +237,15 @@ async def use_mount(*pos_args: Any, **kwargs: Any) -> Any:
     else:
         processor_fn = pos_args[0]
         args = pos_args[1:]
-        name = getattr(processor_fn, "__name__", None)
+        name = _default_subpath_name(processor_fn)
         if name is None:
             raise TypeError(
                 "use_mount() requires a ComponentSubpath when the function has no "
                 "__name__. Provide an explicit subpath as the first argument."
             )
         subpath = ComponentSubpath(Symbol(name))
+
+    check_not_in_process_live("coco.use_mount")
 
     if is_live_component_class(processor_fn):
         raise TypeError(
@@ -313,7 +274,16 @@ async def _mount_live_component(
     child_path: core.StablePath,
     instance: Any,
 ) -> ComponentMountHandle:
-    """Mount a pre-constructed LiveComponent instance."""
+    """Mount a pre-constructed LiveComponent instance.
+
+    Wraps `instance.process_live(operator)` in `_process_live_wrapper` so
+    `_in_process_live = True` is set inside the asyncio Task that runs
+    the body (the wrapper Coroutine inherits this `Context` value through
+    asyncio's standard Task-context inheritance, and any `coco.mount*`
+    call within will raise).
+    """
+    from .live_component import _process_live_wrapper
+
     controller, readiness_handle = await core.mount_live_async(
         child_path,
         parent_ctx._core_processor_ctx,
@@ -323,8 +293,7 @@ async def _mount_live_component(
 
     operator = LiveComponentOperator(controller, instance, parent_ctx._env, child_path)
 
-    process_live_coro = instance.process_live(operator)
-    controller.start(process_live_coro)
+    controller.start(_process_live_wrapper(instance, operator))
 
     return ComponentMountHandle([readiness_handle])
 
@@ -369,6 +338,8 @@ async def mount(*pos_args: Any, **kwargs: Any) -> ComponentMountHandle:
         # With explicit subpath:
         await coco.mount(coco.component_subpath("process", filename), process_file, file, target)
     """
+    check_not_in_process_live("coco.mount")
+
     if pos_args and isinstance(pos_args[0], ComponentSubpath):
         subpath = pos_args[0]
         processor_fn = pos_args[1]
@@ -376,7 +347,7 @@ async def mount(*pos_args: Any, **kwargs: Any) -> ComponentMountHandle:
     else:
         processor_fn = pos_args[0]
         args = pos_args[1:]
-        name = getattr(processor_fn, "__name__", None)
+        name = _default_subpath_name(processor_fn)
         if name is None:
             raise TypeError(
                 "mount() requires a ComponentSubpath when the function has no "
@@ -394,17 +365,10 @@ async def mount(*pos_args: Any, **kwargs: Any) -> ComponentMountHandle:
     processor = create_core_component_processor(
         processor_fn, parent_ctx._env, child_path, args, kwargs
     )
-    resolved = (
-        _resolve_handler(
-            parent_ctx._exception_handler_chain,
-            env_name=parent_ctx._env.name,
-            stable_path=child_path.to_string(),
-            processor_name=getattr(processor_fn, "__qualname__", None),
-            mount_kind="mount",
-            parent_stable_path=parent_ctx._core_path.to_string(),
-        )
-        if parent_ctx._exception_handler_chain
-        else None
+    resolved = parent_ctx.resolve_exception_handler(
+        stable_path=child_path.to_string(),
+        processor_name=getattr(processor_fn, "__qualname__", None),
+        mount_kind="mount",
     )
     core_handle = await core.mount_async(
         processor,
@@ -462,6 +426,8 @@ async def mount_each(*pos_args: Any, **kwargs: Any) -> ComponentMountHandle:
     Returns:
         A handle that can be used to wait until all processing units are ready.
     """
+    check_not_in_process_live("coco.mount_each")
+
     if pos_args and isinstance(pos_args[0], ComponentSubpath):
         subpath = pos_args[0]
         fn = pos_args[1]
@@ -471,7 +437,7 @@ async def mount_each(*pos_args: Any, **kwargs: Any) -> ComponentMountHandle:
         fn = pos_args[0]
         items = pos_args[1]
         extra_args = pos_args[2:]
-        name = getattr(fn, "__name__", None)
+        name = _default_subpath_name(fn)
         if name is None:
             raise TypeError(
                 "mount_each() requires a ComponentSubpath when the function has no "
@@ -499,17 +465,10 @@ async def mount_each(*pos_args: Any, **kwargs: Any) -> ComponentMountHandle:
         processor = create_core_component_processor(
             fn, parent_ctx._env, item_path, (item, *extra_args), kwargs
         )
-        resolved = (
-            _resolve_handler(
-                parent_ctx._exception_handler_chain,
-                env_name=parent_ctx._env.name,
-                stable_path=item_path.to_string(),
-                processor_name=getattr(fn, "__qualname__", None),
-                mount_kind="mount_each",
-                parent_stable_path=parent_ctx._core_path.to_string(),
-            )
-            if parent_ctx._exception_handler_chain
-            else None
+        resolved = parent_ctx.resolve_exception_handler(
+            stable_path=item_path.to_string(),
+            processor_name=getattr(fn, "__qualname__", None),
+            mount_kind="mount_each",
         )
         core_handle = await core.mount_async(
             processor,
@@ -663,6 +622,100 @@ def runtime() -> _DualModeRuntime:
 
 
 # ============================================================================
+# use_state
+# ============================================================================
+
+_StateT = TypeVar("_StateT")
+
+
+class StateHandle(Generic[_StateT]):
+    """
+    Handle for a persistent per-component state value.
+
+    Returned by `coco.use_state()`. Read the current value via `.value`;
+    assign to `.value` to persist a new value for the next run.
+    """
+
+    __slots__ = ("_key", "_value", "_core_processor_ctx")
+
+    def __init__(
+        self,
+        key: str,
+        value: _StateT,
+        core_processor_ctx: core.ComponentProcessorContext,
+    ) -> None:
+        self._key = key
+        self._value = value
+        self._core_processor_ctx = core_processor_ctx
+
+    @property
+    def value(self) -> _StateT:
+        return self._value
+
+    @value.setter
+    def value(self, new_value: _StateT) -> None:
+        self._core_processor_ctx.update_user_state(self._key, _serialize(new_value))
+        self._value = new_value
+
+
+@overload
+def use_state(key: str) -> StateHandle[Any]: ...
+@overload
+def use_state(key: str, initial_value: _StateT) -> StateHandle[_StateT]: ...
+def use_state(key: str, initial_value: Any = None) -> StateHandle[Any]:
+    """
+    Declare a persistent state for the current component.
+
+    On the first run, the returned handle's `.value` is `initial_value`
+    (or `None` if omitted). On subsequent runs, `.value` is the value
+    stored at the end of the previous run. Assign to `handle.value`
+    during the run to persist a new value.
+
+    Args:
+        key: Unique key within this component. Must be declared at most
+             once per component run.
+        initial_value: Value to use when no stored state exists for `key`.
+                       Defaults to `None`.
+
+    Returns:
+        A StateHandle wrapping the current value.
+
+    Raises:
+        RuntimeError: In the following cases, which surface as component build
+                      failures — logged by default but not propagated to
+                      `app.update()` unless a custom exception handler re-raises:
+
+                      - Inside a `with coco.component_subpath()` block: state
+                        is owned by the component's stable path, not the shifted
+                        subpath, so the key would silently read/write under the
+                        wrong identity.
+                      - Inside a memoized function body: on a cache hit the body
+                        is skipped entirely, so the key would never be declared
+                        and would be garbage-collected as stale on the next commit.
+                      - If `key` is declared more than once in the same component
+                        run: each key maps to exactly one state slot; a second
+                        declaration would be ambiguous.
+    """
+    ctx = get_context_from_ctx()
+    if ctx._core_path != ctx._core_processor_ctx.stable_path:
+        raise RuntimeError(
+            "coco.use_state() cannot be called inside a `with coco.component_subpath()` block"
+        )
+
+    if ctx._in_memo_fn:
+        raise RuntimeError(
+            "coco.use_state() cannot be called inside a memoized function"
+        )
+    try:
+        stored_bytes = ctx._core_processor_ctx.use_state(key, _serialize(initial_value))
+    except ValueError as e:
+        # Rust client errors surface as ValueError; normalize to RuntimeError so
+        # all use_state usage errors have a consistent type for callers.
+        raise RuntimeError(str(e)) from None
+    return StateHandle(key, _deserialize(stored_bytes), ctx._core_processor_ctx)
+
+
+# ============================================================================
 # __all__
 # ============================================================================
 
@@ -675,6 +728,7 @@ __all__ = [
     "show_progress",
     # .update_stats
     "ComponentStats",
+    "StatsGroupHandle",
     "UpdateSnapshot",
     "UpdateStats",
     "UpdateStatus",
@@ -722,10 +776,12 @@ __all__ = [
     "ExceptionHandler",
     "component_subpath",
     "exception_handler",
+    "stats_group",
     "use_context",
     "get_component_context",
     # .setting
     "Settings",
+    "LmdbSettings",
     # .stable_path
     "ROOT_PATH",
     "StablePath",
@@ -742,6 +798,10 @@ __all__ = [
     "LiveMapFeed",
     "LiveMapView",
     "LiveMapSubscriber",
+    "auto_refresh",
+    # use_state
+    "StateHandle",
+    "use_state",
     # Mount APIs
     "ComponentMountHandle",
     "mount",

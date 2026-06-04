@@ -167,3 +167,110 @@ async def test_drop_empty_app() -> None:
 
     # Verify no paths exist
     assert await coco_inspect.list_stable_paths(app) == []
+
+
+# ============================================================================
+# Slice D: drop_app live-component drain integration
+# ============================================================================
+
+
+class _CatchUpLiveComponent:
+    """Catch-up live component: process is a no-op, then process_live exits via mark_ready.
+
+    Empty `process()` is fine — declares no target states.
+    """
+
+    async def process(self) -> None:
+        pass
+
+    async def process_live(self, operator: coco.LiveComponentOperator) -> None:
+        await operator.update_full()
+        await operator.mark_ready()
+
+
+def test_drop_with_live_component_in_registry() -> None:
+    """Slice D: after a live-mode update mounts a live component, calling
+    drop_app should walk the live-components registry and drain each (with
+    30s per-component timeout). For a quiesced live component (catch-up
+    mode that mark_ready'd cleanly), the drain is a no-op and drop_app
+    completes promptly without timing out.
+    """
+    DictsTarget.store.clear()
+    _source_data.clear()
+
+    async def _main() -> None:
+        await coco.mount(coco.component_subpath("live"), _CatchUpLiveComponent)
+
+    app = coco.App(
+        coco.AppConfig(name="test_drop_live_component_drain", environment=coco_env),
+        _main,
+    )
+    # Run in catch-up mode (live=False is the default; the component's own
+    # mark_ready in non-live mode triggers process_live to suspend then be
+    # dropped via the controller's biased select).
+    app.update_blocking()
+
+    # The drain path must not hang here — registry walk + 30s-bounded drain.
+    app.drop_blocking()
+
+    # Verify state is fully cleaned up after drop.
+    assert DictsTarget.store.data == {}
+    assert coco_inspect.list_stable_paths_sync(app) == []
+
+
+def test_drop_failure_preserves_tracking_for_retry() -> None:
+    """When a delete fails during `app.drop()`, the tracking record must
+    survive so a follow-up drop (or next update) can retry the cleanup.
+
+    A failed sink call short-circuits `submit()` BEFORE
+    `cleanup_tombstone()`, so the tombstone/tracking record stays in the
+    DB. The next `app.drop_blocking()` (with the sink healthy) finds
+    the surviving records and cleans up — no leak.
+
+    Note: today this test does NOT assert `app.drop_blocking()` raises
+    on failure, because failed sub-component deletes happen via the GC
+    sweep which doesn't propagate err to the root. Surfacing that to
+    `app.drop()` as a raise is a follow-up. The preservation contract
+    (this test) is what guarantees no data leaks regardless.
+    """
+    DictsTarget.store.clear()
+    _source_data.clear()
+
+    app = coco.App(
+        coco.AppConfig(
+            name="test_drop_failure_preserves_tracking", environment=coco_env
+        ),
+        _declare_dicts,
+    )
+
+    _source_data["D1"] = {"a": 1}
+    app.update_blocking()
+    assert "D1" in DictsTarget.store.data
+    paths_before_failed_drop = coco_inspect.list_stable_paths_sync(app)
+    assert paths_before_failed_drop, (
+        "tracking records should exist after the initial update"
+    )
+
+    # First drop attempt with a failing sink. Whether or not it raises,
+    # the tracking record for the failed delete MUST survive.
+    DictsTarget.store.sink_exception = True
+    try:
+        try:
+            app.drop_blocking()
+        except Exception:
+            pass  # tolerate either propagation outcome (see note above)
+    finally:
+        DictsTarget.store.sink_exception = False
+
+    # Tracking record must survive a failed delete — otherwise the
+    # target state would be leaked (no one to clean it up later).
+    paths_after_failed_drop = coco_inspect.list_stable_paths_sync(app)
+    assert paths_after_failed_drop, (
+        "tracking records must survive a failed drop so retry can find them; "
+        f"got empty list — target state would leak"
+    )
+
+    # Healthy retry cleans up properly.
+    app.drop_blocking()
+    assert DictsTarget.store.data == {}
+    assert coco_inspect.list_stable_paths_sync(app) == []

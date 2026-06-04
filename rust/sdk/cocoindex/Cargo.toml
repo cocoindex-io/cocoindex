@@ -1,0 +1,128 @@
+[package]
+name = "cocoindex"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+# Live LocalFS directory watching (`fs::DirWalker::live`), via the `notify`
+# filesystem-watcher crate.
+fs_live = ["dep:notify"]
+# Text splitting / language detection facade (`ops::text`).
+text = ["dep:cocoindex_ops_text"]
+# Local sentence-transformer embeddings via fastembed (`ops::sentence_transformers`).
+fastembed = ["dep:fastembed"]
+# Remote embeddings / transcription over an OpenAI-compatible HTTP API (`ops::api`).
+embed_api = ["dep:serde_json", "dep:reqwest", "reqwest/multipart"]
+postgres = ["dep:serde_json", "dep:sqlx", "dep:chrono"]
+sqlite = ["dep:serde_json", "dep:sqlx", "sqlx/sqlite"]
+# Apache Doris target: MySQL protocol (DDL/DELETE) via sqlx + Stream Load (row
+# ingestion) over HTTP via reqwest.
+doris = ["dep:serde_json", "dep:sqlx", "sqlx/mysql", "dep:reqwest"]
+surrealdb = ["dep:serde_json", "dep:surrealdb"]
+kafka = ["dep:rskafka", "dep:chrono"]
+iggy = ["dep:iggy"]
+amazon_s3 = ["dep:aws-config", "dep:aws-sdk-s3"]
+google_drive = [
+    "dep:serde_json",
+    "dep:reqwest",
+    "dep:rsa",
+    "dep:sha2",
+    "dep:base64",
+    "dep:chrono",
+]
+# OCI Object Storage source: REST API + RSA-SHA256 HTTP Signature request
+# signing (no official Oracle Rust SDK). Reuses the google_drive crypto/HTTP
+# crates; `chrono/clock` provides the request `date` header + timestamp parsing.
+oci_object_storage = [
+    "dep:serde_json",
+    "dep:reqwest",
+    "dep:rsa",
+    "dep:sha2",
+    "dep:base64",
+    "dep:chrono",
+    "chrono/clock",
+]
+lancedb = ["dep:serde_json", "dep:lancedb", "dep:arrow-array", "dep:arrow-schema"]
+qdrant = ["dep:serde_json", "dep:qdrant-client"]
+turbopuffer = ["dep:serde_json", "dep:reqwest"]
+neo4j = ["dep:serde_json", "dep:neo4rs"]
+falkordb = ["dep:serde_json", "dep:redis"]
+
+[dependencies]
+cocoindex_macros = { path = "../cocoindex_macros" }
+cocoindex_core = { path = "../../core", package = "cocoindex_core" }
+cocoindex_utils = { path = "../../utils", package = "cocoindex_utils" }
+# Text splitting / language detection (`ops::text`).
+cocoindex_ops_text = { path = "../../ops_text", optional = true }
+# Local sentence-transformer embeddings (`ops::sentence_transformers`); pulls in
+# the ONNX runtime, so it is gated behind the `fastembed` feature.
+fastembed = { version = "4", optional = true }
+thiserror = "2"
+bytes = "1"
+serde = { version = "1", features = ["derive"] }
+rmp-serde = "1"
+tokio = { version = "1", features = ["fs", "sync"] }
+futures = "0.3"
+tracing = "0.1"
+globset = "0.4"
+walkdir = "2"
+encoding_rs = "0.8"
+async-trait = "0.1"
+# Filesystem watcher for live LocalFS sources (feature `fs_live`).
+notify = { version = "8", optional = true }
+rustc-hash = "2.1.1"
+uuid = { workspace = true }
+serde_json = { version = "1", optional = true }
+sqlx = { version = "0.8", default-features = false, optional = true, features = [
+    "runtime-tokio",
+    "tls-rustls",
+    "postgres",
+    "chrono",
+] }
+chrono = { version = "0.4", default-features = false, optional = true }
+rskafka = { version = "0.6", default-features = false, optional = true }
+# Apache Iggy message-streaming target (pure-Rust client; TCP/QUIC/HTTP).
+iggy = { version = "0.10", optional = true }
+# Amazon S3 (and S3-compatible, e.g. MinIO) object source.
+aws-config = { version = "1", optional = true }
+aws-sdk-s3 = { version = "1", optional = true }
+# Google Drive source: HTTP (native-tls = macOS Security.framework, no cmake)
+# + pure-Rust RS256 JWT signing for service-account auth.
+reqwest = { version = "0.12", features = ["json"], optional = true }
+rsa = { version = "0.9", features = ["sha2", "pem"], optional = true }
+sha2 = { version = "0.10", optional = true }
+base64 = { version = "0.22", optional = true }
+# Native LanceDB target (LanceDB core is Rust). Arrow versions track lancedb's.
+lancedb = { version = "0.26", default-features = false, optional = true }
+arrow-array = { version = "57", optional = true }
+arrow-schema = { version = "57", optional = true }
+# Qdrant vector-store target (gRPC client; build needs `protoc`).
+qdrant-client = { version = "1.18", optional = true }
+surrealdb = { version = "3", default-features = false, optional = true, features = [
+    "protocol-ws",
+    "rustls",
+] }
+neo4rs = { version = "0.8.0", optional = true }
+redis = { version = "0.32.7", default-features = false, optional = true, features = [
+    "aio",
+    "tokio-comp",
+] }
+
+[dev-dependencies]
+tempfile = "3"
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+criterion = "0.5"
+glob = "0.3"
+# Used by the live Kafka integration test to consume produced records back.
+rskafka = { version = "0.6", default-features = false }
+# Hermetic mock HTTP server for the Google Drive source integration test.
+wiremock = "0.6"
+# Generate an ephemeral RSA key for the OCI signing unit test.
+rand = "0.8"
+
+[[bench]]
+name = "sdk_microbench"
+harness = false

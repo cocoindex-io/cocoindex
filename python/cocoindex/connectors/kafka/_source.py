@@ -1,8 +1,13 @@
 """
 Kafka source for CocoIndex.
 
-Treats a Kafka topic as a live keyed map — each message is a create/update/delete
-event for a key. Returns a ``LiveMapFeed`` for use with ``mount_each()``.
+Exposes a Kafka topic as a :class:`LiveStream` of raw messages and as a
+:class:`LiveMapFeed` of keyed change events. ``topic_as_stream`` returns the
+primitive stream (with a ``payloads()`` view yielding bytes), and
+``topic_as_map`` interprets messages as a keyed map for use with ``mount_each``.
+
+User-facing docs and worked examples:
+https://cocoindex.io/docs/connectors/kafka
 """
 
 from __future__ import annotations
@@ -10,7 +15,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import deque
-from typing import Callable, Protocol
+from typing import Callable
 
 try:
     from confluent_kafka import Message, TopicPartition  # type: ignore[import-not-found]
@@ -20,20 +25,22 @@ except ImportError as e:
         "confluent_kafka is required to use the Kafka connector. "
         "Please install cocoindex[kafka]."
     ) from e
-from cocoindex._internal.live_component import LiveMapSubscriber
+
+from cocoindex._internal.live_component import (
+    _IMMEDIATE_READY,
+    LiveMapSubscriber,
+    LiveStream,
+    LiveStreamSubscriber,
+    ReadyAwaitable,
+)
 from cocoindex._internal.typing import StableKey
 
 _logger = logging.getLogger(__name__)
 
+
 # --- Public type aliases ---
 
 IsDeleteFn = Callable[[Message], bool]
-
-
-class _ReadyAwaitable(Protocol):
-    """Protocol for objects with an async ready() method (e.g. ComponentMountHandle)."""
-
-    async def ready(self) -> None: ...
 
 
 # --- Per-partition state ---
@@ -81,21 +88,24 @@ class _PartitionState:
         """Whether this partition has consumed up to its initial high watermark."""
         return self._committed_offset >= self._high_watermark
 
-    def track(self, offset: int, handle: _ReadyAwaitable) -> None:
-        """Register an inflight offset with its ComponentMountHandle."""
+    def track(self, offset: int, handle: ReadyAwaitable) -> None:
+        """Register an inflight offset with its readiness handle.
+
+        Fast path: if ``handle is _IMMEDIATE_READY``, record completion
+        synchronously without spawning a task.
+        """
+        if handle is _IMMEDIATE_READY:
+            self._inflight.append(offset)
+            self._completed.add(offset)
+            self._try_drain_and_commit()
+            return
         self._inflight.append(offset)
         task = asyncio.create_task(self._await_handle(offset, handle))
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
 
-    def skip(self, offset: int) -> None:
-        """Mark an offset as immediately completed (e.g. null-key message)."""
-        self._inflight.append(offset)
-        self._completed.add(offset)
-        self._try_drain_and_commit()
-
-    async def _await_handle(self, offset: int, handle: _ReadyAwaitable) -> None:
-        """Await a ComponentMountHandle and mark the offset as completed."""
+    async def _await_handle(self, offset: int, handle: ReadyAwaitable) -> None:
+        """Await a readiness handle and mark the offset as completed."""
         try:
             await handle.ready()
         except asyncio.CancelledError:
@@ -222,26 +232,40 @@ class _OffsetTracker:
         self._partitions.clear()
 
 
-# --- LiveMapFeed implementation ---
+# --- TopicStream: LiveStream[Message] primitive ---
 
 
-class _TopicMapFeed:
-    """LiveMapFeed implementation for Kafka topics."""
+class TopicStream:
+    """A :class:`LiveStream` of raw Kafka :class:`Message` objects.
 
-    __slots__ = ("_consumer", "_topics", "_is_deletion")
+    Owns the consumer subscription and delivers every valid polled message to
+    the subscriber's ``send()``. ``mark_ready()`` is called once per
+    ``watch()`` invocation, when all initially-assigned partitions have been
+    consumed up to their initial high watermarks.
 
-    def __init__(
-        self,
-        consumer: AIOConsumer,
-        topics: list[str],
-        is_deletion: IsDeleteFn | None,
-    ) -> None:
+    The underlying ``AIOConsumer`` can only be subscribed once at a time, so
+    ``watch()`` is single-shot per :class:`TopicStream` instance: at most one
+    of ``watch()`` and ``payloads().watch()`` (across all ``payloads()``
+    views) may be active concurrently. Documented contract; not runtime-checked.
+    """
+
+    __slots__ = ("_consumer", "_topics")
+
+    def __init__(self, consumer: AIOConsumer, topics: list[str]) -> None:
         self._consumer = consumer
         self._topics = topics
-        self._is_deletion = is_deletion
 
-    async def watch(self, subscriber: LiveMapSubscriber[StableKey, Message]) -> None:
-        """Consume messages and deliver them as map changes."""
+    def payloads(self) -> LiveStream[bytes]:
+        """View of this stream yielding each message's payload as bytes.
+
+        Null-valued messages (Kafka tombstones) are filtered out of the bytes
+        view; consumers that need tombstone semantics should subscribe at the
+        ``Message`` level.
+        """
+        return _TopicPayloadsStream(self)
+
+    async def watch(self, subscriber: LiveStreamSubscriber[Message]) -> None:
+        """Consume messages from the topics and deliver them to the subscriber."""
         tracker = _OffsetTracker(self._consumer)
         ready_signaled = False
 
@@ -282,35 +306,19 @@ class _TopicMapFeed:
         )
 
         async def _process_message(msg: Message | None) -> None:
-            """Dispatch a consumed message to the subscriber."""
+            """Forward a polled message to the subscriber and track its offset."""
             if msg is None or msg.error() is not None:
                 if msg is not None:
                     _logger.error("Consumer error: %s", msg.error())
                 return
 
-            key = msg.key()
             topic: str = msg.topic()  # type: ignore[assignment]
             partition: int = msg.partition()  # type: ignore[assignment]
             offset: int = msg.offset()  # type: ignore[assignment]
 
             part_state = tracker.get_or_create(topic, partition)
-
-            if key is None:
-                _logger.error(
-                    "Skipping message with null key at %s/%d offset %d",
-                    topic,
-                    partition,
-                    offset,
-                )
-                part_state.skip(offset)
-            elif msg.value() is None or (
-                self._is_deletion is not None and self._is_deletion(msg)
-            ):
-                handle = await subscriber.delete(key)
-                part_state.track(offset, handle)
-            else:
-                handle = await subscriber.update(key, msg)
-                part_state.track(offset, handle)
+            handle = await subscriber.send(msg)
+            part_state.track(offset, handle)
 
         # AIOConsumer.poll() runs Consumer.poll() in a ThreadPoolExecutor.
         # Keep the timeout short so the blocked thread returns promptly on
@@ -320,7 +328,6 @@ class _TopicMapFeed:
         active_poll_task: asyncio.Task[Message | None] | None = None
         try:
             # Phase 1: Wait for initial partition assignment.
-            # on_assign fires during poll(), which sets watermarks on partition states.
             while not tracker.is_assigned():
                 await _process_message(await self._consumer.poll(timeout=_POLL_TIMEOUT))
 
@@ -340,7 +347,6 @@ class _TopicMapFeed:
                         ready_signaled = True
                     else:
                         ready_task.cancel()
-                    # Always process the poll result
                     await _process_message(await active_poll_task)
                     active_poll_task = None
                 else:
@@ -355,7 +361,114 @@ class _TopicMapFeed:
             await self._consumer.unsubscribe()
 
 
+class _TopicPayloadsStream:
+    """``LiveStream[bytes]`` view over a :class:`TopicStream`."""
+
+    __slots__ = ("_source",)
+
+    def __init__(self, source: TopicStream) -> None:
+        self._source = source
+
+    async def watch(self, subscriber: LiveStreamSubscriber[bytes]) -> None:
+        await self._source.watch(_PayloadsAdapter(subscriber))
+
+
+class _PayloadsAdapter:
+    """Adapts a ``LiveStreamSubscriber[bytes]`` to receive Kafka ``Message`` objects."""
+
+    __slots__ = ("_downstream",)
+
+    def __init__(self, downstream: LiveStreamSubscriber[bytes]) -> None:
+        self._downstream = downstream
+
+    async def send(self, message: Message) -> ReadyAwaitable:
+        value = message.value()
+        if value is None:
+            return _IMMEDIATE_READY
+        return await self._downstream.send(value)
+
+    async def mark_ready(self) -> None:
+        await self._downstream.mark_ready()
+
+
+# --- LiveMapFeed implementation ---
+
+
+class _StreamToMapSubscriber:
+    """Adapts a :class:`LiveMapSubscriber` to consume a ``LiveStream[Message]``."""
+
+    __slots__ = ("_map_sub", "_is_deletion")
+
+    def __init__(
+        self,
+        map_sub: LiveMapSubscriber[StableKey, Message],
+        is_deletion: IsDeleteFn | None,
+    ) -> None:
+        self._map_sub = map_sub
+        self._is_deletion = is_deletion
+
+    async def send(self, message: Message) -> ReadyAwaitable:
+        msg = message
+        key = msg.key()
+        if key is None:
+            _logger.error(
+                "Skipping message with null key at %s/%d offset %d",
+                msg.topic(),
+                msg.partition(),
+                msg.offset(),
+            )
+            return _IMMEDIATE_READY
+        if msg.value() is None or (
+            self._is_deletion is not None and self._is_deletion(msg)
+        ):
+            return await self._map_sub.delete(key)
+        return await self._map_sub.update(key, msg)
+
+    async def mark_ready(self) -> None:
+        await self._map_sub.mark_ready()
+
+
+class _TopicMapFeed:
+    """``LiveMapFeed`` view over a :class:`TopicStream`."""
+
+    __slots__ = ("_stream", "_is_deletion")
+
+    def __init__(
+        self,
+        stream: TopicStream,
+        is_deletion: IsDeleteFn | None,
+    ) -> None:
+        self._stream = stream
+        self._is_deletion = is_deletion
+
+    async def watch(self, subscriber: LiveMapSubscriber[StableKey, Message]) -> None:
+        await self._stream.watch(_StreamToMapSubscriber(subscriber, self._is_deletion))
+
+
 # --- Public API ---
+
+
+def topic_as_stream(consumer: AIOConsumer, topics: list[str]) -> TopicStream:
+    """
+    Treat a Kafka topic as a :class:`LiveStream` of raw messages.
+
+    The returned :class:`TopicStream` implements ``LiveStream[Message]`` and
+    exposes ``.payloads()`` for a ``LiveStream[bytes]`` view of message values
+    — the typical input for sources that consume opaque event payloads (e.g.
+    the OCI Object Storage source's live mode; see
+    https://cocoindex.io/docs/connectors/oci_object_storage#live-bucket-watching).
+
+    The consumer must be **unsubscribed** — ``topic_as_stream()`` handles
+    subscription internally to register partition rebalance callbacks.
+
+    Args:
+        consumer: An unsubscribed ``AIOConsumer``. Auto-commit should be disabled.
+        topics: Topics to subscribe to.
+
+    Returns:
+        A :class:`TopicStream` (single-watcher; bind to one consumer).
+    """
+    return TopicStream(consumer, topics)
 
 
 def topic_as_map(
@@ -385,10 +498,12 @@ def topic_as_map(
     Returns:
         A ``LiveMapFeed[bytes | str, Message]`` for use with ``mount_each()``.
     """
-    return _TopicMapFeed(consumer, topics, is_deletion)
+    return _TopicMapFeed(topic_as_stream(consumer, topics), is_deletion)
 
 
 __all__ = [
     "IsDeleteFn",
+    "TopicStream",
     "topic_as_map",
+    "topic_as_stream",
 ]

@@ -2,10 +2,50 @@ import contextlib
 import os
 import time
 
+import pytest
+
 from cocoindex._internal.serde import enable_strict_serialize
 
 os.environ.setdefault("PYTHONASYNCIODEBUG", "1")
 enable_strict_serialize()
+
+
+def _is_docker_available() -> bool:
+    """Check whether a Docker daemon is reachable.
+
+    Used to skip (rather than error) tests that need testcontainers when no
+    Docker socket exists — e.g. macOS GitHub runners that ship without a
+    running daemon.
+    """
+    try:
+        import docker  # type: ignore[import-untyped]
+    except ImportError:
+        return False
+    try:
+        client = docker.from_env(timeout=2)
+        client.ping()
+        return True
+    except Exception:
+        return False
+
+
+_DOCKER_AVAILABLE = _is_docker_available()
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    config.addinivalue_line(
+        "markers",
+        "requires_docker: test needs a running Docker daemon (e.g. testcontainers)",
+    )
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    if _DOCKER_AVAILABLE:
+        return
+    skip_marker = pytest.mark.skip(reason="Docker daemon not available")
+    for item in items:
+        if item.get_closest_marker("requires_docker") is not None:
+            item.add_marker(skip_marker)
 
 
 def _install_testcontainers_reaper_retry() -> None:

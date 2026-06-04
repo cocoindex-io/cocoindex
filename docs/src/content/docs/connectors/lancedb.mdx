@@ -54,7 +54,7 @@ The `lancedb` connector provides target state APIs for writing rows to tables. W
 Create a `ContextKey[lancedb.LanceAsyncConnection]` to identify your LanceDB connection, then provide it in your lifespan:
 
 :::note
-The key name is load-bearing across runs — it's the stable identity CocoIndex uses to track managed tables. See [ContextKey as stable identity](../programming_guide/context.md#contextkey-as-stable-identity) before renaming.
+The key name is load-bearing across runs — it's the stable identity CocoIndex uses to track managed tables. See [ContextKey as stable identity](../programming_guide/context#contextkey-as-stable-identity) before renaming.
 :::
 
 ```python
@@ -80,6 +80,7 @@ def declare_table_target(
     table_schema: TableSchema[RowT],
     *,
     managed_by: Literal["system", "user"] = "system",
+    num_transactions_before_optimize: int = 50,
 ) -> TableTarget[RowT, coco.PendingS]
 ```
 
@@ -89,6 +90,7 @@ def declare_table_target(
 - `table_name` — Name of the table.
 - `table_schema` — Schema definition including columns and primary key (see [Table Schema](#table-schema-from-python-class)).
 - `managed_by` — Whether CocoIndex manages the table lifecycle (`"system"`) or assumes it exists (`"user"`).
+- `num_transactions_before_optimize` — Number of successful row mutation batches before scheduling a background LanceDB `table.optimize()` call.
 
 **Returns:** A pending `TableTarget`. Use the convenience wrapper `await lancedb.mount_table_target(LANCE_DB, table_name, table_schema)` to resolve.
 
@@ -179,7 +181,7 @@ class MyRow:
 
 #### VectorSchemaProvider
 
-For `NDArray` fields, a [`VectorSchemaProvider`](../common_resources/vector_schema.md#vectorschemaprovider) annotation specifies the vector dimension and dtype. See [Vector Schema](../common_resources/vector_schema.md#vectorschemaprovider) for the full list of annotation options (`ContextKey`, embedder instance, or explicit `VectorSchema`).
+For `NDArray` fields, a [`VectorSchemaProvider`](../common_resources/vector_schema#vectorschemaprovider) annotation specifies the vector dimension and dtype. See [Vector Schema](../common_resources/vector_schema#vectorschemaprovider) for the full list of annotation options (`ContextKey`, embedder instance, or explicit `VectorSchema`).
 
 ### Table schema: explicit column definitions
 

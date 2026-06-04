@@ -85,7 +85,7 @@ The `doris` connector provides target state APIs for writing rows to tables. Coc
 Create a `ContextKey[doris.ManagedConnection]` to identify your connection, then provide it in your lifespan:
 
 :::note
-The key name is load-bearing across runs — it's the stable identity CocoIndex uses to track managed rows. See [ContextKey as stable identity](../programming_guide/context.md#contextkey-as-stable-identity) before renaming.
+The key name is load-bearing across runs — it's the stable identity CocoIndex uses to track managed rows. See [ContextKey as stable identity](../programming_guide/context#contextkey-as-stable-identity) before renaming.
 :::
 
 ```python

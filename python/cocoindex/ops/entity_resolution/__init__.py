@@ -68,8 +68,12 @@ class ExistingCanonicalPolicy(_enum.StrEnum):
 
 @_dataclasses.dataclass(frozen=True, slots=True)
 class ResolutionEvent:
-    """A single entity's resolution outcome. Emitted in real time as
-    ``resolve_entities`` proceeds."""
+    """A single entity's resolution outcome. ``resolve_entities`` collects
+    one event per resolved entity and invokes ``on_resolution`` for each
+    one after all components finish, in the same order the prior
+    single-pass implementation used (PREFERRED: sorted by entity name;
+    PINNED: pass-1 existings first then pass-2 non-existings, each in
+    sorted order)."""
 
     entity: str
     """The entity just resolved."""
@@ -102,6 +106,12 @@ class PairResolver(_typing.Protocol):
     the threshold. Must return a :class:`PairDecision` whose ``matched`` is
     either None or one of the supplied ``candidates`` (else
     ``resolve_entities`` raises :exc:`ValueError`).
+
+    ``__call__`` may be invoked concurrently. ``resolve_entities`` partitions
+    entities into independent components and resolves them in parallel, so a
+    resolver instance can see overlapping ``__call__`` invocations. Built-in
+    resolvers are concurrency-safe; custom implementations with mutable
+    internal state should guard it accordingly.
     """
 
     async def __call__(
@@ -111,6 +121,7 @@ class PairResolver(_typing.Protocol):
     ) -> PairDecision: ...
 
 
+@_dataclasses.dataclass(frozen=True, slots=True)
 class ResolvedEntities:
     """Result of entity resolution.
 
@@ -119,10 +130,7 @@ class ResolvedEntities:
     contract.
     """
 
-    __slots__ = ("_dedup",)
-
-    def __init__(self, dedup: dict[str, str | None]) -> None:
-        self._dedup = dedup
+    _dedup: dict[str, str | None]
 
     def canonical_of(self, name: str) -> str:
         """Return the canonical name for ``name``.
@@ -183,6 +191,303 @@ class _EntityInfo:
         self.is_existing = is_existing
 
 
+@_dataclasses.dataclass(frozen=True, slots=True)
+class _DecisionApplication:
+    canonical: str
+    repointed: str | None = None
+
+
+class _CandidateIndex:
+    """FAISS index plus canonical-chain aware candidate lookup."""
+
+    __slots__ = ("_dedup", "_index", "_indexed_names", "_max_distance", "_top_n")
+
+    def __init__(
+        self,
+        *,
+        dim: int,
+        dedup: dict[str, str | None],
+        max_distance: float,
+        top_n: int,
+    ) -> None:
+        self._dedup = dedup
+        self._index = _faiss.IndexFlatIP(dim)
+        self._indexed_names: list[str] = []
+        self._max_distance = max_distance
+        self._top_n = top_n
+
+    def add(self, info: _EntityInfo) -> None:
+        self._index.add(info.normalized_vec)
+        self._indexed_names.append(info.name)
+
+    def search(self, info: _EntityInfo) -> list[str]:
+        if self._index.ntotal == 0 or self._top_n <= 0:
+            return []
+        threshold = 1.0 - self._max_distance
+        k = min(self._top_n, self._index.ntotal)
+
+        while True:
+            scores, idxs = self._index.search(info.normalized_vec, k)
+            candidates = self._distinct_canonicals(scores[0], idxs[0], threshold, info)
+            if len(candidates) >= self._top_n:
+                return candidates
+            if k >= self._index.ntotal or scores[0][-1] < threshold:
+                return candidates
+            k = min(self._index.ntotal, max(k + 1, k * 2))
+
+    def _distinct_canonicals(
+        self,
+        scores: _NDArray[_np.float32],
+        idxs: _NDArray[_np.int64],
+        threshold: float,
+        info: _EntityInfo,
+    ) -> list[str]:
+        seen: set[str] = set()
+        out: list[str] = []
+        for score, idx in zip(scores, idxs):
+            if idx < 0 or score < threshold:
+                continue
+            canonical = _chain_walk(self._dedup, self._indexed_names[idx])
+            if canonical == info.name or canonical in seen:
+                continue
+            seen.add(canonical)
+            out.append(canonical)
+            if len(out) >= self._top_n:
+                # ``top_n`` bounds the candidate list size — the public
+                # docs frame it as a maximum. Stop as soon as we have
+                # enough distinct canonicals so the backfill loop in
+                # ``search`` returns exactly ``top_n`` and never more.
+                break
+        return out
+
+
+def _chain_walk(dedup: dict[str, str | None], name: str) -> str:
+    current = name
+    while True:
+        target = dedup.get(current)
+        if target is None:
+            return current
+        current = target
+
+
+def _validate_pair_decision(
+    *,
+    entity: str,
+    candidates: list[str],
+    decision: PairDecision,
+) -> None:
+    if decision.matched is not None and (
+        decision.matched not in candidates or decision.matched == entity
+    ):
+        raise ValueError(
+            f"resolve_pair returned matched={decision.matched!r}, "
+            f"which is not in candidates={candidates!r}. This is a "
+            f"contract violation (see requirement.md)."
+        )
+
+
+def _apply_pair_decision(
+    *,
+    info: _EntityInfo,
+    decision: PairDecision,
+    entity_map: dict[str, _EntityInfo],
+    dedup: dict[str, str | None],
+    existing_policy: ExistingCanonicalPolicy,
+) -> _DecisionApplication:
+    if decision.matched is None:
+        dedup[info.name] = None
+        return _DecisionApplication(canonical=info.name)
+
+    matched = decision.matched
+    if _new_wins(
+        entity_info=info,
+        matched_info=entity_map[matched],
+        decision=decision,
+        existing_policy=existing_policy,
+    ):
+        dedup[info.name] = None
+        dedup[matched] = info.name
+        return _DecisionApplication(canonical=info.name, repointed=matched)
+
+    dedup[info.name] = matched
+    return _DecisionApplication(canonical=matched)
+
+
+def _event_for_seeded_existing(info: _EntityInfo) -> ResolutionEvent:
+    return ResolutionEvent(
+        entity=info.name,
+        canonical=info.name,
+        candidates=[],
+        seeded=True,
+    )
+
+
+def _event_for_new_canonical(info: _EntityInfo) -> ResolutionEvent:
+    return ResolutionEvent(
+        entity=info.name,
+        canonical=info.name,
+        candidates=[],
+    )
+
+
+def _event_for_pair_decision(
+    *,
+    info: _EntityInfo,
+    candidates: list[str],
+    decision: PairDecision,
+    application: _DecisionApplication,
+) -> ResolutionEvent:
+    return ResolutionEvent(
+        entity=info.name,
+        canonical=application.canonical,
+        candidates=candidates,
+        decision=decision,
+        repointed=application.repointed,
+    )
+
+
+@_dataclasses.dataclass(frozen=True, slots=True)
+class _ComponentEvents:
+    """Per-component events split by resolution phase.
+
+    The split is the source of truth for cross-component ordering. The
+    PINNED contract is 'all pass-1 (seeded existings) first, then all
+    pass-2 (non-existings)', and storing the phases separately means the
+    merge step does not have to infer phase from a derived field on
+    ResolutionEvent (which historically conflated `seeded=True` with
+    'belongs in pass-1').
+    """
+
+    pass_1: list[ResolutionEvent]
+    pass_2: list[ResolutionEvent]
+
+
+async def _resolve_component(
+    infos: list[_EntityInfo],
+    *,
+    entity_map: dict[str, _EntityInfo],
+    dedup: dict[str, str | None],
+    candidate_index: _CandidateIndex,
+    existing_policy: ExistingCanonicalPolicy,
+    resolve_pair: PairResolver,
+    events: _ComponentEvents,
+) -> None:
+    """Greedy two-pass resolution over one connected component (or one
+    entire input, when no graph partitioning has happened yet).
+
+    Mutates ``dedup``, ``candidate_index``, and ``events`` in place.
+    ``entity_map`` is read-only for canonical-selection lookups during
+    decision application.
+    """
+    if existing_policy == ExistingCanonicalPolicy.PINNED:
+        pass_1 = [i for i in infos if i.is_existing]
+        pass_2 = [i for i in infos if not i.is_existing]
+    else:
+        pass_1 = []
+        pass_2 = infos
+
+    for info in pass_1:
+        dedup[info.name] = None
+        candidate_index.add(info)
+        events.pass_1.append(_event_for_seeded_existing(info))
+
+    for info in pass_2:
+        candidates = candidate_index.search(info)
+
+        if not candidates:
+            dedup[info.name] = None
+            candidate_index.add(info)
+            events.pass_2.append(_event_for_new_canonical(info))
+            continue
+
+        decision = await resolve_pair(info.name, candidates)
+        _validate_pair_decision(
+            entity=info.name,
+            candidates=candidates,
+            decision=decision,
+        )
+        application = _apply_pair_decision(
+            info=info,
+            decision=decision,
+            entity_map=entity_map,
+            dedup=dedup,
+            existing_policy=existing_policy,
+        )
+        candidate_index.add(info)
+        events.pass_2.append(
+            _event_for_pair_decision(
+                info=info,
+                candidates=candidates,
+                decision=decision,
+                application=application,
+            )
+        )
+
+
+def _partition_components(
+    entity_list: list[str],
+    normalized_vecs: list[_NDArray[_np.float32]],
+    *,
+    max_distance: float,
+) -> list[list[int]]:
+    """Connected components of the conservative candidate-edge graph.
+
+    Edges: every (i, j) pair with cosine similarity ≥ ``1 - max_distance``.
+    This is a superset of any edge the runtime greedy ``_CandidateIndex``
+    could ever surface (which only ever filters down via chain-walk). Extra
+    edges reduce parallelism but cannot change correctness; missing edges
+    can change behavior, so we must not under-approximate.
+
+    Returns a list of components, each as a sorted list of indexes into
+    ``entity_list``. The component list itself is sorted by lex-min entity
+    name so downstream dispatch is deterministic.
+    """
+    n = len(entity_list)
+    if n == 0:
+        return []
+    if n == 1:
+        return [[0]]
+
+    dim = int(normalized_vecs[0].shape[-1])
+    matrix = _np.stack([v.reshape(-1) for v in normalized_vecs]).astype(_np.float32)
+    index = _faiss.IndexFlatIP(dim)
+    index.add(matrix)
+    # FAISS IndexFlatIP.range_search is strict (returns pairs with score >
+    # radius). The runtime _CandidateIndex.search filter is inclusive
+    # (score >= threshold). Stepping the radius one float32 below the
+    # threshold ensures the boundary-equal pairs that the runtime would
+    # surface are also captured by the partition, preserving the
+    # superset invariant at the exact equality boundary.
+    threshold = _np.float32(1.0 - max_distance)
+    radius = float(_np.nextafter(threshold, _np.float32(-_np.inf)))
+    lims, _scores, idxs = index.range_search(matrix, radius)
+
+    parent = list(range(n))
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for i in range(n):
+        for slot in range(int(lims[i]), int(lims[i + 1])):
+            j = int(idxs[slot])
+            if j <= i:
+                continue
+            ri, rj = find(i), find(j)
+            if ri != rj:
+                parent[ri] = rj
+
+    groups: dict[int, list[int]] = {}
+    for i in range(n):
+        groups.setdefault(find(i), []).append(i)
+    return sorted(
+        groups.values(),
+        key=lambda members: entity_list[members[0]],
+    )
+
+
 async def resolve_entities(
     entities: _Iterable[str],
     *,
@@ -195,6 +500,18 @@ async def resolve_entities(
     top_n: int = 5,
 ) -> ResolvedEntities:
     """Resolve a set of raw entity names into a canonical dedup map.
+
+    Resolution proceeds in three phases. First, all entities are embedded
+    concurrently. Second, a transient FAISS index partitions entities into
+    connected components of the candidate-similarity graph — entities in
+    different components can never compare to each other under any chain
+    walk. Third, each component is resolved by an independent greedy runner
+    (same algorithm as the single-component case) and runners execute
+    concurrently. Within a component, processing order is deterministic
+    (sorted by entity name); across components, the ``on_resolution``
+    callback fires in the same per-policy order as the single-component
+    case (PREFERRED: globally sorted; PINNED: all existings first sorted,
+    then all non-existings sorted).
 
     See ``specs/entity_resolution/requirement.md`` for the full contract,
     including existing-canonical policies (PINNED / PREFERRED),
@@ -209,6 +526,7 @@ async def resolve_entities(
     )
 
     entity_map: dict[str, _EntityInfo] = {}
+    normalized_vecs: list[_NDArray[_np.float32]] = []
     for name, raw_vec in zip(entity_list, raw_embeddings):
         vec = raw_vec.reshape(1, -1).copy()
         _faiss.normalize_L2(vec)
@@ -221,124 +539,102 @@ async def resolve_entities(
                 else False
             ),
         )
+        normalized_vecs.append(vec)
 
     dim = int(raw_embeddings[0].shape[-1])
-    index = _faiss.IndexFlatIP(dim)
-    indexed_names: list[str] = []
+    components = _partition_components(
+        entity_list, normalized_vecs, max_distance=max_distance
+    )
+
     dedup: dict[str, str | None] = {}
+    # Pre-allocated per-component event records. Storing the lists in the
+    # parent scope (instead of returning them from each task) keeps
+    # already-emitted events reachable even if a sibling task gets
+    # cancelled mid-flight — important for preserving partial-failure
+    # observability through on_resolution.
+    per_component_events: list[_ComponentEvents] = [
+        _ComponentEvents(pass_1=[], pass_2=[]) for _ in components
+    ]
 
-    def _emit(event: ResolutionEvent) -> None:
+    async def _run_one(events: _ComponentEvents, member_idxs: list[int]) -> None:
+        component_index = _CandidateIndex(
+            dim=dim,
+            dedup=dedup,
+            max_distance=max_distance,
+            top_n=top_n,
+        )
+        infos = [entity_map[entity_list[i]] for i in member_idxs]
+        await _resolve_component(
+            infos,
+            entity_map=entity_map,
+            dedup=dedup,
+            candidate_index=component_index,
+            existing_policy=existing_policy,
+            resolve_pair=resolve_pair,
+            events=events,
+        )
+
+    # Cancel sibling component tasks on the first exception. Bare
+    # asyncio.gather lets siblings keep running after the exception has
+    # already propagated to the caller, leaking resolver calls (and any
+    # LLM cost they incur) for results that will never be observed. A
+    # TaskGroup would also achieve this but wraps the exception in
+    # BaseExceptionGroup, hiding the original type from callers; spelling
+    # the cancellation out preserves the original exception.
+    tasks: list[_asyncio.Task[None]] = [
+        _asyncio.create_task(_run_one(events, members))
+        for events, members in zip(per_component_events, components)
+    ]
+    try:
+        await _asyncio.gather(*tasks)
+    except BaseException:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        if tasks:
+            await _asyncio.gather(*tasks, return_exceptions=True)
+        # Even on partial failure, surface the events that completed
+        # before the exception. Otherwise on_resolution loses every
+        # already-resolved entity, breaking observability the prior
+        # single-pass implementation provided via real-time emission.
         if on_resolution is not None:
-            on_resolution(event)
+            _deliver_events(per_component_events, on_resolution)
+        raise
 
-    def _add_to_index(info: _EntityInfo) -> None:
-        index.add(info.normalized_vec)
-        indexed_names.append(info.name)
+    if on_resolution is not None:
+        _deliver_events(per_component_events, on_resolution)
 
-    def _chain_walk(name: str) -> str:
-        current = name
-        while True:
-            target = dedup.get(current)
-            if target is None:
-                return current
-            current = target
+    # Rebuild the dedup map in sorted entity order. Concurrent component
+    # runners populated the shared dict in scheduler-interleaved order;
+    # exposing that as ResolvedEntities iteration order would be a
+    # behavioral regression vs the prior single-pass implementation that
+    # iterated `sorted(set(entities))`.
+    ordered_dedup: dict[str, str | None] = {name: dedup[name] for name in entity_list}
+    return ResolvedEntities(ordered_dedup)
 
-    def _search_candidates(info: _EntityInfo) -> list[str]:
-        if index.ntotal == 0:
-            return []
-        k = min(top_n, index.ntotal)
-        scores, idxs = index.search(info.normalized_vec, k)
-        threshold = 1.0 - max_distance
-        seen: set[str] = set()
-        out: list[str] = []
-        for score, idx in zip(scores[0], idxs[0]):
-            if idx < 0 or score < threshold:
-                continue
-            canonical = _chain_walk(indexed_names[idx])
-            if canonical == info.name or canonical in seen:
-                continue
-            seen.add(canonical)
-            out.append(canonical)
-        return out
 
-    if existing_policy == ExistingCanonicalPolicy.PINNED:
-        pass_1 = [i for i in entity_map.values() if i.is_existing]
-        pass_2 = [i for i in entity_map.values() if not i.is_existing]
-    else:
-        pass_1 = []
-        pass_2 = list(entity_map.values())
-
-    for info in pass_1:
-        dedup[info.name] = None
-        _add_to_index(info)
-        _emit(
-            ResolutionEvent(
-                entity=info.name,
-                canonical=info.name,
-                candidates=[],
-                seeded=True,
-            )
-        )
-
-    for info in pass_2:
-        candidates = _search_candidates(info)
-
-        if not candidates:
-            dedup[info.name] = None
-            _add_to_index(info)
-            _emit(
-                ResolutionEvent(
-                    entity=info.name,
-                    canonical=info.name,
-                    candidates=[],
-                )
-            )
-            continue
-
-        decision = await resolve_pair(info.name, candidates)
-
-        if decision.matched is not None and (
-            decision.matched not in candidates or decision.matched == info.name
-        ):
-            raise ValueError(
-                f"resolve_pair returned matched={decision.matched!r}, "
-                f"which is not in candidates={candidates!r}. This is a "
-                f"contract violation (see requirement.md)."
-            )
-
-        if decision.matched is None:
-            dedup[info.name] = None
-            canonical = info.name
-            repointed: str | None = None
-        else:
-            matched = decision.matched
-            if _new_wins(
-                entity_info=info,
-                matched_info=entity_map[matched],
-                decision=decision,
-                existing_policy=existing_policy,
-            ):
-                dedup[info.name] = None
-                dedup[matched] = info.name
-                canonical = info.name
-                repointed = matched
-            else:
-                dedup[info.name] = matched
-                canonical = matched
-                repointed = None
-
-        _add_to_index(info)
-        _emit(
-            ResolutionEvent(
-                entity=info.name,
-                canonical=canonical,
-                candidates=candidates,
-                decision=decision,
-                repointed=repointed,
-            )
-        )
-
-    return ResolvedEntities(dedup)
+def _deliver_events(
+    per_component_events: list[_ComponentEvents],
+    on_resolution: _Callable[[ResolutionEvent], None],
+) -> None:
+    # PINNED requires 'all pass-1 first, then all pass-2'. PREFERRED's
+    # pass_1 lists are always empty (the policy only seeds in PINNED), so
+    # the same two-phase emit collapses to a single sorted stream there.
+    # Using the explicit phase lists — rather than inferring from
+    # ``ResolutionEvent.seeded`` — keeps the ordering invariant tied to
+    # the source of truth in _resolve_component.
+    pass_1 = sorted(
+        (e for events in per_component_events for e in events.pass_1),
+        key=lambda e: e.entity,
+    )
+    pass_2 = sorted(
+        (e for events in per_component_events for e in events.pass_2),
+        key=lambda e: e.entity,
+    )
+    for event in pass_1:
+        on_resolution(event)
+    for event in pass_2:
+        on_resolution(event)
 
 
 def _new_wins(

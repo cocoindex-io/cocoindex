@@ -3,7 +3,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::engine::app::AppOpHandle;
-use crate::engine::stats::{ProcessingStatsGroup, TERMINATED_VERSION};
+use crate::engine::runtime::get_runtime;
+use crate::engine::stats::{ProcessingStats, ProcessingStatsGroup, TERMINATED_VERSION};
 use crate::prelude::*;
 
 /// Spinner characters (braille pattern), cycled on each redraw.
@@ -25,6 +26,19 @@ impl Default for ProgressDisplayOptions {
     fn default() -> Self {
         Self {
             refresh_interval: DEFAULT_REFRESH_INTERVAL,
+        }
+    }
+}
+
+impl ProgressDisplayOptions {
+    /// Build options from an optional refresh interval in seconds — `None`
+    /// (or a non-positive value) falls back to the default interval.
+    pub fn from_refresh_secs(refresh_interval_secs: Option<f64>) -> Self {
+        match refresh_interval_secs {
+            Some(secs) if secs > 0.0 => Self {
+                refresh_interval: Duration::from_secs_f64(secs),
+            },
+            _ => Self::default(),
         }
     }
 }
@@ -130,7 +144,9 @@ fn build_progress_lines(
     spinner_idx: usize,
     max_width: usize,
 ) -> Vec<String> {
-    let mut lines = Vec::new();
+    // Header labels the region so it's identifiable among interleaved group
+    // log blocks ([Stats: <title>]) the PTY reader scrolls above it.
+    let mut lines = vec![truncate_to_width("[Stats]", max_width)];
     for (name, group) in stats.iter() {
         let line = format_component_line(name, group, spinner_idx);
         lines.push(truncate_to_width(&line, max_width));
@@ -152,6 +168,7 @@ fn print_final_stats(
     start_time: Instant,
     ready_time: &Option<Instant>,
 ) {
+    println!("[Stats] (terminated)");
     for (name, group) in stats.iter() {
         // Use static checkmark for final output
         let line = format_component_line(name, group, 0);
@@ -257,8 +274,7 @@ async fn show_progress_pty<T: Send + 'static>(
     start_time: Instant,
 ) -> Result<T> {
     use nix::pty::openpty;
-    use std::os::unix::io::{AsRawFd, FromRawFd, IntoRawFd};
-    use tokio::io::unix::AsyncFd;
+    use std::os::unix::io::IntoRawFd;
 
     // Open PTY
     let pty = openpty(None, None).map_err(|e| internal_error!("openpty failed: {e}"))?;
@@ -285,93 +301,117 @@ async fn show_progress_pty<T: Send + 'static>(
     // Number of progress lines currently displayed
     let num_lines = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
-    // Set master fd to non-blocking for AsyncFd (kqueue/epoll readiness).
-    // tokio::fs::File uses spawn_blocking, which can hang on macOS when the PTY
-    // slave closes while a blocking read is in progress on the master.
+    // Set master fd to non-blocking so we can poll for readability with a
+    // short timeout — required for a reliable shutdown signal (see the
+    // shutdown flag below).
     unsafe {
         let flags = nix::libc::fcntl(master_fd, nix::libc::F_GETFL);
         nix::libc::fcntl(master_fd, nix::libc::F_SETFL, flags | nix::libc::O_NONBLOCK);
     }
-    let master_file: std::fs::File = unsafe { FromRawFd::from_raw_fd(master_fd) };
-    let async_master = AsyncFd::new(master_file)
-        .map_err(|e| internal_error!("AsyncFd for PTY master failed: {e}"))?;
 
-    // Dup saved_stdout for the reader task (guard will close the original)
+    // Dup saved_stdout for the reader thread (guard will close the original)
     let reader_stdout_fd = unsafe { nix::libc::dup(saved_stdout) };
+
+    // Shutdown flag: set when the display loop ends so the reader exits
+    // promptly even if the PTY slave hasn't fully closed in the kernel.
+    //
+    // Why this matters: on macOS, the master's blocking `read()` only returns
+    // EOF once *every* fd referencing the slave is closed. If Python (or any
+    // dependency) forks a helper between `dup2(slave, STDOUT_FILENO)` and the
+    // guard drop — `multiprocessing.resource_tracker` is one such helper —
+    // that helper inherits fd 1/fd 2 pointing at our slave, and even after
+    // we restore the parent's fds the slave's kernel refcount stays > 0.
+    // Without an out-of-band exit signal, the reader's `read()` would hang
+    // forever and `reader_handle.join()` below would deadlock the cleanup
+    // path. Polling with a short timeout lets us notice the flag promptly.
+    let shutdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let shutdown_for_reader = shutdown.clone();
 
     let stats_clone = handle.stats().clone();
     let reader_num_lines = num_lines.clone();
 
-    // Spawn reader task — forwards captured output to real terminal.
-    // Uses AsyncFd (kqueue/epoll) for readiness, with non-blocking reads.
-    let reader_handle = tokio::spawn(async move {
+    // Spawn reader on a dedicated OS thread, *not* the Tokio runtime.
+    //
+    // The reader's job is to drain the PTY master so that anyone (tracing
+    // subscribers, println!, etc.) writing to the slave can make progress.
+    // If the reader ran as a Tokio task, a flood of concurrent writes from
+    // worker threads could fill the slave→master kernel buffer, block every
+    // worker in write(2) while holding StdoutLock, and leave the reader with
+    // no thread to be scheduled on — a classic runtime-starvation deadlock.
+    // An OS thread is always schedulable independent of the Tokio runtime.
+    let reader_handle = std::thread::spawn(move || {
         let mut buf = [0u8; 4096];
         loop {
-            // Wait for readability via kqueue/epoll
-            let mut ready_guard = match async_master.readable().await {
-                Ok(g) => g,
-                Err(_) => break,
-            };
-
-            // Non-blocking read from PTY master
-            let read_result = ready_guard.try_io(|inner| {
-                let fd = inner.as_raw_fd();
-                let n = unsafe {
-                    nix::libc::read(fd, buf.as_mut_ptr() as *mut nix::libc::c_void, buf.len())
-                };
-                if n < 0 {
-                    Err(std::io::Error::last_os_error())
-                } else {
-                    Ok(n as usize)
-                }
-            });
-
-            match read_result {
-                Ok(Ok(0)) => break,
-                Ok(Ok(n)) => {
-                    let captured = &buf[..n];
-                    let cur_lines = reader_num_lines.load(Ordering::Relaxed);
-
-                    let mut output = Vec::new();
-                    // Clear progress region
-                    if cur_lines > 0 {
-                        use std::io::Write;
-                        write!(&mut output, "\x1b[{}A", cur_lines).unwrap();
-                        for _ in 0..cur_lines {
-                            write!(&mut output, "\r\x1b[2K\n").unwrap();
-                        }
-                        write!(&mut output, "\x1b[{}A", cur_lines).unwrap();
-                    }
-                    // Write captured output
-                    output.extend_from_slice(captured);
-                    // Redraw progress with current stats
-                    let snapshot = stats_clone.snapshot();
-                    let width = terminal_width_from_fd(reader_stdout_fd);
-                    let lines = build_progress_lines(
-                        &snapshot.stats,
-                        live,
-                        snapshot.ready,
-                        start_time,
-                        &None,
-                        0,
-                        width,
-                    );
-                    {
-                        use std::io::Write;
-                        for line in &lines {
-                            write!(&mut output, "\r\x1b[2K{line}\n").unwrap();
-                        }
-                    }
-                    reader_num_lines.store(lines.len(), Ordering::Relaxed);
-                    write_to_fd(reader_stdout_fd, &output);
-                }
-                Ok(Err(_)) => break,           // EIO when slave closes
-                Err(_would_block) => continue, // Spurious readiness, retry
+            if shutdown_for_reader.load(Ordering::Relaxed) {
+                break;
             }
+            let mut pfd = nix::libc::pollfd {
+                fd: master_fd,
+                events: nix::libc::POLLIN,
+                revents: 0,
+            };
+            // 100 ms timeout: bounds shutdown latency without busy-looping.
+            let rc = unsafe { nix::libc::poll(&mut pfd, 1, 100) };
+            if rc <= 0 {
+                continue; // timeout (0) or EINTR/error (<0) — loop & re-check flag
+            }
+            let n = unsafe {
+                nix::libc::read(
+                    master_fd,
+                    buf.as_mut_ptr() as *mut nix::libc::c_void,
+                    buf.len(),
+                )
+            };
+            if n < 0 {
+                let errno = std::io::Error::last_os_error().raw_os_error();
+                if errno == Some(nix::libc::EAGAIN) || errno == Some(nix::libc::EWOULDBLOCK) {
+                    continue;
+                }
+                break; // EIO (slave closed) or other terminal error
+            }
+            if n == 0 {
+                break; // EOF
+            }
+            let captured = &buf[..n as usize];
+            let cur_lines = reader_num_lines.load(Ordering::Relaxed);
+
+            let mut output = Vec::new();
+            // Clear progress region
+            if cur_lines > 0 {
+                use std::io::Write;
+                write!(&mut output, "\x1b[{}A", cur_lines).unwrap();
+                for _ in 0..cur_lines {
+                    write!(&mut output, "\r\x1b[2K\n").unwrap();
+                }
+                write!(&mut output, "\x1b[{}A", cur_lines).unwrap();
+            }
+            // Write captured output
+            output.extend_from_slice(captured);
+            // Redraw progress with current stats
+            let snapshot = stats_clone.snapshot();
+            let width = terminal_width_from_fd(reader_stdout_fd);
+            let lines = build_progress_lines(
+                &snapshot.stats,
+                live,
+                snapshot.ready,
+                start_time,
+                &None,
+                0,
+                width,
+            );
+            {
+                use std::io::Write;
+                for line in &lines {
+                    write!(&mut output, "\r\x1b[2K{line}\n").unwrap();
+                }
+            }
+            reader_num_lines.store(lines.len(), Ordering::Relaxed);
+            write_to_fd(reader_stdout_fd, &output);
         }
-        // Close our dup of saved_stdout
+        // Close our dup of saved_stdout and the master fd.
         unsafe {
             nix::libc::close(reader_stdout_fd);
+            nix::libc::close(master_fd);
         }
     });
 
@@ -446,13 +486,16 @@ async fn show_progress_pty<T: Send + 'static>(
         write_to_fd(saved_stdout, &output);
     }
 
-    // Drop guard first: restores stdout/stderr (closing slave side refs).
+    // Drop guard first: restores stdout/stderr (closing the parent's
+    // slave-side refs). The slave may still be referenced by an inherited
+    // child fd (e.g. multiprocessing.resource_tracker), so we don't rely on
+    // EOF — we set the shutdown flag and let the reader's poll loop notice.
     drop(_guard);
+    shutdown.store(true, Ordering::Relaxed);
 
-    // On macOS, kqueue may not report readability when the PTY slave closes,
-    // so the reader could remain blocked in readable().await. Abort it.
-    reader_handle.abort();
-    let _ = reader_handle.await;
+    // Joining the OS thread is blocking; offload to spawn_blocking so we
+    // don't stall the Tokio worker we're running on.
+    let _ = tokio::task::spawn_blocking(move || reader_handle.join()).await;
 
     // Print final stats to restored stdout
     let snapshot = handle.stats_snapshot();
@@ -463,57 +506,113 @@ async fn show_progress_pty<T: Send + 'static>(
 
 /// Plain text fallback (non-TTY, Windows).
 async fn show_progress_plain<T: Send + 'static>(
-    mut handle: AppOpHandle<T>,
+    handle: AppOpHandle<T>,
     options: ProgressDisplayOptions,
     live: bool,
     start_time: Instant,
 ) -> Result<T> {
+    render_plain(handle.stats(), None, live, &options, start_time).await;
+    PROGRESS_ACTIVE.store(false, Ordering::SeqCst);
+    handle.result().await
+}
+
+/// Render `stats` as plain scrolling text until it terminates. Decoupled from
+/// `AppOpHandle` and from the `PROGRESS_ACTIVE` singleton, so a stats group can
+/// run this concurrently with the root reporter — its writes are captured and
+/// interleaved by the root's PTY reader when one is active (see
+/// specs/progress_report), and scroll directly otherwise.
+///
+/// A block is emitted only when the stats changed since the last one (skipping
+/// idle refreshes), plus a final block on termination. `title`, when set,
+/// headers each block (groups).
+async fn render_plain(
+    stats: &ProcessingStats,
+    title: Option<&str>,
+    live: bool,
+    options: &ProgressDisplayOptions,
+    start_time: Instant,
+) {
     let mut ready_time: Option<Instant> = None;
+    // `ProcessingStats` starts at version 0; first real change bumps it, so an
+    // idle group emits nothing until it has something to show.
+    let mut last_printed_version: u64 = 0;
+
     let mut sleep_fut = std::pin::pin!(tokio::time::sleep(options.refresh_interval));
-
     loop {
-        tokio::select! {
-            result = handle.changed() => {
-                let version = match result {
-                    Ok(v) => v,
-                    Err(_) => break,
-                };
-                if version >= TERMINATED_VERSION {
-                    break;
-                }
+        let terminated = tokio::select! {
+            // Wakes only on termination, not on every stats change; the refresh
+            // timer drives rendering.
+            () = stats.wait_terminated() => true,
+            () = &mut sleep_fut => {
+                sleep_fut.set(tokio::time::sleep(options.refresh_interval));
+                false
             }
-            () = &mut sleep_fut => {}
-        }
+        };
 
-        sleep_fut.set(tokio::time::sleep(options.refresh_interval));
-
-        let snapshot = handle.stats_snapshot();
+        let snapshot = stats.snapshot();
         if snapshot.ready && ready_time.is_none() {
             ready_time = Some(Instant::now());
         }
 
-        for (name, group) in snapshot.stats.iter() {
-            println!("{}", format_component_line(name, group, 0));
+        // Skip idle refreshes (no change since the last block); always emit the
+        // final terminated block.
+        if !terminated && snapshot.version == last_printed_version {
+            continue;
         }
-        println!(
-            "{}",
-            format_status_line(
-                live,
-                snapshot.ready,
-                start_time.elapsed(),
-                ready_time.map(|t| t.duration_since(start_time))
-            )
-        );
-        println!();
+        last_printed_version = snapshot.version;
+
+        render_plain_block(title, terminated, &snapshot, live, start_time, &ready_time);
+        if terminated {
+            break;
+        }
     }
+}
 
-    PROGRESS_ACTIVE.store(false, Ordering::SeqCst);
+/// Render one plain block: a `[Stats]` header for the root or `[Stats: <title>]`
+/// for a group (with a `(terminated)` marker on the final one), the per-component
+/// lines, the status line, and a trailing blank line.
+fn render_plain_block(
+    title: Option<&str>,
+    terminated: bool,
+    snapshot: &crate::engine::stats::VersionedProcessingStats,
+    live: bool,
+    start_time: Instant,
+    ready_time: &Option<Instant>,
+) {
+    let marker = if terminated { " (terminated)" } else { "" };
+    match title {
+        Some(title) => println!("[Stats: {title}]{marker}"),
+        None => println!("[Stats]{marker}"),
+    }
+    for (name, group) in snapshot.stats.iter() {
+        println!("{}", format_component_line(name, group, 0));
+    }
+    println!(
+        "{}",
+        format_status_line(
+            live,
+            snapshot.ready,
+            start_time.elapsed(),
+            ready_time.map(|t| t.duration_since(start_time))
+        )
+    );
+    println!();
+}
 
-    // Print final stats
-    let snapshot = handle.stats_snapshot();
-    print_final_stats(&snapshot.stats, live, start_time, &ready_time);
-
-    handle.result().await
+/// Spawn a standalone plain reporter for a stats group's `ProcessingStats`.
+/// Always plain scrolling output: when a root PTY display is active its reader
+/// captures and interleaves these writes above the progress region; otherwise
+/// they scroll directly. Self-terminates when the group terminates.
+pub(crate) fn spawn_group_plain_report(
+    stats: ProcessingStats,
+    title: String,
+    live: bool,
+    refresh_interval_secs: Option<f64>,
+) {
+    get_runtime().spawn(async move {
+        let options = ProgressDisplayOptions::from_refresh_secs(refresh_interval_secs);
+        render_plain(&stats, Some(&title), live, &options, Instant::now()).await;
+    });
 }
 
 #[cfg(test)]

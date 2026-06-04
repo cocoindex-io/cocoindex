@@ -154,7 +154,7 @@ The `postgres` connector provides target state APIs for writing rows to tables. 
 Create a `ContextKey[asyncpg.Pool]` to identify your connection pool, then provide the pool directly in your lifespan:
 
 :::note
-The key name is load-bearing across runs — it's the stable identity CocoIndex uses to track managed rows. See [ContextKey as stable identity](../programming_guide/context.md#contextkey-as-stable-identity) before renaming.
+The key name is load-bearing across runs — it's the stable identity CocoIndex uses to track managed rows. See [ContextKey as stable identity](../programming_guide/context#contextkey-as-stable-identity) before renaming.
 :::
 
 ```python
@@ -339,6 +339,10 @@ Python types are automatically mapped to PostgreSQL types:
 | `list`, `dict`, nested structs | `jsonb` |
 | `NDArray` (with vector schema) | `vector(n)` or `halfvec(n)` |
 
+:::note[U+0000 (NUL) in strings]
+U+0000 (NUL) is a valid Unicode codepoint, but Postgres cannot store it — neither in `text`-family columns nor inside strings in `jsonb` (the `\u0000` escape is rejected at parse time). CocoIndex automatically strips U+0000 from strings before writing to Postgres, recursively for nested strings and dict keys in `jsonb` payloads. For example, `"Hello\0World"` is written as `"HelloWorld"`.
+:::
+
 To override the default mapping, provide a `PgType` or `VectorSchemaProvider` via:
 
 - **Type annotation** — using `typing.Annotated` on the field
@@ -373,7 +377,7 @@ schema = postgres.TableSchema(
 
 #### VectorSchemaProvider
 
-For `NDArray` fields, a [`VectorSchemaProvider`](../common_resources/vector_schema.md#vectorschemaprovider) annotation specifies the vector dimension and dtype. The connector has built-in pgvector support and automatically creates the extension when needed. See [Vector Schema](../common_resources/vector_schema.md#vectorschemaprovider) for the full list of annotation options (`ContextKey`, embedder instance, or explicit `VectorSchema`).
+For `NDArray` fields, a [`VectorSchemaProvider`](../common_resources/vector_schema#vectorschemaprovider) annotation specifies the vector dimension and dtype. The connector has built-in pgvector support and automatically creates the extension when needed. See [Vector Schema](../common_resources/vector_schema#vectorschemaprovider) for the full list of annotation options (`ContextKey`, embedder instance, or explicit `VectorSchema`).
 
 ### Table schema: explicit column definitions
 

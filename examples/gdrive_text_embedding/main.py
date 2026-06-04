@@ -1,11 +1,13 @@
 """
 Google Drive Text Embedding (v1) - CocoIndex pipeline example.
 
-- Read text files from Google Drive
-- Chunk text (RecursiveSplitter)
-- Embed chunks (SentenceTransformers)
-- Store into Postgres with pgvector column (no vector index)
-- Query demo using pgvector cosine distance (<=>)
+Index (one-shot catch-up; live mode is not supported for the google_drive source):
+    cocoindex update main
+
+Query the index:
+    python main.py "your query"
+
+Pipeline: read text files from Google Drive -> chunk -> embed -> store in pgvector.
 """
 
 from __future__ import annotations
@@ -14,9 +16,11 @@ import asyncio
 import os
 import sys
 from dataclasses import dataclass
+from dotenv import load_dotenv
 from typing import AsyncIterator, Annotated
 
 import asyncpg
+from pgvector.asyncpg import register_vector
 from numpy.typing import NDArray
 
 import cocoindex as coco
@@ -39,7 +43,6 @@ EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 PG_DB = coco.ContextKey[asyncpg.Pool]("gdrive_text_embedding_db")
 EMBEDDER = coco.ContextKey[SentenceTransformerEmbedder]("embedder", detect_change=True)
 
-_pool: asyncpg.Pool | None = None
 _splitter = RecursiveSplitter()
 
 
@@ -47,9 +50,7 @@ _splitter = RecursiveSplitter()
 async def coco_lifespan(
     builder: coco.EnvironmentBuilder,
 ) -> AsyncIterator[None]:
-    global _pool
-    async with await asyncpg.create_pool(DATABASE_URL) as pool:
-        _pool = pool
+    async with asyncpg.create_pool(DATABASE_URL) as pool:
         builder.provide(PG_DB, pool)
         builder.provide(EMBEDDER, SentenceTransformerEmbedder(EMBED_MODEL))
         yield
@@ -127,12 +128,13 @@ app = coco.App(
 
 
 async def query_once(
-    embedder: SentenceTransformerEmbedder, query: str, *, top_k: int = TOP_K
+    pool: asyncpg.Pool,
+    embedder: SentenceTransformerEmbedder,
+    query: str,
+    *,
+    top_k: int = TOP_K,
 ) -> None:
     query_vec = await embedder.embed(query)
-    pool = _pool
-    assert pool is not None
-
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             f"""
@@ -155,21 +157,21 @@ async def query_once(
         print("---")
 
 
-async def query() -> None:
+async def query(initial_query: str | None = None) -> None:
     embedder = SentenceTransformerEmbedder(EMBED_MODEL)
-    async with coco.runtime():
-        if len(sys.argv) > 2:
-            q = " ".join(sys.argv[2:])
-            await query_once(embedder, q)
+    async with asyncpg.create_pool(DATABASE_URL, init=register_vector) as pool:
+        if initial_query is not None:
+            await query_once(pool, embedder, initial_query)
             return
 
         while True:
             q = input("Enter search query (or Enter to quit): ").strip()
             if not q:
                 break
-            await query_once(embedder, q)
+            await query_once(pool, embedder, q)
 
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "query":
-        asyncio.run(query())
+    load_dotenv()
+    initial = " ".join(sys.argv[1:]) if len(sys.argv) > 1 else None
+    asyncio.run(query(initial))

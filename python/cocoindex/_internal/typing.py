@@ -44,6 +44,10 @@ class NotSetType:
 NOT_SET = NotSetType()
 
 
+def is_not_set(obj: Any) -> TypeIs[NotSetType]:
+    return obj is NOT_SET
+
+
 class NonExistenceType:
     __slots__ = ()
     _instance: NonExistenceType | None = None

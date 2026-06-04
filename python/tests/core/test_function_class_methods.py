@@ -84,6 +84,56 @@ def test_regular_method() -> None:
     assert _metrics.collect() == {}
 
 
+def test_regular_method_memo_key_on_self() -> None:
+    """memo_key should allow method memoization to depend on selected self state."""
+    _metrics.clear()
+
+    processor = MemoKeyProcessor("processed")
+
+    @coco.fn
+    def run() -> None:
+        first = processor.transform(
+            SourceDataEntry(name="A", version=1, content="contentA1")
+        )
+        second = processor.transform(
+            SourceDataEntry(name="A", version=1, content="contentA2")
+        )
+        processor.noise = "changed"
+        third = processor.transform(
+            SourceDataEntry(name="A", version=1, content="contentA3")
+        )
+        processor.prefix = "updated"
+        fourth = processor.transform(
+            SourceDataEntry(name="A", version=1, content="contentA4")
+        )
+
+        assert first == "processed: contentA1"
+        assert second == "processed: contentA1"
+        assert third == "processed: contentA1"
+        assert fourth == "updated: contentA4"
+
+    app = coco.App(
+        coco.AppConfig(
+            name="test_regular_method_memo_key_on_self", environment=coco_env
+        ),
+        run,
+    )
+
+    app.update_blocking()
+    assert _metrics.collect() == {"call.memo_key_transform": 2}
+
+
+class MemoKeyProcessor:
+    def __init__(self, prefix: str):
+        self.prefix = prefix
+        self.noise = "noise"
+
+    @coco.fn(memo=True, memo_key={"self": lambda self: self.prefix})
+    def transform(self, entry: SourceDataEntry) -> str:
+        _metrics.increment("call.memo_key_transform")
+        return f"{self.prefix}: {entry.content}"
+
+
 # ============================================================================
 # Test 2: Static Methods
 # ============================================================================

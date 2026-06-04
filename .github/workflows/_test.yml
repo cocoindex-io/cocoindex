@@ -36,17 +36,30 @@ jobs:
           RUSTC_WRAPPER: "sccache"
 
         steps:
+        - name: Disable Git autocrlf on Windows
+          if: runner.os == 'Windows'
+          shell: bash
+          run: git config --global core.autocrlf false
+
         - uses: actions/checkout@v6
           with:
             fetch-depth: 1
 
         - name: Setup sccache
-          uses: mozilla-actions/sccache-action@v0.0.9
+          uses: mozilla-actions/sccache-action@v0.0.10
           with:
             # Latest version doesn't work well because of https://github.com/mozilla/sccache/issues/2554
             version: "v0.12.0"
 
         - run: rustup toolchain install stable --profile minimal
+
+        # `protoc` is needed to build the Rust examples that enable the LanceDB
+        # (`lance-encoding`) and Qdrant (`qdrant-client`) features, which compile
+        # protobufs via `prost-build`. Cross-platform across the test matrix.
+        - name: Install protoc
+          uses: arduino/setup-protoc@v3
+          with:
+            repo-token: ${{ secrets.GITHUB_TOKEN }}
 
         - uses: actions/setup-python@v6
           id: setup_python
@@ -72,13 +85,14 @@ jobs:
         - name: Install uv
           uses: astral-sh/setup-uv@v7
 
-        - name: Remove .python-version if exists
-          # Ensure uv uses Python from PATH (set by setup-python) rather than a pinned version
-          shell: bash
-          run: rm -f .python-version
-
         - name: Sync Python dependencies
-          run: uv sync --no-dev --group ci --no-install-project
+          shell: bash
+          run: |
+            uv sync \
+              --python "$(python -c 'import sys; print(sys.executable)')" \
+              --no-dev \
+              --group ci \
+              --no-install-project
 
         - name: Install prek
           uses: j178/prek-action@v2

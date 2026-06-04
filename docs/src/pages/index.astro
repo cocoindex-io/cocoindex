@@ -1,7 +1,8 @@
 ---
 // Root of /docs → the quickstart is the canonical landing page, matching
 // the Docusaurus navbar default. If it ever moves, update the sidebar too.
-const target = `${import.meta.env.BASE_URL.replace(/\/$/, '')}/getting_started/quickstart`;
+// Trailing slash matches the canonical URL (`trailingSlash: 'always'`).
+const target = `${import.meta.env.BASE_URL.replace(/\/$/, '')}/getting_started/quickstart/`;
 ---
 
 <!doctype html>

@@ -1,0 +1,19 @@
+# Python venv
+.venv/
+
+# Rust build artifacts
+**/target/
+
+# uv lockfile (regenerated per environment)
+**/uv.lock
+
+# Generated benchmark data
+data/
+
+# Benchmark outputs
+output_*/
+.work/
+
+# Pipeline runtime state
+.cocoindex/
+coco_state/

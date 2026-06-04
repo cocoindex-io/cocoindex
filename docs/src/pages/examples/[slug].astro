@@ -7,8 +7,11 @@
 import '../../styles/globals.css';
 import Topbar from '../../components/Topbar.astro';
 import Toc from '../../components/Toc.astro';
+import MobileSheet from '../../components/MobileSheet.astro';
+import MermaidRenderer from '../../components/MermaidRenderer.astro';
 import { SITE_URL, titleMarkup, titleText } from '../../consts';
 import { examples, findExample, CATEGORY_META, type Category } from '../../data/examples';
+import { reviewedDate } from '../../data/review-meta';
 import { getEntry, render } from 'astro:content';
 
 // Group examples by category for the left sidebar, in the same order as
@@ -20,6 +23,22 @@ const grouped = CAT_ORDER.map((c) => ({
   meta: CATEGORY_META[c],
   items: examples.filter((e) => e.category === c),
 }));
+
+// Same tree, reshaped for the phone drawer (MobileSheet.SidebarItem[]).
+// The aside.ex-side rail is hidden on phones — without this, readers
+// would lose the cross-example browse nav entirely on small screens.
+import type { SidebarItem } from '../../data/docs-sidebar';
+const examplesSidebar: SidebarItem[] = grouped
+  .filter((g) => g.items.length > 0)
+  .map((g) => ({
+    type: 'category',
+    label: `${titleText(g.meta.label)}${g.meta.em ?? ''}`,
+    items: g.items.map((it) => ({
+      type: 'doc',
+      slug: `examples/${it.slug}`,
+      label: titleText(it.title),
+    })),
+  }));
 
 export async function getStaticPaths() {
   return examples.map((e) => ({ params: { slug: e.slug } }));
@@ -48,15 +67,7 @@ const Content = rendered?.Content;
 // (DocsLayout.astro), so example pages carry the same typographic rhythm.
 const tagOf = (kind: 'src' | 'tgt' | 'llm' | 'ops') =>
   ex.tags.find((t) => t.kind === kind)?.label ?? null;
-const lastReviewedRaw = (entry?.data as { last_reviewed?: string | Date })?.last_reviewed;
-// Format YYYY-MM-DD as a local-calendar date — `new Date('2026-04-20')`
-// parses as UTC midnight and drifts a day west of UTC when rendered.
-const formatLocalDate = (raw: string | Date): string => {
-  const iso = raw instanceof Date ? raw.toISOString().slice(0, 10) : String(raw).slice(0, 10);
-  const [y, m, d] = iso.split('-').map((n) => parseInt(n, 10));
-  return new Date(y, m - 1, d).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-};
-const lastReviewed = lastReviewedRaw ? formatLocalDate(lastReviewedRaw) : null;
+const lastReviewed = reviewedDate(`examples/${slug}`);
 const introItems = [
   { k: 'Time',          v: ex.footMeta.split('·')[0].trim(),                       reviewed: false },
   { k: 'Source',        v: tagOf('src'),                                           reviewed: false },
@@ -86,7 +97,13 @@ const introItems = [
     />
   </head>
   <body class="ex-detail">
-    <Topbar />
+    <Topbar mobileSheetId="mobileSheet" />
+    <MobileSheet
+      currentSlug={`examples/${slug}`}
+      headings={rendered?.headings ?? []}
+      sidebarItems={examplesSidebar}
+    />
+    <MermaidRenderer />
 
     <div class="ex-layout">
       <!-- ─────────── LEFT: EXAMPLE NAV ─────────── -->
@@ -185,7 +202,7 @@ const introItems = [
       <!-- ─────────── RIGHT: ON THIS PAGE ─────────── Reuses the shared
            Toc component so scroll-spy + visual styling match the regular
            docs pages (globals.css `aside.toc`). -->
-      <Toc headings={rendered?.headings ?? []} slug={slug!} lastReviewed={lastReviewed} />
+      <Toc headings={rendered?.headings ?? []} lastReviewed={lastReviewed} />
     </div>
 
     <style is:global>
@@ -467,6 +484,16 @@ const introItems = [
         body.ex-detail .trending-preview { grid-template-columns: 1fr; }
       }
       @media (max-width: 640px) { body.ex-detail .var-grid { grid-template-columns: 1fr; } }
+
+      /* On phones the inline cross-example browse rail moves into the
+         hamburger drawer (MobileSheet) — keeping it inline here would
+         eat a whole pre-fold viewport before the user sees the first
+         line of the example writeup. */
+      @media (max-width: 820px) {
+        body.ex-detail .ex-side { display: none; }
+        body.ex-detail .ex-layout { grid-template-columns: 1fr; }
+        body.ex-detail .ex-main { padding: 16px 20px 56px; }
+      }
 
       /* ═══════════ Prose (rendered MDX body) ═══════════
          The ported markdown drops into `.ex-prose`. Keep the typography

@@ -305,6 +305,59 @@ async def test_batching_out_of_component() -> None:
 
 
 # ============================================================================
+# Error propagation: exception type + traceback survive for all callers
+# ============================================================================
+
+
+class _CustomBatchError(Exception):
+    """Distinct type so we can assert it survives the batch round-trip."""
+
+
+@pytest.mark.asyncio
+async def test_batching_error_preserves_type_for_all_callers() -> None:
+    """A raising batched impl propagates the *same* exception type to every
+    concurrent caller — including the residual recipients the batcher fans
+    the failure out to — not a flattened RuntimeError.
+
+    Regression for the PyErr-through-residuals fix: residuals used to come
+    back as RuntimeError with the original type and traceback lost. Only the
+    first caller in a batch ever saw the real exception.
+    """
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    @coco.fn.as_async(batching=True)
+    async def failing(inputs: list[int]) -> list[int]:
+        started.set()
+        await release.wait()
+        raise _CustomBatchError("boom")
+
+    # First call runs inline and blocks inside the impl, keeping the queue
+    # busy so the next two calls queue into a single pending batch.
+    task1 = asyncio.create_task(failing(1))
+    await started.wait()
+
+    task2 = asyncio.create_task(failing(2))
+    task3 = asyncio.create_task(failing(3))
+    await asyncio.sleep(0.05)  # let task2/task3 enqueue behind the inline call
+
+    release.set()
+
+    results = await asyncio.gather(task1, task2, task3, return_exceptions=True)
+
+    # Every caller — inline (task1), first batch recipient (task2), and
+    # residual recipient (task3) — sees the original exception type, with
+    # its message intact.
+    for r in results:
+        assert isinstance(r, _CustomBatchError), (
+            f"expected _CustomBatchError, got {type(r).__name__}: {r!r}"
+        )
+        assert str(r) == "boom"
+        # Traceback is preserved (clone_ref keeps the original exception).
+        assert r.__traceback__ is not None
+
+
+# ============================================================================
 # Async batching tests
 # ============================================================================
 
@@ -932,6 +985,76 @@ async def test_batching_method_extra_args_separates_batchers() -> None:
         proc.process(1, 2, offset=10),  # type: ignore[call-arg]
     )
     assert r1 == 17 and r2 == 22
+
+
+# ============================================================================
+# Idle batchers are cleared (no stale-batcher / stale batch-key accumulation)
+# ============================================================================
+
+
+@coco.fn.as_async(batching=True)
+async def _idle_double(inputs: list[int]) -> list[int]:
+    await asyncio.sleep(0.01)
+    return [x * 2 for x in inputs]
+
+
+@pytest.mark.asyncio
+async def test_batching_clears_idle_batcher() -> None:
+    """A batcher is dropped once no call is in flight against it."""
+    assert _idle_double._batchers == {}  # type: ignore[attr-defined]
+    assert await _idle_double(5) == 10
+    # The only call has drained -> no stale batcher left behind.
+    assert _idle_double._batchers == {}  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_batching_shares_batcher_while_in_flight() -> None:
+    """Concurrent calls share a single batcher slot (refcounted by in-flight
+    count); the slot is removed once they all drain."""
+    tracker = TrackedBatcher()
+    tracked_double = tracker.create_function()
+    for v in [1, 2, 3]:
+        tracker.create_event(v)
+
+    task1 = asyncio.create_task(tracked_double(1))
+    await wait_for_condition(lambda: len(tracker.batch_inputs) >= 1)
+    task2 = asyncio.create_task(tracked_double(2))
+    task3 = asyncio.create_task(tracked_double(3))
+
+    # All three in-flight calls share one batcher slot, refcounted to 3.
+    await wait_for_condition(
+        lambda: len(tracked_double._batchers) == 1
+        and next(iter(tracked_double._batchers.values())).in_flight == 3
+    )
+
+    tracker.input_events[1].set()
+    for v in [2, 3]:
+        tracker.input_events[v].set()
+    await asyncio.gather(task1, task2, task3)
+
+    # Drained -> slot removed.
+    assert tracked_double._batchers == {}
+
+
+class _SimpleBatchedAdder:
+    def __init__(self, base: int) -> None:
+        self.base = base
+
+    @coco.fn.as_async(batching=True)  # type: ignore[arg-type]
+    async def add(self, inputs: list[int]) -> list[int]:
+        return [self.base + x for x in inputs]
+
+
+@pytest.mark.asyncio
+async def test_batching_method_clears_idle_batchers_per_instance() -> None:
+    """Per-instance batchers don't accumulate across short-lived objects."""
+    async_fn = _SimpleBatchedAdder.add  # the underlying AsyncFunction
+    assert async_fn._batchers == {}  # type: ignore[attr-defined]
+    for base in range(5):
+        proc = _SimpleBatchedAdder(base)
+        assert await proc.add(1) == base + 1  # type: ignore[call-arg]
+    # Each object's batcher was cleared when idle; no per-instance-id leak.
+    assert async_fn._batchers == {}  # type: ignore[attr-defined]
 
 
 # Note: With always-async design, functions with batching/runner are always async.

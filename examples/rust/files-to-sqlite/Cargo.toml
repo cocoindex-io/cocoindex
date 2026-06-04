@@ -1,0 +1,15 @@
+[workspace]
+
+[package]
+name = "files-to-sqlite"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+cocoindex = { path = "../../../rust/sdk/cocoindex", features = ["sqlite"] }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio",
+    "sqlite",
+] }
