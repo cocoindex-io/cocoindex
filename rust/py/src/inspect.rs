@@ -194,10 +194,18 @@ pub struct PyStablePathDetail {
 
 #[pyfunction]
 pub fn get_stable_path_detail(
+    py: Python<'_>,
     app: &PyApp,
     path: &PyStablePath,
 ) -> PyResult<Option<PyStablePathDetail>> {
-    let detail = db_inspect::get_stable_path_detail(&app.0, &path.0).into_py_result()?;
+    let app = app.0.clone();
+    let path_owned = path.0.clone();
+    let detail = py
+        .detach(|| {
+            get_runtime()
+                .block_on(async move { db_inspect::get_stable_path_detail(&app, &path_owned).await })
+        })
+        .into_py_result()?;
     Ok(detail.map(|d| PyStablePathDetail {
         path: PyStablePath(d.path),
         node_type: PyStablePathNodeType(d.node_type),
@@ -221,12 +229,21 @@ pub fn get_stable_path_detail(
 
 #[pyfunction]
 pub fn get_stable_path_detail_by_name(
+    py: Python<'_>,
     env: &PyEnvironment,
     app_name: &str,
     path: &PyStablePath,
 ) -> PyResult<Option<PyStablePathDetail>> {
-    let detail =
-        db_inspect::get_stable_path_detail_by_name(&env.0, app_name, &path.0).into_py_result()?;
+    let env = env.0.clone();
+    let app_name = app_name.to_string();
+    let path_owned = path.0.clone();
+    let detail = py
+        .detach(|| {
+            get_runtime().block_on(async move {
+                db_inspect::get_stable_path_detail_by_name(&env, &app_name, &path_owned).await
+            })
+        })
+        .into_py_result()?;
     Ok(detail.map(|d| PyStablePathDetail {
         path: PyStablePath(d.path),
         node_type: PyStablePathNodeType(d.node_type),

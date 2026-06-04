@@ -5,11 +5,11 @@ use crate::prelude::*;
 
 use crate::engine::environment::Environment;
 use crate::engine::{app::App, profile::EngineProfile};
-use crate::state::db_schema::{self, DbEntryKey};
+use crate::state::db_schema::{self, ChildExistenceInfo, DbEntryKey, StablePathEntryKey};
+use crate::state_store::AppStore;
 use crate::state::stable_path::{StableKey, StablePath, StablePathPrefix, StablePathRef};
 use cocoindex_utils::deser::from_msgpack_slice;
-use futures::stream::Stream;
-use heed::types::{DecodeIgnore, Str};
+use futures::stream::{Stream, StreamExt};
 use tokio_stream::wrappers::ReceiverStream;
 
 pub async fn list_stable_paths<Prof: EngineProfile>(app: &App<Prof>) -> Result<Vec<StablePath>> {
@@ -131,12 +131,14 @@ pub struct StablePathDetail {
     pub target_state_items: Vec<TargetStateInfoItemSummary>,
 }
 
-fn get_stable_path_detail_in_db(
-    db: &db_schema::Database,
-    db_env: heed::Env<heed::WithoutTls>,
+type Database = heed::Database<heed::types::Bytes, heed::types::Bytes>;
+
+async fn get_stable_path_detail_from_store(
+    store: &AppStore,
     path: &StablePath,
 ) -> Result<Option<StablePathDetail>> {
-    let txn = db_env.read_txn()?;
+    let db = store.db();
+    let txn = store.read_txn().await?;
 
     // Get TrackingInfo (version, processor_name, target_state_items)
     let tracking_key = db_schema::DbEntryKey::StablePath(
@@ -173,8 +175,18 @@ fn get_stable_path_detail_in_db(
     } else {
         let path_ref: StablePathRef<'_> = path.as_ref();
         if let Some((parent_ref, key)) = path_ref.split_parent() {
-            get_path_node_type(&db, &txn, parent_ref, key)?
-                .unwrap_or(db_schema::StablePathNodeType::Directory)
+            let parent_owned: StablePath = parent_ref.into();
+            let cex_key = DbEntryKey::StablePath(
+                parent_owned,
+                StablePathEntryKey::ChildExistence(key.clone()),
+            )
+            .encode()?;
+            if let Some(bytes) = db.get(&txn, cex_key.as_slice())? {
+                let info: ChildExistenceInfo = from_msgpack_slice(bytes)?;
+                info.node_type
+            } else {
+                db_schema::StablePathNodeType::Directory
+            }
         } else {
             db_schema::StablePathNodeType::Component
         }
@@ -192,29 +204,21 @@ fn get_stable_path_detail_in_db(
 }
 
 /// Get detailed information about a single stable path from LMDB
-pub fn get_stable_path_detail<Prof: EngineProfile>(
+pub async fn get_stable_path_detail<Prof: EngineProfile>(
     app: &App<Prof>,
     path: &StablePath,
 ) -> Result<Option<StablePathDetail>> {
-    let db = app.app_ctx().db();
-    let db_env = app.app_ctx().env().db_env().clone();
-    get_stable_path_detail_in_db(&db, db_env, path)
+    get_stable_path_detail_from_store(app.app_ctx().app_store(), path).await
 }
 
-pub fn get_stable_path_detail_by_name<Prof: EngineProfile>(
+pub async fn get_stable_path_detail_by_name<Prof: EngineProfile>(
     env: &Environment<Prof>,
     app_name: &str,
     path: &StablePath,
 ) -> Result<Option<StablePathDetail>> {
-    let db_env = env.db_env();
-    let rtxn = db_env.read_txn()?;
-    let db = match db_env
-        .open_database::<heed::types::Bytes, heed::types::Bytes>(&rtxn, Some(app_name))?
-    {
-        Some(db) => db,
+    let store = match env.storage().open_app_store_by_name(app_name).await? {
+        Some(store) => store,
         None => return Ok(None),
     };
-    drop(rtxn);
-
-    get_stable_path_detail_in_db(&db, db_env.clone(), path)
+    get_stable_path_detail_from_store(&store, path).await
 }
