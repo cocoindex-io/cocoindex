@@ -82,7 +82,7 @@ repos:
           pass_filenames: false
 
         - id: cargo-test-rust-externs
-          name: cargo test (rust examples + benchmarks)
+          name: cargo check (rust examples + benchmarks)
           entry: ./dev/run_cargo_test_rust_externs.sh
           language: system
           files: ^(rust/sdk/|examples/rust/|benchmarks/.*/rust/)
