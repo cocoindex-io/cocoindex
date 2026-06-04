@@ -18,7 +18,7 @@ use crate::state::target_state_path::TargetStatePath;
 use crate::{
     engine::environment::{AppRegistration, Environment},
     state::stable_path::StablePath,
-    state_store::{AppStore, WriteTxn},
+    state_store::AppStore,
 };
 
 use cocoindex_utils::deser::from_msgpack_slice;
@@ -237,8 +237,8 @@ impl<Prof: EngineProfile> Default for FnCallMemoEntry<Prof> {
 /// component build. Populated by [`Self::prefetch`] (one prefix scan over
 /// the storage layer) at the start of build mode, then serves every
 /// subsequent fn-memo lookup in memory. New entries from cache-miss
-/// executions accumulate here; [`Self::flush_to_db`] applies the diff to
-/// storage at commit time as per-entry writes and deletes.
+/// executions accumulate here; [`Self::into_flush_plan`] produces the diff
+/// that is applied to storage atomically at commit time.
 pub(crate) struct FnMemoCache<Prof: EngineProfile> {
     /// All known fn-memo entries for this component. Prefetched entries
     /// start as `Stored(bytes)` and lazily decode to `Ready` on first
@@ -314,7 +314,7 @@ impl<Prof: EngineProfile> FnMemoCache<Prof> {
     /// into a [`FnMemoFlushPlan`] that can be re-applied to storage
     /// across retries.
     ///
-    /// Inclusion rule (same as the old `flush_to_db`):
+    /// Inclusion rule:
     ///
     /// - `Ready(Some, already_stored=false)` → serialize bytes into
     ///   `writes` (new or re-executed entries that must be written).
@@ -473,7 +473,8 @@ enum UserStateEntry {
 ///
 /// Mirrors the `FnMemoCache` pattern: `populate` fills it from a
 /// standalone read at build start, then `use_state` / `update_declared`
-/// accumulate the declared states, and `flush_to_db` commits them.
+/// accumulate the declared states, and `into_flush_plan` produces the diff
+/// that is applied atomically via [`CommitPlan`].
 /// At flush time only keys re-declared or newly declared by the user
 /// during this build through use_state() survive: `Declared` entries are
 /// written to DB and `Loaded` entries (present in the previous build but
@@ -571,32 +572,6 @@ impl UserStateCache {
             }
         }
         plan
-    }
-
-    /// Apply the set-reduction diff to LMDB directly (used by tests).
-    pub(crate) async fn flush_to_db(
-        self,
-        wtxn: &mut WriteTxn<'_>,
-        app_store: &AppStore,
-        path: &StablePath,
-    ) -> Result<()> {
-        if !self.is_loaded {
-            // full_reprocess path: wipe all existing entries, then write declared.
-            app_store.delete_all_user_states(wtxn, path).await?;
-        }
-        for (key, entry) in &self.entries {
-            match entry {
-                UserStateEntry::Loaded(_) if self.is_loaded => {
-                    // Loaded from DB but not re-declared this build: delete.
-                    app_store.delete_user_state(wtxn, path, key).await?;
-                }
-                UserStateEntry::Declared(value) => {
-                    app_store.write_user_state(wtxn, path, key, value).await?;
-                }
-                _ => {}
-            }
-        }
-        Ok(())
     }
 }
 
@@ -780,8 +755,8 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
     /// Eagerly load every function-memo entry for this component from
     /// storage into the per-build cache. Called at the start of build mode
     /// before any function calls run; skipped under `full_reprocess` so
-    /// the cache stays empty and `FnMemoCache::flush_to_db` falls through
-    /// to a prefix delete + write of newly-computed entries.
+    /// the cache stays empty and `into_flush_plan` produces a clear-all
+    /// plan followed by writes of newly-computed entries.
     pub(crate) async fn prefetch_fn_memos(&self) -> Result<()> {
         if self.full_reprocess() {
             return Ok(());
@@ -811,8 +786,8 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
 
     /// Eagerly load every user-state entry for this component from storage
     /// into the per-build cache. Mirrors `prefetch_fn_memos`; skipped under
-    /// `full_reprocess` so `UserStateCache::flush_to_db` falls through to
-    /// a delete-all + write of the newly-declared entries.
+    /// `full_reprocess` so `into_flush_plan` produces a clear-all plan
+    /// followed by writes of the newly-declared entries.
     pub(crate) async fn prefetch_user_states(&self) -> Result<()> {
         if self.full_reprocess() {
             return Ok(());
@@ -1212,198 +1187,17 @@ mod tests {
         let mut cache = UserStateCache::new();
         cache.use_state(sym("k"), b("init")).unwrap();
         cache.update_declared(&sym("k"), b("updated")).unwrap();
-        // The updated value is what flush_to_db will write.
+        // The updated value is what into_flush_plan will emit.
         assert!(matches!(
             &cache.entries[&sym("k")],
             UserStateEntry::Declared(v) if v == &b("updated")
         ));
     }
 
-    // --- flush_to_db: set-reduction (is_loaded = true) -----------------------
+    // --- into_flush_plan tests ----------------------------
 
-    #[tokio::test]
-    async fn flush_set_reduction_removes_dropped_keys() {
-        // loaded = {a, b, c}; declared = {a, b}  →  c must be deleted.
-        let (store, _dir) = make_test_store().await;
-        let p = comp_path("comp");
-
-        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
-        store
-            .write_user_state(&mut wtxn, &p, &sym("a"), b"a_val")
-            .await
-            .unwrap();
-        store
-            .write_user_state(&mut wtxn, &p, &sym("b"), b"b_val")
-            .await
-            .unwrap();
-        store
-            .write_user_state(&mut wtxn, &p, &sym("c"), b"c_val")
-            .await
-            .unwrap();
-        wtxn.into_inner().commit().unwrap();
-
-        let mut cache = UserStateCache::new();
-        cache.populate(vec![
-            (sym("a"), b("a_val")),
-            (sym("b"), b("b_val")),
-            (sym("c"), b("c_val")),
-        ]);
-        cache.use_state(sym("a"), b("ignored")).unwrap();
-        cache.use_state(sym("b"), b("ignored")).unwrap();
-        // "c" not re-declared
-
-        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
-        cache.flush_to_db(&mut wtxn, &store, &p).await.unwrap();
-        wtxn.into_inner().commit().unwrap();
-
-        let entries = to_map(store.list_user_states(&p).await.unwrap());
-        assert_eq!(entries.len(), 2);
-        assert!(entries.contains_key(&sym("a")));
-        assert!(entries.contains_key(&sym("b")));
-        assert!(!entries.contains_key(&sym("c")));
-    }
-
-    #[tokio::test]
-    async fn flush_set_reduction_adds_new_keys() {
-        // loaded = {a}; declared = {a, b_new}  →  b is inserted.
-        let (store, _dir) = make_test_store().await;
-        let p = comp_path("comp");
-
-        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
-        store
-            .write_user_state(&mut wtxn, &p, &sym("a"), b"a_val")
-            .await
-            .unwrap();
-        wtxn.into_inner().commit().unwrap();
-
-        let mut cache = UserStateCache::new();
-        cache.populate(vec![(sym("a"), b("a_val"))]);
-        // keep initial value from previous flush.
-        cache.use_state(sym("a"), b("should_be_ignored")).unwrap();
-        cache.use_state(sym("b"), b("b_new")).unwrap(); // new key
-
-        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
-        cache.flush_to_db(&mut wtxn, &store, &p).await.unwrap();
-        wtxn.into_inner().commit().unwrap();
-
-        let entries = to_map(store.list_user_states(&p).await.unwrap());
-        assert_eq!(entries.len(), 2);
-        // keep initial value from previous flush.
-        assert_eq!(entries[&sym("a")], b("a_val"));
-        assert_eq!(entries[&sym("b")], b("b_new"));
-    }
-
-    #[tokio::test]
-    async fn flush_set_reduction_persists_updated_value() {
-        // loaded = {k: "old"}; declare k then update_declared to "new"
-        // →  k must be written with "new".
-        let (store, _dir) = make_test_store().await;
-        let p = comp_path("comp");
-
-        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
-        store
-            .write_user_state(&mut wtxn, &p, &sym("k"), b"old")
-            .await
-            .unwrap();
-        wtxn.into_inner().commit().unwrap();
-
-        let mut cache = UserStateCache::new();
-        cache.populate(vec![(sym("k"), b("old"))]);
-        cache.use_state(sym("k"), b("ignored")).unwrap();
-        cache.update_declared(&sym("k"), b("new")).unwrap();
-
-        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
-        cache.flush_to_db(&mut wtxn, &store, &p).await.unwrap();
-        wtxn.into_inner().commit().unwrap();
-
-        let entries = to_map(store.list_user_states(&p).await.unwrap());
-        assert_eq!(entries[&sym("k")], b("new"));
-    }
-
-    #[tokio::test]
-    async fn flush_set_reduction_empty_declared_removes_all() {
-        // loaded = {a, b}; no use_state calls  →  all entries deleted.
-        let (store, _dir) = make_test_store().await;
-        let p = comp_path("comp");
-
-        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
-        store
-            .write_user_state(&mut wtxn, &p, &sym("a"), b"a_val")
-            .await
-            .unwrap();
-        store
-            .write_user_state(&mut wtxn, &p, &sym("b"), b"b_val")
-            .await
-            .unwrap();
-        wtxn.into_inner().commit().unwrap();
-
-        let mut cache = UserStateCache::new();
-        cache.populate(vec![(sym("a"), b("a_val")), (sym("b"), b("b_val"))]);
-        // no use_state calls
-
-        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
-        cache.flush_to_db(&mut wtxn, &store, &p).await.unwrap();
-        wtxn.into_inner().commit().unwrap();
-
-        assert!(store.list_user_states(&p).await.unwrap().is_empty());
-    }
-
-    // --- flush_to_db: full-reprocess (is_loaded = false) ---------------------
-
-    #[tokio::test]
-    async fn flush_full_reprocess_writes_declared_only() {
-        // DB has pre-existing entry; cache never populated; declared = {new_k}
-        // delete_all wipes old entry, only new_k survives.
-        let (store, _dir) = make_test_store().await;
-        let p = comp_path("comp");
-
-        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
-        store
-            .write_user_state(&mut wtxn, &p, &sym("old"), b"old_val")
-            .await
-            .unwrap();
-        wtxn.into_inner().commit().unwrap();
-
-        let mut cache = UserStateCache::new(); // no populate
-        cache.use_state(sym("new_k"), b("new_val")).unwrap();
-
-        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
-        cache.flush_to_db(&mut wtxn, &store, &p).await.unwrap();
-        wtxn.into_inner().commit().unwrap();
-
-        let entries = to_map(store.list_user_states(&p).await.unwrap());
-        assert_eq!(entries.len(), 1);
-        assert!(!entries.contains_key(&sym("old")));
-        assert_eq!(entries[&sym("new_k")], b("new_val"));
-    }
-
-    #[tokio::test]
-    async fn flush_full_reprocess_no_declared_clears_db() {
-        // DB has pre-existing entry; cache never populated; no use_state calls
-        // delete_all wipes everything, DB is empty.
-        let (store, _dir) = make_test_store().await;
-        let p = comp_path("comp");
-
-        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
-        store
-            .write_user_state(&mut wtxn, &p, &sym("old"), b"old_val")
-            .await
-            .unwrap();
-        wtxn.into_inner().commit().unwrap();
-
-        let cache = UserStateCache::new(); // no populate, no use_state
-
-        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
-        cache.flush_to_db(&mut wtxn, &store, &p).await.unwrap();
-        wtxn.into_inner().commit().unwrap();
-
-        assert!(store.list_user_states(&p).await.unwrap().is_empty());
-    }
-
-    // --- into_flush_plan: verifies plan output matches flush_to_db semantics --
-
-    /// Helper: apply a UserStateFlushPlan through CommitPlan + AppStore::commit,
-    /// which is the production path (as opposed to flush_to_db used above).
+    /// Helper: apply a `UserStateCache` through `into_flush_plan` + `CommitPlan`
+    /// + `AppStore::commit` — the production write path.
     async fn apply_plan_via_commit(store: &AppStore, path: &StablePath, cache: UserStateCache) {
         use crate::state_store::{CommitPlan, ExistenceReconciler};
         use futures::future::BoxFuture;
@@ -1491,5 +1285,102 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert!(!entries.contains_key(&sym("old")));
         assert_eq!(entries[&sym("new_k")], b("new_val"));
+    }
+
+    #[tokio::test]
+    async fn flush_plan_set_reduction_adds_new_keys() {
+        // loaded = {a}; declared = {a, b_new} → b inserted, a's stored value kept.
+        let (store, _dir) = make_test_store().await;
+        let p = comp_path("comp");
+
+        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
+        store
+            .write_user_state(&mut wtxn, &p, &sym("a"), b"a_val")
+            .await
+            .unwrap();
+        wtxn.into_inner().commit().unwrap();
+
+        let mut cache = UserStateCache::new();
+        cache.populate(vec![(sym("a"), b("a_val"))]);
+        cache.use_state(sym("a"), b("should_be_ignored")).unwrap();
+        cache.use_state(sym("b"), b("b_new")).unwrap();
+
+        apply_plan_via_commit(&store, &p, cache).await;
+
+        let entries = to_map(store.list_user_states(&p).await.unwrap());
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[&sym("a")], b("a_val"));
+        assert_eq!(entries[&sym("b")], b("b_new"));
+    }
+
+    #[tokio::test]
+    async fn flush_plan_set_reduction_persists_updated_value() {
+        // loaded = {k: "old"}; declare k then update_declared to "new" → k written with "new".
+        let (store, _dir) = make_test_store().await;
+        let p = comp_path("comp");
+
+        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
+        store
+            .write_user_state(&mut wtxn, &p, &sym("k"), b"old")
+            .await
+            .unwrap();
+        wtxn.into_inner().commit().unwrap();
+
+        let mut cache = UserStateCache::new();
+        cache.populate(vec![(sym("k"), b("old"))]);
+        cache.use_state(sym("k"), b("ignored")).unwrap();
+        cache.update_declared(&sym("k"), b("new")).unwrap();
+
+        apply_plan_via_commit(&store, &p, cache).await;
+
+        let entries = to_map(store.list_user_states(&p).await.unwrap());
+        assert_eq!(entries[&sym("k")], b("new"));
+    }
+
+    #[tokio::test]
+    async fn flush_plan_set_reduction_empty_declared_removes_all() {
+        // loaded = {a, b}; no use_state calls → all entries deleted.
+        let (store, _dir) = make_test_store().await;
+        let p = comp_path("comp");
+
+        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
+        store
+            .write_user_state(&mut wtxn, &p, &sym("a"), b"a_val")
+            .await
+            .unwrap();
+        store
+            .write_user_state(&mut wtxn, &p, &sym("b"), b"b_val")
+            .await
+            .unwrap();
+        wtxn.into_inner().commit().unwrap();
+
+        let mut cache = UserStateCache::new();
+        cache.populate(vec![(sym("a"), b("a_val")), (sym("b"), b("b_val"))]);
+        // no use_state calls
+
+        apply_plan_via_commit(&store, &p, cache).await;
+
+        assert!(store.list_user_states(&p).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn flush_plan_full_reprocess_no_declared_clears_db() {
+        // DB has pre-existing entry; cache never populated; no use_state calls
+        // → clear_all_first wipes everything, DB is empty.
+        let (store, _dir) = make_test_store().await;
+        let p = comp_path("comp");
+
+        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
+        store
+            .write_user_state(&mut wtxn, &p, &sym("old"), b"old_val")
+            .await
+            .unwrap();
+        wtxn.into_inner().commit().unwrap();
+
+        let cache = UserStateCache::new(); // no populate, no use_state
+
+        apply_plan_via_commit(&store, &p, cache).await;
+
+        assert!(store.list_user_states(&p).await.unwrap().is_empty());
     }
 }

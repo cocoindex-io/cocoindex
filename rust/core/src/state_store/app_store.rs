@@ -520,7 +520,7 @@ impl AppStore {
 
     /// Prefix-delete every function memo under `path`. Used when the cache
     /// was not populated (full_reprocess, delete mode) — see
-    /// `FnMemoCache::flush_to_db`.
+    /// `FnMemoCache::into_flush_plan`.
     pub async fn delete_all_fn_memos(
         &self,
         txn: &mut WriteTxn<'_>,
