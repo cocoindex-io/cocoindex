@@ -202,8 +202,9 @@ pub fn get_stable_path_detail(
     let path_owned = path.0.clone();
     let detail = py
         .detach(|| {
-            get_runtime()
-                .block_on(async move { db_inspect::get_stable_path_detail(&app, &path_owned).await })
+            get_runtime().block_on(async move {
+                db_inspect::get_stable_path_detail(&app, &path_owned).await
+            })
         })
         .into_py_result()?;
     Ok(detail.map(|d| PyStablePathDetail {
