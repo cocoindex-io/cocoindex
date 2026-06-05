@@ -218,7 +218,7 @@ async fn extract(ctx: &Ctx, files: Vec<FileEntry>, model: String) -> Result<Vec<
 
 ### Example: Multi-Codebase Summarization
 
-The current checked-in example is `examples/rust/multi-codebase-summarization`. It scans project subdirectories, memoizes per-file extraction, memoizes per-project aggregation, writes markdown summaries, and removes stale outputs when a project disappears.
+The current checked-in example is `examples/rust/multi_codebase_summarization`. It scans project subdirectories, memoizes per-file extraction, memoizes per-project aggregation, writes markdown summaries, and removes stale outputs when a project disappears.
 
 Key patterns demonstrated:
 - **module-level `OnceLock<LlmClient>`** — shared `reqwest`-based LLM client usable from `#[cocoindex::function(memo)]` bodies

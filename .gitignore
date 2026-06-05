@@ -3,8 +3,8 @@
 examples/rust/*/target/
 # LMDB runtime data created by Rust SDK pipelines/tests
 .cocoindex_db/
-examples/rust/files-transform/output_html/
-examples/rust/pdf-to-markdown/out/
+examples/rust/files_transform/output_html/
+examples/rust/pdf_to_markdown/out/
 # Downloaded embedding model cache (fastembed) — e.g. code-embedding example
 .fastembed_cache/
 
