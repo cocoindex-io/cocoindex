@@ -17,7 +17,6 @@ use cocoindex::lancedb::{self, ColumnDef, ColumnType, LanceDatabase, TableSchema
 use cocoindex::ops::sentence_transformers::SentenceTransformerEmbedder;
 use cocoindex::ops::text::{RecursiveChunkConfig, RecursiveSplitter, detect_code_language};
 use cocoindex::prelude::*;
-use cocoindex::walk;
 
 const EMBED_MODEL: &str = "sentence-transformers/all-MiniLM-L6-v2";
 const EMBED_DIM: usize = 384;
@@ -47,8 +46,8 @@ struct CodeEmbedding {
     end_line: i64,
 }
 
-#[cocoindex::function(memo)]
-async fn process_file(ctx: &Ctx, file: &FileEntry) -> Result<Vec<CodeEmbedding>> {
+#[cocoindex::function]
+async fn process_file(ctx: &Ctx, file: FileEntry) -> Result<Vec<CodeEmbedding>> {
     let filename = file.key();
     let text = file.content_str()?;
 
@@ -111,9 +110,9 @@ async fn app_main(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
     let db = ctx.get_key(&DB)?;
     let table = lancedb::mount_table_target(&ctx, db, TABLE, code_embedding_schema()?).await?;
 
-    let files: Vec<FileEntry> = walk(&sourcedir, INCLUDE_PATTERNS)?
+    let files: Vec<(String, FileEntry)> = walk_items(&sourcedir, INCLUDE_PATTERNS)?
         .into_iter()
-        .filter(|f| !is_excluded(&f.key()))
+        .filter(|(_, f)| !is_excluded(&f.key()))
         .collect();
     println!(
         "indexing {} file(s) from {}",
@@ -121,13 +120,7 @@ async fn app_main(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
         sourcedir.display()
     );
 
-    let rows_by_file = ctx
-        .mount_each(
-            files,
-            |f| f.key(),
-            |child, file| async move { process_file(&child, &file).await },
-        )
-        .await?;
+    let rows_by_file = mount_each!(files, |file| process_file(ctx, file)).await?;
 
     let mut count = 0usize;
     for rows in &rows_by_file {

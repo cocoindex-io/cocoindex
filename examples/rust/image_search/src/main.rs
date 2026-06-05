@@ -25,7 +25,6 @@ use cocoindex::ops::image::ImageEmbedder;
 use cocoindex::ops::sentence_transformers::SentenceTransformerEmbedder;
 use cocoindex::prelude::*;
 use cocoindex::qdrant::{self, CollectionSchema, Distance, QdrantConnection};
-use cocoindex::walk;
 use serde_json::json;
 
 /// CLIP ViT-B/32 vision tower (images) and text tower (queries). Both output
@@ -64,8 +63,8 @@ struct PointData {
     filename: String,
 }
 
-#[cocoindex::function(memo)]
-async fn process_image(ctx: &Ctx, file: &FileEntry) -> Result<PointData> {
+#[cocoindex::function]
+async fn process_image(ctx: &Ctx, file: FileEntry) -> Result<PointData> {
     let filename = file.key();
     let bytes = file.content()?;
     let vector = ctx.get_key(&EMBEDDER)?.embed(bytes).await?;
@@ -88,20 +87,14 @@ async fn app_main(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
     )
     .await?;
 
-    let files: Vec<FileEntry> = walk(&sourcedir, IMAGE_GLOBS)?;
+    let files = walk_items(&sourcedir, IMAGE_GLOBS)?;
     println!(
         "indexing {} image(s) from {}",
         files.len(),
         sourcedir.display()
     );
 
-    let points = ctx
-        .mount_each(
-            files,
-            |f| f.key(),
-            |child, file| async move { process_image(&child, &file).await },
-        )
-        .await?;
+    let points = mount_each!(files, |file| process_image(ctx, file)).await?;
 
     for p in &points {
         let payload = json!({ "filename": p.filename })

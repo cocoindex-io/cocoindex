@@ -2870,3 +2870,130 @@ async fn dir_target_deletes_file_when_source_disappears_via_mount_each() {
         "output for a removed source must be deleted"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Grouped-call mount macros: `mount_each!` / `use_mount!` component-memo
+// fast-path (design.md §7.2). Each test uses its own entry fn + static counter
+// so concurrently-running tests don't share state.
+// ---------------------------------------------------------------------------
+
+mod mount_macros {
+    use super::temp_app;
+    use cocoindex::prelude::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static EACH_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+    #[cocoindex::function]
+    async fn each_double(_ctx: &Ctx, n: u32) -> Result<u32> {
+        EACH_CALLS.fetch_add(1, Ordering::SeqCst);
+        Ok(n * 2)
+    }
+
+    async fn run_each(app: &cocoindex::App, items: Vec<(String, u32)>) -> Vec<u32> {
+        app.update(move |ctx| async move {
+            let out = cocoindex::mount_each!(items, |n| each_double(ctx, n)).await?;
+            Ok(out)
+        })
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn mount_each_skips_unchanged_components_across_runs() {
+        let (app, _dir) = temp_app("mount_each_skip").await;
+        let items = vec![("a".to_string(), 1u32), ("b".to_string(), 2u32)];
+
+        let first = run_each(&app, items.clone()).await;
+        assert_eq!(first, vec![2, 4]);
+        assert_eq!(EACH_CALLS.load(Ordering::SeqCst), 2);
+
+        // Same items: both components hit the component-memo fast-path and are
+        // skipped — the cached values are replayed and the fn is not re-run.
+        let second = run_each(&app, items).await;
+        assert_eq!(second, vec![2, 4]);
+        assert_eq!(EACH_CALLS.load(Ordering::SeqCst), 2);
+    }
+
+    static SEL_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+    #[cocoindex::function]
+    async fn sel_double(_ctx: &Ctx, n: u32) -> Result<u32> {
+        SEL_CALLS.fetch_add(1, Ordering::SeqCst);
+        Ok(n * 2)
+    }
+
+    #[tokio::test]
+    async fn mount_each_reprocesses_only_changed_item() {
+        let (app, _dir) = temp_app("mount_each_changed").await;
+
+        async fn run(app: &cocoindex::App, items: Vec<(String, u32)>) {
+            app.update(move |ctx| async move {
+                cocoindex::mount_each!(items, |n| sel_double(ctx, n)).await?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        }
+
+        run(&app, vec![("a".to_string(), 1), ("b".to_string(), 2)]).await;
+        assert_eq!(SEL_CALLS.load(Ordering::SeqCst), 2);
+
+        // `b`'s value changes (1→3 for key b), `a` is identical: only `b` re-runs.
+        run(&app, vec![("a".to_string(), 1), ("b".to_string(), 3)]).await;
+        assert_eq!(SEL_CALLS.load(Ordering::SeqCst), 3);
+    }
+
+    static ONCE_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+    #[cocoindex::function]
+    async fn once_triple(_ctx: &Ctx, n: u32) -> Result<u32> {
+        ONCE_CALLS.fetch_add(1, Ordering::SeqCst);
+        Ok(n * 3)
+    }
+
+    #[tokio::test]
+    async fn use_mount_skips_unchanged_component_across_runs() {
+        let (app, _dir) = temp_app("use_mount_skip").await;
+
+        async fn run(app: &cocoindex::App) -> u32 {
+            app.update(|ctx| async move {
+                let out = cocoindex::use_mount!(once_triple(ctx, 7u32)).await?;
+                Ok(out)
+            })
+            .await
+            .unwrap()
+        }
+
+        assert_eq!(run(&app).await, 21);
+        assert_eq!(ONCE_CALLS.load(Ordering::SeqCst), 1);
+
+        // Same argument: component-memo hit, fn not re-run, cached value replayed.
+        assert_eq!(run(&app).await, 21);
+        assert_eq!(ONCE_CALLS.load(Ordering::SeqCst), 1);
+    }
+
+    #[cocoindex::function]
+    async fn block_id(_ctx: &Ctx, n: u32) -> Result<u32> {
+        Ok(n)
+    }
+
+    #[tokio::test]
+    async fn mount_each_accepts_block_form_closure() {
+        // rustfmt may rewrite `|n| block_id(ctx, n)` into block form
+        // `|n| { block_id(ctx, n) }`; the macro must parse both identically.
+        let (app, _dir) = temp_app("mount_each_block").await;
+        let items = vec![("a".to_string(), 5u32), ("b".to_string(), 6u32)];
+        let out: Vec<u32> = app
+            .update(move |ctx| async move {
+                // `#[rustfmt::skip]` keeps the block braces so this test keeps
+                // exercising the block-form closure body the macro must accept.
+                #[rustfmt::skip]
+                let out = cocoindex::mount_each!(items, |n| { block_id(ctx, n) }).await?;
+                Ok(out)
+            })
+            .await
+            .unwrap();
+        assert_eq!(out, vec![5, 6]);
+    }
+}

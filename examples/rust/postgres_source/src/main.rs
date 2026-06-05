@@ -82,8 +82,8 @@ struct OutputProduct {
 
 /// Compute the derived fields + embedding for one source row. Memoized by the
 /// row content, so unchanged rows skip the embedding work on re-runs.
-#[cocoindex::function(memo)]
-async fn process_product(ctx: &Ctx, product: &SourceProduct) -> Result<OutputProduct> {
+#[cocoindex::function]
+async fn process_product(ctx: &Ctx, product: SourceProduct) -> Result<OutputProduct> {
     let full_description = format!(
         "Category: {}\nName: {}\n\n{}",
         product.product_category, product.product_name, product.description
@@ -121,7 +121,8 @@ fn output_schema() -> Result<postgres::TableSchema> {
 
 async fn app_main(ctx: Ctx) -> Result<()> {
     let db = ctx.get_key(&DB)?;
-    let target = postgres::mount_table_target(&ctx, db, TABLE, output_schema()?, Some(PG_SCHEMA)).await?;
+    let target =
+        postgres::mount_table_target(&ctx, db, TABLE, output_schema()?, Some(PG_SCHEMA)).await?;
     target.declare_vector_index(
         &ctx,
         "embedding",
@@ -135,13 +136,13 @@ async fn app_main(ctx: Ctx) -> Result<()> {
     let products: Vec<SourceProduct> = postgres::read_table(source_db, "source_products").await?;
     println!("read {} source product(s)", products.len());
 
-    let outputs = ctx
-        .mount_each(
-            products,
-            |p| format!("{}|{}", p.product_category, p.product_name),
-            |child, product| async move { process_product(&child, &product).await },
-        )
-        .await?;
+    let outputs = mount_each!(
+        products
+            .into_iter()
+            .map(|p| (format!("{}|{}", p.product_category, p.product_name), p)),
+        |product| process_product(ctx, product)
+    )
+    .await?;
 
     for output in &outputs {
         target.declare_row(&ctx, output)?;

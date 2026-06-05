@@ -34,8 +34,9 @@ pub static EMBEDDER: LazyLock<ContextKey<Embedder>> =
 
 /// SurrealDB connection. State-tracked on the target endpoint so changing the
 /// external graph database invalidates local target-state reconciliation.
-pub static GRAPH: LazyLock<ContextKey<Graph>> =
-    LazyLock::new(|| ContextKey::new_with_state("surreal_db", |g: &Graph| g.state_id().to_string()));
+pub static GRAPH: LazyLock<ContextKey<Graph>> = LazyLock::new(|| {
+    ContextKey::new_with_state("surreal_db", |g: &Graph| g.state_id().to_string())
+});
 
 // ---------------------------------------------------------------------------
 // LLM client (OpenAI-compatible, JSON mode)

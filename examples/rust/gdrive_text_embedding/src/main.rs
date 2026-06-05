@@ -48,8 +48,8 @@ struct DocEmbeddingRow {
     embedding: Vec<f32>,
 }
 
-#[cocoindex::function(memo)]
-async fn process_file(ctx: &Ctx, file: &DriveFile) -> Result<Vec<DocEmbeddingRow>> {
+#[cocoindex::function]
+async fn process_file(ctx: &Ctx, file: DriveFile) -> Result<Vec<DocEmbeddingRow>> {
     let client = ctx.get_key(&GDRIVE)?;
     let text = client.read_text(&file).await?;
     let splitter = RecursiveSplitter::new()?;
@@ -89,7 +89,8 @@ async fn process_file(ctx: &Ctx, file: &DriveFile) -> Result<Vec<DocEmbeddingRow
 async fn app_main(ctx: Ctx, root_folder_ids: Vec<String>) -> Result<()> {
     let db = ctx.get_key(&DB)?;
     let table =
-        postgres::mount_table_target(&ctx, db, TABLE, doc_embedding_schema()?, Some(PG_SCHEMA)).await?;
+        postgres::mount_table_target(&ctx, db, TABLE, doc_embedding_schema()?, Some(PG_SCHEMA))
+            .await?;
     table.declare_vector_index(
         &ctx,
         "embedding",
@@ -104,13 +105,10 @@ async fn app_main(ctx: Ctx, root_folder_ids: Vec<String>) -> Result<()> {
     let files = source.list_files().await?;
     println!("indexing {} Google Drive files", files.len());
 
-    let rows_by_file = ctx
-        .mount_each(
-            files,
-            |file| file.key(),
-            |child, file| async move { process_file(&child, &file).await },
-        )
-        .await?;
+    let rows_by_file = mount_each!(files.into_iter().map(|file| (file.key(), file)), |file| {
+        process_file(ctx, file)
+    })
+    .await?;
 
     let mut count = 0usize;
     for rows in &rows_by_file {

@@ -20,7 +20,6 @@ use cocoindex::ops::sentence_transformers::SentenceTransformerEmbedder;
 use cocoindex::ops::text::{RecursiveChunkConfig, RecursiveSplitter};
 use cocoindex::prelude::*;
 use cocoindex::qdrant::{self, CollectionSchema, Distance, QdrantConnection};
-use cocoindex::walk;
 use serde_json::json;
 
 const EMBED_MODEL: &str = "sentence-transformers/all-MiniLM-L6-v2";
@@ -52,8 +51,8 @@ struct PointData {
     text: String,
 }
 
-#[cocoindex::function(memo)]
-async fn process_file(ctx: &Ctx, file: &FileEntry) -> Result<Vec<PointData>> {
+#[cocoindex::function]
+async fn process_file(ctx: &Ctx, file: FileEntry) -> Result<Vec<PointData>> {
     let filename = file.key();
     let text = file.content_str()?;
 
@@ -100,20 +99,14 @@ async fn app_main(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
     )
     .await?;
 
-    let files: Vec<FileEntry> = walk(&sourcedir, &["**/*.md"])?;
+    let files = walk_items(&sourcedir, &["**/*.md"])?;
     println!(
         "indexing {} markdown file(s) from {}",
         files.len(),
         sourcedir.display()
     );
 
-    let points_by_file = ctx
-        .mount_each(
-            files,
-            |f| f.key(),
-            |child, file| async move { process_file(&child, &file).await },
-        )
-        .await?;
+    let points_by_file = mount_each!(files, |file| process_file(ctx, file)).await?;
 
     let mut count = 0usize;
     for points in &points_by_file {

@@ -33,7 +33,7 @@ use serde::Deserialize;
 
 use clients::{Embedder, Graph, LlmClient};
 use models::*;
-use pipeline::{collect_raw, create_knowledge_base, process_session, resolve_entities};
+use pipeline::{collect_raw, create_knowledge_base, resolve_entities};
 
 const INCLUDE: &[&str] = &["**/*.txt", "**/*.json"];
 
@@ -119,12 +119,10 @@ async fn app_main(ctx: Ctx, input_dir: PathBuf) -> Result<()> {
     );
 
     // Phase 1: per-session fetch + extract (memoized, concurrent).
-    let processed: Vec<ProcessedSession> = ctx
-        .mount_each(
-            sources,
-            |s| s.key(),
-            |child, source| async move { process_session(&child, &source).await },
-        )
+    let processed: Vec<ProcessedSession> =
+        mount_each!(sources.into_iter().map(|s| (s.key(), s)), |source| {
+            pipeline::process_session(ctx, source)
+        })
         .await?;
 
     // Phase 2: entity resolution per type.

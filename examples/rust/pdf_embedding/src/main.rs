@@ -20,7 +20,6 @@ use cocoindex::ops::sentence_transformers::SentenceTransformerEmbedder;
 use cocoindex::ops::text::{RecursiveChunkConfig, RecursiveSplitter};
 use cocoindex::postgres;
 use cocoindex::prelude::*;
-use cocoindex::walk;
 use sqlx::Row;
 use sqlx::postgres::{PgPool, PgPoolOptions};
 
@@ -65,8 +64,8 @@ fn pdf_to_text(content: &[u8]) -> Result<String> {
         .map_err(|e| Error::engine(format!("failed to extract PDF text: {e}")))
 }
 
-#[cocoindex::function(memo)]
-async fn process_file(ctx: &Ctx, file: &FileEntry) -> Result<Vec<PdfEmbedding>> {
+#[cocoindex::function]
+async fn process_file(ctx: &Ctx, file: FileEntry) -> Result<Vec<PdfEmbedding>> {
     let filename = file.key();
     let content = file.content()?;
     let text = tokio::task::spawn_blocking(move || pdf_to_text(&content))
@@ -131,16 +130,14 @@ async fn app_main(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
         postgres::mount_table_target(&ctx, db, TABLE, pdf_embedding_schema()?, Some(PG_SCHEMA))
             .await?;
 
-    let files: Vec<FileEntry> = walk(&sourcedir, &["**/*.pdf"])?;
-    println!("indexing {} PDF(s) from {}", files.len(), sourcedir.display());
+    let files = walk_items(&sourcedir, &["**/*.pdf"])?;
+    println!(
+        "indexing {} PDF(s) from {}",
+        files.len(),
+        sourcedir.display()
+    );
 
-    let rows_by_file = ctx
-        .mount_each(
-            files,
-            |f| f.key(),
-            |child, file| async move { process_file(&child, &file).await },
-        )
-        .await?;
+    let rows_by_file = mount_each!(files, |file| process_file(ctx, file)).await?;
 
     let mut count = 0usize;
     for rows in &rows_by_file {

@@ -109,8 +109,8 @@ pub fn format_transcript(
 /// Process one session end-to-end (fetch -> 2-pass extract -> assign ids).
 /// Memoized by source: unchanged sessions skip all fetch/LLM work. Graph writes
 /// happen later in `create_knowledge_base` through target-state declarations.
-#[cocoindex::function(memo)]
-pub async fn process_session(ctx: &Ctx, source: &SessionSource) -> Result<ProcessedSession> {
+#[cocoindex::function]
+pub async fn process_session(ctx: &Ctx, source: SessionSource) -> Result<ProcessedSession> {
     let transcript = fetch_transcript(&ctx, &source).await?;
 
     // Step 1: format with no known names, extract metadata + speaker map.

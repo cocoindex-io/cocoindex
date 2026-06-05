@@ -211,10 +211,16 @@ pub struct SqliteTableOptions {
 // ---------------------------------------------------------------------------
 
 /// A declarative SQLite table target — a handle to declare rows on.
-#[derive(Clone)]
+///
+/// As a `mount_each!` / `use_mount!` argument it fingerprints by its table name
+/// (its stable key); the schema and runtime provider are not part of the
+/// component-memo identity.
+#[derive(Clone, Serialize)]
 pub struct TableTarget {
     table_name: Arc<str>,
+    #[serde(skip)]
     table_schema: TableSchema,
+    #[serde(skip)]
     rows: TargetStateProvider<RowState>,
 }
 

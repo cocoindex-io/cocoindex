@@ -52,8 +52,8 @@ struct DocEmbeddingRow {
     embedding: Vec<f32>,
 }
 
-#[cocoindex::function(memo)]
-async fn process_file(ctx: &Ctx, file: &OciFile) -> Result<Vec<DocEmbeddingRow>> {
+#[cocoindex::function]
+async fn process_file(ctx: &Ctx, file: OciFile) -> Result<Vec<DocEmbeddingRow>> {
     let text = ctx.get_key(&OCI)?.read_text(&file).await?;
     let splitter = RecursiveSplitter::new()?;
     let chunks = splitter.split_with(
@@ -124,13 +124,11 @@ async fn app_main(ctx: Ctx, namespace: String, bucket: String, prefix: String) -
         files.len()
     );
 
-    let rows_by_file = ctx
-        .mount_each(
-            files,
-            |f| f.key(),
-            |child, file| async move { process_file(&child, &file).await },
-        )
-        .await?;
+    let rows_by_file = mount_each!(
+        files.into_iter().map(|f| (f.key(), f)),
+        |file| process_file(ctx, file)
+    )
+    .await?;
 
     let mut count = 0usize;
     for rows in &rows_by_file {
