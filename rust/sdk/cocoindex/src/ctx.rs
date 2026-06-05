@@ -810,55 +810,6 @@ impl Ctx {
         crate::memo::cached(self, key, f).await
     }
 
-    /// Batch-process items with per-item memoization.
-    ///
-    /// Probes the memo cache for each item. Cache hits return stored values.
-    /// Cache misses are collected and passed to `f` as a single batch.
-    /// Results are stored back and merged in original order.
-    ///
-    /// `f` must return exactly one result per miss item, in the same order.
-    ///
-    /// # Examples
-    ///
-    /// ```no_run
-    /// # use cocoindex::ctx::Ctx;
-    /// # async fn doc(ctx: &Ctx, items: Vec<String>) -> cocoindex::error::Result<()> {
-    /// let results = ctx.batch(
-    ///     items,
-    ///     |item| item.len(), // using length as cache key for demonstration
-    ///     |_ctx, misses| async move {
-    ///         Ok(misses.into_iter().map(|s| s.to_uppercase()).collect())
-    ///     }
-    /// ).await?;
-    /// # Ok(())
-    /// # }
-    /// ```
-    ///
-    /// The closure receives a `Ctx` scoped to this batch's memo call (shared by
-    /// all miss items); use it for `get_key` so change-detection dependencies
-    /// are attributed correctly.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the closure returns an error, or if there's an
-    /// LMDB or serialization error during memoization.
-    pub async fn batch<I, K, T, F, Fut>(
-        &self,
-        items: I,
-        key_fn: impl Fn(&I::Item) -> K,
-        f: F,
-    ) -> Result<Vec<T>>
-    where
-        I: IntoIterator,
-        I::Item: Send + 'static,
-        K: Serialize,
-        T: Serialize + for<'de> Deserialize<'de> + Send + 'static,
-        F: FnOnce(Ctx, Vec<I::Item>) -> Fut + Send,
-        Fut: Future<Output = Result<Vec<T>>> + Send,
-    {
-        crate::memo::batch(self, items, move |item| Ok(key_fn(item)), f).await
-    }
-
     /// Run a closure concurrently for each item, creating a child scope per item.
     ///
     /// Each item gets its own `Ctx` child scope keyed by `key_fn(item)`.
