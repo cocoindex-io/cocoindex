@@ -713,14 +713,35 @@ impl Ctx {
         F: FnOnce(Ctx) -> Fut + Send + 'static,
         Fut: Future<Output = Result<T>> + Send + 'static,
     {
+        self.__use_mount_fp(key.to_string(), None, f).await
+    }
+
+    /// Foreground mount with an explicit component-memo fingerprint. The
+    /// `mount!` / `use_mount!` / `mount_each!` macros call this; `scope` is the
+    /// `memo_fp = None` (always-run) case kept for direct use and tests.
+    ///
+    /// When `memo_fp` is `Some`, the engine checks it before running the child
+    /// and skips the whole component on an unchanged hit (see
+    /// [`crate::mount::component_memo_fp`]).
+    #[doc(hidden)]
+    pub async fn __use_mount_fp<T, F, Fut>(
+        &self,
+        key: String,
+        memo_fp: Option<Fingerprint>,
+        f: F,
+    ) -> Result<T>
+    where
+        T: Serialize + for<'de> Deserialize<'de> + Send + 'static,
+        F: FnOnce(Ctx) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<T>> + Send + 'static,
+    {
         let Some(comp_ctx) = &self.comp_ctx else {
             // No pipeline context — just run the closure directly.
             let child_ctx = self.child(None);
             return f(child_ctx).await;
         };
 
-        let key_str = key.to_string();
-        let child_stable_key = StableKey::Str(Arc::from(key_str.as_str()));
+        let child_stable_key = StableKey::Str(Arc::from(key.as_str()));
         let child_path = comp_ctx.stable_path().concat_part(child_stable_key);
 
         let fn_ctx = Arc::new(FnCallContext::default());
@@ -749,8 +770,8 @@ impl Ctx {
                     Value::from_serializable(&result)
                 })
             },
-            None,
-            format!("scope:{key_str}"),
+            memo_fp,
+            format!("mount:{key}"),
         );
 
         let handle = match child_component.use_mount(comp_ctx, processor).await {
@@ -773,6 +794,58 @@ impl Ctx {
             }
         };
         Ok(result)
+    }
+
+    /// Per-item foreground mounts with component-memo fingerprints, the runtime
+    /// behind `mount_each!`. Each `(key, value)` pair becomes a child component
+    /// at `prefix/key` (or `key` when `prefix` is `None`); `memo_of` computes
+    /// the value's component-memo fingerprint and `body` runs the entry
+    /// function under the child scope. All children run concurrently.
+    #[doc(hidden)]
+    pub async fn __mount_each_fp<K, V, M, B, Fut, T>(
+        &self,
+        items: impl IntoIterator<Item = (K, V)>,
+        prefix: Option<&str>,
+        memo_of: M,
+        body: B,
+    ) -> Result<Vec<T>>
+    where
+        K: Display,
+        V: Send + 'static,
+        T: Serialize + for<'de> Deserialize<'de> + Send + 'static,
+        M: Fn(&V) -> Result<Option<Fingerprint>>,
+        B: Fn(Ctx, V) -> Fut + Clone + Send + 'static,
+        Fut: Future<Output = Result<T>> + Send + 'static,
+    {
+        let mut keys = rustc_hash::FxHashSet::default();
+        let mut keyed = Vec::new();
+        for (key, value) in items {
+            let key = key.to_string();
+            if !keys.insert(key.clone()) {
+                return Err(Error::engine(format!(
+                    "duplicate key `{key}` in mount_each batch"
+                )));
+            }
+            let memo_fp = memo_of(&value)?;
+            let subpath = match prefix {
+                Some(prefix) => format!("{prefix}/{key}"),
+                None => key,
+            };
+            keyed.push((subpath, memo_fp, value));
+        }
+
+        let futs: Vec<_> = keyed
+            .into_iter()
+            .map(|(subpath, memo_fp, value)| {
+                let body = body.clone();
+                async move {
+                    self.__use_mount_fp(subpath, memo_fp, move |child| body(child, value))
+                        .await
+                }
+            })
+            .collect();
+
+        futures::future::try_join_all(futs).await
     }
 
     /// Cached computation. If `key` hasn't changed since the last run,

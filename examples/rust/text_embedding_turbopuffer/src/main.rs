@@ -23,7 +23,6 @@ use cocoindex::ops::sentence_transformers::SentenceTransformerEmbedder;
 use cocoindex::ops::text::{RecursiveChunkConfig, RecursiveSplitter};
 use cocoindex::prelude::*;
 use cocoindex::turbopuffer::{self, DistanceMetric, NamespaceSchema, TurbopufferConnection};
-use cocoindex::walk;
 use serde_json::json;
 
 const EMBED_MODEL: &str = "sentence-transformers/all-MiniLM-L6-v2";
@@ -54,8 +53,8 @@ struct RowData {
     text: String,
 }
 
-#[cocoindex::function(memo)]
-async fn process_file(ctx: &Ctx, file: &FileEntry) -> Result<Vec<RowData>> {
+#[cocoindex::function]
+async fn process_file(ctx: &Ctx, file: FileEntry) -> Result<Vec<RowData>> {
     let filename = file.key();
     let text = file.content_str()?;
 
@@ -102,20 +101,14 @@ async fn app_main(ctx: Ctx, sourcedir: PathBuf, namespace: String) -> Result<()>
     )
     .await?;
 
-    let files: Vec<FileEntry> = walk(&sourcedir, &["**/*.md"])?;
+    let files = walk_items(&sourcedir, &["**/*.md"])?;
     println!(
         "indexing {} markdown file(s) from {}",
         files.len(),
         sourcedir.display()
     );
 
-    let rows_by_file = ctx
-        .mount_each(
-            files,
-            |f| f.key(),
-            |child, file| async move { process_file(&child, &file).await },
-        )
-        .await?;
+    let rows_by_file = mount_each!(files, |file| process_file(ctx, file)).await?;
 
     let mut count = 0usize;
     for rows in &rows_by_file {

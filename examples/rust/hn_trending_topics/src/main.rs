@@ -19,8 +19,8 @@
 
 use std::sync::LazyLock;
 
-use cocoindex::prelude::*;
 use cocoindex::postgres;
+use cocoindex::prelude::*;
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
 use sqlx::postgres::{PgPool, PgPoolOptions};
@@ -32,8 +32,9 @@ const MAX_TEXT: usize = 4000;
 static HTTP: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
 
 /// Shared Postgres target database.
-static PG: LazyLock<ContextKey<postgres::Database>> =
-    LazyLock::new(|| ContextKey::new_with_state("hn_db", |db: &postgres::Database| db.state_id().to_string()));
+static PG: LazyLock<ContextKey<postgres::Database>> = LazyLock::new(|| {
+    ContextKey::new_with_state("hn_db", |db: &postgres::Database| db.state_id().to_string())
+});
 /// LLM client; state-tracked on the model so changing it invalidates memos.
 static LLM: LazyLock<ContextKey<LlmClient>> =
     LazyLock::new(|| ContextKey::new_with_state("llm_model", |c: &LlmClient| c.model.clone()));
@@ -267,8 +268,8 @@ fn max_comments() -> usize {
 /// Fetch one thread and extract topics for every message.
 /// Memoized by thread id: re-runs skip already-processed threads, while target
 /// row declarations still happen in the active pipeline.
-#[cocoindex::function(memo)]
-async fn process_thread(ctx: &Ctx, thread_id: &String) -> Result<ProcessedThread> {
+#[cocoindex::function]
+async fn process_thread(ctx: &Ctx, thread_id: String) -> Result<ProcessedThread> {
     let llm = ctx.get_key(&LLM)?;
     let thread = fetch_thread(&thread_id, max_comments()).await?;
     let mut messages = Vec::with_capacity(thread.messages.len());
@@ -326,13 +327,10 @@ async fn app_main(ctx: Ctx, max_threads: usize) -> Result<()> {
     let thread_ids = fetch_thread_ids(max_threads).await?;
     println!("fetched {} threads from HackerNews", thread_ids.len());
 
-    let processed = ctx
-        .mount_each(
-            thread_ids.clone(),
-            |id| id.clone(),
-            |child, id| async move { process_thread(&child, &id).await },
-        )
-        .await?;
+    let processed = mount_each!(thread_ids.into_iter().map(|id| (id.clone(), id)), |id| {
+        process_thread(ctx, id)
+    })
+    .await?;
 
     let mut count = 0usize;
     for thread in &processed {

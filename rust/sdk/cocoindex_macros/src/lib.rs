@@ -1,13 +1,14 @@
 //! Proc macros for cocoindex: `#[function]`.
 
 use proc_macro::TokenStream;
-use proc_macro2::TokenStream as TokenStream2;
+use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::{format_ident, quote};
 use syn::{
-    Error as SynError, Expr, FnArg, Ident, ItemFn, LitInt, PatType, Token, Type, TypeReference,
-    parenthesized,
+    Error as SynError, Expr, FnArg, Ident, ItemFn, LitInt, Pat, PatType, Path, Token, Type,
+    TypeReference, parenthesized,
     parse::{Parse, ParseStream},
     parse_macro_input,
+    punctuated::Punctuated,
 };
 
 /// Information about a non-ctx parameter.
@@ -511,6 +512,236 @@ pub fn function(attr: TokenStream, item: TokenStream) -> TokenStream {
 
         expanded.into()
     }
+}
+
+// ===========================================================================
+// mount!/use_mount!/mount_each! — grouped-call mount macros (design.md §7.2)
+//
+// These read like the real call — `use_mount!(my_fn(ctx, a, b))` — and turn it
+// into a child processing component whose component-memo fingerprint is
+// `entry-fn logic ⊕ fingerprint(non-ctx args)`. The engine checks that
+// fingerprint *before* running, so an unchanged component (and its whole
+// subtree) is skipped. The macro relies on the `&Ctx`-is-always-first
+// convention: the call's first argument is the parent ctx, which the macro
+// replaces with the freshly-mounted child scope.
+// ===========================================================================
+
+/// Derive the `__COCO_FN_HASH_<NAME>` const path from a function path,
+/// preserving the module prefix (`a::b::my_fn` → `a::b::__COCO_FN_HASH_MY_FN`).
+fn hash_const_path(func_path: &Path) -> Path {
+    let mut path = func_path.clone();
+    if let Some(last) = path.segments.last_mut() {
+        last.ident = format_ident!("__COCO_FN_HASH_{}", last.ident.to_string().to_uppercase());
+        last.arguments = syn::PathArguments::None;
+    }
+    path
+}
+
+/// Destructure a grouped call `my_fn(ctx, a, b)` into its path and arguments.
+fn parse_grouped_call(expr: &Expr) -> syn::Result<(Path, Vec<Expr>)> {
+    let Expr::Call(call) = expr else {
+        return Err(SynError::new_spanned(
+            expr,
+            "expected a function call like `my_fn(ctx, args...)`",
+        ));
+    };
+    let Expr::Path(path) = call.func.as_ref() else {
+        return Err(SynError::new_spanned(
+            &call.func,
+            "expected a plain function path",
+        ));
+    };
+    let args: Vec<Expr> = call.args.iter().cloned().collect();
+    if args.is_empty() {
+        return Err(SynError::new_spanned(
+            expr,
+            "the call's first argument must be the `&Ctx`",
+        ));
+    }
+    Ok((path.path.clone(), args))
+}
+
+/// `use_mount!(my_fn(ctx, a, b))` or `use_mount!(key, my_fn(ctx, a, b))`.
+///
+/// Foreground mount: creates a child component, runs `my_fn` under it with the
+/// child `&Ctx` substituted for the first argument, and returns its value.
+/// `(a, b)` are fingerprinted for the component-memo fast-path. The subpath is
+/// `key` if given, else the function's name.
+#[proc_macro]
+pub fn use_mount(input: TokenStream) -> TokenStream {
+    let parsed = parse_macro_input!(input with Punctuated::<Expr, Token![,]>::parse_terminated);
+    let elems: Vec<Expr> = parsed.into_iter().collect();
+    let (key_expr, call) = match elems.as_slice() {
+        [call] => (None, call),
+        [key, call] => (Some(key), call),
+        _ => {
+            return SynError::new(
+                Span::call_site(),
+                "use_mount! takes `my_fn(ctx, args...)` or `key, my_fn(ctx, args...)`",
+            )
+            .to_compile_error()
+            .into();
+        }
+    };
+
+    let (path, args) = match parse_grouped_call(call) {
+        Ok(v) => v,
+        Err(e) => return e.to_compile_error().into(),
+    };
+    let fn_ident = path.segments.last().unwrap().ident.clone();
+    let hash_path = hash_const_path(&path);
+    let ctx_arg = &args[0];
+    let data_args = &args[1..];
+
+    let arg_idents: Vec<Ident> = (0..data_args.len())
+        .map(|i| format_ident!("__coco_arg{i}"))
+        .collect();
+    let arg_binds = arg_idents
+        .iter()
+        .zip(data_args)
+        .map(|(id, expr)| quote! { let #id = #expr; });
+    let fp_refs = arg_idents.iter().map(|id| quote! { & #id });
+    let key_tokens = match key_expr {
+        Some(key) => quote! { ::std::string::ToString::to_string(&(#key)) },
+        None => quote! { ::std::string::ToString::to_string(::core::stringify!(#fn_ident)) },
+    };
+
+    quote! {{
+        let __coco_parent = &(#ctx_arg);
+        #(#arg_binds)*
+        let __coco_memo_fp = ::cocoindex::mount::component_memo_fp(
+            ::core::module_path!(),
+            ::core::stringify!(#fn_ident),
+            #hash_path,
+            &( #(#fp_refs,)* ),
+        )?;
+        let __coco_key: ::std::string::String = #key_tokens;
+        __coco_parent.__use_mount_fp(
+            __coco_key,
+            ::core::option::Option::Some(__coco_memo_fp),
+            move |__coco_child| async move {
+                #path(&__coco_child, #(#arg_idents),*).await
+            },
+        )
+    }}
+    .into()
+}
+
+/// `mount_each!(items, |item| my_fn(ctx, item, a, b))` or
+/// `mount_each!(prefix, items, |item| my_fn(ctx, item, a, b))`.
+///
+/// One child component per `(key, value)` item (subpath `prefix/key`, prefix
+/// defaulting to the function name). The closure binds the item's **value**;
+/// inside the call, `ctx` → child scope, the bound `item` → that value, and any
+/// other arguments are captured extras that are fingerprinted (with the value)
+/// for each item's component-memo key.
+#[proc_macro]
+pub fn mount_each(input: TokenStream) -> TokenStream {
+    let parsed = parse_macro_input!(input with Punctuated::<Expr, Token![,]>::parse_terminated);
+    let elems: Vec<Expr> = parsed.into_iter().collect();
+    let (prefix_expr, items_expr, closure) = match elems.as_slice() {
+        [items, closure] => (None, items, closure),
+        [prefix, items, closure] => (Some(prefix), items, closure),
+        _ => {
+            return SynError::new(
+                Span::call_site(),
+                "mount_each! takes `items, |item| my_fn(ctx, item, ...)` \
+                 or `prefix, items, |item| my_fn(ctx, item, ...)`",
+            )
+            .to_compile_error()
+            .into();
+        }
+    };
+
+    let Expr::Closure(closure) = closure else {
+        return SynError::new_spanned(closure, "expected a closure `|item| my_fn(ctx, item, ...)`")
+            .to_compile_error()
+            .into();
+    };
+    if closure.inputs.len() != 1 {
+        return SynError::new_spanned(closure, "the closure must take exactly one item parameter")
+            .to_compile_error()
+            .into();
+    }
+    let item_ident = match &closure.inputs[0] {
+        Pat::Ident(pat) => pat.ident.clone(),
+        other => {
+            return SynError::new_spanned(other, "the closure parameter must be an identifier")
+                .to_compile_error()
+                .into();
+        }
+    };
+
+    let (path, args) = match parse_grouped_call(&closure.body) {
+        Ok(v) => v,
+        Err(e) => return e.to_compile_error().into(),
+    };
+    let fn_ident = path.segments.last().unwrap().ident.clone();
+    let hash_path = hash_const_path(&path);
+    let ctx_arg = &args[0];
+
+    // Classify each call argument: position 0 is the ctx; the argument equal to
+    // the closure's item ident is the per-item value; everything else is a
+    // captured extra (bound once, cloned per item).
+    let mut extra_binds = Vec::new();
+    let mut extra_idents = Vec::new();
+    let mut fp_elems = Vec::new(); // non-ctx args, in order, for the memo fingerprint
+    let mut body_args = Vec::new(); // all args, in order, for the body call
+    for (i, arg) in args.iter().enumerate() {
+        if i == 0 {
+            body_args.push(quote! { &__coco_child });
+            continue;
+        }
+        if expr_is_ident(arg, &item_ident) {
+            fp_elems.push(quote! { __coco_value });
+            body_args.push(quote! { __coco_value });
+        } else {
+            let id = format_ident!("__coco_extra{}", extra_idents.len());
+            extra_binds.push(quote! { let #id = #arg; });
+            fp_elems.push(quote! { & #id });
+            body_args.push(quote! { #id });
+            extra_idents.push(id);
+        }
+    }
+
+    let prefix_tokens = match prefix_expr {
+        Some(prefix) => quote! { ::core::option::Option::Some(#prefix) },
+        None => quote! { ::core::option::Option::Some(::core::stringify!(#fn_ident)) },
+    };
+
+    quote! {{
+        #(#extra_binds)*
+        let __coco_memo_of = {
+            #( let #extra_idents = ::core::clone::Clone::clone(&#extra_idents); )*
+            move |__coco_value: &_| ::cocoindex::mount::component_memo_fp(
+                ::core::module_path!(),
+                ::core::stringify!(#fn_ident),
+                #hash_path,
+                &( #(#fp_elems,)* ),
+            )
+            .map(::core::option::Option::Some)
+        };
+        let __coco_body = {
+            #( let #extra_idents = ::core::clone::Clone::clone(&#extra_idents); )*
+            move |__coco_child: ::cocoindex::Ctx, __coco_value| {
+                #( let #extra_idents = ::core::clone::Clone::clone(&#extra_idents); )*
+                async move { #path(#(#body_args),*).await }
+            }
+        };
+        (#ctx_arg).__mount_each_fp(#items_expr, #prefix_tokens, __coco_memo_of, __coco_body)
+    }}
+    .into()
+}
+
+/// Whether `expr` is exactly the identifier `ident` (a bare path with one
+/// segment), used to spot the `mount_each!` item-value argument.
+fn expr_is_ident(expr: &Expr, ident: &Ident) -> bool {
+    if let Expr::Path(path) = expr {
+        if path.qself.is_none() {
+            return path.path.is_ident(ident);
+        }
+    }
+    false
 }
 
 // ===========================================================================

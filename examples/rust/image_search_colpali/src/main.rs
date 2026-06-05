@@ -28,7 +28,6 @@ use std::sync::LazyLock;
 
 use cocoindex::prelude::*;
 use cocoindex::qdrant::{self, CollectionSchema, Distance, QdrantConnection};
-use cocoindex::walk;
 use serde::Deserialize;
 use serde_json::json;
 
@@ -51,9 +50,8 @@ static DB: LazyLock<ContextKey<QdrantConnection>> = LazyLock::new(|| {
         c.state_id().to_string()
     })
 });
-static COLPALI: LazyLock<ContextKey<ColpaliClient>> = LazyLock::new(|| {
-    ContextKey::new_with_state("colpali", |c: &ColpaliClient| c.url.clone())
-});
+static COLPALI: LazyLock<ContextKey<ColpaliClient>> =
+    LazyLock::new(|| ContextKey::new_with_state("colpali", |c: &ColpaliClient| c.url.clone()));
 
 /// HTTP client for an external ColPali inference service (see module docs).
 #[derive(Clone)]
@@ -118,8 +116,8 @@ struct PointData {
     filename: String,
 }
 
-#[cocoindex::function(memo)]
-async fn process_image(ctx: &Ctx, file: &FileEntry) -> Result<PointData> {
+#[cocoindex::function]
+async fn process_image(ctx: &Ctx, file: FileEntry) -> Result<PointData> {
     let filename = file.key();
     let bytes = file.content()?;
     let vectors = ctx.get_key(&COLPALI)?.embed_image(bytes).await?;
@@ -142,20 +140,14 @@ async fn app_main(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
     )
     .await?;
 
-    let files: Vec<FileEntry> = walk(&sourcedir, IMAGE_GLOBS)?;
+    let files = walk_items(&sourcedir, IMAGE_GLOBS)?;
     println!(
         "indexing {} image(s) from {}",
         files.len(),
         sourcedir.display()
     );
 
-    let points = ctx
-        .mount_each(
-            files,
-            |f| f.key(),
-            |child, file| async move { process_image(&child, &file).await },
-        )
-        .await?;
+    let points = mount_each!(files, |file| process_image(ctx, file)).await?;
 
     for p in &points {
         let payload = json!({ "filename": p.filename })

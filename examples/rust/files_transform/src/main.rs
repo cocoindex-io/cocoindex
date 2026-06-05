@@ -10,7 +10,7 @@ use cocoindex::prelude::*;
 use pulldown_cmark::{Options, Parser, html};
 use std::path::PathBuf;
 
-#[cocoindex::function(memo)]
+#[cocoindex::function]
 async fn render_markdown(_ctx: &Ctx, file: &FileEntry) -> Result<String> {
     let markdown = file.content_str()?;
     // GFM-leaning options, to track the Python example's MarkdownIt("gfm-like").
@@ -28,6 +28,21 @@ async fn render_markdown(_ctx: &Ctx, file: &FileEntry) -> Result<String> {
     let mut html_out = String::new();
     html::push_html(&mut html_out, parser);
     Ok(html_out)
+}
+
+/// Process one markdown file: render it and declare the HTML output.
+///
+/// Mounted as a processing component per file via `mount_each!`. As a component
+/// entry it carries the component-memo fast-path — when this logic and the
+/// file's content (and the target) are unchanged, the engine skips the whole
+/// component and replays the previous output, so unchanged files aren't
+/// re-rendered or re-written. `render_markdown` is logic-tracked, so editing it
+/// invalidates the cache.
+#[cocoindex::function]
+async fn process_file(ctx: &Ctx, file: FileEntry, target: DirTarget) -> Result<()> {
+    let html = render_markdown(ctx, &file).await?;
+    target.declare_file(ctx, &output_name_for(&file), html.as_bytes())?;
+    Ok(())
 }
 
 fn output_name_for(file: &FileEntry) -> String {
@@ -66,27 +81,16 @@ async fn main() -> Result<()> {
                 // the previous run and deletes outputs whose source disappeared.
                 let target = DirTarget::mount(&ctx, &output_dir)?;
                 // Recursive `**/*.md`, matching the Python example's
-                // `PatternFilePathMatcher(included_patterns=["**/*.md"])`.
-                // (Output names join the relative-path components with `__`, so
-                // nested files don't collide — see `output_name_for`.)
-                let files = cocoindex::fs::walk(&source_dir, &["**/*.md"])?;
+                // `PatternFilePathMatcher(included_patterns=["**/*.md"])`, as
+                // `(key, file)` pairs for `mount_each!`. (Output names join the
+                // relative-path components with `__`, so nested files don't
+                // collide — see `output_name_for`.)
+                let files = cocoindex::fs::walk_items(&source_dir, &["**/*.md"])?;
 
-                ctx.mount_each(files, |file| file.key(), {
-                    let target = target.clone();
-                    move |file_ctx, file| {
-                        let target = target.clone();
-                        async move {
-                            let html = render_markdown(&file_ctx, &file).await?;
-                            target.declare_file(
-                                &file_ctx,
-                                &output_name_for(&file),
-                                html.as_bytes(),
-                            )?;
-                            Ok(())
-                        }
-                    }
-                })
-                .await?;
+                // One processing component per file. `ctx` is the parent; the
+                // macro substitutes each child scope's `&Ctx`, and fingerprints
+                // `(file, target)` for the per-file component-memo fast-path.
+                mount_each!(files, |file| process_file(ctx, file, target)).await?;
 
                 Ok(())
             }

@@ -278,6 +278,16 @@ pub fn walk(dir: impl AsRef<Path>, patterns: &[&str]) -> Result<Vec<FileEntry>> 
     walk_internal(&FilePath::new(dir.as_ref()), true, &matcher)
 }
 
+/// Like [`walk`], but yields `(stable key, file)` pairs ready to feed to
+/// `mount_each!`, which expects `(key, value)` items (each file's
+/// [`FileEntry::key`] is its relative path).
+pub fn walk_items(dir: impl AsRef<Path>, patterns: &[&str]) -> Result<Vec<(String, FileEntry)>> {
+    Ok(walk(dir, patterns)?
+        .into_iter()
+        .map(|file| (file.key(), file))
+        .collect())
+}
+
 fn walk_internal(
     root: &FilePath,
     recursive: bool,
@@ -369,8 +379,12 @@ fn relative_path(root: &Path, canonical_root: &Path, path: &Path) -> Result<Path
 /// * unchanged files are skipped (no rewrite),
 /// * files declared in a previous run but **not** this run (e.g. their source
 ///   was deleted) are removed from disk.
-#[derive(Clone)]
+/// A directory target handle. As a `mount_each!` / `use_mount!` argument it
+/// fingerprints by its `dir` (its stable key) — the `provider` is a runtime
+/// handle, not part of the component-memo identity.
+#[derive(Clone, Serialize)]
 pub struct DirTarget {
+    #[serde(skip)]
     provider: TargetStateProvider<Vec<u8>>,
     dir: PathBuf,
 }

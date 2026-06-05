@@ -19,7 +19,6 @@ use cocoindex::ops::sentence_transformers::SentenceTransformerEmbedder;
 use cocoindex::ops::text::{RecursiveChunkConfig, RecursiveSplitter};
 use cocoindex::postgres;
 use cocoindex::prelude::*;
-use cocoindex::walk;
 use sqlx::Row;
 use sqlx::postgres::{PgPool, PgPoolOptions};
 
@@ -52,8 +51,8 @@ struct DocEmbedding {
     embedding: Vec<f32>,
 }
 
-#[cocoindex::function(memo)]
-async fn process_file(ctx: &Ctx, file: &FileEntry) -> Result<Vec<DocEmbedding>> {
+#[cocoindex::function]
+async fn process_file(ctx: &Ctx, file: FileEntry) -> Result<Vec<DocEmbedding>> {
     let filename = file.key();
     let text = file.content_str()?;
 
@@ -112,7 +111,8 @@ fn doc_embedding_schema() -> Result<postgres::TableSchema> {
 async fn app_main(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
     let db = ctx.get_key(&DB)?;
     let table =
-        postgres::mount_table_target(&ctx, db, TABLE, doc_embedding_schema()?, Some(PG_SCHEMA)).await?;
+        postgres::mount_table_target(&ctx, db, TABLE, doc_embedding_schema()?, Some(PG_SCHEMA))
+            .await?;
     table.declare_vector_index(
         &ctx,
         "embedding",
@@ -122,20 +122,14 @@ async fn app_main(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
         },
     )?;
 
-    let files: Vec<FileEntry> = walk(&sourcedir, &["**/*.md"])?;
+    let files = walk_items(&sourcedir, &["**/*.md"])?;
     println!(
         "indexing {} markdown file(s) from {}",
         files.len(),
         sourcedir.display()
     );
 
-    let rows_by_file = ctx
-        .mount_each(
-            files,
-            |f| f.key(),
-            |child, file| async move { process_file(&child, &file).await },
-        )
-        .await?;
+    let rows_by_file = mount_each!(files, |file| process_file(ctx, file)).await?;
 
     let mut count = 0usize;
     for rows in &rows_by_file {
@@ -148,7 +142,11 @@ async fn app_main(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
     Ok(())
 }
 
-async fn query_once(pool: &PgPool, embedder: &SentenceTransformerEmbedder, query: &str) -> Result<()> {
+async fn query_once(
+    pool: &PgPool,
+    embedder: &SentenceTransformerEmbedder,
+    query: &str,
+) -> Result<()> {
     let query_vec = vector_param(&embedder.embed(query).await?);
     let rows = sqlx::query(&format!(
         "SELECT filename, text, embedding <=> $1::vector AS distance \

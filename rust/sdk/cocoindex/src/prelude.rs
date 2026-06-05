@@ -13,7 +13,7 @@ pub use crate::file::{
 };
 pub use crate::fs::{
     DirTarget, DirTargetState, DirWalker, FileEntry, declare_dir_target, dir_target,
-    mount_dir_target, walk_dir,
+    mount_dir_target, walk, walk_dir, walk_items,
 };
 pub use crate::id::{
     IdGenerator, UuidGenerator, generate_id, generate_id_default, generate_uuid,
@@ -44,5 +44,7 @@ pub use crate::{
     App, ContextKey, DropHandle, PreviewAction, PreviewValue, Progress, StatsGroupHandle,
     StatsGroupOptions, UpdateHandle, UpdateOptions,
 };
+
+pub use crate::{function, mount_each, use_mount};
 
 pub use serde::{Deserialize, Serialize};

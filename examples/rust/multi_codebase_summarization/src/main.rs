@@ -8,11 +8,13 @@
 //! Aggregates per-file extractions into a project summary and outputs
 //! markdown documentation.
 //!
-//! Demonstrates full macro usage:
-//! - `#[cocoindex::function(memo)]` — per-file LLM extraction cached by fingerprint
-//! - `#[cocoindex::function(memo)]` — project aggregation cached by project fingerprint
-//! - `#[cocoindex::function]` — markdown generation
-//! - `ctx.mount_each(...)` — concurrent per-file processing
+//! Demonstrates the mount macros and memoization layering:
+//! - `use_mount!(key, process_project(ctx, …))` — one component per project,
+//!   skipped wholesale on the component-memo fast-path when unchanged
+//! - `mount_each!(files, |file| extract_file_info(ctx, file))` — concurrent
+//!   per-file extraction, each its own component (unchanged files skip the LLM)
+//! - `#[cocoindex::function(memo)]` — project aggregation cached by project
+//!   fingerprint (function-memo nested inside the project component)
 //! - `DirTarget` — declarative output file sync
 //!
 //! ## Usage
@@ -125,8 +127,8 @@ fn should_skip_python_file(file: &FileEntry) -> bool {
 
 /// Extract structured info from a single Python file via LLM.
 /// `memo` caches results by file fingerprint — unchanged files are skipped.
-#[cocoindex::function(memo)]
-async fn extract_file_info(_ctx: &Ctx, file: &FileEntry) -> Result<CodebaseInfo> {
+#[cocoindex::function]
+async fn extract_file_info(_ctx: &Ctx, file: FileEntry) -> Result<CodebaseInfo> {
     let content = file.content_str()?;
     let file_path = file.key();
 
@@ -307,6 +309,38 @@ async fn generate_markdown(
 }
 
 // ---------------------------------------------------------------------------
+// Per-project processing component
+// ---------------------------------------------------------------------------
+
+/// Process one project: extract per-file info (one child component per file),
+/// aggregate into a project summary, and write the markdown. Mounted as a
+/// per-project processing component — the component-memo fast-path skips
+/// projects whose files and this logic are unchanged.
+#[cocoindex::function]
+async fn process_project(
+    ctx: &Ctx,
+    project_name: String,
+    files: Vec<FileEntry>,
+    target: DirTarget,
+) -> Result<()> {
+    // Extract per-file info — one child component per file (unchanged files skip).
+    let file_infos: Vec<CodebaseInfo> =
+        mount_each!(files.into_iter().map(|f| (f.key(), f)), |file| {
+            extract_file_info(ctx, file)
+        })
+        .await?;
+
+    // Aggregate into a project summary (memoized — unchanged projects skip the LLM).
+    let project_info =
+        aggregate_project_info(ctx, project_name.clone(), file_infos.clone()).await?;
+
+    // Generate and write the markdown.
+    let markdown = generate_markdown(ctx, project_name.clone(), project_info, file_infos).await?;
+    target.declare_file(ctx, &format!("{project_name}.md"), markdown.as_bytes())?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
@@ -358,46 +392,10 @@ async fn main() -> Result<()> {
 
                 println!("Processing project: {project_name} ({} files)", files.len());
 
-                ctx.scope(&format!("project/{project_name}"), {
-                    let project_name = project_name.clone();
-                    let target = target.clone();
-                    move |project_ctx| async move {
-                        // Extract per-file info (memoized — unchanged files skip LLM)
-                        let file_infos: Vec<CodebaseInfo> = project_ctx
-                            .mount_each(
-                                files,
-                                |f| f.key(),
-                                |child_ctx, file| async move {
-                                    extract_file_info(&child_ctx, &file).await
-                                },
-                            )
-                            .await?;
-
-                        // Aggregate into project summary (memoized — unchanged projects skip LLM)
-                        let project_info = aggregate_project_info(
-                            &project_ctx,
-                            project_name.clone(),
-                            file_infos.clone(),
-                        )
-                        .await?;
-
-                        // Generate and write markdown
-                        let markdown = generate_markdown(
-                            &project_ctx,
-                            project_name.clone(),
-                            project_info,
-                            file_infos,
-                        )
-                        .await?;
-
-                        target.declare_file(
-                            &project_ctx,
-                            &format!("{project_name}.md"),
-                            markdown.as_bytes(),
-                        )?;
-                        Ok(())
-                    }
-                })
+                use_mount!(
+                    format!("project/{project_name}"),
+                    process_project(ctx, project_name.clone(), files, target.clone())
+                )
                 .await?;
                 println!("  Wrote {}/{project_name}.md", output_dir.display());
             }

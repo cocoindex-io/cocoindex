@@ -20,7 +20,6 @@ use std::sync::LazyLock;
 use cocoindex::ops::api::ApiTranscriber;
 use cocoindex::postgres;
 use cocoindex::prelude::*;
-use cocoindex::walk;
 
 const TABLE: &str = "audio_transcriptions";
 const PG_SCHEMA: &str = "coco_examples";
@@ -63,7 +62,7 @@ fn transcription_schema() -> Result<postgres::TableSchema> {
 /// Transcribe one audio file with OpenAI Whisper via the SDK's
 /// `ApiTranscriber`. Memoized so the expensive API call only runs when the
 /// file's content changes (or is first seen).
-#[cocoindex::function(memo)]
+#[cocoindex::function]
 async fn transcribe(_ctx: &Ctx, file: &FileEntry) -> Result<String> {
     let bytes = file.content()?;
     // Whisper sniffs the container from the upload filename's extension, so
@@ -83,37 +82,37 @@ async fn transcribe(_ctx: &Ctx, file: &FileEntry) -> Result<String> {
     transcriber.transcribe_bytes(bytes, name).await
 }
 
+/// Process one audio file: transcribe it and declare the output row. Mounted as
+/// a per-file processing component — the component-memo fast-path skips files
+/// whose content and this logic are unchanged, so the Whisper call is not
+/// repeated.
+#[cocoindex::function]
+async fn process_audio(ctx: &Ctx, file: FileEntry, table: postgres::TableTarget) -> Result<()> {
+    let text = transcribe(ctx, &file).await?;
+    table.declare_row(
+        ctx,
+        &AudioTranscription {
+            filename: file.key(),
+            text,
+        },
+    )?;
+    Ok(())
+}
+
 async fn app_main(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
     let db = ctx.get_key(&DB)?;
     let table =
         postgres::mount_table_target(&ctx, db, TABLE, transcription_schema()?, Some(PG_SCHEMA))
             .await?;
 
-    let files: Vec<FileEntry> = walk(&sourcedir, AUDIO_PATTERNS)?;
+    let files = walk_items(&sourcedir, AUDIO_PATTERNS)?;
     println!(
         "transcribing {} audio file(s) from {}",
         files.len(),
         sourcedir.display()
     );
 
-    ctx.mount_each(files, |f| f.key(), {
-        let table = table.clone();
-        move |child, file| {
-            let table = table.clone();
-            async move {
-                let text = transcribe(&child, &file).await?;
-                table.declare_row(
-                    &child,
-                    &AudioTranscription {
-                        filename: file.key(),
-                        text,
-                    },
-                )?;
-                Ok(())
-            }
-        }
-    })
-    .await?;
+    mount_each!(files, |file| process_audio(ctx, file, table)).await?;
 
     Ok(())
 }

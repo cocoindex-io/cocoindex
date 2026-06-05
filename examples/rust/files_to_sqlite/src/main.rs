@@ -47,8 +47,8 @@ fn files_schema() -> Result<sqlite::TableSchema> {
     )
 }
 
-/// Summarize one file. Memoized: unchanged files are skipped on re-runs.
-#[cocoindex::function(memo)]
+/// Summarize one file. Logic-tracked, so editing it invalidates cached files.
+#[cocoindex::function]
 async fn summarize(_ctx: &Ctx, file: &FileEntry) -> Result<FileRow> {
     let text = file.content_str()?;
     let word_count = text.split_whitespace().count() as i64;
@@ -58,6 +58,15 @@ async fn summarize(_ctx: &Ctx, file: &FileEntry) -> Result<FileRow> {
         word_count,
         first_line,
     })
+}
+
+/// Summarize one file and declare its row. Mounted as a per-file processing
+/// component — the component-memo fast-path skips unchanged files on re-runs.
+#[cocoindex::function]
+async fn process_file(ctx: &Ctx, file: FileEntry, table: sqlite::TableTarget) -> Result<()> {
+    let row = summarize(ctx, &file).await?;
+    table.declare_row(ctx, &row)?;
+    Ok(())
 }
 
 async fn index(source_dir: PathBuf, db_path: String) -> Result<()> {
@@ -75,19 +84,8 @@ async fn index(source_dir: PathBuf, db_path: String) -> Result<()> {
                 let db = ctx.get_key(&DB)?;
                 let table = sqlite::mount_table_target(&ctx, db, TABLE, files_schema()?).await?;
 
-                let files = cocoindex::fs::walk(&source_dir, &["**/*.md", "**/*.txt"])?;
-                ctx.mount_each(files, |file| file.key(), {
-                    let table = table.clone();
-                    move |file_ctx, file| {
-                        let table = table.clone();
-                        async move {
-                            let row = summarize(&file_ctx, &file).await?;
-                            table.declare_row(&file_ctx, &row)?;
-                            Ok(())
-                        }
-                    }
-                })
-                .await?;
+                let files = cocoindex::fs::walk_items(&source_dir, &["**/*.md", "**/*.txt"])?;
+                mount_each!(files, |file| process_file(ctx, file, table)).await?;
                 Ok(())
             }
         })
@@ -127,15 +125,18 @@ async fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("query") => {
-            let db_path = args.get(1).cloned().unwrap_or_else(|| "./files.db".to_string());
+            let db_path = args
+                .get(1)
+                .cloned()
+                .unwrap_or_else(|| "./files.db".to_string());
             query(db_path).await
         }
         _ => {
-            let source_dir = args
-                .get(1)
-                .map(PathBuf::from)
-                .unwrap_or_else(data_dir);
-            let db_path = args.get(2).cloned().unwrap_or_else(|| "./files.db".to_string());
+            let source_dir = args.get(1).map(PathBuf::from).unwrap_or_else(data_dir);
+            let db_path = args
+                .get(2)
+                .cloned()
+                .unwrap_or_else(|| "./files.db".to_string());
             index(source_dir, db_path).await
         }
     }

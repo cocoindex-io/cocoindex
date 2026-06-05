@@ -51,8 +51,8 @@ struct DocEmbeddingRow {
     embedding: Vec<f32>,
 }
 
-#[cocoindex::function(memo)]
-async fn process_file(ctx: &Ctx, file: &S3File) -> Result<Vec<DocEmbeddingRow>> {
+#[cocoindex::function]
+async fn process_file(ctx: &Ctx, file: S3File) -> Result<Vec<DocEmbeddingRow>> {
     let text = ctx.get_key(&S3)?.read_text(&file).await?;
     let splitter = RecursiveSplitter::new()?;
     let chunks = splitter.split_with(
@@ -117,15 +117,16 @@ async fn app_main(ctx: Ctx, bucket: String, prefix: String) -> Result<()> {
     )
     .list()
     .await?;
-    println!("indexing {} markdown file(s) from s3://{bucket}", files.len());
+    println!(
+        "indexing {} markdown file(s) from s3://{bucket}",
+        files.len()
+    );
 
-    let rows_by_file = ctx
-        .mount_each(
-            files,
-            |f| f.key(),
-            |child, file| async move { process_file(&child, &file).await },
-        )
-        .await?;
+    let rows_by_file = mount_each!(
+        files.into_iter().map(|f| (f.key(), f)),
+        |file| process_file(ctx, file)
+    )
+    .await?;
 
     let mut count = 0usize;
     for rows in &rows_by_file {
@@ -138,7 +139,11 @@ async fn app_main(ctx: Ctx, bucket: String, prefix: String) -> Result<()> {
     Ok(())
 }
 
-async fn query_once(pool: &PgPool, embedder: &SentenceTransformerEmbedder, query: &str) -> Result<()> {
+async fn query_once(
+    pool: &PgPool,
+    embedder: &SentenceTransformerEmbedder,
+    query: &str,
+) -> Result<()> {
     let query_vec = vector_param(&embedder.embed(query).await?);
     let rows = sqlx::query(&format!(
         "SELECT filename, text, embedding <=> $1::vector AS distance \

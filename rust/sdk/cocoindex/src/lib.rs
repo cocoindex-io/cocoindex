@@ -26,6 +26,7 @@ pub mod live_component;
 #[doc(hidden)]
 pub mod logic;
 pub mod memo;
+pub mod mount;
 #[cfg(feature = "neo4j")]
 pub mod neo4j;
 #[cfg(feature = "oci_object_storage")]
@@ -71,7 +72,7 @@ pub use file::{
 };
 pub use fs::{
     DirTarget, DirTargetState, DirWalker, FileEntry, declare_dir_target, dir_target,
-    mount_dir_target, walk, walk_dir,
+    mount_dir_target, walk, walk_dir, walk_items,
 };
 pub use id::{
     IdGenerator, UuidGenerator, generate_id, generate_id_default, generate_uuid,
@@ -106,7 +107,7 @@ pub use target_state::{
 };
 
 // Re-export proc macros
-pub use cocoindex_macros::{SchemaFields, function};
+pub use cocoindex_macros::{SchemaFields, function, mount_each, use_mount};
 pub use row_schema::{LogicalType, SchemaField, SchemaFields};
 
 // Re-exported so users can implement the async `LiveComponent` / `LiveMapFeed`

@@ -19,9 +19,8 @@ use std::sync::LazyLock;
 
 use cocoindex::ops::sentence_transformers::SentenceTransformerEmbedder;
 use cocoindex::ops::text::{RecursiveChunkConfig, RecursiveSplitter, detect_code_language};
-use cocoindex::prelude::*;
 use cocoindex::postgres;
-use cocoindex::walk;
+use cocoindex::prelude::*;
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
 use sqlx::postgres::{PgPool, PgPoolOptions};
@@ -67,8 +66,8 @@ struct CodeEmbeddingRow {
 /// Process one file into desired embedding rows. Memoized by the file's
 /// fingerprint, while target row declarations still happen in the active
 /// pipeline.
-#[cocoindex::function(memo)]
-async fn process_file(ctx: &Ctx, file: &FileEntry) -> Result<Vec<CodeEmbeddingRow>> {
+#[cocoindex::function]
+async fn process_file(ctx: &Ctx, file: FileEntry) -> Result<Vec<CodeEmbeddingRow>> {
     let filename = file.key();
     let text = file.content_str()?;
 
@@ -112,14 +111,9 @@ async fn process_file(ctx: &Ctx, file: &FileEntry) -> Result<Vec<CodeEmbeddingRo
 
 async fn app_main(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
     let db = ctx.get_key(&DB)?;
-    let table = postgres::mount_table_target(
-        &ctx,
-        db,
-        TABLE,
-        code_embedding_schema()?,
-        Some(PG_SCHEMA),
-    )
-    .await?;
+    let table =
+        postgres::mount_table_target(&ctx, db, TABLE, code_embedding_schema()?, Some(PG_SCHEMA))
+            .await?;
     table.declare_vector_index(
         &ctx,
         "embedding",
@@ -130,9 +124,9 @@ async fn app_main(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
         },
     )?;
 
-    let files: Vec<FileEntry> = walk(&sourcedir, INCLUDE_PATTERNS)?
+    let files: Vec<(String, FileEntry)> = walk_items(&sourcedir, INCLUDE_PATTERNS)?
         .into_iter()
-        .filter(|f| !is_excluded(&f.key()))
+        .filter(|(_, f)| !is_excluded(&f.key()))
         .collect();
     println!(
         "indexing {} files from {}",
@@ -140,13 +134,7 @@ async fn app_main(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
         sourcedir.display()
     );
 
-    let rows_by_file = ctx
-        .mount_each(
-            files,
-            |f| f.key(),
-            |child, file| async move { process_file(&child, &file).await },
-        )
-        .await?;
+    let rows_by_file = mount_each!(files, |file| process_file(ctx, file)).await?;
 
     let mut count = 0usize;
     for rows in &rows_by_file {
@@ -164,7 +152,11 @@ async fn app_main(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
 // Query
 // ---------------------------------------------------------------------------
 
-async fn query_once(pool: &PgPool, embedder: &SentenceTransformerEmbedder, query: &str) -> Result<()> {
+async fn query_once(
+    pool: &PgPool,
+    embedder: &SentenceTransformerEmbedder,
+    query: &str,
+) -> Result<()> {
     let query_vec = vector_param(&embedder.embed(query).await?);
 
     let rows = sqlx::query(&format!(

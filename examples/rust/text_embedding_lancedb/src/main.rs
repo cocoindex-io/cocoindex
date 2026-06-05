@@ -17,7 +17,6 @@ use cocoindex::lancedb::{self, ColumnDef, ColumnType, LanceDatabase, TableSchema
 use cocoindex::ops::sentence_transformers::SentenceTransformerEmbedder;
 use cocoindex::ops::text::{RecursiveChunkConfig, RecursiveSplitter};
 use cocoindex::prelude::*;
-use cocoindex::walk;
 
 const EMBED_MODEL: &str = "sentence-transformers/all-MiniLM-L6-v2";
 const EMBED_DIM: usize = 384;
@@ -47,8 +46,8 @@ struct DocEmbedding {
     embedding: Vec<f32>,
 }
 
-#[cocoindex::function(memo)]
-async fn process_file(ctx: &Ctx, file: &FileEntry) -> Result<Vec<DocEmbedding>> {
+#[cocoindex::function]
+async fn process_file(ctx: &Ctx, file: FileEntry) -> Result<Vec<DocEmbedding>> {
     let filename = file.key();
     let text = file.content_str()?;
 
@@ -105,20 +104,14 @@ async fn app_main(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
     let db = ctx.get_key(&DB)?;
     let table = lancedb::mount_table_target(&ctx, db, TABLE, doc_embedding_schema()?).await?;
 
-    let files: Vec<FileEntry> = walk(&sourcedir, &["**/*.md"])?;
+    let files = walk_items(&sourcedir, &["**/*.md"])?;
     println!(
         "indexing {} markdown file(s) from {}",
         files.len(),
         sourcedir.display()
     );
 
-    let rows_by_file = ctx
-        .mount_each(
-            files,
-            |f| f.key(),
-            |child, file| async move { process_file(&child, &file).await },
-        )
-        .await?;
+    let rows_by_file = mount_each!(files, |file| process_file(ctx, file)).await?;
 
     let mut count = 0usize;
     for rows in &rows_by_file {

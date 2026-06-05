@@ -183,13 +183,21 @@ fn postgres_column_def(field: &crate::row_schema::SchemaField) -> ColumnDef {
 
 /// A declarative Postgres table target — a handle to declare rows (and a vector
 /// index) on. See the [module docs](self).
-#[derive(Clone)]
+///
+/// As a `mount_each!` / `use_mount!` argument it fingerprints by its qualified
+/// table name (its stable key); the schema, managed-by flag, and runtime
+/// providers are not part of the component-memo identity.
+#[derive(Clone, Serialize)]
 pub struct TableTarget {
     pg_schema_name: Option<Arc<str>>,
     table_name: Arc<str>,
+    #[serde(skip)]
     table_schema: TableSchema,
+    #[serde(skip)]
     managed_by: ManagedBy,
+    #[serde(skip)]
     table_provider: TargetStateProvider<TableSpec>,
+    #[serde(skip)]
     rows: TargetStateProvider<RowState>,
 }
 

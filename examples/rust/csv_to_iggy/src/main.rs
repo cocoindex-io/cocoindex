@@ -44,8 +44,8 @@ fn topic_name() -> String {
 
 /// Parse one CSV file into `(message_key, json_value)` pairs. Memoized: a file
 /// whose content is unchanged since the last run is not re-parsed.
-#[cocoindex::function(memo)]
-async fn process_csv(_ctx: &Ctx, file: &FileEntry) -> Result<Vec<(String, String)>> {
+#[cocoindex::function]
+async fn process_csv(_ctx: &Ctx, file: FileEntry) -> Result<Vec<(String, String)>> {
     let text = file.content_str()?;
     let mut reader = csv::Reader::from_reader(text.as_bytes());
     let headers = reader
@@ -117,18 +117,13 @@ async fn index(producer: IggyProducer, stream: String, topic: String) -> Result<
                         format!("{{\"_deleted\":\"{key}\"}}").into_bytes()
                     })),
                 };
-                let target = iggy::mount_iggy_topic_target(&ctx, &producer, stream, topic, options)?;
+                let target =
+                    iggy::mount_iggy_topic_target(&ctx, &producer, stream, topic, options)?;
 
-                let files = cocoindex::fs::walk("./data", &["**/*.csv"])?;
+                let files = cocoindex::fs::walk_items("./data", &["**/*.csv"])?;
                 println!("found {} CSV file(s)", files.len());
 
-                let per_file = ctx
-                    .mount_each(
-                        files,
-                        |f| f.key(),
-                        |child, file| async move { process_csv(&child, &file).await },
-                    )
-                    .await?;
+                let per_file = mount_each!(files, |file| process_csv(ctx, file)).await?;
 
                 let mut declared = 0;
                 for messages in &per_file {
@@ -149,8 +144,8 @@ async fn index(producer: IggyProducer, stream: String, topic: String) -> Result<
 async fn consume(producer: &IggyProducer, stream: &str, topic: &str) -> Result<()> {
     let stream_id = Identifier::from_str_value(stream)
         .map_err(|e| Error::engine(format!("iggy stream id: {e}")))?;
-    let topic_id =
-        Identifier::from_str_value(topic).map_err(|e| Error::engine(format!("iggy topic id: {e}")))?;
+    let topic_id = Identifier::from_str_value(topic)
+        .map_err(|e| Error::engine(format!("iggy topic id: {e}")))?;
     let consumer = Consumer::new(
         Identifier::numeric(1).map_err(|e| Error::engine(format!("iggy consumer id: {e}")))?,
     );

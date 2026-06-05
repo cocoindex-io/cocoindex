@@ -33,7 +33,6 @@ use cocoindex::ops::sentence_transformers::SentenceTransformerEmbedder;
 use cocoindex::ops::text::{CustomLanguageConfig, RecursiveChunkConfig, RecursiveSplitter};
 use cocoindex::postgres;
 use cocoindex::prelude::*;
-use cocoindex::walk;
 use serde::de::DeserializeOwned;
 use sqlx::Row;
 use sqlx::postgres::{PgPool, PgPoolOptions};
@@ -230,7 +229,7 @@ async fn extract_metadata(llm: &LlmClient, first_page_text: &str) -> Result<Pape
     llm.json(system, &user).await
 }
 
-#[cocoindex::function(memo)]
+#[cocoindex::function]
 async fn process_file(ctx: &Ctx, file: &FileEntry) -> Result<ProcessedPaper> {
     let filename = file.key();
     let content = file.content()?;
@@ -292,7 +291,10 @@ async fn process_file(ctx: &Ctx, file: &FileEntry) -> Result<ProcessedPaper> {
     if !chunk_texts.is_empty() {
         let vecs = embedder.embed_batch(chunk_texts.clone()).await?;
         for (text, embedding) in chunk_texts.into_iter().zip(vecs) {
-            let id = uuid_gen.next_uuid(&ctx, &("abstract", &text)).await?.to_string();
+            let id = uuid_gen
+                .next_uuid(&ctx, &("abstract", &text))
+                .await?
+                .to_string();
             embeddings.push(MetadataEmbeddingRow {
                 id,
                 filename: filename.clone(),
@@ -363,11 +365,38 @@ fn embedding_schema() -> Result<postgres::TableSchema> {
 // Indexing
 // ---------------------------------------------------------------------------
 
+/// Process one paper and declare its metadata, author, and embedding rows.
+/// Mounted as a per-file processing component — the component-memo fast-path
+/// skips unchanged papers on re-runs.
+#[cocoindex::function]
+async fn index_paper(
+    ctx: &Ctx,
+    file: FileEntry,
+    metadata_table: postgres::TableTarget,
+    author_table: postgres::TableTarget,
+    embedding_table: postgres::TableTarget,
+) -> Result<()> {
+    let processed = process_file(ctx, &file).await?;
+    metadata_table.declare_row(ctx, &processed.metadata)?;
+    for row in &processed.authors {
+        author_table.declare_row(ctx, row)?;
+    }
+    for row in &processed.embeddings {
+        embedding_table.declare_row(ctx, row)?;
+    }
+    Ok(())
+}
+
 async fn app_main(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
     let db = ctx.get_key(&DB)?;
-    let metadata_table =
-        postgres::mount_table_target(&ctx, db, TABLE_METADATA, metadata_schema()?, Some(PG_SCHEMA))
-            .await?;
+    let metadata_table = postgres::mount_table_target(
+        &ctx,
+        db,
+        TABLE_METADATA,
+        metadata_schema()?,
+        Some(PG_SCHEMA),
+    )
+    .await?;
     let author_table = postgres::mount_table_target(
         &ctx,
         db,
@@ -385,34 +414,20 @@ async fn app_main(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
     )
     .await?;
 
-    let files: Vec<FileEntry> = walk(&sourcedir, &["**/*.pdf"])?;
+    let files = walk_items(&sourcedir, &["**/*.pdf"])?;
     println!(
         "indexing {} PDF(s) from {}",
         files.len(),
         sourcedir.display()
     );
 
-    ctx.mount_each(files, |f| f.key(), {
-        let metadata_table = metadata_table.clone();
-        let author_table = author_table.clone();
-        let embedding_table = embedding_table.clone();
-        move |child, file| {
-            let metadata_table = metadata_table.clone();
-            let author_table = author_table.clone();
-            let embedding_table = embedding_table.clone();
-            async move {
-                let processed = process_file(&child, &file).await?;
-                metadata_table.declare_row(&child, &processed.metadata)?;
-                for row in &processed.authors {
-                    author_table.declare_row(&child, row)?;
-                }
-                for row in &processed.embeddings {
-                    embedding_table.declare_row(&child, row)?;
-                }
-                Ok(())
-            }
-        }
-    })
+    mount_each!(files, |file| index_paper(
+        ctx,
+        file,
+        metadata_table,
+        author_table,
+        embedding_table
+    ))
     .await?;
 
     Ok(())
@@ -422,7 +437,11 @@ async fn app_main(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
 // Query demo (no vector index — sequential cosine scan, like Python)
 // ---------------------------------------------------------------------------
 
-async fn query_once(pool: &PgPool, embedder: &SentenceTransformerEmbedder, query: &str) -> Result<()> {
+async fn query_once(
+    pool: &PgPool,
+    embedder: &SentenceTransformerEmbedder,
+    query: &str,
+) -> Result<()> {
     let query_vec = vector_param(&embedder.embed(query).await?);
     let rows = sqlx::query(&format!(
         "SELECT filename, location, text, embedding <=> $1::vector AS distance \
