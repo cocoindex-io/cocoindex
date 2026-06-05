@@ -175,13 +175,15 @@ async fn main() -> Result<()> {
         .map_err(|e| Error::engine(format!("embedder load panicked: {e}")))??;
 
     let graph_for_report = graph.clone();
-    let app = App::builder("ConversationToKnowledge")
+    let app = Environment::builder()
         .db_path(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".cocoindex_db"))
         .provide_key(&clients::GRAPH, graph)
         .provide_key(&clients::LLM, llm)
         .provide_key(&clients::RESOLVER_LLM, resolver_llm)
         .provide_key(&clients::EMBEDDER, embedder)
         .build()
+        .await?
+        .app("ConversationToKnowledge")
         .await?;
 
     let stats = app.run(move |ctx| app_main(ctx, input_dir)).await?;

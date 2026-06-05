@@ -248,12 +248,14 @@ async fn main() -> Result<()> {
             let embedder = load_embedder().await?;
             let gdrive = load_gdrive_client()?;
             let root_folder_ids = root_folder_ids()?;
-            let app = App::builder("GoogleDriveTextEmbeddingRust")
+            let app = Environment::builder()
                 .db_path(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".cocoindex_db"))
                 .provide_key(&DB, db)
                 .provide_key(&EMBEDDER, embedder)
                 .provide_key(&GDRIVE, gdrive)
                 .build()
+                .await?
+                .app("GoogleDriveTextEmbeddingRust")
                 .await?;
             let stats = app.run(move |ctx| app_main(ctx, root_folder_ids)).await?;
             println!("{stats}");

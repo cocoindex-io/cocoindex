@@ -212,11 +212,13 @@ async fn main() -> Result<()> {
 
             let conn = QdrantConnection::connect(&qdrant_url()).await?;
             let colpali = ColpaliClient::new(colpali_url());
-            let app = App::builder("ImageSearchColpaliRust")
+            let app = Environment::builder()
                 .db_path(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".cocoindex_db"))
                 .provide_key(&DB, conn)
                 .provide_key(&COLPALI, colpali)
                 .build()
+                .await?
+                .app("ImageSearchColpaliRust")
                 .await?;
             let stats = app.run(move |ctx| app_main(ctx, dir)).await?;
             println!("{stats}");

@@ -3,7 +3,7 @@
 use std::sync::LazyLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use cocoindex::{App, ContextKey, Ctx, Result, postgres};
+use cocoindex::{App, ContextKey, Ctx, Environment, Result, postgres};
 use serde::{Deserialize, Serialize};
 use sqlx::Row as _;
 
@@ -169,10 +169,12 @@ async fn postgres_table_target_reconciles_rows_when_available() -> Result<()> {
         .map_err(|e| cocoindex::Error::engine(format!("postgres cleanup: {e}")))?;
 
     let tempdir = tempfile::tempdir().unwrap();
-    let app = App::builder("PostgresTargetE2ETest")
+    let app = Environment::builder()
         .db_path(tempdir.path().join(".cocoindex_db"))
         .provide_key(&PG, db.clone())
         .build()
+        .await?
+        .app("PostgresTargetE2ETest")
         .await?;
 
     app.run({
@@ -280,10 +282,12 @@ async fn postgres_sql_command_attachment_runs_setup_and_teardown_when_available(
         .map_err(|e| cocoindex::Error::engine(format!("postgres cleanup: {e}")))?;
 
     let tempdir = tempfile::tempdir().unwrap();
-    let app = App::builder("PostgresSqlCommandE2ETest")
+    let app = Environment::builder()
         .db_path(tempdir.path().join(".cocoindex_db"))
         .provide_key(&PG, db.clone())
         .build()
+        .await?
+        .app("PostgresSqlCommandE2ETest")
         .await?;
 
     // Declare the attachment → setup SQL creates the index.
@@ -387,10 +391,12 @@ async fn postgres_vector_index_target_reconciles_when_available() -> Result<()> 
         .map_err(|e| cocoindex::Error::engine(format!("postgres cleanup: {e}")))?;
 
     let tempdir = tempfile::tempdir().unwrap();
-    let app = App::builder("PostgresVectorIndexE2ETest")
+    let app = Environment::builder()
         .db_path(tempdir.path().join(".cocoindex_db"))
         .provide_key(&PG, db.clone())
         .build()
+        .await?
+        .app("PostgresVectorIndexE2ETest")
         .await?;
 
     app.run({
@@ -437,10 +443,12 @@ async fn postgres_strips_nul_from_text_when_available() -> Result<()> {
         .map_err(|e| cocoindex::Error::engine(format!("postgres cleanup: {e}")))?;
 
     let tempdir = tempfile::tempdir().unwrap();
-    let app = App::builder("PostgresNulE2ETest")
+    let app = Environment::builder()
         .db_path(tempdir.path().join(".cocoindex_db"))
         .provide_key(&PG, db.clone())
         .build()
+        .await?
+        .app("PostgresNulE2ETest")
         .await?;
 
     // A label containing a U+0000 NUL — Postgres `text` cannot store it, so it
@@ -541,10 +549,12 @@ async fn postgres_adds_and_drops_columns_when_available() -> Result<()> {
         .await
         .map_err(|e| cocoindex::Error::engine(format!("postgres cleanup: {e}")))?;
     let tempdir = tempfile::tempdir().unwrap();
-    let app = App::builder("PostgresEvolveE2ETest")
+    let app = Environment::builder()
         .db_path(tempdir.path().join(".cocoindex_db"))
         .provide_key(&PG, db.clone())
         .build()
+        .await?
+        .app("PostgresEvolveE2ETest")
         .await?;
 
     // v1: (id, label)
@@ -623,10 +633,12 @@ async fn postgres_column_drop_retries_after_failed_attempt_when_available() -> R
         .await
         .map_err(|e| cocoindex::Error::engine(format!("postgres cleanup: {e}")))?;
     let tempdir = tempfile::tempdir().unwrap();
-    let app = App::builder("PostgresDropRetryE2ETest")
+    let app = Environment::builder()
         .db_path(tempdir.path().join(".cocoindex_db"))
         .provide_key(&PG, db.clone())
         .build()
+        .await?
+        .app("PostgresDropRetryE2ETest")
         .await?;
 
     // v1: table with (id, label, extra).
@@ -749,10 +761,12 @@ async fn postgres_bytea_round_trips_byte_arrays_when_available() -> Result<()> {
         .map_err(|e| cocoindex::Error::engine(format!("postgres cleanup: {e}")))?;
 
     let tempdir = tempfile::tempdir().unwrap();
-    let app = App::builder("PostgresByteaTest")
+    let app = Environment::builder()
         .db_path(tempdir.path().join(".cocoindex_db"))
         .provide_key(&PG, db.clone())
         .build()
+        .await?
+        .app("PostgresByteaTest")
         .await?;
 
     app.run({
@@ -859,10 +873,12 @@ async fn postgres_schema_evolution_retype_and_pk_change_when_available() -> Resu
         .map_err(|e| cocoindex::Error::engine(format!("postgres cleanup: {e}")))?;
 
     let tempdir = tempfile::tempdir().unwrap();
-    let app = App::builder("PostgresEvoTest")
+    let app = Environment::builder()
         .db_path(tempdir.path().join(".cocoindex_db"))
         .provide_key(&PG, db.clone())
         .build()
+        .await?
+        .app("PostgresEvoTest")
         .await?;
 
     // v1: score is bigint.

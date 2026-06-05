@@ -71,10 +71,12 @@ async fn process_file(ctx: &Ctx, file: FileEntry, table: sqlite::TableTarget) ->
 
 async fn index(source_dir: PathBuf, db_path: String) -> Result<()> {
     let db = sqlite::Database::connect(&db_path).await?;
-    let app = cocoindex::App::builder("FilesToSqlite")
+    let app = cocoindex::Environment::builder()
         .db_path(".cocoindex_db")
         .provide_key(&DB, db)
         .build()
+        .await?
+        .app("FilesToSqlite")
         .await?;
 
     let stats = app

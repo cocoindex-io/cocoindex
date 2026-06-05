@@ -55,8 +55,8 @@ mod typemap;
 
 // Flat re-exports — the public API surface
 pub use app::{
-    App, AppBuilder, DropHandle, PreviewAction, PreviewValue, Progress, StatsGroupHandle,
-    StatsGroupOptions, UpdateHandle, UpdateOptions,
+    App, AppBuilder, DropHandle, Environment, EnvironmentBuilder, PreviewAction, PreviewValue,
+    Progress, StatsGroupHandle, StatsGroupOptions, UpdateHandle, UpdateOptions,
 };
 pub use batched::Batched;
 pub use ctx::{ContextKey, Ctx};

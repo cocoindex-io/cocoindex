@@ -14,7 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use cocoindex::amazon_s3::aws_sdk_s3::primitives::ByteStream;
 use cocoindex::amazon_s3::{self, ListOptions, S3Client, S3File};
 use cocoindex::file::PatternFilePathMatcher;
-use cocoindex::{App, FileLike, Result};
+use cocoindex::{App, Environment, FileLike, Result};
 
 /// Build a client against MinIO, or `None` to skip when `AWS_ENDPOINT_URL` is unset.
 async fn try_client() -> Option<S3Client> {
@@ -240,10 +240,12 @@ async fn s3_source_mount_each_pipeline_when_available() -> Result<()> {
     }
 
     let tempdir = tempfile::tempdir().unwrap();
-    let app = App::builder("S3PipelineTest")
+    let app = Environment::builder()
         .db_path(tempdir.path().join(".cocoindex_db"))
         .provide_key(&S3, client.clone())
         .build()
+        .await?
+        .app("S3PipelineTest")
         .await?;
 
     let bucket_for_run = bucket.clone();

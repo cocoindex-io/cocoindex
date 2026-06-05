@@ -233,16 +233,16 @@ async fn main() -> cocoindex::Result<()> {
     let profile = Arc::new(args.profile.clone());
     let sync_stats = Arc::new(Mutex::new(None::<OutputSyncStats>));
 
-    let app = App::builder(&format!(
-        "benchmark_{}_{}",
-        args.scenario.as_str(),
+    let app = Environment::builder(),
         args.profile.as_str()
     ))
     .db_path(&args.state)
     .provide(metrics.clone())
     .provide(profile.clone())
     .build()
-    .await?;
+    .await?.app(&format!(
+        "benchmark_{}_{}",
+        args.scenario.as_str().await?;
 
     let dataset = args.dataset.clone();
     let output = args.output.clone();

@@ -233,12 +233,14 @@ async fn main() -> Result<()> {
             let db = postgres::Database::connect(&database_url()).await?;
             let source_db = postgres::Database::connect(&source_database_url()).await?;
             let embedder = load_embedder().await?;
-            let app = App::builder("PostgresSourceRust")
+            let app = Environment::builder()
                 .db_path(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".cocoindex_db"))
                 .provide_key(&DB, db)
                 .provide_key(&SOURCE_DB, source_db)
                 .provide_key(&EMBEDDER, embedder)
                 .build()
+                .await?
+                .app("PostgresSourceRust")
                 .await?;
             let stats = app.run(app_main).await?;
             println!("{stats}");

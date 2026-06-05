@@ -141,7 +141,7 @@ mod tests {
     use serde::Serialize;
 
     use super::*;
-    use crate::{App, ContextKey};
+    use crate::{App, ContextKey, Environment};
 
     static GRAPH: LazyLock<ContextKey<Graph>> = LazyLock::new(|| ContextKey::new("neo4j_graph"));
 
@@ -269,10 +269,12 @@ mod tests {
             .ok();
 
         let dir = tempfile::tempdir().unwrap();
-        let app = App::builder("Neo4jTargetE2ETest")
+        let app = Environment::builder()
             .db_path(dir.path().join(".cocoindex_db"))
             .provide_key(&GRAPH, graph.clone())
             .build()
+            .await?
+            .app("Neo4jTargetE2ETest")
             .await?;
 
         run_people_graph(&app, person_label.clone(), relation_label.clone(), true).await?;

@@ -240,12 +240,14 @@ async fn main() -> Result<()> {
             let db = postgres::Database::connect(&database_url()).await?;
             let oci = OciClient::connect().await?;
             let embedder = load_embedder().await?;
-            let app = App::builder("OciObjectStorageEmbeddingRust")
+            let app = Environment::builder()
                 .db_path(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".cocoindex_db"))
                 .provide_key(&DB, db)
                 .provide_key(&OCI, oci)
                 .provide_key(&EMBEDDER, embedder)
                 .build()
+                .await?
+                .app("OciObjectStorageEmbeddingRust")
                 .await?;
             let stats = app
                 .run(move |ctx| app_main(ctx, namespace, bucket, prefix))

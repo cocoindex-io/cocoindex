@@ -9,7 +9,7 @@
 #![cfg(feature = "lancedb")]
 
 use cocoindex::lancedb::{self, ColumnDef, ColumnType, LanceDatabase, TableSchema};
-use cocoindex::{App, ContextKey, ManagedTargetOptions, Result};
+use cocoindex::{App, ContextKey, Environment, ManagedTargetOptions, Result};
 use serde::Serialize;
 use std::sync::LazyLock;
 
@@ -119,10 +119,13 @@ async fn lancedb_target_creates_upserts_searches_and_reconciles() -> Result<()> 
         let db = db.clone();
         let coco_db_path = coco_db_path.clone();
         async move {
-            let app = App::builder("LanceTargetTest")
+            let app = Environment::builder()
                 .db_path(&coco_db_path)
                 .provide_key(&DB, db)
                 .build()
+                .await
+                .unwrap()
+                .app("LanceTargetTest")
                 .await
                 .unwrap();
             app.run(move |ctx| {
@@ -207,10 +210,13 @@ async fn lancedb_target_creates_upserts_searches_and_reconciles() -> Result<()> 
         mk_v2(1, "alpha-updated", "first", [1.0, 0.0, 0.0]),
         mk_v2(2, "beta", "second", [0.0, 1.0, 0.0]),
     ];
-    let app = App::builder("LanceTargetTest")
+    let app = Environment::builder()
         .db_path(&coco_db_path_for_v2)
         .provide_key(&DB, db_for_v2)
         .build()
+        .await
+        .unwrap()
+        .app("LanceTargetTest")
         .await
         .unwrap();
     app.run(move |ctx| {
@@ -254,10 +260,12 @@ async fn lancedb_replays_unchanged_rows_after_destructive_schema_change() -> Res
         let coco_db_path = coco_db_path.clone();
         let rows = rows.clone();
         async move {
-            let app = App::builder("LanceTargetReplayRowsTest")
+            let app = Environment::builder()
                 .db_path(&coco_db_path)
                 .provide_key(&DB, db)
                 .build()
+                .await?
+                .app("LanceTargetReplayRowsTest")
                 .await?;
             app.run(move |ctx| {
                 let rows = rows.clone();
@@ -300,10 +308,12 @@ async fn lancedb_replaces_table_on_destructive_schema_change() -> Result<()> {
         let db = db.clone();
         let coco_db_path = coco_db_path.clone();
         async move {
-            let app = App::builder("LanceTargetReplaceTest")
+            let app = Environment::builder()
                 .db_path(&coco_db_path)
                 .provide_key(&DB, db)
                 .build()
+                .await?
+                .app("LanceTargetReplaceTest")
                 .await?;
             app.run(move |ctx| {
                 let rows = rows.clone();
@@ -364,10 +374,12 @@ async fn lancedb_user_managed_target_does_not_create_table() -> Result<()> {
     let tempdir = tempfile::tempdir().unwrap();
     let uri = tempdir.path().join("lancedb_data");
     let db = LanceDatabase::connect(uri.to_str().unwrap()).await?;
-    let app = App::builder("LanceUserManagedTargetTest")
+    let app = Environment::builder()
         .db_path(tempdir.path().join(".cocoindex_db"))
         .provide_key(&DB, db.clone())
         .build()
+        .await?
+        .app("LanceUserManagedTargetTest")
         .await?;
 
     app.run(move |ctx| async move {
@@ -426,10 +438,12 @@ async fn lancedb_adds_vector_column_additively() -> Result<()> {
 
     // v1: single vector column.
     {
-        let app = App::builder("LanceAddVecTest")
+        let app = Environment::builder()
             .db_path(&coco_db_path)
             .provide_key(&DB, db.clone())
             .build()
+            .await?
+            .app("LanceAddVecTest")
             .await?;
         app.run(move |ctx| async move {
             let db = ctx.get_key(&DB)?;
@@ -458,10 +472,12 @@ async fn lancedb_adds_vector_column_additively() -> Result<()> {
 
     // v2: add a second (nullable) vector column. Additive evolution.
     {
-        let app = App::builder("LanceAddVecTest")
+        let app = Environment::builder()
             .db_path(&coco_db_path)
             .provide_key(&DB, db.clone())
             .build()
+            .await?
+            .app("LanceAddVecTest")
             .await?;
         app.run(move |ctx| async move {
             let db = ctx.get_key(&DB)?;

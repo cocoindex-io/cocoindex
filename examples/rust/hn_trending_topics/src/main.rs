@@ -496,11 +496,13 @@ async fn main() -> Result<()> {
             let llm = LlmClient::new(
                 std::env::var("LLM_MODEL").unwrap_or_else(|_| "gpt-4o-mini".into()),
             )?;
-            let app = App::builder("HNTrendingTopics")
+            let app = Environment::builder()
                 .db_path(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".cocoindex_db"))
                 .provide_key(&PG, db)
                 .provide_key(&LLM, llm)
                 .build()
+                .await?
+                .app("HNTrendingTopics")
                 .await?;
             let stats = app.run(move |ctx| app_main(ctx, max_threads)).await?;
             println!("{stats}");
