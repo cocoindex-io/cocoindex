@@ -95,6 +95,11 @@ impl AppBuilder {
     /// Returns an error if the LMDB database environment fails to initialize
     /// (e.g., due to permissions, disk space, or a corrupted state directory).
     pub async fn build(self) -> Result<App> {
+        // Register every `#[coco::function]`'s logic fingerprint into the engine's
+        // logic set, so memo entries that depend on them validate correctly
+        // (see `crate::logic`). Idempotent across builds.
+        crate::logic::register_all_fn_logic();
+
         let db_path = self
             .db_path
             .unwrap_or_else(|| PathBuf::from(format!("./coco_state/{}/", self.name)));

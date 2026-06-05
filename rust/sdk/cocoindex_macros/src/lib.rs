@@ -395,6 +395,26 @@ pub fn function(attr: TokenStream, item: TokenStream) -> TokenStream {
     let fn_name = &func.sig.ident;
     let hash_const_name = format_ident!("__COCO_FN_HASH_{}", fn_name.to_string().to_uppercase());
 
+    // Register this function's logic fingerprint into a link-time slice. At
+    // app/environment startup the SDK drains the slice into the engine's logic
+    // set, so a memoized caller's stored `logic_deps` (which include the
+    // fingerprints of transitively-called `#[coco::function]`s) validate via
+    // `all_contained` instead of being perpetually treated as stale. The
+    // (module, name, code_hash) tuple must match `Ctx::__coco_tracked_fn`'s
+    // fingerprint computation. `linkme` is reached through the re-export so the
+    // user crate needs no direct dependency.
+    let logic_slice_name = format_ident!("__COCO_FN_LOGIC_{}", fn_name.to_string().to_uppercase());
+    let logic_registration = quote! {
+        #[::cocoindex::linkme::distributed_slice(::cocoindex::COCO_FN_LOGIC)]
+        #[linkme(crate = ::cocoindex::linkme)]
+        #[doc(hidden)]
+        static #logic_slice_name: ::cocoindex::FnLogicEntry = ::cocoindex::FnLogicEntry {
+            module: ::core::module_path!(),
+            name: ::core::stringify!(#fn_name),
+            code_hash: #code_hash,
+        };
+    };
+
     if !args.memo && !args.memo_key.is_empty() {
         return TokenStream::from(
             SynError::new(
@@ -473,6 +493,7 @@ pub fn function(attr: TokenStream, item: TokenStream) -> TokenStream {
         let expanded = quote! {
             #[doc(hidden)]
             pub const #hash_const_name: u64 = #code_hash;
+            #logic_registration
 
             #(#attrs)*
             #vis #sig {
@@ -548,6 +569,7 @@ pub fn function(attr: TokenStream, item: TokenStream) -> TokenStream {
         let expanded = quote! {
             #[doc(hidden)]
             pub const #hash_const_name: u64 = #code_hash;
+            #logic_registration
 
             #(#attrs)*
             #vis #sig {
@@ -593,6 +615,7 @@ pub fn function(attr: TokenStream, item: TokenStream) -> TokenStream {
         let expanded = quote! {
             #[doc(hidden)]
             pub const #hash_const_name: u64 = #code_hash;
+            #logic_registration
 
             #(#attrs)*
             #vis #sig {
