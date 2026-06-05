@@ -17,8 +17,11 @@ struct ParamInfo {
     is_str_ref: bool,
 }
 
-/// Parse an async fn and extract the ctx parameter name + non-ctx parameter info.
-fn parse_fn_params(func: &ItemFn) -> syn::Result<(syn::Ident, Vec<ParamInfo>)> {
+/// Parse an async fn and extract the optional `&Ctx` parameter name + non-ctx
+/// parameter info. A `&Ctx` parameter is not required: a ctx-free function (e.g.
+/// a batch implementation for `coco::Batched`) still gets a logic-hash const and
+/// registration, just no dependency-tracking wrapper.
+fn parse_fn_params_opt(func: &ItemFn) -> syn::Result<(Option<syn::Ident>, Vec<ParamInfo>)> {
     let mut ctx_ident = None;
     let mut params = Vec::new();
 
@@ -52,6 +55,13 @@ fn parse_fn_params(func: &ItemFn) -> syn::Result<(syn::Ident, Vec<ParamInfo>)> {
         });
     }
 
+    Ok((ctx_ident, params))
+}
+
+/// Like [`parse_fn_params_opt`], but requires a `&Ctx` parameter (memoized and
+/// component-entry functions need one).
+fn parse_fn_params(func: &ItemFn) -> syn::Result<(syn::Ident, Vec<ParamInfo>)> {
+    let (ctx_ident, params) = parse_fn_params_opt(func)?;
     let ctx_ident = ctx_ident.ok_or_else(|| {
         SynError::new(
             func.sig.ident.span(),
@@ -600,10 +610,12 @@ pub fn function(attr: TokenStream, item: TokenStream) -> TokenStream {
 
         expanded.into()
     } else {
-        // L0: change tracking only. The body still runs every time, but its
-        // logic fingerprint and nested context deps propagate to memoized
-        // callers, matching Python's `@coco.fn` without `memo=True`.
-        let (ctx_ident, _) = match parse_fn_params(&func) {
+        // L0: change tracking only. With a `&Ctx`, the body runs every time but
+        // its logic fingerprint and nested context deps propagate to memoized
+        // callers (Python's `@coco.fn` without `memo=True`). Without a `&Ctx`,
+        // the function is a pure logic-tracked helper — e.g. a batch impl for
+        // `coco::Batched` — that gets a logic-hash const + registration only.
+        let (ctx_opt, _) = match parse_fn_params_opt(&func) {
             Ok(params) => params,
             Err(err) => return TokenStream::from(err.to_compile_error()),
         };
@@ -612,22 +624,33 @@ pub fn function(attr: TokenStream, item: TokenStream) -> TokenStream {
         let attrs = &func.attrs;
         let body = &func.block;
 
-        let expanded = quote! {
-            #[doc(hidden)]
-            pub const #hash_const_name: u64 = #code_hash;
-            #logic_registration
+        let expanded = if let Some(ctx_ident) = ctx_opt {
+            quote! {
+                #[doc(hidden)]
+                pub const #hash_const_name: u64 = #code_hash;
+                #logic_registration
 
-            #(#attrs)*
-            #vis #sig {
-                #ctx_ident.__coco_tracked_fn(
-                    ::core::module_path!(),
-                    ::core::stringify!(#fn_name),
-                    #hash_const_name,
-                    move |__coco_scoped_ctx| async move {
-                        let #ctx_ident = &__coco_scoped_ctx;
-                        #body
-                    },
-                ).await
+                #(#attrs)*
+                #vis #sig {
+                    #ctx_ident.__coco_tracked_fn(
+                        ::core::module_path!(),
+                        ::core::stringify!(#fn_name),
+                        #hash_const_name,
+                        move |__coco_scoped_ctx| async move {
+                            let #ctx_ident = &__coco_scoped_ctx;
+                            #body
+                        },
+                    ).await
+                }
+            }
+        } else {
+            quote! {
+                #[doc(hidden)]
+                pub const #hash_const_name: u64 = #code_hash;
+                #logic_registration
+
+                #(#attrs)*
+                #vis #sig #body
             }
         };
 

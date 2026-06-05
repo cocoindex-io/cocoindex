@@ -1561,6 +1561,77 @@ async fn memo_with_function_dep_caches_when_unchanged() {
 }
 
 // ---------------------------------------------------------------------------
+// coco::Batched — single-value calls with per-item memoization + core batcher
+// ---------------------------------------------------------------------------
+
+mod batched_test {
+    use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static ITEMS_PROCESSED: AtomicUsize = AtomicUsize::new(0);
+
+    // A ctx-free `#[cocoindex::function]` batch impl: gets a logic-hash const and
+    // stays directly callable, but takes no `&Ctx`.
+    #[cocoindex::function]
+    async fn double_batch(items: Vec<i64>) -> cocoindex::Result<Vec<i64>> {
+        ITEMS_PROCESSED.fetch_add(items.len(), Ordering::SeqCst);
+        Ok(items.into_iter().map(|x| x * 2).collect())
+    }
+
+    // A second ctx-free batch impl, used only to assert ctx-free callability
+    // without touching `double_batch`'s shared counter (tests run concurrently).
+    #[cocoindex::function]
+    async fn triple_batch(items: Vec<i64>) -> cocoindex::Result<Vec<i64>> {
+        Ok(items.into_iter().map(|x| x * 3).collect())
+    }
+
+    #[tokio::test]
+    async fn batched_is_ctx_free_and_callable() {
+        assert_ne!(__COCO_FN_HASH_TRIPLE_BATCH, 0);
+        assert_eq!(triple_batch(vec![5]).await.unwrap(), vec![15]);
+    }
+
+    #[tokio::test]
+    async fn batched_memoizes_per_item() {
+        ITEMS_PROCESSED.store(0, Ordering::SeqCst);
+        let (app, _dir) = temp_app("batched_memoizes").await;
+        let batched = Arc::new(cocoindex::Batched::new(
+            double_batch,
+            __COCO_FN_HASH_DOUBLE_BATCH,
+        ));
+
+        // Run 1: items 1,2,3 are misses → processed by the batch impl.
+        let b = batched.clone();
+        app.update(move |ctx| async move {
+            for x in [1i64, 2, 3] {
+                assert_eq!(b.call(&ctx, x).await?, x * 2);
+            }
+            Ok(())
+        })
+        .await
+        .unwrap();
+        assert_eq!(ITEMS_PROCESSED.load(Ordering::SeqCst), 3);
+
+        // Run 2: same items → all memo hits, the batch impl must not reprocess.
+        let b = batched.clone();
+        app.update(move |ctx| async move {
+            for x in [1i64, 2, 3] {
+                assert_eq!(b.call(&ctx, x).await?, x * 2);
+            }
+            Ok(())
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            ITEMS_PROCESSED.load(Ordering::SeqCst),
+            3,
+            "run 2 should be all cache hits; batch impl must not reprocess items"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // #[cocoindex::function(memo)] macro
 // ---------------------------------------------------------------------------
 
