@@ -223,11 +223,13 @@ async fn main() -> Result<()> {
 
             let db = postgres::Database::connect(&database_url()).await?;
             let embedder = load_embedder().await?;
-            let app = App::builder("TextEmbeddingRust")
+            let app = Environment::builder()
                 .db_path(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".cocoindex_db"))
                 .provide_key(&DB, db)
                 .provide_key(&EMBEDDER, embedder)
                 .build()
+                .await?
+                .app("TextEmbeddingRust")
                 .await?;
             let stats = app.run(move |ctx| app_main(ctx, dir)).await?;
             println!("{stats}");

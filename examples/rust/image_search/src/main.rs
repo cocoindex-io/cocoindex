@@ -160,11 +160,13 @@ async fn main() -> Result<()> {
 
             let conn = QdrantConnection::connect(&qdrant_url()).await?;
             let embedder = ImageEmbedder::load(IMAGE_MODEL).await?;
-            let app = App::builder("ImageSearchRust")
+            let app = Environment::builder()
                 .db_path(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".cocoindex_db"))
                 .provide_key(&DB, conn)
                 .provide_key(&EMBEDDER, embedder)
                 .build()
+                .await?
+                .app("ImageSearchRust")
                 .await?;
             let stats = app.run(move |ctx| app_main(ctx, dir)).await?;
             println!("{stats}");

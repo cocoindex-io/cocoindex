@@ -9,7 +9,7 @@ use std::sync::LazyLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use cocoindex::{App, ContextKey, Ctx, Result, postgres};
+use cocoindex::{App, ContextKey, Ctx, Environment, Result, postgres};
 use serde::{Deserialize, Serialize};
 
 static DB: LazyLock<ContextKey<postgres::Database>> = LazyLock::new(|| {
@@ -218,10 +218,13 @@ async fn postgres_source_reads_processes_and_reconciles_when_available() -> Resu
             let out_schema_name = out_schema_name.clone();
             let db_path = db_path.clone();
             async move {
-                let app = App::builder("PgSourceTest")
+                let app = Environment::builder()
                     .db_path(&db_path)
                     .provide_key(&DB, db.clone())
                     .build()
+                    .await
+                    .unwrap()
+                    .app("PgSourceTest")
                     .await
                     .unwrap();
                 app.run(move |ctx| {

@@ -8,7 +8,7 @@
 
 use std::sync::LazyLock;
 
-use cocoindex::{App, ContextKey, Ctx, Result, sqlite};
+use cocoindex::{App, ContextKey, Ctx, Environment, Result, sqlite};
 use serde::Serialize;
 use serde_json::json;
 use sqlx::Row as _;
@@ -54,10 +54,13 @@ async fn temp_db() -> (sqlite::Database, tempfile::TempDir) {
 
 async fn build_app(db: &sqlite::Database) -> (App, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
-    let app = App::builder("SqliteTargetTest")
+    let app = Environment::builder()
         .db_path(dir.path().join(".cocoindex_db"))
         .provide_key(&DB, db.clone())
         .build()
+        .await
+        .unwrap()
+        .app("SqliteTargetTest")
         .await
         .unwrap();
     (app, dir)

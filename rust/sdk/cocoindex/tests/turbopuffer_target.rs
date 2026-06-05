@@ -12,7 +12,7 @@ use std::sync::LazyLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use cocoindex::turbopuffer::{self, DistanceMetric, NamespaceSchema, TurbopufferConnection};
-use cocoindex::{App, ContextKey, Result};
+use cocoindex::{App, ContextKey, Environment, Result};
 use serde_json::json;
 
 static DB: LazyLock<ContextKey<TurbopufferConnection>> = LazyLock::new(|| {
@@ -49,10 +49,13 @@ async fn turbopuffer_target_upserts_searches_and_reconciles() -> Result<()> {
         let namespace = namespace.clone();
         let coco_db = coco_db.clone();
         async move {
-            let app = App::builder("TurbopufferTargetTest")
+            let app = Environment::builder()
                 .db_path(&coco_db)
                 .provide_key(&DB, conn)
                 .build()
+                .await
+                .unwrap()
+                .app("TurbopufferTargetTest")
                 .await
                 .unwrap();
             app.run(move |ctx| {

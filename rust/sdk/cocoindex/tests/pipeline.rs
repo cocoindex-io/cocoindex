@@ -1,6 +1,8 @@
 //! Integration tests for the pipeline: App::update, memo::cached, sync API.
 
-use cocoindex::{App, ContextKey, IdGenerator, UuidGenerator, generate_id, generate_uuid};
+use cocoindex::{
+    App, ContextKey, Environment, IdGenerator, UuidGenerator, generate_id, generate_uuid,
+};
 use tokio::time::{Duration, sleep};
 
 /// Helper: create an App with a temp LMDB directory (async tests).
@@ -66,10 +68,12 @@ fn update_blocking_provide_and_get() {
     }
 
     let dir = tempfile::tempdir().unwrap();
-    let app = App::builder("sync_provide")
+    let app = Environment::builder()
         .db_path(dir.path().join("lmdb"))
         .provide(Config { value: 42 })
         .build_blocking()
+        .unwrap()
+        .app_blocking("sync_provide")
         .unwrap();
 
     app.update_blocking(|ctx| async move {
@@ -443,10 +447,13 @@ async fn named_context_key_accepts_non_serializable_resource() {
 
     let key = ContextKey::<Resource>::new("pipeline/non_serializable_resource");
     let dir = tempfile::tempdir().unwrap();
-    let app = App::builder("named_context_resource")
+    let app = Environment::builder()
         .db_path(dir.path().join("lmdb"))
         .provide_key(&key, Resource { value: 123 })
         .build()
+        .await
+        .unwrap()
+        .app("named_context_resource")
         .await
         .unwrap();
 
@@ -491,10 +498,13 @@ async fn detect_change_context_key_invalidates_memo() {
     let dir = tempfile::tempdir().unwrap();
     let call_count = Arc::new(AtomicUsize::new(0));
 
-    let app = App::builder("context_change_invalidates_memo")
+    let app = Environment::builder()
         .db_path(dir.path().join("lmdb"))
         .provide_key(&key, "v1".to_string())
         .build()
+        .await
+        .unwrap()
+        .app("context_change_invalidates_memo")
         .await
         .unwrap();
     let count = call_count.clone();
@@ -516,10 +526,13 @@ async fn detect_change_context_key_invalidates_memo() {
     .unwrap();
     drop(app);
 
-    let app = App::builder("context_change_invalidates_memo")
+    let app = Environment::builder()
         .db_path(dir.path().join("lmdb"))
         .provide_key(&key, "v2".to_string())
         .build()
+        .await
+        .unwrap()
+        .app("context_change_invalidates_memo")
         .await
         .unwrap();
     let count = call_count.clone();
@@ -552,10 +565,13 @@ async fn detect_change_context_key_read_outside_memo_invalidates_component() {
     let dir = tempfile::tempdir().unwrap();
     let call_count = Arc::new(AtomicUsize::new(0));
 
-    let app = App::builder("context_change_component")
+    let app = Environment::builder()
         .db_path(dir.path().join("lmdb"))
         .provide_key(&key, "v1".to_string())
         .build()
+        .await
+        .unwrap()
+        .app("context_change_component")
         .await
         .unwrap();
     let count = call_count.clone();
@@ -570,10 +586,13 @@ async fn detect_change_context_key_read_outside_memo_invalidates_component() {
     .unwrap();
     drop(app);
 
-    let app = App::builder("context_change_component")
+    let app = Environment::builder()
         .db_path(dir.path().join("lmdb"))
         .provide_key(&key, "v2".to_string())
         .build()
+        .await
+        .unwrap()
+        .app("context_change_component")
         .await
         .unwrap();
     let count = call_count.clone();
@@ -599,10 +618,13 @@ async fn no_detect_change_context_key_does_not_invalidate_memo() {
     let dir = tempfile::tempdir().unwrap();
     let call_count = Arc::new(AtomicUsize::new(0));
 
-    let app = App::builder("context_no_change_does_not_invalidate_memo")
+    let app = Environment::builder()
         .db_path(dir.path().join("lmdb"))
         .provide_key(&key, "v1".to_string())
         .build()
+        .await
+        .unwrap()
+        .app("context_no_change_does_not_invalidate_memo")
         .await
         .unwrap();
     let count = call_count.clone();
@@ -624,10 +646,13 @@ async fn no_detect_change_context_key_does_not_invalidate_memo() {
     .unwrap();
     drop(app);
 
-    let app = App::builder("context_no_change_does_not_invalidate_memo")
+    let app = Environment::builder()
         .db_path(dir.path().join("lmdb"))
         .provide_key(&key, "v2".to_string())
         .build()
+        .await
+        .unwrap()
+        .app("context_no_change_does_not_invalidate_memo")
         .await
         .unwrap();
     let count = call_count.clone();
@@ -682,10 +707,13 @@ async fn state_fn_context_key_invalidates_on_state_change_only() {
         tag: &'static str,
         call_count: std::sync::Arc<AtomicUsize>,
     ) -> u64 {
-        let app = App::builder("state_fn_context_key")
+        let app = Environment::builder()
             .db_path(path)
             .provide_key(&key, Resource { version, _tag: tag })
             .build()
+            .await
+            .unwrap()
+            .app("state_fn_context_key")
             .await
             .unwrap();
         let count = call_count.clone();
@@ -766,11 +794,14 @@ async fn concurrent_detect_change_keys_invalidate_independently() {
         a_calls: Arc<AtomicUsize>,
         b_calls: Arc<AtomicUsize>,
     ) -> String {
-        let app = App::builder("concurrent_detect_change")
+        let app = Environment::builder()
             .db_path(path)
             .provide_key(&key_a, a_val.to_string())
             .provide_key(&key_b, b_val.to_string())
             .build()
+            .await
+            .unwrap()
+            .app("concurrent_detect_change")
             .await
             .unwrap();
         app.update(move |ctx| async move {
@@ -1433,10 +1464,13 @@ async fn bare_function_context_key_invalidates_manual_memo_callers() {
     let dir = tempfile::tempdir().unwrap();
     let call_count = Arc::new(AtomicUsize::new(0));
 
-    let app = App::builder("bare_context_key_invalidates_manual_memo")
+    let app = Environment::builder()
         .db_path(dir.path().join("lmdb"))
         .provide_key(&key, "v1".to_string())
         .build()
+        .await
+        .unwrap()
+        .app("bare_context_key_invalidates_manual_memo")
         .await
         .unwrap();
     let count = call_count.clone();
@@ -1458,10 +1492,13 @@ async fn bare_function_context_key_invalidates_manual_memo_callers() {
     .unwrap();
     drop(app);
 
-    let app = App::builder("bare_context_key_invalidates_manual_memo")
+    let app = Environment::builder()
         .db_path(dir.path().join("lmdb"))
         .provide_key(&key, "v2".to_string())
         .build()
+        .await
+        .unwrap()
+        .app("bare_context_key_invalidates_manual_memo")
         .await
         .unwrap();
     let count = call_count.clone();
@@ -1787,10 +1824,13 @@ mod memo_test_file_state {
 
         let calls = Arc::new(AtomicUsize::new(0));
         let dir = tempfile::tempdir().unwrap();
-        let app = App::builder("file_memo_state_reuses_same_content")
+        let app = Environment::builder()
             .db_path(dir.path().join("lmdb"))
             .provide_key(calls_key(), calls.clone())
             .build()
+            .await
+            .unwrap()
+            .app("file_memo_state_reuses_same_content")
             .await
             .unwrap();
 
@@ -1888,10 +1928,13 @@ mod function_macro_identity_tests {
     async fn identical_body_functions_do_not_share_memo_entries() {
         let dir = tempfile::tempdir().unwrap();
         let calls = Arc::new(AtomicUsize::new(0));
-        let app = cocoindex::App::builder("function_identity_memo")
+        let app = cocoindex::Environment::builder()
             .db_path(dir.path().join("lmdb"))
             .provide_key(calls_key(), calls.clone())
             .build()
+            .await
+            .unwrap()
+            .app("function_identity_memo")
             .await
             .unwrap();
 
@@ -1940,10 +1983,13 @@ mod function_macro_memo_key_tests {
     async fn memo_key_transform_and_skip_for_function_macro() {
         let dir = tempfile::tempdir().unwrap();
         let calls = Arc::new(AtomicUsize::new(0));
-        let app = cocoindex::App::builder("function_macro_memo_key")
+        let app = cocoindex::Environment::builder()
             .db_path(dir.path().join("lmdb"))
             .provide_key(calls_key(), calls.clone())
             .build()
+            .await
+            .unwrap()
+            .app("function_macro_memo_key")
             .await
             .unwrap();
 
@@ -2597,10 +2643,13 @@ mod mock_bare {
     async fn bare_calls_api_every_time() {
         let api = MockApi::new();
         let dir = tempfile::tempdir().unwrap();
-        let app = cocoindex::App::builder("mock_bare")
+        let app = cocoindex::Environment::builder()
             .db_path(dir.path().join("lmdb"))
             .provide(api.clone())
             .build()
+            .await
+            .unwrap()
+            .app("mock_bare")
             .await
             .unwrap();
 
@@ -2653,10 +2702,13 @@ mod mock_memo {
     async fn memo_caches_on_second_run() {
         let api = MockApi::new();
         let dir = tempfile::tempdir().unwrap();
-        let app = cocoindex::App::builder("mock_memo")
+        let app = cocoindex::Environment::builder()
             .db_path(dir.path().join("lmdb"))
             .provide(api.clone())
             .build()
+            .await
+            .unwrap()
+            .app("mock_memo")
             .await
             .unwrap();
 

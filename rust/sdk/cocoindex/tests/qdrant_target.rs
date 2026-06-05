@@ -13,7 +13,7 @@ use std::sync::LazyLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use cocoindex::qdrant::{self, CollectionSchema, Distance, QdrantConnection};
-use cocoindex::{App, ContextKey, Result};
+use cocoindex::{App, ContextKey, Environment, Result};
 use serde_json::json;
 
 static DB: LazyLock<ContextKey<QdrantConnection>> = LazyLock::new(|| {
@@ -52,10 +52,13 @@ async fn qdrant_target_creates_upserts_searches_and_reconciles() -> Result<()> {
         let collection = collection.clone();
         let coco_db = coco_db.clone();
         async move {
-            let app = App::builder("QdrantTargetTest")
+            let app = Environment::builder()
                 .db_path(&coco_db)
                 .provide_key(&DB, conn)
                 .build()
+                .await
+                .unwrap()
+                .app("QdrantTargetTest")
                 .await
                 .unwrap();
             app.run(move |ctx| {
@@ -177,10 +180,13 @@ async fn qdrant_target_supports_uuid_point_ids() -> Result<()> {
         let collection = collection.clone();
         let coco_db = coco_db.clone();
         async move {
-            let app = App::builder("QdrantUuidTest")
+            let app = Environment::builder()
                 .db_path(&coco_db)
                 .provide_key(&DB, conn)
                 .build()
+                .await
+                .unwrap()
+                .app("QdrantUuidTest")
                 .await
                 .unwrap();
             app.run(move |ctx| {

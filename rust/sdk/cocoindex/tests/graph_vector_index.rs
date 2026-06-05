@@ -25,7 +25,7 @@ fn nonce() -> u128 {
 #[tokio::test]
 async fn neo4j_vector_index_create_then_drop_when_available() {
     use cocoindex::neo4j::{self, ColumnDef, TableSchema, VectorMetric};
-    use cocoindex::{App, ContextKey, Result};
+    use cocoindex::{App, ContextKey, Environment, Result};
     use std::sync::LazyLock;
 
     static G: LazyLock<ContextKey<neo4j::Graph>> =
@@ -42,10 +42,13 @@ async fn neo4j_vector_index_create_then_drop_when_available() {
 
     let label = format!("VecDoc{}", nonce());
     let tmp = tempfile::tempdir().unwrap();
-    let app = App::builder("Neo4jVectorIndex")
+    let app = Environment::builder()
         .db_path(tmp.path().join("db"))
         .provide_key(&G, graph)
         .build()
+        .await
+        .unwrap()
+        .app("Neo4jVectorIndex")
         .await
         .unwrap();
 
@@ -107,7 +110,7 @@ async fn neo4j_vector_index_create_then_drop_when_available() {
 #[tokio::test]
 async fn falkordb_vector_index_create_then_drop_when_available() {
     use cocoindex::falkordb::{self, ColumnDef, TableSchema, VectorMetric};
-    use cocoindex::{App, ContextKey, Result};
+    use cocoindex::{App, ContextKey, Environment, Result};
     use std::sync::LazyLock;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -129,10 +132,13 @@ async fn falkordb_vector_index_create_then_drop_when_available() {
     };
 
     let tmp = tempfile::tempdir().unwrap();
-    let app = App::builder("FalkorDbVectorIndex")
+    let app = Environment::builder()
         .db_path(tmp.path().join("db"))
         .provide_key(&G, graph)
         .build()
+        .await
+        .unwrap()
+        .app("FalkorDbVectorIndex")
         .await
         .unwrap();
 

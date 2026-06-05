@@ -276,11 +276,13 @@ async fn main() -> Result<()> {
 
             let db = connect_target_db().await?;
             let embedder = load_embedder().await?;
-            let app = App::builder("CodeEmbeddingRust")
+            let app = Environment::builder()
                 .db_path(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".cocoindex_db"))
                 .provide_key(&DB, db)
                 .provide_key(&EMBEDDER, embedder)
                 .build()
+                .await?
+                .app("CodeEmbeddingRust")
                 .await?;
             let stats = app.run(move |ctx| app_main(ctx, dir)).await?;
             println!("{stats}");

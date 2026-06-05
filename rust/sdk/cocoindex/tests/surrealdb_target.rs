@@ -29,10 +29,13 @@ async fn surrealdb_targets_reconcile_records_and_relations_when_available() {
     };
 
     let dir = tempfile::tempdir().unwrap();
-    let app = App::builder("surrealdb_target_smoke")
+    let app = Environment::builder()
         .db_path(dir.path().join("lmdb"))
         .provide_key(&GRAPH, graph.clone())
         .build()
+        .await
+        .unwrap()
+        .app("surrealdb_target_smoke")
         .await
         .unwrap();
 
@@ -58,10 +61,13 @@ async fn surrealdb_targets_e2e_conversation_graph_write_when_available() {
     };
 
     let dir = tempfile::tempdir().unwrap();
-    let app = App::builder("surrealdb_target_e2e")
+    let app = Environment::builder()
         .db_path(dir.path().join("lmdb"))
         .provide_key(&GRAPH, graph.clone())
         .build()
+        .await
+        .unwrap()
+        .app("surrealdb_target_e2e")
         .await
         .unwrap();
 
@@ -248,10 +254,13 @@ async fn surrealdb_declare_row_derives_id_from_row_when_available() {
 
 async fn temp_app(graph: &Graph, name: &str) -> (App, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
-    let app = App::builder(name)
+    let app = Environment::builder()
         .db_path(dir.path().join("lmdb"))
         .provide_key(&GRAPH, graph.clone())
         .build()
+        .await
+        .unwrap()
+        .app(name)
         .await
         .unwrap();
     (app, dir)

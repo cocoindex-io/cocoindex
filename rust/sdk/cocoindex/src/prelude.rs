@@ -41,8 +41,8 @@ pub use crate::target_state::{
     register_root_target_states_provider,
 };
 pub use crate::{
-    App, ContextKey, DropHandle, PreviewAction, PreviewValue, Progress, StatsGroupHandle,
-    StatsGroupOptions, UpdateHandle, UpdateOptions,
+    App, ContextKey, DropHandle, Environment, EnvironmentBuilder, PreviewAction, PreviewValue,
+    Progress, StatsGroupHandle, StatsGroupOptions, UpdateHandle, UpdateOptions,
 };
 
 pub use crate::{function, mount_each, use_mount};

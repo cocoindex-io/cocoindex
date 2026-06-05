@@ -129,7 +129,7 @@ mod tests {
     use serde::Serialize;
 
     use super::*;
-    use crate::{App, ContextKey};
+    use crate::{App, ContextKey, Environment};
 
     static GRAPH: LazyLock<ContextKey<Graph>> = LazyLock::new(|| ContextKey::new("falkordb_graph"));
 
@@ -241,10 +241,12 @@ mod tests {
         let person_label = format!("Person_{nonce}");
         let relation_label = format!("KNOWS_{nonce}");
         let dir = tempfile::tempdir().unwrap();
-        let app = App::builder("FalkorDBTargetE2ETest")
+        let app = Environment::builder()
             .db_path(dir.path().join(".cocoindex_db"))
             .provide_key(&GRAPH, graph.clone())
             .build()
+            .await?
+            .app("FalkorDBTargetE2ETest")
             .await?;
 
         run_people_graph(&app, person_label.clone(), relation_label.clone(), true).await?;

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use cocoindex_core::engine::app::{App as CoreApp, AppOpHandle, AppUpdateOptions};
-use cocoindex_core::engine::environment::{Environment, EnvironmentSettings};
+use cocoindex_core::engine::environment::{Environment as CoreEnvironment, EnvironmentSettings};
 use cocoindex_core::engine::progress_display::{ProgressDisplayOptions, show_progress};
 use cocoindex_core::engine::stats::{ProcessingStats, TERMINATED_VERSION};
 use cocoindex_core::engine::target_state::TargetStateProviderRegistry;
@@ -21,11 +21,84 @@ use crate::stats::RunStats;
 use crate::typemap::TypeMap;
 
 // ---------------------------------------------------------------------------
-// AppBuilder
+// Environment — the home for provided resources + LMDB settings
 // ---------------------------------------------------------------------------
 
-pub struct AppBuilder {
-    name: String,
+/// A CocoIndex environment: the LMDB store plus the resources shared with every
+/// app (and target sink) built from it. Build one with [`Environment::builder`],
+/// then create apps with [`Environment::app`]. Multiple environments (separate
+/// `db_path`s) can coexist for multi-tenancy or test isolation.
+///
+/// # Examples
+///
+/// ```no_run
+/// # use cocoindex::Environment;
+/// # async fn run() -> cocoindex::error::Result<()> {
+/// let env = Environment::builder()
+///     .db_path("./.cocoindex")
+///     .provide(String::from("shared resource"))
+///     .build()
+///     .await?;
+/// let app = env.app("MyApp").await?;
+/// # Ok(())
+/// # }
+/// ```
+#[derive(Clone)]
+pub struct Environment {
+    inner: Arc<EnvironmentInner>,
+}
+
+pub(crate) struct EnvironmentInner {
+    core_env: CoreEnvironment<RustProfile>,
+    state: Arc<TypeMap>,
+    context: Arc<ContextStore>,
+    max_inflight_components: Option<usize>,
+}
+
+impl Environment {
+    /// Start building an environment.
+    pub fn builder() -> EnvironmentBuilder {
+        EnvironmentBuilder::new()
+    }
+
+    /// Create an app in this environment. Multiple apps may share one
+    /// environment — each `name` is its own LMDB namespace and they share the
+    /// environment's provided resources.
+    ///
+    /// # Errors
+    /// Returns an error if the app's state store cannot be created.
+    pub async fn app(&self, name: &str) -> Result<App> {
+        let core_app = CoreApp::new(
+            name,
+            self.inner.core_env.clone(),
+            self.inner.max_inflight_components,
+        )
+        .await
+        .map_err(|e| Error::engine(format!("failed to create app: {e}")))?;
+
+        Ok(App {
+            inner: Arc::new(AppInner {
+                name: name.to_owned(),
+                core_app,
+                state: self.inner.state.clone(),
+                context: self.inner.context.clone(),
+            }),
+        })
+    }
+
+    /// Create an app in this environment (blocking). Convenience for sync
+    /// callers — creates a tokio runtime internally and awaits [`Self::app`].
+    pub fn app_blocking(&self, name: &str) -> Result<App> {
+        let rt = tokio::runtime::Runtime::new()
+            .map_err(|e| Error::engine(format!("failed to create tokio runtime: {e}")))?;
+        rt.block_on(self.app(name))
+    }
+}
+
+/// Builder for [`Environment`]. Provided resources, the LMDB `db_path`, and
+/// other engine settings live here — apps are created from a built environment
+/// via [`Environment::app`].
+pub struct EnvironmentBuilder {
     db_path: Option<PathBuf>,
     lmdb_max_dbs: u32,
     lmdb_map_size: usize,
@@ -34,8 +107,19 @@ pub struct AppBuilder {
     context: ContextStore,
 }
 
-impl AppBuilder {
-    /// Set the LMDB database directory. Default: `./coco_state/{name}/`.
+impl EnvironmentBuilder {
+    fn new() -> Self {
+        Self {
+            db_path: None,
+            lmdb_max_dbs: 1024,
+            lmdb_map_size: 0x1_0000_0000,
+            max_inflight_components: None,
+            state: TypeMap::new(),
+            context: ContextStore::default(),
+        }
+    }
+
+    /// Set the LMDB database directory. Default: `./coco_state`.
     pub fn db_path(mut self, path: impl Into<PathBuf>) -> Self {
         self.db_path = Some(path.into());
         self
@@ -53,7 +137,7 @@ impl AppBuilder {
         self
     }
 
-    /// Limit the number of concurrently processing components.
+    /// Limit the number of concurrently processing components (per app).
     pub fn max_inflight_components(mut self, value: usize) -> Self {
         self.max_inflight_components = Some(value);
         self
@@ -63,11 +147,11 @@ impl AppBuilder {
     /// The type IS the key — each type can only be provided once.
     ///
     /// # Panics
-    /// Panics if a value of type `T` has already been provided for this app.
+    /// Panics if a value of type `T` has already been provided.
     pub fn provide<T: Send + Sync + 'static>(mut self, value: T) -> Self {
         if self.state.contains::<T>() {
             panic!(
-                "AppBuilder::provide: type `{}` has already been provided",
+                "Environment::provide: type `{}` has already been provided",
                 std::any::type_name::<T>()
             );
         }
@@ -77,24 +161,25 @@ impl AppBuilder {
 
     /// Inject a shared resource by named [`ContextKey`].
     ///
-    /// Named keys are useful when multiple resources share the same Rust type.
+    /// Named keys are useful when multiple resources share the same Rust type
+    /// and carry change-tracking.
     ///
     /// # Panics
     /// Panics if a change-tracked key cannot fingerprint the provided value.
     pub fn provide_key<T: Send + Sync + 'static>(mut self, key: &ContextKey<T>, value: T) -> Self {
         self.context
             .provide(key, value)
-            .unwrap_or_else(|e| panic!("AppBuilder::provide_key({}): {e}", key.name()));
+            .unwrap_or_else(|e| panic!("Environment::provide_key({}): {e}", key.name()));
         self
     }
 
-    /// Build the app. Opens (or creates) the LMDB database.
+    /// Build the environment, opening (or creating) the LMDB database.
     ///
     /// # Errors
     ///
     /// Returns an error if the LMDB database environment fails to initialize
     /// (e.g., due to permissions, disk space, or a corrupted state directory).
-    pub async fn build(self) -> Result<App> {
+    pub async fn build(self) -> Result<Environment> {
         // Register every `#[coco::function]`'s logic fingerprint into the engine's
         // logic set, so memo entries that depend on them validate correctly
         // (see `crate::logic`). Idempotent across builds.
@@ -102,7 +187,7 @@ impl AppBuilder {
 
         let db_path = self
             .db_path
-            .unwrap_or_else(|| PathBuf::from(format!("./coco_state/{}/", self.name)));
+            .unwrap_or_else(|| PathBuf::from("./coco_state"));
 
         let settings = EnvironmentSettings {
             db_path,
@@ -112,26 +197,77 @@ impl AppBuilder {
         let providers = Arc::new(std::sync::Mutex::new(TargetStateProviderRegistry::new(
             Default::default(),
         )));
-        let env = Environment::<RustProfile>::new(settings, providers, ())
+        let core_env = CoreEnvironment::<RustProfile>::new(settings, providers, ())
             .await
             .map_err(|e| Error::engine(format!("failed to open LMDB: {e}")))?;
-        self.context.register_logic(&env);
-        let core_app = CoreApp::new(&self.name, env, self.max_inflight_components)
-            .await
-            .map_err(|e| Error::engine(format!("failed to create app: {e}")))?;
+        self.context.register_logic(&core_env);
 
-        Ok(App {
-            inner: Arc::new(AppInner {
-                name: self.name,
-                core_app,
-                state: self.state,
-                context: self.context,
+        Ok(Environment {
+            inner: Arc::new(EnvironmentInner {
+                core_env,
+                state: Arc::new(self.state),
+                context: Arc::new(self.context),
+                max_inflight_components: self.max_inflight_components,
             }),
         })
     }
 
-    /// Build the app (blocking). Convenience for sync callers — creates a
-    /// tokio runtime internally and awaits [`Self::build`].
+    /// Build the environment (blocking). Convenience for sync callers.
+    pub fn build_blocking(self) -> Result<Environment> {
+        let rt = tokio::runtime::Runtime::new()
+            .map_err(|e| Error::engine(format!("failed to create tokio runtime: {e}")))?;
+        rt.block_on(self.build())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// AppBuilder — single-app convenience (no provided resources). To provide
+// shared resources, use `Environment::builder().provide(…).build()` then
+// `env.app(name)`.
+// ---------------------------------------------------------------------------
+
+pub struct AppBuilder {
+    name: String,
+    env: EnvironmentBuilder,
+}
+
+impl AppBuilder {
+    /// Set the LMDB database directory. Default: `./coco_state`.
+    pub fn db_path(mut self, path: impl Into<PathBuf>) -> Self {
+        self.env = self.env.db_path(path);
+        self
+    }
+
+    /// Set the LMDB maximum number of named databases.
+    pub fn lmdb_max_dbs(mut self, value: u32) -> Self {
+        self.env = self.env.lmdb_max_dbs(value);
+        self
+    }
+
+    /// Set the LMDB map size in bytes.
+    pub fn lmdb_map_size(mut self, value: usize) -> Self {
+        self.env = self.env.lmdb_map_size(value);
+        self
+    }
+
+    /// Limit the number of concurrently processing components.
+    pub fn max_inflight_components(mut self, value: usize) -> Self {
+        self.env = self.env.max_inflight_components(value);
+        self
+    }
+
+    /// Build the app. Creates a single-app environment with no provided
+    /// resources, then the app. To provide resources, use
+    /// [`Environment::builder`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the LMDB database environment fails to initialize.
+    pub async fn build(self) -> Result<App> {
+        self.env.build().await?.app(&self.name).await
+    }
+
+    /// Build the app (blocking). Convenience for sync callers.
     pub fn build_blocking(self) -> Result<App> {
         let rt = tokio::runtime::Runtime::new()
             .map_err(|e| Error::engine(format!("failed to create tokio runtime: {e}")))?;
@@ -146,7 +282,7 @@ mod tests {
     #[test]
     fn provide_panics_on_duplicate_type() {
         let result = std::panic::catch_unwind(|| {
-            let _ = App::builder("test").provide(1u32).provide(2u32);
+            let _ = Environment::builder().provide(1u32).provide(2u32);
         });
         assert!(result.is_err());
     }
@@ -159,8 +295,8 @@ mod tests {
 pub(crate) struct AppInner {
     pub(crate) name: String,
     pub(crate) core_app: CoreApp<RustProfile>,
-    pub(crate) state: TypeMap,
-    pub(crate) context: ContextStore,
+    pub(crate) state: Arc<TypeMap>,
+    pub(crate) context: Arc<ContextStore>,
 }
 
 #[derive(Clone)]
@@ -195,30 +331,23 @@ impl App {
         App::builder(name).db_path(db_path).build_blocking()
     }
 
-    /// Start building an app. Name determines the LMDB database namespace.
+    /// Start building a single-app environment. Name determines the LMDB
+    /// database namespace. To provide shared resources, use
+    /// [`Environment::builder`] then [`Environment::app`] instead.
     ///
     /// # Examples
     ///
     /// ```no_run
     /// # use cocoindex::app::App;
     /// # async fn run() -> cocoindex::error::Result<()> {
-    /// let app = App::builder("my_app")
-    ///     .db_path("./data")
-    ///     .provide(String::from("shared resource"))
-    ///     .build()
-    ///     .await?;
+    /// let app = App::builder("my_app").db_path("./data").build().await?;
     /// # Ok(())
     /// # }
     /// ```
     pub fn builder(name: &str) -> AppBuilder {
         AppBuilder {
             name: name.to_owned(),
-            db_path: None,
-            lmdb_max_dbs: 1024,
-            lmdb_map_size: 0x1_0000_0000,
-            max_inflight_components: None,
-            state: TypeMap::new(),
-            context: ContextStore::default(),
+            env: EnvironmentBuilder::new(),
         }
     }
 

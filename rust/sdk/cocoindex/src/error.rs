@@ -21,7 +21,9 @@ pub enum Error {
     Engine(String),
 
     /// Requested type or key not found in context.
-    #[error("context: `{0}` not provided — call App::builder().provide() or provide_key() first")]
+    #[error(
+        "context: `{0}` not provided — call Environment::builder().provide() or provide_key() first"
+    )]
     MissingContext(String),
 
     /// User-provided closure returned an error.
