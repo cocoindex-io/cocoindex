@@ -1,11 +1,10 @@
-//! Pipeline context: scope, memo, write_file.
+//! Pipeline context: scope, memo.
 
 use std::any::Any;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Display;
 use std::future::Future;
 use std::marker::PhantomData;
-use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
@@ -952,30 +951,6 @@ impl Ctx {
     {
         let futs: Vec<_> = items.into_iter().map(f).collect();
         futures::future::try_join_all(futs).await
-    }
-
-    /// Declare a file output. Writes content to the given path.
-    ///
-    /// # Examples
-    ///
-    /// ```no_run
-    /// # use cocoindex::ctx::Ctx;
-    /// # async fn doc(ctx: &Ctx) -> cocoindex::error::Result<()> {
-    /// ctx.write_file("output.txt", b"hello world")?;
-    /// # Ok(())
-    /// # }
-    /// ```
-    ///
-    /// # Errors
-    ///
-    /// Returns an [`Error::Io`] if the parent directory cannot be created or
-    /// if the file cannot be written to disk.
-    pub fn write_file(&self, path: impl AsRef<Path>, content: &[u8]) -> Result<()> {
-        let path = path.as_ref();
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(Error::Io)?;
-        }
-        std::fs::write(path, content).map_err(Error::Io)
     }
 }
 
