@@ -4,7 +4,7 @@ use proc_macro::TokenStream;
 use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::{format_ident, quote};
 use syn::{
-    Error as SynError, Expr, FnArg, Ident, ItemFn, LitInt, Pat, PatType, Path, Token, Type,
+    Error as SynError, Expr, FnArg, Ident, ItemFn, LitInt, Pat, PatType, Path, Stmt, Token, Type,
     TypeReference, parenthesized,
     parse::{Parse, ParseStream},
     parse_macro_input,
@@ -537,8 +537,23 @@ fn hash_const_path(func_path: &Path) -> Path {
     path
 }
 
+/// Unwrap a single tail-expression block (`{ expr }`) to `expr`. rustfmt may
+/// rewrite a closure body `|x| call(...)` into block form `|x| { call(...) }`,
+/// and users may write the block form by hand — both must still parse as a
+/// grouped call.
+fn unwrap_block_expr(expr: &Expr) -> &Expr {
+    if let Expr::Block(block) = expr
+        && block.block.stmts.len() == 1
+        && let Stmt::Expr(inner, None) = &block.block.stmts[0]
+    {
+        return inner;
+    }
+    expr
+}
+
 /// Destructure a grouped call `my_fn(ctx, a, b)` into its path and arguments.
 fn parse_grouped_call(expr: &Expr) -> syn::Result<(Path, Vec<Expr>)> {
+    let expr = unwrap_block_expr(expr);
     let Expr::Call(call) = expr else {
         return Err(SynError::new_spanned(
             expr,

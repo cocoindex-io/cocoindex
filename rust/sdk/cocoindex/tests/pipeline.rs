@@ -2972,4 +2972,28 @@ mod mount_macros {
         assert_eq!(run(&app).await, 21);
         assert_eq!(ONCE_CALLS.load(Ordering::SeqCst), 1);
     }
+
+    #[cocoindex::function]
+    async fn block_id(_ctx: &Ctx, n: u32) -> Result<u32> {
+        Ok(n)
+    }
+
+    #[tokio::test]
+    async fn mount_each_accepts_block_form_closure() {
+        // rustfmt may rewrite `|n| block_id(ctx, n)` into block form
+        // `|n| { block_id(ctx, n) }`; the macro must parse both identically.
+        let (app, _dir) = temp_app("mount_each_block").await;
+        let items = vec![("a".to_string(), 5u32), ("b".to_string(), 6u32)];
+        let out: Vec<u32> = app
+            .update(move |ctx| async move {
+                // `#[rustfmt::skip]` keeps the block braces so this test keeps
+                // exercising the block-form closure body the macro must accept.
+                #[rustfmt::skip]
+                let out = cocoindex::mount_each!(items, |n| { block_id(ctx, n) }).await?;
+                Ok(out)
+            })
+            .await
+            .unwrap();
+        assert_eq!(out, vec![5, 6]);
+    }
 }
