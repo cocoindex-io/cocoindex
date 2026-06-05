@@ -73,6 +73,9 @@ async-trait = "0.1"
 # Filesystem watcher for live LocalFS sources (feature `fs_live`).
 notify = { version = "8", optional = true }
 rustc-hash = "2.1.1"
+# Link-time registry of `#[coco::function]` logic fingerprints, registered into
+# the engine's logic set at startup so transitive logic-change detection works.
+linkme = "0.3"
 uuid = { workspace = true }
 serde_json = { version = "1", optional = true }
 sqlx = { version = "0.8", default-features = false, optional = true, features = [

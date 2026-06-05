@@ -1486,8 +1486,15 @@ async fn bare_function_context_key_invalidates_manual_memo_callers() {
 }
 
 #[tokio::test]
-async fn bare_function_logic_invalidates_manual_memo_callers() {
-    let (app, _dir) = temp_app("bare_logic_invalidates_manual_memo").await;
+async fn manual_memo_closure_body_is_not_logic_tracked() {
+    // The closure passed to `ctx.memo` is NOT logic-tracked — only the memo key
+    // and the `#[coco::function]`s it *calls* are. Calling a different helper the
+    // second time (same key "stable") therefore re-uses the cached result: the
+    // first run recorded `bare_logic_v1`'s fingerprint as a dep, that fingerprint
+    // is still registered (its code is unchanged), so the entry stays valid and
+    // the body (which now calls `bare_logic_v2`) does not run. To invalidate on
+    // such a change, include `__COCO_FN_HASH_*` in the memo key.
+    let (app, _dir) = temp_app("manual_memo_untracked_closure").await;
 
     app.update(|ctx| async move {
         let result: i32 = ctx
@@ -1504,13 +1511,53 @@ async fn bare_function_logic_invalidates_manual_memo_callers() {
             .memo(&"stable", |ctx| async move { bare_logic_v2(&ctx).await })
             .await?;
         assert_eq!(
-            result, 2,
-            "bare #[function] helper logic did not invalidate its memoized caller"
+            result, 1,
+            "manual ctx.memo should cache: the closure body is not logic-tracked, \
+             and bare_logic_v1's unchanged logic keeps the entry valid"
         );
         Ok(())
     })
     .await
     .unwrap();
+}
+
+#[tokio::test]
+async fn memo_with_function_dep_caches_when_unchanged() {
+    // A memoized caller whose body calls a bare `#[function]` should CACHE on an
+    // unchanged rerun — the called function's logic fingerprint, accumulated into
+    // the memo entry's logic_deps, must validate against the registered logic set.
+    // (Regression: without startup fingerprint registration, the stored dep is
+    // never "contained", so the memo is perpetually invalid and re-runs.)
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let (app, _dir) = temp_app("memo_fn_dep_caches").await;
+    let call_count = Arc::new(AtomicUsize::new(0));
+
+    for _ in 0..2 {
+        let count = call_count.clone();
+        app.update(move |ctx| async move {
+            let result: i32 = ctx
+                .memo(&"stable", move |ctx| {
+                    let count = count.clone();
+                    async move {
+                        count.fetch_add(1, Ordering::SeqCst);
+                        bare_logic_v1(&ctx).await
+                    }
+                })
+                .await?;
+            assert_eq!(result, 1);
+            Ok(())
+        })
+        .await
+        .unwrap();
+    }
+
+    assert_eq!(
+        call_count.load(Ordering::SeqCst),
+        1,
+        "memo body calling a #[function] should cache on unchanged rerun (ran twice)"
+    );
 }
 
 // ---------------------------------------------------------------------------

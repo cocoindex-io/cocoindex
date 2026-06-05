@@ -22,6 +22,8 @@ pub mod kafka;
 #[cfg(feature = "lancedb")]
 pub mod lancedb;
 pub mod live_component;
+#[doc(hidden)]
+pub mod logic;
 pub mod memo;
 #[cfg(feature = "neo4j")]
 pub mod neo4j;
@@ -73,10 +75,16 @@ pub use id::{
     IdGenerator, UuidGenerator, generate_id, generate_id_default, generate_uuid,
     generate_uuid_default,
 };
+// Re-exported so `#[cocoindex::function]` output can register each function's
+// logic fingerprint without the user crate needing a direct `linkme` dependency.
+#[doc(hidden)]
+pub use linkme;
 pub use live_component::{
     ExceptionContext, ExceptionHandler, LiveComponent, LiveComponentOperator, LiveMapFeed,
     LiveMapSubscriber, LiveMapView, MountKind,
 };
+#[doc(hidden)]
+pub use logic::{COCO_FN_LOGIC, FnLogicEntry};
 pub use resources::chunk::{Chunk, TextPosition};
 pub use resources::embedder::Embedder;
 pub use resources::schema::{
