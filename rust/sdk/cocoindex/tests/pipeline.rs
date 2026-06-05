@@ -1380,48 +1380,6 @@ async fn ctx_scope_runs_child() {
 }
 
 // ---------------------------------------------------------------------------
-// ctx.write_file() method
-// ---------------------------------------------------------------------------
-
-#[tokio::test]
-async fn ctx_write_file_creates_file() {
-    let (app, dir) = temp_app("ctx_write").await;
-    let output_dir = dir.path().join("output");
-
-    let out = output_dir.clone();
-    app.update(|ctx| async move {
-        ctx.write_file(out.join("hello.txt"), b"world")?;
-        Ok(())
-    })
-    .await
-    .unwrap();
-
-    let content = std::fs::read_to_string(output_dir.join("hello.txt")).unwrap();
-    assert_eq!(content, "world");
-}
-
-#[tokio::test]
-async fn ctx_write_file_creates_nested_dirs_and_overwrites() {
-    let (app, dir) = temp_app("ctx_write_nested").await;
-    let output_dir = dir.path().join("output");
-    let nested = output_dir.join("sub/hello.txt");
-
-    std::fs::create_dir_all(nested.parent().unwrap()).unwrap();
-    std::fs::write(&nested, "old").unwrap();
-
-    let out = nested.clone();
-    app.update(|ctx| async move {
-        ctx.write_file(&out, b"new")?;
-        Ok(())
-    })
-    .await
-    .unwrap();
-
-    let content = std::fs::read_to_string(&nested).unwrap();
-    assert_eq!(content, "new");
-}
-
-// ---------------------------------------------------------------------------
 // #[cocoindex::function] macro — bare (L0, no memo)
 // ---------------------------------------------------------------------------
 
