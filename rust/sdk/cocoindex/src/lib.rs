@@ -1,6 +1,7 @@
 #[cfg(feature = "amazon_s3")]
 pub mod amazon_s3;
 pub mod app;
+pub mod batched;
 pub mod ctx;
 #[cfg(any(feature = "neo4j", feature = "falkordb"))]
 mod cypher_graph;
@@ -56,6 +57,7 @@ pub use app::{
     App, AppBuilder, DropHandle, PreviewAction, PreviewValue, Progress, StatsGroupHandle,
     StatsGroupOptions, UpdateHandle, UpdateOptions,
 };
+pub use batched::Batched;
 pub use ctx::{ContextKey, Ctx};
 pub use entity_resolution::{
     CanonicalSide, EntityEmbedder, ExistingCanonicalPolicy, PairDecision, PairResolver,
