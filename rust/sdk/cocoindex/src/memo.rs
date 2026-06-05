@@ -2,20 +2,19 @@
 
 use std::any::Any;
 use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use cocoindex_core::engine::context::{FnCallContext, MemoStatesPayload};
-use cocoindex_core::engine::function::{FnCallMemoGuard, reserve_memoization};
+use cocoindex_core::engine::function::reserve_memoization;
 use cocoindex_utils::fingerprint::{Fingerprint, Fingerprinter};
 use serde::{Deserialize, Serialize};
 
 use crate::ctx::{Ctx, fn_call_guard};
 use crate::error::{Error, Result};
 use crate::file::FileLike;
-use crate::profile::{RustProfile, Value};
+use crate::profile::Value;
 
 #[derive(Clone)]
 pub struct MemoStateValue(Value);
@@ -24,10 +23,6 @@ pub struct MemoStateDecision {
     state: MemoStateValue,
     memo_valid: bool,
 }
-
-#[doc(hidden)]
-pub type MemoStateBoxFuture<'a> =
-    Pin<Box<dyn Future<Output = Result<Vec<MemoStateDecision>>> + Send + 'a>>;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 struct FileMemoState {
@@ -321,197 +316,6 @@ fn fallback_key_bytes<T: ?Sized>(error: Error) -> Vec<u8> {
             bytes
         }
     }
-}
-
-/// Batch-process items with per-item memoization.
-///
-/// For each item, computes a cache key via `key_fn` and probes the memo cache.
-/// Items with cache hits get their stored values immediately. Items with cache
-/// misses are collected and passed to `f` as a single batch. Results are stored
-/// back in the cache and merged with hits in original order.
-///
-/// This is the key optimization for LLM pipelines: instead of N individual API
-/// calls, you get 1 batch call for the cache misses only.
-///
-/// # Contract
-///
-/// `f` receives the cache-miss items and **must** return exactly one result per
-/// item, in the same order.
-pub async fn batch<I, K, T, F, KF, Fut>(ctx: &Ctx, items: I, key_fn: KF, f: F) -> Result<Vec<T>>
-where
-    I: IntoIterator,
-    I::Item: Send + 'static,
-    K: Serialize,
-    T: Serialize + for<'de> Deserialize<'de> + Send + 'static,
-    KF: Fn(&I::Item) -> Result<K>,
-    F: FnOnce(Ctx, Vec<I::Item>) -> Fut + Send,
-    Fut: Future<Output = Result<Vec<T>>> + Send,
-{
-    batch_by_fingerprint(
-        ctx,
-        items,
-        move |item| {
-            let key = key_fn(item)?;
-            key_fingerprint_result(&key)
-        },
-        f,
-    )
-    .await
-}
-
-/// Same as [`batch`] but lets callers supply precomputed per-item fingerprints.
-#[doc(hidden)]
-pub async fn batch_by_fingerprint<I, T, F, KF, Fut>(
-    ctx: &Ctx,
-    items: I,
-    key_fn: KF,
-    f: F,
-) -> Result<Vec<T>>
-where
-    I: IntoIterator,
-    I::Item: Send + 'static,
-    T: Serialize + for<'de> Deserialize<'de> + Send + 'static,
-    KF: Fn(&I::Item) -> Result<Fingerprint>,
-    F: FnOnce(Ctx, Vec<I::Item>) -> Fut + Send,
-    Fut: Future<Output = Result<Vec<T>>> + Send,
-{
-    batch_by_fingerprint_with_state(
-        ctx,
-        items,
-        key_fn,
-        |_item, _prev_states| Box::pin(async { Ok(Vec::new()) }),
-        f,
-    )
-    .await
-}
-
-#[doc(hidden)]
-pub async fn batch_by_fingerprint_with_state<I, T, F, KF, SF, Fut>(
-    ctx: &Ctx,
-    items: I,
-    key_fn: KF,
-    state_fn: SF,
-    f: F,
-) -> Result<Vec<T>>
-where
-    I: IntoIterator,
-    I::Item: Send + 'static,
-    T: Serialize + for<'de> Deserialize<'de> + Send + 'static,
-    KF: Fn(&I::Item) -> Result<Fingerprint>,
-    SF: for<'a> Fn(&'a I::Item, Option<Vec<MemoStateValue>>) -> MemoStateBoxFuture<'a>,
-    F: FnOnce(Ctx, Vec<I::Item>) -> Fut + Send,
-    Fut: Future<Output = Result<Vec<T>>> + Send,
-{
-    let items: Vec<I::Item> = items.into_iter().collect();
-    let total = items.len();
-
-    let Some(comp_ctx) = &ctx.comp_ctx else {
-        // No pipeline context — execute all directly.
-        return f(ctx.clone(), items).await;
-    };
-
-    let mut results: Vec<Option<T>> = (0..total).map(|_| None).collect();
-    let mut miss_items: Vec<I::Item> = Vec::with_capacity(total);
-    let mut miss_indices: Vec<usize> = Vec::with_capacity(total);
-    let mut miss_states: Vec<Vec<Value>> = Vec::with_capacity(total);
-    // Parallel vec: guard for cache-miss items that still hold the write lock.
-    let mut miss_guards: Vec<FnCallMemoGuard<RustProfile>> = Vec::with_capacity(total);
-
-    let mut fps_seen = rustc_hash::FxHashSet::default();
-
-    for (idx, item) in items.into_iter().enumerate() {
-        let fp = key_fn(&item)?;
-
-        if !fps_seen.insert(fp) {
-            // Engine rejects mapping duplicate memo keys per function invocation.
-            return Err(Error::engine(
-                "duplicate cache keys generated in memo batch execution",
-            ));
-        }
-
-        let mut guard = reserve_memoization(comp_ctx, fp)
-            .await
-            .map_err(|e| Error::engine(format!("reserve_memoization: {e}")))?;
-
-        let cached_states = guard.cached().map(|cached| {
-            cached
-                .memo_states
-                .iter()
-                .cloned()
-                .map(MemoStateValue)
-                .collect::<Vec<_>>()
-        });
-        let state_decisions = state_fn(&item, cached_states).await?;
-        let memo_states_for_resolve = state_decisions
-            .iter()
-            .map(|decision| decision.state.0.clone())
-            .collect::<Vec<_>>();
-
-        if let Some(cached) = guard.cached()
-            && state_decisions.iter().all(|decision| decision.memo_valid)
-        {
-            let states_changed = state_decisions
-                .iter()
-                .map(|decision| &decision.state.0.0)
-                .ne(cached.memo_states.iter().map(|value| &value.0));
-            let cached_context_states = cached.context_memo_states.to_vec();
-            results[idx] = Some(cached.ret.deserialize()?);
-            if states_changed {
-                guard.update_memo_states(MemoStatesPayload {
-                    positional: memo_states_for_resolve,
-                    by_context_fp: cached_context_states,
-                });
-            }
-        } else {
-            // Cache miss — collect for batch execution; keep the guard for resolve.
-            miss_indices.push(idx);
-            miss_states.push(memo_states_for_resolve);
-            miss_items.push(item);
-            miss_guards.push(guard);
-        }
-    }
-
-    if !miss_items.is_empty() {
-        let fn_ctx = Arc::new(FnCallContext::default());
-        let _guard = fn_call_guard(comp_ctx, fn_ctx.clone());
-        let miss_results = f(ctx.with_fn_ctx(fn_ctx.clone()), miss_items).await?;
-        if miss_results.len() != miss_indices.len() {
-            return Err(Error::engine(format!(
-                "batch function returned {} results for {} items",
-                miss_results.len(),
-                miss_indices.len()
-            )));
-        }
-
-        for (((idx, miss_result), guard), memo_states_for_resolve) in miss_indices
-            .into_iter()
-            .zip(miss_results)
-            .zip(miss_guards)
-            .zip(miss_states)
-        {
-            let value = Value::from_serializable(&miss_result)
-                .map_err(|e| Error::engine(format!("failed to serialize memo result: {e}")))?;
-            let memo_states = MemoStatesPayload {
-                positional: memo_states_for_resolve,
-                by_context_fp: fn_ctx.collect_context_initial_states(comp_ctx.app_ctx().env()),
-            };
-            guard
-                .resolve(&fn_ctx, || value, memo_states)
-                .map_err(|e| Error::engine(format!("{e}")))?;
-            results[idx] = Some(miss_result);
-        }
-    }
-
-    let mut resolved = Vec::with_capacity(total);
-    for (idx, value) in results.into_iter().enumerate() {
-        let value = value.ok_or_else(|| {
-            Error::engine(format!(
-                "memo batch internal inconsistency: missing result for index {idx}"
-            ))
-        })?;
-        resolved.push(value);
-    }
-    Ok(resolved)
 }
 
 #[cfg(test)]

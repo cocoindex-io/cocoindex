@@ -150,7 +150,6 @@ impl ToTokenStream for syn::Block {
 #[derive(Debug)]
 struct FunctionArgs {
     memo: bool,
-    batching: bool,
     version: Option<u64>,
     memo_key: Vec<MemoKeyOverride>,
 }
@@ -170,7 +169,6 @@ impl FunctionArgs {
 impl Parse for FunctionArgs {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let mut memo = false;
-        let mut batching = false;
         let mut version = None;
         let mut memo_key = Vec::new();
 
@@ -178,7 +176,6 @@ impl Parse for FunctionArgs {
             let name: Ident = input.parse()?;
             match name.to_string().as_str() {
                 "memo" => memo = true,
-                "batching" => batching = true,
                 "memo_key" => {
                     let content;
                     parenthesized!(content in input);
@@ -213,7 +210,7 @@ impl Parse for FunctionArgs {
                 _ => {
                     return Err(SynError::new(
                         name.span(),
-                        "unsupported function attribute argument. expected `memo`, `batching`, or `version = N`",
+                        "unsupported function attribute argument. expected `memo`, `memo_key(...)`, or `version = N`",
                     ));
                 }
             }
@@ -228,7 +225,6 @@ impl Parse for FunctionArgs {
 
         Ok(Self {
             memo,
-            batching,
             version,
             memo_key,
         })
@@ -279,24 +275,6 @@ fn validate_memo_key_overrides(
                 ),
             ));
         }
-    }
-    Ok(())
-}
-
-/// In a batching function the `item` is what identifies each cache entry, so
-/// `memo_key(item = skip)` would collapse every item into one key. Reject it at
-/// compile time with a clear message instead of failing at runtime with a
-/// confusing "duplicate cache keys" error.
-fn validate_batch_item_override(overrides: &[MemoKeyOverride]) -> syn::Result<()> {
-    if let Some(override_) = memo_key_override(overrides, &format_ident!("item"))
-        && is_skip_expr(&override_.expr)
-    {
-        return Err(SynError::new(
-            override_.ident.span(),
-            "`memo_key(item = skip)` is not allowed in a batching function: the item identifies \
-             each cache entry, so skipping it would collide every item into a single key. Use a \
-             transform `memo_key(item = ...)` to derive a stable key instead.",
-        ));
     }
     Ok(())
 }
@@ -371,23 +349,6 @@ fn gen_state_collect_for_param(
 /// async fn my_fn(ctx: &Ctx, arg: &String) -> Result<String> { ... }
 /// ```
 ///
-/// **With `batching`** — batch processing (no caching, body gets all items every time):
-/// ```ignore
-/// #[cocoindex::function(batching)]
-/// async fn my_fn(ctx: &Ctx, items: Vec<FileEntry>) -> Result<Vec<Info>> {
-///     // `items` is always the full list — no caching
-/// }
-/// ```
-///
-/// **With `memo, batching`** — per-item memoization + batch execution:
-/// ```ignore
-/// #[cocoindex::function(memo, batching)]
-/// async fn my_fn(ctx: &Ctx, items: Vec<FileEntry>) -> Result<Vec<Info>> {
-///     // `items` here is only the cache misses
-///     // `ctx` is available (unlike plain `memo`)
-/// }
-/// ```
-///
 /// Optional `version` parameter forces cache invalidation:
 /// ```ignore
 /// #[cocoindex::function(memo, version = 2)]
@@ -435,113 +396,7 @@ pub fn function(attr: TokenStream, item: TokenStream) -> TokenStream {
         );
     }
 
-    if args.memo && args.batching {
-        // memo + batching: wrap body in ctx.batch() with per-item memoization
-        let (ctx_ident, params) = match parse_fn_params(&func) {
-            Ok(params) => params,
-            Err(err) => return TokenStream::from(err.to_compile_error()),
-        };
-
-        if params.is_empty() {
-            return TokenStream::from(
-                SynError::new(
-                    func.sig.ident.span(),
-                    "#[cocoindex::function(memo, batching)]: function must have at least one non-ctx parameter (the items)",
-                )
-                .to_compile_error(),
-            );
-        }
-
-        // First non-ctx param is the items collection.
-        let items_param = &params[0];
-        let items_ident = &items_param.ident;
-
-        // Remaining params are "extra" — cloned into closure, included in key.
-        let extra_params = &params[1..];
-        let clone_stmts = gen_clones(extra_params);
-        let mut allowed = vec!["item".to_string()];
-        allowed.extend(extra_params.iter().map(|p| p.ident.to_string()));
-        if let Err(err) = validate_memo_key_overrides(&args.memo_key, allowed) {
-            return TokenStream::from(err.to_compile_error());
-        }
-
-        let extra_key_writes: Vec<TokenStream2> = extra_params
-            .iter()
-            .filter_map(|p| {
-                gen_key_write_for_param(&format_ident!("__coco_key_prefix"), p, &args.memo_key)
-            })
-            .collect();
-        if let Err(err) = validate_batch_item_override(&args.memo_key) {
-            return TokenStream::from(err.to_compile_error());
-        }
-        let item_override = memo_key_override(&args.memo_key, &format_ident!("item"));
-        let item_key_write = match item_override {
-            Some(override_) => {
-                let expr = &override_.expr;
-                quote! {
-                    let __coco_item_key = (#expr)(__coco_item);
-                    ::cocoindex::memo::write_key_fingerprint_part(&mut __coco_key, &__coco_item_key)?;
-                }
-            }
-            None => quote! {
-                ::cocoindex::memo::write_key_fingerprint_part_for_arg(&mut __coco_key, __coco_item)?;
-            },
-        };
-        let item_state_collect = quote! {
-            if let Some(__coco_state) =
-                ::cocoindex::memo::collect_memo_arg_state(__coco_item, __coco_prev_state).await?
-            {
-                __coco_states.push(__coco_state);
-            }
-        };
-
-        let vis = &func.vis;
-        let sig = &func.sig;
-        let attrs = &func.attrs;
-        let body = &func.block;
-
-        let expanded = quote! {
-            #[doc(hidden)]
-            pub const #hash_const_name: u64 = #code_hash;
-            #logic_registration
-
-            #(#attrs)*
-            #vis #sig {
-                let mut __coco_key_prefix = ::cocoindex::memo::new_key_fingerprinter();
-                ::cocoindex::memo::write_key_fingerprint_part(&mut __coco_key_prefix, &"cocoindex_fn")?;
-                ::cocoindex::memo::write_key_fingerprint_part(&mut __coco_key_prefix, &::core::module_path!())?;
-                ::cocoindex::memo::write_key_fingerprint_part(&mut __coco_key_prefix, &::core::stringify!(#fn_name))?;
-                ::cocoindex::memo::write_key_fingerprint_part(&mut __coco_key_prefix, &#hash_const_name)?;
-                #(#extra_key_writes)*
-
-                ::cocoindex::memo::batch_by_fingerprint_with_state(
-                    #ctx_ident,
-                    #items_ident,
-                    |__coco_item| {
-                        let mut __coco_key = __coco_key_prefix.clone();
-                        #item_key_write
-                        Ok(::cocoindex::memo::finish_key_fingerprinter(__coco_key))
-                    },
-                    |__coco_item, __coco_prev_states| {
-                        ::std::boxed::Box::pin(async move {
-                            let mut __coco_states = Vec::new();
-                            let __coco_prev_state = __coco_prev_states
-                                .as_ref()
-                                .and_then(|__coco_states| __coco_states.get(0));
-                            #item_state_collect
-                            Ok(__coco_states)
-                        })
-                    },
-                    {
-                        #(#clone_stmts)*
-                        move |#ctx_ident, #items_ident| async move #body
-                    },
-                ).await
-            }
-        };
-
-        expanded.into()
-    } else if args.memo {
+    if args.memo {
         // memo: wrap body in ctx.memo()
         let (ctx_ident, params) = match parse_fn_params(&func) {
             Ok(params) => params,
@@ -843,16 +698,7 @@ mod tests {
     fn parse_function_args_empty() {
         let args = FunctionArgs::parse(TokenStream2::new()).unwrap();
         assert!(!args.memo);
-        assert!(!args.batching);
         assert!(args.version.is_none());
-    }
-
-    #[test]
-    fn parse_function_args_batching_memo_with_version() {
-        let args = FunctionArgs::parse(quote!(memo, batching, version = 42)).unwrap();
-        assert!(args.memo);
-        assert!(args.batching);
-        assert_eq!(args.version, Some(42));
     }
 
     #[test]
@@ -899,26 +745,6 @@ mod tests {
         let args = FunctionArgs::parse(quote!(memo, memo_key(entry = skip, entry = none))).unwrap();
         let err = validate_memo_key_overrides(&args.memo_key, ["entry".to_string()]).unwrap_err();
         assert!(err.to_string().contains("duplicate memo_key override"));
-    }
-
-    #[test]
-    fn batch_item_override_rejects_skip() {
-        let skip = FunctionArgs::parse(quote!(memo, batching, memo_key(item = skip))).unwrap();
-        let none = FunctionArgs::parse(quote!(memo, batching, memo_key(item = none))).unwrap();
-        for args in [skip, none] {
-            let err = validate_batch_item_override(&args.memo_key).unwrap_err();
-            assert!(
-                err.to_string().contains("memo_key(item = skip)"),
-                "unexpected error: {err}"
-            );
-        }
-    }
-
-    #[test]
-    fn batch_item_override_allows_transform() {
-        let args =
-            FunctionArgs::parse(quote!(memo, batching, memo_key(item = derive_key))).unwrap();
-        assert!(validate_batch_item_override(&args.memo_key).is_ok());
     }
 
     #[test]
