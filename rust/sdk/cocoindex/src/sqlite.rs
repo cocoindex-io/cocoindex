@@ -21,7 +21,7 @@ use serde_json::{Map, Value as JsonValue};
 use sqlx::SqlitePool;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 
-use crate::ctx::Ctx;
+use crate::ctx::{ContextKey, Ctx};
 use crate::error::{Error, Result};
 use crate::sql_ident::validate_ident;
 use crate::statediff::{
@@ -228,7 +228,7 @@ pub struct TableTarget {
 /// constructor). System-managed regular table.
 pub fn table_target(
     ctx: &Ctx,
-    db: &Database,
+    db: &ContextKey<Database>,
     table_name: impl Into<String>,
     table_schema: TableSchema,
 ) -> Result<TargetState<TableSpec>> {
@@ -245,7 +245,7 @@ pub fn table_target(
 /// `virtual_table_def`).
 pub fn table_target_with_options(
     ctx: &Ctx,
-    db: &Database,
+    db: &ContextKey<Database>,
     table_name: impl Into<String>,
     table_schema: TableSchema,
     options: SqliteTableOptions,
@@ -257,8 +257,13 @@ pub fn table_target_with_options(
     }
     let provider = register_root_target_states_provider(
         ctx,
-        format!("cocoindex/sqlite/table/{}/{}", db.state_id(), table_name),
-        TableHandler { db: db.clone() },
+        // Stable connection identity = the ContextKey's name (`db_key`), never
+        // live connection details; the pool is resolved at apply time from the
+        // host context (see `design_connectors.md` §5.5).
+        format!("cocoindex/sqlite/table/{}/{}", db.name(), table_name),
+        TableHandler {
+            db_key: db.name().to_string(),
+        },
     )?;
     Ok(provider.target_state(
         "default",
@@ -275,7 +280,7 @@ pub fn table_target_with_options(
 /// provider resolves at this component's commit) and return a handle.
 pub fn declare_table_target(
     ctx: &Ctx,
-    db: &Database,
+    db: &ContextKey<Database>,
     table_name: impl Into<String>,
     table_schema: TableSchema,
 ) -> Result<TableTarget> {
@@ -291,7 +296,7 @@ pub fn declare_table_target(
 /// [`declare_table_target`] with explicit [`SqliteTableOptions`].
 pub fn declare_table_target_with_options(
     ctx: &Ctx,
-    db: &Database,
+    db: &ContextKey<Database>,
     table_name: impl Into<String>,
     table_schema: TableSchema,
     options: SqliteTableOptions,
@@ -306,7 +311,7 @@ pub fn declare_table_target_with_options(
 /// immediately) and return a handle. System-managed regular table.
 pub async fn mount_table_target(
     ctx: &Ctx,
-    db: &Database,
+    db: &ContextKey<Database>,
     table_name: impl Into<String>,
     table_schema: TableSchema,
 ) -> Result<TableTarget> {
@@ -323,7 +328,7 @@ pub async fn mount_table_target(
 /// [`mount_table_target`] with explicit [`SqliteTableOptions`].
 pub async fn mount_table_target_with_options(
     ctx: &Ctx,
-    db: &Database,
+    db: &ContextKey<Database>,
     table_name: impl Into<String>,
     table_schema: TableSchema,
     options: SqliteTableOptions,
@@ -479,7 +484,9 @@ struct RowAction {
 // ---------------------------------------------------------------------------
 
 struct TableHandler {
-    db: Database,
+    /// Stable connection identity (the `ContextKey` name); the live pool is
+    /// resolved from the host context at apply time.
+    db_key: String,
 }
 
 impl TargetHandler<TableSpec> for TableHandler {
@@ -566,11 +573,12 @@ impl TargetHandler<TableSpec> for TableHandler {
 
 impl TableHandler {
     fn table_sink(&self) -> TargetActionSink<TableAction> {
-        let db = self.db.clone();
-        TargetActionSink::from_async_fn_with_children(
-            move |actions: Vec<TargetAction<TableAction>>| {
-                let db = db.clone();
+        let db_key = self.db_key.clone();
+        TargetActionSink::from_async_fn_with_children_ctx(
+            move |host_ctx, actions: Vec<TargetAction<TableAction>>| {
+                let db_key = db_key.clone();
                 async move {
+                    let db = resolve_db(&host_ctx, &db_key)?;
                     let mut out: Vec<Option<ChildTargetDef>> = Vec::with_capacity(actions.len());
                     for action in actions {
                         let a = match action {
@@ -578,7 +586,7 @@ impl TableHandler {
                             | TargetAction::Update(a)
                             | TargetAction::Delete(a) => a,
                         };
-                        out.push(apply_table_action(&db, a).await?);
+                        out.push(apply_table_action(&db, &db_key, a).await?);
                     }
                     Ok(out)
                 }
@@ -587,9 +595,27 @@ impl TableHandler {
     }
 }
 
+/// Resolve the live SQLite [`Database`] from the host context by its stable
+/// `db_key` (the `ContextKey` name it was provided under).
+fn resolve_db(
+    host_ctx: &std::sync::Arc<crate::ctx::ContextStore>,
+    db_key: &str,
+) -> Result<std::sync::Arc<Database>> {
+    host_ctx.resolve::<Database>(db_key).ok_or_else(|| {
+        Error::engine(format!(
+            "sqlite target: database `{db_key}` was not provided in the environment \
+             (call Environment::builder().provide_key(&KEY, db))"
+        ))
+    })
+}
+
 /// Apply one resolved table action and return the row child provider (or
 /// `None` for a drop). Mirrors Python's `_apply_table_actions` decision tree.
-async fn apply_table_action(db: &Database, action: TableAction) -> Result<Option<ChildTargetDef>> {
+async fn apply_table_action(
+    db: &Database,
+    db_key: &str,
+    action: TableAction,
+) -> Result<Option<ChildTargetDef>> {
     let TableAction {
         spec,
         drop,
@@ -639,7 +665,7 @@ async fn apply_table_action(db: &Database, action: TableAction) -> Result<Option
     }
 
     Ok(Some(ChildTargetDef::new::<RowState, _>(RowHandler {
-        db: db.clone(),
+        db_key: db_key.to_string(),
         spec,
     })))
 }
@@ -649,7 +675,7 @@ async fn apply_table_action(db: &Database, action: TableAction) -> Result<Option
 // ---------------------------------------------------------------------------
 
 struct RowHandler {
-    db: Database,
+    db_key: String,
     spec: TableSpec,
 }
 
@@ -689,24 +715,27 @@ impl TargetHandler<RowState> for RowHandler {
 
 impl RowHandler {
     fn row_sink(&self) -> TargetActionSink<RowAction> {
-        let db = self.db.clone();
+        let db_key = self.db_key.clone();
         let spec = self.spec.clone();
-        TargetActionSink::from_async_fn(move |actions: Vec<TargetAction<RowAction>>| {
-            let db = db.clone();
-            let spec = spec.clone();
-            async move {
-                let mut mutations = Vec::with_capacity(actions.len());
-                for action in actions {
-                    let row = match action {
-                        TargetAction::Create(r)
-                        | TargetAction::Update(r)
-                        | TargetAction::Delete(r) => r,
-                    };
-                    mutations.push((row.pk, row.state));
+        TargetActionSink::from_async_fn_with_ctx(
+            move |host_ctx, actions: Vec<TargetAction<RowAction>>| {
+                let db_key = db_key.clone();
+                let spec = spec.clone();
+                async move {
+                    let db = resolve_db(&host_ctx, &db_key)?;
+                    let mut mutations = Vec::with_capacity(actions.len());
+                    for action in actions {
+                        let row = match action {
+                            TargetAction::Create(r)
+                            | TargetAction::Update(r)
+                            | TargetAction::Delete(r) => r,
+                        };
+                        mutations.push((row.pk, row.state));
+                    }
+                    apply_rows(&db, &spec, mutations).await
                 }
-                apply_rows(&db, &spec, mutations).await
-            }
-        })
+            },
+        )
     }
 }
 

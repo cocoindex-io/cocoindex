@@ -77,8 +77,7 @@ async fn fetch(db: &sqlite::Database, table: &str) -> Vec<(i64, String)> {
 }
 
 async fn declare_items(ctx: Ctx, items: Vec<Item>) -> Result<()> {
-    let db = ctx.get_key(&DB)?;
-    let table = sqlite::mount_table_target(&ctx, db, "items", item_schema()).await?;
+    let table = sqlite::mount_table_target(&ctx, &DB, "items", item_schema()).await?;
     for it in &items {
         table.declare_row(&ctx, it)?;
     }
@@ -137,8 +136,7 @@ async fn sqlite_table_dropped_when_no_longer_declared() {
     // Re-register the table provider but declare nothing → the orphaned table
     // is dropped (handler present, table state absent).
     app.run(|ctx| async move {
-        let db = ctx.get_key(&DB)?;
-        let _ = sqlite::table_target(&ctx, db, "items", item_schema())?;
+        let _ = sqlite::table_target(&ctx, &DB, "items", item_schema())?;
         Ok(())
     })
     .await
@@ -163,10 +161,9 @@ async fn sqlite_user_managed_table_keeps_table_manages_rows() {
     let (app, _appdir) = build_app(&db).await;
 
     async fn declare_user(ctx: Ctx, items: Vec<Item>) -> Result<()> {
-        let db = ctx.get_key(&DB)?;
         let table = sqlite::mount_table_target_with_options(
             &ctx,
-            db,
+            &DB,
             "items",
             item_schema(),
             sqlite::SqliteTableOptions {
@@ -204,10 +201,9 @@ async fn sqlite_multiple_tables_in_one_run() {
     let (app, _appdir) = build_app(&db).await;
 
     app.run(|ctx| async move {
-        let db = ctx.get_key(&DB)?;
         let users = sqlite::mount_table_target(
             &ctx,
-            db,
+            &DB,
             "users",
             sqlite::TableSchema::new(
                 [
@@ -220,7 +216,7 @@ async fn sqlite_multiple_tables_in_one_run() {
         .await?;
         let products = sqlite::mount_table_target(
             &ctx,
-            db,
+            &DB,
             "products",
             sqlite::TableSchema::new(
                 [
@@ -273,9 +269,8 @@ async fn sqlite_add_column_preserves_rows() {
 
     // v1: (id, label)
     app.run(|ctx| async move {
-        let db = ctx.get_key(&DB)?;
         let s = sqlite::TableSchema::new([("id", col("INTEGER")), ("label", col("TEXT"))], ["id"])?;
-        let t = sqlite::mount_table_target(&ctx, db, "items", s).await?;
+        let t = sqlite::mount_table_target(&ctx, &DB, "items", s).await?;
         t.declare_row(&ctx, &json!({"id": 1, "label": "one"}))?;
         t.declare_row(&ctx, &json!({"id": 2, "label": "two"}))?;
         Ok(())
@@ -285,7 +280,6 @@ async fn sqlite_add_column_preserves_rows() {
 
     // v2: add nullable `extra` column; same PK → incremental ALTER TABLE ADD COLUMN.
     app.run(|ctx| async move {
-        let db = ctx.get_key(&DB)?;
         let s = sqlite::TableSchema::new(
             [
                 ("id", col("INTEGER")),
@@ -294,7 +288,7 @@ async fn sqlite_add_column_preserves_rows() {
             ],
             ["id"],
         )?;
-        let t = sqlite::mount_table_target(&ctx, db, "items", s).await?;
+        let t = sqlite::mount_table_target(&ctx, &DB, "items", s).await?;
         t.declare_row(&ctx, &json!({"id": 1, "label": "one", "extra": "x1"}))?;
         t.declare_row(&ctx, &json!({"id": 2, "label": "two"}))?; // extra → NULL
         Ok(())
@@ -326,7 +320,6 @@ async fn sqlite_drop_column_preserves_rows() {
 
     // v1: (id, label, extra)
     app.run(|ctx| async move {
-        let db = ctx.get_key(&DB)?;
         let s = sqlite::TableSchema::new(
             [
                 ("id", col("INTEGER")),
@@ -335,7 +328,7 @@ async fn sqlite_drop_column_preserves_rows() {
             ],
             ["id"],
         )?;
-        let t = sqlite::mount_table_target(&ctx, db, "items", s).await?;
+        let t = sqlite::mount_table_target(&ctx, &DB, "items", s).await?;
         t.declare_row(&ctx, &json!({"id": 1, "label": "one", "extra": "x1"}))?;
         Ok(())
     })
@@ -344,9 +337,8 @@ async fn sqlite_drop_column_preserves_rows() {
 
     // v2: drop `extra`; same PK → incremental ALTER TABLE DROP COLUMN.
     app.run(|ctx| async move {
-        let db = ctx.get_key(&DB)?;
         let s = sqlite::TableSchema::new([("id", col("INTEGER")), ("label", col("TEXT"))], ["id"])?;
-        let t = sqlite::mount_table_target(&ctx, db, "items", s).await?;
+        let t = sqlite::mount_table_target(&ctx, &DB, "items", s).await?;
         t.declare_row(&ctx, &json!({"id": 1, "label": "one"}))?;
         Ok(())
     })
@@ -368,9 +360,8 @@ async fn sqlite_change_column_type_recreates_column() {
 
     // v1: score TEXT
     app.run(|ctx| async move {
-        let db = ctx.get_key(&DB)?;
         let s = sqlite::TableSchema::new([("id", col("INTEGER")), ("score", col("TEXT"))], ["id"])?;
-        let t = sqlite::mount_table_target(&ctx, db, "scores", s).await?;
+        let t = sqlite::mount_table_target(&ctx, &DB, "scores", s).await?;
         t.declare_row(&ctx, &json!({"id": 1, "score": "10"}))?;
         Ok(())
     })
@@ -379,10 +370,9 @@ async fn sqlite_change_column_type_recreates_column() {
 
     // v2: score INTEGER; same PK → column type change (DROP + ADD COLUMN).
     app.run(|ctx| async move {
-        let db = ctx.get_key(&DB)?;
         let s =
             sqlite::TableSchema::new([("id", col("INTEGER")), ("score", col("INTEGER"))], ["id"])?;
-        let t = sqlite::mount_table_target(&ctx, db, "scores", s).await?;
+        let t = sqlite::mount_table_target(&ctx, &DB, "scores", s).await?;
         t.declare_row(&ctx, &json!({"id": 1, "score": 42}))?;
         Ok(())
     })
@@ -417,8 +407,7 @@ async fn sqlite_mount_each_per_item_rows() {
     // one row per item from `mount_each` sub-components (mirrors Python's
     // `await coco.mount_each(process, items, target)`).
     app.run(|ctx| async move {
-        let db = ctx.get_key(&DB)?;
-        let table = sqlite::mount_table_target(&ctx, db, "items", item_schema()).await?;
+        let table = sqlite::mount_table_target(&ctx, &DB, "items", item_schema()).await?;
         ctx.mount_each(
             vec![item(1, "one"), item(2, "two"), item(3, "three")],
             |it| it.id.to_string(),

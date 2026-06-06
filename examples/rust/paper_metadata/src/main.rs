@@ -388,10 +388,9 @@ async fn index_paper(
 }
 
 async fn app_main(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
-    let db = ctx.get_key(&DB)?;
     let metadata_table = postgres::mount_table_target(
         &ctx,
-        db,
+        &DB,
         TABLE_METADATA,
         metadata_schema()?,
         Some(PG_SCHEMA),
@@ -399,7 +398,7 @@ async fn app_main(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
     .await?;
     let author_table = postgres::mount_table_target(
         &ctx,
-        db,
+        &DB,
         TABLE_AUTHOR_PAPERS,
         author_schema()?,
         Some(PG_SCHEMA),
@@ -407,7 +406,7 @@ async fn app_main(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
     .await?;
     let embedding_table = postgres::mount_table_target(
         &ctx,
-        db,
+        &DB,
         TABLE_EMBEDDINGS,
         embedding_schema()?,
         Some(PG_SCHEMA),

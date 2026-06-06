@@ -537,7 +537,12 @@ impl App {
         let (core, preview_collector) = self
             .inner
             .core_app
-            .update(processor, core_options, Arc::new(()), preview_collector)
+            .update(
+                processor,
+                core_options,
+                self.inner.context.clone(),
+                preview_collector,
+            )
             .map_err(|e| Error::engine(format!("{e}")))?;
         Ok(UpdateHandle {
             core,
@@ -592,7 +597,7 @@ impl App {
         let core = self
             .inner
             .core_app
-            .drop_app(Arc::new(()))
+            .drop_app(self.inner.context.clone())
             .map_err(|e| Error::engine(format!("{e}")))?;
         Ok(DropHandle { core })
     }

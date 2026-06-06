@@ -100,9 +100,8 @@ async fn process_audio(ctx: &Ctx, file: FileEntry, table: postgres::TableTarget)
 }
 
 async fn app_main(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
-    let db = ctx.get_key(&DB)?;
     let table =
-        postgres::mount_table_target(&ctx, db, TABLE, transcription_schema()?, Some(PG_SCHEMA))
+        postgres::mount_table_target(&ctx, &DB, TABLE, transcription_schema()?, Some(PG_SCHEMA))
             .await?;
 
     let files = walk_items(&sourcedir, AUDIO_PATTERNS)?;

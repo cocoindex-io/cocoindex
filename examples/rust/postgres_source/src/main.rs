@@ -120,9 +120,8 @@ fn output_schema() -> Result<postgres::TableSchema> {
 }
 
 async fn app_main(ctx: Ctx) -> Result<()> {
-    let db = ctx.get_key(&DB)?;
     let target =
-        postgres::mount_table_target(&ctx, db, TABLE, output_schema()?, Some(PG_SCHEMA)).await?;
+        postgres::mount_table_target(&ctx, &DB, TABLE, output_schema()?, Some(PG_SCHEMA)).await?;
     target.declare_vector_index(
         &ctx,
         "embedding",

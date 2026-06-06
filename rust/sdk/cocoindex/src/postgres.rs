@@ -19,7 +19,7 @@ use serde_json::{Map, Value as JsonValue};
 use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
 
-use crate::ctx::Ctx;
+use crate::ctx::{ContextKey, ContextStore, Ctx};
 use crate::error::{Error, Result};
 use crate::statediff::{
     ManagedBy, ManagedTargetOptions, MutualTrackingRecord, resolve_system_transition,
@@ -207,7 +207,7 @@ pub struct TableTarget {
 /// [`declare_target_state_with_child`]/[`mount_target`].
 pub fn table_target(
     ctx: &Ctx,
-    db: &Database,
+    db: &ContextKey<Database>,
     table_name: impl Into<String>,
     table_schema: TableSchema,
     pg_schema_name: Option<&str>,
@@ -225,7 +225,7 @@ pub fn table_target(
 /// [`table_target`] with explicit [`ManagedTargetOptions`] (`managed_by`).
 pub fn table_target_with_options(
     ctx: &Ctx,
-    db: &Database,
+    db: &ContextKey<Database>,
     table_name: impl Into<String>,
     table_schema: TableSchema,
     pg_schema_name: Option<&str>,
@@ -238,13 +238,17 @@ pub fn table_target_with_options(
     }
     let provider = register_root_target_states_provider(
         ctx,
+        // Stable connection identity = the ContextKey's name (`db_key`); the pool
+        // is resolved at apply time from the host context (design_connectors §5.5).
         format!(
             "cocoindex/postgres/table/{}/{}/{}",
-            db.state_id(),
+            db.name(),
             pg_schema_name.unwrap_or("public"),
             table_name
         ),
-        TableHandler { db: db.clone() },
+        TableHandler {
+            db_key: db.name().to_string(),
+        },
     )?;
     Ok(provider.target_state(
         "default",
@@ -262,7 +266,7 @@ pub fn table_target_with_options(
 /// use [`mount_table_target`] when rows must be declared immediately.
 pub fn declare_table_target(
     ctx: &Ctx,
-    db: &Database,
+    db: &ContextKey<Database>,
     table_name: impl Into<String>,
     table_schema: TableSchema,
     pg_schema_name: Option<&str>,
@@ -278,7 +282,7 @@ pub fn declare_table_target(
 /// immediately) and return a handle. System-managed.
 pub async fn mount_table_target(
     ctx: &Ctx,
-    db: &Database,
+    db: &ContextKey<Database>,
     table_name: impl Into<String>,
     table_schema: TableSchema,
     pg_schema_name: Option<&str>,
@@ -297,7 +301,7 @@ pub async fn mount_table_target(
 /// [`mount_table_target`] with explicit [`ManagedTargetOptions`] (`managed_by`).
 pub async fn mount_table_target_with_options(
     ctx: &Ctx,
-    db: &Database,
+    db: &ContextKey<Database>,
     table_name: impl Into<String>,
     table_schema: TableSchema,
     pg_schema_name: Option<&str>,
@@ -518,7 +522,7 @@ pub struct VectorIndexSpec {
 // ---------------------------------------------------------------------------
 
 struct TableHandler {
-    db: Database,
+    db_key: String,
 }
 
 impl TargetHandler<TableSpec> for TableHandler {
@@ -632,13 +636,13 @@ impl TargetHandler<TableSpec> for TableHandler {
             (
                 "vector_index".to_string(),
                 ChildTargetDef::new::<VectorIndexSpec, _>(VectorIndexHandler {
-                    db: self.db.clone(),
+                    db_key: self.db_key.clone(),
                 }),
             ),
             (
                 "sql_command_attachment".to_string(),
                 ChildTargetDef::new::<SqlCommandSpec, _>(SqlCommandHandler {
-                    db: self.db.clone(),
+                    db_key: self.db_key.clone(),
                 }),
             ),
         ])
@@ -647,11 +651,12 @@ impl TargetHandler<TableSpec> for TableHandler {
 
 impl TableHandler {
     fn table_sink(&self) -> TargetActionSink<TableAction> {
-        let db = self.db.clone();
-        TargetActionSink::from_async_fn_with_children(
-            move |actions: Vec<TargetAction<TableAction>>| {
-                let db = db.clone();
+        let db_key = self.db_key.clone();
+        TargetActionSink::from_async_fn_with_children_ctx(
+            move |host_ctx, actions: Vec<TargetAction<TableAction>>| {
+                let db_key = db_key.clone();
                 async move {
+                    let db = resolve_db(&host_ctx, &db_key)?;
                     let mut out: Vec<Option<ChildTargetDef>> = Vec::with_capacity(actions.len());
                     for action in actions {
                         match action {
@@ -675,7 +680,7 @@ impl TableHandler {
                                     apply_retypes(&db, &spec, &a.retype_cols).await?;
                                 }
                                 out.push(Some(ChildTargetDef::new::<RowState, _>(RowHandler {
-                                    db: db.clone(),
+                                    db_key: db_key.clone(),
                                     spec,
                                 })));
                             }
@@ -700,7 +705,7 @@ impl TableHandler {
 // ---------------------------------------------------------------------------
 
 struct RowHandler {
-    db: Database,
+    db_key: String,
     spec: TableSpec,
 }
 
@@ -740,26 +745,40 @@ impl TargetHandler<RowState> for RowHandler {
     }
 }
 
+/// Resolve the live Postgres [`Database`] from the host context by its stable
+/// `db_key` (the `ContextKey` name it was provided under).
+fn resolve_db(host_ctx: &Arc<ContextStore>, db_key: &str) -> Result<Arc<Database>> {
+    host_ctx.resolve::<Database>(db_key).ok_or_else(|| {
+        Error::engine(format!(
+            "postgres target: database `{db_key}` was not provided in the environment \
+             (call Environment::builder().provide_key(&KEY, db))"
+        ))
+    })
+}
+
 impl RowHandler {
     fn row_sink(&self) -> TargetActionSink<RowAction> {
-        let db = self.db.clone();
+        let db_key = self.db_key.clone();
         let spec = self.spec.clone();
-        TargetActionSink::from_async_fn(move |actions: Vec<TargetAction<RowAction>>| {
-            let db = db.clone();
-            let spec = spec.clone();
-            async move {
-                let mut mutations = Vec::with_capacity(actions.len());
-                for action in actions {
-                    let row = match action {
-                        TargetAction::Create(r)
-                        | TargetAction::Update(r)
-                        | TargetAction::Delete(r) => r,
-                    };
-                    mutations.push((row.pk, row.state));
+        TargetActionSink::from_async_fn_with_ctx(
+            move |host_ctx, actions: Vec<TargetAction<RowAction>>| {
+                let db_key = db_key.clone();
+                let spec = spec.clone();
+                async move {
+                    let db = resolve_db(&host_ctx, &db_key)?;
+                    let mut mutations = Vec::with_capacity(actions.len());
+                    for action in actions {
+                        let row = match action {
+                            TargetAction::Create(r)
+                            | TargetAction::Update(r)
+                            | TargetAction::Delete(r) => r,
+                        };
+                        mutations.push((row.pk, row.state));
+                    }
+                    apply_rows(&db, &spec, mutations).await
                 }
-                apply_rows(&db, &spec, mutations).await
-            }
-        })
+            },
+        )
     }
 }
 
@@ -768,7 +787,7 @@ impl RowHandler {
 // ---------------------------------------------------------------------------
 
 struct VectorIndexHandler {
-    db: Database,
+    db_key: String,
 }
 
 impl TargetHandler<VectorIndexSpec> for VectorIndexHandler {
@@ -814,34 +833,37 @@ impl TargetHandler<VectorIndexSpec> for VectorIndexHandler {
 
 impl VectorIndexHandler {
     fn vector_index_sink(&self) -> TargetActionSink<VectorIndexAction> {
-        let db = self.db.clone();
-        TargetActionSink::from_async_fn(move |actions: Vec<TargetAction<VectorIndexAction>>| {
-            let db = db.clone();
-            async move {
-                for action in actions {
-                    let (is_delete, spec) = match action {
-                        TargetAction::Delete(a) => (true, a.spec),
-                        TargetAction::Create(a) | TargetAction::Update(a) => (false, a.spec),
-                    };
-                    if is_delete {
-                        drop_vector_index(&db, &spec).await?;
-                    } else {
-                        define_table(
-                            &db,
-                            &TableSpec {
-                                pg_schema_name: spec.pg_schema_name.clone(),
-                                table_name: spec.table_name.clone(),
-                                table_schema: spec.table_schema.clone(),
-                                managed_by: spec.managed_by,
-                            },
-                        )
-                        .await?;
-                        recreate_vector_index(&db, &spec).await?;
+        let db_key = self.db_key.clone();
+        TargetActionSink::from_async_fn_with_ctx(
+            move |host_ctx, actions: Vec<TargetAction<VectorIndexAction>>| {
+                let db_key = db_key.clone();
+                async move {
+                    let db = resolve_db(&host_ctx, &db_key)?;
+                    for action in actions {
+                        let (is_delete, spec) = match action {
+                            TargetAction::Delete(a) => (true, a.spec),
+                            TargetAction::Create(a) | TargetAction::Update(a) => (false, a.spec),
+                        };
+                        if is_delete {
+                            drop_vector_index(&db, &spec).await?;
+                        } else {
+                            define_table(
+                                &db,
+                                &TableSpec {
+                                    pg_schema_name: spec.pg_schema_name.clone(),
+                                    table_name: spec.table_name.clone(),
+                                    table_schema: spec.table_schema.clone(),
+                                    managed_by: spec.managed_by,
+                                },
+                            )
+                            .await?;
+                            recreate_vector_index(&db, &spec).await?;
+                        }
                     }
+                    Ok(())
                 }
-                Ok(())
-            }
-        })
+            },
+        )
     }
 }
 
@@ -871,7 +893,7 @@ fn collect_teardown_sql(prev: &[SqlCommandSpec]) -> Option<String> {
 }
 
 struct SqlCommandHandler {
-    db: Database,
+    db_key: String,
 }
 
 impl TargetHandler<SqlCommandSpec> for SqlCommandHandler {
@@ -923,33 +945,36 @@ impl TargetHandler<SqlCommandSpec> for SqlCommandHandler {
 
 impl SqlCommandHandler {
     fn sql_command_sink(&self) -> TargetActionSink<SqlCommandAction> {
-        let db = self.db.clone();
-        TargetActionSink::from_async_fn(move |actions: Vec<TargetAction<SqlCommandAction>>| {
-            let db = db.clone();
-            async move {
-                for action in actions {
-                    let action = match action {
-                        TargetAction::Create(a)
-                        | TargetAction::Update(a)
-                        | TargetAction::Delete(a) => a,
-                    };
-                    // Run previous teardown first (on change or removal), then setup.
-                    if let Some(teardown) = action.prev_teardown_sql {
-                        sqlx::query(&teardown)
-                            .execute(db.pool())
-                            .await
-                            .map_err(pg_err)?;
+        let db_key = self.db_key.clone();
+        TargetActionSink::from_async_fn_with_ctx(
+            move |host_ctx, actions: Vec<TargetAction<SqlCommandAction>>| {
+                let db_key = db_key.clone();
+                async move {
+                    let db = resolve_db(&host_ctx, &db_key)?;
+                    for action in actions {
+                        let action = match action {
+                            TargetAction::Create(a)
+                            | TargetAction::Update(a)
+                            | TargetAction::Delete(a) => a,
+                        };
+                        // Run previous teardown first (on change or removal), then setup.
+                        if let Some(teardown) = action.prev_teardown_sql {
+                            sqlx::query(&teardown)
+                                .execute(db.pool())
+                                .await
+                                .map_err(pg_err)?;
+                        }
+                        if let Some(spec) = action.spec {
+                            sqlx::query(&spec.setup_sql)
+                                .execute(db.pool())
+                                .await
+                                .map_err(pg_err)?;
+                        }
                     }
-                    if let Some(spec) = action.spec {
-                        sqlx::query(&spec.setup_sql)
-                            .execute(db.pool())
-                            .await
-                            .map_err(pg_err)?;
-                    }
+                    Ok(())
                 }
-                Ok(())
-            }
-        })
+            },
+        )
     }
 }
 

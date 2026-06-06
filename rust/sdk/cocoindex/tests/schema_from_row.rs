@@ -120,7 +120,7 @@ fn postgres_from_row_matches_explicit_schema() {
 #[tokio::test]
 async fn sqlite_from_row_round_trips_a_row() -> cocoindex::Result<()> {
     use cocoindex::sqlite::{self, Database, TableSchema};
-    use cocoindex::{App, SchemaFields};
+    use cocoindex::{ContextKey, Environment, SchemaFields};
     use sqlx::Row as _;
 
     #[derive(serde::Serialize, SchemaFields, Clone)]
@@ -147,17 +147,18 @@ async fn sqlite_from_row_round_trips_a_row() -> cocoindex::Result<()> {
         },
     ];
 
-    let app = App::builder("SqliteFromRow")
+    let db_key = ContextKey::<Database>::new("sqlite_from_row_db");
+    let env = Environment::builder()
         .db_path(tmp.path().join("coco_db"))
+        .provide_key(&db_key, db.clone())
         .build()
         .await?;
-    let db2 = db.clone();
+    let app = env.app("SqliteFromRow").await?;
     app.run(move |ctx| {
-        let db = db2.clone();
         let rows = rows.clone();
         async move {
             let schema = TableSchema::from_row::<Item>(["id"])?;
-            let table = sqlite::mount_table_target(&ctx, &db, "items", schema).await?;
+            let table = sqlite::mount_table_target(&ctx, &db_key, "items", schema).await?;
             for row in &rows {
                 table.declare_row(&ctx, row)?;
             }

@@ -83,8 +83,7 @@ async fn index(source_dir: PathBuf, db_path: String) -> Result<()> {
         .run(move |ctx| {
             let source_dir = source_dir.clone();
             async move {
-                let db = ctx.get_key(&DB)?;
-                let table = sqlite::mount_table_target(&ctx, db, TABLE, files_schema()?).await?;
+                let table = sqlite::mount_table_target(&ctx, &DB, TABLE, files_schema()?).await?;
 
                 let files = cocoindex::fs::walk_items(&source_dir, &["**/*.md", "**/*.txt"])?;
                 mount_each!(files, |file| process_file(ctx, file, table)).await?;
