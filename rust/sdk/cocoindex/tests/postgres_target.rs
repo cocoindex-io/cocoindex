@@ -3,7 +3,7 @@
 use std::sync::LazyLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use cocoindex::{App, ContextKey, Ctx, Environment, Result, postgres};
+use cocoindex::{ContextKey, Ctx, Environment, Result, postgres};
 use serde::{Deserialize, Serialize};
 use sqlx::Row as _;
 
@@ -26,10 +26,9 @@ struct EmbeddingRow {
 }
 
 async fn declare_rows(ctx: Ctx, schema: String, rows: Vec<TestRow>) -> Result<()> {
-    let db = ctx.get_key(&PG)?;
     let table = postgres::mount_table_target(
         &ctx,
-        db,
+        &PG,
         "rows",
         postgres::TableSchema::new(
             [
@@ -48,10 +47,9 @@ async fn declare_rows(ctx: Ctx, schema: String, rows: Vec<TestRow>) -> Result<()
 }
 
 async fn declare_vector_table(ctx: Ctx, schema: String, with_index: bool) -> Result<()> {
-    let db = ctx.get_key(&PG)?;
     let table = postgres::mount_table_target(
         &ctx,
-        db,
+        &PG,
         "vectors",
         postgres::TableSchema::new(
             [
@@ -88,10 +86,9 @@ async fn declare_rows_with_sql_command(
     schema: String,
     with_attachment: bool,
 ) -> Result<()> {
-    let db = ctx.get_key(&PG)?;
     let table = postgres::mount_table_target(
         &ctx,
-        db,
+        &PG,
         "rows",
         postgres::TableSchema::new(
             [
@@ -489,14 +486,13 @@ async fn declare_cols(
     columns: Vec<(String, String)>,
     row: serde_json::Value,
 ) -> Result<()> {
-    let db = ctx.get_key(&PG)?;
     let cols: Vec<(String, postgres::ColumnDef)> = columns
         .into_iter()
         .map(|(n, t)| (n, postgres::ColumnDef::new(t)))
         .collect();
     let table = postgres::mount_table_target(
         &ctx,
-        db,
+        &PG,
         "rows",
         postgres::TableSchema::new(cols, ["id"])?,
         Some(&schema_ns),
@@ -722,10 +718,9 @@ struct BlobRow {
 }
 
 async fn declare_blobs(ctx: Ctx, schema: String, rows: Vec<BlobRow>) -> Result<()> {
-    let db = ctx.get_key(&PG)?;
     let table = postgres::mount_table_target(
         &ctx,
-        db,
+        &PG,
         "blobs",
         postgres::TableSchema::new(
             [
@@ -824,10 +819,9 @@ async fn declare_evo_table(
     pk: Vec<&'static str>,
     rows: Vec<serde_json::Value>,
 ) -> Result<()> {
-    let db = ctx.get_key(&PG)?;
     let table = postgres::mount_table_target(
         &ctx,
-        db,
+        &PG,
         "evo",
         postgres::TableSchema::new(
             cols.into_iter()

@@ -9,7 +9,7 @@ use cocoindex_core::engine::target_state::ChildInvalidation;
 pub use cocoindex_core::state::stable_path::StableKey;
 use serde::{Serialize, de::DeserializeOwned};
 
-use crate::ctx::Ctx;
+use crate::ctx::{ContextStore, Ctx};
 use crate::error::Result;
 use crate::profile::{Action, BoxedHandler, BoxedSink, RustProfile, Value};
 
@@ -238,6 +238,79 @@ where
                 .collect::<Result<Vec<_>>>();
             let fut = match decoded {
                 Ok(actions) => Box::pin(f(actions))
+                    as Pin<Box<dyn Future<Output = Result<Vec<Option<ChildTargetDef>>>> + Send>>,
+                Err(err) => Box::pin(async move { Err(err) }),
+            };
+            Box::pin(async move {
+                let defs = fut
+                    .await
+                    .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?;
+                let mapped = defs
+                    .into_iter()
+                    .map(|d| {
+                        d.map(|d| cocoindex_core::engine::target_state::ChildTargetDef {
+                            handler: d.handler,
+                        })
+                    })
+                    .collect();
+                Ok(Some(mapped))
+            })
+        });
+        Self {
+            inner,
+            _action: PhantomData,
+        }
+    }
+
+    /// Like [`Self::from_async_fn`], but the apply closure also receives the
+    /// host context (the environment's [`ContextStore`]) so it can resolve a
+    /// provided connection by its stable key at apply time (`design_connectors.md`
+    /// §5.5). Used by connectors that resolve pools/clients in `apply`.
+    // Used only by feature-gated connectors (postgres/sqlite today); harmless
+    // dead code in builds without any such connector enabled.
+    #[allow(dead_code)]
+    pub(crate) fn from_async_fn_with_ctx<F, Fut>(f: F) -> Self
+    where
+        F: Fn(Arc<ContextStore>, Vec<TargetAction<A>>) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<()>> + Send + 'static,
+    {
+        let inner = BoxedSink::new_with_ctx(move |host_ctx, actions| {
+            let decoded = actions
+                .into_iter()
+                .map(decode_action::<A>)
+                .collect::<Result<Vec<_>>>();
+            let fut = match decoded {
+                Ok(actions) => Box::pin(f(host_ctx, actions))
+                    as Pin<Box<dyn Future<Output = Result<()>> + Send>>,
+                Err(err) => Box::pin(async move { Err(err) }),
+            };
+            Box::pin(async move {
+                fut.await
+                    .map_err(|e| cocoindex_utils::error::Error::internal_msg(e.to_string()))?;
+                Ok(None)
+            })
+        });
+        Self {
+            inner,
+            _action: PhantomData,
+        }
+    }
+
+    /// Like [`Self::from_async_fn_with_children`], but the apply closure also
+    /// receives the host context for apply-time connection resolution.
+    #[allow(dead_code)]
+    pub(crate) fn from_async_fn_with_children_ctx<F, Fut>(f: F) -> Self
+    where
+        F: Fn(Arc<ContextStore>, Vec<TargetAction<A>>) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<Vec<Option<ChildTargetDef>>>> + Send + 'static,
+    {
+        let inner = BoxedSink::new_with_ctx(move |host_ctx, actions| {
+            let decoded = actions
+                .into_iter()
+                .map(decode_action::<A>)
+                .collect::<Result<Vec<_>>>();
+            let fut = match decoded {
+                Ok(actions) => Box::pin(f(host_ctx, actions))
                     as Pin<Box<dyn Future<Output = Result<Vec<Option<ChildTargetDef>>>> + Send>>,
                 Err(err) => Box::pin(async move { Err(err) }),
             };

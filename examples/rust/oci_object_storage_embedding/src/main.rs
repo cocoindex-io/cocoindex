@@ -90,9 +90,8 @@ async fn process_file(ctx: &Ctx, file: OciFile) -> Result<Vec<DocEmbeddingRow>> 
 }
 
 async fn app_main(ctx: Ctx, namespace: String, bucket: String, prefix: String) -> Result<()> {
-    let db = ctx.get_key(&DB)?;
     let table =
-        postgres::mount_table_target(&ctx, db, TABLE, doc_embedding_schema()?, Some(PG_SCHEMA))
+        postgres::mount_table_target(&ctx, &DB, TABLE, doc_embedding_schema()?, Some(PG_SCHEMA))
             .await?;
     table.declare_vector_index(
         &ctx,

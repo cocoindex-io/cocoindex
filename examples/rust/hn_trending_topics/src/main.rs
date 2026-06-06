@@ -306,10 +306,9 @@ async fn process_thread(ctx: &Ctx, thread_id: String) -> Result<ProcessedThread>
 }
 
 async fn app_main(ctx: Ctx, max_threads: usize) -> Result<()> {
-    let db = ctx.get_key(&PG)?;
     let messages = postgres::mount_table_target(
         &ctx,
-        db,
+        &PG,
         "hn_messages",
         message_schema()?,
         Some("coco_examples"),
@@ -317,7 +316,7 @@ async fn app_main(ctx: Ctx, max_threads: usize) -> Result<()> {
     .await?;
     let topics = postgres::mount_table_target(
         &ctx,
-        db,
+        &PG,
         "hn_topics",
         topic_schema()?,
         Some("coco_examples"),

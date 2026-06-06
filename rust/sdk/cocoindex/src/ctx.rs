@@ -132,7 +132,7 @@ impl<T> ContextKey<T> {
 
 static USED_CONTEXT_KEYS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub(crate) struct ContextStore {
     values: HashMap<Arc<str>, Arc<dyn Any + Send + Sync>>,
     fingerprints: HashMap<Arc<str>, Fingerprint>,
@@ -162,6 +162,19 @@ impl ContextStore {
         self.values
             .get(&key.name)
             .and_then(|value| value.downcast_ref::<T>())
+    }
+
+    /// Resolve a provided resource by its `ContextKey` name (the stable
+    /// `db_key`), returning a shared handle. Target sinks call this at apply
+    /// time via `HostCtx` (the environment's [`ContextStore`]) so connection
+    /// identity in target keys stays a stable key while the live pool/client is
+    /// resolved only when the sink runs (see `design_connectors.md` §5.5).
+    // Used only by feature-gated connectors (postgres/sqlite today).
+    #[allow(dead_code)]
+    pub(crate) fn resolve<T: Send + Sync + 'static>(&self, db_key: &str) -> Option<Arc<T>> {
+        self.values
+            .get(db_key)
+            .and_then(|value| value.clone().downcast::<T>().ok())
     }
 
     fn fingerprint<T>(&self, key: &ContextKey<T>) -> Option<Fingerprint> {

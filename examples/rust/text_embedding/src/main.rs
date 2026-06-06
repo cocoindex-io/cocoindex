@@ -109,9 +109,8 @@ fn doc_embedding_schema() -> Result<postgres::TableSchema> {
 }
 
 async fn app_main(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
-    let db = ctx.get_key(&DB)?;
     let table =
-        postgres::mount_table_target(&ctx, db, TABLE, doc_embedding_schema()?, Some(PG_SCHEMA))
+        postgres::mount_table_target(&ctx, &DB, TABLE, doc_embedding_schema()?, Some(PG_SCHEMA))
             .await?;
     table.declare_vector_index(
         &ctx,

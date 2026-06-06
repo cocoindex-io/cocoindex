@@ -16,6 +16,7 @@ use cocoindex_core::state::stable_path::StableKey;
 use cocoindex_utils::fingerprint::Fingerprint;
 use serde::{Deserialize, Serialize};
 
+use crate::ctx::ContextStore;
 use crate::error::Result;
 
 // ---------------------------------------------------------------------------
@@ -27,7 +28,9 @@ pub(crate) struct RustProfile;
 
 impl EngineProfile for RustProfile {
     type HostRuntimeCtx = ();
-    type HostCtx = ();
+    /// The environment's context store, so target sinks can resolve provided
+    /// resources (pools/clients) by their stable key at apply time (§10/§11).
+    type HostCtx = ContextStore;
     type ComponentProc = BoxedProcessor;
     type FunctionData = Value;
 
@@ -236,20 +239,21 @@ impl TargetHandler<RustProfile> for BoxedHandler {
 // BoxedSink — Type-erased action sink for batched target state application.
 // ---------------------------------------------------------------------------
 
-type SinkFn = Arc<
-    dyn Fn(
-            Vec<Action>,
-        ) -> Pin<
-            Box<
-                dyn Future<
-                        Output = cocoindex_utils::error::Result<
-                            Option<Vec<Option<ChildTargetDef<RustProfile>>>>,
-                        >,
-                    > + Send,
-            >,
-        > + Send
-        + Sync,
+type SinkFuture = Pin<
+    Box<
+        dyn Future<
+                Output = cocoindex_utils::error::Result<
+                    Option<Vec<Option<ChildTargetDef<RustProfile>>>>,
+                >,
+            > + Send,
+    >,
 >;
+
+// The sink receives the host context (the environment's `ContextStore`) so it
+// can resolve provided resources (pools/clients) by their stable key at apply
+// time. `BoxedSink::new` adapts host-ctx-free closures (the common case);
+// `new_with_ctx` is for connectors that resolve a connection at apply.
+type SinkFn = Arc<dyn Fn(Arc<ContextStore>, Vec<Action>) -> SinkFuture + Send + Sync>;
 
 #[derive(Clone)]
 pub(crate) struct BoxedSink {
@@ -258,20 +262,12 @@ pub(crate) struct BoxedSink {
 }
 
 impl BoxedSink {
-    pub(crate) fn new(
-        f: impl Fn(
-            Vec<Action>,
-        ) -> Pin<
-            Box<
-                dyn Future<
-                        Output = cocoindex_utils::error::Result<
-                            Option<Vec<Option<ChildTargetDef<RustProfile>>>>,
-                        >,
-                    > + Send,
-            >,
-        > + Send
-        + Sync
-        + 'static,
+    pub(crate) fn new(f: impl Fn(Vec<Action>) -> SinkFuture + Send + Sync + 'static) -> Self {
+        Self::new_with_ctx(move |_host_ctx, actions| f(actions))
+    }
+
+    pub(crate) fn new_with_ctx(
+        f: impl Fn(Arc<ContextStore>, Vec<Action>) -> SinkFuture + Send + Sync + 'static,
     ) -> Self {
         let arc: SinkFn = Arc::new(f);
         // Cast through a thin pointer to get a stable address for equality.
@@ -299,10 +295,10 @@ impl TargetActionSink<RustProfile> for BoxedSink {
     async fn apply(
         &self,
         _host_runtime_ctx: &(),
-        _host_ctx: Arc<()>,
+        host_ctx: Arc<ContextStore>,
         actions: Vec<Action>,
     ) -> cocoindex_utils::error::Result<Option<Vec<Option<ChildTargetDef<RustProfile>>>>> {
-        (self.apply_fn)(actions).await
+        (self.apply_fn)(host_ctx, actions).await
     }
 }
 
