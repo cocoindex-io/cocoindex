@@ -27,6 +27,7 @@ from .component_ctx import (
 )
 from .function import AnyCallable, create_core_component_processor
 from .environment import Environment
+from .serde import deserialize
 
 if TYPE_CHECKING:
     from .api import ComponentMountHandle
@@ -394,6 +395,29 @@ class LiveComponentOperator:
         """Signal readiness. In catch-up mode, this never returns (terminates process_live)."""
         await self._require_controller().mark_ready_async()
 
+    async def read_committed_state(self, key: str) -> Any | None:
+        """Read state committed under ``key`` by a prior run's ``process()``.
+
+        Read-only counterpart to :func:`coco.use_state`, callable inside
+        ``process_live``. A durable connector persists a bootstrap flag /
+        logic version via ``coco.use_state`` inside ``process()``; on a
+        later run it reads that value back here — before the first
+        ``update_full`` — to decide whether the startup full scan can be
+        skipped.
+
+        Returns the deserialized value (the same object a subsequent
+        ``use_state`` call would observe), or ``None`` if no value was
+        committed for ``key`` (e.g. the component never bootstrapped). The
+        value is read from a fresh standalone snapshot and reflects the most
+        recently committed run, not any in-flight ``update_full`` of the
+        current ``process_live``.
+        """
+        controller = self._require_controller()
+        raw = await controller.read_committed_state_async(key)
+        if raw is None:
+            return None
+        return deserialize(raw)
+
     async def report_exception(self, exc: BaseException) -> None:
         """Route an exception raised during ``process_live`` to the parent's exception handler chain.
 
@@ -487,6 +511,16 @@ class LiveMapSubscriber(Generic[_K, _V]):
     async def delete(self, key: _K) -> ComponentMountHandle:
         """Incrementally delete a single entry."""
         return await self._operator.delete(ComponentSubpath(key))  # type: ignore[no-any-return,arg-type]
+
+    async def read_committed_state(self, key: str) -> Any | None:
+        """Read prior-run committed state for ``key``.
+
+        Delegates to :meth:`LiveComponentOperator.read_committed_state` so a
+        ``LiveMapView``/``LiveMapFeed`` ``watch()`` (which receives this
+        subscriber, not the operator) can gate its startup ``update_all()``
+        on persisted bootstrap state.
+        """
+        return await self._operator.read_committed_state(key)
 
 
 class _MountEachLiveComponent:

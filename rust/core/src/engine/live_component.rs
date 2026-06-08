@@ -9,7 +9,7 @@ use crate::engine::profile::EngineProfile;
 use crate::engine::stats::ProcessingStats;
 use crate::engine::target_state::TargetStateProvider;
 use crate::prelude::*;
-use crate::state::stable_path::StablePath;
+use crate::state::stable_path::{StableKey, StablePath};
 use crate::state::target_state_path::TargetStatePath;
 use cocoindex_utils::error::{SharedError, SharedResult};
 
@@ -483,6 +483,27 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
 
     pub fn is_live(&self) -> bool {
         self.live
+    }
+
+    /// Read the value committed under `key` in this live component's
+    /// persistent user state by a prior run (written via `coco.use_state(...)`
+    /// inside `process()`). Read-only counterpart to `use_state`, callable
+    /// from `process_live` — before the first `update_full` — to decide
+    /// whether a startup full scan can be skipped (e.g. a durable connector
+    /// that persisted a bootstrap flag + logic version).
+    ///
+    /// Returns `None` if `key` has no committed value (e.g. the component
+    /// never bootstrapped). Reads a fresh standalone snapshot; unlike
+    /// `use_state`, it neither declares the key nor participates in commit,
+    /// so it is safe in the non-committing `process_live` context.
+    pub async fn read_committed_state(&self, key: &StableKey) -> Result<Option<Vec<u8>>> {
+        let rows = self
+            .component
+            .app_ctx()
+            .app_store()
+            .list_user_states(self.component.stable_path())
+            .await?;
+        Ok(rows.into_iter().find_map(|(k, v)| (k == *key).then_some(v)))
     }
 
     /// Full processing cycle. Acquires `update_full_lock` (serializes with

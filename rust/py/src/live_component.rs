@@ -7,6 +7,7 @@ use crate::{
 };
 
 use cocoindex_core::engine::live_component::LiveComponentController;
+use cocoindex_core::state::stable_path::StableKey;
 use cocoindex_py_utils::from_py_future;
 use pyo3_async_runtimes::tokio::future_into_py;
 
@@ -116,6 +117,26 @@ impl PyLiveComponentController {
     #[getter]
     pub fn is_live(&self) -> bool {
         self.0.is_live()
+    }
+
+    /// Read previously-committed user state for `key` (written via
+    /// `coco.use_state` inside `process()`), as a fresh standalone read.
+    /// Returns `None` if absent. Callable from `process_live` to gate a
+    /// durable startup-scan skip.
+    pub fn read_committed_state_async<'py>(
+        &self,
+        py: Python<'py>,
+        key: String,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let ctrl = self.0.clone();
+        future_into_py(py, async move {
+            let stable_key = StableKey::Symbol(key.into());
+            let value = ctrl
+                .read_committed_state(&stable_key)
+                .await
+                .into_py_result()?;
+            Ok(value)
+        })
     }
 }
 

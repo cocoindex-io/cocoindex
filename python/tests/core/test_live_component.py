@@ -152,6 +152,56 @@ def test_live_component_mark_ready_auto_on_return() -> None:
 
 
 # ============================================================================
+# read_committed_state (process_live read of a prior run's use_state)
+# ============================================================================
+
+
+_committed_reads: list[Any] = []
+
+
+class _BootstrapStateLiveComponent:
+    """Persists a marker via ``use_state`` in ``process()`` and reads it back
+    via ``operator.read_committed_state`` at the top of ``process_live`` —
+    the bootstrap-detection pattern: a later run observes what the prior run
+    committed, before its own ``update_full`` runs.
+    """
+
+    async def process(self) -> None:
+        marker = coco.use_state("marker", 0)
+        marker.value = 100
+        _declare_source_entries()
+
+    async def process_live(self, operator: coco.LiveComponentOperator) -> None:
+        # Read BEFORE update_full so we observe the PRIOR run's commit, not
+        # this run's process().
+        _committed_reads.append(await operator.read_committed_state("marker"))
+        await operator.update_full()
+        await operator.mark_ready()
+
+
+def test_read_committed_state_across_runs() -> None:
+    GlobalDictTarget.store.clear()
+    _source_data.clear()
+    _committed_reads.clear()
+    _source_data["k"] = 1
+
+    async def _main() -> None:
+        await coco.mount(coco.component_subpath("live"), _BootstrapStateLiveComponent)
+
+    app = coco.App(
+        coco.AppConfig(name="test_read_committed_state", environment=coco_env),
+        _main,
+    )
+
+    # Run 1: nothing committed yet -> None; process() then commits marker=100.
+    app.update_blocking()
+    # Run 2: reads back the value committed by run 1.
+    app.update_blocking()
+
+    assert _committed_reads == [None, 100]
+
+
+# ============================================================================
 # Incremental operations
 # ============================================================================
 
