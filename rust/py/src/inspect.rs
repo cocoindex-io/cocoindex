@@ -1,7 +1,12 @@
 use std::pin::Pin;
 use std::sync::Arc;
 
-use crate::{app::PyApp, environment::PyEnvironment, prelude::*, stable_path::{PyStableKey, PyStablePath}};
+use crate::{
+    app::PyApp,
+    environment::PyEnvironment,
+    prelude::*,
+    stable_path::{PyStableKey, PyStablePath},
+};
 
 use cocoindex_core::engine::runtime::get_runtime;
 use cocoindex_core::inspect::db_inspect;
@@ -218,7 +223,10 @@ pub struct PyStablePathDetail {
     pub target_state_items: Vec<PyTargetStateInfoItemSummary>,
 }
 
-fn convert_detail(_py: Python<'_>, d: db_inspect::StablePathDetail) -> PyResult<PyStablePathDetail> {
+fn convert_detail(
+    _py: Python<'_>,
+    d: db_inspect::StablePathDetail,
+) -> PyResult<PyStablePathDetail> {
     Ok(PyStablePathDetail {
         path: PyStablePath(d.path),
         node_type: PyStablePathNodeType(d.node_type),
