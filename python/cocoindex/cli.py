@@ -645,14 +645,6 @@ def show(
     Otherwise, `--db` and `--app-name` can be used to inspect an app
     directly from its database without loading the module.
 
-    \b
-    Examples:
-        cocoindex show ./app.py
-        cocoindex show ./app.py --tree
-        cocoindex show ./app.py -l
-        cocoindex show ./app.py /"files" -r
-        cocoindex show ./app.py /"files"/"file1.txt" -p
-        cocoindex show --db ./my.db --app-name MyApp
     """
     if (recursive or parents) and not stable_path:
         raise click.ClickException(
