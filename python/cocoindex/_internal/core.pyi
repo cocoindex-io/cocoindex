@@ -192,12 +192,20 @@ class StablePathInfoAsyncIterator:
     def __aiter__(self) -> StablePathInfoAsyncIterator: ...
     def __anext__(self) -> Awaitable[StablePathInfo]: ...
 
+class TargetStateVersion:
+    version: int
+    state: str
+
+class ProviderGeneration:
+    provider_id: int
+    provider_schema_version: int
+
 class TargetStateInfoItemSummary:
     target_state_path: str
     key: str
-    states: list[tuple[int, int]]
+    states: list[TargetStateVersion]
     provider_schema_version: int
-    provider_generation: tuple[int, int] | None
+    provider_generation: ProviderGeneration | None
 
 class StablePathDetail:
     """Detailed information about a stable path from LMDB."""
@@ -211,6 +219,24 @@ class StablePathDetail:
     target_state_items: list[TargetStateInfoItemSummary]
 
 def get_stable_path_detail(app: App, path: StablePath) -> StablePathDetail | None: ...
+def get_stable_path_detail_by_name(
+    env: Any, app_name: str, path: StablePath
+) -> StablePathDetail | None: ...
+def query_stable_path_details(
+    app: App,
+    path: StablePath,
+    include_children: bool,
+    recursive: bool,
+    include_parents: bool,
+) -> list[StablePathDetail]: ...
+def query_stable_path_details_by_name(
+    env: Any,
+    app_name: str,
+    path: StablePath,
+    include_children: bool,
+    recursive: bool,
+    include_parents: bool,
+) -> list[StablePathDetail]: ...
 
 # --- UpdateHandle ---
 class UpdateHandle:

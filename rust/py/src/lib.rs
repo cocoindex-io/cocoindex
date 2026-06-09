@@ -74,10 +74,17 @@ fn core_module(m: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()>
         inspect::get_stable_path_detail_by_name,
         m
     )?)?;
+    m.add_function(wrap_pyfunction!(inspect::query_stable_path_details, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        inspect::query_stable_path_details_by_name,
+        m
+    )?)?;
 
     m.add_class::<inspect::PyStablePathNodeType>()?;
     m.add_class::<inspect::PyStablePathInfo>()?;
     m.add_class::<inspect::PyStablePathInfoAsyncIterator>()?;
+    m.add_class::<inspect::PyTargetStateVersion>()?;
+    m.add_class::<inspect::PyProviderGeneration>()?;
     m.add_class::<inspect::PyTargetStateInfoItemSummary>()?;
     m.add_class::<inspect::PyStablePathDetail>()?;
 

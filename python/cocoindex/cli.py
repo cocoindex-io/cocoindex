@@ -22,7 +22,14 @@ from cocoindex._internal.environment import (
     get_registered_environment_infos,
 )
 from cocoindex._internal.setting import get_default_db_path
-from cocoindex.inspect import iter_stable_paths, iter_stable_paths_by_name
+from cocoindex.inspect import (
+    iter_stable_paths,
+    iter_stable_paths_by_name,
+    get_stable_path_detail,
+    get_stable_path_detail_by_name,
+    query_stable_path_details,
+    query_stable_path_details_by_name,
+)
 from cocoindex._internal.stable_path import StablePath
 
 
@@ -603,7 +610,7 @@ def ls(app_target: str | None, db: str | None) -> None:
     "long_format",
     is_flag=True,
     default=False,
-    help="Display detailed information in table format.",
+    help="Display detailed information in multi-line format.",
 )
 @click.argument("stable_path", type=str, required=False)
 @click.option(
@@ -692,6 +699,26 @@ def show(
         )
 
 
+def _parse_stable_path(path_str: str) -> StablePath:
+    """Parse a CLI stable path string into a StablePath.
+
+    Accepts formats like:
+      /"files"/"file1.txt"   (quoted parts, as displayed by StablePath.__str__)
+      /files/file1.txt       (unquoted parts)
+    """
+    path = StablePath()
+    # Strip leading slash
+    stripped = path_str.strip("/")
+    if not stripped:
+        return path
+    for part in stripped.split("/"):
+        # Strip surrounding quotes if present
+        if len(part) >= 2 and part.startswith('"') and part.endswith('"'):
+            part = part[1:-1]
+        path = path / part
+    return path
+
+
 async def _show_from_app(
     app: App[Any, Any],
     tree: bool = False,
@@ -701,15 +728,36 @@ async def _show_from_app(
     parents: bool = False,
 ) -> None:
     try:
-        await _show_stable_paths(
-            iter_stable_paths(app),
-            app=app,
-            tree=tree,
-            long_format=long_format,
-            stable_path=stable_path,
-            recursive=recursive,
-            parents=parents,
-        )
+        if stable_path is not None:
+            # Targeted query — no scan needed
+            path_obj = _parse_stable_path(stable_path)
+            details = await query_stable_path_details(
+                app,
+                path_obj,
+                include_children=recursive,
+                recursive=recursive,
+                include_parents=parents,
+            )
+            _print_details(details)
+        elif long_format:
+            # Stream paths, fetch detail one-by-one (no buffering)
+            click.echo("Stable paths:")
+            count = 0
+            async for item in iter_stable_paths(app):
+                path_obj = StablePath(item.path)
+                detail = await get_stable_path_detail(app, path_obj)
+                if detail:
+                    _print_one_detail(detail)
+                count += 1
+            if count == 0:
+                click.echo("  (none)")
+        elif tree:
+            component_node_type = _core.StablePathNodeType.component()
+            await _print_tree_streaming(iter_stable_paths(app), component_node_type)
+        else:
+            click.echo("Stable paths:")
+            async for item in iter_stable_paths(app):
+                click.echo(f"  {StablePath(item.path)}")
     finally:
         await _stop_all_environments()
 
@@ -733,158 +781,88 @@ async def _show_from_database(
         Settings(db_path=db_path_obj),
         event_loop=asyncio.get_running_loop(),
     )
-    await _show_stable_paths(
-        iter_stable_paths_by_name(env, app_name),
-        app=None,
-        tree=tree,
-        long_format=long_format,
-        stable_path=stable_path,
-        recursive=recursive,
-        parents=parents,
-    )
 
-
-async def _show_stable_paths(
-    items: AsyncIterator[Any],
-    app: App[Any, Any] | None = None,
-    tree: bool = False,
-    long_format: bool = False,
-    stable_path: str | None = None,
-    recursive: bool = False,
-    parents: bool = False,
-) -> None:
-    # Collect all items first for filtering
-    all_items = [item async for item in items]
-
-    # Filter by stable_path if provided
-    filtered_items = _filter_stable_paths(
-        all_items,
-        stable_path=stable_path,
-        recursive=recursive,
-        parents=parents,
-    )
-
-    if long_format:
-        await _print_long_format(filtered_items, app)
+    if stable_path is not None:
+        path_obj = _parse_stable_path(stable_path)
+        details = await query_stable_path_details_by_name(
+            env,
+            app_name,
+            path_obj,
+            include_children=recursive,
+            recursive=recursive,
+            include_parents=parents,
+        )
+        _print_details(details)
+    elif long_format:
+        click.echo("Stable paths:")
+        count = 0
+        async for item in iter_stable_paths_by_name(env, app_name):
+            path_obj = StablePath(item.path)
+            detail = await get_stable_path_detail_by_name(env, app_name, path_obj)
+            if detail:
+                _print_one_detail(detail)
+            count += 1
+        if count == 0:
+            click.echo("  (none)")
     elif tree:
         component_node_type = _core.StablePathNodeType.component()
-        # For tree view, we need to reconstruct the iterator
-        from typing import AsyncIterator
-
-        async def iter_filtered() -> AsyncIterator[Any]:
-            for item in filtered_items:
-                yield item
-
-        await _print_tree_streaming(iter_filtered(), component_node_type)
+        await _print_tree_streaming(
+            iter_stable_paths_by_name(env, app_name), component_node_type
+        )
     else:
         click.echo("Stable paths:")
-        for item in filtered_items:
-            path = StablePath(item.path)
-            click.echo(f"  {path}")
+        async for item in iter_stable_paths_by_name(env, app_name):
+            click.echo(f"  {StablePath(item.path)}")
 
 
-def _filter_stable_paths(
-    items: list[Any],
-    stable_path: str | None = None,
-    recursive: bool = False,
-    parents: bool = False,
-) -> list[Any]:
-    """Filter stable paths by path, recursively, or parents."""
-    if not stable_path:
-        return items
-
-    filtered = []
-    for item in items:
-        item_path = StablePath(item.path)
-        item_path_str = str(item_path)
-
-        # Check exact match
-        if item_path_str == stable_path:
-            filtered.append(item)
-            continue
-
-        # Check parent/child relationships using string prefix matching
-        # Parents: item is a prefix of target
-        if parents:
-            if stable_path.startswith(item_path_str) and stable_path != item_path_str:
-                filtered.append(item)
-
-        # Children: target is a prefix of item
-        if recursive:
-            if item_path_str.startswith(stable_path) and item_path_str != stable_path:
-                if item not in filtered:
-                    filtered.append(item)
-
-    return filtered
-
-
-async def _print_long_format(
-    items: list[Any],
-    app: App[Any, Any] | None = None,
-) -> None:
-    """Print stable paths in a detailed multi-line format."""
-    if not items:
+def _print_details(details: list[_core.StablePathDetail]) -> None:
+    """Print a list of StablePathDetail in multi-line format."""
+    if not details:
         click.echo("Stable paths:")
         click.echo("  (none)")
         return
 
-    # Fetch detailed info from LMDB if app is available
-    details_map: dict[str, Any] = {}
-    if app is not None:
-        from cocoindex.inspect import get_stable_path_detail
-
-        for item in items:
-            path = StablePath(item.path)
-            detail = await get_stable_path_detail(app, path)
-            if detail:
-                details_map[str(path)] = detail
-
     click.echo("Stable paths:")
-    for item in items:
-        path = StablePath(item.path)
-        path_str = str(path)
-        node_type = (
-            "component"
-            if item.node_type == _core.StablePathNodeType.component()
-            else "directory"
-        )
-        click.echo(f"  PATH: {path_str}")
-        click.echo(f"    type: {node_type}")
+    for detail in details:
+        _print_one_detail(detail)
 
-        detail = details_map.get(path_str)
-        if detail:
-            click.echo(f"    version: {detail.version}")
-            click.echo(
-                f"    processor: {detail.processor_name if detail.processor_name else '-'}"
-            )
-            click.echo(f"    target_state_count: {detail.target_state_count}")
-            click.echo(
-                f"    has_memoization: {'true' if detail.has_memoization else 'false'}"
-            )
-            if getattr(detail, "target_state_items", None):
-                click.echo("    target_state_items:")
-                for item_summary in detail.target_state_items:
-                    provider_generation = (
-                        f"{item_summary.provider_generation[0]}.{item_summary.provider_generation[1]}"
-                        if item_summary.provider_generation is not None
-                        else "None"
-                    )
-                    states = ", ".join(
-                        f"{version}:{state}" for version, state in item_summary.states
-                    )
-                    click.echo(
-                        f"      - target_state_path: {item_summary.target_state_path}"
-                    )
-                    click.echo(f"        key: {item_summary.key}")
-                    click.echo(f"        states: {states if states else '-'}")
-                    click.echo(
-                        f"        provider_schema_version: {item_summary.provider_schema_version}"
-                    )
-                    click.echo(f"        provider_generation: {provider_generation}")
-        else:
-            click.echo("    details: not available")
 
-        click.echo("")
+def _print_one_detail(detail: _core.StablePathDetail) -> None:
+    """Print a single StablePathDetail in multi-line format."""
+    path = StablePath(detail.path)
+    node_type = (
+        "component"
+        if detail.node_type == _core.StablePathNodeType.component()
+        else "directory"
+    )
+    click.echo(f"  {path}")
+    click.echo(
+        f"    type:{node_type} version:{detail.version}"
+        f" processor:{detail.processor_name or '-'}"
+    )
+    click.echo(
+        f"    has_memoization:{'true' if detail.has_memoization else 'false'}"
+        f" target_state_count:{detail.target_state_count}"
+    )
+    if detail.target_state_items:
+        click.echo("    Target states:")
+        for item_summary in detail.target_state_items:
+            provider_gen = (
+                f"{item_summary.provider_generation.provider_id}"
+                f".{item_summary.provider_generation.provider_schema_version}"
+                if item_summary.provider_generation is not None
+                else "None"
+            )
+            states = ", ".join(f"{s.version}:{s.state}" for s in item_summary.states)
+            click.echo(
+                f"      - path:{item_summary.target_state_path} key:{item_summary.key}"
+            )
+            click.echo(
+                f"        states:{states or '-'}"
+                f" schema_version:{item_summary.provider_schema_version}"
+                f" generation:{provider_gen}"
+            )
+    click.echo()
 
 
 async def _stop_all_environments() -> None:
