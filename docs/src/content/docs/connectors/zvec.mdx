@@ -174,7 +174,7 @@ Scalar Python types map to zvec field types as follows:
 | `datetime.timedelta` | `DOUBLE` (total seconds) |
 | `list[str]` / `list[int]` / `list[float]` / `list[bool]` | `ARRAY_STRING` / `ARRAY_INT64` / `ARRAY_DOUBLE` / `ARRAY_BOOL` |
 | other `list`, `dict`, nested structs | `STRING` (JSON) |
-| `NDArray` (with vector schema) | `VECTOR_FP32` / `FP16` / `FP64` / `INT8` (by dtype) |
+| `NDArray` (with vector schema) | `VECTOR_FP32` (float32) or `VECTOR_FP16` (float16) |
 
 Scalar fields get an invert index by default so they can be used in query filters. The primary-key column maps to the document `id` and is not stored as a separate field.
 
@@ -201,7 +201,7 @@ A collection can declare multiple named vector fields, dense and sparse, in one 
 
 #### Dense vectors
 
-A NumPy `ndarray` field with a `VectorSchema` becomes a dense vector. The element dtype selects the zvec type (`float32` → `VECTOR_FP32`, `float16` → `VECTOR_FP16`, `float64` → `VECTOR_FP64`, `int8` → `VECTOR_INT8`). Tune the HNSW index with `ZvecVectorDef`:
+A NumPy `ndarray` field with a `VectorSchema` becomes a dense vector. The element dtype selects the zvec type: `float32` → `VECTOR_FP32`, `float16` → `VECTOR_FP16`. zvec's dense index only accepts these two; for smaller storage, keep a float32 vector and set `quantize`. Tune the HNSW index with `ZvecVectorDef`:
 
 ```python
 from cocoindex.connectors.zvec import ZvecVectorDef
