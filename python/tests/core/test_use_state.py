@@ -326,6 +326,43 @@ def test_use_state_raises_on_duplicate_key() -> None:
     assert _raised["a"] is True
 
 
+def test_use_state_accepts_non_string_stable_keys() -> None:
+    # use_state accepts any StableKey, not just str. Distinct StableKey values
+    # (including tuples, ints, and Symbols) address independent state slots and
+    # persist across runs.
+    _source_items.clear()
+    _captured.clear()
+
+    keys: list[coco.StableKey] = [42, ("ns", 1), coco.Symbol("sym"), b"raw"]
+
+    @coco.fn
+    def _process_multikey(item: str) -> None:
+        snapshot: dict[coco.StableKey, object] = {}
+        for k in keys:
+            handle = coco.use_state(k, 0)
+            snapshot[k] = handle.value
+            handle.value = handle.value + 1
+        _captured[item] = snapshot
+
+    @coco.fn
+    async def _root_multikey(items: list[str]) -> None:
+        for item in items:
+            await coco.mount(coco.component_subpath(item), _process_multikey, item)
+
+    app = coco.App(  # type: ignore[type-arg]
+        coco.AppConfig(name="use_state_non_string_keys", environment=coco_env),
+        _root_multikey,
+        items=_source_items,
+    )
+    _source_items[:] = ["a"]
+
+    app.update_blocking()
+    assert _captured["a"] == {k: 0 for k in keys}
+
+    app.update_blocking()
+    assert _captured["a"] == {k: 1 for k in keys}
+
+
 def test_use_state_raises_inside_component_subpath_block() -> None:
     _source_items.clear()
     _captured.clear()
