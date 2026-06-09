@@ -640,7 +640,7 @@ class StateHandle(Generic[_StateT]):
 
     def __init__(
         self,
-        key: str,
+        key: StableKey,
         value: _StateT,
         core_processor_ctx: core.ComponentProcessorContext,
     ) -> None:
@@ -659,10 +659,10 @@ class StateHandle(Generic[_StateT]):
 
 
 @overload
-def use_state(key: str) -> StateHandle[Any]: ...
+def use_state(key: StableKey) -> StateHandle[Any]: ...
 @overload
-def use_state(key: str, initial_value: _StateT) -> StateHandle[_StateT]: ...
-def use_state(key: str, initial_value: Any = None) -> StateHandle[Any]:
+def use_state(key: StableKey, initial_value: _StateT) -> StateHandle[_StateT]: ...
+def use_state(key: StableKey, initial_value: Any = None) -> StateHandle[Any]:
     """
     Declare a persistent state for the current component.
 
@@ -672,8 +672,9 @@ def use_state(key: str, initial_value: Any = None) -> StateHandle[Any]:
     during the run to persist a new value.
 
     Args:
-        key: Unique key within this component. Must be declared at most
-             once per component run.
+        key: Unique StableKey within this component (None, bool, int, str,
+             bytes, uuid.UUID, Symbol, or a tuple of these). Must be declared
+             at most once per component run.
         initial_value: Value to use when no stored state exists for `key`.
                        Defaults to `None`.
 
