@@ -284,17 +284,16 @@ def _json_encoder(value: Any) -> str:
 
 
 def _dense_vector_data_type(dtype: np.dtype) -> Any:
+    # zvec's dense vector index only accepts FP32 and FP16. For smaller storage,
+    # keep an FP32 vector and set quantize on ZvecVectorDef (e.g. "int8").
     if dtype == np.float32:
         return _zvec.DataType.VECTOR_FP32
     if dtype == np.float16:
         return _zvec.DataType.VECTOR_FP16
-    if dtype == np.float64:
-        return _zvec.DataType.VECTOR_FP64
-    if dtype == np.int8:
-        return _zvec.DataType.VECTOR_INT8
     raise ValueError(
-        f"Unsupported dense vector dtype {dtype!r}; expected float32, float16, "
-        "float64, or int8."
+        f"Unsupported dense vector dtype {dtype!r}; zvec dense vectors must be "
+        "float32 or float16. For compressed storage, use a float32 vector with "
+        'ZvecVectorDef(quantize="int8").'
     )
 
 
