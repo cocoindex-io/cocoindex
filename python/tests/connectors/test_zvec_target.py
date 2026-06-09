@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import datetime
+import decimal
 import tempfile
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Any, Iterator
@@ -122,6 +125,66 @@ class MultiVectorDoc:
     id: str
     dense: _Embedding
     sparse: Annotated[dict[int, float], zc.ZvecVectorDef(sparse=True)]
+
+
+_Embedding16 = Annotated[
+    NDArray[np.float16], VectorSchema(dtype=np.dtype(np.float16), size=4)
+]
+_EMB16 = np.array([0.1, 0.2, 0.3, 0.4], dtype=np.float16)
+
+
+@dataclass
+class Fp16Doc:
+    id: str
+    title: str
+    embedding: _Embedding16
+
+
+@dataclass
+class QuantizedDoc:
+    id: str
+    title: str
+    embedding: Annotated[
+        NDArray[np.float32],
+        VectorSchema(dtype=np.dtype(np.float32), size=4),
+        zc.ZvecVectorDef(quantize="int8"),
+    ]
+
+
+@dataclass
+class EncoderDoc:
+    id: str
+    uid: uuid.UUID
+    price: decimal.Decimal
+    created: datetime.datetime
+    day: datetime.date
+    moment: datetime.time
+    elapsed: datetime.timedelta
+    blob: bytes
+    embedding: _Embedding
+
+
+@dataclass
+class ArrayDoc:
+    id: str
+    ints: list[int]
+    floats: list[float]
+    flags: list[bool]
+    embedding: _Embedding
+
+
+@dataclass
+class JsonDoc:
+    id: str
+    meta: dict[str, int]
+    embedding: _Embedding
+
+
+@dataclass
+class FilterDoc:
+    id: str
+    year: int
+    embedding: _Embedding
 
 
 # =============================================================================
@@ -412,3 +475,126 @@ async def test_schema_validation(conn: Any) -> None:
     )
     with pytest.raises(ValueError, match="at least one vector field"):
         zc.collection_target(ZVEC_DB, "no_vec_collection", no_vec_schema)
+
+    # zvec dense vectors must be float32 or float16.
+    @dataclass
+    class Float64Doc:
+        id: str
+        embedding: Annotated[
+            NDArray[np.float64], VectorSchema(dtype=np.dtype(np.float64), size=4)
+        ]
+
+    with pytest.raises(ValueError, match="float32 or float16"):
+        await zc.CollectionSchema.from_class(Float64Doc, primary_key=["id"])
+
+
+def test_fp16_dense_vector(conn: Any) -> None:
+    _reset(Fp16Doc, "test_fp16")
+    app = _make_app(conn, "test_fp16_dense_vector")
+
+    _rows.append(Fp16Doc(id="1", title="h", embedding=_EMB16))
+    app.update_blocking()
+
+    col = conn.open_existing("test_fp16")
+    results = col.query(
+        zvec.VectorQuery(field_name="embedding", vector=[0.1, 0.2, 0.3, 0.4]), topk=5
+    )
+    assert [d.id for d in results] == ["1"]
+
+
+def test_int8_quantized_vector(conn: Any) -> None:
+    _reset(QuantizedDoc, "test_quant")
+    app = _make_app(conn, "test_int8_quantized_vector")
+
+    _rows.append(QuantizedDoc(id="1", title="q", embedding=_EMB))
+    app.update_blocking()
+
+    assert fetch_doc(conn, "test_quant", "1") is not None
+
+
+def test_scalar_encoders_round_trip(conn: Any) -> None:
+    _reset(EncoderDoc, "test_enc")
+    app = _make_app(conn, "test_scalar_encoders_round_trip")
+
+    uid = uuid.UUID("12345678-1234-5678-1234-567812345678")
+    created = datetime.datetime(2020, 1, 2, 3, 4, 5)
+    day = datetime.date(2020, 1, 2)
+    moment = datetime.time(3, 4, 5)
+    _rows.append(
+        EncoderDoc(
+            id="1",
+            uid=uid,
+            price=decimal.Decimal("3.50"),
+            created=created,
+            day=day,
+            moment=moment,
+            elapsed=datetime.timedelta(hours=1),
+            blob=b"hello",
+            embedding=_EMB,
+        )
+    )
+    app.update_blocking()
+
+    fields = fetch_doc(conn, "test_enc", "1").fields
+    assert fields["uid"] == str(uid)
+    assert fields["price"] == "3.50"
+    assert fields["created"] == created.isoformat()
+    assert fields["day"] == day.isoformat()
+    assert fields["moment"] == moment.isoformat()
+    assert fields["elapsed"] == pytest.approx(3600.0)
+    assert fields["blob"] == "aGVsbG8="  # base64 of b"hello"
+
+
+def test_array_fields_round_trip(conn: Any) -> None:
+    _reset(ArrayDoc, "test_arr")
+    app = _make_app(conn, "test_array_fields_round_trip")
+
+    _rows.append(
+        ArrayDoc(
+            id="1",
+            ints=[1, 2, 3],
+            floats=[1.5, 2.5],
+            flags=[True, False],
+            embedding=_EMB,
+        )
+    )
+    app.update_blocking()
+
+    fields = fetch_doc(conn, "test_arr", "1").fields
+    assert list(fields["ints"]) == [1, 2, 3]
+    assert list(fields["floats"]) == pytest.approx([1.5, 2.5])
+    assert list(fields["flags"]) == [True, False]
+
+
+def test_json_fallback_round_trip(conn: Any) -> None:
+    _reset(JsonDoc, "test_json")
+    app = _make_app(conn, "test_json_fallback_round_trip")
+
+    _rows.append(JsonDoc(id="1", meta={"a": 1, "b": 2}, embedding=_EMB))
+    app.update_blocking()
+
+    import json
+
+    raw = fetch_doc(conn, "test_json", "1").fields["meta"]
+    assert json.loads(raw) == {"a": 1, "b": 2}
+
+
+def test_filter_query(conn: Any) -> None:
+    _reset(FilterDoc, "test_filter")
+    app = _make_app(conn, "test_filter_query")
+
+    _rows.extend(
+        [
+            FilterDoc(id="1", year=1990, embedding=_EMB),
+            FilterDoc(id="2", year=2020, embedding=_EMB),
+        ]
+    )
+    app.update_blocking()
+
+    col = conn.open_existing("test_filter")
+    results = col.query(
+        zvec.VectorQuery(field_name="embedding", vector=[0.1, 0.2, 0.3, 0.4]),
+        topk=5,
+        filter="year > 2000",
+    )
+    assert [d.id for d in results] == ["2"]
