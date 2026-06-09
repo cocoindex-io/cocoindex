@@ -488,8 +488,8 @@ pub(crate) struct UserStateCache {
     /// False under `full_reprocess` (prefetch skipped).
     ///
     /// When true: stale `Loaded` entries are individually deleted.
-    /// When false: all existing entries are wiped upfront via
-    /// delete_all_user_states before writing.
+    /// When false: all existing `Regular` entries are wiped upfront via
+    /// `delete_user_states_of_kind` before writing.
     is_loaded: bool,
 }
 
@@ -811,7 +811,7 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         let rows = self
             .app_ctx()
             .app_store()
-            .list_user_states(self.stable_path())
+            .list_user_states(self.stable_path(), db_schema::StateKind::Regular)
             .await?;
         self.update_building_state(|s| {
             s.user_states.populate(rows);
@@ -1099,6 +1099,7 @@ impl FnCallContext {
 #[cfg(test)]
 mod tests {
     use super::{UserStateCache, UserStateEntry};
+    use crate::state::db_schema::StateKind;
     use crate::state::stable_path::{StableKey, StablePath};
     use crate::state_store::{AppStore, WriteTxn};
     use std::collections::HashMap;
@@ -1213,6 +1214,7 @@ mod tests {
             user_state_clear_all_first: plan_data.clear_all_first,
             user_state_writes: plan_data.writes,
             user_state_deletes: plan_data.deletes,
+            user_state_clear_live: false,
             child_path_set: None,
         };
         let reconciler: ExistenceReconciler =
@@ -1230,15 +1232,15 @@ mod tests {
 
         let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
         store
-            .write_user_state(&mut wtxn, &p, &sym("a"), b"a")
+            .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("a"), b"a")
             .await
             .unwrap();
         store
-            .write_user_state(&mut wtxn, &p, &sym("b"), b"b")
+            .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("b"), b"b")
             .await
             .unwrap();
         store
-            .write_user_state(&mut wtxn, &p, &sym("c"), b"c")
+            .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("c"), b"c")
             .await
             .unwrap();
         wtxn.into_inner().commit().unwrap();
@@ -1255,7 +1257,12 @@ mod tests {
 
         apply_plan_via_commit(&store, &p, cache).await;
 
-        let entries = to_map(store.list_user_states(&p).await.unwrap());
+        let entries = to_map(
+            store
+                .list_user_states(&p, StateKind::Regular)
+                .await
+                .unwrap(),
+        );
         assert_eq!(entries.len(), 2);
         assert!(entries.contains_key(&sym("a")));
         assert!(entries.contains_key(&sym("b")));
@@ -1271,7 +1278,7 @@ mod tests {
 
         let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
         store
-            .write_user_state(&mut wtxn, &p, &sym("old"), b"old")
+            .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("old"), b"old")
             .await
             .unwrap();
         wtxn.into_inner().commit().unwrap();
@@ -1281,7 +1288,12 @@ mod tests {
 
         apply_plan_via_commit(&store, &p, cache).await;
 
-        let entries = to_map(store.list_user_states(&p).await.unwrap());
+        let entries = to_map(
+            store
+                .list_user_states(&p, StateKind::Regular)
+                .await
+                .unwrap(),
+        );
         assert_eq!(entries.len(), 1);
         assert!(!entries.contains_key(&sym("old")));
         assert_eq!(entries[&sym("new_k")], b("new_val"));
@@ -1295,7 +1307,7 @@ mod tests {
 
         let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
         store
-            .write_user_state(&mut wtxn, &p, &sym("a"), b"a_val")
+            .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("a"), b"a_val")
             .await
             .unwrap();
         wtxn.into_inner().commit().unwrap();
@@ -1307,7 +1319,12 @@ mod tests {
 
         apply_plan_via_commit(&store, &p, cache).await;
 
-        let entries = to_map(store.list_user_states(&p).await.unwrap());
+        let entries = to_map(
+            store
+                .list_user_states(&p, StateKind::Regular)
+                .await
+                .unwrap(),
+        );
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[&sym("a")], b("a_val"));
         assert_eq!(entries[&sym("b")], b("b_new"));
@@ -1321,7 +1338,7 @@ mod tests {
 
         let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
         store
-            .write_user_state(&mut wtxn, &p, &sym("k"), b"old")
+            .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("k"), b"old")
             .await
             .unwrap();
         wtxn.into_inner().commit().unwrap();
@@ -1333,7 +1350,12 @@ mod tests {
 
         apply_plan_via_commit(&store, &p, cache).await;
 
-        let entries = to_map(store.list_user_states(&p).await.unwrap());
+        let entries = to_map(
+            store
+                .list_user_states(&p, StateKind::Regular)
+                .await
+                .unwrap(),
+        );
         assert_eq!(entries[&sym("k")], b("new"));
     }
 
@@ -1345,11 +1367,11 @@ mod tests {
 
         let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
         store
-            .write_user_state(&mut wtxn, &p, &sym("a"), b"a_val")
+            .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("a"), b"a_val")
             .await
             .unwrap();
         store
-            .write_user_state(&mut wtxn, &p, &sym("b"), b"b_val")
+            .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("b"), b"b_val")
             .await
             .unwrap();
         wtxn.into_inner().commit().unwrap();
@@ -1360,7 +1382,13 @@ mod tests {
 
         apply_plan_via_commit(&store, &p, cache).await;
 
-        assert!(store.list_user_states(&p).await.unwrap().is_empty());
+        assert!(
+            store
+                .list_user_states(&p, StateKind::Regular)
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -1372,7 +1400,7 @@ mod tests {
 
         let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
         store
-            .write_user_state(&mut wtxn, &p, &sym("old"), b"old_val")
+            .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("old"), b"old_val")
             .await
             .unwrap();
         wtxn.into_inner().commit().unwrap();
@@ -1381,6 +1409,12 @@ mod tests {
 
         apply_plan_via_commit(&store, &p, cache).await;
 
-        assert!(store.list_user_states(&p).await.unwrap().is_empty());
+        assert!(
+            store
+                .list_user_states(&p, StateKind::Regular)
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 }

@@ -493,17 +493,20 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
     /// that persisted a bootstrap flag + logic version).
     ///
     /// Returns `None` if `key` has no committed value (e.g. the component
-    /// never bootstrapped). Reads a fresh standalone snapshot; unlike
-    /// `use_state`, it neither declares the key nor participates in commit,
-    /// so it is safe in the non-committing `process_live` context.
+    /// never bootstrapped). Reads a fresh standalone snapshot via a single
+    /// point-get; unlike `use_state`, it neither declares the key nor
+    /// participates in commit, so it is safe in the non-committing
+    /// `process_live` context.
     pub async fn read_committed_state(&self, key: &StableKey) -> Result<Option<Vec<u8>>> {
-        let rows = self
-            .component
+        self.component
             .app_ctx()
             .app_store()
-            .list_user_states(self.component.stable_path())
-            .await?;
-        Ok(rows.into_iter().find_map(|(k, v)| (k == *key).then_some(v)))
+            .read_user_state(
+                self.component.stable_path(),
+                db_schema::StateKind::Regular,
+                key,
+            )
+            .await
     }
 
     /// Full processing cycle. Acquires `update_full_lock` (serializes with
