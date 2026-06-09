@@ -267,6 +267,9 @@ class LiveComponentController:
     def read_committed_state_async(
         self, key: str
     ) -> Coroutine[Any, Any, bytes | None]: ...
+    def write_committed_state_async(
+        self, key: str, value: bytes
+    ) -> Coroutine[Any, Any, None]: ...
     def start(self, process_live_fut: Any) -> None: ...
     def mount_inner_live_async(
         self, stable_path: StablePath

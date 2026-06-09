@@ -152,7 +152,7 @@ def test_live_component_mark_ready_auto_on_return() -> None:
 
 
 # ============================================================================
-# read_committed_state (process_live read of a prior run's use_state)
+# read_committed_state / write_committed_state (the Live keyspace)
 # ============================================================================
 
 
@@ -160,22 +160,25 @@ _committed_reads: list[Any] = []
 
 
 class _BootstrapStateLiveComponent:
-    """Persists a marker via ``use_state`` in ``process()`` and reads it back
-    via ``operator.read_committed_state`` at the top of ``process_live`` —
-    the bootstrap-detection pattern: a later run observes what the prior run
-    committed, before its own ``update_full`` runs.
+    """Commits a marker via ``operator.write_committed_state`` (the ``Live``
+    keyspace) and reads it back via ``operator.read_committed_state`` at the
+    top of ``process_live`` — the bootstrap-detection pattern: a later run
+    observes what the prior run committed, before its own ``update_full``
+    runs.
     """
 
     async def process(self) -> None:
-        marker = coco.use_state("marker", 0)
-        marker.value = 100
         _declare_source_entries()
 
     async def process_live(self, operator: coco.LiveComponentOperator) -> None:
         # Read BEFORE update_full so we observe the PRIOR run's commit, not
-        # this run's process().
+        # anything from this run.
         _committed_reads.append(await operator.read_committed_state("marker"))
         await operator.update_full()
+        # Persist the bootstrap marker for the next run to read back. Lives
+        # in the Live keyspace, separate from any `coco.use_state` in
+        # `process()`.
+        await operator.write_committed_state("marker", 100)
         await operator.mark_ready()
 
 
@@ -193,12 +196,68 @@ def test_read_committed_state_across_runs() -> None:
         _main,
     )
 
-    # Run 1: nothing committed yet -> None; process() then commits marker=100.
+    # Run 1: nothing committed yet -> None; commits marker=100 via the Live path.
     app.update_blocking()
     # Run 2: reads back the value committed by run 1.
     app.update_blocking()
 
     assert _committed_reads == [None, 100]
+
+
+_iso_boot_reads: list[Any] = []
+
+
+class _LiveBootSurvivesRegularPrune:
+    """Regression for the ``StateKind`` split (PR #2078): a live component's
+    ``process()`` runs a *Regular* ``coco.use_state`` flush whose
+    set-reduction prunes every prefetched key it does not redeclare. The
+    live machinery's *Live* committed state, written via
+    ``operator.write_committed_state``, must be exempt from that prune.
+
+    The read happens AFTER ``update_full()`` (i.e. after ``process()``'s
+    Regular flush has run) so that, pre-fix — when both kinds shared one
+    ``UserState`` prefix — the flush would have pruned the ``"boot"`` key it
+    never redeclared, and the assertion below would see ``None``.
+    """
+
+    async def process(self) -> None:
+        # A Regular use_state key, declared every run. Its presence makes the
+        # set-reduction flush active; pre-fix the Live "boot" key shared this
+        # keyspace and would be pruned because `process()` never redeclares it.
+        coco.use_state("reg", 0)
+        _declare_source_entries()
+
+    async def process_live(self, operator: coco.LiveComponentOperator) -> None:
+        # Commit the Live bootstrap key once (run 1).
+        if await operator.read_committed_state("boot") is None:
+            await operator.write_committed_state("boot", "ready")
+        # Run process(), which flushes the Regular keyspace with prune...
+        await operator.update_full()
+        # ...then confirm the Live key still survives that flush.
+        _iso_boot_reads.append(await operator.read_committed_state("boot"))
+        await operator.mark_ready()
+
+
+def test_live_state_survives_regular_use_state_prune() -> None:
+    GlobalDictTarget.store.clear()
+    _source_data.clear()
+    _iso_boot_reads.clear()
+    _source_data["k"] = 1
+
+    async def _main() -> None:
+        await coco.mount(coco.component_subpath("live"), _LiveBootSurvivesRegularPrune)
+
+    app = coco.App(
+        coco.AppConfig(name="test_live_state_survives_prune", environment=coco_env),
+        _main,
+    )
+
+    # Run 1 commits "boot"; run 2's process() runs a Regular flush that must
+    # not touch the Live "boot" key. Both runs read it back as "ready".
+    app.update_blocking()
+    app.update_blocking()
+
+    assert _iso_boot_reads == ["ready", "ready"]
 
 
 # ============================================================================

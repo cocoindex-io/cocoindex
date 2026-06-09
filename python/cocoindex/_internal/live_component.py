@@ -27,7 +27,7 @@ from .component_ctx import (
 )
 from .function import AnyCallable, create_core_component_processor
 from .environment import Environment
-from .serde import deserialize
+from .serde import deserialize, serialize
 
 if TYPE_CHECKING:
     from .api import ComponentMountHandle
@@ -418,6 +418,21 @@ class LiveComponentOperator:
             return None
         return deserialize(raw)
 
+    async def write_committed_state(self, key: str, value: Any) -> None:
+        """Commit ``value`` under ``key`` for a later run to read back.
+
+        Write-side counterpart to :meth:`read_committed_state`. The live
+        machinery uses this to persist a durable bootstrap flag / logic
+        version (the value a subsequent :meth:`read_committed_state` will
+        observe) without going through :func:`coco.use_state`, whose
+        ``Regular`` keyspace is set-reduced by the component's own
+        ``process()`` flush. The write commits to a fresh standalone
+        transaction; it does not participate in any in-flight
+        ``update_full``.
+        """
+        controller = self._require_controller()
+        await controller.write_committed_state_async(key, serialize(value))
+
     async def report_exception(self, exc: BaseException) -> None:
         """Route an exception raised during ``process_live`` to the parent's exception handler chain.
 
@@ -521,6 +536,16 @@ class LiveMapSubscriber(Generic[_K, _V]):
         on persisted bootstrap state.
         """
         return await self._operator.read_committed_state(key)
+
+    async def write_committed_state(self, key: str, value: Any) -> None:
+        """Commit ``value`` under ``key`` for a later run to read back.
+
+        Delegates to :meth:`LiveComponentOperator.write_committed_state` so a
+        ``watch()`` implementation can persist bootstrap state (e.g. after a
+        successful initial scan) that a later run reads via
+        :meth:`read_committed_state`.
+        """
+        await self._operator.write_committed_state(key, value)
 
 
 class _MountEachLiveComponent:

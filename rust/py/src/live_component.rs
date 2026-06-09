@@ -138,6 +138,26 @@ impl PyLiveComponentController {
             Ok(value)
         })
     }
+
+    /// Commit `value` under `key` in this live component's persistent user
+    /// state (the `Live` keyspace), read back by `read_committed_state` on a
+    /// later run. Counterpart writer to `read_committed_state_async`; the
+    /// value is pre-serialized opaque bytes.
+    pub fn write_committed_state_async<'py>(
+        &self,
+        py: Python<'py>,
+        key: String,
+        value: Vec<u8>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let ctrl = self.0.clone();
+        future_into_py(py, async move {
+            let stable_key = StableKey::Symbol(key.into());
+            ctrl.write_committed_state(&stable_key, value)
+                .await
+                .into_py_result()?;
+            Ok(())
+        })
+    }
 }
 
 #[pyfunction]

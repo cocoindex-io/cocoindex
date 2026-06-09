@@ -871,6 +871,32 @@ impl AppStore {
         Ok(())
     }
 
+    /// Write a single `kind` user-state entry outside a caller-supplied txn.
+    /// Routed through the single-writer batcher so concurrent writers
+    /// coalesce (same invariant as the other standalone writers). Used by
+    /// the live machinery's `write_committed_state`, which commits a
+    /// [`StateKind::Live`] key independently of any component build's flush.
+    pub async fn write_user_state_standalone(
+        &self,
+        path: &StablePath,
+        kind: StateKind,
+        user_key: &StableKey,
+        value: &[u8],
+    ) -> Result<()> {
+        let app_store = self.clone();
+        let path = path.clone();
+        let user_key = user_key.clone();
+        let value = value.to_vec();
+        self.run_in_batcher(move |wtxn| {
+            Box::pin(async move {
+                app_store
+                    .write_user_state(wtxn, &path, kind, &user_key, &value)
+                    .await
+            })
+        })
+        .await
+    }
+
     pub async fn delete_user_state(
         &self,
         txn: &mut WriteTxn<'_>,
