@@ -202,7 +202,7 @@ class ProviderGeneration:
 
 class TargetStateInfoItemSummary:
     target_state_path: str
-    key: str
+    key: StableKey
     states: list[TargetStateVersion]
     provider_schema_version: int
     provider_generation: ProviderGeneration | None

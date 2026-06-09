@@ -1,11 +1,12 @@
 use std::pin::Pin;
 use std::sync::Arc;
 
-use crate::{app::PyApp, environment::PyEnvironment, prelude::*, stable_path::PyStablePath};
+use crate::{app::PyApp, environment::PyEnvironment, prelude::*, stable_path::{PyStableKey, PyStablePath}};
 
 use cocoindex_core::engine::runtime::get_runtime;
 use cocoindex_core::inspect::db_inspect;
 use cocoindex_core::inspect::db_inspect::StablePathNodeType;
+use cocoindex_core::state::stable_path::StableKey;
 use futures::stream::Stream;
 use pyo3::exceptions::PyStopAsyncIteration;
 use pyo3_async_runtimes::tokio::future_into_py;
@@ -181,14 +182,21 @@ pub struct PyProviderGeneration {
 pub struct PyTargetStateInfoItemSummary {
     #[pyo3(get)]
     pub target_state_path: String,
-    #[pyo3(get)]
-    pub key: String,
+    pub key: StableKey,
     #[pyo3(get)]
     pub states: Vec<PyTargetStateVersion>,
     #[pyo3(get)]
     pub provider_schema_version: u64,
     #[pyo3(get)]
     pub provider_generation: Option<PyProviderGeneration>,
+}
+
+#[pymethods]
+impl PyTargetStateInfoItemSummary {
+    #[getter]
+    fn key<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        PyStableKey(self.key.clone()).into_pyobject(py)
+    }
 }
 
 #[pyclass(name = "StablePathDetail")]
@@ -210,7 +218,7 @@ pub struct PyStablePathDetail {
     pub target_state_items: Vec<PyTargetStateInfoItemSummary>,
 }
 
-fn convert_detail(py: Python<'_>, d: db_inspect::StablePathDetail) -> PyResult<PyStablePathDetail> {
+fn convert_detail(_py: Python<'_>, d: db_inspect::StablePathDetail) -> PyResult<PyStablePathDetail> {
     Ok(PyStablePathDetail {
         path: PyStablePath(d.path),
         node_type: PyStablePathNodeType(d.node_type),
@@ -224,7 +232,7 @@ fn convert_detail(py: Python<'_>, d: db_inspect::StablePathDetail) -> PyResult<P
             .map(|item| -> PyResult<PyTargetStateInfoItemSummary> {
                 Ok(PyTargetStateInfoItemSummary {
                     target_state_path: item.target_state_path,
-                    key: item.key.to_string(),
+                    key: item.key,
                     states: item
                         .states
                         .into_iter()
