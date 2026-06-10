@@ -217,31 +217,41 @@ def test_aiter_snapshot() -> None:
     assert collected == {"a": "1", "b": "2"}
 
 
+# Desired entries for the restart test below; varied between updates of the same app.
+_restart_desired: dict[str, Any] = {}
+
+
 def test_restart_refill_and_cross_run_delete() -> None:
     GlobalDictTarget.store.clear()
     _call_counts.clear()
     env = common.create_test_env(__file__, suffix="restart")
 
-    def run(desired: dict[str, Any]) -> None:
-        @coco.fn
-        async def app_main() -> None:
-            lm: LiveMap[str, Val] = await LiveMap.create()
-            handle = await coco.mount(produce, lm, desired)
-            await handle.ready()
-            await coco.mount_each(process_entry, lm)
+    @coco.fn
+    async def app_main() -> None:
+        lm: LiveMap[str, Val] = await LiveMap.create()
+        handle = await coco.mount(produce, lm, dict(_restart_desired))
+        await handle.ready()
+        await coco.mount_each(process_entry, lm)
 
-        app = coco.App(
-            coco.AppConfig(name="test_live_map_restart", environment=env), app_main
-        )
-        app.update_blocking()
+    # One app, re-run via repeated update_blocking() — the supported multi-run pattern. (A
+    # fresh Environment/App per run at the same db_path is not supported by LMDB; see
+    # tests/core/test_context_tracked_state_validation.py.) Each update re-runs app_main,
+    # creating a fresh LiveMap (new UUID, empty dict) against the persisted state.
+    app = coco.App(
+        coco.AppConfig(name="test_live_map_restart", environment=env), app_main
+    )
 
     # Run 1.
-    run({"a": "1", "b": "2"})
+    _restart_desired.clear()
+    _restart_desired.update({"a": "1", "b": "2"})
+    app.update_blocking()
     assert _data() == {"a": "1", "b": "2"}
 
-    # Run 2 (same env + app name = restart): fresh LiveMap (new UUID) refills the empty dict;
-    # `a` unchanged still reappears, `b` dropped is removed, `c` added.
-    run({"a": "1", "c": "3"})
+    # Run 2 = restart: fresh LiveMap (new UUID) refills the empty dict; `a` unchanged still
+    # reappears, `b` dropped is removed, `c` added.
+    _restart_desired.clear()
+    _restart_desired.update({"a": "1", "c": "3"})
+    app.update_blocking()
     assert _data() == {"a": "1", "c": "3"}
 
 
@@ -253,22 +263,20 @@ def test_restart_same_inputs_refill() -> None:
     GlobalDictTarget.store.clear()
     env = common.create_test_env(__file__, suffix="restart_same")
 
-    def run() -> None:
-        @coco.fn
-        async def app_main() -> None:
-            lm: LiveMap[str, Val] = await LiveMap.create()
-            handle = await coco.mount(produce, lm, {"a": "1", "b": "2"})
-            await handle.ready()
-            await coco.mount_each(process_entry, lm)
+    @coco.fn
+    async def app_main() -> None:
+        lm: LiveMap[str, Val] = await LiveMap.create()
+        handle = await coco.mount(produce, lm, {"a": "1", "b": "2"})
+        await handle.ready()
+        await coco.mount_each(process_entry, lm)
 
-        app = coco.App(
-            coco.AppConfig(name="test_live_map_restart_same", environment=env), app_main
-        )
-        app.update_blocking()
-
-    run()
+    # One app, re-run via repeated update_blocking() (the supported multi-run pattern).
+    app = coco.App(
+        coco.AppConfig(name="test_live_map_restart_same", environment=env), app_main
+    )
+    app.update_blocking()
     assert _data() == {"a": "1", "b": "2"}
-    run()  # same inputs, fresh LiveMap: must still refill, not empty out.
+    app.update_blocking()  # same inputs, fresh LiveMap: must still refill, not empty out.
     assert _data() == {"a": "1", "b": "2"}
 
 
