@@ -390,6 +390,15 @@ impl<Prof: EngineProfile> Committer<Prof> {
             child_path_set.map(Arc::new)
         };
 
+        // On whole-component deletion, also clear the `Live` user-state
+        // keyspace. The regular flush (clear_all_first / writes / deletes)
+        // only touches `Regular`, so without this the live-machinery
+        // committed state (read via `read_committed_state`) would leak when
+        // its owning component disappears. For a Delete action `user_states`
+        // is `UserStateCache::new()`, so `clear_all_first` is already true —
+        // this flag is the parallel signal for the `Live` half.
+        let user_state_clear_live = self.component_ctx.mode() == ComponentProcessingMode::Delete;
+
         let plan = CommitPlan {
             new_tracking_info,
             target_owners_to_upsert: Vec::new(),
@@ -400,6 +409,7 @@ impl<Prof: EngineProfile> Committer<Prof> {
             user_state_clear_all_first: user_state_plan.clear_all_first,
             user_state_writes: user_state_plan.writes,
             user_state_deletes: user_state_plan.deletes,
+            user_state_clear_live,
             child_path_set: child_path_set.clone(),
         };
 

@@ -17,6 +17,49 @@ use crate::state::{
     target_state_path::TargetStatePath,
 };
 
+/// Which writer owns a user-state entry. The two kinds share the `0xc0`
+/// `UserState*` keyspace but are isolated by a discriminant byte so they
+/// never collide on prefix scans (see the layout note on
+/// [`StablePathEntryKey::UserState`]).
+///
+/// * `Regular` — declared by `coco.use_state()` during a component build and
+///   subject to set-reduction at flush time (prefetch-all, then prune every
+///   loaded-but-not-redeclared key).
+/// * `Live` — committed by the live-component machinery (e.g. a bootstrap
+///   flag + logic version) and read back via `read_committed_state`. Exempt
+///   from the regular flush's prune so a live component's own `process()`
+///   (which may itself call `coco.use_state`) can't delete it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StateKind {
+    Regular,
+    Live,
+}
+
+impl storekey::Encode for StateKind {
+    fn encode<W: Write>(&self, e: &mut storekey::Writer<W>) -> Result<(), storekey::EncodeError> {
+        // Avoid 0x00/0x01: `storekey` reserves 0x00 as a delimiter and escapes
+        // it (and the 0x01 escape byte itself) with a preceding 0x01, which
+        // would expand the tag to two bytes and break the single-byte per-kind
+        // prefix. 0x02/0x03 encode as a clean single byte.
+        match self {
+            StateKind::Regular => e.write_u8(0x02),
+            StateKind::Live => e.write_u8(0x03),
+        }
+    }
+}
+
+impl storekey::Decode for StateKind {
+    fn decode<D: std::io::BufRead>(
+        d: &mut storekey::Reader<D>,
+    ) -> Result<Self, storekey::DecodeError> {
+        match d.read_u8()? {
+            0x02 => Ok(StateKind::Regular),
+            0x03 => Ok(StateKind::Live),
+            _ => Err(storekey::DecodeError::InvalidFormat),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum StablePathEntryKey {
     /// Value type: ComponentMemoizationInfo
@@ -38,9 +81,13 @@ pub enum StablePathEntryKey {
     /// Relative path to the parent component.
     ChildComponentTombstone(StablePath),
 
-    UserStatePrefix,
+    /// Scan prefix for all user-state entries of one [`StateKind`].
+    /// Encodes as `0xc0` + the kind byte, a strict prefix of every
+    /// `UserState(kind, *)` that never matches the other kind's entries.
+    UserStatePrefix(StateKind),
+    /// Layout: `0xc0` + [`StateKind`] byte + the encoded `StableKey`.
     /// Value type: opaque bytes (msgpack-serialized by the caller).
-    UserState(StableKey),
+    UserState(StateKind, StableKey),
 }
 
 impl storekey::Encode for StablePathEntryKey {
@@ -64,9 +111,13 @@ impl storekey::Encode for StablePathEntryKey {
                 e.write_u8(0xb0)?;
                 path.encode(e)
             }
-            StablePathEntryKey::UserStatePrefix => e.write_u8(0xc0),
-            StablePathEntryKey::UserState(key) => {
+            StablePathEntryKey::UserStatePrefix(kind) => {
                 e.write_u8(0xc0)?;
+                kind.encode(e)
+            }
+            StablePathEntryKey::UserState(kind, key) => {
+                e.write_u8(0xc0)?;
+                kind.encode(e)?;
                 key.encode(e)
             }
         }
@@ -93,8 +144,9 @@ impl storekey::Decode for StablePathEntryKey {
                 StablePathEntryKey::ChildComponentTombstone(path)
             }
             0xc0 => {
+                let kind: StateKind = storekey::Decode::decode(d)?;
                 let key: StableKey = storekey::Decode::decode(d)?;
-                StablePathEntryKey::UserState(key)
+                StablePathEntryKey::UserState(kind, key)
             }
             _ => return Err(storekey::DecodeError::InvalidFormat),
         };
@@ -438,55 +490,117 @@ mod tests {
             matches!(decoded, StablePathEntryKey::ChildComponentTombstone(p) if p == child_path)
         );
 
-        // UserState with several StableKey types.
+        // UserState with several StableKey types, across both kinds.
         let user_keys: Vec<StableKey> = vec![
             StableKey::Str(Arc::from("counter")),
             StableKey::Int(42),
             StableKey::Symbol(Arc::from("sys/state")),
             StableKey::Bytes(Arc::from(&b"raw\x00key"[..])),
         ];
-        for user_key in user_keys {
-            let decoded = roundtrip_entry_key(&StablePathEntryKey::UserState(user_key.clone()));
-            assert!(
-                matches!(&decoded, StablePathEntryKey::UserState(k) if k == &user_key),
-                "UserState({user_key:?}) did not roundtrip correctly"
-            );
+        for kind in [StateKind::Regular, StateKind::Live] {
+            for user_key in &user_keys {
+                let decoded =
+                    roundtrip_entry_key(&StablePathEntryKey::UserState(kind, user_key.clone()));
+                assert!(
+                    matches!(&decoded, StablePathEntryKey::UserState(k, key) if *k == kind && key == user_key),
+                    "UserState({kind:?}, {user_key:?}) did not roundtrip correctly"
+                );
+            }
         }
     }
 
-    /// `UserStatePrefix` must encode as a single byte `0xc0`.
-    /// Documents the wire format and guards against accidental discriminant collisions.
+    /// `StateKind` roundtrips through storekey as a single discriminant byte.
+    #[test]
+    fn state_kind_roundtrip() {
+        for kind in [StateKind::Regular, StateKind::Live] {
+            let bytes = storekey::encode_vec(&kind).expect("encode");
+            assert_eq!(bytes.len(), 1, "StateKind must encode to one byte");
+            let decoded: StateKind = storekey::decode(Cursor::new(bytes)).expect("decode");
+            assert_eq!(decoded, kind);
+        }
+        // Distinct discriminants so the two keyspaces never alias.
+        assert_ne!(
+            storekey::encode_vec(&StateKind::Regular).unwrap(),
+            storekey::encode_vec(&StateKind::Live).unwrap(),
+        );
+    }
+
+    /// `UserStatePrefix(kind)` must encode as `0xc0` followed by the kind
+    /// byte. Documents the wire format and guards against accidental
+    /// discriminant collisions.
     #[test]
     fn user_state_prefix_discriminant_is_0xc0() {
-        let bytes = storekey::encode_vec(&StablePathEntryKey::UserStatePrefix).expect("encode");
         // NOTE: `0xc0u8` uses an explicit primitive suffix to force a 1-byte allocation.
         // Without `u8`, Rust infers `0xc0` as `i32` (4 bytes), causing a compile-time type
         // mismatch with `bytes` (`Vec<u8>`).
-        assert_eq!(bytes, &[0xc0u8]);
+        let regular =
+            storekey::encode_vec(&StablePathEntryKey::UserStatePrefix(StateKind::Regular))
+                .expect("encode");
+        assert_eq!(regular, &[0xc0u8, 0x02]);
+        let live = storekey::encode_vec(&StablePathEntryKey::UserStatePrefix(StateKind::Live))
+            .expect("encode");
+        assert_eq!(live, &[0xc0u8, 0x03]);
     }
 
-    /// Every `UserState(key)` encoding must start with the `UserStatePrefix`
-    /// encoding. This is the invariant that makes LMDB prefix scans correct:
-    /// `prefix_iter` with the prefix key will hit exactly the right entries.
+    /// Every `UserState(kind, key)` encoding must start with the matching
+    /// `UserStatePrefix(kind)` encoding. This is the invariant that makes
+    /// LMDB prefix scans correct: `prefix_iter` with the prefix key will hit
+    /// exactly the right entries.
     #[test]
     fn user_state_key_starts_with_prefix() {
-        let prefix_bytes =
-            storekey::encode_vec(&StablePathEntryKey::UserStatePrefix).expect("encode");
-
         let cases: Vec<StableKey> = vec![
             StableKey::Str(Arc::from("my_state")),
             StableKey::Int(0),
             StableKey::Null,
             StableKey::Bytes(Arc::from(&b""[..])),
         ];
-        for user_key in cases {
-            let key_bytes = storekey::encode_vec(&StablePathEntryKey::UserState(user_key.clone()))
-                .expect("encode");
-            assert!(
-                key_bytes.starts_with(&prefix_bytes),
-                "UserState({user_key:?}) bytes don't start with UserStatePrefix bytes"
-            );
+        for kind in [StateKind::Regular, StateKind::Live] {
+            let prefix_bytes =
+                storekey::encode_vec(&StablePathEntryKey::UserStatePrefix(kind)).expect("encode");
+            for user_key in &cases {
+                let key_bytes =
+                    storekey::encode_vec(&StablePathEntryKey::UserState(kind, user_key.clone()))
+                        .expect("encode");
+                assert!(
+                    key_bytes.starts_with(&prefix_bytes),
+                    "UserState({kind:?}, {user_key:?}) bytes don't start with UserStatePrefix({kind:?}) bytes"
+                );
+            }
         }
+    }
+
+    /// A `UserStatePrefix(Regular)` scan must never match a `Live` entry (and
+    /// vice versa). This is the isolation guarantee that lets a live
+    /// component's regular flush prune `Regular` keys without touching the
+    /// `Live` bootstrap state committed by the live machinery.
+    #[test]
+    fn user_state_prefix_does_not_cross_kinds() {
+        let user_key = StableKey::Str(Arc::from("bootstrap"));
+        let regular_prefix =
+            storekey::encode_vec(&StablePathEntryKey::UserStatePrefix(StateKind::Regular))
+                .expect("encode");
+        let live_prefix =
+            storekey::encode_vec(&StablePathEntryKey::UserStatePrefix(StateKind::Live))
+                .expect("encode");
+        let live_key = storekey::encode_vec(&StablePathEntryKey::UserState(
+            StateKind::Live,
+            user_key.clone(),
+        ))
+        .expect("encode");
+        let regular_key = storekey::encode_vec(&StablePathEntryKey::UserState(
+            StateKind::Regular,
+            user_key.clone(),
+        ))
+        .expect("encode");
+
+        assert!(
+            !live_key.starts_with(&regular_prefix),
+            "Live entry must not match the Regular prefix"
+        );
+        assert!(
+            !regular_key.starts_with(&live_prefix),
+            "Regular entry must not match the Live prefix"
+        );
     }
 
     /// Full `DbEntryKey::StablePath(path, UserState(key))` roundtrip.
@@ -500,14 +614,15 @@ mod tests {
 
         let entry = DbEntryKey::StablePath(
             path.clone(),
-            StablePathEntryKey::UserState(user_key.clone()),
+            StablePathEntryKey::UserState(StateKind::Live, user_key.clone()),
         );
         let bytes = entry.encode().expect("encode");
         let decoded = DbEntryKey::decode(&bytes).expect("decode");
 
         match decoded {
-            DbEntryKey::StablePath(p, StablePathEntryKey::UserState(k)) => {
+            DbEntryKey::StablePath(p, StablePathEntryKey::UserState(kind, k)) => {
                 assert_eq!(p, path);
+                assert_eq!(kind, StateKind::Live);
                 assert_eq!(k, user_key);
             }
             other => panic!("expected StablePath/UserState, got {other:?}"),
@@ -521,13 +636,15 @@ mod tests {
     fn db_entry_key_user_state_prefix_scan() {
         let path = StablePath(Arc::from(vec![StableKey::Str(Arc::from("docs/intro.md"))]));
 
-        let prefix_bytes =
-            DbEntryKey::StablePath(path.clone(), StablePathEntryKey::UserStatePrefix)
-                .encode()
-                .expect("encode");
+        let prefix_bytes = DbEntryKey::StablePath(
+            path.clone(),
+            StablePathEntryKey::UserStatePrefix(StateKind::Regular),
+        )
+        .encode()
+        .expect("encode");
         let state_bytes = DbEntryKey::StablePath(
             path.clone(),
-            StablePathEntryKey::UserState(StableKey::Str(Arc::from("counter"))),
+            StablePathEntryKey::UserState(StateKind::Regular, StableKey::Str(Arc::from("counter"))),
         )
         .encode()
         .expect("encode");
@@ -550,12 +667,15 @@ mod tests {
         let path_a = StablePath(Arc::from(vec![StableKey::Str(Arc::from("file_a.md"))]));
         let path_b = StablePath(Arc::from(vec![StableKey::Str(Arc::from("file_b.md"))]));
 
-        let prefix_a = DbEntryKey::StablePath(path_a.clone(), StablePathEntryKey::UserStatePrefix)
-            .encode()
-            .expect("encode");
+        let prefix_a = DbEntryKey::StablePath(
+            path_a.clone(),
+            StablePathEntryKey::UserStatePrefix(StateKind::Regular),
+        )
+        .encode()
+        .expect("encode");
         let state_b = DbEntryKey::StablePath(
             path_b,
-            StablePathEntryKey::UserState(StableKey::Str(Arc::from("x"))),
+            StablePathEntryKey::UserState(StateKind::Regular, StableKey::Str(Arc::from("x"))),
         )
         .encode()
         .expect("encode");

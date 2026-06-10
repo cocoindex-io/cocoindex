@@ -31,7 +31,7 @@ use cocoindex_utils::fingerprint::Fingerprint;
 use crate::prelude::*;
 use crate::state::db_schema::{
     ChildExistenceInfo, DbEntryKey, FunctionMemoizationEntry, IdSequencerInfo, StablePathEntryKey,
-    StablePathNodeType, TargetStateOwnerInfo,
+    StablePathNodeType, StateKind, TargetStateOwnerInfo,
 };
 use crate::state::stable_path::{StableKey, StablePath, StablePathPrefix, StablePathRef};
 use crate::state::target_state_path::TargetStatePath;
@@ -207,16 +207,16 @@ fn key_id_sequencer(key: &StableKey) -> Result<Vec<u8>> {
     DbEntryKey::IdSequencer(key.clone()).encode()
 }
 
-fn key_user_state(path: &StablePath, user_key: &StableKey) -> Result<Vec<u8>> {
+fn key_user_state(path: &StablePath, kind: StateKind, user_key: &StableKey) -> Result<Vec<u8>> {
     DbEntryKey::StablePath(
         path.clone(),
-        StablePathEntryKey::UserState(user_key.clone()),
+        StablePathEntryKey::UserState(kind, user_key.clone()),
     )
     .encode()
 }
 
-fn key_user_state_prefix(path: &StablePath) -> Result<Vec<u8>> {
-    DbEntryKey::StablePath(path.clone(), StablePathEntryKey::UserStatePrefix).encode()
+fn key_user_state_prefix(path: &StablePath, kind: StateKind) -> Result<Vec<u8>> {
+    DbEntryKey::StablePath(path.clone(), StablePathEntryKey::UserStatePrefix(kind)).encode()
 }
 
 // --- Tracking info -------------------------------------------------------
@@ -825,11 +825,15 @@ impl AppStore {
 // --- User state ----------------------------------------------------------
 
 impl AppStore {
-    /// List all user-state entries for `path` from a fresh snapshot.
-    /// Returns `(user_key, value_bytes)` pairs in on-disk key order.
-    pub async fn list_user_states(&self, path: &StablePath) -> Result<Vec<(StableKey, Vec<u8>)>> {
+    /// List all user-state entries of `kind` under `path` from a fresh
+    /// snapshot. Returns `(user_key, value_bytes)` pairs in on-disk key order.
+    pub async fn list_user_states(
+        &self,
+        path: &StablePath,
+        kind: StateKind,
+    ) -> Result<Vec<(StableKey, Vec<u8>)>> {
         let rtxn = self.read_txn().await?;
-        let prefix = key_user_state_prefix(path)?;
+        let prefix = key_user_state_prefix(path, kind)?;
         let db = self.db();
         let mut out = Vec::new();
         for entry in db.prefix_iter(&rtxn, &prefix)? {
@@ -840,36 +844,81 @@ impl AppStore {
         Ok(out)
     }
 
+    /// Point-read the single `kind` entry under `(path, user_key)` from a
+    /// fresh snapshot, or `None` if absent. Used by `read_committed_state`
+    /// to fetch one [`StateKind::Live`] key without scanning the prefix.
+    pub async fn read_user_state(
+        &self,
+        path: &StablePath,
+        kind: StateKind,
+        user_key: &StableKey,
+    ) -> Result<Option<Vec<u8>>> {
+        let rtxn = self.read_txn().await?;
+        let key = key_user_state(path, kind, user_key)?;
+        Ok(self.db().get(&rtxn, &key)?.map(<[u8]>::to_vec))
+    }
+
     pub async fn write_user_state(
         &self,
         txn: &mut WriteTxn<'_>,
         path: &StablePath,
+        kind: StateKind,
         user_key: &StableKey,
         value: &[u8],
     ) -> Result<()> {
-        let key = key_user_state(path, user_key)?;
+        let key = key_user_state(path, kind, user_key)?;
         self.db().put(&mut **txn, &key, value)?;
         Ok(())
+    }
+
+    /// Write a single `kind` user-state entry outside a caller-supplied txn.
+    /// Routed through the single-writer batcher so concurrent writers
+    /// coalesce (same invariant as the other standalone writers). Used by
+    /// the live machinery's `write_committed_state`, which commits a
+    /// [`StateKind::Live`] key independently of any component build's flush.
+    pub async fn write_user_state_standalone(
+        &self,
+        path: &StablePath,
+        kind: StateKind,
+        user_key: &StableKey,
+        value: &[u8],
+    ) -> Result<()> {
+        let app_store = self.clone();
+        let path = path.clone();
+        let user_key = user_key.clone();
+        let value = value.to_vec();
+        self.run_in_batcher(move |wtxn| {
+            Box::pin(async move {
+                app_store
+                    .write_user_state(wtxn, &path, kind, &user_key, &value)
+                    .await
+            })
+        })
+        .await
     }
 
     pub async fn delete_user_state(
         &self,
         txn: &mut WriteTxn<'_>,
         path: &StablePath,
+        kind: StateKind,
         user_key: &StableKey,
     ) -> Result<()> {
-        let key = key_user_state(path, user_key)?;
+        let key = key_user_state(path, kind, user_key)?;
         self.db().delete(&mut **txn, &key)?;
         Ok(())
     }
 
-    /// Delete every user-state entry under `path`. Used during component GC.
-    pub async fn delete_all_user_states(
+    /// Delete every user-state entry of `kind` under `path`. Used by the
+    /// regular flush's clear-all (with [`StateKind::Regular`]) and by
+    /// whole-component deletion (which clears both kinds).
+    pub async fn delete_user_states_of_kind(
         &self,
         txn: &mut WriteTxn<'_>,
         path: &StablePath,
+        kind: StateKind,
     ) -> Result<()> {
-        let prefix = key_user_state_prefix(path)?;
+        let prefix = key_user_state_prefix(path, kind)?;
         let db = self.db();
         let mut iter = db.prefix_iter_mut(&mut **txn, &prefix)?;
         while iter.next().transpose()?.is_some() {
@@ -885,6 +934,7 @@ impl AppStore {
 #[cfg(test)]
 mod tests {
     use super::AppStore;
+    use crate::state::db_schema::StateKind;
     use crate::state::stable_path::{StableKey, StablePath};
     use crate::state_store::txn::WriteTxn;
     use std::collections::HashMap;
@@ -930,7 +980,10 @@ mod tests {
     #[tokio::test]
     async fn list_user_states_empty_on_fresh_path() {
         let (store, _dir) = make_test_store().await;
-        let result = store.list_user_states(&comp_path("comp")).await.unwrap();
+        let result = store
+            .list_user_states(&comp_path("comp"), StateKind::Regular)
+            .await
+            .unwrap();
         assert!(result.is_empty());
     }
 
@@ -943,20 +996,25 @@ mod tests {
 
         let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
         store
-            .write_user_state(&mut wtxn, &p, &sym("count"), b"42")
+            .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("count"), b"42")
             .await
             .unwrap();
         store
-            .write_user_state(&mut wtxn, &p, &sym("name"), b"hello")
+            .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("name"), b"hello")
             .await
             .unwrap();
         store
-            .write_user_state(&mut wtxn, &p, &sym("flag"), b"true")
+            .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("flag"), b"true")
             .await
             .unwrap();
         wtxn.into_inner().commit().unwrap();
 
-        let entries = to_map(store.list_user_states(&p).await.unwrap());
+        let entries = to_map(
+            store
+                .list_user_states(&p, StateKind::Regular)
+                .await
+                .unwrap(),
+        );
         assert_eq!(entries.len(), 3);
         assert_eq!(entries[&sym("count")], b"42");
         assert_eq!(entries[&sym("name")], b"hello");
@@ -970,19 +1028,24 @@ mod tests {
 
         let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
         store
-            .write_user_state(&mut wtxn, &p, &sym("k"), b"v1")
+            .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("k"), b"v1")
             .await
             .unwrap();
         wtxn.into_inner().commit().unwrap();
 
         let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
         store
-            .write_user_state(&mut wtxn, &p, &sym("k"), b"v2")
+            .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("k"), b"v2")
             .await
             .unwrap();
         wtxn.into_inner().commit().unwrap();
 
-        let entries = to_map(store.list_user_states(&p).await.unwrap());
+        let entries = to_map(
+            store
+                .list_user_states(&p, StateKind::Regular)
+                .await
+                .unwrap(),
+        );
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[&sym("k")], b"v2");
     }
@@ -998,15 +1061,15 @@ mod tests {
 
         let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
         store
-            .write_user_state(&mut wtxn, &p, &sym("a"), b"old_a")
+            .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("a"), b"old_a")
             .await
             .unwrap();
         store
-            .write_user_state(&mut wtxn, &p, &sym("b"), b"b_val")
+            .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("b"), b"b_val")
             .await
             .unwrap();
         store
-            .write_user_state(&mut wtxn, &p, &sym("c"), b"c_val")
+            .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("c"), b"c_val")
             .await
             .unwrap();
         wtxn.into_inner().commit().unwrap();
@@ -1014,23 +1077,28 @@ mod tests {
         // write and delete are atomic within the same txn.
         let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
         store
-            .write_user_state(&mut wtxn, &p, &sym("a"), b"new_a")
+            .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("a"), b"new_a")
             .await
             .unwrap();
         store
-            .delete_user_state(&mut wtxn, &p, &sym("b"))
+            .delete_user_state(&mut wtxn, &p, StateKind::Regular, &sym("b"))
             .await
             .unwrap();
         wtxn.into_inner().commit().unwrap();
 
-        let entries = to_map(store.list_user_states(&p).await.unwrap());
+        let entries = to_map(
+            store
+                .list_user_states(&p, StateKind::Regular)
+                .await
+                .unwrap(),
+        );
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[&sym("a")], b"new_a");
         assert!(!entries.contains_key(&sym("b")));
         assert_eq!(entries[&sym("c")], b"c_val");
     }
 
-    // --- delete_all_user_states --------------------------------------------
+    // --- delete_user_states_of_kind ----------------------------------------
 
     #[tokio::test]
     async fn delete_all_then_write_within_flush_txn() {
@@ -1041,33 +1109,41 @@ mod tests {
 
         let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
         store
-            .write_user_state(&mut wtxn, &p, &sym("a"), b"old_a")
+            .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("a"), b"old_a")
             .await
             .unwrap();
         store
-            .write_user_state(&mut wtxn, &p, &sym("b"), b"b_val")
+            .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("b"), b"b_val")
             .await
             .unwrap();
         store
-            .write_user_state(&mut wtxn, &p, &sym("c"), b"c_val")
+            .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("c"), b"c_val")
             .await
             .unwrap();
         wtxn.into_inner().commit().unwrap();
 
         // delete_all and subsequent writes are atomic within the same txn.
         let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
-        store.delete_all_user_states(&mut wtxn, &p).await.unwrap();
         store
-            .write_user_state(&mut wtxn, &p, &sym("a"), b"new_a")
+            .delete_user_states_of_kind(&mut wtxn, &p, StateKind::Regular)
             .await
             .unwrap();
         store
-            .write_user_state(&mut wtxn, &p, &sym("d"), b"d_val")
+            .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("a"), b"new_a")
+            .await
+            .unwrap();
+        store
+            .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("d"), b"d_val")
             .await
             .unwrap();
         wtxn.into_inner().commit().unwrap();
 
-        let entries = to_map(store.list_user_states(&p).await.unwrap());
+        let entries = to_map(
+            store
+                .list_user_states(&p, StateKind::Regular)
+                .await
+                .unwrap(),
+        );
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[&sym("a")], b"new_a");
         assert!(!entries.contains_key(&sym("b")));
@@ -1085,21 +1161,126 @@ mod tests {
 
         let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
         store
-            .write_user_state(&mut wtxn, &p1, &sym("k"), b"from_a")
+            .write_user_state(&mut wtxn, &p1, StateKind::Regular, &sym("k"), b"from_a")
             .await
             .unwrap();
         store
-            .write_user_state(&mut wtxn, &p2, &sym("k"), b"from_b")
+            .write_user_state(&mut wtxn, &p2, StateKind::Regular, &sym("k"), b"from_b")
             .await
             .unwrap();
         wtxn.into_inner().commit().unwrap();
 
-        let r1 = to_map(store.list_user_states(&p1).await.unwrap());
-        let r2 = to_map(store.list_user_states(&p2).await.unwrap());
+        let r1 = to_map(
+            store
+                .list_user_states(&p1, StateKind::Regular)
+                .await
+                .unwrap(),
+        );
+        let r2 = to_map(
+            store
+                .list_user_states(&p2, StateKind::Regular)
+                .await
+                .unwrap(),
+        );
         assert_eq!(r1.len(), 1);
         assert_eq!(r2.len(), 1);
         assert_eq!(r1[&sym("k")], b"from_a");
         assert_eq!(r2[&sym("k")], b"from_b");
+    }
+
+    // --- kind isolation ----------------------------------------------------
+
+    #[tokio::test]
+    async fn user_states_isolated_by_kind() {
+        // Regular and Live share the component path and even the same user
+        // key, but never collide: per-kind list/read see only their own
+        // entries, and a Regular bulk-delete leaves Live intact.
+        let (store, _dir) = make_test_store().await;
+        let p = comp_path("comp");
+
+        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
+        store
+            .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("k"), b"reg")
+            .await
+            .unwrap();
+        store
+            .write_user_state(&mut wtxn, &p, StateKind::Live, &sym("k"), b"live")
+            .await
+            .unwrap();
+        wtxn.into_inner().commit().unwrap();
+
+        // Per-kind list sees only its own keyspace, even for the same key.
+        let reg = to_map(
+            store
+                .list_user_states(&p, StateKind::Regular)
+                .await
+                .unwrap(),
+        );
+        let live = to_map(store.list_user_states(&p, StateKind::Live).await.unwrap());
+        assert_eq!(reg.len(), 1);
+        assert_eq!(live.len(), 1);
+        assert_eq!(reg[&sym("k")], b"reg");
+        assert_eq!(live[&sym("k")], b"live");
+
+        // Point-read resolves per kind.
+        assert_eq!(
+            store
+                .read_user_state(&p, StateKind::Regular, &sym("k"))
+                .await
+                .unwrap()
+                .as_deref(),
+            Some(&b"reg"[..])
+        );
+        assert_eq!(
+            store
+                .read_user_state(&p, StateKind::Live, &sym("k"))
+                .await
+                .unwrap()
+                .as_deref(),
+            Some(&b"live"[..])
+        );
+        assert_eq!(
+            store
+                .read_user_state(&p, StateKind::Live, &sym("absent"))
+                .await
+                .unwrap(),
+            None
+        );
+
+        // Clearing the Regular keyspace must not touch Live (the live
+        // bootstrap state survives a component's regular flush).
+        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
+        store
+            .delete_user_states_of_kind(&mut wtxn, &p, StateKind::Regular)
+            .await
+            .unwrap();
+        wtxn.into_inner().commit().unwrap();
+
+        assert!(
+            store
+                .list_user_states(&p, StateKind::Regular)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        let live = to_map(store.list_user_states(&p, StateKind::Live).await.unwrap());
+        assert_eq!(live.len(), 1);
+        assert_eq!(live[&sym("k")], b"live");
+
+        // Clearing Live too leaves the component with no user state.
+        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
+        store
+            .delete_user_states_of_kind(&mut wtxn, &p, StateKind::Live)
+            .await
+            .unwrap();
+        wtxn.into_inner().commit().unwrap();
+        assert!(
+            store
+                .list_user_states(&p, StateKind::Live)
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 }
 
