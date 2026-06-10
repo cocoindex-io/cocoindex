@@ -6,6 +6,7 @@
 // file and the card appears in its category automatically.
 import '../../styles/globals.css';
 import Topbar from '../../components/Topbar.astro';
+import LegacyExampleBanner from '../../components/LegacyExampleBanner.astro';
 import { GITHUB_REPO, DISCORD_URL, SITE_URL, titleMarkup } from '../../consts';
 import {
   examples,
@@ -53,6 +54,7 @@ const canonical = new URL(`${base}/examples`, SITE_URL).toString();
   </head>
   <body class="ex-listing">
     <Topbar />
+    <LegacyExampleBanner />
 
     <div class="ex-wrap">
       <!-- ═══════════ HERO ═══════════ -->
