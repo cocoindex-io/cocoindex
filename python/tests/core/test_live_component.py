@@ -41,22 +41,6 @@ def test_live_component_rejected_in_use_mount() -> None:
         app.update_blocking()
 
 
-def test_live_component_rejected_in_mount_each() -> None:
-    async def _main() -> None:
-        await coco.mount_each(  # type: ignore[call-overload]
-            coco.component_subpath("x"),
-            _MinimalLiveComponent,
-            [("a",), ("b",)],
-        )
-
-    app = coco.App(
-        coco.AppConfig(name="test_rejected_mount_each", environment=coco_env),
-        _main,
-    )
-    with pytest.raises(TypeError, match="cannot be used with mount_each"):
-        app.update_blocking()
-
-
 # ============================================================================
 # Basic lifecycle tests
 # ============================================================================
@@ -1089,6 +1073,184 @@ def test_mount_each_auto_subpath() -> None:
     app.update_blocking()
 
     assert "k1" in GlobalDictTarget.store.data
+
+
+# ============================================================================
+# mount_each with a LiveComponent class as the per-item processor
+# ============================================================================
+
+
+class _PerItemLiveComponent:
+    """A LiveComponent used as the per-item processor in ``mount_each``.
+
+    Receives the item value as its sole constructor argument — exactly how a
+    plain per-item function receives the item as its first positional argument.
+    Each item therefore gets its own live component instance.
+    """
+
+    def __init__(self, value: int) -> None:
+        self._value = value
+
+    async def process(self) -> None:
+        coco.declare_target_state(
+            GlobalDictTarget.target_state(f"item{self._value}", self._value)
+        )
+
+    async def process_live(self, operator: coco.LiveComponentOperator) -> None:
+        await operator.update_full()
+        await operator.mark_ready()
+
+
+def test_mount_each_live_component_per_item_catch_up() -> None:
+    """A LiveComponent class can be the per-item processor for static items.
+
+    Catch-up mode: each per-item live component does one full pass and
+    terminates after ``mark_ready``.
+    """
+    GlobalDictTarget.store.clear()
+
+    async def _main() -> None:
+        await coco.mount_each(
+            coco.component_subpath("items"),
+            _PerItemLiveComponent,
+            [("a", 1), ("b", 2)],
+        )
+
+    app = coco.App(
+        coco.AppConfig(
+            name="test_mount_each_live_per_item_catch_up", environment=coco_env
+        ),
+        _main,
+    )
+    app.update_blocking()
+
+    assert GlobalDictTarget.store.data == {
+        "item1": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
+        "item2": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
+    }
+
+
+def test_mount_each_live_component_per_item_live_mode() -> None:
+    """Same as above but in live mode.
+
+    All per-item live components return after ``mark_ready``, so the app
+    becomes inactive and ``update_blocking(live=True)`` returns. This
+    exercises readiness aggregation across the per-item live mounts.
+    """
+    GlobalDictTarget.store.clear()
+
+    async def _main() -> None:
+        handle = await coco.mount_each(
+            coco.component_subpath("items"),
+            _PerItemLiveComponent,
+            [("a", 1), ("b", 2), ("c", 3)],
+        )
+        await handle.ready()
+
+    app = coco.App(
+        coco.AppConfig(
+            name="test_mount_each_live_per_item_live_mode", environment=coco_env
+        ),
+        _main,
+    )
+    app.update_blocking(live=True)
+
+    assert GlobalDictTarget.store.data == {
+        "item1": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
+        "item2": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
+        "item3": DictDataWithPrev(data=3, prev=[], prev_may_be_missing=True),
+    }
+
+
+_per_item_live_source: list[int] = []
+
+
+def test_mount_each_live_component_per_item_gc_on_rerun() -> None:
+    """A per-item live component is GC'd when its item disappears on re-run.
+
+    Confirms the per-item live mounts participate in the normal child-existence
+    reconciliation: dropping an item from the source deletes that item's
+    component (and its declared target state) on the next ``update``.
+    """
+    GlobalDictTarget.store.clear()
+
+    async def _main() -> None:
+        handle = await coco.mount_each(
+            coco.component_subpath("items"),
+            _PerItemLiveComponent,
+            [(str(v), v) for v in _per_item_live_source],
+        )
+        await handle.ready()
+
+    app = coco.App(
+        coco.AppConfig(name="test_mount_each_live_per_item_gc", environment=coco_env),
+        _main,
+    )
+
+    _per_item_live_source[:] = [1, 2]
+    app.update_blocking()
+    assert set(GlobalDictTarget.store.data) == {"item1", "item2"}
+
+    # Re-run with item 2 removed → its per-item live component is GC'd.
+    _per_item_live_source[:] = [1]
+    app.update_blocking()
+    assert set(GlobalDictTarget.store.data) == {"item1"}
+
+
+class _PerItemLiveComponentByName:
+    """Per-item LiveComponent keyed by a string name (for LiveMapView items).
+
+    ``_TestLiveMapView`` yields ``(key, key)``, so the per-item processor
+    receives the key string as its value. The component looks up the real
+    value from ``_live_source`` — mirroring ``_declare_live_item``.
+    """
+
+    def __init__(self, name: str) -> None:
+        self._name = name
+
+    async def process(self) -> None:
+        coco.declare_target_state(
+            GlobalDictTarget.target_state(self._name, _live_source[self._name])
+        )
+
+    async def process_live(self, operator: coco.LiveComponentOperator) -> None:
+        await operator.update_full()
+        await operator.mark_ready()
+
+
+def test_mount_each_live_items_view_with_live_component() -> None:
+    """LiveMapView source + LiveComponent per-item processor (recursive case).
+
+    The internal ``_MountEachLiveComponent`` mounts each item via ``mount()``
+    (in ``process()``) / ``operator.update()`` (in ``process_live``); both
+    install the per-item LiveComponent as a nested live component under the
+    outer's ``update_full_lock``.
+    """
+    GlobalDictTarget.store.clear()
+    _live_source.clear()
+    _live_source.update({"a": 1, "b": 2})
+
+    items = _TestLiveMapView(_live_source)
+
+    async def _main() -> None:
+        await coco.mount_each(
+            coco.component_subpath("items"),
+            _PerItemLiveComponentByName,
+            items,  # type: ignore[arg-type]
+        )
+
+    app = coco.App(
+        coco.AppConfig(
+            name="test_mount_each_live_items_live_component", environment=coco_env
+        ),
+        _main,
+    )
+    app.update_blocking(live=True)
+
+    assert GlobalDictTarget.store.data == {
+        "a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
+        "b": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
+    }
 
 
 def test_mount_each_no_name_raises() -> None:

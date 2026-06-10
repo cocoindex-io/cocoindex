@@ -418,7 +418,10 @@ async def mount_each(*pos_args: Any, **kwargs: Any) -> ComponentMountHandle:
 
     Args:
         subpath: Optional component subpath. Auto-derived from fn.__name__ when omitted.
-        fn: The function to run for each item. The item value is passed as the first argument.
+        fn: The function to run for each item — the item value is passed as the
+            first argument. May also be a LiveComponent class, in which case one
+            live component instance is created per item (the item value is passed
+            as the first constructor argument, mirroring the plain-function shape).
         items: A keyed iterable of (key, value) pairs, or a LiveMapFeed/LiveMapView for live mode.
         *args: Additional arguments passed to fn after the item value.
         **kwargs: Additional keyword arguments passed to fn.
@@ -445,23 +448,30 @@ async def mount_each(*pos_args: Any, **kwargs: Any) -> ComponentMountHandle:
             )
         subpath = ComponentSubpath(Symbol(name))
 
-    if is_live_component_class(fn):
-        raise TypeError(
-            "LiveComponent classes cannot be used with mount_each(). "
-            "Use mount() instead."
-        )
-
     parent_ctx = get_context_from_ctx()
     child_path = build_child_path(parent_ctx, subpath)
 
     if isinstance(items, LiveMapFeed):
+        # Live data source: the per-item `fn` (whether a plain function or a
+        # LiveComponent class) is dispatched through `mount()` / `operator.update()`
+        # inside `_MountEachLiveComponent`, both of which already handle live
+        # component classes — so no special-casing of `fn` is needed here.
         instance = _MountEachLiveComponent(items, fn, extra_args, kwargs)
         return await _mount_live_component(parent_ctx, child_path, instance)
 
+    # Static data source: mount one component per item. When `fn` is a
+    # LiveComponent class, each item gets its own live component instance
+    # (same path as `mount(LiveCompClass)`, just looped per item).
+    fn_is_live = is_live_component_class(fn)
     core_handles: list[core.ComponentMountHandle] = []
 
     async def _mount_one(key: StableKey, item: Any) -> None:
         item_path = child_path.concat(key)
+        if fn_is_live:
+            instance = fn(item, *extra_args, **kwargs)
+            handle = await _mount_live_component(parent_ctx, item_path, instance)
+            core_handles.extend(handle._cores)
+            return
         processor = create_core_component_processor(
             fn, parent_ctx._env, item_path, (item, *extra_args), kwargs
         )
