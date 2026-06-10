@@ -3,11 +3,10 @@ use crate::{
     context::{PyComponentProcessorContext, PyFnCallContext},
     prelude::*,
     runtime::build_on_error,
-    stable_path::PyStablePath,
+    stable_path::{PyStableKey, PyStablePath},
 };
 
 use cocoindex_core::engine::live_component::LiveComponentController;
-use cocoindex_core::state::stable_path::StableKey;
 use cocoindex_py_utils::from_py_future;
 use pyo3_async_runtimes::tokio::future_into_py;
 
@@ -126,15 +125,11 @@ impl PyLiveComponentController {
     pub fn read_committed_state_async<'py>(
         &self,
         py: Python<'py>,
-        key: String,
+        key: PyStableKey,
     ) -> PyResult<Bound<'py, PyAny>> {
         let ctrl = self.0.clone();
         future_into_py(py, async move {
-            let stable_key = StableKey::Symbol(key.into());
-            let value = ctrl
-                .read_committed_state(&stable_key)
-                .await
-                .into_py_result()?;
+            let value = ctrl.read_committed_state(&key.0).await.into_py_result()?;
             Ok(value)
         })
     }
@@ -146,13 +141,12 @@ impl PyLiveComponentController {
     pub fn write_committed_state_async<'py>(
         &self,
         py: Python<'py>,
-        key: String,
+        key: PyStableKey,
         value: Vec<u8>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let ctrl = self.0.clone();
         future_into_py(py, async move {
-            let stable_key = StableKey::Symbol(key.into());
-            ctrl.write_committed_state(&stable_key, value)
+            ctrl.write_committed_state(&key.0, value)
                 .await
                 .into_py_result()?;
             Ok(())

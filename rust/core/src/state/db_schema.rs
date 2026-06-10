@@ -37,9 +37,13 @@ pub enum StateKind {
 
 impl storekey::Encode for StateKind {
     fn encode<W: Write>(&self, e: &mut storekey::Writer<W>) -> Result<(), storekey::EncodeError> {
+        // Avoid 0x00/0x01: `storekey` reserves 0x00 as a delimiter and escapes
+        // it (and the 0x01 escape byte itself) with a preceding 0x01, which
+        // would expand the tag to two bytes and break the single-byte per-kind
+        // prefix. 0x02/0x03 encode as a clean single byte.
         match self {
-            StateKind::Regular => e.write_u8(0x00),
-            StateKind::Live => e.write_u8(0x01),
+            StateKind::Regular => e.write_u8(0x02),
+            StateKind::Live => e.write_u8(0x03),
         }
     }
 }
@@ -49,8 +53,8 @@ impl storekey::Decode for StateKind {
         d: &mut storekey::Reader<D>,
     ) -> Result<Self, storekey::DecodeError> {
         match d.read_u8()? {
-            0x00 => Ok(StateKind::Regular),
-            0x01 => Ok(StateKind::Live),
+            0x02 => Ok(StateKind::Regular),
+            0x03 => Ok(StateKind::Live),
             _ => Err(storekey::DecodeError::InvalidFormat),
         }
     }
@@ -532,10 +536,10 @@ mod tests {
         let regular =
             storekey::encode_vec(&StablePathEntryKey::UserStatePrefix(StateKind::Regular))
                 .expect("encode");
-        assert_eq!(regular, &[0xc0u8, 0x00]);
+        assert_eq!(regular, &[0xc0u8, 0x02]);
         let live = storekey::encode_vec(&StablePathEntryKey::UserStatePrefix(StateKind::Live))
             .expect("encode");
-        assert_eq!(live, &[0xc0u8, 0x01]);
+        assert_eq!(live, &[0xc0u8, 0x03]);
     }
 
     /// Every `UserState(kind, key)` encoding must start with the matching

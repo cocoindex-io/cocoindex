@@ -28,6 +28,7 @@ from .component_ctx import (
 from .function import AnyCallable, create_core_component_processor
 from .environment import Environment
 from .serde import deserialize, serialize
+from .typing import StableKey
 
 if TYPE_CHECKING:
     from .api import ComponentMountHandle
@@ -395,7 +396,7 @@ class LiveComponentOperator:
         """Signal readiness. In catch-up mode, this never returns (terminates process_live)."""
         await self._require_controller().mark_ready_async()
 
-    async def read_committed_state(self, key: str) -> Any | None:
+    async def read_committed_state(self, key: StableKey) -> Any | None:
         """Read state committed under ``key`` by a prior run's ``process()``.
 
         Read-only counterpart to :func:`coco.use_state`, callable inside
@@ -418,7 +419,7 @@ class LiveComponentOperator:
             return None
         return deserialize(raw)
 
-    async def write_committed_state(self, key: str, value: Any) -> None:
+    async def write_committed_state(self, key: StableKey, value: Any) -> None:
         """Commit ``value`` under ``key`` for a later run to read back.
 
         Write-side counterpart to :meth:`read_committed_state`. The live
@@ -527,7 +528,7 @@ class LiveMapSubscriber(Generic[_K, _V]):
         """Incrementally delete a single entry."""
         return await self._operator.delete(ComponentSubpath(key))  # type: ignore[no-any-return,arg-type]
 
-    async def read_committed_state(self, key: str) -> Any | None:
+    async def read_committed_state(self, key: StableKey) -> Any | None:
         """Read prior-run committed state for ``key``.
 
         Delegates to :meth:`LiveComponentOperator.read_committed_state` so a
@@ -537,7 +538,7 @@ class LiveMapSubscriber(Generic[_K, _V]):
         """
         return await self._operator.read_committed_state(key)
 
-    async def write_committed_state(self, key: str, value: Any) -> None:
+    async def write_committed_state(self, key: StableKey, value: Any) -> None:
         """Commit ``value`` under ``key`` for a later run to read back.
 
         Delegates to :meth:`LiveComponentOperator.write_committed_state` so a
