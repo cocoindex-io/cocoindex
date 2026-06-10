@@ -8,7 +8,7 @@ single ``NDArray[np.float32]`` rather than a ``list[NDArray]``.
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, call, patch
 
 import numpy as np
 import pytest
@@ -17,6 +17,12 @@ pytest.importorskip("litellm", reason="litellm not installed")
 
 from cocoindex.ops.litellm import LiteLLMEmbedder  # noqa: E402
 from cocoindex.resources.embedder import Embedder  # noqa: E402
+
+
+class _FakeHTTPError(Exception):
+    def __init__(self, status_code: int, message: str | None = None) -> None:
+        self.status_code = status_code
+        super().__init__(message or f"HTTP {status_code}")
 
 
 @pytest.mark.asyncio
@@ -84,3 +90,70 @@ async def test_litellm_encoding_format_gated_by_provider(
     else:
         assert "encoding_format" not in call_kwargs
         assert "drop_params" not in call_kwargs
+
+
+@pytest.mark.asyncio
+async def test_litellm_embedder_retries_transient_embedding_errors() -> None:
+    fake_response = type(
+        "R",
+        (),
+        {"data": [{"embedding": [0.1, 0.2, 0.3, 0.4]}]},
+    )()
+    embedder = LiteLLMEmbedder("fake-model")
+    mocked_embedding = AsyncMock(
+        side_effect=[
+            _FakeHTTPError(429),
+            _FakeHTTPError(503),
+            fake_response,
+        ]
+    )
+
+    with (
+        patch("cocoindex.ops.litellm.litellm.aembedding", new=mocked_embedding),
+        patch("cocoindex.ops.litellm._asyncio.sleep", new=AsyncMock()) as sleep,
+    ):
+        vec = await embedder.embed("hello")
+
+    assert vec.tolist() == pytest.approx([0.1, 0.2, 0.3, 0.4])
+    assert mocked_embedding.call_count == 3
+    sleep.assert_has_awaits([call(1.0), call(2.0)])
+
+
+@pytest.mark.asyncio
+async def test_litellm_embedder_does_not_retry_non_transient_embedding_errors() -> None:
+    embedder = LiteLLMEmbedder("fake-model")
+    mocked_embedding = AsyncMock(side_effect=_FakeHTTPError(400))
+
+    with (
+        patch("cocoindex.ops.litellm.litellm.aembedding", new=mocked_embedding),
+        patch("cocoindex.ops.litellm._asyncio.sleep", new=AsyncMock()) as sleep,
+    ):
+        with pytest.raises(_FakeHTTPError):
+            await embedder.embed("hello")
+
+    mocked_embedding.assert_awaited_once()
+    sleep.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_litellm_embedder_does_not_retry_missing_credentials_server_error() -> (
+    None
+):
+    embedder = LiteLLMEmbedder("fake-model")
+    missing_credentials_error = _FakeHTTPError(
+        500,
+        "litellm.InternalServerError: OpenAIException - Missing credentials. "
+        "Please pass an `api_key`, `workload_identity`, `admin_api_key`, or set "
+        "the `OPENAI_API_KEY` or `OPENAI_ADMIN_KEY` environment variable.",
+    )
+    mocked_embedding = AsyncMock(side_effect=missing_credentials_error)
+
+    with (
+        patch("cocoindex.ops.litellm.litellm.aembedding", new=mocked_embedding),
+        patch("cocoindex.ops.litellm._asyncio.sleep", new=AsyncMock()) as sleep,
+    ):
+        with pytest.raises(_FakeHTTPError):
+            await embedder.embed("hello")
+
+    mocked_embedding.assert_awaited_once()
+    sleep.assert_not_called()
