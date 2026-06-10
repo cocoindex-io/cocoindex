@@ -40,7 +40,7 @@ The following types all work out of the box — no registration needed:
 | **Other stdlib** | `uuid.UUID`, `complex`, `pathlib.Path`, `pathlib.PurePath` |
 | **NumPy** | `numpy.ndarray`, `numpy.dtype` (when numpy is installed) |
 
-More generally, all types [supported by msgspec](https://jcristharif.com/msgspec/supported-types.html) work automatically. These types also work when nested inside collections or other structured types.
+More generally, all types [supported by msgspec](https://msgspec.dev/supported-types) work automatically. These types also work when nested inside collections or other structured types.
 
 ## Custom types
 
@@ -87,7 +87,7 @@ class Settings(NamedTuple):
     config: Config | str  # fails at deserialization
 ```
 
-**Fix** — wrap each variant in a tagged [`msgspec.Struct`](https://jcristharif.com/msgspec/structs.html#tagged-unions). The `tag=True` parameter embeds a type tag in the serialized data so that the correct variant can be identified during deserialization:
+**Fix** — wrap each variant in a tagged [`msgspec.Struct`](https://msgspec.dev/structs#tagged-unions). The `tag=True` parameter embeds a type tag in the serialized data so that the correct variant can be identified during deserialization:
 
 ```python
 import msgspec
