@@ -2230,7 +2230,14 @@ async fn max_inflight_components_limits_mount_each_concurrency() {
 async fn max_inflight_components_allows_nested_scope_with_single_permit() {
     let (app, _dir) = temp_app_with_max_inflight("nested_scope_max_inflight_one", 1).await;
 
-    tokio::time::timeout(Duration::from_secs(3), async {
+    // This is a liveness check: with a single permit, nested scopes must not
+    // deadlock (the parent releases its permit before a child acquires one).
+    // The timeout only exists to turn a genuine deadlock-hang into a failure
+    // instead of hanging the whole test binary — a real deadlock never makes
+    // progress, so a generous bound still catches it. Keep it generous: the 8
+    // nested components each commit LMDB write txns with fsync, which is slow on
+    // Windows CI under load and was flaking a tighter 3s bound (issue: Elapsed).
+    tokio::time::timeout(Duration::from_secs(60), async {
         app.update(|ctx| async move {
             for i in 0..4 {
                 let key = format!("child-{i}");
