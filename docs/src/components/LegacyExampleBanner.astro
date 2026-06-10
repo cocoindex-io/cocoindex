@@ -1,0 +1,108 @@
+---
+// Legacy notice shown just below the Topbar on the V0 example listing
+// (/docs-v0/examples) and on every example walkthrough
+// (/docs-v0/examples/<slug>). These were ported from the V0 examples; the
+// banner points readers to the current V1 example docs and the up-to-date
+// example code on `main`. Full-bleed strip mirroring the site-wide
+// Banner.astro so it reads as a page-level notice, not page content.
+const DOCS_HREF = 'https://cocoindex.io/docs/examples/';
+const CODE_HREF = 'https://github.com/cocoindex-io/cocoindex/tree/main/examples';
+---
+
+<aside class="legacy-banner" role="note" aria-label="Legacy example notice">
+  <div class="lb-accent" aria-hidden="true"></div>
+  <div class="lb-in">
+    <span class="lb-tag">Legacy · V0</span>
+    <p class="lb-msg">
+      This is a <strong>CocoIndex&nbsp;V0</strong> example. For the current
+      version, see the new example docs and code.
+    </p>
+    <div class="lb-cta">
+      <a class="lb-btn" href={DOCS_HREF}>New example docs →</a>
+      <a class="lb-btn lb-btn-ghost" href={CODE_HREF}>Example code on GitHub →</a>
+    </div>
+  </div>
+</aside>
+
+<style>
+  /* Full-bleed strip sitting between the Topbar and the page layout, like
+     the site-wide Banner.astro. Palette comes from globals.css. Cream body
+     keeps the maroon-ink text legible; the coral CTAs carry the eye. */
+  .legacy-banner {
+    position: relative;
+    background: linear-gradient(90deg, var(--cream) 0%, var(--paper) 100%);
+    border-bottom: 1px solid var(--rule);
+  }
+  /* 4px top accent using the brand "pipeline" stripes, animated left→right
+     to mirror Banner.astro — signals a migration/in-transition state. */
+  .lb-accent {
+    position: absolute;
+    inset: 0 0 auto 0;
+    height: 4px;
+    background: repeating-linear-gradient(135deg, var(--peach) 0 12px, var(--coral) 12px 24px);
+    background-size: 34px 34px;
+    animation: lb-flow 3s linear infinite;
+    will-change: background-position;
+  }
+  @keyframes lb-flow {
+    from { background-position: 0 0; }
+    to   { background-position: 34px 0; }
+  }
+  .lb-in {
+    max-width: 1480px;
+    margin: 0 auto;
+    padding: 12px 32px;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px 16px;
+    font-family: var(--sans);
+  }
+  .lb-tag {
+    flex: none;
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    padding: 4px 10px;
+    border-radius: 999px;
+    background: color-mix(in oklab, var(--coral) 16%, transparent);
+    border: 1px solid color-mix(in oklab, var(--coral) 45%, transparent);
+    color: var(--maroon);
+  }
+  .lb-msg {
+    margin: 0;
+    flex: 1 1 260px;
+    min-width: 220px;
+    font-size: 14px;
+    line-height: 1.5;
+    color: var(--maroon-ink);
+  }
+  .lb-msg strong { color: var(--maroon); font-weight: 600; white-space: nowrap; }
+  .lb-cta { display: flex; gap: 10px; flex-wrap: wrap; flex: none; }
+  .lb-btn {
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    padding: 7px 14px;
+    border-radius: 999px;
+    background: var(--coral);
+    color: var(--cream);
+    border: 1px solid var(--coral);
+    text-decoration: none;
+    white-space: nowrap;
+    transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+  }
+  .lb-btn:hover { background: var(--maroon); border-color: var(--maroon); }
+  .lb-btn-ghost { background: transparent; color: var(--maroon); border-color: var(--rule-strong); }
+  .lb-btn-ghost:hover { background: var(--maroon); color: var(--cream); border-color: var(--maroon); }
+
+  @media (prefers-reduced-motion: reduce) {
+    .lb-accent { animation: none; }
+  }
+  @media (max-width: 820px) {
+    .lb-in { padding: 12px 16px; }
+    .lb-cta { width: 100%; }
+  }
+</style>
