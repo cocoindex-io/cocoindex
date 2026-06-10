@@ -15,7 +15,12 @@ __all__ = [
 
 import asyncio as _asyncio
 import io as _io
+import logging as _logging
+import time as _time
+from collections.abc import Awaitable as _Awaitable
+from collections.abc import Callable as _Callable
 from typing import Any as _Any
+from typing import TypeVar as _TypeVar
 
 import litellm as litellm
 import numpy as _np
@@ -24,6 +29,133 @@ from numpy.typing import NDArray as _NDArray
 import cocoindex as coco
 from cocoindex.resources import file as _file
 from cocoindex.resources import schema as _schema
+
+_logger = _logging.getLogger(__name__)
+
+_T = _TypeVar("_T")
+_EMBEDDING_RETRY_TIMEOUT_SECONDS = 10 * 60
+_EMBEDDING_RETRY_INITIAL_BACKOFF_SECONDS = 1.0
+_EMBEDDING_RETRY_MAX_BACKOFF_SECONDS = 30.0
+_RETRYABLE_HTTP_STATUS_CODES = frozenset({408, 409, 425, 429, 500, 502, 503, 504})
+_RETRYABLE_TRANSPORT_ERROR_CLASS_NAMES = frozenset(
+    {
+        "ClientConnectorError",
+        "ConnectError",
+        "ConnectTimeout",
+        "PoolTimeout",
+        "ReadError",
+        "ReadTimeout",
+        "RemoteProtocolError",
+        "ServerDisconnectedError",
+        "WriteError",
+        "WriteTimeout",
+    }
+)
+
+
+def _message_indicates_non_retryable_credentials_error(message: str) -> bool:
+    normalized = message.lower()
+    if any(
+        fragment in normalized
+        for fragment in (
+            "missing credentials",
+            "no api key",
+            "invalid api key",
+            "unauthorized",
+        )
+    ):
+        return True
+    if "api key" not in normalized and "api_key" not in normalized:
+        return False
+    return any(
+        fragment in normalized
+        for fragment in ("missing", "must be set", "not set", "required", "invalid")
+    )
+
+
+def _litellm_exception_classes(*names: str) -> tuple[type[BaseException], ...]:
+    classes: list[type[BaseException]] = []
+    for name in names:
+        obj = getattr(litellm, name, None)
+        if isinstance(obj, type) and issubclass(obj, BaseException):
+            classes.append(obj)
+    return tuple(classes)
+
+
+_RETRYABLE_LITELLM_EXCEPTION_CLASSES = _litellm_exception_classes(
+    "APIConnectionError",
+    "BadGatewayError",
+    "InternalServerError",
+    "RateLimitError",
+    "ServiceUnavailableError",
+    "Timeout",
+)
+
+
+def _http_status_code(error: BaseException) -> int | None:
+    for attr in ("status_code", "exception_status_code"):
+        value = getattr(error, attr, None)
+        if isinstance(value, int):
+            return value
+    response = getattr(error, "response", None)
+    value = getattr(response, "status_code", None)
+    if isinstance(value, int):
+        return value
+    return None
+
+
+def _is_transport_error(error: BaseException) -> bool:
+    if isinstance(error, (TimeoutError, ConnectionError)):
+        return True
+    error_type = type(error)
+    module = error_type.__module__
+    return (
+        module.startswith(("aiohttp.", "httpcore.", "httpx."))
+        and error_type.__name__ in _RETRYABLE_TRANSPORT_ERROR_CLASS_NAMES
+    )
+
+
+def _is_retryable_litellm_error(error: BaseException) -> bool:
+    if _message_indicates_non_retryable_credentials_error(str(error)):
+        return False
+    status_code = _http_status_code(error)
+    if status_code is not None:
+        return status_code in _RETRYABLE_HTTP_STATUS_CODES or 500 <= status_code < 600
+    return isinstance(
+        error, _RETRYABLE_LITELLM_EXCEPTION_CLASSES
+    ) or _is_transport_error(error)
+
+
+async def _retry_litellm_call(
+    operation: _Callable[[], _Awaitable[_T]],
+    operation_name: str,
+) -> _T:
+    deadline = _time.monotonic() + _EMBEDDING_RETRY_TIMEOUT_SECONDS
+    backoff = _EMBEDDING_RETRY_INITIAL_BACKOFF_SECONDS
+    attempt = 1
+    while True:
+        remaining = deadline - _time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError(f"{operation_name} did not succeed within 10 minutes")
+        try:
+            return await _asyncio.wait_for(operation(), timeout=remaining)
+        except Exception as e:
+            if not _is_retryable_litellm_error(e):
+                raise
+            remaining = deadline - _time.monotonic()
+            if remaining <= 0:
+                raise
+            delay = min(backoff, remaining)
+            _logger.warning(
+                "%s failed with transient error on attempt %d; retrying in %.1fs: %s",
+                operation_name,
+                attempt,
+                delay,
+                e,
+            )
+            await _asyncio.sleep(delay)
+            backoff = min(backoff * 2, _EMBEDDING_RETRY_MAX_BACKOFF_SECONDS)
+            attempt += 1
 
 
 class LiteLLMEmbedder(_schema.VectorSchemaProvider):
@@ -77,6 +209,16 @@ class LiteLLMEmbedder(_schema.VectorSchemaProvider):
             kwargs.setdefault("drop_params", True)
         return kwargs
 
+    async def _aembedding_with_retry(self, texts: list[str], **extra: _Any) -> _Any:
+        async def _call() -> _Any:
+            return await litellm.aembedding(
+                model=self._model,
+                input=texts,
+                **self._build_call_kwargs(**extra),
+            )
+
+        return await _retry_litellm_call(_call, "litellm.aembedding")
+
     async def _get_dim(self) -> int:
         """Get embedding dimension, caching the result.
 
@@ -88,11 +230,7 @@ class LiteLLMEmbedder(_schema.VectorSchemaProvider):
         async with self._get_lock():
             if self._dim is not None:
                 return self._dim
-            response = await litellm.aembedding(
-                model=self._model,
-                input=["hello"],
-                **self._build_call_kwargs(),
-            )
+            response = await self._aembedding_with_retry(["hello"])
             embedding = response.data[0]["embedding"]
             self._dim = len(embedding)
             return self._dim
@@ -119,11 +257,7 @@ class LiteLLMEmbedder(_schema.VectorSchemaProvider):
         extra: dict[str, _Any] = {}
         if input_type is not None:
             extra["input_type"] = input_type
-        response = await litellm.aembedding(
-            model=self._model,
-            input=texts,
-            **self._build_call_kwargs(**extra),
-        )
+        response = await self._aembedding_with_retry(texts, **extra)
         return [
             _np.array(item["embedding"], dtype=_np.float32) for item in response.data
         ]
