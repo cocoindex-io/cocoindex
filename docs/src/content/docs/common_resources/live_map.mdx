@@ -1,0 +1,82 @@
+---
+title: In-memory *LiveMap*
+description: >
+  LiveMap is an in-memory keyed collection that bridges live producing and consuming
+  logic — declare (key, value) entries as target states on one side, consume it as a
+  LiveMapView with mount_each on the other.
+---
+`LiveMap[K, V]` (`cocoindex.resources.live_map`) is an in-memory, keyed collection that sits **between** a producing part of your pipeline and a consuming part. The producing side **declares** `(key, value)` entries; the consuming side reads the map as a [`LiveMapView`](../advanced_topics/live_component#livemapfeed-and-livemapview) via `coco.mount_each`, getting one processing component per entry that stays in sync as entries appear, change, and disappear.
+
+Think of it as a connector whose "external system" is an in-process `dict`: entries are declared as [target states](../programming_guide/target_state) — so they participate in CocoIndex's declarative change detection and ownership — and that same `dict` is simultaneously exposed as a live source for downstream components. It lets you split a pipeline into a producer half and a consumer half that are decoupled through one shared, incrementally-maintained collection.
+
+It is designed for [live mode](../programming_guide/live_mode): the producer and consumer run concurrently, and the consumer reacts as the producer updates the map.
+
+## Example
+
+```python
+import cocoindex as coco
+from cocoindex.resources.live_map import LiveMap
+
+
+@coco.fn
+async def produce_entries(lm: LiveMap[str, str]) -> None:
+    # Any component can declare entries — often a live component reading a stream.
+    for key, text in fetch_items():
+        lm.declare_entry(key, text)
+
+
+@coco.fn
+async def process_entry(value: str) -> None:
+    ...  # build something from each entry's value
+
+
+@coco.fn
+async def app_main() -> None:
+    lm: LiveMap[str, str] = await LiveMap.create()
+
+    await coco.mount(produce_entries, lm)        # producing side
+    await coco.mount_each(process_entry, lm)     # consuming side: one component per entry
+```
+
+## Creating a LiveMap
+
+```python
+lm: LiveMap[str, str] = await LiveMap.create()
+```
+
+`create()` is an async factory and must be called from **inside the app's component tree** (it mounts a backing target). `K` must be a [stable key](../programming_guide/processing_component#component-path); `V` is any value comparable with `==` — no hashability, serialization, or fingerprinting is required, so arbitrary objects (lists, dataclasses, …) work.
+
+## Producing entries
+
+```python
+lm.declare_entry(key, value)
+```
+
+Call `declare_entry` from inside any component. The entry is a target state **owned by the declaring component**, which gives it normal declarative semantics:
+
+- Declaring a key makes it present, or updates its value.
+- The consumer is notified **only when the value actually changes** (compared with `==`) — re-declaring the same value is a no-op for downstream.
+- An entry is removed when the component that declared it **stops declaring it** (on a re-run) or disappears. There is no explicit delete verb; deletion follows target-state ownership, exactly like other CocoIndex targets.
+
+Multiple components may declare into the same map, as long as each key has a single owner (two components declaring the same key is a conflict, the same as for any target).
+
+## Consuming entries
+
+A `LiveMap` is a [`LiveMapView`](../advanced_topics/live_component#livemapfeed-and-livemapview), so pass it straight to `coco.mount_each` — it behaves just like a live source:
+
+```python
+await coco.mount_each(process_entry, lm)
+```
+
+`mount_each` mounts one processing component per entry (keyed by the entry key), scans the current entries first, then reacts to incremental changes — re-mounting a component when its value changes and removing it when its entry is deleted. The processor receives the entry **value**.
+
+A LiveMap supports **one active consumer** (`mount_each`) at a time.
+
+## Semantics
+
+- **Live-mode first.** LiveMap is built for [`app.update(live=True)`](../programming_guide/live_mode): the consumer subscribes and reacts as producers update the map. In catch-up mode (plain `app.update()`), the consumer scans whatever entries happen to exist when it runs, which can race producers running concurrently in the same session — so for predictable one-shot results, order the producer ahead of the consumer (await the producer's `handle.ready()` before consuming).
+- **In-memory and per-session.** The map lives in process memory and is rebuilt from its producers each time the app starts; its contents do not persist across restarts.
+
+## When to use it
+
+Reach for a LiveMap when you want to decouple a producing stage from a consuming stage through a shared, incrementally-maintained collection. For example: one part of your pipeline watches a stream, extracts entities, and declares them into a map keyed by entity ID; another part builds an index or enrichment for each entity, reacting automatically as entities are added, updated, or removed.
