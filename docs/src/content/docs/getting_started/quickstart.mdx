@@ -57,6 +57,14 @@ When your source data is updated, or your processing logic is changed (for examp
 
 ## Define the app
 
+At a high level, the app has three layers:
+
+1. **App** — binds the pipeline function to concrete input and output paths
+2. **Main function** — finds PDF files and mounts one processing component per file
+3. **File processing** — converts one PDF to Markdown and declares the output file
+
+We'll define the code in the opposite order so each Python symbol exists before it is referenced.
+
 Create a new file `main.py`. We'll define the processing functions first, then wire them into an App.
 
 ### Define file processing
