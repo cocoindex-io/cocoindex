@@ -37,14 +37,32 @@ const MOTIFS = {
   repos: `<svg viewBox="0 0 120 70" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="14" y="18" width="20" height="34" rx="2"/><rect x="40" y="18" width="20" height="34" rx="2"/><rect x="66" y="18" width="20" height="34" rx="2"/><path d="M92 35 L106 35 M98 30 L106 35 L98 40" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
   pdfToMd: `<svg viewBox="0 0 120 70" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="18" y="14" width="30" height="42" rx="2"/><path d="M54 35 L70 35 M62 29 L70 35 L62 41" stroke-linecap="round" stroke-linejoin="round"/><rect x="74" y="14" width="30" height="42" rx="2"/><path d="M80 24 L98 24 M80 32 L94 32 M80 40 L98 40 M80 48 L88 48"/></svg>`,
   codeChunks: `<svg viewBox="0 0 120 70" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="14" y="12" width="34" height="46" rx="2"/><path d="M20 22 L42 22 M20 30 L36 30 M20 38 L42 38 M20 46 L32 46" stroke-width="1.2"/><path d="M54 24 L70 24 M62 18 L70 24 L62 30" stroke-linecap="round" stroke-linejoin="round"/><path d="M54 46 L70 46 M62 40 L70 46 L62 52" stroke-linecap="round" stroke-linejoin="round"/><rect x="76" y="14" width="30" height="18" rx="2" fill="currentColor" opacity="0.14"/><rect x="76" y="38" width="30" height="18" rx="2" fill="currentColor" opacity="0.14"/><circle cx="91" cy="23" r="2.5" fill="currentColor"/><circle cx="91" cy="47" r="2.5" fill="currentColor"/></svg>`,
+  textVec: `<svg viewBox="0 0 120 70" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="12" y="16" width="26" height="38" rx="2"/><path d="M17 25 L33 25 M17 32 L29 32 M17 39 L33 39 M17 46 L25 46" stroke-width="1.2"/><path d="M44 35 L56 35 M50 30 L56 35 L50 40" stroke-linecap="round" stroke-linejoin="round"/><circle cx="66" cy="24" r="2.4" fill="currentColor"/><circle cx="78" cy="24" r="2.4" fill="currentColor"/><circle cx="66" cy="35" r="2.4" fill="currentColor"/><circle cx="78" cy="35" r="2.4" fill="currentColor"/><circle cx="66" cy="46" r="2.4" fill="currentColor"/><circle cx="78" cy="46" r="2.4" fill="currentColor"/><path d="M86 35 L98 35 M92 30 L98 35 L92 40" stroke-linecap="round" stroke-linejoin="round"/><circle cx="106" cy="31" r="7"/><path d="M111 36 L116 41" stroke-linecap="round"/></svg>`,
   graph: `<svg viewBox="0 0 120 70" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M34 20 L58 36 M86 19 L64 36 M34 50 L56 41 M86 51 L66 40 M36 19 L84 18"/><circle cx="30" cy="18" r="6"/><circle cx="90" cy="17" r="6"/><circle cx="28" cy="52" r="6"/><circle cx="92" cy="52" r="6"/><circle cx="61" cy="38" r="8" fill="currentColor" opacity="0.14"/><circle cx="61" cy="38" r="8"/></svg>`,
 } as const;
 
 export const examples: ExampleCard[] = [
   {
+    slug: 'text-embedding',
+    title: 'Semantic Search *101*',
+    index: '01 / 05',
+    category: 'search',
+    thumbLabel: 'Markdown · embeddings',
+    motif: MOTIFS.textVec,
+    description: 'Chunk Markdown files, embed each chunk, store the vectors in Postgres, and search them in plain English. The simplest end-to-end vector index — the best place to start.',
+    tags: [
+      { kind: 'src', label: 'Local FS' },
+      { kind: 'tgt', label: 'Postgres' },
+      { kind: 'ops', label: 'Embeddings' },
+      { kind: 'lvl', label: 'Starter' },
+    ],
+    footMeta: '~6 min · starter',
+    sourceSlug: 'text_embedding',
+  },
+  {
     slug: 'index-codebase',
     title: 'Index Your *Codebase*',
-    index: '01 / 04',
+    index: '02 / 05',
     category: 'search',
     thumbLabel: 'Code · Tree-sitter',
     motif: MOTIFS.codeChunks,
@@ -61,7 +79,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'multi-codebase-summarization',
     title: 'Multi-codebase *Summarization*',
-    index: '02 / 04',
+    index: '03 / 05',
     category: 'llm',
     thumbLabel: 'Code · LLM summaries',
     motif: MOTIFS.repos,
@@ -78,7 +96,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'pdf-to-markdown',
     title: 'PDF → *Markdown*',
-    index: '03 / 04',
+    index: '04 / 05',
     category: 'ingest',
     thumbLabel: 'PDF · custom blocks',
     motif: MOTIFS.pdfToMd,
@@ -94,7 +112,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'podcast-to-knowledge-graph',
     title: 'Podcasts → *Knowledge Graph*',
-    index: '04 / 04',
+    index: '05 / 05',
     category: 'agents',
     thumbLabel: 'YouTube · LLM + graph',
     motif: MOTIFS.graph,
@@ -127,6 +145,7 @@ export const SIDEBAR_TARGETS = ['Local FS', 'Postgres', 'SurrealDB'];
 export const SIDEBAR_SOURCES = ['Local FS', 'PDF', 'Multi-repo', 'YouTube'];
 export const SIDEBAR_LLMS = ['OpenAI', 'Gemini', 'Anthropic'];
 export const POPULAR: Array<{ slug: string; label: string; count: string }> = [
+  { slug: 'text-embedding', label: 'Semantic Search 101', count: '★' },
   { slug: 'index-codebase', label: 'Index Your Codebase', count: '★' },
   { slug: 'multi-codebase-summarization', label: 'Multi-codebase Summarization', count: '★' },
   { slug: 'pdf-to-markdown', label: 'PDF → Markdown', count: '★' },
