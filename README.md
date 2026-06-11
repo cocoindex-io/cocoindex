@@ -310,3 +310,5 @@ coco.App(coco.AppConfig(name="docs"), main, src="./docs").update_blocking()
 <br/><br/>
 
 <p align="center"><sub>Apache 2.0 · © CocoIndex contributors 🥥</sub></p>
+
+<img referrerpolicy="no-referrer-when-downgrade" src="https://static.scarf.sh/a.png?x-pxid=7f27e85b-be3a-411a-b612-0b9d53711814&page=README.md" alt="" width="1" height="1" />

@@ -26,3 +26,10 @@ export const titleMarkup = (s: string): string =>
   s.replace(/\*([^*]+)\*|([^*]+)/g, (_m, em, rest) =>
     em ? `<em>${escapeHtml(em)}</em>` : escapeHtml(rest),
   );
+
+export const POSTHOG_KEY = (import.meta.env.COCOINDEX_DOCS_POSTHOG_API_KEY ?? '') as string;
+export const POSTHOG_HOST = 'https://us.i.posthog.com';
+export const MIXPANEL_TOKEN = (import.meta.env.COCOINDEX_DOCS_MIXPANEL_API_KEY ?? '') as string;
+
+export const SCARF_PIXEL_ID = (import.meta.env.COCOINDEX_DOCS_SCARF_PIXEL_ID ?? '') as string;
+export const SCARF_QUICKSTART_PIXEL_ID = (import.meta.env.COCOINDEX_DOCS_SCARF_QUICKSTART_PIXEL_ID ?? '') as string;

@@ -105,13 +105,17 @@
       "sourcePath": "contributing/setup_dev_environment.md",
       "reviewedTs": 1780444800
     },
+    "examples/index-codebase": {
+      "sourcePath": "example-posts/index-codebase.md",
+      "reviewedTs": 1781092800
+    },
     "examples/multi-codebase-summarization": {
       "sourcePath": "example-posts/multi-codebase-summarization.md",
-      "reviewedTs": 1780444800
+      "reviewedTs": 1781092800
     },
     "examples/pdf-to-markdown": {
       "sourcePath": "example-posts/pdf-to-markdown.md",
-      "reviewedTs": 1780444800
+      "reviewedTs": 1781092800
     },
     "faq": {
       "sourcePath": "faq.md",

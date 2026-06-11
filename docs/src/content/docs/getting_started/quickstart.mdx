@@ -8,6 +8,8 @@ import AppExample from '/src/components/diagrams/concepts/AppExample.astro';
 import FileProcess from '/src/components/diagrams/concepts/FileProcess.astro';
 import ComponentsFanout from '/src/components/diagrams/concepts/ComponentsFanout.astro';
 import AppDef from '/src/components/diagrams/concepts/AppDef.astro';
+import ScarfPixel from '/src/components/ScarfPixel.astro';
+import { SCARF_QUICKSTART_PIXEL_ID } from '/src/consts';
 
 In this tutorial, we'll build a simple app that converts PDF files to Markdown and saves them to a local directory.
 
@@ -207,3 +209,5 @@ The corresponding Markdown file is automatically removed.
 - Read [Core Concepts](../programming_guide/core_concepts) to understand the mental model — state-driven programming, processing components, and memoization
 - Dive into the [Programming Guide](../programming_guide/app), starting with Apps, to learn how to build more complex pipelines
 - Browse more [examples](https://github.com/cocoindex-io/cocoindex/tree/main/examples) for real-world patterns (text embedding, RAG, knowledge graphs)
+
+<ScarfPixel pxid={SCARF_QUICKSTART_PIXEL_ID} />
