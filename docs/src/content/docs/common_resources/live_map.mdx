@@ -70,7 +70,7 @@ await coco.mount_each(process_entry, lm)
 
 `mount_each` mounts one processing component per entry (keyed by the entry key), scans the current entries first, then reacts to incremental changes — re-mounting a component when its value changes and removing it when its entry is deleted. The processor receives the entry **value**.
 
-A LiveMap supports **one active consumer** (`mount_each`) at a time.
+A LiveMap supports **one active consumer** (`mount_each`) at a time; a second concurrent consumer raises `RuntimeError`.
 
 ## Semantics
 

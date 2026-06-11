@@ -34,6 +34,7 @@ from cocoindex._internal.live_component import (
     ReadyAwaitable,
 )
 from cocoindex._internal.typing import StableKey
+from cocoindex.connectorkits import SingleWatcherGuard
 
 _logger = logging.getLogger(__name__)
 
@@ -246,14 +247,17 @@ class TopicStream:
     The underlying ``AIOConsumer`` can only be subscribed once at a time, so
     ``watch()`` is single-shot per :class:`TopicStream` instance: at most one
     of ``watch()`` and ``payloads().watch()`` (across all ``payloads()``
-    views) may be active concurrently. Documented contract; not runtime-checked.
+    views) may be active concurrently — they all funnel through this
+    ``watch()``, which is runtime-guarded, so a second concurrent call raises
+    ``RuntimeError``.
     """
 
-    __slots__ = ("_consumer", "_topics")
+    __slots__ = ("_consumer", "_topics", "_watch_guard")
 
     def __init__(self, consumer: AIOConsumer, topics: list[str]) -> None:
         self._consumer = consumer
         self._topics = topics
+        self._watch_guard = SingleWatcherGuard("Kafka TopicStream")
 
     def payloads(self) -> LiveStream[bytes]:
         """View of this stream yielding each message's payload as bytes.
@@ -266,6 +270,10 @@ class TopicStream:
 
     async def watch(self, subscriber: LiveStreamSubscriber[Message]) -> None:
         """Consume messages from the topics and deliver them to the subscriber."""
+        with self._watch_guard:
+            await self._watch(subscriber)
+
+    async def _watch(self, subscriber: LiveStreamSubscriber[Message]) -> None:
         tracker = _OffsetTracker(self._consumer)
         ready_signaled = False
 
