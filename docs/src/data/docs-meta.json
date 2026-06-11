@@ -117,6 +117,10 @@
       "sourcePath": "example-posts/pdf-to-markdown.md",
       "reviewedTs": 1781092800
     },
+    "examples/podcast-to-knowledge-graph": {
+      "sourcePath": "example-posts/podcast-to-knowledge-graph.md",
+      "reviewedTs": 1781092800
+    },
     "faq": {
       "sourcePath": "faq.md",
       "reviewedTs": 1780444800
