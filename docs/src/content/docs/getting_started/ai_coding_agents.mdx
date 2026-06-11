@@ -13,7 +13,7 @@ The skill lives in the [`skills/cocoindex/`](https://github.com/cocoindex-io/coc
 
 CocoIndex v1 is a fundamental redesign from v0. Without context, an LLM trained on older snapshots tends to hallucinate the wrong API (the v0 flow-builder DSL, deprecated decorators, missing `@coco.fn`, unstable component paths). The skill gives the agent a single concise reference covering:
 
-- **Mental model** — `target_state = transform(source_state)`, declarative pipelines, processing components.
+- **Mental model** — `target_state = transform(source_state)`, declarative pipelines, [processing components](../programming_guide/processing_component).
 - **Core APIs** — `@coco.fn`, `mount` / `use_mount` / `mount_each`, `ContextKey`, `@coco.lifespan`, target state declarations.
 - **Common patterns** — file transformation, vector embedding, LLM extraction, knowledge graphs.
 - **Connectors** — PostgreSQL, SQLite, LanceDB, Qdrant, SurrealDB, Apache Doris, LocalFS, S3, Kafka, Google Drive.

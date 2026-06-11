@@ -62,6 +62,8 @@ const introItems = [
   { k: 'Last reviewed', v: lastReviewed,        reviewed: true  },
 ].filter((m) => m.v);
 const canonical = new URL(`${base}/${slug}/`, SITE_URL).toString();
+const docsHome = new URL(`${base}/`, SITE_URL).toString();
+const ogImage = new URL(`${base}/images/coconut.svg`, SITE_URL).toString();
 
 // Breadcrumb: walk the sidebar tree for the current slug so category
 // labels light up correctly even for nested pages.
@@ -86,6 +88,33 @@ const flat = flatten();
 const i = flat.findIndex((e) => e.slug === slug);
 const prev = i > 0 ? flat[i - 1] : null;
 const next = i >= 0 && i < flat.length - 1 ? flat[i + 1] : null;
+
+// Structured data: a TechArticle for the page plus a BreadcrumbList built from
+// the same `crumbs` used in the visible breadcrumb. Helps search engines and
+// agents understand the page and its place in the docs hierarchy.
+const articleLd = {
+  '@context': 'https://schema.org',
+  '@type': 'TechArticle',
+  headline: title,
+  ...(description ? { description } : {}),
+  url: canonical,
+  inLanguage: 'en',
+  image: ogImage,
+  isPartOf: { '@type': 'WebSite', name: 'CocoIndex Docs', url: docsHome },
+};
+const breadcrumbLd = {
+  '@context': 'https://schema.org',
+  '@type': 'BreadcrumbList',
+  itemListElement: [
+    { '@type': 'ListItem', position: 1, name: 'Docs', item: docsHome },
+    ...crumbs.map((c, idx) => ({
+      '@type': 'ListItem',
+      position: idx + 2,
+      name: c.label,
+      item: c.href ? new URL(c.href, SITE_URL).toString() : canonical,
+    })),
+  ],
+};
 ---
 
 <!doctype html>
@@ -99,6 +128,22 @@ const next = i >= 0 && i < flat.length - 1 ? flat[i + 1] : null;
     <title>{fullTitle}</title>
     {description && <meta name="description" content={description} />}
     <link rel="canonical" href={canonical} />
+
+    <!-- Open Graph / Twitter — link previews on social, Slack, iMessage, etc. -->
+    <meta property="og:type" content="article" />
+    <meta property="og:site_name" content="CocoIndex Docs" />
+    <meta property="og:title" content={fullTitle} />
+    {description && <meta property="og:description" content={description} />}
+    <meta property="og:url" content={canonical} />
+    <meta property="og:image" content={ogImage} />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={fullTitle} />
+    {description && <meta name="twitter:description" content={description} />}
+    <meta name="twitter:image" content={ogImage} />
+
+    <!-- Structured data for search engines and agents. -->
+    <script type="application/ld+json" set:html={JSON.stringify(articleLd)} />
+    <script type="application/ld+json" set:html={JSON.stringify(breadcrumbLd)} />
 
     <link rel="icon" href={`${base}/img/favicon.ico`} />
     <link rel="preconnect" href="https://fonts.googleapis.com" />

@@ -5,7 +5,7 @@ description: >
   logic — declare (key, value) entries as target states on one side, consume it as a
   LiveMapView with mount_each on the other.
 ---
-`LiveMap[K, V]` (`cocoindex.resources.live_map`) is an in-memory, keyed collection that sits **between** a producing part of your pipeline and a consuming part. The producing side **declares** `(key, value)` entries; the consuming side reads the map as a [`LiveMapView`](../advanced_topics/live_component#livemapfeed-and-livemapview) via `coco.mount_each`, getting one processing component per entry that stays in sync as entries appear, change, and disappear.
+`LiveMap[K, V]` (`cocoindex.resources.live_map`) is an in-memory, keyed collection that sits **between** a producing part of your pipeline and a consuming part. The producing side **declares** `(key, value)` entries; the consuming side reads the map as a [`LiveMapView`](../advanced_topics/live_component#livemapfeed-and-livemapview) via `coco.mount_each`, getting one [processing component](../programming_guide/processing_component) per entry that stays in sync as entries appear, change, and disappear.
 
 Think of it as a connector whose "external system" is an in-process `dict`: entries are declared as [target states](../programming_guide/target_state) — so they participate in CocoIndex's declarative change detection and ownership — and that same `dict` is simultaneously exposed as a live source for downstream components. It lets you split a pipeline into a producer half and a consumer half that are decoupled through one shared, incrementally-maintained collection.
 

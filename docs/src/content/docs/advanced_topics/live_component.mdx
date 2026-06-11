@@ -6,7 +6,7 @@ description: >
   (update_full, update, delete, mark_ready) and LiveMapFeed / LiveMapView
   abstractions over event sources.
 ---
-By default, a processing component runs in **catch-up mode** — on each `app.update()`, it declares all target states and mounts all sub-components from scratch. CocoIndex handles incremental updates by skipping memoized sub-components and reconciling target states at the end, then the component exits. This works well when the dataset is small enough to scan fully each cycle.
+By default, a [processing component](../programming_guide/processing_component) runs in **catch-up mode** — on each `app.update()`, it declares all target states and mounts all sub-components from scratch. CocoIndex handles incremental updates by skipping [memoized](../programming_guide/function) sub-components and reconciling target states at the end, then the component exits. This works well when the dataset is small enough to scan fully each cycle.
 
 When the dataset is large or you need to react to changes continuously (e.g., watching a file system), you want the component itself to stay running and react incrementally. A **live component** does an initial full scan (same as catch-up mode), then keeps running and reacts to individual changes without rescanning everything.
 
