@@ -5,7 +5,7 @@
 // src/pages/examples/[slug].astro beneath the shared hero. Titles may use
 // *asterisks* to mark the italic-coral accent — see consts.titleMarkup.
 //
-// The v1 examples repo currently ships two walkthroughs; this file grows
+// The v1 examples repo currently ships three walkthroughs; this file grows
 // as more land there.
 
 export type Category = 'search' | 'ingest' | 'llm' | 'agents' | 'image';
@@ -36,13 +36,31 @@ export type ExampleCard = {
 const MOTIFS = {
   repos: `<svg viewBox="0 0 120 70" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="14" y="18" width="20" height="34" rx="2"/><rect x="40" y="18" width="20" height="34" rx="2"/><rect x="66" y="18" width="20" height="34" rx="2"/><path d="M92 35 L106 35 M98 30 L106 35 L98 40" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
   pdfToMd: `<svg viewBox="0 0 120 70" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="18" y="14" width="30" height="42" rx="2"/><path d="M54 35 L70 35 M62 29 L70 35 L62 41" stroke-linecap="round" stroke-linejoin="round"/><rect x="74" y="14" width="30" height="42" rx="2"/><path d="M80 24 L98 24 M80 32 L94 32 M80 40 L98 40 M80 48 L88 48"/></svg>`,
+  codeChunks: `<svg viewBox="0 0 120 70" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="14" y="12" width="34" height="46" rx="2"/><path d="M20 22 L42 22 M20 30 L36 30 M20 38 L42 38 M20 46 L32 46" stroke-width="1.2"/><path d="M54 24 L70 24 M62 18 L70 24 L62 30" stroke-linecap="round" stroke-linejoin="round"/><path d="M54 46 L70 46 M62 40 L70 46 L62 52" stroke-linecap="round" stroke-linejoin="round"/><rect x="76" y="14" width="30" height="18" rx="2" fill="currentColor" opacity="0.14"/><rect x="76" y="38" width="30" height="18" rx="2" fill="currentColor" opacity="0.14"/><circle cx="91" cy="23" r="2.5" fill="currentColor"/><circle cx="91" cy="47" r="2.5" fill="currentColor"/></svg>`,
 } as const;
 
 export const examples: ExampleCard[] = [
   {
+    slug: 'index-codebase',
+    title: 'Index Your *Codebase*',
+    index: '01 / 03',
+    category: 'search',
+    thumbLabel: 'Code · Tree-sitter',
+    motif: MOTIFS.codeChunks,
+    description: 'Walk a repo, split by syntax with Tree-sitter, embed, and query your codebase in English. A live vector index for AI coding agents, in ~100 lines.',
+    tags: [
+      { kind: 'src', label: 'Local FS' },
+      { kind: 'tgt', label: 'Postgres' },
+      { kind: 'ops', label: 'Tree-sitter' },
+      { kind: 'lvl', label: 'Starter' },
+    ],
+    footMeta: '~10 min · starter',
+    sourceSlug: 'code_embedding',
+  },
+  {
     slug: 'multi-codebase-summarization',
     title: 'Multi-codebase *Summarization*',
-    index: '01 / 02',
+    index: '02 / 03',
     category: 'llm',
     thumbLabel: 'Code · LLM summaries',
     motif: MOTIFS.repos,
@@ -59,7 +77,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'pdf-to-markdown',
     title: 'PDF → *Markdown*',
-    index: '02 / 02',
+    index: '03 / 03',
     category: 'ingest',
     thumbLabel: 'PDF · custom blocks',
     motif: MOTIFS.pdfToMd,
@@ -90,6 +108,7 @@ export const SIDEBAR_TARGETS = ['Local FS', 'Postgres'];
 export const SIDEBAR_SOURCES = ['Local FS', 'PDF', 'Multi-repo'];
 export const SIDEBAR_LLMS = ['OpenAI', 'Gemini', 'Anthropic'];
 export const POPULAR: Array<{ slug: string; label: string; count: string }> = [
+  { slug: 'index-codebase', label: 'Index Your Codebase', count: '★' },
   { slug: 'multi-codebase-summarization', label: 'Multi-codebase Summarization', count: '★' },
   { slug: 'pdf-to-markdown', label: 'PDF → Markdown', count: '★' },
 ];

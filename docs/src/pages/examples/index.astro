@@ -7,7 +7,9 @@
 import '../../styles/globals.css';
 import Topbar from '../../components/Topbar.astro';
 import MobileSheet from '../../components/MobileSheet.astro';
-import { GITHUB_REPO, DISCORD_URL, SITE_URL, titleMarkup } from '../../consts';
+import Analytics from '../../components/Analytics.astro';
+import ScarfPixel from '../../components/ScarfPixel.astro';
+import { GITHUB_REPO, DISCORD_URL, SITE_URL, titleMarkup, SCARF_PIXEL_ID } from '../../consts';
 import {
   examples,
   byCategory,
@@ -24,7 +26,7 @@ import { titleText } from '../../consts';
 import type { SidebarItem } from '../../data/docs-sidebar';
 
 const base = import.meta.env.BASE_URL.replace(/\/$/, '') || '';
-const exampleHref = (slug: string) => `${base}/examples/${slug}`;
+const exampleHref = (slug: string) => `${base}/examples/${slug}/`;
 const featured = findExample(featuredSlug)!;
 
 // Category order and counts, computed from the data.
@@ -53,7 +55,7 @@ const examplesSidebar: SidebarItem[] = CAT_ORDER
 
 const total = examples.length;
 const fullTitle = `Examples · CocoIndex Docs`;
-const description = 'Real pipelines you can clone, run, and bend to your data — custom sources, LLM extraction, vector search, streaming ingest.';
+const description = 'Real pipelines you can clone, run, and bend to your data — codebase vector search, multi-repo LLM summarization, and custom PDF ingest.';
 const canonical = new URL(`${base}/examples`, SITE_URL).toString();
 ---
 <!doctype html>
@@ -85,15 +87,15 @@ const canonical = new URL(`${base}/examples`, SITE_URL).toString();
           <span class="eyb"><span class="dot" aria-hidden="true"></span>{total} live examples · updated weekly</span>
           <div class="stats">
             <span><b>{total}</b> examples</span>
-            <span><b>9</b> sources</span>
-            <span><b>6</b> targets</span>
-            <span><b>5</b> LLM providers</span>
+            <span><b>{SIDEBAR_SOURCES.length}</b> sources</span>
+            <span><b>{SIDEBAR_TARGETS.length}</b> targets</span>
+            <span><b>{SIDEBAR_LLMS.length}</b> LLM providers</span>
           </div>
         </div>
 
         <div class="hero-grid">
           <div>
-            <h1 class="hero-h">Examples<em>.</em></h1>
+            <h1 class="hero-h">Examples</h1>
             <p class="hero-sub">
               Real pipelines you can <b>clone, run, and bend</b> to your data. Each example is production-wired — one source, a declarative flow, a live target. Pick the one closest to what you need and change the parts that don't fit.
             </p>
@@ -743,5 +745,7 @@ const canonical = new URL(`${base}/examples`, SITE_URL).toString();
         body.ex-listing .doc { padding-top: 16px; }
       }
     </style>
+    <Analytics />
+    <ScarfPixel pxid={SCARF_PIXEL_ID} />
   </body>
 </html>

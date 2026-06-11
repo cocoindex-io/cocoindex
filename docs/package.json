@@ -20,6 +20,8 @@
     "astro": "^6.1.8",
     "mdast-util-to-string": "^4.0.0",
     "mermaid": "^11.15.0",
+    "mixpanel-browser": "^2.78.0",
+    "posthog-js": "^1.369.3",
     "remark-directive": "^4.0.0",
     "sharp": "^0.34.5",
     "unist-util-visit": "^5.0.0"

@@ -9,7 +9,9 @@ import Topbar from '../../components/Topbar.astro';
 import Toc from '../../components/Toc.astro';
 import MobileSheet from '../../components/MobileSheet.astro';
 import MermaidRenderer from '../../components/MermaidRenderer.astro';
-import { SITE_URL, titleMarkup, titleText } from '../../consts';
+import Analytics from '../../components/Analytics.astro';
+import ScarfPixel from '../../components/ScarfPixel.astro';
+import { SITE_URL, titleMarkup, titleText, SCARF_PIXEL_ID } from '../../consts';
 import { examples, findExample, CATEGORY_META, type Category } from '../../data/examples';
 import { reviewedDate } from '../../data/review-meta';
 import { getEntry, render } from 'astro:content';
@@ -527,5 +529,7 @@ const introItems = [
       body.ex-detail .ex-prose th { font-family: var(--mono); font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); border-bottom-color: var(--rule-strong); }
       body.ex-detail .ex-prose kbd { font-family: var(--mono); font-size: 12px; padding: 2px 6px; border: 1px solid var(--rule-strong); border-radius: 4px; background: var(--cream); }
     </style>
+    <Analytics />
+    <ScarfPixel pxid={SCARF_PIXEL_ID} />
   </body>
 </html>
