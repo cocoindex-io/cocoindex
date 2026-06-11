@@ -1,19 +1,560 @@
 ---
-// Root of /docs → the quickstart is the canonical landing page, matching
-// the Docusaurus navbar default. If it ever moves, update the sidebar too.
-// Trailing slash matches the canonical URL (`trailingSlash: 'always'`).
-const target = `${import.meta.env.BASE_URL.replace(/\/$/, '')}/getting_started/quickstart/`;
----
+import '../styles/globals.css';
+import Topbar from '../components/Topbar.astro';
+import Sidebar from '../components/Sidebar.astro';
+import MobileSheet from '../components/MobileSheet.astro';
+import Analytics from '../components/Analytics.astro';
+import ScarfPixel from '../components/ScarfPixel.astro';
+import Foot from '../components/Foot.astro';
+import {
+  SITE_URL, SITE_MAIN, GITHUB_REPO, DISCORD_URL,
+  titleMarkup, SCARF_PIXEL_ID,
+} from '../consts';
+import { sidebar } from '../data/docs-sidebar';
 
+const base = import.meta.env.BASE_URL.replace(/\/$/, '') || '';
+const doc = (slug: string) => `${base}/${slug}/`;
+const CODE = `${SITE_MAIN}/cocoindex-code`;
+const EXAMPLES = `${base}/examples`;
+
+const fullTitle = 'CocoIndex Docs — fresh data views for AI agents';
+const description =
+  'CocoIndex is an ultra-performant framework for building data processing pipelines for AI, with built-in incremental processing. Declare what your target should look like as a function of your source — the Rust engine keeps it in sync, reprocessing only what changed.';
+const canonical = new URL(`${base}/`, SITE_URL).toString();
+
+// "Start here" entry points — labels and slugs match the sidebar exactly.
+const startCards = [
+  { slug: 'getting_started/quickstart', label: 'Quickstart', meta: '5 min',
+    body: 'Build your first pipeline end to end — convert PDFs to Markdown and watch only changed files reprocess.', icon: 'rocket' },
+  { slug: 'getting_started/installation', label: 'Installation', meta: 'Setup',
+    body: 'Install the package and the Rust engine. Python 3.10+, pip / uv / poetry.', icon: 'download' },
+  { slug: 'programming_guide/core_concepts', label: 'Core Concepts', meta: 'Mental model',
+    body: 'App, processing components, target states, and how incremental syncing works.', icon: 'concept' },
+  { slug: 'getting_started/ai_coding_agents', label: 'Use with AI coding agents', meta: 'Skill',
+    body: 'Drop in the CocoIndex skill so Claude Code or Cursor writes correct v1 flows.', icon: 'agent' },
+];
+
+// What you can build — each links to runnable examples or the product page.
+const buildCards = [
+  { href: doc('examples/index-codebase'), title: 'Semantic & vector search',
+    body: 'Chunk, embed, and index documents or code into pgvector, Qdrant, LanceDB, or Turbopuffer.', meta: 'RAG · retrieval' },
+  { href: 'https://github.com/cocoindex-io/cocoindex/tree/main/examples/meeting_notes_graph_neo4j', title: 'Knowledge graphs',
+    body: 'Extract entities and relationships into Neo4j, FalkorDB, or SurrealDB — structured context for agents.', meta: 'Entities · relations' },
+  { href: CODE, title: 'Live code index',
+    body: 'AST-aware semantic chunks and call graphs kept fresh on every commit, served over MCP.', meta: 'CocoIndex Code' },
+  { href: 'https://github.com/cocoindex-io/cocoindex/tree/main/examples/patient_intake_extraction_dspy', title: 'Structured extraction',
+    body: 'Turn PDFs, transcripts, and inboxes into typed rows with LLM extraction and entity resolution.', meta: 'Ingest · transform' },
+];
+
+// Building blocks — connectors and ops straight from the sidebar.
+const sources = [
+  { slug: 'connectors/localfs', label: 'Local files' },
+  { slug: 'connectors/postgres', label: 'Postgres' },
+  { slug: 'connectors/google_drive', label: 'Google Drive' },
+  { slug: 'connectors/amazon_s3', label: 'Amazon S3' },
+  { slug: 'connectors/oci_object_storage', label: 'OCI Storage' },
+  { slug: 'connectors/kafka', label: 'Kafka' },
+  { slug: 'connectors/iggy', label: 'Iggy' },
+];
+const operations = [
+  { slug: 'ops/text', label: 'Split / chunk' },
+  { slug: 'ops/sentence_transformers', label: 'Embed' },
+  { slug: 'ops/litellm', label: 'LiteLLM' },
+  { slug: 'ops/entity_resolution', label: 'Entity resolution' },
+  { slug: 'programming_guide/function', label: 'Custom @coco.fn' },
+];
+const targets = [
+  { slug: 'connectors/postgres', label: 'pgvector' },
+  { slug: 'connectors/qdrant', label: 'Qdrant' },
+  { slug: 'connectors/lancedb', label: 'LanceDB' },
+  { slug: 'connectors/turbopuffer', label: 'Turbopuffer' },
+  { slug: 'connectors/neo4j', label: 'Neo4j' },
+  { slug: 'connectors/falkordb', label: 'FalkorDB' },
+  { slug: 'connectors/surrealdb', label: 'SurrealDB' },
+  { slug: 'connectors/doris', label: 'Apache Doris' },
+];
+
+const ICONS: Record<string, string> = {
+  rocket: '<path d="M4.5 16.5 12 4l7.5 12.5"/><path d="M12 4v16"/>',
+  download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/><path d="M12 15V3"/>',
+  concept: '<circle cx="12" cy="12" r="3"/><path d="M5 12H2m20 0h-3M12 5V2m0 20v-3M7 7 5 5m14 14-2-2M17 7l2-2M5 19l2-2"/>',
+  agent: '<rect x="3" y="4" width="18" height="14" rx="2"/><path d="M8 21h8M12 18v3M9 9l-2 2 2 2m6-4 2 2-2 2"/>',
+};
+---
 <!doctype html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta http-equiv="refresh" content={`0; url=${target}`} />
-    <link rel="canonical" href={target} />
-    <title>CocoIndex Docs</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <meta name="theme-color" content="#FBF6E8" />
+    <title>{fullTitle}</title>
+    <meta name="description" content={description} />
+    <link rel="canonical" href={canonical} />
+    <link rel="icon" href={`${base}/img/favicon.ico`} />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&family=Source+Serif+4:ital,wght@0,400;1,400&display=swap"
+    />
   </head>
-  <body>
-    <p>Redirecting to <a href={target}>{target}</a>…</p>
+  <body class="docs-home">
+    <Topbar mobileSheetId="mobileSheet" />
+    <MobileSheet sidebarItems={sidebar} />
+
+    <div class="layout dh-layout">
+      <Sidebar currentSlug="" />
+
+      <main class="content dh-main">
+        <!-- ═══════════ HERO ═══════════ -->
+        <section class="dh-hero">
+          <div class="hero-grid">
+            <div class="hero-copy">
+              <span class="eyb"><span class="dot" aria-hidden="true"></span>Documentation · v1</span>
+              <h1 class="hero-h" set:html={titleMarkup('Fresh data views for *agents.*')} />
+              <p class="hero-sub">
+                CocoIndex is an ultra-performant framework for building data pipelines for AI, with
+                built-in incremental processing. Declare <b>what</b> your target should look like as a
+                function of your source — the Rust engine keeps it in sync, reprocessing only the&nbsp;Δ.
+              </p>
+              <div class="hero-cta">
+                <a class="btn btn-coral btn-lg" href={doc('getting_started/quickstart')}>Quickstart →</a>
+                <a class="btn btn-outline btn-lg" href={doc('programming_guide/core_concepts')}>Core concepts</a>
+              </div>
+              <div class="install" data-copy="pip install -U cocoindex">
+                <code><span class="p">$</span> pip install -U cocoindex</code>
+                <button class="copy" type="button" aria-label="Copy install command">Copy</button>
+              </div>
+              <div class="hero-meta">
+                <span><b>Incremental</b> · only the delta</span>
+                <span><b>Rust engine</b> · parallel by default</span>
+                <span><b>Declarative</b> · Python, no DSL</span>
+              </div>
+            </div>
+
+            <!-- declarative mental-model card -->
+            <div class="hero-viz" aria-hidden="true">
+              <div class="viz-label">target_state = f(source_state)</div>
+              <div class="viz-flow">
+                <div class="node src">
+                  <span class="nt">Source</span>
+                  <span class="nv">Codebase · Docs · Slack · PDFs</span>
+                </div>
+                <div class="viz-arrow">↓</div>
+                <div class="node eng">
+                  <span class="nt">Incremental engine</span>
+                  <span class="nv">declare the state — it stays in sync</span>
+                </div>
+                <div class="viz-arrow">↓</div>
+                <div class="node tgt">
+                  <span class="nt">Target view</span>
+                  <span class="nv">Vector · Graph · Relational</span>
+                </div>
+                <div class="viz-delta"><span class="d"></span>only the Δ is reprocessed on change</div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ═══════════ START HERE ═══════════ -->
+        <section class="dh-sec">
+          <div class="sec-head">
+            <span class="idx">Start here</span>
+            <h2 set:html={titleMarkup('Your first flow in *five minutes*')} />
+            <p>Install, declare a source and a target, and let the engine keep them in sync. Four ways in:</p>
+          </div>
+          <div class="card-grid four">
+            {startCards.map((c) => (
+              <a class="card" href={doc(c.slug)}>
+                <span class="ico" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" set:html={ICONS[c.icon]} />
+                </span>
+                <h3>{c.label} <span class="ar">→</span></h3>
+                <p>{c.body}</p>
+                <span class="meta">{c.meta}</span>
+              </a>
+            ))}
+          </div>
+        </section>
+
+        <!-- ═══════════ HOW IT WORKS ═══════════ -->
+        <section class="dh-sec">
+          <div class="sec-head">
+            <span class="idx">How it works</span>
+            <h2>Two steps. Then it maintains itself.</h2>
+            <p>A flow is a function from source to target. Run it once; re-run it forever — CocoIndex tracks fine-grained lineage and recomputes only what changed, in batch or live mode.</p>
+          </div>
+          <div class="steps">
+            <div class="step">
+              <span class="num">1</span>
+              <div>
+                <h4>Declare the target state</h4>
+                <p>Point at a source (<code>localfs</code>, <code>postgres</code>, Google&nbsp;Drive, S3, Kafka…), transform it — chunk, embed, extract, resolve entities — and declare the rows, vectors, or graph nodes you want to exist.</p>
+              </div>
+            </div>
+            <div class="step">
+              <span class="num">2</span>
+              <div>
+                <h4>Run — only the Δ recomputes</h4>
+                <p>The engine backfills on first run and keeps the target in sync on every re-run or in <code>live</code> mode. Change one file and only that file reprocesses. No DAGs, no orchestration to babysit.</p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ═══════════ WHAT YOU CAN BUILD ═══════════ -->
+        <section class="dh-sec">
+          <div class="sec-head">
+            <span class="idx">What you can build</span>
+            <h2 set:html={titleMarkup('Different *views* of your data')} />
+            <p>CocoIndex pipelines aren’t built for analytics — they build the views an agent reasons over. High-fanout joins, multi-stage symbol resolution, and cross-entity relationships are first-class.</p>
+          </div>
+          <div class="card-grid four">
+            {buildCards.map((c) => (
+              <a class="card build" href={c.href}>
+                <h3>{c.title} <span class="ar">→</span></h3>
+                <p>{c.body}</p>
+                <span class="meta">{c.meta}</span>
+              </a>
+            ))}
+          </div>
+        </section>
+
+        <!-- ═══════════ IN CODE ═══════════ -->
+        <section class="dh-sec">
+          <div class="split">
+            <div class="sec-head no-mb">
+              <span class="idx">In code</span>
+              <h2 set:html={titleMarkup('Declarative Python. *No DSL.*')} />
+              <p>Write batch-style code without worrying about deltas. Declare the target; CocoIndex runs it incrementally and keeps the output up to date — recomputing only the Δ.</p>
+              <a class="btn btn-coral" href={doc('getting_started/quickstart')} style="margin-top:22px;">Full quickstart →</a>
+            </div>
+            <div class="codeblk" data-copy={`@coco.fn(memo=True)
+async def process_file(file, target):
+    html = render(await file.read_text())
+    target.declare_file(filename=file.name, content=html)
+
+@coco.fn
+async def app_main(sourcedir, outdir):
+    target = await coco.use_mount(localfs.declare_dir_target, outdir)
+    files = localfs.walk_dir(sourcedir)
+    await coco.mount_each(process_file, files.items(), target)
+
+app = coco.App(coco.AppConfig(name="docs"), app_main,
+               sourcedir="./docs", outdir="./out")
+app.update_blocking()`}>
+              <div class="bar">
+                <span class="d" style="background:var(--pink)"></span>
+                <span class="d" style="background:var(--peach)"></span>
+                <span class="d" style="background:var(--palm)"></span>
+                <span class="fname">app.py</span>
+                <button class="copy" type="button" aria-label="Copy code">Copy</button>
+              </div>
+<pre><code><span class="dec">@coco.fn</span>(memo=<span class="num">True</span>)
+<span class="kw">async def</span> <span class="fn">process_file</span>(file, target):
+    html = <span class="fn">render</span>(<span class="kw">await</span> file.read_text())
+    target.declare_file(filename=file.name, content=html)
+
+<span class="dec">@coco.fn</span>
+<span class="kw">async def</span> <span class="fn">app_main</span>(sourcedir, outdir):
+    target = <span class="kw">await</span> coco.use_mount(localfs.declare_dir_target, outdir)
+    files = localfs.walk_dir(sourcedir)
+    <span class="kw">await</span> coco.mount_each(process_file, files.items(), target)
+
+app = coco.<span class="ty">App</span>(coco.<span class="ty">AppConfig</span>(name=<span class="str">"docs"</span>), app_main,
+               sourcedir=<span class="str">"./docs"</span>, outdir=<span class="str">"./out"</span>)
+app.update_blocking()</code></pre>
+            </div>
+          </div>
+        </section>
+
+        <!-- ═══════════ BUILDING BLOCKS ═══════════ -->
+        <section class="dh-sec">
+          <div class="sec-head">
+            <span class="idx">Building blocks</span>
+            <h2>Sources in, transforms, targets out</h2>
+            <p>Mix and match connectors and operations through one open interface — no vendor lock-in. Many targets are projects in the CocoIndex ecosystem.</p>
+          </div>
+          <div class="bb">
+            <div class="bb-col">
+              <h4>Sources</h4>
+              <div class="chips">{sources.map((s) => <a class="chip" href={doc(s.slug)}>{s.label}</a>)}</div>
+            </div>
+            <div class="bb-col">
+              <h4>Operations</h4>
+              <div class="chips">{operations.map((s) => <a class="chip" href={doc(s.slug)}>{s.label}</a>)}</div>
+            </div>
+            <div class="bb-col">
+              <h4>Targets</h4>
+              <div class="chips">{targets.map((s) => <a class="chip" href={doc(s.slug)}>{s.label}</a>)}</div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ═══════════ COMMUNITY ═══════════ -->
+        <section class="dh-sec last">
+          <div class="sec-head">
+            <span class="idx">Community</span>
+            <h2>Build in the open</h2>
+            <p>An incremental engine for agents — Apache-2.0, built fully in the open.</p>
+          </div>
+          <div class="card-grid four">
+            <a class="card build" href={GITHUB_REPO}><h3>GitHub <span class="ar">→</span></h3><p>Star the repo, read the source, open an issue.</p></a>
+            <a class="card build" href={DISCORD_URL}><h3>Discord <span class="ar">→</span></h3><p>Showcase, release notes, and help from maintainers.</p></a>
+            <a class="card build" href={EXAMPLES}><h3>Examples <span class="ar">→</span></h3><p>Runnable recipes you can clone, run, and bend to your data.</p></a>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script is:inline>
+      // Copy buttons for the install command and the code sample. Reads the
+      // verbatim text from the element's `data-copy` attribute.
+      (function () {
+        document.querySelectorAll('.docs-home [data-copy]').forEach((wrap) => {
+          const btn = wrap.querySelector('.copy');
+          if (!btn) return;
+          btn.addEventListener('click', () => {
+            const text = wrap.getAttribute('data-copy') || '';
+            const done = () => { btn.textContent = 'Copied'; setTimeout(() => { btn.textContent = 'Copy'; }, 1500); };
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+              navigator.clipboard.writeText(text).then(done).catch(() => {});
+            }
+          });
+        });
+      })();
+    </script>
+
+    <style is:global>
+      /* ═══════════ Docs-home styles ═══════════
+         Scoped to body.docs-home. The page reuses the docs `.layout` grid and
+         the real Sidebar; here we only (a) drop the right TOC column so the
+         landing main spans sidebar→edge, and (b) style the landing content.
+         Tokens, fonts, and .btn variants come from globals.css. */
+      body.docs-home .dh-layout { grid-template-columns: var(--side) 1fr; }
+      /* Mirror the base .layout breakpoint: the Sidebar hides at <=820px, so
+         drop its reserved column too — otherwise the empty 280px track squeezes
+         the landing content into a narrow strip. */
+      @media (max-width: 820px) {
+        body.docs-home .dh-layout { grid-template-columns: 1fr; }
+      }
+      body.docs-home main.dh-main { padding: 40px clamp(28px, 4vw, 64px) 96px; }
+
+      /* ── HERO ── */
+      body.docs-home .dh-hero { padding: 8px 0 8px; }
+      body.docs-home .hero-grid { display: grid; grid-template-columns: 1.1fr 0.9fr; gap: 48px; align-items: center; }
+      body.docs-home .hero-copy .eyb {
+        font-family: var(--mono); font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase;
+        color: var(--coral); display: inline-flex; align-items: center; gap: 9px; margin-bottom: 20px;
+      }
+      body.docs-home .hero-copy .eyb .dot {
+        width: 7px; height: 7px; border-radius: 50%; background: var(--palm-ink);
+        animation: dh-pulse 2.4s ease-in-out infinite;
+      }
+      @keyframes dh-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+      body.docs-home h1.hero-h {
+        font-family: var(--serif); font-weight: 400;
+        font-size: clamp(38px, 4.4vw, 60px); line-height: 1.0; letter-spacing: -0.03em;
+        margin: 0 0 20px; max-width: 13ch;
+      }
+      body.docs-home h1.hero-h em { font-style: italic; color: var(--coral); }
+      body.docs-home .hero-sub {
+        font-size: clamp(15.5px, 1.2vw, 18px); line-height: 1.55; color: var(--maroon-ink);
+        max-width: 52ch; margin: 0 0 24px;
+      }
+      body.docs-home .hero-sub b { font-weight: 600; color: var(--maroon); }
+      body.docs-home .hero-cta { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+
+      body.docs-home .install {
+        margin-top: 22px; display: inline-flex; align-items: center; gap: 12px;
+        background: var(--maroon-ink); border-radius: 8px; padding: 11px 12px 11px 16px;
+      }
+      body.docs-home .install code {
+        font-family: var(--mono); font-size: 13.5px; color: var(--cream);
+        background: transparent; padding: 0; border: none;
+      }
+      body.docs-home .install code .p { color: var(--peach); margin-right: 8px; }
+      body.docs-home .install .copy,
+      body.docs-home .codeblk .copy {
+        font-family: var(--mono); font-size: 11px; letter-spacing: 0.04em;
+        color: var(--cream); background: transparent;
+        border: 1px solid rgba(252, 243, 216, 0.25); border-radius: 5px;
+        padding: 4px 10px; cursor: pointer; transition: background .15s, border-color .15s;
+      }
+      body.docs-home .install .copy:hover,
+      body.docs-home .codeblk .copy:hover { background: rgba(252, 243, 216, 0.12); border-color: rgba(252, 243, 216, 0.5); }
+
+      body.docs-home .hero-meta {
+        display: flex; flex-wrap: wrap; gap: 6px 18px; margin-top: 22px;
+        font-family: var(--mono); font-size: 11px; letter-spacing: 0.03em; color: var(--muted);
+      }
+      body.docs-home .hero-meta b { color: var(--maroon); font-weight: 600; }
+
+      /* hero diagram */
+      body.docs-home .hero-viz {
+        background: var(--cream); border: 1px solid var(--rule); border-radius: 16px;
+        padding: 24px 22px;
+      }
+      body.docs-home .viz-label {
+        font-family: var(--mono); font-size: 11px; letter-spacing: 0.06em; color: var(--muted);
+        margin-bottom: 16px; text-align: center;
+      }
+      body.docs-home .viz-flow { display: flex; flex-direction: column; align-items: stretch; gap: 8px; }
+      body.docs-home .node {
+        border: 1px solid var(--rule-strong); border-radius: 8px; padding: 12px 14px;
+        background: var(--paper); display: flex; flex-direction: column; gap: 3px; text-align: center;
+      }
+      body.docs-home .node .nt {
+        font-family: var(--mono); font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted);
+      }
+      body.docs-home .node .nv { font-size: 13px; font-weight: 600; color: var(--maroon-ink); }
+      body.docs-home .node.src .nv { color: var(--maroon); }
+      body.docs-home .node.tgt .nv { color: var(--coral); }
+      body.docs-home .node.eng { background: var(--maroon); border-color: var(--maroon); }
+      body.docs-home .node.eng .nt { color: var(--peach); }
+      body.docs-home .node.eng .nv { color: var(--cream); }
+      body.docs-home .viz-arrow { text-align: center; color: var(--coral); font-family: var(--mono); line-height: 1; }
+      body.docs-home .viz-delta {
+        margin: 6px auto 0; display: inline-flex; align-items: center; gap: 7px;
+        font-family: var(--mono); font-size: 11px; color: var(--palm-ink);
+        background: color-mix(in oklab, var(--palm) 16%, var(--cream));
+        border: 1px solid color-mix(in oklab, var(--palm-ink) 30%, transparent);
+        border-radius: 999px; padding: 4px 12px;
+      }
+      body.docs-home .viz-delta .d { width: 7px; height: 7px; border-radius: 50%; background: var(--palm-ink); }
+
+      /* ── SECTIONS ── */
+      body.docs-home .dh-sec { padding: 56px 0; border-top: 1px solid var(--rule); margin-top: 56px; }
+      body.docs-home .dh-sec.last { padding-bottom: 0; }
+      body.docs-home .sec-head { margin-bottom: 32px; max-width: 64ch; }
+      body.docs-home .sec-head.no-mb { margin-bottom: 0; }
+      body.docs-home .sec-head .idx {
+        font-family: var(--mono); font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase;
+        color: var(--coral); display: block; margin-bottom: 14px;
+      }
+      body.docs-home .sec-head h2 {
+        font-family: var(--sans); font-weight: 600; font-size: clamp(24px, 2.6vw, 34px);
+        line-height: 1.1; letter-spacing: -0.025em; margin: 0 0 12px;
+      }
+      body.docs-home .sec-head h2 em { font-style: italic; color: var(--coral); }
+      body.docs-home .sec-head p { margin: 0; font-size: 16px; color: var(--maroon-ink); line-height: 1.55; max-width: 62ch; }
+
+      /* card grid — auto-fit so it always fits the (narrower) main column */
+      body.docs-home .card-grid { display: grid; gap: 16px; }
+      body.docs-home .card-grid.four { grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); }
+      body.docs-home .card {
+        position: relative; overflow: hidden;
+        display: block; background: var(--cream); border: 1px solid var(--rule);
+        border-radius: 12px; padding: 22px; text-decoration: none; color: var(--maroon-ink);
+        transition: border-color .18s ease;
+      }
+      /* Corner-dots hover motif — matches the homepage (.integ / .code-feat)
+         and the blog list rows: a bottom-right radial-gradient dot field that
+         fades in. No drop-shadow, no lift. */
+      body.docs-home .card::before {
+        content: ""; position: absolute; inset: auto 0 0 auto;
+        width: 200px; height: 120px;
+        background-image: radial-gradient(circle, rgba(190, 81, 51, 0.45) 1.2px, transparent 1.6px);
+        background-size: 9px 9px; background-position: 100% 100%;
+        opacity: 0; transition: opacity .25s ease; pointer-events: none;
+        -webkit-mask-image: radial-gradient(circle at 100% 100%, #000 0%, transparent 75%);
+                mask-image: radial-gradient(circle at 100% 100%, #000 0%, transparent 75%);
+      }
+      body.docs-home .card > * { position: relative; z-index: 1; }
+      body.docs-home .card:hover { border-color: rgba(190, 81, 51, 0.4); text-decoration: none; }
+      /* On hover the dot-field simply fades in — no motion. */
+      body.docs-home .card:hover::before {
+        opacity: 1;
+      }
+      body.docs-home .card .ico {
+        width: 38px; height: 38px; border-radius: 8px; display: grid; place-items: center;
+        background: color-mix(in oklab, var(--coral) 12%, var(--cream)); color: var(--coral); margin-bottom: 16px;
+      }
+      body.docs-home .card .ico svg { width: 20px; height: 20px; }
+      body.docs-home .card h3 {
+        margin: 0 0 6px; font-size: 16px; font-weight: 600; letter-spacing: -0.01em;
+        display: flex; align-items: center; gap: 6px; color: var(--maroon-ink);
+      }
+      body.docs-home .card h3 .ar { color: var(--coral); transition: transform .18s ease; }
+      body.docs-home .card:hover h3 .ar { transform: translateX(3px); }
+      body.docs-home .card p { margin: 0; font-size: 13.5px; color: var(--muted); line-height: 1.5; }
+      body.docs-home .card .meta {
+        display: block; margin-top: 14px; font-family: var(--mono); font-size: 10.5px;
+        letter-spacing: 0.1em; text-transform: uppercase; color: var(--coral);
+      }
+      body.docs-home .card.build h3 { font-size: 17px; }
+
+      /* steps */
+      body.docs-home .steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 18px; }
+      body.docs-home .step {
+        display: grid; grid-template-columns: auto 1fr; gap: 18px;
+        background: var(--cream-soft); border: 1px solid var(--rule); border-radius: 12px; padding: 24px;
+      }
+      body.docs-home .step .num {
+        width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center;
+        background: var(--maroon); color: var(--cream); font-family: var(--serif); font-size: 20px;
+      }
+      body.docs-home .step h4 { margin: 2px 0 8px; font-size: 17px; font-weight: 600; letter-spacing: -0.01em; }
+      body.docs-home .step p { margin: 0; font-size: 14px; color: var(--muted); line-height: 1.55; }
+
+      /* code split */
+      body.docs-home .split { display: grid; grid-template-columns: 0.85fr 1.15fr; gap: 44px; align-items: center; }
+      body.docs-home .codeblk {
+        background: var(--maroon-ink); border-radius: 12px; overflow: hidden;
+        box-shadow: 0 8px 32px rgba(42, 18, 27, 0.08);
+      }
+      body.docs-home .codeblk .bar {
+        display: flex; align-items: center; gap: 8px; padding: 11px 14px;
+        border-bottom: 1px solid rgba(252, 243, 216, 0.12);
+      }
+      body.docs-home .codeblk .bar .d { width: 11px; height: 11px; border-radius: 50%; }
+      body.docs-home .codeblk .bar .fname { margin-left: 6px; font-family: var(--mono); font-size: 12px; color: var(--stone); }
+      body.docs-home .codeblk .bar .copy { margin-left: auto; }
+      body.docs-home .codeblk pre { margin: 0; padding: 22px 24px; overflow-x: auto; }
+      body.docs-home .codeblk code {
+        font-family: var(--mono); font-size: 12.5px; line-height: 1.75; color: var(--cream);
+        background: transparent; padding: 0; border: none;
+      }
+      body.docs-home .codeblk .cm { color: var(--taupe); font-style: italic; }
+      body.docs-home .codeblk .kw { color: var(--peach); }
+      body.docs-home .codeblk .str { color: var(--palm); }
+      body.docs-home .codeblk .fn { color: var(--pink); }
+      body.docs-home .codeblk .ty { color: var(--lavender); }
+      body.docs-home .codeblk .dec { color: var(--peach); }
+      body.docs-home .codeblk .num { color: var(--gold); }
+
+      /* building blocks */
+      body.docs-home .bb { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 22px; }
+      body.docs-home .bb-col h4 {
+        font-family: var(--mono); font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase;
+        color: var(--coral); margin: 0 0 14px; padding-bottom: 10px; border-bottom: 1px solid var(--rule);
+      }
+      body.docs-home .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+      body.docs-home .chip {
+        font-family: var(--mono); font-size: 12px; padding: 6px 11px;
+        border: 1px solid var(--rule-strong); border-radius: 999px; color: var(--maroon);
+        text-decoration: none; transition: background .15s, border-color .15s, color .15s;
+      }
+      body.docs-home .chip:hover {
+        background: color-mix(in oklab, var(--peach) 14%, var(--cream));
+        border-color: rgba(190, 81, 51, 0.45); color: var(--coral); text-decoration: none;
+      }
+
+      /* ── responsive: collapse hero + code split when the main column gets
+         narrow (sidebar present), before the global 1120 toc-drop kicks in. ── */
+      @media (max-width: 1180px) {
+        body.docs-home .hero-grid { grid-template-columns: 1fr; gap: 32px; }
+        body.docs-home .split { grid-template-columns: 1fr; gap: 26px; }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        body.docs-home .hero-copy .eyb .dot { animation: none; }
+        body.docs-home .card, body.docs-home .card h3 .ar { transition: none; }
+      }
+    </style>
+
+    <Foot />
+    <Analytics />
+    <ScarfPixel pxid={SCARF_PIXEL_ID} />
   </body>
 </html>
