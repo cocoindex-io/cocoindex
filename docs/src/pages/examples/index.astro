@@ -9,6 +9,7 @@ import Topbar from '../../components/Topbar.astro';
 import MobileSheet from '../../components/MobileSheet.astro';
 import Analytics from '../../components/Analytics.astro';
 import ScarfPixel from '../../components/ScarfPixel.astro';
+import Foot from '../../components/Foot.astro';
 import { GITHUB_REPO, DISCORD_URL, SITE_URL, titleMarkup, SCARF_PIXEL_ID } from '../../consts';
 import {
   examples,
@@ -745,6 +746,7 @@ const canonical = new URL(`${base}/examples`, SITE_URL).toString();
         body.ex-listing .doc { padding-top: 16px; }
       }
     </style>
+    <Foot />
     <Analytics />
     <ScarfPixel pxid={SCARF_PIXEL_ID} />
   </body>

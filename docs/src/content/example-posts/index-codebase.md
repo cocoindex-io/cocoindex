@@ -8,7 +8,7 @@ tags: [data-indexing, semantic-search]
 
 ![Index Your Codebase for AI Agents with CocoIndex V1](https://cocoindex.io/blobs/docs-v1/img/examples/index-codebase/cover.png)
 
-In this tutorial, we'll build a live semantic index over a codebase with [CocoIndex](https://github.com/cocoindex-io/cocoindex). Point it at a repo, and you get a vector index you can search in natural language ("where do we embed chunks?") that updates itself as you edit — the kind of fresh, low-latency context an [AI coding agent](https://cocoindex.io/docs/getting_started/ai_coding_agents/) needs.
+In this tutorial, we'll build a live semantic index over a codebase with [CocoIndex](https://github.com/cocoindex-io/cocoindex). Point it at a repo, and you get a vector index you can search in natural language ("where do we embed chunks?") that updates itself as you edit — the kind of fresh, low-latency context an agent needs.
 
 The whole pipeline is ordinary `async` Python and your own types. The heavy lifting — incremental processing, change tracking, managed targets — runs in a Rust engine underneath, so only what changed gets re-embedded and re-upserted.
 
@@ -300,5 +300,3 @@ You can plug it straight into your coding agent or code-review agent:
 - **Claude Code skill:** `npx skills add cocoindex-io/cocoindex-code`, then invoke `/ccc`.
 - **MCP server:** `claude mcp add cocoindex-code -- ccc mcp` (Codex, OpenCode, Cursor, and any MCP client work the same way).
 - **CLI:** `ccc index` to build the index, `ccc search "where we embed chunks"` to query it.
-
-
