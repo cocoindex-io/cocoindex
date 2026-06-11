@@ -174,7 +174,7 @@ walker = oci_object_storage.list_objects(
 For a complete app using this pattern, see the [OCI Object Storage live-mode example](./oci_object_storage#example).
 
 :::caution
-A `TopicStream` (and any `payloads()` view of it) supports at most one active watcher — the underlying consumer can hold only one subscription. This is not runtime-checked.
+A `TopicStream` (and any `payloads()` view of it) supports at most one active watcher — the underlying consumer can hold only one subscription. A second concurrent `watch()` raises `RuntimeError`.
 :::
 
 ## As target

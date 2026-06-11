@@ -46,6 +46,7 @@ from cocoindex._internal.live_component import (
     LiveStream,
     ReadyAwaitable,
 )
+from cocoindex.connectorkits import SingleWatcherGuard
 from cocoindex.resources import file
 
 _logger = logging.getLogger(__name__)
@@ -372,11 +373,12 @@ class _LiveOCIItems:
     6. Await the stream task; it runs until cancellation.
     """
 
-    __slots__ = ("_walker", "_live_stream")
+    __slots__ = ("_walker", "_live_stream", "_watch_guard")
 
     def __init__(self, walker: OCIWalker, live_stream: LiveStream[bytes]) -> None:
         self._walker = walker
         self._live_stream = live_stream
+        self._watch_guard = SingleWatcherGuard("OCI Object Storage live view")
 
     def __aiter__(self) -> AsyncIterator[tuple[str, OCIFile]]:
         return self._aiter_impl()
@@ -386,6 +388,11 @@ class _LiveOCIItems:
             yield pair
 
     async def watch(self, subscriber: LiveMapSubscriber[str, OCIFile]) -> None:
+        """Deliver an initial scan then live bucket changes to the subscriber."""
+        with self._watch_guard:
+            await self._watch(subscriber)
+
+    async def _watch(self, subscriber: LiveMapSubscriber[str, OCIFile]) -> None:
         cutoff = datetime.now(timezone.utc) - _SKEW_TOLERANCE
         adapter = _OCIStreamSubscriber(self._walker, subscriber, cutoff)
         stream_task = asyncio.create_task(self._live_stream.watch(adapter))

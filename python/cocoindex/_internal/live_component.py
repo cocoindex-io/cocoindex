@@ -164,6 +164,10 @@ class LiveStream(Protocol[_M_co]):
     The implementation buffers inflight messages, acks the underlying source
     once earlier messages have been processed, and signals readiness when it
     has caught up to its initial watermark.
+
+    Single-subscriber: one active ``watch()`` at a time (implementations enforce
+    this via ``cocoindex.connectorkits.SingleWatcherGuard``). Fan-out to multiple
+    subscribers, if ever needed, belongs in a layer above the stream.
     """
 
     async def watch(self, subscriber: LiveStreamSubscriber[_M_co]) -> None: ...
@@ -468,6 +472,11 @@ class LiveMapFeed(Protocol[_K, _V]):
 
     For sources like Kafka that stream change events but have no scannable snapshot.
     Consumed by ``mount_each()``.
+
+    Single-subscriber: one active ``watch()`` at a time (implementations enforce
+    this via ``cocoindex.connectorkits.SingleWatcherGuard``, except ``LiveMap``
+    whose watcher queue already serves as the guard). Fan-out belongs in a layer
+    above the feed.
     """
 
     async def watch(self, subscriber: LiveMapSubscriber[_K, _V]) -> None: ...

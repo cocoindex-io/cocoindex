@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -123,5 +124,32 @@ async def test_localfs_live_add_edit_delete(tmp_path: Path) -> None:
         update_task.cancel()
         try:
             await update_task
+        except asyncio.CancelledError:
+            pass
+
+
+@pytest.mark.asyncio
+async def test_localfs_live_single_watcher(tmp_path: Path) -> None:
+    """A second concurrent watch() on one live view fails loudly."""
+    items: Any = localfs.walk_dir(tmp_path, live=True).items()
+
+    class _DummySub:
+        async def update_all(self) -> None: ...
+        async def mark_ready(self) -> None: ...
+        async def update(self, key: Any, value: Any) -> Any:
+            raise AssertionError("unreached")
+
+        async def delete(self, key: Any) -> Any:
+            raise AssertionError("unreached")
+
+    first = asyncio.create_task(items.watch(_DummySub()))
+    await asyncio.sleep(0.1)  # let the first watch enter the guard
+    try:
+        with pytest.raises(RuntimeError, match="single active watch"):
+            await items.watch(_DummySub())
+    finally:
+        first.cancel()
+        try:
+            await first
         except asyncio.CancelledError:
             pass
