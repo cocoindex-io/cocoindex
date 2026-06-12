@@ -3,13 +3,15 @@
 // per-page descriptions that drive the site, so it stays in sync automatically.
 import type { APIRoute } from 'astro';
 import { getCollection } from 'astro:content';
-import { SITE_URL, GITHUB_REPO } from '../consts';
+import {
+  GITHUB_REPO,
+  pageUrl as url,
+  pageMarkdownUrl as markdownUrl,
+  LLMS_FULL_TXT_URL,
+  SKILL_MD_URL,
+} from '../consts';
 import { sidebar, type SidebarDoc } from '../data/docs-sidebar';
 import { EXAMPLE_CATALOG } from '../data/examples';
-
-const base = import.meta.env.BASE_URL.replace(/\/$/, '');
-const url = (slug: string) => new URL(`${base}/${slug}/`, SITE_URL).toString();
-const markdownUrl = (slug: string) => new URL(`${base}/${slug}.md`, SITE_URL).toString();
 const oneLine = (s?: string) => (s ?? '').replace(/\s+/g, ' ').trim();
 
 export const GET: APIRoute = async () => {
@@ -30,11 +32,11 @@ export const GET: APIRoute = async () => {
       'as a function of your source — the Rust engine keeps it in sync, reprocessing ' +
       'only what changed.',
     '',
-    '> Full docs text in one file: ' + new URL(`${base}/llms-full.txt`, SITE_URL).toString() +
+    '> Full docs text in one file: ' + LLMS_FULL_TXT_URL +
       `. Regular docs pages also have raw Markdown twins by replacing the trailing slash with \`.md\`, e.g. ${markdownUrl('programming_guide/core_concepts')}. Example walkthroughs are included in llms-full.txt.`,
     '',
     '> Coding agents: install the CocoIndex skill before writing v1 code — ' +
-      new URL(`${base}/skill.md`, SITE_URL).toString() +
+      SKILL_MD_URL +
       ' (teaches the correct v1 API; without it, LLMs tend to hallucinate the deprecated v0 flow-builder DSL).',
     '',
   ];

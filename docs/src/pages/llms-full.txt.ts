@@ -4,14 +4,16 @@
 // (see https://llmstxt.org/). /docs/llms.txt is the lighter index.
 import type { APIRoute } from 'astro';
 import { getCollection } from 'astro:content';
-import { SITE_URL, docSlug, titleText } from '../consts';
+import { docSlug, docTitle, titleText, pageUrl } from '../consts';
 import { examples, findExample } from '../data/examples';
 import { flatten } from '../data/docs-sidebar';
 import { mdxToMarkdown } from '../lib/raw-markdown';
 
-const base = import.meta.env.BASE_URL.replace(/\/$/, '');
-const pageUrl = (slug: string) => new URL(`${base}/${slug}/`, SITE_URL).toString();
-const exampleUrl = (slug: string) => new URL(`${base}/examples/${slug}/`, SITE_URL).toString();
+const exampleUrl = (slug: string) => pageUrl(`examples/${slug}`);
+
+// Include-fragments are embedded verbatim in their host page (cli.mdx inlines
+// cli_commands.mdx), so emitting them standalone would duplicate the content.
+const INCLUDE_FRAGMENTS = new Set(['cli_commands']);
 
 export const GET: APIRoute = async () => {
   const docs = await getCollection('docs');
@@ -31,13 +33,13 @@ export const GET: APIRoute = async () => {
     const d = bySlug.get(slug);
     if (!d || seen.has(slug)) return;
     seen.add(slug);
-    const title = titleText(typeof d.data.title === 'string' ? d.data.title : slug);
+    const title = docTitle(d.id, d.data.title);
     out.push('', '---', '', `# ${title}`, '', `Source: ${pageUrl(slug)}`, '', mdxToMarkdown(d.body));
   };
 
   // Sidebar order first, then any stray docs not in the tree.
   for (const e of flatten()) emit(e.slug);
-  for (const slug of bySlug.keys()) emit(slug);
+  for (const slug of bySlug.keys()) if (!INCLUDE_FRAGMENTS.has(slug)) emit(slug);
 
   const examplePosts = await getCollection('examplePosts');
   const byExampleSlug = new Map(examplePosts.map((e) => [e.id.replace(/\.mdx?$/, ''), e]));

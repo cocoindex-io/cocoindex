@@ -1,9 +1,7 @@
 import { defineMiddleware } from 'astro:middleware';
 import { getCollection } from 'astro:content';
-import { docSlug } from './consts';
+import { docSlug, DOCS_BASE as base } from './consts';
 import { buildDocMarkdown } from './lib/raw-markdown';
-
-const base = import.meta.env.BASE_URL.replace(/\/$/, '');
 
 // Dev-only workaround for an Astro dev-server bug (withastro/astro#10149,
 // #16140): with `trailingSlash: 'always'`, dynamic file endpoints like
