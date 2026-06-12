@@ -11,7 +11,7 @@
     "Declare target states through connector Target APIs (e.g. postgres.declare_table_target then target.declare_row, localfs declare_file) instead of exporting collectors.",
     "Functions with memo=True must have full type annotations on all parameters and the return value.",
     "There is no `cocoindex setup` step in v1: run apps with `cocoindex update` (add --live for live mode) or `app.update_blocking()` in Python.",
-    "Full docs index for agents: https://cocoindex.io/docs/llms.txt (per-page Markdown: append .md to any docs URL)."
+    "Full docs index for agents: https://cocoindex.io/docs/llms.txt (docs pages and example walkthroughs have raw-Markdown twins: replace the trailing slash with .md)."
   ],
   "previousVersions": [
     {
