@@ -35,7 +35,6 @@ from . import core
 from .component_ctx import (
     _context_var,
     _enter_component_context,
-    get_context_from_ctx,
 )
 from .context_keys import resolve_awaitables_sync
 from .memo_fingerprint import (
@@ -738,7 +737,10 @@ class SyncFunction(Function[P, R_co]):
         if _in_subprocess():
             return self._fn(*args, **kwargs)
 
-        parent_ctx = get_context_from_ctx()
+        # Outside any component context (e.g. a direct standalone call), run the raw
+        # function with no memoization — mirroring the async `__call__` path below. Use
+        # the non-raising getter so this is a graceful fallback, not an error.
+        parent_ctx = _context_var.get(None)
         if parent_ctx is None:
             return self._fn(*args, **kwargs)
 
