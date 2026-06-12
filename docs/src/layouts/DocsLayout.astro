@@ -5,7 +5,9 @@ import Topbar from '../components/Topbar.astro';
 import Banner from '../components/Banner.astro';
 import Sidebar from '../components/Sidebar.astro';
 import Toc from '../components/Toc.astro';
-import { SITE_URL, titleMarkup, DOCS_EDIT_BASE } from '../consts';
+import Analytics from '../components/Analytics.astro';
+import ScarfPixel from '../components/ScarfPixel.astro';
+import { SITE_URL, titleMarkup, DOCS_EDIT_BASE, SCARF_PIXEL_ID } from '../consts';
 import { flatten, sidebar, type SidebarItem } from '../data/docs-sidebar';
 import docsMeta from '../data/docs-meta.json';
 
@@ -193,5 +195,8 @@ const next = i >= 0 && i < flat.length - 1 ? flat[i + 1] : null;
 
       <Toc headings={headings} slug={slug} />
     </div>
+
+    <Analytics />
+    <ScarfPixel pxid={SCARF_PIXEL_ID} />
   </body>
 </html>
