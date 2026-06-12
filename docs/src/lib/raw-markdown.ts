@@ -1,5 +1,6 @@
 // Convert MDX page bodies to clean Markdown for the agent-facing endpoints
-// (/docs/<slug>.md and /docs/llms-full.txt). The goals, in order:
+// (/docs/<slug>.md, /docs/examples/<slug>.md, and /docs/llms-full.txt). The
+// goals, in order:
 //
 //   1. Never corrupt code. Fenced blocks (incl. indented ```sh under a list)
 //      and inline `code` spans are protected verbatim — so literal placeholders
@@ -19,14 +20,12 @@
 // net beyond code protection.
 
 import type { CollectionEntry } from 'astro:content';
-import { getCollection } from 'astro:content';
-import { docSlug, docTitle, pageUrl, LLMS_TXT_URL, SKILL_MD_URL } from '../consts';
+import { getCollection, getEntry } from 'astro:content';
+import { GITHUB_REPO, docSlug, docTitle, pageUrl, LLMS_TXT_URL, SKILL_MD_URL } from '../consts';
+import { findExample } from '../data/examples';
+import { FENCE, MDX_COMMENT } from './fence.mjs';
 
 const SENT = '\x00'; // sentinel: cannot occur in source text
-// Fence runs are captured as a whole (`{3,}) so a ```` opener is not closed by
-// a bare ``` line inside it; the closer may be longer than the opener, per
-// CommonMark. (Kept in sync with docs/scripts/check-agent-output.mjs.)
-const FENCE = /(^|\n)[ \t]*(`{3,}|~{3,})[^\n]*\n[\s\S]*?\n[ \t]*\2[`~]*[ \t]*(?=\n|$)/g;
 const INLINE = /`[^`\n]+`/g;
 const RESTORE_INLINE = /\x00C(\d+)\x00/g;
 const RESTORE_FENCE = /\x00F(\d+)\x00/g;
@@ -41,23 +40,28 @@ const ADMONITION_LABEL: Record<string, string> = {
   important: 'Important',
 };
 
+// Replace each match with a sentinel, keeping any leading newline captured by
+// the regex outside the sentinel so blank-line collapsing sees the real layout.
 function protect(text: string, re: RegExp, store: string[], tag: string): string {
-  return text.replace(re, (m) => {
+  return text.replace(re, (m, pre: string | undefined) => {
+    const lead = typeof pre === 'string' ? pre : '';
     const i = store.length;
-    store.push(m);
-    return `${SENT}${tag}${i}${SENT}`;
+    store.push(m.slice(lead.length));
+    return `${lead}${SENT}${tag}${i}${SENT}`;
   });
 }
 
-// Conversion runs for both the per-page .md twin and llms-full.txt (and per
-// request in the dev middleware) — memoize per body.
-const memo = new Map<string, string>();
+// Conversion runs for both the per-page .md twin and llms-full.txt — memoize
+// per body. Skipped in dev: the middleware converts per request on bodies that
+// change with every edit, which would grow the map without bound.
+const memo = import.meta.env.DEV ? null : new Map<string, string>();
 
 export function mdxToMarkdown(body: string): string {
-  const cached = memo.get(body ?? '');
+  const key = body ?? '';
+  const cached = memo?.get(key);
   if (cached !== undefined) return cached;
 
-  let s = (body ?? '').replace(/\r\n/g, '\n');
+  let s = key.replace(/\r\n/g, '\n');
 
   // 1. Protect fenced code, then inline code, behind sentinels.
   const fences: string[] = [];
@@ -69,7 +73,7 @@ export function mdxToMarkdown(body: string): string {
   //    with the word "import"), MDX `export …` scaffolding, and MDX comments.
   s = s.replace(/^[ \t]*import\b.+\bfrom\b.+$/gm, '');
   s = s.replace(/^[ \t]*export\s+(?:const|let|var|default|function|\{).+$/gm, '');
-  s = s.replace(/\{\/\*[\s\S]*?\*\/\}/g, '');
+  s = s.replace(MDX_COMMENT, '');
 
   // 3. Flatten admonitions to a bold callout lead-in, keeping the body prose.
   //    Handles 3+ colons (nesting) and both title forms: `:::note[Title]` and
@@ -89,7 +93,8 @@ export function mdxToMarkdown(body: string): string {
   s = s.replace(/<\/?[A-Z][a-z][A-Za-z0-9]*\b[^>]*>/g, '');
 
   // 5. Collapse blank lines left by removals — before restoring code, so
-  //    blank-line runs inside fenced blocks survive verbatim.
+  //    blank-line runs inside fenced blocks survive verbatim. Sentinels sit on
+  //    their own lines (leading newlines stayed outside them in protect()).
   s = s.replace(/\n{3,}/g, '\n\n');
 
   // 6. Restore inline code, then fenced code.
@@ -97,7 +102,7 @@ export function mdxToMarkdown(body: string): string {
   s = s.replace(RESTORE_FENCE, (_m, i) => fences[Number(i)]);
 
   const out = s.trim();
-  memo.set(body ?? '', out);
+  memo?.set(key, out);
   return out;
 }
 
@@ -109,16 +114,43 @@ export async function docStaticPaths() {
   return docs.map((doc) => ({ params: { slug: docSlug(doc.id) }, props: { doc } }));
 }
 
-// Full Markdown body for a docs page's /<slug>.md twin: H1, the top-of-page v1
-// guard + index/skill pointers, then the cleaned body. Single source of truth
-// shared by the [...slug].md endpoint and the dev-only middleware fallback.
+// Shared top-of-page banner for every agent-facing .md twin: v1 guard, then
+// source/index/skill pointers. One format for docs pages and example pages.
+function buildGuard(slug: string, lead: string, extra = ''): string {
+  return (
+    `> ${lead}\n` +
+    `>\n` +
+    `> Source: ${pageUrl(slug)} · Docs index: ${LLMS_TXT_URL} · Agent skill: ${SKILL_MD_URL}${extra}`
+  );
+}
+
+// Full Markdown body for a docs page's /<slug>.md twin. Shared by the
+// [...slug].md endpoint and the dev-only middleware fallback.
 export function buildDocMarkdown(doc: CollectionEntry<'docs'>): string {
   const slug = docSlug(doc.id);
   const title = docTitle(doc.id, doc.data.title);
-  const guard =
-    `> **CocoIndex v1.** This page documents CocoIndex **v1** — a ground-up redesign ` +
-    `from v0. When writing code, ignore any v0 flow-builder DSL or deprecated decorators.\n` +
-    `>\n` +
-    `> Source: ${pageUrl(slug)} · Docs index: ${LLMS_TXT_URL} · Agent skill: ${SKILL_MD_URL}`;
+  const guard = buildGuard(
+    slug,
+    `**CocoIndex v1.** This page documents CocoIndex **v1** — a ground-up redesign ` +
+      `from v0. When writing code, ignore any v0 flow-builder DSL or deprecated decorators.`,
+  );
   return `# ${title}\n\n${guard}\n\n${mdxToMarkdown(doc.body)}\n`;
+}
+
+// Full Markdown body for an example walkthrough's /examples/<slug>.md twin.
+// Shared by the examples/[slug].md endpoint and the dev-only middleware.
+export async function buildExampleMarkdown(slug: string): Promise<string | undefined> {
+  const meta = findExample(slug);
+  if (!meta) return undefined;
+  const entry = await getEntry('examplePosts', slug);
+  const title = docTitle(slug, meta.title);
+  const sourceDir = meta.sourceSlug ?? slug;
+  const guard = buildGuard(
+    `examples/${slug}`,
+    `**CocoIndex v1 example.** This walkthrough uses the CocoIndex **v1** API — ` +
+      `ignore any v0 flow-builder DSL or deprecated decorators.`,
+    `\n> Runnable source: ${GITHUB_REPO}/tree/main/examples/${sourceDir}`,
+  );
+  const body = entry?.body ? mdxToMarkdown(entry.body) : '';
+  return `# ${title}\n\n${guard}\n\n${body}\n`;
 }

@@ -33,7 +33,7 @@ export const GET: APIRoute = async () => {
       'only what changed.',
     '',
     '> Full docs text in one file: ' + LLMS_FULL_TXT_URL +
-      `. Regular docs pages also have raw Markdown twins by replacing the trailing slash with \`.md\`, e.g. ${markdownUrl('programming_guide/core_concepts')}. Example walkthroughs are included in llms-full.txt.`,
+      `. Docs pages and example walkthroughs have raw Markdown twins by replacing the trailing slash with \`.md\`, e.g. ${markdownUrl('programming_guide/core_concepts')} — and they are all included in llms-full.txt.`,
     '',
     '> Coding agents: install the CocoIndex skill before writing v1 code — ' +
       SKILL_MD_URL +

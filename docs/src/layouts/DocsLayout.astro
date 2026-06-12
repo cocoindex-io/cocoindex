@@ -10,6 +10,7 @@ import Analytics from '../components/Analytics.astro';
 import ScarfPixel from '../components/ScarfPixel.astro';
 import Foot from '../components/Foot.astro';
 import { SITE_URL, titleMarkup, pageUrl, pageMarkdownUrl, SKILL_MD_URL, DOCS_EDIT_BASE, SCARF_PIXEL_ID, OG_IMAGE_DOCS, OG_IMAGE_WIDTH, OG_IMAGE_HEIGHT, OG_IMAGE_DOCS_ALT } from '../consts';
+import { skillReferenceNames } from '../lib/skill-files';
 import ICON_COPY from '../icons/copy.svg?raw';
 import ICON_EXT from '../icons/external.svg?raw';
 import ICON_CHATGPT from '../icons/chatgpt.svg?raw';
@@ -87,7 +88,7 @@ const claudeHref = `https://claude.ai/new?q=${encodeURIComponent(aiPrompt)}`;
 const referencesUrl = new URL(`${base}/references`, SITE_URL).toString();
 const skillInstallCmd =
   `mkdir -p .claude/skills/cocoindex/references && curl -fsSL ${SKILL_MD_URL} -o .claude/skills/cocoindex/SKILL.md && ` +
-  `for f in api_reference connectors patterns setup_database setup_project; do curl -fsSL ${referencesUrl}/$f.md -o .claude/skills/cocoindex/references/$f.md; done`;
+  `for f in ${skillReferenceNames().join(' ')}; do curl -fsSL ${referencesUrl}/$f.md -o .claude/skills/cocoindex/references/$f.md; done`;
 
 // Breadcrumb: walk the sidebar tree for the current slug so category
 // labels light up correctly even for nested pages.
@@ -498,22 +499,27 @@ const breadcrumbLd = {
             e.preventDefault();
             const href = btn.getAttribute('data-md');
             if (!href) return;
-            const viaItem =
-              typeof ClipboardItem !== 'undefined'
-                ? navigator.clipboard.write([
-                    new ClipboardItem({
-                      'text/plain': fetchMarkdown(href).then(
-                        (t) => new Blob([t], { type: 'text/plain' }),
-                      ),
-                    }),
-                  ])
-                : Promise.reject();
+            const text = fetchMarkdown(href);
+            let viaItem: Promise<void>;
+            try {
+              viaItem =
+                typeof ClipboardItem !== 'undefined'
+                  ? navigator.clipboard.write([
+                      new ClipboardItem({
+                        'text/plain': text.then((t) => new Blob([t], { type: 'text/plain' })),
+                      }),
+                    ])
+                  : Promise.reject(new Error('no ClipboardItem'));
+            } catch (err) {
+              viaItem = Promise.reject(err);
+            }
             viaItem
-              .catch(() => fetchMarkdown(href).then((t) => navigator.clipboard.writeText(t)))
+              .catch(() => text.then((t) => navigator.clipboard.writeText(t)))
               .then(
                 () => flash(btn, 'Copied'),
                 () => flash(btn, 'Copy failed'),
               );
+            text.catch(() => {}); // viaItem already reports fetch failures
           });
         });
         // Copy a literal string (the skill-install command).
@@ -614,7 +620,7 @@ const breadcrumbLd = {
     color: var(--coral);
     background: var(--paper);
   }
-  .ai-primary svg {
+  .ai-primary :global(svg) {
     width: 14px;
     height: 14px;
   }
@@ -678,7 +684,7 @@ const breadcrumbLd = {
     border: 1px solid var(--rule);
     border-radius: 9px;
   }
-  .ai-ic svg {
+  .ai-ic :global(svg) {
     width: 17px;
     height: 17px;
   }
@@ -695,7 +701,7 @@ const breadcrumbLd = {
     font: 500 14px/1.25 var(--sans);
     color: var(--maroon-ink);
   }
-  .ai-t .ext {
+  .ai-t :global(.ext) {
     width: 12px;
     height: 12px;
     opacity: 0.5;

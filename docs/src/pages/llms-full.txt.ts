@@ -4,7 +4,7 @@
 // (see https://llmstxt.org/). /docs/llms.txt is the lighter index.
 import type { APIRoute } from 'astro';
 import { getCollection } from 'astro:content';
-import { docSlug, docTitle, titleText, pageUrl } from '../consts';
+import { docSlug, docTitle, pageUrl } from '../consts';
 import { examples, findExample } from '../data/examples';
 import { flatten } from '../data/docs-sidebar';
 import { mdxToMarkdown } from '../lib/raw-markdown';
@@ -49,7 +49,7 @@ export const GET: APIRoute = async () => {
     if (!post || emittedExamples.has(slug)) return;
     emittedExamples.add(slug);
     const meta = findExample(slug);
-    const title = titleText(meta?.title ?? slug);
+    const title = docTitle(slug, meta?.title);
     out.push('', '---', '', `# Example: ${title}`, '', `Source: ${exampleUrl(slug)}`, '', mdxToMarkdown(post.body));
   };
 
