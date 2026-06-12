@@ -81,6 +81,24 @@ fn default_map_size() -> usize {
     DEFAULT_MAP_SIZE
 }
 
+/// Round `requested` up to the next multiple of the OS page size.
+///
+/// heed/LMDB require `map_size` to be a multiple of the system page size
+/// (4 KiB on most Linux, 16 KiB on Apple Silicon), rejecting other values
+/// with a hard error. Users shouldn't have to know their page size, so we
+/// align for them here. Rounding *up* only raises the cap on how far the
+/// memory map may grow — it never shrinks the user's request. We read the
+/// page size via the same `page_size` crate heed validates against, so the
+/// aligned value is guaranteed to satisfy heed.
+fn align_map_size_to_page(requested: usize) -> usize {
+    let page = page_size::get();
+    // `page` is a power of two on every supported platform, so it can't be 0
+    // and `div_ceil` won't divide by zero. `saturating_mul` guards the
+    // (practically impossible) case of `requested` being within one page of
+    // `usize::MAX`.
+    requested.div_ceil(page).saturating_mul(page)
+}
+
 /// Configuration for opening the storage environment.
 ///
 /// The on-disk schema (field names, defaults) is the public configuration
@@ -149,11 +167,20 @@ impl Storage {
         if settings.lmdb_map_size == 0 {
             client_bail!("lmdb_map_size must be > 0, got {}", settings.lmdb_map_size);
         }
+        let map_size = align_map_size_to_page(settings.lmdb_map_size);
+        if map_size != settings.lmdb_map_size {
+            debug!(
+                "Rounded lmdb_map_size up from {} to {} to match the system page size ({})",
+                settings.lmdb_map_size,
+                map_size,
+                page_size::get()
+            );
+        }
         let db_env = unsafe {
             heed::EnvOpenOptions::new()
                 .read_txn_without_tls()
                 .max_dbs(settings.lmdb_max_dbs)
-                .map_size(settings.lmdb_map_size)
+                .map_size(map_size)
                 .open(db_path)
         }?;
         let cleared_count = db_env.clear_stale_readers()?;
@@ -391,5 +418,48 @@ impl Storage {
             }
         }
         Ok(names)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn align_map_size_rounds_up_to_page_multiple() {
+        let page = page_size::get();
+        // Exact multiples are left untouched.
+        assert_eq!(align_map_size_to_page(page), page);
+        assert_eq!(align_map_size_to_page(4 * page), 4 * page);
+        // Anything below a full page rounds up to a single page.
+        assert_eq!(align_map_size_to_page(1), page);
+        assert_eq!(align_map_size_to_page(page - 1), page);
+        // A value just past a page boundary rounds up to the next page.
+        assert_eq!(align_map_size_to_page(page + 1), 2 * page);
+
+        // The value from the original bug report (10 KiB) becomes a valid
+        // page multiple no smaller than what was requested.
+        let aligned = align_map_size_to_page(10 * 1024);
+        assert_eq!(aligned % page, 0);
+        assert!(aligned >= 10 * 1024);
+    }
+
+    /// Regression test for the user-facing failure: a `lmdb_map_size` that
+    /// isn't a multiple of the system page size used to surface heed's hard
+    /// error ("map size (N) must be a multiple of the system page size").
+    /// We now align it up transparently, so opening the env just works.
+    #[tokio::test]
+    async fn new_accepts_unaligned_map_size() {
+        let dir = TempDir::new().unwrap();
+        let settings = StorageSettings {
+            db_path: dir.path().to_path_buf(),
+            lmdb_max_dbs: DEFAULT_MAX_DBS,
+            // 4 MiB + 1 byte: deliberately not a multiple of any page size,
+            // yet large enough to back a real env on both 4 KiB and 16 KiB
+            // page platforms once aligned up.
+            lmdb_map_size: 4 * 1024 * 1024 + 1,
+        };
+        Storage::new(&settings).await.unwrap();
     }
 }
