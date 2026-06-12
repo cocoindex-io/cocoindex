@@ -18,8 +18,9 @@ cp -r /tmp/cocoindex-skill/skills/cocoindex .claude/skills/
 The skill itself lives at [`skills/cocoindex/`](../skills/cocoindex) (SKILL.md +
 `references/`). For Cursor, copy `SKILL.md` into `.cursor/rules/`. Full machine-readable
 docs: <https://cocoindex.io/docs/llms.txt> (index) and
-<https://cocoindex.io/docs/llms-full.txt> (everything). Raw Markdown is available
-by replacing a docs page's trailing slash with `.md` (e.g.
+<https://cocoindex.io/docs/llms-full.txt> (everything, including example
+walkthroughs). Regular docs pages also have raw Markdown twins by replacing the
+trailing slash with `.md` (e.g.
 `https://cocoindex.io/docs/programming_guide/core_concepts.md`).
 
 ## The v1 mental model

@@ -31,7 +31,7 @@ export const GET: APIRoute = async () => {
       'only what changed.',
     '',
     '> Full docs text in one file: ' + new URL(`${base}/llms-full.txt`, SITE_URL).toString() +
-      `. Raw Markdown is available by replacing the trailing slash with \`.md\`, e.g. ${markdownUrl('programming_guide/core_concepts')}.`,
+      `. Regular docs pages also have raw Markdown twins by replacing the trailing slash with \`.md\`, e.g. ${markdownUrl('programming_guide/core_concepts')}. Example walkthroughs are included in llms-full.txt.`,
     '',
   ];
 

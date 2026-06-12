@@ -102,7 +102,7 @@ export SURREALDB_DB="yt_conversations"
 export SURREALDB_USER="root"
 export SURREALDB_PASS="root"
 export INPUT_DIR="./input"
-export LLM_MODEL="openai/gpt-5.4-mini"
+export LLM_MODEL="openai/gpt-5.4"
 export RESOLUTION_LLM_MODEL="openai/gpt-5-mini"
 ```
 

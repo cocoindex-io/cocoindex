@@ -110,8 +110,8 @@ POSTGRES_URL=postgres://user:pass@localhost/db
 QDRANT_URL=http://localhost:6333
 
 # API keys (if using LLM extraction)
-OPENAI_API_KEY=sk-...
-ANTHROPIC_API_KEY=sk-ant-...
+OPENAI_API_KEY=your-openai-api-key
+ANTHROPIC_API_KEY=your-anthropic-api-key
 ```
 
 ### Manual Settings (in lifespan)
