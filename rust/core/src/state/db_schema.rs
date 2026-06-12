@@ -17,7 +17,7 @@ use crate::state::{
     target_state_path::TargetStatePath,
 };
 
-/// Which writer owns a user-state entry. The two kinds share the `0xc0`
+/// Which writer owns a user-state entry. The two kinds share the `0x34`
 /// `UserState*` keyspace but are isolated by a discriminant byte so they
 /// never collide on prefix scans (see the layout note on
 /// [`StablePathEntryKey::UserState`]).
@@ -69,6 +69,14 @@ pub enum StablePathEntryKey {
     /// Value type: FunctionMemoizationEntry
     FunctionMemoization(Fingerprint),
 
+    /// Scan prefix for all user-state entries of one [`StateKind`].
+    /// Encodes as `0x34` + the kind byte, a strict prefix of every
+    /// `UserState(kind, *)` that never matches the other kind's entries.
+    UserStatePrefix(StateKind),
+    /// Layout: `0x34` + [`StateKind`] byte + the encoded `StableKey`.
+    /// Value type: opaque bytes (msgpack-serialized by the caller).
+    UserState(StateKind, StableKey),
+
     /// Required.
     /// Value type: StablePathEntryTargetStateInfo
     TrackingInfo,
@@ -80,14 +88,6 @@ pub enum StablePathEntryKey {
     ChildComponentTombstonePrefix,
     /// Relative path to the parent component.
     ChildComponentTombstone(StablePath),
-
-    /// Scan prefix for all user-state entries of one [`StateKind`].
-    /// Encodes as `0xc0` + the kind byte, a strict prefix of every
-    /// `UserState(kind, *)` that never matches the other kind's entries.
-    UserStatePrefix(StateKind),
-    /// Layout: `0xc0` + [`StateKind`] byte + the encoded `StableKey`.
-    /// Value type: opaque bytes (msgpack-serialized by the caller).
-    UserState(StateKind, StableKey),
 }
 
 impl storekey::Encode for StablePathEntryKey {
@@ -100,6 +100,15 @@ impl storekey::Encode for StablePathEntryKey {
                 e.write_u8(0x30)?;
                 fp.encode(e)
             }
+            StablePathEntryKey::UserStatePrefix(kind) => {
+                e.write_u8(0x34)?;
+                kind.encode(e)
+            }
+            StablePathEntryKey::UserState(kind, key) => {
+                e.write_u8(0x34)?;
+                kind.encode(e)?;
+                key.encode(e)
+            }
             StablePathEntryKey::TrackingInfo => e.write_u8(0x40),
             StablePathEntryKey::ChildExistencePrefix => e.write_u8(0xa0),
             StablePathEntryKey::ChildExistence(key) => {
@@ -110,15 +119,6 @@ impl storekey::Encode for StablePathEntryKey {
             StablePathEntryKey::ChildComponentTombstone(path) => {
                 e.write_u8(0xb0)?;
                 path.encode(e)
-            }
-            StablePathEntryKey::UserStatePrefix(kind) => {
-                e.write_u8(0xc0)?;
-                kind.encode(e)
-            }
-            StablePathEntryKey::UserState(kind, key) => {
-                e.write_u8(0xc0)?;
-                kind.encode(e)?;
-                key.encode(e)
             }
         }
     }
@@ -134,6 +134,11 @@ impl storekey::Decode for StablePathEntryKey {
                 let fp = Fingerprint::decode(d)?;
                 StablePathEntryKey::FunctionMemoization(fp)
             }
+            0x34 => {
+                let kind: StateKind = storekey::Decode::decode(d)?;
+                let key: StableKey = storekey::Decode::decode(d)?;
+                StablePathEntryKey::UserState(kind, key)
+            }
             0x40 => StablePathEntryKey::TrackingInfo,
             0xa0 => {
                 let key: StableKey = storekey::Decode::decode(d)?;
@@ -142,11 +147,6 @@ impl storekey::Decode for StablePathEntryKey {
             0xb0 => {
                 let path: StablePath = storekey::Decode::decode(d)?;
                 StablePathEntryKey::ChildComponentTombstone(path)
-            }
-            0xc0 => {
-                let kind: StateKind = storekey::Decode::decode(d)?;
-                let key: StableKey = storekey::Decode::decode(d)?;
-                StablePathEntryKey::UserState(kind, key)
             }
             _ => return Err(storekey::DecodeError::InvalidFormat),
         };
@@ -525,21 +525,21 @@ mod tests {
         );
     }
 
-    /// `UserStatePrefix(kind)` must encode as `0xc0` followed by the kind
+    /// `UserStatePrefix(kind)` must encode as `0x34` followed by the kind
     /// byte. Documents the wire format and guards against accidental
     /// discriminant collisions.
     #[test]
-    fn user_state_prefix_discriminant_is_0xc0() {
-        // NOTE: `0xc0u8` uses an explicit primitive suffix to force a 1-byte allocation.
-        // Without `u8`, Rust infers `0xc0` as `i32` (4 bytes), causing a compile-time type
+    fn user_state_prefix_discriminant_is_0x34() {
+        // NOTE: `0x34u8` uses an explicit primitive suffix to force a 1-byte allocation.
+        // Without `u8`, Rust infers `0x34` as `i32` (4 bytes), causing a compile-time type
         // mismatch with `bytes` (`Vec<u8>`).
         let regular =
             storekey::encode_vec(&StablePathEntryKey::UserStatePrefix(StateKind::Regular))
                 .expect("encode");
-        assert_eq!(regular, &[0xc0u8, 0x02]);
+        assert_eq!(regular, &[0x34u8, 0x02]);
         let live = storekey::encode_vec(&StablePathEntryKey::UserStatePrefix(StateKind::Live))
             .expect("encode");
-        assert_eq!(live, &[0xc0u8, 0x03]);
+        assert_eq!(live, &[0x34u8, 0x03]);
     }
 
     /// Every `UserState(kind, key)` encoding must start with the matching
