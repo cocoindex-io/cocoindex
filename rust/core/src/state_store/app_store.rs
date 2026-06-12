@@ -469,21 +469,6 @@ impl AppStore {
 // --- Function memoization ------------------------------------------------
 
 impl AppStore {
-    /// List every function memo under `path` from a fresh snapshot. Used
-    /// by the per-component `fn_memos` loader outside `run_txn`.
-    pub async fn list_fn_memos(&self, path: &StablePath) -> Result<Vec<(Fingerprint, Vec<u8>)>> {
-        let rtxn = self.read_txn().await?;
-        let prefix = key_fn_memo_prefix(path)?;
-        let db = self.db();
-        let mut out = Vec::new();
-        for entry in db.prefix_iter(&rtxn, &prefix)? {
-            let (raw_key, raw_val) = entry?;
-            let fp: Fingerprint = storekey::decode(raw_key[prefix.len()..].as_ref())?;
-            out.push((fp, raw_val.to_vec()));
-        }
-        Ok(out)
-    }
-
     pub async fn write_fn_memo(
         &self,
         txn: &mut WriteTxn<'_>,
@@ -825,25 +810,6 @@ impl AppStore {
 // --- User state ----------------------------------------------------------
 
 impl AppStore {
-    /// List all user-state entries of `kind` under `path` from a fresh
-    /// snapshot. Returns `(user_key, value_bytes)` pairs in on-disk key order.
-    pub async fn list_user_states(
-        &self,
-        path: &StablePath,
-        kind: StateKind,
-    ) -> Result<Vec<(StableKey, Vec<u8>)>> {
-        let rtxn = self.read_txn().await?;
-        let prefix = key_user_state_prefix(path, kind)?;
-        let db = self.db();
-        let mut out = Vec::new();
-        for entry in db.prefix_iter(&rtxn, &prefix)? {
-            let (raw_key, raw_val) = entry?;
-            let user_key: StableKey = storekey::decode(raw_key[prefix.len()..].as_ref())?;
-            out.push((user_key, raw_val.to_vec()));
-        }
-        Ok(out)
-    }
-
     /// Point-read the single `kind` entry under `(path, user_key)` from a
     /// fresh snapshot, or `None` if absent. Used by `read_committed_state`
     /// to fetch one [`StateKind::Live`] key without scanning the prefix.
@@ -931,6 +897,48 @@ impl AppStore {
     }
 }
 
+// --- Combined prefetch read ----------------------------------------------
+
+impl AppStore {
+    /// List every function-memo and user-state entry under `path` from a
+    /// single read snapshot. Used by the per-component prefetch
+    /// ([`crate::engine::context::ComponentProcessorContext::prefetch_states`]).
+    ///
+    /// Both ranges are read under one `RoTxn` rather than two. Under
+    /// `MDB_NOTLS` each read-txn begin takes the reader-table mutex, so a
+    /// single snapshot halves that cost — most visibly when many child
+    /// components prefetch concurrently during `mount_each` fan-out — and
+    /// halves concurrent reader-slot occupancy against the
+    /// `MDB_READERS_FULL` limit.
+    pub async fn prefetch_fn_processing_states(
+        &self,
+        path: &StablePath,
+    ) -> Result<(Vec<(Fingerprint, Vec<u8>)>, Vec<(StableKey, Vec<u8>)>)> {
+        let rtxn = self.read_txn().await?;
+        let db = self.db();
+
+        // Function memos, keyed by fingerprint.
+        let fp_prefix = key_fn_memo_prefix(path)?;
+        let mut memos = Vec::new();
+        for entry in db.prefix_iter(&rtxn, &fp_prefix)? {
+            let (raw_key, raw_val) = entry?;
+            let fp: Fingerprint = storekey::decode(raw_key[fp_prefix.len()..].as_ref())?;
+            memos.push((fp, raw_val.to_vec()));
+        }
+
+        // User states, keyed by stable key.
+        let us_prefix = key_user_state_prefix(path, StateKind::Regular)?;
+        let mut states = Vec::new();
+        for entry in db.prefix_iter(&rtxn, &us_prefix)? {
+            let (raw_key, raw_val) = entry?;
+            let user_key: StableKey = storekey::decode(raw_key[us_prefix.len()..].as_ref())?;
+            states.push((user_key, raw_val.to_vec()));
+        }
+
+        Ok((memos, states))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::AppStore;
@@ -975,15 +983,20 @@ mod tests {
         pairs.into_iter().collect()
     }
 
-    // --- list_user_states --------------------------------------------------
+    /// Read back a component's Regular user states through the production
+    /// prefetch path (`prefetch_fn_processing_states`), so these tests assert
+    /// against the same read code the engine runs. The fn-memo half of the
+    /// result is unused here (these tests write no memos).
+    async fn read_regular_states(store: &AppStore, p: &StablePath) -> HashMap<StableKey, Vec<u8>> {
+        to_map(store.prefetch_fn_processing_states(p).await.unwrap().1)
+    }
+
+    // --- user state read-back (via prefetch) -------------------------------
 
     #[tokio::test]
-    async fn list_user_states_empty_on_fresh_path() {
+    async fn user_states_empty_on_fresh_path() {
         let (store, _dir) = make_test_store().await;
-        let result = store
-            .list_user_states(&comp_path("comp"), StateKind::Regular)
-            .await
-            .unwrap();
+        let result = read_regular_states(&store, &comp_path("comp")).await;
         assert!(result.is_empty());
     }
 
@@ -1009,12 +1022,7 @@ mod tests {
             .unwrap();
         wtxn.into_inner().commit().unwrap();
 
-        let entries = to_map(
-            store
-                .list_user_states(&p, StateKind::Regular)
-                .await
-                .unwrap(),
-        );
+        let entries = read_regular_states(&store, &p).await;
         assert_eq!(entries.len(), 3);
         assert_eq!(entries[&sym("count")], b"42");
         assert_eq!(entries[&sym("name")], b"hello");
@@ -1040,12 +1048,7 @@ mod tests {
             .unwrap();
         wtxn.into_inner().commit().unwrap();
 
-        let entries = to_map(
-            store
-                .list_user_states(&p, StateKind::Regular)
-                .await
-                .unwrap(),
-        );
+        let entries = read_regular_states(&store, &p).await;
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[&sym("k")], b"v2");
     }
@@ -1086,12 +1089,7 @@ mod tests {
             .unwrap();
         wtxn.into_inner().commit().unwrap();
 
-        let entries = to_map(
-            store
-                .list_user_states(&p, StateKind::Regular)
-                .await
-                .unwrap(),
-        );
+        let entries = read_regular_states(&store, &p).await;
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[&sym("a")], b"new_a");
         assert!(!entries.contains_key(&sym("b")));
@@ -1138,12 +1136,7 @@ mod tests {
             .unwrap();
         wtxn.into_inner().commit().unwrap();
 
-        let entries = to_map(
-            store
-                .list_user_states(&p, StateKind::Regular)
-                .await
-                .unwrap(),
-        );
+        let entries = read_regular_states(&store, &p).await;
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[&sym("a")], b"new_a");
         assert!(!entries.contains_key(&sym("b")));
@@ -1170,18 +1163,8 @@ mod tests {
             .unwrap();
         wtxn.into_inner().commit().unwrap();
 
-        let r1 = to_map(
-            store
-                .list_user_states(&p1, StateKind::Regular)
-                .await
-                .unwrap(),
-        );
-        let r2 = to_map(
-            store
-                .list_user_states(&p2, StateKind::Regular)
-                .await
-                .unwrap(),
-        );
+        let r1 = read_regular_states(&store, &p1).await;
+        let r2 = read_regular_states(&store, &p2).await;
         assert_eq!(r1.len(), 1);
         assert_eq!(r2.len(), 1);
         assert_eq!(r1[&sym("k")], b"from_a");
@@ -1193,8 +1176,9 @@ mod tests {
     #[tokio::test]
     async fn user_states_isolated_by_kind() {
         // Regular and Live share the component path and even the same user
-        // key, but never collide: per-kind list/read see only their own
-        // entries, and a Regular bulk-delete leaves Live intact.
+        // key, but never collide: the Regular bulk read excludes Live, point
+        // reads resolve per kind, and a Regular bulk-delete leaves Live intact.
+        // (Live has no bulk reader by design — production point-reads it.)
         let (store, _dir) = make_test_store().await;
         let p = comp_path("comp");
 
@@ -1209,20 +1193,13 @@ mod tests {
             .unwrap();
         wtxn.into_inner().commit().unwrap();
 
-        // Per-kind list sees only its own keyspace, even for the same key.
-        let reg = to_map(
-            store
-                .list_user_states(&p, StateKind::Regular)
-                .await
-                .unwrap(),
-        );
-        let live = to_map(store.list_user_states(&p, StateKind::Live).await.unwrap());
+        // The Regular bulk read sees only the Regular entry, never the Live
+        // one written under the same key.
+        let reg = read_regular_states(&store, &p).await;
         assert_eq!(reg.len(), 1);
-        assert_eq!(live.len(), 1);
         assert_eq!(reg[&sym("k")], b"reg");
-        assert_eq!(live[&sym("k")], b"live");
 
-        // Point-read resolves per kind.
+        // Point-read resolves per kind for the shared key, and misses absent.
         assert_eq!(
             store
                 .read_user_state(&p, StateKind::Regular, &sym("k"))
@@ -1256,16 +1233,15 @@ mod tests {
             .unwrap();
         wtxn.into_inner().commit().unwrap();
 
-        assert!(
+        assert!(read_regular_states(&store, &p).await.is_empty());
+        assert_eq!(
             store
-                .list_user_states(&p, StateKind::Regular)
+                .read_user_state(&p, StateKind::Live, &sym("k"))
                 .await
                 .unwrap()
-                .is_empty()
+                .as_deref(),
+            Some(&b"live"[..])
         );
-        let live = to_map(store.list_user_states(&p, StateKind::Live).await.unwrap());
-        assert_eq!(live.len(), 1);
-        assert_eq!(live[&sym("k")], b"live");
 
         // Clearing Live too leaves the component with no user state.
         let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
@@ -1276,10 +1252,10 @@ mod tests {
         wtxn.into_inner().commit().unwrap();
         assert!(
             store
-                .list_user_states(&p, StateKind::Live)
+                .read_user_state(&p, StateKind::Live, &sym("k"))
                 .await
                 .unwrap()
-                .is_empty()
+                .is_none()
         );
     }
 }
