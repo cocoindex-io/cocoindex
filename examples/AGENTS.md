@@ -8,7 +8,16 @@ CocoIndex **v1** apps; `rust/` contains Rust ports with per-example READMEs.
 
 CocoIndex v1 is a fundamental redesign from v0. Without context, LLMs tend to
 hallucinate the v0 flow-builder DSL and deprecated decorators. Install the
-official skill first — it teaches the correct v1 API:
+official skill first — it teaches the correct v1 API. Quickest path is the
+hosted single file:
+
+```sh
+mkdir -p .claude/skills/cocoindex
+curl -fsSL https://cocoindex.io/docs/skill.md -o .claude/skills/cocoindex/SKILL.md
+```
+
+For the full skill including its `references/` (deeper API guides the SKILL.md
+links to), clone the repo instead:
 
 ```sh
 mkdir -p .claude/skills

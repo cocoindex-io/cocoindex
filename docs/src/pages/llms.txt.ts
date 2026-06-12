@@ -33,6 +33,10 @@ export const GET: APIRoute = async () => {
     '> Full docs text in one file: ' + new URL(`${base}/llms-full.txt`, SITE_URL).toString() +
       `. Regular docs pages also have raw Markdown twins by replacing the trailing slash with \`.md\`, e.g. ${markdownUrl('programming_guide/core_concepts')}. Example walkthroughs are included in llms-full.txt.`,
     '',
+    '> Coding agents: install the CocoIndex skill before writing v1 code — ' +
+      new URL(`${base}/skill.md`, SITE_URL).toString() +
+      ' (teaches the correct v1 API; without it, LLMs tend to hallucinate the deprecated v0 flow-builder DSL).',
+    '',
   ];
 
   // Standalone top-level docs (Core Concepts, CLI, FAQ) surfaced first.

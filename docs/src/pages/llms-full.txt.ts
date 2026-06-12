@@ -7,15 +7,11 @@ import { getCollection } from 'astro:content';
 import { SITE_URL, docSlug, titleText } from '../consts';
 import { examples, findExample } from '../data/examples';
 import { flatten } from '../data/docs-sidebar';
+import { mdxToMarkdown } from '../lib/raw-markdown';
 
 const base = import.meta.env.BASE_URL.replace(/\/$/, '');
 const pageUrl = (slug: string) => new URL(`${base}/${slug}/`, SITE_URL).toString();
 const exampleUrl = (slug: string) => new URL(`${base}/examples/${slug}/`, SITE_URL).toString();
-
-// Strip MDX ESM import lines (e.g. `import Tabs from '...'`) — noise for agents
-// reading the prose. Leaves any JSX components in place; they're rare and harmless.
-const cleanBody = (s?: string) =>
-  (s ?? '').replace(/^import\s.+?from\s.+?;?\s*$/gm, '').replace(/\n{3,}/g, '\n\n').trim();
 
 export const GET: APIRoute = async () => {
   const docs = await getCollection('docs');
@@ -36,7 +32,7 @@ export const GET: APIRoute = async () => {
     if (!d || seen.has(slug)) return;
     seen.add(slug);
     const title = titleText(typeof d.data.title === 'string' ? d.data.title : slug);
-    out.push('', '---', '', `# ${title}`, '', `Source: ${pageUrl(slug)}`, '', cleanBody(d.body));
+    out.push('', '---', '', `# ${title}`, '', `Source: ${pageUrl(slug)}`, '', mdxToMarkdown(d.body));
   };
 
   // Sidebar order first, then any stray docs not in the tree.
@@ -52,7 +48,7 @@ export const GET: APIRoute = async () => {
     emittedExamples.add(slug);
     const meta = findExample(slug);
     const title = titleText(meta?.title ?? slug);
-    out.push('', '---', '', `# Example: ${title}`, '', `Source: ${exampleUrl(slug)}`, '', cleanBody(post.body));
+    out.push('', '---', '', `# Example: ${title}`, '', `Source: ${exampleUrl(slug)}`, '', mdxToMarkdown(post.body));
   };
 
   out.push('', '---', '', '# Example Walkthroughs');
