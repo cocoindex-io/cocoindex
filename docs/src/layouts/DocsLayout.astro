@@ -9,7 +9,7 @@ import MermaidRenderer from '../components/MermaidRenderer.astro';
 import Analytics from '../components/Analytics.astro';
 import ScarfPixel from '../components/ScarfPixel.astro';
 import Foot from '../components/Foot.astro';
-import { SITE_URL, titleMarkup, DOCS_EDIT_BASE, SCARF_PIXEL_ID } from '../consts';
+import { SITE_URL, titleMarkup, DOCS_EDIT_BASE, SCARF_PIXEL_ID, OG_IMAGE_DOCS, OG_IMAGE_WIDTH, OG_IMAGE_HEIGHT, OG_IMAGE_DOCS_ALT } from '../consts';
 import { flatten, sidebar, type SidebarItem } from '../data/docs-sidebar';
 import { docsVersion, reviewedDate } from '../data/review-meta';
 
@@ -63,7 +63,7 @@ const introItems = [
 ].filter((m) => m.v);
 const canonical = new URL(`${base}/${slug}/`, SITE_URL).toString();
 const docsHome = new URL(`${base}/`, SITE_URL).toString();
-const ogImage = new URL(`${base}/images/coconut.svg`, SITE_URL).toString();
+const ogImage = OG_IMAGE_DOCS;
 
 // Breadcrumb: walk the sidebar tree for the current slug so category
 // labels light up correctly even for nested pages.
@@ -136,6 +136,9 @@ const breadcrumbLd = {
     {description && <meta property="og:description" content={description} />}
     <meta property="og:url" content={canonical} />
     <meta property="og:image" content={ogImage} />
+    <meta property="og:image:width" content={OG_IMAGE_WIDTH} />
+    <meta property="og:image:height" content={OG_IMAGE_HEIGHT} />
+    <meta property="og:image:alt" content={OG_IMAGE_DOCS_ALT} />
     <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:title" content={fullTitle} />
     {description && <meta name="twitter:description" content={description} />}

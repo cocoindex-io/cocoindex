@@ -41,3 +41,13 @@ Query:
 ```sh
 python main.py "wireless headphones"
 ```
+
+## Environment
+
+Copy `.env.example` to `.env` and fill in the blanks — it is loaded automatically when you run the example:
+
+```sh
+cp .env.example .env
+```
+
+Set `POSTGRES_URL` (where results are written) and `SOURCE_DATABASE_URL` (the table read as the source) — they can point at the same instance.

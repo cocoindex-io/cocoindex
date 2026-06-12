@@ -472,10 +472,25 @@ Check component paths are stable. Use stable IDs, not object references.
 - **[setup_project.md](references/setup_project.md)**: Project setup guide
 - **[setup_database.md](references/setup_database.md)**: Database setup guide
 
+### Runnable examples
+
+Every pattern above has a complete, runnable app under
+[`examples/`](https://github.com/cocoindex-io/cocoindex/tree/main/examples) — start
+from the one closest to the task and adapt it. Each has its own `README.md` and
+most Python examples have a `.env.example`; see
+[`examples/AGENTS.md`](https://github.com/cocoindex-io/cocoindex/blob/main/examples/AGENTS.md)
+for the full map, credentials, and per-example run commands. Good starting points:
+
+- Vector search → `text_embedding` (Postgres), `text_embedding_qdrant` / `_lancedb` (other stores)
+- Code search → `code_embedding`
+- LLM extraction → `hn_trending_topics`, `patient_intake_extraction_baml`
+- Knowledge graph → `conversation_to_knowledge`, `meeting_notes_graph_neo4j`
+- Custom transform → `files_transform`, `pdf_to_markdown`
+
 ### External
 
-- [CocoIndex Documentation](https://docs.cocoindex.dev/docs/)
-- [GitHub Examples](https://github.com/cocoindex-io/cocoindex/tree/v1/examples)
+- [CocoIndex Documentation](https://cocoindex.io/docs/) — full text at [llms-full.txt](https://cocoindex.io/docs/llms-full.txt)
+- [GitHub Examples](https://github.com/cocoindex-io/cocoindex/tree/main/examples)
 
 ## Version Note
 
