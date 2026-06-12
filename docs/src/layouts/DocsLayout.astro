@@ -215,14 +215,14 @@ const breadcrumbLd = {
                 </svg>
                 <span class="ai-primary-label">Copy page</span>
               </button>
-              <button type="button" class="ai-toggle" aria-haspopup="menu" aria-expanded="false" aria-label="More ways to use this page with AI">
+              <button type="button" class="ai-toggle" aria-haspopup="menu" aria-expanded="false" aria-controls="aiMenuPanel" aria-label="More ways to use this page with AI">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                   <polyline points="6 9 12 15 18 9" />
                 </svg>
               </button>
             </div>
 
-            <div class="ai-panel" role="menu" aria-label="Use this page with AI" hidden>
+            <div class="ai-panel" id="aiMenuPanel" role="menu" aria-label="Use this page with AI" hidden>
               <button type="button" class="ai-item" role="menuitem" data-ai-copy data-md={mdHref}>
                 <span class="ai-ic">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -393,22 +393,60 @@ const breadcrumbLd = {
         const toggle = menu.querySelector('.ai-toggle') as HTMLElement | null;
         const panel = menu.querySelector('.ai-panel') as HTMLElement | null;
 
-        const setOpen = (open: boolean) => {
+        const items = () =>
+          Array.from(panel?.querySelectorAll('.ai-item') ?? []) as HTMLElement[];
+
+        // focus: 'first' focuses the top item on open; 'toggle' restores focus to
+        // the trigger on a keyboard close; undefined leaves focus alone.
+        const setOpen = (open: boolean, focus?: 'first' | 'toggle') => {
           menu.classList.toggle('open', open);
           toggle?.setAttribute('aria-expanded', String(open));
           if (panel) panel.hidden = !open;
-          if (open) (panel?.querySelector('.ai-item') as HTMLElement | null)?.focus();
+          if (open && focus === 'first') items()[0]?.focus();
+          if (!open && focus === 'toggle') toggle?.focus();
         };
+
         toggle?.addEventListener('click', (e) => {
           e.stopPropagation();
-          setOpen(panel?.hidden ?? true);
+          setOpen(panel?.hidden ?? true, 'first');
+        });
+        toggle?.addEventListener('keydown', (e) => {
+          if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            setOpen(true, 'first');
+          }
         });
         document.addEventListener('click', (e) => {
           if (!menu.contains(e.target as Node)) setOpen(false);
         });
         document.addEventListener('keydown', (e) => {
-          if (e.key === 'Escape') setOpen(false);
+          if (e.key === 'Escape' && !panel?.hidden) {
+            e.preventDefault();
+            setOpen(false, 'toggle');
+          }
         });
+        // Roving focus between items (ArrowUp/Down wrap; Home/End jump).
+        panel?.addEventListener('keydown', (e) => {
+          const list = items();
+          const i = list.indexOf(document.activeElement as HTMLElement);
+          if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            list[(i + 1) % list.length]?.focus();
+          } else if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            list[(i - 1 + list.length) % list.length]?.focus();
+          } else if (e.key === 'Home') {
+            e.preventDefault();
+            list[0]?.focus();
+          } else if (e.key === 'End') {
+            e.preventDefault();
+            list[list.length - 1]?.focus();
+          }
+        });
+        // Link items open a new tab — close the menu so it isn't left hanging.
+        menu.querySelectorAll('a.ai-item').forEach((a) =>
+          a.addEventListener('click', () => setOpen(false)),
+        );
 
         // Brief "Copied" feedback on the clicked control (primary button label
         // or a menu item's description line), then revert.
@@ -504,6 +542,23 @@ const breadcrumbLd = {
     }
     .ai-actions {
       align-self: flex-start;
+    }
+    /* Button is left-aligned now, so open the panel rightward from its left
+       edge (anchoring right:0 would push it off the left of the viewport) and
+       clamp the width so it never exceeds the content gutter. */
+    .ai-panel {
+      left: 0;
+      right: auto;
+      width: min(308px, calc(100vw - 48px));
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .ai-toggle svg,
+    .ai-item,
+    .ai-primary,
+    .ai-toggle {
+      transition: none;
     }
   }
 
