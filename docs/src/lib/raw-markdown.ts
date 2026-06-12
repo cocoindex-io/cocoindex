@@ -4,13 +4,14 @@
 //   1. Never corrupt code. Fenced blocks (incl. indented ```sh under a list)
 //      and inline `code` spans are protected verbatim — so literal placeholders
 //      like `LIST<FLOAT>` or `<COMMAND>` in examples survive untouched.
-//   2. Drop MDX scaffolding (ESM `import … from …` / `export const …` lines).
+//   2. Drop MDX scaffolding (ESM `import … from …` / `export const …` lines
+//      and `{/* … */}` comments).
 //   3. Flatten Starlight admonitions (`:::note[Title]` … `:::`) to a bold
 //      callout lead-in, keeping the body prose.
 //   4. Remove leftover JSX component tags so agents never see bare
-//      `<AppOverview />` noise: self-closing diagram components are dropped
-//      entirely (visual-only); paired wrappers (`<Tabs>`, `<Fragment>`) have
-//      their tags stripped but inner content kept.
+//      `<AppOverview />` noise: tags are stripped (which drops self-closing
+//      components entirely and keeps inner content of paired wrappers like
+//      `<Tabs>`).
 //
 // Component names are matched as PascalCase (`[A-Z][a-z]…`) on purpose: it hits
 // real components (AppOverview, Tabs, ComponentWithChunks) while leaving
@@ -18,11 +19,17 @@
 // net beyond code protection.
 
 import type { CollectionEntry } from 'astro:content';
-import { SITE_URL, docSlug, titleText } from '../consts';
+import { getCollection } from 'astro:content';
+import { docSlug, docTitle, pageUrl, LLMS_TXT_URL, SKILL_MD_URL } from '../consts';
 
 const SENT = '\x00'; // sentinel: cannot occur in source text
-const FENCE = /(^|\n)[ \t]*(```|~~~)[^\n]*\n[\s\S]*?\n[ \t]*\2[ \t]*(?=\n|$)/g;
+// Fence runs are captured as a whole (`{3,}) so a ```` opener is not closed by
+// a bare ``` line inside it; the closer may be longer than the opener, per
+// CommonMark. (Kept in sync with docs/scripts/check-agent-output.mjs.)
+const FENCE = /(^|\n)[ \t]*(`{3,}|~{3,})[^\n]*\n[\s\S]*?\n[ \t]*\2[`~]*[ \t]*(?=\n|$)/g;
 const INLINE = /`[^`\n]+`/g;
+const RESTORE_INLINE = /\x00C(\d+)\x00/g;
+const RESTORE_FENCE = /\x00F(\d+)\x00/g;
 
 const ADMONITION_LABEL: Record<string, string> = {
   note: 'Note',
@@ -42,7 +49,14 @@ function protect(text: string, re: RegExp, store: string[], tag: string): string
   });
 }
 
+// Conversion runs for both the per-page .md twin and llms-full.txt (and per
+// request in the dev middleware) — memoize per body.
+const memo = new Map<string, string>();
+
 export function mdxToMarkdown(body: string): string {
+  const cached = memo.get(body ?? '');
+  if (cached !== undefined) return cached;
+
   let s = (body ?? '').replace(/\r\n/g, '\n');
 
   // 1. Protect fenced code, then inline code, behind sentinels.
@@ -52,9 +66,10 @@ export function mdxToMarkdown(body: string): string {
   s = protect(s, INLINE, inlines, 'C');
 
   // 2. Strip ESM import lines (require `from` so we never eat prose starting
-  //    with the word "import") and MDX `export …` scaffolding.
+  //    with the word "import"), MDX `export …` scaffolding, and MDX comments.
   s = s.replace(/^[ \t]*import\b.+\bfrom\b.+$/gm, '');
   s = s.replace(/^[ \t]*export\s+(?:const|let|var|default|function|\{).+$/gm, '');
+  s = s.replace(/\{\/\*[\s\S]*?\*\/\}/g, '');
 
   // 3. Flatten admonitions to a bold callout lead-in, keeping the body prose.
   //    Handles 3+ colons (nesting) and both title forms: `:::note[Title]` and
@@ -69,33 +84,41 @@ export function mdxToMarkdown(body: string): string {
   );
   s = s.replace(/^[ \t]*:{3,}[ \t]*$/gm, '');
 
-  // 4. Remove JSX component tags (inline/fenced code already protected).
-  s = s.replace(/<[A-Z][a-z][A-Za-z0-9]*\b[^>]*\/>/g, ''); // self-closing (incl. multi-line)
-  s = s.replace(/<\/?[A-Z][a-z][A-Za-z0-9]*\b[^>]*>/g, ''); // paired wrapper open/close
+  // 4. Remove JSX component tags (inline/fenced code already protected). The
+  //    `/?` + `[^>]*` body covers open, close, and self-closing forms.
+  s = s.replace(/<\/?[A-Z][a-z][A-Za-z0-9]*\b[^>]*>/g, '');
 
-  // 5. Restore inline code, then fenced code.
-  s = s.replace(new RegExp(`${SENT}C(\\d+)${SENT}`, 'g'), (_m, i) => inlines[Number(i)]);
-  s = s.replace(new RegExp(`${SENT}F(\\d+)${SENT}`, 'g'), (_m, i) => fences[Number(i)]);
+  // 5. Collapse blank lines left by removals — before restoring code, so
+  //    blank-line runs inside fenced blocks survive verbatim.
+  s = s.replace(/\n{3,}/g, '\n\n');
 
-  // 6. Collapse blank lines left by removals.
-  return s.replace(/\n{3,}/g, '\n\n').trim();
+  // 6. Restore inline code, then fenced code.
+  s = s.replace(RESTORE_INLINE, (_m, i) => inlines[Number(i)]);
+  s = s.replace(RESTORE_FENCE, (_m, i) => fences[Number(i)]);
+
+  const out = s.trim();
+  memo.set(body ?? '', out);
+  return out;
 }
 
-const base = import.meta.env.BASE_URL.replace(/\/$/, '');
-const llmsTxt = new URL(`${base}/llms.txt`, SITE_URL).toString();
-const skillUrl = new URL(`${base}/skill.md`, SITE_URL).toString();
+// Single source for the docs-page route map, shared by the HTML route
+// ([...slug].astro) and the Markdown twin ([...slug].md.ts) so the two can
+// never enumerate different page sets.
+export async function docStaticPaths() {
+  const docs = await getCollection('docs');
+  return docs.map((doc) => ({ params: { slug: docSlug(doc.id) }, props: { doc } }));
+}
 
 // Full Markdown body for a docs page's /<slug>.md twin: H1, the top-of-page v1
 // guard + index/skill pointers, then the cleaned body. Single source of truth
 // shared by the [...slug].md endpoint and the dev-only middleware fallback.
 export function buildDocMarkdown(doc: CollectionEntry<'docs'>): string {
   const slug = docSlug(doc.id);
-  const title = titleText(typeof doc.data.title === 'string' ? doc.data.title : slug);
-  const url = new URL(`${base}/${slug}/`, SITE_URL).toString();
+  const title = docTitle(doc.id, doc.data.title);
   const guard =
     `> **CocoIndex v1.** This page documents CocoIndex **v1** — a ground-up redesign ` +
     `from v0. When writing code, ignore any v0 flow-builder DSL or deprecated decorators.\n` +
     `>\n` +
-    `> Source: ${url} · Docs index: ${llmsTxt} · Agent skill: ${skillUrl}`;
+    `> Source: ${pageUrl(slug)} · Docs index: ${LLMS_TXT_URL} · Agent skill: ${SKILL_MD_URL}`;
   return `# ${title}\n\n${guard}\n\n${mdxToMarkdown(doc.body)}\n`;
 }

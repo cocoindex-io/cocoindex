@@ -8,7 +8,7 @@
   },
   "scripts": {
     "dev": "astro dev",
-    "build": "astro build",
+    "build": "astro build && node scripts/check-agent-output.mjs",
     "preview": "astro preview",
     "astro": "astro"
   },
