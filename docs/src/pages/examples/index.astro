@@ -10,7 +10,7 @@ import MobileSheet from '../../components/MobileSheet.astro';
 import Analytics from '../../components/Analytics.astro';
 import ScarfPixel from '../../components/ScarfPixel.astro';
 import Foot from '../../components/Foot.astro';
-import { GITHUB_REPO, DISCORD_URL, SITE_URL, titleMarkup, SCARF_PIXEL_ID } from '../../consts';
+import { GITHUB_REPO, DISCORD_URL, SITE_URL, titleMarkup, SCARF_PIXEL_ID, OG_IMAGE_EXAMPLES, OG_IMAGE_WIDTH, OG_IMAGE_HEIGHT, OG_IMAGE_EXAMPLES_ALT } from '../../consts';
 import {
   examples,
   byCategory,
@@ -57,7 +57,41 @@ const examplesSidebar: SidebarItem[] = CAT_ORDER
 const total = examples.length;
 const fullTitle = `Examples · CocoIndex Docs`;
 const description = 'Real pipelines you can clone, run, and bend to your data — codebase vector search, multi-repo LLM summarization, and custom PDF ingest.';
-const canonical = new URL(`${base}/examples`, SITE_URL).toString();
+// trailingSlash: 'always' — canonical must carry the slash to match the served URL.
+const canonical = new URL(`${base}/examples/`, SITE_URL).toString();
+const ogImage = OG_IMAGE_EXAMPLES;
+
+// Structured data: a CollectionPage wrapping an ItemList of the examples (so
+// search engines and agents can read the catalog), plus a Docs › Examples
+// breadcrumb.
+const collectionLd = {
+  '@context': 'https://schema.org',
+  '@type': 'CollectionPage',
+  name: 'CocoIndex Examples',
+  description,
+  url: canonical,
+  inLanguage: 'en',
+  isPartOf: { '@type': 'WebSite', name: 'CocoIndex Docs', url: new URL(`${base}/`, SITE_URL).toString() },
+  mainEntity: {
+    '@type': 'ItemList',
+    numberOfItems: examples.length,
+    itemListElement: examples.map((e, i) => ({
+      '@type': 'ListItem',
+      position: i + 1,
+      name: titleText(e.title),
+      description: e.description,
+      url: new URL(`${base}/examples/${e.slug}/`, SITE_URL).toString(),
+    })),
+  },
+};
+const breadcrumbLd = {
+  '@context': 'https://schema.org',
+  '@type': 'BreadcrumbList',
+  itemListElement: [
+    { '@type': 'ListItem', position: 1, name: 'Docs', item: new URL(`${base}/`, SITE_URL).toString() },
+    { '@type': 'ListItem', position: 2, name: 'Examples', item: canonical },
+  ],
+};
 ---
 <!doctype html>
 <html lang="en">
@@ -69,6 +103,26 @@ const canonical = new URL(`${base}/examples`, SITE_URL).toString();
     <title>{fullTitle}</title>
     <meta name="description" content={description} />
     <link rel="canonical" href={canonical} />
+
+    <!-- Open Graph / Twitter — link previews on social, Slack, iMessage, etc. -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="CocoIndex Docs" />
+    <meta property="og:title" content={fullTitle} />
+    <meta property="og:description" content={description} />
+    <meta property="og:url" content={canonical} />
+    <meta property="og:image" content={ogImage} />
+    <meta property="og:image:width" content={OG_IMAGE_WIDTH} />
+    <meta property="og:image:height" content={OG_IMAGE_HEIGHT} />
+    <meta property="og:image:alt" content={OG_IMAGE_EXAMPLES_ALT} />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={fullTitle} />
+    <meta name="twitter:description" content={description} />
+    <meta name="twitter:image" content={ogImage} />
+
+    <!-- Structured data for search engines and agents. -->
+    <script type="application/ld+json" set:html={JSON.stringify(collectionLd)} />
+    <script type="application/ld+json" set:html={JSON.stringify(breadcrumbLd)} />
+
     <link rel="icon" href={`${base}/img/favicon.ico`} />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -161,7 +215,7 @@ const canonical = new URL(`${base}/examples`, SITE_URL).toString();
           <div class="side-group">
             <h6>Resources</h6>
             <div class="links">
-              <a href={`${GITHUB_REPO}/tree/v1/examples`}>↗ Source on GitHub</a>
+              <a href={`${GITHUB_REPO}/tree/main/examples`}>↗ Source on GitHub</a>
               <a href={base || '/'}>↗ Documentation</a>
               <a href={DISCORD_URL}>↗ Discord</a>
             </div>

@@ -1,0 +1,101 @@
+// Convert MDX page bodies to clean Markdown for the agent-facing endpoints
+// (/docs/<slug>.md and /docs/llms-full.txt). The goals, in order:
+//
+//   1. Never corrupt code. Fenced blocks (incl. indented ```sh under a list)
+//      and inline `code` spans are protected verbatim — so literal placeholders
+//      like `LIST<FLOAT>` or `<COMMAND>` in examples survive untouched.
+//   2. Drop MDX scaffolding (ESM `import … from …` / `export const …` lines).
+//   3. Flatten Starlight admonitions (`:::note[Title]` … `:::`) to a bold
+//      callout lead-in, keeping the body prose.
+//   4. Remove leftover JSX component tags so agents never see bare
+//      `<AppOverview />` noise: self-closing diagram components are dropped
+//      entirely (visual-only); paired wrappers (`<Tabs>`, `<Fragment>`) have
+//      their tags stripped but inner content kept.
+//
+// Component names are matched as PascalCase (`[A-Z][a-z]…`) on purpose: it hits
+// real components (AppOverview, Tabs, ComponentWithChunks) while leaving
+// ALL-CAPS literals (`<FLOAT>`, `<ANY>`, `<COMMAND>`) alone as a second safety
+// net beyond code protection.
+
+import type { CollectionEntry } from 'astro:content';
+import { SITE_URL, docSlug, titleText } from '../consts';
+
+const SENT = '\x00'; // sentinel: cannot occur in source text
+const FENCE = /(^|\n)[ \t]*(```|~~~)[^\n]*\n[\s\S]*?\n[ \t]*\2[ \t]*(?=\n|$)/g;
+const INLINE = /`[^`\n]+`/g;
+
+const ADMONITION_LABEL: Record<string, string> = {
+  note: 'Note',
+  tip: 'Tip',
+  info: 'Info',
+  warning: 'Warning',
+  caution: 'Caution',
+  danger: 'Danger',
+  important: 'Important',
+};
+
+function protect(text: string, re: RegExp, store: string[], tag: string): string {
+  return text.replace(re, (m) => {
+    const i = store.length;
+    store.push(m);
+    return `${SENT}${tag}${i}${SENT}`;
+  });
+}
+
+export function mdxToMarkdown(body: string): string {
+  let s = (body ?? '').replace(/\r\n/g, '\n');
+
+  // 1. Protect fenced code, then inline code, behind sentinels.
+  const fences: string[] = [];
+  s = protect(s, FENCE, fences, 'F');
+  const inlines: string[] = [];
+  s = protect(s, INLINE, inlines, 'C');
+
+  // 2. Strip ESM import lines (require `from` so we never eat prose starting
+  //    with the word "import") and MDX `export …` scaffolding.
+  s = s.replace(/^[ \t]*import\b.+\bfrom\b.+$/gm, '');
+  s = s.replace(/^[ \t]*export\s+(?:const|let|var|default|function|\{).+$/gm, '');
+
+  // 3. Flatten admonitions to a bold callout lead-in, keeping the body prose.
+  //    Handles 3+ colons (nesting) and both title forms: `:::note[Title]` and
+  //    `::::note Title`. Closing `:::`/`::::` fences are removed.
+  s = s.replace(
+    /^[ \t]*:{3,}([a-z]+)(?:\[([^\]]*)\]|[ \t]+(.+?))?[ \t]*$/gim,
+    (_m, type: string, bracketTitle?: string, spaceTitle?: string) => {
+      const title = bracketTitle ?? spaceTitle;
+      const label = ADMONITION_LABEL[type.toLowerCase()] ?? type[0].toUpperCase() + type.slice(1);
+      return `**${title ? `${label} — ${title}` : label}**`;
+    },
+  );
+  s = s.replace(/^[ \t]*:{3,}[ \t]*$/gm, '');
+
+  // 4. Remove JSX component tags (inline/fenced code already protected).
+  s = s.replace(/<[A-Z][a-z][A-Za-z0-9]*\b[^>]*\/>/g, ''); // self-closing (incl. multi-line)
+  s = s.replace(/<\/?[A-Z][a-z][A-Za-z0-9]*\b[^>]*>/g, ''); // paired wrapper open/close
+
+  // 5. Restore inline code, then fenced code.
+  s = s.replace(new RegExp(`${SENT}C(\\d+)${SENT}`, 'g'), (_m, i) => inlines[Number(i)]);
+  s = s.replace(new RegExp(`${SENT}F(\\d+)${SENT}`, 'g'), (_m, i) => fences[Number(i)]);
+
+  // 6. Collapse blank lines left by removals.
+  return s.replace(/\n{3,}/g, '\n\n').trim();
+}
+
+const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+const llmsTxt = new URL(`${base}/llms.txt`, SITE_URL).toString();
+const skillUrl = new URL(`${base}/skill.md`, SITE_URL).toString();
+
+// Full Markdown body for a docs page's /<slug>.md twin: H1, the top-of-page v1
+// guard + index/skill pointers, then the cleaned body. Single source of truth
+// shared by the [...slug].md endpoint and the dev-only middleware fallback.
+export function buildDocMarkdown(doc: CollectionEntry<'docs'>): string {
+  const slug = docSlug(doc.id);
+  const title = titleText(typeof doc.data.title === 'string' ? doc.data.title : slug);
+  const url = new URL(`${base}/${slug}/`, SITE_URL).toString();
+  const guard =
+    `> **CocoIndex v1.** This page documents CocoIndex **v1** — a ground-up redesign ` +
+    `from v0. When writing code, ignore any v0 flow-builder DSL or deprecated decorators.\n` +
+    `>\n` +
+    `> Source: ${url} · Docs index: ${llmsTxt} · Agent skill: ${skillUrl}`;
+  return `# ${title}\n\n${guard}\n\n${mdxToMarkdown(doc.body)}\n`;
+}

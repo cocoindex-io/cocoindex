@@ -21,7 +21,7 @@
 
 <div align="center">
 
-[Step By Step Tutorial](https://cocoindex.io/examples-v1/multi-codebase-summarization)
+[Step By Step Tutorial](https://cocoindex.io/docs/examples/multi-codebase-summarization/)
 
 </div>
 

@@ -35,8 +35,8 @@ sessions, statements, persons, techs, orgs, and the relationships between them.
   docker run -d --name surrealdb -p 8787:8000 surrealdb/surrealdb:latest \
     start --user root --pass root surrealkv:/data/database
   ```
-- **OpenAI API key**: `export OPENAI_API_KEY=sk-...` (override model with `LLM_MODEL`, default `gpt-4o-mini`).
-- For the YouTube path only: `yt-dlp` + `ffmpeg` installed and `export ASSEMBLYAI_API_KEY=...`.
+- **OpenAI API key**: `export OPENAI_API_KEY="your-openai-api-key"` (override model with `LLM_MODEL`, default `gpt-4o-mini`).
+- For the YouTube path only: `yt-dlp` + `ffmpeg` installed and `export ASSEMBLYAI_API_KEY="your-assemblyai-api-key"`.
 - The embedding model downloads automatically into the Hugging Face / fastembed cache on first run.
 
 Connection/config via env (defaults shown): `SURREALDB_URL=127.0.0.1:8787`, `SURREALDB_NS=cocoindex`, `SURREALDB_DB=yt_conversations`, `SURREALDB_USER=root`, `SURREALDB_PASS=root`.

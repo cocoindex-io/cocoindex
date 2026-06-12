@@ -48,3 +48,13 @@ Go to `http://localhost:5173` to search.
 
 - `pipeline.py` — defines the CocoIndex `app`, the ColPali embedder helpers, and a small `_qdrant_search` shim. Library only — not an entry point.
 - `api.py` — FastAPI server. Imports `pipeline`, runs `pipeline.app.update(live=True)` in the background, and exposes `/search`.
+
+## Environment
+
+Copy `.env.example` to `.env` and fill in the blanks — it is loaded automatically when you run the example:
+
+```sh
+cp .env.example .env
+```
+
+Requires a running Postgres (`POSTGRES_URL`) and Qdrant (`QDRANT_URL`, default `http://localhost:6334/`).

@@ -9,7 +9,7 @@ import MermaidRenderer from '../components/MermaidRenderer.astro';
 import Analytics from '../components/Analytics.astro';
 import ScarfPixel from '../components/ScarfPixel.astro';
 import Foot from '../components/Foot.astro';
-import { SITE_URL, titleMarkup, DOCS_EDIT_BASE, SCARF_PIXEL_ID } from '../consts';
+import { SITE_URL, titleMarkup, DOCS_EDIT_BASE, SCARF_PIXEL_ID, OG_IMAGE_DOCS, OG_IMAGE_WIDTH, OG_IMAGE_HEIGHT, OG_IMAGE_DOCS_ALT } from '../consts';
 import { flatten, sidebar, type SidebarItem } from '../data/docs-sidebar';
 import { docsVersion, reviewedDate } from '../data/review-meta';
 
@@ -63,7 +63,24 @@ const introItems = [
 ].filter((m) => m.v);
 const canonical = new URL(`${base}/${slug}/`, SITE_URL).toString();
 const docsHome = new URL(`${base}/`, SITE_URL).toString();
-const ogImage = new URL(`${base}/images/coconut.svg`, SITE_URL).toString();
+const ogImage = OG_IMAGE_DOCS;
+
+// Contextual menu ("use this page with AI"): the raw-Markdown twin plus
+// one-click deep links that open ChatGPT/Claude with this page preloaded as
+// context. We pass the .md URL (not the inlined body) so it stays token-light
+// and always current. Mirrors Mintlify's contextual menu.
+const mdHref = `${base}/${slug}.md`;
+const mdAbs = new URL(mdHref, SITE_URL).toString();
+const aiPrompt =
+  `Read ${mdAbs} — it is the raw Markdown for the CocoIndex (v1) docs page ` +
+  `"${title}". Use it as context for my questions. Note: CocoIndex v1 is a ` +
+  `redesign from v0; ignore any v0 flow-builder DSL or deprecated APIs.`;
+const chatgptHref = `https://chatgpt.com/?q=${encodeURIComponent(aiPrompt)}`;
+const claudeHref = `https://claude.ai/new?q=${encodeURIComponent(aiPrompt)}`;
+// One-liner to install the CocoIndex v1 skill from the hosted /docs/skill.md —
+// the "Copy skill install" item (our analog to Mintlify's "Copy MCP install").
+const skillUrl = new URL(`${base}/skill.md`, SITE_URL).toString();
+const skillInstallCmd = `mkdir -p .claude/skills/cocoindex && curl -fsSL ${skillUrl} -o .claude/skills/cocoindex/SKILL.md`;
 
 // Breadcrumb: walk the sidebar tree for the current slug so category
 // labels light up correctly even for nested pages.
@@ -129,6 +146,10 @@ const breadcrumbLd = {
     {description && <meta name="description" content={description} />}
     <link rel="canonical" href={canonical} />
 
+    <!-- Raw-Markdown twin of this page, for agents that prefer Markdown over
+         scraping HTML. Advertised here so they don't have to guess the URL. -->
+    <link rel="alternate" type="text/markdown" href={mdAbs} title="Markdown" />
+
     <!-- Open Graph / Twitter — link previews on social, Slack, iMessage, etc. -->
     <meta property="og:type" content="article" />
     <meta property="og:site_name" content="CocoIndex Docs" />
@@ -136,6 +157,9 @@ const breadcrumbLd = {
     {description && <meta property="og:description" content={description} />}
     <meta property="og:url" content={canonical} />
     <meta property="og:image" content={ogImage} />
+    <meta property="og:image:width" content={OG_IMAGE_WIDTH} />
+    <meta property="og:image:height" content={OG_IMAGE_HEIGHT} />
+    <meta property="og:image:alt" content={OG_IMAGE_DOCS_ALT} />
     <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:title" content={fullTitle} />
     {description && <meta name="twitter:description" content={description} />}
@@ -165,6 +189,7 @@ const breadcrumbLd = {
       <Sidebar currentSlug={slug} />
 
       <main class="content">
+        <div class="page-head">
         <nav class="breadcrumb" aria-label="Breadcrumb">
           <a href={base || '/'}>Docs</a>
           {crumbs.map((c, idx) => (
@@ -180,6 +205,83 @@ const breadcrumbLd = {
             </>
           ))}
         </nav>
+
+        <div class="ai-actions">
+          <div class="ai-menu" data-ai-menu>
+            <div class="ai-split">
+              <button type="button" class="ai-primary" data-ai-copy data-md={mdHref}>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <rect x="9" y="9" width="11" height="11" rx="2" /><path d="M5 15V5a2 2 0 0 1 2-2h10" />
+                </svg>
+                <span class="ai-primary-label">Copy page</span>
+              </button>
+              <button type="button" class="ai-toggle" aria-haspopup="menu" aria-expanded="false" aria-controls="aiMenuPanel" aria-label="More ways to use this page with AI">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <polyline points="6 9 12 15 18 9" />
+                </svg>
+              </button>
+            </div>
+
+            <div class="ai-panel" id="aiMenuPanel" role="menu" aria-label="Use this page with AI" hidden>
+              <button type="button" class="ai-item" role="menuitem" data-ai-copy data-md={mdHref}>
+                <span class="ai-ic">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <rect x="9" y="9" width="11" height="11" rx="2" /><path d="M5 15V5a2 2 0 0 1 2-2h10" />
+                  </svg>
+                </span>
+                <span class="ai-tx">
+                  <span class="ai-t">Copy page</span>
+                  <span class="ai-d">Copy page as Markdown for LLMs</span>
+                </span>
+              </button>
+
+              <a class="ai-item" role="menuitem" href={mdHref} target="_blank" rel="noopener">
+                <span class="ai-ic">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <polyline points="8 7 3 12 8 17" /><polyline points="16 7 21 12 16 17" />
+                  </svg>
+                </span>
+                <span class="ai-tx">
+                  <span class="ai-t">View as Markdown<svg class="ext" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7" /><path d="M9 7h8v8" /></svg></span>
+                  <span class="ai-d">Open the raw Markdown page</span>
+                </span>
+              </a>
+
+              <a class="ai-item" role="menuitem" href={chatgptHref} target="_blank" rel="noopener">
+                <span class="ai-ic">
+                  <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5963 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997Z" /></svg>
+                </span>
+                <span class="ai-tx">
+                  <span class="ai-t">Open in ChatGPT<svg class="ext" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7" /><path d="M9 7h8v8" /></svg></span>
+                  <span class="ai-d">Ask questions about this page</span>
+                </span>
+              </a>
+
+              <a class="ai-item" role="menuitem" href={claudeHref} target="_blank" rel="noopener">
+                <span class="ai-ic">
+                  <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="m4.7144 15.9555 4.7174-2.6471.079-.2307-.079-.1275h-.2307l-.7893-.0486-2.6956-.0729-2.3375-.0971-2.2646-.1214-.5707-.1215-.5343-.7042.0546-.3522.4797-.3218.686.0608 1.5179.1032 2.2767.1578 1.6514.0972 2.4468.255h.3886l.0546-.1579-.1336-.0971-.1032-.0972L6.973 9.8356l-2.55-1.6879-1.3356-.9714-.7225-.4918-.3643-.4614-.1578-1.0078.6557-.7225.8803.0607.2246.0607.8925.686 1.9064 1.4754 2.4893 1.8336.3643.3035.1457-.1032.0182-.0728-.164-.2733-1.3539-2.4467-1.445-2.4893-.6435-1.032-.17-.6194c-.0607-.255-.1032-.4674-.1032-.7285L6.287.1335 6.6997 0l.9957.1336.419.3642.6192 1.4147 1.0018 2.2282 1.5543 3.0296.4553.8985.2429.8318.091.255h.1579v-.1457l.1275-1.706.2368-2.0947.2307-2.6957.0789-.7589.3764-.9107.7468-.4918.5828.2793.4797.686-.0668.4433-.2853 1.8517-.5586 2.9021-.3643 1.9429h.2125l.2429-.2429.9835-1.3053 1.6514-2.0643.7286-.8196.85-.9046.5464-.4311h1.0321l.759 1.1293-.34 1.1657-1.0625 1.3478-.8804 1.1414-1.2628 1.7-.7893 1.36.0729.1093.1882-.0183 2.8535-.607 1.5421-.2794 1.8396-.3157.8318.3886.091.3946-.3278.8075-1.967.4857-2.3072.4614-3.4364.8136-.0425.0304.0486.0607 1.5482.1457.6618.0364h1.621l3.0175.2247.7892.522.4736.6376-.079.4857-1.2142.6193-1.6393-.3886-3.825-.9107-1.3113-.3279h-.1822v.1093l1.0929 1.0686 2.0035 1.8092 2.5075 2.3314.1275.5768-.3218.4554-.34-.0486-2.2039-1.6575-.85-.7468-1.9246-1.621h-.1275v.17l.4432.6496 2.3436 3.5214.1214 1.0807-.17.3521-.6071.2125-.6679-.1214-1.3721-1.9246L14.38 17.959l-1.1414-1.9428-.1397.079-.674 7.2552-.3156.3703-.7286.2793-.6071-.4614-.3218-.7468.3218-1.4753.3886-1.9246.3157-1.53.2853-1.9004.17-.6314-.0121-.0425-.1397.0182-1.4328 1.9672-2.1796 2.9446-1.7243 1.8456-.4128.164-.7164-.3704.0667-.6618.4008-.5889 2.386-3.0357 1.4389-1.882.929-1.0868-.0062-.1579h-.0546l-6.3385 4.1164-1.1293.1457-.4857-.4554.0608-.7467.2307-.2429 1.9064-1.3114Z" /></svg>
+                </span>
+                <span class="ai-tx">
+                  <span class="ai-t">Open in Claude<svg class="ext" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7" /><path d="M9 7h8v8" /></svg></span>
+                  <span class="ai-d">Ask questions about this page</span>
+                </span>
+              </a>
+
+              <button type="button" class="ai-item" role="menuitem" data-ai-copy-text={skillInstallCmd}>
+                <span class="ai-ic">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <polyline points="5 8 9 12 5 16" /><line x1="12" y1="16" x2="18" y2="16" />
+                  </svg>
+                </span>
+                <span class="ai-tx">
+                  <span class="ai-t">Copy skill install</span>
+                  <span class="ai-d">Install the CocoIndex v1 skill (Claude Code / Cursor)</span>
+                </span>
+              </button>
+            </div>
+          </div>
+        </div>
+        </div>
 
         <article class="prose">
           <h1 set:html={renderedTitle} />
@@ -282,6 +384,308 @@ const breadcrumbLd = {
         }
       }
     </script>
+    <script>
+      // Contextual "use this page with AI" split-button + dropdown. The primary
+      // button copies the page's raw-Markdown twin; the chevron opens a menu of
+      // deep links (ChatGPT/Claude), the raw .md, and the skill-install command.
+      const menu = document.querySelector('[data-ai-menu]') as HTMLElement | null;
+      if (menu) {
+        const toggle = menu.querySelector('.ai-toggle') as HTMLElement | null;
+        const panel = menu.querySelector('.ai-panel') as HTMLElement | null;
+
+        const items = () =>
+          Array.from(panel?.querySelectorAll('.ai-item') ?? []) as HTMLElement[];
+
+        // focus: 'first' focuses the top item on open; 'toggle' restores focus to
+        // the trigger on a keyboard close; undefined leaves focus alone.
+        const setOpen = (open: boolean, focus?: 'first' | 'toggle') => {
+          menu.classList.toggle('open', open);
+          toggle?.setAttribute('aria-expanded', String(open));
+          if (panel) panel.hidden = !open;
+          if (open && focus === 'first') items()[0]?.focus();
+          if (!open && focus === 'toggle') toggle?.focus();
+        };
+
+        toggle?.addEventListener('click', (e) => {
+          e.stopPropagation();
+          setOpen(panel?.hidden ?? true, 'first');
+        });
+        toggle?.addEventListener('keydown', (e) => {
+          if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            setOpen(true, 'first');
+          }
+        });
+        document.addEventListener('click', (e) => {
+          if (!menu.contains(e.target as Node)) setOpen(false);
+        });
+        document.addEventListener('keydown', (e) => {
+          if (e.key === 'Escape' && !panel?.hidden) {
+            e.preventDefault();
+            setOpen(false, 'toggle');
+          }
+        });
+        // Roving focus between items (ArrowUp/Down wrap; Home/End jump).
+        panel?.addEventListener('keydown', (e) => {
+          const list = items();
+          const i = list.indexOf(document.activeElement as HTMLElement);
+          if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            list[(i + 1) % list.length]?.focus();
+          } else if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            list[(i - 1 + list.length) % list.length]?.focus();
+          } else if (e.key === 'Home') {
+            e.preventDefault();
+            list[0]?.focus();
+          } else if (e.key === 'End') {
+            e.preventDefault();
+            list[list.length - 1]?.focus();
+          }
+        });
+        // Link items open a new tab — close the menu so it isn't left hanging.
+        menu.querySelectorAll('a.ai-item').forEach((a) =>
+          a.addEventListener('click', () => setOpen(false)),
+        );
+
+        // Brief "Copied" feedback on the clicked control (primary button label
+        // or a menu item's description line), then revert.
+        const timers = new WeakMap<HTMLElement, number>();
+        const flash = (el: HTMLElement, msg: string) => {
+          const node = (el.querySelector('.ai-primary-label') ??
+            el.querySelector('.ai-d')) as HTMLElement | null;
+          if (node) {
+            if (node.dataset.orig === undefined) node.dataset.orig = node.textContent ?? '';
+            node.textContent = msg;
+          }
+          el.classList.add('copied');
+          window.clearTimeout(timers.get(el));
+          timers.set(
+            el,
+            window.setTimeout(() => {
+              el.classList.remove('copied');
+              if (node && node.dataset.orig !== undefined) {
+                node.textContent = node.dataset.orig;
+                delete node.dataset.orig;
+              }
+            }, 1500),
+          );
+        };
+
+        const copy = async (text: string, el: HTMLElement) => {
+          try {
+            await navigator.clipboard.writeText(text);
+            flash(el, 'Copied to clipboard');
+          } catch {
+            flash(el, 'Copy failed');
+          }
+        };
+
+        // Copy the raw .md (primary button + "Copy page" item).
+        menu.querySelectorAll<HTMLElement>('[data-ai-copy]').forEach((btn) => {
+          btn.addEventListener('click', async (e) => {
+            e.preventDefault();
+            const href = btn.getAttribute('data-md');
+            if (!href) return;
+            const isPrimary = btn.classList.contains('ai-primary');
+            try {
+              const res = await fetch(href);
+              await navigator.clipboard.writeText(await res.text());
+              flash(btn, isPrimary ? 'Copied' : 'Copied to clipboard');
+            } catch {
+              flash(btn, isPrimary ? 'Failed' : 'Copy failed');
+            }
+          });
+        });
+        // Copy a literal string (the skill-install command).
+        menu.querySelectorAll<HTMLElement>('[data-ai-copy-text]').forEach((btn) => {
+          btn.addEventListener('click', () =>
+            copy(btn.getAttribute('data-ai-copy-text') ?? '', btn),
+          );
+        });
+      }
+    </script>
     <Analytics />
   </body>
 </html>
+
+<style>
+  /* Breadcrumb + AI actions share one band: breadcrumb left, button right.
+     This anchors the control instead of floating it on its own row above
+     the title. */
+  .page-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    margin: 0 0 20px;
+  }
+  .page-head .breadcrumb {
+    margin: 0;
+    min-width: 0;
+  }
+  .ai-actions {
+    display: flex;
+    justify-content: flex-end;
+    flex: none;
+  }
+  .ai-menu {
+    position: relative;
+  }
+  @media (max-width: 600px) {
+    /* On phones the breadcrumb can get long; let it sit above the button,
+       with the button left-aligned under it. Desktop keeps it on the right. */
+    .page-head {
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 12px;
+    }
+    .ai-actions {
+      align-self: flex-start;
+    }
+    /* Button is left-aligned now, so open the panel rightward from its left
+       edge (anchoring right:0 would push it off the left of the viewport) and
+       clamp the width so it never exceeds the content gutter. */
+    .ai-panel {
+      left: 0;
+      right: auto;
+      width: min(308px, calc(100vw - 48px));
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .ai-toggle svg,
+    .ai-item,
+    .ai-primary,
+    .ai-toggle {
+      transition: none;
+    }
+  }
+
+  /* Split button: primary "Copy page" + chevron toggle. */
+  .ai-split {
+    display: inline-flex;
+    align-items: stretch;
+    background: var(--cream);
+    border: 1px solid var(--rule);
+    border-radius: 999px;
+    overflow: hidden;
+  }
+  .ai-primary,
+  .ai-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font: 500 13px/1 var(--sans);
+    color: var(--maroon-ink);
+    background: transparent;
+    border: 0;
+    cursor: pointer;
+    transition: color 0.15s, background 0.15s;
+  }
+  .ai-primary {
+    padding: 8px 12px 8px 14px;
+  }
+  .ai-toggle {
+    padding: 8px 9px;
+    border-left: 1px solid var(--rule);
+  }
+  .ai-primary:hover,
+  .ai-toggle:hover {
+    color: var(--coral);
+    background: var(--paper);
+  }
+  .ai-primary svg {
+    width: 14px;
+    height: 14px;
+  }
+  .ai-toggle svg {
+    width: 13px;
+    height: 13px;
+    transition: transform 0.18s ease;
+  }
+  .ai-menu.open .ai-toggle svg {
+    transform: rotate(180deg);
+  }
+  .ai-primary.copied {
+    color: var(--palm-ink);
+  }
+
+  /* Dropdown panel. */
+  .ai-panel {
+    position: absolute;
+    top: calc(100% + 8px);
+    right: 0;
+    z-index: 40;
+    width: 308px;
+    padding: 6px;
+    background: var(--paper);
+    border: 1px solid var(--rule);
+    border-radius: 14px;
+    box-shadow:
+      0 14px 32px rgba(42, 18, 27, 0.16),
+      0 3px 8px rgba(42, 18, 27, 0.08);
+  }
+  .ai-panel[hidden] {
+    display: none;
+  }
+  .ai-item {
+    display: flex;
+    gap: 11px;
+    align-items: flex-start;
+    width: 100%;
+    padding: 9px 10px;
+    border: 0;
+    border-radius: 10px;
+    background: transparent;
+    text-align: left;
+    text-decoration: none;
+    cursor: pointer;
+    transition: background 0.12s ease;
+  }
+  .ai-item:hover,
+  .ai-item:focus-visible {
+    background: color-mix(in oklab, var(--coral) 8%, transparent);
+    outline: none;
+  }
+  .ai-ic {
+    flex: none;
+    display: grid;
+    place-items: center;
+    width: 34px;
+    height: 34px;
+    color: var(--maroon-ink);
+    background: var(--cream);
+    border: 1px solid var(--rule);
+    border-radius: 9px;
+  }
+  .ai-ic svg {
+    width: 17px;
+    height: 17px;
+  }
+  .ai-tx {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+  .ai-t {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font: 500 14px/1.25 var(--sans);
+    color: var(--maroon-ink);
+  }
+  .ai-t .ext {
+    width: 12px;
+    height: 12px;
+    opacity: 0.5;
+  }
+  .ai-d {
+    font: 400 12px/1.3 var(--sans);
+    color: var(--muted);
+  }
+  .ai-item.copied .ai-d {
+    color: var(--palm-ink);
+  }
+</style>

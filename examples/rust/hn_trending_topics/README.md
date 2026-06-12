@@ -25,7 +25,7 @@ Scrapes recent HackerNews threads + comments via the public [Algolia HN API](htt
     postgres:16-alpine
   ```
   Override with `POSTGRES_URL` (default `postgres://cocoindex:cocoindex@localhost/cocoindex`).
-- `export OPENAI_API_KEY=sk-...` (override model with `LLM_MODEL`, default `gpt-4o-mini`).
+- `export OPENAI_API_KEY="your-openai-api-key"` (override model with `LLM_MODEL`, default `gpt-4o-mini`).
 
 Optional caps (handy to limit LLM calls): `HN_MAX_THREADS` (default 10), `HN_MAX_COMMENTS` (default unlimited).
 

@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="https://cocoindex.io/blogs/podcast-to-knowledge-graph/" title="Turn podcasts into a knowledge graph with LLM and CocoIndex — transcription, LLM extraction, entity resolution, and a SurrealDB graph">
+  <a href="https://cocoindex.io/docs/examples/podcast-to-knowledge-graph/" title="Turn podcasts into a knowledge graph with LLM and CocoIndex — transcription, LLM extraction, entity resolution, and a SurrealDB graph">
     <img src="https://cocoindex.io/blobs/docs-v1/img/examples/podcast-to-knowledge-graph/cover.png" alt="Turn podcasts into a knowledge graph with LLM and CocoIndex — podcast episodes transcribed, extracted, and resolved into a graph of people, statements, technologies, and organizations" width="100%" draggable="false"/>
   </a>
 </p>
@@ -13,7 +13,7 @@
 
 <p align="center">
   <strong>Star us&nbsp;❤️&nbsp;→</strong>&nbsp;<a href="https://github.com/cocoindex-io/cocoindex" title="Star CocoIndex on GitHub"><picture><source media="(prefers-color-scheme: dark)" srcset="https://cocoindex.io/blobs/github/homepage/star-btn-small-dark.svg"><source media="(prefers-color-scheme: light)" srcset="https://cocoindex.io/blobs/github/homepage/star-btn-small-light.svg"><img src="https://cocoindex.io/blobs/github/homepage/star-btn-small-light.svg" alt="Star CocoIndex on GitHub" height="36" align="absmiddle"/></picture></a> &nbsp;·&nbsp;
-  <a href="https://cocoindex.io/blogs/podcast-to-knowledge-graph/" title="Read the full tutorial"><picture><source media="(prefers-color-scheme: dark)" srcset="https://cocoindex.io/blobs/github/homepage/docs-inline-dark.svg"><source media="(prefers-color-scheme: light)" srcset="https://cocoindex.io/blobs/github/homepage/docs-inline-light.svg"><img src="https://cocoindex.io/blobs/github/homepage/docs-inline-light.svg" alt="Read the CocoIndex tutorial" height="36" align="absmiddle"/></picture></a> &nbsp;·&nbsp;
+  <a href="https://cocoindex.io/docs/examples/podcast-to-knowledge-graph/" title="Read the full tutorial"><picture><source media="(prefers-color-scheme: dark)" srcset="https://cocoindex.io/blobs/github/homepage/docs-inline-dark.svg"><source media="(prefers-color-scheme: light)" srcset="https://cocoindex.io/blobs/github/homepage/docs-inline-light.svg"><img src="https://cocoindex.io/blobs/github/homepage/docs-inline-light.svg" alt="Read the CocoIndex tutorial" height="36" align="absmiddle"/></picture></a> &nbsp;·&nbsp;
   <a href="https://discord.com/invite/zpA9S2DR7s" title="Join the CocoIndex Discord"><picture><source media="(prefers-color-scheme: dark)" srcset="https://cocoindex.io/blobs/github/homepage/discord-inline-dark.svg"><source media="(prefers-color-scheme: light)" srcset="https://cocoindex.io/blobs/github/homepage/discord-inline-light.svg"><img src="https://cocoindex.io/blobs/github/homepage/discord-inline-light.svg" alt="Join the CocoIndex Discord" height="36" align="absmiddle"/></picture></a>
 </p>
 
@@ -67,7 +67,7 @@ statement_mentions_rel = await surrealdb.mount_relation_target(
 ```
 
 <p align="center">
-  📘 <b><a href="https://cocoindex.io/blogs/podcast-to-knowledge-graph/">Full Tutorial →</a></b><br/>
+  📘 <b><a href="https://cocoindex.io/docs/examples/podcast-to-knowledge-graph/">Full Tutorial →</a></b><br/>
   Step-by-step walkthrough: the two-step LLM extraction, the data models, entity resolution, the graph schema, and exactly what happens on each kind of change.
 </p>
 
@@ -102,7 +102,7 @@ export SURREALDB_DB="yt_conversations"
 export SURREALDB_USER="root"
 export SURREALDB_PASS="root"
 export INPUT_DIR="./input"
-export LLM_MODEL="openai/gpt-5.4-mini"
+export LLM_MODEL="openai/gpt-5.4"
 export RESOLUTION_LLM_MODEL="openai/gpt-5-mini"
 ```
 
@@ -155,5 +155,5 @@ Building graphs from other sources? See [meeting notes → Neo4j](https://github
 
 <p align="center">
   If this turned hours of podcasts into something you can actually query, <a href="https://github.com/cocoindex-io/cocoindex"><b>give CocoIndex a star ⭐</b></a> — it helps a lot.<br/>
-  <a href="https://cocoindex.io/docs">Docs</a> · <a href="https://cocoindex.io/blogs/podcast-to-knowledge-graph/">Tutorial</a> · <a href="https://discord.com/invite/zpA9S2DR7s">Discord</a> · <a href="https://github.com/cocoindex-io/cocoindex/tree/main/examples"><b>See all examples →</b></a>
+  <a href="https://cocoindex.io/docs">Docs</a> · <a href="https://cocoindex.io/docs/examples/podcast-to-knowledge-graph/">Tutorial</a> · <a href="https://discord.com/invite/zpA9S2DR7s">Discord</a> · <a href="https://github.com/cocoindex-io/cocoindex/tree/main/examples"><b>See all examples →</b></a>
 </p>
