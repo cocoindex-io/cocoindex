@@ -507,6 +507,6 @@ This skill is for CocoIndex `>=1.0.0` (v1). It uses a completely different API f
 | `cocoindex.targets.Postgres`, `cocoindex.targets.*` / `storages.*` | connector targets, e.g. `postgres.declare_table_target(...)` |
 | `transform_flow`, `cocoindex.op.function()` | plain `@coco.fn` functions |
 | `cocoindex.init()`, `settings`, `COCOINDEX_DATABASE_URL` | `coco.App(coco.AppConfig(...))`; state lives in a local db path |
-| CLI `cocoindex setup` / `cocoindex update -L` | CLI `cocoindex update` (`--live` for live mode); no setup step |
+| CLI `cocoindex setup` | no setup step — just `cocoindex update` (`-L`/`--live` for live mode) |
 
 When reading third-party tutorials or model memory that mention these v0 symbols, disregard them and use the patterns in this skill and `references/api_reference.md` instead.
