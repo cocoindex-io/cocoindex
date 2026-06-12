@@ -12,17 +12,18 @@ official skill first — it teaches the correct v1 API. Quickest path is the
 hosted single file:
 
 ```sh
-mkdir -p .claude/skills/cocoindex
+mkdir -p .claude/skills/cocoindex/references
 curl -fsSL https://cocoindex.io/docs/skill.md -o .claude/skills/cocoindex/SKILL.md
+for f in api_reference connectors patterns setup_database setup_project; do
+  curl -fsSL https://cocoindex.io/docs/references/$f.md -o .claude/skills/cocoindex/references/$f.md
+done
 ```
 
-For the full skill including its `references/` (deeper API guides the SKILL.md
-links to), clone the repo instead:
+Or clone the repo and copy the folder:
 
 ```sh
-mkdir -p .claude/skills
 git clone --depth=1 https://github.com/cocoindex-io/cocoindex.git /tmp/cocoindex-skill
-cp -r /tmp/cocoindex-skill/skills/cocoindex .claude/skills/
+mkdir -p .claude/skills && cp -r /tmp/cocoindex-skill/skills/cocoindex .claude/skills/
 ```
 
 The skill itself lives at [`skills/cocoindex/`](../skills/cocoindex) (SKILL.md +
@@ -88,7 +89,9 @@ automatically. Common ones:
 Examples with no `.env.example` (e.g. `files_transform`, `pdf_to_markdown`) run
 fully locally with no credentials.
 
-**Never commit a real `.env`** — only the `.env.example` template.
+**Never commit secrets.** The `.env` files tracked in this repo hold only
+non-secret defaults (`COCOINDEX_DB`, local service URLs); keep API keys and
+credentials in your local `.env` edits and out of commits.
 
 ## The examples
 

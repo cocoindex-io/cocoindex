@@ -5,8 +5,7 @@
 // src/pages/examples/[slug].astro beneath the shared hero. Titles may use
 // *asterisks* to mark the italic-coral accent — see consts.titleMarkup.
 //
-// The v1 examples repo currently ships six walkthroughs; this file grows
-// as more land there.
+// This file grows as new walkthroughs land in src/content/example-posts.
 
 export type Category = 'search' | 'ingest' | 'llm' | 'agents' | 'image';
 

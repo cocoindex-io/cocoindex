@@ -15,7 +15,15 @@ export const DISCORD_URL = 'https://discord.com/invite/zpA9S2DR7s';
 export const SITE_MAIN = 'https://cocoindex.io';
 export const SITE_BLOG = 'https://cocoindex.io/blogs';
 // `import.meta.env.BASE_URL` reflects `base` in astro.config.mjs (e.g. `/docs-v0/`).
-export const SITE_EXAMPLES = `${import.meta.env.BASE_URL.replace(/\/$/, '')}/examples`;
+// DOCS_BASE and the URL builders below are the single source for the /docs base
+// and the trailingSlash: 'always' convention — don't rebuild them per file.
+export const DOCS_BASE = import.meta.env.BASE_URL.replace(/\/$/, '');
+export const SITE_EXAMPLES = `${DOCS_BASE}/examples`;
+export const pageUrl = (slug: string) => new URL(`${DOCS_BASE}/${slug}/`, SITE_URL).toString();
+export const pageMarkdownUrl = (slug: string) => new URL(`${DOCS_BASE}/${slug}.md`, SITE_URL).toString();
+export const LLMS_TXT_URL = new URL(`${DOCS_BASE}/llms.txt`, SITE_URL).toString();
+export const LLMS_FULL_TXT_URL = new URL(`${DOCS_BASE}/llms-full.txt`, SITE_URL).toString();
+export const SKILL_MD_URL = new URL(`${DOCS_BASE}/skill.md`, SITE_URL).toString();
 // GitHub web-editor URL prefix for the "Edit this page" link.
 export const DOCS_EDIT_BASE = 'https://github.com/cocoindex-io/cocoindex/edit/main/docs/docs';
 
@@ -32,6 +40,11 @@ const HTML_ESCAPES: Record<string, string> = {
 const escapeHtml = (s: string) => s.replace(/[&<>"']/g, (c) => HTML_ESCAPES[c]);
 
 export const titleText = (s: string): string => s.replace(/\*([^*]+)\*/g, '$1');
+
+// Display title for a docs entry with the slug as fallback — guards both
+// missing and empty-string titles so HTML pages and their .md twins agree.
+export const docTitle = (id: string, title: unknown): string =>
+  titleText(typeof title === 'string' && title.length > 0 ? title : docSlug(id));
 
 export const titleMarkup = (s: string): string =>
   s.replace(/\*([^*]+)\*|([^*]+)/g, (_m, em, rest) =>
