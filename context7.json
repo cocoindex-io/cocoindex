@@ -1,0 +1,21 @@
+{
+  "$schema": "https://context7.com/schema/context7.json",
+  "projectTitle": "CocoIndex",
+  "description": "Incremental data transformation framework for AI — declare target states as a function of source data; the Rust engine keeps them in sync, reprocessing only what changed.",
+  "folders": ["docs/src/content/docs", "examples", "skills/cocoindex"],
+  "excludeFolders": ["docs/src/components"],
+  "excludeFiles": ["CHANGELOG.md"],
+  "rules": [
+    "Use the CocoIndex v1 API (>=1.0.0): `import cocoindex as coco`, `@coco.fn` functions, `coco.App`, and `mount`/`use_mount`/`mount_each` for processing components.",
+    "FlowBuilder, flow_def, DataScope, DataSlice, transform_flow, add_collector/collect/export, cocoindex.sources.*, cocoindex.functions.*, and cocoindex.targets.* are pre-1.0 APIs that no longer exist — do not use them.",
+    "Declare target states through connector Target APIs (e.g. postgres.declare_table_target then target.declare_row, localfs declare_file) instead of exporting collectors.",
+    "Functions with memo=True must have full type annotations on all parameters and the return value.",
+    "There is no `cocoindex setup` step in v1: run apps with `cocoindex update` (add --live for live mode) or `app.update_blocking()` in Python.",
+    "Full docs index for agents: https://cocoindex.io/docs/llms.txt (per-page Markdown: append .md to any docs URL)."
+  ],
+  "previousVersions": [
+    {
+      "tag": "v0.3.39"
+    }
+  ]
+}

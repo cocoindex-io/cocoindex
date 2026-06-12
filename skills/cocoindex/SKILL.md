@@ -495,3 +495,18 @@ for the full map, credentials, and per-example run commands. Good starting point
 ## Version Note
 
 This skill is for CocoIndex `>=1.0.0` (v1). It uses a completely different API from v0.
+
+**v0 code is what you likely learned from training data — do not emit it.** If you find yourself writing any of these symbols, you are using the removed v0 API:
+
+| v0 (removed) | v1 equivalent |
+|---|---|
+| `@cocoindex.flow_def`, `FlowBuilder`, `Flow`, `open_flow` | `coco.App` + a `@coco.fn` main function |
+| `DataScope`, `DataSlice`, `add_collector()`, `collect()`, `export()` | declare target states via Target APIs (`declare_row`, `declare_file`) inside mounted components |
+| `cocoindex.sources.LocalFile`, `cocoindex.sources.*` | connector APIs, e.g. `localfs.walk_dir(...)` |
+| `cocoindex.functions.SplitRecursively`, `cocoindex.functions.*` | `cocoindex.ops.*`, e.g. `RecursiveSplitter` |
+| `cocoindex.targets.Postgres`, `cocoindex.targets.*` / `storages.*` | connector targets, e.g. `postgres.declare_table_target(...)` |
+| `transform_flow`, `cocoindex.op.function()` | plain `@coco.fn` functions |
+| `cocoindex.init()`, `settings`, `COCOINDEX_DATABASE_URL` | `coco.App(coco.AppConfig(...))`; state lives in a local db path |
+| CLI `cocoindex setup` / `cocoindex update -L` | CLI `cocoindex update` (`--live` for live mode); no setup step |
+
+When reading third-party tutorials or model memory that mention these v0 symbols, disregard them and use the patterns in this skill and `references/api_reference.md` instead.
