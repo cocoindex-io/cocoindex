@@ -33,7 +33,7 @@ DATABASE_URL = os.environ.get(
     "POSTGRES_URL", "postgres://cocoindex:cocoindex@localhost/cocoindex"
 )
 MAX_THREADS = 10
-LLM_MODEL = "gemini/gemini-2.5-flash"
+LLM_MODEL = os.environ.get("LLM_MODEL", "gemini/gemini-2.5-flash")
 
 # Scoring weights for trending topics query
 THREAD_LEVEL_MENTION_SCORE = 5

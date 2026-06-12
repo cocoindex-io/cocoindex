@@ -1,9 +1,0 @@
-User-agent: *
-Disallow:
-
-Sitemap: https://cocoindex.io/docs/sitemap-index.xml
-
-# LLM/agent indexes (llmstxt.org). Per-page raw Markdown: append `.md` to a
-# page path, e.g. https://cocoindex.io/docs/programming_guide/core_concepts.md
-# llms.txt:      https://cocoindex.io/docs/llms.txt
-# llms-full.txt: https://cocoindex.io/docs/llms-full.txt

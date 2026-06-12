@@ -6,12 +6,6 @@ This example builds an image search index using the ColPali multi-vector embeddi
 We appreciate a star ⭐ at [CocoIndex Github](https://github.com/cocoindex-io/cocoindex) if this is helpful.
 
 ## Setup
-- A running Postgres. If you don't have one, start a local instance with the compose file in this repo:
-
-  ```sh
-  docker compose -f ../../dev/postgres.yaml up -d
-  ```
-
 - Make sure Qdrant is running
 
   ```sh
@@ -57,4 +51,4 @@ Copy `.env.example` to `.env` and fill in the blanks — it is loaded automatica
 cp .env.example .env
 ```
 
-Requires a running Postgres (`POSTGRES_URL`) and Qdrant (`QDRANT_URL`, default `http://localhost:6334/`).
+Requires a running Qdrant (`QDRANT_URL`, default `http://localhost:6334/`).
