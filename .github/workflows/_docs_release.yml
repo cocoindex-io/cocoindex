@@ -36,6 +36,12 @@ jobs:
           # index is read-only with that key.
           COCOINDEX_DOCS_ALGOLIA_APP_ID:  ${{ vars.COCOINDEX_DOCS_ALGOLIA_APP_ID }}
           COCOINDEX_DOCS_ALGOLIA_API_KEY: ${{ vars.COCOINDEX_DOCS_ALGOLIA_API_KEY }}
+          # Analytics + attribution, injected from repo vars so forks building
+          # these docs never report to our accounts. consts.ts reads these;
+          # Analytics.astro / ScarfPixel.astro consume them. Empty => no-op.
+          COCOINDEX_DOCS_POSTHOG_API_KEY:  ${{ vars.COCOINDEX_DOCS_POSTHOG_API_KEY }}
+          COCOINDEX_DOCS_MIXPANEL_API_KEY: ${{ vars.COCOINDEX_DOCS_MIXPANEL_API_KEY }}
+          COCOINDEX_DOCS_V0_SCARF_PIXEL_ID: ${{ vars.COCOINDEX_DOCS_V0_SCARF_PIXEL_ID }}
         run: npm --prefix docs run build
       - name: Deploy to cocoindex-io/docs-v0 gh-pages
         env:

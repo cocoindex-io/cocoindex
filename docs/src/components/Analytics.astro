@@ -1,0 +1,25 @@
+---
+---
+<script>
+  import { POSTHOG_KEY, POSTHOG_HOST, MIXPANEL_TOKEN } from '../consts';
+
+  const start = () => {
+    if (!import.meta.env.PROD) return;
+    if (POSTHOG_KEY) {
+      import('posthog-js').then(({ default: posthog }) => {
+        posthog.init(POSTHOG_KEY, { api_host: POSTHOG_HOST });
+      });
+    }
+    if (MIXPANEL_TOKEN) {
+      import('mixpanel-browser').then(({ default: mixpanel }) => {
+        mixpanel.init(MIXPANEL_TOKEN, { track_pageview: true });
+      });
+    }
+  };
+  const w = window as Window & { requestIdleCallback?: (cb: () => void) => number };
+  if (w.requestIdleCallback) {
+    w.requestIdleCallback(start);
+  } else {
+    setTimeout(start, 1000);
+  }
+</script>

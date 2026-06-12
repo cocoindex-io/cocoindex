@@ -6,8 +6,10 @@
 // file and the card appears in its category automatically.
 import '../../styles/globals.css';
 import Topbar from '../../components/Topbar.astro';
-import LegacyExampleBanner from '../../components/LegacyExampleBanner.astro';
-import { GITHUB_REPO, DISCORD_URL, SITE_URL, titleMarkup } from '../../consts';
+import Banner from '../../components/Banner.astro';
+import Analytics from '../../components/Analytics.astro';
+import ScarfPixel from '../../components/ScarfPixel.astro';
+import { GITHUB_REPO, DISCORD_URL, SITE_URL, titleMarkup, SCARF_PIXEL_ID } from '../../consts';
 import {
   examples,
   byCategory,
@@ -54,7 +56,7 @@ const canonical = new URL(`${base}/examples`, SITE_URL).toString();
   </head>
   <body class="ex-listing">
     <Topbar />
-    <LegacyExampleBanner />
+    <Banner />
 
     <div class="ex-wrap">
       <!-- ═══════════ HERO ═══════════ -->
@@ -71,7 +73,15 @@ const canonical = new URL(`${base}/examples`, SITE_URL).toString();
 
         <div class="hero-grid">
           <div>
-            <h1 class="hero-h">Examples<em>.</em></h1>
+            <span class="eyb"><span class="dot" aria-hidden="true"></span>Example · v0 (legacy)</span>
+            <div class="hero-legacy" role="alert">
+              <p class="hl-msg">
+                <strong>V0 is legacy and in maintenance mode.</strong> Please refer to
+                <a href="https://cocoindex.io/docs/examples/">CocoIndex&nbsp;V1 Examples</a>.
+              </p>
+              <a class="hl-cta" href="https://cocoindex.io/docs/examples/">Go to CocoIndex&nbsp;V1 Examples →</a>
+            </div>
+            <h1 class="hero-h">Examples V0 <em>(Legacy)</em></h1>
             <p class="hero-sub">
               Real pipelines you can <b>clone, run, and bend</b> to your data. Each example is production-wired — one source, a declarative flow, a live target. Pick the one closest to what you need and change the parts that don't fit.
             </p>
@@ -329,6 +339,30 @@ const canonical = new URL(`${base}/examples`, SITE_URL).toString();
       body.ex-listing .hero-top .stats b { color: var(--maroon); font-weight: 500; font-size: 14px; }
 
       body.ex-listing .hero-grid { display: grid; grid-template-columns: 1.35fr 1fr; gap: 48px; align-items: end; }
+      body.ex-listing .eyb {
+        font-family: var(--mono); font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase;
+        color: var(--coral); display: inline-flex; align-items: center; gap: 9px; margin-bottom: 18px;
+      }
+      body.ex-listing .eyb .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--coral); }
+      /* Prominent legacy / maintenance-mode notice in the examples hero. */
+      body.ex-listing .hero-legacy {
+        display: flex; align-items: center; gap: 12px 16px; flex-wrap: wrap;
+        margin: 0 0 22px; padding: 14px 18px; max-width: 56ch;
+        border: 1px solid var(--coral); border-left: 5px solid var(--coral);
+        border-radius: 12px;
+        background: color-mix(in srgb, var(--coral) 12%, var(--cream));
+      }
+      body.ex-listing .hero-legacy .hl-msg {
+        margin: 0; flex: 1 1 240px; font-size: 15px; line-height: 1.45; color: var(--maroon);
+      }
+      body.ex-listing .hero-legacy .hl-msg strong { color: var(--maroon-ink); font-weight: 700; }
+      body.ex-listing .hero-legacy .hl-msg a { color: var(--coral); font-weight: 600; text-decoration: underline; }
+      body.ex-listing .hero-legacy .hl-cta {
+        white-space: nowrap; font-size: 14px; font-weight: 600;
+        color: var(--cream); background: var(--coral);
+        padding: 9px 16px; border-radius: 8px; text-decoration: none;
+      }
+      body.ex-listing .hero-legacy .hl-cta:hover { background: var(--maroon); }
       body.ex-listing h1.hero-h {
         font-family: var(--serif); font-weight: 400;
         font-size: clamp(40px, 4.6vw, 60px); line-height: 0.98; letter-spacing: -0.03em;
@@ -712,5 +746,8 @@ const canonical = new URL(`${base}/examples`, SITE_URL).toString();
         body.ex-listing .hero-top .stats { order: 3; width: 100%; }
       }
     </style>
+
+    <Analytics />
+    <ScarfPixel pxid={SCARF_PIXEL_ID} />
   </body>
 </html>

@@ -19,6 +19,11 @@ function href(slug: string): string {
 
 <aside class="side">
   <Search />
+  <div class="side-group">
+    <ul>
+      <li><a href={`${base}/`}>About CocoIndex V0</a></li>
+    </ul>
+  </div>
   {sidebar.map((item) => (
     item.type === 'doc' ? (
       <div class="side-group">

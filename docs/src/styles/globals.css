@@ -169,11 +169,10 @@ nav.top {
 }
 
 /* ─── V0 legacy banner ───
-   One source of truth shared by Banner.astro (docs) and
-   LegacyExampleBanner.astro (examples) so the V0 notice wraps and styles
-   identically on every page. Light cream strip pinned under the nav; the
-   row wraps (never truncates) so the copy and buttons stay fully visible
-   at every width, including mobile. */
+   One source of truth for Banner.astro, used on both the docs and example
+   pages so the V0 notice wraps and styles identically on every page. Light
+   cream strip pinned under the nav; the row wraps (never truncates) so the
+   copy and buttons stay fully visible at every width, including mobile. */
 .v0-banner {
   position: sticky;
   top: var(--nav-h);
