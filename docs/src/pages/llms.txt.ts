@@ -11,7 +11,7 @@ import {
   SKILL_MD_URL,
 } from '../consts';
 import { sidebar, type SidebarDoc } from '../data/docs-sidebar';
-import { EXAMPLE_CATALOG } from '../data/examples';
+import { EXAMPLE_CATALOG, EXAMPLE_CATALOG_GROUPS } from '../data/examples';
 const oneLine = (s?: string) => (s ?? '').replace(/\s+/g, ' ').trim();
 
 export const GET: APIRoute = async () => {
@@ -71,13 +71,18 @@ export const GET: APIRoute = async () => {
       '`, then `cd cocoindex/examples/<dir>`, copy `.env.example` if present, install with `pip install -e .`, and run the command shown for that example.',
   );
   out.push('');
-  for (const ex of EXAMPLE_CATALOG) {
-    const href = ex.docs
-      ? url(`examples/${ex.docs}`)
-      : `${GITHUB_REPO}/tree/main/examples/${ex.dir}`;
-    out.push(`- [${ex.title}](${href}): ${oneLine(ex.description)} (examples/${ex.dir}; run: \`${ex.run ?? 'cocoindex update main'}\`)`);
+  for (const group of EXAMPLE_CATALOG_GROUPS) {
+    out.push(`### ${group.title}`);
+    out.push(`> ${group.blurb}`);
+    out.push('');
+    for (const ex of group.entries) {
+      const href = ex.docs
+        ? url(`examples/${ex.docs}`)
+        : `${GITHUB_REPO}/tree/main/examples/${ex.dir}`;
+      out.push(`- [${ex.title}](${href}): ${oneLine(ex.description)} (examples/${ex.dir}; run: \`${ex.run ?? 'cocoindex update main'}\`)`);
+    }
+    out.push('');
   }
-  out.push('');
 
   return new Response(out.join('\n'), {
     headers: { 'Content-Type': 'text/plain; charset=utf-8' },

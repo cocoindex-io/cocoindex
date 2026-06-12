@@ -33,6 +33,10 @@ const featured = findExample(featuredSlug)!;
 // Category order and counts, computed from the data.
 const CAT_ORDER: Category[] = ['search', 'ingest', 'llm', 'agents', 'image'];
 const catCount = (c: Category) => examples.filter((e) => e.category === c).length;
+// Categories with no examples yet (e.g. 'image') stay out of the chips and
+// side-nav — their grid sections already render nothing, so a chip or anchor
+// would point nowhere.
+const activeCats = CAT_ORDER.filter((c) => catCount(c) > 0);
 
 // Phone drawer mirror of the inline `.side-nav` browse aside. The aside
 // becomes a horizontal flex pill row at ≤1180px which is fine on tablet,
@@ -157,7 +161,7 @@ const breadcrumbLd = {
 
             <div class="hero-filters" id="filters">
               <button class="filter-chip on" data-filter="all">All <span class="cnt">{total}</span></button>
-              {CAT_ORDER.map((c) => (
+              {activeCats.map((c) => (
                 <button class="filter-chip" data-filter={c}>
                   {CATEGORY_META[c].label}{CATEGORY_META[c].em ?? ''} <span class="cnt">{catCount(c)}</span>
                 </button>
@@ -177,7 +181,7 @@ const breadcrumbLd = {
           </div>
           <ol id="sideList">
             <li data-target="section.feat"><a href="#feat-scroll" data-cat="featured"><span class="cat-dot"></span>Featured<span class="count">★</span></a></li>
-            {CAT_ORDER.map((c) => (
+            {activeCats.map((c) => (
               <li data-target={`#cat-${c}`}>
                 <a href={`#cat-${c}`} data-cat={c}>
                   <span class="cat-dot"></span>
