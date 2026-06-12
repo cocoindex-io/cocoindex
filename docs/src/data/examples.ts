@@ -5,7 +5,7 @@
 // src/pages/examples/[slug].astro beneath the shared hero. Titles may use
 // *asterisks* to mark the italic-coral accent — see consts.titleMarkup.
 //
-// The v1 examples repo currently ships five walkthroughs; this file grows
+// The v1 examples repo currently ships six walkthroughs; this file grows
 // as more land there.
 
 export type Category = 'search' | 'ingest' | 'llm' | 'agents' | 'image';
@@ -45,7 +45,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'text-embedding',
     title: 'Semantic Search *101*',
-    index: '01 / 05',
+    index: '01 / 06',
     category: 'search',
     thumbLabel: 'Markdown · embeddings',
     motif: MOTIFS.textVec,
@@ -62,7 +62,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'index-codebase',
     title: 'Index Your *Codebase*',
-    index: '02 / 05',
+    index: '02 / 06',
     category: 'search',
     thumbLabel: 'Code · Tree-sitter',
     motif: MOTIFS.codeChunks,
@@ -79,7 +79,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'multi-codebase-summarization',
     title: 'Multi-codebase *Summarization*',
-    index: '03 / 05',
+    index: '03 / 06',
     category: 'llm',
     thumbLabel: 'Code · LLM summaries',
     motif: MOTIFS.repos,
@@ -96,7 +96,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'pdf-to-markdown',
     title: 'PDF → *Markdown*',
-    index: '04 / 05',
+    index: '04 / 06',
     category: 'ingest',
     thumbLabel: 'PDF · custom blocks',
     motif: MOTIFS.pdfToMd,
@@ -112,7 +112,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'podcast-to-knowledge-graph',
     title: 'Podcasts → *Knowledge Graph*',
-    index: '05 / 05',
+    index: '05 / 06',
     category: 'agents',
     thumbLabel: 'YouTube · LLM + graph',
     motif: MOTIFS.graph,
@@ -126,6 +126,23 @@ export const examples: ExampleCard[] = [
     ],
     footMeta: '~40 min · advanced',
     sourceSlug: 'conversation_to_knowledge',
+  },
+  {
+    slug: 'docs-to-knowledge-graph',
+    title: 'Docs → *Knowledge Graph*',
+    index: '06 / 06',
+    category: 'agents',
+    thumbLabel: 'Markdown · LLM + Neo4j',
+    motif: MOTIFS.graph,
+    description: 'Turn a folder of Markdown docs into a Neo4j concept graph — LLM-extracted (subject, predicate, object) triples that stay in sync as the docs change.',
+    tags: [
+      { kind: 'src', label: 'Local FS' },
+      { kind: 'llm', label: 'Any LLM' },
+      { kind: 'tgt', label: 'Neo4j' },
+      { kind: 'lvl', label: 'Intermediate' },
+    ],
+    footMeta: '~20 min',
+    sourceSlug: 'docs_to_knowledge_graph',
   },
 ];
 
@@ -141,7 +158,7 @@ export const findExample = (slug: string): ExampleCard | undefined =>
 
 // Sidebar facets shown on the listing. Short in v1 — expands as more
 // examples land.
-export const SIDEBAR_TARGETS = ['Local FS', 'Postgres', 'SurrealDB'];
+export const SIDEBAR_TARGETS = ['Local FS', 'Postgres', 'SurrealDB', 'Neo4j'];
 export const SIDEBAR_SOURCES = ['Local FS', 'PDF', 'Multi-repo', 'YouTube'];
 export const SIDEBAR_LLMS = ['OpenAI', 'Gemini', 'Anthropic'];
 export const POPULAR: Array<{ slug: string; label: string; count: string }> = [
@@ -150,6 +167,7 @@ export const POPULAR: Array<{ slug: string; label: string; count: string }> = [
   { slug: 'multi-codebase-summarization', label: 'Multi-codebase Summarization', count: '★' },
   { slug: 'pdf-to-markdown', label: 'PDF → Markdown', count: '★' },
   { slug: 'podcast-to-knowledge-graph', label: 'Podcasts → Knowledge Graph', count: '★' },
+  { slug: 'docs-to-knowledge-graph', label: 'Docs → Knowledge Graph', count: '★' },
 ];
 
 // Full catalog of runnable examples in the cocoindex monorepo, used to build the
@@ -176,6 +194,7 @@ export const EXAMPLE_CATALOG: ExampleCatalogEntry[] = [
   { dir: 'multi_codebase_summarization', docs: 'multi-codebase-summarization', title: 'Multi-codebase Summarization', description: 'Walk many Python repos, chunk by syntax, and ask an LLM for a searchable summary per file.', run: RUN_MAIN_PY },
   { dir: 'pdf_to_markdown', docs: 'pdf-to-markdown', title: 'PDF → Markdown', description: 'Incrementally convert a folder of local PDFs to Markdown with docling.', run: RUN_MAIN },
   { dir: 'conversation_to_knowledge', docs: 'podcast-to-knowledge-graph', title: 'Podcasts → Knowledge Graph', description: 'Turn YouTube podcasts into a SurrealDB knowledge graph: diarized transcription, two-step LLM extraction, and embedding-based entity resolution.', run: 'cocoindex update conv_knowledge.app' },
+  { dir: 'docs_to_knowledge_graph', docs: 'docs-to-knowledge-graph', title: 'Docs → Knowledge Graph', description: 'Turn a folder of Markdown docs into a Neo4j concept graph: LLM-extracted (subject, predicate, object) triples, declared as nodes and edges that stay in sync.', run: RUN_MAIN },
 
   // Vector search — more stores and sources.
   { dir: 'text_embedding_qdrant', title: 'Text Embedding · Qdrant', description: 'Embed local Markdown files and store the chunks + vectors in Qdrant; semantic-search demo.' },
