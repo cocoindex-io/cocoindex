@@ -70,7 +70,7 @@ when the set of raw names changes.
   providers — see [LiteLLM providers](https://docs.litellm.ai/docs/providers)).
 - A Google Cloud service account with read access to the source folders, and
   the folder IDs you want to ingest. See
-  [Setup for Google Drive](https://cocoindex.io/docs/connectors/google_drive/#setup-for-google-drive).
+  [Setting up a service account](https://cocoindex.io/docs/connectors/google_drive/#setting-up-a-service-account).
 
 ## Environment
 

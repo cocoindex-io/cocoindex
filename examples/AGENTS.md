@@ -1,7 +1,8 @@
 # AGENTS.md — CocoIndex examples
 
 Guidance for AI coding agents (Claude Code, Cursor, etc.) working in this `examples/`
-directory. Each subfolder is a self-contained, runnable CocoIndex **v1** app.
+directory. Most top-level Python subfolders are self-contained, runnable
+CocoIndex **v1** apps; `rust/` contains Rust ports with per-example READMEs.
 
 ## Before you write CocoIndex code: install the skill
 
@@ -63,9 +64,10 @@ example's `README.md`. Examples that need extra services or a code-gen step
 
 ## Environment / credentials
 
-Required env vars are templated in each example's **`.env.example`** — `cp` it to
-`.env` and fill in the blanks; both `python main.py` and the `cocoindex` CLI load
-`.env` automatically. Common ones:
+When an example needs credentials or service configuration, required env vars
+are templated in that example's **`.env.example`** — `cp` it to `.env` and fill
+in the blanks; both `python main.py` and the `cocoindex` CLI load `.env`
+automatically. Common ones:
 
 - `POSTGRES_URL` — for Postgres/pgvector targets. Local instance:
   `docker compose -f ../../dev/postgres.yaml up -d` from inside an example
@@ -120,10 +122,10 @@ A walkthrough URL means there's a step-by-step guide at
 
 ## Conventions for edits
 
-- Keep each example self-contained: its own `pyproject.toml`, `README.md`, and
-  `.env.example`. When you add an example, add all three, and add a line to
-  `EXAMPLE_CATALOG` in the docs repo (`docs/src/data/examples.ts`) so it appears
-  in `/docs/llms.txt`.
+- Keep each Python example self-contained: its own `pyproject.toml` and
+  `README.md`; add `.env.example` when credentials or configurable services are
+  required. When you add an example, also add a line to `EXAMPLE_CATALOG` in the
+  docs repo (`docs/src/data/examples.ts`) so it appears in `/docs/llms.txt`.
 - Match the surrounding code's low comment density.
 - Don't commit generated artifacts (`cocoindex.db`, `__pycache__`, build output) —
   they're already git-ignored.
