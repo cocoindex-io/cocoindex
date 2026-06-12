@@ -2045,6 +2045,7 @@ dependencies = [
  "heed",
  "indexmap 2.14.0",
  "nix 0.30.1",
+ "page_size",
  "parking_lot",
  "rand 0.9.4",
  "rmp",
