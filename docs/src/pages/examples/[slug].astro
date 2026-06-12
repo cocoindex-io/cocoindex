@@ -104,7 +104,7 @@ const introItems = [
   { k: 'Target',        v: tagOf('tgt'),                                           reviewed: false },
   { k: 'LLM',           v: tagOf('llm'),                                           reviewed: false },
   { k: 'Mode',          v: tagOf('ops'),                                           reviewed: false },
-  { k: 'Category',      v: ex.category,                                            reviewed: false },
+  { k: 'Category',      v: `${titleText(CATEGORY_META[ex.category].label)}${CATEGORY_META[ex.category].em ?? ''}`, reviewed: false },
   { k: 'Last reviewed', v: lastReviewed,                                           reviewed: true  },
 ].filter((m) => m.v);
 ---
