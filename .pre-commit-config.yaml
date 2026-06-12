@@ -107,5 +107,9 @@ repos:
           name: generate CLI documentation
           entry: uv run python dev/generate_cli_docs.py
           language: system
-          files: ^(python/cocoindex/cli\.py|dev/generate_cli_docs\.py)$
+          # Includes cli.mdx itself so a manual edit to the generated file
+          # re-runs the generator and is caught on PR CI (which runs prek only
+          # on changed files). Otherwise a hand-edit to cli.mdx slips through
+          # every PR and only surfaces on the all-files run after merge to main.
+          files: ^(python/cocoindex/cli\.py|dev/generate_cli_docs\.py|docs/src/content/docs/cli\.mdx)$
           pass_filenames: false
