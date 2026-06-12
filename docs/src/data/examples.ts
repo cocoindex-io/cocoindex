@@ -1,7 +1,7 @@
 // Metadata for the /docs/examples listing and per-example pages.
 //
-// Data is mirrored from github.com/cocoindex-io/examples-v1 — the markdown
-// bodies live in src/content/example-posts/<slug>.md and are rendered by
+// Card metadata for the /docs/examples listing. Markdown walkthrough bodies live
+// in src/content/example-posts/<slug>.md and are rendered by
 // src/pages/examples/[slug].astro beneath the shared hero. Titles may use
 // *asterisks* to mark the italic-coral accent — see consts.titleMarkup.
 //

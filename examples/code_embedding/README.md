@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="https://cocoindex.io/docs/examples/code-indexing/" title="Index your codebase for AI agents with CocoIndex — Tree-sitter chunking, embeddings, and a live pgvector index">
+  <a href="https://cocoindex.io/docs/examples/index-codebase/" title="Index your codebase for AI agents with CocoIndex — Tree-sitter chunking, embeddings, and a live pgvector index">
     <img src="https://cocoindex.io/blobs/docs-v1/img/examples/index-codebase/cover.png" alt="Index your codebase for AI agents with CocoIndex and Tree-sitter — language-aware chunking, embeddings, semantic search, and a live vector index in plain async Python" width="100%" draggable="false"/>
   </a>
 </p>
@@ -13,7 +13,7 @@
 
 <p align="center">
   <strong>Star us&nbsp;❤️&nbsp;→</strong>&nbsp;<a href="https://github.com/cocoindex-io/cocoindex" title="Star CocoIndex on GitHub"><picture><source media="(prefers-color-scheme: dark)" srcset="https://cocoindex.io/blobs/github/homepage/star-btn-small-dark.svg"><source media="(prefers-color-scheme: light)" srcset="https://cocoindex.io/blobs/github/homepage/star-btn-small-light.svg"><img src="https://cocoindex.io/blobs/github/homepage/star-btn-small-light.svg" alt="Star CocoIndex on GitHub" height="36" align="absmiddle"/></picture></a> &nbsp;·&nbsp;
-  <a href="https://cocoindex.io/docs/examples/code-indexing/" title="Read the full walkthrough"><picture><source media="(prefers-color-scheme: dark)" srcset="https://cocoindex.io/blobs/github/homepage/docs-inline-dark.svg"><source media="(prefers-color-scheme: light)" srcset="https://cocoindex.io/blobs/github/homepage/docs-inline-light.svg"><img src="https://cocoindex.io/blobs/github/homepage/docs-inline-light.svg" alt="CocoIndex documentation" height="36" align="absmiddle"/></picture></a> &nbsp;·&nbsp;
+  <a href="https://cocoindex.io/docs/examples/index-codebase/" title="Read the full walkthrough"><picture><source media="(prefers-color-scheme: dark)" srcset="https://cocoindex.io/blobs/github/homepage/docs-inline-dark.svg"><source media="(prefers-color-scheme: light)" srcset="https://cocoindex.io/blobs/github/homepage/docs-inline-light.svg"><img src="https://cocoindex.io/blobs/github/homepage/docs-inline-light.svg" alt="CocoIndex documentation" height="36" align="absmiddle"/></picture></a> &nbsp;·&nbsp;
   <a href="https://discord.com/invite/zpA9S2DR7s" title="Join the CocoIndex Discord"><picture><source media="(prefers-color-scheme: dark)" srcset="https://cocoindex.io/blobs/github/homepage/discord-inline-dark.svg"><source media="(prefers-color-scheme: light)" srcset="https://cocoindex.io/blobs/github/homepage/discord-inline-light.svg"><img src="https://cocoindex.io/blobs/github/homepage/discord-inline-light.svg" alt="Join the CocoIndex Discord" height="36" align="absmiddle"/></picture></a>
 </p>
 
@@ -79,7 +79,7 @@ async def app_main(sourcedir: pathlib.Path) -> None:
 ```
 
 <p align="center">
-  📘 <b><a href="https://cocoindex.io/docs/examples/code-indexing/">Full Tutorial →</a></b><br/>
+  📘 <b><a href="https://cocoindex.io/docs/examples/index-codebase/">Full Tutorial →</a></b><br/>
   Step-by-step walkthrough with the data model, the lifespan, chunking, embedding, the App, and exactly what happens on each kind of change.
 </p>
 
@@ -149,5 +149,5 @@ ccc index && ccc search "where we embed chunks" # CLI
 
 <p align="center">
   If this made your agents smarter, <a href="https://github.com/cocoindex-io/cocoindex"><b>give CocoIndex a star ⭐</b></a> — it helps a lot.<br/>
-  <a href="https://cocoindex.io/docs">Docs</a> · <a href="https://cocoindex.io/docs/examples/code-indexing/">Walkthrough</a> · <a href="https://discord.com/invite/zpA9S2DR7s">Discord</a> · <a href="https://github.com/cocoindex-io/cocoindex/tree/main/examples"><b>See all examples →</b></a>
+  <a href="https://cocoindex.io/docs">Docs</a> · <a href="https://cocoindex.io/docs/examples/index-codebase/">Walkthrough</a> · <a href="https://discord.com/invite/zpA9S2DR7s">Discord</a> · <a href="https://github.com/cocoindex-io/cocoindex/tree/main/examples"><b>See all examples →</b></a>
 </p>
