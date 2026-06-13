@@ -947,13 +947,13 @@ impl<Prof: EngineProfile> Component<Prof> {
                         eager_existence_upsert(processor_context).await?;
                     }
 
-                    // Eagerly load all function-memo entries for this component
-                    // into the per-build cache, so every subsequent fn-call probe
-                    // serves from memory. Skipped under `full_reprocess` and in
-                    // delete mode (no `ComponentBuildingState`); see the cache
-                    // flush logic for how those cases are handled at commit time.
-                    processor_context.prefetch_fn_memos().await?;
-                    processor_context.prefetch_user_states().await?;
+                    // Eagerly load all function-memo and user-state entries for
+                    // this component into the per-build cache (one read txn), so
+                    // every subsequent fn-call probe and `use_state` serves from
+                    // memory. Skipped under `full_reprocess` and in delete mode
+                    // (no `ComponentBuildingState`); see the cache flush logic
+                    // for how those cases are handled at commit time.
+                    processor_context.prefetch_states().await?;
 
                     if memo_fp_to_store.is_some() {
                         *self.inner.last_memo_fp.lock().unwrap() = memo_fp_to_store;

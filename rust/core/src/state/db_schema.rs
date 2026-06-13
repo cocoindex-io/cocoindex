@@ -660,8 +660,8 @@ mod tests {
     }
 
     /// Prefix for path A must not match entries under path B.
-    /// Guards the scoping guarantee: `list_user_states(path_a)` never
-    /// returns entries that belong to path_b.
+    /// Guards the scoping guarantee: a user-state prefix scan for path_a
+    /// never returns entries that belong to path_b.
     #[test]
     fn user_state_prefix_does_not_cross_paths() {
         let path_a = StablePath(Arc::from(vec![StableKey::Str(Arc::from("file_a.md"))]));
