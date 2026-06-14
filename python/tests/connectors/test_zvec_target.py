@@ -361,6 +361,12 @@ def test_sparse_vector(conn: Any) -> None:
     assert doc is not None
     assert doc.fields["title"] == "s"
 
+    col = conn.open_existing("test_sparse")
+    results = col.query(
+        zvec.VectorQuery(field_name="sparse", vector={1: 0.5, 7: 0.9}), topk=5
+    )
+    assert [d.id for d in results] == ["1"]
+
 
 def test_multiple_vector_fields(conn: Any) -> None:
     _reset(MultiVectorDoc, "test_multivec")
