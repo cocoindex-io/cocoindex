@@ -32,6 +32,10 @@ except ImportError as e:
 from cocoindex.resources import file
 
 
+def _etag_to_bytes(etag: str | None) -> bytes | None:
+    return etag.encode("utf-8") if isinstance(etag, str) else None
+
+
 def _parse_s3_uri(uri: str) -> tuple[str, str]:
     """Parse an ``s3://bucket/key`` URI into *(bucket_name, key)*."""
     if not uri.startswith("s3://"):
@@ -113,7 +117,7 @@ class S3File(file.FileLike[str]):
         return file.FileMetadata(
             size=int(head["ContentLength"]),
             modified_time=head["LastModified"],
-            content_fingerprint=head.get("ETag"),
+            content_fingerprint=_etag_to_bytes(head.get("ETag")),
         )
 
     async def _read_impl(self, size: int = -1) -> bytes:
@@ -150,7 +154,7 @@ async def _s3file_from_head(
     metadata = file.FileMetadata(
         size=int(head["ContentLength"]),
         modified_time=head["LastModified"],
-        content_fingerprint=head.get("ETag"),
+        content_fingerprint=_etag_to_bytes(head.get("ETag")),
     )
     return S3File(client=client, file_path=fp, _metadata=metadata)
 
@@ -320,7 +324,7 @@ class S3Walker:
                 metadata = file.FileMetadata(
                     size=obj_size,
                     modified_time=obj["LastModified"],
-                    content_fingerprint=obj.get("ETag"),
+                    content_fingerprint=_etag_to_bytes(obj.get("ETag")),
                 )
 
                 yield S3File(

@@ -351,6 +351,33 @@ class TestMemoization:
         memo_keys = {f.file_path.__coco_memo_key__() for f in files}
         assert len(memo_keys) == len(files)
 
+    async def test_memo_state_serde_regression(
+        self, s3_client: tuple[Any, str]
+    ) -> None:
+        """Verify that memo state generated from S3File can be successfully serialized and deserialized using CocoIndex serde machinery."""
+        import cocoindex
+        from cocoindex._internal.memo_fingerprint import _make_state_deserialize_fn
+        from cocoindex._internal.serde import serialize
+        from cocoindex.resources.file import FileLike
+
+        client, bucket_name = s3_client
+        f = await amazon_s3.get_object(client, bucket_name, "file1.txt")
+
+        # 1. Generate memo-state
+        outcome = await f.__coco_memo_state__(cocoindex.NON_EXISTENCE)
+        state = outcome.state
+
+        # 2. Serialize using CocoIndex serialization machinery
+        serialized = serialize(state)
+
+        # 3. Deserialize using the type expected by FileLike.__coco_memo_state__
+        deser = _make_state_deserialize_fn(FileLike.__coco_memo_state__)
+
+        # This will fail on main if the ETag in content_fingerprint is str
+        # but succeeds with the fix because it is normalized to bytes.
+        deserialized = deser(serialized)
+        assert deserialized == state
+
 
 # ---------------------------------------------------------------------------
 # S3FilePath unit tests
