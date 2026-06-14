@@ -12,6 +12,7 @@ import pytest
 
 import cocoindex as coco
 from tests import common
+from cocoindex.connectorkits.fingerprint import fingerprint_object
 
 try:
     import pyarrow as pa  # type: ignore
@@ -568,11 +569,13 @@ if HAS_LANCEDB:
             pa.array(data["content"]),
             pa.array(data["embedding"], type=pa.list_(pa.float32(), vec_size)),
         ]
-        schema = pa.schema([
-            pa.field("id", pa.string(), nullable=False),
-            pa.field("content", pa.string()),
-            pa.field("embedding", pa.list_(pa.float32(), vec_size)),
-        ])
+        schema = pa.schema(
+            [
+                pa.field("id", pa.string(), nullable=False),
+                pa.field("content", pa.string()),
+                pa.field("embedding", pa.list_(pa.float32(), vec_size)),
+            ]
+        )
         batch = pa.RecordBatch.from_arrays(arrays, schema=schema)
         await conn.create_table(table_name, batch, mode="overwrite")
 
@@ -583,13 +586,18 @@ if HAS_LANCEDB:
         """Create a table with id and content columns."""
         data = {
             "id": ["1", "2"],
-            "content": ["His first language is Spanish", "Her first language is English"],
+            "content": [
+                "His first language is Spanish",
+                "Her first language is English",
+            ],
         }
         arrays = [pa.array(data["id"]), pa.array(data["content"])]
-        schema = pa.schema([
-            pa.field("id", pa.string(), nullable=False),
-            pa.field("content", pa.string()),
-        ])
+        schema = pa.schema(
+            [
+                pa.field("id", pa.string(), nullable=False),
+                pa.field("content", pa.string()),
+            ]
+        )
         batch = pa.RecordBatch.from_arrays(arrays, schema=schema)
         await conn.create_table(table_name, batch, mode="overwrite")
 
@@ -628,10 +636,15 @@ async def test_vector_index_handler_creates_ivf_pq_index(lancedb_dir: Path) -> N
 
     # Verify index was created
     indices = await _list_indices(conn, table_name)
-    index_names = [getattr(idx, "name", None) or getattr(idx, "index_name", None) or getattr(idx, "columns", [""])[0] for idx in indices]
-    assert any(
-        "embedding" in str(n) for n in index_names
-    ), f"Expected an embedding vector index, got: {index_names}"
+    index_names = [
+        getattr(idx, "name", None)
+        or getattr(idx, "index_name", None)
+        or getattr(idx, "columns", [""])[0]
+        for idx in indices
+    ]
+    assert any("embedding" in str(n) for n in index_names), (
+        f"Expected an embedding vector index, got: {index_names}"
+    )
 
 
 @pytest.mark.asyncio
@@ -671,9 +684,7 @@ def test_vector_index_handler_reconcile_no_op_when_fingerprint_unchanged(
 ) -> None:
     """Reconcile returns None when the fingerprint is unchanged (no-op)."""
     # handler instance (conn/table_name don't matter for pure reconcile logic)
-    handler = _target._VectorIndexHandler(
-        conn=cast(Any, None), table_name="dummy"
-    )
+    handler = _target._VectorIndexHandler(conn=cast(Any, None), table_name="dummy")
     spec = _target._VectorIndexSpec(
         column="embedding",
         metric="cosine",
@@ -684,7 +695,6 @@ def test_vector_index_handler_reconcile_no_op_when_fingerprint_unchanged(
         m=None,
         ef_construction=None,
     )
-    from cocoindex.connectors.lancedb._target import fingerprint_object
 
     fp = fingerprint_object(spec)
     # Simulate: previous run recorded the same fingerprint, and prev_may_be_missing=False.
@@ -695,9 +705,7 @@ def test_vector_index_handler_reconcile_no_op_when_fingerprint_unchanged(
 @requires_lancedb
 def test_vector_index_handler_reconcile_action_when_spec_changes() -> None:
     """Reconcile emits an action when the spec has changed."""
-    handler = _target._VectorIndexHandler(
-        conn=cast(Any, None), table_name="dummy"
-    )
+    handler = _target._VectorIndexHandler(conn=cast(Any, None), table_name="dummy")
     old_spec = _target._VectorIndexSpec(
         column="embedding",
         metric="cosine",
@@ -718,7 +726,6 @@ def test_vector_index_handler_reconcile_action_when_spec_changes() -> None:
         m=None,
         ef_construction=None,
     )
-    from cocoindex.connectors.lancedb._target import fingerprint_object
 
     old_fp = fingerprint_object(old_spec)
     result = handler.reconcile("emb", new_spec, [old_fp], False)
@@ -771,10 +778,15 @@ async def test_fts_index_handler_creates_fts_index(lancedb_dir: Path) -> None:
 
     # Verify FTS index was created
     indices = await _list_indices(conn, table_name)
-    index_names = [getattr(idx, "name", None) or getattr(idx, "index_name", None) or getattr(idx, "columns", [""])[0] for idx in indices]
-    assert any(
-        "content" in str(n) for n in index_names
-    ), f"Expected a content FTS index, got: {index_names}"
+    index_names = [
+        getattr(idx, "name", None)
+        or getattr(idx, "index_name", None)
+        or getattr(idx, "columns", [""])[0]
+        for idx in indices
+    ]
+    assert any("content" in str(n) for n in index_names), (
+        f"Expected a content FTS index, got: {index_names}"
+    )
 
 
 @pytest.mark.asyncio
@@ -796,9 +808,9 @@ async def test_fts_index_handler_search_returns_results(lancedb_dir: Path) -> No
 
     # FTS search for "spanish"
     fts_tbl = await conn.open_table(table_name)
-    result_arrow = await (
-        await fts_tbl.search("spanish", query_type="fts")
-    ).limit(5).to_arrow()
+    result_arrow = (
+        await (await fts_tbl.search("spanish", query_type="fts")).limit(5).to_arrow()
+    )
     rows = result_arrow.to_pylist()
     assert len(rows) >= 1
     assert rows[0]["id"] == "1"
@@ -827,15 +839,12 @@ async def test_fts_index_handler_replace_is_idempotent(lancedb_dir: Path) -> Non
 @requires_lancedb
 def test_fts_index_handler_reconcile_no_op_when_fingerprint_unchanged() -> None:
     """Reconcile returns None when the fingerprint is unchanged (no-op)."""
-    handler = _target._FtsIndexHandler(
-        conn=cast(Any, None), table_name="dummy"
-    )
+    handler = _target._FtsIndexHandler(conn=cast(Any, None), table_name="dummy")
     spec = _target._FtsIndexSpec(
         column="content",
         language="English",
         with_position=True,
     )
-    from cocoindex.connectors.lancedb._target import fingerprint_object
 
     fp = fingerprint_object(spec)
     result = handler.reconcile("content_fts", spec, [fp], False)
@@ -845,9 +854,7 @@ def test_fts_index_handler_reconcile_no_op_when_fingerprint_unchanged() -> None:
 @requires_lancedb
 def test_fts_index_handler_reconcile_action_when_spec_changes() -> None:
     """Reconcile emits an action when the spec has changed."""
-    handler = _target._FtsIndexHandler(
-        conn=cast(Any, None), table_name="dummy"
-    )
+    handler = _target._FtsIndexHandler(conn=cast(Any, None), table_name="dummy")
     old_spec = _target._FtsIndexSpec(
         column="content",
         language="English",
@@ -858,7 +865,6 @@ def test_fts_index_handler_reconcile_action_when_spec_changes() -> None:
         language="Chinese",  # changed
         with_position=False,
     )
-    from cocoindex.connectors.lancedb._target import fingerprint_object
 
     old_fp = fingerprint_object(old_spec)
     result = handler.reconcile("content_fts", new_spec, [old_fp], False)
@@ -884,6 +890,3 @@ def test_declare_fts_index_rejects_unknown_column() -> None:
     )
     with pytest.raises(ValueError, match="Column 'no_such_col' not found"):
         tbl.declare_fts_index(column="no_such_col")
-
-
-
