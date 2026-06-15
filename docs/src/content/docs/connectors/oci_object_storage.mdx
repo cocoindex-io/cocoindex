@@ -58,6 +58,7 @@ def list_objects(
     path_matcher: FilePathMatcher | None = None,
     max_file_size: int | None = None,
     live_stream: LiveStream[bytes] | None = None,
+    logic_version: str | None = None,
 ) -> OCIWalker
 ```
 
@@ -70,6 +71,7 @@ def list_objects(
 - `path_matcher` — Optional filter for files. Patterns are matched against the relative path (after prefix stripping). See [PatternFilePathMatcher](../common_resources/data_types#patternfilepathmatcher).
 - `max_file_size` — Skip objects larger than this size in bytes.
 - `live_stream` — Optional `LiveStream[bytes]` of OCI Object Storage event payloads. When provided, `OCIWalker.items()` returns a [`LiveMapView`](../advanced_topics/live_component#livemapfeed-and-livemapview) that performs an initial scan and continues watching for changes via the supplied stream. See [Live mode](#live-bucket-watching).
+- `logic_version` — Opt into skipping the startup full scan on reruns. See [Skipping the startup scan](#skipping-the-startup-scan).
 
 **Returns:** An `OCIWalker` that can be used with `async for` loops.
 
@@ -241,6 +243,27 @@ await coco.mount_each(process_file, walker.items(), target)
 ```
 
 See [Live Mode](../programming_guide/live_mode) for how live mode works and how to enable it on the app.
+
+### Skipping the startup scan
+
+By default, every live run begins with a full bucket scan to reconcile current state before processing stream events. On a long-lived deployment that restarts often, this scan is redundant work when nothing relevant has changed since the last run.
+
+Set `logic_version` to opt into skipping it:
+
+```python
+walker = oci_object_storage.list_objects(
+    client, "my-namespace", "my-bucket",
+    live_stream=topic_stream.payloads(),
+    logic_version="v1",
+)
+```
+
+After a successful scan, the connector records `logic_version`. On a later run, if the recorded version still matches, the scan is skipped and the durable stream is replayed from its committed cursor to catch up on changes that happened while the app was down.
+
+This is safe only when two conditions hold, and **you are responsible for both**:
+
+- **Durable stream.** The stream must resume exactly where it left off — e.g. a Kafka consumer with a stable `group.id` and committed offsets (as in the setup above). Without durable resumption, skipping the scan loses changes that occurred during downtime.
+- **Bump `logic_version` whenever your processing logic changes.** The recorded version is the only signal the connector has that a rescan is needed. If you change your pipeline (e.g. how `process_file` transforms content) without bumping it, the run reuses stale results instead of reprocessing. Leave `logic_version` unset (the default) to always scan on startup.
 
 ### Example
 
