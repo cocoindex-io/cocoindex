@@ -12,6 +12,7 @@ import pytest
 
 import cocoindex as coco
 from tests import common
+from cocoindex.connectorkits.fingerprint import fingerprint_object
 
 try:
     import pyarrow as pa  # type: ignore
@@ -532,8 +533,360 @@ def test_table_target_rejects_non_positive_optimize_interval() -> None:
 
 @requires_lancedb
 def test_lancedb_async_table_supports_add_columns_api() -> None:
-    async_table = cast(Any, lancedb).table.AsyncTable
+    import lancedb as real_lancedb  # type: ignore[import-not-found]
+
+    async_table = real_lancedb.table.AsyncTable
 
     assert hasattr(async_table, "add_columns")
     assert callable(async_table.add_columns)
     assert pa.field("x", pa.string())
+
+
+# =============================================================================
+# Vector index tests
+# =============================================================================
+
+if HAS_LANCEDB:
+    import numpy as np
+
+    async def _create_test_table_with_vectors(
+        conn: lancedb.LanceAsyncConnection,
+        table_name: str,
+        num_rows: int = 256,
+        vec_size: int = 4,
+    ) -> None:
+        """Create a table with id, content, and embedding columns populated."""
+        data = {
+            "id": [str(i) for i in range(num_rows)],
+            "content": [f"doc {i}" for i in range(num_rows)],
+            "embedding": [
+                np.array([float(i) % 10, 1.0, 1.0, 1.0], dtype=np.float32)
+                for i in range(num_rows)
+            ],
+        }
+        arrays = [
+            pa.array(data["id"]),
+            pa.array(data["content"]),
+            pa.array(data["embedding"], type=pa.list_(pa.float32(), vec_size)),
+        ]
+        schema = pa.schema(
+            [
+                pa.field("id", pa.string(), nullable=False),
+                pa.field("content", pa.string()),
+                pa.field("embedding", pa.list_(pa.float32(), vec_size)),
+            ]
+        )
+        batch = pa.RecordBatch.from_arrays(arrays, schema=schema)
+        await conn.create_table(table_name, batch, mode="overwrite")
+
+    async def _create_test_table_with_text(
+        conn: lancedb.LanceAsyncConnection,
+        table_name: str,
+    ) -> None:
+        """Create a table with id and content columns."""
+        data = {
+            "id": ["1", "2"],
+            "content": [
+                "His first language is Spanish",
+                "Her first language is English",
+            ],
+        }
+        arrays = [pa.array(data["id"]), pa.array(data["content"])]
+        schema = pa.schema(
+            [
+                pa.field("id", pa.string(), nullable=False),
+                pa.field("content", pa.string()),
+            ]
+        )
+        batch = pa.RecordBatch.from_arrays(arrays, schema=schema)
+        await conn.create_table(table_name, batch, mode="overwrite")
+
+    async def _list_indices(
+        conn: lancedb.LanceAsyncConnection, table_name: str
+    ) -> list[Any]:
+        """Return the list of index metadata dicts for a table."""
+        table = await conn.open_table(table_name)
+        return list(await table.list_indices())
+
+
+@pytest.mark.asyncio
+@requires_lancedb
+async def test_vector_index_handler_creates_ivf_pq_index(lancedb_dir: Path) -> None:
+    """_VectorIndexHandler creates an IVF-PQ vector index on a populated table."""
+    conn = await lancedb.connect_async(str(lancedb_dir))
+    table_name = "test_vec_idx_handler"
+    # IVF-PQ needs data to train on (at least num_partitions rows)
+    await _create_test_table_with_vectors(conn, table_name, num_rows=256)
+
+    handler = _target._VectorIndexHandler(conn=conn, table_name=table_name)
+    spec = _target._VectorIndexSpec(
+        column="embedding",
+        metric="cosine",
+        index_type="ivf_pq",
+        num_partitions=2,
+        num_sub_vectors=2,
+        num_bits=None,
+        m=None,
+        ef_construction=None,
+    )
+    action = _target._VectorIndexAction(name="embedding_idx", spec=spec)
+
+    # Apply the action directly (context_provider not used for index creation)
+    await handler._apply_actions(cast(Any, None), [action])
+
+    # Verify index was created
+    indices = await _list_indices(conn, table_name)
+    index_names = [
+        getattr(idx, "name", None)
+        or getattr(idx, "index_name", None)
+        or getattr(idx, "columns", [""])[0]
+        for idx in indices
+    ]
+    assert any("embedding" in str(n) for n in index_names), (
+        f"Expected an embedding vector index, got: {index_names}"
+    )
+
+
+@pytest.mark.asyncio
+@requires_lancedb
+async def test_vector_index_handler_replace_replaces_existing_index(
+    lancedb_dir: Path,
+) -> None:
+    """_VectorIndexHandler with replace=True recreates an existing index without error."""
+    conn = await lancedb.connect_async(str(lancedb_dir))
+    table_name = "test_vec_replace"
+    await _create_test_table_with_vectors(conn, table_name, num_rows=256)
+
+    handler = _target._VectorIndexHandler(conn=conn, table_name=table_name)
+    spec = _target._VectorIndexSpec(
+        column="embedding",
+        metric="cosine",
+        index_type="ivf_pq",
+        num_partitions=2,
+        num_sub_vectors=2,
+        num_bits=None,
+        m=None,
+        ef_construction=None,
+    )
+    action = _target._VectorIndexAction(name="emb", spec=spec)
+
+    # Apply twice — second call should not raise (uses replace=True)
+    await handler._apply_actions(cast(Any, None), [action])
+    await handler._apply_actions(cast(Any, None), [action])  # no-error on re-create
+
+    indices = await _list_indices(conn, table_name)
+    assert len(indices) >= 1
+
+
+@requires_lancedb
+def test_vector_index_handler_reconcile_no_op_when_fingerprint_unchanged(
+    lancedb_dir: Path,
+) -> None:
+    """Reconcile returns None when the fingerprint is unchanged (no-op)."""
+    # handler instance (conn/table_name don't matter for pure reconcile logic)
+    handler = _target._VectorIndexHandler(conn=cast(Any, None), table_name="dummy")
+    spec = _target._VectorIndexSpec(
+        column="embedding",
+        metric="cosine",
+        index_type="ivf_pq",
+        num_partitions=2,
+        num_sub_vectors=None,
+        num_bits=None,
+        m=None,
+        ef_construction=None,
+    )
+
+    fp = fingerprint_object(spec)
+    # Simulate: previous run recorded the same fingerprint, and prev_may_be_missing=False.
+    result = handler.reconcile("emb", spec, [fp], False)
+    assert result is None, "Expected no-op when fingerprint matches"
+
+
+@requires_lancedb
+def test_vector_index_handler_reconcile_action_when_spec_changes() -> None:
+    """Reconcile emits an action when the spec has changed."""
+    handler = _target._VectorIndexHandler(conn=cast(Any, None), table_name="dummy")
+    old_spec = _target._VectorIndexSpec(
+        column="embedding",
+        metric="cosine",
+        index_type="ivf_pq",
+        num_partitions=2,
+        num_sub_vectors=None,
+        num_bits=None,
+        m=None,
+        ef_construction=None,
+    )
+    new_spec = _target._VectorIndexSpec(
+        column="embedding",
+        metric="l2",  # changed
+        index_type="ivf_pq",
+        num_partitions=2,
+        num_sub_vectors=None,
+        num_bits=None,
+        m=None,
+        ef_construction=None,
+    )
+
+    old_fp = fingerprint_object(old_spec)
+    result = handler.reconcile("emb", new_spec, [old_fp], False)
+    assert result is not None, "Expected action when spec changed"
+    assert result.action.spec == new_spec
+
+
+@requires_lancedb
+def test_declare_vector_index_rejects_unknown_column() -> None:
+    """declare_vector_index() raises ValueError for a column not in the schema."""
+    schema = lancedb.TableSchema(
+        columns={
+            "id": lancedb.ColumnDef(type=pa.string(), nullable=False),
+        },
+        primary_key=["id"],
+    )
+    from unittest.mock import MagicMock
+
+    fake_provider = MagicMock()
+    tbl: lancedb.TableTarget[Any, Any] = cast(
+        lancedb.TableTarget,
+        lancedb.TableTarget(fake_provider, schema),
+    )
+    with pytest.raises(ValueError, match="Column 'nonexistent' not found"):
+        tbl.declare_vector_index(column="nonexistent")
+
+
+# =============================================================================
+# FTS index tests
+# =============================================================================
+
+
+@pytest.mark.asyncio
+@requires_lancedb
+async def test_fts_index_handler_creates_fts_index(lancedb_dir: Path) -> None:
+    """_FtsIndexHandler creates an FTS index on a text column."""
+    conn = await lancedb.connect_async(str(lancedb_dir))
+    table_name = "test_fts_idx_handler"
+    await _create_test_table_with_text(conn, table_name)
+
+    handler = _target._FtsIndexHandler(conn=conn, table_name=table_name)
+    spec = _target._FtsIndexSpec(
+        column="content",
+        language="English",
+        with_position=True,
+    )
+    action = _target._FtsIndexAction(name="content_fts", spec=spec)
+
+    await handler._apply_actions(cast(Any, None), [action])
+
+    # Verify FTS index was created
+    indices = await _list_indices(conn, table_name)
+    index_names = [
+        getattr(idx, "name", None)
+        or getattr(idx, "index_name", None)
+        or getattr(idx, "columns", [""])[0]
+        for idx in indices
+    ]
+    assert any("content" in str(n) for n in index_names), (
+        f"Expected a content FTS index, got: {index_names}"
+    )
+
+
+@pytest.mark.asyncio
+@requires_lancedb
+async def test_fts_index_handler_search_returns_results(lancedb_dir: Path) -> None:
+    """After _FtsIndexHandler creates an FTS index, full-text search works."""
+    conn = await lancedb.connect_async(str(lancedb_dir))
+    table_name = "test_fts_search"
+    await _create_test_table_with_text(conn, table_name)
+
+    handler = _target._FtsIndexHandler(conn=conn, table_name=table_name)
+    spec = _target._FtsIndexSpec(
+        column="content",
+        language="English",
+        with_position=True,
+    )
+    action = _target._FtsIndexAction(name="content_fts", spec=spec)
+    await handler._apply_actions(cast(Any, None), [action])
+
+    # FTS search for "spanish"
+    fts_tbl = await conn.open_table(table_name)
+    result_arrow = (
+        await (await fts_tbl.search("spanish", query_type="fts")).limit(5).to_arrow()
+    )
+    rows = result_arrow.to_pylist()
+    assert len(rows) >= 1
+    assert rows[0]["id"] == "1"
+
+
+@pytest.mark.asyncio
+@requires_lancedb
+async def test_fts_index_handler_replace_is_idempotent(lancedb_dir: Path) -> None:
+    """Calling _apply_actions twice with replace=True should not raise."""
+    conn = await lancedb.connect_async(str(lancedb_dir))
+    table_name = "test_fts_replace"
+    await _create_test_table_with_text(conn, table_name)
+
+    handler = _target._FtsIndexHandler(conn=conn, table_name=table_name)
+    spec = _target._FtsIndexSpec(
+        column="content",
+        language="English",
+        with_position=True,
+    )
+    action = _target._FtsIndexAction(name="content_fts", spec=spec)
+
+    await handler._apply_actions(cast(Any, None), [action])
+    await handler._apply_actions(cast(Any, None), [action])  # no error on re-create
+
+
+@requires_lancedb
+def test_fts_index_handler_reconcile_no_op_when_fingerprint_unchanged() -> None:
+    """Reconcile returns None when the fingerprint is unchanged (no-op)."""
+    handler = _target._FtsIndexHandler(conn=cast(Any, None), table_name="dummy")
+    spec = _target._FtsIndexSpec(
+        column="content",
+        language="English",
+        with_position=True,
+    )
+
+    fp = fingerprint_object(spec)
+    result = handler.reconcile("content_fts", spec, [fp], False)
+    assert result is None, "Expected no-op when fingerprint matches"
+
+
+@requires_lancedb
+def test_fts_index_handler_reconcile_action_when_spec_changes() -> None:
+    """Reconcile emits an action when the spec has changed."""
+    handler = _target._FtsIndexHandler(conn=cast(Any, None), table_name="dummy")
+    old_spec = _target._FtsIndexSpec(
+        column="content",
+        language="English",
+        with_position=True,
+    )
+    new_spec = _target._FtsIndexSpec(
+        column="content",
+        language="Chinese",  # changed
+        with_position=False,
+    )
+
+    old_fp = fingerprint_object(old_spec)
+    result = handler.reconcile("content_fts", new_spec, [old_fp], False)
+    assert result is not None, "Expected action when spec changed"
+    assert result.action.spec == new_spec
+
+
+@requires_lancedb
+def test_declare_fts_index_rejects_unknown_column() -> None:
+    """declare_fts_index() raises ValueError for a column not in the schema."""
+    from unittest.mock import MagicMock
+
+    schema = lancedb.TableSchema(
+        columns={
+            "id": lancedb.ColumnDef(type=pa.string(), nullable=False),
+        },
+        primary_key=["id"],
+    )
+    fake_provider = MagicMock()
+    tbl: lancedb.TableTarget[Any, Any] = cast(
+        lancedb.TableTarget,
+        lancedb.TableTarget(fake_provider, schema),
+    )
+    with pytest.raises(ValueError, match="Column 'no_such_col' not found"):
+        tbl.declare_fts_index(column="no_such_col")
