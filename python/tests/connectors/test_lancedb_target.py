@@ -533,7 +533,7 @@ def test_table_target_rejects_non_positive_optimize_interval() -> None:
 
 @requires_lancedb
 def test_lancedb_async_table_supports_add_columns_api() -> None:
-    import lancedb as real_lancedb
+    import lancedb as real_lancedb  # type: ignore[import-not-found]
 
     async_table = real_lancedb.table.AsyncTable
 
