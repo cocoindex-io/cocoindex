@@ -319,6 +319,11 @@ class TableSchema(Generic[RowT]):
         return columns
 
 
+def _escape_sql_string(value: str) -> str:
+    """Escape a string for safe embedding in a DataFusion SQL string literal."""
+    return value.replace("'", "''")
+
+
 class _RowAction(NamedTuple):
     """Action to perform on a row."""
 
@@ -486,7 +491,7 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
                 pk_value = action.key[i]
                 # Handle different types appropriately
                 if isinstance(pk_value, str):
-                    conditions.append(f"{pk_col} = '{pk_value}'")
+                    conditions.append(f"{pk_col} = '{_escape_sql_string(pk_value)}'")
                 else:
                     conditions.append(f"{pk_col} = {pk_value}")
 

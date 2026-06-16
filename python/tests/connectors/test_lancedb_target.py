@@ -890,3 +890,107 @@ def test_declare_fts_index_rejects_unknown_column() -> None:
     )
     with pytest.raises(ValueError, match="Column 'no_such_col' not found"):
         tbl.declare_fts_index(column="no_such_col")
+
+
+# =============================================================================
+# SQL string escaping tests (delete path)
+# =============================================================================
+
+
+@requires_lancedb
+def test_escape_sql_string_doubles_single_quotes() -> None:
+    """_escape_sql_string doubles embedded single quotes for DataFusion SQL."""
+    assert _target._escape_sql_string("hello") == "hello"
+    assert _target._escape_sql_string("it's") == "it''s"
+    assert _target._escape_sql_string("O'Brien") == "O''Brien"
+    assert _target._escape_sql_string("a''b") == "a''''b"
+    assert _target._escape_sql_string("") == ""
+    # Backslashes pass through unchanged (DataFusion does not use backslash escaping)
+    assert _target._escape_sql_string("path\\to\\file") == "path\\to\\file"
+
+
+@pytest.mark.asyncio
+@requires_lancedb
+async def test_execute_deletes_escapes_string_pk() -> None:
+    """_execute_deletes properly escapes single quotes in string primary key values."""
+    table_schema = lancedb.TableSchema(
+        columns={
+            "id": lancedb.ColumnDef(type=pa.string(), nullable=False),
+            "name": lancedb.ColumnDef(type=pa.string()),
+        },
+        primary_key=["id"],
+    )
+
+    delete_filters: list[str] = []
+
+    class _DeletableFakeTable(_FakeAsyncTable):
+        async def delete(self, filter: str) -> None:  # noqa: A002
+            delete_filters.append(filter)
+
+    fake_table = _DeletableFakeTable()
+    handler = _target._RowHandler(
+        conn=cast(Any, None),
+        table_name="test_table",
+        table_schema=table_schema,
+        num_transactions_before_optimize=50,
+    )
+    await handler._execute_deletes(
+        cast(Any, fake_table),
+        [
+            _target._RowAction(key=("O'Brien",), value=None),
+        ],
+    )
+    assert delete_filters == ["id = 'O''Brien'"]
+
+
+@pytest.mark.asyncio
+@requires_lancedb
+async def test_execute_deletes_with_real_lancedb(lancedb_dir: Path) -> None:
+    """Integration test: insert and then delete a row whose PK contains a single quote."""
+    conn = await lancedb.connect_async(str(lancedb_dir))
+    table_name = "test_delete_escape"
+
+    # Insert a row with a quote in the PK
+    batch = pa.RecordBatch.from_arrays(
+        [pa.array(["O'Brien", "normal"]), pa.array(["Alice", "Bob"])],
+        schema=pa.schema(
+            [
+                pa.field("id", pa.string(), nullable=False),
+                pa.field("name", pa.string()),
+            ]
+        ),
+    )
+    await conn.create_table(table_name, batch, mode="overwrite")
+
+    # Verify both rows exist
+    rows = await _read_rows(conn, table_name)
+    assert sorted(rows, key=lambda r: r["id"]) == [
+        {"id": "O'Brien", "name": "Alice"},
+        {"id": "normal", "name": "Bob"},
+    ]
+
+    # Delete the row with the problematic PK via _execute_deletes
+    table_schema = lancedb.TableSchema(
+        columns={
+            "id": lancedb.ColumnDef(type=pa.string(), nullable=False),
+            "name": lancedb.ColumnDef(type=pa.string()),
+        },
+        primary_key=["id"],
+    )
+    table = await conn.open_table(table_name)
+    handler = _target._RowHandler(
+        conn=conn,
+        table_name=table_name,
+        table_schema=table_schema,
+        num_transactions_before_optimize=50,
+    )
+    await handler._execute_deletes(
+        table,
+        [
+            _target._RowAction(key=("O'Brien",), value=None),
+        ],
+    )
+
+    # Verify only the quoted-PK row was deleted
+    rows = await _read_rows(conn, table_name)
+    assert rows == [{"id": "normal", "name": "Bob"}]
