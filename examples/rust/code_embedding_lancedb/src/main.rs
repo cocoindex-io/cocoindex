@@ -108,7 +108,7 @@ fn is_excluded(key: &str) -> bool {
 
 async fn app_main(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
     let db = ctx.get_key(&DB)?;
-    let table = lancedb::mount_table_target(&ctx, db, TABLE, code_embedding_schema()?).await?;
+    let table = lancedb::mount_table_target(&ctx, &DB, TABLE, code_embedding_schema()?).await?;
 
     let files: Vec<(String, FileEntry)> = walk_items(&sourcedir, INCLUDE_PATTERNS)?
         .into_iter()

@@ -102,7 +102,7 @@ fn doc_embedding_schema() -> Result<TableSchema> {
 
 async fn app_main(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
     let db = ctx.get_key(&DB)?;
-    let table = lancedb::mount_table_target(&ctx, db, TABLE, doc_embedding_schema()?).await?;
+    let table = lancedb::mount_table_target(&ctx, &DB, TABLE, doc_embedding_schema()?).await?;
 
     let files = walk_items(&sourcedir, &["**/*.md"])?;
     println!(
