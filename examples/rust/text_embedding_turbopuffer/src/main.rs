@@ -95,7 +95,7 @@ async fn app_main(ctx: Ctx, sourcedir: PathBuf, namespace: String) -> Result<()>
     let conn = ctx.get_key(&DB)?;
     let target = turbopuffer::mount_namespace_target(
         &ctx,
-        conn,
+        &DB,
         &namespace,
         NamespaceSchema::new(EMBED_DIM, DistanceMetric::CosineDistance),
     )

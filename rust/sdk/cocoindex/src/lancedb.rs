@@ -25,7 +25,7 @@ use lancedb::table::NewColumnTransform;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value as JsonValue};
 
-use crate::ctx::Ctx;
+use crate::ctx::{ContextKey, ContextStore, Ctx};
 use crate::error::{Error, Result};
 use crate::statediff::{
     CompositeTrackingRecord, DiffAction, ManagedBy, ManagedTargetOptions, MutualTrackingRecord,
@@ -199,7 +199,7 @@ pub struct LanceTableTarget {
 /// [`declare_target_state_with_child`]/[`mount_target`]. System-managed.
 pub fn table_target(
     ctx: &Ctx,
-    db: &LanceDatabase,
+    db: &ContextKey<LanceDatabase>,
     table_name: impl Into<String>,
     table_schema: TableSchema,
 ) -> Result<TargetState<TableSpec>> {
@@ -215,7 +215,7 @@ pub fn table_target(
 /// [`table_target`] with explicit [`ManagedTargetOptions`] (`managed_by`).
 pub fn table_target_with_options(
     ctx: &Ctx,
-    db: &LanceDatabase,
+    db: &ContextKey<LanceDatabase>,
     table_name: impl Into<String>,
     table_schema: TableSchema,
     options: ManagedTargetOptions,
@@ -223,8 +223,10 @@ pub fn table_target_with_options(
     let table_name = table_name.into();
     let provider = register_root_target_states_provider(
         ctx,
-        format!("cocoindex/lancedb/table/{}/{}", db.state_id(), table_name),
-        TableHandler { db: db.clone() },
+        format!("cocoindex/lancedb/table/{}/{}", db.name(), table_name),
+        TableHandler {
+            db_key: db.name().to_string(),
+        },
     )?;
     Ok(provider.target_state(
         "default",
@@ -244,7 +246,7 @@ pub fn table_target_with_options(
 /// table schema so destructive schema changes do not skip unchanged rows.
 pub fn declare_table_target(
     ctx: &Ctx,
-    db: &LanceDatabase,
+    db: &ContextKey<LanceDatabase>,
     table_name: impl Into<String>,
     table_schema: TableSchema,
 ) -> Result<LanceTableTarget> {
@@ -263,12 +265,12 @@ pub fn declare_table_target(
         ctx,
         format!(
             "cocoindex/lancedb/row/{}/{}/{}",
-            db.state_id(),
+            db.name(),
             table_name,
             schema_fp
         ),
         RowHandler {
-            db: db.clone(),
+            db_key: db.name().to_string(),
             spec: spec.clone(),
         },
     )?;
@@ -285,7 +287,7 @@ pub fn declare_table_target(
 /// invalidate child rows.
 pub async fn mount_table_target(
     ctx: &Ctx,
-    db: &LanceDatabase,
+    db: &ContextKey<LanceDatabase>,
     table_name: impl Into<String>,
     table_schema: TableSchema,
 ) -> Result<LanceTableTarget> {
@@ -302,7 +304,7 @@ pub async fn mount_table_target(
 /// [`mount_table_target`] with explicit [`ManagedTargetOptions`] (`managed_by`).
 pub async fn mount_table_target_with_options(
     ctx: &Ctx,
-    db: &LanceDatabase,
+    db: &ContextKey<LanceDatabase>,
     table_name: impl Into<String>,
     table_schema: TableSchema,
     options: ManagedTargetOptions,
@@ -395,8 +397,19 @@ fn table_tracking_record(
     )
 }
 
+/// Resolve the live LanceDB database from the host context by the connection's
+/// stable `db_key` (the ContextKey name), used at apply time.
+fn resolve_db(host_ctx: &Arc<ContextStore>, db_key: &str) -> Result<Arc<LanceDatabase>> {
+    host_ctx.resolve::<LanceDatabase>(db_key).ok_or_else(|| {
+        Error::engine(format!(
+            "lancedb target: database `{db_key}` was not provided in the environment \
+             (call Environment::builder().provide_key(&KEY, db))"
+        ))
+    })
+}
+
 struct TableHandler {
-    db: LanceDatabase,
+    db_key: String,
 }
 
 impl TargetHandler<TableSpec> for TableHandler {
@@ -470,11 +483,12 @@ impl TargetHandler<TableSpec> for TableHandler {
 
 impl TableHandler {
     fn table_sink(&self) -> TargetActionSink<TableAction> {
-        let db = self.db.clone();
-        TargetActionSink::from_async_fn_with_children(
-            move |actions: Vec<TargetAction<TableAction>>| {
-                let db = db.clone();
+        let db_key = self.db_key.clone();
+        TargetActionSink::from_async_fn_with_children_ctx(
+            move |host_ctx, actions: Vec<TargetAction<TableAction>>| {
+                let db_key = db_key.clone();
                 async move {
+                    let db = resolve_db(&host_ctx, &db_key)?;
                     let mut out: Vec<Option<ChildTargetDef>> = Vec::with_capacity(actions.len());
                     for action in actions {
                         match action {
@@ -486,7 +500,7 @@ impl TableHandler {
                                     ensure_table(&db, &spec, a.recreate).await?;
                                 }
                                 out.push(Some(ChildTargetDef::new::<RowState, _>(RowHandler {
-                                    db: db.clone(),
+                                    db_key: db_key.clone(),
                                     spec,
                                 })));
                             }
@@ -604,7 +618,7 @@ struct RowAction {
 }
 
 struct RowHandler {
-    db: LanceDatabase,
+    db_key: String,
     spec: TableSpec,
 }
 
@@ -644,28 +658,31 @@ impl TargetHandler<RowState> for RowHandler {
 
 impl RowHandler {
     fn row_sink(&self) -> TargetActionSink<RowAction> {
-        let db = self.db.clone();
+        let db_key = self.db_key.clone();
         let spec = self.spec.clone();
-        TargetActionSink::from_async_fn(move |actions: Vec<TargetAction<RowAction>>| {
-            let db = db.clone();
-            let spec = spec.clone();
-            async move {
-                let mut upserts: Vec<Map<String, JsonValue>> = Vec::new();
-                let mut deletes: Vec<Vec<JsonValue>> = Vec::new();
-                for action in actions {
-                    let row = match action {
-                        TargetAction::Create(r)
-                        | TargetAction::Update(r)
-                        | TargetAction::Delete(r) => r,
-                    };
-                    match row.state {
-                        Some(state) => upserts.push(state.fields),
-                        None => deletes.push(row.pk),
+        TargetActionSink::from_async_fn_with_ctx(
+            move |host_ctx, actions: Vec<TargetAction<RowAction>>| {
+                let db_key = db_key.clone();
+                let spec = spec.clone();
+                async move {
+                    let db = resolve_db(&host_ctx, &db_key)?;
+                    let mut upserts: Vec<Map<String, JsonValue>> = Vec::new();
+                    let mut deletes: Vec<Vec<JsonValue>> = Vec::new();
+                    for action in actions {
+                        let row = match action {
+                            TargetAction::Create(r)
+                            | TargetAction::Update(r)
+                            | TargetAction::Delete(r) => r,
+                        };
+                        match row.state {
+                            Some(state) => upserts.push(state.fields),
+                            None => deletes.push(row.pk),
+                        }
                     }
+                    apply_rows(&db, &spec, upserts, deletes).await
                 }
-                apply_rows(&db, &spec, upserts, deletes).await
-            }
-        })
+            },
+        )
     }
 }
 

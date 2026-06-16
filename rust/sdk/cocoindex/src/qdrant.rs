@@ -23,7 +23,7 @@ use qdrant_client::qdrant::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value as JsonValue};
 
-use crate::ctx::Ctx;
+use crate::ctx::{ContextKey, ContextStore, Ctx};
 use crate::error::{Error, Result};
 use crate::resources::schema::{
     MultiVectorSchema, MultiVectorSchemaProvider, VectorElementType, VectorSchema,
@@ -541,7 +541,7 @@ pub struct CollectionTarget {
 /// changing the vector schema recreates the collection.
 pub async fn mount_collection_target(
     ctx: &Ctx,
-    conn: &QdrantConnection,
+    conn: &ContextKey<QdrantConnection>,
     collection_name: impl Into<String>,
     schema: CollectionSchema,
 ) -> Result<CollectionTarget> {
@@ -557,7 +557,7 @@ pub async fn mount_collection_target(
 
 pub async fn mount_collection_target_with_options(
     ctx: &Ctx,
-    conn: &QdrantConnection,
+    conn: &ContextKey<QdrantConnection>,
     collection_name: impl Into<String>,
     schema: CollectionSchema,
     options: ManagedTargetOptions,
@@ -580,7 +580,7 @@ pub async fn mount_collection_target_with_options(
 /// or use [`declare_collection_target`]/[`mount_collection_target`].
 pub fn collection_target(
     ctx: &Ctx,
-    conn: &QdrantConnection,
+    conn: &ContextKey<QdrantConnection>,
     collection_name: impl Into<String>,
     schema: CollectionSchema,
 ) -> Result<TargetState<CollectionSpec>> {
@@ -596,7 +596,7 @@ pub fn collection_target(
 /// [`collection_target`] with explicit [`ManagedTargetOptions`].
 pub fn collection_target_with_options(
     ctx: &Ctx,
-    conn: &QdrantConnection,
+    conn: &ContextKey<QdrantConnection>,
     collection_name: impl Into<String>,
     schema: CollectionSchema,
     options: ManagedTargetOptions,
@@ -606,10 +606,10 @@ pub fn collection_target_with_options(
         ctx,
         format!(
             "cocoindex/qdrant/collection/{}/{}",
-            conn.state_id(),
+            conn.name(),
             collection_name
         ),
-        CollectionHandler::new(conn.client.clone()),
+        CollectionHandler::new(conn.name().to_string()),
     )?;
     Ok(provider.target_state(
         "default",
@@ -627,7 +627,7 @@ pub fn collection_target_with_options(
 /// immediately.
 pub fn declare_collection_target(
     ctx: &Ctx,
-    conn: &QdrantConnection,
+    conn: &ContextKey<QdrantConnection>,
     collection_name: impl Into<String>,
     schema: CollectionSchema,
 ) -> Result<CollectionTarget> {
@@ -643,7 +643,7 @@ pub fn declare_collection_target(
 /// [`declare_collection_target`] with explicit [`ManagedTargetOptions`].
 pub fn declare_collection_target_with_options(
     ctx: &Ctx,
-    conn: &QdrantConnection,
+    conn: &ContextKey<QdrantConnection>,
     collection_name: impl Into<String>,
     schema: CollectionSchema,
     options: ManagedTargetOptions,
@@ -757,14 +757,28 @@ struct CollectionAction {
     managed_by: ManagedBy,
 }
 
+/// Resolve the live Qdrant client from the host context by the connection's
+/// stable `db_key` (the ContextKey name), used at apply time.
+fn resolve_client(host_ctx: &Arc<ContextStore>, conn_key: &str) -> Result<Arc<Qdrant>> {
+    host_ctx
+        .resolve::<QdrantConnection>(conn_key)
+        .map(|conn| conn.client.clone())
+        .ok_or_else(|| {
+            Error::engine(format!(
+                "qdrant target: connection `{conn_key}` was not provided in the environment \
+                 (call Environment::builder().provide_key(&KEY, conn))"
+            ))
+        })
+}
+
 struct CollectionHandler {
     sink: TargetActionSink<CollectionAction>,
 }
 
 impl CollectionHandler {
-    fn new(client: Arc<Qdrant>) -> Self {
+    fn new(conn_key: String) -> Self {
         Self {
-            sink: collection_sink(client),
+            sink: collection_sink(conn_key),
         }
     }
 }
@@ -841,18 +855,19 @@ impl TargetHandler<CollectionSpec> for CollectionHandler {
     }
 }
 
-fn collection_sink(client: Arc<Qdrant>) -> TargetActionSink<CollectionAction> {
-    TargetActionSink::from_async_fn_with_children(
-        move |actions: Vec<TargetAction<CollectionAction>>| {
-            let client = client.clone();
+fn collection_sink(conn_key: String) -> TargetActionSink<CollectionAction> {
+    TargetActionSink::from_async_fn_with_children_ctx(
+        move |host_ctx, actions: Vec<TargetAction<CollectionAction>>| {
+            let conn_key = conn_key.clone();
             async move {
+                let client = resolve_client(&host_ctx, &conn_key)?;
                 let mut out: Vec<Option<ChildTargetDef>> = Vec::with_capacity(actions.len());
                 for action in actions {
                     match action {
                         TargetAction::Create(a) | TargetAction::Update(a) => {
                             ensure_collection(&client, &a).await?;
                             out.push(Some(ChildTargetDef::new::<Point, _>(PointHandler::new(
-                                client.clone(),
+                                conn_key.clone(),
                                 a.name,
                                 a.schema,
                             ))));
@@ -922,9 +937,9 @@ struct PointHandler {
 }
 
 impl PointHandler {
-    fn new(client: Arc<Qdrant>, collection_name: String, schema: CollectionSchema) -> Self {
+    fn new(conn_key: String, collection_name: String, schema: CollectionSchema) -> Self {
         Self {
-            sink: point_sink(client, collection_name, schema),
+            sink: point_sink(conn_key, collection_name, schema),
         }
     }
 }
@@ -1000,49 +1015,52 @@ fn point_fingerprint(point: &Point) -> String {
 }
 
 fn point_sink(
-    client: Arc<Qdrant>,
+    conn_key: String,
     collection_name: String,
     schema: CollectionSchema,
 ) -> TargetActionSink<PointAction> {
-    TargetActionSink::from_async_fn(move |actions: Vec<TargetAction<PointAction>>| {
-        let client = client.clone();
-        let collection_name = collection_name.clone();
-        let schema = schema.clone();
-        async move {
-            let mut upserts: Vec<PointStruct> = Vec::new();
-            let mut deletes: Vec<qdrant_client::qdrant::PointId> = Vec::new();
-            for action in actions {
-                match action {
-                    TargetAction::Create(a) | TargetAction::Update(a) => {
-                        if let Some(point) = a.point {
-                            let id = point.id.to_qdrant();
-                            let vectors = point.to_qdrant_vectors(&schema)?;
-                            let payload: Payload = point.payload.into();
-                            let struct_ = PointStruct::new(id, vectors, payload);
-                            upserts.push(struct_);
+    TargetActionSink::from_async_fn_with_ctx(
+        move |host_ctx, actions: Vec<TargetAction<PointAction>>| {
+            let conn_key = conn_key.clone();
+            let collection_name = collection_name.clone();
+            let schema = schema.clone();
+            async move {
+                let client = resolve_client(&host_ctx, &conn_key)?;
+                let mut upserts: Vec<PointStruct> = Vec::new();
+                let mut deletes: Vec<qdrant_client::qdrant::PointId> = Vec::new();
+                for action in actions {
+                    match action {
+                        TargetAction::Create(a) | TargetAction::Update(a) => {
+                            if let Some(point) = a.point {
+                                let id = point.id.to_qdrant();
+                                let vectors = point.to_qdrant_vectors(&schema)?;
+                                let payload: Payload = point.payload.into();
+                                let struct_ = PointStruct::new(id, vectors, payload);
+                                upserts.push(struct_);
+                            }
                         }
+                        TargetAction::Delete(a) => deletes.push(a.id.to_qdrant()),
                     }
-                    TargetAction::Delete(a) => deletes.push(a.id.to_qdrant()),
                 }
+                if !upserts.is_empty() {
+                    client
+                        .upsert_points(UpsertPointsBuilder::new(collection_name.clone(), upserts))
+                        .await
+                        .map_err(|e| Error::engine(format!("qdrant upsert_points: {e}")))?;
+                }
+                if !deletes.is_empty() {
+                    client
+                        .delete_points(
+                            DeletePointsBuilder::new(collection_name.clone())
+                                .points(PointsIdsList { ids: deletes }),
+                        )
+                        .await
+                        .map_err(|e| Error::engine(format!("qdrant delete_points: {e}")))?;
+                }
+                Ok(())
             }
-            if !upserts.is_empty() {
-                client
-                    .upsert_points(UpsertPointsBuilder::new(collection_name.clone(), upserts))
-                    .await
-                    .map_err(|e| Error::engine(format!("qdrant upsert_points: {e}")))?;
-            }
-            if !deletes.is_empty() {
-                client
-                    .delete_points(
-                        DeletePointsBuilder::new(collection_name.clone())
-                            .points(PointsIdsList { ids: deletes }),
-                    )
-                    .await
-                    .map_err(|e| Error::engine(format!("qdrant delete_points: {e}")))?;
-            }
-            Ok(())
-        }
-    })
+        },
+    )
 }
 
 // ---------------------------------------------------------------------------

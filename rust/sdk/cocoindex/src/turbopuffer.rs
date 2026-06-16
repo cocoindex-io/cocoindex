@@ -12,7 +12,7 @@ use std::{collections::BTreeMap, sync::Arc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value as JsonValue, json};
 
-use crate::ctx::Ctx;
+use crate::ctx::{ContextKey, ContextStore, Ctx};
 use crate::error::{Error, Result};
 use crate::resources::schema::{VectorElementType, VectorSchema, VectorSchemaProvider};
 use crate::statediff::{
@@ -428,7 +428,7 @@ pub struct NamespaceTarget {
 /// orphaned rows are deleted; changing the vector schema clears the namespace.
 pub async fn mount_namespace_target(
     ctx: &Ctx,
-    conn: &TurbopufferConnection,
+    conn: &ContextKey<TurbopufferConnection>,
     namespace: impl Into<String>,
     schema: NamespaceSchema,
 ) -> Result<NamespaceTarget> {
@@ -444,7 +444,7 @@ pub async fn mount_namespace_target(
 
 pub async fn mount_namespace_target_with_options(
     ctx: &Ctx,
-    conn: &TurbopufferConnection,
+    conn: &ContextKey<TurbopufferConnection>,
     namespace: impl Into<String>,
     schema: NamespaceSchema,
     options: ManagedTargetOptions,
@@ -467,7 +467,7 @@ pub async fn mount_namespace_target_with_options(
 /// or use [`declare_namespace_target`]/[`mount_namespace_target`].
 pub fn namespace_target(
     ctx: &Ctx,
-    conn: &TurbopufferConnection,
+    conn: &ContextKey<TurbopufferConnection>,
     namespace: impl Into<String>,
     schema: NamespaceSchema,
 ) -> Result<TargetState<NamespaceSpec>> {
@@ -483,7 +483,7 @@ pub fn namespace_target(
 /// [`namespace_target`] with explicit [`ManagedTargetOptions`].
 pub fn namespace_target_with_options(
     ctx: &Ctx,
-    conn: &TurbopufferConnection,
+    conn: &ContextKey<TurbopufferConnection>,
     namespace: impl Into<String>,
     schema: NamespaceSchema,
     options: ManagedTargetOptions,
@@ -494,10 +494,10 @@ pub fn namespace_target_with_options(
         ctx,
         format!(
             "cocoindex/turbopuffer/namespace/{}/{}",
-            conn.state_id(),
+            conn.name(),
             namespace
         ),
-        NamespaceHandler::new(conn.clone()),
+        NamespaceHandler::new(conn.name().to_string()),
     )?;
     Ok(provider.target_state(
         "default",
@@ -515,7 +515,7 @@ pub fn namespace_target_with_options(
 /// immediately.
 pub fn declare_namespace_target(
     ctx: &Ctx,
-    conn: &TurbopufferConnection,
+    conn: &ContextKey<TurbopufferConnection>,
     namespace: impl Into<String>,
     schema: NamespaceSchema,
 ) -> Result<NamespaceTarget> {
@@ -531,7 +531,7 @@ pub fn declare_namespace_target(
 /// [`declare_namespace_target`] with explicit [`ManagedTargetOptions`].
 pub fn declare_namespace_target_with_options(
     ctx: &Ctx,
-    conn: &TurbopufferConnection,
+    conn: &ContextKey<TurbopufferConnection>,
     namespace: impl Into<String>,
     schema: NamespaceSchema,
     options: ManagedTargetOptions,
@@ -634,14 +634,30 @@ struct NamespaceAction {
     managed_by: ManagedBy,
 }
 
+/// Resolve the live Turbopuffer connection from the host context by its stable
+/// `db_key` (the ContextKey name), used at apply time.
+fn resolve_conn(
+    host_ctx: &Arc<ContextStore>,
+    conn_key: &str,
+) -> Result<Arc<TurbopufferConnection>> {
+    host_ctx
+        .resolve::<TurbopufferConnection>(conn_key)
+        .ok_or_else(|| {
+            Error::engine(format!(
+                "turbopuffer target: connection `{conn_key}` was not provided in the environment \
+                 (call Environment::builder().provide_key(&KEY, conn))"
+            ))
+        })
+}
+
 struct NamespaceHandler {
     sink: TargetActionSink<NamespaceAction>,
 }
 
 impl NamespaceHandler {
-    fn new(conn: TurbopufferConnection) -> Self {
+    fn new(conn_key: String) -> Self {
         Self {
-            sink: namespace_sink(conn),
+            sink: namespace_sink(conn_key),
         }
     }
 }
@@ -715,11 +731,12 @@ impl TargetHandler<NamespaceSpec> for NamespaceHandler {
     }
 }
 
-fn namespace_sink(conn: TurbopufferConnection) -> TargetActionSink<NamespaceAction> {
-    TargetActionSink::from_async_fn_with_children(
-        move |actions: Vec<TargetAction<NamespaceAction>>| {
-            let conn = conn.clone();
+fn namespace_sink(conn_key: String) -> TargetActionSink<NamespaceAction> {
+    TargetActionSink::from_async_fn_with_children_ctx(
+        move |host_ctx, actions: Vec<TargetAction<NamespaceAction>>| {
+            let conn_key = conn_key.clone();
             async move {
+                let conn = resolve_conn(&host_ctx, &conn_key)?;
                 let mut out: Vec<Option<ChildTargetDef>> = Vec::with_capacity(actions.len());
                 for action in actions {
                     match action {
@@ -730,7 +747,7 @@ fn namespace_sink(conn: TurbopufferConnection) -> TargetActionSink<NamespaceActi
                                 conn.delete_namespace(&a.namespace).await?;
                             }
                             out.push(Some(ChildTargetDef::new::<Row, _>(RowHandler::new(
-                                conn.clone(),
+                                conn_key.clone(),
                                 a.namespace,
                                 a.schema,
                             ))));
@@ -764,9 +781,9 @@ struct RowHandler {
 }
 
 impl RowHandler {
-    fn new(conn: TurbopufferConnection, namespace: String, schema: NamespaceSchema) -> Self {
+    fn new(conn_key: String, namespace: String, schema: NamespaceSchema) -> Self {
         Self {
-            sink: row_sink(conn, namespace, schema),
+            sink: row_sink(conn_key, namespace, schema),
         }
     }
 }
@@ -830,45 +847,48 @@ fn row_fingerprint(row: &Row) -> String {
 }
 
 fn row_sink(
-    conn: TurbopufferConnection,
+    conn_key: String,
     namespace: String,
     schema: NamespaceSchema,
 ) -> TargetActionSink<RowAction> {
-    TargetActionSink::from_async_fn(move |actions: Vec<TargetAction<RowAction>>| {
-        let conn = conn.clone();
-        let namespace = namespace.clone();
-        let schema = schema.clone();
-        async move {
-            let mut upserts: Vec<JsonValue> = Vec::new();
-            let mut deletes: Vec<JsonValue> = Vec::new();
-            for action in actions {
-                match action {
-                    TargetAction::Create(a) | TargetAction::Update(a) => {
-                        if let Some(row) = a.row {
-                            upserts.push(row.to_upsert(&schema)?);
+    TargetActionSink::from_async_fn_with_ctx(
+        move |host_ctx, actions: Vec<TargetAction<RowAction>>| {
+            let conn_key = conn_key.clone();
+            let namespace = namespace.clone();
+            let schema = schema.clone();
+            async move {
+                let conn = resolve_conn(&host_ctx, &conn_key)?;
+                let mut upserts: Vec<JsonValue> = Vec::new();
+                let mut deletes: Vec<JsonValue> = Vec::new();
+                for action in actions {
+                    match action {
+                        TargetAction::Create(a) | TargetAction::Update(a) => {
+                            if let Some(row) = a.row {
+                                upserts.push(row.to_upsert(&schema)?);
+                            }
                         }
+                        TargetAction::Delete(a) => deletes.push(JsonValue::from(a.id)),
                     }
-                    TargetAction::Delete(a) => deletes.push(JsonValue::from(a.id)),
                 }
+                if upserts.is_empty() && deletes.is_empty() {
+                    return Ok(());
+                }
+                let mut body = Map::new();
+                body.insert(
+                    "distance_metric".into(),
+                    JsonValue::from(schema.distance.as_str()),
+                );
+                body.insert("schema".into(), schema.write_schema()?);
+                if !upserts.is_empty() {
+                    body.insert("upsert_rows".into(), JsonValue::Array(upserts));
+                }
+                if !deletes.is_empty() {
+                    body.insert("deletes".into(), JsonValue::Array(deletes));
+                }
+                conn.write(&namespace, JsonValue::Object(body)).await
             }
-            if upserts.is_empty() && deletes.is_empty() {
-                return Ok(());
-            }
-            let mut body = Map::new();
-            body.insert(
-                "distance_metric".into(),
-                JsonValue::from(schema.distance.as_str()),
-            );
-            body.insert("schema".into(), schema.write_schema()?);
-            if !upserts.is_empty() {
-                body.insert("upsert_rows".into(), JsonValue::Array(upserts));
-            }
-            if !deletes.is_empty() {
-                body.insert("deletes".into(), JsonValue::Array(deletes));
-            }
-            conn.write(&namespace, JsonValue::Object(body)).await
-        }
-    })
+        },
+    )
 }
 
 // ---------------------------------------------------------------------------

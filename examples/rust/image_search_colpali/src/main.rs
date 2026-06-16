@@ -134,7 +134,7 @@ async fn app_main(ctx: Ctx, sourcedir: PathBuf) -> Result<()> {
     let conn = ctx.get_key(&DB)?;
     let target = qdrant::mount_collection_target(
         &ctx,
-        conn,
+        &DB,
         COLLECTION,
         CollectionSchema::multivector(EMBED_DIM, Distance::Cosine),
     )

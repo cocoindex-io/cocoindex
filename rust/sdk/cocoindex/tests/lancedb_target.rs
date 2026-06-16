@@ -9,7 +9,7 @@
 #![cfg(feature = "lancedb")]
 
 use cocoindex::lancedb::{self, ColumnDef, ColumnType, LanceDatabase, TableSchema};
-use cocoindex::{App, ContextKey, Environment, ManagedTargetOptions, Result};
+use cocoindex::{ContextKey, Environment, ManagedTargetOptions, Result};
 use serde::Serialize;
 use std::sync::LazyLock;
 
@@ -131,8 +131,7 @@ async fn lancedb_target_creates_upserts_searches_and_reconciles() -> Result<()> 
             app.run(move |ctx| {
                 let rows = rows.clone();
                 async move {
-                    let db = ctx.get_key(&DB)?;
-                    let table = lancedb::mount_table_target(&ctx, db, TABLE, schema()).await?;
+                    let table = lancedb::mount_table_target(&ctx, &DB, TABLE, schema()).await?;
                     for row in &rows {
                         table.declare_row(&ctx, row)?;
                     }
@@ -222,8 +221,7 @@ async fn lancedb_target_creates_upserts_searches_and_reconciles() -> Result<()> 
     app.run(move |ctx| {
         let rows = rows_v2.clone();
         async move {
-            let db = ctx.get_key(&DB)?;
-            let table = lancedb::mount_table_target(&ctx, db, TABLE, schema_v2()).await?;
+            let table = lancedb::mount_table_target(&ctx, &DB, TABLE, schema_v2()).await?;
             for row in &rows {
                 table.declare_row(&ctx, row)?;
             }
@@ -271,8 +269,7 @@ async fn lancedb_replays_unchanged_rows_after_destructive_schema_change() -> Res
                 let rows = rows.clone();
                 let schema = schema.clone();
                 async move {
-                    let db = ctx.get_key(&DB)?;
-                    let table = lancedb::mount_table_target(&ctx, db, TABLE, schema).await?;
+                    let table = lancedb::mount_table_target(&ctx, &DB, TABLE, schema).await?;
                     for row in &rows {
                         table.declare_row(&ctx, row)?;
                     }
@@ -319,8 +316,7 @@ async fn lancedb_replaces_table_on_destructive_schema_change() -> Result<()> {
                 let rows = rows.clone();
                 let schema = schema.clone();
                 async move {
-                    let db = ctx.get_key(&DB)?;
-                    let table = lancedb::mount_table_target(&ctx, db, TABLE, schema).await?;
+                    let table = lancedb::mount_table_target(&ctx, &DB, TABLE, schema).await?;
                     for row in &rows {
                         table.declare_row(&ctx, row)?;
                     }
@@ -383,10 +379,9 @@ async fn lancedb_user_managed_target_does_not_create_table() -> Result<()> {
         .await?;
 
     app.run(move |ctx| async move {
-        let db = ctx.get_key(&DB)?;
         let _table = lancedb::mount_table_target_with_options(
             &ctx,
-            db,
+            &DB,
             TABLE,
             schema(),
             ManagedTargetOptions::user_managed(),
@@ -446,8 +441,7 @@ async fn lancedb_adds_vector_column_additively() -> Result<()> {
             .app("LanceAddVecTest")
             .await?;
         app.run(move |ctx| async move {
-            let db = ctx.get_key(&DB)?;
-            let table = lancedb::mount_table_target(&ctx, db, TABLE, schema()).await?;
+            let table = lancedb::mount_table_target(&ctx, &DB, TABLE, schema()).await?;
             table.declare_row(
                 &ctx,
                 &Row {
@@ -480,8 +474,7 @@ async fn lancedb_adds_vector_column_additively() -> Result<()> {
             .app("LanceAddVecTest")
             .await?;
         app.run(move |ctx| async move {
-            let db = ctx.get_key(&DB)?;
-            let table = lancedb::mount_table_target(&ctx, db, TABLE, schema_two_vec()).await?;
+            let table = lancedb::mount_table_target(&ctx, &DB, TABLE, schema_two_vec()).await?;
             table.declare_row(
                 &ctx,
                 &RowTwoVec {
