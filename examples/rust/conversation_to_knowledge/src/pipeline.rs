@@ -277,28 +277,27 @@ pub async fn create_knowledge_base(
     processed: &[ProcessedSession],
     dedups: &HashMap<String, HashMap<String, Option<String>>>,
 ) -> Result<()> {
-    let graph = ctx.get_key(&GRAPH)?;
-
     let session_target =
-        surrealdb::mount_table_target_with_schema(ctx, graph, "session", Some(session_schema()?))
+        surrealdb::mount_table_target_with_schema(ctx, &GRAPH, "session", Some(session_schema()?))
             .await?;
     let statement_target = surrealdb::mount_table_target_with_schema(
         ctx,
-        graph,
+        &GRAPH,
         "statement",
         Some(statement_schema()?),
     )
     .await?;
     let person_target =
-        surrealdb::mount_table_target_with_schema(ctx, graph, PERSON, Some(entity_schema()?))
+        surrealdb::mount_table_target_with_schema(ctx, &GRAPH, PERSON, Some(entity_schema()?))
             .await?;
     let tech_target =
-        surrealdb::mount_table_target_with_schema(ctx, graph, TECH, Some(entity_schema()?)).await?;
+        surrealdb::mount_table_target_with_schema(ctx, &GRAPH, TECH, Some(entity_schema()?))
+            .await?;
     let org_target =
-        surrealdb::mount_table_target_with_schema(ctx, graph, ORG, Some(entity_schema()?)).await?;
+        surrealdb::mount_table_target_with_schema(ctx, &GRAPH, ORG, Some(entity_schema()?)).await?;
     let session_statement_target = surrealdb::mount_relation_target(
         ctx,
-        graph,
+        &GRAPH,
         "session_statement",
         &session_target,
         &statement_target,
@@ -306,7 +305,7 @@ pub async fn create_knowledge_base(
     .await?;
     let person_session_target = surrealdb::mount_relation_target(
         ctx,
-        graph,
+        &GRAPH,
         "person_session",
         &person_target,
         &session_target,
@@ -314,7 +313,7 @@ pub async fn create_knowledge_base(
     .await?;
     let person_statement_target = surrealdb::mount_relation_target(
         ctx,
-        graph,
+        &GRAPH,
         "person_statement",
         &person_target,
         &statement_target,
@@ -322,7 +321,7 @@ pub async fn create_knowledge_base(
     .await?;
     let statement_mentions_target = surrealdb::mount_relation_target_many(
         ctx,
-        graph,
+        &GRAPH,
         "statement_mentions",
         &[&statement_target],
         &[&person_target, &tech_target, &org_target],
