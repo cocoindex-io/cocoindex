@@ -21,7 +21,7 @@ use surrealdb::engine::remote::ws::{Client, Ws};
 use surrealdb::opt::auth::Root;
 use surrealdb::types::RecordId;
 
-use crate::ctx::Ctx;
+use crate::ctx::{ContextKey, ContextStore, Ctx};
 use crate::error::{Error, Result};
 use crate::sql_ident::validate_ident;
 use crate::statediff::{
@@ -468,17 +468,21 @@ fn relation_handle(spec: TableSpec, records: TargetStateProvider<RecordState>) -
 // Spec constructors (the composable `TargetState<TableSpec>`)
 // ---------------------------------------------------------------------------
 
-fn table_target_state(ctx: &Ctx, graph: &Graph, spec: TableSpec) -> Result<TargetState<TableSpec>> {
+fn table_target_state(
+    ctx: &Ctx,
+    graph: &ContextKey<Graph>,
+    spec: TableSpec,
+) -> Result<TargetState<TableSpec>> {
     validate_ident(&spec.table_name, "table name")?;
     let provider = register_root_target_states_provider(
         ctx,
         format!(
             "cocoindex/surrealdb/table/{}/{}",
-            graph.state_id(),
+            graph.name(),
             spec.table_name
         ),
         TableHandler {
-            graph: graph.clone(),
+            graph_key: graph.name().to_string(),
         },
     )?;
     Ok(provider.target_state("default", spec))
@@ -489,7 +493,7 @@ fn table_target_state(ctx: &Ctx, graph: &Graph, spec: TableSpec) -> Result<Targe
 /// or the generic target-state helpers.
 pub fn table_target(
     ctx: &Ctx,
-    graph: &Graph,
+    graph: &ContextKey<Graph>,
     table_name: impl Into<String>,
 ) -> Result<TargetState<TableSpec>> {
     table_target_with_schema_and_options(
@@ -504,7 +508,7 @@ pub fn table_target(
 /// [`table_target`] with an explicit schema and [`ManagedTargetOptions`].
 pub fn table_target_with_schema_and_options(
     ctx: &Ctx,
-    graph: &Graph,
+    graph: &ContextKey<Graph>,
     table_name: impl Into<String>,
     table_schema: Option<TableSchema>,
     options: ManagedTargetOptions,
@@ -520,7 +524,7 @@ pub fn table_target_with_schema_and_options(
 /// connect any of `from_tables` to any of `to_tables`.
 pub fn relation_target_many(
     ctx: &Ctx,
-    graph: &Graph,
+    graph: &ContextKey<Graph>,
     table_name: impl Into<String>,
     from_tables: &[&TableTarget],
     to_tables: &[&TableTarget],
@@ -540,7 +544,7 @@ pub fn relation_target_many(
 /// [`relation_target_many`] with explicit [`ManagedTargetOptions`].
 pub fn relation_target_many_with_options(
     ctx: &Ctx,
-    graph: &Graph,
+    graph: &ContextKey<Graph>,
     table_name: impl Into<String>,
     from_tables: &[&TableTarget],
     to_tables: &[&TableTarget],
@@ -582,7 +586,7 @@ pub fn relation_target_many_with_options(
 /// table (no fixed `from`/`to` tables).
 pub fn relation_target_unconstrained(
     ctx: &Ctx,
-    graph: &Graph,
+    graph: &ContextKey<Graph>,
     table_name: impl Into<String>,
 ) -> Result<TargetState<TableSpec>> {
     relation_target_unconstrained_with_options(
@@ -596,7 +600,7 @@ pub fn relation_target_unconstrained(
 /// [`relation_target_unconstrained`] with explicit [`ManagedTargetOptions`].
 pub fn relation_target_unconstrained_with_options(
     ctx: &Ctx,
-    graph: &Graph,
+    graph: &ContextKey<Graph>,
     table_name: impl Into<String>,
     options: ManagedTargetOptions,
 ) -> Result<TargetState<TableSpec>> {
@@ -623,7 +627,7 @@ pub fn relation_target_unconstrained_with_options(
 /// immediately.
 pub fn declare_table_target(
     ctx: &Ctx,
-    graph: &Graph,
+    graph: &ContextKey<Graph>,
     table_name: impl Into<String>,
 ) -> Result<TableTarget> {
     declare_table_target_with_schema_and_options(
@@ -638,7 +642,7 @@ pub fn declare_table_target(
 /// [`declare_table_target`] with an explicit schema and [`ManagedTargetOptions`].
 pub fn declare_table_target_with_schema_and_options(
     ctx: &Ctx,
-    graph: &Graph,
+    graph: &ContextKey<Graph>,
     table_name: impl Into<String>,
     table_schema: Option<TableSchema>,
     options: ManagedTargetOptions,
@@ -655,7 +659,7 @@ pub fn declare_table_target_with_schema_and_options(
 /// be declared immediately.
 pub fn declare_relation_target_many(
     ctx: &Ctx,
-    graph: &Graph,
+    graph: &ContextKey<Graph>,
     table_name: impl Into<String>,
     from_tables: &[&TableTarget],
     to_tables: &[&TableTarget],
@@ -675,7 +679,7 @@ pub fn declare_relation_target_many(
 /// [`declare_relation_target_many`] with explicit [`ManagedTargetOptions`].
 pub fn declare_relation_target_many_with_options(
     ctx: &Ctx,
-    graph: &Graph,
+    graph: &ContextKey<Graph>,
     table_name: impl Into<String>,
     from_tables: &[&TableTarget],
     to_tables: &[&TableTarget],
@@ -699,7 +703,7 @@ pub fn declare_relation_target_many_with_options(
 /// Declare an unconstrained SurrealDB relation target in the current component.
 pub fn declare_relation_target_unconstrained(
     ctx: &Ctx,
-    graph: &Graph,
+    graph: &ContextKey<Graph>,
     table_name: impl Into<String>,
 ) -> Result<RelationTarget> {
     declare_relation_target_unconstrained_with_options(
@@ -713,7 +717,7 @@ pub fn declare_relation_target_unconstrained(
 /// [`declare_relation_target_unconstrained`] with explicit [`ManagedTargetOptions`].
 pub fn declare_relation_target_unconstrained_with_options(
     ctx: &Ctx,
-    graph: &Graph,
+    graph: &ContextKey<Graph>,
     table_name: impl Into<String>,
     options: ManagedTargetOptions,
 ) -> Result<RelationTarget> {
@@ -729,7 +733,7 @@ pub fn declare_relation_target_unconstrained_with_options(
 
 pub async fn mount_table_target(
     ctx: &Ctx,
-    graph: &Graph,
+    graph: &ContextKey<Graph>,
     table_name: impl Into<String>,
 ) -> Result<TableTarget> {
     mount_table_target_with_schema_and_options(
@@ -744,7 +748,7 @@ pub async fn mount_table_target(
 
 pub async fn mount_table_target_with_options(
     ctx: &Ctx,
-    graph: &Graph,
+    graph: &ContextKey<Graph>,
     table_name: impl Into<String>,
     options: ManagedTargetOptions,
 ) -> Result<TableTarget> {
@@ -753,7 +757,7 @@ pub async fn mount_table_target_with_options(
 
 pub async fn mount_table_target_with_schema(
     ctx: &Ctx,
-    graph: &Graph,
+    graph: &ContextKey<Graph>,
     table_name: impl Into<String>,
     table_schema: Option<TableSchema>,
 ) -> Result<TableTarget> {
@@ -769,7 +773,7 @@ pub async fn mount_table_target_with_schema(
 
 pub async fn mount_table_target_with_schema_and_options(
     ctx: &Ctx,
-    graph: &Graph,
+    graph: &ContextKey<Graph>,
     table_name: impl Into<String>,
     table_schema: Option<TableSchema>,
     options: ManagedTargetOptions,
@@ -783,7 +787,7 @@ pub async fn mount_table_target_with_schema_and_options(
 
 pub async fn mount_relation_target(
     ctx: &Ctx,
-    graph: &Graph,
+    graph: &ContextKey<Graph>,
     table_name: impl Into<String>,
     from_table: &TableTarget,
     to_table: &TableTarget,
@@ -802,7 +806,7 @@ pub async fn mount_relation_target(
 
 pub async fn mount_relation_target_with_options(
     ctx: &Ctx,
-    graph: &Graph,
+    graph: &ContextKey<Graph>,
     table_name: impl Into<String>,
     from_table: &TableTarget,
     to_table: &TableTarget,
@@ -822,7 +826,7 @@ pub async fn mount_relation_target_with_options(
 
 pub async fn mount_relation_target_many(
     ctx: &Ctx,
-    graph: &Graph,
+    graph: &ContextKey<Graph>,
     table_name: impl Into<String>,
     from_tables: &[&TableTarget],
     to_tables: &[&TableTarget],
@@ -842,7 +846,7 @@ pub async fn mount_relation_target_many(
 
 pub async fn mount_relation_target_many_with_options(
     ctx: &Ctx,
-    graph: &Graph,
+    graph: &ContextKey<Graph>,
     table_name: impl Into<String>,
     from_tables: &[&TableTarget],
     to_tables: &[&TableTarget],
@@ -865,7 +869,7 @@ pub async fn mount_relation_target_many_with_options(
 
 pub async fn mount_relation_target_unconstrained(
     ctx: &Ctx,
-    graph: &Graph,
+    graph: &ContextKey<Graph>,
     table_name: impl Into<String>,
 ) -> Result<RelationTarget> {
     mount_relation_target_unconstrained_with_options(
@@ -879,7 +883,7 @@ pub async fn mount_relation_target_unconstrained(
 
 pub async fn mount_relation_target_unconstrained_with_options(
     ctx: &Ctx,
-    graph: &Graph,
+    graph: &ContextKey<Graph>,
     table_name: impl Into<String>,
     options: ManagedTargetOptions,
 ) -> Result<RelationTarget> {
@@ -1023,8 +1027,19 @@ struct RecordAction {
 // Table container handler (root) + sink yielding record children
 // ---------------------------------------------------------------------------
 
+/// Resolve the live SurrealDB graph connection from the host context by its
+/// stable `db_key` (the ContextKey name), used at apply time.
+fn resolve_graph(host_ctx: &Arc<ContextStore>, graph_key: &str) -> Result<Arc<Graph>> {
+    host_ctx.resolve::<Graph>(graph_key).ok_or_else(|| {
+        Error::engine(format!(
+            "surrealdb target: connection `{graph_key}` was not provided in the environment \
+             (call Environment::builder().provide_key(&KEY, graph))"
+        ))
+    })
+}
+
 struct TableHandler {
-    graph: Graph,
+    graph_key: String,
 }
 
 impl TargetHandler<TableSpec> for TableHandler {
@@ -1141,7 +1156,7 @@ impl TargetHandler<TableSpec> for TableHandler {
         Ok(vec![(
             "vector_index".to_string(),
             ChildTargetDef::new::<VectorIndexSpec, _>(VectorIndexHandler {
-                graph: self.graph.clone(),
+                graph_key: self.graph_key.clone(),
             }),
         )])
     }
@@ -1149,11 +1164,12 @@ impl TargetHandler<TableSpec> for TableHandler {
 
 impl TableHandler {
     fn table_sink(&self) -> TargetActionSink<TableAction> {
-        let graph = self.graph.clone();
-        TargetActionSink::from_async_fn_with_children(
-            move |actions: Vec<TargetAction<TableAction>>| {
-                let graph = graph.clone();
+        let graph_key = self.graph_key.clone();
+        TargetActionSink::from_async_fn_with_children_ctx(
+            move |host_ctx, actions: Vec<TargetAction<TableAction>>| {
+                let graph_key = graph_key.clone();
                 async move {
+                    let graph = resolve_graph(&host_ctx, &graph_key)?;
                     let mut out: Vec<Option<ChildTargetDef>> = Vec::with_capacity(actions.len());
                     for action in actions {
                         match action {
@@ -1179,7 +1195,7 @@ impl TableHandler {
                                 }
                                 out.push(Some(ChildTargetDef::new::<RecordState, _>(
                                     RecordHandler {
-                                        graph: graph.clone(),
+                                        graph_key: graph_key.clone(),
                                         spec,
                                     },
                                 )));
@@ -1204,7 +1220,7 @@ impl TableHandler {
 // ---------------------------------------------------------------------------
 
 struct RecordHandler {
-    graph: Graph,
+    graph_key: String,
     spec: TableSpec,
 }
 
@@ -1248,24 +1264,27 @@ impl TargetHandler<RecordState> for RecordHandler {
 
 impl RecordHandler {
     fn record_sink(&self) -> TargetActionSink<RecordAction> {
-        let graph = self.graph.clone();
+        let graph_key = self.graph_key.clone();
         let spec = self.spec.clone();
-        TargetActionSink::from_async_fn(move |actions: Vec<TargetAction<RecordAction>>| {
-            let graph = graph.clone();
-            let spec = spec.clone();
-            async move {
-                let mut mutations = Vec::with_capacity(actions.len());
-                for action in actions {
-                    let record = match action {
-                        TargetAction::Create(r)
-                        | TargetAction::Update(r)
-                        | TargetAction::Delete(r) => r,
-                    };
-                    mutations.push((record.record_id, record.state));
+        TargetActionSink::from_async_fn_with_ctx(
+            move |host_ctx, actions: Vec<TargetAction<RecordAction>>| {
+                let graph_key = graph_key.clone();
+                let spec = spec.clone();
+                async move {
+                    let graph = resolve_graph(&host_ctx, &graph_key)?;
+                    let mut mutations = Vec::with_capacity(actions.len());
+                    for action in actions {
+                        let record = match action {
+                            TargetAction::Create(r)
+                            | TargetAction::Update(r)
+                            | TargetAction::Delete(r) => r,
+                        };
+                        mutations.push((record.record_id, record.state));
+                    }
+                    apply_records(&graph, &spec, mutations).await
                 }
-                apply_records(&graph, &spec, mutations).await
-            }
-        })
+            },
+        )
     }
 }
 
@@ -1297,7 +1316,7 @@ struct VectorIndexAction {
 }
 
 struct VectorIndexHandler {
-    graph: Graph,
+    graph_key: String,
 }
 
 impl TargetHandler<VectorIndexSpec> for VectorIndexHandler {
@@ -1348,21 +1367,24 @@ impl TargetHandler<VectorIndexSpec> for VectorIndexHandler {
 
 impl VectorIndexHandler {
     fn vector_index_sink(&self) -> TargetActionSink<VectorIndexAction> {
-        let graph = self.graph.clone();
-        TargetActionSink::from_async_fn(move |actions: Vec<TargetAction<VectorIndexAction>>| {
-            let graph = graph.clone();
-            async move {
-                for action in actions {
-                    let action = match action {
-                        TargetAction::Create(a)
-                        | TargetAction::Update(a)
-                        | TargetAction::Delete(a) => a,
-                    };
-                    apply_vector_index(&graph, action).await?;
+        let graph_key = self.graph_key.clone();
+        TargetActionSink::from_async_fn_with_ctx(
+            move |host_ctx, actions: Vec<TargetAction<VectorIndexAction>>| {
+                let graph_key = graph_key.clone();
+                async move {
+                    let graph = resolve_graph(&host_ctx, &graph_key)?;
+                    for action in actions {
+                        let action = match action {
+                            TargetAction::Create(a)
+                            | TargetAction::Update(a)
+                            | TargetAction::Delete(a) => a,
+                        };
+                        apply_vector_index(&graph, action).await?;
+                    }
+                    Ok(())
                 }
-                Ok(())
-            }
-        })
+            },
+        )
     }
 }
 

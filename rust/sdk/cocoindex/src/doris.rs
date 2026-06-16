@@ -31,7 +31,7 @@ use serde_json::{Map, Value as JsonValue};
 use sqlx::MySqlPool;
 use sqlx::mysql::{MySqlConnectOptions, MySqlPoolOptions};
 
-use crate::ctx::Ctx;
+use crate::ctx::{ContextKey, ContextStore, Ctx};
 use crate::error::{Error, Result};
 use crate::sql_ident::validate_ident;
 use crate::statediff::{
@@ -468,7 +468,7 @@ pub struct TableTarget {
 /// indexes).
 pub fn table_target(
     ctx: &Ctx,
-    conn: &DorisConnection,
+    conn: &ContextKey<DorisConnection>,
     table_name: impl Into<String>,
     table_schema: TableSchema,
 ) -> Result<TargetState<TableSpec>> {
@@ -485,7 +485,7 @@ pub fn table_target(
 /// vector/inverted indexes).
 pub fn table_target_with_options(
     ctx: &Ctx,
-    conn: &DorisConnection,
+    conn: &ContextKey<DorisConnection>,
     table_name: impl Into<String>,
     table_schema: TableSchema,
     options: DorisTableOptions,
@@ -495,8 +495,10 @@ pub fn table_target_with_options(
     validate_indexes(&table_schema, &options)?;
     let provider = register_root_target_states_provider(
         ctx,
-        format!("cocoindex/doris/table/{}/{}", conn.state_id(), table_name),
-        TableHandler { conn: conn.clone() },
+        format!("cocoindex/doris/table/{}/{}", conn.name(), table_name),
+        TableHandler {
+            conn_key: conn.name().to_string(),
+        },
     )?;
     Ok(provider.target_state(
         "default",
@@ -514,7 +516,7 @@ pub fn table_target_with_options(
 /// provider resolves at this component's commit) and return a handle.
 pub fn declare_table_target(
     ctx: &Ctx,
-    conn: &DorisConnection,
+    conn: &ContextKey<DorisConnection>,
     table_name: impl Into<String>,
     table_schema: TableSchema,
 ) -> Result<TableTarget> {
@@ -530,7 +532,7 @@ pub fn declare_table_target(
 /// [`declare_table_target`] with explicit [`DorisTableOptions`].
 pub fn declare_table_target_with_options(
     ctx: &Ctx,
-    conn: &DorisConnection,
+    conn: &ContextKey<DorisConnection>,
     table_name: impl Into<String>,
     table_schema: TableSchema,
     options: DorisTableOptions,
@@ -545,7 +547,7 @@ pub fn declare_table_target_with_options(
 /// and return a handle.
 pub async fn mount_table_target(
     ctx: &Ctx,
-    conn: &DorisConnection,
+    conn: &ContextKey<DorisConnection>,
     table_name: impl Into<String>,
     table_schema: TableSchema,
 ) -> Result<TableTarget> {
@@ -562,7 +564,7 @@ pub async fn mount_table_target(
 /// [`mount_table_target`] with explicit [`DorisTableOptions`].
 pub async fn mount_table_target_with_options(
     ctx: &Ctx,
-    conn: &DorisConnection,
+    conn: &ContextKey<DorisConnection>,
     table_name: impl Into<String>,
     table_schema: TableSchema,
     options: DorisTableOptions,
@@ -717,8 +719,21 @@ struct RowAction {
 // Table container handler (root) + sink yielding row children
 // ---------------------------------------------------------------------------
 
+/// Resolve the live Doris connection from the host context by its stable
+/// `db_key` (the ContextKey name), used at apply time.
+fn resolve_conn(host_ctx: &Arc<ContextStore>, conn_key: &str) -> Result<Arc<DorisConnection>> {
+    host_ctx
+        .resolve::<DorisConnection>(conn_key)
+        .ok_or_else(|| {
+            Error::engine(format!(
+                "doris target: connection `{conn_key}` was not provided in the environment \
+             (call Environment::builder().provide_key(&KEY, conn))"
+            ))
+        })
+}
+
 struct TableHandler {
-    conn: DorisConnection,
+    conn_key: String,
 }
 
 impl TargetHandler<TableSpec> for TableHandler {
@@ -800,11 +815,12 @@ impl TargetHandler<TableSpec> for TableHandler {
 
 impl TableHandler {
     fn table_sink(&self) -> TargetActionSink<TableAction> {
-        let conn = self.conn.clone();
-        TargetActionSink::from_async_fn_with_children(
-            move |actions: Vec<TargetAction<TableAction>>| {
-                let conn = conn.clone();
+        let conn_key = self.conn_key.clone();
+        TargetActionSink::from_async_fn_with_children_ctx(
+            move |host_ctx, actions: Vec<TargetAction<TableAction>>| {
+                let conn_key = conn_key.clone();
                 async move {
+                    let conn = resolve_conn(&host_ctx, &conn_key)?;
                     let mut out: Vec<Option<ChildTargetDef>> = Vec::with_capacity(actions.len());
                     for action in actions {
                         let a = match action {
@@ -812,7 +828,7 @@ impl TableHandler {
                             | TargetAction::Update(a)
                             | TargetAction::Delete(a) => a,
                         };
-                        out.push(apply_table_action(&conn, a).await?);
+                        out.push(apply_table_action(&conn, &conn_key, a).await?);
                     }
                     Ok(out)
                 }
@@ -825,6 +841,7 @@ impl TableHandler {
 /// for a drop). Mirrors Python's `_apply_table_actions`.
 async fn apply_table_action(
     conn: &DorisConnection,
+    conn_key: &str,
     action: TableAction,
 ) -> Result<Option<ChildTargetDef>> {
     let TableAction {
@@ -863,7 +880,7 @@ async fn apply_table_action(
     }
 
     Ok(Some(ChildTargetDef::new::<RowState, _>(RowHandler {
-        conn: conn.clone(),
+        conn_key: conn_key.to_string(),
         spec,
     })))
 }
@@ -873,7 +890,7 @@ async fn apply_table_action(
 // ---------------------------------------------------------------------------
 
 struct RowHandler {
-    conn: DorisConnection,
+    conn_key: String,
     spec: TableSpec,
 }
 
@@ -916,24 +933,27 @@ impl TargetHandler<RowState> for RowHandler {
 
 impl RowHandler {
     fn row_sink(&self) -> TargetActionSink<RowAction> {
-        let conn = self.conn.clone();
+        let conn_key = self.conn_key.clone();
         let spec = self.spec.clone();
-        TargetActionSink::from_async_fn(move |actions: Vec<TargetAction<RowAction>>| {
-            let conn = conn.clone();
-            let spec = spec.clone();
-            async move {
-                let mut mutations = Vec::with_capacity(actions.len());
-                for action in actions {
-                    let row = match action {
-                        TargetAction::Create(r)
-                        | TargetAction::Update(r)
-                        | TargetAction::Delete(r) => r,
-                    };
-                    mutations.push((row.pk, row.state));
+        TargetActionSink::from_async_fn_with_ctx(
+            move |host_ctx, actions: Vec<TargetAction<RowAction>>| {
+                let conn_key = conn_key.clone();
+                let spec = spec.clone();
+                async move {
+                    let conn = resolve_conn(&host_ctx, &conn_key)?;
+                    let mut mutations = Vec::with_capacity(actions.len());
+                    for action in actions {
+                        let row = match action {
+                            TargetAction::Create(r)
+                            | TargetAction::Update(r)
+                            | TargetAction::Delete(r) => r,
+                        };
+                        mutations.push((row.pk, row.state));
+                    }
+                    apply_rows(&conn, &spec, mutations).await
                 }
-                apply_rows(&conn, &spec, mutations).await
-            }
-        })
+            },
+        )
     }
 }
 

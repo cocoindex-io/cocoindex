@@ -17,14 +17,18 @@
 //! unit test rather than live here.
 #![cfg(feature = "doris")]
 
+use std::sync::LazyLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use cocoindex::doris::{
     self, ColumnDef, DorisConfig, DorisConnection, DorisTableOptions, InvertedIndexDef, TableSchema,
 };
-use cocoindex::{App, Result};
+use cocoindex::{ContextKey, Environment, Result};
 use serde::Serialize;
 use sqlx::Row;
+
+static DORIS_DB: LazyLock<ContextKey<DorisConnection>> =
+    LazyLock::new(|| ContextKey::new("doris_target_test_db"));
 
 #[derive(Serialize, Clone)]
 struct Item {
@@ -84,18 +88,19 @@ async fn declare(
     table: &str,
     rows: Vec<Item>,
 ) -> Result<()> {
-    let conn = conn.clone();
     let table = table.to_string();
-    let app = App::builder("DorisTargetTest")
+    let app = Environment::builder()
         .db_path(db_path)
+        .provide_key(&DORIS_DB, conn.clone())
         .build()
+        .await?
+        .app("DorisTargetTest")
         .await?;
     app.run(move |ctx| {
-        let conn = conn.clone();
         let table = table.clone();
         let rows = rows.clone();
         async move {
-            let target = doris::mount_table_target(&ctx, &conn, table, item_schema()).await?;
+            let target = doris::mount_table_target(&ctx, &DORIS_DB, table, item_schema()).await?;
             for row in &rows {
                 target.declare_row(&ctx, row)?;
             }
@@ -286,14 +291,18 @@ async fn doris_value_map_rows() -> Result<()> {
     let tmp = tempfile::tempdir().unwrap();
     let db = tmp.path().join("db");
 
-    let conn2 = conn.clone();
     let table2 = table.clone();
-    let app = App::builder("DorisMapRows").db_path(&db).build().await?;
+    let app = Environment::builder()
+        .db_path(&db)
+        .provide_key(&DORIS_DB, conn.clone())
+        .build()
+        .await?
+        .app("DorisMapRows")
+        .await?;
     app.run(move |ctx| {
-        let conn = conn2.clone();
         let table = table2.clone();
         async move {
-            let target = doris::mount_table_target(&ctx, &conn, table, item_schema()).await?;
+            let target = doris::mount_table_target(&ctx, &DORIS_DB, table, item_schema()).await?;
             target.declare_row(
                 &ctx,
                 &serde_json::json!({"id": "1", "name": "Zoe", "value": 7}),
@@ -368,20 +377,22 @@ async fn doris_inverted_index_table() -> Result<()> {
         ..Default::default()
     };
 
-    let conn2 = conn.clone();
     let table2 = table.clone();
-    let app = App::builder("DorisInvertedIndex")
+    let app = Environment::builder()
         .db_path(&db)
+        .provide_key(&DORIS_DB, conn.clone())
         .build()
+        .await?
+        .app("DorisInvertedIndex")
         .await?;
     app.run(move |ctx| {
-        let conn = conn2.clone();
         let table = table2.clone();
         let schema = schema.clone();
         let options = options.clone();
         async move {
             let target =
-                doris::mount_table_target_with_options(&ctx, &conn, table, schema, options).await?;
+                doris::mount_table_target_with_options(&ctx, &DORIS_DB, table, schema, options)
+                    .await?;
             target.declare_row(
                 &ctx,
                 &serde_json::json!({"id": "1", "content": "the quick brown fox"}),
