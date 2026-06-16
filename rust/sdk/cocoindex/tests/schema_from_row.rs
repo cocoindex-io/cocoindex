@@ -194,7 +194,7 @@ async fn sqlite_from_row_round_trips_a_row() -> cocoindex::Result<()> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn doris_from_row_round_trips_a_row() -> cocoindex::Result<()> {
     use cocoindex::doris::{self, DorisConfig, DorisConnection, TableSchema};
-    use cocoindex::{App, SchemaFields};
+    use cocoindex::{ContextKey, Environment, SchemaFields};
     use sqlx::Row as _;
 
     let Ok(fe_host) = std::env::var("DORIS_FE_HOST") else {
@@ -244,19 +244,21 @@ async fn doris_from_row_round_trips_a_row() -> cocoindex::Result<()> {
     ];
 
     let tmp = tempfile::tempdir().unwrap();
-    let conn2 = conn.clone();
+    let conn_key = ContextKey::<DorisConnection>::new("doris_from_row_db");
     let table2 = table.clone();
-    let app = App::builder("DorisFromRow")
+    let app = Environment::builder()
         .db_path(tmp.path().join("db"))
+        .provide_key(&conn_key, conn.clone())
         .build()
+        .await?
+        .app("DorisFromRow")
         .await?;
     app.run(move |ctx| {
-        let conn = conn2.clone();
         let table = table2.clone();
         let rows = rows.clone();
         async move {
             let schema = TableSchema::from_row::<Doc>(["id"])?;
-            let target = doris::mount_table_target(&ctx, &conn, table, schema).await?;
+            let target = doris::mount_table_target(&ctx, &conn_key, table, schema).await?;
             for row in &rows {
                 target.declare_row(&ctx, row)?;
             }

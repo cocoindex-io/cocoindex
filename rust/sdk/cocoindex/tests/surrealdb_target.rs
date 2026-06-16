@@ -92,13 +92,12 @@ async fn surrealdb_targets_e2e_conversation_graph_write_when_available() {
 
 async fn run_graph(app: &App, people: &'static [&'static str]) {
     app.run(move |ctx| async move {
-        let graph = ctx.get_key(&GRAPH)?;
         let person_schema = TableSchema::new([("name", ColumnDef::new("string"))])?;
         let person =
-            surrealdb::mount_table_target_with_schema(&ctx, graph, "person", Some(person_schema))
+            surrealdb::mount_table_target_with_schema(&ctx, &GRAPH, "person", Some(person_schema))
                 .await?;
         let knows =
-            surrealdb::mount_relation_target(&ctx, graph, "knows", &person, &person).await?;
+            surrealdb::mount_relation_target(&ctx, &GRAPH, "knows", &person, &person).await?;
 
         for name in people {
             person.declare_record(&ctx, *name, &serde_json::json!({ "name": name }))?;
@@ -114,7 +113,6 @@ async fn run_graph(app: &App, people: &'static [&'static str]) {
 
 async fn run_conversation_graph(app: &App, include_all_entities: bool) {
     app.run(move |ctx| async move {
-        let graph = ctx.get_key(&GRAPH)?;
         let session_schema = TableSchema::new([
             ("youtube_id", ColumnDef::new("string")),
             ("name", ColumnDef::new("string")),
@@ -122,36 +120,40 @@ async fn run_conversation_graph(app: &App, include_all_entities: bool) {
         let statement_schema = TableSchema::new([("statement", ColumnDef::new("string"))])?;
         let entity_schema = TableSchema::new([("name", ColumnDef::new("string"))])?;
 
-        let session =
-            surrealdb::mount_table_target_with_schema(&ctx, graph, "session", Some(session_schema))
-                .await?;
+        let session = surrealdb::mount_table_target_with_schema(
+            &ctx,
+            &GRAPH,
+            "session",
+            Some(session_schema),
+        )
+        .await?;
         let statement = surrealdb::mount_table_target_with_schema(
             &ctx,
-            graph,
+            &GRAPH,
             "statement",
             Some(statement_schema),
         )
         .await?;
         let person = surrealdb::mount_table_target_with_schema(
             &ctx,
-            graph,
+            &GRAPH,
             "person",
             Some(entity_schema.clone()),
         )
         .await?;
         let tech = surrealdb::mount_table_target_with_schema(
             &ctx,
-            graph,
+            &GRAPH,
             "tech",
             Some(entity_schema.clone()),
         )
         .await?;
         let org =
-            surrealdb::mount_table_target_with_schema(&ctx, graph, "org", Some(entity_schema))
+            surrealdb::mount_table_target_with_schema(&ctx, &GRAPH, "org", Some(entity_schema))
                 .await?;
         let session_statement = surrealdb::mount_relation_target(
             &ctx,
-            graph,
+            &GRAPH,
             "session_statement",
             &session,
             &statement,
@@ -159,7 +161,7 @@ async fn run_conversation_graph(app: &App, include_all_entities: bool) {
         .await?;
         let statement_mentions = surrealdb::mount_relation_target_many(
             &ctx,
-            graph,
+            &GRAPH,
             "statement_mentions",
             &[&statement],
             &[&person, &tech, &org],
@@ -240,8 +242,7 @@ async fn surrealdb_declare_row_derives_id_from_row_when_available() {
     let (app, _dir) = temp_app(&graph, "surrealdb_declare_row").await;
 
     app.run(|ctx| async move {
-        let graph = ctx.get_key(&GRAPH)?;
-        let people = surrealdb::mount_table_target(&ctx, graph, "human").await?;
+        let people = surrealdb::mount_table_target(&ctx, &GRAPH, "human").await?;
         // `declare_row` takes the record id from the row's own `id` field.
         people.declare_row(&ctx, &serde_json::json!({ "id": "alice", "age": 30 }))?;
         people.declare_row(&ctx, &serde_json::json!({ "id": "bob", "age": 41 }))?;
@@ -285,8 +286,7 @@ async fn surrealdb_vector_index_attachment_lifecycle_when_available() {
 
     async fn run(app: &App, metric: &'static str, declare_index: bool) {
         app.run(move |ctx| async move {
-            let graph = ctx.get_key(&GRAPH)?;
-            let docs = surrealdb::mount_table_target(&ctx, graph, "doc").await?;
+            let docs = surrealdb::mount_table_target(&ctx, &GRAPH, "doc").await?;
             if declare_index {
                 docs.declare_vector_index(
                     &ctx,
@@ -344,7 +344,6 @@ async fn surrealdb_schema_evolution_adds_field_when_available() {
 
     async fn run(app: &App, with_email: bool) {
         app.run(move |ctx| async move {
-            let graph = ctx.get_key(&GRAPH)?;
             let columns: Vec<(&str, ColumnDef)> = if with_email {
                 vec![
                     ("name", ColumnDef::new("string")),
@@ -355,7 +354,7 @@ async fn surrealdb_schema_evolution_adds_field_when_available() {
             };
             let schema = TableSchema::new(columns)?;
             let person =
-                surrealdb::mount_table_target_with_schema(&ctx, graph, "member", Some(schema))
+                surrealdb::mount_table_target_with_schema(&ctx, &GRAPH, "member", Some(schema))
                     .await?;
             if with_email {
                 person.declare_record(
@@ -404,8 +403,7 @@ async fn surrealdb_table_dropped_when_no_longer_declared_when_available() {
 
     // Declare the table + a record.
     app.run(|ctx| async move {
-        let graph = ctx.get_key(&GRAPH)?;
-        let widget = surrealdb::mount_table_target(&ctx, graph, "widget").await?;
+        let widget = surrealdb::mount_table_target(&ctx, &GRAPH, "widget").await?;
         widget.declare_record(&ctx, "w1", &serde_json::json!({ "name": "gear" }))?;
         Ok(())
     })
@@ -424,8 +422,7 @@ async fn surrealdb_table_dropped_when_no_longer_declared_when_available() {
     // declared in the previous run is now orphaned, so the system-managed table
     // is dropped (`REMOVE TABLE`) and its rows go with it.
     app.run(|ctx| async move {
-        let graph = ctx.get_key(&GRAPH)?;
-        let _ = surrealdb::table_target(&ctx, graph, "widget")?;
+        let _ = surrealdb::table_target(&ctx, &GRAPH, "widget")?;
         Ok(())
     })
     .await
@@ -457,13 +454,12 @@ async fn surrealdb_schema_evolution_drops_field_when_available() {
 
     // v1: name + email.
     app.run(|ctx| async move {
-        let graph = ctx.get_key(&GRAPH)?;
         let schema = TableSchema::new(vec![
             ("name", ColumnDef::new("string")),
             ("email", ColumnDef::new("string")),
         ])?;
         let t =
-            surrealdb::mount_table_target_with_schema(&ctx, graph, "acct", Some(schema)).await?;
+            surrealdb::mount_table_target_with_schema(&ctx, &GRAPH, "acct", Some(schema)).await?;
         t.declare_record(
             &ctx,
             "p1",
@@ -483,10 +479,9 @@ async fn surrealdb_schema_evolution_drops_field_when_available() {
 
     // v2: drop the email field. The undeclared field must be REMOVEd.
     app.run(|ctx| async move {
-        let graph = ctx.get_key(&GRAPH)?;
         let schema = TableSchema::new(vec![("name", ColumnDef::new("string"))])?;
         let t =
-            surrealdb::mount_table_target_with_schema(&ctx, graph, "acct", Some(schema)).await?;
+            surrealdb::mount_table_target_with_schema(&ctx, &GRAPH, "acct", Some(schema)).await?;
         t.declare_record(&ctx, "p1", &serde_json::json!({ "name": "Ann" }))?;
         Ok(())
     })
