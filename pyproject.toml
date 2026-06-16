@@ -90,6 +90,7 @@ falkordb = ["falkordb>=1.1.0"]
 neo4j = ["neo4j>=5.18.0"]
 kafka = ["confluent_kafka>=2.6"]
 iggy = ["apache-iggy>=0.8.0"]
+notion = ["aiohttp>=3.9.0"]
 oci = ["oci>=2.0"]
 entity_resolution = ["faiss-cpu>=1.7"]
 entity_resolution_llm = [

@@ -1,0 +1,481 @@
+---
+title: "*Notion* connector"
+toc_max_heading_level: 4
+description: >
+  Write rows to Notion databases (data sources) as a CocoIndex target.
+  Upserts and archives are automatic — declare your rows from a Python
+  class and CocoIndex keeps Notion in sync, including cleanup of rows
+  that fall out of the declared set.
+---
+
+The `notion` connector lets you treat a Notion database (called a *data source* in
+Notion's 2025-09-03 API) as a first-class CocoIndex target. You declare a Python
+class as the row shape, mount the target, and call `declare_row()` — CocoIndex
+handles creates, updates, and archives across runs.
+
+```python
+from cocoindex.connectors import notion
+```
+
+```bash
+pip install cocoindex[notion]
+```
+
+The connector supports two modes:
+
+- **`managed_by="system"`** (default) — you give the connector a parent (page
+  or database) and a title; it finds or creates the data source for you, and
+  PATCH-adds new properties as your row class grows. Destructive changes
+  (existing column's type changed) are rejected unless you opt in with
+  `allow_destructive=True`.
+- **`managed_by="user"`** — you point it at an existing data source
+  and the connector keeps individual rows in sync. The declared property
+  schema is validated against the live data source at mount, and the
+  connector refuses to write if anything's mismatched.
+
+## Connection setup
+
+### NotionClient
+
+A token-scoped Notion API client with built-in rate limiting (3 concurrent
+requests by default, matching Notion's documented sustained limit) and bounded
+exponential-backoff retry that honors `Retry-After` on 429s.
+
+```python
+@dataclass
+class NotionClient:
+    token: str
+    max_concurrency: int = 3
+    session: aiohttp.ClientSession | None = None
+```
+
+**Parameters:**
+
+- `token` — Internal integration token from
+  [Notion's integrations page](https://www.notion.so/profile/integrations).
+- `max_concurrency` — Cap on concurrent in-flight requests. Default `3`. Lower
+  if the integration is shared across multiple workloads in the same workspace.
+- `session` — Optional `aiohttp.ClientSession` to reuse. If omitted, the
+  client creates and owns its own session.
+
+**Use as an async context manager** so the underlying HTTP session is closed
+deterministically:
+
+```python
+async with notion.NotionClient(token=os.environ["NOTION_TOKEN"]) as client:
+    ...
+```
+
+### Providing the client via ContextKey
+
+Create a `ContextKey[notion.NotionClient]` and provide it in your lifespan.
+The key name is the stable identity CocoIndex uses to track managed rows
+across runs.
+
+```python
+import os
+from typing import AsyncIterator
+import cocoindex as coco
+from cocoindex.connectors import notion
+
+NOTION = coco.ContextKey[notion.NotionClient]("notion_main")
+
+@coco.lifespan
+async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]:
+    async with notion.NotionClient(token=os.environ["NOTION_TOKEN"]) as client:
+        builder.provide(NOTION, client)
+        yield
+```
+
+## As target
+
+The connector exposes a two-level target — a database (the data source) at the
+top, and pages (rows) underneath. CocoIndex tracks every page it has written
+and reconciles on every run: new rows POST, changed rows PATCH, missing rows
+get archived (or hard-deleted, or left alone — your choice).
+
+### Declaring target states
+
+#### Database (parent state)
+
+```python
+async def mount_database_target(
+    client: ContextKey[NotionClient],
+    data_source_id: str | None = None,
+    schema: DatabaseSchema[RowT] | None = None,
+    *,
+    managed_by: Literal["system", "user"] = "system",
+    parent_page_id: str | None = None,
+    parent_database_id: str | None = None,
+    title: str | None = None,
+    on_delete: OnDelete = OnDelete.ARCHIVE,
+    allow_destructive: bool = False,
+) -> DatabaseTarget[RowT]
+```
+
+**Parameters:**
+
+- `client` — A `ContextKey[NotionClient]` identifying the client to use.
+- `data_source_id` — Required when `managed_by="user"`. Notion data source ID
+  (find it via the database URL or `GET /v1/databases/{id}/data_sources`).
+- `schema` — A `DatabaseSchema` describing the row class and its mapping onto
+  Notion properties.
+- `managed_by` — `"system"` (default) creates and evolves the data source;
+  `"user"` reuses an existing one.
+- `parent_page_id` / `parent_database_id` — Required in `system` mode, exactly
+  one of them. The data source is created (or found) under this parent.
+- `title` — Required in `system` mode. The Notion display name for the data
+  source, also used as the stable identifier across runs.
+- `on_delete` — Strategy for pages whose source row is no longer declared.
+- `allow_destructive` — In `system` mode, opt in to changes that would lose
+  data (e.g. changing an existing property's type). Default `False` — the
+  connector refuses such changes at mount.
+
+**Returns:** A ready-to-use `DatabaseTarget` for declaring rows.
+
+In `user` mode the connector calls `GET /v1/data_sources/{id}` at mount and
+fails loudly on missing properties or type mismatches. In `system` mode it
+queries the parent for an existing data source with the matching title — if
+none, it creates one via `POST /v1/databases` (page parent) or
+`POST /v1/data_sources` (database parent). New properties declared in the
+dataclass are added via `PATCH /v1/data_sources/{id}` on subsequent runs.
+If `allow_destructive=True`, existing non-title property type mismatches are
+also PATCHed to the declared type. Notion may reject unsupported conversions.
+The title property is special: Notion requires exactly one title property and
+does not allow its type to be added, removed, or changed via the API, so the
+connector always raises for title-property mismatches instead of attempting an
+automatic destructive change.
+
+Notion API references checked on 2026-06-01:
+
+- [Pagination](https://developers.notion.com/reference/intro) — list endpoints
+  such as block children return at most 100 items per page and continue with
+  `next_cursor` / `start_cursor`.
+- [Rate limits](https://developers.notion.com/reference/request-limits) —
+  Notion returns `Retry-After` on `429` responses.
+- [Update data source properties](https://developers.notion.com/reference/update-data-source-properties)
+  — data source property types are updated by PATCHing the new type schema;
+  title property type changes are not allowed.
+- [Update a data source](https://developers.notion.com/reference/update-a-data-source)
+  — Notion describes property type conversion behavior and notes that some
+  conversions are unsupported.
+
+Lower-level entry points — `database_target()` returns a `TargetState` for
+composition with `coco.mount_target()`, and `declare_database_target()` is the
+synchronous declaration variant. Both have the same kwargs as
+`mount_database_target`.
+
+#### Rows (child states)
+
+Once a `DatabaseTarget` is resolved, declare rows to upsert:
+
+```python
+def DatabaseTarget.declare_row(
+    self,
+    *,
+    row: RowT,
+) -> None
+```
+
+**Parameters:**
+
+- `row` — A dataclass / NamedTuple / dict / Pydantic model matching the
+  `DatabaseSchema`. Primary-key fields must be set.
+
+CocoIndex fingerprints each declared row; unchanged rows are a no-op (no
+Notion writes). On rows whose primary key was declared on a prior run but is
+absent this run, CocoIndex emits an archive (default) — see
+[Delete strategies](#delete-strategies).
+
+### Database schema
+
+#### From a Python class
+
+Bind a Python row class to Notion properties via `Annotated[T, PropType]`
+metadata, or via the `property_map` override.
+
+```python
+@classmethod
+async def DatabaseSchema.from_class(
+    cls,
+    record_type: type[RowT],
+    primary_key: list[str],
+    *,
+    property_map: dict[str, PropType] | None = None,
+) -> DatabaseSchema[RowT]
+```
+
+**Parameters:**
+
+- `record_type` — The row class (dataclass / NamedTuple / Pydantic model).
+- `primary_key` — Field names that uniquely identify a row. Notion has no
+  native composite-key constraint, so the connector uses `AND`-of-filters to
+  resolve the row on every cache miss.
+- `property_map` — Optional per-field override mapping `field_name → PropType`.
+  Useful when you don't want to (or can't) put `Annotated[...]` on the field.
+
+**Example:**
+
+```python
+from typing_extensions import Annotated
+from dataclasses import dataclass
+
+@dataclass(frozen=True)
+class Person:
+    name:   Annotated[str,  notion.TitleProp("Name")]
+    email:  Annotated[str,  notion.EmailProp("Email")]
+    role:   Annotated[str,  notion.SelectProp("Role")]
+    active: Annotated[bool, notion.CheckboxProp("Active")]
+
+schema = await notion.DatabaseSchema.from_class(Person, primary_key=["name"])
+```
+
+Or with explicit `property_map`:
+
+```python
+schema = await notion.DatabaseSchema.from_class(
+    Person,
+    primary_key=["name"],
+    property_map={
+        "name":   notion.TitleProp("Name"),
+        "email":  notion.EmailProp("Email"),
+        "role":   notion.SelectProp("Role"),
+        "active": notion.CheckboxProp("Active"),
+    },
+)
+```
+
+Both forms validate that at least one field has a binding, that no two fields
+map to the same Notion property name, that there's at most one `TitleProp`, and
+that every primary-key field has a binding. Fields without a binding are
+ignored, which lets the Python class carry transient state that should not be
+written to Notion. Typos in `property_map` keys (i.e. keys that don't name a
+real field) raise loudly.
+
+### Property types
+
+The connector supports the property types you'd reach for first:
+
+| `PropType` | Notion type | Python type | Usable as PK? |
+|-----------|-------------|-------------|---------------|
+| `TitleProp` | `title` | `str` | yes |
+| `RichTextProp` | `rich_text` | `str` | yes |
+| `NumberProp` | `number` | `int` / `float` | yes |
+| `UrlProp` | `url` | `str` | yes |
+| `EmailProp` | `email` | `str` | yes |
+| `SelectProp` | `select` | `str` | yes |
+| `MultiSelectProp` | `multi_select` | `list[str]` | no |
+| `DateProp` | `date` | `datetime` / `date` / ISO string | yes |
+| `CheckboxProp` | `checkbox` | `bool` | yes |
+| `RelationProp` | `relation` | page ID or `list[str]` | no |
+
+Each `PropType` takes the Notion property's display name as its only positional
+argument: `notion.SelectProp("Role")` binds to the property literally named
+"Role" in your Notion data source.
+
+`RelationProp` writes Notion relation values as page IDs from the related data
+source. It is intentionally page-ID based: it does not resolve related rows by
+CocoIndex primary key, coordinate writes across targets, or create related pages
+for you. Relation values follow Notion's
+[page property value shape](https://developers.notion.com/reference/page-property-values)
+(checked 2026-06-01): page references are written as
+`{"relation": [{"id": "..."}]}`. The connector does not look up or create
+related pages for you.
+
+For `managed_by="user"`, the relation column must already exist in Notion and
+the connector validates that its Notion type is `relation`. For
+`managed_by="system"`, pass `target_data_source_id` so CocoIndex can create or
+add the relation column. Notion's
+[data-source property docs](https://developers.notion.com/reference/property-object)
+(checked 2026-06-01) define relation schema with `data_source_id`, and the
+related data source must be shared with the integration.
+
+```python
+@dataclass
+class TaskRow:
+    name: Annotated[str, notion.TitleProp("Name")]
+    project_page_ids: Annotated[
+        list[str],
+        notion.RelationProp("Projects", target_data_source_id=PROJECTS_DS_ID),
+    ]
+```
+
+People, files, formula, status, rollup, created_time / last_edited_time, and
+"place" properties are not yet supported.
+
+### Delete strategies
+
+When a row's primary key was declared on a prior run but isn't declared this
+run, the row handler emits one of three actions based on `on_delete`:
+
+| `OnDelete` | Notion call | When to use |
+|---|---|---|
+| `ARCHIVE` (default) | `PATCH /v1/pages/{id}` with `{"archived": true}` | Recoverable. Matches what Notion users expect when they hit "Delete" in the UI. |
+| `HARD` | `DELETE /v1/blocks/{id}` | Moves the page to Notion's trash (recoverable for 30 days). Use if you don't want archived rows showing up in `archived: true` queries. |
+| `IGNORE` | (nothing) | Leave the page alone. CocoIndex drops the tracking record so future runs treat the row as new. Useful for additive-only workflows. |
+
+```python
+target = await notion.mount_database_target(
+    NOTION,
+    data_source_id,
+    schema,
+    managed_by="user",
+    on_delete=notion.OnDelete.HARD,
+)
+```
+
+### Page-id persistence
+
+Notion assigns each page an ID on `POST`, so a fresh process doesn't know
+the page IDs of rows it inserted on a previous run. The connector resolves
+this lazily: when the row handler needs a page ID and doesn't have one cached,
+it issues `POST /v1/data_sources/{id}/query` with a filter on the primary key.
+The first hit gets cached for the rest of the run; subsequent actions on the
+same row are O(1) lookups.
+
+Trade-off: heavier per-miss cost than pre-fetching the entire data source up
+front, but much cheaper on the common case where CocoIndex's tracking records
+short-circuit reconcile and the sink only sees the rows that genuinely
+changed.
+
+## Setup heads-ups
+
+Documented here so the gotchas we hit while building the connector don't
+trip anyone else up. None of these are CocoIndex-specific — they're how Notion
+integrations work — but they're easy to miss.
+
+### 1. Every parent in the path must be shared with the integration
+
+Sharing a *database* with your integration is not enough on its own. Notion
+also checks the parent *page* — if the integration isn't connected to the
+page that contains your database, the API returns `object_not_found` with
+the misleading message *"Make sure the relevant pages and databases are shared
+with your integration"*.
+
+Fix: open the parent page in Notion, top-right `···` → **Connections** →
+**`+ Add connections`** → search your integration → confirm.
+
+If you don't see this entry, double-check you're looking at the **page**,
+not the *database* itself. Linked-view arrows (`↗`) jump to the source where
+the Connections menu lives.
+
+### 2. Internal integrations can't create workspace-level databases
+
+`POST /v1/databases` with `parent.type = "workspace"` returns
+`validation_error` for internal (token-based) integrations. Pass
+`parent.page_id` pointing at a page the integration can see. This matters for
+`managed_by="system"` (the default), which creates databases — the
+user-managed flow sidesteps it since it never creates anything.
+
+### 3. Sharing is per-integration
+
+A workspace can have multiple integrations. Sharing a page with the
+`cocoindex` integration does not share it with `cocoindex gtm` (or any
+other). At mount the connector calls `GET /v1/data_sources/{id}` and fails
+loudly if the integration can't see the data source — that's the friendlier
+error you'll usually hit first.
+
+### 4. Notion-Version pinning
+
+The connector pins `Notion-Version: 2025-09-03`, the first version that
+exposes *data sources* as first-class objects distinct from *databases*.
+Rolling back to an older API version will break the `data_source_id` routing.
+
+## Complete example
+
+```python
+import os
+import pathlib
+from dataclasses import dataclass
+from typing import AsyncIterator
+from typing_extensions import Annotated
+
+import cocoindex as coco
+from cocoindex.connectors import notion
+
+NOTION = coco.ContextKey[notion.NotionClient]("notion_main")
+
+
+@dataclass(frozen=True)
+class Person:
+    name:   Annotated[str,  notion.TitleProp("Name")]
+    email:  Annotated[str,  notion.EmailProp("Email")]
+    role:   Annotated[str,  notion.SelectProp("Role")]
+    active: Annotated[bool, notion.CheckboxProp("Active")]
+
+
+PEOPLE: list[Person] = [
+    Person(name="Ada Lovelace", email="ada@example.com",
+           role="Engineer",   active=True),
+    Person(name="Grace Hopper", email="grace@example.com",
+           role="Engineer",   active=True),
+    Person(name="Alan Turing",  email="alan@example.com",
+           role="Researcher", active=False),
+]
+
+
+@coco.lifespan
+async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]:
+    builder.settings.db_path = pathlib.Path("./cocoindex.db")
+    async with notion.NotionClient(token=os.environ["NOTION_TOKEN"]) as client:
+        builder.provide(NOTION, client)
+        yield
+
+
+@coco.fn
+async def app_main() -> None:
+    # managed_by="system" is the default — CocoIndex creates the "People"
+    # database under the parent page on first run and evolves it as Person grows.
+    target = await notion.mount_database_target(
+        NOTION,
+        schema=await notion.DatabaseSchema.from_class(Person, primary_key=["name"]),
+        parent_page_id=os.environ["NOTION_PARENT_PAGE"],
+        title="People",
+    )
+    for person in PEOPLE:
+        target.declare_row(row=person)
+
+
+app = coco.App(
+    coco.AppConfig(name="NotionTargetBasics"),
+    app_main,
+)
+```
+
+Run it:
+
+```bash
+export NOTION_TOKEN=ntn_...
+export NOTION_PARENT_PAGE=<your-parent-page-id>
+cocoindex update main.py:NotionTargetBasics
+```
+
+On the first run the connector creates a database titled "People" under the
+parent page. Edit `PEOPLE` (add, remove, change) and re-run — CocoIndex syncs
+the diff, and any row you delete from the list gets archived in Notion on the
+next run.
+
+### User-managed variant
+
+To point the connector at an existing data source instead of creating one,
+pass `managed_by="user"` with its `data_source_id`:
+
+```python
+target = await notion.mount_database_target(
+    NOTION,
+    os.environ["NOTION_DATA_SOURCE_ID"],
+    schema=await notion.DatabaseSchema.from_class(Person, primary_key=["name"]),
+    managed_by="user",
+)
+```
+
+The declared property schema is validated against the live data source at
+mount; the connector refuses to write if anything's mismatched.
+
+On the first run the connector creates a database titled "People" under the
+given page. On later runs, adding a new field with an `Annotated[T,
+notion.SomeProp("Foo")]` annotation triggers `PATCH /v1/data_sources/{id}` to
+add the new "Foo" property. Existing-property type changes are rejected
+unless you pass `allow_destructive=True`.
+
+Full source: [`examples/notion_target_basics`](https://github.com/cocoindex-io/cocoindex/tree/main/examples/notion_target_basics).
