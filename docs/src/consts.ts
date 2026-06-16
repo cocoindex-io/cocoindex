@@ -25,7 +25,7 @@ export const LLMS_TXT_URL = new URL(`${DOCS_BASE}/llms.txt`, SITE_URL).toString(
 export const LLMS_FULL_TXT_URL = new URL(`${DOCS_BASE}/llms-full.txt`, SITE_URL).toString();
 export const SKILL_MD_URL = new URL(`${DOCS_BASE}/skill.md`, SITE_URL).toString();
 // GitHub web-editor URL prefix for the "Edit this page" link.
-export const DOCS_EDIT_BASE = 'https://github.com/cocoindex-io/cocoindex/edit/main/docs/docs';
+export const DOCS_EDIT_BASE = 'https://github.com/cocoindex-io/cocoindex/edit/main/docs';
 
 // A content-collection id for `sources/index.md` is `sources/index`; the URL
 // slug we want is just `sources`. Mirrors the blog-site helper pattern.
