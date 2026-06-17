@@ -559,12 +559,12 @@ def _build_doc(value: _DocValue) -> Any:
 class _DocHandler(coco.TargetHandler[_DocValue, bytes]):
     """Handler for document-level target states within a collection."""
 
-    _conn: ManagedConnection
+    _db_key: str
     _collection_name: str
     _sink: coco.TargetActionSink[_DocAction, None]
 
-    def __init__(self, conn: ManagedConnection, collection_name: str) -> None:
-        self._conn = conn
+    def __init__(self, db_key: str, collection_name: str) -> None:
+        self._db_key = db_key
         self._collection_name = collection_name
         self._sink = coco.TargetActionSink[_DocAction, None].from_fn(
             self._apply_actions
@@ -575,7 +575,8 @@ class _DocHandler(coco.TargetHandler[_DocValue, bytes]):
     ) -> None:
         if not actions:
             return
-        col = self._conn.open_existing(self._collection_name)
+        conn = context_provider.get(self._db_key, ManagedConnection)
+        col = conn.open_existing(self._collection_name)
 
         upserts: list[Any] = []
         deletes: list[str] = []
@@ -715,7 +716,7 @@ def _apply_collection_actions(
 
             spec = action.spec
             outputs[i] = coco.ChildTargetDef(
-                handler=_DocHandler(conn, key.collection_name)
+                handler=_DocHandler(key.db_key, key.collection_name)
             )
 
             if action.main_action in ("insert", "upsert", "replace"):
