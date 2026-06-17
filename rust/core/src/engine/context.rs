@@ -453,20 +453,19 @@ pub(crate) fn decode_stored_entry<Prof: EngineProfile>(
 
 /// Lifecycle state of one user-state key within a single component build.
 ///
-/// TODO: make `V` generic over the engine profile (like `FnCallMemoEntry<Prof>`) so
-/// `Declared` can hold a `Prof::FunctionData` (= `PyStoredValue` in the Python profile)
-/// instead of raw bytes. `PyStoredValue` holds both representations lazily behind an
-/// `Arc<Mutex<...>>`, so cloning is a cheap refcount bump, deserialization from bytes
-/// happens once on first access, and serialization to bytes happens once at flush.
-/// Requires adding a `FunctionData`-equivalent associated type to `EngineProfile` (or
-/// reusing `FunctionData` directly) and threading it through `UserStateCache`.
-enum UserStateEntry {
+/// Generic over the stored value type `D`, which the engine instantiates as
+/// `Prof::FunctionData` (= `PyStoredValue` in the Python profile). `PyStoredValue`
+/// holds both the Python object and serialized bytes lazily behind an
+/// `Arc<Mutex<...>>`, so cloning is a cheap refcount bump, deserialization from
+/// bytes happens once on first access, and serialization to bytes happens once at
+/// flush (`into_flush_plan`).
+enum UserStateEntry<D> {
     /// Prefetched from DB at build start; `use_state()` not yet called for
     /// this key. Deleted at flush time if it stays in this state (set-reduction path).
-    Loaded(Vec<u8>),
+    Loaded(D),
     /// Claimed by `use_state()` and optionally overwritten by
     /// `update_declared()`. Written to DB at flush time.
-    Declared(Vec<u8>),
+    Declared(D),
 }
 
 /// Per-component user state cache for a single build.
@@ -479,11 +478,11 @@ enum UserStateEntry {
 /// during this build through use_state() survive: `Declared` entries are
 /// written to DB and `Loaded` entries (present in the previous build but
 /// not re-declared this build) are deleted.
-pub(crate) struct UserStateCache {
+pub(crate) struct UserStateCache<D> {
     /// All entries seen this build. Prefetched entries start as `Loaded` and
     /// transition to `Declared` when claimed by `use_state()`; brand-new keys
     /// start directly as `Declared`.
-    entries: HashMap<StableKey, UserStateEntry>,
+    entries: HashMap<StableKey, UserStateEntry<D>>,
     /// True after a successful `populate`;
     /// False under `full_reprocess` (prefetch skipped).
     ///
@@ -493,7 +492,7 @@ pub(crate) struct UserStateCache {
     is_loaded: bool,
 }
 
-impl UserStateCache {
+impl<D: Persist + Clone> UserStateCache<D> {
     pub(crate) fn new() -> Self {
         Self {
             entries: HashMap::new(),
@@ -505,18 +504,22 @@ impl UserStateCache {
         self.is_loaded
     }
 
-    pub(crate) fn populate(&mut self, rows: Vec<(StableKey, Vec<u8>)>) {
+    /// Wrap each prefetched DB row as a `Loaded` entry. The bytes are decoded
+    /// into `D` (for the Python profile, `PyStoredValue::from_bytes` — a
+    /// bytes-backed cell that defers deserialization until first access).
+    pub(crate) fn populate(&mut self, rows: Vec<(StableKey, Vec<u8>)>) -> Result<()> {
         self.entries = rows
             .into_iter()
-            .map(|(k, v)| (k, UserStateEntry::Loaded(v)))
-            .collect();
+            .map(|(k, bytes)| Ok((k, UserStateEntry::Loaded(D::from_bytes(&bytes)?))))
+            .collect::<Result<_>>()?;
         self.is_loaded = true;
+        Ok(())
     }
 
     /// Register `key` as declared for this build. Returns the previously
     /// stored value (if any) or `initial_value`. Errors on duplicate keys.
     /// Called when the user calls coco.use_state("key", initial_value)
-    pub(crate) fn use_state(&mut self, key: StableKey, initial_value: Vec<u8>) -> Result<Vec<u8>> {
+    pub(crate) fn use_state(&mut self, key: StableKey, initial_value: D) -> Result<D> {
         use std::collections::hash_map::Entry;
         match self.entries.entry(key) {
             Entry::Occupied(mut e) => match e.get() {
@@ -541,7 +544,7 @@ impl UserStateCache {
 
     /// Update the current value for an already-declared key. Called when
     /// the user sets `my_state.value = ...`.
-    pub(crate) fn update_declared(&mut self, key: &StableKey, value: Vec<u8>) -> Result<()> {
+    pub(crate) fn update_declared(&mut self, key: &StableKey, value: D) -> Result<()> {
         match self.entries.get_mut(key) {
             Some(UserStateEntry::Declared(v)) => {
                 *v = value;
@@ -557,8 +560,9 @@ impl UserStateCache {
     }
 
     /// Drain the cache into a serialized plan for inclusion in [`CommitPlan`].
-    /// Mirrors [`FnMemoCache::into_flush_plan`].
-    pub(crate) fn into_flush_plan(self) -> UserStateFlushPlan {
+    /// Mirrors [`FnMemoCache::into_flush_plan`]. Serialization of each surviving
+    /// `Declared` value to bytes happens here — once per key, at commit time.
+    pub(crate) fn into_flush_plan(self) -> Result<UserStateFlushPlan> {
         let mut plan = UserStateFlushPlan {
             clear_all_first: !self.is_loaded,
             writes: Vec::new(),
@@ -567,11 +571,13 @@ impl UserStateCache {
         for (key, entry) in self.entries {
             match entry {
                 UserStateEntry::Loaded(_) if self.is_loaded => plan.deletes.push(key),
-                UserStateEntry::Declared(value) => plan.writes.push((key, value)),
+                UserStateEntry::Declared(value) => {
+                    plan.writes.push((key, value.to_bytes()?.to_vec()))
+                }
                 _ => {}
             }
         }
-        plan
+        Ok(plan)
     }
 }
 
@@ -587,7 +593,7 @@ pub(crate) struct ComponentBuildingState<Prof: EngineProfile> {
     pub target_states: ComponentTargetStatesContext<Prof>,
     pub child_path_set: ChildStablePathSet,
     pub fn_memos: FnMemoCache<Prof>,
-    pub user_states: UserStateCache,
+    pub user_states: UserStateCache<Prof::FunctionData>,
 }
 
 /// Shared collector for preview actions across all components in a single update.
@@ -791,7 +797,7 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
             .await?;
         self.update_building_state(|s| {
             s.fn_memos.populate(fn_memo_rows);
-            s.user_states.populate(user_state_rows);
+            s.user_states.populate(user_state_rows)?;
             Ok(())
         })
     }
@@ -801,13 +807,17 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
     /// otherwise `initial_value` is used. Duplicate keys within the same
     /// component run are an error.
     /// Called when the user calls coco.use_state("key", initial_value)
-    pub fn use_state(&self, key: StableKey, initial_value: Vec<u8>) -> Result<Vec<u8>> {
+    pub fn use_state(
+        &self,
+        key: StableKey,
+        initial_value: Prof::FunctionData,
+    ) -> Result<Prof::FunctionData> {
         self.update_building_state(|s| s.user_states.use_state(key, initial_value))
     }
 
     /// Update the current value for an already-declared user state key.
     /// Called when the user sets `my_state.value = ...`.
-    pub fn update_user_state(&self, key: &StableKey, value: Vec<u8>) -> Result<()> {
+    pub fn update_user_state(&self, key: &StableKey, value: Prof::FunctionData) -> Result<()> {
         self.update_building_state(|s| s.user_states.update_declared(key, value))
     }
 
@@ -1076,6 +1086,7 @@ impl FnCallContext {
 #[cfg(test)]
 mod tests {
     use super::{UserStateCache, UserStateEntry};
+    use crate::engine::profile::Persist;
     use crate::state::db_schema::StateKind;
     use crate::state::stable_path::{StableKey, StablePath};
     use crate::state_store::{AppStore, WriteTxn};
@@ -1083,12 +1094,33 @@ mod tests {
     use std::sync::Arc;
     use tempfile::TempDir;
 
+    /// Minimal `Persist` value type for exercising the generic `UserStateCache`.
+    /// Serialization is identity (the inner bytes), so flush-plan assertions can
+    /// keep comparing against raw byte strings.
+    #[derive(Clone, PartialEq, Debug)]
+    struct TestData(Vec<u8>);
+
+    impl Persist for TestData {
+        fn to_bytes(&self) -> crate::prelude::Result<bytes::Bytes> {
+            Ok(bytes::Bytes::from(self.0.clone()))
+        }
+
+        fn from_bytes(data: &[u8]) -> crate::prelude::Result<Self> {
+            Ok(TestData(data.to_vec()))
+        }
+    }
+
     fn sym(s: &str) -> StableKey {
         StableKey::Symbol(Arc::from(s))
     }
 
     fn b(s: &str) -> Vec<u8> {
         s.as_bytes().to_vec()
+    }
+
+    /// Wrap a string as `TestData` for `use_state` / `update_declared` inputs.
+    fn td(s: &str) -> TestData {
+        TestData(s.as_bytes().to_vec())
     }
 
     fn comp_path(name: &str) -> StablePath {
@@ -1130,33 +1162,33 @@ mod tests {
     #[test]
     fn use_state_returns_initial_when_no_loaded_state() {
         let mut cache = UserStateCache::new();
-        let val = cache.use_state(sym("k"), b("init")).unwrap();
-        assert_eq!(val, b("init"));
+        let val = cache.use_state(sym("k"), td("init")).unwrap();
+        assert_eq!(val, td("init"));
     }
 
     #[test]
     fn use_state_returns_loaded_value_ignoring_initial() {
         let mut cache = UserStateCache::new();
-        cache.populate(vec![(sym("k"), b("stored"))]);
-        let val = cache.use_state(sym("k"), b("init")).unwrap();
-        assert_eq!(val, b("stored")); // initial_value is ignored
+        cache.populate(vec![(sym("k"), b("stored"))]).unwrap();
+        let val = cache.use_state(sym("k"), td("init")).unwrap();
+        assert_eq!(val, td("stored")); // initial_value is ignored
     }
 
     #[test]
     fn use_state_duplicate_key_errors() {
         let mut cache = UserStateCache::new();
-        cache.use_state(sym("k"), b("v")).unwrap();
-        assert!(cache.use_state(sym("k"), b("v2")).is_err());
+        cache.use_state(sym("k"), td("v")).unwrap();
+        assert!(cache.use_state(sym("k"), td("v2")).is_err());
     }
 
     #[test]
     fn use_state_loaded_and_fresh_keys_independent() {
         let mut cache = UserStateCache::new();
-        cache.populate(vec![(sym("a"), b("stored_a"))]);
-        let va = cache.use_state(sym("a"), b("ignored")).unwrap();
-        let vb = cache.use_state(sym("b"), b("init_b")).unwrap();
-        assert_eq!(va, b("stored_a")); // from loaded state
-        assert_eq!(vb, b("init_b")); // initial_value (not in loaded)
+        cache.populate(vec![(sym("a"), b("stored_a"))]).unwrap();
+        let va = cache.use_state(sym("a"), td("ignored")).unwrap();
+        let vb = cache.use_state(sym("b"), td("init_b")).unwrap();
+        assert_eq!(va, td("stored_a")); // from loaded state
+        assert_eq!(vb, td("init_b")); // initial_value (not in loaded)
     }
 
     // --- update_declared -----------------------------------------------------
@@ -1164,18 +1196,18 @@ mod tests {
     #[test]
     fn update_declared_undeclared_key_errors() {
         let mut cache = UserStateCache::new();
-        assert!(cache.update_declared(&sym("k"), b("v")).is_err());
+        assert!(cache.update_declared(&sym("k"), td("v")).is_err());
     }
 
     #[test]
     fn update_declared_updates_value_in_declared() {
         let mut cache = UserStateCache::new();
-        cache.use_state(sym("k"), b("init")).unwrap();
-        cache.update_declared(&sym("k"), b("updated")).unwrap();
+        cache.use_state(sym("k"), td("init")).unwrap();
+        cache.update_declared(&sym("k"), td("updated")).unwrap();
         // The updated value is what into_flush_plan will emit.
         assert!(matches!(
             &cache.entries[&sym("k")],
-            UserStateEntry::Declared(v) if v == &b("updated")
+            UserStateEntry::Declared(v) if v == &td("updated")
         ));
     }
 
@@ -1183,11 +1215,15 @@ mod tests {
 
     /// Helper: apply a `UserStateCache` through `into_flush_plan` + `CommitPlan`
     /// + `AppStore::commit` — the production write path.
-    async fn apply_plan_via_commit(store: &AppStore, path: &StablePath, cache: UserStateCache) {
+    async fn apply_plan_via_commit(
+        store: &AppStore,
+        path: &StablePath,
+        cache: UserStateCache<TestData>,
+    ) {
         use crate::state_store::{CommitPlan, ExistenceReconciler};
         use futures::future::BoxFuture;
 
-        let plan_data = cache.into_flush_plan();
+        let plan_data = cache.into_flush_plan().unwrap();
         let plan = CommitPlan {
             new_tracking_info: None,
             target_owners_to_upsert: Vec::new(),
@@ -1230,13 +1266,15 @@ mod tests {
         wtxn.into_inner().commit().unwrap();
 
         let mut cache = UserStateCache::new();
-        cache.populate(vec![
-            (sym("a"), b("a")),
-            (sym("b"), b("b")),
-            (sym("c"), b("c")),
-        ]);
-        cache.use_state(sym("a"), b("ignored")).unwrap();
-        cache.use_state(sym("b"), b("ignored")).unwrap();
+        cache
+            .populate(vec![
+                (sym("a"), b("a")),
+                (sym("b"), b("b")),
+                (sym("c"), b("c")),
+            ])
+            .unwrap();
+        cache.use_state(sym("a"), td("ignored")).unwrap();
+        cache.use_state(sym("b"), td("ignored")).unwrap();
         // "c" not re-declared
 
         apply_plan_via_commit(&store, &p, cache).await;
@@ -1263,7 +1301,7 @@ mod tests {
         wtxn.into_inner().commit().unwrap();
 
         let mut cache = UserStateCache::new(); // no populate
-        cache.use_state(sym("new_k"), b("new_val")).unwrap();
+        cache.use_state(sym("new_k"), td("new_val")).unwrap();
 
         apply_plan_via_commit(&store, &p, cache).await;
 
@@ -1287,9 +1325,9 @@ mod tests {
         wtxn.into_inner().commit().unwrap();
 
         let mut cache = UserStateCache::new();
-        cache.populate(vec![(sym("a"), b("a_val"))]);
-        cache.use_state(sym("a"), b("should_be_ignored")).unwrap();
-        cache.use_state(sym("b"), b("b_new")).unwrap();
+        cache.populate(vec![(sym("a"), b("a_val"))]).unwrap();
+        cache.use_state(sym("a"), td("should_be_ignored")).unwrap();
+        cache.use_state(sym("b"), td("b_new")).unwrap();
 
         apply_plan_via_commit(&store, &p, cache).await;
 
@@ -1313,9 +1351,9 @@ mod tests {
         wtxn.into_inner().commit().unwrap();
 
         let mut cache = UserStateCache::new();
-        cache.populate(vec![(sym("k"), b("old"))]);
-        cache.use_state(sym("k"), b("ignored")).unwrap();
-        cache.update_declared(&sym("k"), b("new")).unwrap();
+        cache.populate(vec![(sym("k"), b("old"))]).unwrap();
+        cache.use_state(sym("k"), td("ignored")).unwrap();
+        cache.update_declared(&sym("k"), td("new")).unwrap();
 
         apply_plan_via_commit(&store, &p, cache).await;
 
@@ -1341,7 +1379,9 @@ mod tests {
         wtxn.into_inner().commit().unwrap();
 
         let mut cache = UserStateCache::new();
-        cache.populate(vec![(sym("a"), b("a_val")), (sym("b"), b("b_val"))]);
+        cache
+            .populate(vec![(sym("a"), b("a_val")), (sym("b"), b("b_val"))])
+            .unwrap();
         // no use_state calls
 
         apply_plan_via_commit(&store, &p, cache).await;

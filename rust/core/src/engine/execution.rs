@@ -369,12 +369,14 @@ impl<Prof: EngineProfile> Committer<Prof> {
         self,
         child_path_set: Option<ChildStablePathSet>,
         fn_memos: FnMemoCache<Prof>,
-        user_states: UserStateCache,
+        user_states: UserStateCache<Prof::FunctionData>,
         curr_version: Option<u64>,
     ) -> Result<()> {
         // Consume FnMemoCache once (drains each entry's RwLock to Pending).
         let fn_memo_plan = fn_memos.into_flush_plan()?;
-        let user_state_plan = user_states.into_flush_plan();
+        // Likewise consume UserStateCache by value, serializing each surviving
+        // Declared value to bytes once for the commit (see into_flush_plan).
+        let user_state_plan = user_states.into_flush_plan()?;
 
         // Engine-side decisions: read existing tracking_info, prune by
         // version retention, clear pending_process_token, version-

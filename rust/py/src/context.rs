@@ -4,8 +4,10 @@ use crate::prelude::*;
 use crate::stable_path::PyStableKey;
 
 use crate::app::PyStatsGroupHandle;
+use crate::value::PyStoredValue;
 use crate::{environment::PyEnvironment, stable_path::PyStablePath};
 use cocoindex_core::engine::context::{ComponentProcessorContext, FnCallContext};
+use cocoindex_core::engine::profile::Persist;
 use pyo3::types::PyDict;
 use pyo3_async_runtimes::tokio::future_into_py;
 
@@ -103,13 +105,16 @@ impl PyComponentProcessorContext {
     /// `initial_value`. Raises if the same key is declared more than once
     /// within the same component run.
     fn use_state(&self, key: PyStableKey, initial_value: Vec<u8>) -> PyResult<Vec<u8>> {
-        self.0.use_state(key.0, initial_value).into_py_result()
+        let initial = PyStoredValue::from_bytes(&initial_value).into_py_result()?;
+        let stored = self.0.use_state(key.0, initial).into_py_result()?;
+        Ok(stored.to_bytes().into_py_result()?.to_vec())
     }
 
     /// Update the value for an already-declared state key.
     ///
     /// Raises if `key` was not declared via `use_state` in this component run.
     fn update_user_state(&self, key: PyStableKey, value: Vec<u8>) -> PyResult<()> {
+        let value = PyStoredValue::from_bytes(&value).into_py_result()?;
         self.0.update_user_state(&key.0, value).into_py_result()
     }
 }
