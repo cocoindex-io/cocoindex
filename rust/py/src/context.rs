@@ -112,10 +112,16 @@ impl PyComponentProcessorContext {
 
     /// Update the value for an already-declared state key.
     ///
+    /// Takes the raw Python object and wraps it in an object-backed
+    /// `PyStoredValue` without serializing — serialization is deferred to
+    /// commit time (`into_flush_plan`), so repeated writes in one run cost no
+    /// serialization and only the final value is encoded once.
+    ///
     /// Raises if `key` was not declared via `use_state` in this component run.
-    fn update_user_state(&self, key: PyStableKey, value: Vec<u8>) -> PyResult<()> {
-        let value = PyStoredValue::from_bytes(&value).into_py_result()?;
-        self.0.update_user_state(&key.0, value).into_py_result()
+    fn update_user_state(&self, key: PyStableKey, value: Py<PyAny>) -> PyResult<()> {
+        self.0
+            .update_user_state(&key.0, PyStoredValue::new(value))
+            .into_py_result()
     }
 }
 

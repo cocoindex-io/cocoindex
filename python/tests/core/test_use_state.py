@@ -15,6 +15,27 @@ _source_items: list[str] = []
 _captured: dict[str, object] = {}
 
 
+@coco.serialize_by_pickle
+class _SerCounter:
+    """Counts its own serializations, to prove writes don't serialize eagerly.
+
+    `__getstate__` runs on every pickle, so `serialize_count` reflects how many
+    times the value was actually encoded to bytes.
+    """
+
+    serialize_count = 0
+
+    def __init__(self, n: int) -> None:
+        self.n = n
+
+    def __getstate__(self) -> dict[str, int]:
+        type(self).serialize_count += 1
+        return {"n": self.n}
+
+    def __setstate__(self, state: dict[str, int]) -> None:
+        self.n = state["n"]
+
+
 @coco.fn
 async def _root(items: list[str]) -> None:
     for item in items:
@@ -134,6 +155,46 @@ def test_use_state_defaults_to_none() -> None:
 
     app.update_blocking()
     assert _captured["a"] == "set"  # second run: stored value returned
+
+
+def test_use_state_writes_serialize_once_at_flush() -> None:
+    # Assigning state.value repeatedly must NOT serialize on each write.
+    # Serialization is deferred to commit, so N writes in one run cost
+    # exactly one serialization (of the final value).
+    _source_items.clear()
+
+    _seen: dict[str, object] = {}
+
+    @coco.fn
+    def _process_writes(item: str) -> None:
+        s = coco.use_state("obj")  # initial None — does not touch the counter
+        _seen[item] = s.value
+        for i in range(5):
+            s.value = _SerCounter(i)
+
+    @coco.fn
+    async def _root_writes(items: list[str]) -> None:
+        for item in items:
+            await coco.mount(coco.component_subpath(item), _process_writes, item)
+
+    app = coco.App(  # type: ignore[type-arg]
+        coco.AppConfig(name="use_state_write_serialize", environment=coco_env),
+        _root_writes,
+        items=_source_items,
+    )
+    _source_items[:] = ["a"]
+
+    _SerCounter.serialize_count = 0
+    app.update_blocking()
+    assert _seen["a"] is None  # first run: no stored value
+    assert _SerCounter.serialize_count == 1  # 5 writes → 1 serialize at commit
+
+    _SerCounter.serialize_count = 0
+    app.update_blocking()
+    loaded = _seen["a"]
+    assert isinstance(loaded, _SerCounter)
+    assert loaded.n == 4  # persisted final value from the previous run
+    assert _SerCounter.serialize_count == 1  # again, one serialize at commit
 
 
 def test_use_state_raises_inside_memoized_function() -> None:

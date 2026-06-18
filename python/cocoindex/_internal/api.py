@@ -664,7 +664,10 @@ class StateHandle(Generic[_StateT]):
 
     @value.setter
     def value(self, new_value: _StateT) -> None:
-        self._core_processor_ctx.update_user_state(self._key, _serialize(new_value))
+        # Pass the object straight through — the Rust side wraps it in an
+        # object-backed StoredValue and serializes only once, at commit time.
+        # Repeated writes in one run therefore cost no serialization.
+        self._core_processor_ctx.update_user_state(self._key, new_value)
         self._value = new_value
 
 
