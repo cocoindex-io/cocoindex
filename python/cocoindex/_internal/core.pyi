@@ -192,6 +192,52 @@ class StablePathInfoAsyncIterator:
     def __aiter__(self) -> StablePathInfoAsyncIterator: ...
     def __anext__(self) -> Awaitable[StablePathInfo]: ...
 
+class TargetStateVersion:
+    version: int
+    state: str
+
+class ProviderGeneration:
+    provider_id: int
+    provider_schema_version: int
+
+class TargetStateInfoItemSummary:
+    target_state_path: str
+    key: StableKey
+    states: list[TargetStateVersion]
+    provider_schema_version: int
+    provider_generation: ProviderGeneration | None
+
+class StablePathDetail:
+    """Detailed information about a stable path from LMDB."""
+
+    path: StablePath
+    node_type: StablePathNodeType
+    version: int
+    processor_name: str
+    target_state_count: int
+    has_memoization: bool
+    target_state_items: list[TargetStateInfoItemSummary]
+
+def get_stable_path_detail(app: App, path: StablePath) -> StablePathDetail | None: ...
+def get_stable_path_detail_by_name(
+    env: Any, app_name: str, path: StablePath
+) -> StablePathDetail | None: ...
+def query_stable_path_details(
+    app: App,
+    path: StablePath,
+    include_children: bool,
+    recursive: bool,
+    include_parents: bool,
+) -> list[StablePathDetail]: ...
+def query_stable_path_details_by_name(
+    env: Any,
+    app_name: str,
+    path: StablePath,
+    include_children: bool,
+    recursive: bool,
+    include_parents: bool,
+) -> list[StablePathDetail]: ...
+
 # --- UpdateHandle ---
 class UpdateHandle:
     def stats_snapshot(self) -> tuple[int, bool, dict[str, dict[str, int]]]: ...

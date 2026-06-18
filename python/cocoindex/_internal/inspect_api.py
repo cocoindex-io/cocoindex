@@ -57,10 +57,65 @@ def list_stable_paths_info_sync(
     return asyncio.run(_iter_stable_paths_collected(app))
 
 
+async def get_stable_path_detail(
+    app: App[Any, Any],
+    path: StablePath,
+) -> core.StablePathDetail | None:
+    """Get detailed information about a single stable path from LMDB."""
+    core_app = await app._get_core()
+    return core.get_stable_path_detail(core_app, path._core)
+
+
+async def get_stable_path_detail_by_name(
+    env: Environment,
+    app_name: str,
+    path: StablePath,
+) -> core.StablePathDetail | None:
+    """Get detailed information about a single stable path from LMDB (by app name)."""
+    return core.get_stable_path_detail_by_name(env._core_env, app_name, path._core)
+
+
+async def query_stable_path_details(
+    app: App[Any, Any],
+    path: StablePath,
+    include_children: bool = False,
+    recursive: bool = False,
+    include_parents: bool = False,
+) -> list[core.StablePathDetail]:
+    """Query details for a path with optional children/parents from a live App."""
+    core_app = await app._get_core()
+    return core.query_stable_path_details(
+        core_app, path._core, include_children, recursive, include_parents
+    )
+
+
+async def query_stable_path_details_by_name(
+    env: Environment,
+    app_name: str,
+    path: StablePath,
+    include_children: bool = False,
+    recursive: bool = False,
+    include_parents: bool = False,
+) -> list[core.StablePathDetail]:
+    """Query details for a path with optional children/parents (by app name)."""
+    return core.query_stable_path_details_by_name(
+        env._core_env,
+        app_name,
+        path._core,
+        include_children,
+        recursive,
+        include_parents,
+    )
+
+
 __all__ = [
     "iter_stable_paths",
     "iter_stable_paths_by_name",
     "list_stable_paths",
     "list_stable_paths_info_sync",
     "list_stable_paths_sync",
+    "get_stable_path_detail",
+    "get_stable_path_detail_by_name",
+    "query_stable_path_details",
+    "query_stable_path_details_by_name",
 ]
