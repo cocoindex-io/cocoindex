@@ -92,8 +92,7 @@ from .memo_fingerprint import (
 from .serde import (
     unpickle_safe,
     serialize_by_pickle,
-    serialize as _serialize,
-    deserialize as _deserialize,
+    make_deserialize_fn,
 )
 
 from .pending_marker import PendingS, ResolvedS, MaybePendingS
@@ -637,6 +636,9 @@ def runtime() -> _DualModeRuntime:
 
 _StateT = TypeVar("_StateT")
 
+# State has no static type hint (the handle is generic), so decode as Any.
+_DESERIALIZE_ANY = make_deserialize_fn(Any)
+
 
 class StateHandle(Generic[_StateT]):
     """
@@ -646,29 +648,29 @@ class StateHandle(Generic[_StateT]):
     assign to `.value` to persist a new value for the next run.
     """
 
-    __slots__ = ("_key", "_value", "_core_processor_ctx")
+    __slots__ = ("_key", "_stored", "_core_processor_ctx")
 
     def __init__(
         self,
         key: StableKey,
-        value: _StateT,
+        stored: core.StoredValue,
         core_processor_ctx: core.ComponentProcessorContext,
     ) -> None:
         self._key = key
-        self._value = value
+        self._stored = stored
         self._core_processor_ctx = core_processor_ctx
 
     @property
     def value(self) -> _StateT:
-        return self._value
+        # Lazy read: object-backed returns directly; bytes-backed deserializes once, cached.
+        return self._stored.get(_DESERIALIZE_ANY)  # type: ignore[no-any-return]
 
     @value.setter
     def value(self, new_value: _StateT) -> None:
-        # Pass the object straight through — the Rust side wraps it in an
-        # object-backed StoredValue and serializes only once, at commit time.
-        # Repeated writes in one run therefore cost no serialization.
-        self._core_processor_ctx.update_user_state(self._key, new_value)
-        self._value = new_value
+        # Hand the object to Rust without serializing (serialization is deferred
+        # to commit). Keep the returned object-backed cell so later in-run reads
+        # return this value directly.
+        self._stored = self._core_processor_ctx.update_user_state(self._key, new_value)
 
 
 @overload
@@ -683,6 +685,12 @@ def use_state(key: StableKey, initial_value: Any = None) -> StateHandle[Any]:
     (or `None` if omitted). On subsequent runs, `.value` is the value
     stored at the end of the previous run. Assign to `handle.value`
     during the run to persist a new value.
+
+    The value is serialized lazily, once, when the component commits — not at
+    assignment. Two consequences: (1) if the value is not serializable, the
+    error surfaces at commit (identifying the state key) rather than at the
+    `handle.value = ...` line; (2) the persisted value reflects the object as it
+    is at commit, so mutating it in place after assignment is captured.
 
     Args:
         key: Unique StableKey within this component (None, bool, int, str,
@@ -721,12 +729,14 @@ def use_state(key: StableKey, initial_value: Any = None) -> StateHandle[Any]:
             "coco.use_state() cannot be called inside a memoized function"
         )
     try:
-        stored_bytes = ctx._core_processor_ctx.use_state(key, _serialize(initial_value))
+        # initial_value passed unserialized; engine core drops it if a value is
+        # already stored on the previous run for this key.
+        stored = ctx._core_processor_ctx.use_state(key, initial_value)
     except ValueError as e:
         # Rust client errors surface as ValueError; normalize to RuntimeError so
         # all use_state usage errors have a consistent type for callers.
         raise RuntimeError(str(e)) from None
-    return StateHandle(key, _deserialize(stored_bytes), ctx._core_processor_ctx)
+    return StateHandle(key, stored, ctx._core_processor_ctx)
 
 
 # ============================================================================

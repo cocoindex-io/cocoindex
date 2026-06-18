@@ -7,7 +7,6 @@ use crate::app::PyStatsGroupHandle;
 use crate::value::PyStoredValue;
 use crate::{environment::PyEnvironment, stable_path::PyStablePath};
 use cocoindex_core::engine::context::{ComponentProcessorContext, FnCallContext};
-use cocoindex_core::engine::profile::Persist;
 use pyo3::types::PyDict;
 use pyo3_async_runtimes::tokio::future_into_py;
 
@@ -101,27 +100,44 @@ impl PyComponentProcessorContext {
 
     /// Declare a persistent state key for this component build.
     ///
-    /// Returns the previously stored bytes for `key` if available, otherwise
-    /// `initial_value`. Raises if the same key is declared more than once
-    /// within the same component run.
-    fn use_state(&self, key: PyStableKey, initial_value: Vec<u8>) -> PyResult<Vec<u8>> {
-        let initial = PyStoredValue::from_bytes(&initial_value).into_py_result()?;
-        let stored = self.0.use_state(key.0, initial).into_py_result()?;
-        Ok(stored.to_bytes().into_py_result()?.to_vec())
+    /// `initial_value` is wrapped in an object-backed `StoredValue` without
+    /// being serialized.
+    ///
+    /// - A value is already stored for `key` (from a previous run): the core
+    ///   returns that *bytes-backed* `StoredValue` and this run's
+    ///   `initial_value` is dropped (unserialized). Decoding those bytes back
+    ///   to a Python object is deferred until the value is actually read.
+    /// - Brand-new key (no stored value): the core keeps and returns the
+    ///   `initial_value` cell as-is (*object-backed*). It is serialized once,
+    ///   at commit (only if it survives as the component's state).
+    ///
+    /// Either way the `StoredValue` cell is returned directly, so the Python
+    /// `StateHandle` reads through it lazily: a fresh value needs no
+    /// serialize/deserialize round-trip, and a reloaded value is decoded at
+    /// most once, on first access.
+    ///
+    /// Raises if the same key is declared more than once within the same run.
+    fn use_state(&self, key: PyStableKey, initial_value: Py<PyAny>) -> PyResult<PyStoredValue> {
+        self.0
+            .use_state(key.0, PyStoredValue::new(initial_value))
+            .into_py_result()
     }
 
     /// Update the value for an already-declared state key.
     ///
-    /// Takes the raw Python object and wraps it in an object-backed
-    /// `PyStoredValue` without serializing — serialization is deferred to
-    /// commit time (`into_flush_plan`), so repeated writes in one run cost no
-    /// serialization and only the final value is encoded once.
+    /// Wraps the raw Python object in an object-backed `StoredValue` without
+    /// serializing — serialization is deferred to commit time
+    /// (`into_flush_plan`), so repeated writes in one run cost no serialization
+    /// and only the final value is encoded once. Returns the wrapping cell so
+    /// the `StateHandle` can keep it for subsequent in-run reads.
     ///
     /// Raises if `key` was not declared via `use_state` in this component run.
-    fn update_user_state(&self, key: PyStableKey, value: Py<PyAny>) -> PyResult<()> {
+    fn update_user_state(&self, key: PyStableKey, value: Py<PyAny>) -> PyResult<PyStoredValue> {
+        let stored = PyStoredValue::new(value);
         self.0
-            .update_user_state(&key.0, PyStoredValue::new(value))
-            .into_py_result()
+            .update_user_state(&key.0, stored.clone())
+            .into_py_result()?;
+        Ok(stored)
     }
 }
 

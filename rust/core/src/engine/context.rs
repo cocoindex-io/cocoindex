@@ -572,7 +572,13 @@ impl<D: Persist + Clone> UserStateCache<D> {
             match entry {
                 UserStateEntry::Loaded(_) if self.is_loaded => plan.deletes.push(key),
                 UserStateEntry::Declared(value) => {
-                    plan.writes.push((key, value.to_bytes()?.to_vec()))
+                    // Serialization is deferred to here, so a non-serializable
+                    // state value surfaces at commit. Attach the key so the
+                    // error identifies which `use_state` value failed.
+                    let bytes = value.to_bytes().with_context(|| {
+                        format!("failed to serialize user state for key {key:?}")
+                    })?;
+                    plan.writes.push((key, bytes.to_vec()));
                 }
                 _ => {}
             }
