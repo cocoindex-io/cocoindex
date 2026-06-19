@@ -179,7 +179,7 @@ table.declare_fts_index(column="content")
 ```
 
 :::note
-Indexes are reconciled as part of the table's target state: changing a declaration replaces the index in place, and dropping the table removes its indexes. Removing only an index declaration is currently a no-op — the index persists until the table is rebuilt.
+Indexes are reconciled as part of the table's target state: changing a declaration replaces the index in place, removing a declaration drops the index, and dropping the table removes all its indexes.
 :::
 
 ### Table schema: from Python class

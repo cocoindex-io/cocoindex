@@ -324,6 +324,24 @@ def _escape_sql_string(value: str) -> str:
     return value.replace("'", "''")
 
 
+async def _drop_index_if_exists(
+    table: lancedb.table.AsyncTable, index_name: str, table_name: str
+) -> None:
+    """Drop an index by name if it currently exists on the table.
+
+    LanceDB's ``drop_index`` only detaches the index from the table; the storage
+    is reclaimed on the next ``table.optimize()``, which the row handler already
+    schedules periodically after mutation batches.
+    """
+    existing = {idx.name for idx in await table.list_indices()}
+    if index_name not in existing:
+        _logger.debug(
+            "LanceDB index %s on table %s: nothing to drop", index_name, table_name
+        )
+        return
+    await table.drop_index(index_name)
+
+
 class _RowAction(NamedTuple):
     """Action to perform on a row."""
 
@@ -592,14 +610,7 @@ class _VectorIndexHandler:
         table = await self._conn.open_table(self._table_name)
         for action in actions:
             if action.spec is None:
-                # LanceDB does not expose a first-class "drop index" API on AsyncTable;
-                # we silently skip — the index will cease to exist after the table is
-                # dropped/recreated by the table-level handler if the spec changes.
-                _logger.debug(
-                    "LanceDB vector index %s on table %s: no-op delete (not supported)",
-                    action.name,
-                    self._table_name,
-                )
+                await _drop_index_if_exists(table, action.name, self._table_name)
             else:
                 spec = action.spec
                 if spec.index_type == "ivf_pq":
@@ -631,6 +642,7 @@ class _VectorIndexHandler:
                     spec.column,
                     config=index_config,
                     replace=True,
+                    name=action.name,
                 )
 
     def reconcile(
@@ -703,11 +715,7 @@ class _FtsIndexHandler:
         table = await self._conn.open_table(self._table_name)
         for action in actions:
             if action.spec is None:
-                _logger.debug(
-                    "LanceDB FTS index %s on table %s: no-op delete (not supported)",
-                    action.name,
-                    self._table_name,
-                )
+                await _drop_index_if_exists(table, action.name, self._table_name)
             else:
                 spec = action.spec
                 fts_config = lancedb_index.FTS(
@@ -718,6 +726,7 @@ class _FtsIndexHandler:
                     spec.column,
                     config=fts_config,
                     replace=True,
+                    name=action.name,
                 )
 
     def reconcile(

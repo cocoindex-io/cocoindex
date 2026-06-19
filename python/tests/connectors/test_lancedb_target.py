@@ -533,7 +533,7 @@ def test_table_target_rejects_non_positive_optimize_interval() -> None:
 
 @requires_lancedb
 def test_lancedb_async_table_supports_add_columns_api() -> None:
-    import lancedb as real_lancedb  # type: ignore[import-not-found]
+    import lancedb as real_lancedb  # type: ignore[import-not-found, import-untyped]
 
     async_table = real_lancedb.table.AsyncTable
 
@@ -676,6 +676,41 @@ async def test_vector_index_handler_replace_replaces_existing_index(
 
     indices = await _list_indices(conn, table_name)
     assert len(indices) >= 1
+
+
+@pytest.mark.asyncio
+@requires_lancedb
+async def test_vector_index_handler_drops_index_on_delete(lancedb_dir: Path) -> None:
+    """A delete action (spec=None) drops the previously created vector index."""
+    conn = await lancedb.connect_async(str(lancedb_dir))
+    table_name = "test_vec_drop"
+    await _create_test_table_with_vectors(conn, table_name, num_rows=256)
+
+    handler = _target._VectorIndexHandler(conn=conn, table_name=table_name)
+    spec = _target._VectorIndexSpec(
+        column="embedding",
+        metric="cosine",
+        index_type="ivf_pq",
+        num_partitions=2,
+        num_sub_vectors=2,
+        num_bits=None,
+        m=None,
+        ef_construction=None,
+    )
+    await handler._apply_actions(
+        cast(Any, None), [_target._VectorIndexAction(name="emb_idx", spec=spec)]
+    )
+    names_before = {idx.name for idx in await _list_indices(conn, table_name)}
+    assert "emb_idx" in names_before
+
+    # Delete action (spec=None) drops the index by name.
+    delete = _target._VectorIndexAction(name="emb_idx", spec=None)
+    await handler._apply_actions(cast(Any, None), [delete])
+    names_after = {idx.name for idx in await _list_indices(conn, table_name)}
+    assert "emb_idx" not in names_after
+
+    # Dropping again is a safe no-op when the index is already gone.
+    await handler._apply_actions(cast(Any, None), [delete])
 
 
 @requires_lancedb
@@ -834,6 +869,33 @@ async def test_fts_index_handler_replace_is_idempotent(lancedb_dir: Path) -> Non
 
     await handler._apply_actions(cast(Any, None), [action])
     await handler._apply_actions(cast(Any, None), [action])  # no error on re-create
+
+
+@pytest.mark.asyncio
+@requires_lancedb
+async def test_fts_index_handler_drops_index_on_delete(lancedb_dir: Path) -> None:
+    """A delete action (spec=None) drops the previously created FTS index."""
+    conn = await lancedb.connect_async(str(lancedb_dir))
+    table_name = "test_fts_drop"
+    await _create_test_table_with_text(conn, table_name)
+
+    handler = _target._FtsIndexHandler(conn=conn, table_name=table_name)
+    spec = _target._FtsIndexSpec(
+        column="content",
+        language="English",
+        with_position=True,
+    )
+    await handler._apply_actions(
+        cast(Any, None), [_target._FtsIndexAction(name="content_fts", spec=spec)]
+    )
+    assert "content_fts" in {idx.name for idx in await _list_indices(conn, table_name)}
+
+    # Delete action (spec=None) drops the index by name.
+    delete = _target._FtsIndexAction(name="content_fts", spec=None)
+    await handler._apply_actions(cast(Any, None), [delete])
+    assert "content_fts" not in {
+        idx.name for idx in await _list_indices(conn, table_name)
+    }
 
 
 @requires_lancedb
