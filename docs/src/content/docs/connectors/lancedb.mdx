@@ -110,9 +110,9 @@ def TableTarget.declare_row(
 
 - `row` — A row object (dict, dataclass, NamedTuple, or Pydantic model). Must include all primary key columns.
 
-#### Vector indexes (child states)
+#### Vector indexes (attachment)
 
-Declare a vector index on a vector column to accelerate similarity search. The index is created and kept in sync as part of the table's target state:
+Declare a vector index on a vector column to accelerate similarity search. Vector indexes are an [attachment](../advanced_topics/custom_target_connector#implementing-attachment-providers) to a `TableTarget`:
 
 ```python
 def TableTarget.declare_vector_index(
@@ -150,9 +150,9 @@ Parameters left as `None` fall back to LanceDB's defaults.
 table.declare_vector_index(column="embedding", metric="cosine")
 ```
 
-#### FTS indexes (child states)
+#### FTS indexes (attachment)
 
-Declare a full-text search (FTS) index on a text column to enable keyword and phrase search:
+Declare a full-text search (FTS) index on a text column to enable keyword and phrase search. Like vector indexes, FTS indexes are an [attachment](../advanced_topics/custom_target_connector#implementing-attachment-providers) to a `TableTarget`:
 
 ```python
 def TableTarget.declare_fts_index(
