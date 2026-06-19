@@ -39,3 +39,13 @@ python main.py "what is self-attention?"
 ```
 
 You can also open the Qdrant dashboard at <http://localhost:6333/dashboard>.
+
+## Environment
+
+Copy `.env.example` to `.env` and fill in the blanks — it is loaded automatically when you run the example:
+
+```sh
+cp .env.example .env
+```
+
+Stores vectors in Qdrant (defaults to a local container at `http://localhost:6334/`), so no required secrets — the file documents the optional `QDRANT_URL` override.

@@ -59,14 +59,14 @@ when the set of raw names changes.
   providers — see [LiteLLM providers](https://docs.litellm.ai/docs/providers)).
 - A Google Cloud service account with read access to the source folders, and
   the folder IDs you want to ingest. See
-  [Setup for Google Drive](https://cocoindex.io/docs/sources/googledrive#setup-for-google-drive).
+  [Setting up a service account](https://cocoindex.io/docs/connectors/google_drive/#setting-up-a-service-account).
 
 ## Environment
 
 Set the following variables (copy `.env.example` to `.env` and fill in):
 
 ```sh
-export OPENAI_API_KEY=sk-...
+export OPENAI_API_KEY="your-openai-api-key"
 export GOOGLE_SERVICE_ACCOUNT_CREDENTIAL=/absolute/path/to/service_account.json
 export GOOGLE_DRIVE_ROOT_FOLDER_IDS=folderId1,folderId2
 export FALKORDB_URI=falkor://localhost:6379

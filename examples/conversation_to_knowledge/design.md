@@ -10,8 +10,8 @@ Convert podcast sessions (from YouTube) into a structured knowledge graph stored
 |---------|--------|-----------|
 | Audio download | `yt-dlp` | Standard, reliable YouTube downloader |
 | Transcription + diarization | AssemblyAI | Single API call gives speaker-labeled transcript with utterances. No file size / duration limits. No GPU needed |
-| LLM (extraction) | `instructor` + `litellm` → **`gpt-5.4`** (configurable via `LLM_MODEL` in `.env`) | Strong model for structured extraction from transcripts |
-| LLM (entity resolution) | `instructor` + `litellm` → **`gpt-5-mini`** (configurable via `RESOLUTION_LLM_MODEL` in `.env`) | Lighter model sufficient for simple entity deduplication decisions |
+| LLM (extraction) | `instructor` + `litellm` → **`openai/gpt-5.4`** (configurable via `LLM_MODEL` in `.env`) | Strong model for structured extraction from transcripts |
+| LLM (entity resolution) | `instructor` + `litellm` → **`openai/gpt-5-mini`** (configurable via `RESOLUTION_LLM_MODEL` in `.env`) | Lighter model sufficient for simple entity deduplication decisions |
 | Embedding (entity resolution) | `sentence-transformers/all-MiniLM-L6-v2` | Fast, good for short entity name similarity |
 | In-memory vector search | `faiss-cpu` (`IndexFlatIP`) | SIMD-optimized exact search with incremental `add()`; no GPU needed |
 | Target database | SurrealDB | Graph DB with relations, per spec |
@@ -575,14 +575,14 @@ async def coco_lifespan(builder: coco.EnvironmentBuilder) -> AsyncIterator[None]
 
 ```env
 # Required
-OPENAI_API_KEY=sk-...
+OPENAI_API_KEY=
 SURREALDB_URL=ws://localhost:8000/rpc
 
 # Optional (with defaults)
 SURREALDB_USER=root
 SURREALDB_PASS=root
-LLM_MODEL=gpt-5.4
-RESOLUTION_LLM_MODEL=gpt-5-mini
+LLM_MODEL=openai/gpt-5.4
+RESOLUTION_LLM_MODEL=openai/gpt-5-mini
 ```
 
 ## ID Generation

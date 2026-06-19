@@ -9,7 +9,7 @@ use crate::engine::profile::EngineProfile;
 use crate::engine::stats::ProcessingStats;
 use crate::engine::target_state::TargetStateProvider;
 use crate::prelude::*;
-use crate::state::stable_path::StablePath;
+use crate::state::stable_path::{StableKey, StablePath};
 use crate::state::target_state_path::TargetStatePath;
 use cocoindex_utils::error::{SharedError, SharedResult};
 
@@ -485,6 +485,49 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
         self.live
     }
 
+    /// Read the value this live component committed under `key` via
+    /// [`Self::write_committed_state`] on a prior run. Callable from
+    /// `process_live` — before the first `update_full` — to decide whether a
+    /// startup full scan can be skipped (e.g. a durable connector that
+    /// persisted a bootstrap flag + logic version).
+    ///
+    /// Returns `None` if `key` has no committed value (e.g. the component
+    /// never bootstrapped). Reads the [`StateKind::Live`] keyspace via a
+    /// single point-get on a fresh standalone snapshot — isolated from the
+    /// `Regular` keyspace that `coco.use_state` in `process()` writes and
+    /// set-reduces, and not participating in any commit, so it is safe in the
+    /// non-committing `process_live` context.
+    pub async fn read_committed_state(&self, key: &StableKey) -> Result<Option<Vec<u8>>> {
+        self.component
+            .app_ctx()
+            .app_store()
+            .read_user_state(
+                self.component.stable_path(),
+                db_schema::StateKind::Live,
+                key,
+            )
+            .await
+    }
+
+    /// Commit `value` under `key` in this live component's [`StateKind::Live`]
+    /// persistent user state, read back by [`Self::read_committed_state`] on a
+    /// later run. Written via the single-writer batcher in its own txn —
+    /// independent of any component build's flush — so the live machinery can
+    /// persist a bootstrap flag / logic version without going through
+    /// `coco.use_state` (which targets the prune-eligible `Regular` keyspace).
+    pub async fn write_committed_state(&self, key: &StableKey, value: Vec<u8>) -> Result<()> {
+        self.component
+            .app_ctx()
+            .app_store()
+            .write_user_state_standalone(
+                self.component.stable_path(),
+                db_schema::StateKind::Live,
+                key,
+                &value,
+            )
+            .await
+    }
+
     /// Full processing cycle. Acquires `update_full_lock` (serializes with
     /// concurrent `update_full()` calls), waits for any in-flight subpath
     /// drains to quiesce, then runs `process()` via `run_in_background`.
@@ -530,6 +573,7 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
                 self.full_reprocess,
                 self.live,
                 on_error.clone(),
+                None,
             ),
         );
 
@@ -596,6 +640,11 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
                 .app_ctx()
                 .env()
                 .run_txn(move |wtxn| {
+                    let app_store = app_store.clone();
+                    let parent_path = parent_path.clone();
+                    let child_key = child_key.clone();
+                    let component_path = component_path.clone();
+                    let relative_child = relative_child.clone();
                     Box::pin(async move {
                         app_store
                             .remove_child_with_tombstone(
@@ -825,6 +874,7 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
                 self.full_reprocess,
                 self.live,
                 None,
+                None,
             ),
         );
         let fn_ctx = FnCallContext::default();
@@ -847,6 +897,9 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
                 .app_ctx()
                 .env()
                 .run_txn(move |wtxn| {
+                    let app_store = app_store.clone();
+                    let parent_path = parent_path.clone();
+                    let child_key = child_key.clone();
                     Box::pin(async move {
                         crate::engine::execution::ensure_path_node_type(
                             &app_store,
@@ -1126,6 +1179,7 @@ async fn run_op<Prof: EngineProfile>(
                     full_reprocess,
                     live,
                     on_error.clone(),
+                    None,
                 ),
             );
             let inner_handle = child

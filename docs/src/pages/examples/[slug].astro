@@ -8,8 +8,13 @@ import '../../styles/globals.css';
 import Topbar from '../../components/Topbar.astro';
 import Toc from '../../components/Toc.astro';
 import MobileSheet from '../../components/MobileSheet.astro';
-import { SITE_URL, titleMarkup, titleText } from '../../consts';
+import MermaidRenderer from '../../components/MermaidRenderer.astro';
+import Analytics from '../../components/Analytics.astro';
+import ScarfPixel from '../../components/ScarfPixel.astro';
+import Foot from '../../components/Foot.astro';
+import { SITE_URL, titleMarkup, titleText, SCARF_PIXEL_ID, OG_IMAGE_EXAMPLES, OG_IMAGE_WIDTH, OG_IMAGE_HEIGHT, OG_IMAGE_EXAMPLES_ALT } from '../../consts';
 import { examples, findExample, CATEGORY_META, type Category } from '../../data/examples';
+import { reviewedDate } from '../../data/review-meta';
 import { getEntry, render } from 'astro:content';
 
 // Group examples by category for the left sidebar, in the same order as
@@ -49,10 +54,37 @@ if (!ex) throw new Error(`Unknown example slug: ${slug}`);
 const base = import.meta.env.BASE_URL.replace(/\/$/, '') || '';
 const plainTitle = titleText(ex.title);
 const fullTitle = `${plainTitle} · CocoIndex Examples`;
-const canonical = new URL(`${base}/examples/${slug}`, SITE_URL).toString();
+// trailingSlash: 'always' — canonical must carry the slash to match the served URL.
+const canonical = new URL(`${base}/examples/${slug}/`, SITE_URL).toString();
+const examplesHome = new URL(`${base}/examples/`, SITE_URL).toString();
+const docsHome = new URL(`${base}/`, SITE_URL).toString();
+const ogImage = OG_IMAGE_EXAMPLES;
 // The repo directory usually matches the slug; override via sourceSlug when
 // it doesn't (e.g. listing slug `code_index` vs repo dir `code_embedding`).
 const sourceUrl = `https://github.com/cocoindex-io/cocoindex/tree/main/examples/${ex.sourceSlug ?? slug}`;
+
+// Structured data: a TechArticle for the example plus a BreadcrumbList
+// (Docs › Examples › <example>), mirroring DocsLayout so agents and search
+// engines understand the page and its place in the hierarchy.
+const articleLd = {
+  '@context': 'https://schema.org',
+  '@type': 'TechArticle',
+  headline: plainTitle,
+  description: ex.description,
+  url: canonical,
+  inLanguage: 'en',
+  image: ogImage,
+  isPartOf: { '@type': 'WebSite', name: 'CocoIndex Docs', url: docsHome },
+};
+const breadcrumbLd = {
+  '@context': 'https://schema.org',
+  '@type': 'BreadcrumbList',
+  itemListElement: [
+    { '@type': 'ListItem', position: 1, name: 'Docs', item: docsHome },
+    { '@type': 'ListItem', position: 2, name: 'Examples', item: examplesHome },
+    { '@type': 'ListItem', position: 3, name: plainTitle, item: canonical },
+  ],
+};
 
 // Pull the ported markdown body. Every listed example should have a
 // matching entry, but we tolerate a missing one so we can ship the
@@ -65,22 +97,14 @@ const Content = rendered?.Content;
 // (DocsLayout.astro), so example pages carry the same typographic rhythm.
 const tagOf = (kind: 'src' | 'tgt' | 'llm' | 'ops') =>
   ex.tags.find((t) => t.kind === kind)?.label ?? null;
-const lastReviewedRaw = (entry?.data as { last_reviewed?: string | Date })?.last_reviewed;
-// Format YYYY-MM-DD as a local-calendar date — `new Date('2026-04-20')`
-// parses as UTC midnight and drifts a day west of UTC when rendered.
-const formatLocalDate = (raw: string | Date): string => {
-  const iso = raw instanceof Date ? raw.toISOString().slice(0, 10) : String(raw).slice(0, 10);
-  const [y, m, d] = iso.split('-').map((n) => parseInt(n, 10));
-  return new Date(y, m - 1, d).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-};
-const lastReviewed = lastReviewedRaw ? formatLocalDate(lastReviewedRaw) : null;
+const lastReviewed = reviewedDate(`examples/${slug}`);
 const introItems = [
   { k: 'Time',          v: ex.footMeta.split('·')[0].trim(),                       reviewed: false },
   { k: 'Source',        v: tagOf('src'),                                           reviewed: false },
   { k: 'Target',        v: tagOf('tgt'),                                           reviewed: false },
   { k: 'LLM',           v: tagOf('llm'),                                           reviewed: false },
   { k: 'Mode',          v: tagOf('ops'),                                           reviewed: false },
-  { k: 'Category',      v: ex.category,                                            reviewed: false },
+  { k: 'Category',      v: `${titleText(CATEGORY_META[ex.category].label)}${CATEGORY_META[ex.category].em ?? ''}`, reviewed: false },
   { k: 'Last reviewed', v: lastReviewed,                                           reviewed: true  },
 ].filter((m) => m.v);
 ---
@@ -94,6 +118,26 @@ const introItems = [
     <title>{fullTitle}</title>
     <meta name="description" content={ex.description} />
     <link rel="canonical" href={canonical} />
+
+    <!-- Open Graph / Twitter — link previews on social, Slack, iMessage, etc. -->
+    <meta property="og:type" content="article" />
+    <meta property="og:site_name" content="CocoIndex Docs" />
+    <meta property="og:title" content={fullTitle} />
+    <meta property="og:description" content={ex.description} />
+    <meta property="og:url" content={canonical} />
+    <meta property="og:image" content={ogImage} />
+    <meta property="og:image:width" content={OG_IMAGE_WIDTH} />
+    <meta property="og:image:height" content={OG_IMAGE_HEIGHT} />
+    <meta property="og:image:alt" content={OG_IMAGE_EXAMPLES_ALT} />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={fullTitle} />
+    <meta name="twitter:description" content={ex.description} />
+    <meta name="twitter:image" content={ogImage} />
+
+    <!-- Structured data for search engines and agents. -->
+    <script type="application/ld+json" set:html={JSON.stringify(articleLd)} />
+    <script type="application/ld+json" set:html={JSON.stringify(breadcrumbLd)} />
+
     <link rel="icon" href={`${base}/img/favicon.ico`} />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -109,6 +153,7 @@ const introItems = [
       headings={rendered?.headings ?? []}
       sidebarItems={examplesSidebar}
     />
+    <MermaidRenderer />
 
     <div class="ex-layout">
       <!-- ─────────── LEFT: EXAMPLE NAV ─────────── -->
@@ -207,7 +252,7 @@ const introItems = [
       <!-- ─────────── RIGHT: ON THIS PAGE ─────────── Reuses the shared
            Toc component so scroll-spy + visual styling match the regular
            docs pages (globals.css `aside.toc`). -->
-      <Toc headings={rendered?.headings ?? []} slug={slug!} lastReviewed={lastReviewed} />
+      <Toc headings={rendered?.headings ?? []} lastReviewed={lastReviewed} />
     </div>
 
     <style is:global>
@@ -532,5 +577,8 @@ const introItems = [
       body.ex-detail .ex-prose th { font-family: var(--mono); font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); border-bottom-color: var(--rule-strong); }
       body.ex-detail .ex-prose kbd { font-family: var(--mono); font-size: 12px; padding: 2px 6px; border: 1px solid var(--rule-strong); border-radius: 4px; background: var(--cream); }
     </style>
+    <Foot />
+    <Analytics />
+    <ScarfPixel pxid={SCARF_PIXEL_ID} />
   </body>
 </html>

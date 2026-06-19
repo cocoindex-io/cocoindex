@@ -875,6 +875,37 @@ aside.toc .meta .edited { color: var(--muted); cursor: default; }
   scroll-margin-top: 80px;
 }
 
+/* Shareable permalink affordance on section headings. A link icon sits in the
+   left gutter and reveals on hover; clicking sets the URL hash and copies the
+   section's full URL to the clipboard. Headings already carry Astro-generated
+   ids (the TOC relies on them); the anchors are injected by the script in
+   DocsLayout.astro. Mirrors the blog's `.head-anchor` affordance. */
+.prose :is(h2, h3, h4, h5, h6) { position: relative; }
+.prose .head-anchor {
+  position: absolute;
+  left: -1.4em; top: 0; bottom: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 1.4em;
+  color: var(--coral);
+  opacity: 0;
+  text-decoration: none;
+  transition: opacity 0.15s ease, color 0.15s ease;
+}
+.prose .head-anchor svg { width: 0.66em; height: 0.66em; }
+.prose :is(h2, h3, h4, h5, h6):hover .head-anchor { opacity: 0.5; }
+.prose .head-anchor:hover,
+.prose .head-anchor:focus-visible { opacity: 1; }
+.prose .head-anchor.copied { opacity: 1; color: var(--palm-ink); }
+.prose .head-anchor.copied::after {
+  content: "Link copied";
+  position: absolute; left: 50%; bottom: calc(100% + 7px);
+  transform: translateX(-50%);
+  background: var(--maroon-ink); color: var(--cream);
+  font-family: var(--mono); font-size: 11px; letter-spacing: 0.02em;
+  white-space: nowrap; padding: 3px 8px; border-radius: 5px;
+  pointer-events: none;
+}
+
 .prose p { margin: 12px 0; max-width: 68ch; }
 .prose ul, .prose ol { max-width: 68ch; padding-left: 22px; }
 .prose li { margin: 6px 0; }
@@ -985,6 +1016,38 @@ aside.toc .meta .edited { color: var(--muted); cursor: default; }
 .code-figure pre code {
   background: transparent; padding: 0; border: 0; color: inherit;
   font-family: var(--mono); font-size: 13px;
+}
+
+/* Mermaid diagrams — rendered from ```mermaid fenced blocks by
+   scripts/remark-mermaid.mjs and initialized in MermaidRenderer.astro. */
+.mermaid-figure {
+  margin: 24px 0;
+  padding: 18px;
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  background: var(--paper);
+  overflow-x: auto;
+}
+.mermaid-figure .mermaid {
+  display: flex;
+  justify-content: center;
+  min-width: 620px;
+  margin: 0;
+  padding: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+  color: var(--maroon-ink);
+  font-family: var(--sans);
+}
+.mermaid-figure svg {
+  max-width: 100%;
+  height: auto;
+}
+.mermaid-figure-error {
+  border-color: color-mix(in oklab, var(--pink) 70%, var(--rule));
+}
+@media (max-width: 720px) {
+  .mermaid-figure .mermaid { min-width: 560px; }
 }
 
 /* Admonitions — rendered from Docusaurus-style `:::note`, `:::info`,
@@ -1156,6 +1219,13 @@ aside.toc .meta .edited { color: var(--muted); cursor: default; }
   aside.side { display: none; }
   main.content { padding: 32px 24px 64px; }
   .nav-links { display: none; }
+
+  /* No left gutter to spare and no hover on touch: show the link icon inline
+     before the heading, faintly, so it stays tappable. */
+  .prose .head-anchor {
+    position: static; width: auto; opacity: 0.4;
+    margin-right: 7px; vertical-align: middle;
+  }
 
   /* Topbar tightens up: less side padding, smaller gap, and the .stars
      pill loses its cream fill + heavy border. At rest the star is just

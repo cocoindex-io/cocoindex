@@ -77,6 +77,7 @@ postgres = ["asyncpg>=0.31.0"]
 qdrant = ["qdrant-client>=1.6.0"]
 sqlite = ["sqlite-vec>=0.1.6"]
 surrealdb = ["surrealdb>=1.0.0"]
+zvec = ["zvec>=0.4.0"]
 turbopuffer = ["turbopuffer>=0.5.0"]
 valkey = ["valkey-glide>=2.4.0"]
 google_drive = [
@@ -127,6 +128,7 @@ all = [
     "oci>=2.0",
     "faiss-cpu>=1.7",
     "instructor>=1.0",
+    "zvec>=0.4.0",
 ]
 
 
@@ -239,6 +241,8 @@ module = [
     "transformers.*",
     "testcontainers",
     "testcontainers.*",
+    "zvec",
+    "zvec.*",
 ]
 ignore_missing_imports = true
 

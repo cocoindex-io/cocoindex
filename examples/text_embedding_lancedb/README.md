@@ -42,3 +42,13 @@ Query:
 ```sh
 python main.py "what is self-attention?"
 ```
+
+## Environment
+
+Copy `.env.example` to `.env` and fill in the blanks — it is loaded automatically when you run the example:
+
+```sh
+cp .env.example .env
+```
+
+LanceDB is an embedded local store, so there are no required secrets — the file documents the optional `LANCEDB_URI` override.

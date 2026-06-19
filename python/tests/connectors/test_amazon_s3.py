@@ -339,6 +339,43 @@ class TestMemoization:
                 outcome2 = await f2.__coco_memo_state__(outcome1.state)
                 assert outcome2.memo_valid is True
 
+    async def test_memo_state_serde_roundtrip(self) -> None:
+        """Memo state must survive a serialize/deserialize round-trip.
+
+        Regression test for the incremental-update crash on S3 sources: the S3
+        ETag is a ``str``, but ``FileMetadata.content_fingerprint`` (and hence
+        the memo state's ``tuple[datetime, bytes]``) is typed ``bytes``.  Storing
+        the raw ``str`` encodes fine on the first run but fails to decode on
+        re-run (msgspec sees a str where it expects bin), so the fingerprint
+        must be ``bytes`` and the state must round-trip through serde.
+        """
+        import cocoindex
+        from cocoindex._internal import serde
+
+        async with mock_aws():
+            sync_client = boto3.client("s3", region_name="us-east-1")
+            sync_client.create_bucket(Bucket="memo-serde-test")
+            sync_client.put_object(Bucket="memo-serde-test", Key="f.txt", Body=b"hello")
+
+            session = aiobotocore.session.get_session()
+            async with session.create_client("s3", region_name="us-east-1") as client:
+                f = await amazon_s3.get_object(client, "memo-serde-test", "f.txt")
+
+                # Fingerprint must be bytes, not the raw ETag str.
+                fp = await f.content_fingerprint()
+                assert isinstance(fp, bytes)
+
+                outcome = await f.__coco_memo_state__(cocoindex.NON_EXISTENCE)
+
+                # Resolve the prev_state type hint exactly as the engine does,
+                # then verify the persisted state decodes back without error.
+                hint = serde.strip_non_existence_type(
+                    serde.get_param_annotation(f.__coco_memo_state__, 0)
+                )
+                payload = serde.serialize(outcome.state)
+                restored = serde.make_deserialize_fn(hint)(payload)
+                assert restored == outcome.state
+
     async def test_file_path_memo_key(self, s3_client: tuple[Any, str]) -> None:
         """S3FilePath.__coco_memo_key__() incorporates bucket and path."""
         client, bucket_name = s3_client

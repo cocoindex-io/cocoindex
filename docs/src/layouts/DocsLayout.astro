@@ -5,9 +5,18 @@ import Topbar from '../components/Topbar.astro';
 import Sidebar from '../components/Sidebar.astro';
 import Toc from '../components/Toc.astro';
 import MobileSheet from '../components/MobileSheet.astro';
-import { SITE_URL, titleMarkup, DOCS_EDIT_BASE } from '../consts';
+import MermaidRenderer from '../components/MermaidRenderer.astro';
+import Analytics from '../components/Analytics.astro';
+import ScarfPixel from '../components/ScarfPixel.astro';
+import Foot from '../components/Foot.astro';
+import { SITE_URL, titleMarkup, pageUrl, pageMarkdownUrl, SKILL_MD_URL, DOCS_EDIT_BASE, SCARF_PIXEL_ID, OG_IMAGE_DOCS, OG_IMAGE_WIDTH, OG_IMAGE_HEIGHT, OG_IMAGE_DOCS_ALT } from '../consts';
+import { skillReferenceNames } from '../lib/skill-files';
+import ICON_COPY from '../icons/copy.svg?raw';
+import ICON_EXT from '../icons/external.svg?raw';
+import ICON_CHATGPT from '../icons/chatgpt.svg?raw';
+import ICON_CLAUDE from '../icons/claude.svg?raw';
 import { flatten, sidebar, type SidebarItem } from '../data/docs-sidebar';
-import docsMeta from '../data/docs-meta.json';
+import { docsVersion, reviewedDate } from '../data/review-meta';
 
 export interface IntroMeta {
   time?: string;
@@ -43,18 +52,12 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, '');
 const renderedTitle = titleMarkup(titleMarkupRaw ?? title);
 const fullTitle = `${title} · CocoIndex Docs`;
 
-// Version + last-reviewed come from data/docs-meta.json, baked at build time.
-const fileMeta = (
-  docsMeta as { _version?: string | null; files: Record<string, { reviewedTs: number }> }
-);
-// `about/*` pages (community, telemetry, …) are evergreen meta pages that
-// aren't tied to a release cycle, so we skip the version/last-reviewed stamp.
+// Version + last-reviewed come from data/docs-meta.json (via review-meta),
+// baked at build time. `about/*` pages (community, telemetry, …) are evergreen
+// meta pages not tied to a release cycle, so we skip the stamp entirely.
 const showReviewStamp = !slug.startsWith('about/');
-const version = showReviewStamp && fileMeta._version ? `v ${fileMeta._version}` : null;
-const reviewedTs = showReviewStamp ? (fileMeta.files?.[slug]?.reviewedTs ?? 0) : 0;
-const lastReviewed = reviewedTs
-  ? new Date(reviewedTs * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
-  : null;
+const version = showReviewStamp ? docsVersion : null;
+const lastReviewed = showReviewStamp ? reviewedDate(slug) : null;
 
 const introItems = [
   { k: 'Time',          v: introMeta?.time,     reviewed: false },
@@ -63,7 +66,29 @@ const introItems = [
   { k: 'Version',       v: version,             reviewed: false },
   { k: 'Last reviewed', v: lastReviewed,        reviewed: true  },
 ].filter((m) => m.v);
-const canonical = new URL(`${base}/${slug}/`, SITE_URL).toString();
+const canonical = pageUrl(slug);
+const docsHome = new URL(`${base}/`, SITE_URL).toString();
+const ogImage = OG_IMAGE_DOCS;
+
+// Contextual menu ("use this page with AI"): the raw-Markdown twin plus
+// one-click deep links that open ChatGPT/Claude with this page preloaded as
+// context. We pass the .md URL (not the inlined body) so it stays token-light
+// and always current. Mirrors Mintlify's contextual menu.
+const mdHref = `${base}/${slug}.md`;
+const mdAbs = pageMarkdownUrl(slug);
+const aiPrompt =
+  `Read ${mdAbs} — it is the raw Markdown for the CocoIndex (v1) docs page ` +
+  `"${title}". Use it as context for my questions. Note: CocoIndex v1 is a ` +
+  `redesign from v0; ignore any v0 flow-builder DSL or deprecated APIs.`;
+const chatgptHref = `https://chatgpt.com/?q=${encodeURIComponent(aiPrompt)}`;
+const claudeHref = `https://claude.ai/new?q=${encodeURIComponent(aiPrompt)}`;
+// One-liner to install the CocoIndex v1 skill from the hosted /docs/skill.md —
+// the "Copy skill install" item (our analog to Mintlify's "Copy MCP install").
+// Fetches the references/ companions too so the skill's relative links resolve.
+const referencesUrl = new URL(`${base}/references`, SITE_URL).toString();
+const skillInstallCmd =
+  `mkdir -p .claude/skills/cocoindex/references && curl -fsSL ${SKILL_MD_URL} -o .claude/skills/cocoindex/SKILL.md && ` +
+  `for f in ${skillReferenceNames().join(' ')}; do curl -fsSL ${referencesUrl}/$f.md -o .claude/skills/cocoindex/references/$f.md; done`;
 
 // Breadcrumb: walk the sidebar tree for the current slug so category
 // labels light up correctly even for nested pages.
@@ -88,6 +113,33 @@ const flat = flatten();
 const i = flat.findIndex((e) => e.slug === slug);
 const prev = i > 0 ? flat[i - 1] : null;
 const next = i >= 0 && i < flat.length - 1 ? flat[i + 1] : null;
+
+// Structured data: a TechArticle for the page plus a BreadcrumbList built from
+// the same `crumbs` used in the visible breadcrumb. Helps search engines and
+// agents understand the page and its place in the docs hierarchy.
+const articleLd = {
+  '@context': 'https://schema.org',
+  '@type': 'TechArticle',
+  headline: title,
+  ...(description ? { description } : {}),
+  url: canonical,
+  inLanguage: 'en',
+  image: ogImage,
+  isPartOf: { '@type': 'WebSite', name: 'CocoIndex Docs', url: docsHome },
+};
+const breadcrumbLd = {
+  '@context': 'https://schema.org',
+  '@type': 'BreadcrumbList',
+  itemListElement: [
+    { '@type': 'ListItem', position: 1, name: 'Docs', item: docsHome },
+    ...crumbs.map((c, idx) => ({
+      '@type': 'ListItem',
+      position: idx + 2,
+      name: c.label,
+      item: c.href ? new URL(c.href, SITE_URL).toString() : canonical,
+    })),
+  ],
+};
 ---
 
 <!doctype html>
@@ -101,6 +153,29 @@ const next = i >= 0 && i < flat.length - 1 ? flat[i + 1] : null;
     <title>{fullTitle}</title>
     {description && <meta name="description" content={description} />}
     <link rel="canonical" href={canonical} />
+
+    <!-- Raw-Markdown twin of this page, for agents that prefer Markdown over
+         scraping HTML. Advertised here so they don't have to guess the URL. -->
+    <link rel="alternate" type="text/markdown" href={mdAbs} title="Markdown" />
+
+    <!-- Open Graph / Twitter — link previews on social, Slack, iMessage, etc. -->
+    <meta property="og:type" content="article" />
+    <meta property="og:site_name" content="CocoIndex Docs" />
+    <meta property="og:title" content={fullTitle} />
+    {description && <meta property="og:description" content={description} />}
+    <meta property="og:url" content={canonical} />
+    <meta property="og:image" content={ogImage} />
+    <meta property="og:image:width" content={OG_IMAGE_WIDTH} />
+    <meta property="og:image:height" content={OG_IMAGE_HEIGHT} />
+    <meta property="og:image:alt" content={OG_IMAGE_DOCS_ALT} />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={fullTitle} />
+    {description && <meta name="twitter:description" content={description} />}
+    <meta name="twitter:image" content={ogImage} />
+
+    <!-- Structured data for search engines and agents. -->
+    <script type="application/ld+json" set:html={JSON.stringify(articleLd)} />
+    <script type="application/ld+json" set:html={JSON.stringify(breadcrumbLd)} />
 
     <link rel="icon" href={`${base}/img/favicon.ico`} />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -116,11 +191,13 @@ const next = i >= 0 && i < flat.length - 1 ? flat[i + 1] : null;
   <body>
     <Topbar mobileSheetId="mobileSheet" />
     <MobileSheet currentSlug={slug} headings={headings} />
+    <MermaidRenderer />
 
     <div class="layout">
       <Sidebar currentSlug={slug} />
 
       <main class="content">
+        <div class="page-head">
         <nav class="breadcrumb" aria-label="Breadcrumb">
           <a href={base || '/'}>Docs</a>
           {crumbs.map((c, idx) => (
@@ -136,6 +213,79 @@ const next = i >= 0 && i < flat.length - 1 ? flat[i + 1] : null;
             </>
           ))}
         </nav>
+
+        <div class="ai-actions">
+          <div class="ai-menu" data-ai-menu>
+            <div class="ai-split">
+              <button type="button" class="ai-primary" data-ai-copy data-md={mdHref}>
+                <Fragment set:html={ICON_COPY} />
+                <span class="ai-primary-label">Copy page</span>
+              </button>
+              <button type="button" class="ai-toggle" aria-haspopup="menu" aria-expanded="false" aria-controls="aiMenuPanel" aria-label="More ways to use this page with AI">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <polyline points="6 9 12 15 18 9" />
+                </svg>
+              </button>
+            </div>
+
+            <div class="ai-panel" id="aiMenuPanel" role="menu" aria-label="Use this page with AI" hidden>
+              <button type="button" class="ai-item" role="menuitem" data-ai-copy data-md={mdHref}>
+                <span class="ai-ic">
+                  <Fragment set:html={ICON_COPY} />
+                </span>
+                <span class="ai-tx">
+                  <span class="ai-t">Copy page</span>
+                  <span class="ai-d">Copy page as Markdown for LLMs</span>
+                </span>
+              </button>
+
+              <a class="ai-item" role="menuitem" href={mdHref} target="_blank" rel="noopener">
+                <span class="ai-ic">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <polyline points="8 7 3 12 8 17" /><polyline points="16 7 21 12 16 17" />
+                  </svg>
+                </span>
+                <span class="ai-tx">
+                  <span class="ai-t">View as Markdown<Fragment set:html={ICON_EXT} /></span>
+                  <span class="ai-d">Open the raw Markdown page</span>
+                </span>
+              </a>
+
+              <a class="ai-item" role="menuitem" href={chatgptHref} target="_blank" rel="noopener">
+                <span class="ai-ic">
+                  <Fragment set:html={ICON_CHATGPT} />
+                </span>
+                <span class="ai-tx">
+                  <span class="ai-t">Open in ChatGPT<Fragment set:html={ICON_EXT} /></span>
+                  <span class="ai-d">Ask questions about this page</span>
+                </span>
+              </a>
+
+              <a class="ai-item" role="menuitem" href={claudeHref} target="_blank" rel="noopener">
+                <span class="ai-ic">
+                  <Fragment set:html={ICON_CLAUDE} />
+                </span>
+                <span class="ai-tx">
+                  <span class="ai-t">Open in Claude<Fragment set:html={ICON_EXT} /></span>
+                  <span class="ai-d">Ask questions about this page</span>
+                </span>
+              </a>
+
+              <button type="button" class="ai-item" role="menuitem" data-ai-copy-text={skillInstallCmd}>
+                <span class="ai-ic">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <polyline points="5 8 9 12 5 16" /><line x1="12" y1="16" x2="18" y2="16" />
+                  </svg>
+                </span>
+                <span class="ai-tx">
+                  <span class="ai-t">Copy skill install</span>
+                  <span class="ai-d">Install the CocoIndex v1 skill (Claude Code / Cursor)</span>
+                </span>
+              </button>
+            </div>
+          </div>
+        </div>
+        </div>
 
         <article class="prose">
           <h1 set:html={renderedTitle} />
@@ -191,7 +341,376 @@ const next = i >= 0 && i < flat.length - 1 ? flat[i + 1] : null;
         </div>
       </main>
 
-      <Toc headings={headings} slug={slug} lastReviewed={lastReviewed} />
+      <Toc headings={headings} lastReviewed={lastReviewed} />
     </div>
+
+    <Foot />
+
+    <ScarfPixel pxid={SCARF_PIXEL_ID} />
+
+    <script>
+      // Clickable permalink anchors on every section heading. Markdown headings
+      // already carry Astro-generated ids (the TOC relies on them); we surface a
+      // link affordance so a reader can grab a shareable URL to any section.
+      // Clicking sets the hash (native scroll/back-forward) and copies the full
+      // section URL to the clipboard with brief "Link copied" feedback. Mirrors
+      // the same behavior on the blog (cocoindex.io/blogs).
+      const proseEl = document.querySelector('main.content .prose');
+      if (proseEl) {
+        const LINK_ICON =
+          '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
+          'stroke-width="2" stroke-linecap="round" stroke-linejoin="round" ' +
+          'aria-hidden="true"><path d="M9.5 13.5a4 4 0 0 0 5.66 0l2.83-2.83a4 4 0 1 0-5.66-5.66l-1.41 1.42"/>' +
+          '<path d="M14.5 10.5a4 4 0 0 0-5.66 0L6 13.34a4 4 0 1 0 5.66 5.66l1.41-1.42"/></svg>';
+        const heads = proseEl.querySelectorAll(
+          'h2[id], h3[id], h4[id], h5[id], h6[id]'
+        ) as NodeListOf<HTMLElement>;
+        for (const h of heads) {
+          const a = document.createElement('a');
+          a.className = 'head-anchor';
+          a.href = '#' + h.id;
+          a.setAttribute('aria-label', 'Copy link to this section');
+          a.innerHTML = LINK_ICON;
+          h.prepend(a);
+          let resetId: number | undefined;
+          a.addEventListener('click', (e) => {
+            const url = location.origin + location.pathname + '#' + h.id;
+            history.replaceState(null, '', '#' + h.id);
+            if (navigator.clipboard) {
+              e.preventDefault();
+              navigator.clipboard.writeText(url).then(() => {
+                a.classList.add('copied');
+                window.clearTimeout(resetId);
+                resetId = window.setTimeout(() => a.classList.remove('copied'), 1500);
+              });
+            }
+          });
+        }
+      }
+    </script>
+    <script>
+      // Contextual "use this page with AI" split-button + dropdown. The primary
+      // button copies the page's raw-Markdown twin; the chevron opens a menu of
+      // deep links (ChatGPT/Claude), the raw .md, and the skill-install command.
+      const menu = document.querySelector('[data-ai-menu]') as HTMLElement | null;
+      if (menu) {
+        const toggle = menu.querySelector('.ai-toggle') as HTMLElement | null;
+        const panel = menu.querySelector('.ai-panel') as HTMLElement | null;
+
+        const items = () =>
+          Array.from(panel?.querySelectorAll('.ai-item') ?? []) as HTMLElement[];
+
+        // focus: 'first' focuses the top item on open; 'toggle' restores focus to
+        // the trigger on a keyboard close; undefined leaves focus alone.
+        const setOpen = (open: boolean, focus?: 'first' | 'toggle') => {
+          toggle?.setAttribute('aria-expanded', String(open));
+          if (panel) panel.hidden = !open;
+          if (open && focus === 'first') items()[0]?.focus();
+          if (!open && focus === 'toggle') toggle?.focus();
+        };
+
+        toggle?.addEventListener('click', (e) => {
+          e.stopPropagation();
+          setOpen(panel?.hidden ?? true, 'first');
+        });
+        toggle?.addEventListener('keydown', (e) => {
+          if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            setOpen(true, 'first');
+          }
+        });
+        document.addEventListener('click', (e) => {
+          if (!menu.contains(e.target as Node)) setOpen(false);
+        });
+        document.addEventListener('keydown', (e) => {
+          if (e.key === 'Escape' && !panel?.hidden) {
+            e.preventDefault();
+            setOpen(false, 'toggle');
+          }
+        });
+        // Roving focus between items (ArrowUp/Down wrap; Home/End jump).
+        panel?.addEventListener('keydown', (e) => {
+          const list = items();
+          const i = list.indexOf(document.activeElement as HTMLElement);
+          if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            list[(i + 1) % list.length]?.focus();
+          } else if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            list[(i - 1 + list.length) % list.length]?.focus();
+          } else if (e.key === 'Home') {
+            e.preventDefault();
+            list[0]?.focus();
+          } else if (e.key === 'End') {
+            e.preventDefault();
+            list[list.length - 1]?.focus();
+          }
+        });
+        // Link items open a new tab — close the menu so it isn't left hanging.
+        menu.querySelectorAll('a.ai-item').forEach((a) =>
+          a.addEventListener('click', () => setOpen(false)),
+        );
+
+        // Brief "Copied" feedback on the clicked control (primary button label
+        // or a menu item's description line), then revert.
+        const timers = new WeakMap<HTMLElement, number>();
+        const flash = (el: HTMLElement, msg: string) => {
+          const node = (el.querySelector('.ai-primary-label') ??
+            el.querySelector('.ai-d')) as HTMLElement | null;
+          if (node) {
+            if (node.dataset.orig === undefined) node.dataset.orig = node.textContent ?? '';
+            node.textContent = msg;
+          }
+          el.classList.add('copied');
+          window.clearTimeout(timers.get(el));
+          timers.set(
+            el,
+            window.setTimeout(() => {
+              el.classList.remove('copied');
+              if (node && node.dataset.orig !== undefined) {
+                node.textContent = node.dataset.orig;
+                delete node.dataset.orig;
+              }
+            }, 1500),
+          );
+        };
+
+        const copy = async (text: string, el: HTMLElement) => {
+          try {
+            await navigator.clipboard.writeText(text);
+            flash(el, 'Copied');
+          } catch {
+            flash(el, 'Copy failed');
+          }
+        };
+
+        const fetchMarkdown = async (href: string) => {
+          const res = await fetch(href);
+          if (!res.ok) throw new Error(`fetch ${href}: ${res.status}`);
+          return res.text();
+        };
+
+        // Copy the raw .md (primary button + "Copy page" item). Safari revokes
+        // the click's transient user activation once an await resolves, so feed
+        // the clipboard a promise via ClipboardItem where supported, falling
+        // back to fetch-then-writeText (fine on Chromium/Firefox).
+        menu.querySelectorAll<HTMLElement>('[data-ai-copy]').forEach((btn) => {
+          btn.addEventListener('click', (e) => {
+            e.preventDefault();
+            const href = btn.getAttribute('data-md');
+            if (!href) return;
+            const text = fetchMarkdown(href);
+            let viaItem: Promise<void>;
+            try {
+              viaItem =
+                typeof ClipboardItem !== 'undefined'
+                  ? navigator.clipboard.write([
+                      new ClipboardItem({
+                        'text/plain': text.then((t) => new Blob([t], { type: 'text/plain' })),
+                      }),
+                    ])
+                  : Promise.reject(new Error('no ClipboardItem'));
+            } catch (err) {
+              viaItem = Promise.reject(err);
+            }
+            viaItem
+              .catch(() => text.then((t) => navigator.clipboard.writeText(t)))
+              .then(
+                () => flash(btn, 'Copied'),
+                () => flash(btn, 'Copy failed'),
+              );
+            text.catch(() => {}); // viaItem already reports fetch failures
+          });
+        });
+        // Copy a literal string (the skill-install command).
+        menu.querySelectorAll<HTMLElement>('[data-ai-copy-text]').forEach((btn) => {
+          btn.addEventListener('click', () =>
+            copy(btn.getAttribute('data-ai-copy-text') ?? '', btn),
+          );
+        });
+      }
+    </script>
+    <Analytics />
   </body>
 </html>
+
+<style>
+  /* Breadcrumb + AI actions share one band: breadcrumb left, button right.
+     This anchors the control instead of floating it on its own row above
+     the title. */
+  .page-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    margin: 0 0 20px;
+  }
+  .page-head .breadcrumb {
+    margin: 0;
+    min-width: 0;
+  }
+  .ai-actions {
+    display: flex;
+    justify-content: flex-end;
+    flex: none;
+  }
+  .ai-menu {
+    position: relative;
+  }
+  @media (max-width: 600px) {
+    /* On phones the breadcrumb can get long; let it sit above the button,
+       with the button left-aligned under it. Desktop keeps it on the right. */
+    .page-head {
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 12px;
+    }
+    .ai-actions {
+      align-self: flex-start;
+    }
+    /* Button is left-aligned now, so open the panel rightward from its left
+       edge (anchoring right:0 would push it off the left of the viewport) and
+       clamp the width so it never exceeds the content gutter. */
+    .ai-panel {
+      left: 0;
+      right: auto;
+      width: min(308px, calc(100vw - 48px));
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .ai-toggle svg,
+    .ai-item,
+    .ai-primary,
+    .ai-toggle {
+      transition: none;
+    }
+  }
+
+  /* Split button: primary "Copy page" + chevron toggle. */
+  .ai-split {
+    display: inline-flex;
+    align-items: stretch;
+    background: var(--cream);
+    border: 1px solid var(--rule);
+    border-radius: 999px;
+    overflow: hidden;
+  }
+  .ai-primary,
+  .ai-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font: 500 13px/1 var(--sans);
+    color: var(--maroon-ink);
+    background: transparent;
+    border: 0;
+    cursor: pointer;
+    transition: color 0.15s, background 0.15s;
+  }
+  .ai-primary {
+    padding: 8px 12px 8px 14px;
+  }
+  .ai-toggle {
+    padding: 8px 9px;
+    border-left: 1px solid var(--rule);
+  }
+  .ai-primary:hover,
+  .ai-toggle:hover {
+    color: var(--coral);
+    background: var(--paper);
+  }
+  .ai-primary :global(svg) {
+    width: 14px;
+    height: 14px;
+  }
+  .ai-toggle svg {
+    width: 13px;
+    height: 13px;
+    transition: transform 0.18s ease;
+  }
+  .ai-toggle[aria-expanded='true'] svg {
+    transform: rotate(180deg);
+  }
+  .ai-primary.copied {
+    color: var(--palm-ink);
+  }
+
+  /* Dropdown panel. */
+  .ai-panel {
+    position: absolute;
+    top: calc(100% + 8px);
+    right: 0;
+    z-index: 40;
+    width: 308px;
+    padding: 6px;
+    background: var(--paper);
+    border: 1px solid var(--rule);
+    border-radius: 14px;
+    box-shadow:
+      0 14px 32px rgba(42, 18, 27, 0.16),
+      0 3px 8px rgba(42, 18, 27, 0.08);
+  }
+  .ai-panel[hidden] {
+    display: none;
+  }
+  .ai-item {
+    display: flex;
+    gap: 11px;
+    align-items: flex-start;
+    width: 100%;
+    padding: 9px 10px;
+    border: 0;
+    border-radius: 10px;
+    background: transparent;
+    text-align: left;
+    text-decoration: none;
+    cursor: pointer;
+    transition: background 0.12s ease;
+  }
+  .ai-item:hover,
+  .ai-item:focus-visible {
+    background: color-mix(in oklab, var(--coral) 8%, transparent);
+    outline: none;
+  }
+  .ai-ic {
+    flex: none;
+    display: grid;
+    place-items: center;
+    width: 34px;
+    height: 34px;
+    color: var(--maroon-ink);
+    background: var(--cream);
+    border: 1px solid var(--rule);
+    border-radius: 9px;
+  }
+  .ai-ic :global(svg) {
+    width: 17px;
+    height: 17px;
+  }
+  .ai-tx {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+  .ai-t {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font: 500 14px/1.25 var(--sans);
+    color: var(--maroon-ink);
+  }
+  .ai-t :global(.ext) {
+    width: 12px;
+    height: 12px;
+    opacity: 0.5;
+  }
+  .ai-d {
+    font: 400 12px/1.3 var(--sans);
+    color: var(--muted);
+  }
+  .ai-item.copied .ai-d {
+    color: var(--palm-ink);
+  }
+</style>

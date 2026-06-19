@@ -117,9 +117,46 @@ class PgType(NamedTuple):
     encoder: ValueEncoder | None = None
 
 
+def _strip_nul(s: str) -> str:
+    """Strip U+0000 (NUL) bytes from a string.
+
+    Postgres ``text`` cannot contain NUL, and ``jsonb`` additionally rejects
+    the ``\\u0000`` escape on parse. ``str.replace`` returns the original
+    string object when no NUL is present, so this is allocation-free in the
+    common case.
+    """
+    return s.replace("\x00", "")
+
+
+def _sanitize_nul(value: Any) -> Any:
+    """Recursively strip NUL from strings, dict keys, and nested containers.
+
+    Applied to jsonb payloads before ``json.dumps`` so nested strings — and
+    dict keys — don't surface as ``\\u0000`` escapes in the serialized JSON
+    (which Postgres rejects when parsing ``jsonb``).
+    """
+    if isinstance(value, str):
+        return _strip_nul(value)
+    if isinstance(value, dict):
+        return {_sanitize_nul(k): _sanitize_nul(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_sanitize_nul(v) for v in value]
+    return value
+
+
+def _json_default(obj: Any) -> str:
+    """``json.dumps`` fallback that stringifies and strips NUL.
+
+    The pre-walk in ``_sanitize_nul`` runs before serialization and so cannot
+    see strings produced mid-stream by ``default`` (e.g., a non-JSON-native
+    object whose ``str()`` contains NUL). Stripping here closes that gap.
+    """
+    return _strip_nul(str(obj))
+
+
 def _json_encoder(value: Any) -> str:
-    """Encode a value to JSON string for asyncpg."""
-    return json.dumps(value, default=str)
+    """Encode a value to JSON string for asyncpg, stripping NUL from every string."""
+    return json.dumps(_sanitize_nul(value), default=_json_default)
 
 
 def _vector_encoder(value: Any) -> str:
@@ -128,19 +165,29 @@ def _vector_encoder(value: Any) -> str:
 
 
 _PGVECTOR_TYPE_BASES: frozenset[str] = frozenset({"vector", "halfvec"})
-_PGVECTOR_TYPE_PREFIXES: frozenset[str] = frozenset(
-    {f"{base}(" for base in _PGVECTOR_TYPE_BASES}
-)
+
+
+def _pgvector_type_base(pg_type: str) -> str | None:
+    """
+    Return the pgvector type base for a PostgreSQL type, if any.
+
+    Supports both dimensioned and undimensioned pgvector types, e.g. `vector`,
+    `vector(384)`, `halfvec`, and `halfvec(384)`.
+    """
+    t = pg_type.lower().strip()
+    for base in _PGVECTOR_TYPE_BASES:
+        if t == base or t.startswith(f"{base}("):
+            return base
+    return None
 
 
 def _is_pgvector_pg_type(pg_type: str) -> bool:
     """
-    Return True if `pg_type` is a pgvector type (`vector(n)`, ...).
+    Return True if `pg_type` is a pgvector type (`vector(n)`, `halfvec(n)`, ...).
 
     This is used for extension checks and validation.
     """
-    t = pg_type.lower().strip()
-    return any(t.startswith(p) for p in _PGVECTOR_TYPE_PREFIXES)
+    return _pgvector_type_base(pg_type) is not None
 
 
 class _TypeMapping(NamedTuple):
@@ -393,16 +440,39 @@ class _RowAction(NamedTuple):
 
 # --- Vector Index Attachment ---
 
-_METRIC_OP_CLASS: dict[str, str] = {
-    "cosine": "vector_cosine_ops",
-    "l2": "vector_l2_ops",
-    "ip": "vector_ip_ops",
+_PGVECTOR_OP_CLASS: dict[str, dict[str, str]] = {
+    "vector": {
+        "cosine": "vector_cosine_ops",
+        "l2": "vector_l2_ops",
+        "ip": "vector_ip_ops",
+    },
+    "halfvec": {
+        "cosine": "halfvec_cosine_ops",
+        "l2": "halfvec_l2_ops",
+        "ip": "halfvec_ip_ops",
+    },
 }
+
+
+def _pgvector_op_class(column: str, pg_type: str, metric: str) -> str:
+    type_base = _pgvector_type_base(pg_type)
+    if type_base is None:
+        raise ValueError(
+            f"Column '{column}' has PostgreSQL type '{pg_type}', which is not a pgvector type."
+        )
+
+    try:
+        return _PGVECTOR_OP_CLASS[type_base][metric]
+    except KeyError as e:
+        raise ValueError(
+            f"Unsupported pgvector metric '{metric}' for PostgreSQL type '{pg_type}'."
+        ) from e
 
 
 class _VectorIndexSpec(NamedTuple):
     column: str
     metric: str
+    op_class: str
     method: str
     lists: int | None
     m: int | None
@@ -450,7 +520,6 @@ class _VectorIndexHandler:
                     table_name = _qualified_table_name(
                         self._table_name, self._schema_name
                     )
-                    op_class = _METRIC_OP_CLASS[action.spec.metric]
                     with_params: list[str] = []
                     if action.spec.method == "ivfflat":
                         if action.spec.lists is not None:
@@ -467,7 +536,7 @@ class _VectorIndexHandler:
                     )
                     sql = (
                         f"CREATE INDEX {index_name} ON {table_name} "
-                        f'USING {action.spec.method} ("{action.spec.column}" {op_class})'
+                        f'USING {action.spec.method} ("{action.spec.column}" {action.spec.op_class})'
                         f"{with_clause}"
                     )
                     await conn.execute(sql)
@@ -1206,6 +1275,14 @@ class TableTarget(
 
             if value is not None and col.encoder is not None:
                 value = col.encoder(value)
+            # Strip NUL from any string bound directly to Postgres. Text-family
+            # columns reject it; jsonb columns are already handled inside
+            # `_json_encoder` (nested strings + dict keys), so this is a no-op
+            # on the encoded JSON string but catches `text`/`varchar`/`citext`/
+            # custom-typed str columns regardless of whether the user supplied
+            # an encoder.
+            if isinstance(value, str):
+                value = _strip_nul(value)
             out[col_name] = value
         return out
 
@@ -1236,9 +1313,15 @@ class TableTarget(
         """
         if name is None:
             name = column
+        col_def = self._table_schema.columns.get(column)
+        if col_def is None:
+            raise ValueError(
+                f"Column '{column}' not found in table schema: {list(self._table_schema.columns.keys())}"
+            )
         spec = _VectorIndexSpec(
             column=column,
             metric=metric,
+            op_class=_pgvector_op_class(column, col_def.type, metric),
             method=method,
             lists=lists,
             m=m,

@@ -3,7 +3,7 @@ use crate::engine::stats::{ProcessingStats, VersionedProcessingStats};
 use crate::prelude::*;
 
 use crate::engine::component::Component;
-use crate::engine::context::AppContext;
+use crate::engine::context::{AppContext, PreviewActionCollector};
 use crate::engine::live_component::{LIVE_COMPONENT_DRAIN_TIMEOUT_SECS, LiveComponentState};
 
 use crate::engine::environment::{AppRegistration, Environment};
@@ -51,6 +51,13 @@ impl<T: Send + 'static> AppOpHandle<T> {
         Ok(*self.version_rx.borrow())
     }
 
+    /// Waits until the operation terminates, ignoring intermediate changes.
+    /// Unlike `changed()`, this only resolves on termination, so callers that
+    /// don't care about every update aren't woken on every version bump.
+    pub async fn wait_terminated(&self) {
+        self.stats.wait_terminated().await;
+    }
+
     /// Awaits the task completion and returns the result.
     pub async fn result(self) -> Result<T> {
         self.task
@@ -94,7 +101,11 @@ impl<Prof: EngineProfile> App<Prof> {
         root_processor: Prof::ComponentProc,
         options: AppUpdateOptions,
         host_ctx: Arc<Prof::HostCtx>,
-    ) -> Result<AppOpHandle<Prof::FunctionData>> {
+        preview_collector: Option<PreviewActionCollector<Prof>>,
+    ) -> Result<(
+        AppOpHandle<Prof::FunctionData>,
+        Option<PreviewActionCollector<Prof>>,
+    )> {
         crate::telemetry::track("app_update");
         // Refresh the app token if a prior operation (e.g. drop_app) cancelled
         // it, so this update starts with a non-cancelled token.
@@ -106,6 +117,7 @@ impl<Prof: EngineProfile> App<Prof> {
             processing_stats.clone(),
             options.full_reprocess,
             options.live,
+            preview_collector.clone(),
             host_ctx,
             // Root has no installed on_error in Build mode — orphan-delete
             // failures from the root's GC sweep log + swallow. (Cascading
@@ -145,12 +157,15 @@ impl<Prof: EngineProfile> App<Prof> {
             .instrument(span),
         );
 
-        Ok(AppOpHandle {
-            task,
-            stats: processing_stats,
-            version_rx,
-            live,
-        })
+        Ok((
+            AppOpHandle {
+                task,
+                stats: processing_stats,
+                version_rx,
+                live,
+            },
+            preview_collector,
+        ))
     }
 
     /// Drop the app, reverting all target states and clearing the database.
@@ -227,13 +242,25 @@ impl<Prof: EngineProfile> App<Prof> {
                 // Wait for the drop operation to complete
                 handle.ready().await?;
 
-                // Clear the database
-                let app_store = root_component.app_ctx().app_store().clone();
+                // Drop the per-app state-store data. Clears the per-app
+                // sub-database (heed 0.22 doesn't expose `mdb_drop`).
+                // Subsumes the previous `clear_all` step — `drop_app`
+                // wipes everything `clear_all` would have emptied.
+                let app_name = root_component.app_ctx().app_reg().name().to_owned();
                 root_component
                     .app_ctx()
                     .env()
-                    .run_txn(move |wtxn| Box::pin(async move { app_store.clear_all(wtxn).await }))
+                    .storage()
+                    .drop_app(&app_name)
                     .await?;
+
+                // Release the env-side `app_names` slot eagerly so a
+                // follow-up `App::new(name, …)` (e.g. Python re-using
+                // the same `App` instance for `update()` after `drop()`)
+                // doesn't trip the "App name already registered" check
+                // while pending tokio captures of `Arc<AppContextInner>`
+                // are still releasing.
+                root_component.app_ctx().app_reg().unregister();
 
                 info!("App dropped successfully");
                 stats_for_task.notify_terminated();

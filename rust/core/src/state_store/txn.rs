@@ -1,14 +1,14 @@
-//! Read and write transaction wrappers.
+//! Write transaction wrapper.
 //!
-//! These wrap the underlying LMDB transaction types so engine code outside
-//! `state_store/` doesn't see `heed::*`. The wrappers `Deref` to the inner
-//! heed types so internal call sites (within this module) can still reach
-//! the heed API.
+//! Wraps the underlying LMDB `heed::RwTxn` so engine code outside
+//! `state_store/` doesn't see `heed::*`. Derefs to the inner heed type
+//! so internal call sites (within this module) can still reach the
+//! heed API.
 //!
-//! The [`AnyTxn`] trait lets read-only [`AppStore`](super::AppStore) methods
-//! be called from either a `ReadTxn` or `WriteTxn` context.
-
-use crate::state_store::app_store::Database;
+//! Read access doesn't have a wrapper type: standalone read methods on
+//! [`AppStore`](super::AppStore) open a fresh `heed::RoTxn` internally
+//! per call, and in-write-txn reads (`*_in_txn`) take this [`WriteTxn`]
+//! directly. There is no public read-transaction handle.
 
 use std::ops::{Deref, DerefMut};
 
@@ -35,92 +35,5 @@ impl<'env> Deref for WriteTxn<'env> {
 impl<'env> DerefMut for WriteTxn<'env> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
-    }
-}
-
-/// Read transaction wrapper. Opened from [`Storage::read_txn`](super::Storage::read_txn).
-pub struct ReadTxn<'env>(pub(crate) heed::RoTxn<'env, heed::WithoutTls>);
-
-impl<'env> ReadTxn<'env> {
-    pub(crate) fn new(inner: heed::RoTxn<'env, heed::WithoutTls>) -> Self {
-        Self(inner)
-    }
-}
-
-impl<'env> Deref for ReadTxn<'env> {
-    type Target = heed::RoTxn<'env, heed::WithoutTls>;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-/// Marker trait for operations that only need read access. Implemented by
-/// both `ReadTxn` and `WriteTxn` so `AppStore` read methods can be called
-/// from either context without separate variants.
-///
-/// The trait is sealed — only the two wrapper types implement it. The hidden
-/// methods are accessed within this module via `pub(crate)` visibility.
-///
-/// The methods take `&mut self`. They don't actually mutate the txn — but
-/// the LMDB-backed transactions wrap `!Sync` raw pointers, so a `&Self`
-/// borrow would make any async future capturing this txn `!Send`. Using
-/// `&mut self` keeps borrows `Send`, at the cost of forcing read methods to
-/// be called sequentially (which they are anyway — there's no parallelism
-/// to lose).
-pub trait AnyTxn: sealed::Sealed {
-    #[doc(hidden)]
-    fn db_get_bytes<'a>(
-        &'a mut self,
-        db: Database,
-        key: &[u8],
-    ) -> crate::prelude::Result<Option<&'a [u8]>>;
-
-    #[doc(hidden)]
-    fn db_prefix_iter<'a>(
-        &'a mut self,
-        db: Database,
-        prefix: &[u8],
-    ) -> crate::prelude::Result<heed::RoPrefix<'a, heed::types::Bytes, heed::types::Bytes>>;
-}
-
-mod sealed {
-    pub trait Sealed {}
-    impl Sealed for super::ReadTxn<'_> {}
-    impl Sealed for super::WriteTxn<'_> {}
-}
-
-impl<'env> AnyTxn for ReadTxn<'env> {
-    fn db_get_bytes<'a>(
-        &'a mut self,
-        db: Database,
-        key: &[u8],
-    ) -> crate::prelude::Result<Option<&'a [u8]>> {
-        Ok(db.get(&self.0, key)?)
-    }
-
-    fn db_prefix_iter<'a>(
-        &'a mut self,
-        db: Database,
-        prefix: &[u8],
-    ) -> crate::prelude::Result<heed::RoPrefix<'a, heed::types::Bytes, heed::types::Bytes>> {
-        Ok(db.prefix_iter(&self.0, prefix)?)
-    }
-}
-
-impl<'env> AnyTxn for WriteTxn<'env> {
-    fn db_get_bytes<'a>(
-        &'a mut self,
-        db: Database,
-        key: &[u8],
-    ) -> crate::prelude::Result<Option<&'a [u8]>> {
-        Ok(db.get(&self.0, key)?)
-    }
-
-    fn db_prefix_iter<'a>(
-        &'a mut self,
-        db: Database,
-        prefix: &[u8],
-    ) -> crate::prelude::Result<heed::RoPrefix<'a, heed::types::Bytes, heed::types::Bytes>> {
-        Ok(db.prefix_iter(&self.0, prefix)?)
     }
 }

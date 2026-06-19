@@ -6,7 +6,7 @@ description: >
   (update_full, update, delete, mark_ready) and LiveMapFeed / LiveMapView
   abstractions over event sources.
 ---
-By default, a processing component runs in **catch-up mode** — on each `app.update()`, it declares all target states and mounts all sub-components from scratch. CocoIndex handles incremental updates by skipping memoized sub-components and reconciling target states at the end, then the component exits. This works well when the dataset is small enough to scan fully each cycle.
+By default, a [processing component](../programming_guide/processing_component) runs in **catch-up mode** — on each `app.update()`, it declares all target states and mounts all sub-components from scratch. CocoIndex handles incremental updates by skipping [memoized](../programming_guide/function) sub-components and reconciling target states at the end, then the component exits. This works well when the dataset is small enough to scan fully each cycle.
 
 When the dataset is large or you need to react to changes continuously (e.g., watching a file system), you want the component itself to stay running and react incrementally. A **live component** does an initial full scan (same as catch-up mode), then keeps running and reacts to individual changes without rescanning everything.
 
@@ -250,6 +250,24 @@ To add live support to a source connector, make your source return an object tha
 - **`LiveMapView` example**: The [`localfs`](../connectors/localfs) connector's `DirWalker` — `walk_dir(..., live=True).items()` returns a `LiveMapView` backed by `watchfiles`.
 - **`LiveMapFeed` example**: The [`kafka`](../connectors/kafka) connector — `topic_as_map()` returns a `LiveMapFeed` that consumes messages from Kafka topics.
 
+### Single-subscriber contract
+
+A live feed — `LiveMapView`, `LiveMapFeed`, or `LiveStream` — is **single-subscriber**. Its `watch()` typically owns an exclusive underlying resource (a consumer subscription, an OS file watch, a single in-memory change channel) that can't be fanned out to two concurrent callers — e.g. two subscriptions would race one consumer's offset commits. So a given feed instance supports **one active `watch()` (one `mount_each`) at a time**; consuming it from two places concurrently is unsupported. Fan-out to multiple subscribers, if ever needed, belongs in a layer above the feed.
+
+Enforce this in your `watch()` with `cocoindex.connectorkits.SingleWatcherGuard`, which raises `RuntimeError` on a second concurrent call:
+
+```python
+from cocoindex.connectorkits import SingleWatcherGuard
+
+class MyView:
+    def __init__(self, ...) -> None:
+        self._watch_guard = SingleWatcherGuard("MyView")
+
+    async def watch(self, subscriber) -> None:
+        with self._watch_guard:
+            ...  # existing body
+```
+
 ## LiveStream
 
 Some change sources are not naturally keyed maps — they deliver opaque event payloads (e.g. cloud-storage event notifications, raw message buses) that the consuming connector translates into map updates on its own terms. For these, CocoIndex provides **`LiveStream`**: a keyless sibling of `LiveMapFeed` — an unkeyed sequence of messages without any "key" or "delete" semantics. Connectors typically wrap a user-supplied `LiveStream` into their own `LiveMapView` (or `LiveMapFeed`) by translating each event into the appropriate key-level operation.
@@ -274,6 +292,7 @@ A connector built on `LiveStream` typically:
 1. Accepts a user-supplied `LiveStream[...]` as a constructor argument — the user wires up the underlying transport.
 2. Wraps the stream into a `LiveMapView` (or `LiveMapFeed`): `__aiter__()` runs an initial scan if the source has scannable state; `watch()` subscribes to the stream and translates each event into `subscriber.update(key, value)` / `subscriber.delete(key)`.
 3. Lets the underlying `LiveStream` handle offset commits, readiness signaling, and back-pressure.
+4. Guards its `watch()` against concurrent subscription — see [Single-subscriber contract](#single-subscriber-contract) — with `connectorkits.SingleWatcherGuard`.
 
 **Example**: The [`oci_object_storage`](../connectors/oci_object_storage#live-bucket-watching) connector takes a `LiveStream[bytes]` (typically [`kafka.topic_as_stream(...).payloads()`](../connectors/kafka#as-a-live-stream)) and translates OCI Object Storage events into bucket-keyed updates. The Kafka connector exposes `topic_as_stream()` precisely so that downstream connectors like this one can plug into Kafka without inheriting the keyed-map semantics of `topic_as_map()`.
 

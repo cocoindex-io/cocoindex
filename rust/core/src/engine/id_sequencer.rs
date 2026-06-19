@@ -14,7 +14,13 @@ use std::collections::HashMap;
 
 use crate::prelude::*;
 use crate::state::stable_path::StableKey;
-use crate::state_store::{AppStore, Storage, WriteTxn};
+use crate::state_store::{AppStore, Storage};
+
+// Deferred ID allocation (the old `IdReservation` struct) is gone:
+// the session-driven `submit()` reconcile body no longer carries a
+// `WriteTxn`, so each fresh ID call goes straight to the standalone
+// autocommit primitive `app_store.reserve_id_range_standalone`. Only
+// the rare `ChildInvalidation::Destructive` branch issues these calls.
 
 /// Initial batch size for ID allocation.
 const INITIAL_BATCH_SIZE: u64 = 2;
@@ -106,65 +112,23 @@ impl IdSequencerManager {
             let batch_size = state.next_batch_size;
             let app_store = app_store.clone();
             let key = key.clone();
+            // `reserve_id_range` is idempotent under retry: each attempt
+            // reads the current counter, computes `start_id`, writes
+            // `start_id + batch_size`.
             let start_id = storage
                 .run_txn(move |wtxn| {
-                    Box::pin(
-                        async move { app_store.reserve_id_range(wtxn, &key, batch_size).await },
-                    )
+                    let app_store = app_store.clone();
+                    let key = key.clone();
+                    Box::pin(async move {
+                        app_store
+                            .reserve_id_range_in_txn(wtxn, &key, batch_size)
+                            .await
+                    })
                 })
                 .await?;
             state.refill(start_id, batch_size);
         }
 
         Ok(state.take_id())
-    }
-}
-
-/// Deferred ID allocation that reads via `&WriteTxn` and commits writes later.
-///
-/// This splits the read and write phases of ID allocation so that the read
-/// doesn't require exclusive access; writes are applied in
-/// [`commit()`](IdReservation::commit).
-///
-/// Each reservation is scoped to a single key. At most one reservation per key
-/// should be live at a time, which is naturally enforced by the storage
-/// backend's single-writer transaction.
-pub struct IdReservation {
-    key: &'static StableKey,
-    /// Next ID to hand out (initialized from DB on first `next_id` call).
-    next_id_state: Option<u64>,
-}
-
-impl IdReservation {
-    pub fn new(key: &'static StableKey) -> Self {
-        Self {
-            key,
-            next_id_state: None,
-        }
-    }
-
-    /// Allocate the next ID. Reads from DB on first call, then tracks locally.
-    pub async fn next_id(&mut self, wtxn: &mut WriteTxn<'_>, app_store: &AppStore) -> Result<u64> {
-        let next_id = match &mut self.next_id_state {
-            Some(n) => n,
-            slot @ None => {
-                let current = app_store
-                    .peek_id_sequence(wtxn, self.key)
-                    .await?
-                    .unwrap_or(1);
-                slot.insert(current)
-            }
-        };
-        let id = *next_id;
-        *next_id += 1;
-        Ok(id)
-    }
-
-    /// Write the reserved ID range back to DB. Call once at end of transaction.
-    pub async fn commit(self, wtxn: &mut WriteTxn<'_>, app_store: &AppStore) -> Result<()> {
-        if let Some(next_id) = self.next_id_state {
-            app_store.write_id_sequence(wtxn, self.key, next_id).await?;
-        }
-        Ok(())
     }
 }

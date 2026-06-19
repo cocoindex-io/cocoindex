@@ -93,6 +93,10 @@ app.update_blocking(live=True)
 
 **Handling deletes:** each cycle's declarations are reconciled against the previous run. If a row disappears from the source table between polls, `sync_users` simply doesn't declare it that cycle — CocoIndex automatically deletes the corresponding target. You don't need to track deletions yourself.
 
+### Decoupling stages with an in-memory `LiveMap`
+
+When one part of your pipeline produces keyed data and another consumes it — without going through an external system — put an in-memory [`LiveMap`](../common_resources/live_map) between them. Producers declare `(key, value)` entries; the consumer reads it as a `LiveMapView` via `mount_each`, reacting to adds, updates, and deletes just like a live source.
+
 ## Examples
 
 ### `localfs` — file watching with `LiveMapView`

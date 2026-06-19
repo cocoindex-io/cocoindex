@@ -78,6 +78,20 @@ async def _index_info(pool: "asyncpg.Pool", index_name: str) -> dict[str, Any] |
         return dict(row) if row else None
 
 
+async def _index_opclass_names(pool: "asyncpg.Pool", index_name: str) -> list[str]:
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT opc.opcname "
+            "FROM pg_index i "
+            "JOIN pg_class c ON i.indexrelid = c.oid "
+            "JOIN generate_series(0, i.indnatts - 1) AS s(n) ON true "
+            "JOIN pg_opclass opc ON opc.oid = i.indclass[s.n] "
+            "WHERE c.relname = $1 ORDER BY s.n",
+            index_name,
+        )
+        return [str(row["opcname"]) for row in rows]
+
+
 async def _table_exists(pool: "asyncpg.Pool", table_name: str) -> bool:
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
@@ -93,6 +107,16 @@ async def _row_count(pool: "asyncpg.Pool", table_name: str) -> int:
         row = await conn.fetchrow(f'SELECT count(*) as cnt FROM "{table_name}"')
         assert row is not None
         return int(row["cnt"])
+
+
+async def _table_columns(pool: "asyncpg.Pool", table_name: str) -> set[str]:
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = $1 AND table_schema = 'public'",
+            table_name,
+        )
+        return {str(row["column_name"]) for row in rows}
 
 
 async def _drop_table(pool: "asyncpg.Pool", table_name: str) -> None:
@@ -162,9 +186,36 @@ class VectorRow:
 
 
 @dataclass
+class HalfVectorRow:
+    id: str
+    content: str
+    embedding: Annotated[
+        NDArray[np.float16], VectorSchema(dtype=np.dtype(np.float16), size=4)
+    ]
+
+
+@dataclass
 class TextRow:
     id: str
     content: str
+
+
+@dataclass
+class _NulProbeRow:
+    """Row type covering both NUL-stripping paths: a `text` column and a
+    `jsonb` column (via `dict[str, Any]`)."""
+
+    id: str
+    content: str
+    extra: dict[str, Any]
+
+
+class _NulInStr:
+    """Object whose ``str()`` contains NUL; exercises the ``json.dumps``
+    ``default`` hook (objects produced mid-serialization)."""
+
+    def __str__(self) -> str:
+        return "weird\x00str"
 
 
 # =============================================================================
@@ -298,6 +349,59 @@ async def test_postgres_declare_vector_index_fingerprint_no_change(
         info2 = await _index_info(pool, pg_index_name)
         assert info2 is not None
         assert info2["amname"] == "ivfflat"
+
+    finally:
+        await _drop_table(pool, table_name)
+
+
+@pytest.mark.asyncio
+async def test_postgres_declare_halfvec_vector_index_uses_halfvec_opclass(
+    pg_env: _PgEnv,
+) -> None:
+    """halfvec columns need halfvec_* pgvector operator classes."""
+    pool = pg_env.pool
+    coco_env = pg_env.coco_env
+    table_name = _unique_name("test_halfvec_idx")
+    logical_name = "idx1"
+    pg_index_name = f"{table_name}__vector__{logical_name}"
+
+    try:
+
+        async def declare_fn() -> None:
+            table = await coco.use_mount(
+                coco.component_subpath("setup", "table"),
+                postgres.declare_table_target,
+                _PG_DB_KEY,
+                table_name,
+                await postgres.TableSchema.from_class(
+                    HalfVectorRow, primary_key=["id"]
+                ),
+            )
+            table.declare_row(
+                row=HalfVectorRow(
+                    id="1",
+                    content="hello",
+                    embedding=np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float16),
+                )
+            )
+            table.declare_vector_index(
+                name=logical_name,
+                column="embedding",
+                metric="cosine",
+                method="ivfflat",
+            )
+
+        app = coco.App(
+            coco.AppConfig(name=f"test_halfvec_idx_{table_name}", environment=coco_env),
+            declare_fn,
+        )
+
+        await app.update()
+
+        info = await _index_info(pool, pg_index_name)
+        assert info is not None, f"Index {pg_index_name} should exist"
+        assert info["amname"] == "ivfflat"
+        assert await _index_opclass_names(pool, pg_index_name) == ["halfvec_cosine_ops"]
 
     finally:
         await _drop_table(pool, table_name)
@@ -524,4 +628,140 @@ async def test_postgres_mixed_rows_and_attachments(pg_env: _PgEnv) -> None:
         assert info["amname"] == "hnsw"  # changed
 
     finally:
+        await _drop_table(pool, table_name)
+
+
+@pytest.mark.asyncio
+async def test_postgres_strips_nul_in_text_and_jsonb(pg_env: _PgEnv) -> None:
+    """U+0000 (NUL) is stripped from text columns and recursively from jsonb
+    (nested string values, dict keys, and strings produced via
+    ``json.dumps``'s ``default`` hook)."""
+    import json as _json
+
+    pool = pg_env.pool
+    coco_env = pg_env.coco_env
+    table_name = _unique_name("test_nul_strip")
+
+    rows = [
+        _NulProbeRow(
+            id="row1",
+            content="hello\x00world",
+            extra={
+                "nested": ["a\x00b", {"deep\x00key": "deep\x00val"}],
+                "weird\x00key": _NulInStr(),  # → exercises default=str
+            },
+        ),
+    ]
+
+    try:
+
+        async def declare_fn() -> None:
+            table = await coco.use_mount(
+                coco.component_subpath("setup", "table"),
+                postgres.declare_table_target,
+                _PG_DB_KEY,
+                table_name,
+                await postgres.TableSchema.from_class(_NulProbeRow, primary_key=["id"]),
+            )
+            for row in rows:
+                table.declare_row(row=row)
+
+        app = coco.App(
+            coco.AppConfig(name=f"test_nul_strip_{table_name}", environment=coco_env),
+            declare_fn,
+        )
+        await app.update()
+
+        async with pool.acquire() as conn:
+            written = await conn.fetchrow(
+                f'SELECT "content", "extra" FROM "{table_name}" WHERE "id" = $1',
+                "row1",
+            )
+        assert written is not None
+        assert written["content"] == "helloworld"
+        # asyncpg returns jsonb as a JSON-encoded string by default; decode it.
+        assert _json.loads(written["extra"]) == {
+            "nested": ["ab", {"deepkey": "deepval"}],
+            "weirdkey": "weirdstr",
+        }
+
+    finally:
+        await _drop_table(pool, table_name)
+
+
+@pytest.mark.asyncio
+async def test_postgres_column_drop_retries_after_failed_attempt(
+    pg_env: _PgEnv,
+) -> None:
+    """A column drop that fails (here, blocked by a dependent view) leaves the
+    table's tracking item with multiple possible states on disk. A later run,
+    once the dependency is gone, must still recompute the column-level diff and
+    actually drop the column — it must NOT treat the prior states as missing and
+    short-circuit into a no-op ``CREATE TABLE IF NOT EXISTS``.
+
+    Scenario:
+      t1: create table with columns (id, value, extra).
+      t2: remove "extra" from the schema, but a view depends on it, so the
+          ``DROP COLUMN`` fails. The table item is left with possible states
+          [(id, value, extra), (id, value)].
+      t3: drop the view, run again -> "extra" must actually be dropped.
+    """
+    pool = pg_env.pool
+    coco_env = pg_env.coco_env
+    table_name = _unique_name("test_col_drop")
+    view_name = _unique_name("test_col_drop_view")
+
+    include_extra = True
+
+    def _schema() -> "postgres.TableSchema[dict[str, Any]]":
+        columns = {
+            "id": postgres.ColumnDef("text", nullable=False),
+            "value": postgres.ColumnDef("text"),
+        }
+        if include_extra:
+            columns["extra"] = postgres.ColumnDef("text")
+        return postgres.TableSchema(columns=columns, primary_key=["id"])
+
+    try:
+
+        async def declare_fn() -> None:
+            await coco.use_mount(
+                coco.component_subpath("setup", "table"),
+                postgres.declare_table_target,
+                _PG_DB_KEY,
+                table_name,
+                _schema(),
+            )
+
+        app = coco.App(
+            coco.AppConfig(name=f"test_col_drop_{table_name}", environment=coco_env),
+            declare_fn,
+        )
+
+        # t1: create table with id, value, extra.
+        await app.update()
+        assert await _table_columns(pool, table_name) == {"id", "value", "extra"}
+
+        # Create a view that depends on column "extra" so DROP COLUMN fails.
+        async with pool.acquire() as conn:
+            await conn.execute(
+                f'CREATE VIEW "{view_name}" AS SELECT "extra" FROM "{table_name}"'
+            )
+
+        # t2: drop "extra" -> blocked by the dependent view, so the run fails.
+        include_extra = False
+        with pytest.raises(Exception):
+            await app.update()
+        # The column is still present because the drop failed.
+        assert "extra" in await _table_columns(pool, table_name)
+
+        # t3: remove the dependency, run again. The column drop must now happen.
+        async with pool.acquire() as conn:
+            await conn.execute(f'DROP VIEW IF EXISTS "{view_name}"')
+        await app.update()
+        assert await _table_columns(pool, table_name) == {"id", "value"}
+
+    finally:
+        async with pool.acquire() as conn:
+            await conn.execute(f'DROP VIEW IF EXISTS "{view_name}"')
         await _drop_table(pool, table_name)

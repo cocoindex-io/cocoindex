@@ -11,34 +11,67 @@ use crate::state::db_schema::{
 };
 use crate::state::stable_path::{StablePath, StablePathPrefix, StablePathRef};
 use crate::state_store::app_store::{AppStore, Database};
-use crate::state_store::txn::{ReadTxn, WriteTxn};
+use crate::state_store::txn::WriteTxn;
 
 use cocoindex_utils::batching::{BatchQueue, Batcher, BatchingOptions, Runner};
 use cocoindex_utils::deser::from_msgpack_slice;
-use cocoindex_utils::retryable;
 use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use std::any::Any;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
 
 const DEFAULT_MAX_DBS: u32 = 1024;
 const DEFAULT_MAP_SIZE: usize = 0x1_0000_0000; // 4GiB
 
-/// Phase 1: short timeout to handle transient concurrency.
-static READ_TXN_RETRY_PHASE1: retryable::RetryOptions = retryable::RetryOptions {
-    retry_timeout: Some(Duration::from_secs(3)),
-    initial_backoff: Duration::from_millis(10),
-    max_backoff: Duration::from_secs(1),
-};
+/// Sync sibling of [`AppStore::read_txn`]'s `MDB_READERS_FULL` retry,
+/// for use inside `spawn_blocking` where the async retry helper isn't
+/// reachable. Same two-phase policy.
+fn open_read_txn_sync_with_retry(
+    env: &heed::Env<heed::WithoutTls>,
+) -> Result<heed::RoTxn<'_, heed::WithoutTls>> {
+    use std::time::{Duration, Instant};
 
-/// Phase 2: after clearing stale readers, retry indefinitely.
-static READ_TXN_RETRY_PHASE2: retryable::RetryOptions = retryable::RetryOptions {
-    retry_timeout: None,
-    initial_backoff: Duration::from_millis(10),
-    max_backoff: Duration::from_secs(1),
-};
+    const INITIAL_BACKOFF: Duration = Duration::from_millis(10);
+    const MAX_BACKOFF: Duration = Duration::from_secs(1);
+    const PHASE1_TIMEOUT: Duration = Duration::from_secs(3);
+
+    // Phase 1: short timeout for transient concurrency.
+    let phase1_start = Instant::now();
+    let mut backoff = INITIAL_BACKOFF;
+    loop {
+        match env.read_txn() {
+            Ok(txn) => return Ok(txn),
+            Err(heed::Error::Mdb(heed::MdbError::ReadersFull)) => {
+                if phase1_start.elapsed() >= PHASE1_TIMEOUT {
+                    break;
+                }
+                warn!("LMDB readers full, retrying");
+                std::thread::sleep(backoff);
+                backoff = (backoff * 2).min(MAX_BACKOFF);
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+
+    // Phase 2: clear stale readers, then retry indefinitely.
+    let cleared = env.clear_stale_readers()?;
+    if cleared > 0 {
+        warn!("Cleared {cleared} stale LMDB readers");
+    }
+    backoff = INITIAL_BACKOFF;
+    loop {
+        match env.read_txn() {
+            Ok(txn) => return Ok(txn),
+            Err(heed::Error::Mdb(heed::MdbError::ReadersFull)) => {
+                warn!("LMDB readers still full after clearing stale readers, retrying");
+                std::thread::sleep(backoff);
+                backoff = (backoff * 2).min(MAX_BACKOFF);
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+}
 
 fn default_max_dbs() -> u32 {
     DEFAULT_MAX_DBS
@@ -46,6 +79,24 @@ fn default_max_dbs() -> u32 {
 
 fn default_map_size() -> usize {
     DEFAULT_MAP_SIZE
+}
+
+/// Round `requested` up to the next multiple of the OS page size.
+///
+/// heed/LMDB require `map_size` to be a multiple of the system page size
+/// (4 KiB on most Linux, 16 KiB on Apple Silicon), rejecting other values
+/// with a hard error. Users shouldn't have to know their page size, so we
+/// align for them here. Rounding *up* only raises the cap on how far the
+/// memory map may grow — it never shrinks the user's request. We read the
+/// page size via the same `page_size` crate heed validates against, so the
+/// aligned value is guaranteed to satisfy heed.
+fn align_map_size_to_page(requested: usize) -> usize {
+    let page = page_size::get();
+    // `page` is a power of two on every supported platform, so it can't be 0
+    // and `div_ceil` won't divide by zero. `saturating_mul` guards the
+    // (practically impossible) case of `requested` being within one page of
+    // `usize::MAX`.
+    requested.div_ceil(page).saturating_mul(page)
 }
 
 /// Configuration for opening the storage environment.
@@ -116,11 +167,20 @@ impl Storage {
         if settings.lmdb_map_size == 0 {
             client_bail!("lmdb_map_size must be > 0, got {}", settings.lmdb_map_size);
         }
+        let map_size = align_map_size_to_page(settings.lmdb_map_size);
+        if map_size != settings.lmdb_map_size {
+            debug!(
+                "Rounded lmdb_map_size up from {} to {} to match the system page size ({})",
+                settings.lmdb_map_size,
+                map_size,
+                page_size::get()
+            );
+        }
         let db_env = unsafe {
             heed::EnvOpenOptions::new()
                 .read_txn_without_tls()
                 .max_dbs(settings.lmdb_max_dbs)
-                .map_size(settings.lmdb_map_size)
+                .map_size(map_size)
                 .open(db_path)
         }?;
         let cleared_count = db_env.clear_stale_readers()?;
@@ -137,6 +197,21 @@ impl Storage {
         Ok(Self {
             inner: Arc::new(StorageInner { db_env, batcher }),
         })
+    }
+
+    /// Construct a `Storage` from an already-open `heed::Env`. Used in tests
+    /// where the env is created directly without going through `StorageSettings`.
+    pub(crate) fn from_env(db_env: heed::Env<heed::WithoutTls>) -> Self {
+        let batcher = Batcher::new(
+            TxnRunner {
+                db_env: db_env.clone(),
+            },
+            Arc::new(BatchQueue::new()),
+            BatchingOptions::default(),
+        );
+        Self {
+            inner: Arc::new(StorageInner { db_env, batcher }),
+        }
     }
 
     /// Migrate legacy files from the old layout (directly in `base_path`)
@@ -205,7 +280,7 @@ impl Storage {
             .db_env
             .create_database(&mut wtxn, Some(app_name))?;
         wtxn.commit()?;
-        Ok(AppStore::new(db))
+        Ok(AppStore::new(db, self.inner.db_env.clone(), self.clone()))
     }
 
     /// Open the per-app sub-database by name, or `None` if it doesn't exist.
@@ -213,70 +288,47 @@ impl Storage {
     pub async fn open_app_store_by_name(&self, app_name: &str) -> Result<Option<AppStore>> {
         let rtxn = self.inner.db_env.read_txn()?;
         let db: Option<Database> = self.inner.db_env.open_database(&rtxn, Some(app_name))?;
-        Ok(db.map(AppStore::new))
+        let env = self.inner.db_env.clone();
+        let storage = self.clone();
+        Ok(db.map(|db| AppStore::new(db, env, storage.clone())))
     }
 
-    /// Open a read transaction with automatic retry on `MDB_READERS_FULL`.
-    ///
-    /// Two-phase strategy:
-    /// 1. Retry with a short timeout — handles transient reader slot contention.
-    /// 2. If phase 1 times out, call `clear_stale_readers()` to reclaim slots
-    ///    from dead processes, then retry indefinitely.
-    pub async fn read_txn(&self) -> Result<ReadTxn<'_>> {
-        let db_env = &self.inner.db_env;
-        let try_read_txn = || async {
-            match db_env.read_txn() {
-                Ok(txn) => retryable::Ok(txn),
-                Err(heed::Error::Mdb(heed::MdbError::ReadersFull)) => {
-                    warn!("Storage readers full, retrying");
-                    Err(retryable::Error::retryable(internal_error!(
-                        "Storage readers full"
-                    )))
-                }
-                Err(e) => Err(retryable::Error::not_retryable(e)),
-            }
+    /// Drop an app's data from this LMDB environment. heed 0.22 doesn't
+    /// expose `mdb_drop`, so the sub-database stays registered in the
+    /// env's catalog but is emptied. `list_app_names` filters out
+    /// empty sub-databases, so the app is effectively gone.
+    /// Idempotent: dropping a non-existent app is a no-op.
+    pub async fn drop_app(&self, app_name: &str) -> Result<()> {
+        let rtxn = self.inner.db_env.read_txn()?;
+        let db: Option<Database> = self.inner.db_env.open_database(&rtxn, Some(app_name))?;
+        drop(rtxn);
+        let Some(db) = db else {
+            return Ok(());
         };
-
-        // Phase 1: short timeout for transient concurrency.
-        match retryable::run(&try_read_txn, &READ_TXN_RETRY_PHASE1).await {
-            Ok(txn) => return Ok(ReadTxn::new(txn)),
-            Err(e) if !e.is_retryable => return Err(e.into()),
-            Err(_) => {}
-        }
-
-        // Phase 2: clear stale readers, then retry indefinitely.
-        let cleared = db_env.clear_stale_readers()?;
-        if cleared > 0 {
-            warn!("Cleared {cleared} stale storage readers");
-        }
-        retryable::run(&try_read_txn, &READ_TXN_RETRY_PHASE2)
-            .await
-            .map(ReadTxn::new)
-            .map_err(Into::into)
+        let mut wtxn = self.inner.db_env.write_txn()?;
+        db.clear(&mut wtxn)?;
+        wtxn.commit()?;
+        Ok(())
     }
 
-    /// Non-retrying read txn for inspection use. Callers tolerate
-    /// `MDB_READERS_FULL` at a higher level rather than going through the
-    /// engine's two-phase retry path.
-    pub async fn read_txn_for_inspect(&self) -> Result<ReadTxn<'_>> {
-        Ok(ReadTxn::new(self.inner.db_env.read_txn()?))
-    }
-
-    /// Spawn a thread that streams every `(StablePath, node_type)` entry
-    /// from `app_store` via a channel. A dedicated thread is needed because
-    /// LMDB read transactions and cursors are `!Send`.
-    pub async fn spawn_iter_stable_paths_with_node_type(
+    /// Stream every `(StablePath, node_type)` entry from `app_store` via
+    /// a channel. Runs on `tokio::task::spawn_blocking` because the LMDB
+    /// cursor (`RoPrefix`) wraps a raw `*mut MDB_cursor` and is `!Send`,
+    /// so the cursor can't be held across an `.await`. The sync loop on
+    /// the blocking-pool thread uses `blocking_send` for backpressure.
+    /// The rtxn open uses the same `MDB_READERS_FULL` retry policy as
+    /// [`AppStore::read_txn`], but sync (since we're off the runtime).
+    pub async fn spawn_stable_path_iter(
         &self,
         app_store: AppStore,
     ) -> tokio::sync::mpsc::Receiver<Result<(StablePath, StablePathNodeType)>> {
         let (tx, rx) = tokio::sync::mpsc::channel(128);
-        let storage = self.clone();
 
-        std::thread::spawn(move || {
+        tokio::task::spawn_blocking(move || {
             let result: Result<()> = (|| {
                 let encoded_key_prefix =
                     DbEntryKey::StablePathPrefixPrefix(StablePathPrefix::default()).encode()?;
-                let txn = storage.inner.db_env.read_txn()?;
+                let txn = open_read_txn_sync_with_retry(&app_store.env)?;
                 let db = app_store.db();
 
                 let mut last_prefix: Option<Vec<u8>> = None;
@@ -335,13 +387,13 @@ impl Storage {
 
     /// Resolves the app store by name, then spawns the stable-path iteration
     /// thread. Returns `None` if the app's database doesn't exist.
-    pub async fn spawn_iter_stable_paths_with_node_type_for_app_name(
+    pub async fn spawn_stable_path_iter_by_name(
         &self,
         app_name: &str,
     ) -> Result<Option<tokio::sync::mpsc::Receiver<Result<(StablePath, StablePathNodeType)>>>> {
         let app_store = self.open_app_store_by_name(app_name).await?;
         Ok(match app_store {
-            Some(store) => Some(self.spawn_iter_stable_paths_with_node_type(store).await),
+            Some(store) => Some(self.spawn_stable_path_iter(store).await),
             None => None,
         })
     }
@@ -366,5 +418,48 @@ impl Storage {
             }
         }
         Ok(names)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn align_map_size_rounds_up_to_page_multiple() {
+        let page = page_size::get();
+        // Exact multiples are left untouched.
+        assert_eq!(align_map_size_to_page(page), page);
+        assert_eq!(align_map_size_to_page(4 * page), 4 * page);
+        // Anything below a full page rounds up to a single page.
+        assert_eq!(align_map_size_to_page(1), page);
+        assert_eq!(align_map_size_to_page(page - 1), page);
+        // A value just past a page boundary rounds up to the next page.
+        assert_eq!(align_map_size_to_page(page + 1), 2 * page);
+
+        // The value from the original bug report (10 KiB) becomes a valid
+        // page multiple no smaller than what was requested.
+        let aligned = align_map_size_to_page(10 * 1024);
+        assert_eq!(aligned % page, 0);
+        assert!(aligned >= 10 * 1024);
+    }
+
+    /// Regression test for the user-facing failure: a `lmdb_map_size` that
+    /// isn't a multiple of the system page size used to surface heed's hard
+    /// error ("map size (N) must be a multiple of the system page size").
+    /// We now align it up transparently, so opening the env just works.
+    #[tokio::test]
+    async fn new_accepts_unaligned_map_size() {
+        let dir = TempDir::new().unwrap();
+        let settings = StorageSettings {
+            db_path: dir.path().to_path_buf(),
+            lmdb_max_dbs: DEFAULT_MAX_DBS,
+            // 4 MiB + 1 byte: deliberately not a multiple of any page size,
+            // yet large enough to back a real env on both 4 KiB and 16 KiB
+            // page platforms once aligned up.
+            lmdb_map_size: 4 * 1024 * 1024 + 1,
+        };
+        Storage::new(&settings).await.unwrap();
     }
 }

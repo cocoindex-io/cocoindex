@@ -20,6 +20,7 @@ from cocoindex.resources.file import (
 
 from cocoindex._internal.context_keys import ContextKey
 from cocoindex._internal.live_component import LiveMapSubscriber
+from cocoindex.connectorkits import SingleWatcherGuard
 
 from ._common import FilePath, to_file_path
 
@@ -174,6 +175,7 @@ class _LiveDirItems:
     def __init__(self, walker: DirWalker) -> None:
         self._walker = walker
         self._resolved_root = walker._root_path.resolve()
+        self._watch_guard = SingleWatcherGuard("localfs live directory")
 
     def __aiter__(self) -> AsyncIterator[tuple[str, File]]:
         return self._aiter_impl()
@@ -183,6 +185,11 @@ class _LiveDirItems:
             yield pair
 
     async def watch(self, subscriber: LiveMapSubscriber[str, File]) -> None:
+        """Deliver an initial scan then live filesystem changes to the subscriber."""
+        with self._watch_guard:
+            await self._watch(subscriber)
+
+    async def _watch(self, subscriber: LiveMapSubscriber[str, File]) -> None:
         from watchdog.events import (
             EVENT_TYPE_CREATED,
             EVENT_TYPE_DELETED,

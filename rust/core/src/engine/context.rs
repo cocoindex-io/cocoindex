@@ -1,8 +1,8 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use cocoindex_utils::fingerprint::Fingerprint;
 
-use crate::engine::component::{Component, ComponentBgChildReadiness};
+use crate::engine::component::{Component, ComponentBgChildReadiness, StatsGroup};
 use crate::engine::id_sequencer::IdSequencerManager;
 use crate::engine::profile::EngineProfile;
 use crate::engine::stats::ProcessingStats;
@@ -18,7 +18,7 @@ use crate::state::target_state_path::TargetStatePath;
 use crate::{
     engine::environment::{AppRegistration, Environment},
     state::stable_path::StablePath,
-    state_store::{AppStore, WriteTxn},
+    state_store::AppStore,
 };
 
 use cocoindex_utils::deser::from_msgpack_slice;
@@ -237,8 +237,8 @@ impl<Prof: EngineProfile> Default for FnCallMemoEntry<Prof> {
 /// component build. Populated by [`Self::prefetch`] (one prefix scan over
 /// the storage layer) at the start of build mode, then serves every
 /// subsequent fn-memo lookup in memory. New entries from cache-miss
-/// executions accumulate here; [`Self::flush_to_db`] applies the diff to
-/// storage at commit time as per-entry writes and deletes.
+/// executions accumulate here; [`Self::into_flush_plan`] produces the diff
+/// that is applied to storage atomically at commit time.
 pub(crate) struct FnMemoCache<Prof: EngineProfile> {
     /// All known fn-memo entries for this component. Prefetched entries
     /// start as `Stored(bytes)` and lazily decode to `Ready` on first
@@ -261,7 +261,7 @@ impl<Prof: EngineProfile> FnMemoCache<Prof> {
 
     /// Insert prefetched rows from the database into the cache and mark it
     /// fully loaded. The async I/O lives at the context layer
-    /// ([`ComponentProcessorContext::prefetch_fn_memos`]); this is the sync
+    /// ([`ComponentProcessorContext::prefetch_states`]); this is the sync
     /// half that runs under the building-state mutex.
     pub(crate) fn populate(&mut self, rows: Vec<(Fingerprint, Vec<u8>)>) {
         for (fp, bytes) in rows {
@@ -310,26 +310,29 @@ impl<Prof: EngineProfile> FnMemoCache<Prof> {
         self.entries.iter()
     }
 
-    /// Consume the cache and apply its diff to storage in a single write
-    /// transaction.
+    /// Consume the cache, classify entries, and serialize the writes
+    /// into a [`FnMemoFlushPlan`] that can be re-applied to storage
+    /// across retries.
     ///
-    /// - If `is_fully_loaded` is true: for each entry, write `Ready(Some)`
-    ///   with `already_stored=false` (new or re-executed), delete
-    ///   `Stored(_)` and `Ready(None)` (untouched or memoization-disabled),
-    ///   skip `Ready(Some)` with `already_stored=true` (cache hit, row
-    ///   already in DB).
-    /// - Otherwise: prefix-delete every fn-memo row for `path`, then write
-    ///   the `Ready(Some)` `already_stored=false` entries. Covers
-    ///   `full_reprocess` and any path where the cache was not prefetched.
-    pub(crate) async fn flush_to_db(
-        self,
-        wtxn: &mut WriteTxn<'_>,
-        app_store: &AppStore,
-        path: &StablePath,
-    ) -> Result<()> {
-        if !self.is_fully_loaded {
-            app_store.delete_all_fn_memos(wtxn, path).await?;
-        }
+    /// Inclusion rule:
+    ///
+    /// - `Ready(Some, already_stored=false)` → serialize bytes into
+    ///   `writes` (new or re-executed entries that must be written).
+    /// - `Ready(Some, already_stored=true)` → skip (DB row already correct).
+    /// - `Stored(_)` and `Ready(None)` → record in `deletes`, only when
+    ///   `is_fully_loaded=true` (otherwise these entries can't exist on
+    ///   disk because prefetch didn't run).
+    /// - `Pending` → no-op (the function errored before resolving; no
+    ///   DB row exists or needs to exist).
+    ///
+    /// `clear_all_first` is set when `!is_fully_loaded` so the apply
+    /// step prefix-deletes the whole range before writing `writes`.
+    pub(crate) fn into_flush_plan(self) -> Result<FnMemoFlushPlan> {
+        let mut plan = FnMemoFlushPlan {
+            clear_all_first: !self.is_fully_loaded,
+            writes: Vec::new(),
+            deletes: Vec::new(),
+        };
         for (fp, lock) in self.entries.into_iter() {
             // No other holders at flush time — extract by reference under
             // a try_write guard rather than unwrapping the Arc, since
@@ -359,13 +362,14 @@ impl<Prof: EngineProfile> FnMemoCache<Prof> {
                         memo_states: memo_states_serialized,
                         context_memo_states: context_memo_states_serialized,
                     };
-                    app_store.write_fn_memo(wtxn, path, fp, &entry).await?;
+                    let encoded = rmp_serde::to_vec_named(&entry)?;
+                    plan.writes.push((fp, encoded));
                 }
                 FnCallMemoEntry::Stored(_) | FnCallMemoEntry::Ready(None) => {
                     if self.is_fully_loaded {
                         // Stored: untouched prefetched entry, stale.
                         // Ready(None): memoization disabled at runtime.
-                        app_store.delete_fn_memo(wtxn, path, fp).await?;
+                        plan.deletes.push(fp);
                     }
                 }
                 FnCallMemoEntry::Pending => {
@@ -379,8 +383,18 @@ impl<Prof: EngineProfile> FnMemoCache<Prof> {
                 }
             }
         }
-        Ok(())
+        Ok(plan)
     }
+}
+
+/// A serialized, re-applyable diff produced by
+/// [`FnMemoCache::into_flush_plan`]. Owns the encoded bytes for every
+/// write so `apply_to_db` can be called repeatedly across retries
+/// without re-touching the cache.
+pub(crate) struct FnMemoFlushPlan {
+    pub(crate) clear_all_first: bool,
+    pub(crate) writes: Vec<(Fingerprint, Vec<u8>)>,
+    pub(crate) deletes: Vec<Fingerprint>,
 }
 
 impl<Prof: EngineProfile> Default for FnMemoCache<Prof> {
@@ -437,23 +451,157 @@ pub(crate) fn decode_stored_entry<Prof: EngineProfile>(
     Ok(())
 }
 
+/// Lifecycle state of one user-state key within a single component build.
+///
+/// TODO: make `V` generic over the engine profile (like `FnCallMemoEntry<Prof>`) so
+/// `Declared` can hold a `Prof::FunctionData` (= `PyStoredValue` in the Python profile)
+/// instead of raw bytes. `PyStoredValue` holds both representations lazily behind an
+/// `Arc<Mutex<...>>`, so cloning is a cheap refcount bump, deserialization from bytes
+/// happens once on first access, and serialization to bytes happens once at flush.
+/// Requires adding a `FunctionData`-equivalent associated type to `EngineProfile` (or
+/// reusing `FunctionData` directly) and threading it through `UserStateCache`.
+enum UserStateEntry {
+    /// Prefetched from DB at build start; `use_state()` not yet called for
+    /// this key. Deleted at flush time if it stays in this state (set-reduction path).
+    Loaded(Vec<u8>),
+    /// Claimed by `use_state()` and optionally overwritten by
+    /// `update_declared()`. Written to DB at flush time.
+    Declared(Vec<u8>),
+}
+
+/// Per-component user state cache for a single build.
+///
+/// Mirrors the `FnMemoCache` pattern: `populate` fills it from a
+/// standalone read at build start, then `use_state` / `update_declared`
+/// accumulate the declared states, and `into_flush_plan` produces the diff
+/// that is applied atomically via [`CommitPlan`].
+/// At flush time only keys re-declared or newly declared by the user
+/// during this build through use_state() survive: `Declared` entries are
+/// written to DB and `Loaded` entries (present in the previous build but
+/// not re-declared this build) are deleted.
+pub(crate) struct UserStateCache {
+    /// All entries seen this build. Prefetched entries start as `Loaded` and
+    /// transition to `Declared` when claimed by `use_state()`; brand-new keys
+    /// start directly as `Declared`.
+    entries: HashMap<StableKey, UserStateEntry>,
+    /// True after a successful `populate`;
+    /// False under `full_reprocess` (prefetch skipped).
+    ///
+    /// When true: stale `Loaded` entries are individually deleted.
+    /// When false: all existing `Regular` entries are wiped upfront via
+    /// `delete_user_states_of_kind` before writing.
+    is_loaded: bool,
+}
+
+impl UserStateCache {
+    pub(crate) fn new() -> Self {
+        Self {
+            entries: HashMap::new(),
+            is_loaded: false,
+        }
+    }
+
+    pub(crate) fn is_loaded(&self) -> bool {
+        self.is_loaded
+    }
+
+    pub(crate) fn populate(&mut self, rows: Vec<(StableKey, Vec<u8>)>) {
+        self.entries = rows
+            .into_iter()
+            .map(|(k, v)| (k, UserStateEntry::Loaded(v)))
+            .collect();
+        self.is_loaded = true;
+    }
+
+    /// Register `key` as declared for this build. Returns the previously
+    /// stored value (if any) or `initial_value`. Errors on duplicate keys.
+    /// Called when the user calls coco.use_state("key", initial_value)
+    pub(crate) fn use_state(&mut self, key: StableKey, initial_value: Vec<u8>) -> Result<Vec<u8>> {
+        use std::collections::hash_map::Entry;
+        match self.entries.entry(key) {
+            Entry::Occupied(mut e) => match e.get() {
+                UserStateEntry::Declared(_) => {
+                    client_bail!(
+                        "coco.use_state() key {:?} declared more than once in the same component run",
+                        e.key()
+                    );
+                }
+                UserStateEntry::Loaded(v) => {
+                    let value = v.clone();
+                    e.insert(UserStateEntry::Declared(value.clone()));
+                    Ok(value)
+                }
+            },
+            Entry::Vacant(e) => {
+                e.insert(UserStateEntry::Declared(initial_value.clone()));
+                Ok(initial_value)
+            }
+        }
+    }
+
+    /// Update the current value for an already-declared key. Called when
+    /// the user sets `my_state.value = ...`.
+    pub(crate) fn update_declared(&mut self, key: &StableKey, value: Vec<u8>) -> Result<()> {
+        match self.entries.get_mut(key) {
+            Some(UserStateEntry::Declared(v)) => {
+                *v = value;
+                Ok(())
+            }
+            _ => {
+                client_bail!(
+                    "coco.use_state() key {:?} has not been declared via use_state() in this component run",
+                    key
+                );
+            }
+        }
+    }
+
+    /// Drain the cache into a serialized plan for inclusion in [`CommitPlan`].
+    /// Mirrors [`FnMemoCache::into_flush_plan`].
+    pub(crate) fn into_flush_plan(self) -> UserStateFlushPlan {
+        let mut plan = UserStateFlushPlan {
+            clear_all_first: !self.is_loaded,
+            writes: Vec::new(),
+            deletes: Vec::new(),
+        };
+        for (key, entry) in self.entries {
+            match entry {
+                UserStateEntry::Loaded(_) if self.is_loaded => plan.deletes.push(key),
+                UserStateEntry::Declared(value) => plan.writes.push((key, value)),
+                _ => {}
+            }
+        }
+        plan
+    }
+}
+
+/// Serialized diff produced by [`UserStateCache::into_flush_plan`].
+/// Included in [`CommitPlan`] so the AppStore can apply it atomically.
+pub(crate) struct UserStateFlushPlan {
+    pub(crate) clear_all_first: bool,
+    pub(crate) writes: Vec<(StableKey, Vec<u8>)>,
+    pub(crate) deletes: Vec<StableKey>,
+}
+
 pub(crate) struct ComponentBuildingState<Prof: EngineProfile> {
     pub target_states: ComponentTargetStatesContext<Prof>,
     pub child_path_set: ChildStablePathSet,
     pub fn_memos: FnMemoCache<Prof>,
+    pub user_states: UserStateCache,
 }
+
+/// Shared collector for preview actions across all components in a single update.
+pub(crate) type PreviewActionCollector<Prof> =
+    Arc<std::sync::Mutex<Vec<<Prof as EngineProfile>::TargetAction>>>;
 
 pub(crate) struct ComponentBuildContext<Prof: EngineProfile> {
     pub state: Mutex<Option<ComponentBuildingState<Prof>>>,
     pub full_reprocess: bool,
     pub live: bool,
-    /// Error handler routed to orphan-delete failures from this build's
-    /// commit-phase GC sweep. Same shape and meaning as
-    /// `ComponentDeleteContext::on_error` — see that doc for the
-    /// unified principle. `None` preserves the "log + swallow"
     /// default (e.g. root `App.update`, `use_mount`'s foreground path,
     /// `mount_inner_live`'s self-built parent context).
     pub on_error: Option<crate::engine::component::OnError>,
+    pub preview_collector: Option<PreviewActionCollector<Prof>>,
 }
 
 pub(crate) struct ComponentDeleteContext<Prof: EngineProfile> {
@@ -487,6 +635,7 @@ impl<Prof: EngineProfile> ComponentProcessingAction<Prof> {
         full_reprocess: bool,
         live: bool,
         on_error: Option<crate::engine::component::OnError>,
+        preview_collector: Option<PreviewActionCollector<Prof>>,
     ) -> Self {
         Self::Build(ComponentBuildContext {
             state: Mutex::new(Some(ComponentBuildingState {
@@ -496,10 +645,12 @@ impl<Prof: EngineProfile> ComponentProcessingAction<Prof> {
                 },
                 child_path_set: Default::default(),
                 fn_memos: FnMemoCache::new(),
+                user_states: UserStateCache::new(),
             })),
             full_reprocess,
             live,
             on_error,
+            preview_collector,
         })
     }
 }
@@ -508,9 +659,7 @@ struct ComponentProcessorContextInner<Prof: EngineProfile> {
     component: Component<Prof>,
     parent_context: Option<ComponentProcessorContext<Prof>>,
     processing_action: ComponentProcessingAction<Prof>,
-    components_readiness: ComponentBgChildReadiness,
 
-    processing_stats: ProcessingStats,
     inflight_permit: Mutex<Option<tokio::sync::OwnedSemaphorePermit>>,
 
     /// Logic fingerprints accumulated from function calls and child components.
@@ -520,9 +669,22 @@ struct ComponentProcessorContextInner<Prof: EngineProfile> {
     host_ctx: Arc<Prof::HostCtx>,
 }
 
+/// A `ComponentProcessorContext` is a thin view over a shared `inner`
+/// (component identity, building state, providers — never forked) plus three
+/// **per-view** fields that a `stats_group` substitutes: the stats bucket, the
+/// child-readiness accumulator, and the enclosing-group list for liveness.
+/// `Clone` shares everything (all `Arc`-based handles), so an unscoped clone is
+/// byte-for-byte equivalent; only `with_stats_group` produces a divergent view.
 #[derive(Clone)]
 pub struct ComponentProcessorContext<Prof: EngineProfile> {
     inner: Arc<ComponentProcessorContextInner<Prof>>,
+    /// Where this view's components report stats (root's, or a group's).
+    processing_stats: ProcessingStats,
+    /// Where children mounted under this view register their readiness.
+    components_readiness: ComponentBgChildReadiness,
+    /// Enclosing stats groups, outermost-first, for live-member liveness
+    /// fan-out. Empty for the root / unscoped views.
+    stats_groups: Arc<Vec<Arc<StatsGroup<Prof>>>>,
 }
 
 impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
@@ -538,12 +700,39 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
                 component,
                 parent_context,
                 processing_action,
-                components_readiness: Default::default(),
-                processing_stats,
                 inflight_permit: Mutex::new(None),
                 logic_deps: Mutex::new(HashSet::new()),
                 host_ctx,
             }),
+            processing_stats,
+            components_readiness: Default::default(),
+            stats_groups: Arc::new(Vec::new()),
+        }
+    }
+
+    /// Derive a sibling view that reports into `group`'s stats, registers child
+    /// readiness into `group`'s readiness, and appends `group` to the
+    /// enclosing-group list (for live-member liveness). Shares `inner` — so
+    /// component identity, building state, providers, and the inflight permit
+    /// are unchanged.
+    pub(crate) fn with_stats_group(&self, group: &Arc<StatsGroup<Prof>>) -> Self {
+        let mut stats_groups = Vec::with_capacity(self.stats_groups.len() + 1);
+        stats_groups.extend(self.stats_groups.iter().cloned());
+        stats_groups.push(group.clone());
+        Self {
+            inner: self.inner.clone(),
+            processing_stats: group.stats().clone(),
+            components_readiness: group.readiness().clone(),
+            stats_groups: Arc::new(stats_groups),
+        }
+    }
+
+    /// Register a freshly-mounted child as an active member of every enclosing
+    /// stats group, so each group's liveness tracking sees it (and, via the
+    /// strong parent-chain, its whole subtree). No-op when not in a group.
+    pub fn push_active_member(&self, child: &Component<Prof>) {
+        for group in self.stats_groups.iter() {
+            group.push_member(child);
         }
     }
 
@@ -563,38 +752,63 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         self.inner.component.stable_path()
     }
 
-    /// Eagerly load every function-memo entry for this component from
-    /// storage into the per-build cache. Called at the start of build mode
-    /// before any function calls run; skipped under `full_reprocess` so
-    /// the cache stays empty and `FnMemoCache::flush_to_db` falls through
-    /// to a prefix delete + write of newly-computed entries.
-    pub(crate) async fn prefetch_fn_memos(&self) -> Result<()> {
+    /// Eagerly load every function-memo and user-state entry for this
+    /// component from storage into the per-build cache. Called at the start
+    /// of build mode before any function calls run, so every subsequent
+    /// fn-call probe and `use_state` serves from memory. Skipped under
+    /// `full_reprocess` so both caches stay empty and `into_flush_plan`
+    /// produces a clear-all plan followed by writes of newly-computed entries.
+    ///
+    /// Both ranges are read under a single LMDB read transaction: under
+    /// `MDB_NOTLS` every read-txn begin takes the reader-table mutex, so
+    /// one snapshot instead of two halves that cost — most visibly during
+    /// `mount_each` fan-out, where many child components prefetch at once
+    /// (it also halves concurrent reader-slot occupancy against LMDB's
+    /// `MDB_READERS_FULL` limit).
+    pub(crate) async fn prefetch_states(&self) -> Result<()> {
         if self.full_reprocess() {
             return Ok(());
         }
-        // Cheap check: skip if already loaded (re-entry, etc.).
+        // Cheap check: skip if already loaded (re-entry, etc.). The two
+        // caches are always prefetched together, so they load as a pair.
         let already_loaded = match &self.inner.processing_action {
             ComponentProcessingAction::Build(build_ctx) => {
                 let guard = build_ctx.state.lock().unwrap();
                 let Some(state) = guard.as_ref() else {
                     return Ok(());
                 };
-                state.fn_memos.is_fully_loaded()
+                state.fn_memos.is_fully_loaded() && state.user_states.is_loaded()
             }
             ComponentProcessingAction::Delete { .. } => return Ok(()),
         };
         if already_loaded {
             return Ok(());
         }
-        let app_store = self.app_ctx().app_store();
-        let path = self.stable_path();
-        let mut rtxn = self.app_ctx().env().read_txn().await?;
-        let rows = app_store.list_fn_memos(&mut rtxn, path).await?;
-        drop(rtxn);
+        let (fn_memo_rows, user_state_rows) = self
+            .app_ctx()
+            .app_store()
+            .prefetch_fn_processing_states(self.stable_path())
+            .await?;
         self.update_building_state(|s| {
-            s.fn_memos.populate(rows);
+            s.fn_memos.populate(fn_memo_rows);
+            s.user_states.populate(user_state_rows);
             Ok(())
         })
+    }
+
+    /// Register `key` as a user state for this build and return its current
+    /// value. On first call for a key, the stored value (if any) is returned;
+    /// otherwise `initial_value` is used. Duplicate keys within the same
+    /// component run are an error.
+    /// Called when the user calls coco.use_state("key", initial_value)
+    pub fn use_state(&self, key: StableKey, initial_value: Vec<u8>) -> Result<Vec<u8>> {
+        self.update_building_state(|s| s.user_states.use_state(key, initial_value))
+    }
+
+    /// Update the current value for an already-declared user state key.
+    /// Called when the user sets `my_state.value = ...`.
+    pub fn update_user_state(&self, key: &StableKey, value: Vec<u8>) -> Result<()> {
+        self.update_building_state(|s| s.user_states.update_declared(key, value))
     }
 
     pub(crate) fn parent_context(&self) -> Option<&ComponentProcessorContext<Prof>> {
@@ -633,7 +847,7 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
     }
 
     pub fn components_readiness(&self) -> &ComponentBgChildReadiness {
-        &self.inner.components_readiness
+        &self.components_readiness
     }
 
     pub(crate) fn mode(&self) -> ComponentProcessingMode {
@@ -732,13 +946,27 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
     }
 
     pub fn processing_stats(&self) -> &ProcessingStats {
-        &self.inner.processing_stats
+        &self.processing_stats
     }
 
     pub fn full_reprocess(&self) -> bool {
         match &self.inner.processing_action {
             ComponentProcessingAction::Build(build_ctx) => build_ctx.full_reprocess,
             ComponentProcessingAction::Delete { .. } => false,
+        }
+    }
+
+    pub fn preview(&self) -> bool {
+        match &self.inner.processing_action {
+            ComponentProcessingAction::Build(build_ctx) => build_ctx.preview_collector.is_some(),
+            ComponentProcessingAction::Delete { .. } => false,
+        }
+    }
+
+    pub(crate) fn preview_collector(&self) -> Option<&PreviewActionCollector<Prof>> {
+        match &self.inner.processing_action {
+            ComponentProcessingAction::Build(build_ctx) => build_ctx.preview_collector.as_ref(),
+            ComponentProcessingAction::Delete { .. } => None,
         }
     }
 
@@ -842,5 +1070,303 @@ impl FnCallContext {
     pub fn update<T>(&self, f: impl FnOnce(&mut FnCallContextInner) -> T) -> T {
         let mut guard = self.inner.lock().unwrap();
         f(&mut guard)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{UserStateCache, UserStateEntry};
+    use crate::state::db_schema::StateKind;
+    use crate::state::stable_path::{StableKey, StablePath};
+    use crate::state_store::{AppStore, WriteTxn};
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use tempfile::TempDir;
+
+    fn sym(s: &str) -> StableKey {
+        StableKey::Symbol(Arc::from(s))
+    }
+
+    fn b(s: &str) -> Vec<u8> {
+        s.as_bytes().to_vec()
+    }
+
+    fn comp_path(name: &str) -> StablePath {
+        StablePath(Arc::from(vec![StableKey::Str(Arc::from(name))]))
+    }
+
+    async fn make_test_store() -> (AppStore, TempDir) {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("mdb");
+        std::fs::create_dir_all(&db_path).unwrap();
+        let env = unsafe {
+            heed::EnvOpenOptions::new()
+                .read_txn_without_tls()
+                .max_dbs(4)
+                .map_size(1 << 22)
+                .open(&db_path)
+        }
+        .unwrap();
+        let mut wtxn = env.write_txn().unwrap();
+        let db = env.create_database(&mut wtxn, Some("test")).unwrap();
+        wtxn.commit().unwrap();
+        let storage = crate::state_store::Storage::from_env(env.clone());
+        (AppStore::new(db, env, storage), dir)
+    }
+
+    fn to_map(pairs: Vec<(StableKey, Vec<u8>)>) -> HashMap<StableKey, Vec<u8>> {
+        pairs.into_iter().collect()
+    }
+
+    /// Read back a component's Regular user states through the production
+    /// prefetch path (`prefetch_fn_processing_states`), so these tests assert
+    /// against the same read code the engine runs.
+    async fn read_regular_states(store: &AppStore, p: &StablePath) -> HashMap<StableKey, Vec<u8>> {
+        to_map(store.prefetch_fn_processing_states(p).await.unwrap().1)
+    }
+
+    // --- use_state -----------------------------------------------------------
+
+    #[test]
+    fn use_state_returns_initial_when_no_loaded_state() {
+        let mut cache = UserStateCache::new();
+        let val = cache.use_state(sym("k"), b("init")).unwrap();
+        assert_eq!(val, b("init"));
+    }
+
+    #[test]
+    fn use_state_returns_loaded_value_ignoring_initial() {
+        let mut cache = UserStateCache::new();
+        cache.populate(vec![(sym("k"), b("stored"))]);
+        let val = cache.use_state(sym("k"), b("init")).unwrap();
+        assert_eq!(val, b("stored")); // initial_value is ignored
+    }
+
+    #[test]
+    fn use_state_duplicate_key_errors() {
+        let mut cache = UserStateCache::new();
+        cache.use_state(sym("k"), b("v")).unwrap();
+        assert!(cache.use_state(sym("k"), b("v2")).is_err());
+    }
+
+    #[test]
+    fn use_state_loaded_and_fresh_keys_independent() {
+        let mut cache = UserStateCache::new();
+        cache.populate(vec![(sym("a"), b("stored_a"))]);
+        let va = cache.use_state(sym("a"), b("ignored")).unwrap();
+        let vb = cache.use_state(sym("b"), b("init_b")).unwrap();
+        assert_eq!(va, b("stored_a")); // from loaded state
+        assert_eq!(vb, b("init_b")); // initial_value (not in loaded)
+    }
+
+    // --- update_declared -----------------------------------------------------
+
+    #[test]
+    fn update_declared_undeclared_key_errors() {
+        let mut cache = UserStateCache::new();
+        assert!(cache.update_declared(&sym("k"), b("v")).is_err());
+    }
+
+    #[test]
+    fn update_declared_updates_value_in_declared() {
+        let mut cache = UserStateCache::new();
+        cache.use_state(sym("k"), b("init")).unwrap();
+        cache.update_declared(&sym("k"), b("updated")).unwrap();
+        // The updated value is what into_flush_plan will emit.
+        assert!(matches!(
+            &cache.entries[&sym("k")],
+            UserStateEntry::Declared(v) if v == &b("updated")
+        ));
+    }
+
+    // --- into_flush_plan tests ----------------------------
+
+    /// Helper: apply a `UserStateCache` through `into_flush_plan` + `CommitPlan`
+    /// + `AppStore::commit` — the production write path.
+    async fn apply_plan_via_commit(store: &AppStore, path: &StablePath, cache: UserStateCache) {
+        use crate::state_store::{CommitPlan, ExistenceReconciler};
+        use futures::future::BoxFuture;
+
+        let plan_data = cache.into_flush_plan();
+        let plan = CommitPlan {
+            new_tracking_info: None,
+            target_owners_to_upsert: Vec::new(),
+            target_owners_to_delete: Vec::new(),
+            fn_memo_clear_all_first: false,
+            fn_memo_writes: Vec::new(),
+            fn_memo_deletes: Vec::new(),
+            user_state_clear_all_first: plan_data.clear_all_first,
+            user_state_writes: plan_data.writes,
+            user_state_deletes: plan_data.deletes,
+            user_state_clear_live: false,
+            child_path_set: None,
+        };
+        let reconciler: ExistenceReconciler =
+            Box::new(|_wtxn| -> BoxFuture<'_, crate::prelude::Result<()>> {
+                Box::pin(async { Ok(()) })
+            });
+        store.commit(path, plan, reconciler).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn flush_plan_set_reduction_removes_dropped_keys() {
+        // loaded = {a, b, c}; declared = {a, b} → c deleted via CommitPlan path.
+        let (store, _dir) = make_test_store().await;
+        let p = comp_path("comp");
+
+        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
+        store
+            .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("a"), b"a")
+            .await
+            .unwrap();
+        store
+            .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("b"), b"b")
+            .await
+            .unwrap();
+        store
+            .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("c"), b"c")
+            .await
+            .unwrap();
+        wtxn.into_inner().commit().unwrap();
+
+        let mut cache = UserStateCache::new();
+        cache.populate(vec![
+            (sym("a"), b("a")),
+            (sym("b"), b("b")),
+            (sym("c"), b("c")),
+        ]);
+        cache.use_state(sym("a"), b("ignored")).unwrap();
+        cache.use_state(sym("b"), b("ignored")).unwrap();
+        // "c" not re-declared
+
+        apply_plan_via_commit(&store, &p, cache).await;
+
+        let entries = read_regular_states(&store, &p).await;
+        assert_eq!(entries.len(), 2);
+        assert!(entries.contains_key(&sym("a")));
+        assert!(entries.contains_key(&sym("b")));
+        assert!(!entries.contains_key(&sym("c")));
+    }
+
+    #[tokio::test]
+    async fn flush_plan_full_reprocess_wipes_and_writes_declared() {
+        // DB has pre-existing entry; cache never populated (full_reprocess);
+        // declared = {new_k} → old entry wiped, only new_k survives.
+        let (store, _dir) = make_test_store().await;
+        let p = comp_path("comp");
+
+        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
+        store
+            .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("old"), b"old")
+            .await
+            .unwrap();
+        wtxn.into_inner().commit().unwrap();
+
+        let mut cache = UserStateCache::new(); // no populate
+        cache.use_state(sym("new_k"), b("new_val")).unwrap();
+
+        apply_plan_via_commit(&store, &p, cache).await;
+
+        let entries = read_regular_states(&store, &p).await;
+        assert_eq!(entries.len(), 1);
+        assert!(!entries.contains_key(&sym("old")));
+        assert_eq!(entries[&sym("new_k")], b("new_val"));
+    }
+
+    #[tokio::test]
+    async fn flush_plan_set_reduction_adds_new_keys() {
+        // loaded = {a}; declared = {a, b_new} → b inserted, a's stored value kept.
+        let (store, _dir) = make_test_store().await;
+        let p = comp_path("comp");
+
+        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
+        store
+            .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("a"), b"a_val")
+            .await
+            .unwrap();
+        wtxn.into_inner().commit().unwrap();
+
+        let mut cache = UserStateCache::new();
+        cache.populate(vec![(sym("a"), b("a_val"))]);
+        cache.use_state(sym("a"), b("should_be_ignored")).unwrap();
+        cache.use_state(sym("b"), b("b_new")).unwrap();
+
+        apply_plan_via_commit(&store, &p, cache).await;
+
+        let entries = read_regular_states(&store, &p).await;
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[&sym("a")], b("a_val"));
+        assert_eq!(entries[&sym("b")], b("b_new"));
+    }
+
+    #[tokio::test]
+    async fn flush_plan_set_reduction_persists_updated_value() {
+        // loaded = {k: "old"}; declare k then update_declared to "new" → k written with "new".
+        let (store, _dir) = make_test_store().await;
+        let p = comp_path("comp");
+
+        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
+        store
+            .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("k"), b"old")
+            .await
+            .unwrap();
+        wtxn.into_inner().commit().unwrap();
+
+        let mut cache = UserStateCache::new();
+        cache.populate(vec![(sym("k"), b("old"))]);
+        cache.use_state(sym("k"), b("ignored")).unwrap();
+        cache.update_declared(&sym("k"), b("new")).unwrap();
+
+        apply_plan_via_commit(&store, &p, cache).await;
+
+        let entries = read_regular_states(&store, &p).await;
+        assert_eq!(entries[&sym("k")], b("new"));
+    }
+
+    #[tokio::test]
+    async fn flush_plan_set_reduction_empty_declared_removes_all() {
+        // loaded = {a, b}; no use_state calls → all entries deleted.
+        let (store, _dir) = make_test_store().await;
+        let p = comp_path("comp");
+
+        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
+        store
+            .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("a"), b"a_val")
+            .await
+            .unwrap();
+        store
+            .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("b"), b"b_val")
+            .await
+            .unwrap();
+        wtxn.into_inner().commit().unwrap();
+
+        let mut cache = UserStateCache::new();
+        cache.populate(vec![(sym("a"), b("a_val")), (sym("b"), b("b_val"))]);
+        // no use_state calls
+
+        apply_plan_via_commit(&store, &p, cache).await;
+
+        assert!(read_regular_states(&store, &p).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn flush_plan_full_reprocess_no_declared_clears_db() {
+        // DB has pre-existing entry; cache never populated; no use_state calls
+        // → clear_all_first wipes everything, DB is empty.
+        let (store, _dir) = make_test_store().await;
+        let p = comp_path("comp");
+
+        let mut wtxn = WriteTxn::new(store.env.write_txn().unwrap());
+        store
+            .write_user_state(&mut wtxn, &p, StateKind::Regular, &sym("old"), b"old_val")
+            .await
+            .unwrap();
+        wtxn.into_inner().commit().unwrap();
+
+        let cache = UserStateCache::new(); // no populate, no use_state
+
+        apply_plan_via_commit(&store, &p, cache).await;
+
+        assert!(read_regular_states(&store, &p).await.is_empty());
     }
 }

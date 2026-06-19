@@ -5,6 +5,7 @@ pub mod deser;
 pub mod error;
 pub mod fingerprint;
 pub mod immutable;
+pub mod ratelimit;
 pub mod retryable;
 pub mod slow_warn;
 
@@ -16,7 +17,5 @@ pub mod bytes_decode;
 pub mod http;
 #[cfg(feature = "reqwest")]
 pub use reqwest;
-#[cfg(feature = "sqlx")]
-pub mod str_sanitize;
 #[cfg(feature = "yaml")]
 pub mod yaml_ser;

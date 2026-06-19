@@ -189,6 +189,9 @@ pub fn use_mount_async<'py>(
         .component()
         .mount_child(&fn_ctx.0, stable_path.0)
         .into_py_result()?;
+    // Register as an active member of any enclosing stats group(s) before the
+    // run starts, so the group's liveness tracking can't miss it.
+    comp_ctx.0.push_active_member(&child);
     future_into_py(py, async move {
         let handle = child
             .use_mount(&comp_ctx.0, processor)
@@ -213,6 +216,9 @@ pub fn mount_async<'py>(
         .component()
         .mount_child(&fn_ctx.0, stable_path.0)
         .into_py_result()?;
+    // Register as an active member of any enclosing stats group(s) before the
+    // run starts, so the group's liveness tracking can't miss it.
+    comp_ctx.0.push_active_member(&child);
 
     let host_runtime_ctx = comp_ctx.0.app_ctx().env().host_runtime_ctx().clone();
     let on_error = build_on_error(host_runtime_ctx, handler_callback);

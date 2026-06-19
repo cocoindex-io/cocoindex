@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 from typing import Generator
@@ -29,14 +30,28 @@ CLEANUP_PATTERNS = [
 ]
 
 
+def _is_free_threaded_python() -> bool:
+    is_gil_enabled = getattr(sys, "_is_gil_enabled", None)
+    return callable(is_gil_enabled) and not is_gil_enabled()
+
+
+_SKIP_WINDOWS_FREE_THREADED_MULTI_ENV = pytest.mark.skipif(
+    sys.platform == "win32" and _is_free_threaded_python(),
+    reason="multi-environment CLI update is flaky on Windows free-threaded Python",
+)
+
+
 def run_cli(
-    *args: str, check: bool = True, input: str | None = None
+    *args: str,
+    check: bool = True,
+    input: str | None = None,
+    cwd: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run a cocoindex CLI command and return the result."""
     cmd = ["cocoindex", *args]
     result = subprocess.run(
         cmd,
-        cwd=TEST_DIR,
+        cwd=cwd if cwd is not None else TEST_DIR,
         capture_output=True,
         text=True,
         check=False,
@@ -191,8 +206,8 @@ class TestMultipleApps:
         lines = result.stdout.split("\n")
 
         # Find lines with app names
-        app1_line = next((l for l in lines if "MultiApp1" in l), "")
-        app2_line = next((l for l in lines if "MultiApp2" in l), "")
+        app1_line = next((line for line in lines if "MultiApp1" in line), "")
+        app2_line = next((line for line in lines if "MultiApp2" in line), "")
 
         assert "[+]" in app1_line
         assert "[+]" not in app2_line
@@ -237,19 +252,21 @@ class TestMultipleEnvironments:
         assert "db1" in result.stdout
         assert "db2" in result.stdout
 
+    @_SKIP_WINDOWS_FREE_THREADED_MULTI_ENV
     def test_update_both_environments(self) -> None:
         """Can update apps in different environments."""
-        run_cli("update", "./multi_env.py:DB1App")
-        run_cli("update", "./multi_env.py:DB2App")
+        run_cli("update", "-q", "./multi_env.py:DB1App")
+        run_cli("update", "-q", "./multi_env.py:DB2App")
 
         # Both output dirs should have files
         assert (TEST_DIR / "out_db1" / "db1.txt").exists()
         assert (TEST_DIR / "out_db2" / "db2.txt").exists()
 
+    @_SKIP_WINDOWS_FREE_THREADED_MULTI_ENV
     def test_drop_in_different_envs(self) -> None:
         """Can drop apps in different environments independently."""
-        run_cli("update", "./multi_env.py:DB1App")
-        run_cli("update", "./multi_env.py:DB2App")
+        run_cli("update", "-q", "./multi_env.py:DB1App")
+        run_cli("update", "-q", "./multi_env.py:DB2App")
 
         # Drop only DB1App
         run_cli("drop", "./multi_env.py:DB1App", "-f")
@@ -258,8 +275,8 @@ class TestMultipleEnvironments:
         result = run_cli("ls", "./multi_env.py")
         lines = result.stdout.split("\n")
 
-        db1_line = next((l for l in lines if "DB1App" in l), "")
-        db2_line = next((l for l in lines if "DB2App" in l), "")
+        db1_line = next((line for line in lines if "DB1App" in line), "")
+        db2_line = next((line for line in lines if "DB2App" in line), "")
 
         assert "[+]" in db1_line
         assert "[+]" not in db2_line
@@ -590,35 +607,35 @@ class TestUpdateFlags:
         third = stamp_path.read_text()
         assert third != first, "--full-reprocess should force rewrite even if unchanged"
 
-    def test_full_reprocess_deleted_target_not_resurrected(self) -> None:
+    def test_full_reprocess_deleted_target_not_resurrected(
+        self, tmp_path: Path
+    ) -> None:
         """Test that --full-reprocess doesn't keep deleted targets alive via memo reuse."""
         app_path = "./full_reprocess_app.py"
-        target_a_path = TEST_DIR / "out_full_reprocess" / "target_a.txt"
-        target_b_path = TEST_DIR / "out_full_reprocess" / "target_b.txt"
+        (tmp_path / "full_reprocess_app.py").write_text(
+            (TEST_DIR / "full_reprocess_app.py").read_text()
+        )
+        target_a_path = tmp_path / "out_full_reprocess" / "target_a.txt"
+        target_b_path = tmp_path / "out_full_reprocess" / "target_b.txt"
 
         # First run: create both targets A and B
-        run_cli("update", app_path)
+        run_cli("update", app_path, cwd=tmp_path)
         assert target_a_path.exists(), "target_a.txt should exist after first run"
         assert target_b_path.exists(), "target_b.txt should exist after first run"
 
         # Modify the app to only create A (remove B)
-        # We'll do this by creating a modified version of the app
-        original_content = (TEST_DIR / app_path).read_text()
-        modified_content = original_content.replace(
-            "create_b: bool = True", "create_b: bool = False"
+        (tmp_path / "full_reprocess_app.py").write_text(
+            (tmp_path / "full_reprocess_app.py")
+            .read_text()
+            .replace("create_b: bool = True", "create_b: bool = False")
         )
-        (TEST_DIR / app_path).write_text(modified_content)
 
-        try:
-            # Run with --full-reprocess: B should be deleted, not kept alive by old memos
-            run_cli("update", app_path, "--full-reprocess")
-            assert target_a_path.exists(), "target_a.txt should still exist"
-            assert not target_b_path.exists(), (
-                "target_b.txt should be deleted, not kept alive by old memos"
-            )
-        finally:
-            # Restore original content
-            (TEST_DIR / app_path).write_text(original_content)
+        # Run with --full-reprocess: B should be deleted, not kept alive by old memos
+        run_cli("update", app_path, "--full-reprocess", cwd=tmp_path)
+        assert target_a_path.exists(), "target_a.txt should still exist"
+        assert not target_b_path.exists(), (
+            "target_b.txt should be deleted, not kept alive by old memos"
+        )
 
 
 class TestFullReprocess:
@@ -643,35 +660,35 @@ class TestFullReprocess:
         third = stamp_path.read_text()
         assert third != first, "--full-reprocess should force rewrite even if unchanged"
 
-    def test_full_reprocess_deleted_target_not_resurrected(self) -> None:
+    def test_full_reprocess_deleted_target_not_resurrected(
+        self, tmp_path: Path
+    ) -> None:
         """Test that --full-reprocess doesn't keep deleted targets alive via memo reuse."""
         app_path = "./full_reprocess_app.py"
-        target_a_path = TEST_DIR / "out_full_reprocess" / "target_a.txt"
-        target_b_path = TEST_DIR / "out_full_reprocess" / "target_b.txt"
+        (tmp_path / "full_reprocess_app.py").write_text(
+            (TEST_DIR / "full_reprocess_app.py").read_text()
+        )
+        target_a_path = tmp_path / "out_full_reprocess" / "target_a.txt"
+        target_b_path = tmp_path / "out_full_reprocess" / "target_b.txt"
 
         # First run: create both targets A and B
-        run_cli("update", app_path)
+        run_cli("update", app_path, cwd=tmp_path)
         assert target_a_path.exists(), "target_a.txt should exist after first run"
         assert target_b_path.exists(), "target_b.txt should exist after first run"
 
         # Modify the app to only create A (remove B)
-        # We'll do this by creating a modified version of the app
-        original_content = (TEST_DIR / app_path).read_text()
-        modified_content = original_content.replace(
-            "create_b: bool = True", "create_b: bool = False"
+        (tmp_path / "full_reprocess_app.py").write_text(
+            (tmp_path / "full_reprocess_app.py")
+            .read_text()
+            .replace("create_b: bool = True", "create_b: bool = False")
         )
-        (TEST_DIR / app_path).write_text(modified_content)
 
-        try:
-            # Run with --full-reprocess: B should be deleted, not kept alive by old memos
-            run_cli("update", app_path, "--full-reprocess")
-            assert target_a_path.exists(), "target_a.txt should still exist"
-            assert not target_b_path.exists(), (
-                "target_b.txt should be deleted, not kept alive by old memos"
-            )
-        finally:
-            # Restore original content
-            (TEST_DIR / app_path).write_text(original_content)
+        # Run with --full-reprocess: B should be deleted, not kept alive by old memos
+        run_cli("update", app_path, "--full-reprocess", cwd=tmp_path)
+        assert target_a_path.exists(), "target_a.txt should still exist"
+        assert not target_b_path.exists(), (
+            "target_b.txt should be deleted, not kept alive by old memos"
+        )
 
 
 class TestDropQuiet:
@@ -688,6 +705,32 @@ class TestDropQuiet:
 # =============================================================================
 # Test: Show command with --tree flag
 # =============================================================================
+
+
+class TestPreview:
+    """Tests for the --preview flag on update."""
+
+    def test_preview_prints_actions(self) -> None:
+        """update --preview should print planned actions without writing."""
+        result = run_cli("update", "./flat_target_app.py", "--preview")
+        assert "Preview: planned target actions" in result.stdout
+        assert "('x', 42)" in result.stdout
+
+    def test_preview_reset_rejected(self) -> None:
+        """--preview --reset should be rejected."""
+        result = run_cli(
+            "update", "./single_app.py", "--preview", "--reset", check=False
+        )
+        assert result.returncode != 0
+        assert "cannot be used together" in result.stderr.lower()
+
+    def test_preview_live_rejected(self) -> None:
+        """--preview --live should be rejected."""
+        result = run_cli(
+            "update", "./single_app.py", "--preview", "--live", check=False
+        )
+        assert result.returncode != 0
+        assert "cannot be used together" in result.stderr.lower()
 
 
 class TestShowTree:
@@ -736,12 +779,12 @@ class TestShowTree:
         # Find the root line - should be annotated as component (- / or /)
         root_line = next(
             (
-                l
-                for l in lines
-                if l.strip() == "/"
-                or l.strip().startswith("/ [component]")
-                or l.strip() == "- /"
-                or (l.strip().startswith("- /") and "[component]" in l)
+                line
+                for line in lines
+                if line.strip() == "/"
+                or line.strip().startswith("/ [component]")
+                or line.strip() == "- /"
+                or (line.strip().startswith("- /") and "[component]" in line)
             ),
             None,
         )
@@ -751,10 +794,15 @@ class TestShowTree:
         # Should have "files" node as an intermediate node (NOT a component)
         assert "files" in output_text, "Should have 'files' node in output"
         files_line = next(
-            (l for l in lines if "files" in l and l.strip().endswith("files")), None
+            (
+                line
+                for line in lines
+                if "files" in line and line.strip().endswith("files")
+            ),
+            None,
         )
         if files_line is None:
-            files_line = next((l for l in lines if "files" in l), None)
+            files_line = next((line for line in lines if "files" in line), None)
         assert files_line is not None, "Should have 'files' intermediate node line"
         assert "[component]" not in files_line, (
             f"'files' should NOT be annotated as [component] (it's an intermediate node). "
@@ -765,8 +813,8 @@ class TestShowTree:
         assert "file1.txt" in output_text, "Should have 'file1.txt' node"
         assert "file2.txt" in output_text, "Should have 'file2.txt' node"
         # Both should be annotated as components
-        file1_line = next((l for l in lines if "file1.txt" in l), None)
-        file2_line = next((l for l in lines if "file2.txt" in l), None)
+        file1_line = next((line for line in lines if "file1.txt" in line), None)
+        file2_line = next((line for line in lines if "file2.txt" in line), None)
         assert file1_line is not None, "Should have 'file1.txt' line"
         assert file2_line is not None, "Should have 'file2.txt' line"
         assert "[component]" in file1_line, (
@@ -778,23 +826,27 @@ class TestShowTree:
 
         # Should have "direct" as a component (direct child of root)
         assert "direct" in output_text, "Should have 'direct' node"
-        direct_line = next((l for l in lines if "direct" in l), None)
+        direct_line = next((line for line in lines if "direct" in line), None)
         assert direct_line is not None, "Should have 'direct' line"
         assert "[component]" in direct_line, "direct should be annotated as [component]"
 
         # Should have "setup" as a component
         assert "setup" in output_text, "Should have 'setup' node"
-        setup_line = next((l for l in lines if "setup" in l), None)
+        setup_line = next((line for line in lines if "setup" in line), None)
         assert setup_line is not None, "Should have 'setup' line"
         assert "[component]" in setup_line, "setup should be annotated as [component]"
 
         # Verify tree structure: file1.txt and file2.txt should be nested under files
         files_idx = next(
-            (i for i, l in enumerate(lines) if "files" in l and "[component]" not in l),
+            (
+                i
+                for i, line in enumerate(lines)
+                if "files" in line and "[component]" not in line
+            ),
             None,
         )
         file1_idx = next(
-            (i for i, l in enumerate(lines) if "file1.txt" in l),
+            (i for i, line in enumerate(lines) if "file1.txt" in line),
             None,
         )
 

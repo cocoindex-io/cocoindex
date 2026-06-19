@@ -1,3 +1,4 @@
+import logging
 import os
 import signal
 import sys
@@ -21,8 +22,34 @@ from cocoindex._internal.environment import (
     get_registered_environment_infos,
 )
 from cocoindex._internal.setting import get_default_db_path
-from cocoindex.inspect import iter_stable_paths, iter_stable_paths_by_name
+from cocoindex.inspect import (
+    iter_stable_paths,
+    iter_stable_paths_by_name,
+    get_stable_path_detail,
+    get_stable_path_detail_by_name,
+    query_stable_path_details,
+    query_stable_path_details_by_name,
+)
 from cocoindex._internal.stable_path import StablePath
+
+
+# ---------------------------------------------------------------------------
+# Logging setup
+# ---------------------------------------------------------------------------
+
+
+def _setup_logging() -> None:
+    """Configure Python's root logger for CLI use.
+
+    Level is taken from the ``COCOINDEX_LOG_LEVEL`` env var (default ``WARNING``).
+    Uses ``force=True`` so re-invocation (e.g. tests) replaces any prior config.
+    """
+    level = os.environ.get("COCOINDEX_LOG_LEVEL", "WARNING").upper()
+    logging.basicConfig(
+        format="%(asctime)s %(levelname)-5s %(name)s: %(message)s",
+        level=level,
+        force=True,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -501,6 +528,8 @@ async def _print_tree_streaming(
 )
 def cli(env_file: str | None = None, app_dir: str | None = "") -> None:
     """CLI for CocoIndex."""
+    _setup_logging()
+
     dotenv_path = env_file or find_dotenv(usecwd=True)
 
     if load_dotenv(dotenv_path=dotenv_path):
@@ -575,8 +604,38 @@ def ls(app_target: str | None, db: str | None) -> None:
     default=False,
     help="Display stable paths as a tree with component annotations.",
 )
+@click.option(
+    "-l",
+    "--long",
+    "long_format",
+    is_flag=True,
+    default=False,
+    help="Display detailed information in multi-line format.",
+)
+@click.argument("stable_path", type=str, required=False)
+@click.option(
+    "-r",
+    "--recursive",
+    is_flag=True,
+    default=False,
+    help="Show all children recursively (requires stable_path).",
+)
+@click.option(
+    "-p",
+    "--parents",
+    is_flag=True,
+    default=False,
+    help="Show all parent paths (requires stable_path).",
+)
 def show(
-    app_target: str | None, db: str | None, app_name: str | None, tree: bool
+    app_target: str | None,
+    db: str | None,
+    app_name: str | None,
+    tree: bool,
+    long_format: bool,
+    stable_path: str | None,
+    recursive: bool,
+    parents: bool,
 ) -> None:
     """
     Show the app's stable paths.
@@ -585,16 +644,41 @@ def show(
     If `APP_TARGET` is provided, loads the app from the module.
     Otherwise, `--db` and `--app-name` can be used to inspect an app
     directly from its database without loading the module.
+
     """
+    if (recursive or parents) and not stable_path:
+        raise click.ClickException(
+            "-r/--recursive and -p/--parents require a stable_path argument."
+        )
+
     if app_target:
         if db or app_name:
             click.echo(
                 "Warning: --db/--app-name are ignored when APP_TARGET is specified.",
                 err=True,
             )
-        asyncio.run(_show_from_app(_load_app(app_target), tree))
+        asyncio.run(
+            _show_from_app(
+                _load_app(app_target),
+                tree=tree,
+                long_format=long_format,
+                stable_path=stable_path,
+                recursive=recursive,
+                parents=parents,
+            )
+        )
     elif db and app_name:
-        asyncio.run(_show_from_database(db, app_name, tree))
+        asyncio.run(
+            _show_from_database(
+                db,
+                app_name,
+                tree=tree,
+                long_format=long_format,
+                stable_path=stable_path,
+                recursive=recursive,
+                parents=parents,
+            )
+        )
     elif db or app_name:
         raise click.ClickException(
             "Both --db and --app-name are required when APP_TARGET is not specified."
@@ -607,14 +691,78 @@ def show(
         )
 
 
-async def _show_from_app(app: App[Any, Any], tree: bool) -> None:
+def _parse_stable_path(path_str: str) -> StablePath:
+    """Parse a CLI stable path string into a StablePath.
+
+    Accepts formats like:
+      /"files"/"file1.txt"   (quoted parts, as displayed by StablePath.__str__)
+      /files/file1.txt       (unquoted parts)
+    """
+    path = StablePath()
+    # Strip leading slash
+    stripped = path_str.strip("/")
+    if not stripped:
+        return path
+    for part in stripped.split("/"):
+        # Strip surrounding quotes if present
+        if len(part) >= 2 and part.startswith('"') and part.endswith('"'):
+            part = part[1:-1]
+        path = path / part
+    return path
+
+
+async def _show_from_app(
+    app: App[Any, Any],
+    tree: bool = False,
+    long_format: bool = False,
+    stable_path: str | None = None,
+    recursive: bool = False,
+    parents: bool = False,
+) -> None:
     try:
-        await _show_stable_paths(iter_stable_paths(app), tree)
+        if stable_path is not None:
+            # Targeted query — no scan needed
+            path_obj = _parse_stable_path(stable_path)
+            details = await query_stable_path_details(
+                app,
+                path_obj,
+                include_children=recursive,
+                recursive=recursive,
+                include_parents=parents,
+            )
+            _print_details(details)
+        elif long_format:
+            # Stream paths, fetch detail one-by-one (no buffering)
+            click.echo("Stable paths:")
+            count = 0
+            async for item in iter_stable_paths(app):
+                path_obj = StablePath(item.path)
+                detail = await get_stable_path_detail(app, path_obj)
+                if detail:
+                    _print_one_detail(detail)
+                count += 1
+            if count == 0:
+                click.echo("  (none)")
+        elif tree:
+            component_node_type = _core.StablePathNodeType.component()
+            await _print_tree_streaming(iter_stable_paths(app), component_node_type)
+        else:
+            click.echo("Stable paths:")
+            async for item in iter_stable_paths(app):
+                click.echo(f"  {StablePath(item.path)}")
     finally:
         await _stop_all_environments()
 
 
-async def _show_from_database(db_path: str, app_name: str, tree: bool) -> None:
+async def _show_from_database(
+    db_path: str,
+    app_name: str,
+    tree: bool = False,
+    long_format: bool = False,
+    stable_path: str | None = None,
+    recursive: bool = False,
+    parents: bool = False,
+) -> None:
     db_path_obj = pathlib.Path(db_path)
     if not db_path_obj.exists():
         raise click.ClickException(f"Database path does not exist: {db_path}")
@@ -625,18 +773,88 @@ async def _show_from_database(db_path: str, app_name: str, tree: bool) -> None:
         Settings(db_path=db_path_obj),
         event_loop=asyncio.get_running_loop(),
     )
-    await _show_stable_paths(iter_stable_paths_by_name(env, app_name), tree)
 
-
-async def _show_stable_paths(items: AsyncIterator[Any], tree: bool) -> None:
-    if tree:
+    if stable_path is not None:
+        path_obj = _parse_stable_path(stable_path)
+        details = await query_stable_path_details_by_name(
+            env,
+            app_name,
+            path_obj,
+            include_children=recursive,
+            recursive=recursive,
+            include_parents=parents,
+        )
+        _print_details(details)
+    elif long_format:
+        click.echo("Stable paths:")
+        count = 0
+        async for item in iter_stable_paths_by_name(env, app_name):
+            path_obj = StablePath(item.path)
+            detail = await get_stable_path_detail_by_name(env, app_name, path_obj)
+            if detail:
+                _print_one_detail(detail)
+            count += 1
+        if count == 0:
+            click.echo("  (none)")
+    elif tree:
         component_node_type = _core.StablePathNodeType.component()
-        await _print_tree_streaming(items, component_node_type)
+        await _print_tree_streaming(
+            iter_stable_paths_by_name(env, app_name), component_node_type
+        )
     else:
         click.echo("Stable paths:")
-        async for item in items:
-            path = StablePath(item.path)
-            click.echo(f"  {path}")
+        async for item in iter_stable_paths_by_name(env, app_name):
+            click.echo(f"  {StablePath(item.path)}")
+
+
+def _print_details(details: list[_core.StablePathDetail]) -> None:
+    """Print a list of StablePathDetail in multi-line format."""
+    if not details:
+        click.echo("Stable paths:")
+        click.echo("  (none)")
+        return
+
+    click.echo("Stable paths:")
+    for detail in details:
+        _print_one_detail(detail)
+
+
+def _print_one_detail(detail: _core.StablePathDetail) -> None:
+    """Print a single StablePathDetail in multi-line format."""
+    path = StablePath(detail.path)
+    node_type = (
+        "component"
+        if detail.node_type == _core.StablePathNodeType.component()
+        else "directory"
+    )
+    click.echo(f"  {path}")
+    click.echo(
+        f"    type:{node_type} version:{detail.version}"
+        f" processor:{detail.processor_name or '-'}"
+    )
+    click.echo(
+        f"    has_memoization:{'true' if detail.has_memoization else 'false'}"
+        f" target_state_count:{detail.target_state_count}"
+    )
+    if detail.target_state_items:
+        click.echo("    Target states:")
+        for item_summary in detail.target_state_items:
+            provider_gen = (
+                f"{item_summary.provider_generation.provider_id}"
+                f".{item_summary.provider_generation.provider_schema_version}"
+                if item_summary.provider_generation is not None
+                else "None"
+            )
+            states = ", ".join(f"{s.version}:{s.state}" for s in item_summary.states)
+            click.echo(
+                f"      - path:{item_summary.target_state_path} key:{item_summary.key!r}"
+            )
+            click.echo(
+                f"        states:{states or '-'}"
+                f" schema_version:{item_summary.provider_schema_version}"
+                f" generation:{provider_gen}"
+            )
+    click.echo()
 
 
 async def _stop_all_environments() -> None:
@@ -686,6 +904,13 @@ async def _stop_all_environments() -> None:
     default=False,
     help="Run in live mode (live components continue processing after initial update).",
 )
+@click.option(
+    "--preview",
+    is_flag=True,
+    show_default=True,
+    default=False,
+    help="Compute target actions without applying them. Prints planned actions.",
+)
 def update(
     app_target: str,
     force: bool,
@@ -693,12 +918,18 @@ def update(
     reset: bool,
     full_reprocess: bool,
     live: bool,
+    preview: bool,
 ) -> None:
     """
     Run an app in catch-up mode. With --live, run in live mode.
 
     `APP_TARGET`: `path/to/app.py`, `module`, `path/to/app.py:app_name`, or `module:app_name`.
     """
+    if preview and reset:
+        raise click.UsageError("--preview and --reset cannot be used together.")
+    if preview and live:
+        raise click.UsageError("--preview and --live cannot be used together.")
+
     app = _load_app(app_target)
 
     async def _do(cancelled: Any) -> None:
@@ -710,6 +941,20 @@ def update(
                 print(
                     f"Running app '{app._name}' from environment '{env.name}' (db path: {env.settings.db_path})"
                 )
+
+            if preview:
+                handle = app.update(
+                    full_reprocess=full_reprocess,
+                    preview=True,
+                )
+                actions: list[Any] = await handle.result()
+                click.echo("Preview: planned target actions")
+                if actions:
+                    for action in actions:
+                        click.echo(f"  {action!r}")
+                else:
+                    click.echo("  No target actions planned.")
+                return
 
             # --reset: drop existing state first (equivalent to `cocoindex drop ...`)
             if reset:

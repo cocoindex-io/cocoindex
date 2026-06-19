@@ -698,3 +698,12 @@ async def test_topic_stream_payloads_filters_null_values() -> None:
     await asyncio.sleep(0.05)
     final_committed = max((tp.offset for tp in consumer._committed), default=-1)
     assert final_committed == 3
+
+
+@pytest.mark.asyncio
+async def test_single_watcher_raises() -> None:
+    """A second concurrent watch() on one TopicStream fails loudly."""
+    stream = TopicStream(MockAIOConsumer(), ["test-topic"])  # type: ignore[arg-type]
+    with stream._watch_guard:  # simulate an already-active watch
+        with pytest.raises(RuntimeError, match="single active watch"):
+            await stream.watch(MagicMock())  # type: ignore[arg-type]

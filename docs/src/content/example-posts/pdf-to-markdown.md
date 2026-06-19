@@ -4,7 +4,6 @@ description: 'Convert PDF files to Markdown with incremental processing'
 slug: pdf-to-markdown
 image: https://cocoindex.io/blobs/docs-v1/img/examples/pdf-to-markdown/cover.png
 tags: [pdf, custom-building-blocks]
-last_reviewed: 2026-04-20
 ---
 
 ![PDF to Markdown](https://cocoindex.io/blobs/docs-v1/img/examples/pdf-to-markdown/cover.png)
@@ -63,17 +62,15 @@ Define a CocoIndex App — the top-level runnable unit in CocoIndex.
 ![App Definition](https://cocoindex.io/blobs/docs-v1/img/examples/pdf-to-markdown/app-def.svg)
 
 ```python title="main.py"
+import pathlib
 
+import cocoindex as coco
 from cocoindex.connectors import localfs
 from cocoindex.resources.file import PatternFilePathMatcher
-from docling.document_converter import DocumentConverter
-
-app = coco.App(
-    coco.AppConfig(name="PdfToMarkdown"),
-    app_main,
-    sourcedir=pathlib.Path("./pdf_files"),
-    outdir=pathlib.Path("./out"),
-)
+from docling.datamodel.accelerator_options import AcceleratorDevice, AcceleratorOptions
+from docling.datamodel.base_models import InputFormat
+from docling.datamodel.pipeline_options import PdfPipelineOptions
+from docling.document_converter import DocumentConverter, PdfFormatOption
 ```
 
 [→ CocoIndex App](/docs/programming_guide/app)
@@ -85,25 +82,18 @@ app = coco.App(
 In the main function, we walk through each file in the source directory and process it.
 
 ```python title="main.py"
-@coco.function
-def app_main(sourcedir: pathlib.Path, outdir: pathlib.Path) -> None:
+@coco.fn
+async def app_main(sourcedir: pathlib.Path, outdir: pathlib.Path) -> None:
     files = localfs.walk_dir(
         sourcedir,
         recursive=True,
-        path_matcher=PatternFilePathMatcher(included_patterns=["*.pdf"]),
+        path_matcher=PatternFilePathMatcher(included_patterns=["**/*.pdf"]),
     )
-    for f in files:
-        coco.mount(
-            coco.component_subpath("process", str(f.file_path.path)),
-            process_file,
-            f,
-            outdir,
-        )
+    await coco.mount_each(process_file, files.items(), outdir)
 ```
-For each file, `coco.mount()` mounts a processing component. It's up to you to pick the process granularity, for example it can be
-- at directory level,
-- at file level,
-- at page level.
+For each file, `coco.mount_each()` mounts a processing component. It's up to
+you to pick the process granularity, for example it can be at directory level,
+file level, or page level.
 
 In this example, because we want to independently convert each file to Markdown, it is the most natural to pick it at the file level.
 
@@ -114,12 +104,24 @@ In this example, because we want to independently convert each file to Markdown,
 
 ![File Process](https://cocoindex.io/blobs/docs-v1/img/examples/pdf-to-markdown/file-process.svg)
 
-For a file, we use Docling to convert it to Markdown.
+For a file, we use Docling to convert it to Markdown. The converter follows
+Docling's [explicit accelerator configuration](https://docling-project.github.io/docling/_generated/examples/run_with_accelerator/)
+pattern and is pinned to CPU for portability across local machines. The
+Docling accelerator docs were checked on 2026-05-31; Docling documents CPU as
+the mode that works everywhere, while MPS/CUDA/XPU depend on compatible
+hardware and PyTorch builds.
 
 ```python title="main.py"
-_converter = DocumentConverter()
+_pipeline_options = PdfPipelineOptions(
+    accelerator_options=AcceleratorOptions(device=AcceleratorDevice.CPU)
+)
+_converter = DocumentConverter(
+    format_options={
+        InputFormat.PDF: PdfFormatOption(pipeline_options=_pipeline_options)
+    }
+)
 
-@coco.function(memo=True)
+@coco.fn(memo=True)
 def process_file(
     file: localfs.File,
     outdir: pathlib.Path,
@@ -131,9 +133,20 @@ def process_file(
     localfs.declare_file(outdir / outname, markdown, create_parent_dirs=True)
 ```
 
-We use `@coco.function` with `memo=True` to create a memoized function that processes each file.
+We use `@coco.fn` with `memo=True` to create a memoized function that processes each file.
 
 [→ Function](/docs/programming_guide/function)
+
+### Create the App
+
+```python title="main.py"
+app = coco.App(
+    "PdfToMarkdown",
+    app_main,
+    sourcedir=pathlib.Path("./pdf_files"),
+    outdir=pathlib.Path("./out"),
+)
+```
 
 ## Run the pipeline
 

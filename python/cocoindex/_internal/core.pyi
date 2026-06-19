@@ -92,6 +92,15 @@ class ComponentProcessorContext:
         self,
     ) -> dict[Fingerprint, list[Any]]: ...
     async def next_id(self, key: StableKey | None = None) -> int: ...
+    def begin_stats_group(
+        self,
+        title: str,
+        report_to_stdout: bool,
+        refresh_interval_secs: float | None = None,
+    ) -> tuple[ComponentProcessorContext, StatsGroupHandle]: ...
+    def end_stats_group(self) -> None: ...
+    def use_state(self, key: StableKey, initial_value: bytes) -> bytes: ...
+    def update_user_state(self, key: StableKey, value: bytes) -> None: ...
 
 # --- FnCallContext ---
 class FnCallContext:
@@ -183,11 +192,58 @@ class StablePathInfoAsyncIterator:
     def __aiter__(self) -> StablePathInfoAsyncIterator: ...
     def __anext__(self) -> Awaitable[StablePathInfo]: ...
 
+class TargetStateVersion:
+    version: int
+    state: str
+
+class ProviderGeneration:
+    provider_id: int
+    provider_schema_version: int
+
+class TargetStateInfoItemSummary:
+    target_state_path: str
+    key: StableKey
+    states: list[TargetStateVersion]
+    provider_schema_version: int
+    provider_generation: ProviderGeneration | None
+
+class StablePathDetail:
+    """Detailed information about a stable path from LMDB."""
+
+    path: StablePath
+    node_type: StablePathNodeType
+    version: int
+    processor_name: str
+    target_state_count: int
+    has_memoization: bool
+    target_state_items: list[TargetStateInfoItemSummary]
+
+def get_stable_path_detail(app: App, path: StablePath) -> StablePathDetail | None: ...
+def get_stable_path_detail_by_name(
+    env: Any, app_name: str, path: StablePath
+) -> StablePathDetail | None: ...
+def query_stable_path_details(
+    app: App,
+    path: StablePath,
+    include_children: bool,
+    recursive: bool,
+    include_parents: bool,
+) -> list[StablePathDetail]: ...
+def query_stable_path_details_by_name(
+    env: Any,
+    app_name: str,
+    path: StablePath,
+    include_children: bool,
+    recursive: bool,
+    include_parents: bool,
+) -> list[StablePathDetail]: ...
+
 # --- UpdateHandle ---
 class UpdateHandle:
     def stats_snapshot(self) -> tuple[int, bool, dict[str, dict[str, int]]]: ...
     def changed(self) -> Coroutine[Any, Any, int]: ...
     def result(self) -> Coroutine[Any, Any, StoredValue]: ...
+    def take_preview_actions(self) -> list[Any]: ...
 
 # --- DropHandle ---
 class DropHandle:
@@ -195,7 +251,14 @@ class DropHandle:
     def changed(self) -> Coroutine[Any, Any, int]: ...
     def result(self) -> Coroutine[Any, Any, None]: ...
 
-def show_progress(handle: UpdateHandle) -> Coroutine[Any, Any, StoredValue]: ...
+# --- StatsGroupHandle ---
+class StatsGroupHandle:
+    def stats_snapshot(self) -> tuple[int, bool, dict[str, dict[str, int]]]: ...
+    def changed(self) -> Coroutine[Any, Any, int]: ...
+
+def show_progress(
+    handle: UpdateHandle, refresh_interval_secs: float | None = None
+) -> Coroutine[Any, Any, StoredValue]: ...
 
 # --- App ---
 class App:
@@ -208,16 +271,24 @@ class App:
         full_reprocess: bool = False,
         host_ctx: Any = None,
         report_to_stdout: bool = False,
+        refresh_interval_secs: float | None = None,
         live: bool = False,
-    ) -> StoredValue: ...
+        preview: bool = False,
+    ) -> StoredValue | list[Any]: ...
     def update_async(
         self,
         root_processor: ComponentProcessor[T_co],
         full_reprocess: bool = False,
         live: bool = False,
+        preview: bool = False,
         host_ctx: Any = None,
     ) -> UpdateHandle: ...
-    def drop(self, host_ctx: Any = None, report_to_stdout: bool = False) -> None: ...
+    def drop(
+        self,
+        host_ctx: Any = None,
+        report_to_stdout: bool = False,
+        refresh_interval_secs: float | None = None,
+    ) -> None: ...
     def drop_async(self, host_ctx: Any = None) -> DropHandle: ...
 
 # --- LiveComponentController ---
@@ -239,6 +310,12 @@ class LiveComponentController:
         handler_callback: Callable[[str], Awaitable[None]] | None = None,
     ) -> Coroutine[Any, Any, ComponentMountHandle]: ...
     def mark_ready_async(self) -> Coroutine[Any, Any, None]: ...
+    def read_committed_state_async(
+        self, key: StableKey
+    ) -> Coroutine[Any, Any, bytes | None]: ...
+    def write_committed_state_async(
+        self, key: StableKey, value: bytes
+    ) -> Coroutine[Any, Any, None]: ...
     def start(self, process_live_fut: Any) -> None: ...
     def mount_inner_live_async(
         self, stable_path: StablePath
@@ -507,3 +584,22 @@ class Batcher(Generic[T, R_co]):
         async_ctx: AsyncContext,
     ) -> "Batcher[T, R_co]": ...
     def run(self, input: T) -> Coroutine[Any, Any, R_co]: ...
+
+########################################################
+# Rate limiting
+########################################################
+
+# --- RateLimiter ---
+class RateLimiter:
+    """Token-bucket rate limiter (governor-based).
+
+    ``acquire(n)`` waits until ``n`` tokens are available; concurrent
+    callers are served in FIFO order. ``burst_window_secs`` sets how many
+    seconds' worth of tokens (``max_rows_per_second * burst_window_secs``)
+    may accumulate while idle.
+    """
+
+    def __new__(
+        cls, max_rows_per_second: float, burst_window_secs: float = 1.0
+    ) -> "RateLimiter": ...
+    def acquire(self, n: int = 1) -> Coroutine[Any, Any, None]: ...

@@ -35,7 +35,6 @@ from . import core
 from .component_ctx import (
     _context_var,
     _enter_component_context,
-    get_context_from_ctx,
 )
 from .context_keys import resolve_awaitables_sync
 from .memo_fingerprint import (
@@ -738,12 +737,17 @@ class SyncFunction(Function[P, R_co]):
         if _in_subprocess():
             return self._fn(*args, **kwargs)
 
-        parent_ctx = get_context_from_ctx()
+        # Outside any component context (e.g. a direct standalone call), run the raw
+        # function with no memoization — mirroring the async `__call__` path below. Use
+        # the non-raising getter so this is a graceful fallback, not an error.
+        parent_ctx = _context_var.get(None)
         if parent_ctx is None:
             return self._fn(*args, **kwargs)
 
-        def _call_in_context(ctx: core.FnCallContext) -> R_co:
-            context = parent_ctx._with_fn_call_ctx(ctx)
+        def _call_in_context(
+            ctx: core.FnCallContext, *, in_memo_fn: bool = False
+        ) -> R_co:
+            context = parent_ctx._with_fn_call_ctx(ctx, in_memo_fn=in_memo_fn)
             tok = _context_var.set(context)
             try:
                 return self._fn(*args, **kwargs)
@@ -816,7 +820,7 @@ class SyncFunction(Function[P, R_co]):
                     fn_ctx = core.FnCallContext(propagate_children_fn_logic=propagate)
                     if self._logic_fp is not None:
                         fn_ctx.add_fn_logic_dep(self._logic_fp)
-                    ret = _call_in_context(fn_ctx)
+                    ret = _call_in_context(fn_ctx, in_memo_fn=True)
                     # Positional: collect only if not already set (cache-miss path).
                     # Context: look up eager initial states from the Rust
                     # registry in a single call — no state fn calls on cache
@@ -844,7 +848,7 @@ class SyncFunction(Function[P, R_co]):
                 fn_ctx = core.FnCallContext(propagate_children_fn_logic=propagate)
                 if self._logic_fp is not None:
                     fn_ctx.add_fn_logic_dep(self._logic_fp)
-                return _call_in_context(fn_ctx)
+                return _call_in_context(fn_ctx, in_memo_fn=parent_ctx._in_memo_fn)
         finally:
             if fn_ctx is not None:
                 parent_ctx._core_fn_call_ctx.join_child(fn_ctx)
@@ -1071,6 +1075,27 @@ class _BoundAsyncMethod(Generic[SelfT]):
         return _BoundAsyncMethod(func, self_obj)
 
 
+class _BatcherSlot(Generic[R]):
+    """A batcher plus a count of in-flight calls currently sharing it.
+
+    A batcher is kept in `_batchers` only while at least one call is in flight,
+    so concurrent calls with the same key batch together. Once the last call
+    drains (see `_release_batcher`), the slot is removed. This keeps idle
+    batchers from accumulating, and — since the key embeds `id(self_obj)` —
+    avoids reusing a stale batcher for a new object that happens to land on the
+    same `id` after the previous one was garbage-collected.
+    """
+
+    __slots__ = ("batcher", "in_flight")
+
+    batcher: core.Batcher[Any, R]
+    in_flight: int
+
+    def __init__(self, batcher: core.Batcher[Any, R]) -> None:
+        self.batcher = batcher
+        self.in_flight = 0
+
+
 class AsyncFunction(Function[P, R_co]):
     """Async function with optional memoization and batching/runner support."""
 
@@ -1087,7 +1112,6 @@ class AsyncFunction(Function[P, R_co]):
         "_max_batch_size",
         "_runner",
         "_has_self",
-        "_queues",
         "_batchers",
         "_batchers_lock",
         "_return_deserializer",
@@ -1105,11 +1129,10 @@ class AsyncFunction(Function[P, R_co]):
     _max_batch_size: int | None
     _runner: Runner | None
     _has_self: bool
-    _queues: dict[object, core.BatchQueue]
     _return_deserializer: DeserializeFn | None
     _return_deserializer_lock: threading.Lock
 
-    _batchers: dict[object, core.Batcher[Any, R_co]]
+    _batchers: dict[object, _BatcherSlot[R_co]]
     _batchers_lock: threading.Lock
 
     def __init__(
@@ -1153,7 +1176,6 @@ class AsyncFunction(Function[P, R_co]):
         self._max_batch_size = max_batch_size
         self._runner = runner
         self._has_self = _has_self_parameter(fn) if (batching or runner) else False
-        self._queues = {}
         self._batchers = {}
         self._batchers_lock = threading.Lock()
 
@@ -1298,7 +1320,9 @@ class AsyncFunction(Function[P, R_co]):
                 async_ctx = core.AsyncContext(get_event_loop_or_default())
                 result = await self._execute(async_ctx, *args, **kwargs)
             else:
-                comp_ctx = parent_ctx._with_fn_call_ctx(fn_ctx)
+                comp_ctx = parent_ctx._with_fn_call_ctx(
+                    fn_ctx, in_memo_fn=guard is not None or parent_ctx._in_memo_fn
+                )
                 tok = _context_var.set(comp_ctx)
                 try:
                     result = await self._execute(
@@ -1373,10 +1397,13 @@ class AsyncFunction(Function[P, R_co]):
             extra_args = ()
             extra_kwargs = {}
 
-        batcher = self._get_or_create_batcher(
+        batcher_key, batcher = self._acquire_batcher(
             async_ctx, self_obj, extra_args, extra_kwargs
         )
-        return await batcher.run(input_val)
+        try:
+            return await batcher.run(input_val)
+        finally:
+            self._release_batcher(batcher_key)
 
     async def _execute_orig_async_fn(self, *args: Any, **kwargs: Any) -> Any:
         assert self._orig_async_fn is not None
@@ -1471,53 +1498,72 @@ class AsyncFunction(Function[P, R_co]):
         else:
             return (id(self._any_fn), extra_args, extra_kwargs)
 
-    def _get_or_create_batcher(
+    def _acquire_batcher(
         self,
         async_ctx: core.AsyncContext,
         self_obj: Any,
         extra_args: tuple[Any, ...] = (),
         extra_kwargs: dict[str, Any] | None = None,
-    ) -> core.Batcher[Any, R_co]:
-        """Get or create batcher for this function/self combination."""
+    ) -> tuple[object, core.Batcher[Any, R_co]]:
+        """Get or create the batcher for this function/self combination, and
+        mark one more in-flight call against it.
+
+        The caller MUST pair this with `_release_batcher(batcher_key)` once its
+        `batcher.run()` completes, so the batcher is dropped when idle.
+        """
         if extra_kwargs is None:
             extra_kwargs = {}
         extra_kwargs_key = tuple(sorted(extra_kwargs.items()))
         batcher_key = self._get_batcher_key(self_obj, extra_args, extra_kwargs_key)
         with self._batchers_lock:
-            if (batcher := self._batchers.get(batcher_key, None)) is not None:
-                return batcher
-
-            batch_runner_fn = self._create_batch_runner_fn(
-                self_obj, extra_args, extra_kwargs
-            )
-
-            # Get queue: from runner (if present) or owned by this function
-            if self._runner is not None:
-                queue = self._runner.get_queue()
-            else:
-                if batcher_key not in self._queues:
-                    self._queues[batcher_key] = core.BatchQueue()
-                queue = self._queues[batcher_key]
-
-            # When runner is specified without batching, use max_batch_size=1
-            # to process items individually through the shared queue.
-            options = core.BatchingOptions(
-                max_batch_size=self._max_batch_size if self._batching else 1
-            )
-            if inspect.iscoroutinefunction(batch_runner_fn):
-                batcher = core.Batcher.new_async(
-                    queue, options, batch_runner_fn, async_ctx
+            slot = self._batchers.get(batcher_key, None)
+            if slot is None:
+                slot = _BatcherSlot(
+                    self._create_batcher(async_ctx, self_obj, extra_args, extra_kwargs)
                 )
-            else:
-                batcher = core.Batcher.new_sync(
-                    queue,
-                    options,
-                    batch_runner_fn,  # type: ignore[arg-type]
-                    async_ctx,
-                )
+                self._batchers[batcher_key] = slot
+            slot.in_flight += 1
+            return batcher_key, slot.batcher
 
-            self._batchers[batcher_key] = batcher
-            return batcher
+    def _release_batcher(self, batcher_key: object) -> None:
+        """Mark one in-flight call done; drop the batcher once it goes idle."""
+        with self._batchers_lock:
+            slot = self._batchers[batcher_key]
+            slot.in_flight -= 1
+            if slot.in_flight == 0:
+                del self._batchers[batcher_key]
+
+    def _create_batcher(
+        self,
+        async_ctx: core.AsyncContext,
+        self_obj: Any,
+        extra_args: tuple[Any, ...],
+        extra_kwargs: dict[str, Any],
+    ) -> core.Batcher[Any, R_co]:
+        batch_runner_fn = self._create_batch_runner_fn(
+            self_obj, extra_args, extra_kwargs
+        )
+
+        # Get queue: shared from the runner (if present), or a fresh one owned
+        # by this batcher otherwise.
+        queue = (
+            self._runner.get_queue() if self._runner is not None else core.BatchQueue()
+        )
+
+        # When runner is specified without batching, use max_batch_size=1
+        # to process items individually through the shared queue.
+        options = core.BatchingOptions(
+            max_batch_size=self._max_batch_size if self._batching else 1
+        )
+        if inspect.iscoroutinefunction(batch_runner_fn):
+            return core.Batcher.new_async(queue, options, batch_runner_fn, async_ctx)
+        else:
+            return core.Batcher.new_sync(
+                queue,
+                options,
+                batch_runner_fn,  # type: ignore[arg-type]
+                async_ctx,
+            )
 
     def _core_processor(
         self,

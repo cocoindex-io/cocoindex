@@ -43,10 +43,27 @@ pub struct TargetReconcileOutput<Prof: EngineProfile> {
 }
 
 pub trait TargetHandler<Prof: EngineProfile>: Send + Sync + Sized + 'static {
+    /// Reconcile the desired target state against the previously-tracked
+    /// records, returning the action to take.
+    ///
+    /// `desired_target_state` is borrowed (not owned) because the engine
+    /// holds it under a short-lived `tokio::sync::MutexGuard` for the
+    /// duration of this call — see the lock-scoped call site in
+    /// `submit()`'s `pre_commit`. Borrowing here lets the host-specific
+    /// implementation decide whether (and how) to clone:
+    ///
+    /// * Native Rust profile (`Value: Clone`): typically `value.clone()`
+    ///   when constructing the `Action`.
+    /// * Python profile (`Py<PyAny>: !Clone`): `value.clone_ref(py)`
+    ///   under the GIL.
+    ///
+    /// Avoids forcing every call site to round-trip through an
+    /// engine-level `clone_target_state_value` even when the impl
+    /// might not need an owned copy.
     fn reconcile(
         &self,
         key: StableKey,
-        desired_target_state: Option<Prof::TargetStateValue>,
+        desired_target_state: Option<&Prof::TargetStateValue>,
         prev_possible_records: &[Prof::TargetStateTrackingRecord],
         prev_may_be_missing: bool,
     ) -> Result<Option<TargetReconcileOutput<Prof>>>;
@@ -198,14 +215,7 @@ impl<Prof: EngineProfile> TargetStateProvider<Prof> {
         let symbol_key = StableKey::Symbol(att_type.into());
         let target_state_path = self.target_state_path().concat(&symbol_key);
 
-        let provider_generation = self
-            .provider_generation()
-            .ok_or_else(|| {
-                internal_error!(
-                    "Parent provider generation must be set before registering attachment"
-                )
-            })?
-            .clone();
+        let provider_generation = self.provider_generation().cloned().unwrap_or_default();
 
         let provider = TargetStateProvider {
             inner: Arc::new(TargetStateProviderInner {
@@ -283,6 +293,7 @@ impl<Prof: EngineProfile> TargetStateProviderRegistry<Prof> {
             }),
         };
         self.add(target_state_path, provider.clone())?;
+        provider.register_all_attachment_providers(self)?;
         Ok(provider)
     }
 

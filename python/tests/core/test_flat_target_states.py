@@ -178,6 +178,52 @@ def test_async_global_dict_target_state_insert() -> None:
     assert AsyncGlobalDictTarget.store.metrics.collect() == {"sink": 1, "upsert": 1}
 
 
+def test_global_dict_preview_returns_actions_without_writing() -> None:
+    GlobalDictTarget.store.clear()
+    _source_data.clear()
+
+    app = coco.App(
+        coco.AppConfig(
+            name="test_global_dict_preview_returns_actions", environment=coco_env
+        ),
+        declare_global_dict_entries,
+    )
+
+    _source_data["a"] = 1
+    _source_data["b"] = 2
+    actions = app.update_blocking(preview=True)
+
+    assert isinstance(actions, list)
+    assert len(actions) == 2
+    assert GlobalDictTarget.store.data == {}
+    assert GlobalDictTarget.store.metrics.collect() == {}
+
+    app.update_blocking()
+    assert GlobalDictTarget.store.data == {
+        "a": DictDataWithPrev(data=1, prev=[], prev_may_be_missing=True),
+        "b": DictDataWithPrev(data=2, prev=[], prev_may_be_missing=True),
+    }
+    assert GlobalDictTarget.store.metrics.collect() == {"sink": 1, "upsert": 2}
+
+
+@pytest.mark.asyncio
+async def test_global_dict_preview_async() -> None:
+    GlobalDictTarget.store.clear()
+    _source_data.clear()
+
+    app = coco.App(
+        coco.AppConfig(name="test_global_dict_preview_async", environment=coco_env),
+        declare_global_dict_entries,
+    )
+
+    _source_data["a"] = 1
+    actions = await app.update(preview=True)
+
+    assert isinstance(actions, list)
+    assert len(actions) > 0
+    assert GlobalDictTarget.store.data == {}
+
+
 def test_global_dict_target_state_proceed_with_exception() -> None:
     GlobalDictTarget.store.clear()
     _source_data.clear()

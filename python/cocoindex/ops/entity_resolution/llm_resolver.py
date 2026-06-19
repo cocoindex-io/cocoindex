@@ -6,6 +6,8 @@ validation-and-retry loop.
 
 from __future__ import annotations
 
+import typing as _typing
+
 import pydantic as _pydantic
 
 import cocoindex as _coco
@@ -80,6 +82,7 @@ class LlmPairResolver:
         self._retries = retries
         self._system_prompt = _build_prompt(entity_type, extra_guidance)
         self._memo_key = _coco.memo_fingerprint((model, entity_type, extra_guidance))
+        self._client: _typing.Any | None = None
 
     @_coco.fn(memo=True, logic_tracking="self")
     async def __call__(
@@ -94,17 +97,13 @@ class LlmPairResolver:
             + "\n".join(f"  - {c!r}" for c in candidates)
         )
 
-        client = _instructor.from_litellm(
-            _litellm.acompletion, mode=_instructor.Mode.JSON
-        )
-
         messages: list[dict[str, str]] = [
             {"role": "system", "content": self._system_prompt},
             {"role": "user", "content": user_message},
         ]
 
         for attempt in range(1 + self._retries):
-            result = await client.chat.completions.create(
+            result = await self._get_client().chat.completions.create(
                 model=self._model,
                 response_model=_LlmResponse,
                 messages=messages,
@@ -124,6 +123,28 @@ class LlmPairResolver:
 
     def __coco_memo_key__(self) -> object:
         return self._memo_key
+
+    def __getstate__(self) -> dict[str, _typing.Any]:
+        return {
+            "model": self._model,
+            "retries": self._retries,
+            "system_prompt": self._system_prompt,
+            "memo_key": self._memo_key,
+        }
+
+    def __setstate__(self, state: dict[str, _typing.Any]) -> None:
+        self._model = state["model"]
+        self._retries = state["retries"]
+        self._system_prompt = state["system_prompt"]
+        self._memo_key = state["memo_key"]
+        self._client = None
+
+    def _get_client(self) -> _typing.Any:
+        if self._client is None:
+            self._client = _instructor.from_litellm(
+                _litellm.acompletion, mode=_instructor.Mode.JSON
+            )
+        return self._client
 
 
 def _build_prompt(entity_type: str | None, extra_guidance: str | None) -> str:

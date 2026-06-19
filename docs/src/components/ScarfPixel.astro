@@ -1,0 +1,16 @@
+---
+interface Props {
+  pxid: string;
+}
+const { pxid } = Astro.props;
+---
+{pxid && (
+  <img
+    referrerpolicy="no-referrer-when-downgrade"
+    src={`https://static.scarf.sh/a.png?x-pxid=${pxid}`}
+    alt=""
+    width="1"
+    height="1"
+    style="position:absolute; width:1px; height:1px; opacity:0; pointer-events:none;"
+  />
+)}

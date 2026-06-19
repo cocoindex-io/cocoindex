@@ -7,7 +7,10 @@
 import '../../styles/globals.css';
 import Topbar from '../../components/Topbar.astro';
 import MobileSheet from '../../components/MobileSheet.astro';
-import { GITHUB_REPO, DISCORD_URL, SITE_URL, titleMarkup } from '../../consts';
+import Analytics from '../../components/Analytics.astro';
+import ScarfPixel from '../../components/ScarfPixel.astro';
+import Foot from '../../components/Foot.astro';
+import { GITHUB_REPO, DISCORD_URL, SITE_URL, titleMarkup, SCARF_PIXEL_ID, OG_IMAGE_EXAMPLES, OG_IMAGE_WIDTH, OG_IMAGE_HEIGHT, OG_IMAGE_EXAMPLES_ALT } from '../../consts';
 import {
   examples,
   byCategory,
@@ -24,12 +27,16 @@ import { titleText } from '../../consts';
 import type { SidebarItem } from '../../data/docs-sidebar';
 
 const base = import.meta.env.BASE_URL.replace(/\/$/, '') || '';
-const exampleHref = (slug: string) => `${base}/examples/${slug}`;
+const exampleHref = (slug: string) => `${base}/examples/${slug}/`;
 const featured = findExample(featuredSlug)!;
 
 // Category order and counts, computed from the data.
 const CAT_ORDER: Category[] = ['search', 'ingest', 'llm', 'agents', 'image'];
 const catCount = (c: Category) => examples.filter((e) => e.category === c).length;
+// Categories with no examples yet (e.g. 'image') stay out of the chips and
+// side-nav — their grid sections already render nothing, so a chip or anchor
+// would point nowhere.
+const activeCats = CAT_ORDER.filter((c) => catCount(c) > 0);
 
 // Phone drawer mirror of the inline `.side-nav` browse aside. The aside
 // becomes a horizontal flex pill row at ≤1180px which is fine on tablet,
@@ -53,8 +60,42 @@ const examplesSidebar: SidebarItem[] = CAT_ORDER
 
 const total = examples.length;
 const fullTitle = `Examples · CocoIndex Docs`;
-const description = 'Real pipelines you can clone, run, and bend to your data — custom sources, LLM extraction, vector search, streaming ingest.';
-const canonical = new URL(`${base}/examples`, SITE_URL).toString();
+const description = 'Real pipelines you can clone, run, and bend to your data — codebase vector search, multi-repo LLM summarization, and custom PDF ingest.';
+// trailingSlash: 'always' — canonical must carry the slash to match the served URL.
+const canonical = new URL(`${base}/examples/`, SITE_URL).toString();
+const ogImage = OG_IMAGE_EXAMPLES;
+
+// Structured data: a CollectionPage wrapping an ItemList of the examples (so
+// search engines and agents can read the catalog), plus a Docs › Examples
+// breadcrumb.
+const collectionLd = {
+  '@context': 'https://schema.org',
+  '@type': 'CollectionPage',
+  name: 'CocoIndex Examples',
+  description,
+  url: canonical,
+  inLanguage: 'en',
+  isPartOf: { '@type': 'WebSite', name: 'CocoIndex Docs', url: new URL(`${base}/`, SITE_URL).toString() },
+  mainEntity: {
+    '@type': 'ItemList',
+    numberOfItems: examples.length,
+    itemListElement: examples.map((e, i) => ({
+      '@type': 'ListItem',
+      position: i + 1,
+      name: titleText(e.title),
+      description: e.description,
+      url: new URL(`${base}/examples/${e.slug}/`, SITE_URL).toString(),
+    })),
+  },
+};
+const breadcrumbLd = {
+  '@context': 'https://schema.org',
+  '@type': 'BreadcrumbList',
+  itemListElement: [
+    { '@type': 'ListItem', position: 1, name: 'Docs', item: new URL(`${base}/`, SITE_URL).toString() },
+    { '@type': 'ListItem', position: 2, name: 'Examples', item: canonical },
+  ],
+};
 ---
 <!doctype html>
 <html lang="en">
@@ -66,6 +107,26 @@ const canonical = new URL(`${base}/examples`, SITE_URL).toString();
     <title>{fullTitle}</title>
     <meta name="description" content={description} />
     <link rel="canonical" href={canonical} />
+
+    <!-- Open Graph / Twitter — link previews on social, Slack, iMessage, etc. -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="CocoIndex Docs" />
+    <meta property="og:title" content={fullTitle} />
+    <meta property="og:description" content={description} />
+    <meta property="og:url" content={canonical} />
+    <meta property="og:image" content={ogImage} />
+    <meta property="og:image:width" content={OG_IMAGE_WIDTH} />
+    <meta property="og:image:height" content={OG_IMAGE_HEIGHT} />
+    <meta property="og:image:alt" content={OG_IMAGE_EXAMPLES_ALT} />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={fullTitle} />
+    <meta name="twitter:description" content={description} />
+    <meta name="twitter:image" content={ogImage} />
+
+    <!-- Structured data for search engines and agents. -->
+    <script type="application/ld+json" set:html={JSON.stringify(collectionLd)} />
+    <script type="application/ld+json" set:html={JSON.stringify(breadcrumbLd)} />
+
     <link rel="icon" href={`${base}/img/favicon.ico`} />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -85,22 +146,22 @@ const canonical = new URL(`${base}/examples`, SITE_URL).toString();
           <span class="eyb"><span class="dot" aria-hidden="true"></span>{total} live examples · updated weekly</span>
           <div class="stats">
             <span><b>{total}</b> examples</span>
-            <span><b>9</b> sources</span>
-            <span><b>6</b> targets</span>
-            <span><b>5</b> LLM providers</span>
+            <span><b>{SIDEBAR_SOURCES.length}</b> sources</span>
+            <span><b>{SIDEBAR_TARGETS.length}</b> targets</span>
+            <span><b>{SIDEBAR_LLMS.length}</b> LLM providers</span>
           </div>
         </div>
 
         <div class="hero-grid">
           <div>
-            <h1 class="hero-h">Examples<em>.</em></h1>
+            <h1 class="hero-h">Examples</h1>
             <p class="hero-sub">
               Real pipelines you can <b>clone, run, and bend</b> to your data. Each example is production-wired — one source, a declarative flow, a live target. Pick the one closest to what you need and change the parts that don't fit.
             </p>
 
             <div class="hero-filters" id="filters">
               <button class="filter-chip on" data-filter="all">All <span class="cnt">{total}</span></button>
-              {CAT_ORDER.map((c) => (
+              {activeCats.map((c) => (
                 <button class="filter-chip" data-filter={c}>
                   {CATEGORY_META[c].label}{CATEGORY_META[c].em ?? ''} <span class="cnt">{catCount(c)}</span>
                 </button>
@@ -120,7 +181,7 @@ const canonical = new URL(`${base}/examples`, SITE_URL).toString();
           </div>
           <ol id="sideList">
             <li data-target="section.feat"><a href="#feat-scroll" data-cat="featured"><span class="cat-dot"></span>Featured<span class="count">★</span></a></li>
-            {CAT_ORDER.map((c) => (
+            {activeCats.map((c) => (
               <li data-target={`#cat-${c}`}>
                 <a href={`#cat-${c}`} data-cat={c}>
                   <span class="cat-dot"></span>
@@ -158,7 +219,7 @@ const canonical = new URL(`${base}/examples`, SITE_URL).toString();
           <div class="side-group">
             <h6>Resources</h6>
             <div class="links">
-              <a href={`${GITHUB_REPO}/tree/v1/examples`}>↗ Source on GitHub</a>
+              <a href={`${GITHUB_REPO}/tree/main/examples`}>↗ Source on GitHub</a>
               <a href={base || '/'}>↗ Documentation</a>
               <a href={DISCORD_URL}>↗ Discord</a>
             </div>
@@ -743,5 +804,8 @@ const canonical = new URL(`${base}/examples`, SITE_URL).toString();
         body.ex-listing .doc { padding-top: 16px; }
       }
     </style>
+    <Foot />
+    <Analytics />
+    <ScarfPixel pxid={SCARF_PIXEL_ID} />
   </body>
 </html>

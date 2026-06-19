@@ -46,6 +46,7 @@ from cocoindex._internal.live_component import (
     LiveStream,
     ReadyAwaitable,
 )
+from cocoindex.connectorkits import SingleWatcherGuard
 from cocoindex.resources import file
 
 _logger = logging.getLogger(__name__)
@@ -55,8 +56,13 @@ _OBJECT_EVENT_PREFIX = "com.oraclecloud.objectstorage."
 # Wall-clock tolerance for the event-time cutoff. Events with eventTime older
 # than this window before _LiveOCIItems.watch() starts are dropped — the scan
 # is authoritative for their state. Hardcoded; promote to a kwarg only if a
-# concrete need emerges (per CLAUDE.md "Minimize API surface").
+# concrete need emerges (per AGENTS.md "Minimize API surface").
 _SKEW_TOLERANCE = timedelta(seconds=5)
+
+# Committed-state key under which the live view records the user-declared
+# ``logic_version`` after a successful full scan. Read back on a later run to
+# decide whether the startup scan can be skipped. See ``list_objects``.
+_SCAN_VERSION_KEY = "__coco_oci_scan_version__"
 
 
 def _parse_event_time(s: Any) -> datetime | None:
@@ -258,6 +264,7 @@ class OCIWalker:
     _path_matcher: file.FilePathMatcher
     _max_file_size: int | None
     _live_stream: LiveStream[bytes] | None
+    _logic_version: str | None
 
     def __init__(
         self,
@@ -269,6 +276,7 @@ class OCIWalker:
         path_matcher: file.FilePathMatcher | None = None,
         max_file_size: int | None = None,
         live_stream: LiveStream[bytes] | None = None,
+        logic_version: str | None = None,
     ) -> None:
         self._client = client
         self._namespace = namespace
@@ -277,6 +285,7 @@ class OCIWalker:
         self._path_matcher = path_matcher or file.MatchAllFilePathMatcher()
         self._max_file_size = max_file_size
         self._live_stream = live_stream
+        self._logic_version = logic_version
 
     @property
     def namespace(self) -> str:
@@ -370,13 +379,21 @@ class _LiveOCIItems:
     5. Set ``adapter.mark_ready_complete()`` — unblocks any post-cutoff
        ``send()`` calls parked on ``_ready_complete``.
     6. Await the stream task; it runs until cancellation.
+
+    Skip-scan mode (opt-in via ``OCIWalker(logic_version=...)``): when a prior
+    run committed the same ``logic_version``, steps 1+3 are replaced — the scan
+    is skipped and ``cutoff`` is ``None`` so the durable stream's replayed
+    backlog (resumed from its committed cursor) is processed rather than
+    dropped. The committed version is (re)written after step 4 on any run that
+    actually scans.
     """
 
-    __slots__ = ("_walker", "_live_stream")
+    __slots__ = ("_walker", "_live_stream", "_watch_guard")
 
     def __init__(self, walker: OCIWalker, live_stream: LiveStream[bytes]) -> None:
         self._walker = walker
         self._live_stream = live_stream
+        self._watch_guard = SingleWatcherGuard("OCI Object Storage live view")
 
     def __aiter__(self) -> AsyncIterator[tuple[str, OCIFile]]:
         return self._aiter_impl()
@@ -386,12 +403,32 @@ class _LiveOCIItems:
             yield pair
 
     async def watch(self, subscriber: LiveMapSubscriber[str, OCIFile]) -> None:
-        cutoff = datetime.now(timezone.utc) - _SKEW_TOLERANCE
+        """Deliver an initial scan then live bucket changes to the subscriber."""
+        with self._watch_guard:
+            await self._watch(subscriber)
+
+    async def _watch(self, subscriber: LiveMapSubscriber[str, OCIFile]) -> None:
+        logic_version = self._walker._logic_version
+        skip_scan = False
+        if logic_version is not None:
+            stored = await subscriber.read_committed_state(_SCAN_VERSION_KEY)
+            skip_scan = stored == logic_version
+
+        # With no scan, the wall-clock cutoff must not fire: the durable stream
+        # (resumed from its committed cursor) replays the downtime backlog, and
+        # there is no scan covering it. With a scan, the cutoff dedupes
+        # stream-vs-scan as before.
+        cutoff = None if skip_scan else datetime.now(timezone.utc) - _SKEW_TOLERANCE
         adapter = _OCIStreamSubscriber(self._walker, subscriber, cutoff)
         stream_task = asyncio.create_task(self._live_stream.watch(adapter))
         try:
-            await subscriber.update_all()
+            if not skip_scan:
+                await subscriber.update_all()
             await subscriber.mark_ready()
+            # Record the version only after mark_ready (the scan has committed),
+            # so a later run skips only when the bootstrap durably landed.
+            if not skip_scan and logic_version is not None:
+                await subscriber.write_committed_state(_SCAN_VERSION_KEY, logic_version)
             adapter.mark_ready_complete()
             await stream_task
         finally:
@@ -415,7 +452,8 @@ class _OCIStreamSubscriber:
     3. Namespace + bucket filter (cross-bucket events on a shared topic).
     4. **Event-time cutoff.** ``event_time < self._cutoff`` → drop (the scan
        covers this state). Missing / unparseable / future-dated events fall
-       through to be processed.
+       through to be processed. Disabled entirely when ``cutoff is None``
+       (skip-scan mode): the replayed backlog is processed, not dropped.
     5. Prefix + path-matcher filter.
     6. **Block on ``self._ready_complete``** — ensures dispatch happens
        strictly after both the scan's ``update_full`` has committed and
@@ -437,7 +475,7 @@ class _OCIStreamSubscriber:
         self,
         walker: OCIWalker,
         map_sub: LiveMapSubscriber[str, OCIFile],
-        cutoff: datetime,
+        cutoff: datetime | None,
     ) -> None:
         self._walker = walker
         self._map_sub = map_sub
@@ -484,9 +522,12 @@ class _OCIStreamSubscriber:
             return _IMMEDIATE_READY
 
         # Event-time cutoff. Missing / unparseable / future-dated → fall through.
-        event_time = _parse_event_time(event_time_raw)
-        if event_time is not None and event_time < self._cutoff:
-            return _IMMEDIATE_READY
+        # In skip-scan mode (cutoff is None) the cutoff is disabled entirely so
+        # the replayed downtime backlog is processed instead of dropped.
+        if self._cutoff is not None:
+            event_time = _parse_event_time(event_time_raw)
+            if event_time is not None and event_time < self._cutoff:
+                return _IMMEDIATE_READY
 
         # Prefix + path-matcher filter
         prefix = self._walker._prefix
@@ -605,6 +646,7 @@ def list_objects(
     path_matcher: file.FilePathMatcher | None = None,
     max_file_size: int | None = None,
     live_stream: LiveStream[bytes] | None = None,
+    logic_version: str | None = None,
 ) -> OCIWalker:
     """List objects in an OCI bucket and yield file entries.
 
@@ -624,6 +666,15 @@ def list_objects(
             path, after prefix stripping).
         max_file_size: Skip objects larger than this size in bytes.
         live_stream: Optional ``LiveStream[bytes]`` of OCI Object Storage events.
+        logic_version: Opt into skipping the startup full scan on reruns. When
+            set, the live view records this version after a successful scan and,
+            on a later run, skips the scan if the recorded version matches —
+            relying on the durable stream to replay the downtime backlog from
+            its committed cursor. You MUST bump this whenever your processing
+            logic changes (otherwise stale state is silently kept), and the
+            stream MUST be durable (e.g. a Kafka consumer with a stable
+            ``group_id`` and committed offsets). Leave unset (``None``) to always
+            scan on startup.
     """
     return OCIWalker(
         client,
@@ -633,4 +684,5 @@ def list_objects(
         path_matcher=path_matcher,
         max_file_size=max_file_size,
         live_stream=live_stream,
+        logic_version=logic_version,
     )

@@ -148,7 +148,7 @@ directly from its database without loading the module.
 **Usage:**
 
 ```bash
-cocoindex show [OPTIONS] [APP_TARGET]
+cocoindex show [OPTIONS] [APP_TARGET] [STABLE_PATH]
 ```
 
 **Options:**
@@ -158,6 +158,9 @@ cocoindex show [OPTIONS] [APP_TARGET]
 | `--db TEXT` | Path to database (used with --app-name when APP_TARGET is not specified). |
 | `--app-name TEXT` | App name to inspect (used with --db when APP_TARGET is not specified). |
 | `--tree` | Display stable paths as a tree with component annotations. |
+| `-l, --long` | Display detailed information in multi-line format. |
+| `-r, --recursive` | Show all children recursively (requires stable_path). |
+| `-p, --parents` | Show all parent paths (requires stable_path). |
 | `--help` | Show this message and exit. |
 
 ---
@@ -185,6 +188,7 @@ cocoindex update [OPTIONS] APP_TARGET
 | `--reset` | Drop existing setup before updating (equivalent to running 'cocoindex drop' first). |
 | `--full-reprocess` | Reprocess everything and invalidate existing caches. |
 | `-L, --live` | Run in live mode (live components continue processing after initial update). |
+| `--preview` | Compute target actions without applying them. Prints planned actions. |
 | `--help` | Show this message and exit. |
 
 ---

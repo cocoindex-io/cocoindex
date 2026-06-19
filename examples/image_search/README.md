@@ -13,12 +13,6 @@ We appreciate a star ⭐ at [CocoIndex Github](https://github.com/cocoindex-io/c
 - Qdrant for vector storage
 
 ## Setup
-- A running Postgres. If you don't have one, start a local instance with the compose file in this repo:
-
-  ```sh
-  docker compose -f ../../dev/postgres.yaml up -d
-  ```
-
 - Make sure Qdrant is running
 
   ```sh
@@ -55,3 +49,13 @@ Then open `http://localhost:5173`.
 
 - `pipeline.py` — defines the CocoIndex `app`, the CLIP embedder helpers, and a small `_qdrant_search` shim. Library only — not an entry point.
 - `api.py` — FastAPI server. Imports `pipeline`, runs `pipeline.app.update(live=True)` in the background, and exposes `/search`.
+
+## Environment
+
+Copy `.env.example` to `.env` and fill in the blanks — it is loaded automatically when you run the example:
+
+```sh
+cp .env.example .env
+```
+
+Requires a running Qdrant (`QDRANT_URL`, default `http://localhost:6334/`).

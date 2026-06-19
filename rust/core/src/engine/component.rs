@@ -7,11 +7,11 @@ use std::sync::Weak;
 use crate::engine::context::FnCallContext;
 use crate::engine::context::{
     AppContext, ComponentDeleteContext, ComponentProcessingAction, ComponentProcessingMode,
-    ComponentProcessorContext, MemoStatesPayload,
+    ComponentProcessorContext, MemoStatesPayload, PreviewActionCollector,
 };
 use crate::engine::execution::{
-    cleanup_tombstone, post_submit_for_build, submit, update_component_memo_states,
-    use_or_invalidate_component_memoization,
+    cleanup_tombstone, eager_existence_upsert, post_submit_for_build, submit,
+    update_component_memo_states, use_or_invalidate_component_memoization,
 };
 use crate::engine::profile::EngineProfile;
 use crate::engine::stats::ProcessingStats;
@@ -246,11 +246,18 @@ impl Drop for ComponentBgChildReadinessChildGuard {
 }
 
 impl ComponentBgChildReadinessChildGuard {
-    pub(crate) fn resolve(mut self, outcome: ComponentRunOutcome) {
+    pub(crate) fn resolve(self, outcome: ComponentRunOutcome) {
+        self.resolve_result(Ok(outcome));
+    }
+
+    /// Like `resolve`, but propagates a full `SharedResult`: `Ok` merges the
+    /// outcome (logic deps), `Err` fails the enclosing readiness. Used by a
+    /// `StatsGroup` to forward its members' aggregate readiness to its parent.
+    pub(crate) fn resolve_result(mut self, result: SharedResult<ComponentRunOutcome>) {
         {
             let mut state = self.readiness.state().lock().unwrap();
             state.remaining_count -= 1;
-            state.maybe_set_readiness(Some(Ok(outcome)), self.readiness.readiness());
+            state.maybe_set_readiness(Some(result), self.readiness.readiness());
         }
         self.resolved = true;
     }
@@ -293,6 +300,131 @@ impl ComponentBgChildReadiness {
         let mut state = self.state().lock().unwrap();
         state.build_done = true;
         state.maybe_set_readiness(None, self.readiness());
+    }
+}
+
+/// "Is any member still active?" — pops dead `Weak`s off the back until the
+/// first live one (or empty). Each entry is removed at most once over the
+/// collection's lifetime ⇒ amortized O(1) per inserted member, no full scan.
+/// Used by [`StatsGroup`] for live-mode termination (the group's unkeyed,
+/// drop-hookless analogue of `active_children`).
+fn any_active<T>(members: &mut Vec<Weak<T>>) -> bool {
+    while let Some(last) = members.last() {
+        if last.strong_count() > 0 {
+            return true;
+        }
+        members.pop();
+    }
+    false
+}
+
+/// A named, separate stats aggregation scope created by `coco.stats_group(...)`.
+/// Components mounted within the scope report into `stats` (split out of the
+/// enclosing aggregate), register their initial readiness into `readiness`, and
+/// are tracked for liveness in `active_members`. Shared (`Arc`) between the
+/// substituted context view (which pushes members) and the spawned
+/// group-lifecycle task (which awaits readiness and polls liveness).
+pub(crate) struct StatsGroup<Prof: EngineProfile> {
+    stats: ProcessingStats,
+    readiness: ComponentBgChildReadiness,
+    active_members: parking_lot::Mutex<Vec<Weak<ComponentInner<Prof>>>>,
+}
+
+impl<Prof: EngineProfile> StatsGroup<Prof> {
+    pub(crate) fn new() -> Self {
+        Self {
+            stats: ProcessingStats::new(),
+            readiness: ComponentBgChildReadiness::default(),
+            active_members: parking_lot::Mutex::new(Vec::new()),
+        }
+    }
+
+    pub(crate) fn stats(&self) -> &ProcessingStats {
+        &self.stats
+    }
+
+    pub(crate) fn readiness(&self) -> &ComponentBgChildReadiness {
+        &self.readiness
+    }
+
+    /// Register a direct member's `ComponentInner` for liveness tracking.
+    pub(crate) fn push_member(&self, child: &Component<Prof>) {
+        self.active_members.lock().push(child.downgrade_inner());
+    }
+
+    /// True while any member (or anything in its subtree, via the strong
+    /// parent-chain) is still alive. Prunes dead entries as it scans.
+    pub(crate) fn any_active(&self) -> bool {
+        any_active(&mut self.active_members.lock())
+    }
+}
+
+impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
+    /// Open a stats group rooted at this context. Returns a derived context view
+    /// (whose mounts report into the group and register liveness with it) and
+    /// the group's `ProcessingStats` (for the Python handle / watch).
+    ///
+    /// Spawns the group-lifecycle task, which mirrors the root's
+    /// `notify_ready → wait_until_inactive → notify_terminated` flow but resolves
+    /// the parent-readiness guard at READY (not at termination) so a live member
+    /// can never deadlock the enclosing component's initial readiness.
+    pub fn begin_stats_group(
+        &self,
+        title: String,
+        report_to_stdout: bool,
+        refresh_interval_secs: Option<f64>,
+    ) -> (ComponentProcessorContext<Prof>, ProcessingStats) {
+        let group = Arc::new(StatsGroup::new());
+        let group_stats = group.stats().clone();
+
+        // The group counts as one pending child of the enclosing readiness, so
+        // the parent component (or outer group) waits for it as a unit.
+        let parent_guard = self.components_readiness().clone().add_child();
+
+        let cancel_token = self.app_ctx().cancellation_token();
+        let live = self.live();
+        let lifecycle_group = group.clone();
+        get_runtime().spawn(async move {
+            // Fires once registration is closed (`set_build_done` via
+            // `end_stats_group`) AND every member reached initial readiness.
+            let outcome = lifecycle_group.readiness().readiness().wait().await.clone();
+            lifecycle_group.stats().notify_ready();
+            // Propagate readiness/logic-deps upward AT READY — decoupled from
+            // termination, matching the root (app.rs).
+            parent_guard.resolve_result(outcome);
+
+            if live && !cancel_token.is_cancelled() {
+                // Cancel-aware inactivity poll, scoped to this group's members
+                // (the group's analogue of `wait_until_inactive`).
+                let mut delay = std::time::Duration::from_millis(1);
+                let max_delay = std::time::Duration::from_secs(10);
+                while lifecycle_group.any_active() {
+                    tokio::select! {
+                        () = tokio::time::sleep(delay) => {}
+                        () = cancel_token.cancelled() => break,
+                    }
+                    delay = (delay * 2).min(max_delay);
+                }
+            }
+            lifecycle_group.stats().notify_terminated();
+        });
+
+        if report_to_stdout {
+            crate::engine::progress_display::spawn_group_plain_report(
+                group_stats.clone(),
+                title,
+                live,
+                refresh_interval_secs,
+            );
+        }
+
+        (self.with_stats_group(&group), group_stats)
+    }
+
+    /// Close the group opened by `begin_stats_group` for member registration.
+    /// Non-blocking — readiness then resolves once the members finish.
+    pub fn end_stats_group(&self) {
+        self.components_readiness().set_build_done();
     }
 }
 
@@ -391,6 +523,7 @@ impl<Prof: EngineProfile> Component<Prof> {
             parent_ctx.processing_stats().clone(),
             parent_ctx.full_reprocess(),
             parent_ctx.live(), // use_mount inherits live from parent
+            parent_ctx.preview_collector().cloned(),
             parent_ctx.host_ctx().clone(),
             // No build-mode on_error: use_mount is foreground; failures
             // propagate as `Err` to the awaiting parent via `.result()`.
@@ -419,6 +552,7 @@ impl<Prof: EngineProfile> Component<Prof> {
             parent_ctx.processing_stats().clone(),
             parent_ctx.full_reprocess(),
             parent_ctx.live(), // mount inherits live from parent
+            parent_ctx.preview_collector().cloned(),
             parent_ctx.host_ctx().clone(),
             on_error.clone(),
         )?;
@@ -448,6 +582,12 @@ impl<Prof: EngineProfile> Component<Prof> {
 
     pub fn stable_path(&self) -> &StablePath {
         &self.inner.stable_path
+    }
+
+    /// A `Weak` to this component's inner, for liveness tracking by a
+    /// [`StatsGroup`] (alive iff this component or any descendant is alive).
+    fn downgrade_inner(&self) -> Weak<ComponentInner<Prof>> {
+        Arc::downgrade(&self.inner)
     }
 
     pub fn set_live_state(
@@ -790,16 +930,30 @@ impl<Prof: EngineProfile> Component<Prof> {
         let result = {
             let reported_processor_name = &mut reported_processor_name;
             async move {
-                // Acquire the semaphore to ensure `process()` and `commit_effects()` cannot happen in parallel.
-                let ret_n_submit_output = {
+                // Acquire the semaphore to ensure `process()` and `submit()` cannot overlap
+                // with another execution of the same component.
+                let (ret, submit_output, children_outcome) = {
                     let _permit = self.inner.build_semaphore.acquire().await?;
 
-                    // Eagerly load all function-memo entries for this component
-                    // into the per-build cache, so every subsequent fn-call probe
-                    // serves from memory. Skipped under `full_reprocess` and in
-                    // delete mode (no `ComponentBuildingState`); see the cache
-                    // flush logic for how those cases are handled at commit time.
-                    processor_context.prefetch_fn_memos().await?;
+                    // Build mode only: write the component's own existence bit
+                    // (and ancestor chain) into the parent in its own txn,
+                    // before the user processor runs. Maintains the invariant
+                    // that existence ⊇ tracked state and eliminates the
+                    // dual-writer conflict with the parent's commit-time
+                    // existence reconciliation. See `internal_states.md` §3.1.
+                    if processor_context.mode() == ComponentProcessingMode::Build
+                        && !processor_context.preview()
+                    {
+                        eager_existence_upsert(processor_context).await?;
+                    }
+
+                    // Eagerly load all function-memo and user-state entries for
+                    // this component into the per-build cache (one read txn), so
+                    // every subsequent fn-call probe and `use_state` serves from
+                    // memory. Skipped under `full_reprocess` and in delete mode
+                    // (no `ComponentBuildingState`); see the cache flush logic
+                    // for how those cases are handled at commit time.
+                    processor_context.prefetch_states().await?;
 
                     if memo_fp_to_store.is_some() {
                         *self.inner.last_memo_fp.lock().unwrap() = memo_fp_to_store;
@@ -817,38 +971,35 @@ impl<Prof: EngineProfile> Component<Prof> {
                             .map(Some),
                         None => Ok(None),
                     };
-                    match ret {
-                        Ok(ret) => {
-                            let submit_output = submit(processor_context, processor, |name| {
-                                if reported_processor_name.is_none() {
-                                    processing_stats.update(&name, |stats| {
-                                        stats.num_execution_starts += 1;
-                                    });
-                                    *reported_processor_name = Some(Cow::Owned(name.to_string()));
-                                }
-                            })
-                            .await?;
-                            Ok((ret, submit_output))
+
+                    // Wait until children components ready before submitting this
+                    // component's target states and child-existence reconciliation.
+                    let components_readiness = processor_context.components_readiness();
+                    components_readiness.set_build_done();
+                    let mut children_outcome = components_readiness
+                        .readiness()
+                        .wait()
+                        .await
+                        .clone()
+                        .into_result()?;
+
+                    // Merge children's logic deps into this component's context before
+                    // post-submit memoization stores this component's dependency set.
+                    processor_context
+                        .merge_logic_deps(std::mem::take(&mut children_outcome.logic_deps));
+
+                    let ret = ret?;
+                    let submit_output = submit(processor_context, processor, |name| {
+                        if reported_processor_name.is_none() {
+                            processing_stats.update(&name, |stats| {
+                                stats.num_execution_starts += 1;
+                            });
+                            *reported_processor_name = Some(Cow::Owned(name.to_string()));
                         }
-                        Err(err) => Err(err),
-                    }
-                };
-
-                // Wait until children components ready.
-                let components_readiness = processor_context.components_readiness();
-                components_readiness.set_build_done();
-                let mut children_outcome = components_readiness
-                    .readiness()
-                    .wait()
-                    .await
-                    .clone()
-                    .into_result()?;
-
-                // Merge children's logic deps into this component's context.
-                processor_context
-                    .merge_logic_deps(std::mem::take(&mut children_outcome.logic_deps));
-
-                let (ret, submit_output) = ret_n_submit_output?;
+                    })
+                    .await?;
+                    Ok::<_, Error>((ret, submit_output, children_outcome))
+                }?;
                 let build_output = match ret {
                     Some(ret) => {
                         if !children_outcome.has_exception {
@@ -970,6 +1121,7 @@ impl<Prof: EngineProfile> Component<Prof> {
         processing_stats: ProcessingStats,
         full_reprocess: bool,
         live: bool,
+        preview_collector: Option<PreviewActionCollector<Prof>>,
         host_ctx: Arc<Prof::HostCtx>,
         on_error: Option<OnError>,
     ) -> Result<ComponentProcessorContext<Prof>> {
@@ -1002,7 +1154,13 @@ impl<Prof: EngineProfile> Component<Prof> {
             parent_ctx.cloned(),
             processing_stats,
             host_ctx,
-            ComponentProcessingAction::new_build(providers, full_reprocess, live, on_error),
+            ComponentProcessingAction::new_build(
+                providers,
+                full_reprocess,
+                live,
+                on_error,
+                preview_collector,
+            ),
         ))
     }
 
@@ -1024,5 +1182,37 @@ impl<Prof: EngineProfile> Component<Prof> {
                 on_error,
             }),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::any_active;
+    use std::sync::{Arc, Weak};
+
+    #[test]
+    fn test_any_active_pop_prune() {
+        // Empty → inactive.
+        let mut members: Vec<Weak<()>> = Vec::new();
+        assert!(!any_active(&mut members));
+
+        // One live entry → active, not pruned.
+        let live = Arc::new(());
+        members.push(Arc::downgrade(&live));
+        assert!(any_active(&mut members));
+        assert_eq!(members.len(), 1);
+
+        // Trailing dead entries are popped off the back until the first live
+        // one; the live entry at the front is preserved.
+        let dead = Arc::new(());
+        members.push(Arc::downgrade(&dead));
+        drop(dead);
+        assert!(any_active(&mut members)); // pops the dead tail, finds `live`
+        assert_eq!(members.len(), 1);
+
+        // All dead → inactive and emptied.
+        drop(live);
+        assert!(!any_active(&mut members));
+        assert!(members.is_empty());
     }
 }
