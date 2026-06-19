@@ -64,6 +64,12 @@ _RowValue = dict[str, Any]  # Column name -> value
 _RowFingerprint = bytes
 ValueEncoder = Callable[[Any], Any]
 
+# Prefix for physical LanceDB index names to avoid cross-type collisions
+# (vector_index and fts_index are separate CocoIndex attachment providers
+# sharing the same per-table LanceDB index namespace).
+_VECTOR_INDEX_NAME_PREFIX = "coco_idx_vector_"
+_FTS_INDEX_NAME_PREFIX = "coco_idx_fts_"
+
 
 class LanceType(NamedTuple):
     """
@@ -591,15 +597,12 @@ class _VectorIndexHandler:
     ) -> None:
         table = await self._conn.open_table(self._table_name)
         for action in actions:
+            physical_name = f"{_VECTOR_INDEX_NAME_PREFIX}{action.name}"
             if action.spec is None:
-                # LanceDB does not expose a first-class "drop index" API on AsyncTable;
-                # we silently skip — the index will cease to exist after the table is
-                # dropped/recreated by the table-level handler if the spec changes.
-                _logger.debug(
-                    "LanceDB vector index %s on table %s: no-op delete (not supported)",
-                    action.name,
-                    self._table_name,
-                )
+                try:
+                    await table.drop_index(physical_name)
+                except Exception:
+                    pass
             else:
                 spec = action.spec
                 if spec.index_type == "ivf_pq":
@@ -630,6 +633,7 @@ class _VectorIndexHandler:
                 await table.create_index(
                     spec.column,
                     config=index_config,
+                    name=physical_name,
                     replace=True,
                 )
 
@@ -702,12 +706,12 @@ class _FtsIndexHandler:
     ) -> None:
         table = await self._conn.open_table(self._table_name)
         for action in actions:
+            physical_name = f"{_FTS_INDEX_NAME_PREFIX}{action.name}"
             if action.spec is None:
-                _logger.debug(
-                    "LanceDB FTS index %s on table %s: no-op delete (not supported)",
-                    action.name,
-                    self._table_name,
-                )
+                try:
+                    await table.drop_index(physical_name)
+                except Exception:
+                    pass
             else:
                 spec = action.spec
                 fts_config = lancedb_index.FTS(
@@ -717,6 +721,7 @@ class _FtsIndexHandler:
                 await table.create_index(
                     spec.column,
                     config=fts_config,
+                    name=physical_name,
                     replace=True,
                 )
 

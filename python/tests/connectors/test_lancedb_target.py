@@ -994,3 +994,161 @@ async def test_execute_deletes_with_real_lancedb(lancedb_dir: Path) -> None:
     # Verify only the quoted-PK row was deleted
     rows = await _read_rows(conn, table_name)
     assert rows == [{"id": "normal", "name": "Bob"}]
+
+
+# =============================================================================
+# Index lifecycle tests (create -> delete)
+# =============================================================================
+
+
+@requires_lancedb
+def test_physical_index_name_prefixes_avoid_collision() -> None:
+    """Physical LanceDB index names are namespaced by attachment type."""
+    assert _target._VECTOR_INDEX_NAME_PREFIX == "coco_idx_vector_"
+    assert _target._FTS_INDEX_NAME_PREFIX == "coco_idx_fts_"
+    # Same logical name produces different physical names
+    assert _target._VECTOR_INDEX_NAME_PREFIX + "text_col" != (
+        _target._FTS_INDEX_NAME_PREFIX + "text_col"
+    )
+
+
+@pytest.mark.asyncio
+@requires_lancedb
+async def test_vector_index_lifecycle_create_then_delete(lancedb_dir: Path) -> None:
+    """Creating a vector index then removing it leaves no physical index."""
+    conn = await lancedb.connect_async(str(lancedb_dir))
+    table_name = "test_vec_lifecycle"
+    await _create_test_table_with_vectors(conn, table_name, num_rows=256)
+
+    handler = _target._VectorIndexHandler(conn=conn, table_name=table_name)
+
+    # Create
+    spec = _target._VectorIndexSpec(
+        column="embedding",
+        metric="cosine",
+        index_type="ivf_pq",
+        num_partitions=2,
+        num_sub_vectors=2,
+        num_bits=None,
+        m=None,
+        ef_construction=None,
+    )
+    create_action = _target._VectorIndexAction(name="embedding", spec=spec)
+    await handler._apply_actions(cast(Any, None), [create_action])
+    indices_after_create = await _list_indices(conn, table_name)
+    assert len(indices_after_create) >= 1, "Expected at least one index after create"
+
+    # Delete
+    delete_action = _target._VectorIndexAction(name="embedding", spec=None)
+    await handler._apply_actions(cast(Any, None), [delete_action])
+    indices_after_delete = await _list_indices(conn, table_name)
+    assert len(indices_after_delete) == 0, (
+        f"Expected no indices after delete, got: {indices_after_delete}"
+    )
+
+
+@pytest.mark.asyncio
+@requires_lancedb
+async def test_fts_index_lifecycle_create_then_delete(lancedb_dir: Path) -> None:
+    """Creating an FTS index then removing it leaves no physical index."""
+    conn = await lancedb.connect_async(str(lancedb_dir))
+    table_name = "test_fts_lifecycle"
+    await _create_test_table_with_text(conn, table_name)
+
+    handler = _target._FtsIndexHandler(conn=conn, table_name=table_name)
+
+    # Create
+    spec = _target._FtsIndexSpec(
+        column="content",
+        language="English",
+        with_position=True,
+    )
+    create_action = _target._FtsIndexAction(name="content", spec=spec)
+    await handler._apply_actions(cast(Any, None), [create_action])
+    indices_after_create = await _list_indices(conn, table_name)
+    assert len(indices_after_create) >= 1, "Expected at least one index after create"
+
+    # Delete
+    delete_action = _target._FtsIndexAction(name="content", spec=None)
+    await handler._apply_actions(cast(Any, None), [delete_action])
+    indices_after_delete = await _list_indices(conn, table_name)
+    assert len(indices_after_delete) == 0, (
+        f"Expected no indices after delete, got: {indices_after_delete}"
+    )
+
+
+@pytest.mark.asyncio
+@requires_lancedb
+async def test_vector_index_delete_no_error_if_absent(lancedb_dir: Path) -> None:
+    """Deleting a vector index that doesn't exist is a silent no-op (not an error)."""
+    conn = await lancedb.connect_async(str(lancedb_dir))
+    table_name = "test_vec_delete_absent"
+    await _create_test_table_with_vectors(conn, table_name, num_rows=256)
+
+    handler = _target._VectorIndexHandler(conn=conn, table_name=table_name)
+    delete_action = _target._VectorIndexAction(name="nonexistent", spec=None)
+    # Should not raise
+    await handler._apply_actions(cast(Any, None), [delete_action])
+
+
+@pytest.mark.asyncio
+@requires_lancedb
+async def test_fts_index_delete_no_error_if_absent(lancedb_dir: Path) -> None:
+    """Deleting an FTS index that doesn't exist is a silent no-op (not an error)."""
+    conn = await lancedb.connect_async(str(lancedb_dir))
+    table_name = "test_fts_delete_absent"
+    await _create_test_table_with_text(conn, table_name)
+
+    handler = _target._FtsIndexHandler(conn=conn, table_name=table_name)
+    delete_action = _target._FtsIndexAction(name="nonexistent", spec=None)
+    # Should not raise
+    await handler._apply_actions(cast(Any, None), [delete_action])
+
+
+@pytest.mark.asyncio
+@requires_lancedb
+async def test_vector_and_fts_indices_coexist_with_same_logical_name(
+    lancedb_dir: Path,
+) -> None:
+    """A vector index and an FTS index with the same logical name don't collide
+    because they use different physical name prefixes."""
+    conn = await lancedb.connect_async(str(lancedb_dir))
+    table_name = "test_coexist"
+    await _create_test_table_with_vectors(conn, table_name, num_rows=256)
+
+    vec_handler = _target._VectorIndexHandler(conn=conn, table_name=table_name)
+    fts_handler = _target._FtsIndexHandler(conn=conn, table_name=table_name)
+
+    vec_spec = _target._VectorIndexSpec(
+        column="embedding",
+        metric="cosine",
+        index_type="ivf_pq",
+        num_partitions=2,
+        num_sub_vectors=2,
+        num_bits=None,
+        m=None,
+        ef_construction=None,
+    )
+    fts_spec = _target._FtsIndexSpec(
+        column="content",
+        language="English",
+        with_position=True,
+    )
+
+    # Both use the same logical name "myindex"
+    await vec_handler._apply_actions(
+        cast(Any, None), [_target._VectorIndexAction(name="myindex", spec=vec_spec)]
+    )
+    await fts_handler._apply_actions(
+        cast(Any, None), [_target._FtsIndexAction(name="myindex", spec=fts_spec)]
+    )
+
+    indices = await _list_indices(conn, table_name)
+    index_names = [getattr(idx, "name", None) for idx in indices]
+    assert "coco_idx_vector_myindex" in index_names, (
+        f"Expected coco_idx_vector_myindex, got: {index_names}"
+    )
+    assert "coco_idx_fts_myindex" in index_names, (
+        f"Expected coco_idx_fts_myindex, got: {index_names}"
+    )
+    assert len(indices) == 2
