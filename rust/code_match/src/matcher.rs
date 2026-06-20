@@ -122,6 +122,13 @@ impl Pattern {
         })
     }
 
+    /// Build a [`Prefilter`](crate::Prefilter) — the pattern's required literal
+    /// content, for cheaply rejecting sources that can't match before parsing.
+    /// `min_len` drops terms shorter than this many chars (default sensibly 3).
+    pub fn prefilter(&self, min_len: usize) -> crate::Prefilter {
+        crate::Prefilter::build(&self.items, &self.cfg, min_len)
+    }
+
     pub fn matches<'s>(&self, source: &'s str) -> Vec<Match<'s>> {
         let mut parser = Parser::new();
         parser

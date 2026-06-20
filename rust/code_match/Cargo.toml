@@ -8,6 +8,8 @@ license = { workspace = true }
 [dependencies]
 cocoindex_utils = { path = "../utils" }
 regex = { workspace = true }
+regex-syntax = { workspace = true }
+aho-corasick = { workspace = true }
 
 # tree-sitter + grammars are pinned to the SAME versions as `cocoindex_ops_text`.
 # `tree-sitter` uses `links = "tree-sitter"`, so the whole workspace must resolve

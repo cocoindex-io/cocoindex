@@ -209,6 +209,10 @@ pub struct LangConfig {
     /// Compound operators normalized to single chars on both sides (e.g. `>>` ->
     /// `>` `>`). Auto-detected from the grammar.
     pub splittable: HashSet<String>,
+    /// The grammar's word-shaped anonymous symbols — its keywords (`if`, `return`,
+    /// contextual ones like TS `type`). Complement of `op_tokens` among anonymous
+    /// symbols. Used by the prefilter to exclude keywords from identifier terms.
+    pub keywords: HashSet<String>,
     /// Metavariable sigil. Default `\` (shell-safe).
     pub meta_char: char,
     /// Tokenizers for literal/identifier classes, tried at each position; the
@@ -236,10 +240,12 @@ impl LangConfig {
         let single_char = single_char_punct_tokens(&language);
         let splittable = detect_splittable(&language, &single_char);
         let op_tokens = derive_op_tokens(&language, &splittable);
+        let keywords = derive_keywords(&language);
         LangConfig {
             language,
             op_tokens,
             splittable,
+            keywords,
             meta_char: '\\',
             tokenizers,
             transitions: Vec::new(),
@@ -356,4 +362,26 @@ fn derive_op_tokens(lang: &Language, splittable: &HashSet<String>) -> Vec<String
     toks.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
     toks.dedup();
     toks
+}
+
+/// The grammar's word-shaped anonymous symbols — its keywords. These are the
+/// anonymous symbols `derive_op_tokens` *excludes* (they fail `is_punct_token`),
+/// e.g. `if`, `return`, `async`, contextual keywords like TS `type`. A pattern
+/// word in this set is a keyword, not a selective identifier, so the prefilter
+/// skips it.
+fn derive_keywords(lang: &Language) -> HashSet<String> {
+    let mut set = HashSet::new();
+    for id in 0..lang.node_kind_count() as u16 {
+        if lang.node_kind_is_named(id) {
+            continue;
+        }
+        let Some(s) = lang.node_kind_for_id(id) else {
+            continue;
+        };
+        if s.is_empty() || s == "ERROR" || is_punct_token(s) {
+            continue;
+        }
+        set.insert(s.to_string());
+    }
+    set
 }
