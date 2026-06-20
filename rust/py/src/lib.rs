@@ -132,7 +132,9 @@ fn core_module(m: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()>
     m.add_class::<code_ast::PyCodeAst>()?;
     m.add_class::<code_ast::PyCodeMatch>()?;
     m.add_class::<code_ast::PyCodePattern>()?;
+    m.add_class::<code_ast::PyFileMatch>()?;
     m.add_function(wrap_pyfunction!(code_ast::match_code, m)?)?;
+    m.add_function(wrap_pyfunction!(code_ast::index_terms, m)?)?;
 
     // Synchronization primitives
     m.add_class::<rwlock::RWLock>()?;

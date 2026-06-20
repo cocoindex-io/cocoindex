@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::ops::Range;
 
 use cocoindex_code_match::lang;
-use cocoindex_code_match::{Match, Pattern, Prefilter};
+use cocoindex_code_match::{Match, Pattern, Prefilter, index_terms_in_tree};
 use cocoindex_ops_text::prog_langs;
 use cocoindex_ops_text::split::{
     LineIndex, OutputPosition, RecursiveChunkConfig, RecursiveChunker, RecursiveSplitConfig,
@@ -218,6 +218,14 @@ impl PyCodeAst {
         Ok(chunks.iter().map(PyChunk::from_chunk).collect())
     }
 
+    /// The indexable terms of this source (identifiers + string-literal content,
+    /// ≥ `min_len`, deduped), reusing the parse — for feeding an external prefilter
+    /// index (FTS / n-grams).
+    #[pyo3(signature = (min_len=3))]
+    fn index_terms(&self, py: Python<'_>, min_len: usize) -> Vec<String> {
+        py.detach(|| index_terms_in_tree(&self.tree, &self.source, min_len))
+    }
+
     fn __repr__(&self) -> String {
         format!(
             "CodeAst(language={:?}, source_len={})",
@@ -285,8 +293,69 @@ impl PyCodePattern {
         })
     }
 
+    /// Read the file at `path`, run the prefilter, and (only if it might match)
+    /// parse + match. Returns a [`FileMatch`] with the parsed `CodeAst` and the
+    /// matches when there is at least one match, else `None` — so a rejected or
+    /// non-matching file never costs a parse beyond what the prefilter needs.
+    /// Non-UTF-8 (binary) files are skipped (`None`); other I/O errors raise.
+    fn match_file(&self, py: Python<'_>, path: String) -> PyResult<Option<PyFileMatch>> {
+        let content = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            // binary / non-text file → skip, don't error a corpus scan
+            Err(e) if e.kind() == std::io::ErrorKind::InvalidData => return Ok(None),
+            Err(e) => {
+                return Err(pyo3::exceptions::PyOSError::new_err(format!(
+                    "failed to read {path:?}: {e}"
+                )));
+            }
+        };
+        if !self.prefilter.might_match(&content) {
+            return Ok(None); // rejected without parsing
+        }
+        let ast = PyCodeAst::new(content, self.language.clone())?;
+        let raw = self.pattern.matches_in_tree(&ast.tree, &ast.source);
+        if raw.is_empty() {
+            return Ok(None);
+        }
+        let matches = {
+            let line_index = ast.line_index.get_or_init(|| LineIndex::build(&ast.source));
+            build_matches(&ast.source, line_index, raw)
+        };
+        Ok(Some(PyFileMatch {
+            path,
+            ast: Py::new(py, ast)?,
+            matches,
+        }))
+    }
+
     fn __repr__(&self) -> String {
         format!("CodePattern(language={:?})", self.language)
+    }
+}
+
+/// The result of [`CodePattern::match_file`]: the parsed AST and the matches found
+/// in one file. The file content is `file_match.ast.source`.
+#[pyclass(name = "FileMatch")]
+pub struct PyFileMatch {
+    /// The path that was matched.
+    #[pyo3(get)]
+    path: String,
+    /// The parsed `CodeAst` (reuse it to `split()` or match more patterns).
+    #[pyo3(get)]
+    ast: Py<PyCodeAst>,
+    /// The matches found.
+    #[pyo3(get)]
+    matches: Vec<PyCodeMatch>,
+}
+
+#[pymethods]
+impl PyFileMatch {
+    fn __repr__(&self) -> String {
+        format!(
+            "FileMatch(path={:?}, matches={})",
+            self.path,
+            self.matches.len()
+        )
     }
 }
 
@@ -298,6 +367,21 @@ fn same_grammar(a: &str, b: &str) -> bool {
         (Some(ca), Some(cb)) => ca.language == cb.language,
         _ => false,
     }
+}
+
+/// Extract the indexable terms of `source` (identifiers + string-literal content,
+/// ≥ `min_len`, deduped), for building an external prefilter index. One-shot; use
+/// `CodeAst.index_terms` to reuse an existing parse.
+#[pyfunction]
+#[pyo3(signature = (source, language, min_len=3))]
+pub fn index_terms(
+    py: Python<'_>,
+    source: String,
+    language: String,
+    min_len: usize,
+) -> PyResult<Vec<String>> {
+    let ast = PyCodeAst::new(source, language)?;
+    Ok(py.detach(|| index_terms_in_tree(&ast.tree, &ast.source, min_len)))
 }
 
 /// One-shot convenience: parse `source` for `language` and return all matches of

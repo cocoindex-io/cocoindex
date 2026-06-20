@@ -9,6 +9,8 @@ __all__ = [
     "CodeAst",
     "CodeMatch",
     "CodePattern",
+    "FileMatch",
+    "index_terms",
     "match_code",
 ]
 
@@ -77,6 +79,25 @@ class CodePattern:
         prefilter rejects it. Reuses this pattern's compilation across calls."""
         return [_convert_match(m, source) for m in self._cp.match_source(source)]
 
+    def match_file(self, path: str) -> "FileMatch | None":
+        """Read ``path``, prefilter, and (only if it might match) parse + match.
+
+        Returns a :class:`FileMatch` (parsed AST + matches) when there is at least
+        one match, else ``None`` — so a rejected or non-matching file never costs a
+        parse beyond what the prefilter needs. Non-UTF-8 (binary) files are skipped
+        (``None``); other I/O errors raise ``OSError``.
+        """
+        raw = self._cp.match_file(path)
+        if raw is None:
+            return None
+        ast = CodeAst._from_core(raw.ast)
+        source = ast.source
+        return FileMatch(
+            path=raw.path,
+            ast=ast,
+            matches=[_convert_match(m, source) for m in raw.matches],
+        )
+
 
 class CodeAst:
     r"""A parsed code AST: parse once, then match and/or split without re-parsing.
@@ -98,6 +119,14 @@ class CodeAst:
 
     def __init__(self, source: str, language: str) -> None:
         self._ast = _core.CodeAst(source, language)
+
+    @classmethod
+    def _from_core(cls, raw: "_core.CodeAst") -> "CodeAst":
+        """Wrap an already-parsed core AST (e.g. from ``CodePattern.match_file``)
+        without re-parsing."""
+        self = cls.__new__(cls)
+        self._ast = raw
+        return self
 
     @property
     def language(self) -> str:
@@ -145,6 +174,28 @@ class CodeAst:
         raw = self._ast.split(chunk_size, min_chunk_size, chunk_overlap)
         return [_convert_chunk(c, self._ast.source) for c in raw]
 
+    def index_terms(self, min_len: int = 3) -> list[str]:
+        """The indexable terms of this source (identifiers + string-literal content,
+        ``>= min_len`` chars, deduped), reusing the parse — for feeding an external
+        prefilter index (FTS / n-grams)."""
+        return self._ast.index_terms(min_len)
+
+
+@_dataclass(frozen=True, slots=True)
+class FileMatch:
+    """The result of :meth:`CodePattern.match_file`: the parsed AST and the matches
+    found in one file. The file content is ``file_match.ast.source``."""
+
+    path: str
+    """The path that was matched."""
+
+    ast: CodeAst
+    """The parsed AST (reuse it to ``split()`` or match more patterns)."""
+
+    matches: list[CodeMatch]
+    """The matches found (always at least one — ``match_file`` returns ``None``
+    when there are none)."""
+
 
 def match_code(pattern: str, source: str, language: str) -> list[CodeMatch]:
     r"""One-shot: parse ``source`` for ``language`` and return all matches of
@@ -152,6 +203,13 @@ def match_code(pattern: str, source: str, language: str) -> list[CodeMatch]:
     return [
         _convert_match(m, source) for m in _core.match_code(pattern, source, language)
     ]
+
+
+def index_terms(source: str, language: str, min_len: int = 3) -> list[str]:
+    """Extract the indexable terms of ``source`` (identifiers + string-literal
+    content, ``>= min_len`` chars, deduped), for building an external prefilter
+    index. One-shot; use :meth:`CodeAst.index_terms` to reuse an existing parse."""
+    return _core.index_terms(source, language, min_len)
 
 
 def _convert_match(raw: "_core.CodeMatch", source: str) -> CodeMatch:
