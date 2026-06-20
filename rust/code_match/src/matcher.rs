@@ -31,7 +31,8 @@ pub struct Capture<'s> {
 
 #[derive(Debug, Clone)]
 pub struct Match<'s> {
-    pub kind: String,
+    /// tree-sitter node kind of the matched node.
+    pub kind: &'static str,
     pub range: Range<usize>,
     pub text: &'s str,
     pub captures: HashMap<String, Capture<'s>>,
@@ -61,7 +62,8 @@ struct Span {
     end_leaf: usize, // inclusive
     start_byte: usize,
     end_byte: usize,
-    node_kind: String,
+    /// tree-sitter node kind (`Node::kind()` is `&'static str`).
+    node_kind: &'static str,
     /// `[start_leaf, end_leaf]` of each direct child that produced leaves, in
     /// order. Used only for candidates (partial child-aligned matching); empty
     /// for leaf nodes. (Carried on every span for simplicity; see §matches.)
@@ -182,7 +184,7 @@ impl Pattern {
             });
             if let Some(captures) = captures {
                 out.push(Match {
-                    kind: cand.node_kind.clone(),
+                    kind: cand.node_kind,
                     range: cand.start_byte..cand.end_byte,
                     text: &source[cand.start_byte..cand.end_byte],
                     captures,
@@ -336,7 +338,7 @@ impl Collector<'_> {
                 end_leaf: self.leaves.len() - 1,
                 start_byte: node.start_byte(),
                 end_byte: node.end_byte(),
-                node_kind: node.kind().to_string(),
+                node_kind: node.kind(),
                 child_bounds,
             });
         }
@@ -639,7 +641,7 @@ mod tests {
         let cfg = crate::lang::by_name("python").unwrap();
         let ms =
             crate::lang::testutil::matches(cfg, r"return \X", "def foo(a, b):\n    return a + b\n");
-        let kinds: Vec<&str> = ms.iter().map(|m| m.kind.as_str()).collect();
+        let kinds: Vec<&str> = ms.iter().map(|m| m.kind).collect();
         assert_eq!(ms.len(), 1, "expected one match, got kinds {kinds:?}");
         assert_eq!(ms[0].kind, "return_statement"); // the inner node, not `block`
         assert_eq!(ms[0].capture_text("X"), Some("a + b"));
