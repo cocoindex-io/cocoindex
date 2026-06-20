@@ -44,6 +44,18 @@ fn leading_trailing_tolerance() {
 }
 
 #[test]
+fn function_signature_ignores_body() {
+    // Signature-style search should match the full function declaration even
+    // though the pattern stops before the trailing body child.
+    let src = "function f() { return 1; }";
+    let ms = matches(lang::typescript(), r"function f()", src);
+    assert!(
+        ms.iter().any(|m| m.kind == "function_declaration"),
+        "should match the function declaration from its signature, got {ms:?}",
+    );
+}
+
+#[test]
 fn star_is_same_level() {
     // `\*` is same-level: `~D() \* }` requires the destructor to be the LAST
     // member — a same-level run can't leak past the class body into siblings.
@@ -52,6 +64,18 @@ fn star_is_same_level() {
     assert!(
         matches(lang::cpp(), same, "class Bar { ~Bar(); int x; };").is_empty(),
         "same-level `*` must not skip past following members",
+    );
+}
+
+#[test]
+fn star_after_cpp_destructor_does_not_absorb_next_member() {
+    // This is the concrete leak regression: after `~A()` the next `\*` is still
+    // inside the destructor declaration, so it cannot absorb `void f();`.
+    let src = "class A { ~A(); void f(); };";
+    let ms = matches(lang::cpp(), r"class \C { \* ~\C() \* }", src);
+    assert!(
+        !ms.iter().any(|m| m.kind == "class_specifier"),
+        "a single trailing `*` must not absorb following class members, got {ms:?}",
     );
 }
 
