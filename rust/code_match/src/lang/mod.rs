@@ -65,6 +65,47 @@ pub use typescript::{tsx, typescript};
 pub use xml::xml;
 pub use yaml::yaml;
 
+/// Resolve a language name to its [`LangConfig`], case-insensitively and with
+/// common aliases (`c++`, `c#`, `js`, `py`, `golang`, …). Returns `None` for a
+/// language code_match doesn't support. Used by the Python binding to map a
+/// user-supplied language string to a matcher config.
+pub fn by_name(name: &str) -> Option<crate::config::LangConfig> {
+    Some(match name.to_ascii_lowercase().as_str() {
+        "bash" | "shell" | "sh" => bash(),
+        "c" => c(),
+        "cpp" | "c++" => cpp(),
+        "csharp" | "c#" | "cs" => csharp(),
+        "cmake" => cmake(),
+        "css" => css(),
+        "elm" => elm(),
+        "fortran" | "f90" => fortran(),
+        "go" | "golang" => go(),
+        "hcl" | "terraform" | "tf" => hcl(),
+        "html" => html(),
+        "java" => java(),
+        "javascript" | "js" => javascript(),
+        "json" => json(),
+        "julia" | "jl" => julia(),
+        "kotlin" | "kt" => kotlin(),
+        "pascal" | "delphi" => pascal(),
+        "php" => php(),
+        "python" | "py" => python(),
+        "r" => r(),
+        "ruby" | "rb" => ruby(),
+        "rust" | "rs" => rust(),
+        "scala" => scala(),
+        "solidity" | "sol" => solidity(),
+        "sql" => sql(),
+        "swift" => swift(),
+        "toml" => toml(),
+        "typescript" | "ts" => typescript(),
+        "tsx" => tsx(),
+        "xml" => xml(),
+        "yaml" | "yml" => yaml(),
+        _ => return None,
+    })
+}
+
 #[cfg(test)]
 pub(crate) mod testutil {
     use crate::config::LangConfig;

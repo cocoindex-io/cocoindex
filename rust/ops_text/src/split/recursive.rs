@@ -657,7 +657,7 @@ impl RecursiveChunker {
         };
 
         let language = UniCase::new(config.language.unwrap_or_default());
-        let mut output = if let Some(lang_config) = self.custom_languages.get(&language) {
+        let output = if let Some(lang_config) = self.custom_languages.get(&language) {
             internal_chunker.split_root_chunk(ChunkKind::RegexpSepChunk {
                 lang_config,
                 next_regexp_sep_id: 0,
@@ -694,32 +694,78 @@ impl RecursiveChunker {
             })
         };
 
-        // Compute positions
-        set_output_positions(
-            text,
-            output.iter_mut().flat_map(|chunk_output| {
-                std::iter::once(&mut chunk_output.start_pos)
-                    .chain(std::iter::once(&mut chunk_output.end_pos))
-            }),
-        );
-
-        // Convert to final output
-        output
-            .into_iter()
-            .map(|chunk_output| {
-                let start = chunk_output.start_pos.output.unwrap();
-                let end = chunk_output.end_pos.output.unwrap();
-                Chunk {
-                    range: TextRange::new(
-                        chunk_output.start_pos.byte_offset,
-                        chunk_output.end_pos.byte_offset,
-                    ),
-                    start,
-                    end,
-                }
-            })
-            .collect()
+        finalize_chunks(text, output)
     }
+
+    /// Split using an already-parsed tree-sitter `tree`, reusing the parse
+    /// instead of re-parsing `text` (e.g. a tree shared with the pattern
+    /// matcher). The tree must come from the grammar for `config.language`; if
+    /// that language has no tree-sitter support the tree is ignored and the
+    /// default regex splitter is used (same fallback as `split`). Custom (regex)
+    /// languages are not consulted — a provided tree always takes the
+    /// tree-sitter path.
+    pub fn split_with_tree(
+        &self,
+        text: &str,
+        config: RecursiveChunkConfig,
+        tree: &tree_sitter::Tree,
+    ) -> Vec<Chunk> {
+        let min_chunk_size = config.min_chunk_size.unwrap_or(config.chunk_size / 2);
+        let chunk_overlap = std::cmp::min(config.chunk_overlap.unwrap_or(0), min_chunk_size);
+        let internal_chunker = InternalRecursiveChunker {
+            full_text: text,
+            chunk_size: config.chunk_size,
+            chunk_overlap,
+            min_chunk_size,
+            min_atom_chunk_size: if chunk_overlap > 0 {
+                chunk_overlap
+            } else {
+                min_chunk_size
+            },
+        };
+        let language = UniCase::new(config.language.unwrap_or_default());
+        let output = if let Some(lang_info) = prog_langs::get_language_info(&language)
+            && let Some(tree_sitter_info) = lang_info.treesitter_info.as_ref()
+        {
+            internal_chunker.split_root_chunk(ChunkKind::TreeSitterNode {
+                tree_sitter_info,
+                node: tree.root_node(),
+            })
+        } else {
+            internal_chunker.split_root_chunk(ChunkKind::RegexpSepChunk {
+                lang_config: &DEFAULT_LANGUAGE_CONFIG,
+                next_regexp_sep_id: 0,
+            })
+        };
+        finalize_chunks(text, output)
+    }
+}
+
+/// Compute line/column positions on `output` and convert to the public `Chunk`s.
+/// Shared by `split` and `split_with_tree`.
+fn finalize_chunks(text: &str, mut output: Vec<ChunkOutput>) -> Vec<Chunk> {
+    set_output_positions(
+        text,
+        output.iter_mut().flat_map(|chunk_output| {
+            std::iter::once(&mut chunk_output.start_pos)
+                .chain(std::iter::once(&mut chunk_output.end_pos))
+        }),
+    );
+    output
+        .into_iter()
+        .map(|chunk_output| {
+            let start = chunk_output.start_pos.output.unwrap();
+            let end = chunk_output.end_pos.output.unwrap();
+            Chunk {
+                range: TextRange::new(
+                    chunk_output.start_pos.byte_offset,
+                    chunk_output.end_pos.byte_offset,
+                ),
+                start,
+                end,
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]

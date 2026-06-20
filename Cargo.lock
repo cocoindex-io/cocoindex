@@ -2165,6 +2165,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "bytes",
+ "cocoindex_code_match",
  "cocoindex_core",
  "cocoindex_ops_text",
  "cocoindex_py_utils",
@@ -2175,6 +2176,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "tree-sitter",
  "uuid",
 ]
 

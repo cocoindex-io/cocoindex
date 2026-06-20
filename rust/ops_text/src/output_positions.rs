@@ -55,6 +55,26 @@ impl Position {
     }
 }
 
+/// Compute the [`OutputPosition`] (char offset, 1-based line/column) for each
+/// byte offset in `byte_offsets`, returned in the same order. Single pass over
+/// `text`. Offsets must lie on char boundaries; an offset at the end of the text
+/// is allowed. Lets callers attach positions to arbitrary ranges (e.g. pattern
+/// match ranges) exactly the way the chunk splitter does.
+pub fn output_positions_for(text: &str, byte_offsets: &[usize]) -> Vec<OutputPosition> {
+    let mut positions: Vec<Position> = byte_offsets.iter().map(|&b| Position::new(b)).collect();
+    set_output_positions(text, positions.iter_mut());
+    positions
+        .into_iter()
+        .map(|p| {
+            p.output.unwrap_or(OutputPosition {
+                char_offset: 0,
+                line: 1,
+                column: 1,
+            })
+        })
+        .collect()
+}
+
 /// Fill OutputPosition for the requested byte offsets.
 ///
 /// This function efficiently computes character offsets, line numbers, and column

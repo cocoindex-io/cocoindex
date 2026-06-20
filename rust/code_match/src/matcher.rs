@@ -15,7 +15,7 @@ use std::ops::Range;
 
 use cocoindex_utils::error::Result;
 use regex::Regex;
-use tree_sitter::{Node, Parser};
+use tree_sitter::{Node, Parser, Tree};
 
 use crate::config::LangConfig;
 use crate::lexer::{Cardinality, PatternItem, lex};
@@ -121,6 +121,16 @@ impl Pattern {
             .set_language(&self.cfg.language)
             .expect("load language");
         let tree = parser.parse(source, None).expect("parse source");
+        self.matches_in_tree(&tree, source)
+    }
+
+    /// Match against an already-parsed `tree`, so one compiled AST can be reused
+    /// across calls (e.g. shared with the chunk splitter instead of re-parsing).
+    /// The tree MUST come from the same grammar as this pattern's
+    /// [`LangConfig::language`]; tree-sitter is pinned to one version
+    /// workspace-wide, so a tree the splitter parsed for the same language is
+    /// compatible.
+    pub fn matches_in_tree<'s>(&self, tree: &Tree, source: &'s str) -> Vec<Match<'s>> {
         let idx = index_tree(tree.root_node(), source.as_bytes(), &self.cfg);
 
         // Run the DP over leaves `[start, hi)` with a fresh binding context;
@@ -571,4 +581,39 @@ fn reachable(li: usize, hi: usize, idx: &Indexed) -> Vec<usize> {
     let mut res: Vec<usize> = (0..=n).filter(|&o| reach[o]).map(|o| li + o).collect();
     res.sort_by(|a, b| b.cmp(a));
     res
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Pattern;
+    use tree_sitter::Parser;
+
+    #[test]
+    fn by_name_resolves_aliases() {
+        assert!(crate::lang::by_name("python").is_some());
+        assert!(crate::lang::by_name("PY").is_some());
+        assert!(crate::lang::by_name("c++").is_some());
+        assert!(crate::lang::by_name("nope").is_none());
+    }
+
+    /// One parse, many patterns — and `matches_in_tree` agrees with `matches`.
+    #[test]
+    fn matches_in_tree_reuses_parse() {
+        let cfg = crate::lang::by_name("python").unwrap();
+        let src = "def foo(a, b):\n    return a + b\n";
+        let mut parser = Parser::new();
+        parser.set_language(&cfg.language).unwrap();
+        let tree = parser.parse(src, None).unwrap();
+
+        let p1 = Pattern::compile(r"def \NAME(\(A*)):", &cfg).unwrap();
+        let m1 = p1.matches_in_tree(&tree, src);
+        assert_eq!(m1.iter().find_map(|m| m.capture_text("NAME")), Some("foo"));
+
+        let p2 = Pattern::compile(r"return \X + \Y", &cfg).unwrap();
+        let m2 = p2.matches_in_tree(&tree, src);
+        assert_eq!(m2.iter().find_map(|m| m.capture_text("X")), Some("a"));
+
+        // identical to the self-parsing entry point
+        assert_eq!(p1.matches_in_tree(&tree, src).len(), p1.matches(src).len());
+    }
 }
