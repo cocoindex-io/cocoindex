@@ -16,7 +16,7 @@
 use std::collections::{HashMap, HashSet};
 
 use aho_corasick::{AhoCorasick, MatchKind};
-use tree_sitter::{Node, Parser};
+use tree_sitter::{Node, Parser, Tree};
 
 use crate::config::LangConfig;
 use crate::lexer::PatternItem;
@@ -216,6 +216,13 @@ pub fn index_terms(source: &str, cfg: &LangConfig, min_len: usize) -> Vec<String
     let Some(tree) = parser.parse(source, None) else {
         return Vec::new();
     };
+    index_terms_in_tree(&tree, source, min_len)
+}
+
+/// [`index_terms`] reusing an already-parsed `tree` (which encodes the language,
+/// so no `LangConfig` is needed). `tree` must be `source`'s parse. Use this when
+/// the caller already has the AST (e.g. a `CodeAst`) to avoid re-parsing.
+pub fn index_terms_in_tree(tree: &Tree, source: &str, min_len: usize) -> Vec<String> {
     let mut out = HashSet::new();
     collect_index_terms(tree.root_node(), source.as_bytes(), min_len, &mut out);
     out.into_iter().collect()

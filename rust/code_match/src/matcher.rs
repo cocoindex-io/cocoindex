@@ -129,6 +129,22 @@ impl Pattern {
         crate::Prefilter::build(&self.items, &self.cfg, min_len)
     }
 
+    /// Match `source`, skipping the parse entirely when `prefilter` rejects it —
+    /// the point of prefiltering (the parse dominates cost at scale). `prefilter`
+    /// should be one this pattern produced; a mismatched one stays *sound* (it can
+    /// only over-accept) but may parse needlessly.
+    pub fn matches_prefiltered<'s>(
+        &self,
+        source: &'s str,
+        prefilter: &crate::Prefilter,
+    ) -> Vec<Match<'s>> {
+        if prefilter.might_match(source) {
+            self.matches(source)
+        } else {
+            Vec::new()
+        }
+    }
+
     pub fn matches<'s>(&self, source: &'s str) -> Vec<Match<'s>> {
         let mut parser = Parser::new();
         parser

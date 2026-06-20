@@ -15,7 +15,9 @@ mod prefilter;
 pub use config::{LangConfig, RegexTokenizer, TokKind, TokenRule, Tokenizer};
 pub use lexer::{Cardinality, PatternItem};
 pub use matcher::{Capture, Match, Pattern};
-pub use prefilter::{Boundary, FilterClause, FilterTerm, Prefilter, index_terms};
+pub use prefilter::{
+    Boundary, FilterClause, FilterTerm, Prefilter, index_terms, index_terms_in_tree,
+};
 
 // The crate's fallible surface uses the workspace-standard error type.
 pub use cocoindex_utils::error::{Error, Result};
