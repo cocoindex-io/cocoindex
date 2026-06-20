@@ -2,7 +2,15 @@
 
 import pytest
 
-from cocoindex.ops.code import CodeAst, CodeMatch, CodePattern, match_code
+from pathlib import Path
+
+from cocoindex.ops.code import (
+    CodeAst,
+    CodeMatch,
+    CodePattern,
+    index_terms,
+    match_code,
+)
 from cocoindex.resources.chunk import Chunk
 
 _PY_SRC = "def foo(a, b):\n    return a + b\n\ndef bar(x):\n    return x\n"
@@ -115,3 +123,39 @@ def test_code_pattern_language_mismatch_raises() -> None:
     ast = CodeAst(_PY_SRC, language="python")
     with pytest.raises(ValueError):
         ast.matches(cp)
+
+
+def test_code_pattern_match_file(tmp_path: Path) -> None:
+    cp = CodePattern(r"def \NAME(\(A*)):", language="python")
+
+    hit = tmp_path / "hit.py"
+    # newline="" so the bytes round-trip verbatim (no `\n`→`\r\n` on Windows).
+    hit.write_text(_PY_SRC, newline="")
+    fm = cp.match_file(str(hit))
+    assert fm is not None
+    assert fm.path == str(hit)
+    assert fm.ast.source == _PY_SRC  # the AST is bundled (content via ast.source)
+    assert {_cap(m, "NAME") for m in fm.matches} == {"foo", "bar"}
+    # the bundled AST is reusable without re-parsing
+    assert fm.ast.split(chunk_size=1000)
+
+    # a file with no match → None (and binary/missing handled gracefully)
+    miss = tmp_path / "miss.py"
+    miss.write_text("x = 1\n", newline="")
+    assert cp.match_file(str(miss)) is None
+
+    binary = tmp_path / "blob.bin"
+    binary.write_bytes(b"\xff\xfe\x00\x01def foo():")
+    assert cp.match_file(str(binary)) is None  # non-utf8 skipped
+
+
+def test_index_terms_free_fn_and_method() -> None:
+    src = 'def handler(req):\n    return process(req, "payload")\n'
+    want = {"handler", "req", "process", "payload"}
+    assert want <= set(index_terms(src, language="python"))
+    # the CodeAst method reuses the parse and agrees
+    ast = CodeAst(src, language="python")
+    assert sorted(ast.index_terms()) == sorted(index_terms(src, language="python"))
+    # keywords excluded
+    assert "def" not in ast.index_terms()
+    assert "return" not in ast.index_terms()
