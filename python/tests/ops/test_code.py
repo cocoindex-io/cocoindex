@@ -149,6 +149,15 @@ def test_code_pattern_match_file(tmp_path: Path) -> None:
     assert cp.match_file(str(binary)) is None  # non-utf8 skipped
 
 
+def test_comments_in_source_are_ignored() -> None:
+    # Code written inside a comment must not match; a comment is transparent to the
+    # matcher (and the bundled match path agrees).
+    src = "# bar(commented)\ndef g():\n    return bar(real)  # bar(also_commented)\n"
+    ast = CodeAst(src, language="python")
+    args = [_cap(m, "X") for m in ast.matches(r"bar(\X)")]
+    assert args == ["real"]  # the two `bar(...)` in comments do not match
+
+
 def test_index_terms_free_fn_and_method() -> None:
     src = 'def handler(req):\n    return process(req, "payload")\n'
     want = {"handler", "req", "process", "payload"}
