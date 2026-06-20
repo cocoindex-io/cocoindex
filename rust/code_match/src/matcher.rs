@@ -244,10 +244,25 @@ fn index_tree(root: Node, src: &[u8], cfg: &LangConfig) -> Indexed {
         child_end_owners[leaf].push(id);
     }
 
+    // Match candidates: drop leaf-equivalent wrappers — a named node spanning
+    // exactly the same leaves as a descendant (e.g. a Python `block` whose only
+    // child is a `return_statement`) would otherwise report the same match with
+    // only a different `kind`. Such a wrapper has a single leaf-producing child,
+    // so it can only match whole-node (never a child-run), making its match a
+    // pure duplicate of the inner one. Candidates are in post-order (innermost
+    // first), so keep the first occurrence of each leaf span. `spans_by_start`
+    // keeps *all* spans — metavar binding still needs every nesting level.
+    let mut seen_spans: HashSet<(usize, usize)> = HashSet::new();
+    let candidates: Vec<Span> = c
+        .spans
+        .into_iter()
+        .filter(|sp| seen_spans.insert((sp.start_leaf, sp.end_leaf)))
+        .collect();
+
     Indexed {
         leaves: c.leaves,
         spans_by_start,
-        candidates: c.spans,
+        candidates,
         child_start_owners,
         child_end_owners,
     }
@@ -615,5 +630,18 @@ mod tests {
 
         // identical to the self-parsing entry point
         assert_eq!(p1.matches_in_tree(&tree, src).len(), p1.matches(src).len());
+    }
+
+    /// A leaf-equivalent wrapper (a `block` whose only child is the matched
+    /// `return_statement`) must not produce a duplicate match.
+    #[test]
+    fn dedupes_leaf_equivalent_wrappers() {
+        let cfg = crate::lang::by_name("python").unwrap();
+        let ms =
+            crate::lang::testutil::matches(cfg, r"return \X", "def foo(a, b):\n    return a + b\n");
+        let kinds: Vec<&str> = ms.iter().map(|m| m.kind.as_str()).collect();
+        assert_eq!(ms.len(), 1, "expected one match, got kinds {kinds:?}");
+        assert_eq!(ms[0].kind, "return_statement"); // the inner node, not `block`
+        assert_eq!(ms[0].capture_text("X"), Some("a + b"));
     }
 }
