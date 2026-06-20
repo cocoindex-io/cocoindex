@@ -13,9 +13,10 @@
 //! literals of a regex matcher `\(:/re/)` (substring, via `regex-syntax`).
 //! Keywords, punctuation, numbers, and bare metavars contribute nothing.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use aho_corasick::{AhoCorasick, MatchKind};
+use tree_sitter::{Node, Parser};
 
 use crate::config::LangConfig;
 use crate::lexer::PatternItem;
@@ -194,6 +195,77 @@ impl Prefilter {
     pub fn clauses(&self) -> &[FilterClause] {
         &self.clauses
     }
+}
+
+/// Extract the indexable terms of a **source** file — the same content the
+/// pattern side requires (identifiers and string-literal content), as deduped
+/// word-runs (≥ `min_len`). The caller feeds these into its index (FTS tokens, or
+/// n-grams for substring/regex queries) and later queries it with the clauses from
+/// [`Pattern::prefilter`](crate::Pattern::prefilter). Use the **same `min_len`** on
+/// both sides so the index is a superset of what any pattern can ask for.
+///
+/// AST traversal (not a text scan): at index-build time you're parsing anyway, so
+/// this is category-precise — identifiers (named leaves) and string contents, with
+/// comments skipped (the matcher skips them too). Over-collecting would only ever
+/// add false positives, never false negatives.
+pub fn index_terms(source: &str, cfg: &LangConfig, min_len: usize) -> Vec<String> {
+    let mut parser = Parser::new();
+    parser
+        .set_language(&cfg.language)
+        .expect("load language for index_terms");
+    let Some(tree) = parser.parse(source, None) else {
+        return Vec::new();
+    };
+    let mut out = HashSet::new();
+    collect_index_terms(tree.root_node(), source.as_bytes(), min_len, &mut out);
+    out.into_iter().collect()
+}
+
+fn collect_index_terms(node: Node, src: &[u8], min_len: usize, out: &mut HashSet<String>) {
+    let kind = node.kind();
+    if kind.contains("comment") {
+        return; // patterns never match comment text (matcher skips them)
+    }
+    let keep = |s: &str, out: &mut HashSet<String>| {
+        if s.chars().count() >= min_len {
+            out.insert(s.to_string());
+        }
+    };
+    if is_string_like(kind) {
+        // The whole literal's word-runs (its content); don't descend into the
+        // quote/content children.
+        if let Ok(text) = node.utf8_text(src) {
+            for run in word_runs(text) {
+                keep(run, out);
+            }
+        }
+        return;
+    }
+    if node.child_count() == 0 {
+        // A named leaf that is word-shaped is an identifier (keywords are
+        // anonymous; numbers start with a digit) — the source counterpart of a
+        // pattern identifier term.
+        if node.is_named()
+            && let Ok(text) = node.utf8_text(src)
+            && text
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_alphabetic() || c == '_')
+        {
+            keep(text, out);
+        }
+        return;
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_index_terms(child, src, min_len, out);
+    }
+}
+
+/// A string/char literal node kind. Liberal on purpose: over-collecting source
+/// content into the index is sound (only adds false positives).
+fn is_string_like(kind: &str) -> bool {
+    kind.contains("string") || kind.contains("char")
 }
 
 /// A pattern `Token` is an identifier term iff it starts with an identifier char
