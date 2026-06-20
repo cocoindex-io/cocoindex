@@ -26,7 +26,7 @@ The sigil is `\` by default (shell-safe; configurable to `$` via `LangConfig::wi
 - `\NAME` — one node (named); `\_` — one node, anonymous.
 - `\(NAME*)` — a run of **same-level** sibling nodes (many); `\*` — anonymous. A cross-level skip is written as multiple `\*`, one per grammar level.
 - `\(NAME?)` — optional (zero or one node); `\?` — anonymous.
-- `\(NAME:/regex/)` — the captured source text must match the regex (unanchored; `^…$` for whole-node).
+- `\(NAME:/regex/)` — the captured source text must match the regex (unanchored; `^…$` for whole-node). The name is optional: `\(:/regex/)` constrains a node without capturing it.
 - A repeated name must capture equal text: `\X == \X` matches `a == a`, not `a == b`.
 
 Use raw strings (`r"..."`) when writing patterns in Rust so the backslashes stay literal.

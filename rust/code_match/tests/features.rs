@@ -178,6 +178,24 @@ fn regex_constrains_identifier() {
 }
 
 #[test]
+fn anonymous_regex_matcher() {
+    // `\(:/re/)` — a regex constraint with no name: filter a node without
+    // capturing it. Here the callee must match `^get`, but isn't bound.
+    let src = "getUser(1); setName(2); getId(3);";
+    let ms = matches(lang::typescript(), r"\(:/^get/)(\*)", src);
+    let callees: Vec<&str> = ms
+        .iter()
+        .filter(|m| m.kind == "call_expression")
+        .map(|m| m.text)
+        .collect();
+    assert!(callees.contains(&"getUser(1)") && callees.contains(&"getId(3)"));
+    assert!(
+        !callees.iter().any(|t| t.contains("setName")),
+        "the `^get` constraint must exclude setName, got {callees:?}",
+    );
+}
+
+#[test]
 fn regex_pins_nesting_level() {
     // Larger spans (`foo.bar`, `foo.bar(x)`) all start at `foo`; `^foo$` filters
     // the candidates down to the leaf. Exercises "every sub-layer is a candidate".

@@ -11,6 +11,7 @@
 //!   `S_` / `S(_)`   anonymous single        `S*` / `S(*)`  anonymous many
 //!   `S?` / `S(?)`   anonymous optional
 //!   `S(NAME:/re/)`  single, regex-constrained — see below
+//!   `S(:/re/)`      regex-constrained, **anonymous** (filter without capturing)
 //!   `SS`            a doubled sigil is one **literal** sigil (e.g. `\\` → `\`)
 //! `*` is **same-level** (one parent's direct siblings); a cross-level skip is
 //! written as multiple `*`, one per grammar level.
@@ -20,6 +21,7 @@
 //!
 //! Regex matcher `:/re/` constrains a **single-node** metavar: the captured
 //! source text must `is_match` (unanchored) the regex (use `^…$` for whole-node).
+//! The name is optional — `S(:/re/)` constrains a node without capturing it.
 //! Applies to `One`/`Optional`; ignored on `Many` (sibling runs, out of scope).
 //! The closing `/` is optional (`:/re`): a `/` at the matcher's top paren level
 //! closes (delimited), else the matcher's `)` closes (shorthand). Balanced `()`
