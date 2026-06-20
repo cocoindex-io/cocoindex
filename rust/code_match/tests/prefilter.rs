@@ -137,6 +137,52 @@ fn index_terms_supply_every_required_term_of_a_match() {
 }
 
 #[test]
+fn extracted_terms_match_literally_not_as_regex() {
+    // A regex matcher's extracted literal contains a `.` (escaped in the regex).
+    // `might_match` uses aho-corasick *literal* search, so the `.` matches only a
+    // literal dot — no re-interpretation of the term as a regex.
+    let pf = prefilter(r"\(:/foo\.bar/)", 3);
+    assert!(pf.might_match("x = foo.bar")); // literal `foo.bar`
+    assert!(!pf.might_match("x = fooXbar")); // `.` is literal, not "any char"
+}
+
+#[test]
+fn matches_prefiltered_skips_on_reject_and_agrees_on_accept() {
+    let pat = Pattern::compile(r"return process(\X)", &lang::python()).unwrap();
+    let pf = pat.prefilter(3);
+
+    // Accept: identical to a plain match.
+    let hit = "def f():\n    return process(x)\n";
+    assert_eq!(
+        pat.matches_prefiltered(hit, &pf).len(),
+        pat.matches(hit).len(),
+    );
+    assert_eq!(pat.matches_prefiltered(hit, &pf).len(), 1);
+
+    // Reject: `process` absent → prefilter short-circuits → empty (no parse needed).
+    let miss = "def f():\n    return other(x)\n";
+    assert!(!pf.might_match(miss));
+    assert!(pat.matches_prefiltered(miss, &pf).is_empty());
+}
+
+#[test]
+fn index_terms_in_tree_matches_the_parsing_variant() {
+    use tree_sitter::Parser;
+    let src = "def f():\n    return process(item, \"payload\")\n";
+    let cfg = lang::python();
+    let mut parser = Parser::new();
+    parser.set_language(&cfg.language).unwrap();
+    let tree = parser.parse(src, None).unwrap();
+
+    let mut a = cocoindex_code_match::index_terms_in_tree(&tree, src, 3);
+    let mut b = cocoindex_code_match::index_terms(src, &cfg, 3);
+    a.sort();
+    b.sort();
+    assert_eq!(a, b);
+    assert!(a.contains(&"process".to_string()));
+}
+
+#[test]
 fn clause_structure_is_exposed() {
     let pf = prefilter(r"foobar", 3);
     let clauses = pf.clauses();
