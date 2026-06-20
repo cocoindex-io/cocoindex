@@ -1,0 +1,248 @@
+//! Language configuration and the tokenizer framework — the abstraction the
+//! engine (`lexer`, `matcher`) consumes. This module is *not* language-specific:
+//! the per-language constructors live in `lang`, which depends on this.
+//!
+//! A language = a tree-sitter grammar + a list of **tokenizers** for the
+//! structured token classes (identifiers, numbers, strings, raw strings, …).
+//! The operator/punctuation table and the `>>`-style "splittable" set are
+//! *derived from the grammar*. Comments need no config (the source side is
+//! tree-sitter; `collect` skips comment nodes).
+
+use std::collections::HashSet;
+use std::sync::Arc;
+
+use regex::Regex;
+use tree_sitter::Language;
+
+// ---------------------------------------------------------------------------
+// Tokenizer interface
+// ---------------------------------------------------------------------------
+
+/// How a matched pattern token aligns against the source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TokKind {
+    /// Word / number / operator — matched against a single source *leaf* by text.
+    Token,
+    /// String / char / raw literal — matched against a source *node* by text.
+    Str,
+}
+
+/// A pattern tokenizer: given the input at a position, return the byte length of
+/// a token at the start, or `None`. `RegexTokenizer` covers the easy cases;
+/// hand-written impls (e.g. `lang::cpp`'s raw-string scanner) cover
+/// delimiter-balanced forms the `regex` crate can't (no backreferences).
+pub trait Tokenizer: Send + Sync {
+    fn match_len(&self, input: &str) -> Option<usize>;
+}
+
+/// A tokenizer paired with how its match should be emitted.
+#[derive(Clone)]
+pub struct TokenRule {
+    pub tokenizer: Arc<dyn Tokenizer>,
+    pub kind: TokKind,
+}
+
+impl TokenRule {
+    pub fn new(tokenizer: impl Tokenizer + 'static, kind: TokKind) -> Self {
+        TokenRule {
+            tokenizer: Arc::new(tokenizer),
+            kind,
+        }
+    }
+}
+
+/// A position-anchored regex tokenizer (the pattern is compiled with a leading `^`).
+pub struct RegexTokenizer {
+    re: Regex,
+}
+
+impl RegexTokenizer {
+    pub fn new(pat: &str) -> Self {
+        RegexTokenizer {
+            re: Regex::new(pat).expect("valid tokenizer regex"),
+        }
+    }
+}
+
+impl Tokenizer for RegexTokenizer {
+    fn match_len(&self, input: &str) -> Option<usize> {
+        // `^` anchors at the start, so a match (if any) starts at 0.
+        self.re.find(input).map(|m| m.end()).filter(|&l| l > 0)
+    }
+}
+
+/// Convenience: a regex-based rule.
+pub fn regex_rule(pat: &str, kind: TokKind) -> TokenRule {
+    TokenRule::new(RegexTokenizer::new(pat), kind)
+}
+
+// --- shared (generic) token-class builders, composed by the language modules ---
+
+/// Identifier, Unicode-aware (`XID_Start`/`XID_Continue` + leading `_`), so a
+/// pattern can contain non-ASCII identifiers (Python/JS allow them). The source
+/// side decides what's a real identifier; over-matching in the pattern is
+/// harmless (a pattern identifier the source lacks just won't match).
+pub fn identifier() -> TokenRule {
+    regex_rule(r"^[_\p{XID_Start}][_\p{XID_Continue}]*", TokKind::Token)
+}
+
+/// Number: starts with a digit or `.digit` (so `.5`, `1.`, `1.5` all work),
+/// then a run of digits/letters/`_`/`.` (covers `0xFF`, `1_000`, suffixes,
+/// fractions) — with `[eEpP][-+]` tried *first* so signed exponents (`1.5e-10`)
+/// aren't swallowed by the alnum branch. `extra` adds chars like `'` (C/C++).
+/// A leading `.` only starts a number when followed by a digit, so `a.b` member
+/// access still splits.
+pub fn number(extra: &str) -> TokenRule {
+    regex_rule(
+        &format!(r"^(?:[0-9]|\.[0-9])(?:[eEpP][-+]|[0-9A-Za-z_.{extra}])*"),
+        TokKind::Token,
+    )
+}
+
+pub fn dq_string() -> TokenRule {
+    regex_rule(r#"(?s)^"(?:\\.|[^"\\])*""#, TokKind::Str)
+}
+pub fn sq_string() -> TokenRule {
+    // also a C/C++/Rust char literal; a bare `'a` (Rust lifetime) has no closing
+    // quote so this fails and `'` falls through to the op table.
+    regex_rule(r"(?s)^'(?:\\.|[^'\\])*'", TokKind::Str)
+}
+pub fn backtick_string() -> TokenRule {
+    regex_rule(r"(?s)^`(?:\\.|[^`\\])*`", TokKind::Str)
+}
+
+/// The default tokenizer set (identifier, number, the three quote styles).
+pub fn generic_tokenizers() -> Vec<TokenRule> {
+    vec![
+        identifier(),
+        number(""),
+        dq_string(),
+        sq_string(),
+        backtick_string(),
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// LangConfig
+// ---------------------------------------------------------------------------
+
+#[derive(Clone)]
+pub struct LangConfig {
+    pub language: Language,
+    /// Anonymous punctuation/operator tokens, longest-first, excluding the
+    /// splittable compounds. Derived from the grammar; used for maximal munch.
+    pub op_tokens: Vec<String>,
+    /// Compound operators normalized to single chars on both sides (e.g. `>>` ->
+    /// `>` `>`). Auto-detected from the grammar.
+    pub splittable: HashSet<String>,
+    /// Metavariable sigil. Default `\` (shell-safe).
+    pub meta_char: char,
+    /// Tokenizers for literal/identifier classes, tried at each position; the
+    /// longest match wins.
+    pub tokenizers: Vec<TokenRule>,
+}
+
+impl LangConfig {
+    /// Build a config from a grammar with the generic tokenizers and derived
+    /// op/splittable tables. Language modules call this, then `with_tokenizers`.
+    pub fn from_grammar(language: Language) -> Self {
+        let single_char = single_char_punct_tokens(&language);
+        let splittable = detect_splittable(&language, &single_char);
+        let op_tokens = derive_op_tokens(&language, &splittable);
+        LangConfig {
+            language,
+            op_tokens,
+            splittable,
+            meta_char: '\\',
+            tokenizers: generic_tokenizers(),
+        }
+    }
+
+    /// Replace the tokenizer set (per-language literal profiles).
+    pub fn with_tokenizers(mut self, tokenizers: Vec<TokenRule>) -> Self {
+        self.tokenizers = tokenizers;
+        self
+    }
+
+    /// Override the metavariable sigil (default `\`).
+    pub fn with_meta_char(mut self, c: char) -> Self {
+        self.meta_char = c;
+        self
+    }
+
+    pub fn is_splittable(&self, text: &str) -> bool {
+        self.splittable.contains(text)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Grammar-derived tables
+// ---------------------------------------------------------------------------
+
+fn is_punct_token(s: &str) -> bool {
+    !s.is_empty() && s.chars().all(|c| !c.is_alphanumeric() && c != '_')
+}
+
+/// The single-character punctuation tokens the grammar defines.
+fn single_char_punct_tokens(lang: &Language) -> HashSet<String> {
+    let mut set = HashSet::new();
+    for id in 0..lang.node_kind_count() as u16 {
+        if lang.node_kind_is_named(id) {
+            continue;
+        }
+        if let Some(s) = lang.node_kind_for_id(id)
+            && s.chars().count() == 1
+            && is_punct_token(s)
+        {
+            set.insert(s.to_string());
+        }
+    }
+    set
+}
+
+/// A compound token is splittable when it is all-punctuation, longer than one
+/// char, and every character is itself a single-char token. Splitting it on both
+/// sides aligns context-sensitive tokenizations like C++/Rust `>>`. Over-split
+/// (e.g. `==`) is safe — both sides normalize identically.
+fn detect_splittable(lang: &Language, single_char: &HashSet<String>) -> HashSet<String> {
+    let mut set = HashSet::new();
+    for id in 0..lang.node_kind_count() as u16 {
+        if lang.node_kind_is_named(id) {
+            continue;
+        }
+        let Some(s) = lang.node_kind_for_id(id) else {
+            continue;
+        };
+        if !is_punct_token(s) || s.chars().count() < 2 {
+            continue;
+        }
+        if s.chars().all(|c| single_char.contains(&c.to_string())) {
+            set.insert(s.to_string());
+        }
+    }
+    set
+}
+
+/// Operator/punctuation tokens for maximal munch. Dropping the splittables here
+/// already implements "remove a compound whose every char is an existing token":
+/// what survives is single-char tokens plus the few multi-char tokens with a
+/// *non-token* component (e.g. TS `${`, Python `!=` — `$`/`!` aren't standalone
+/// tokens there), which must stay whole.
+fn derive_op_tokens(lang: &Language, splittable: &HashSet<String>) -> Vec<String> {
+    let mut toks: Vec<String> = Vec::new();
+    for id in 0..lang.node_kind_count() as u16 {
+        if lang.node_kind_is_named(id) {
+            continue;
+        }
+        let Some(s) = lang.node_kind_for_id(id) else {
+            continue;
+        };
+        if s.is_empty() || s == "ERROR" || !is_punct_token(s) || splittable.contains(s) {
+            continue;
+        }
+        toks.push(s.to_string());
+    }
+    toks.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
+    toks.dedup();
+    toks
+}
