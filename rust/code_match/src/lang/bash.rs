@@ -1,11 +1,20 @@
-//! Bash.
-use crate::config::LangConfig;
+//! Bash. Single-quoted strings have **no** escaping — a `'` always closes and
+//! `$`/`\` are literal (`'$x'` is the literal text `$x`). Double-quoted strings
+//! use backslash and `$`-expansion (matched opaquely via the node's text).
+use crate::config::*;
 use std::sync::LazyLock;
 use tree_sitter::Language;
 
 pub fn bash() -> LangConfig {
-    static CFG: LazyLock<LangConfig> =
-        LazyLock::new(|| LangConfig::from_grammar(Language::new(tree_sitter_bash::LANGUAGE)));
+    static CFG: LazyLock<LangConfig> = LazyLock::new(|| {
+        let toks = vec![
+            identifier(),
+            number(""),
+            dq_string(),         // "..." backslash + $-expansion
+            sq_string_literal(), // '...' literal, no escaping
+        ];
+        LangConfig::from_grammar(Language::new(tree_sitter_bash::LANGUAGE)).with_tokenizers(toks)
+    });
     CFG.clone()
 }
 
@@ -20,5 +29,17 @@ mod tests {
         let src = "echo hello";
         let ms = matches(bash(), r"echo \MSG", src);
         assert_eq!(cap(&ms, "MSG").as_deref(), Some("hello"));
+    }
+
+    /// Conformance over Bash string forms (literal single quotes).
+    #[test]
+    fn literal_forms() {
+        for (lit, ctx) in [
+            ("'$HOME'", "x='$HOME'"), // literal, $ not expanded
+            ("'a b'", "x='a b'"),
+            ("\"hi\"", "x=\"hi\""),
+        ] {
+            assert!(!matches(bash(), lit, ctx).is_empty(), "Bash `{lit}`");
+        }
     }
 }
