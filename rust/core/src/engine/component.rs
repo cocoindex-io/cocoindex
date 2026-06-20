@@ -207,6 +207,16 @@ impl ComponentRunOutcome {
         }
     }
 
+    /// Outcome for a component that hit its memo cache: no exception, but it
+    /// still reports the stored logic dependency set so a mounting parent's
+    /// memo depends on this subtree.
+    fn reused(logic_deps: Vec<Fingerprint>) -> Self {
+        Self {
+            has_exception: false,
+            logic_deps: logic_deps.into_iter().collect(),
+        }
+    }
+
     fn merge(&mut self, other: Self) {
         self.has_exception |= other.has_exception;
         self.logic_deps.extend(other.logic_deps);
@@ -869,7 +879,7 @@ impl<Prof: EngineProfile> Component<Prof> {
 
             match use_or_invalidate_component_memoization(processor_context, memo_fp_to_store).await
             {
-                Ok(Some((ret, memo_states))) => {
+                Ok(Some((ret, memo_states, stored_logic_deps))) => {
                     // If processor has state handler and there are stored states, validate them.
                     if processor.has_memo_state_handler() && !memo_states.is_empty() {
                         let fut = processor.handle_memo_states(
@@ -888,8 +898,11 @@ impl<Prof: EngineProfile> Component<Prof> {
                                 stats.num_execution_starts += 1;
                                 stats.num_unchanged += 1;
                             });
+                            // Report the stored dependency set upward even on a
+                            // memo hit, so a mounting parent's memo depends on
+                            // this whole subtree (see `merge_logic_deps` below).
                             return Ok((
-                                ComponentRunOutcome::default(),
+                                ComponentRunOutcome::reused(stored_logic_deps),
                                 Some(ComponentBuildOutput {
                                     ret,
                                     built_target_states_providers: Default::default(),
@@ -905,7 +918,7 @@ impl<Prof: EngineProfile> Component<Prof> {
                             stats.num_unchanged += 1;
                         });
                         return Ok((
-                            ComponentRunOutcome::default(),
+                            ComponentRunOutcome::reused(stored_logic_deps),
                             Some(ComponentBuildOutput {
                                 ret,
                                 built_target_states_providers: Default::default(),
@@ -932,7 +945,7 @@ impl<Prof: EngineProfile> Component<Prof> {
             async move {
                 // Acquire the semaphore to ensure `process()` and `submit()` cannot overlap
                 // with another execution of the same component.
-                let (ret, submit_output, children_outcome) = {
+                let (ret, submit_output, mut children_outcome) = {
                     let _permit = self.inner.build_semaphore.acquire().await?;
 
                     // Build mode only: write the component's own existence bit
@@ -983,8 +996,10 @@ impl<Prof: EngineProfile> Component<Prof> {
                         .clone()
                         .into_result()?;
 
-                    // Merge children's logic deps into this component's context before
-                    // post-submit memoization stores this component's dependency set.
+                    // Merge children's logic deps into this component's context. The
+                    // full set (own fp ∪ all descendants) is taken once after
+                    // memo-state collection below and used for both this component's
+                    // own memo and the outcome reported to its parent.
                     processor_context
                         .merge_logic_deps(std::mem::take(&mut children_outcome.logic_deps));
 
@@ -1038,7 +1053,18 @@ impl<Prof: EngineProfile> Component<Prof> {
                             } else {
                                 None
                             };
-                            post_submit_for_build(processor_context, comp_memo).await?;
+                            // Take the full dependency set once (O(1) move). It
+                            // must run after the memo-state collection above, which
+                            // reads the set via `collect_context_initial_states`.
+                            // Serves both this component's own memo (sorted inside
+                            // `post_submit_for_build`, only when memoizing) and the
+                            // outcome reported to the parent across the mount
+                            // boundary — so the parent's memo depends on this whole
+                            // subtree's logic.
+                            let logic_deps = processor_context.take_logic_deps();
+                            post_submit_for_build(processor_context, comp_memo, &logic_deps)
+                                .await?;
+                            children_outcome.logic_deps = logic_deps;
                         }
                         Some(ComponentBuildOutput {
                             ret,
