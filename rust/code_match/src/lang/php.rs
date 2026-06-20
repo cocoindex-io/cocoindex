@@ -27,4 +27,19 @@ mod tests {
         let ms = matches(php(), r"$result = \VAL", src);
         assert_eq!(cap(&ms, "VAL").as_deref(), Some("compute()"));
     }
+
+    /// Conformance over PHP literal forms — the generic backslash profile fits.
+    #[test]
+    fn literal_forms() {
+        for (lit, ctx) in [
+            ("\"hi\"", "<?php $x = \"hi\"; ?>"),
+            ("'hi'", "<?php $x = 'hi'; ?>"),
+            ("42", "<?php $x = 42; ?>"),
+            ("0xFF", "<?php $x = 0xFF; ?>"),
+            ("1_000", "<?php $x = 1_000; ?>"),
+            ("1.5e-10", "<?php $x = 1.5e-10; ?>"),
+        ] {
+            assert!(!matches(php(), lit, ctx).is_empty(), "PHP `{lit}`");
+        }
+    }
 }

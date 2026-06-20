@@ -124,6 +124,37 @@ pub fn backtick_string() -> TokenRule {
     regex_rule(r"(?s)^`(?:\\.|[^`\\])*`", TokKind::Str)
 }
 
+// --- non-backslash string conventions ---
+//
+// `dq_string`/`sq_string` above bake in C-style backslash escaping (`"a\"b"` is
+// one string). That is *wrong* for languages that escape differently, where it
+// would close the string at the wrong quote. The builders below cover the two
+// other common conventions; a language must pick the one its grammar uses.
+
+/// Single-quoted string where an embedded quote is written by **doubling** it
+/// (`'it''s'`), with no backslash escaping. Used by SQL, Fortran, Pascal.
+pub fn sq_string_doubled() -> TokenRule {
+    regex_rule(r"(?s)^'(?:''|[^'])*'", TokKind::Str)
+}
+
+/// Double-quoted string with doubled-quote escaping (`"a""b"`) — Fortran.
+pub fn dq_string_doubled() -> TokenRule {
+    regex_rule(r#"(?s)^"(?:""|[^"])*""#, TokKind::Str)
+}
+
+/// Single-quoted string with **no** escaping at all — a `'` always closes it
+/// (`'$x\n'` is the five characters `$x\n`). Used by POSIX shells and TOML's
+/// literal strings.
+pub fn sq_string_literal() -> TokenRule {
+    regex_rule(r"^'[^']*'", TokKind::Str)
+}
+
+/// Backtick string with **no** escaping — a backtick always closes it, and `\`
+/// is a literal character (Go raw strings `` `a\b` ``). May span newlines.
+pub fn backtick_string_literal() -> TokenRule {
+    regex_rule(r"^`[^`]*`", TokKind::Str)
+}
+
 /// A free-text run up to (not including) `stop`, emitted atomically like a
 /// string node. Used for markup text content (HTML/XML), where the run has no
 /// special punctuation and a `"` is a literal char, not a string delimiter.
@@ -132,7 +163,25 @@ pub fn free_text(stop: char) -> TokenRule {
     regex_rule(&format!("^[^{stop}]+"), TokKind::Str)
 }
 
-/// The default tokenizer set (identifier, number, the three quote styles).
+/// Triple-double-quoted string `"""..."""` — one node. The generic `"..."`
+/// would mis-split the opening `""` as an empty string, so languages with raw /
+/// multiline triple strings (Kotlin, Julia, Elm, TOML basic, …) add this.
+/// Interpolations inside are matched opaquely via the whole node's text.
+pub fn triple_dq_string() -> TokenRule {
+    regex_rule(r#"(?s)^""".*?""""#, TokKind::Str)
+}
+
+/// Triple-single-quoted string `'''...'''` — one node (TOML literal multiline).
+pub fn triple_sq_string() -> TokenRule {
+    regex_rule(r"(?s)^'''.*?'''", TokKind::Str)
+}
+
+/// A convenience tokenizer set for **C-style** languages: identifier, number,
+/// and the three quote styles with *backslash* escaping. Correct for the large
+/// family (C/C++/Rust/Java/JS/TS/C#/Go/…), but **not** universal — languages
+/// that escape differently (SQL/Fortran/Pascal `''` doubling, shells/TOML
+/// literal `'...'`, Go raw backticks) must build their own set from the
+/// `*_doubled` / `*_literal` builders above. Verify with a `literal_forms` test.
 pub fn generic_tokenizers() -> Vec<TokenRule> {
     vec![
         identifier(),
@@ -172,8 +221,11 @@ pub struct LangConfig {
 }
 
 impl LangConfig {
-    /// Build a config from a grammar with the generic tokenizers and derived
-    /// op/splittable tables. Language modules call this, then `with_tokenizers`.
+    /// Build a config from a grammar. Seeds the **C-style** `generic_tokenizers`
+    /// (backslash escaping) and the derived op/splittable tables; a language
+    /// module then refines the literal profile via `with_tokenizers`. The seeded
+    /// default is a convenience, *not* a guarantee — if the language escapes
+    /// strings differently it must override (see `generic_tokenizers`).
     pub fn from_grammar(language: Language) -> Self {
         let single_char = single_char_punct_tokens(&language);
         let splittable = detect_splittable(&language, &single_char);
