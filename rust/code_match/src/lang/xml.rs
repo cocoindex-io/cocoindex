@@ -19,8 +19,7 @@ pub fn xml() -> LangConfig {
             dq_string().in_modes(1 << TAG),
             sq_string().in_modes(1 << TAG),
         ];
-        LangConfig::from_grammar(Language::new(tree_sitter_xml::LANGUAGE_XML))
-            .with_tokenizers(toks)
+        LangConfig::from_grammar(Language::new(tree_sitter_xml::LANGUAGE_XML), toks)
             .with_modes(vec![(TEXT, '<', TAG), (TAG, '>', TEXT)], 1 << TEXT)
     });
     CFG.clone()

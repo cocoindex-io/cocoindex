@@ -1,11 +1,15 @@
-//! javascript.
-use crate::config::LangConfig;
+//! JavaScript: C-style escaping + backtick template strings.
+use crate::config::*;
 use std::sync::LazyLock;
 use tree_sitter::Language;
 
 pub fn javascript() -> LangConfig {
-    static CFG: LazyLock<LangConfig> =
-        LazyLock::new(|| LangConfig::from_grammar(Language::new(tree_sitter_javascript::LANGUAGE)));
+    static CFG: LazyLock<LangConfig> = LazyLock::new(|| {
+        LangConfig::from_grammar(
+            Language::new(tree_sitter_javascript::LANGUAGE),
+            c_like_tokenizers(),
+        )
+    });
     CFG.clone()
 }
 

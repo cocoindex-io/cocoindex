@@ -13,7 +13,7 @@ pub fn bash() -> LangConfig {
             dq_string(),         // "..." backslash + $-expansion
             sq_string_literal(), // '...' literal, no escaping
         ];
-        LangConfig::from_grammar(Language::new(tree_sitter_bash::LANGUAGE)).with_tokenizers(toks)
+        LangConfig::from_grammar(Language::new(tree_sitter_bash::LANGUAGE), toks)
     });
     CFG.clone()
 }

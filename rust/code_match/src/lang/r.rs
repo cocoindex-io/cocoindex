@@ -21,7 +21,7 @@ pub fn r() -> LangConfig {
             // `%...%` infix/special operators, one token.
             regex_rule(r"^%[^%]*%", TokKind::Token),
         ];
-        LangConfig::from_grammar(Language::new(tree_sitter_r::LANGUAGE)).with_tokenizers(toks)
+        LangConfig::from_grammar(Language::new(tree_sitter_r::LANGUAGE), toks)
     });
     CFG.clone()
 }

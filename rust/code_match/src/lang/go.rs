@@ -15,7 +15,7 @@ pub fn go() -> LangConfig {
             sq_string(),               // rune 'r'
             backtick_string_literal(), // `raw, no escapes`
         ];
-        LangConfig::from_grammar(Language::new(tree_sitter_go::LANGUAGE)).with_tokenizers(toks)
+        LangConfig::from_grammar(Language::new(tree_sitter_go::LANGUAGE), toks)
     });
     CFG.clone()
 }

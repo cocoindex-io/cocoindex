@@ -17,7 +17,7 @@ pub fn fortran() -> LangConfig {
             regex_rule(r"^[BOZboz]'[0-9A-Fa-f]*'", TokKind::Str),
             regex_rule(r#"^[BOZboz]"[0-9A-Fa-f]*""#, TokKind::Str),
         ];
-        LangConfig::from_grammar(Language::new(tree_sitter_fortran::LANGUAGE)).with_tokenizers(toks)
+        LangConfig::from_grammar(Language::new(tree_sitter_fortran::LANGUAGE), toks)
     });
     CFG.clone()
 }

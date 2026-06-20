@@ -26,7 +26,7 @@ pub fn toml() -> LangConfig {
             triple_dq_string(),  // """..."""
             triple_sq_string(),  // '''...'''
         ];
-        LangConfig::from_grammar(Language::new(tree_sitter_toml_ng::LANGUAGE)).with_tokenizers(toks)
+        LangConfig::from_grammar(Language::new(tree_sitter_toml_ng::LANGUAGE), toks)
     });
     CFG.clone()
 }

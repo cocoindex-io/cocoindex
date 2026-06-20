@@ -26,7 +26,7 @@ pub fn julia() -> LangConfig {
                 TokKind::Str,
             ),
         ];
-        LangConfig::from_grammar(Language::new(tree_sitter_julia::LANGUAGE)).with_tokenizers(toks)
+        LangConfig::from_grammar(Language::new(tree_sitter_julia::LANGUAGE), toks)
     });
     CFG.clone()
 }

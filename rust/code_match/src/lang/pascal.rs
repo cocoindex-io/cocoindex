@@ -16,7 +16,7 @@ pub fn pascal() -> LangConfig {
             regex_rule(r"^%[01]+", TokKind::Str),           // binary
             regex_rule(r"^#\$?[0-9A-Fa-f]+", TokKind::Str), // char code #65 / #$41
         ];
-        LangConfig::from_grammar(Language::new(tree_sitter_pascal::LANGUAGE)).with_tokenizers(toks)
+        LangConfig::from_grammar(Language::new(tree_sitter_pascal::LANGUAGE), toks)
     });
     CFG.clone()
 }

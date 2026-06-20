@@ -15,7 +15,7 @@ pub fn yaml() -> LangConfig {
             dq_string(),         // "..." backslash escaping
             sq_string_doubled(), // '...' with '' escaping
         ];
-        LangConfig::from_grammar(Language::new(tree_sitter_yaml::LANGUAGE)).with_tokenizers(toks)
+        LangConfig::from_grammar(Language::new(tree_sitter_yaml::LANGUAGE), toks)
     });
     CFG.clone()
 }
