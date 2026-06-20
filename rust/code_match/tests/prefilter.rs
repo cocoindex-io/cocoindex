@@ -2,12 +2,20 @@
 //! scan. The load-bearing property is **no false negatives** — anything that
 //! actually matches must pass the prefilter.
 
-use cocoindex_code_match::{Boundary, Pattern, Prefilter, lang};
+use std::collections::HashSet;
+
+use cocoindex_code_match::{Boundary, Pattern, Prefilter, index_terms, lang};
 
 fn prefilter(pat: &str, min_len: usize) -> Prefilter {
     Pattern::compile(pat, &lang::python())
         .expect("valid pattern")
         .prefilter(min_len)
+}
+
+fn terms(src: &str, min_len: usize) -> HashSet<String> {
+    index_terms(src, &lang::python(), min_len)
+        .into_iter()
+        .collect()
 }
 
 #[test]
@@ -81,6 +89,51 @@ fn no_false_negative_on_a_real_match() {
         pat.prefilter(3).might_match(src),
         "prefilter must never reject a real match",
     );
+}
+
+#[test]
+fn index_terms_extracts_identifiers_and_string_content() {
+    let t = terms(
+        "def handler(req):\n    return process(req, \"hello world\")\n",
+        3,
+    );
+    for want in ["handler", "req", "process", "hello", "world"] {
+        assert!(t.contains(want), "expected {want:?} in {t:?}");
+    }
+    assert!(!t.contains("def"), "keyword must be excluded");
+    assert!(!t.contains("return"), "keyword must be excluded");
+}
+
+#[test]
+fn index_terms_skips_comments_and_short_terms() {
+    let t = terms("x = 1  # secret note\nvalue = compute()\n", 3);
+    assert!(t.contains("value"));
+    assert!(t.contains("compute"));
+    assert!(!t.contains("secret"), "comment text must be skipped");
+    assert!(!t.contains("note"));
+    assert!(!t.contains("x"), "below min_len");
+}
+
+#[test]
+fn index_terms_supply_every_required_term_of_a_match() {
+    // Index-path soundness: every clause a matching pattern requires is satisfiable
+    // from the source's index terms (Word => token present; Substring => substring
+    // of some indexed token, as an n-gram index would resolve).
+    let src = "def f():\n    return process(item, \"payload data\")\n";
+    let pat = Pattern::compile(r#"process(\X, "payload data")"#, &lang::python()).unwrap();
+    assert!(!pat.matches(src).is_empty(), "sanity: pattern matches");
+
+    let idx = terms(src, 3);
+    for clause in pat.prefilter(3).clauses() {
+        let ok = clause.any_of.iter().any(|t| match t.boundary {
+            Boundary::Word => idx.contains(&t.text),
+            Boundary::Substring => idx.iter().any(|term| term.contains(&t.text)),
+        });
+        assert!(
+            ok,
+            "index terms miss a required clause {clause:?} (have {idx:?})"
+        );
+    }
 }
 
 #[test]
