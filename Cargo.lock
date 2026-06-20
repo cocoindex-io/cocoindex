@@ -2035,8 +2035,10 @@ dependencies = [
 name = "cocoindex_code_match"
 version = "999.0.0"
 dependencies = [
+ "aho-corasick",
  "cocoindex_utils",
  "regex",
+ "regex-syntax",
  "tree-sitter",
  "tree-sitter-bash",
  "tree-sitter-c",

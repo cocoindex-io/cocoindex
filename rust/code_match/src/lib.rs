@@ -10,10 +10,12 @@ mod config;
 pub mod lang;
 mod lexer;
 mod matcher;
+mod prefilter;
 
 pub use config::{LangConfig, RegexTokenizer, TokKind, TokenRule, Tokenizer};
 pub use lexer::{Cardinality, PatternItem};
 pub use matcher::{Capture, Match, Pattern};
+pub use prefilter::{Boundary, FilterClause, FilterTerm, Prefilter};
 
 // The crate's fallible surface uses the workspace-standard error type.
 pub use cocoindex_utils::error::{Error, Result};
