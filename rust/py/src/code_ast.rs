@@ -25,7 +25,7 @@ use crate::ops::PyChunk;
 pub struct PyCodeMatch {
     /// tree-sitter node kind of the matched node (e.g. `function_definition`).
     #[pyo3(get)]
-    pub kind: String,
+    pub kind: &'static str,
     /// The matched code region(s), each a `Chunk` with text and line/column
     /// positions. Currently always exactly one (the whole matched node); a future
     /// carve-out feature may return several (e.g. a function's head and tail with
