@@ -8,6 +8,7 @@ pattern use the ``\`` sigil (e.g. ``\NAME``, ``\(ARGS*)``).
 __all__ = [
     "CodeAst",
     "CodeMatch",
+    "CodePattern",
     "match_code",
 ]
 
@@ -36,6 +37,45 @@ class CodeMatch:
 
     Each captured value is a list of chunks (currently always exactly one); the
     captured text is ``m.captures[name][0].text``, with line/column on each chunk."""
+
+
+class CodePattern:
+    r"""A compiled structural pattern, built once and reused across many sources.
+
+    Compiling a pattern (and its prefilter) is not free; construct a ``CodePattern``
+    once and match it against many files/ASTs instead of passing a pattern string to
+    :meth:`CodeAst.matches` every time (which recompiles).
+
+    Args:
+        pattern: The by-example structural pattern (``\`` sigil for metavars).
+        language: Language name or alias (e.g. ``"python"``, ``"c++"``).
+        min_len: Prefilter tuning — required terms shorter than this are dropped.
+
+    Examples:
+        >>> cp = CodePattern(r"def \NAME(\(A*)):", language="python")
+        >>> cp.might_match("x = 1")          # cheap, parse-free pre-check
+        False
+        >>> [m.captures["NAME"][0].text for m in cp.match_source("def f(): pass")]
+        ['f']
+    """
+
+    def __init__(self, pattern: str, language: str, *, min_len: int = 3) -> None:
+        self._cp = _core.CodePattern(pattern, language, min_len)
+
+    @property
+    def language(self) -> str:
+        """The language this pattern was compiled for."""
+        return self._cp.language
+
+    def might_match(self, source: str) -> bool:
+        """Whether ``source`` *might* contain a match — a cheap, parse-free prefilter
+        check. ``False`` means it definitely can't (skip it); ``True`` means "maybe"."""
+        return self._cp.might_match(source)
+
+    def match_source(self, source: str) -> list[CodeMatch]:
+        """Match against ``source`` (parses it), skipping the parse entirely when the
+        prefilter rejects it. Reuses this pattern's compilation across calls."""
+        return [_convert_match(m, source) for m in self._cp.match_source(source)]
 
 
 class CodeAst:
@@ -69,15 +109,21 @@ class CodeAst:
         """The source text."""
         return self._ast.source
 
-    def matches(self, pattern: str) -> list[CodeMatch]:
+    def matches(self, pattern: "str | CodePattern") -> list[CodeMatch]:
         r"""Find every match of a by-example structural ``pattern`` (reuses the parse).
 
+        ``pattern`` is either a pattern string (compiled on the spot) or a
+        precompiled :class:`CodePattern` — pass the latter to reuse the compilation
+        when matching the same pattern across many ASTs.
+
         Raises:
-            ValueError: if the language is unsupported for matching, or the
-                pattern is malformed.
+            ValueError: if the language is unsupported for matching, the pattern
+                string is malformed, or a ``CodePattern``'s language differs from
+                this AST's.
         """
         source = self._ast.source
-        return [_convert_match(m, source) for m in self._ast.matches(pattern)]
+        raw = pattern._cp if isinstance(pattern, CodePattern) else pattern
+        return [_convert_match(m, source) for m in self._ast.matches(raw)]
 
     def split(
         self,
