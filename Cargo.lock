@@ -2032,6 +2032,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "cocoindex_code_match"
+version = "999.0.0"
+dependencies = [
+ "cocoindex_utils",
+ "regex",
+ "tree-sitter",
+ "tree-sitter-bash",
+ "tree-sitter-c",
+ "tree-sitter-c-sharp",
+ "tree-sitter-cpp",
+ "tree-sitter-go",
+ "tree-sitter-java",
+ "tree-sitter-javascript",
+ "tree-sitter-php",
+ "tree-sitter-python",
+ "tree-sitter-ruby",
+ "tree-sitter-rust",
+ "tree-sitter-scala",
+ "tree-sitter-sequel",
+ "tree-sitter-typescript",
+]
+
+[[package]]
 name = "cocoindex_core"
 version = "999.0.0"
 dependencies = [

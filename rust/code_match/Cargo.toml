@@ -1,0 +1,29 @@
+[package]
+name = "cocoindex_code_match"
+version = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+license = { workspace = true }
+
+[dependencies]
+cocoindex_utils = { path = "../utils" }
+regex = { workspace = true }
+
+# tree-sitter + grammars are pinned to the SAME versions as `cocoindex_ops_text`.
+# `tree-sitter` uses `links = "tree-sitter"`, so the whole workspace must resolve
+# to a single version — keep these in lockstep with rust/ops_text/Cargo.toml.
+tree-sitter = "0.25.10"
+tree-sitter-bash = "0.25.1"
+tree-sitter-c = "0.24.1"
+tree-sitter-c-sharp = "0.23.1"
+tree-sitter-cpp = "0.23.4"
+tree-sitter-go = "0.23.4"
+tree-sitter-java = "0.23.5"
+tree-sitter-javascript = "0.23.1"
+tree-sitter-php = "0.23.11"
+tree-sitter-python = "0.23.6"
+tree-sitter-ruby = "0.23.1"
+tree-sitter-rust = "0.24.0"
+tree-sitter-scala = "0.24.0"
+tree-sitter-sequel = "0.3.11"
+tree-sitter-typescript = "0.23.2"
