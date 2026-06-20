@@ -500,6 +500,82 @@ fn non_ascii_sigil() {
     );
 }
 
+// ---------------- containment `\{{ ... \}}` ----------------
+
+#[test]
+fn contains_basic() {
+    // `\{{ return \X \}}` asserts the function body *contains* `return \X` (any
+    // depth). The whole function_definition is reported; X binds inside the group
+    // and is exposed on the match.
+    let src = "def foo():\n    x = 1\n    return a + b\n";
+    let ms = matches(lang::python(), r"def foo(): \{{ return \X \}}", src);
+    let m = ms
+        .iter()
+        .find(|m| m.kind == "function_definition")
+        .unwrap_or_else(|| panic!("should match the function containing `return \\X`, got {ms:?}"));
+    assert_eq!(m.capture_text("X"), Some("a + b"));
+}
+
+#[test]
+fn contains_searches_any_depth() {
+    // The `return` is nested inside an `if` — the descendant search must descend.
+    let src = "def foo():\n    if c:\n        return a + b\n";
+    let ms = matches(lang::python(), r"def foo(): \{{ return \X \}}", src);
+    assert_eq!(cap(&ms, "X").as_deref(), Some("a + b"));
+}
+
+#[test]
+fn contains_negative_when_absent() {
+    // No `return` in the body → the containment predicate fails → no match.
+    let src = "def foo():\n    x = 1\n";
+    let ms = matches(lang::python(), r"def foo(): \{{ return \X \}}", src);
+    assert!(
+        !ms.iter().any(|m| m.kind == "function_definition"),
+        "must not match a function whose body has no `return`, got {ms:?}",
+    );
+}
+
+#[test]
+fn contains_binding_threads_across_the_group() {
+    // A name bound *before* the group constrains a use *inside* it (forward
+    // threading): `\P` is the parameter and must equal the returned name.
+    let pat = r"def foo(\P): \{{ return \P \}}";
+    let yes = matches(lang::python(), pat, "def foo(a):\n    return a\n");
+    assert!(
+        yes.iter().any(|m| m.kind == "function_definition"),
+        "param `a` and returned `a` are equal → match, got {yes:?}",
+    );
+    let no = matches(lang::python(), pat, "def foo(b):\n    return a\n");
+    assert!(
+        !no.iter().any(|m| m.kind == "function_definition"),
+        "param `b` ≠ returned `a` → no match, got {no:?}",
+    );
+}
+
+#[test]
+fn contains_nested() {
+    // Nested groups: foo's body contains an `if` whose body contains `return \X`.
+    // Exercises the back-patched close indices and recursive `match_contains`.
+    let src = "def foo():\n    if c:\n        return a + b\n";
+    let ms = matches(
+        lang::python(),
+        r"def foo(): \{{ if \C: \{{ return \X \}} \}}",
+        src,
+    );
+    let m = ms
+        .iter()
+        .find(|m| m.kind == "function_definition")
+        .unwrap_or_else(|| panic!("nested containment should match, got {ms:?}"));
+    assert_eq!(m.capture_text("C"), Some("c"));
+    assert_eq!(m.capture_text("X"), Some("a + b"));
+}
+
+#[test]
+fn contains_unbalanced_markers_error() {
+    assert!(Pattern::compile(r"def foo(): \{{ return \X", &lang::python()).is_err());
+    assert!(Pattern::compile(r"return \X \}}", &lang::python()).is_err());
+}
+
 // ---------------- operator/generics alignment ----------------
 
 #[test]

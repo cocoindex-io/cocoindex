@@ -100,20 +100,25 @@ impl Indexed {
 pub struct Pattern {
     items: Vec<PatternItem>,
     cfg: LangConfig,
-    /// true when some metavar name appears more than once (disables the fail-memo)
-    has_dup_names: bool,
+    /// Whether the `(pi, li)` fail-memo is sound. It isn't when forward-threaded
+    /// bindings can change whether a `(pi, li)` matches: a repeated metavar name,
+    /// or a containment group (`\{{ \}}`), whose INNER binds names per descendant.
+    use_memo: bool,
 }
 
 impl Pattern {
     /// Compile a pattern for `cfg`. Fails with a `client` error on a malformed
-    /// metavar matcher (e.g. an unparseable regex).
+    /// metavar matcher (e.g. an unparseable regex) or unbalanced `\{{` / `\}}`.
     pub fn compile(pattern: &str, cfg: &LangConfig) -> Result<Pattern> {
         let items = lex(pattern, cfg)?;
-        let has_dup_names = detect_dup_names(&items);
+        let has_contains = items
+            .iter()
+            .any(|it| matches!(it, PatternItem::ContainsOpen { .. }));
+        let use_memo = !detect_dup_names(&items) && !has_contains;
         Ok(Pattern {
             items,
             cfg: cfg.clone(),
-            has_dup_names,
+            use_memo,
         })
     }
 
@@ -142,11 +147,11 @@ impl Pattern {
                 items: &self.items,
                 idx: &idx,
                 source,
-                use_memo: !self.has_dup_names,
+                use_memo: self.use_memo,
                 bound: HashMap::new(),
                 fail: HashSet::new(),
             };
-            ctx.dp(0, start, hi).then_some(ctx.bound)
+            ctx.dp(0, self.items.len(), start, hi).then_some(ctx.bound)
         };
 
         let mut out = Vec::new();
@@ -355,10 +360,14 @@ struct Ctx<'a, 's> {
 }
 
 impl<'s> Ctx<'_, 's> {
-    /// Match `items[pi..]` against leaves `[li, hi)`. On success, `bound` holds
-    /// the captures.
-    fn dp(&mut self, pi: usize, li: usize, hi: usize) -> bool {
-        if pi == self.items.len() {
+    /// Match `items[pi..end]` against leaves `[li, hi)`. On success, `bound` holds
+    /// the captures. `end` is the exclusive item bound: `items.len()` at the top
+    /// level, or a containment group's `close` index for an INNER sub-match — so
+    /// the same `dp` engine matches a bracketed sub-pattern without it running
+    /// past its `\}}`. (`end` is a structural function of `pi` — each item sits in
+    /// exactly one bracket level — so the `(pi, li)` fail-memo stays well-keyed.)
+    fn dp(&mut self, pi: usize, end: usize, li: usize, hi: usize) -> bool {
+        if pi == end {
             return li == hi;
         }
         if self.use_memo && self.fail.contains(&(pi, li)) {
@@ -370,17 +379,23 @@ impl<'s> Ctx<'_, 's> {
         let items = self.items;
         let ok = match &items[pi] {
             PatternItem::Token(t) => {
-                li < hi && &self.idx.leaves[li].text == t && self.dp(pi + 1, li + 1, hi)
+                li < hi && &self.idx.leaves[li].text == t && self.dp(pi + 1, end, li + 1, hi)
             }
-            PatternItem::Str(s) => self.match_literal(pi, li, hi, s),
+            PatternItem::Str(s) => self.match_literal(pi, end, li, hi, s),
             PatternItem::Meta { name, card, regex } => match card {
-                Cardinality::One => self.match_single(pi, li, hi, name.as_deref(), regex.as_ref()),
+                Cardinality::One => {
+                    self.match_single(pi, end, li, hi, name.as_deref(), regex.as_ref())
+                }
                 // Many ignores the regex (sibling runs are out of the single-node scope).
-                Cardinality::Many => self.match_multi(pi, li, hi, name.as_deref()),
+                Cardinality::Many => self.match_multi(pi, end, li, hi, name.as_deref()),
                 Cardinality::Optional => {
-                    self.match_optional(pi, li, hi, name.as_deref(), regex.as_ref())
+                    self.match_optional(pi, end, li, hi, name.as_deref(), regex.as_ref())
                 }
             },
+            PatternItem::ContainsOpen { close } => self.match_contains(pi, *close, end, li, hi),
+            // Never landed on: the outer DP jumps over `[open+1, close]` to
+            // `close+1`, and an INNER sub-DP stops at `pi == end == close`.
+            PatternItem::ContainsClose => false,
         };
 
         if !ok && self.use_memo {
@@ -389,7 +404,7 @@ impl<'s> Ctx<'_, 's> {
         ok
     }
 
-    fn match_literal(&mut self, pi: usize, li: usize, hi: usize, s: &str) -> bool {
+    fn match_literal(&mut self, pi: usize, end: usize, li: usize, hi: usize, s: &str) -> bool {
         if li >= hi {
             return false;
         }
@@ -400,7 +415,7 @@ impl<'s> Ctx<'_, 's> {
         for sp in &idx.spans_by_start[li] {
             if sp.end_leaf < hi
                 && &source[sp.start_byte..sp.end_byte] == s
-                && self.dp(pi + 1, sp.end_leaf + 1, hi)
+                && self.dp(pi + 1, end, sp.end_leaf + 1, hi)
             {
                 return true;
             }
@@ -411,6 +426,7 @@ impl<'s> Ctx<'_, 's> {
     fn match_single(
         &mut self,
         pi: usize,
+        end: usize,
         li: usize,
         hi: usize,
         name: Option<&str>,
@@ -434,7 +450,7 @@ impl<'s> Ctx<'_, 's> {
             match self.bind(name, cap) {
                 BindResult::Inconsistent => continue,
                 bind => {
-                    if self.dp(pi + 1, sp.end_leaf + 1, hi) {
+                    if self.dp(pi + 1, end, sp.end_leaf + 1, hi) {
                         return true;
                     }
                     self.unbind(name, bind);
@@ -448,7 +464,14 @@ impl<'s> Ctx<'_, 's> {
     /// of *one parent's* direct children (same-level), so a `*` run can't
     /// silently leak out of the subtree the pattern entered. A cross-level skip
     /// is written as multiple `*`, one per grammar level.
-    fn match_multi(&mut self, pi: usize, li: usize, hi: usize, name: Option<&str>) -> bool {
+    fn match_multi(
+        &mut self,
+        pi: usize,
+        end: usize,
+        li: usize,
+        hi: usize,
+        name: Option<&str>,
+    ) -> bool {
         let idx = self.idx;
         let reach = reachable(li, hi, idx); // descending => greedy longest first
         for next in reach {
@@ -466,7 +489,7 @@ impl<'s> Ctx<'_, 's> {
             match self.bind(name, cap) {
                 BindResult::Inconsistent => continue,
                 bind => {
-                    if self.dp(pi + 1, next, hi) {
+                    if self.dp(pi + 1, end, next, hi) {
                         return true;
                     }
                     self.unbind(name, bind);
@@ -476,12 +499,86 @@ impl<'s> Ctx<'_, 's> {
         false
     }
 
+    /// `\{{ INNER \}}` — containment (DESIGN §12). Consume a same-level region
+    /// `[li, next)` (a child-aligned sibling slice, like `\*`, possibly empty),
+    /// require `INNER` (`items[pi+1..close]`) to match *some descendant node*
+    /// fully inside the region (any depth), then continue the outer match at
+    /// `items[close+1..end]` from `next`. The region grows greedily (longest
+    /// first) so whole-node coverage is preferred, same as `match_multi`.
+    fn match_contains(
+        &mut self,
+        pi: usize,
+        close: usize,
+        end: usize,
+        li: usize,
+        hi: usize,
+    ) -> bool {
+        let inner = pi + 1; // first INNER item
+        let cont = close + 1; // first outer item after `\}}`
+        let idx = self.idx;
+        for next in reachable(li, hi, idx) {
+            if !idx.same_level(li, next) {
+                continue; // region must be a clean sibling slice
+            }
+            if self.contains_then_continue(inner, close, cont, end, li, next, hi) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// For a fixed region `[reg_lo, reg_hi)`: try to match `INNER` (`items[inner..
+    /// inner_end]`) against some descendant inside it, and on a hit continue the
+    /// outer match (`items[cont..cont_end]`) from `reg_hi`. INNER bindings thread
+    /// forward (visible after the group); a `bound` snapshot/restore around each
+    /// attempt undoes them when that attempt doesn't pan out.
+    #[allow(clippy::too_many_arguments)]
+    fn contains_then_continue(
+        &mut self,
+        inner: usize,
+        inner_end: usize,
+        cont: usize,
+        cont_end: usize,
+        reg_lo: usize,
+        reg_hi: usize,
+        hi: usize,
+    ) -> bool {
+        let idx = self.idx;
+        // Descendant candidates fully inside the region, any depth. `candidates`
+        // is post-order (innermost first) and leaf-dedup'd — enough for existence.
+        // (MVP scans all candidates filtered by region; a region-indexed lookup is
+        // a perf follow-up, in line with §10 deferring indexing.)
+        for cand in &idx.candidates {
+            if cand.start_leaf < reg_lo || cand.end_leaf >= reg_hi {
+                continue;
+            }
+            // Snapshot is the *pre-group* bindings (captures inside INNER haven't
+            // happened yet) — usually empty or tiny, so the clone is cheap.
+            let snapshot = self.bound.clone();
+            if self.dp(inner, inner_end, cand.start_leaf, cand.end_leaf + 1)
+                && self.dp(cont, cont_end, reg_hi, hi)
+            {
+                return true;
+            }
+            self.bound = snapshot; // undo INNER bindings from a failed attempt
+        }
+        // INNER matches zero nodes (all-optional INNER, e.g. `\{{ \? \}}`): match
+        // the empty leaf range, then continue.
+        let snapshot = self.bound.clone();
+        if self.dp(inner, inner_end, reg_lo, reg_lo) && self.dp(cont, cont_end, reg_hi, hi) {
+            return true;
+        }
+        self.bound = snapshot;
+        false
+    }
+
     /// `\(X?)` — match zero or one node. Greedy: try one node first, then none
     /// (binding an empty capture at `li`). A regex constrains the node *when
     /// present*; absence is always allowed (the `?` keeps its meaning).
     fn match_optional(
         &mut self,
         pi: usize,
+        end: usize,
         li: usize,
         hi: usize,
         name: Option<&str>,
@@ -501,7 +598,7 @@ impl<'s> Ctx<'_, 's> {
                 match self.bind(name, cap) {
                     BindResult::Inconsistent => continue,
                     bind => {
-                        if self.dp(pi + 1, sp.end_leaf + 1, hi) {
+                        if self.dp(pi + 1, end, sp.end_leaf + 1, hi) {
                             return true;
                         }
                         self.unbind(name, bind);
@@ -521,7 +618,7 @@ impl<'s> Ctx<'_, 's> {
         match self.bind(name, cap) {
             BindResult::Inconsistent => false,
             bind => {
-                if self.dp(pi + 1, li, hi) {
+                if self.dp(pi + 1, end, li, hi) {
                     return true;
                 }
                 self.unbind(name, bind);

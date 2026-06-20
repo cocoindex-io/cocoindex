@@ -12,6 +12,8 @@
 //!   `S?` / `S(?)`   anonymous optional
 //!   `S(NAME:/re/)`  single, regex-constrained — see below
 //!   `S(:/re/)`      regex-constrained, **anonymous** (filter without capturing)
+//!   `S{{ INNER S}}` containment: INNER must match some descendant within a
+//!                   same-level region here (DESIGN §12). Paired; may nest.
 //!   `SS`            a doubled sigil is one **literal** sigil (e.g. `\\` → `\`)
 //! `*` is **same-level** (one parent's direct siblings); a cross-level skip is
 //! written as multiple `*`, one per grammar level.
@@ -76,6 +78,14 @@ pub enum PatternItem {
         card: Cardinality,
         regex: Option<Regex>,
     },
+    /// `\{{` — opens a containment group `\{{ INNER \}}` (DESIGN §12). `close` is
+    /// the index of the matching `ContainsClose` in the flat items vec
+    /// (back-patched by `lex`); `INNER` is `items[self_index+1 .. close]`. Kept
+    /// flat (not a nested `Vec`) so the DP runs in one `pi` space with one memo,
+    /// and nesting falls out of the back-patched indices.
+    ContainsOpen { close: usize },
+    /// `\}}` — closes the containment group opened by the matching `ContainsOpen`.
+    ContainsClose,
 }
 
 pub fn lex(pattern: &str, cfg: &LangConfig) -> Result<Vec<PatternItem>> {
@@ -112,6 +122,18 @@ pub fn lex(pattern: &str, cfg: &LangConfig) -> Result<Vec<PatternItem>> {
             if pattern[after..].starts_with(cfg.meta_char) {
                 out.push(PatternItem::Token(cfg.meta_char.to_string()));
                 i = after + cfg.meta_char.len_utf8();
+                continue;
+            }
+            // containment markers `\{{` / `\}}` (sigil-agnostic: the `{{`/`}}`
+            // sits right after the sigil). `close` is back-patched after lexing.
+            if pattern[after..].starts_with("{{") {
+                out.push(PatternItem::ContainsOpen { close: 0 });
+                i = after + 2;
+                continue;
+            }
+            if pattern[after..].starts_with("}}") {
+                out.push(PatternItem::ContainsClose);
+                i = after + 2;
                 continue;
             }
             if let Some((item, next)) = lex_metavar(pattern, bytes, after)? {
@@ -181,7 +203,33 @@ pub fn lex(pattern: &str, cfg: &LangConfig) -> Result<Vec<PatternItem>> {
         i += clen;
     }
 
+    resolve_contains(&mut out)?;
     Ok(out)
+}
+
+/// Pair up `\{{` / `\}}` markers and back-patch each `ContainsOpen.close` with the
+/// index of its matching `ContainsClose`. A `client` error on any unbalanced
+/// marker (the pattern is malformed). Nesting is handled by the stack.
+fn resolve_contains(items: &mut [PatternItem]) -> Result<()> {
+    let mut stack: Vec<usize> = Vec::new();
+    for idx in 0..items.len() {
+        match &items[idx] {
+            PatternItem::ContainsOpen { .. } => stack.push(idx),
+            PatternItem::ContainsClose => {
+                let open = stack
+                    .pop()
+                    .ok_or_else(|| Error::client("unmatched `\\}}` in pattern"))?;
+                if let PatternItem::ContainsOpen { close } = &mut items[open] {
+                    *close = idx;
+                }
+            }
+            _ => {}
+        }
+    }
+    if !stack.is_empty() {
+        return Err(Error::client("unmatched `\\{{` in pattern"));
+    }
+    Ok(())
 }
 
 /// Parse a metavar given `s` = the index just past the sigil. `Ok(Some(..))` is
