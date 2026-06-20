@@ -131,6 +131,7 @@ fn core_module(m: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()>
     // Structural code matching over a reusable parsed AST
     m.add_class::<code_ast::PyCodeAst>()?;
     m.add_class::<code_ast::PyCodeMatch>()?;
+    m.add_class::<code_ast::PyCodePattern>()?;
     m.add_function(wrap_pyfunction!(code_ast::match_code, m)?)?;
 
     // Synchronization primitives

@@ -2,7 +2,7 @@
 
 import pytest
 
-from cocoindex.ops.code import CodeAst, CodeMatch, match_code
+from cocoindex.ops.code import CodeAst, CodeMatch, CodePattern, match_code
 from cocoindex.resources.chunk import Chunk
 
 _PY_SRC = "def foo(a, b):\n    return a + b\n\ndef bar(x):\n    return x\n"
@@ -87,3 +87,31 @@ def test_malformed_pattern_raises() -> None:
     ast = CodeAst(_PY_SRC, language="python")
     with pytest.raises(ValueError):
         ast.matches(r"\(:/[/)")  # unterminated regex matcher
+
+
+def test_code_pattern_reused_across_asts() -> None:
+    # Compile once, match against many ASTs — same results as passing the string.
+    cp = CodePattern(r"def \NAME(\(ARGS*)):", language="python")
+    assert cp.language == "python"
+    ast = CodeAst(_PY_SRC, language="python")
+    via_obj = {_cap(m, "NAME") for m in ast.matches(cp)}
+    via_str = {_cap(m, "NAME") for m in ast.matches(r"def \NAME(\(ARGS*)):")}
+    assert via_obj == via_str == {"foo", "bar"}
+
+
+def test_code_pattern_match_source_and_might_match() -> None:
+    cp = CodePattern(r"return process(\X)", language="python")
+    # prefilter: a source without `process` is rejected without parsing
+    assert cp.might_match("def f():\n    return process(x)\n")
+    assert not cp.might_match("def f():\n    return other(x)\n")
+    # match_source agrees with the prefilter and binds captures
+    hit = cp.match_source("def f():\n    return process(item)\n")
+    assert [_cap(m, "X") for m in hit] == ["item"]
+    assert cp.match_source("def f():\n    return other(item)\n") == []
+
+
+def test_code_pattern_language_mismatch_raises() -> None:
+    cp = CodePattern(r"return \X;", language="c++")
+    ast = CodeAst(_PY_SRC, language="python")
+    with pytest.raises(ValueError):
+        ast.matches(cp)

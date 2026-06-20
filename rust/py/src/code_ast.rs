@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::ops::Range;
 
 use cocoindex_code_match::lang;
-use cocoindex_code_match::{Match, Pattern};
+use cocoindex_code_match::{Match, Pattern, Prefilter};
 use cocoindex_ops_text::prog_langs;
 use cocoindex_ops_text::split::{
     LineIndex, OutputPosition, RecursiveChunkConfig, RecursiveChunker, RecursiveSplitConfig,
@@ -147,17 +147,43 @@ impl PyCodeAst {
         &self.source
     }
 
-    /// Find every match of a structural `pattern`, reusing the parse. Raises
-    /// `ValueError` if the language is unsupported for matching or the pattern
-    /// is malformed.
-    fn matches(&self, py: Python<'_>, pattern: &str) -> PyResult<Vec<PyCodeMatch>> {
+    /// Find every match of `pattern`, reusing the parse. `pattern` is either a
+    /// pattern **string** (compiled on the spot) or a precompiled **`CodePattern`**
+    /// (reuses its compilation — preferred when matching the same pattern across
+    /// many ASTs). Raises `ValueError` if the language is unsupported for matching,
+    /// the pattern string is malformed, or a `CodePattern`'s language differs from
+    /// this AST's.
+    fn matches(&self, py: Python<'_>, pattern: &Bound<'_, PyAny>) -> PyResult<Vec<PyCodeMatch>> {
+        // Reuse path: a precompiled CodePattern.
+        if let Ok(cp) = pattern.cast::<PyCodePattern>() {
+            let cp = cp.borrow();
+            if !same_grammar(&self.language, &cp.language) {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "CodePattern language {:?} does not match this AST's {:?}",
+                    cp.language, self.language
+                )));
+            }
+            // Capture `&Pattern` (not the GIL-bound `PyRef`) across `detach`.
+            let compiled = &cp.pattern;
+            return Ok(py.detach(|| {
+                let line_index = self
+                    .line_index
+                    .get_or_init(|| LineIndex::build(&self.source));
+                let raw = compiled.matches_in_tree(&self.tree, &self.source);
+                build_matches(&self.source, line_index, raw)
+            }));
+        }
+        // Convenience path: a pattern string, compiled here.
+        let pattern: String = pattern.extract().map_err(|_| {
+            pyo3::exceptions::PyTypeError::new_err("pattern must be a str or CodePattern")
+        })?;
         let cfg = lang::by_name(&self.language).ok_or_else(|| {
             pyo3::exceptions::PyValueError::new_err(format!(
                 "structural matching is not supported for language {:?}",
                 self.language
             ))
         })?;
-        let compiled = Pattern::compile(pattern, &cfg)
+        let compiled = Pattern::compile(&pattern, &cfg)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{e}")))?;
         Ok(py.detach(|| {
             let line_index = self
@@ -201,6 +227,79 @@ impl PyCodeAst {
     }
 }
 
+/// A **compiled** structural pattern + its prefilter, built once and reused across
+/// many sources/files — so matching the same pattern over a corpus doesn't recompile
+/// it each time. Construct with `CodePattern(pattern, language, min_len=3)`.
+#[pyclass(name = "CodePattern")]
+pub struct PyCodePattern {
+    language: String,
+    pattern: Pattern,
+    prefilter: Prefilter,
+}
+
+#[pymethods]
+impl PyCodePattern {
+    /// Compile `pattern` for `language` once. `min_len` tunes the prefilter (terms
+    /// shorter than this are dropped). Raises `ValueError` if the language is
+    /// unsupported for matching or the pattern is malformed.
+    #[new]
+    #[pyo3(signature = (pattern, language, min_len=3))]
+    fn new(pattern: &str, language: String, min_len: usize) -> PyResult<Self> {
+        let cfg = lang::by_name(&language).ok_or_else(|| {
+            pyo3::exceptions::PyValueError::new_err(format!(
+                "structural matching is not supported for language {language:?}"
+            ))
+        })?;
+        let compiled = Pattern::compile(pattern, &cfg)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{e}")))?;
+        let prefilter = compiled.prefilter(min_len);
+        Ok(Self {
+            language,
+            pattern: compiled,
+            prefilter,
+        })
+    }
+
+    /// The language this pattern was compiled for.
+    #[getter]
+    fn language(&self) -> &str {
+        &self.language
+    }
+
+    /// Whether `source` **might** contain a match — a cheap, parse-free prefilter
+    /// check. `False` means it definitely can't (skip it); `True` means "maybe".
+    fn might_match(&self, source: &str) -> bool {
+        self.prefilter.might_match(source)
+    }
+
+    /// Match against `source`, parsing it — but skip the parse entirely when the
+    /// prefilter rejects it. Reuses this pattern's compilation across calls.
+    fn match_source(&self, py: Python<'_>, source: String) -> Vec<PyCodeMatch> {
+        py.detach(|| {
+            let raw = self.pattern.matches_prefiltered(&source, &self.prefilter);
+            if raw.is_empty() {
+                return Vec::new();
+            }
+            let line_index = LineIndex::build(&source);
+            build_matches(&source, &line_index, raw)
+        })
+    }
+
+    fn __repr__(&self) -> String {
+        format!("CodePattern(language={:?})", self.language)
+    }
+}
+
+/// Whether two language names resolve to the same tree-sitter grammar (so a pattern
+/// compiled for one can match a tree parsed for the other) — handles aliases
+/// (`c++`/`cpp`). `false` if either is unsupported for matching.
+fn same_grammar(a: &str, b: &str) -> bool {
+    match (lang::by_name(a), lang::by_name(b)) {
+        (Some(ca), Some(cb)) => ca.language == cb.language,
+        _ => false,
+    }
+}
+
 /// One-shot convenience: parse `source` for `language` and return all matches of
 /// `pattern`. Equivalent to `CodeAst(source, language).matches(pattern)` but
 /// without keeping the AST around.
@@ -211,5 +310,18 @@ pub fn match_code(
     source: String,
     language: String,
 ) -> PyResult<Vec<PyCodeMatch>> {
-    PyCodeAst::new(source, language)?.matches(py, pattern)
+    let ast = PyCodeAst::new(source, language)?;
+    let cfg = lang::by_name(&ast.language).ok_or_else(|| {
+        pyo3::exceptions::PyValueError::new_err(format!(
+            "structural matching is not supported for language {:?}",
+            ast.language
+        ))
+    })?;
+    let compiled = Pattern::compile(pattern, &cfg)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{e}")))?;
+    Ok(py.detach(|| {
+        let line_index = LineIndex::build(&ast.source);
+        let raw = compiled.matches_in_tree(&ast.tree, &ast.source);
+        build_matches(&ast.source, &line_index, raw)
+    }))
 }
