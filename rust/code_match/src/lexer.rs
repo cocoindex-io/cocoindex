@@ -11,6 +11,7 @@
 //!   `S_` / `S(_)`   anonymous single        `S*` / `S(*)`  anonymous many
 //!   `S?` / `S(?)`   anonymous optional
 //!   `S(NAME:/re/)`  single, regex-constrained — see below
+//!   `SS`            a doubled sigil is one **literal** sigil (e.g. `\\` → `\`)
 //! `*` is **same-level** (one parent's direct siblings); a cross-level skip is
 //! written as multiple `*`, one per grammar level.
 //! Names are `[A-Za-z0-9_]+` (upper/lower/digit, sed-like `\1`); UPPERCASE is a
@@ -84,6 +85,13 @@ pub fn lex(pattern: &str, cfg: &LangConfig) -> Result<Vec<PatternItem>> {
         // metavar sigil (compare as a char; any sigil works, not just ASCII)
         if first == cfg.meta_char {
             let after = i + clen;
+            // escaped sigil: a doubled sigil (`\\`) is one *literal* sigil — the
+            // way to write a literal `\` (or whatever the sigil is) in a pattern.
+            if pattern[after..].starts_with(cfg.meta_char) {
+                out.push(PatternItem::Token(cfg.meta_char.to_string()));
+                i = after + cfg.meta_char.len_utf8();
+                continue;
+            }
             if let Some((item, next)) = lex_metavar(pattern, bytes, after)? {
                 out.push(item);
                 i = next;

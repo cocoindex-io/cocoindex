@@ -292,6 +292,25 @@ fn configurable_dollar_sigil() {
     );
 }
 
+#[test]
+fn escaped_sigil_is_literal() {
+    // A doubled sigil is one *literal* sigil. `\\X` is a literal `\` + `X`, not a
+    // metavar, so it does not match `a = 1` the way `\X` does.
+    let ts = lang::typescript();
+    assert!(!matches(ts.clone(), r"\X = 1", "a = 1;").is_empty());
+    assert!(
+        matches(ts, r"\\X = 1", "a = 1;").is_empty(),
+        "`\\\\X` must be a literal backslash + X, not a metavar",
+    );
+    // And the escape is sigil-agnostic: with `$` as the sigil, `$$` is a literal
+    // `$` — here matching a jQuery-style `$(…)` call.
+    let dollar = lang::typescript().with_meta_char('$');
+    assert!(has_kind(
+        &matches(dollar, "$$(a)", "$(a);"),
+        "call_expression"
+    ));
+}
+
 // ---------------- lexer robustness ----------------
 
 #[test]
