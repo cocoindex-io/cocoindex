@@ -176,13 +176,13 @@ pub fn triple_sq_string() -> TokenRule {
     regex_rule(r"(?s)^'''.*?'''", TokKind::Str)
 }
 
-/// A convenience tokenizer set for **C-style** languages: identifier, number,
-/// and the three quote styles with *backslash* escaping. Correct for the large
-/// family (C/C++/Rust/Java/JS/TS/C#/Go/…), but **not** universal — languages
-/// that escape differently (SQL/Fortran/Pascal `''` doubling, shells/TOML
-/// literal `'...'`, Go raw backticks) must build their own set from the
+/// The tokenizer profile for **C-style** languages: identifier, number, and the
+/// three quote styles with *backslash* escaping. Passed explicitly by the large
+/// family (C/C++/Rust/Java/JS/TS/C#/Go/…) to [`LangConfig::from_grammar`].
+/// Languages that escape differently (SQL/Fortran/Pascal `''` doubling,
+/// shells/TOML literal `'...'`, Go raw backticks) compose their own set from the
 /// `*_doubled` / `*_literal` builders above. Verify with a `literal_forms` test.
-pub fn generic_tokenizers() -> Vec<TokenRule> {
+pub fn c_like_tokenizers() -> Vec<TokenRule> {
     vec![
         identifier(),
         number(""),
@@ -221,12 +221,14 @@ pub struct LangConfig {
 }
 
 impl LangConfig {
-    /// Build a config from a grammar. Seeds the **C-style** `generic_tokenizers`
-    /// (backslash escaping) and the derived op/splittable tables; a language
-    /// module then refines the literal profile via `with_tokenizers`. The seeded
-    /// default is a convenience, *not* a guarantee — if the language escapes
-    /// strings differently it must override (see `generic_tokenizers`).
-    pub fn from_grammar(language: Language) -> Self {
+    /// Build a config from a grammar and an **explicit** tokenizer profile.
+    /// There is deliberately no default: every language must state how its
+    /// literals tokenize, because string-escaping conventions differ (a `"a\"b"`
+    /// that is one string in C is two in a doubled-quote language). C-style
+    /// languages pass [`c_like_tokenizers`]; others compose the `*_doubled` /
+    /// `*_literal` / `triple_*` builders. Op/splittable tables are derived from
+    /// the grammar.
+    pub fn from_grammar(language: Language, tokenizers: Vec<TokenRule>) -> Self {
         let single_char = single_char_punct_tokens(&language);
         let splittable = detect_splittable(&language, &single_char);
         let op_tokens = derive_op_tokens(&language, &splittable);
@@ -235,16 +237,10 @@ impl LangConfig {
             op_tokens,
             splittable,
             meta_char: '\\',
-            tokenizers: generic_tokenizers(),
+            tokenizers,
             transitions: Vec::new(),
             ws_preserve: 0,
         }
-    }
-
-    /// Replace the tokenizer set (per-language literal profiles).
-    pub fn with_tokenizers(mut self, tokenizers: Vec<TokenRule>) -> Self {
-        self.tokenizers = tokenizers;
-        self
     }
 
     /// Configure a context-sensitive (multi-mode) lexer: `transitions` flip the

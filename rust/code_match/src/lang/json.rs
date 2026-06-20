@@ -14,7 +14,7 @@ pub fn json() -> LangConfig {
             ),
             dq_string(),
         ];
-        LangConfig::from_grammar(Language::new(tree_sitter_json::LANGUAGE)).with_tokenizers(toks)
+        LangConfig::from_grammar(Language::new(tree_sitter_json::LANGUAGE), toks)
     });
     CFG.clone()
 }

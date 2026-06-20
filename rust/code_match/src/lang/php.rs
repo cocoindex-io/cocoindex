@@ -1,11 +1,15 @@
-//! PHP. Config-wise generic; `$` is ordinary source (the sigil is `\`).
-use crate::config::LangConfig;
+//! PHP: C-style escaping; `$` is ordinary source (the sigil is `\`).
+use crate::config::*;
 use std::sync::LazyLock;
 use tree_sitter::Language;
 
 pub fn php() -> LangConfig {
-    static CFG: LazyLock<LangConfig> =
-        LazyLock::new(|| LangConfig::from_grammar(Language::new(tree_sitter_php::LANGUAGE_PHP)));
+    static CFG: LazyLock<LangConfig> = LazyLock::new(|| {
+        LangConfig::from_grammar(
+            Language::new(tree_sitter_php::LANGUAGE_PHP),
+            c_like_tokenizers(),
+        )
+    });
     CFG.clone()
 }
 

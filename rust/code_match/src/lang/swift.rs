@@ -14,7 +14,7 @@ pub fn swift() -> LangConfig {
             triple_dq_string(),
             TokenRule::new(SwiftRawString, TokKind::Str),
         ];
-        LangConfig::from_grammar(Language::new(tree_sitter_swift::LANGUAGE)).with_tokenizers(toks)
+        LangConfig::from_grammar(Language::new(tree_sitter_swift::LANGUAGE), toks)
     });
     CFG.clone()
 }

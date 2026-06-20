@@ -11,8 +11,7 @@ pub(crate) fn c_tokenizers() -> Vec<TokenRule> {
 
 pub fn c() -> LangConfig {
     static CFG: LazyLock<LangConfig> = LazyLock::new(|| {
-        LangConfig::from_grammar(Language::new(tree_sitter_c::LANGUAGE))
-            .with_tokenizers(c_tokenizers())
+        LangConfig::from_grammar(Language::new(tree_sitter_c::LANGUAGE), c_tokenizers())
     });
     CFG.clone()
 }

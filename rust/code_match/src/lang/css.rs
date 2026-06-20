@@ -23,7 +23,7 @@ pub fn css() -> LangConfig {
             // `!important` / `!default` — one token.
             regex_rule(r"^![A-Za-z]+", TokKind::Token),
         ];
-        LangConfig::from_grammar(Language::new(tree_sitter_css::LANGUAGE)).with_tokenizers(toks)
+        LangConfig::from_grammar(Language::new(tree_sitter_css::LANGUAGE), toks)
     });
     CFG.clone()
 }

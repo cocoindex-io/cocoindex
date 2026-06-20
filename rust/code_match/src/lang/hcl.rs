@@ -1,14 +1,18 @@
-//! hcl (HashiCorp Configuration Language / Terraform). The generic profile fits:
+//! hcl (HashiCorp Configuration Language / Terraform). The C-style profile fits:
 //! strings use backslash escaping and `${...}` interpolation is matched opaquely
 //! via the whole string node. Heredocs (`<<EOF ... EOF`) are one node — match
 //! them with a metavar rather than an exact literal.
-use crate::config::LangConfig;
+use crate::config::*;
 use std::sync::LazyLock;
 use tree_sitter::Language;
 
 pub fn hcl() -> LangConfig {
-    static CFG: LazyLock<LangConfig> =
-        LazyLock::new(|| LangConfig::from_grammar(Language::new(tree_sitter_hcl::LANGUAGE)));
+    static CFG: LazyLock<LangConfig> = LazyLock::new(|| {
+        LangConfig::from_grammar(
+            Language::new(tree_sitter_hcl::LANGUAGE),
+            c_like_tokenizers(),
+        )
+    });
     CFG.clone()
 }
 

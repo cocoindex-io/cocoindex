@@ -5,10 +5,9 @@ use tree_sitter::Language;
 
 pub fn kotlin() -> LangConfig {
     static CFG: LazyLock<LangConfig> = LazyLock::new(|| {
-        let mut toks = generic_tokenizers();
+        let mut toks = c_like_tokenizers();
         toks.push(triple_dq_string());
-        LangConfig::from_grammar(Language::new(tree_sitter_kotlin_ng::LANGUAGE))
-            .with_tokenizers(toks)
+        LangConfig::from_grammar(Language::new(tree_sitter_kotlin_ng::LANGUAGE), toks)
     });
     CFG.clone()
 }

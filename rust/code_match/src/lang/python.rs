@@ -6,7 +6,7 @@ use tree_sitter::Language;
 
 pub fn python() -> LangConfig {
     static CFG: LazyLock<LangConfig> = LazyLock::new(|| {
-        let mut toks = generic_tokenizers();
+        let mut toks = c_like_tokenizers();
         // triple-quoted (with optional r/b/f/u prefixes), then prefixed single
         // line strings. Interpolation inside f-strings is treated opaquely.
         toks.push(regex_rule(r#"(?s)^[rbfuRBFU]{0,2}""".*?""""#, TokKind::Str));
@@ -19,7 +19,7 @@ pub fn python() -> LangConfig {
             r"^[rbfuRBFU]{1,2}'(?:\\.|[^'\\])*'",
             TokKind::Str,
         ));
-        LangConfig::from_grammar(Language::new(tree_sitter_python::LANGUAGE)).with_tokenizers(toks)
+        LangConfig::from_grammar(Language::new(tree_sitter_python::LANGUAGE), toks)
     });
     CFG.clone()
 }

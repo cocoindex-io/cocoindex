@@ -15,7 +15,7 @@ pub fn sql() -> LangConfig {
             dq_string_doubled(), // "delimited ""id"""
             backtick_string(),   // `mysql_id`
         ];
-        LangConfig::from_grammar(Language::new(tree_sitter_sequel::LANGUAGE)).with_tokenizers(toks)
+        LangConfig::from_grammar(Language::new(tree_sitter_sequel::LANGUAGE), toks)
     });
     CFG.clone()
 }

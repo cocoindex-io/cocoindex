@@ -18,8 +18,7 @@ pub fn solidity() -> LangConfig {
             regex_rule(r#"^unicode"(?:\\.|[^"\\])*""#, TokKind::Str),
             regex_rule(r"^unicode'(?:\\.|[^'\\])*'", TokKind::Str),
         ];
-        LangConfig::from_grammar(Language::new(tree_sitter_solidity::LANGUAGE))
-            .with_tokenizers(toks)
+        LangConfig::from_grammar(Language::new(tree_sitter_solidity::LANGUAGE), toks)
     });
     CFG.clone()
 }

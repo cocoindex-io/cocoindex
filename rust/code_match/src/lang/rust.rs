@@ -14,7 +14,7 @@ pub fn rust() -> LangConfig {
             TokenRule::new(RustRawString, TokKind::Str),
             regex_rule(r#"(?s)^b"(?:\\.|[^"\\])*""#, TokKind::Str), // byte string b"..."
         ];
-        LangConfig::from_grammar(Language::new(tree_sitter_rust::LANGUAGE)).with_tokenizers(toks)
+        LangConfig::from_grammar(Language::new(tree_sitter_rust::LANGUAGE), toks)
     });
     CFG.clone()
 }

@@ -6,9 +6,9 @@ use tree_sitter::Language;
 
 pub fn java() -> LangConfig {
     static CFG: LazyLock<LangConfig> = LazyLock::new(|| {
-        let mut toks = generic_tokenizers();
+        let mut toks = c_like_tokenizers();
         toks.push(triple_dq_string());
-        LangConfig::from_grammar(Language::new(tree_sitter_java::LANGUAGE)).with_tokenizers(toks)
+        LangConfig::from_grammar(Language::new(tree_sitter_java::LANGUAGE), toks)
     });
     CFG.clone()
 }
