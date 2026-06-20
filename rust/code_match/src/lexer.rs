@@ -45,12 +45,27 @@ pub enum Cardinality {
 
 // `Regex` is not `PartialEq`/`Eq`, so `PatternItem` isn't either (it's only ever
 // pattern-matched, never compared for equality).
+//
+// `Token` vs `Str` are two **distinct match operations** (not a vestigial split):
+//   - `Token` → one source *leaf* by text, advancing exactly one leaf.
+//   - `Str`   → one whole *node* span by text, advancing past all its leaves.
+// They can't be unified without loss. An operator/punctuation leaf (`+`, `<`) is
+// *anonymous* — it never appears as a named span, so the whole-node path can't
+// reach it. A composite literal (`"foo"`, `'a'`, a raw string) spans ≥2 leaves
+// (quote + content + quote), so the single-leaf path can't reach it. The split
+// also lets the matcher do the minimal correct lookup in its hot path instead of
+// speculatively trying both. Critically, the lexer already knows which one a
+// token is — for free, from the tokenizer's `TokKind` (config.rs) — so encoding
+// it in the variant here is the "exchange to the strong type early" rule: a
+// unified variant would discard that and re-derive it per compare at match time.
 #[derive(Debug, Clone)]
 pub enum PatternItem {
-    /// Word (identifier / keyword / number) or operator/punctuation token.
-    /// Matched against a single source *leaf* by text.
+    /// Operator / punctuation / word (identifier / keyword / number) — always a
+    /// single source *leaf*. Matched against `leaves[li]` by text (advance 1 leaf).
     Token(String),
-    /// String literal (with quotes). Matched against a source string *node* by text.
+    /// Atomic whole-node literal: string / char / raw string, and any other
+    /// `TokKind::Str` class (e.g. TOML dates, CSS hex colors). Matched against a
+    /// source *node* span by text, atomically (advance past the whole span).
     Str(String),
     /// Metavariable. `name` == None for anonymous (`\_`, `\*`, `\?`). `regex`, if
     /// present, constrains the captured text (unanchored `is_match`); honored for

@@ -18,12 +18,16 @@ use tree_sitter::Language;
 // Tokenizer interface
 // ---------------------------------------------------------------------------
 
-/// How a matched pattern token aligns against the source.
+/// How a matched pattern token aligns against the source. This is the strong
+/// type the lexer carries into `PatternItem::{Token, Str}` — the two are distinct
+/// match operations (single leaf vs whole node), not a redundant split; see the
+/// note on `PatternItem` in `lexer.rs`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TokKind {
-    /// Word / number / operator — matched against a single source *leaf* by text.
+    /// Word / number / operator — always a single source *leaf*, matched by text.
     Token,
-    /// String / char / raw literal — matched against a source *node* by text.
+    /// String / char / raw literal (or any atomic whole-node class) — matched
+    /// against a source *node* by text, spanning all its leaves at once.
     Str,
 }
 
