@@ -178,6 +178,24 @@ fn regex_constrains_identifier() {
 }
 
 #[test]
+fn anonymous_regex_matcher() {
+    // `\(:/re/)` — a regex constraint with no name: filter a node without
+    // capturing it. Here the callee must match `^get`, but isn't bound.
+    let src = "getUser(1); setName(2); getId(3);";
+    let ms = matches(lang::typescript(), r"\(:/^get/)(\*)", src);
+    let callees: Vec<&str> = ms
+        .iter()
+        .filter(|m| m.kind == "call_expression")
+        .map(|m| m.text)
+        .collect();
+    assert!(callees.contains(&"getUser(1)") && callees.contains(&"getId(3)"));
+    assert!(
+        !callees.iter().any(|t| t.contains("setName")),
+        "the `^get` constraint must exclude setName, got {callees:?}",
+    );
+}
+
+#[test]
 fn regex_pins_nesting_level() {
     // Larger spans (`foo.bar`, `foo.bar(x)`) all start at `foo`; `^foo$` filters
     // the candidates down to the leaf. Exercises "every sub-layer is a candidate".
@@ -290,6 +308,25 @@ fn configurable_dollar_sigil() {
         ms.iter()
             .any(|m| m.capture_text("A") == Some("a") && m.capture_text("B") == Some("b"))
     );
+}
+
+#[test]
+fn escaped_sigil_is_literal() {
+    // A doubled sigil is one *literal* sigil. `\\X` is a literal `\` + `X`, not a
+    // metavar, so it does not match `a = 1` the way `\X` does.
+    let ts = lang::typescript();
+    assert!(!matches(ts.clone(), r"\X = 1", "a = 1;").is_empty());
+    assert!(
+        matches(ts, r"\\X = 1", "a = 1;").is_empty(),
+        "`\\\\X` must be a literal backslash + X, not a metavar",
+    );
+    // And the escape is sigil-agnostic: with `$` as the sigil, `$$` is a literal
+    // `$` — here matching a jQuery-style `$(…)` call.
+    let dollar = lang::typescript().with_meta_char('$');
+    assert!(has_kind(
+        &matches(dollar, "$$(a)", "$(a);"),
+        "call_expression"
+    ));
 }
 
 // ---------------- lexer robustness ----------------
