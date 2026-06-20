@@ -576,6 +576,58 @@ fn contains_unbalanced_markers_error() {
     assert!(Pattern::compile(r"return \X \}}", &lang::python()).is_err());
 }
 
+// ---------------- comments are transparent ----------------
+
+#[test]
+fn comment_between_tokens_is_ignored() {
+    // A block comment sitting between call args must not break the match, and must
+    // not leak into the capture.
+    let ms = matches(lang::rust(), r"foo(\X)", "fn m() { foo(/* hi */ bar); }");
+    assert_eq!(cap(&ms, "X").as_deref(), Some("bar"));
+}
+
+#[test]
+fn code_inside_a_comment_is_not_matched() {
+    // `foo(bar)` written inside a line comment must not match.
+    let ms = matches(lang::python(), r"foo(\X)", "# foo(bar)\ny = 1\n");
+    assert!(ms.is_empty(), "must not match inside a comment, got {ms:?}");
+}
+
+#[test]
+fn comment_between_statements_is_ignored() {
+    let src = "def f():\n    # leading comment\n    return a + b\n";
+    let ms = matches(lang::python(), r"return \X", src);
+    assert_eq!(cap(&ms, "X").as_deref(), Some("a + b"));
+}
+
+#[test]
+fn star_run_does_not_absorb_a_comment_into_its_capture() {
+    // A `\*` sibling run skips comment nodes — the captured text is the args only.
+    let ms = matches(
+        lang::rust(),
+        r"foo(\(ARGS*))",
+        "fn m() { foo(a, /* c */ b); }",
+    );
+    assert_eq!(cap(&ms, "ARGS").as_deref(), Some("a, /* c */ b"));
+    // the matched call is reported, args captured across the comment
+    assert!(has_kind(&ms, "call_expression"));
+}
+
+#[test]
+fn prefilter_passes_comment_text_but_the_matcher_skips_it() {
+    // The index-free prefilter is a raw-text scan, so it *can* pass on a term that
+    // only appears in a comment (a sound false positive); the matcher then skips
+    // the comment, so the end-to-end result is correctly no match.
+    let pat = Pattern::compile(r"process(\X)", &lang::python()).unwrap();
+    let pf = pat.prefilter(3);
+    let src = "# process(stuff)\nx = 1\n";
+    assert!(pf.might_match(src), "raw-text prefilter sees `process`");
+    assert!(
+        pat.matches_prefiltered(src, &pf).is_empty(),
+        "matcher skips the comment → no match",
+    );
+}
+
 // ---------------- operator/generics alignment ----------------
 
 #[test]
