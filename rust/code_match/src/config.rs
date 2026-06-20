@@ -35,11 +35,18 @@ pub trait Tokenizer: Send + Sync {
     fn match_len(&self, input: &str) -> Option<usize>;
 }
 
-/// A tokenizer paired with how its match should be emitted.
+/// A tokenizer active in any lexer mode (the default mask).
+pub const ALL_MODES: u8 = 0xFF;
+
+/// A tokenizer paired with how its match should be emitted and which lexer
+/// **modes** it's active in. Most languages have one mode (`ALL_MODES`);
+/// context-sensitive ones (HTML/XML) restrict rules per mode (DESIGN: lexer modes).
 #[derive(Clone)]
 pub struct TokenRule {
     pub tokenizer: Arc<dyn Tokenizer>,
     pub kind: TokKind,
+    /// Bitmask of modes this rule applies in (bit `m` ↔ mode `m`).
+    pub modes: u8,
 }
 
 impl TokenRule {
@@ -47,7 +54,13 @@ impl TokenRule {
         TokenRule {
             tokenizer: Arc::new(tokenizer),
             kind,
+            modes: ALL_MODES,
         }
+    }
+    /// Restrict this rule to a set of lexer modes (a bitmask).
+    pub fn in_modes(mut self, modes: u8) -> Self {
+        self.modes = modes;
+        self
     }
 }
 
@@ -111,6 +124,14 @@ pub fn backtick_string() -> TokenRule {
     regex_rule(r"(?s)^`(?:\\.|[^`\\])*`", TokKind::Str)
 }
 
+/// A free-text run up to (not including) `stop`, emitted atomically like a
+/// string node. Used for markup text content (HTML/XML), where the run has no
+/// special punctuation and a `"` is a literal char, not a string delimiter.
+/// `stop` must be safe inside a regex character class (e.g. `<`).
+pub fn free_text(stop: char) -> TokenRule {
+    regex_rule(&format!("^[^{stop}]+"), TokKind::Str)
+}
+
 /// The default tokenizer set (identifier, number, the three quote styles).
 pub fn generic_tokenizers() -> Vec<TokenRule> {
     vec![
@@ -140,6 +161,14 @@ pub struct LangConfig {
     /// Tokenizers for literal/identifier classes, tried at each position; the
     /// longest match wins.
     pub tokenizers: Vec<TokenRule>,
+    /// Lexer **mode** transitions: in mode `from`, emitting a single-char token
+    /// whose text is `trigger` switches the lexer to mode `to`. Empty ⇒ a single
+    /// mode (mode 0), the default. HTML/XML use this to flip between text and tag
+    /// context (`<` ⇒ tag, `>` ⇒ text).
+    pub transitions: Vec<(u8, char, u8)>,
+    /// Bitmask of modes that **preserve** whitespace (the lexer does not skip it)
+    /// — e.g. HTML text content. Default 0 (whitespace skipped in every mode).
+    pub ws_preserve: u8,
 }
 
 impl LangConfig {
@@ -155,12 +184,23 @@ impl LangConfig {
             splittable,
             meta_char: '\\',
             tokenizers: generic_tokenizers(),
+            transitions: Vec::new(),
+            ws_preserve: 0,
         }
     }
 
     /// Replace the tokenizer set (per-language literal profiles).
     pub fn with_tokenizers(mut self, tokenizers: Vec<TokenRule>) -> Self {
         self.tokenizers = tokenizers;
+        self
+    }
+
+    /// Configure a context-sensitive (multi-mode) lexer: `transitions` flip the
+    /// active mode on single-char tokens, `ws_preserve` marks modes whose
+    /// whitespace is significant.
+    pub fn with_modes(mut self, transitions: Vec<(u8, char, u8)>, ws_preserve: u8) -> Self {
+        self.transitions = transitions;
+        self.ws_preserve = ws_preserve;
         self
     }
 
@@ -172,6 +212,25 @@ impl LangConfig {
 
     pub fn is_splittable(&self, text: &str) -> bool {
         self.splittable.contains(text)
+    }
+
+    /// Whether mode `m` preserves whitespace (the lexer should not skip it).
+    pub fn preserves_ws(&self, mode: u8) -> bool {
+        (self.ws_preserve >> mode) & 1 == 1
+    }
+
+    /// The mode after emitting an operator token `text` in mode `mode`. A token
+    /// *containing* the trigger char flips the mode, so multi-char tag delimiters
+    /// work too (`</`, `/>`, `<!--` carry `<`/`>`). Only the caller's *operator*
+    /// tokens reach here — string/free-text tokens never trigger, so a `>` inside
+    /// an attribute value or text run doesn't spuriously flip the mode.
+    pub fn mode_after(&self, mode: u8, text: &str) -> u8 {
+        for &(from, trigger, to) in &self.transitions {
+            if from == mode && text.contains(trigger) {
+                return to;
+            }
+        }
+        mode
     }
 }
 

@@ -67,6 +67,9 @@ pub fn lex(pattern: &str, cfg: &LangConfig) -> Result<Vec<PatternItem>> {
     let bytes = pattern.as_bytes();
     let mut i = 0usize;
     let mut out = Vec::new();
+    // Lexer mode — single-mode (0) for most languages; HTML/XML flip between
+    // text (0) and tag (1) on `<`/`>`, which gates the tokenizers + whitespace.
+    let mut mode: u8 = 0;
 
     // We dispatch on the leading `char` at `i` (not a raw byte). `i` is always
     // advanced by char-aligned amounts (a decoded char, a regex match `end()`,
@@ -78,8 +81,10 @@ pub fn lex(pattern: &str, cfg: &LangConfig) -> Result<Vec<PatternItem>> {
         let first = pattern[i..].chars().next().expect("i is a char boundary");
         let clen = first.len_utf8();
 
-        // whitespace (decode the char so non-ASCII whitespace, e.g. U+3000, skips too)
-        if first.is_whitespace() {
+        // whitespace (decode the char so non-ASCII whitespace, e.g. U+3000, skips
+        // too) — unless the current mode preserves it (e.g. HTML text content,
+        // where it's part of the text node).
+        if first.is_whitespace() && !cfg.preserves_ws(mode) {
             i += clen;
             continue;
         }
@@ -112,6 +117,9 @@ pub fn lex(pattern: &str, cfg: &LangConfig) -> Result<Vec<PatternItem>> {
         let mut best_len = 0usize;
         let mut best_kind = TokKind::Token;
         for rule in &cfg.tokenizers {
+            if rule.modes & (1 << mode) == 0 {
+                continue; // not active in the current mode
+            }
             if let Some(l) = rule.tokenizer.match_len(rest)
                 && l > best_len
             {
@@ -138,6 +146,11 @@ pub fn lex(pattern: &str, cfg: &LangConfig) -> Result<Vec<PatternItem>> {
         }
         if best_len > 0 {
             let text = pattern[i..i + best_len].to_string();
+            // Only operator tokens flip the mode (e.g. `<`/`>` in HTML); a string
+            // or free-text token carrying `<`/`>` must not.
+            if best_kind == TokKind::Token {
+                mode = cfg.mode_after(mode, &text);
+            }
             out.push(match best_kind {
                 TokKind::Str => PatternItem::Str(text),
                 TokKind::Token => PatternItem::Token(text),
@@ -147,7 +160,9 @@ pub fn lex(pattern: &str, cfg: &LangConfig) -> Result<Vec<PatternItem>> {
         }
 
         // single-char fallback (a char in neither a literal class nor the op table)
-        out.push(PatternItem::Token(pattern[i..i + clen].to_string()));
+        let text = pattern[i..i + clen].to_string();
+        mode = cfg.mode_after(mode, &text);
+        out.push(PatternItem::Token(text));
         i += clen;
     }
 
