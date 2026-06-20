@@ -11,8 +11,7 @@ use cocoindex_code_match::lang;
 use cocoindex_code_match::{Match, Pattern};
 use cocoindex_ops_text::prog_langs;
 use cocoindex_ops_text::split::{
-    OutputPosition, RecursiveChunkConfig, RecursiveChunker, RecursiveSplitConfig,
-    output_positions_for,
+    LineIndex, OutputPosition, RecursiveChunkConfig, RecursiveChunker, RecursiveSplitConfig,
 };
 use pyo3::prelude::*;
 use tree_sitter::{Parser, Tree};
@@ -69,46 +68,29 @@ fn chunk_from(range: &Range<usize>, s: OutputPosition, e: OutputPosition) -> PyC
     }
 }
 
-/// Convert raw matches to `PyCodeMatch`, computing line/column positions for
-/// every match and capture endpoint in a *single* pass over `source` (the way
-/// the splitter does). Capture names are sorted so the offset read-back aligns.
-fn build_matches(source: &str, raw: Vec<Match<'_>>) -> Vec<PyCodeMatch> {
-    let mut offsets = Vec::new();
-    let mut per_match_caps: Vec<Vec<(String, Range<usize>)>> = Vec::with_capacity(raw.len());
-    for m in &raw {
-        offsets.push(m.range.start);
-        offsets.push(m.range.end);
-        let mut caps: Vec<(String, Range<usize>)> = m
-            .captures
-            .iter()
-            .map(|(k, c)| (k.clone(), c.range.clone()))
-            .collect();
-        caps.sort_by(|a, b| a.0.cmp(&b.0));
-        for (_, r) in &caps {
-            offsets.push(r.start);
-            offsets.push(r.end);
-        }
-        per_match_caps.push(caps);
-    }
-
-    let pos = output_positions_for(source, &offsets);
-    let mut idx = 0usize;
-    let mut out = Vec::with_capacity(raw.len());
-    for (m, caps) in raw.into_iter().zip(per_match_caps) {
-        let chunk = chunk_from(&m.range, pos[idx], pos[idx + 1]);
-        idx += 2;
-        let mut captures: HashMap<String, Vec<PyChunk>> = HashMap::with_capacity(caps.len());
-        for (name, range) in caps {
-            captures.insert(name, vec![chunk_from(&range, pos[idx], pos[idx + 1])]);
-            idx += 2;
-        }
-        out.push(PyCodeMatch {
-            kind: m.kind,
-            chunks: vec![chunk],
-            captures,
-        });
-    }
-    out
+/// Convert raw matches to `PyCodeMatch`, resolving line/column positions for
+/// every match and capture endpoint through the AST's reusable [`LineIndex`]
+/// (each offset is an independent lookup, so no per-call full-file scan).
+fn build_matches(source: &str, line_index: &LineIndex, raw: Vec<Match<'_>>) -> Vec<PyCodeMatch> {
+    let pos = |b: usize| line_index.position(source, b);
+    raw.into_iter()
+        .map(|m| {
+            let chunk = chunk_from(&m.range, pos(m.range.start), pos(m.range.end));
+            let captures = m
+                .captures
+                .iter()
+                .map(|(name, c)| {
+                    let ch = chunk_from(&c.range, pos(c.range.start), pos(c.range.end));
+                    (name.clone(), vec![ch])
+                })
+                .collect();
+            PyCodeMatch {
+                kind: m.kind,
+                chunks: vec![chunk],
+                captures,
+            }
+        })
+        .collect()
 }
 
 /// A parsed code AST. Parse once, then `matches()` structural patterns and/or
@@ -119,6 +101,9 @@ pub struct PyCodeAst {
     source: String,
     language: String,
     tree: Tree,
+    /// Byte→position index over `source`, built on first `matches()` and reused
+    /// across subsequent pattern queries (the "one parse, many patterns" case).
+    line_index: std::sync::OnceLock<LineIndex>,
 }
 
 #[pymethods]
@@ -146,6 +131,7 @@ impl PyCodeAst {
             source,
             language,
             tree,
+            line_index: std::sync::OnceLock::new(),
         })
     }
 
@@ -174,8 +160,11 @@ impl PyCodeAst {
         let compiled = Pattern::compile(pattern, &cfg)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{e}")))?;
         Ok(py.detach(|| {
+            let line_index = self
+                .line_index
+                .get_or_init(|| LineIndex::build(&self.source));
             let raw = compiled.matches_in_tree(&self.tree, &self.source);
-            build_matches(&self.source, raw)
+            build_matches(&self.source, line_index, raw)
         }))
     }
 
