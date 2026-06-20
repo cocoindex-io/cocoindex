@@ -79,6 +79,7 @@ sqlite = ["sqlite-vec>=0.1.6"]
 surrealdb = ["surrealdb>=1.0.0"]
 zvec = ["zvec>=0.4.0"]
 turbopuffer = ["turbopuffer>=0.5.0"]
+valkey = ["valkey-glide>=2.4.0"]
 google_drive = [
     "google-api-python-client>=2.0.0",
     "google-auth>=2.0.0",
@@ -111,6 +112,7 @@ all = [
     "sqlite-vec>=0.1.6",
     "surrealdb>=1.0.0",
     "turbopuffer>=0.5.0",
+    "valkey-glide>=2.4.0",
     "google-api-python-client>=2.0.0",
     "google-auth>=2.0.0",
     "google-auth-httplib2>=0.2.0",
@@ -203,6 +205,8 @@ module = [
     "surrealdb.*",
     "turbopuffer",
     "turbopuffer.*",
+    "glide",
+    "glide.*",
     "googleapiclient",
     "googleapiclient.*",
     "google.oauth2",
