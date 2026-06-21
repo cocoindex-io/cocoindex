@@ -633,6 +633,28 @@ fn regex_matcher_is_whole_node_anchored() {
 }
 
 #[test]
+fn overlapping_fragments_are_leftmost_longest_non_overlapping() {
+    // `a b a b a b a` parses (bash) as one `command` with seven `word` siblings.
+    // A *fragment* pattern reports every non-overlapping occurrence within the node
+    // (leftmost-longest), not just the first.
+    let bash = || cocoindex_code_match::lang::by_name("bash").unwrap();
+    let src = "a b a b a b a\n";
+    let texts = |p: &str| -> Vec<String> {
+        matches(bash(), p, src)
+            .iter()
+            .map(|m| m.text.to_string())
+            .collect()
+    };
+    // whole-node matches — the four distinct `word` nodes spelled `a`
+    assert_eq!(texts("a").len(), 4);
+    // fragment matches — every non-overlapping `a b`
+    assert_eq!(texts("a b"), ["a b", "a b", "a b"]);
+    // and `a b a` at [0..5] and [8..13]; the overlapping [4..9] is skipped (resume
+    // past each match).
+    assert_eq!(texts("a b a"), ["a b a", "a b a"]);
+}
+
+#[test]
 fn metavar_bounded_pattern_matches_all_siblings() {
     // `\K: \V` has no literal-token boundary, so the leading/trailing-token prune
     // can't help — it relies on the single-DP-per-candidate path (shared memo +
