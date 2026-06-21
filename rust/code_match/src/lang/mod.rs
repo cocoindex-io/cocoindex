@@ -111,10 +111,25 @@ pub(crate) mod testutil {
     use crate::config::LangConfig;
     use crate::{Match, Pattern};
 
+    /// Run the pattern against `src`. Every call also cross-checks the **prefilter**:
+    /// it must never reject a source that actually matches (soundness — no false
+    /// negatives), and `matches_prefiltered` must agree with the plain run. So every
+    /// feature / per-language test doubles as a prefilter soundness test for free.
+    /// `min_len = 1` keeps even short terms, exercising the most prefilter logic.
     pub fn matches<'s>(cfg: LangConfig, pat: &str, src: &'s str) -> Vec<Match<'s>> {
-        Pattern::compile(pat, &cfg)
-            .expect("valid test pattern")
-            .matches(src)
+        let compiled = Pattern::compile(pat, &cfg).expect("valid test pattern");
+        let out = compiled.matches(src);
+        let pf = compiled.prefilter(1);
+        assert!(
+            out.is_empty() || pf.might_match(src),
+            "prefilter wrongly rejected a matching source\n  pattern: {pat:?}\n  source:  {src:?}",
+        );
+        assert_eq!(
+            compiled.matches_prefiltered(src, &pf).len(),
+            out.len(),
+            "matches_prefiltered disagrees with matches\n  pattern: {pat:?}\n  source:  {src:?}",
+        );
+        out
     }
 
     pub fn cap(ms: &[Match], name: &str) -> Option<String> {

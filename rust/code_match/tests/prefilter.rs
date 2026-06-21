@@ -183,6 +183,23 @@ fn index_terms_in_tree_matches_the_parsing_variant() {
 }
 
 #[test]
+fn regex_on_optional_metavar_is_not_required() {
+    // An optional metavar's regex must NOT become a required term — the node may be
+    // absent, so requiring its literal would falsely reject (e.g. `f(\(A?:/x.*/))`
+    // matching `f()`). A `One`-cardinality regex *is* still required.
+    let opt = Pattern::compile(r"f(\(A?:/x.*/))", &lang::python())
+        .unwrap()
+        .prefilter(1);
+    assert!(opt.might_match("f()"), "optional-absent call must pass");
+
+    let one = Pattern::compile(r"f(\(A:/x.*/))", &lang::python())
+        .unwrap()
+        .prefilter(1);
+    assert!(!one.might_match("f()"), "a One-metavar regex is required");
+    assert!(one.might_match("f(xyz)"));
+}
+
+#[test]
 fn clause_structure_is_exposed() {
     let pf = prefilter(r"foobar", 3);
     let clauses = pf.clauses();
