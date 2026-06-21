@@ -2,13 +2,16 @@
 title: "*Apache Pulsar* connector"
 sidebar_label: Pulsar
 description: >
-  Produce messages to Apache Pulsar topics as target states.
+  Consume Apache Pulsar topics as live streams/maps, and produce messages as
+  target states.
 ---
 
 The `pulsar` connector supports [Apache Pulsar](https://pulsar.apache.org/docs/)
-as a **target**: declared target states are produced as messages to a
-user-managed Pulsar topic, with the target-state key used as the message
+as both a **source** and a **target**. As a target, declared target states are
+produced as messages to a user-managed Pulsar topic, with the target-state key
+used as the message
 [partition key](https://pulsar.apache.org/docs/concepts-messaging/#routing-modes).
+As a source, a topic is consumed as a live stream of messages or a live keyed map.
 
 ```python
 from cocoindex.connectors import pulsar
@@ -22,6 +25,69 @@ pip install cocoindex[pulsar]
 
 The connector expects a `pulsar.Client` that you create and provide through your
 app context. Topics are user-managed: CocoIndex does not create or drop them.
+
+## As Source
+
+Consume a topic as a `LiveStream` of raw `pulsar.Message` objects (with a
+`.payloads()` view yielding `bytes`), or as a `LiveMapFeed` of keyed change
+events for use with `mount_each()`.
+
+```python
+import pulsar
+
+client = pulsar.Client("pulsar://localhost:6650")
+
+# Raw payloads:
+events = pulsar.topic_as_stream(
+    client, ["persistent://public/default/events"], "cocoindex-sub"
+).payloads()
+
+# Keyed map (keyed by message partition key — the same key the target writes):
+items = pulsar.topic_as_map(
+    client, ["persistent://public/default/events"], "cocoindex-sub"
+)
+```
+
+Durability is the Pulsar **subscription cursor**: the source consumes with manual
+acknowledgement and acks a message only after CocoIndex finishes processing it,
+so an unprocessed message is redelivered on restart (at-least-once). The
+`subscription_name` is the durable cursor identity (analogous to a Kafka consumer
+group).
+
+Messages with an empty payload are treated as deletions in the map view; pass
+`is_deletion=lambda msg: ...` for custom deletion detection. Messages with no
+partition key are skipped in the map view.
+
+:::note
+Pulsar's client does not expose a per-partition high watermark, so the source
+reports readiness when the initial backlog appears drained (the first
+`receive` that returns no message within `receive_timeout_millis`).
+:::
+
+### Source APIs
+
+```python
+def topic_as_stream(
+    client: pulsar.Client,
+    topics: list[str],
+    subscription_name: str,
+    *,
+    consumer_type: pulsar.ConsumerType | None = None,   # default: Exclusive
+    receive_timeout_millis: int = 1000,
+) -> TopicStream
+```
+
+```python
+def topic_as_map(
+    client: pulsar.Client,
+    topics: list[str],
+    subscription_name: str,
+    *,
+    is_deletion: IsDeleteFn | None = None,
+    consumer_type: pulsar.ConsumerType | None = None,   # default: Exclusive
+    receive_timeout_millis: int = 1000,
+) -> LiveMapFeed
+```
 
 ## As Target
 
