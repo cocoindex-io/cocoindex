@@ -94,6 +94,23 @@ impl Indexed {
         let ends = &self.child_end_owners[next - 1];
         starts.iter().any(|n| ends.contains(n))
     }
+
+    /// Is `[li, next)` *exactly one* direct child of some parent — a single
+    /// same-level sibling node, not the whole subtree and not a multi-sibling run?
+    /// (`same_level` is true for the whole of a node's children too — e.g. a root
+    /// `module` spanning all its statements — which `\{{ \}}` must *not* treat as a
+    /// single node.) True iff some parent `M` owns `li` as a child-start and
+    /// `next-1` as a child-end with **no** child-end of `M` strictly inside.
+    fn single_child(&self, li: usize, next: usize) -> bool {
+        if next <= li {
+            return false;
+        }
+        let last = next - 1;
+        self.child_start_owners[li].iter().any(|&m| {
+            self.child_end_owners[last].contains(&m)
+                && !(li..last).any(|e| self.child_end_owners[e].contains(&m))
+        })
+    }
 }
 
 /// Compiled, language-bound pattern.
@@ -576,12 +593,12 @@ impl<'s> Ctx<'_, 's> {
         false
     }
 
-    /// `\{{ INNER \}}` — containment (DESIGN §12). Consume a same-level region
-    /// `[li, next)` (a child-aligned sibling slice, like `\*`, possibly empty),
-    /// require `INNER` (`items[pi+1..close]`) to match *some descendant node*
-    /// fully inside the region (any depth), then continue the outer match at
-    /// `items[close+1..end]` from `next`. The region grows greedily (longest
-    /// first) so whole-node coverage is preferred, same as `match_multi`.
+    /// `\{{ INNER \}}` — containment (DESIGN §12). The region is a **single node**
+    /// starting at `li` (a clean direct-child of the surrounding parent): require
+    /// `INNER` (`items[pi+1..close]`) to match *some descendant node* inside that one
+    /// node (any depth), then continue the outer match at `items[close+1..end]` from
+    /// just past it. "This one node contains INNER" — the `has` intuition; the node
+    /// is tried largest-first (`spans_by_start` is sorted that way).
     fn match_contains(
         &mut self,
         pi: usize,
@@ -593,9 +610,12 @@ impl<'s> Ctx<'_, 's> {
         let inner = pi + 1; // first INNER item
         let cont = close + 1; // first outer item after `\}}`
         let idx = self.idx;
-        for next in reachable(li, hi, idx) {
-            if !idx.same_level(li, next) {
-                continue; // region must be a clean sibling slice
+        for sp in &idx.spans_by_start[li] {
+            let next = sp.end_leaf + 1;
+            // the region must be exactly one direct-child node (not a multi-child
+            // span like a root `module` covering all its statements)
+            if next > hi || !idx.single_child(li, next) {
+                continue;
             }
             if self.contains_then_continue(inner, close, cont, end, li, next, hi) {
                 return true;
