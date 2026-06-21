@@ -204,42 +204,47 @@ impl Pattern {
             let end_idx: HashMap<usize, usize> =
                 kids.iter().enumerate().map(|(c, &(_, e))| (e, c)).collect();
 
-            let mut found: Option<(usize, usize)> = None; // (start_byte, end_byte)
+            // Collect the candidate's matches **leftmost-longest, non-overlapping**:
+            // after a match `[a, b)` resume at `b` (skip overlapped starts). Because
+            // `stops` is start-independent the fail-memo is shared across the whole
+            // loop, so finding *every* occurrence is still O(N·k) — no worse than
+            // finding the first; the old `break` was only an early exit. The DP is
+            // greedy (longest stop first), so each match is the longest from its start.
+            let mut next_start = 0; // earliest non-overlapping start (a leaf index)
             for a in starts {
+                if a < next_start {
+                    continue;
+                }
                 ctx.bound.clear();
                 if !ctx.dp(0, n_items, a, hi) {
                     continue;
                 }
                 let b = ctx.matched_end; // child-end-exclusive, or `hi`
-                // Whole-node coverage spans the entire candidate → report the whole
-                // node, no ≥2 gate.
-                if a == cand.start_leaf && b == hi {
-                    found = Some((cand.start_byte, cand.end_byte));
-                    break;
-                }
-                // Fragment: it must span **≥2** direct children, except a single
-                // child that is one anonymous leaf (a keyword/punct like `if` — never
-                // a candidate on its own; see §4). A single *named* child defers to
-                // that child's own candidate, so we skip it and try the next start.
-                let ci = start_idx[&a];
-                let cj = end_idx[&(b - 1)];
-                let ok = cj > ci || {
-                    let (s, e) = kids[ci];
-                    s == e && idx.leaves[s].anon
+                // Whole-node coverage spans the entire candidate → the whole node, no
+                // ≥2 gate. Otherwise a fragment: it must span **≥2** direct children,
+                // except a single child that is one anonymous leaf (a keyword/punct
+                // like `if` — never a candidate on its own; see §4). A single *named*
+                // child defers to its own candidate, so it isn't reported here.
+                let range = if a == cand.start_leaf && b == hi {
+                    Some((cand.start_byte, cand.end_byte))
+                } else {
+                    let ci = start_idx[&a];
+                    let cj = end_idx[&(b - 1)];
+                    let ok = cj > ci || {
+                        let (s, e) = kids[ci];
+                        s == e && idx.leaves[s].anon
+                    };
+                    ok.then(|| (idx.leaves[a].start_byte, idx.leaves[b - 1].end_byte))
                 };
-                if ok {
-                    found = Some((idx.leaves[a].start_byte, idx.leaves[b - 1].end_byte));
-                    break;
+                if let Some((start_byte, end_byte)) = range {
+                    out.push(Match {
+                        kind: cand.node_kind,
+                        range: start_byte..end_byte,
+                        text: &source[start_byte..end_byte],
+                        captures: std::mem::take(&mut ctx.bound),
+                    });
+                    next_start = b; // non-overlapping: resume past this match
                 }
-            }
-
-            if let Some((start_byte, end_byte)) = found {
-                out.push(Match {
-                    kind: cand.node_kind,
-                    range: start_byte..end_byte,
-                    text: &source[start_byte..end_byte],
-                    captures: std::mem::take(&mut ctx.bound),
-                });
             }
         }
         out
