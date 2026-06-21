@@ -177,6 +177,21 @@ impl Pattern {
             ctx.dp(0, self.items.len(), start, hi).then_some(ctx.bound)
         };
 
+        // A child-run match must begin at a child whose first leaf is the pattern's
+        // leading literal token (if any), and end at a child whose last leaf is the
+        // trailing literal token (if any). Precompute both so the O(children²) scan
+        // skips hopeless starts/ends in O(1) without ever building a match context —
+        // this is what keeps a wildcard-led pattern like `\*: Path` from running the
+        // DP against every (i, j) over a huge node's thousands of children.
+        let first_tok = match self.items.first() {
+            Some(PatternItem::Token(t)) => Some(t.as_str()),
+            _ => None,
+        };
+        let last_tok = match self.items.last() {
+            Some(PatternItem::Token(t)) => Some(t.as_str()),
+            _ => None,
+        };
+
         let mut out = Vec::new();
         for cand in &idx.candidates {
             // 1) Whole-node coverage (the pattern spans the entire candidate) →
@@ -197,15 +212,19 @@ impl Pattern {
                     // whole node.
                     let kids = &cand.child_bounds;
                     (0..kids.len()).find_map(|i| {
-                        // Cheap prune: if the pattern starts with a literal token,
-                        // the run must start at a child whose first leaf is that
-                        // token — skip hopeless starts without allocating a context.
-                        if let Some(PatternItem::Token(t)) = self.items.first()
-                            && &idx.leaves[kids[i].0].text != t
+                        // Leading-token prune: the run must start at this child.
+                        if let Some(t) = first_tok
+                            && idx.leaves[kids[i].0].text != t
                         {
                             return None;
                         }
                         (i..kids.len()).find_map(|j| {
+                            // Trailing-token prune: the run must end at this child.
+                            if let Some(t) = last_tok
+                                && idx.leaves[kids[j].1].text != t
+                            {
+                                return None;
+                            }
                             let (first, last) = (kids[i].0, kids[j].1);
                             let hi = last + 1;
                             // skip the whole-node run — already tried in (1)

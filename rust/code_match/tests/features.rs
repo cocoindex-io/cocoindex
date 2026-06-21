@@ -632,6 +632,17 @@ fn regex_matcher_is_whole_node_anchored() {
     );
 }
 
+#[test]
+fn leading_wildcard_trailing_token_still_matches() {
+    // `\*: Path` — leading wildcard, trailing literal token. The trailing-token
+    // prune (which makes this fast on huge nodes) must not drop the real match.
+    let ms = matches(lang::python(), r"\*: Path", "def f(x: Path):\n    pass\n");
+    assert!(
+        ms.iter().any(|m| m.text == "x: Path"),
+        "should match the annotated `x: Path`, got {ms:?}",
+    );
+}
+
 // ---------------- comments are transparent ----------------
 
 #[test]
