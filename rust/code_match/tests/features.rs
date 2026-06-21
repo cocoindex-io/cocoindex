@@ -633,6 +633,32 @@ fn regex_matcher_is_whole_node_anchored() {
 }
 
 #[test]
+fn containment_brackets_a_single_node_not_a_multi_sibling_region() {
+    // `\{{ INNER \}}` brackets exactly one node (the "has" intuition), not a greedy
+    // multi-sibling region. `\{{ b() \}}` must NOT match the whole module (which
+    // spans all three statements) — only the single node containing `b()`.
+    let ms = matches(lang::python(), r"\{{ b() \}}", "a()\nb()\nc()\n");
+    assert!(
+        !ms.iter().any(|m| m.kind == "module"),
+        "must not bracket the whole module, got {ms:?}",
+    );
+    assert!(
+        ms.iter().any(|m| m.text == "b()"),
+        "should match the single node `b()`, got {ms:?}",
+    );
+    // canonical body-containment still works (the body block is one node)
+    let f = matches(
+        lang::python(),
+        r"def f(): \{{ return \X \}}",
+        "def f():\n    x = 1\n    return y\n",
+    );
+    assert!(
+        f.iter()
+            .any(|m| m.kind == "function_definition" && m.capture_text("X") == Some("y")),
+    );
+}
+
+#[test]
 fn overlapping_fragments_are_leftmost_longest_non_overlapping() {
     // `a b a b a b a` parses (bash) as one `command` with seven `word` siblings.
     // A *fragment* pattern reports every non-overlapping occurrence within the node
