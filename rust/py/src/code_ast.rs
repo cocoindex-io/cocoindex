@@ -106,13 +106,11 @@ pub struct PyCodeAst {
     line_index: std::sync::OnceLock<LineIndex>,
 }
 
-#[pymethods]
 impl PyCodeAst {
-    /// Parse `source` for `language` (name or alias: `"python"`, `"rust"`,
-    /// `"c++"`, …). Raises `ValueError` if the language has no tree-sitter
-    /// grammar.
-    #[new]
-    fn new(source: String, language: String) -> PyResult<Self> {
+    /// Parse `source` for `language` — the **GIL-free** body of the constructor, so
+    /// callers that have already released the GIL (e.g. inside `py.detach`) can build
+    /// an AST without re-acquiring it. Touches no Python objects.
+    fn parse(source: String, language: String) -> PyResult<Self> {
         let ts = prog_langs::get_language_info(&language)
             .and_then(|i| i.treesitter_info.as_ref())
             .ok_or_else(|| {
@@ -133,6 +131,17 @@ impl PyCodeAst {
             tree,
             line_index: std::sync::OnceLock::new(),
         })
+    }
+}
+
+#[pymethods]
+impl PyCodeAst {
+    /// Parse `source` for `language` (name or alias: `"python"`, `"rust"`,
+    /// `"c++"`, …). Raises `ValueError` if the language has no tree-sitter
+    /// grammar. The parse runs with the GIL released.
+    #[new]
+    fn new(py: Python<'_>, source: String, language: String) -> PyResult<Self> {
+        py.detach(|| Self::parse(source, language))
     }
 
     /// The language this AST was parsed for.
@@ -276,8 +285,9 @@ impl PyCodePattern {
 
     /// Whether `source` **might** contain a match — a cheap, parse-free prefilter
     /// check. `False` means it definitely can't (skip it); `True` means "maybe".
-    fn might_match(&self, source: &str) -> bool {
-        self.prefilter.might_match(source)
+    /// The scan runs with the GIL released.
+    fn might_match(&self, py: Python<'_>, source: &str) -> bool {
+        py.detach(|| self.prefilter.might_match(source))
     }
 
     /// Match against `source`, parsing it — but skip the parse entirely when the
@@ -298,28 +308,40 @@ impl PyCodePattern {
     /// matches when there is at least one match, else `None` — so a rejected or
     /// non-matching file never costs a parse beyond what the prefilter needs.
     /// Non-UTF-8 (binary) files are skipped (`None`); other I/O errors raise.
+    ///
+    /// The expensive work (read + prefilter + parse + match + build) runs **with
+    /// the GIL released**, so a Python thread pool can scan many files truly in
+    /// parallel; only the final wrap into Python objects re-acquires it.
     fn match_file(&self, py: Python<'_>, path: String) -> PyResult<Option<PyFileMatch>> {
-        let content = match std::fs::read_to_string(&path) {
-            Ok(c) => c,
-            // binary / non-text file → skip, don't error a corpus scan
-            Err(e) if e.kind() == std::io::ErrorKind::InvalidData => return Ok(None),
-            Err(e) => {
-                return Err(pyo3::exceptions::PyOSError::new_err(format!(
-                    "failed to read {path:?}: {e}"
-                )));
+        type Built = (PyCodeAst, Vec<PyCodeMatch>);
+        let built: Option<Built> = py.detach(|| -> PyResult<Option<Built>> {
+            let content = match std::fs::read_to_string(&path) {
+                Ok(c) => c,
+                // binary / non-text file → skip, don't error a corpus scan
+                Err(e) if e.kind() == std::io::ErrorKind::InvalidData => return Ok(None),
+                Err(e) => {
+                    return Err(pyo3::exceptions::PyOSError::new_err(format!(
+                        "failed to read {path:?}: {e}"
+                    )));
+                }
+            };
+            if !self.prefilter.might_match(&content) {
+                return Ok(None); // rejected without parsing
             }
-        };
-        if !self.prefilter.might_match(&content) {
-            return Ok(None); // rejected without parsing
-        }
-        let ast = PyCodeAst::new(content, self.language.clone())?;
-        let raw = self.pattern.matches_in_tree(&ast.tree, &ast.source);
-        if raw.is_empty() {
+            let ast = PyCodeAst::parse(content, self.language.clone())?;
+            let raw = self.pattern.matches_in_tree(&ast.tree, &ast.source);
+            if raw.is_empty() {
+                return Ok(None);
+            }
+            let matches = {
+                let line_index = ast.line_index.get_or_init(|| LineIndex::build(&ast.source));
+                build_matches(&ast.source, line_index, raw)
+            };
+            Ok(Some((ast, matches)))
+        })?;
+
+        let Some((ast, matches)) = built else {
             return Ok(None);
-        }
-        let matches = {
-            let line_index = ast.line_index.get_or_init(|| LineIndex::build(&ast.source));
-            build_matches(&ast.source, line_index, raw)
         };
         Ok(Some(PyFileMatch {
             path,
@@ -380,8 +402,10 @@ pub fn index_terms(
     language: String,
     min_len: usize,
 ) -> PyResult<Vec<String>> {
-    let ast = PyCodeAst::new(source, language)?;
-    Ok(py.detach(|| index_terms_in_tree(&ast.tree, &ast.source, min_len)))
+    py.detach(|| {
+        let ast = PyCodeAst::parse(source, language)?;
+        Ok(index_terms_in_tree(&ast.tree, &ast.source, min_len))
+    })
 }
 
 /// One-shot convenience: parse `source` for `language` and return all matches of
@@ -394,18 +418,18 @@ pub fn match_code(
     source: String,
     language: String,
 ) -> PyResult<Vec<PyCodeMatch>> {
-    let ast = PyCodeAst::new(source, language)?;
-    let cfg = lang::by_name(&ast.language).ok_or_else(|| {
-        pyo3::exceptions::PyValueError::new_err(format!(
-            "structural matching is not supported for language {:?}",
-            ast.language
-        ))
-    })?;
-    let compiled = Pattern::compile(pattern, &cfg)
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{e}")))?;
-    Ok(py.detach(|| {
+    py.detach(|| {
+        let ast = PyCodeAst::parse(source, language)?;
+        let cfg = lang::by_name(&ast.language).ok_or_else(|| {
+            pyo3::exceptions::PyValueError::new_err(format!(
+                "structural matching is not supported for language {:?}",
+                ast.language
+            ))
+        })?;
+        let compiled = Pattern::compile(pattern, &cfg)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{e}")))?;
         let line_index = LineIndex::build(&ast.source);
         let raw = compiled.matches_in_tree(&ast.tree, &ast.source);
-        build_matches(&ast.source, &line_index, raw)
-    }))
+        Ok(build_matches(&ast.source, &line_index, raw))
+    })
 }
