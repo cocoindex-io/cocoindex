@@ -163,26 +163,8 @@ impl Pattern {
     pub fn matches_in_tree<'s>(&self, tree: &Tree, source: &'s str) -> Vec<Match<'s>> {
         let idx = index_tree(tree.root_node(), source.as_bytes(), &self.cfg);
 
-        // Run the DP over leaves `[start, hi)` with a fresh binding context;
-        // return the captures on an exact match.
-        let run = |start: usize, hi: usize| -> Option<HashMap<String, Capture<'s>>> {
-            let mut ctx = Ctx {
-                items: &self.items,
-                idx: &idx,
-                source,
-                use_memo: self.use_memo,
-                bound: HashMap::new(),
-                fail: HashSet::new(),
-            };
-            ctx.dp(0, self.items.len(), start, hi).then_some(ctx.bound)
-        };
-
-        // A child-run match must begin at a child whose first leaf is the pattern's
-        // leading literal token (if any), and end at a child whose last leaf is the
-        // trailing literal token (if any). Precompute both so the O(children²) scan
-        // skips hopeless starts/ends in O(1) without ever building a match context —
-        // this is what keeps a wildcard-led pattern like `\*: Path` from running the
-        // DP against every (i, j) over a huge node's thousands of children.
+        // Leading/trailing literal-token boundaries: a match's first/last leaf must
+        // be these tokens, so we prune hopeless start/stop positions in O(1).
         let first_tok = match self.items.first() {
             Some(PatternItem::Token(t)) => Some(t.as_str()),
             _ => None,
@@ -191,69 +173,91 @@ impl Pattern {
             Some(PatternItem::Token(t)) => Some(t.as_str()),
             _ => None,
         };
+        let n_items = self.items.len();
 
         let mut out = Vec::new();
         for cand in &idx.candidates {
-            // 1) Whole-node coverage (the pattern spans the entire candidate) →
-            //    the match is the whole node. 2) Otherwise a contiguous run of the
-            //    candidate's direct children (leading/trailing tolerance) → the
-            //    match is that *fragment's* span, with `kind` still the node's.
-            let hit = run(cand.start_leaf, cand.end_leaf + 1)
-                .map(|caps| (caps, cand.start_byte, cand.end_byte))
-                .or_else(|| {
-                    // A child-run covers children `[i, j]`. It must span **≥2**
-                    // children, *except* a single child that is one **anonymous**
-                    // leaf (a keyword/punct like `if`): the ≥2 rule exists only to
-                    // defer to a *named* child candidate matched on its own
-                    // iteration (so `\A = \B` matches the assignment, not the
-                    // `expr;`), and an anonymous leaf is never a candidate — so
-                    // there is nothing to defer to, and `if` should match
-                    // `if_statement`. The reported range is the fragment, not the
-                    // whole node.
-                    let kids = &cand.child_bounds;
-                    (0..kids.len()).find_map(|i| {
-                        // Leading-token prune: the run must start at this child.
-                        if let Some(t) = first_tok
-                            && idx.leaves[kids[i].0].text != t
-                        {
-                            return None;
-                        }
-                        (i..kids.len()).find_map(|j| {
-                            // Trailing-token prune: the run must end at this child.
-                            if let Some(t) = last_tok
-                                && idx.leaves[kids[j].1].text != t
-                            {
-                                return None;
-                            }
-                            let (first, last) = (kids[i].0, kids[j].1);
-                            let hi = last + 1;
-                            // skip the whole-node run — already tried in (1)
-                            if first == cand.start_leaf && hi == cand.end_leaf + 1 {
-                                return None;
-                            }
-                            // single-child run only for one anonymous leaf
-                            if j == i {
-                                let (s, e) = kids[i];
-                                if !(s == e && idx.leaves[s].anon) {
-                                    return None;
-                                }
-                            }
-                            run(first, hi).map(|caps| {
-                                (
-                                    caps,
-                                    idx.leaves[first].start_byte,
-                                    idx.leaves[last].end_byte,
-                                )
-                            })
-                        })
-                    })
-                });
-            if let Some((captures, start_byte, end_byte)) = hit {
+            // For each candidate we run the DP **once per start position** with the
+            // fail-memo shared across starts and *trailing tolerance* in the base
+            // case (the match may stop at any child-end boundary). That folds the old
+            // O(children²) (i, j) scan into O(children) DP entries with one shared
+            // memo → O(N·k). The whole-node case is just the entry that starts at the
+            // candidate's first leaf and consumes everything.
+            let kids = &cand.child_bounds;
+            let hi = cand.end_leaf + 1;
+
+            // Valid stop boundaries (child-end-exclusive), pruned by the trailing
+            // token. `li == hi` (whole-node / a leaf candidate) is always allowed by
+            // the base case, so a childless candidate needs no entry here.
+            let mut stops: HashSet<usize> = HashSet::with_capacity(kids.len());
+            for &(_, e) in kids {
+                if last_tok.is_none_or(|t| idx.leaves[e].text == t) {
+                    stops.insert(e + 1);
+                }
+            }
+
+            let mut ctx = Ctx {
+                items: &self.items,
+                idx: &idx,
+                source,
+                use_memo: self.use_memo,
+                bound: HashMap::new(),
+                fail: HashSet::new(),
+                stops,
+                matched_end: 0,
+            };
+
+            // Start positions: each child-start (pruned by the leading token); a leaf
+            // candidate has none, so use the candidate's start (whole-node only).
+            let starts: Vec<usize> = if kids.is_empty() {
+                vec![cand.start_leaf]
+            } else {
+                kids.iter()
+                    .map(|&(s, _)| s)
+                    .filter(|&s| first_tok.is_none_or(|t| idx.leaves[s].text == t))
+                    .collect()
+            };
+            // child-start / child-end leaf → child index, to classify a fragment.
+            let start_idx: HashMap<usize, usize> =
+                kids.iter().enumerate().map(|(c, &(s, _))| (s, c)).collect();
+            let end_idx: HashMap<usize, usize> =
+                kids.iter().enumerate().map(|(c, &(_, e))| (e, c)).collect();
+
+            let mut found: Option<(usize, usize)> = None; // (start_byte, end_byte)
+            for a in starts {
+                ctx.bound.clear();
+                if !ctx.dp(0, n_items, a, hi) {
+                    continue;
+                }
+                let b = ctx.matched_end; // child-end-exclusive, or `hi`
+                // Whole-node coverage spans the entire candidate → report the whole
+                // node, no ≥2 gate.
+                if a == cand.start_leaf && b == hi {
+                    found = Some((cand.start_byte, cand.end_byte));
+                    break;
+                }
+                // Fragment: it must span **≥2** direct children, except a single
+                // child that is one anonymous leaf (a keyword/punct like `if` — never
+                // a candidate on its own; see §4). A single *named* child defers to
+                // that child's own candidate, so we skip it and try the next start.
+                let ci = start_idx[&a];
+                let cj = end_idx[&(b - 1)];
+                let ok = cj > ci || {
+                    let (s, e) = kids[ci];
+                    s == e && idx.leaves[s].anon
+                };
+                if ok {
+                    found = Some((idx.leaves[a].start_byte, idx.leaves[b - 1].end_byte));
+                    break;
+                }
+            }
+
+            if let Some((start_byte, end_byte)) = found {
                 out.push(Match {
                     kind: cand.node_kind,
                     range: start_byte..end_byte,
                     text: &source[start_byte..end_byte],
-                    captures,
+                    captures: std::mem::take(&mut ctx.bound),
                 });
             }
         }
@@ -418,6 +422,19 @@ struct Ctx<'a, 's> {
     use_memo: bool,
     bound: HashMap<String, Capture<'s>>,
     fail: HashSet<(usize, usize)>,
+    /// Valid end positions for the **whole pattern** when matching against the
+    /// current candidate: the child-end-exclusive boundaries `{ child.end + 1 }`
+    /// (which include the candidate's own end). When the pattern is fully consumed
+    /// (`pi == items.len()`) the match may stop at any of these — that's the
+    /// trailing leading/trailing-tolerance, folded into one DP per candidate so the
+    /// fail-memo is shared across every start position (→ O(N·k), not O(children²)).
+    /// `stops` is fixed per candidate, so it doesn't depend on where matching began
+    /// — which is what keeps the shared memo sound. Empty for a leaf candidate
+    /// (whole-node only, via `li == hi`).
+    stops: HashSet<usize>,
+    /// Set to the stop position when the top-level base case succeeds, so the caller
+    /// learns where the (possibly partial) match ended.
+    matched_end: usize,
 }
 
 impl<'s> Ctx<'_, 's> {
@@ -429,6 +446,19 @@ impl<'s> Ctx<'_, 's> {
     /// exactly one bracket level — so the `(pi, li)` fail-memo stays well-keyed.)
     fn dp(&mut self, pi: usize, end: usize, li: usize, hi: usize) -> bool {
         if pi == end {
+            // Top-level (the whole pattern consumed): leading/trailing tolerance —
+            // the match may stop at any of the candidate's child-end boundaries, not
+            // only at the very end. `stops` is candidate-fixed (start-independent),
+            // so caching the states that lead here stays sound across start
+            // positions. A containment-inner sub-pattern (`end < items.len()`) must
+            // still land exactly on `hi`.
+            if end == self.items.len() {
+                if li == hi || self.stops.contains(&li) {
+                    self.matched_end = li;
+                    return true;
+                }
+                return false;
+            }
             return li == hi;
         }
         if self.use_memo && self.fail.contains(&(pi, li)) {

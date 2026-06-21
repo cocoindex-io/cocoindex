@@ -633,6 +633,27 @@ fn regex_matcher_is_whole_node_anchored() {
 }
 
 #[test]
+fn metavar_bounded_pattern_matches_all_siblings() {
+    // `\K: \V` has no literal-token boundary, so the leading/trailing-token prune
+    // can't help — it relies on the single-DP-per-candidate path (shared memo +
+    // trailing tolerance) to stay O(N·k) instead of O(children²) on the enclosing
+    // dict. Correctness check: every `key: value` pair is found.
+    let src = "d = {a: 1, bb: 2, ccc: 3}\n";
+    let ms = matches(lang::python(), r"\K: \V", src);
+    let pairs: Vec<(&str, &str)> = ms
+        .iter()
+        .filter(|m| m.kind == "pair")
+        .map(|m| (m.capture_text("K").unwrap(), m.capture_text("V").unwrap()))
+        .collect();
+    assert!(
+        pairs.contains(&("a", "1"))
+            && pairs.contains(&("bb", "2"))
+            && pairs.contains(&("ccc", "3")),
+        "should match every dict pair, got {pairs:?}",
+    );
+}
+
+#[test]
 fn leading_wildcard_trailing_token_still_matches() {
     // `\*: Path` — leading wildcard, trailing literal token. The trailing-token
     // prune (which makes this fast on huge nodes) must not drop the real match.
