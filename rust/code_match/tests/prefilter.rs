@@ -46,14 +46,14 @@ fn string_content_runs_required() {
 #[test]
 fn regex_substring_literal() {
     // `.*foobar.*` → required substring `foobar`, NOT word-bounded.
-    let pf = prefilter(r"\(:/.*foobar.*/)", 3);
+    let pf = prefilter(r"\(/.*foobar.*/\)", 3);
     assert!(pf.might_match("name = xfoobary")); // mid-token substring is fine
     assert!(!pf.might_match("name = foo_bar")); // no contiguous `foobar`
 }
 
 #[test]
 fn regex_alternation_is_a_disjunction() {
-    let pf = prefilter(r"\(:/get|set/)", 3);
+    let pf = prefilter(r"\(/get|set/\)", 3);
     assert!(pf.might_match("o.getValue()")); // get
     assert!(pf.might_match("o.setValue()")); // set
     assert!(!pf.might_match("o.value()")); // neither
@@ -141,7 +141,7 @@ fn extracted_terms_match_literally_not_as_regex() {
     // A regex matcher's extracted literal contains a `.` (escaped in the regex).
     // `might_match` uses aho-corasick *literal* search, so the `.` matches only a
     // literal dot — no re-interpretation of the term as a regex.
-    let pf = prefilter(r"\(:/foo\.bar/)", 3);
+    let pf = prefilter(r"\(/foo\.bar/\)", 3);
     assert!(pf.might_match("x = foo.bar")); // literal `foo.bar`
     assert!(!pf.might_match("x = fooXbar")); // `.` is literal, not "any char"
 }
@@ -185,14 +185,14 @@ fn index_terms_in_tree_matches_the_parsing_variant() {
 #[test]
 fn regex_on_optional_metavar_is_not_required() {
     // An optional metavar's regex must NOT become a required term — the node may be
-    // absent, so requiring its literal would falsely reject (e.g. `f(\(A?:/x.*/))`
+    // absent, so requiring its literal would falsely reject (e.g. `f(\(A?:/x.*/\))`
     // matching `f()`). A `One`-cardinality regex *is* still required.
-    let opt = Pattern::compile(r"f(\(A?:/x.*/))", &lang::python())
+    let opt = Pattern::compile(r"f(\(A?:/x.*/\))", &lang::python())
         .unwrap()
         .prefilter(1);
     assert!(opt.might_match("f()"), "optional-absent call must pass");
 
-    let one = Pattern::compile(r"f(\(A:/x.*/))", &lang::python())
+    let one = Pattern::compile(r"f(\(A:/x.*/\))", &lang::python())
         .unwrap()
         .prefilter(1);
     assert!(!one.might_match("f()"), "a One-metavar regex is required");

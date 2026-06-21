@@ -33,7 +33,7 @@ mod tests {
 
     #[test]
     fn call() {
-        let ms = matches(r(), r"foo(\(A*))", "foo(a, b)");
+        let ms = matches(r(), r"foo(\(A*\))", "foo(a, b)");
         assert_eq!(cap(&ms, "A").as_deref(), Some("a, b"));
     }
 

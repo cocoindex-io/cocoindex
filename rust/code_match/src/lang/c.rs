@@ -24,14 +24,14 @@ mod tests {
     #[test]
     fn call_multi_args() {
         let src = "void g(){ foo(a, b); }";
-        let ms = matches(c(), r"foo(\(ARGS*))", src);
+        let ms = matches(c(), r"foo(\(ARGS*\))", src);
         assert_eq!(cap(&ms, "ARGS").as_deref(), Some("a, b"));
     }
 
     #[test]
     fn balanced_nested() {
         let src = "void g(){ foo(bar(x), baz); }";
-        let ms = matches(c(), r"foo(\(ARGS*))", src);
+        let ms = matches(c(), r"foo(\(ARGS*\))", src);
         assert_eq!(cap(&ms, "ARGS").as_deref(), Some("bar(x), baz"));
     }
 

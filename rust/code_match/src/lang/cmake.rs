@@ -62,7 +62,7 @@ mod tests {
     #[test]
     fn command() {
         // CMake command arguments are space-separated.
-        let ms = matches(cmake(), r"set(\(A*))", "set(x 1)");
+        let ms = matches(cmake(), r"set(\(A*\))", "set(x 1)");
         assert_eq!(cap(&ms, "A").as_deref(), Some("x 1"));
     }
 

@@ -19,7 +19,7 @@ mod tests {
 
     #[test]
     fn call() {
-        let ms = matches(kotlin(), r"foo(\(A*))", "fun m() { foo(a, b) }");
+        let ms = matches(kotlin(), r"foo(\(A*\))", "fun m() { foo(a, b) }");
         assert_eq!(cap(&ms, "A").as_deref(), Some("a, b"));
     }
 

@@ -32,21 +32,21 @@ mod tests {
     #[test]
     fn call_multi_args() {
         let src = "foo(a, b, c)";
-        let ms = matches(python(), r"foo(\(ARGS*))", src);
+        let ms = matches(python(), r"foo(\(ARGS*\))", src);
         assert_eq!(cap(&ms, "ARGS").as_deref(), Some("a, b, c"));
     }
 
     #[test]
     fn string_atomic() {
         let src = r#"print("a)b")"#;
-        let ms = matches(python(), r"print(\(ARGS*))", src);
+        let ms = matches(python(), r"print(\(ARGS*\))", src);
         assert_eq!(cap(&ms, "ARGS").as_deref(), Some(r#""a)b""#));
     }
 
     #[test]
     fn keyword_args() {
         let src = "f(x=1, y=2)";
-        let ms = matches(python(), r"f(\(KW*))", src);
+        let ms = matches(python(), r"f(\(KW*\))", src);
         assert_eq!(cap(&ms, "KW").as_deref(), Some("x=1, y=2"));
     }
 

@@ -75,7 +75,7 @@ mod tests {
     #[test]
     fn call_multi_args() {
         let src = "fn m(){ foo(a, b); }";
-        let ms = matches(rust(), r"foo(\(ARGS*))", src);
+        let ms = matches(rust(), r"foo(\(ARGS*\))", src);
         assert_eq!(cap(&ms, "ARGS").as_deref(), Some("a, b"));
     }
 

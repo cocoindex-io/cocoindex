@@ -22,7 +22,7 @@ mod tests {
     #[test]
     fn call() {
         let src = "object O { def m = foo(a, b) }";
-        let ms = matches(scala(), r"foo(\(ARGS*))", src);
+        let ms = matches(scala(), r"foo(\(ARGS*\))", src);
         assert_eq!(cap(&ms, "ARGS").as_deref(), Some("a, b"));
     }
 
