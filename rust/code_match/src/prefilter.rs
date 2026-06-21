@@ -19,7 +19,7 @@ use aho_corasick::{AhoCorasick, MatchKind};
 use tree_sitter::{Node, Parser, Tree};
 
 use crate::config::LangConfig;
-use crate::lexer::PatternItem;
+use crate::lexer::{Cardinality, PatternItem};
 
 /// How a required term must occur in the source text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,8 +95,14 @@ impl Prefilter {
                         }
                     }
                 }
+                // A regex literal is required only on a `One` metavar: an `Optional`
+                // node may be absent (so its regex isn't required — extracting it
+                // would be a false negative, e.g. `f(\(A?:/^x/))` matching `f()`),
+                // and `Many` ignores the regex entirely.
                 PatternItem::Meta {
-                    regex: Some(re), ..
+                    regex: Some(re),
+                    card: Cardinality::One,
+                    ..
                 } => {
                     for alts in regex_required_literals(re.as_str()) {
                         // Disjunction: keep only if every alternative survives.
