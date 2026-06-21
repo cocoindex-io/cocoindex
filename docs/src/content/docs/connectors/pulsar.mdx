@@ -1,0 +1,81 @@
+---
+title: "*Apache Pulsar* connector"
+sidebar_label: Pulsar
+description: >
+  Produce messages to Apache Pulsar topics as target states.
+---
+
+The `pulsar` connector supports [Apache Pulsar](https://pulsar.apache.org/docs/)
+as a **target**: declared target states are produced as messages to a
+user-managed Pulsar topic, with the target-state key used as the message
+[partition key](https://pulsar.apache.org/docs/concepts-messaging/#routing-modes).
+
+```python
+from cocoindex.connectors import pulsar
+```
+
+Install the optional dependency:
+
+```bash
+pip install cocoindex[pulsar]
+```
+
+The connector expects a `pulsar.Client` that you create and provide through your
+app context. Topics are user-managed: CocoIndex does not create or drop them.
+
+## As Target
+
+The target connector sends bytes or strings to a user-managed Pulsar topic. The
+`pulsar.Client` is provided via a [`ContextKey`](/core/context); the connector
+creates and caches one producer per topic and sends off the event loop.
+
+```python
+import pulsar
+
+PULSAR = coco.ContextKey[pulsar.Client]("pulsar")
+
+target = await pulsar.mount_pulsar_topic_target(
+    PULSAR,
+    topic="persistent://public/default/derived-events",
+)
+
+target.declare_target_state(key="order-123", value=b'{"status":"ready"}')
+```
+
+On each commit, CocoIndex produces a message only when a declared target state
+has changed since the last run (tracked by a content fingerprint).
+
+### Deletions
+
+By default a deleted target state produces a message with an empty payload (and
+the key as the partition key). For key-based compaction, use a
+[compacted topic](https://pulsar.apache.org/docs/concepts-topic-compaction/).
+Pass `deletion_value_fn` to emit a custom delete marker instead:
+
+```python
+target = await pulsar.mount_pulsar_topic_target(
+    PULSAR,
+    topic="persistent://public/default/derived-events",
+    deletion_value_fn=lambda key: f'{{"id":{key!r},"deleted":true}}',
+)
+```
+
+### Target APIs
+
+```python
+def declare_pulsar_topic_target(
+    client: ContextKey[pulsar.Client],
+    topic: str,
+    *,
+    deletion_value_fn: DeletionValueFn | None = None,
+) -> PulsarTopicTarget[PendingS]
+```
+
+```python
+async def mount_pulsar_topic_target(
+    client: ContextKey[pulsar.Client],
+    topic: str,
+    *,
+    deletion_value_fn: DeletionValueFn | None = None,
+) -> PulsarTopicTarget[ResolvedS]
+```

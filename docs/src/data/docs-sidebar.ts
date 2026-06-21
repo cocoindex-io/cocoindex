@@ -70,6 +70,7 @@ export const sidebar: SidebarItem[] = [
       { type: 'doc', slug: 'connectors/neo4j', label: 'Neo4j' },
       { type: 'doc', slug: 'connectors/oci_object_storage', label: 'OCI Object Storage' },
       { type: 'doc', slug: 'connectors/postgres', label: 'Postgres' },
+      { type: 'doc', slug: 'connectors/pulsar', label: 'Pulsar' },
       { type: 'doc', slug: 'connectors/qdrant', label: 'Qdrant' },
       { type: 'doc', slug: 'connectors/sqlite', label: 'SQLite' },
       { type: 'doc', slug: 'connectors/surrealdb', label: 'SurrealDB' },
