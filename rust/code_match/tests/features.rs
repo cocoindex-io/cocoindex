@@ -195,18 +195,19 @@ fn caps_all<'a>(ms: &'a [cocoindex_code_match::Match], name: &str) -> Vec<&'a st
 
 #[test]
 fn regex_constrains_identifier() {
-    // `\(F:/^get/)` filters the callee to names starting with `get`.
+    // Matchers are whole-node anchored, so `get.*` filters callees *starting* with
+    // `get` (the trailing `.*` is the explicit "prefix").
     let src = "getUser(1); setName(2); getId(3);";
-    let ms = matches(lang::typescript(), r"\(F:/^get/)(\*)", src);
+    let ms = matches(lang::typescript(), r"\(F:/get.*/)(\*)", src);
     assert_eq!(caps_all(&ms, "F"), vec!["getId", "getUser"]);
 }
 
 #[test]
 fn anonymous_regex_matcher() {
     // `\(:/re/)` — a regex constraint with no name: filter a node without
-    // capturing it. Here the callee must match `^get`, but isn't bound.
+    // capturing it. Here the callee must start with `get` (`get.*`), but isn't bound.
     let src = "getUser(1); setName(2); getId(3);";
-    let ms = matches(lang::typescript(), r"\(:/^get/)(\*)", src);
+    let ms = matches(lang::typescript(), r"\(:/get.*/)(\*)", src);
     let callees: Vec<&str> = ms
         .iter()
         .filter(|m| m.kind == "call_expression")
@@ -231,9 +232,10 @@ fn regex_pins_nesting_level() {
 #[test]
 fn regex_on_subtree() {
     // The metavar binds a whole expression; the regex tests its source text.
-    let yes = matches(lang::typescript(), r"f(\(A:/\+/))", "f(a + b);");
+    // Anchored, so `.*\+.*` is the explicit "contains `+`".
+    let yes = matches(lang::typescript(), r"f(\(A:/.*\+.*/))", "f(a + b);");
     assert_eq!(cap(&yes, "A").as_deref(), Some("a + b"));
-    let no = matches(lang::typescript(), r"f(\(A:/\+/))", "f(ab);");
+    let no = matches(lang::typescript(), r"f(\(A:/.*\+.*/))", "f(ab);");
     assert!(no.iter().all(|m| m.kind != "call_expression"));
 }
 
@@ -247,8 +249,9 @@ fn regex_alternation_parens_free() {
 
 #[test]
 fn regex_shorthand_no_closing_slash() {
+    // Shorthand (no closing `/`): the `)` closes the matcher. Anchored, so `get.*`.
     let src = "getUser(1); setName(2);";
-    let ms = matches(lang::typescript(), r"\(F:/^get)(\*)", src);
+    let ms = matches(lang::typescript(), r"\(F:/get.*)(\*)", src);
     assert_eq!(cap(&ms, "F").as_deref(), Some("getUser"));
 }
 
@@ -574,6 +577,59 @@ fn contains_nested() {
 fn contains_unbalanced_markers_error() {
     assert!(Pattern::compile(r"def foo(): \{{ return \X", &lang::python()).is_err());
     assert!(Pattern::compile(r"return \X \}}", &lang::python()).is_err());
+}
+
+// ---------------- single bare keyword / fragment range / anchored regex ----------------
+
+#[test]
+fn bare_keyword_matches_its_enclosing_node() {
+    // A single anonymous-leaf token (a keyword) matches the node it's a direct
+    // child of — `if` → `if_statement` — reported as the keyword fragment.
+    let ms = matches(lang::python(), r"if", "if x:\n    pass\n");
+    let m = by_text(&ms, "if").expect("`if` should match");
+    assert_eq!(m.kind, "if_statement");
+
+    let src = "if x:\n    pass\nelse:\n    pass\n";
+    assert!(has_kind(
+        &matches(lang::python(), r"else", src),
+        "else_clause"
+    ));
+    // a single *identifier* already matched (it's a named leaf node) — unchanged
+    assert!(has_kind(
+        &matches(lang::python(), r"foo", "y = foo + 1"),
+        "identifier"
+    ));
+}
+
+#[test]
+fn fragment_match_reports_the_fragment_span_not_the_whole_node() {
+    // The pattern covers the signature but not the body: the reported range is the
+    // signature *fragment*, with `kind` still the enclosing function node.
+    let src = "def foo(a, b):\n    return a + b\n";
+    let ms = matches(lang::python(), r"def \NAME(\(A*)):", src);
+    let m = by_text(&ms, "def foo(a, b):").expect("fragment span, not whole node");
+    assert_eq!(m.kind, "function_definition");
+    assert_eq!(m.capture_text("NAME"), Some("foo"));
+}
+
+#[test]
+fn regex_matcher_is_whole_node_anchored() {
+    // Matchers anchor to the whole node text, so a bare `set_.*` is a *prefix*
+    // (no false positive on `test_unset_is`, where `set_` is only a substring).
+    let src = "def set_value(): pass\ndef test_unset_is(): pass\n";
+    let prefix = matches(lang::python(), r"def \(N:/set_.*/)(\*):", src);
+    assert_eq!(caps_all(&prefix, "N"), vec!["set_value"]);
+
+    // exact (no `.*`): the text must equal the regex
+    let exact = matches(lang::python(), r"def \(N:/set_value/)(\*):", src);
+    assert_eq!(caps_all(&exact, "N"), vec!["set_value"]);
+
+    // substring needs explicit `.*…*.`
+    let substring = matches(lang::python(), r"def \(N:/.*set_.*/)(\*):", src);
+    assert_eq!(
+        caps_all(&substring, "N"),
+        vec!["set_value", "test_unset_is"]
+    );
 }
 
 // ---------------- comments are transparent ----------------
