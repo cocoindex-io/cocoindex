@@ -283,6 +283,30 @@ fn regex_escaped_slash() {
 }
 
 #[test]
+fn regex_matches_a_string_literal() {
+    // A regex anchors to the **whole node** text, which for a string literal
+    // *includes its quotes* — so `\/".*Hello.*"/` binds the `string` node, not its
+    // content node or the enclosing statement. (A string is a multi-leaf `Str`
+    // node, so this also pins regex-on-strings, a common target — distinct from the
+    // identifier/expression cases above.) The quotes in the regex are what make it
+    // precise: `\/.*Hello.*/` would also match the content + enclosing nodes.
+    let ms = matches(
+        lang::python(),
+        r#"\/".*Hello.*"/"#,
+        "x = \"Hello world!\"\n",
+    );
+    assert!(
+        ms.iter()
+            .any(|m| m.kind == "string" && m.text == "\"Hello world!\""),
+        "expected the `string` node `\"Hello world!\"`, got {ms:?}",
+    );
+    assert!(
+        !ms.iter().any(|m| m.kind == "assignment"),
+        "the leading/trailing quotes must pin it to the string node, got {ms:?}",
+    );
+}
+
+#[test]
 fn regex_dotstar_equals_bare() {
     // `/.*/ ` is a pure pass-through filter, so it must behave exactly like `\X`.
     let src = "a = b = c;";
