@@ -993,6 +993,16 @@ pub struct FnCallContextInner {
     /// If true, function-level memoization is disabled for this call.
     pub has_child_components: bool,
 
+    /// Whether memoization has been explicitly invalidated for this call (and,
+    /// via `join_child`, for every ancestor on the current call stack).
+    ///
+    /// Set through [`FnCallContext::invalidate_memo`]. Unlike `has_child_components`,
+    /// this is a deliberate, non-erroring opt-out used by operations whose observable
+    /// effect is *not* fully captured by the return value plus declared target states
+    /// — e.g. reads from sources that change over time, or live components. When true,
+    /// no memo is stored for this call, so it (and its callers) re-execute next run.
+    pub memo_invalidated: bool,
+
     /// Function logic fingerprints (mode-controlled propagation via `propagate_children_fn_logic`).
     pub fn_logic_deps: HashSet<Fingerprint>,
     /// Context key fingerprints (always propagate regardless of logic_tracking mode).
@@ -1034,6 +1044,9 @@ impl FnCallContext {
                 .dependency_memo_entries
                 .extend(child_inner.dependency_memo_entries);
             inner.has_child_components |= child_inner.has_child_components;
+            // Memo invalidation propagates up the call stack: if any descendant
+            // invalidated, none of its ancestors may memoize this run either.
+            inner.memo_invalidated |= child_inner.memo_invalidated;
             // Context change deps always propagate.
             inner
                 .context_change_deps
@@ -1048,6 +1061,19 @@ impl FnCallContext {
     pub fn add_fn_logic_dep(&self, fp: Fingerprint) {
         self.update(|inner| {
             inner.fn_logic_deps.insert(fp);
+        });
+    }
+
+    /// Invalidate memoization for the current call stack.
+    ///
+    /// Marks this function call as non-memoizable; the flag propagates to every
+    /// ancestor via [`join_child`](Self::join_child), so no call on the current
+    /// stack stores a memo this run and all of them re-execute next run. Used by
+    /// operations whose result is not fully captured by their inputs — source
+    /// reads that change over time, live components, and similar future cases.
+    pub fn invalidate_memo(&self) {
+        self.update(|inner| {
+            inner.memo_invalidated = true;
         });
     }
 
@@ -1097,6 +1123,31 @@ mod tests {
 
     fn comp_path(name: &str) -> StablePath {
         StablePath(Arc::from(vec![StableKey::Str(Arc::from(name))]))
+    }
+
+    #[test]
+    fn memo_invalidation_propagates_up_the_call_stack() {
+        use super::FnCallContext;
+
+        // A child that invalidates memoization taints its parent on join, so no
+        // ancestor on the stack memoizes this run.
+        let parent = FnCallContext::default();
+        let child = FnCallContext::default();
+        assert!(!parent.update(|i| i.memo_invalidated));
+
+        child.invalidate_memo();
+        assert!(child.update(|i| i.memo_invalidated));
+
+        parent.join_child(&child);
+        assert!(
+            parent.update(|i| i.memo_invalidated),
+            "memo invalidation must propagate up the call stack"
+        );
+
+        // A clean stack stays memoizable.
+        let clean_parent = FnCallContext::default();
+        clean_parent.join_child(&FnCallContext::default());
+        assert!(!clean_parent.update(|i| i.memo_invalidated));
     }
 
     async fn make_test_store() -> (AppStore, TempDir) {

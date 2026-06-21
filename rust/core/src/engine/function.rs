@@ -14,6 +14,12 @@ fn build_fn_call_memo<Prof: EngineProfile>(
     memo_states: MemoStatesPayload<Prof>,
 ) -> Option<FnCallMemo<Prof>> {
     fn_ctx.update(|inner| {
+        // Memoization explicitly invalidated for this call stack (e.g. a source
+        // read or live component whose result changes over time): store no memo
+        // so this call and its callers re-execute next run.
+        if inner.memo_invalidated {
+            return None;
+        }
         let mut logic_deps = inner.fn_logic_deps.clone();
         logic_deps.extend(inner.context_change_deps.iter().cloned());
         Some(FnCallMemo {

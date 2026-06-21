@@ -147,6 +147,14 @@ impl PyFnCallContext {
         Ok(())
     }
 
+    /// Invalidate memoization for the current call stack (propagates to ancestors
+    /// on `join_child`). Used for source reads / live components whose result is
+    /// not fully captured by their inputs.
+    pub fn invalidate_memo(&self) -> PyResult<()> {
+        self.0.invalidate_memo();
+        Ok(())
+    }
+
     /// Collect eager initial memo states for the change-detection context fingerprints
     /// captured in this fn call context, by looking them up in the given
     /// environment's registry. Returns a `dict[Fingerprint, list[Any]]`

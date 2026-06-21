@@ -113,6 +113,32 @@ from .typing import NonExistenceType, NON_EXISTENCE, is_non_existence, MemoState
 
 
 # ============================================================================
+# Memoization control
+# ============================================================================
+
+
+def invalidate_memoization() -> None:
+    """Invalidate memoization for the current function call stack.
+
+    Memoization assumes a function's observable effect is fully captured by its
+    return value plus its declared target states. When that does not hold — e.g.
+    reading a source whose data changes over time, or a live component — call this
+    from within the function to opt the current call out of memoization. The opt-out
+    propagates up the call stack, so no caller memoizes this run and the whole stack
+    re-executes next run.
+
+    Notes:
+        * Ordering within the call does not matter; only that it runs during this
+          function call.
+        * It only affects the current call stack — sibling calls are unaffected.
+
+    Raises:
+        RuntimeError: If called outside an active component context.
+    """
+    get_component_context()._core_fn_call_ctx.invalidate_memo()
+
+
+# ============================================================================
 # Mount APIs (async only)
 # ============================================================================
 
