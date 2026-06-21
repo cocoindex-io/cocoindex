@@ -30,7 +30,7 @@ def test_codeast_properties() -> None:
 
 def test_matches_returns_dataclasses_with_captures() -> None:
     ast = CodeAst(_PY_SRC, language="python")
-    matches = ast.matches(r"def \NAME(\(ARGS*)):")
+    matches = ast.matches(r"def \NAME(\(ARGS*\)):")
     assert all(isinstance(m, CodeMatch) for m in matches)
     by_name = {_cap(m, "NAME"): m for m in matches}
     assert set(by_name) == {"foo", "bar"}
@@ -50,7 +50,7 @@ def test_matches_returns_dataclasses_with_captures() -> None:
 def test_one_parse_many_patterns() -> None:
     """A single CodeAst can be matched against multiple patterns (reused parse)."""
     ast = CodeAst(_PY_SRC, language="python")
-    assert {_cap(m, "NAME") for m in ast.matches(r"def \NAME(\(ARGS*)):")} == {
+    assert {_cap(m, "NAME") for m in ast.matches(r"def \NAME(\(ARGS*\)):")} == {
         "foo",
         "bar",
     }
@@ -68,7 +68,7 @@ def test_split_returns_chunks() -> None:
 
 
 def test_match_code_one_shot() -> None:
-    matches = match_code(r"def \NAME(\(ARGS*)):", _PY_SRC, "python")
+    matches = match_code(r"def \NAME(\(ARGS*\)):", _PY_SRC, "python")
     assert {_cap(m, "NAME") for m in matches} == {"foo", "bar"}
 
 
@@ -94,16 +94,16 @@ def test_matching_unsupported_language_raises() -> None:
 def test_malformed_pattern_raises() -> None:
     ast = CodeAst(_PY_SRC, language="python")
     with pytest.raises(ValueError):
-        ast.matches(r"\(:/[/)")  # unterminated regex matcher
+        ast.matches(r"\(/[/\)")  # invalid regex matcher (unterminated char class)
 
 
 def test_code_pattern_reused_across_asts() -> None:
     # Compile once, match against many ASTs — same results as passing the string.
-    cp = CodePattern(r"def \NAME(\(ARGS*)):", language="python")
+    cp = CodePattern(r"def \NAME(\(ARGS*\)):", language="python")
     assert cp.language == "python"
     ast = CodeAst(_PY_SRC, language="python")
     via_obj = {_cap(m, "NAME") for m in ast.matches(cp)}
-    via_str = {_cap(m, "NAME") for m in ast.matches(r"def \NAME(\(ARGS*)):")}
+    via_str = {_cap(m, "NAME") for m in ast.matches(r"def \NAME(\(ARGS*\)):")}
     assert via_obj == via_str == {"foo", "bar"}
 
 
@@ -126,7 +126,7 @@ def test_code_pattern_language_mismatch_raises() -> None:
 
 
 def test_code_pattern_match_file(tmp_path: Path) -> None:
-    cp = CodePattern(r"def \NAME(\(A*)):", language="python")
+    cp = CodePattern(r"def \NAME(\(A*\)):", language="python")
 
     hit = tmp_path / "hit.py"
     # newline="" so the bytes round-trip verbatim (no `\n`→`\r\n` on Windows).

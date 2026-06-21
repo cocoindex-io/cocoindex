@@ -31,7 +31,7 @@ mod tests {
     #[test]
     fn call_multi_args() {
         let src = r#"console.log("a", b);"#;
-        let ms = matches(typescript(), r"console.log(\(ARGS*))", src);
+        let ms = matches(typescript(), r"console.log(\(ARGS*\))", src);
         assert_eq!(cap(&ms, "ARGS").as_deref(), Some(r#""a", b"#));
     }
 

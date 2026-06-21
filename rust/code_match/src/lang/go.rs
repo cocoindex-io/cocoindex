@@ -28,7 +28,7 @@ mod tests {
     #[test]
     fn call() {
         let src = "package main\nfunc m() { foo(a, b) }";
-        let ms = matches(go(), r"foo(\(ARGS*))", src);
+        let ms = matches(go(), r"foo(\(ARGS*\))", src);
         assert_eq!(cap(&ms, "ARGS").as_deref(), Some("a, b"));
     }
 

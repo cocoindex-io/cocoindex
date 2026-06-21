@@ -13,7 +13,7 @@ use cocoindex_code_match::{Pattern, lang};
 fn string_is_atomic() {
     // The `)` inside the string literal must be invisible — strings are one node.
     let src = r#"foo("a)b");"#;
-    let ms = matches(lang::typescript(), r"foo(\(ARGS*))", src);
+    let ms = matches(lang::typescript(), r"foo(\(ARGS*\))", src);
     assert_eq!(cap(&ms, "ARGS").as_deref(), Some(r#""a)b""#));
 }
 
@@ -118,7 +118,7 @@ fn partial_match_dedup() {
 fn multiple_gaps_dp() {
     // Two `\(*)` gaps around an anchor — exercises the wildcard DP / backtracking.
     let src = "function f() { a(); foo(); b(); }";
-    let ms = matches(lang::typescript(), r"{ \(A*) foo(); \(B*) }", src);
+    let ms = matches(lang::typescript(), r"{ \(A*\) foo(); \(B*\) }", src);
     let m = ms
         .iter()
         .find(|m| m.kind == "statement_block")
@@ -130,9 +130,9 @@ fn multiple_gaps_dp() {
 #[test]
 fn optional_metavar() {
     // `\(ARG?)` matches calls with zero or one argument.
-    let ms = matches(lang::typescript(), r"f(\(ARG?))", "f(x);");
+    let ms = matches(lang::typescript(), r"f(\(ARG?\))", "f(x);");
     assert_eq!(cap(&ms, "ARG").as_deref(), Some("x"));
-    let ms = matches(lang::typescript(), r"f(\(ARG?))", "f();");
+    let ms = matches(lang::typescript(), r"f(\(ARG?\))", "f();");
     assert!(has_kind(&ms, "call_expression"), "no-arg call should match");
 }
 
@@ -198,16 +198,34 @@ fn regex_constrains_identifier() {
     // Matchers are whole-node anchored, so `get.*` filters callees *starting* with
     // `get` (the trailing `.*` is the explicit "prefix").
     let src = "getUser(1); setName(2); getId(3);";
-    let ms = matches(lang::typescript(), r"\(F:/get.*/)(\*)", src);
+    let ms = matches(lang::typescript(), r"\(F:/get.*/\)(\*)", src);
     assert_eq!(caps_all(&ms, "F"), vec!["getId", "getUser"]);
 }
 
 #[test]
 fn anonymous_regex_matcher() {
-    // `\(:/re/)` — a regex constraint with no name: filter a node without
+    // `\(/re/\)` — a regex constraint with no name: filter a node without
     // capturing it. Here the callee must start with `get` (`get.*`), but isn't bound.
     let src = "getUser(1); setName(2); getId(3);";
-    let ms = matches(lang::typescript(), r"\(:/get.*/)(\*)", src);
+    let ms = matches(lang::typescript(), r"\(/get.*/\)(\*)", src);
+    let callees: Vec<&str> = ms
+        .iter()
+        .filter(|m| m.kind == "call_expression")
+        .map(|m| m.text)
+        .collect();
+    assert!(callees.contains(&"getUser(1)") && callees.contains(&"getId(3)"));
+    assert!(
+        !callees.iter().any(|t| t.contains("setName")),
+        "the `^get` constraint must exclude setName, got {callees:?}",
+    );
+}
+
+#[test]
+fn anonymous_regex_short_form() {
+    // `\/re/` is the short form of `\(/re/\)` — an anonymous regex-constrained node
+    // (filter, don't capture). Mirrors `anonymous_regex_matcher`.
+    let src = "getUser(1); setName(2); getId(3);";
+    let ms = matches(lang::typescript(), r"\/get.*/(\*)", src);
     let callees: Vec<&str> = ms
         .iter()
         .filter(|m| m.kind == "call_expression")
@@ -225,7 +243,7 @@ fn regex_pins_nesting_level() {
     // Larger spans (`foo.bar`, `foo.bar(x)`) all start at `foo`; `^foo$` filters
     // the candidates down to the leaf. Exercises "every sub-layer is a candidate".
     let src = "foo.bar(x);";
-    let ms = matches(lang::typescript(), r"\(OBJ:/^foo$/).bar(\*)", src);
+    let ms = matches(lang::typescript(), r"\(OBJ:/^foo$/\).bar(\*)", src);
     assert_eq!(cap(&ms, "OBJ").as_deref(), Some("foo"));
 }
 
@@ -233,32 +251,34 @@ fn regex_pins_nesting_level() {
 fn regex_on_subtree() {
     // The metavar binds a whole expression; the regex tests its source text.
     // Anchored, so `.*\+.*` is the explicit "contains `+`".
-    let yes = matches(lang::typescript(), r"f(\(A:/.*\+.*/))", "f(a + b);");
+    let yes = matches(lang::typescript(), r"f(\(A:/.*\+.*/\))", "f(a + b);");
     assert_eq!(cap(&yes, "A").as_deref(), Some("a + b"));
-    let no = matches(lang::typescript(), r"f(\(A:/.*\+.*/))", "f(ab);");
+    let no = matches(lang::typescript(), r"f(\(A:/.*\+.*/\))", "f(ab);");
     assert!(no.iter().all(|m| m.kind != "call_expression"));
 }
 
 #[test]
 fn regex_alternation_parens_free() {
-    // Balanced `()` inside a delimited regex need no escaping (paren-depth close).
+    // Balanced `()` inside a delimited regex need no escaping (the regex closes at
+    // its delimiting `/`, not at a paren).
     let src = "foo; bar; baz;";
-    let ms = matches(lang::typescript(), r"\(N:/^(foo|bar)$/)", src);
+    let ms = matches(lang::typescript(), r"\(N:/^(foo|bar)$/\)", src);
     assert_eq!(caps_all(&ms, "N"), vec!["bar", "foo"]);
 }
 
 #[test]
-fn regex_shorthand_no_closing_slash() {
-    // Shorthand (no closing `/`): the `)` closes the matcher. Anchored, so `get.*`.
+fn regex_named_then_call_group() {
+    // A named regex metavar `\(F:/get.*/\)` followed by a literal `(\*)` call group:
+    // F captures the callee (anchored, so `get.*`).
     let src = "getUser(1); setName(2);";
-    let ms = matches(lang::typescript(), r"\(F:/get.*)(\*)", src);
+    let ms = matches(lang::typescript(), r"\(F:/get.*/\)(\*)", src);
     assert_eq!(cap(&ms, "F").as_deref(), Some("getUser"));
 }
 
 #[test]
 fn regex_escaped_slash() {
     // `\/` is a literal slash (the `regex` crate accepts `\<punct>`).
-    let ms = matches(lang::typescript(), r"f(\(P:/a\/b/))", "f(a/b); f(ab);");
+    let ms = matches(lang::typescript(), r"f(\(P:/a\/b/\))", "f(a/b); f(ab);");
     assert_eq!(cap(&ms, "P").as_deref(), Some("a/b"));
 }
 
@@ -267,7 +287,7 @@ fn regex_dotstar_equals_bare() {
     // `/.*/ ` is a pure pass-through filter, so it must behave exactly like `\X`.
     let src = "a = b = c;";
     let bare = matches(lang::typescript(), r"\X = \Y", src);
-    let dotstar = matches(lang::typescript(), r"\(X:/.*/) = \Y", src);
+    let dotstar = matches(lang::typescript(), r"\(X:/.*/\) = \Y", src);
     assert_eq!(bare.len(), dotstar.len());
     assert_eq!(caps_all(&bare, "X"), caps_all(&dotstar, "X"));
 }
@@ -277,15 +297,15 @@ fn regex_optional_constrains_when_present() {
     // Present must match the regex; absence is still allowed (the `?` is kept).
     let ts = lang::typescript();
     assert_eq!(
-        cap(&matches(ts.clone(), r"f(\(A?:/^x/))", "f(x);"), "A").as_deref(),
+        cap(&matches(ts.clone(), r"f(\(A?:/^x/\))", "f(x);"), "A").as_deref(),
         Some("x")
     );
     assert!(has_kind(
-        &matches(ts.clone(), r"f(\(A?:/^x/))", "f();"),
+        &matches(ts.clone(), r"f(\(A?:/^x/\))", "f();"),
         "call_expression"
     ));
     assert!(
-        matches(ts, r"f(\(A?:/^x/))", "f(y);")
+        matches(ts, r"f(\(A?:/^x/\))", "f(y);")
             .iter()
             .all(|m| m.kind != "call_expression")
     );
@@ -295,7 +315,7 @@ fn regex_optional_constrains_when_present() {
 fn regex_invalid_errors() {
     // An unparseable regex surfaces as a `client` compile error (not a panic,
     // not a silently-dropped constraint).
-    let res = Pattern::compile(r"\(Z:/[/) = \Y", &lang::typescript());
+    let res = Pattern::compile(r"\(Z:/[/\) = \Y", &lang::typescript());
     assert!(
         matches!(res, Err(cocoindex_code_match::Error::Client { .. })),
         "expected a client error"
@@ -326,7 +346,7 @@ fn metavar_lowercase_name() {
 fn configurable_dollar_sigil() {
     let cfg = lang::typescript().with_meta_char('$');
     let src = "foo(a, b);";
-    let ms = Pattern::compile("foo($(ARGS*))", &cfg)
+    let ms = Pattern::compile("foo($(ARGS*$))", &cfg)
         .unwrap()
         .matches(src);
     assert_eq!(cap(&ms, "ARGS").as_deref(), Some("a, b"));
@@ -466,7 +486,7 @@ fn cjk_identifier() {
 #[test]
 fn emoji_in_string_and_as_arg() {
     let src = r#"f("😀", 你好)"#;
-    let ms = matches(lang::typescript(), r"f(\(ARGS*))", src);
+    let ms = matches(lang::typescript(), r"f(\(ARGS*\))", src);
     assert_eq!(cap(&ms, "ARGS").as_deref(), Some(r#""😀", 你好"#));
 }
 
@@ -606,7 +626,7 @@ fn fragment_match_reports_the_fragment_span_not_the_whole_node() {
     // The pattern covers the signature but not the body: the reported range is the
     // signature *fragment*, with `kind` still the enclosing function node.
     let src = "def foo(a, b):\n    return a + b\n";
-    let ms = matches(lang::python(), r"def \NAME(\(A*)):", src);
+    let ms = matches(lang::python(), r"def \NAME(\(A*\)):", src);
     let m = by_text(&ms, "def foo(a, b):").expect("fragment span, not whole node");
     assert_eq!(m.kind, "function_definition");
     assert_eq!(m.capture_text("NAME"), Some("foo"));
@@ -617,15 +637,15 @@ fn regex_matcher_is_whole_node_anchored() {
     // Matchers anchor to the whole node text, so a bare `set_.*` is a *prefix*
     // (no false positive on `test_unset_is`, where `set_` is only a substring).
     let src = "def set_value(): pass\ndef test_unset_is(): pass\n";
-    let prefix = matches(lang::python(), r"def \(N:/set_.*/)(\*):", src);
+    let prefix = matches(lang::python(), r"def \(N:/set_.*/\)(\*):", src);
     assert_eq!(caps_all(&prefix, "N"), vec!["set_value"]);
 
     // exact (no `.*`): the text must equal the regex
-    let exact = matches(lang::python(), r"def \(N:/set_value/)(\*):", src);
+    let exact = matches(lang::python(), r"def \(N:/set_value/\)(\*):", src);
     assert_eq!(caps_all(&exact, "N"), vec!["set_value"]);
 
     // substring needs explicit `.*…*.`
-    let substring = matches(lang::python(), r"def \(N:/.*set_.*/)(\*):", src);
+    let substring = matches(lang::python(), r"def \(N:/.*set_.*/\)(\*):", src);
     assert_eq!(
         caps_all(&substring, "N"),
         vec!["set_value", "test_unset_is"]
@@ -741,7 +761,7 @@ fn star_run_does_not_absorb_a_comment_into_its_capture() {
     // A `\*` sibling run skips comment nodes — the captured text is the args only.
     let ms = matches(
         lang::rust(),
-        r"foo(\(ARGS*))",
+        r"foo(\(ARGS*\))",
         "fn m() { foo(a, /* c */ b); }",
     );
     assert_eq!(cap(&ms, "ARGS").as_deref(), Some("a, /* c */ b"));

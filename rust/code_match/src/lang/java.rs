@@ -21,7 +21,7 @@ mod tests {
     #[test]
     fn call() {
         let src = "class C { void m() { foo(a, b); } }";
-        let ms = matches(java(), r"foo(\(ARGS*))", src);
+        let ms = matches(java(), r"foo(\(ARGS*\))", src);
         assert_eq!(cap(&ms, "ARGS").as_deref(), Some("a, b"));
     }
 

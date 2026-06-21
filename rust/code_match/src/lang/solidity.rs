@@ -31,7 +31,7 @@ mod tests {
     #[test]
     fn call() {
         let src = "contract C { function f() public { foo(a, b); } }";
-        let ms = matches(solidity(), r"foo(\(A*))", src);
+        let ms = matches(solidity(), r"foo(\(A*\))", src);
         assert_eq!(cap(&ms, "A").as_deref(), Some("a, b"));
     }
 

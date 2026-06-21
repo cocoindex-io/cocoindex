@@ -3,17 +3,18 @@
 //! Metavariables are first-class tokens. Everything else is lexed with a small
 //! hand engine + the per-language op-token table.
 //!
-//! Metavar syntax (sigil `S` is configurable, default `\`):
-//!   `S NAME`        single, named (sugar for `S(NAME)`)
-//!   `S(NAME)`       single, named
-//!   `S(NAME*)`      many   (zero or more **same-level** sibling nodes)
-//!   `S(NAME?)`      optional (zero or one node)
-//!   `S_` / `S(_)`   anonymous single        `S*` / `S(*)`  anonymous many
-//!   `S?` / `S(?)`   anonymous optional
-//!   `S(NAME:/re/)`  single, regex-constrained — see below
-//!   `S(:/re/)`      regex-constrained, **anonymous** (filter without capturing)
-//!   `S{{ INNER S}}` containment: INNER must match some descendant within a
-//!                   same-level region here (DESIGN §12). Paired; may nest.
+//! Metavar syntax (sigil `S` is configurable, default `\`; delimiters are
+//! **symmetric** — a metavar is `S( … S)`, see DESIGN §0). Currently implemented:
+//!   `S NAME`        single, named (sugar for `S(NAME S)`)
+//!   `S(NAME S)`     single, named
+//!   `S(NAME* S)`    many   (zero or more **same-level** sibling nodes)
+//!   `S(NAME? S)`    optional (zero or one node)
+//!   `S_` / `S(_ S)` anonymous single        `S*` / `S(* S)`  anonymous many
+//!   `S?` / `S(? S)` anonymous optional
+//!   `S(NAME:/re/ S)` single, regex-constrained — see below
+//!   `S(/re/ S)` / `S/re/`  regex-constrained, **anonymous** (filter, don't capture)
+//!   `S{{ INNER S}}` containment: INNER must match some descendant of one node
+//!                   here (DESIGN §12). Paired; may nest.
 //!   `SS`            a doubled sigil is one **literal** sigil (e.g. `\\` → `\`)
 //! `*` is **same-level** (one parent's direct siblings); a cross-level skip is
 //! written as multiple `*`, one per grammar level.
@@ -21,18 +22,17 @@
 //! readability convention, not a rule. With the `\` sigil, lowercase `\foo` only
 //! collides with bare-`\` escapes (Bash `\n`) / Haskell lambdas.
 //!
-//! Regex matcher `:/re/` constrains a **single-node** metavar: the captured
-//! source text must match the regex **anchored to the whole node** (compiled as
-//! `^(?:re)$`). So `:/set_/` means "text is exactly `set_`", `:/set_.*/` means
+//! Regex matcher `/re/` constrains a **single-node** metavar: the captured source
+//! text must match the regex **anchored to the whole node** (compiled as
+//! `^(?:re)$`). So `/set_/` means "text is exactly `set_`", `/set_.*/` means
 //! "starts with `set_`"; add `.*` explicitly for prefix/suffix/substring. (This is
 //! less surprising than unanchored `is_match`, where a bare `set_.*` would match
-//! inside `unset_…`.) The name is optional — `S(:/re/)` constrains without capturing.
-//! Applies to `One`/`Optional`; ignored on `Many` (sibling runs, out of scope).
-//! The closing `/` is optional (`:/re`): a `/` at the matcher's top paren level
-//! closes (delimited), else the matcher's `)` closes (shorthand). Balanced `()`
-//! inside the regex (alternations) need no escaping; escape a literal `/` or an
-//! unbalanced `)` as `\/` / `\)`. An unparseable (or unterminated) regex is a
-//! `client` error from `lex` / `Pattern::compile`.
+//! inside `unset_…`.) Named is `S(NAME:/re/ S)` (the `:` only follows a NAME);
+//! anonymous is `S(/re/ S)` or the short form `S/re/`. Applies to `One`/`Optional`;
+//! ignored on `Many` (sibling runs, out of scope). The regex is **delimited** —
+//! it closes at the first unescaped `/`; *balanced* `()` inside (alternations) need
+//! no escaping, escape a literal `/` as `\/`. An unparseable (or unterminated)
+//! regex is a `client` error from `lex` / `Pattern::compile`.
 
 use crate::config::{LangConfig, TokKind};
 use cocoindex_utils::error::{Error, Result};
@@ -42,9 +42,9 @@ use regex::Regex;
 pub enum Cardinality {
     /// `\X` — exactly one node
     One,
-    /// `\(X*)` — zero or more sibling nodes
+    /// `\(X*\)` — zero or more sibling nodes
     Many,
-    /// `\(X?)` — zero or one node
+    /// `\(X?\)` — zero or one node
     Optional,
 }
 
@@ -81,13 +81,13 @@ pub enum PatternItem {
         card: Cardinality,
         regex: Option<Regex>,
     },
-    /// `\{{` — opens a containment group `\{{ INNER \}}` (DESIGN §12). `close` is
+    /// `\{{` — opens a containment `\{{ INNER \}}` (DESIGN §12). `close` is
     /// the index of the matching `ContainsClose` in the flat items vec
     /// (back-patched by `lex`); `INNER` is `items[self_index+1 .. close]`. Kept
     /// flat (not a nested `Vec`) so the DP runs in one `pi` space with one memo,
     /// and nesting falls out of the back-patched indices.
     ContainsOpen { close: usize },
-    /// `\}}` — closes the containment group opened by the matching `ContainsOpen`.
+    /// `\}}` — closes the containment opened by the matching `ContainsOpen`.
     ContainsClose,
 }
 
@@ -139,7 +139,7 @@ pub fn lex(pattern: &str, cfg: &LangConfig) -> Result<Vec<PatternItem>> {
                 i = after + 2;
                 continue;
             }
-            if let Some((item, next)) = lex_metavar(pattern, bytes, after)? {
+            if let Some((item, next)) = lex_metavar(pattern, bytes, after, cfg.meta_char)? {
                 out.push(item);
                 i = next;
                 continue;
@@ -241,14 +241,24 @@ fn resolve_contains(items: &mut [PatternItem]) -> Result<()> {
 /// matcher (e.g. a bad regex). The metavar syntax is ASCII, so byte reads from
 /// `s` are safe even if a non-ASCII char follows the sigil (ASCII checks just
 /// fail → `Ok(None)`).
-fn lex_metavar(pattern: &str, bytes: &[u8], s: usize) -> Result<Option<(PatternItem, usize)>> {
+fn lex_metavar(
+    pattern: &str,
+    bytes: &[u8],
+    s: usize,
+    meta_char: char,
+) -> Result<Option<(PatternItem, usize)>> {
     Ok(match bytes.get(s).copied() {
-        // qualified form: S( ... )
-        Some(b'(') => return lex_qualified(pattern, bytes, s + 1),
-        // anonymous shorthands: S*  S?
+        // qualified form: \( ... \)
+        Some(b'(') => return lex_qualified(pattern, bytes, s + 1, meta_char),
+        // anonymous short forms: \*  \?
         Some(b'*') => Some((meta(None, Cardinality::Many, None), s + 1)),
         Some(b'?') => Some((meta(None, Cardinality::Optional, None), s + 1)),
-        // sugar: S NAME  /  S_  (single). Names may start with any alnum/`_`
+        // anonymous regex short form: \/re/  (≡ \(/re/\))
+        Some(b'/') => {
+            let (re, next) = lex_regex(pattern, bytes, s)?;
+            Some((meta(None, Cardinality::One, Some(re)), next))
+        }
+        // sugar: \NAME / \_  (single). Names may start with any alnum/`_`
         // (lowercase + digit allowed; the `\` sigil makes collisions rare).
         Some(c) if c.is_ascii_alphanumeric() || c == b'_' => {
             let (name, end) = read_name(pattern, bytes, s);
@@ -258,10 +268,17 @@ fn lex_metavar(pattern: &str, bytes: &[u8], s: usize) -> Result<Option<(PatternI
     })
 }
 
-/// Parse the inside of `S( ... )` given `j` pointing just after `(`:
-/// `NAME [*|?] [ : /regex/ ] )`. A `:` commits to a regex matcher (a bad regex
-/// is an `Err`); a missing closing `)` is lenient (`Ok(None)` → literal sigil).
-fn lex_qualified(pattern: &str, bytes: &[u8], j: usize) -> Result<Option<(PatternItem, usize)>> {
+/// Parse the inside of a metavar `\( ... \)` given `j` pointing just after `\(`.
+/// Forms (existing functionality): `NAME [*|?] \)`, named regex `NAME : /re/ \)`,
+/// anonymous regex `/re/ \)` (no colon — `:` separates a NAME from its body). The
+/// close is the **sigil + `)`** (`\)`); a bad regex is an `Err`, a missing/garbled
+/// close is lenient (`Ok(None)` → treat the sigil as literal).
+fn lex_qualified(
+    pattern: &str,
+    bytes: &[u8],
+    j: usize,
+    meta_char: char,
+) -> Result<Option<(PatternItem, usize)>> {
     let (name, mut k) = read_name(pattern, bytes, j);
     let card = match bytes.get(k).copied() {
         Some(b'*') => {
@@ -274,73 +291,65 @@ fn lex_qualified(pattern: &str, bytes: &[u8], j: usize) -> Result<Option<(Patter
         }
         _ => Cardinality::One,
     };
-    // optional `: /regex/` matcher
     k = skip_spaces(bytes, k);
-    let regex = if bytes.get(k) == Some(&b':') {
-        let (re, nk) = lex_regex(pattern, bytes, skip_spaces(bytes, k + 1))?;
-        k = nk;
-        Some(re)
-    } else {
-        None
+    // regex matcher: named `NAME:/re/` (a `:` only ever follows a NAME) or
+    // anonymous `/re/` (regex directly, no colon).
+    let regex = match bytes.get(k) {
+        Some(&b':') if !name.is_empty() => {
+            let (re, nk) = lex_regex(pattern, bytes, skip_spaces(bytes, k + 1))?;
+            k = nk;
+            Some(re)
+        }
+        Some(&b'/') if name.is_empty() => {
+            let (re, nk) = lex_regex(pattern, bytes, k)?;
+            k = nk;
+            Some(re)
+        }
+        _ => None,
     };
     k = skip_spaces(bytes, k);
-    if bytes.get(k) != Some(&b')') {
-        return Ok(None); // unterminated / malformed `S(` — treat the sigil as literal
+    // close: the sigil followed by `)` (`\)`). Sigil-agnostic + UTF-8-safe.
+    if !pattern[k..].starts_with(meta_char) || bytes.get(k + meta_char.len_utf8()) != Some(&b')') {
+        return Ok(None); // unterminated / malformed `\(` — treat the sigil as literal
     }
-    Ok(Some((meta(name_binding(name), card, regex), k + 1)))
+    let end = k + meta_char.len_utf8() + 1;
+    Ok(Some((meta(name_binding(name), card, regex), end)))
 }
 
-/// Parse `/regex/` (or shorthand `/regex`) starting at `k` (which must point at
-/// the opening `/`). Returns `(compiled_regex, index_past_the_regex)`. A missing
-/// `/`, an unterminated regex, or one that fails to compile is a `client` error.
-///
-/// Delimiting uses **paren depth** (the matcher's `\(` is depth 1): a `/` at
-/// depth 1 closes (delimited form); a `)` that drops depth to 0 closes (shorthand
-/// form). So *balanced* `()` inside the regex — alternations like `(foo|bar)` —
-/// are free, no escaping. Escape a literal `/` (or an unbalanced `)`) as `\/` /
-/// `\)`; the `regex` crate accepts `\<punct>` as the literal, so the slice is
-/// passed through verbatim. Scanning for these ASCII bytes is UTF-8-safe (they
-/// never occur mid multi-byte char).
+/// Parse a **delimited** `/regex/` starting at `k` (which must point at the
+/// opening `/`). Returns `(compiled_regex, index_past_the_closing_/)`. The regex
+/// closes at the first **unescaped** `/`; a literal `/` inside is escaped `\/`
+/// (the `regex` crate accepts `\<punct>` as the literal, so the slice is passed
+/// through verbatim, and *balanced* `()` need no escaping). A missing `/`, an
+/// unterminated regex, or one that fails to compile is a `client` error.
+/// Scanning for these ASCII bytes is UTF-8-safe (they never occur mid char).
 fn lex_regex(pattern: &str, bytes: &[u8], k: usize) -> Result<(Regex, usize)> {
     if bytes.get(k) != Some(&b'/') {
         return Err(Error::client(
-            "metavar matcher must be a regex: expected `/` after `:`",
+            "metavar matcher must be a regex: expected `/`",
         ));
     }
     let start = k + 1;
     let mut p = start;
-    let mut depth = 1usize; // the matcher's `\(` is open
-    let (close, delimited) = loop {
+    let close = loop {
         match bytes.get(p) {
             None => return Err(Error::client("unterminated regex in metavar matcher")),
-            Some(b'\\') => p += 2, // skip the escaped char (\/ \) \( …)
-            Some(b'(') => {
-                depth += 1;
-                p += 1;
-            }
-            Some(b')') => {
-                depth -= 1;
-                if depth == 0 {
-                    break (p, false); // matcher close → shorthand
-                }
-                p += 1;
-            }
-            Some(b'/') if depth == 1 => break (p, true), // top-level `/` → delimited
+            Some(b'\\') => p += 2, // skip the escaped char (\/ \( \) …)
+            Some(b'/') => break p, // delimiter close
             Some(_) => p += 1,
         }
     };
-    // `start`/`close` land on ASCII (`/`, `)`) → char boundaries; safe slice.
+    // `start`/`close` land on ASCII (`/`) → char boundaries; safe slice.
     let raw = &pattern[start..close];
-    // Anchor the matcher to the **whole** node text: `\(:/set_/)` means "text is
-    // exactly `set_`", `\(:/set_.*/)` means "starts with `set_`". Users add `.*`
+    // Anchor the matcher to the **whole** node text: `\(/set_/\)` means "text is
+    // exactly `set_`", `\(/set_.*/\)` means "starts with `set_`". Users add `.*`
     // explicitly for prefix/suffix/substring — far less surprising than unanchored
     // `is_match`, where a bare `set_.*` would match inside `unset_…`. Wrapping in a
     // non-capturing group keeps the user's alternations/anchors valid (a redundant
     // `^…$` they wrote still compiles).
     let regex = Regex::new(&format!("^(?:{raw})$"))
         .map_err(|e| Error::client(format!("invalid regex `/{raw}/`: {e}")))?;
-    let next = if delimited { close + 1 } else { close };
-    Ok((regex, next))
+    Ok((regex, close + 1))
 }
 
 fn skip_spaces(bytes: &[u8], mut k: usize) -> usize {

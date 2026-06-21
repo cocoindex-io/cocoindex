@@ -28,7 +28,7 @@ mod tests {
 
     #[test]
     fn call() {
-        let ms = matches(pascal(), r"foo(\(A*))", "begin foo(a, b); end.");
+        let ms = matches(pascal(), r"foo(\(A*\))", "begin foo(a, b); end.");
         assert_eq!(cap(&ms, "A").as_deref(), Some("a, b"));
     }
 

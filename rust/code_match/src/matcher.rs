@@ -119,7 +119,7 @@ pub struct Pattern {
     cfg: LangConfig,
     /// Whether the `(pi, li)` fail-memo is sound. It isn't when forward-threaded
     /// bindings can change whether a `(pi, li)` matches: a repeated metavar name,
-    /// or a containment group (`\{{ \}}`), whose INNER binds names per descendant.
+    /// or a containment (`\{{ \}}`), whose INNER binds names per descendant.
     use_memo: bool,
 }
 
@@ -443,7 +443,7 @@ struct Ctx<'a, 's> {
 impl<'s> Ctx<'_, 's> {
     /// Match `items[pi..end]` against leaves `[li, hi)`. On success, `bound` holds
     /// the captures. `end` is the exclusive item bound: `items.len()` at the top
-    /// level, or a containment group's `close` index for an INNER sub-match — so
+    /// level, or a containment's `close` index for an INNER sub-match — so
     /// the same `dp` engine matches a bracketed sub-pattern without it running
     /// past its `\}}`. (`end` is a structural function of `pi` — each item sits in
     /// exactly one bracket level — so the `(pi, li)` fail-memo stays well-keyed.)
@@ -554,7 +554,7 @@ impl<'s> Ctx<'_, 's> {
         false
     }
 
-    /// `\(X*)` — match a run of sibling subtrees, restricted to a contiguous run
+    /// `\(X*\)` — match a run of sibling subtrees, restricted to a contiguous run
     /// of *one parent's* direct children (same-level), so a `*` run can't
     /// silently leak out of the subtree the pattern entered. A cross-level skip
     /// is written as multiple `*`, one per grammar level.
@@ -627,7 +627,7 @@ impl<'s> Ctx<'_, 's> {
     /// For a fixed region `[reg_lo, reg_hi)`: try to match `INNER` (`items[inner..
     /// inner_end]`) against some descendant inside it, and on a hit continue the
     /// outer match (`items[cont..cont_end]`) from `reg_hi`. INNER bindings thread
-    /// forward (visible after the group); a `bound` snapshot/restore around each
+    /// forward (visible after the containment); a `bound` snapshot/restore around each
     /// attempt undoes them when that attempt doesn't pan out.
     #[allow(clippy::too_many_arguments)]
     fn contains_then_continue(
@@ -649,7 +649,7 @@ impl<'s> Ctx<'_, 's> {
             if cand.start_leaf < reg_lo || cand.end_leaf >= reg_hi {
                 continue;
             }
-            // Snapshot is the *pre-group* bindings (captures inside INNER haven't
+            // Snapshot is the *pre-containment* bindings (captures inside INNER haven't
             // happened yet) — usually empty or tiny, so the clone is cheap.
             let snapshot = self.bound.clone();
             if self.dp(inner, inner_end, cand.start_leaf, cand.end_leaf + 1)
@@ -669,7 +669,7 @@ impl<'s> Ctx<'_, 's> {
         false
     }
 
-    /// `\(X?)` — match zero or one node. Greedy: try one node first, then none
+    /// `\(X?\)` — match zero or one node. Greedy: try one node first, then none
     /// (binding an empty capture at `li`). A regex constrains the node *when
     /// present*; absence is always allowed (the `?` keeps its meaning).
     fn match_optional(
@@ -818,7 +818,7 @@ mod tests {
         parser.set_language(&cfg.language).unwrap();
         let tree = parser.parse(src, None).unwrap();
 
-        let p1 = Pattern::compile(r"def \NAME(\(A*)):", &cfg).unwrap();
+        let p1 = Pattern::compile(r"def \NAME(\(A*\)):", &cfg).unwrap();
         let m1 = p1.matches_in_tree(&tree, src);
         assert_eq!(m1.iter().find_map(|m| m.capture_text("NAME")), Some("foo"));
 

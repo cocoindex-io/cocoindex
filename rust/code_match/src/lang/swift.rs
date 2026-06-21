@@ -80,7 +80,7 @@ mod tests {
 
     #[test]
     fn call() {
-        let ms = matches(swift(), r"foo(\(A*))", "func m() { foo(a, b) }");
+        let ms = matches(swift(), r"foo(\(A*\))", "func m() { foo(a, b) }");
         assert_eq!(cap(&ms, "A").as_deref(), Some("a, b"));
     }
 

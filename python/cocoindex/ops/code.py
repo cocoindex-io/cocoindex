@@ -2,7 +2,7 @@ r"""Structural code matching over a reusable parsed AST.
 
 Parse source once into a :class:`CodeAst`, then match by-example structural
 patterns and/or split it into chunks without re-parsing. Metavariables in a
-pattern use the ``\`` sigil (e.g. ``\NAME``, ``\(ARGS*)``).
+pattern use the ``\`` sigil (e.g. ``\NAME``, ``\(ARGS*\)``).
 """
 
 __all__ = [
@@ -54,7 +54,7 @@ class CodePattern:
         min_len: Prefilter tuning — required terms shorter than this are dropped.
 
     Examples:
-        >>> cp = CodePattern(r"def \NAME(\(A*)):", language="python")
+        >>> cp = CodePattern(r"def \NAME(\(A*\)):", language="python")
         >>> cp.might_match("x = 1")          # cheap, parse-free pre-check
         False
         >>> [m.captures["NAME"][0].text for m in cp.match_source("def f(): pass")]
@@ -112,7 +112,7 @@ class CodeAst:
 
     Examples:
         >>> ast = CodeAst("def f(a, b): return a + b", language="python")
-        >>> [m.captures["NAME"] for m in ast.matches(r"def \NAME(\(ARGS*)):")]
+        >>> [m.captures["NAME"] for m in ast.matches(r"def \NAME(\(ARGS*\)):")]
         ['f']
         >>> chunks = ast.split(chunk_size=1000)
     """

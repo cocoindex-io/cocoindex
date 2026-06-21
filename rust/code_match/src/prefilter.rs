@@ -10,7 +10,7 @@
 //!
 //! Terms come from three places in a pattern: identifiers (whole-word), string
 //! literal content (whole-word over each alphanumeric run), and the required
-//! literals of a regex matcher `\(:/re/)` (substring, via `regex-syntax`).
+//! literals of a regex matcher `\(/re/\)` (substring, via `regex-syntax`).
 //! Keywords, punctuation, numbers, and bare metavars contribute nothing.
 
 use std::collections::{HashMap, HashSet};
@@ -41,7 +41,7 @@ pub struct FilterTerm {
 }
 
 /// One CNF clause: satisfied if **any** of its terms occurs. More than one term
-/// only arises from a regex alternation (`\(:/get|set/)`); a plain identifier or
+/// only arises from a regex alternation (`\(/get|set/\)`); a plain identifier or
 /// string run is a singleton.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FilterClause {
@@ -97,7 +97,7 @@ impl Prefilter {
                 }
                 // A regex literal is required only on a `One` metavar: an `Optional`
                 // node may be absent (so its regex isn't required — extracting it
-                // would be a false negative, e.g. `f(\(A?:/^x/))` matching `f()`),
+                // would be a false negative, e.g. `f(\(A?:/^x/\))` matching `f()`),
                 // and `Many` ignores the regex entirely.
                 PatternItem::Meta {
                     regex: Some(re),
