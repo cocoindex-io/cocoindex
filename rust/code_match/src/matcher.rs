@@ -162,17 +162,6 @@ impl Pattern {
     /// compatible.
     pub fn matches_in_tree<'s>(&self, tree: &Tree, source: &'s str) -> Vec<Match<'s>> {
         let idx = index_tree(tree.root_node(), source.as_bytes(), &self.cfg);
-
-        // Leading/trailing literal-token boundaries: a match's first/last leaf must
-        // be these tokens, so we prune hopeless start/stop positions in O(1).
-        let first_tok = match self.items.first() {
-            Some(PatternItem::Token(t)) => Some(t.as_str()),
-            _ => None,
-        };
-        let last_tok = match self.items.last() {
-            Some(PatternItem::Token(t)) => Some(t.as_str()),
-            _ => None,
-        };
         let n_items = self.items.len();
 
         let mut out = Vec::new();
@@ -186,15 +175,10 @@ impl Pattern {
             let kids = &cand.child_bounds;
             let hi = cand.end_leaf + 1;
 
-            // Valid stop boundaries (child-end-exclusive), pruned by the trailing
-            // token. `li == hi` (whole-node / a leaf candidate) is always allowed by
-            // the base case, so a childless candidate needs no entry here.
-            let mut stops: HashSet<usize> = HashSet::with_capacity(kids.len());
-            for &(_, e) in kids {
-                if last_tok.is_none_or(|t| idx.leaves[e].text == t) {
-                    stops.insert(e + 1);
-                }
-            }
+            // Valid stop boundaries (child-end-exclusive). `li == hi` (whole-node /
+            // a leaf candidate) is always allowed by the base case, so a childless
+            // candidate needs no entry here.
+            let stops: HashSet<usize> = kids.iter().map(|&(_, e)| e + 1).collect();
 
             let mut ctx = Ctx {
                 items: &self.items,
@@ -207,15 +191,12 @@ impl Pattern {
                 matched_end: 0,
             };
 
-            // Start positions: each child-start (pruned by the leading token); a leaf
-            // candidate has none, so use the candidate's start (whole-node only).
+            // Start positions: each child-start; a leaf candidate has none, so use
+            // the candidate's start (whole-node only).
             let starts: Vec<usize> = if kids.is_empty() {
                 vec![cand.start_leaf]
             } else {
-                kids.iter()
-                    .map(|&(s, _)| s)
-                    .filter(|&s| first_tok.is_none_or(|t| idx.leaves[s].text == t))
-                    .collect()
+                kids.iter().map(|&(s, _)| s).collect()
             };
             // child-start / child-end leaf → child index, to classify a fragment.
             let start_idx: HashMap<usize, usize> =
