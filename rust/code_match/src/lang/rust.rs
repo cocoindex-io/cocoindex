@@ -123,11 +123,12 @@ mod tests {
             "fn clone(self) {}",
         ] {
             let ms = matches(rust(), r"fn clone(self)", src);
-            // exactly one match — the function_item, reported with its full
-            // range; no enclosing-level (source_file) noise.
+            // exactly one match — the function_item (kind), no enclosing-level
+            // (source_file) noise. The reported range is the matched *fragment*
+            // (`fn clone(self)`), not the whole node incl. the body.
             assert_eq!(ms.len(), 1, "one match for `{src}`");
             assert_eq!(ms[0].kind, "function_item");
-            assert_eq!(ms[0].text, src);
+            assert_eq!(ms[0].text, "fn clone(self)");
         }
     }
 

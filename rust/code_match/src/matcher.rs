@@ -179,42 +179,61 @@ impl Pattern {
 
         let mut out = Vec::new();
         for cand in &idx.candidates {
-            // 1) Whole-node coverage (the pattern spans the entire candidate).
-            let captures = run(cand.start_leaf, cand.end_leaf + 1).or_else(|| {
-                // 2) Leading/trailing tolerance: the pattern may instead cover a
-                // contiguous run of the candidate's *direct children* that spans
-                // **≥2** children (`j > i`). Leading/trailing siblings — e.g. a
-                // Rust `pub` and the fn body around `fn clone(self)` — are free
-                // context. The ≥2 rule means a single-child run isn't matched
-                // here; that child is the integral match on its own iteration
-                // (so `\A = \B` matches the assignment, not the `expr;` around it).
-                let kids = &cand.child_bounds;
-                (0..kids.len()).find_map(|i| {
-                    // Cheap prune: if the pattern starts with a literal token, the
-                    // run must start at a child whose first leaf is that token —
-                    // skip hopeless starts without allocating a match context.
-                    // (Keeps the O(children²) partial scan from churning on the
-                    // common no-match candidates during a search.)
-                    if let Some(PatternItem::Token(t)) = self.items.first()
-                        && &idx.leaves[kids[i].0].text != t
-                    {
-                        return None;
-                    }
-                    (i + 1..kids.len()).find_map(|j| {
-                        let (a, hi) = (kids[i].0, kids[j].1 + 1);
-                        // skip the whole-node run — already tried in (1)
-                        if a == cand.start_leaf && hi == cand.end_leaf + 1 {
+            // 1) Whole-node coverage (the pattern spans the entire candidate) →
+            //    the match is the whole node. 2) Otherwise a contiguous run of the
+            //    candidate's direct children (leading/trailing tolerance) → the
+            //    match is that *fragment's* span, with `kind` still the node's.
+            let hit = run(cand.start_leaf, cand.end_leaf + 1)
+                .map(|caps| (caps, cand.start_byte, cand.end_byte))
+                .or_else(|| {
+                    // A child-run covers children `[i, j]`. It must span **≥2**
+                    // children, *except* a single child that is one **anonymous**
+                    // leaf (a keyword/punct like `if`): the ≥2 rule exists only to
+                    // defer to a *named* child candidate matched on its own
+                    // iteration (so `\A = \B` matches the assignment, not the
+                    // `expr;`), and an anonymous leaf is never a candidate — so
+                    // there is nothing to defer to, and `if` should match
+                    // `if_statement`. The reported range is the fragment, not the
+                    // whole node.
+                    let kids = &cand.child_bounds;
+                    (0..kids.len()).find_map(|i| {
+                        // Cheap prune: if the pattern starts with a literal token,
+                        // the run must start at a child whose first leaf is that
+                        // token — skip hopeless starts without allocating a context.
+                        if let Some(PatternItem::Token(t)) = self.items.first()
+                            && &idx.leaves[kids[i].0].text != t
+                        {
                             return None;
                         }
-                        run(a, hi)
+                        (i..kids.len()).find_map(|j| {
+                            let (first, last) = (kids[i].0, kids[j].1);
+                            let hi = last + 1;
+                            // skip the whole-node run — already tried in (1)
+                            if first == cand.start_leaf && hi == cand.end_leaf + 1 {
+                                return None;
+                            }
+                            // single-child run only for one anonymous leaf
+                            if j == i {
+                                let (s, e) = kids[i];
+                                if !(s == e && idx.leaves[s].anon) {
+                                    return None;
+                                }
+                            }
+                            run(first, hi).map(|caps| {
+                                (
+                                    caps,
+                                    idx.leaves[first].start_byte,
+                                    idx.leaves[last].end_byte,
+                                )
+                            })
+                        })
                     })
-                })
-            });
-            if let Some(captures) = captures {
+                });
+            if let Some((captures, start_byte, end_byte)) = hit {
                 out.push(Match {
                     kind: cand.node_kind,
-                    range: cand.start_byte..cand.end_byte,
-                    text: &source[cand.start_byte..cand.end_byte],
+                    range: start_byte..end_byte,
+                    text: &source[start_byte..end_byte],
                     captures,
                 });
             }
@@ -688,8 +707,10 @@ enum BindResult {
     Inconsistent,
 }
 
-/// A metavar's regex constraint (if any) against a candidate's source text.
-/// Unanchored (`is_match`): `/get/` is a substring test, `^…$` pins the whole node.
+/// A metavar's regex constraint (if any) against a candidate's source text. The
+/// regex is whole-node anchored at compile time (`^(?:re)$`, see `lexer::lex_regex`),
+/// so `is_match` here means "the *whole* text matches": `/get/` ≡ exactly `get`,
+/// `/get.*/` ≡ starts with `get`.
 fn regex_ok(regex: Option<&Regex>, text: &str) -> bool {
     regex.is_none_or(|re| re.is_match(text))
 }

@@ -22,8 +22,11 @@
 //! collides with bare-`\` escapes (Bash `\n`) / Haskell lambdas.
 //!
 //! Regex matcher `:/re/` constrains a **single-node** metavar: the captured
-//! source text must `is_match` (unanchored) the regex (use `^…$` for whole-node).
-//! The name is optional — `S(:/re/)` constrains a node without capturing it.
+//! source text must match the regex **anchored to the whole node** (compiled as
+//! `^(?:re)$`). So `:/set_/` means "text is exactly `set_`", `:/set_.*/` means
+//! "starts with `set_`"; add `.*` explicitly for prefix/suffix/substring. (This is
+//! less surprising than unanchored `is_match`, where a bare `set_.*` would match
+//! inside `unset_…`.) The name is optional — `S(:/re/)` constrains without capturing.
 //! Applies to `One`/`Optional`; ignored on `Many` (sibling runs, out of scope).
 //! The closing `/` is optional (`:/re`): a `/` at the matcher's top paren level
 //! closes (delimited), else the matcher's `)` closes (shorthand). Balanced `()`
@@ -70,9 +73,9 @@ pub enum PatternItem {
     /// source *node* span by text, atomically (advance past the whole span).
     Str(String),
     /// Metavariable. `name` == None for anonymous (`\_`, `\*`, `\?`). `regex`, if
-    /// present, constrains the captured text (unanchored `is_match`); honored for
-    /// single-node cardinalities (`One`/`Optional`) only. `Many` (`*`) is always
-    /// same-level; cross-level skips use multiple `*`.
+    /// present, constrains the captured text (whole-node anchored — compiled
+    /// `^(?:re)$`); honored for single-node cardinalities (`One`/`Optional`) only.
+    /// `Many` (`*`) is always same-level; cross-level skips use multiple `*`.
     Meta {
         name: Option<String>,
         card: Cardinality,
@@ -328,8 +331,14 @@ fn lex_regex(pattern: &str, bytes: &[u8], k: usize) -> Result<(Regex, usize)> {
     };
     // `start`/`close` land on ASCII (`/`, `)`) → char boundaries; safe slice.
     let raw = &pattern[start..close];
-    let regex =
-        Regex::new(raw).map_err(|e| Error::client(format!("invalid regex `/{raw}/`: {e}")))?;
+    // Anchor the matcher to the **whole** node text: `\(:/set_/)` means "text is
+    // exactly `set_`", `\(:/set_.*/)` means "starts with `set_`". Users add `.*`
+    // explicitly for prefix/suffix/substring — far less surprising than unanchored
+    // `is_match`, where a bare `set_.*` would match inside `unset_…`. Wrapping in a
+    // non-capturing group keeps the user's alternations/anchors valid (a redundant
+    // `^…$` they wrote still compiles).
+    let regex = Regex::new(&format!("^(?:{raw})$"))
+        .map_err(|e| Error::client(format!("invalid regex `/{raw}/`: {e}")))?;
     let next = if delimited { close + 1 } else { close };
     Ok((regex, next))
 }
