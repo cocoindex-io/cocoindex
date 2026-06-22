@@ -3,6 +3,12 @@
 //! Each test exercises the public SDK API: `CodeAst`, `CodePattern`,
 //! `match_code`, `index_terms`, `FileMatch`.  We use short Python and Rust
 //! snippets because both grammars are always present in the code_match crate.
+//!
+//! `ops::code` is gated behind the `code_match` feature, so this test only
+//! compiles when that feature is enabled (mirrors `valkey_target.rs` /
+//! `lancedb_target.rs`). Without it, the default `cargo test` would fail to
+//! compile this file with `unresolved import cocoindex::ops::code`.
+#![cfg(feature = "code_match")]
 
 use cocoindex::ops::code::{CodeAst, CodePattern, FileMatch, index_terms, match_code};
 
