@@ -7,6 +7,7 @@ use crate::engine::component::{
     Component, ComponentBgChildReadinessChildGuard, ComponentExecutionHandle, OnError,
 };
 use crate::engine::context::{ComponentProcessingAction, ComponentProcessorContext, FnCallContext};
+use crate::engine::logic_registry;
 use crate::engine::profile::EngineProfile;
 use crate::engine::stats::ProcessingStats;
 use crate::engine::target_state::TargetStateProvider;
@@ -529,6 +530,38 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
                 &value,
             )
             .await
+    }
+
+    /// Whether this live component's processing logic is unchanged since its
+    /// last committed scan: the persisted subtree dependency set `S` exists and
+    /// every fingerprint in it is still registered in the current logic set.
+    ///
+    /// Callable from `process_live` to decide whether a durable connector can
+    /// skip its startup full scan. Failure-safe — returns `false` when no `S`
+    /// was ever committed (never scanned), when the stored value can't be
+    /// decoded, or when any fingerprint is gone (code changed); each means
+    /// "re-scan to be safe."
+    pub async fn processing_unchanged(&self) -> Result<bool> {
+        let Some(bytes) = self
+            .component
+            .app_ctx()
+            .app_store()
+            .read_user_state(
+                self.component.stable_path(),
+                db_schema::StateKind::Live,
+                &logic_deps_state_key(),
+            )
+            .await?
+        else {
+            return Ok(false);
+        };
+        let Ok(deps) = decode_logic_deps(&bytes) else {
+            return Ok(false);
+        };
+        Ok(logic_registry::all_contained_with_env(
+            &deps,
+            self.component.app_ctx().env(),
+        ))
     }
 
     /// Full processing cycle. Acquires `update_full_lock` (serializes with

@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 
 import cocoindex as coco
+from cocoindex._internal import core
 
 from tests import common
 from tests.common.target_states import GlobalDictTarget, DictDataWithPrev
@@ -258,6 +259,90 @@ def test_live_state_survives_regular_use_state_prune() -> None:
     app.update_blocking()
 
     assert _iso_boot_reads == ["ready", "ready"]
+
+
+# ============================================================================
+# processing_unchanged (framework-computed logic-change signal, #2124)
+# ============================================================================
+
+
+@coco.fn
+async def _scan_item(key: str, value: int) -> None:
+    """Tracked child the live component mounts per source entry. Its logic
+    fingerprint rolls up into the persisted subtree dependency set ``S``."""
+    coco.declare_target_state(GlobalDictTarget.target_state(key, value))
+
+
+_unchanged_reads: list[bool] = []
+
+
+class _LogicTrackedLiveComponent:
+    """Mounts a tracked ``@coco.fn`` per source entry, so ``update_full``
+    persists a non-empty ``S`` that includes ``_scan_item``'s fingerprint."""
+
+    async def process(self) -> None:
+        for key, value in _source_data.items():
+            await coco.mount(coco.component_subpath(key), _scan_item, key, value)
+
+    async def process_live(self, operator: coco.LiveComponentOperator) -> None:
+        # Read BEFORE update_full so we observe the PRIOR run's persisted S.
+        _unchanged_reads.append(await operator.processing_unchanged())
+        await operator.update_full()
+        await operator.mark_ready()
+
+
+def test_processing_unchanged_across_runs() -> None:
+    """First run has no committed ``S`` (-> False); a second run with the same
+    code finds every stored fingerprint still registered (-> True)."""
+    GlobalDictTarget.store.clear()
+    _source_data.clear()
+    _unchanged_reads.clear()
+    _source_data["k"] = 1
+
+    async def _main() -> None:
+        await coco.mount(coco.component_subpath("live"), _LogicTrackedLiveComponent)
+
+    app = coco.App(
+        coco.AppConfig(name="test_processing_unchanged_runs", environment=coco_env),
+        _main,
+    )
+
+    app.update_blocking(live=True)  # Run 1: no S yet -> False; persists S.
+    app.update_blocking(live=True)  # Run 2: S present and contained -> True.
+
+    assert _unchanged_reads == [False, True]
+
+
+def test_processing_unchanged_false_after_logic_change() -> None:
+    """When a stored dependency's code changes, its fingerprint is no longer in
+    the logic set, so the predicate returns False (re-scan)."""
+    GlobalDictTarget.store.clear()
+    _source_data.clear()
+    _unchanged_reads.clear()
+    _source_data["k"] = 1
+
+    async def _main() -> None:
+        await coco.mount(coco.component_subpath("live"), _LogicTrackedLiveComponent)
+
+    app = coco.App(
+        coco.AppConfig(name="test_processing_unchanged_change", environment=coco_env),
+        _main,
+    )
+
+    app.update_blocking(live=True)  # Run 1: persists S = {_scan_item fp, ...}.
+
+    # Simulate editing _scan_item's body: a real edit loads new code with a new
+    # fingerprint, leaving the stored one unregistered. Unregistering the old
+    # fingerprint reproduces exactly that "stored dep no longer in the logic
+    # set" condition. Restore it afterward so global state stays clean.
+    assert _scan_item._logic_fp is not None
+    core.unregister_logic_fingerprint(_scan_item._logic_fp)
+    try:
+        app.update_blocking(live=True)  # Run 2: S has an absent fp -> False.
+    finally:
+        core.register_logic_fingerprint(_scan_item._logic_fp)
+
+    assert _unchanged_reads == [False, False]
 
 
 # ============================================================================
