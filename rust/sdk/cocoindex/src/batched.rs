@@ -124,7 +124,7 @@ where
         let fp =
             crate::memo::key_fingerprint_result(&("cocoindex_batched", self.code_hash, &item))?;
         let batcher = self.batcher.clone();
-        crate::memo::cached_by_fingerprint(ctx, fp, move |_ctx| async move {
+        crate::memo::cached_by_fingerprint(ctx, fp, true, move |_ctx| async move {
             batcher.run(item).await.map_err(Error::from)
         })
         .await

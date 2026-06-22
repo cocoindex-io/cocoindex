@@ -259,6 +259,7 @@ impl Ctx {
         module_path: &'static str,
         fn_name: &'static str,
         code_hash: u64,
+        propagate_children_fn_logic: bool,
         f: F,
     ) -> Result<T>
     where
@@ -267,7 +268,11 @@ impl Ctx {
     {
         let fp = Fingerprint::from(&("cocoindex_fn", module_path, fn_name, code_hash))
             .map_err(|e| Error::engine(format!("function logic fingerprint error: {e}")))?;
-        let fn_ctx = Arc::new(FnCallContext::default());
+        // `propagate_children_fn_logic` is the `logic_tracking` mode lowered by
+        // the `#[function]` macro: `true` for `"full"` (default — a transitively
+        // called function's logic change also invalidates this one), `false` for
+        // `"self"` (only this function's own body is tracked).
+        let fn_ctx = Arc::new(FnCallContext::new(propagate_children_fn_logic));
         fn_ctx.add_fn_logic_dep(fp);
         let _guard = TrackedFnCallGuard {
             comp_ctx: self.comp_ctx.clone(),

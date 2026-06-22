@@ -4,8 +4,8 @@ use proc_macro::TokenStream;
 use proc_macro2::{Span, TokenStream as TokenStream2};
 use quote::{format_ident, quote};
 use syn::{
-    Error as SynError, Expr, FnArg, Ident, ItemFn, LitInt, Pat, PatType, Path, Stmt, Token, Type,
-    TypeReference, parenthesized,
+    Error as SynError, Expr, FnArg, Ident, ItemFn, LitInt, LitStr, Pat, PatType, Path, Stmt, Token,
+    Type, TypeReference, parenthesized,
     parse::{Parse, ParseStream},
     parse_macro_input,
     punctuated::Punctuated,
@@ -153,6 +153,22 @@ struct FunctionArgs {
     memo: bool,
     version: Option<u64>,
     memo_key: Vec<MemoKeyOverride>,
+    logic_tracking: LogicTracking,
+}
+
+/// `logic_tracking` mode, mirroring Python's `@coco.fn(logic_tracking=...)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LogicTracking {
+    /// `"full"` (default): this function's own logic *and* the logic of every
+    /// `#[function]` it transitively calls are tracked; a change in any of them
+    /// invalidates memoized callers.
+    Full,
+    /// `"self"`: only this function's own body is tracked; logic changes in the
+    /// functions it calls do not propagate up to it.
+    SelfOnly,
+    /// `"none"`: this function's logic is not tracked at all — it is not
+    /// registered in the logic set and not recorded as a dependency of callers.
+    None,
 }
 
 #[derive(Debug)]
@@ -172,11 +188,29 @@ impl Parse for FunctionArgs {
         let mut memo = false;
         let mut version = None;
         let mut memo_key = Vec::new();
+        let mut logic_tracking = LogicTracking::Full;
 
         while !input.is_empty() {
             let name: Ident = input.parse()?;
             match name.to_string().as_str() {
                 "memo" => memo = true,
+                "logic_tracking" => {
+                    input.parse::<Token![=]>()?;
+                    let mode: LitStr = input.parse()?;
+                    logic_tracking = match mode.value().as_str() {
+                        "full" => LogicTracking::Full,
+                        "self" => LogicTracking::SelfOnly,
+                        "none" => LogicTracking::None,
+                        other => {
+                            return Err(SynError::new(
+                                mode.span(),
+                                format!(
+                                    "invalid logic_tracking {other:?}; expected \"full\", \"self\", or \"none\""
+                                ),
+                            ));
+                        }
+                    };
+                }
                 "memo_key" => {
                     let content;
                     parenthesized!(content in input);
@@ -211,7 +245,7 @@ impl Parse for FunctionArgs {
                 _ => {
                     return Err(SynError::new(
                         name.span(),
-                        "unsupported function attribute argument. expected `memo`, `memo_key(...)`, or `version = N`",
+                        "unsupported function attribute argument. expected `memo`, `memo_key(...)`, `version = N`, or `logic_tracking = \"full\"|\"self\"|\"none\"`",
                     ));
                 }
             }
@@ -228,6 +262,7 @@ impl Parse for FunctionArgs {
             memo,
             version,
             memo_key,
+            logic_tracking,
         })
     }
 }
@@ -367,6 +402,14 @@ pub fn function(attr: TokenStream, item: TokenStream) -> TokenStream {
     let fn_name = &func.sig.ident;
     let hash_const_name = format_ident!("__COCO_FN_HASH_{}", fn_name.to_string().to_uppercase());
 
+    // `logic_tracking` mode, lowered to two booleans:
+    //  - `track_logic`: whether to register this function's logic fingerprint at
+    //    all (`"full"`/`"self"` ⇒ yes, `"none"` ⇒ no).
+    //  - `propagate_children_fn_logic`: whether a transitively-called
+    //    `#[function]`'s logic change also invalidates this one (`"full"` only).
+    let track_logic = args.logic_tracking != LogicTracking::None;
+    let propagate_children_fn_logic = args.logic_tracking == LogicTracking::Full;
+
     // Register this function's logic fingerprint into a link-time slice. At
     // app/environment startup the SDK drains the slice into the engine's logic
     // set, so a memoized caller's stored `logic_deps` (which include the
@@ -374,17 +417,22 @@ pub fn function(attr: TokenStream, item: TokenStream) -> TokenStream {
     // `all_contained` instead of being perpetually treated as stale. The
     // (module, name, code_hash) tuple must match `Ctx::__coco_tracked_fn`'s
     // fingerprint computation. `linkme` is reached through the re-export so the
-    // user crate needs no direct dependency.
+    // user crate needs no direct dependency. Omitted entirely for
+    // `logic_tracking = "none"`.
     let logic_slice_name = format_ident!("__COCO_FN_LOGIC_{}", fn_name.to_string().to_uppercase());
-    let logic_registration = quote! {
-        #[::cocoindex::linkme::distributed_slice(::cocoindex::COCO_FN_LOGIC)]
-        #[linkme(crate = ::cocoindex::linkme)]
-        #[doc(hidden)]
-        static #logic_slice_name: ::cocoindex::FnLogicEntry = ::cocoindex::FnLogicEntry {
-            module: ::core::module_path!(),
-            name: ::core::stringify!(#fn_name),
-            code_hash: #code_hash,
-        };
+    let logic_registration = if track_logic {
+        quote! {
+            #[::cocoindex::linkme::distributed_slice(::cocoindex::COCO_FN_LOGIC)]
+            #[linkme(crate = ::cocoindex::linkme)]
+            #[doc(hidden)]
+            static #logic_slice_name: ::cocoindex::FnLogicEntry = ::cocoindex::FnLogicEntry {
+                module: ::core::module_path!(),
+                name: ::core::stringify!(#fn_name),
+                code_hash: #code_hash,
+            };
+        }
+    } else {
+        quote! {}
     };
 
     if !args.memo && !args.memo_key.is_empty() {
@@ -449,7 +497,7 @@ pub fn function(attr: TokenStream, item: TokenStream) -> TokenStream {
                     ::cocoindex::memo::finish_key_fingerprinter(__coco_key)
                 };
 
-                ::cocoindex::memo::cached_by_fingerprint_with_state(#ctx_ident, __coco_key, {
+                ::cocoindex::memo::cached_by_fingerprint_with_state(#ctx_ident, __coco_key, #propagate_children_fn_logic, {
                     #(#clone_stmts)*
                     move |__coco_prev_states| async move {
                         let mut __coco_states = Vec::new();
@@ -481,22 +529,36 @@ pub fn function(attr: TokenStream, item: TokenStream) -> TokenStream {
         let body = &func.block;
 
         let expanded = if let Some(ctx_ident) = ctx_opt {
-            quote! {
-                #[doc(hidden)]
-                pub const #hash_const_name: u64 = #code_hash;
-                #logic_registration
+            if track_logic {
+                quote! {
+                    #[doc(hidden)]
+                    pub const #hash_const_name: u64 = #code_hash;
+                    #logic_registration
 
-                #(#attrs)*
-                #vis #sig {
-                    #ctx_ident.__coco_tracked_fn(
-                        ::core::module_path!(),
-                        ::core::stringify!(#fn_name),
-                        #hash_const_name,
-                        move |__coco_scoped_ctx| async move {
-                            let #ctx_ident = &__coco_scoped_ctx;
-                            #body
-                        },
-                    ).await
+                    #(#attrs)*
+                    #vis #sig {
+                        #ctx_ident.__coco_tracked_fn(
+                            ::core::module_path!(),
+                            ::core::stringify!(#fn_name),
+                            #hash_const_name,
+                            #propagate_children_fn_logic,
+                            move |__coco_scoped_ctx| async move {
+                                let #ctx_ident = &__coco_scoped_ctx;
+                                #body
+                            },
+                        ).await
+                    }
+                }
+            } else {
+                // `logic_tracking = "none"`: run the body without recording this
+                // function's logic dependency. The hash const is still emitted so
+                // `use_mount!`/`mount_each!` can reference it.
+                quote! {
+                    #[doc(hidden)]
+                    pub const #hash_const_name: u64 = #code_hash;
+
+                    #(#attrs)*
+                    #vis #sig #body
                 }
             }
         } else {
