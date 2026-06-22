@@ -1,0 +1,18 @@
+[project]
+name = "slides-to-speech"
+version = "0.1.0"
+description = "CocoIndex example: turn slide decks into narrated, searchable indexes — vision LLM speaker notes, Piper TTS, and LanceDB."
+requires-python = ">=3.11"
+dependencies = [
+    "cocoindex[lancedb,sentence_transformers]>=1.0.7",
+    "instructor>=1.0.0",
+    "litellm>=1.0.0",
+    "pydantic>=2.0.0",
+    "pymupdf>=1.24.0",
+    "piper-tts>=1.2.0",
+    "pydub>=0.25.1",
+    "numpy<2.5",          # numpy 2.5 breaks NDArray vector-column resolution
+]
+
+[tool.setuptools]
+packages = []

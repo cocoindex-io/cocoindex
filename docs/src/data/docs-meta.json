@@ -292,6 +292,26 @@
     "examples/face-recognition": {
       "sourcePath": "example-posts/face-recognition.md",
       "reviewedTs": 1782129600
+    },
+    "examples/product-recommendation": {
+      "sourcePath": "example-posts/product-recommendation.md",
+      "reviewedTs": 1782129600
+    },
+    "examples/manuals-llm-extraction": {
+      "sourcePath": "example-posts/manuals-llm-extraction.md",
+      "reviewedTs": 1782129600
+    },
+    "examples/multi-format-indexing": {
+      "sourcePath": "example-posts/multi-format-indexing.md",
+      "reviewedTs": 1782129600
+    },
+    "examples/slides-to-speech": {
+      "sourcePath": "example-posts/slides-to-speech.md",
+      "reviewedTs": 1782129600
+    },
+    "examples/sec-edgar-analytics": {
+      "sourcePath": "example-posts/sec-edgar-analytics.md",
+      "reviewedTs": 1782129600
     }
   }
 }
