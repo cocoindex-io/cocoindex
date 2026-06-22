@@ -166,6 +166,6 @@ The expensive part (CNN detection + embedding) is fully memoized, so iterating o
 
 ## Run it
 
-The full, runnable example is in the CocoIndex repo: [examples/face_recognition](https://github.com/cocoindex-io/cocoindex/tree/main/examples/face_recognition). For text-driven image search instead of face matching, see [Search Images by Text](https://cocoindex.io/docs/examples/image-search/) (CLIP) — same Qdrant target, a different encoder.
+The full, runnable example is in the CocoIndex repo: [examples/face_recognition](https://github.com/cocoindex-io/cocoindex/tree/main/examples/face_recognition). For text-driven image search instead of face matching, see [Search Images by Text](https://github.com/cocoindex-io/cocoindex/tree/main/examples/image_search) (CLIP) — same Qdrant target, a different encoder.
 
 Got a photo library you want to make searchable by face? Come tell us on [Discord](https://discord.com/invite/zpA9S2DR7s) — and if this was useful, [star CocoIndex on GitHub](https://github.com/cocoindex-io/cocoindex).
