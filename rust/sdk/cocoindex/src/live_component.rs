@@ -339,6 +339,22 @@ impl LiveComponentOperator {
             .await
             .map_err(engine_err)
     }
+
+    /// Whether this component's processing logic is unchanged since its last
+    /// committed scan. The framework persists the subtree's logic-dependency set
+    /// after each committed scan (`update_full` / incremental `update`); this
+    /// checks that set still resolves against the currently registered logic.
+    ///
+    /// A durable connector pairs this with its own cursor to decide whether the
+    /// startup full scan can be skipped — resume from the persisted cursor when
+    /// the logic is unchanged, rescan otherwise. Failure-safe: returns `false`
+    /// when no scan has been committed yet or any dependency's code changed.
+    pub async fn processing_unchanged(&self) -> Result<bool> {
+        self.controller
+            .processing_unchanged()
+            .await
+            .map_err(engine_err)
+    }
 }
 
 /// Internal constructor used by `Ctx::mount_live`. Kept here so the operator's
@@ -437,6 +453,12 @@ impl<K: Display, V: Send + 'static> LiveMapSubscriber<K, V> {
     ) -> Result<()> {
         self.operator.write_committed_state(key, value).await
     }
+
+    /// Whether the processing logic is unchanged since the last scan (see
+    /// [`LiveComponentOperator::processing_unchanged`]).
+    pub async fn processing_unchanged(&self) -> Result<bool> {
+        self.operator.processing_unchanged().await
+    }
 }
 
 /// Enforces the single-active-subscriber contract for a [`LiveMapFeed::watch`]
@@ -523,12 +545,13 @@ pub trait LiveMapFeed<K, V>: Send + Sync + 'static {
     /// (`update_full`) before [`watch`](LiveMapFeed::watch). Defaults to `false`
     /// (always scan), so existing feeds are unchanged.
     ///
-    /// A durable feed can override this to consult committed state via
-    /// `operator` (e.g. [`LiveComponentOperator::read_committed_state`]) and
-    /// resume from its persisted cursor instead of rescanning — the Rust
-    /// analogue of the OCI source's `logic_version` skip-scan. When it returns
-    /// `true`, `watch()` must process the replayed backlog itself rather than
-    /// relying on a scan to cover it.
+    /// A durable feed can override this to consult the framework's logic-change
+    /// signal via `operator` (e.g.
+    /// [`LiveComponentOperator::processing_unchanged`]) and resume from its
+    /// persisted cursor instead of rescanning — the Rust analogue of the OCI
+    /// source's `durable_stream` skip-scan. When it returns `true`, `watch()`
+    /// must process the replayed backlog itself rather than relying on a scan to
+    /// cover it.
     async fn skip_initial_scan(&self, _operator: &LiveComponentOperator) -> Result<bool> {
         Ok(false)
     }
