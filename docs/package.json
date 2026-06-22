@@ -14,7 +14,7 @@
   },
   "dependencies": {
     "@astrojs/mdx": "^5.0.3",
-    "@cocoindex/brand": "github:cocoindex-io/cocoindex-brand#v0.1.0",
+    "@cocoindex/brand": "github:cocoindex-io/cocoindex-brand#v0.2.0",
     "@astrojs/sitemap": "^3.7.2",
     "@docsearch/css": "^4.6.2",
     "@docsearch/js": "^4.6.2",
@@ -28,6 +28,9 @@
     "unist-util-visit": "^5.0.0"
   },
   "devDependencies": {
+    "@fontsource/inter": "^5.2.8",
+    "@fontsource/jetbrains-mono": "^5.2.8",
+    "@fontsource/source-serif-4": "^5.2.9",
     "node-addon-api": "^8.7.0",
     "node-gyp": "^12.2.0"
   }

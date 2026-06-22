@@ -363,6 +363,16 @@ fn regex_on_a_run() {
 }
 
 #[test]
+fn containment_at_candidate_end_does_not_panic() {
+    // Regression: a `\*` before `\{{ … \}}` can consume up to the candidate end, so the
+    // containment is matched at the **end-exclusive** position (`li == leaves.len()`).
+    // `match_contains` indexed `spans_by_start[li]` there → out of bounds → panic. No
+    // node starts at the end, so nothing contains INNER — but it must not crash.
+    let src = "function f() { try { g(); } catch (e) { throw e; } }";
+    let _ = matches(lang::typescript(), r"catch \* \{{ throw \}}", src);
+}
+
+#[test]
 fn regex_run_empty_at_boundary_does_not_panic() {
     // Regression: a `*`-run forced to match **empty** at a child boundary (the regex
     // rejects the next node) is a zero-width match — it must be dropped, not reported
@@ -901,4 +911,60 @@ fn alignment_operators_and_generics() {
         "fn m(){ std::mem::swap(); }"
     ));
     assert!(ok(lang::typescript(), "a === b", "if (a === b) {}"));
+}
+
+#[test]
+fn containment_inner_matches_a_fragment() {
+    // A containment's INNER matches a descendant whole-node **or fragment**, the same
+    // tolerance a top-level match gives — so a bare keyword `\{{ throw \}}` matches the
+    // `throw_statement` it heads, not only the whole-node form `\{{ throw err ; \}}`.
+    // The second `catch` (no `throw`) is correctly excluded.
+    let src = "function g() {\n  try { x(); } catch (err: unknown) {\n    if ((err as any) !== \"EPIPE\") { throw err; }\n  }\n  try { y(); } catch (e2) { log(e2); }\n}\n";
+    let full = matches(
+        lang::typescript(),
+        r"catch (\_:\_) \{{ throw err ; \}}",
+        src,
+    );
+    assert_eq!(
+        full.len(),
+        1,
+        "whole-node INNER matches the catch with a throw"
+    );
+    let bare = matches(lang::typescript(), r"catch (\_:\_) \{{ throw \}}", src);
+    assert_eq!(
+        bare.len(),
+        1,
+        "bare-keyword INNER also matches it (fragment tolerance)"
+    );
+    assert_eq!(bare[0].kind, "catch_clause");
+}
+
+#[test]
+fn containment_inner_leading_fragment_at_any_depth() {
+    // INNER gets the FULL top-level tolerance — **leading** too: `fn clone(self)` is a
+    // leading-context fragment of `pub fn clone(self){}` (it skips the `pub`), and it
+    // matches as a containment INNER, nested arbitrarily deep (here inside `impl`
+    // inside `mod`). This is the case a single-start INNER match would miss.
+    let src = "mod m { impl Foo { pub fn clone(self) -> Foo { Foo } } }";
+    // sanity: the same fragment matches at the top level (leading tolerance there).
+    assert!(has_kind(
+        &matches(lang::rust(), r"fn clone(self)", src),
+        "function_item"
+    ));
+    // as INNER, it matches the enclosing impl (the fragment is found at depth).
+    let ms = matches(lang::rust(), r"impl \T \{{ fn clone(self) \}}", src);
+    assert!(
+        ms.iter().any(|m| m.kind == "impl_item"),
+        "the impl contains the leading-fragment fn, got {ms:?}",
+    );
+
+    // and a keyword INNER reaches arbitrary depth (the `throw` is 3 blocks deep):
+    let deep = "function f() { if (a) { while (b) { throw e; } } }";
+    assert!(
+        has_kind(
+            &matches(lang::typescript(), r"function f() \{{ throw \}}", deep),
+            "function_declaration",
+        ),
+        "INNER must reach a throw nested several levels deep",
+    );
 }
