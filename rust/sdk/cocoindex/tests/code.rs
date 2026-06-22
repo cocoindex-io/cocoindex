@@ -4,7 +4,7 @@
 //! `match_code`, `index_terms`, `FileMatch`.  We use short Python and Rust
 //! snippets because both grammars are always present in the code_match crate.
 
-use cocoindex::ops::code::{CodeAst, CodePattern, FileMatch, match_code, index_terms};
+use cocoindex::ops::code::{CodeAst, CodePattern, FileMatch, index_terms, match_code};
 
 // ─── match_code (one-shot free function) ────────────────────────────────────
 
@@ -13,10 +13,7 @@ fn match_code_finds_python_function_defs() {
     let src = "def foo(x): return x\ndef bar(a, b): pass";
     let ms = match_code(r"def \NAME(\(A*\)):", src, "python").unwrap();
     assert_eq!(ms.len(), 2, "expected two matches, got {}", ms.len());
-    let names: Vec<&str> = ms
-        .iter()
-        .map(|m| m.captures["NAME"][0].text(src))
-        .collect();
+    let names: Vec<&str> = ms.iter().map(|m| m.captures["NAME"][0].text(src)).collect();
     assert!(names.contains(&"foo"), "missing 'foo' in {names:?}");
     assert!(names.contains(&"bar"), "missing 'bar' in {names:?}");
 }
@@ -40,7 +37,10 @@ fn match_code_no_match_returns_empty() {
 fn match_code_returns_kind() {
     let src = "def f(x): pass";
     let ms = match_code(r"def \NAME(\(A*\)):", src, "python").unwrap();
-    assert!(!ms.is_empty(), "expected a match for a Python function definition");
+    assert!(
+        !ms.is_empty(),
+        "expected a match for a Python function definition"
+    );
     // tree-sitter node kind for a Python function definition
     assert_eq!(ms[0].kind, "function_definition");
 }
@@ -52,7 +52,10 @@ fn match_code_chunk_positions_sane() {
     assert_eq!(ms.len(), 1);
     let chunk = &ms[0].chunks[0];
     // "def foo(z): pass" starts at byte offset 6 (after "x = 1\n")
-    assert_eq!(chunk.start.byte_offset, 6, "function should start at byte 6");
+    assert_eq!(
+        chunk.start.byte_offset, 6,
+        "function should start at byte 6"
+    );
     assert_eq!(chunk.start.line, 2, "function starts on line 2");
     assert_eq!(chunk.start.column, 1, "column should be 1-based");
 }
@@ -62,7 +65,10 @@ fn match_code_unknown_language_errors() {
     let result = match_code(r"x", "src", "brainfuck");
     assert!(result.is_err(), "expected error for unknown language");
     let msg = result.err().expect("expected error").to_string();
-    assert!(msg.contains("brainfuck"), "error should mention the bad language: {msg}");
+    assert!(
+        msg.contains("brainfuck"),
+        "error should mention the bad language: {msg}"
+    );
 }
 
 // ─── CodePattern ─────────────────────────────────────────────────────────────
@@ -95,10 +101,7 @@ fn code_pattern_match_source_finds_matches() {
     let src = "def alpha():\n    pass\n\ndef beta(x, y):\n    return x + y";
     let ms = pat.match_source(src);
     assert_eq!(ms.len(), 2);
-    let mut names: Vec<&str> = ms
-        .iter()
-        .map(|m| m.captures["NAME"][0].text(src))
-        .collect();
+    let mut names: Vec<&str> = ms.iter().map(|m| m.captures["NAME"][0].text(src)).collect();
     names.sort_unstable();
     assert_eq!(names, ["alpha", "beta"]);
 }
@@ -129,7 +132,10 @@ fn code_pattern_match_file_finds_match() {
     let result = pat.match_file(path.to_str().unwrap()).unwrap();
     let fm: FileMatch = result.expect("expected a FileMatch");
     assert_eq!(fm.matches.len(), 1);
-    assert_eq!(fm.matches[0].captures["NAME"][0].text(fm.ast.source()), "compute");
+    assert_eq!(
+        fm.matches[0].captures["NAME"][0].text(fm.ast.source()),
+        "compute"
+    );
     assert_eq!(fm.path, path.to_str().unwrap());
 }
 
@@ -159,7 +165,10 @@ fn code_pattern_match_file_binary_returns_none() {
 #[test]
 fn code_pattern_bad_pattern_errors() {
     let result = CodePattern::compile(r"def \(UNCLOSED:", "python");
-    assert!(result.is_err(), "expected compilation error for malformed pattern");
+    assert!(
+        result.is_err(),
+        "expected compilation error for malformed pattern"
+    );
 }
 
 #[test]
@@ -167,7 +176,10 @@ fn code_pattern_unsupported_language_errors() {
     let result = CodePattern::compile(r"x", "made_up_language");
     assert!(result.is_err(), "expected error for unsupported language");
     let msg = result.err().expect("expected error").to_string();
-    assert!(msg.contains("made_up_language"), "error should mention the bad language: {msg}");
+    assert!(
+        msg.contains("made_up_language"),
+        "error should mention the bad language: {msg}"
+    );
 }
 
 #[test]
@@ -179,7 +191,10 @@ fn code_pattern_min_len_tunes_prefilter() {
 
     // Both should still find the same matches; the only difference is prefilter speed
     let src = "def f(): pass";
-    assert_eq!(pat_strict.match_source(src).len(), pat_relaxed.match_source(src).len());
+    assert_eq!(
+        pat_strict.match_source(src).len(),
+        pat_relaxed.match_source(src).len()
+    );
 }
 
 // ─── CodeAst ─────────────────────────────────────────────────────────────────
@@ -295,9 +310,15 @@ fn code_ast_index_terms_extracts_identifiers() {
     let src = "def compute_total(price, tax):\n    return price + tax";
     let ast = CodeAst::new(src, "python").unwrap();
     let terms = ast.index_terms(3);
-    assert!(terms.contains(&"compute_total".to_string()), "terms: {terms:?}");
+    assert!(
+        terms.contains(&"compute_total".to_string()),
+        "terms: {terms:?}"
+    );
     assert!(terms.contains(&"price".to_string()), "terms: {terms:?}");
-    assert!(terms.contains(&"return".to_string()) || terms.contains(&"tax".to_string()), "terms: {terms:?}");
+    assert!(
+        terms.contains(&"return".to_string()) || terms.contains(&"tax".to_string()),
+        "terms: {terms:?}"
+    );
     // "def" is a keyword — it may or may not appear depending on language config
 }
 
@@ -310,8 +331,14 @@ fn code_ast_index_terms_min_len_filters() {
     // "foo_long_name" should appear at both min_lens
     assert!(terms_long.contains(&"foo_long_name".to_string()));
     // With min_len=1, "x" might appear; with min_len=5 it shouldn't
-    assert!(!terms_long.iter().any(|t| t == "x"), "short id 'x' should be filtered at min_len=5");
-    assert!(terms_short.len() >= terms_long.len(), "fewer terms with longer min_len");
+    assert!(
+        !terms_long.iter().any(|t| t == "x"),
+        "short id 'x' should be filtered at min_len=5"
+    );
+    assert!(
+        terms_short.len() >= terms_long.len(),
+        "fewer terms with longer min_len"
+    );
 }
 
 #[test]
@@ -319,7 +346,10 @@ fn code_ast_unknown_language_errors() {
     let result = CodeAst::new("x", "notareallangjkjk");
     assert!(result.is_err(), "expected error for unknown language");
     let msg = result.err().expect("expected error").to_string();
-    assert!(msg.contains("notareallangjkjk"), "error should mention the bad language: {msg}");
+    assert!(
+        msg.contains("notareallangjkjk"),
+        "error should mention the bad language: {msg}"
+    );
 }
 
 // ─── index_terms (free function) ─────────────────────────────────────────────
@@ -345,7 +375,10 @@ fn index_terms_unknown_language_errors() {
     let result = index_terms("x", "cobol_2025", 3);
     assert!(result.is_err(), "expected error for unknown language");
     let msg = result.err().expect("expected error").to_string();
-    assert!(msg.contains("cobol_2025"), "error should mention the bad language: {msg}");
+    assert!(
+        msg.contains("cobol_2025"),
+        "error should mention the bad language: {msg}"
+    );
 }
 
 // ─── Language aliases ─────────────────────────────────────────────────────────
@@ -398,7 +431,12 @@ fn multiple_captures_extracted() {
     let src = "score = 100";
     let ast = CodeAst::new(src, "python").unwrap();
     let ms = ast.matches(r"\VAR = \VALUE").unwrap();
-    assert_eq!(ms.len(), 1, "expected one match for assignment; got {}", ms.len());
+    assert_eq!(
+        ms.len(),
+        1,
+        "expected one match for assignment; got {}",
+        ms.len()
+    );
     let m = &ms[0];
     assert_eq!(m.captures["VAR"][0].text(src), "score");
     assert_eq!(m.captures["VALUE"][0].text(src), "100");
@@ -434,4 +472,3 @@ fn file_match_ast_can_split_and_index() {
     assert!(terms.contains(&"add".to_string()), "terms: {terms:?}");
     assert!(terms.contains(&"mul".to_string()), "terms: {terms:?}");
 }
-

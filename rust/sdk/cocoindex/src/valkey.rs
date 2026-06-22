@@ -45,8 +45,8 @@ pub struct Valkey {
 impl Valkey {
     /// Connect to a Valkey/Redis server (e.g. `redis://localhost:6379`).
     pub async fn connect(uri: &str) -> Result<Self> {
-        let client = redis::Client::open(uri)
-            .map_err(|e| Error::engine(format!("valkey config: {e}")))?;
+        let client =
+            redis::Client::open(uri).map_err(|e| Error::engine(format!("valkey config: {e}")))?;
         let conn = client
             .get_multiplexed_async_connection()
             .await
@@ -185,7 +185,9 @@ impl IndexSchema {
     pub async fn create(vectors: VectorDef<'_>, fields: Vec<FieldDef>) -> Result<Self> {
         let schema = vectors.schema.vector_schema().await?;
         if schema.size == 0 {
-            return Err(Error::engine("valkey vector size must be greater than zero"));
+            return Err(Error::engine(
+                "valkey vector size must be greater than zero",
+            ));
         }
         for f in &fields {
             validate_name(&f.name, "field name")?;
@@ -208,7 +210,10 @@ impl IndexSchema {
 /// Validate that a name contains only `[A-Za-z0-9_-]+`, keeping it out of the
 /// search DSL and away from key-prefix collisions.
 fn validate_name(value: &str, label: &str) -> Result<()> {
-    if value.is_empty() || !value.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    if value.is_empty()
+        || !value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
     {
         return Err(Error::engine(format!(
             "valkey {label} must match [A-Za-z0-9_-]+, got: {value:?}"
@@ -540,8 +545,10 @@ fn index_sink(db_key: String) -> TargetActionSink<IndexAction> {
                             let spec = a.spec.ok_or_else(|| {
                                 Error::engine("valkey create/update action missing spec")
                             })?;
-                            if matches!(a.main_action, Some(DiffAction::Replace | DiffAction::Delete))
-                            {
+                            if matches!(
+                                a.main_action,
+                                Some(DiffAction::Replace | DiffAction::Delete)
+                            ) {
                                 drop_index(&db, &a.index_name).await?;
                                 if matches!(a.main_action, Some(DiffAction::Replace)) {
                                     delete_prefix_keys(&db, &a.index_name).await?;
@@ -747,7 +754,9 @@ fn stable_key_to_doc_id(key: &StableKey) -> Result<String> {
     match key {
         StableKey::Str(s) | StableKey::Symbol(s) => Ok(s.to_string()),
         StableKey::Int(i) => Ok(i.to_string()),
-        other => Err(Error::engine(format!("unsupported valkey doc key: {other:?}"))),
+        other => Err(Error::engine(format!(
+            "unsupported valkey doc key: {other:?}"
+        ))),
     }
 }
 
@@ -761,7 +770,9 @@ fn document_sink(db_key: String) -> TargetActionSink<DocumentAction> {
                 let mut upserts: Vec<(String, Document)> = Vec::new();
                 for action in actions {
                     let a = match action {
-                        TargetAction::Create(a) | TargetAction::Update(a) | TargetAction::Delete(a) => a,
+                        TargetAction::Create(a)
+                        | TargetAction::Update(a)
+                        | TargetAction::Delete(a) => a,
                     };
                     match a.document {
                         Some(doc) => upserts.push((a.hash_key, doc)),
@@ -786,7 +797,8 @@ fn document_sink(db_key: String) -> TargetActionSink<DocumentAction> {
                     pipe.cmd("DEL").arg(&hash_key);
                     let mut hset = redis::cmd("HSET");
                     hset.arg(&hash_key);
-                    hset.arg(VECTOR_FIELD_NAME).arg(vector_to_bytes(&doc.vector));
+                    hset.arg(VECTOR_FIELD_NAME)
+                        .arg(vector_to_bytes(&doc.vector));
                     if let Some(payload) = &doc.payload {
                         for (k, v) in payload {
                             hset.arg(k).arg(v);
@@ -832,7 +844,11 @@ mod tests {
         assert_eq!(make_hash_key("idx", "d1"), "idx:d1");
     }
 
-    fn schema(distance: Distance, algorithm: VectorAlgorithm, fields: Vec<FieldDef>) -> IndexSchema {
+    fn schema(
+        distance: Distance,
+        algorithm: VectorAlgorithm,
+        fields: Vec<FieldDef>,
+    ) -> IndexSchema {
         IndexSchema {
             vectors: ResolvedVectorDef {
                 schema: VectorSchema::f32(4),
@@ -857,9 +873,28 @@ mod tests {
         assert_eq!(
             args,
             vec![
-                "docs", "ON", "HASH", "PREFIX", "1", "docs:", "SCHEMA", "vector", "VECTOR", "HNSW",
-                "6", "TYPE", "FLOAT32", "DIM", "4", "DISTANCE_METRIC", "COSINE", "text", "TEXT",
-                "price", "NUMERIC", "SORTABLE",
+                "docs",
+                "ON",
+                "HASH",
+                "PREFIX",
+                "1",
+                "docs:",
+                "SCHEMA",
+                "vector",
+                "VECTOR",
+                "HNSW",
+                "6",
+                "TYPE",
+                "FLOAT32",
+                "DIM",
+                "4",
+                "DISTANCE_METRIC",
+                "COSINE",
+                "text",
+                "TEXT",
+                "price",
+                "NUMERIC",
+                "SORTABLE",
             ]
         );
     }
@@ -871,8 +906,23 @@ mod tests {
         assert_eq!(
             args,
             vec![
-                "v", "ON", "HASH", "PREFIX", "1", "v:", "SCHEMA", "vector", "VECTOR", "FLAT", "6",
-                "TYPE", "FLOAT32", "DIM", "4", "DISTANCE_METRIC", "L2",
+                "v",
+                "ON",
+                "HASH",
+                "PREFIX",
+                "1",
+                "v:",
+                "SCHEMA",
+                "vector",
+                "VECTOR",
+                "FLAT",
+                "6",
+                "TYPE",
+                "FLOAT32",
+                "DIM",
+                "4",
+                "DISTANCE_METRIC",
+                "L2",
             ]
         );
     }

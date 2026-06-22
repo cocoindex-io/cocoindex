@@ -278,7 +278,9 @@ impl CodeAst {
             ))
         })?;
         let compiled = Pattern::compile(pattern, &cfg)?;
-        let line_index = self.line_index.get_or_init(|| LineIndex::build(&self.source));
+        let line_index = self
+            .line_index
+            .get_or_init(|| LineIndex::build(&self.source));
         let raw = compiled.matches_in_tree(&self.tree, &self.source);
         Ok(build_sdk_matches(&self.source, line_index, raw))
     }
@@ -287,7 +289,10 @@ impl CodeAst {
     /// the pattern's compilation. This is the fast path for matching the same
     /// pattern against many sources.
     pub fn matches_with(&self, pattern: &CodePattern) -> Result<Vec<CodeMatch>> {
-        match (lang::by_name(&self.language), lang::by_name(&pattern.language)) {
+        match (
+            lang::by_name(&self.language),
+            lang::by_name(&pattern.language),
+        ) {
             (Some(ca), Some(cb)) if ca.language == cb.language => {}
             _ => {
                 return Err(Error::engine(format!(
@@ -296,7 +301,9 @@ impl CodeAst {
                 )));
             }
         }
-        let line_index = self.line_index.get_or_init(|| LineIndex::build(&self.source));
+        let line_index = self
+            .line_index
+            .get_or_init(|| LineIndex::build(&self.source));
         let raw = pattern.pattern.matches_in_tree(&self.tree, &self.source);
         Ok(build_sdk_matches(&self.source, line_index, raw))
     }

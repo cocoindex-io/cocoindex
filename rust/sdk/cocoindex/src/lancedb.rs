@@ -419,8 +419,7 @@ impl LanceTableTarget {
         validate_identifier(&name)?;
         // Attach to the ROW provider (see `declare_vector_index`) so the index
         // survives a destructive table replace.
-        let provider: TargetStateProvider<FtsIndexSpec> =
-            self.rows.attachment(ctx, "fts_index")?;
+        let provider: TargetStateProvider<FtsIndexSpec> = self.rows.attachment(ctx, "fts_index")?;
         let spec = FtsIndexSpec {
             table_name: self.table_name.to_string(),
             name: name.clone(),
@@ -579,7 +578,6 @@ impl TargetHandler<TableSpec> for TableHandler {
             }
         }
     }
-
 }
 
 impl TableHandler {

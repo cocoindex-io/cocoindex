@@ -70,9 +70,7 @@ pub use live::LiveDirWalker;
 mod live {
     use super::{DirWalker, FileEntry};
     use crate::error::{Error, Result};
-    use crate::live_component::{
-        LiveMapFeed, LiveMapSubscriber, LiveMapView, SingleWatcherGuard,
-    };
+    use crate::live_component::{LiveMapFeed, LiveMapSubscriber, LiveMapView, SingleWatcherGuard};
     use async_trait::async_trait;
     use notify::{RecursiveMode, Watcher};
     use std::path::PathBuf;

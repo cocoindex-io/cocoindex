@@ -85,7 +85,8 @@ impl ComponentStats {
 
     /// Executions started but not yet finished.
     pub fn num_in_progress(&self) -> u64 {
-        self.num_execution_starts.saturating_sub(self.num_finished())
+        self.num_execution_starts
+            .saturating_sub(self.num_finished())
     }
 
     /// Whether any execution for this component errored.

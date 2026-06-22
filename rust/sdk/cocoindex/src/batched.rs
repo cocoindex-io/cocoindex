@@ -128,12 +128,9 @@ where
         // calls; the `propagate_children_fn_logic` flag is therefore inert here.
         // Pass `true` (the default) — only the batch impl's own `code_hash`
         // (folded into the memo key above) tracks its logic.
-        crate::memo::cached_by_fingerprint(
-            ctx,
-            fp,
-            true,
-            move |_ctx| async move { batcher.run(item).await.map_err(Error::from) },
-        )
+        crate::memo::cached_by_fingerprint(ctx, fp, true, move |_ctx| async move {
+            batcher.run(item).await.map_err(Error::from)
+        })
         .await
     }
 }

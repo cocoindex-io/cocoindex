@@ -148,20 +148,20 @@ impl<V: LiveMapValue> LiveMap<V> {
 impl<V: LiveMapValue> LiveMapView<String, V> for LiveMap<V> {
     async fn scan(&self) -> Result<Vec<(String, V)>> {
         let entries = self.inner.entries.lock().unwrap();
-        Ok(entries.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+        Ok(entries
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect())
     }
 }
 
 #[async_trait]
 impl<V: LiveMapValue> LiveMapFeed<String, V> for LiveMap<V> {
     async fn watch(&self, subscriber: LiveMapSubscriber<String, V>) -> Result<()> {
-        let mut rx = self
-            .inner
-            .receiver
-            .lock()
-            .unwrap()
-            .take()
-            .ok_or_else(|| Error::engine("LiveMap supports a single active watch() at a time."))?;
+        let mut rx =
+            self.inner.receiver.lock().unwrap().take().ok_or_else(|| {
+                Error::engine("LiveMap supports a single active watch() at a time.")
+            })?;
         // The framework already ran the catch-up scan + mark_ready before calling
         // `watch`. Drain incremental changes from here on. Changes that occurred
         // before the scan are replayed too; the consumer's update/delete is

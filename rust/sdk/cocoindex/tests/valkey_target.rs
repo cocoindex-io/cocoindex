@@ -131,7 +131,8 @@ async fn valkey_index_upsert_update_and_cleanup_when_available() {
         move |ctx| {
             let index_name = index_name.clone();
             async move {
-                let index = valkey::mount_index_target(&ctx, &VK, index_name, schema().await).await?;
+                let index =
+                    valkey::mount_index_target(&ctx, &VK, index_name, schema().await).await?;
                 index.declare_document(&ctx, doc("d1", vec![0.1, 0.2, 0.3], "hello"))?;
                 index.declare_document(&ctx, doc("d2", vec![0.4, 0.5, 0.6], "world"))?;
                 Ok(())
@@ -144,7 +145,9 @@ async fn valkey_index_upsert_update_and_cleanup_when_available() {
     assert!(index_exists(&uri, &index_name).await);
     assert_eq!(ft_search_count(&uri, &index_name).await, 2);
     assert_eq!(
-        hget(&uri, &format!("{index_name}:d1"), "text").await.as_deref(),
+        hget(&uri, &format!("{index_name}:d1"), "text")
+            .await
+            .as_deref(),
         Some("hello")
     );
 
@@ -154,7 +157,8 @@ async fn valkey_index_upsert_update_and_cleanup_when_available() {
         move |ctx| {
             let index_name = index_name.clone();
             async move {
-                let index = valkey::mount_index_target(&ctx, &VK, index_name, schema().await).await?;
+                let index =
+                    valkey::mount_index_target(&ctx, &VK, index_name, schema().await).await?;
                 index.declare_document(&ctx, doc("d1", vec![0.1, 0.2, 0.3], "updated"))?;
                 Ok(())
             }
@@ -165,7 +169,9 @@ async fn valkey_index_upsert_update_and_cleanup_when_available() {
 
     assert_eq!(ft_search_count(&uri, &index_name).await, 1);
     assert_eq!(
-        hget(&uri, &format!("{index_name}:d1"), "text").await.as_deref(),
+        hget(&uri, &format!("{index_name}:d1"), "text")
+            .await
+            .as_deref(),
         Some("updated")
     );
     assert!(!key_exists(&uri, &format!("{index_name}:d2")).await);

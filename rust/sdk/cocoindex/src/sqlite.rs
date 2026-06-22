@@ -820,7 +820,10 @@ async fn apply_column_actions(
                     // constraint is only applied on a full table (re)create.
                     run_best_effort(
                         db,
-                        &format!("ALTER TABLE {table} ADD COLUMN {col_ident} {}", col.sqlite_type),
+                        &format!(
+                            "ALTER TABLE {table} ADD COLUMN {col_ident} {}",
+                            col.sqlite_type
+                        ),
                     )
                     .await;
                 }
@@ -834,7 +837,10 @@ async fn apply_column_actions(
                         .await;
                     run_best_effort(
                         db,
-                        &format!("ALTER TABLE {table} ADD COLUMN {col_ident} {}", col.sqlite_type),
+                        &format!(
+                            "ALTER TABLE {table} ADD COLUMN {col_ident} {}",
+                            col.sqlite_type
+                        ),
                     )
                     .await;
                 }

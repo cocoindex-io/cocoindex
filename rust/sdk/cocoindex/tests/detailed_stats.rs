@@ -140,7 +140,10 @@ async fn detailed_stats_after_completion_are_ready_and_consistent() {
 
     // Completed run → Ready, no errors.
     assert_eq!(detailed.status, UpdateStatus::Ready);
-    assert!(!detailed.by_component.is_empty(), "expected at least one component");
+    assert!(
+        !detailed.by_component.is_empty(),
+        "expected at least one component"
+    );
     assert_eq!(detailed.total().num_errors, 0);
 
     // The detailed view must agree with the coarse RunStats:

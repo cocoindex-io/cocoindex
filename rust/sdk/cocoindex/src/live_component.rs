@@ -507,8 +507,7 @@ pub struct SingleWatcherToken<'a> {
 
 impl Drop for SingleWatcherToken<'_> {
     fn drop(&mut self) {
-        self.flag
-            .store(false, std::sync::atomic::Ordering::Release);
+        self.flag.store(false, std::sync::atomic::Ordering::Release);
     }
 }
 

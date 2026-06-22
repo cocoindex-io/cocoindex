@@ -112,7 +112,12 @@ impl ser::Serializer for FiniteChecker {
     fn serialize_unit_struct(self, _: &'static str) -> Result<(), NonFinite> {
         Ok(())
     }
-    fn serialize_unit_variant(self, _: &'static str, _: u32, _: &'static str) -> Result<(), NonFinite> {
+    fn serialize_unit_variant(
+        self,
+        _: &'static str,
+        _: u32,
+        _: &'static str,
+    ) -> Result<(), NonFinite> {
         Ok(())
     }
 
@@ -268,19 +273,34 @@ mod tests {
 
     #[test]
     fn finite_row_ok() {
-        let r = Row { id: 1, score: 0.5, embedding: vec![1.0, 2.0], note: Some("x".into()) };
+        let r = Row {
+            id: 1,
+            score: 0.5,
+            embedding: vec![1.0, 2.0],
+            note: Some("x".into()),
+        };
         assert!(ensure_finite(&r).is_ok());
     }
 
     #[test]
     fn nan_scalar_rejected() {
-        let r = Row { id: 1, score: f64::NAN, embedding: vec![1.0], note: None };
+        let r = Row {
+            id: 1,
+            score: f64::NAN,
+            embedding: vec![1.0],
+            note: None,
+        };
         assert!(ensure_finite(&r).is_err());
     }
 
     #[test]
     fn inf_in_vector_rejected() {
-        let r = Row { id: 1, score: 0.0, embedding: vec![1.0, f32::INFINITY], note: None };
+        let r = Row {
+            id: 1,
+            score: 0.0,
+            embedding: vec![1.0, f32::INFINITY],
+            note: None,
+        };
         assert!(ensure_finite(&r).is_err());
     }
 }

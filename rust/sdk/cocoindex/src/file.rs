@@ -403,29 +403,18 @@ impl PatternFilePathMatcher {
 impl PatternFilePathMatcher {
     /// Whether `key` is excluded after applying both exclusion and negation patterns.
     fn is_excluded(&self, key: &str) -> bool {
-        if !self
-            .excluded
-            .as_ref()
-            .is_some_and(|gs| gs.is_match(key))
-        {
+        if !self.excluded.as_ref().is_some_and(|gs| gs.is_match(key)) {
             return false;
         }
         // Matches an exclusion pattern; a negation pattern can un-exclude it.
-        !self
-            .negation
-            .as_ref()
-            .is_some_and(|gs| gs.is_match(key))
+        !self.negation.as_ref().is_some_and(|gs| gs.is_match(key))
     }
 }
 
 impl FilePathMatcher for PatternFilePathMatcher {
     fn is_dir_included(&self, path: &Path) -> bool {
         let key = path_key(path);
-        if !self
-            .excluded
-            .as_ref()
-            .is_some_and(|gs| gs.is_match(&key))
-        {
+        if !self.excluded.as_ref().is_some_and(|gs| gs.is_match(&key)) {
             return true;
         }
         // The directory matches an exclusion pattern. Traverse it anyway if a
@@ -443,9 +432,7 @@ impl FilePathMatcher for PatternFilePathMatcher {
         // whose ancestor directories would otherwise be pruned before the exempt
         // file is reached.
         let dir_prefix = format!("{key}/");
-        self.negation_raw
-            .iter()
-            .any(|p| p.starts_with(&dir_prefix))
+        self.negation_raw.iter().any(|p| p.starts_with(&dir_prefix))
     }
 
     fn is_file_included(&self, path: &Path) -> bool {
@@ -738,9 +725,11 @@ mod tests {
         assert!(m.is_dir_included(Path::new(".github/workflows")));
 
         // Exact-path negation under a broad exclusion: ancestors stay traversable.
-        let exact =
-            PatternFilePathMatcher::new(std::iter::empty::<&str>(), ["dir1/**", "!dir1/dir2/a.yml"])
-                .unwrap();
+        let exact = PatternFilePathMatcher::new(
+            std::iter::empty::<&str>(),
+            ["dir1/**", "!dir1/dir2/a.yml"],
+        )
+        .unwrap();
         assert!(!exact.is_file_included(Path::new("dir1/other.txt")));
         assert!(exact.is_file_included(Path::new("dir1/dir2/a.yml")));
         assert!(exact.is_dir_included(Path::new("dir1")));

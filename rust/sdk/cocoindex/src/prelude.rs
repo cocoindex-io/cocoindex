@@ -27,7 +27,6 @@ pub use crate::resources::chunk::{Chunk, TextPosition};
 pub use crate::resources::embedder::Embedder;
 pub use crate::resources::live_map::LiveMap;
 pub use crate::resources::rate_limit::RateLimiter;
-pub use crate::user_state::{IntoStateKey, StateHandle};
 pub use crate::resources::schema::{
     MultiVectorSchema, MultiVectorSchemaProvider, VectorElementType, VectorSchema,
     VectorSchemaProvider,
@@ -43,6 +42,7 @@ pub use crate::target_state::{
     TargetStateProvider, declare_target_state, declare_target_state_with_child, mount_target,
     register_root_target_states_provider,
 };
+pub use crate::user_state::{IntoStateKey, StateHandle};
 pub use crate::{
     App, ContextKey, DropHandle, Environment, EnvironmentBuilder, PreviewAction, PreviewValue,
     Progress, StatsGroupHandle, StatsGroupOptions, UpdateHandle, UpdateOptions,

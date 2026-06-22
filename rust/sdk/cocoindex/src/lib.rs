@@ -106,7 +106,6 @@ pub use resources::chunk::{Chunk, TextPosition};
 pub use resources::embedder::Embedder;
 pub use resources::live_map::LiveMap;
 pub use resources::rate_limit::RateLimiter;
-pub use user_state::{IntoStateKey, StateHandle};
 pub use resources::schema::{
     MultiVectorSchema, MultiVectorSchemaProvider, VectorElementType, VectorSchema,
     VectorSchemaProvider,
@@ -122,6 +121,7 @@ pub use target_state::{
     TargetStateProvider, declare_target_state, declare_target_state_with_child, mount_target,
     register_root_target_states_provider,
 };
+pub use user_state::{IntoStateKey, StateHandle};
 
 // Re-export proc macros
 pub use cocoindex_macros::{SchemaFields, function, mount_each, use_mount};

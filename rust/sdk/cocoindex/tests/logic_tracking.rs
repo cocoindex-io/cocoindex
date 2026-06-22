@@ -87,8 +87,14 @@ fn tracked_modes_register_logic_none_does_not() {
     let names = registered_logic_names();
 
     // full (default + explicit) and self register their logic fingerprint.
-    assert!(names.contains(&"full_default"), "full_default should register");
-    assert!(names.contains(&"full_explicit"), "full_explicit should register");
+    assert!(
+        names.contains(&"full_default"),
+        "full_default should register"
+    );
+    assert!(
+        names.contains(&"full_explicit"),
+        "full_explicit should register"
+    );
     assert!(names.contains(&"self_only"), "self_only should register");
     assert!(names.contains(&"self_memo"), "self_memo should register");
 

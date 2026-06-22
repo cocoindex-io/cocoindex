@@ -619,7 +619,10 @@ async fn lancedb_user_managed_fts_index_not_dropped_on_undeclare() -> Result<()>
         .await?;
     }
     assert!(
-        index_names(&db, TABLE).await.iter().any(|n| n == "text_fts_idx"),
+        index_names(&db, TABLE)
+            .await
+            .iter()
+            .any(|n| n == "text_fts_idx"),
         "system setup should have created the index"
     );
 
@@ -662,7 +665,10 @@ async fn lancedb_user_managed_fts_index_not_dropped_on_undeclare() -> Result<()>
     run_user(true).await; // adopt the index as user-managed
     run_user(false).await; // stop declaring it
     assert!(
-        index_names(&db, TABLE).await.iter().any(|n| n == "text_fts_idx"),
+        index_names(&db, TABLE)
+            .await
+            .iter()
+            .any(|n| n == "text_fts_idx"),
         "user-managed FTS index must NOT be dropped on undeclare, got {:?}",
         index_names(&db, TABLE).await
     );
@@ -705,7 +711,10 @@ async fn lancedb_fts_index_with_language() -> Result<()> {
     })
     .await?;
     assert!(
-        index_names(&db, TABLE).await.iter().any(|n| n == "text_fts_idx"),
+        index_names(&db, TABLE)
+            .await
+            .iter()
+            .any(|n| n == "text_fts_idx"),
         "fts index with a language should be created"
     );
     Ok(())
@@ -759,7 +768,10 @@ async fn lancedb_fts_index_survives_destructive_table_replace() -> Result<()> {
     // Run 1: dim-3 schema + FTS index → created.
     run(schema(), vec![1.0, 0.0, 0.0]).await;
     assert!(
-        index_names(&db, TABLE).await.iter().any(|n| n == "text_fts_idx"),
+        index_names(&db, TABLE)
+            .await
+            .iter()
+            .any(|n| n == "text_fts_idx"),
         "fts index should exist after the first run"
     );
 
