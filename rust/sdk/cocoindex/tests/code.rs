@@ -352,11 +352,11 @@ fn index_terms_unknown_language_errors() {
 
 #[test]
 fn language_aliases_accepted() {
-    // Python: "py" alias
-    let ms = match_code(r"def \N(\(A*\)):", "def f(): pass", "py").unwrap();
-    assert_eq!(ms.len(), 1);
+    // Languages/aliases resolved through the tree-sitter table (prog_langs),
+    // matching the Python binding. Bare "py" is NOT accepted (Python uses
+    // "python"); the dotted/extension aliases below all resolve.
 
-    // C++: "c++" and "cpp" aliases
+    // C++: "c++" and "cpp" aliases both map to the same grammar.
     let ms = match_code(r"void \N(\(P*\))", "void run() {}", "c++").unwrap();
     assert_eq!(ms.len(), 1);
     let ms2 = match_code(r"void \N(\(P*\))", "void run() {}", "cpp").unwrap();
@@ -365,6 +365,27 @@ fn language_aliases_accepted() {
     // Go
     let ms = match_code(r"func \N(\(P*\))", "func main() {}", "go").unwrap();
     assert_eq!(ms.len(), 1);
+}
+
+#[test]
+fn parse_uses_treesitter_table_like_python() {
+    // CodeAst parsing goes through the full tree-sitter table, exactly like the
+    // Python binding — so the canonical name parses, while a structural-match-only
+    // alias (`code_match`'s "sh"/"py" that the tree-sitter table doesn't know) is
+    // rejected at parse instead of silently regex-falling-back in split().
+
+    // Canonical name parses + splits via tree-sitter.
+    let ast = CodeAst::new("def f(x): return x", "python").unwrap();
+    assert!(!ast.split(50, None, None).unwrap().is_empty());
+
+    // "bash" (tree-sitter table) parses; its code_match-only alias "sh" does not.
+    assert!(CodeAst::new("echo hi", "bash").is_ok());
+    assert!(
+        CodeAst::new("echo hi", "sh").is_err(),
+        "structural-only alias 'sh' must error at parse (matches Python), not silently regex-split"
+    );
+    // Bare "py" is rejected (Python uses "python").
+    assert!(CodeAst::new("x = 1", "py").is_err());
 }
 
 // ─── Multiple captures ────────────────────────────────────────────────────────

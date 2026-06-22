@@ -70,6 +70,19 @@ fn registered_logic_names() -> Vec<&'static str> {
 }
 
 #[test]
+fn none_mode_uses_sentinel_hash_const() {
+    // A `none`-tracked function's body hash must not feed the memo key or the
+    // `use_mount!`/`mount_each!` component fingerprint — so its `__COCO_FN_HASH_*`
+    // const is the sentinel 0 (a body edit then invalidates neither), matching
+    // Python's `logic_tracking=None`. Tracked functions keep their real body hash.
+    assert_eq!(__COCO_FN_HASH_UNTRACKED, 0);
+    assert_eq!(__COCO_FN_HASH_UNTRACKED_MEMO, 0);
+    assert_ne!(__COCO_FN_HASH_FULL_DEFAULT, 0);
+    assert_ne!(__COCO_FN_HASH_SELF_ONLY, 0);
+    assert_ne!(__COCO_FN_HASH_SELF_MEMO, 0);
+}
+
+#[test]
 fn tracked_modes_register_logic_none_does_not() {
     let names = registered_logic_names();
 

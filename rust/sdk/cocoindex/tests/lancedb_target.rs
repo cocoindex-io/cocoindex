@@ -583,3 +583,65 @@ async fn lancedb_fts_index_created_then_dropped() -> Result<()> {
     );
     Ok(())
 }
+
+/// A destructive table replace (dim-3 → dim-4 vector column) drops and recreates
+/// the underlying table, destroying its indices. A still-declared FTS index must
+/// be rebuilt on the new table — not silently lost. Regression test for the
+/// index-attachment-on-the-wrong-provider bug.
+#[tokio::test]
+async fn lancedb_fts_index_survives_destructive_table_replace() -> Result<()> {
+    let tempdir = tempfile::tempdir().unwrap();
+    let uri = tempdir.path().join("lancedb_data");
+    let db = LanceDatabase::connect(uri.to_str().unwrap()).await?;
+    let coco_db_path = tempdir.path().join(".cocoindex_db");
+
+    let run = |schema: TableSchema, embedding: Vec<f32>| {
+        let db = db.clone();
+        let coco_db_path = coco_db_path.clone();
+        async move {
+            let app = Environment::builder()
+                .db_path(&coco_db_path)
+                .provide_key(&DB, db)
+                .build()
+                .await
+                .unwrap()
+                .app("LanceFtsReplaceTest")
+                .await
+                .unwrap();
+            app.run(move |ctx| {
+                let embedding = embedding.clone();
+                async move {
+                    let table = lancedb::mount_table_target(&ctx, &DB, TABLE, schema).await?;
+                    table.declare_row(
+                        &ctx,
+                        &Row {
+                            id: 1,
+                            text: "hello world".to_string(),
+                            embedding,
+                        },
+                    )?;
+                    table.declare_fts_index(&ctx, "text", lancedb::FtsIndexOptions::default())?;
+                    Ok(())
+                }
+            })
+            .await
+            .unwrap();
+        }
+    };
+
+    // Run 1: dim-3 schema + FTS index → created.
+    run(schema(), vec![1.0, 0.0, 0.0]).await;
+    assert!(
+        index_names(&db, TABLE).await.iter().any(|n| n == "text_fts_idx"),
+        "fts index should exist after the first run"
+    );
+
+    // Run 2: dim-4 schema forces a destructive table replace; index still declared.
+    run(schema_dim4(), vec![1.0, 0.0, 0.0, 0.0]).await;
+    let names = index_names(&db, TABLE).await;
+    assert!(
+        names.iter().any(|n| n == "text_fts_idx"),
+        "fts index must be rebuilt after a destructive table replace, got {names:?}"
+    );
+    Ok(())
+}

@@ -624,6 +624,12 @@ async fn delete_prefix_keys(db: &Valkey, index_name: &str) -> Result<()> {
     loop {
         iterations += 1;
         if iterations > MAX_ITERATIONS {
+            // Don't silently truncate a purge — stray keys would be left behind.
+            tracing::warn!(
+                pattern = %pattern,
+                max_iterations = MAX_ITERATIONS,
+                "valkey prefix-key purge hit its SCAN safety limit; some keys may remain"
+            );
             break;
         }
         let mut conn = db.conn.lock().await;

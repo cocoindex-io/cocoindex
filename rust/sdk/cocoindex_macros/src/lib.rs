@@ -410,6 +410,18 @@ pub fn function(attr: TokenStream, item: TokenStream) -> TokenStream {
     let track_logic = args.logic_tracking != LogicTracking::None;
     let propagate_children_fn_logic = args.logic_tracking == LogicTracking::Full;
 
+    // The `__COCO_FN_HASH_<NAME>` const feeds the memo key and the
+    // `use_mount!`/`mount_each!` component fingerprint. For `logic_tracking =
+    // "none"` the function's body must not be tracked anywhere (matching Python's
+    // `None`), so the const is a fixed sentinel `0` rather than the body hash —
+    // a body edit then invalidates neither the memo entry nor the component.
+    // `module`/`name` still distinguish functions, so the sentinel can't collide.
+    let hash_const_value = if track_logic {
+        quote! { #code_hash }
+    } else {
+        quote! { 0u64 }
+    };
+
     // Register this function's logic fingerprint into a link-time slice. At
     // app/environment startup the SDK drains the slice into the engine's logic
     // set, so a memoized caller's stored `logic_deps` (which include the
@@ -482,7 +494,7 @@ pub fn function(attr: TokenStream, item: TokenStream) -> TokenStream {
 
         let expanded = quote! {
             #[doc(hidden)]
-            pub const #hash_const_name: u64 = #code_hash;
+            pub const #hash_const_name: u64 = #hash_const_value;
             #logic_registration
 
             #(#attrs)*
@@ -532,7 +544,7 @@ pub fn function(attr: TokenStream, item: TokenStream) -> TokenStream {
             if track_logic {
                 quote! {
                     #[doc(hidden)]
-                    pub const #hash_const_name: u64 = #code_hash;
+                    pub const #hash_const_name: u64 = #hash_const_value;
                     #logic_registration
 
                     #(#attrs)*
@@ -555,7 +567,7 @@ pub fn function(attr: TokenStream, item: TokenStream) -> TokenStream {
                 // `use_mount!`/`mount_each!` can reference it.
                 quote! {
                     #[doc(hidden)]
-                    pub const #hash_const_name: u64 = #code_hash;
+                    pub const #hash_const_name: u64 = #hash_const_value;
 
                     #(#attrs)*
                     #vis #sig #body
@@ -564,7 +576,7 @@ pub fn function(attr: TokenStream, item: TokenStream) -> TokenStream {
         } else {
             quote! {
                 #[doc(hidden)]
-                pub const #hash_const_name: u64 = #code_hash;
+                pub const #hash_const_name: u64 = #hash_const_value;
                 #logic_registration
 
                 #(#attrs)*

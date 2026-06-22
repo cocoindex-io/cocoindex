@@ -464,9 +464,11 @@ impl<K: Display, V: Send + 'static> LiveMapSubscriber<K, V> {
 ///
 /// The flag resets when the returned token drops — on normal return, error, or
 /// cancellation (a cancelled `await` inside `watch()` unwinds through the
-/// token's `Drop`) — so the feed can be re-watched sequentially afterward. A
-/// plain atomic flag (no lock) suffices because the framework's live consumer
-/// drives `watch()` on a single task.
+/// token's `Drop`). This guard only enforces single-*concurrent*-entry; it does
+/// not by itself make a feed re-watchable, since a feed may also consume a
+/// one-shot resource (a change channel, an event stream) that is not restored on
+/// drop. A plain atomic flag (no lock) suffices because the framework's live
+/// consumer drives `watch()` on a single task.
 #[derive(Debug)]
 pub struct SingleWatcherGuard {
     label: String,

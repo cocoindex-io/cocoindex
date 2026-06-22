@@ -192,7 +192,6 @@ pub struct LanceTableTarget {
     table_name: Arc<str>,
     table_schema: TableSchema,
     managed_by: ManagedBy,
-    table_provider: TargetStateProvider<TableSpec>,
     rows: TargetStateProvider<RowState>,
 }
 
@@ -261,7 +260,6 @@ pub fn declare_table_target(
         ManagedTargetOptions::default(),
     )?;
     let spec = target_state.value().clone();
-    let table_provider = target_state.provider().clone();
     let schema_fp = Fingerprint::from(&table_tracking_record(&spec)).map_err(Error::from)?;
     declare_target_state(ctx, target_state)?;
     let rows = register_root_target_states_provider(
@@ -278,7 +276,6 @@ pub fn declare_table_target(
         table_name: Arc::from(table_name),
         table_schema: spec.table_schema,
         managed_by: spec.managed_by,
-        table_provider,
         rows,
     })
 }
@@ -315,13 +312,11 @@ pub async fn mount_table_target_with_options(
     let target_state =
         table_target_with_options(ctx, db, table_name.clone(), table_schema.clone(), options)?;
     let spec = target_state.value().clone();
-    let table_provider = target_state.provider().clone();
     let rows = mount_target::<TableSpec, RowState>(ctx, target_state).await?;
     Ok(LanceTableTarget {
         table_name: Arc::from(table_name),
         table_schema: spec.table_schema,
         managed_by: spec.managed_by,
-        table_provider,
         rows,
     })
 }
@@ -373,8 +368,12 @@ impl LanceTableTarget {
         }
         let name = options.name.unwrap_or_else(|| format!("{column}_idx"));
         validate_identifier(&name)?;
+        // Attach to the ROW provider, not the root table provider: the row
+        // provider is destructively invalidated when the table is recreated
+        // (incompatible schema change), so the index is rebuilt on the new table
+        // instead of being silently lost. Mirrors Python's `_RowHandler.attachments`.
         let provider: TargetStateProvider<VectorIndexSpec> =
-            self.table_provider.attachment(ctx, "vector_index")?;
+            self.rows.attachment(ctx, "vector_index")?;
         let spec = VectorIndexSpec {
             table_name: self.table_name.to_string(),
             name: name.clone(),
@@ -418,8 +417,10 @@ impl LanceTableTarget {
         }
         let name = options.name.unwrap_or_else(|| format!("{column}_fts_idx"));
         validate_identifier(&name)?;
+        // Attach to the ROW provider (see `declare_vector_index`) so the index
+        // survives a destructive table replace.
         let provider: TargetStateProvider<FtsIndexSpec> =
-            self.table_provider.attachment(ctx, "fts_index")?;
+            self.rows.attachment(ctx, "fts_index")?;
         let spec = FtsIndexSpec {
             table_name: self.table_name.to_string(),
             name: name.clone(),
@@ -578,22 +579,6 @@ impl TargetHandler<TableSpec> for TableHandler {
         }
     }
 
-    fn attachments(&self) -> Result<Vec<(String, ChildTargetDef)>> {
-        Ok(vec![
-            (
-                "vector_index".to_string(),
-                ChildTargetDef::new::<VectorIndexSpec, _>(VectorIndexHandler {
-                    db_key: self.db_key.clone(),
-                }),
-            ),
-            (
-                "fts_index".to_string(),
-                ChildTargetDef::new::<FtsIndexSpec, _>(FtsIndexHandler {
-                    db_key: self.db_key.clone(),
-                }),
-            ),
-        ])
-    }
 }
 
 impl TableHandler {
@@ -731,15 +716,18 @@ struct RowAction {
     state: Option<RowState>,
 }
 
-/// Number of applied row mutations after which the table is optimized
-/// (compaction + index maintenance), mirroring Python's default.
-const ROWS_BEFORE_OPTIMIZE: u64 = 50;
+/// Number of applied row-batches (transactions) after which the table is
+/// optimized (compaction + index maintenance). Mirrors Python's
+/// `num_transactions_before_optimize` default of 50 — counted per batch, not per
+/// row.
+const TRANSACTIONS_BEFORE_OPTIMIZE: u64 = 50;
 
 struct RowHandler {
     db_key: String,
     spec: TableSpec,
-    /// Shared across this handler's per-batch sinks: counts applied mutations so
-    /// the table is periodically optimized (see [`ROWS_BEFORE_OPTIMIZE`]).
+    /// Shared across this handler's per-batch sinks: a monotonic count of applied
+    /// row-batches so the table is optimized every
+    /// [`TRANSACTIONS_BEFORE_OPTIMIZE`] batches (see [`apply_rows`]).
     optimize_counter: Arc<std::sync::atomic::AtomicU64>,
 }
 
@@ -784,6 +772,26 @@ impl TargetHandler<RowState> for RowHandler {
             tracking_record: desired_fp,
             child_invalidation: None,
         }))
+    }
+
+    /// Vector/FTS indexes attach to the row provider so they share its lifecycle:
+    /// a destructive table replace invalidates the row provider and therefore its
+    /// index attachments, forcing them to be rebuilt on the recreated table.
+    fn attachments(&self) -> Result<Vec<(String, ChildTargetDef)>> {
+        Ok(vec![
+            (
+                "vector_index".to_string(),
+                ChildTargetDef::new::<VectorIndexSpec, _>(VectorIndexHandler {
+                    db_key: self.db_key.clone(),
+                }),
+            ),
+            (
+                "fts_index".to_string(),
+                ChildTargetDef::new::<FtsIndexSpec, _>(FtsIndexHandler {
+                    db_key: self.db_key.clone(),
+                }),
+            ),
+        ])
     }
 }
 
@@ -831,7 +839,6 @@ async fn apply_rows(
     if upserts.is_empty() && deletes.is_empty() {
         return Ok(());
     }
-    let mutations = (upserts.len() + deletes.len()) as u64;
     // Rows imply the table exists for system-managed targets. User-managed
     // targets intentionally leave DDL to the caller and let open_table surface
     // missing/incompatible tables.
@@ -873,11 +880,13 @@ async fn apply_rows(
     }
 
     // Periodically compact + fold new rows into existing indices. Done inline
-    // (rather than Python's debounced background task) once enough mutations have
-    // accumulated, so it amortizes across many batches without a detached task.
-    let total = optimize_counter.fetch_add(mutations, Ordering::Relaxed) + mutations;
-    if total >= ROWS_BEFORE_OPTIMIZE {
-        optimize_counter.store(0, Ordering::Relaxed);
+    // (rather than Python's debounced background task) every
+    // `TRANSACTIONS_BEFORE_OPTIMIZE` batches. The counter is monotonic and the
+    // trigger is `count % N == 0`, so concurrent batches each get a distinct
+    // count via the atomic `fetch_add` and exactly one in N optimizes — no reset,
+    // hence no lost-increment race or double-optimize.
+    let count = optimize_counter.fetch_add(1, Ordering::Relaxed) + 1;
+    if count % TRANSACTIONS_BEFORE_OPTIMIZE == 0 {
         table
             .optimize(lancedb::table::OptimizeAction::All)
             .await

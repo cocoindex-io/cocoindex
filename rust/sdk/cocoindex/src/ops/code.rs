@@ -34,6 +34,7 @@ use std::sync::OnceLock;
 
 use cocoindex_code_match::lang;
 use cocoindex_code_match::{Pattern, Prefilter, index_terms_in_tree};
+use cocoindex_ops_text::prog_langs;
 use cocoindex_ops_text::split::{
     LineIndex, OutputPosition, RecursiveChunkConfig, RecursiveChunker, RecursiveSplitConfig,
 };
@@ -89,22 +90,28 @@ fn build_sdk_matches(
 }
 
 /// Parse `source` for `language`, returning the tree-sitter tree.
+///
+/// Resolution goes through `prog_langs` (the full tree-sitter table — hundreds
+/// of languages), exactly like the Python binding, so any tree-sitter-supported
+/// language can be parsed and split (`split` re-resolves through the same table).
+/// Structural matching ([`CodeAst::matches`]) additionally requires the language
+/// to be in the smaller `code_match` set and errors otherwise — also matching
+/// Python. The stored language string is kept verbatim so `split` re-resolves it
+/// consistently (both lookups are case-insensitive).
 fn parse_tree(source: &str, language: &str) -> Result<(Tree, String)> {
-    let cfg = lang::by_name(language).ok_or_else(|| {
-        Error::engine(format!(
-            "unknown or unsupported language for code matching: {language:?}"
-        ))
-    })?;
+    let ts = prog_langs::get_language_info(language)
+        .and_then(|i| i.treesitter_info.as_ref())
+        .ok_or_else(|| {
+            Error::engine(format!("unknown or non-tree-sitter language: {language:?}"))
+        })?;
     let mut parser = Parser::new();
     parser
-        .set_language(&cfg.language)
+        .set_language(&ts.tree_sitter_lang)
         .map_err(|e| Error::engine(format!("failed to load grammar for {language:?}: {e}")))?;
     let tree = parser
         .parse(source, None)
         .ok_or_else(|| Error::engine(format!("failed to parse source as {language:?}")))?;
-    // Normalise to the canonical name from code_match's lang table.
-    let canonical = language.to_ascii_lowercase();
-    Ok((tree, canonical))
+    Ok((tree, language.to_string()))
 }
 
 // ─── Public types ────────────────────────────────────────────────────────────
