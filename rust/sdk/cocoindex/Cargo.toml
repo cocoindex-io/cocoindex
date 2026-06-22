@@ -54,6 +54,8 @@ qdrant = ["dep:serde_json", "dep:qdrant-client"]
 turbopuffer = ["dep:serde_json", "dep:reqwest"]
 neo4j = ["dep:serde_json", "dep:neo4rs"]
 falkordb = ["dep:serde_json", "dep:redis"]
+# Valkey/Redis (RediSearch) vector-search target. Reuses the `redis` crate.
+valkey = ["dep:redis", "dep:serde_json"]
 
 [dependencies]
 cocoindex_macros = { path = "../cocoindex_macros" }

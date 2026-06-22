@@ -53,6 +53,8 @@ pub mod target_state;
 pub mod turbopuffer;
 mod typemap;
 pub mod user_state;
+#[cfg(feature = "valkey")]
+pub mod valkey;
 
 // Flat re-exports — the public API surface
 pub use app::{
