@@ -334,6 +334,35 @@ fn regex_matches_a_string_literal() {
 }
 
 #[test]
+fn regex_on_a_run() {
+    // `\(NAME:/re/*\)` — a run of nodes **each** matching `re` (literal per-node: a
+    // non-matching node, e.g. a separator, ends the run). Folding the separator
+    // into the regex matches the whole comma-separated list.
+    let src = "const x = [1, 2, 3];";
+    let ms = matches(lang::typescript(), r"[\(N:/[0-9]+|,/*\)]", src);
+    assert_eq!(cap(&ms, "N").as_deref(), Some("1, 2, 3"));
+    // Without the separator in `re`, the comma ends the run, so the `[ … ]` can't
+    // close → no array match.
+    assert!(
+        !has_kind(
+            &matches(lang::typescript(), r"[\(/[0-9]+/*\)]", src),
+            "array"
+        ),
+        "a non-matching separator must end the run",
+    );
+    // `+` requires at least one matching node: an empty `[]` matches with `*`, not `+`.
+    let empty = "const y = [];";
+    assert!(has_kind(
+        &matches(lang::typescript(), r"[\(/[0-9]+/*\)]", empty),
+        "array"
+    ));
+    assert!(!has_kind(
+        &matches(lang::typescript(), r"[\(/[0-9]+/+\)]", empty),
+        "array"
+    ));
+}
+
+#[test]
 fn regex_dotstar_equals_bare() {
     // `/.*/ ` is a pure pass-through filter, so it must behave exactly like `\X`.
     let src = "a = b = c;";

@@ -29,8 +29,10 @@
 //! "starts with `set_`"; add `.*` explicitly for prefix/suffix/substring. (This is
 //! less surprising than unanchored `is_match`, where a bare `set_.*` would match
 //! inside `unset_…`.) Named is `S(NAME:/re/ S)` (the `:` only follows a NAME);
-//! anonymous is `S(/re/ S)` or the short form `S/re/`. Applies to `One`/`Optional`;
-//! ignored on `Many` (sibling runs, out of scope). The regex is **delimited** —
+//! anonymous is `S(/re/ S)` or the short form `S/re/`. On a **run** (`S(NAME:/re/* S)`
+//! / `+`) the regex constrains *every* node — literal per-node: a non-matching node
+//! ends the run. The quantifier sits after the regex term (the after-NAME position
+//! `S(NAME*:/re/ S)` is also accepted). The regex is **delimited** —
 //! it closes at the first unescaped `/`; *balanced* `()` inside (alternations) need
 //! no escaping, escape a literal `/` as `\/`. An unparseable (or unterminated)
 //! regex is a `client` error from `lex` / `Pattern::compile`.
@@ -272,11 +274,27 @@ fn lex_metavar(
     })
 }
 
+/// Read a cardinality quantifier (`*`/`+`/`?`) at `k`, advancing past it.
+/// `None` (and `k` unchanged) if there's no quantifier there.
+fn read_card(bytes: &[u8], k: &mut usize) -> Option<Cardinality> {
+    let card = match bytes.get(*k).copied() {
+        Some(b'*') => Cardinality::Many,
+        Some(b'+') => Cardinality::OneOrMore,
+        Some(b'?') => Cardinality::Optional,
+        _ => return None,
+    };
+    *k += 1;
+    Some(card)
+}
+
 /// Parse the inside of a metavar `\( ... \)` given `j` pointing just after `\(`.
-/// Forms (existing functionality): `NAME [*|?] \)`, named regex `NAME : /re/ \)`,
-/// anonymous regex `/re/ \)` (no colon — `:` separates a NAME from its body). The
-/// close is the **sigil + `)`** (`\)`); a bad regex is an `Err`, a missing/garbled
-/// close is lenient (`Ok(None)` → treat the sigil as literal).
+/// Forms: `NAME [*+?] \)` (shorthand: quantifier on the implicit `.` body), named
+/// regex `NAME : /re/ [*+?] \)`, anonymous regex `/re/ [*+?] \)` (no colon — `:`
+/// separates a NAME from its body). The quantifier sits **after the body term**
+/// (`\(NAME:/re/*\)`, the locked grammar); the after-NAME position is the shorthand
+/// when there's no explicit body, and is also accepted with one for back-compat.
+/// The close is the **sigil + `)`** (`\)`); a bad regex is an `Err`, a
+/// missing/garbled close is lenient (`Ok(None)` → treat the sigil as literal).
 fn lex_qualified(
     pattern: &str,
     bytes: &[u8],
@@ -284,21 +302,8 @@ fn lex_qualified(
     meta_char: char,
 ) -> Result<Option<(PatternItem, usize)>> {
     let (name, mut k) = read_name(pattern, bytes, j);
-    let card = match bytes.get(k).copied() {
-        Some(b'*') => {
-            k += 1;
-            Cardinality::Many
-        }
-        Some(b'+') => {
-            k += 1;
-            Cardinality::OneOrMore
-        }
-        Some(b'?') => {
-            k += 1;
-            Cardinality::Optional
-        }
-        _ => Cardinality::One,
-    };
+    // quantifier after the NAME — the shorthand position (`\(NAME*\)`).
+    let card_after_name = read_card(bytes, &mut k);
     k = skip_spaces(bytes, k);
     // regex matcher: named `NAME:/re/` (a `:` only ever follows a NAME) or
     // anonymous `/re/` (regex directly, no colon).
@@ -315,6 +320,16 @@ fn lex_qualified(
         }
         _ => None,
     };
+    // quantifier after the body **term** — the locked position (`\(NAME:/re/*\)`).
+    // Wins over the after-NAME one when both are present.
+    let card_after_term = if regex.is_some() {
+        read_card(bytes, &mut k)
+    } else {
+        None
+    };
+    let card = card_after_term
+        .or(card_after_name)
+        .unwrap_or(Cardinality::One);
     k = skip_spaces(bytes, k);
     // close: the sigil followed by `)` (`\)`). Sigil-agnostic + UTF-8-safe.
     if !pattern[k..].starts_with(meta_char) || bytes.get(k + meta_char.len_utf8()) != Some(&b')') {

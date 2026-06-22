@@ -200,6 +200,29 @@ fn regex_on_optional_metavar_is_not_required() {
 }
 
 #[test]
+fn regex_on_a_run_required_only_for_one_or_more() {
+    // A `+` run is ≥1 node *each* matching `re`, so `re`'s required literal IS
+    // required → can reject a source lacking it.
+    let plus = Pattern::compile(r"[\(/foo[0-9]/+\)]", &lang::typescript())
+        .unwrap()
+        .prefilter(1);
+    assert!(
+        !plus.might_match("[bar]"),
+        "`+` run regex literal is required"
+    );
+    assert!(plus.might_match("[foo1]"));
+    // A `*` run can be empty, so its regex literal must NOT be required (else `[]`
+    // would be a false negative).
+    let star = Pattern::compile(r"[\(/foo[0-9]/*\)]", &lang::typescript())
+        .unwrap()
+        .prefilter(1);
+    assert!(
+        star.might_match("[]"),
+        "`*` run can be empty — must not reject"
+    );
+}
+
+#[test]
 fn clause_structure_is_exposed() {
     let pf = prefilter(r"foobar", 3);
     let clauses = pf.clauses();

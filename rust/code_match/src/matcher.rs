@@ -480,10 +480,14 @@ impl<'s> Ctx<'_, 's> {
                 Cardinality::One => {
                     self.match_single(pi, end, li, hi, name.as_deref(), regex.as_ref())
                 }
-                // Many/OneOrMore ignore the regex (sibling runs are out of the
-                // single-node scope). `OneOrMore` is `Many` with a non-empty run.
-                Cardinality::Many => self.match_multi(pi, end, li, hi, name.as_deref(), false),
-                Cardinality::OneOrMore => self.match_multi(pi, end, li, hi, name.as_deref(), true),
+                // A regex on a run constrains every node in it (literal per-node,
+                // §0). `OneOrMore` is `Many` with a non-empty run.
+                Cardinality::Many => {
+                    self.match_multi(pi, end, li, hi, name.as_deref(), false, regex.as_ref())
+                }
+                Cardinality::OneOrMore => {
+                    self.match_multi(pi, end, li, hi, name.as_deref(), true, regex.as_ref())
+                }
                 Cardinality::Optional => {
                     self.match_optional(pi, end, li, hi, name.as_deref(), regex.as_ref())
                 }
@@ -568,9 +572,12 @@ impl<'s> Ctx<'_, 's> {
         hi: usize,
         name: Option<&str>,
         nonempty: bool,
+        regex: Option<&Regex>,
     ) -> bool {
         let idx = self.idx;
-        let reach = reachable(li, hi, idx); // descending => greedy longest first
+        // a regex run extends only over nodes each matching `re` (literal per-node).
+        let re_filter = regex.map(|re| (self.source, re));
+        let reach = reachable(li, hi, idx, re_filter); // descending => greedy longest first
         for next in reach {
             // `\+` (one-or-more) requires at least one node; `\*` allows the empty run
             if nonempty && next == li {
@@ -780,7 +787,7 @@ fn regex_ok(regex: Option<&Regex>, text: &str) -> bool {
 /// Positions reachable from `li` (within `[li, hi]`) by consuming whole units:
 /// a complete named subtree span, or a single anonymous leaf. Returns them
 /// descending so the multi-metavar binds greedily (longest first).
-fn reachable(li: usize, hi: usize, idx: &Indexed) -> Vec<usize> {
+fn reachable(li: usize, hi: usize, idx: &Indexed, re_filter: Option<(&str, &Regex)>) -> Vec<usize> {
     let n = hi - li;
     let mut reach = vec![false; n + 1];
     reach[0] = true;
@@ -790,11 +797,15 @@ fn reachable(li: usize, hi: usize, idx: &Indexed) -> Vec<usize> {
         }
         let p = li + off;
         for sp in &idx.spans_by_start[p] {
-            if sp.end_leaf < hi {
+            // `\(/re/*\)` only extends a run over nodes whose whole text matches
+            // `re` (literal per-node — a non-matching node ends the run).
+            if sp.end_leaf < hi
+                && re_filter.is_none_or(|(src, re)| re.is_match(&src[sp.start_byte..sp.end_byte]))
+            {
                 reach[sp.end_leaf + 1 - li] = true;
             }
         }
-        if idx.leaves[p].anon {
+        if idx.leaves[p].anon && re_filter.is_none_or(|(_, re)| re.is_match(&idx.leaves[p].text)) {
             reach[p + 1 - li] = true;
         }
     }
