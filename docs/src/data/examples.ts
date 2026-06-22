@@ -44,7 +44,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'text-embedding',
     title: 'Semantic Search *101*',
-    index: '01 / 26',
+    index: '01 / 27',
     category: 'search',
     thumbLabel: 'Markdown · embeddings',
     motif: MOTIFS.textVec,
@@ -61,7 +61,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'index-codebase',
     title: 'Index Your *Codebase*',
-    index: '02 / 26',
+    index: '02 / 27',
     category: 'search',
     thumbLabel: 'Code · Tree-sitter',
     motif: MOTIFS.codeChunks,
@@ -78,7 +78,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'multi-codebase-summarization',
     title: 'Multi-codebase *Summarization*',
-    index: '03 / 26',
+    index: '03 / 27',
     category: 'llm',
     thumbLabel: 'Code · structured output',
     motif: MOTIFS.repos,
@@ -97,7 +97,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'pdf-to-markdown',
     title: 'PDF → *Markdown*',
-    index: '04 / 26',
+    index: '04 / 27',
     category: 'ingest',
     thumbLabel: 'PDF · custom blocks',
     motif: MOTIFS.pdfToMd,
@@ -113,7 +113,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'podcast-to-knowledge-graph',
     title: 'Podcasts → *Knowledge Graph*',
-    index: '05 / 26',
+    index: '05 / 27',
     category: 'agents',
     thumbLabel: 'YouTube · LLM + graph',
     motif: MOTIFS.graph,
@@ -131,7 +131,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'docs-to-knowledge-graph',
     title: 'Docs → *Knowledge Graph*',
-    index: '06 / 26',
+    index: '06 / 27',
     category: 'agents',
     thumbLabel: 'Markdown · LLM + Neo4j',
     motif: MOTIFS.graph,
@@ -148,7 +148,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'meeting-notes-to-knowledge-graph',
     title: 'Meeting Notes → *Knowledge Graph*',
-    index: '07 / 26',
+    index: '07 / 27',
     category: 'agents',
     thumbLabel: 'Google Drive · LLM + Neo4j',
     motif: MOTIFS.graph,
@@ -166,7 +166,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'csv-to-kafka',
     title: 'CSV → *Kafka*',
-    index: '08 / 26',
+    index: '08 / 27',
     category: 'ingest',
     thumbLabel: 'CSV · live Kafka target',
     motif: MOTIFS.pdfToMd,
@@ -183,7 +183,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'pdf-embedding',
     title: 'Semantic Search over *PDFs*',
-    index: '09 / 26',
+    index: '09 / 27',
     category: 'search',
     thumbLabel: 'PDF · docling + embeddings',
     motif: MOTIFS.textVec,
@@ -200,7 +200,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'image-search',
     title: 'Search Images by *Text*',
-    index: '10 / 26',
+    index: '10 / 27',
     category: 'image',
     thumbLabel: 'Images · CLIP + Qdrant',
     motif: MOTIFS.textVec,
@@ -217,7 +217,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'audio-to-text',
     title: "Audio to *Text*",
-    index: '11 / 26',
+    index: '11 / 27',
     category: 'image',
     thumbLabel: "Audio \u00b7 LiteLLM",
     motif: MOTIFS.textVec,
@@ -235,7 +235,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'hackernews-trending-topics',
     title: "Trending Topics from *HackerNews*",
-    index: '12 / 26',
+    index: '12 / 27',
     category: 'llm',
     thumbLabel: "HN API \u00b7 LLM topics",
     motif: MOTIFS.textVec,
@@ -253,7 +253,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'paper-metadata',
     title: "Index *Academic Papers*",
-    index: '13 / 26',
+    index: '13 / 27',
     category: 'llm',
     thumbLabel: "PDF \u00b7 LLM extract",
     motif: MOTIFS.pdfToMd,
@@ -271,7 +271,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'patient-intake-baml',
     title: "Patient Intake Forms to Typed JSON with *BAML*",
-    index: '14 / 26',
+    index: '14 / 27',
     category: 'llm',
     thumbLabel: "PDF \u00b7 BAML",
     motif: MOTIFS.pdfToMd,
@@ -289,7 +289,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'patient-intake-dspy',
     title: "Patient Intake Forms to Typed JSON with *DSPy*",
-    index: '15 / 26',
+    index: '15 / 27',
     category: 'llm',
     thumbLabel: "PDF \u00b7 DSPy",
     motif: MOTIFS.pdfToMd,
@@ -308,7 +308,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'postgres-source',
     title: "Postgres as a *Source*",
-    index: '16 / 26',
+    index: '16 / 27',
     category: 'ingest',
     thumbLabel: "Postgres \u00b7 pgvector",
     motif: MOTIFS.textVec,
@@ -326,7 +326,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'files-transform',
     title: "Transform a *Folder of Files*",
-    index: '17 / 26',
+    index: '17 / 27',
     category: 'ingest',
     thumbLabel: "Markdown \u00b7 markdown-it",
     motif: MOTIFS.pdfToMd,
@@ -344,7 +344,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'kafka-to-lancedb',
     title: "Consume Kafka into *LanceDB*",
-    index: '18 / 26',
+    index: '18 / 27',
     category: 'ingest',
     thumbLabel: "Kafka \u00b7 dispatch",
     motif: MOTIFS.textVec,
@@ -361,7 +361,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'entire-session-search',
     title: "Search Your *AI Coding Sessions*",
-    index: '19 / 26',
+    index: '19 / 27',
     category: 'search',
     thumbLabel: "Entire \u00b7 Embeddings",
     motif: MOTIFS.textVec,
@@ -379,7 +379,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'image-search-colpali',
     title: "Image Search with *ColPali*",
-    index: '20 / 26',
+    index: '20 / 27',
     category: 'image',
     thumbLabel: "Images \u00b7 ColPali",
     motif: MOTIFS.textVec,
@@ -397,7 +397,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'text-embedding-qdrant',
     title: "Semantic Search with *Qdrant*",
-    index: '21 / 26',
+    index: '21 / 27',
     category: 'search',
     thumbLabel: "Markdown \u00b7 Qdrant",
     motif: MOTIFS.textVec,
@@ -414,7 +414,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'text-embedding-lancedb',
     title: "Semantic Search with *LanceDB*",
-    index: '22 / 26',
+    index: '22 / 27',
     category: 'search',
     thumbLabel: "Markdown \u00b7 LanceDB",
     motif: MOTIFS.textVec,
@@ -432,7 +432,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'text-embedding-turbopuffer',
     title: "Semantic Search with *Turbopuffer*",
-    index: '23 / 26',
+    index: '23 / 27',
     category: 'search',
     thumbLabel: "Markdown \u00b7 Turbopuffer",
     motif: MOTIFS.textVec,
@@ -449,7 +449,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'amazon-s3-embedding',
     title: "Embed Markdown from *Amazon S3*",
-    index: '24 / 26',
+    index: '24 / 27',
     category: 'search',
     thumbLabel: "S3 \u00b7 pgvector",
     motif: MOTIFS.textVec,
@@ -467,7 +467,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'google-drive-embedding',
     title: "Semantic Search over *Google Drive*",
-    index: '25 / 26',
+    index: '25 / 27',
     category: 'search',
     thumbLabel: "Google Drive \u00b7 Embed",
     motif: MOTIFS.textVec,
@@ -484,7 +484,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'oci-object-storage-embedding',
     title: "Embed *OCI Object Storage*",
-    index: '26 / 26',
+    index: '26 / 27',
     category: 'search',
     thumbLabel: "OCI \u00b7 pgvector",
     motif: MOTIFS.textVec,
@@ -498,6 +498,23 @@ export const examples: ExampleCard[] = [
     ],
     footMeta: "~7 min",
     sourceSlug: 'oci_object_storage_embedding',
+  },
+  {
+    slug: 'face-recognition',
+    title: 'Build Your Own *Face Search*',
+    index: '27 / 27',
+    category: 'image',
+    thumbLabel: 'Photos · face embeddings',
+    motif: MOTIFS.textVec,
+    description: 'Detect every face in a folder of photos, embed each into a 128-d vector with face_recognition (dlib), and index them in Qdrant — then search your photos by face.',
+    tags: [
+      { kind: 'src', label: 'Local FS' },
+      { kind: 'ops', label: 'Face detection' },
+      { kind: 'tgt', label: 'Qdrant' },
+      { kind: 'lvl', label: 'Intermediate' },
+    ],
+    footMeta: '~15 min',
+    sourceSlug: 'face_recognition',
   },
 ];
 
@@ -527,6 +544,7 @@ export const POPULAR: Array<{ slug: string; label: string; count: string }> = [
   { slug: 'csv-to-kafka', label: 'CSV → Kafka', count: '★' },
   { slug: 'pdf-embedding', label: 'Semantic Search over PDFs', count: '★' },
   { slug: 'image-search', label: 'Search Images by Text', count: '★' },
+  { slug: 'face-recognition', label: 'Build Your Own Face Search', count: '★' },
   { slug: 'audio-to-text', label: "Audio to Text", count: '★' },
   { slug: 'hackernews-trending-topics', label: "Trending Topics from HackerNews", count: '★' },
   { slug: 'paper-metadata', label: "Index Academic Papers", count: '★' },
@@ -600,6 +618,7 @@ export const EXAMPLE_CATALOG_GROUPS: ExampleCatalogGroup[] = [
     blurb: 'Images and audio — same declarative flow, different encoder.',
     entries: [
       { dir: 'image_search_colpali', docs: 'image-search-colpali', title: 'Image Search (ColPali)', description: 'Image search using the ColPali multi-vector model with Qdrant MaxSim; natural-language queries via FastAPI.', run: 'python -m uvicorn api:app --reload --host 0.0.0.0 --port 8000' },
+      { dir: 'face_recognition', docs: 'face-recognition', title: 'Build Your Own Face Search', description: 'Detect faces in a folder of photos, embed each with face_recognition (dlib), and index them in Qdrant for face search; query demo.', run: RUN_MAIN },
       { dir: 'audio_to_text', docs: 'audio-to-text', title: 'Audio → Text', description: 'Transcribe local audio files with LiteLLM and store one row per file in Postgres, keyed by filename.', run: RUN_MAIN_PY },
     ],
   },

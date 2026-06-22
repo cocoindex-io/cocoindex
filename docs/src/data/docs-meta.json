@@ -288,6 +288,10 @@
     "examples/oci-object-storage-embedding": {
       "sourcePath": "example-posts/oci-object-storage-embedding.md",
       "reviewedTs": 1782129600
+    },
+    "examples/face-recognition": {
+      "sourcePath": "example-posts/face-recognition.md",
+      "reviewedTs": 1782129600
     }
   }
 }
