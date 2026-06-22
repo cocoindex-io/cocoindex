@@ -44,7 +44,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'text-embedding',
     title: 'Semantic Search *101*',
-    index: '01 / 27',
+    index: '01 / 26',
     category: 'search',
     thumbLabel: 'Markdown · embeddings',
     motif: MOTIFS.textVec,
@@ -61,7 +61,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'index-codebase',
     title: 'Index Your *Codebase*',
-    index: '02 / 27',
+    index: '02 / 26',
     category: 'search',
     thumbLabel: 'Code · Tree-sitter',
     motif: MOTIFS.codeChunks,
@@ -78,7 +78,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'multi-codebase-summarization',
     title: 'Multi-codebase *Summarization*',
-    index: '03 / 27',
+    index: '03 / 26',
     category: 'llm',
     thumbLabel: 'Code · structured output',
     motif: MOTIFS.repos,
@@ -97,7 +97,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'pdf-to-markdown',
     title: 'PDF → *Markdown*',
-    index: '04 / 27',
+    index: '04 / 26',
     category: 'ingest',
     thumbLabel: 'PDF · custom blocks',
     motif: MOTIFS.pdfToMd,
@@ -113,7 +113,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'podcast-to-knowledge-graph',
     title: 'Podcasts → *Knowledge Graph*',
-    index: '05 / 27',
+    index: '05 / 26',
     category: 'agents',
     thumbLabel: 'YouTube · LLM + graph',
     motif: MOTIFS.graph,
@@ -131,7 +131,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'docs-to-knowledge-graph',
     title: 'Docs → *Knowledge Graph*',
-    index: '06 / 27',
+    index: '06 / 26',
     category: 'agents',
     thumbLabel: 'Markdown · LLM + Neo4j',
     motif: MOTIFS.graph,
@@ -148,7 +148,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'meeting-notes-to-knowledge-graph',
     title: 'Meeting Notes → *Knowledge Graph*',
-    index: '07 / 27',
+    index: '07 / 26',
     category: 'agents',
     thumbLabel: 'Google Drive · LLM + Neo4j',
     motif: MOTIFS.graph,
@@ -166,7 +166,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'csv-to-kafka',
     title: 'CSV → *Kafka*',
-    index: '08 / 27',
+    index: '08 / 26',
     category: 'ingest',
     thumbLabel: 'CSV · live Kafka target',
     motif: MOTIFS.pdfToMd,
@@ -183,7 +183,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'pdf-embedding',
     title: 'Semantic Search over *PDFs*',
-    index: '09 / 27',
+    index: '09 / 26',
     category: 'search',
     thumbLabel: 'PDF · docling + embeddings',
     motif: MOTIFS.textVec,
@@ -200,7 +200,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'image-search',
     title: 'Search Images by *Text*',
-    index: '10 / 27',
+    index: '10 / 26',
     category: 'image',
     thumbLabel: 'Images · CLIP + Qdrant',
     motif: MOTIFS.textVec,
@@ -217,7 +217,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'audio-to-text',
     title: "Audio to *Text*",
-    index: '11 / 27',
+    index: '11 / 26',
     category: 'image',
     thumbLabel: "Audio \u00b7 LiteLLM",
     motif: MOTIFS.textVec,
@@ -235,7 +235,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'hackernews-trending-topics',
     title: "Trending Topics from *HackerNews*",
-    index: '12 / 27',
+    index: '12 / 26',
     category: 'llm',
     thumbLabel: "HN API \u00b7 LLM topics",
     motif: MOTIFS.textVec,
@@ -252,8 +252,8 @@ export const examples: ExampleCard[] = [
   },
   {
     slug: 'paper-metadata',
-    title: "Structured *Metadata* from PDF Papers",
-    index: '13 / 27',
+    title: "Index *Academic Papers*",
+    index: '13 / 26',
     category: 'llm',
     thumbLabel: "PDF \u00b7 LLM extract",
     motif: MOTIFS.pdfToMd,
@@ -271,7 +271,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'patient-intake-baml',
     title: "Patient Intake Forms to Typed JSON with *BAML*",
-    index: '14 / 27',
+    index: '14 / 26',
     category: 'llm',
     thumbLabel: "PDF \u00b7 BAML",
     motif: MOTIFS.pdfToMd,
@@ -288,8 +288,8 @@ export const examples: ExampleCard[] = [
   },
   {
     slug: 'patient-intake-dspy',
-    title: "Patient Intake Forms to Structured *JSON*",
-    index: '15 / 27',
+    title: "Patient Intake Forms to Typed JSON with *DSPy*",
+    index: '15 / 26',
     category: 'llm',
     thumbLabel: "PDF \u00b7 DSPy",
     motif: MOTIFS.pdfToMd,
@@ -308,7 +308,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'postgres-source',
     title: "Postgres as a *Source*",
-    index: '16 / 27',
+    index: '16 / 26',
     category: 'ingest',
     thumbLabel: "Postgres \u00b7 pgvector",
     motif: MOTIFS.textVec,
@@ -326,7 +326,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'files-transform',
     title: "Transform a *Folder of Files*",
-    index: '17 / 27',
+    index: '17 / 26',
     category: 'ingest',
     thumbLabel: "Markdown \u00b7 markdown-it",
     motif: MOTIFS.pdfToMd,
@@ -344,7 +344,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'kafka-to-lancedb',
     title: "Consume Kafka into *LanceDB*",
-    index: '18 / 27',
+    index: '18 / 26',
     category: 'ingest',
     thumbLabel: "Kafka \u00b7 dispatch",
     motif: MOTIFS.textVec,
@@ -361,7 +361,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'entire-session-search',
     title: "Search Your *AI Coding Sessions*",
-    index: '19 / 27',
+    index: '19 / 26',
     category: 'search',
     thumbLabel: "Entire \u00b7 Embeddings",
     motif: MOTIFS.textVec,
@@ -379,7 +379,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'image-search-colpali',
     title: "Image Search with *ColPali*",
-    index: '20 / 27',
+    index: '20 / 26',
     category: 'image',
     thumbLabel: "Images \u00b7 ColPali",
     motif: MOTIFS.textVec,
@@ -397,7 +397,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'text-embedding-qdrant',
     title: "Semantic Search with *Qdrant*",
-    index: '21 / 27',
+    index: '21 / 26',
     category: 'search',
     thumbLabel: "Markdown \u00b7 Qdrant",
     motif: MOTIFS.textVec,
@@ -414,7 +414,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'text-embedding-lancedb',
     title: "Semantic Search with *LanceDB*",
-    index: '22 / 27',
+    index: '22 / 26',
     category: 'search',
     thumbLabel: "Markdown \u00b7 LanceDB",
     motif: MOTIFS.textVec,
@@ -432,7 +432,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'text-embedding-turbopuffer',
     title: "Semantic Search with *Turbopuffer*",
-    index: '23 / 27',
+    index: '23 / 26',
     category: 'search',
     thumbLabel: "Markdown \u00b7 Turbopuffer",
     motif: MOTIFS.textVec,
@@ -449,7 +449,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'amazon-s3-embedding',
     title: "Embed Markdown from *Amazon S3*",
-    index: '24 / 27',
+    index: '24 / 26',
     category: 'search',
     thumbLabel: "S3 \u00b7 pgvector",
     motif: MOTIFS.textVec,
@@ -467,7 +467,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'google-drive-embedding',
     title: "Semantic Search over *Google Drive*",
-    index: '25 / 27',
+    index: '25 / 26',
     category: 'search',
     thumbLabel: "Google Drive \u00b7 Embed",
     motif: MOTIFS.textVec,
@@ -484,7 +484,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'oci-object-storage-embedding',
     title: "Embed *OCI Object Storage*",
-    index: '26 / 27',
+    index: '26 / 26',
     category: 'search',
     thumbLabel: "OCI \u00b7 pgvector",
     motif: MOTIFS.textVec,
@@ -498,24 +498,6 @@ export const examples: ExampleCard[] = [
     ],
     footMeta: "~7 min",
     sourceSlug: 'oci_object_storage_embedding',
-  },
-  {
-    slug: 'code-embedding-lancedb',
-    title: "Index Your Codebase with *LanceDB*",
-    index: '27 / 27',
-    category: 'search',
-    thumbLabel: "Code \u00b7 LanceDB",
-    motif: MOTIFS.codeChunks,
-    description: "Index a codebase into an embedded LanceDB vector store with Tree-sitter chunking and local embeddings \u2014 the Index Your Codebase example, pointed at LanceDB instead of Postgres.",
-    tags: [
-      { kind: 'src', label: "Codebase" },
-      { kind: 'tgt', label: "LanceDB" },
-      { kind: 'ops', label: "Tree-sitter chunking" },
-      { kind: 'ops', label: "Local embeddings" },
-      { kind: 'lvl', label: "Variant" },
-    ],
-    footMeta: "~8 min",
-    sourceSlug: 'code_embedding_lancedb',
   },
 ];
 
@@ -547,9 +529,9 @@ export const POPULAR: Array<{ slug: string; label: string; count: string }> = [
   { slug: 'image-search', label: 'Search Images by Text', count: '★' },
   { slug: 'audio-to-text', label: "Audio to Text", count: '★' },
   { slug: 'hackernews-trending-topics', label: "Trending Topics from HackerNews", count: '★' },
-  { slug: 'paper-metadata', label: "Structured Metadata from PDF Papers", count: '★' },
+  { slug: 'paper-metadata', label: "Index Academic Papers", count: '★' },
   { slug: 'patient-intake-baml', label: "Patient Intake Forms to Typed JSON with BAML", count: '★' },
-  { slug: 'patient-intake-dspy', label: "Patient Intake Forms to Structured JSON", count: '★' },
+  { slug: 'patient-intake-dspy', label: "Patient Intake Forms to Typed JSON with DSPy", count: '★' },
   { slug: 'postgres-source', label: "Postgres as a Source", count: '★' },
   { slug: 'files-transform', label: "Transform a Folder of Files", count: '★' },
   { slug: 'kafka-to-lancedb', label: "Consume Kafka into LanceDB", count: '★' },
@@ -605,7 +587,7 @@ export const EXAMPLE_CATALOG_GROUPS: ExampleCatalogGroup[] = [
       { dir: 'text_embedding_qdrant', docs: 'text-embedding-qdrant', title: 'Text Embedding · Qdrant', description: 'Embed local Markdown files and store the chunks + vectors in Qdrant; semantic-search demo.' },
       { dir: 'text_embedding_lancedb', docs: 'text-embedding-lancedb', title: 'Text Embedding · LanceDB', description: 'Embed local Markdown files and store the chunks + vectors in LanceDB; semantic-search demo.' },
       { dir: 'text_embedding_turbopuffer', docs: 'text-embedding-turbopuffer', title: 'Text Embedding · Turbopuffer', description: 'Embed local Markdown files into a Turbopuffer namespace; semantic-search demo.' },
-      { dir: 'code_embedding_lancedb', docs: 'code-embedding-lancedb', title: 'Code Embedding · LanceDB', description: 'Extract code chunks from Python/Rust/TOML/Markdown and store code + vectors in LanceDB; semantic code search.' },
+      { dir: 'code_embedding_lancedb', title: 'Code Embedding · LanceDB', description: 'Extract code chunks from Python/Rust/TOML/Markdown and store code + vectors in LanceDB; semantic code search.' },
       { dir: 'entire_session_search', docs: 'entire-session-search', title: 'Entire Session Search', description: 'Semantic search over AI coding sessions captured by Entire — transcripts, prompts, and context summaries into Postgres (pgvector).' },
       { dir: 'amazon_s3_embedding', docs: 'amazon-s3-embedding', title: 'Amazon S3 Embedding', description: 'Embed Markdown files from an S3 bucket into Postgres (pgvector); semantic-search demo.' },
       { dir: 'gdrive_text_embedding', docs: 'google-drive-embedding', title: 'Google Drive Text Embedding', description: 'Embed text files from Google Drive into Postgres (pgvector); query demo.' },

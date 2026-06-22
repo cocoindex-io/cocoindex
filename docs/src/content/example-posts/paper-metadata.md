@@ -1,12 +1,12 @@
 ---
-title: Structured Metadata from PDF Papers
+title: Index Academic Papers and Extract Metadata
 description: 'Turn a folder of academic PDFs into structured metadata with CocoIndex V1 — read the first page, LLM-extract title, authors, and abstract into typed rows, embed the title and abstract for semantic search, and store it all in Postgres with pgvector. Plain async Python.'
 slug: paper-metadata
 image: https://cocoindex.io/blobs/docs-v1/img/examples/paper-metadata/cover.png
 tags: [llm-extraction, pdf]
 ---
 
-![Structured Metadata from PDF Papers with CocoIndex V1](https://cocoindex.io/blobs/docs-v1/img/examples/paper-metadata/cover.png)
+![Index academic papers and extract metadata for AI agents with CocoIndex V1](https://cocoindex.io/blobs/docs-v1/img/examples/paper-metadata/cover.png)
 
 We'll take a folder of academic PDFs and pull out the parts you actually want to query — **title, authors, abstract** — as structured, typed rows. The first page of a paper holds almost all of this, so we read just that page, hand the text to an LLM with a strict schema, and get back clean JSON. The same metadata is then embedded so you can search papers by meaning, not just by exact words.
 

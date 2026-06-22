@@ -288,10 +288,6 @@
     "examples/oci-object-storage-embedding": {
       "sourcePath": "example-posts/oci-object-storage-embedding.md",
       "reviewedTs": 1782129600
-    },
-    "examples/code-embedding-lancedb": {
-      "sourcePath": "example-posts/code-embedding-lancedb.md",
-      "reviewedTs": 1782129600
     }
   }
 }
