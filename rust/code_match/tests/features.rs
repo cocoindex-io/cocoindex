@@ -137,6 +137,33 @@ fn optional_metavar() {
 }
 
 #[test]
+fn one_or_more_metavar() {
+    // `\(NAME+\)` / `\+` — one or more same-level siblings; like `\*` but non-empty.
+    let src = "f(a, b); g();";
+    // named: captures the (non-empty) argument run
+    let ms = matches(lang::typescript(), r"f(\(ARGS+\))", src);
+    assert_eq!(cap(&ms, "ARGS").as_deref(), Some("a, b"));
+    // anonymous short form `\+` matches the multi-arg call
+    assert!(has_kind(
+        &matches(lang::typescript(), r"f(\+)", src),
+        "call_expression"
+    ));
+    // `+` must REJECT the zero-arg call `g()` (the run is empty)…
+    assert!(
+        !has_kind(
+            &matches(lang::typescript(), r"g(\(A+\))", src),
+            "call_expression"
+        ),
+        "`+` must require at least one node",
+    );
+    // …whereas `*` accepts it — the difference between the two.
+    assert!(has_kind(
+        &matches(lang::typescript(), r"g(\(A*\))", src),
+        "call_expression"
+    ));
+}
+
+#[test]
 fn anonymous_metavars() {
     // `\_` single + `\*` anonymous many: matches but captures nothing.
     let src = "obj.method(1, 2, 3);";
@@ -303,6 +330,54 @@ fn regex_matches_a_string_literal() {
     assert!(
         !ms.iter().any(|m| m.kind == "assignment"),
         "the leading/trailing quotes must pin it to the string node, got {ms:?}",
+    );
+}
+
+#[test]
+fn regex_on_a_run() {
+    // `\(NAME:/re/*\)` — a run of nodes **each** matching `re` (literal per-node: a
+    // non-matching node, e.g. a separator, ends the run). Folding the separator
+    // into the regex matches the whole comma-separated list.
+    let src = "const x = [1, 2, 3];";
+    let ms = matches(lang::typescript(), r"[\(N:/[0-9]+|,/*\)]", src);
+    assert_eq!(cap(&ms, "N").as_deref(), Some("1, 2, 3"));
+    // Without the separator in `re`, the comma ends the run, so the `[ … ]` can't
+    // close → no array match.
+    assert!(
+        !has_kind(
+            &matches(lang::typescript(), r"[\(/[0-9]+/*\)]", src),
+            "array"
+        ),
+        "a non-matching separator must end the run",
+    );
+    // `+` requires at least one matching node: an empty `[]` matches with `*`, not `+`.
+    let empty = "const y = [];";
+    assert!(has_kind(
+        &matches(lang::typescript(), r"[\(/[0-9]+/*\)]", empty),
+        "array"
+    ));
+    assert!(!has_kind(
+        &matches(lang::typescript(), r"[\(/[0-9]+/+\)]", empty),
+        "array"
+    ));
+}
+
+#[test]
+fn regex_run_empty_at_boundary_does_not_panic() {
+    // Regression: a `*`-run forced to match **empty** at a child boundary (the regex
+    // rejects the next node) is a zero-width match — it must be dropped, not reported
+    // as a fragment (which would index `leaves[b-1]` = the leaf *before* the start →
+    // an inverted byte range → panic). `a + b + c` parses as `(a + b) + c`, so the
+    // `[a-z]` run keeps hitting `+`/`=` boundaries where it can only match empty.
+    let src = "x = a + b + c;";
+    let ms = matches(lang::typescript(), r"\(/[a-z]/*\)", src);
+    assert!(
+        ms.iter().all(|m| !m.text.is_empty()),
+        "no zero-width match may be reported, got {ms:?}",
+    );
+    assert!(
+        ms.iter().any(|m| m.text == "a"),
+        "the identifiers still match"
     );
 }
 

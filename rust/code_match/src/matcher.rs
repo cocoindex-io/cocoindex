@@ -244,7 +244,7 @@ impl Pattern {
                 // child defers to its own candidate, so it isn't reported here.
                 let range = if a == cand.start_leaf && b == hi {
                     Some((cand.start_byte, cand.end_byte))
-                } else {
+                } else if b > a {
                     let ci = start_idx[&a];
                     let cj = end_idx[&(b - 1)];
                     let ok = cj > ci || {
@@ -252,6 +252,12 @@ impl Pattern {
                         s == e && idx.leaves[s].anon
                     };
                     ok.then(|| (idx.leaves[a].start_byte, idx.leaves[b - 1].end_byte))
+                } else {
+                    // `b == a`: the pattern matched **empty** (e.g. an all-`\*` / `\?`
+                    // pattern landing on a child boundary). A zero-width match isn't a
+                    // fragment — drop it (and don't index `leaves[b - 1]`, which would
+                    // be the leaf *before* `a` → an inverted byte range).
+                    None
                 };
                 if let Some((start_byte, end_byte)) = range {
                     out.push(Match {
@@ -480,8 +486,14 @@ impl<'s> Ctx<'_, 's> {
                 Cardinality::One => {
                     self.match_single(pi, end, li, hi, name.as_deref(), regex.as_ref())
                 }
-                // Many ignores the regex (sibling runs are out of the single-node scope).
-                Cardinality::Many => self.match_multi(pi, end, li, hi, name.as_deref()),
+                // A regex on a run constrains every node in it (literal per-node,
+                // §0). `OneOrMore` is `Many` with a non-empty run.
+                Cardinality::Many => {
+                    self.match_multi(pi, end, li, hi, name.as_deref(), false, regex.as_ref())
+                }
+                Cardinality::OneOrMore => {
+                    self.match_multi(pi, end, li, hi, name.as_deref(), true, regex.as_ref())
+                }
                 Cardinality::Optional => {
                     self.match_optional(pi, end, li, hi, name.as_deref(), regex.as_ref())
                 }
@@ -565,11 +577,19 @@ impl<'s> Ctx<'_, 's> {
         li: usize,
         hi: usize,
         name: Option<&str>,
+        nonempty: bool,
+        regex: Option<&Regex>,
     ) -> bool {
         let idx = self.idx;
-        let reach = reachable(li, hi, idx); // descending => greedy longest first
+        // a regex run extends only over nodes each matching `re` (literal per-node).
+        let re_filter = regex.map(|re| (self.source, re));
+        let reach = reachable(li, hi, idx, re_filter); // descending => greedy longest first
         for next in reach {
-            // a same-level `*` run must be a single parent's sibling slice
+            // `\+` (one-or-more) requires at least one node; `\*` allows the empty run
+            if nonempty && next == li {
+                continue;
+            }
+            // a same-level `*`/`+` run must be a single parent's sibling slice
             if !idx.same_level(li, next) {
                 continue;
             }
@@ -773,7 +793,7 @@ fn regex_ok(regex: Option<&Regex>, text: &str) -> bool {
 /// Positions reachable from `li` (within `[li, hi]`) by consuming whole units:
 /// a complete named subtree span, or a single anonymous leaf. Returns them
 /// descending so the multi-metavar binds greedily (longest first).
-fn reachable(li: usize, hi: usize, idx: &Indexed) -> Vec<usize> {
+fn reachable(li: usize, hi: usize, idx: &Indexed, re_filter: Option<(&str, &Regex)>) -> Vec<usize> {
     let n = hi - li;
     let mut reach = vec![false; n + 1];
     reach[0] = true;
@@ -783,11 +803,15 @@ fn reachable(li: usize, hi: usize, idx: &Indexed) -> Vec<usize> {
         }
         let p = li + off;
         for sp in &idx.spans_by_start[p] {
-            if sp.end_leaf < hi {
+            // `\(/re/*\)` only extends a run over nodes whose whole text matches
+            // `re` (literal per-node — a non-matching node ends the run).
+            if sp.end_leaf < hi
+                && re_filter.is_none_or(|(src, re)| re.is_match(&src[sp.start_byte..sp.end_byte]))
+            {
                 reach[sp.end_leaf + 1 - li] = true;
             }
         }
-        if idx.leaves[p].anon {
+        if idx.leaves[p].anon && re_filter.is_none_or(|(_, re)| re.is_match(&idx.leaves[p].text)) {
             reach[p + 1 - li] = true;
         }
     }
