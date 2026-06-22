@@ -484,19 +484,17 @@ fn chain_walk(dedup: &BTreeMap<String, Option<String>>, name: &str) -> String {
     // construction, but guard against an unexpected cycle rather than hang.
     for _ in 0..=dedup.len() {
         if !seen.insert(current.to_string()) {
-            return seen
-                .into_iter()
-                .next()
-                .unwrap_or_else(|| current.to_string());
+            // Unexpected cycle: stop at the node we looped back to (the walk's
+            // endpoint), not the lexicographically-smallest visited name.
+            return current.to_string();
         }
         match dedup.get(current) {
             Some(Some(next)) => current = next,
             _ => return current.to_string(),
         }
     }
-    seen.into_iter()
-        .next()
-        .unwrap_or_else(|| current.to_string())
+    // Bound exhausted (also unexpected): return the last node reached.
+    current.to_string()
 }
 
 fn deliver_events(mut events: Vec<ComponentEvents>) -> Vec<ResolutionEvent> {
