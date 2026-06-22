@@ -15,7 +15,7 @@
   "dependencies": {
     "@astrojs/mdx": "^5.0.3",
     "@astrojs/sitemap": "^3.7.2",
-    "@cocoindex/brand": "github:cocoindex-io/cocoindex-brand#v0.4.5",
+    "@cocoindex/brand": "github:cocoindex-io/cocoindex-brand#v0.4.6",
     "@docsearch/css": "^4.6.2",
     "@docsearch/js": "^4.6.2",
     "astro": "^6.1.8",
