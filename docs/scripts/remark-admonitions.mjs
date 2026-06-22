@@ -1,5 +1,6 @@
-// Turn Docusaurus-style admonition blocks into the design system's `.co`
-// layout (see design_guidelines/ui/admonitions.html). Shape:
+// Turn Docusaurus-style admonition blocks into the shared `.callout` layout
+// (the four-variant callout from @cocoindex/brand/base.css, identical to the
+// blog). Shape:
 //
 //   :::info Prerequisite
 //   Make sure your Postgres server is running.
@@ -7,15 +8,15 @@
 //
 // …becomes:
 //
-//   <div class="co info">
+//   <div class="callout info">
 //     <div class="ico">i</div>
 //     <div class="body"><b>Prerequisite</b> Make sure your …</div>
 //   </div>
 //
 // Pair with `remark-directive` (it's what parses the `:::name [label]`
-// block into a containerDirective node). The CSS for `.co` + variants
-// lives in src/styles/globals.css and matches
-// design_guidelines/ui/admonitions.html verbatim.
+// block into a containerDirective node). The CSS for `.callout` + variants
+// lives in @cocoindex/brand/base.css (imported via components.css), shared
+// pixel-for-pixel with the blog and home.
 import { visit } from 'unist-util-visit';
 import { toString } from 'mdast-util-to-string';
 
@@ -25,15 +26,15 @@ import { toString } from 'mdast-util-to-string';
 //   info    — important context (coral i, peach-tinted cream)
 //   tip     — helpful suggestion (palm ✓, green-tinted cream)
 //   warning — heads up (pink !, pink-tinted cream)
-//   caution — alias for warning
-//   danger  — critical (coral !, deeper pink-tinted cream)
+//   caution — alias for warning (GUIDELINE §3: not a separate variant)
+//   danger  — alias for warning (GUIDELINE §3: not a separate variant)
 const SPECS = {
   note: { defaultLabel: 'Note', cls: 'note', icon: 'i' },
   info: { defaultLabel: 'Info', cls: 'info', icon: 'i' },
   tip: { defaultLabel: 'Tip', cls: 'tip', icon: '\u2713' },
   warning: { defaultLabel: 'Warning', cls: 'warn', icon: '!' },
   caution: { defaultLabel: 'Caution', cls: 'warn', icon: '!' },
-  danger: { defaultLabel: 'Danger', cls: 'danger', icon: '!' },
+  danger: { defaultLabel: 'Warning', cls: 'warn', icon: '!' },
 };
 
 export default function remarkAdmonitions() {
@@ -57,7 +58,7 @@ export default function remarkAdmonitions() {
       const body = node.children;
       const data = node.data || (node.data = {});
       data.hName = 'div';
-      data.hProperties = { className: ['co', spec.cls] };
+      data.hProperties = { className: ['callout', spec.cls] };
 
       node.children = [
         {
