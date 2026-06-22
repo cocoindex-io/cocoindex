@@ -236,7 +236,7 @@ const introItems = [
               The step-by-step walkthrough for this example is still being written. The code itself is live on GitHub — clone it to try it today.
             </p>
           </div>
-          <div class="callout" style="max-width:780px;">
+          <div class="ex-callout" style="max-width:780px;">
             <div class="hd tip"><span class="dt"></span>What this example shows</div>
             <p>{ex.description}</p>
           </div>
@@ -430,7 +430,7 @@ const introItems = [
       body.ex-detail .step-head p { margin: 0 0 14px; color: var(--maroon-ink); max-width: 64ch; font-size: 15px; line-height: 1.55; }
       body.ex-detail .step-head code,
       body.ex-detail .step-head p code,
-      body.ex-detail .callout code,
+      body.ex-detail .ex-callout code,
       body.ex-detail .step-bullets code { font-family: var(--mono); font-size: 13px; background: rgba(190, 81, 51, 0.12); color: var(--berry); padding: 1px 6px; border-radius: 3px; }
       body.ex-detail .step-bullets { list-style: none; padding: 0; margin: 0 0 6px; display: flex; flex-direction: column; gap: 4px; }
       body.ex-detail .step-bullets li { display: flex; gap: 10px; align-items: flex-start; font-size: 13.5px; color: var(--muted); padding: 6px 0; border-top: 1px solid var(--rule); }
@@ -462,13 +462,17 @@ const introItems = [
       body.ex-detail .code .comment { color: var(--code-comment); font-style: italic; opacity: 0.75; }
       body.ex-detail .code.terminal .prompt::before { content: "$ "; color: var(--peach); }
 
-      body.ex-detail .callout { border: 1px solid var(--rule-strong); border-radius: 8px; padding: 14px 18px; background: var(--cream); display: flex; flex-direction: column; gap: 6px; font-size: 13px; line-height: 1.5; }
-      body.ex-detail .callout .hd { display: flex; align-items: center; gap: 10px; font-family: var(--mono); font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); }
-      body.ex-detail .callout .hd .dt { width: 8px; height: 8px; border-radius: 50%; background: var(--coral); }
-      body.ex-detail .callout .hd.tip .dt { background: var(--palm-ink); }
-      body.ex-detail .callout .hd.note .dt { background: var(--peach); }
-      body.ex-detail .callout .hd.warn .dt { background: var(--pink); }
-      body.ex-detail .callout p { margin: 0; color: var(--maroon-ink); }
+      /* `.ex-callout` (not `.callout`) so this example-specific highlight box —
+         column layout, .hd dot header — never collides with the shared
+         admonition `.callout` (@cocoindex/brand/base.css) that `:::note` blocks
+         in example content render as. */
+      body.ex-detail .ex-callout { border: 1px solid var(--rule-strong); border-radius: 8px; padding: 14px 18px; background: var(--cream); display: flex; flex-direction: column; gap: 6px; font-size: 13px; line-height: 1.5; }
+      body.ex-detail .ex-callout .hd { display: flex; align-items: center; gap: 10px; font-family: var(--mono); font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); }
+      body.ex-detail .ex-callout .hd .dt { width: 8px; height: 8px; border-radius: 50%; background: var(--coral); }
+      body.ex-detail .ex-callout .hd.tip .dt { background: var(--palm-ink); }
+      body.ex-detail .ex-callout .hd.note .dt { background: var(--peach); }
+      body.ex-detail .ex-callout .hd.warn .dt { background: var(--pink); }
+      body.ex-detail .ex-callout p { margin: 0; color: var(--maroon-ink); }
 
       /* Variations */
       body.ex-detail .var-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
