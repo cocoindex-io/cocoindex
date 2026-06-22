@@ -363,6 +363,25 @@ fn regex_on_a_run() {
 }
 
 #[test]
+fn regex_run_empty_at_boundary_does_not_panic() {
+    // Regression: a `*`-run forced to match **empty** at a child boundary (the regex
+    // rejects the next node) is a zero-width match — it must be dropped, not reported
+    // as a fragment (which would index `leaves[b-1]` = the leaf *before* the start →
+    // an inverted byte range → panic). `a + b + c` parses as `(a + b) + c`, so the
+    // `[a-z]` run keeps hitting `+`/`=` boundaries where it can only match empty.
+    let src = "x = a + b + c;";
+    let ms = matches(lang::typescript(), r"\(/[a-z]/*\)", src);
+    assert!(
+        ms.iter().all(|m| !m.text.is_empty()),
+        "no zero-width match may be reported, got {ms:?}",
+    );
+    assert!(
+        ms.iter().any(|m| m.text == "a"),
+        "the identifiers still match"
+    );
+}
+
+#[test]
 fn regex_dotstar_equals_bare() {
     // `/.*/ ` is a pure pass-through filter, so it must behave exactly like `\X`.
     let src = "a = b = c;";

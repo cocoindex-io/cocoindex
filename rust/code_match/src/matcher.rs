@@ -244,7 +244,7 @@ impl Pattern {
                 // child defers to its own candidate, so it isn't reported here.
                 let range = if a == cand.start_leaf && b == hi {
                     Some((cand.start_byte, cand.end_byte))
-                } else {
+                } else if b > a {
                     let ci = start_idx[&a];
                     let cj = end_idx[&(b - 1)];
                     let ok = cj > ci || {
@@ -252,6 +252,12 @@ impl Pattern {
                         s == e && idx.leaves[s].anon
                     };
                     ok.then(|| (idx.leaves[a].start_byte, idx.leaves[b - 1].end_byte))
+                } else {
+                    // `b == a`: the pattern matched **empty** (e.g. an all-`\*` / `\?`
+                    // pattern landing on a child boundary). A zero-width match isn't a
+                    // fragment — drop it (and don't index `leaves[b - 1]`, which would
+                    // be the leaf *before* `a` → an inverted byte range).
+                    None
                 };
                 if let Some((start_byte, end_byte)) = range {
                     out.push(Match {
