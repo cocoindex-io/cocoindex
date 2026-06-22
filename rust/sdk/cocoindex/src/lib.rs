@@ -12,6 +12,17 @@ pub mod error;
 #[cfg(feature = "falkordb")]
 pub mod falkordb;
 pub mod file;
+// Rejects non-finite floats before the JSON round-trip in target connectors that
+// serialize rows through `serde_json` (which maps NaN/±Inf to null).
+#[cfg(any(
+    feature = "sqlite",
+    feature = "postgres",
+    feature = "doris",
+    feature = "surrealdb",
+    feature = "neo4j",
+    feature = "falkordb"
+))]
+mod finite;
 pub mod fs;
 #[cfg(feature = "google_drive")]
 pub mod gdrive;
@@ -52,6 +63,9 @@ pub mod target_state;
 #[cfg(feature = "turbopuffer")]
 pub mod turbopuffer;
 mod typemap;
+pub mod user_state;
+#[cfg(feature = "valkey")]
+pub mod valkey;
 
 // Flat re-exports — the public API surface
 pub use app::{
@@ -84,12 +98,14 @@ pub use id::{
 pub use linkme;
 pub use live_component::{
     ExceptionContext, ExceptionHandler, LiveComponent, LiveComponentOperator, LiveMapFeed,
-    LiveMapSubscriber, LiveMapView, MountKind,
+    LiveMapSubscriber, LiveMapView, MountKind, SingleWatcherGuard, SingleWatcherToken,
 };
 #[doc(hidden)]
 pub use logic::{COCO_FN_LOGIC, FnLogicEntry};
 pub use resources::chunk::{Chunk, TextPosition};
 pub use resources::embedder::Embedder;
+pub use resources::live_map::LiveMap;
+pub use resources::rate_limit::RateLimiter;
 pub use resources::schema::{
     MultiVectorSchema, MultiVectorSchemaProvider, VectorElementType, VectorSchema,
     VectorSchemaProvider,
@@ -98,13 +114,14 @@ pub use statediff::{
     CompositeTrackingRecord, DiffAction, ManagedBy, ManagedTargetOptions, MutualTrackingRecord,
     TrackingRecordTransition, diff, diff_composite, resolve_system_transition,
 };
-pub use stats::RunStats;
+pub use stats::{ComponentStats, RunStats, UpdateStats, UpdateStatus};
 pub use target_state::{
     ChildTargetDef, IntoStableKey, StableKey, TargetAction, TargetActionSink,
     TargetChildInvalidation, TargetHandler, TargetReconcileOutput, TargetState,
     TargetStateProvider, declare_target_state, declare_target_state_with_child, mount_target,
     register_root_target_states_provider,
 };
+pub use user_state::{IntoStateKey, StateHandle};
 
 // Re-export proc macros
 pub use cocoindex_macros::{SchemaFields, function, mount_each, use_mount};

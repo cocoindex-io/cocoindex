@@ -6,6 +6,8 @@
 //!
 //! - [`text`] (`text` feature): language detection and recursive/separator
 //!   chunking.
+//! - [`code`] (`code_match` feature): structural code matching over reusable
+//!   parsed ASTs (`CodeAst`, `CodePattern`, `match_code`, `index_terms`).
 //! - [`sentence_transformers`] (`fastembed` feature): local sentence-transformer
 //!   embeddings.
 //! - [`image`] (`fastembed` feature): local image (CLIP) embeddings.
@@ -14,6 +16,8 @@
 
 #[cfg(feature = "embed_api")]
 pub mod api;
+#[cfg(feature = "code_match")]
+pub mod code;
 #[cfg(feature = "fastembed")]
 pub mod image;
 #[cfg(feature = "fastembed")]

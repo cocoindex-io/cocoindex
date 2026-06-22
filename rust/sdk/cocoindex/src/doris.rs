@@ -1444,6 +1444,10 @@ fn key_column_type(doris_type: &str) -> String {
 // ---------------------------------------------------------------------------
 
 fn row_state<R: Serialize>(row: &R, schema: &TableSchema) -> Result<Map<String, JsonValue>> {
+    // Reject non-finite floats up front: `serde_json` would turn NaN/±Inf into
+    // JSON null, silently corrupting the value (or failing a NOT NULL column).
+    crate::finite::ensure_finite(row)
+        .map_err(|e| Error::engine(format!("Doris target row has a {e}")))?;
     let value = serde_json::to_value(row)
         .map_err(|e| Error::engine(format!("serialize Doris target row: {e}")))?;
     let JsonValue::Object(mut fields) = value else {

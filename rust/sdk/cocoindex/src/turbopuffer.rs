@@ -346,10 +346,30 @@ struct Row {
     attributes: Map<String, JsonValue>,
 }
 
+/// Error if any element of a vector is non-finite (NaN/±Inf).
+fn reject_nonfinite_vector(id: &str, field: &str, v: &[f32]) -> Result<()> {
+    if v.iter().any(|x| !x.is_finite()) {
+        return Err(Error::engine(format!(
+            "turbopuffer row {id:?}: vector field {field:?} contains a non-finite (NaN/Inf) element"
+        )));
+    }
+    Ok(())
+}
+
 impl Row {
     /// The wire shape Turbopuffer expects: `{id, vector, ...attributes}` or
     /// `{id, text_vector, image_vector, ...attributes}`.
     fn to_upsert(&self, schema: &NamespaceSchema) -> Result<JsonValue> {
+        // Reject non-finite vector elements: `json!` turns NaN/±Inf into JSON
+        // null, silently corrupting the embedding sent to Turbopuffer.
+        match &self.vector {
+            RowVector::Single(v) => reject_nonfinite_vector(&self.id, "vector", v)?,
+            RowVector::Named(m) => {
+                for (name, v) in m {
+                    reject_nonfinite_vector(&self.id, name, v)?;
+                }
+            }
+        }
         let mut obj = Map::new();
         obj.insert("id".into(), JsonValue::from(self.id.clone()));
 

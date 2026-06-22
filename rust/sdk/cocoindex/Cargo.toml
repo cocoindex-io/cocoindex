@@ -11,6 +11,11 @@ license.workspace = true
 fs_live = ["dep:notify"]
 # Text splitting / language detection facade (`ops::text`).
 text = ["dep:cocoindex_ops_text"]
+# Structural code matching over tree-sitter ASTs (`ops::code`).
+# Activates cocoindex_code_match + tree-sitter + cocoindex_ops_text (for the
+# LineIndex / split-with-tree helpers). Grammar crates are pinned to the same
+# versions as code_match's own Cargo.toml.
+code_match = ["dep:cocoindex_code_match", "dep:cocoindex_ops_text", "dep:tree-sitter"]
 # Local sentence-transformer embeddings via fastembed (`ops::sentence_transformers`).
 fastembed = ["dep:fastembed"]
 # Remote embeddings / transcription over an OpenAI-compatible HTTP API (`ops::api`).
@@ -49,13 +54,19 @@ qdrant = ["dep:serde_json", "dep:qdrant-client"]
 turbopuffer = ["dep:serde_json", "dep:reqwest"]
 neo4j = ["dep:serde_json", "dep:neo4rs"]
 falkordb = ["dep:serde_json", "dep:redis"]
+# Valkey/Redis (RediSearch) vector-search target. Reuses the `redis` crate.
+valkey = ["dep:redis", "dep:serde_json"]
 
 [dependencies]
 cocoindex_macros = { path = "../cocoindex_macros" }
 cocoindex_core = { path = "../../core", package = "cocoindex_core" }
 cocoindex_utils = { path = "../../utils", package = "cocoindex_utils" }
-# Text splitting / language detection (`ops::text`).
+# Text splitting / language detection (`ops::text`); also used by `code_match`.
 cocoindex_ops_text = { path = "../../ops_text", optional = true }
+# Structural code matching (`ops::code`).
+cocoindex_code_match = { path = "../../code_match", optional = true }
+# tree-sitter runtime — same version as code_match's Cargo.toml (workspace pin).
+tree-sitter = { version = "0.25.10", optional = true }
 # Local sentence-transformer embeddings (`ops::sentence_transformers`); pulls in
 # the ONNX runtime, so it is gated behind the `fastembed` feature.
 fastembed = { version = "4", optional = true }

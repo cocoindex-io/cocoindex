@@ -29,7 +29,7 @@ use tokio::sync::OnceCell;
 
 use crate::ctx::Ctx;
 use crate::error::{Error, Result};
-use crate::live_component::{LiveMapFeed, LiveMapSubscriber, LiveMapView};
+use crate::live_component::{LiveMapFeed, LiveMapSubscriber, LiveMapView, SingleWatcherGuard};
 use crate::target_state::{
     StableKey, TargetAction, TargetActionSink, TargetHandler, TargetReconcileOutput,
     TargetStateProvider, declare_target_state, register_root_target_states_provider,
@@ -451,6 +451,7 @@ pub struct KafkaTopicMap {
     /// high-watermark reached by the most recent `scan`, so the tail neither
     /// gaps nor double-reads.
     watch_start: Arc<tokio::sync::Mutex<BTreeMap<i32, i64>>>,
+    watch_guard: SingleWatcherGuard,
 }
 
 /// Build a [`KafkaTopicMap`] over `topic` (tombstone deletes).
@@ -469,6 +470,7 @@ pub fn topic_as_map_with_options(
         topic: topic.into(),
         is_deletion: options.is_deletion,
         watch_start: Arc::new(tokio::sync::Mutex::new(BTreeMap::new())),
+        watch_guard: SingleWatcherGuard::new("KafkaTopicMap"),
     }
 }
 
@@ -521,6 +523,7 @@ impl KafkaTopicMap {
 #[crate::async_trait]
 impl LiveMapFeed<String, Vec<u8>> for KafkaTopicMap {
     async fn watch(&self, subscriber: LiveMapSubscriber<String, Vec<u8>>) -> Result<()> {
+        let _watch_token = self.watch_guard.enter()?;
         let mut offsets = self.watch_start.lock().await.clone();
         let ids = self.partition_ids().await?;
         let mut clients = Vec::with_capacity(ids.len());
@@ -621,6 +624,7 @@ pub struct KafkaTopicStream {
     /// Per-partition offset `watch` resumes from (the high-watermark `scan`
     /// reached), mirroring [`KafkaTopicMap`].
     watch_start: Arc<tokio::sync::Mutex<BTreeMap<i32, i64>>>,
+    watch_guard: SingleWatcherGuard,
 }
 
 /// Build a [`KafkaTopicStream`] over `topic` (keyless payload stream).
@@ -629,6 +633,7 @@ pub fn topic_as_stream(consumer: &KafkaConsumer, topic: impl Into<String>) -> Ka
         client: consumer.client.clone(),
         topic: topic.into(),
         watch_start: Arc::new(tokio::sync::Mutex::new(BTreeMap::new())),
+        watch_guard: SingleWatcherGuard::new("KafkaTopicStream"),
     }
 }
 
@@ -695,6 +700,7 @@ impl LiveMapView<String, Vec<u8>> for KafkaTopicStream {
 #[crate::async_trait]
 impl LiveMapFeed<String, Vec<u8>> for KafkaTopicStream {
     async fn watch(&self, subscriber: LiveMapSubscriber<String, Vec<u8>>) -> Result<()> {
+        let _watch_token = self.watch_guard.enter()?;
         let mut offsets = self.watch_start.lock().await.clone();
         let ids = self.partition_ids().await?;
         let mut clients = Vec::with_capacity(ids.len());
