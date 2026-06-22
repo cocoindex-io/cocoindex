@@ -17,7 +17,7 @@ use tokio::sync::watch;
 use crate::ctx::{ContextKey, ContextStore, Ctx};
 use crate::error::{Error, Result};
 use crate::profile::{Action, BoxedProcessor, RustProfile, Value};
-use crate::stats::RunStats;
+use crate::stats::{ComponentStats, RunStats, UpdateStats, UpdateStatus};
 use crate::typemap::TypeMap;
 
 // ---------------------------------------------------------------------------
@@ -563,6 +563,39 @@ impl App {
         run_stats
     }
 
+    /// Build the detailed per-component [`UpdateStats`] from the engine's
+    /// processing stats (preserves the per-operation breakdown that
+    /// [`RunStats`] flattens away).
+    pub(crate) fn update_stats_from_processing(processing_stats: &ProcessingStats) -> UpdateStats {
+        let snapshot = processing_stats.snapshot();
+        let by_component = snapshot
+            .stats
+            .iter()
+            .map(|(name, group)| {
+                (
+                    name.clone(),
+                    ComponentStats {
+                        num_execution_starts: group.num_execution_starts,
+                        num_unchanged: group.num_unchanged,
+                        num_adds: group.num_adds,
+                        num_deletes: group.num_deletes,
+                        num_reprocesses: group.num_reprocesses,
+                        num_errors: group.num_errors,
+                    },
+                )
+            })
+            .collect();
+        let status = if snapshot.ready {
+            UpdateStatus::Ready
+        } else {
+            UpdateStatus::Running
+        };
+        UpdateStats {
+            by_component,
+            status,
+        }
+    }
+
     /// Run the pipeline (blocking). Convenience for sync callers — creates a
     /// tokio runtime internally.
     ///
@@ -759,6 +792,13 @@ where
         App::run_stats_from_processing(self.core.stats())
     }
 
+    /// A detailed, per-component snapshot of update statistics (mirrors Python's
+    /// `UpdateHandle.stats()`). Use this instead of [`stats_snapshot`](Self::stats_snapshot)
+    /// when you need the per-operation breakdown, error counts, or in-flight counts.
+    pub fn detailed_stats_snapshot(&self) -> UpdateStats {
+        App::update_stats_from_processing(self.core.stats())
+    }
+
     /// Wait for the operation to advance, returning whether it progressed or
     /// terminated. Loop until [`Progress::Done`] to drive it to completion.
     pub async fn changed(&mut self) -> Result<Progress> {
@@ -789,6 +829,12 @@ impl DropHandle {
     /// A point-in-time snapshot of processing statistics for live progress.
     pub fn stats_snapshot(&self) -> RunStats {
         App::run_stats_from_processing(self.core.stats())
+    }
+
+    /// A detailed, per-component snapshot of statistics (see
+    /// [`UpdateHandle::detailed_stats_snapshot`]).
+    pub fn detailed_stats_snapshot(&self) -> UpdateStats {
+        App::update_stats_from_processing(self.core.stats())
     }
 
     /// Wait for the operation to advance, returning whether it progressed or
@@ -826,6 +872,12 @@ impl StatsGroupHandle {
     /// A point-in-time snapshot of this group's processing statistics.
     pub fn stats_snapshot(&self) -> RunStats {
         App::run_stats_from_processing(&self.stats)
+    }
+
+    /// A detailed, per-component snapshot of this group's statistics (see
+    /// [`UpdateHandle::detailed_stats_snapshot`]).
+    pub fn detailed_stats_snapshot(&self) -> UpdateStats {
+        App::update_stats_from_processing(&self.stats)
     }
 
     /// Wait for the group to advance, returning whether it progressed or

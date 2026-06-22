@@ -36,7 +36,7 @@ pub use crate::statediff::{
     DiffAction, ManagedBy, ManagedTargetOptions, MutualTrackingRecord, TrackingRecordTransition,
     diff, resolve_system_transition,
 };
-pub use crate::stats::RunStats;
+pub use crate::stats::{ComponentStats, RunStats, UpdateStats, UpdateStatus};
 pub use crate::target_state::{
     ChildTargetDef, IntoStableKey, StableKey, TargetAction, TargetActionSink,
     TargetChildInvalidation, TargetHandler, TargetReconcileOutput, TargetState,

@@ -102,7 +102,7 @@ pub use statediff::{
     CompositeTrackingRecord, DiffAction, ManagedBy, ManagedTargetOptions, MutualTrackingRecord,
     TrackingRecordTransition, diff, diff_composite, resolve_system_transition,
 };
-pub use stats::RunStats;
+pub use stats::{ComponentStats, RunStats, UpdateStats, UpdateStatus};
 pub use target_state::{
     ChildTargetDef, IntoStableKey, StableKey, TargetAction, TargetActionSink,
     TargetChildInvalidation, TargetHandler, TargetReconcileOutput, TargetState,
