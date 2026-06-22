@@ -44,7 +44,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'text-embedding',
     title: 'Semantic Search *101*',
-    index: '01 / 07',
+    index: '01 / 08',
     category: 'search',
     thumbLabel: 'Markdown · embeddings',
     motif: MOTIFS.textVec,
@@ -61,7 +61,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'index-codebase',
     title: 'Index Your *Codebase*',
-    index: '02 / 07',
+    index: '02 / 08',
     category: 'search',
     thumbLabel: 'Code · Tree-sitter',
     motif: MOTIFS.codeChunks,
@@ -78,7 +78,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'multi-codebase-summarization',
     title: 'Multi-codebase *Summarization*',
-    index: '03 / 07',
+    index: '03 / 08',
     category: 'llm',
     thumbLabel: 'Code · structured output',
     motif: MOTIFS.repos,
@@ -97,7 +97,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'pdf-to-markdown',
     title: 'PDF → *Markdown*',
-    index: '04 / 07',
+    index: '04 / 08',
     category: 'ingest',
     thumbLabel: 'PDF · custom blocks',
     motif: MOTIFS.pdfToMd,
@@ -113,7 +113,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'podcast-to-knowledge-graph',
     title: 'Podcasts → *Knowledge Graph*',
-    index: '05 / 07',
+    index: '05 / 08',
     category: 'agents',
     thumbLabel: 'YouTube · LLM + graph',
     motif: MOTIFS.graph,
@@ -131,7 +131,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'docs-to-knowledge-graph',
     title: 'Docs → *Knowledge Graph*',
-    index: '06 / 07',
+    index: '06 / 08',
     category: 'agents',
     thumbLabel: 'Markdown · LLM + Neo4j',
     motif: MOTIFS.graph,
@@ -148,7 +148,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'meeting-notes-to-knowledge-graph',
     title: 'Meeting Notes → *Knowledge Graph*',
-    index: '07 / 07',
+    index: '07 / 08',
     category: 'agents',
     thumbLabel: 'Google Drive · LLM + Neo4j',
     motif: MOTIFS.graph,
@@ -162,6 +162,23 @@ export const examples: ExampleCard[] = [
     ],
     footMeta: '~25 min',
     sourceSlug: 'meeting_notes_graph_neo4j',
+  },
+  {
+    slug: 'csv-to-kafka',
+    title: 'CSV → *Kafka*',
+    index: '08 / 08',
+    category: 'ingest',
+    thumbLabel: 'CSV · live Kafka target',
+    motif: MOTIFS.pdfToMd,
+    description: 'Watch a folder of CSV files and publish each row as a JSON message to a Kafka topic — declarative target states, only-changed-rows produces, and live mode in ~60 lines.',
+    tags: [
+      { kind: 'src', label: 'Local FS' },
+      { kind: 'tgt', label: 'Kafka' },
+      { kind: 'ops', label: 'Live mode' },
+      { kind: 'lvl', label: 'Starter' },
+    ],
+    footMeta: '~12 min',
+    sourceSlug: 'csv_to_kafka',
   },
 ];
 
@@ -188,6 +205,7 @@ export const POPULAR: Array<{ slug: string; label: string; count: string }> = [
   { slug: 'podcast-to-knowledge-graph', label: 'Podcasts → Knowledge Graph', count: '★' },
   { slug: 'docs-to-knowledge-graph', label: 'Docs → Knowledge Graph', count: '★' },
   { slug: 'meeting-notes-to-knowledge-graph', label: 'Meeting Notes → Knowledge Graph', count: '★' },
+  { slug: 'csv-to-kafka', label: 'CSV → Kafka', count: '★' },
 ];
 
 // Full catalog of runnable examples in the cocoindex monorepo, used to build the
@@ -226,6 +244,7 @@ export const EXAMPLE_CATALOG_GROUPS: ExampleCatalogGroup[] = [
       { dir: 'conversation_to_knowledge', docs: 'podcast-to-knowledge-graph', title: 'Podcasts → Knowledge Graph', description: 'Turn YouTube podcasts into a SurrealDB knowledge graph: diarized transcription, two-step LLM extraction, and embedding-based entity resolution.', run: 'cocoindex update conv_knowledge.app' },
       { dir: 'docs_to_knowledge_graph', docs: 'docs-to-knowledge-graph', title: 'Docs → Knowledge Graph', description: 'Turn a folder of Markdown docs into a Neo4j concept graph: LLM-extracted (subject, predicate, object) triples, declared as nodes and edges that stay in sync.', run: RUN_MAIN },
       { dir: 'meeting_notes_graph_neo4j', docs: 'meeting-notes-to-knowledge-graph', title: 'Meeting Notes → Knowledge Graph', description: 'Turn Google Drive meeting notes into a Neo4j knowledge graph: LLM extraction of organizers, attendees, and tasks, plus embedding-based person entity resolution.', run: RUN_MAIN },
+      { dir: 'csv_to_kafka', docs: 'csv-to-kafka', title: 'CSV → Kafka', description: 'Watch a folder of CSV files and publish each row as a JSON message to a Kafka topic: declarative target states, only-changed-rows produces, and live mode.', run: 'cocoindex update -L main.py' },
     ],
   },
   {
@@ -275,7 +294,6 @@ export const EXAMPLE_CATALOG_GROUPS: ExampleCatalogGroup[] = [
     blurb: 'Bring your own transform or wire pipelines to streaming systems like Kafka.',
     entries: [
       { dir: 'files_transform', title: 'Files Transform', description: 'Watch a directory of Markdown files and convert each to HTML with markdown-it-py, writing .html outputs incrementally.' },
-      { dir: 'csv_to_kafka', title: 'CSV → Kafka', description: 'Watch local CSV files, convert each row to JSON, and publish to a Kafka topic — only changed rows on edit.', run: 'cocoindex update -L main.py' },
       { dir: 'kafka_to_lancedb', title: 'Kafka → LanceDB', description: 'Consume JSON messages from a Kafka topic and dispatch them to two LanceDB tables by message shape.', run: 'cocoindex update -L main.py' },
     ],
   },
