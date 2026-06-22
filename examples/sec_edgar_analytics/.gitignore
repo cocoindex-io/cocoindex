@@ -1,0 +1,8 @@
+.env
+cocoindex.db
+.venv-test/
+__pycache__/
+data/
+
+.doris-test-conf/
+docker-compose.override.yml

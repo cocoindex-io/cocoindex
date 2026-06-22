@@ -1,0 +1,4 @@
+.env
+cocoindex.db
+.venv-test/
+__pycache__/

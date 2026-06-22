@@ -1,0 +1,15 @@
+[project]
+name = "sec-edgar-analytics"
+version = "0.1.0"
+description = "CocoIndex example: index multi-format SEC filings into Apache Doris with vector + full-text indexes for hybrid search."
+requires-python = ">=3.11"
+dependencies = [
+    "cocoindex[doris,sentence_transformers]>=1.0.7",
+    "aiohttp>=3.9.0",
+    "pymysql>=1.1.0",
+    "aiomysql>=0.2.0",
+    "numpy<2.5",
+]
+
+[tool.setuptools]
+packages = []
