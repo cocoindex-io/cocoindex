@@ -733,6 +733,27 @@ impl<'s> Ctx<'_, 's> {
                 }
             }
         }
+        // A single-node term also matches an **anonymous leaf** (keyword/operator/
+        // punctuation): it is a node like any other — a literal matches it, a `\*` run
+        // spans it, and a literal alternation `\( if | while \)` matches it — so `\X`,
+        // `.`, `\_`, and `\/re/` must too. (Named leaves are already covered by the spans
+        // above, so this only adds the anon ones.) Tried *last*, so the greedy
+        // largest-first preference for named subtrees is unchanged — the bare leaf is a
+        // backtrack fallback (`\/if|while/` matches the `if` keyword; `.` still binds the
+        // enclosing `if_statement` first unless the pattern forces the leaf).
+        let leaf = &idx.leaves[li];
+        if leaf.anon && regex_ok(regex, &self.source[leaf.start_byte..leaf.end_byte]) {
+            let cap = self.make_capture(leaf.start_byte, leaf.end_byte, false);
+            match self.bind(name, cap) {
+                BindResult::Inconsistent => {}
+                bind => {
+                    if self.dp(pi + 1, end, li + 1, hi) {
+                        return true;
+                    }
+                    self.unbind(name, bind);
+                }
+            }
+        }
         false
     }
 
