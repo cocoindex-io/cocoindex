@@ -54,45 +54,6 @@ a:hover { text-decoration: underline; }
    Hidden on desktop; phone-mode rules quiet both this and `.stars` so
    the topbar doesn't read as three competing controls (logo + stars +
    burger). See @media (max-width: 820px) below for the ghost treatment. */
-.menu-btn {
-  display: none; /* desktop default; flipped on at phone width */
-  width: 32px; height: 32px; flex: none;
-  border-radius: 8px;
-  border: 1px solid transparent;
-  background: transparent;
-  color: var(--muted);
-  align-items: center; justify-content: center;
-  cursor: pointer;
-  position: relative;
-  padding: 0;
-  transition: background .16s ease, border-color .16s ease, color .16s ease;
-}
-.menu-btn:hover {
-  border-color: var(--rule);
-  background: color-mix(in oklab, var(--peach) 10%, transparent);
-  color: var(--maroon-ink);
-}
-.menu-btn:focus-visible { outline: 2px solid var(--coral); outline-offset: 2px; }
-.menu-btn .bar,
-.menu-btn::before,
-.menu-btn::after {
-  content: "";
-  position: absolute; left: 8px; right: 8px;
-  height: 1.4px; border-radius: 1px;
-  background: currentColor;
-  transition: transform .22s cubic-bezier(.2,.8,.2,1), opacity .14s ease, top .22s cubic-bezier(.2,.8,.2,1);
-}
-.menu-btn::before { top: 10px; }
-.menu-btn .bar    { top: 15px; }
-.menu-btn::after  { top: 20px; }
-.menu-btn.open {
-  color: var(--coral);
-  border-color: var(--rule);
-  background: color-mix(in oklab, var(--peach) 10%, transparent);
-}
-.menu-btn.open::before { top: 15px; transform: rotate(45deg); }
-.menu-btn.open::after  { top: 15px; transform: rotate(-45deg); }
-.menu-btn.open .bar    { opacity: 0; }
 
 /* ─── phone drawer (scrim + sheet + tabs + lists) ───
    Lives at `display: none` on desktop and only materializes at phone

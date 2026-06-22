@@ -1,34 +1,6 @@
 ---
-// Footer — markup + styles from @cocoindex/brand (Footer.astro + footer.css).
-// This file only supplies the docs site's links/logo (absolute cocoindex.io
-// URLs since the docs live under /docs).
+// The one shared footer — identical links + logo on every CocoIndex surface.
+// Markup + styles live in @cocoindex/brand (Footer.astro + footer.css).
 import Footer from '@cocoindex/brand/Footer.astro';
-import { SITE_MAIN, SITE_BLOG, SITE_EXAMPLES, GITHUB_REPO, DISCORD_URL } from '../consts';
-
-const base = import.meta.env.BASE_URL.replace(/\/$/, '');
 ---
-
-<Footer
-  logoHref={SITE_MAIN}
-  logoSrc={`${base}/images/coconut.svg`}
-  resources={[
-    { label: 'Blog', href: SITE_BLOG },
-    { label: 'Documentation', href: `${base}/` },
-    { label: 'YouTube', href: 'https://www.youtube.com/@cocoindex-io' },
-    { label: 'Examples', href: SITE_EXAMPLES },
-  ]}
-  community={[
-    { label: 'GitHub', href: GITHUB_REPO },
-    { label: 'Discord', href: DISCORD_URL },
-    { label: 'Twitter', href: 'https://x.com/cocoindex_io' },
-    { label: 'LinkedIn', href: 'https://www.linkedin.com/company/cocoindex' },
-  ]}
-  company={[
-    { label: 'Enterprise', href: `${SITE_MAIN}/enterprise` },
-    { label: 'Careers', href: `${SITE_MAIN}/careers` },
-    { label: 'Brand & press kit', href: `${SITE_MAIN}/brand` },
-    { label: 'Privacy policy', href: `${SITE_MAIN}/privacy-policy` },
-    { label: 'Terms of use', href: `${SITE_MAIN}/terms-of-use` },
-    { label: 'hi@cocoindex.io', href: 'mailto:hi@cocoindex.io' },
-  ]}
-/>
+<Footer />

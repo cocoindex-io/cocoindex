@@ -10,6 +10,8 @@ import MobileSheet from '../../components/MobileSheet.astro';
 import Analytics from '../../components/Analytics.astro';
 import ScarfPixel from '../../components/ScarfPixel.astro';
 import Foot from '../../components/Foot.astro';
+import ExampleCard from '../../components/examples/ExampleCard.astro';
+import FeaturedCard from '../../components/examples/FeaturedCard.astro';
 import { GITHUB_REPO, DISCORD_URL, SITE_URL, titleMarkup, SCARF_PIXEL_ID, OG_IMAGE_EXAMPLES, OG_IMAGE_WIDTH, OG_IMAGE_HEIGHT, OG_IMAGE_EXAMPLES_ALT } from '../../consts';
 import {
   examples,
@@ -225,24 +227,7 @@ const breadcrumbLd = {
           <!-- ═══════════ FEATURED ═══════════ -->
           <section class="feat" id="feat-scroll">
             <div class="feat-eyebrow">★ Featured</div>
-            <a class="feat-card" href={exampleHref(featured.slug)}>
-              <div class="feat-body">
-                <span class="ribbon"><span class="tick"></span>{featured.thumbLabel} · <span class="idx">{featured.index}</span></span>
-                <h3 set:html={titleMarkup(featured.title + '.')} />
-                <p>{featured.description}</p>
-                <div class="chips">
-                  {featured.tags.map((t) => <span class="chip">{t.label}</span>)}
-                </div>
-                <div class="foot">
-                  <span>{featured.footMeta}</span>
-                  <span class="go">Open example
-                    <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M2 6h8m-3-3 3 3-3 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
-                  </span>
-                </div>
-              </div>
-
-              <div class="feat-viz" aria-hidden="true" set:html={featured.motif ?? ''} />
-            </a>
+            <FeaturedCard ex={featured} href={exampleHref(featured.slug)} />
           </section>
 
           <!-- ═══════════ CATEGORY SECTIONS ═══════════ -->
@@ -259,28 +244,7 @@ const breadcrumbLd = {
                 </div>
 
                 <div class="cat-grid">
-                  {items.map((ex) => (
-                    <a class="ex-card" href={exampleHref(ex.slug)}>
-                      <div class={`ex-thumb ${ex.thumbClass ?? CATEGORY_META[ex.category].thumbClass}`}>
-                        <span class="tl">{ex.thumbLabel}</span>
-                        <span class="tr">{ex.index}</span>
-                        <div class="motif" set:html={ex.motif ?? ''} />
-                      </div>
-                      <div class="ex-body">
-                        <h3 set:html={titleMarkup(ex.title)} />
-                        <p>{ex.description}</p>
-                        <div class="ex-tags">
-                          {ex.tags.map((t) => (
-                            <span class={`t-pill ${t.kind}`}><span class="dt"></span>{t.label}</span>
-                          ))}
-                        </div>
-                        <div class="ex-foot">
-                          <span>{ex.footMeta}</span>
-                          <span class="go">Open →</span>
-                        </div>
-                      </div>
-                    </a>
-                  ))}
+                  {items.map((ex) => <ExampleCard ex={ex} href={exampleHref(ex.slug)} />)}
                 </div>
               </section>
             );
