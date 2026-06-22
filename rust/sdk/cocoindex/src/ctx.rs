@@ -15,6 +15,7 @@ use cocoindex_core::engine::live_component::mount_live_prepare;
 use cocoindex_core::engine::target_state::TargetStateProvider;
 use cocoindex_core::state::stable_path::StableKey;
 use cocoindex_utils::fingerprint::Fingerprint;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use crate::app::{AppInner, StatsGroupHandle, StatsGroupOptions};
@@ -24,6 +25,7 @@ use crate::live_component::{
     MountKind, build_chained_on_error, new_operator, start_process_live,
 };
 use crate::profile::{BoxedHandler, BoxedProcessor, RustProfile, Value};
+use crate::user_state::{IntoStateKey, StateHandle, decode_state, encode_state};
 
 type ContextFingerprinter<T> = Arc<dyn Fn(&str, &T) -> Result<Fingerprint> + Send + Sync>;
 
@@ -393,6 +395,34 @@ impl Ctx {
         comp_ctx.app_ctx().next_id(None).await.map_err(Error::from)
     }
 
+    /// Declare a persistent state for the current component.
+    ///
+    /// On the first run the returned handle holds `initial_value`; on later runs
+    /// it holds the value persisted at the end of the previous run. Assign a new
+    /// value via [`StateHandle::set`] to persist it for next time. The value is
+    /// owned by the component's stable path, so it survives across runs and is
+    /// garbage-collected if the component disappears.
+    ///
+    /// `key` must be declared at most once per component run (a duplicate is an
+    /// error). It accepts a string or a [`StableKey`].
+    pub fn use_state<K: IntoStateKey, T: Serialize + DeserializeOwned>(
+        &self,
+        key: K,
+        initial_value: T,
+    ) -> Result<StateHandle<T>> {
+        let Some(comp_ctx) = &self.comp_ctx else {
+            return Err(Error::engine(
+                "use_state requires an active pipeline context",
+            ));
+        };
+        let key = key.into_state_key();
+        let stored = comp_ctx
+            .use_state(key.clone(), encode_state(&initial_value)?)
+            .map_err(Error::from)?;
+        let value = decode_state(&stored)?;
+        Ok(StateHandle::new(key, value, comp_ctx.clone()))
+    }
+
     pub(crate) fn register_root_target_provider(
         &self,
         name: impl Into<String>,
@@ -644,6 +674,48 @@ impl Ctx {
     {
         let component = MountEachLiveComponent::<K, V, Feed>::new(feed, process_fn);
         self.mount_live(key, component).await
+    }
+
+    /// Mount one [`LiveComponent`] *per item* — each item builds its own live
+    /// component instance. This is the Rust analogue of passing a `LiveComponent`
+    /// to Python's `mount_each`: where [`Ctx::mount_each`] runs a closure per item
+    /// and [`Ctx::mount_each_live`] fans one feed out into closure-driven
+    /// children, this gives each item a full `LiveComponent` (with its own
+    /// `process_live`).
+    ///
+    /// `key_fn` derives each child's scope key from the item; `make_component`
+    /// builds the component from the item. Components are mounted concurrently;
+    /// duplicate keys are an error. In live mode each component keeps reacting to
+    /// its source in the background until the app is dropped.
+    pub async fn mount_each_live_component<I, K, F, C>(
+        &self,
+        items: I,
+        key_fn: impl Fn(&I::Item) -> K,
+        make_component: F,
+    ) -> Result<()>
+    where
+        I: IntoIterator,
+        K: Display,
+        F: Fn(I::Item) -> C,
+        C: LiveComponent,
+    {
+        let mut keys = rustc_hash::FxHashSet::default();
+        let mut components = Vec::new();
+        for item in items {
+            let key = key_fn(&item).to_string();
+            if !keys.insert(key.clone()) {
+                return Err(Error::engine(format!(
+                    "duplicate key `{key}` in mount_each_live_component batch"
+                )));
+            }
+            components.push((key, make_component(item)));
+        }
+        let futs: Vec<_> = components
+            .into_iter()
+            .map(|(key, component)| async move { self.mount_live(&key, component).await })
+            .collect();
+        futures::future::try_join_all(futs).await?;
+        Ok(())
     }
 
     async fn mount_live_impl(

@@ -52,6 +52,7 @@ pub mod target_state;
 #[cfg(feature = "turbopuffer")]
 pub mod turbopuffer;
 mod typemap;
+pub mod user_state;
 
 // Flat re-exports — the public API surface
 pub use app::{
@@ -84,12 +85,15 @@ pub use id::{
 pub use linkme;
 pub use live_component::{
     ExceptionContext, ExceptionHandler, LiveComponent, LiveComponentOperator, LiveMapFeed,
-    LiveMapSubscriber, LiveMapView, MountKind,
+    LiveMapSubscriber, LiveMapView, MountKind, SingleWatcherGuard, SingleWatcherToken,
 };
 #[doc(hidden)]
 pub use logic::{COCO_FN_LOGIC, FnLogicEntry};
 pub use resources::chunk::{Chunk, TextPosition};
 pub use resources::embedder::Embedder;
+pub use resources::live_map::LiveMap;
+pub use resources::rate_limit::RateLimiter;
+pub use user_state::{IntoStateKey, StateHandle};
 pub use resources::schema::{
     MultiVectorSchema, MultiVectorSchemaProvider, VectorElementType, VectorSchema,
     VectorSchemaProvider,

@@ -505,3 +505,81 @@ async fn lancedb_adds_vector_column_additively() -> Result<()> {
     assert_eq!(h2[0]["text"], "b", "the added vector column is queryable");
     Ok(())
 }
+
+async fn index_names(db: &LanceDatabase, table_name: &str) -> Vec<String> {
+    db.connection()
+        .open_table(table_name)
+        .execute()
+        .await
+        .unwrap()
+        .list_indices()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|i| i.name)
+        .collect()
+}
+
+/// An FTS index attachment is created when declared and dropped when the
+/// declaration is removed (the attachment reconcile create/delete path). FTS is
+/// used because, unlike PQ vector indexes, it needs no training data and so is
+/// reliable on a tiny hermetic table.
+#[tokio::test]
+async fn lancedb_fts_index_created_then_dropped() -> Result<()> {
+    let tempdir = tempfile::tempdir().unwrap();
+    let uri = tempdir.path().join("lancedb_data");
+    let db = LanceDatabase::connect(uri.to_str().unwrap()).await?;
+    let coco_db_path = tempdir.path().join(".cocoindex_db");
+
+    let run = |declare_index: bool| {
+        let db = db.clone();
+        let coco_db_path = coco_db_path.clone();
+        async move {
+            let app = Environment::builder()
+                .db_path(&coco_db_path)
+                .provide_key(&DB, db)
+                .build()
+                .await
+                .unwrap()
+                .app("LanceFtsTest")
+                .await
+                .unwrap();
+            app.run(move |ctx| async move {
+                let table = lancedb::mount_table_target(&ctx, &DB, TABLE, schema()).await?;
+                for id in 0..5i64 {
+                    table.declare_row(
+                        &ctx,
+                        &Row {
+                            id,
+                            text: format!("document number {id}"),
+                            embedding: vec![0.0, 0.0, 0.0],
+                        },
+                    )?;
+                }
+                if declare_index {
+                    table.declare_fts_index(&ctx, "text", lancedb::FtsIndexOptions::default())?;
+                }
+                Ok(())
+            })
+            .await
+            .unwrap();
+        }
+    };
+
+    // Run 1: declare the FTS index → it is created.
+    run(true).await;
+    let names = index_names(&db, TABLE).await;
+    assert!(
+        names.iter().any(|n| n == "text_fts_idx"),
+        "fts index created, got {names:?}"
+    );
+
+    // Run 2: stop declaring it → the orphaned attachment is dropped.
+    run(false).await;
+    let names = index_names(&db, TABLE).await;
+    assert!(
+        !names.iter().any(|n| n == "text_fts_idx"),
+        "fts index dropped, got {names:?}"
+    );
+    Ok(())
+}

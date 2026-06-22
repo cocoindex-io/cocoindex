@@ -310,7 +310,16 @@ impl FilePathMatcher for MatchAllFilePathMatcher {
 #[derive(Clone, Debug)]
 pub struct PatternFilePathMatcher {
     included: Option<GlobSet>,
-    excluded: GlobSet,
+    /// Regular (non-negated) exclusion patterns.
+    excluded: Option<GlobSet>,
+    /// Negation (`!`-prefixed in the original list, stored without the `!`)
+    /// patterns compiled into a GlobSet. A path matching one of these is *not*
+    /// excluded even if it matches `excluded`.
+    negation: Option<GlobSet>,
+    /// Brace-expanded raw negation strings, kept so `is_dir_included` can detect
+    /// directories on the path to a negation-exempt file even when the directory
+    /// itself would otherwise be pruned (e.g. `!dir1/dir2/a.yml` with `dir1/**`).
+    negation_raw: Vec<String>,
 }
 
 impl Default for PatternFilePathMatcher {
@@ -344,15 +353,42 @@ impl PatternFilePathMatcher {
             None
         };
 
+        // Patterns in `excluded_patterns` that start with `!` are gitignore-style
+        // negations: they un-exclude any path that would otherwise be excluded.
         let mut excluded_builder = GlobSetBuilder::new();
+        let mut has_excluded = false;
+        let mut negation_builder = GlobSetBuilder::new();
+        let mut has_negation = false;
+        let mut negation_raw = Vec::new();
         for pattern in excluded_patterns {
-            excluded_builder.add(build_glob(pattern.as_ref())?);
+            let pattern = pattern.as_ref();
+            if let Some(stripped) = pattern.strip_prefix('!') {
+                negation_builder.add(build_glob(stripped)?);
+                has_negation = true;
+                negation_raw.extend(brace_expand(stripped));
+            } else {
+                excluded_builder.add(build_glob(pattern)?);
+                has_excluded = true;
+            }
         }
-        let excluded = excluded_builder
-            .build()
-            .map_err(|e| Error::engine(format!("invalid glob set: {e}")))?;
+        let build_set = |builder: GlobSetBuilder, present: bool| -> Result<Option<GlobSet>> {
+            if !present {
+                return Ok(None);
+            }
+            builder
+                .build()
+                .map(Some)
+                .map_err(|e| Error::engine(format!("invalid glob set: {e}")))
+        };
+        let excluded = build_set(excluded_builder, has_excluded)?;
+        let negation = build_set(negation_builder, has_negation)?;
 
-        Ok(Self { included, excluded })
+        Ok(Self {
+            included,
+            excluded,
+            negation,
+            negation_raw,
+        })
     }
 
     pub fn include<I>(included_patterns: I) -> Result<Self>
@@ -364,19 +400,119 @@ impl PatternFilePathMatcher {
     }
 }
 
+impl PatternFilePathMatcher {
+    /// Whether `key` is excluded after applying both exclusion and negation patterns.
+    fn is_excluded(&self, key: &str) -> bool {
+        if !self
+            .excluded
+            .as_ref()
+            .is_some_and(|gs| gs.is_match(key))
+        {
+            return false;
+        }
+        // Matches an exclusion pattern; a negation pattern can un-exclude it.
+        !self
+            .negation
+            .as_ref()
+            .is_some_and(|gs| gs.is_match(key))
+    }
+}
+
 impl FilePathMatcher for PatternFilePathMatcher {
     fn is_dir_included(&self, path: &Path) -> bool {
-        !self.excluded.is_match(path_key(path))
+        let key = path_key(path);
+        if !self
+            .excluded
+            .as_ref()
+            .is_some_and(|gs| gs.is_match(&key))
+        {
+            return true;
+        }
+        // The directory matches an exclusion pattern. Traverse it anyway if a
+        // negation pattern could apply to it or to a file inside it.
+        if let Some(neg) = &self.negation {
+            if neg.is_match(&key) {
+                return true;
+            }
+            // Probe one level inside: catches glob negations like `!**/.github/**`.
+            if neg.is_match(format!("{key}/__probe__").as_str()) {
+                return true;
+            }
+        }
+        // Raw-prefix check: catches exact-path negations like `!dir1/dir2/a.yml`
+        // whose ancestor directories would otherwise be pruned before the exempt
+        // file is reached.
+        let dir_prefix = format!("{key}/");
+        self.negation_raw
+            .iter()
+            .any(|p| p.starts_with(&dir_prefix))
     }
 
     fn is_file_included(&self, path: &Path) -> bool {
         let key = path_key(path);
-        !self.excluded.is_match(&key)
-            && self
-                .included
-                .as_ref()
-                .is_none_or(|included| included.is_match(key))
+        self.included
+            .as_ref()
+            .is_none_or(|included| included.is_match(&key))
+            && !self.is_excluded(&key)
     }
+}
+
+/// Expands brace alternations (`{a,b}`) in a glob into the full set of concrete
+/// alternatives, e.g. `a/{b/c,d}/e` → `["a/b/c/e", "a/d/e"]`. Used only to feed
+/// the prefix-ancestry check in [`PatternFilePathMatcher::is_dir_included`];
+/// file-level matching stays delegated to `globset`, which already expands
+/// braces. A pattern with no expandable (or malformed) braces returns itself.
+fn brace_expand(pattern: &str) -> Vec<String> {
+    let bytes = pattern.as_bytes();
+    let mut in_class = false;
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'[' => in_class = true,
+            b']' => in_class = false,
+            b'{' if !in_class => {
+                let open = i;
+                let mut depth = 1;
+                let mut inner_class = false;
+                let mut seg_start = open + 1;
+                let mut alternatives: Vec<&str> = Vec::new();
+                let mut j = open + 1;
+                while j < bytes.len() && depth > 0 {
+                    match bytes[j] {
+                        b'[' => inner_class = true,
+                        b']' => inner_class = false,
+                        b'{' if !inner_class => depth += 1,
+                        b'}' if !inner_class => {
+                            depth -= 1;
+                            if depth == 0 {
+                                alternatives.push(&pattern[seg_start..j]);
+                            }
+                        }
+                        b',' if !inner_class && depth == 1 => {
+                            alternatives.push(&pattern[seg_start..j]);
+                            seg_start = j + 1;
+                        }
+                        _ => {}
+                    }
+                    j += 1;
+                }
+                // Unbalanced braces: leave untouched so globset reports the error.
+                if depth != 0 {
+                    return vec![pattern.to_string()];
+                }
+                let prefix = &pattern[..open];
+                let suffix = &pattern[j..]; // j is one past the closing '}'
+                let mut out = Vec::new();
+                for alt in alternatives {
+                    out.extend(brace_expand(&format!("{prefix}{alt}{suffix}")));
+                }
+                return out;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    vec![pattern.to_string()]
 }
 
 pub mod system_time_serde {
@@ -586,6 +722,41 @@ mod tests {
     fn pattern_file_path_matcher_rejects_invalid_patterns() {
         assert!(PatternFilePathMatcher::include(["[invalid"]).is_err());
         assert!(PatternFilePathMatcher::new(std::iter::empty::<&str>(), ["[invalid"]).is_err());
+    }
+
+    #[test]
+    fn pattern_file_path_matcher_negation() {
+        // Gitignore-style exception: exclude all dot-entries but keep `.github`.
+        let m =
+            PatternFilePathMatcher::new(std::iter::empty::<&str>(), ["**/.*", "!**/.github/**"])
+                .unwrap();
+        assert!(!m.is_file_included(Path::new(".env")));
+        assert!(m.is_file_included(Path::new(".github/workflows/ci.yml")));
+        // The `.github` dir must be traversed even though `**/.*` excludes it.
+        assert!(!m.is_dir_included(Path::new(".cache")));
+        assert!(m.is_dir_included(Path::new(".github")));
+        assert!(m.is_dir_included(Path::new(".github/workflows")));
+
+        // Exact-path negation under a broad exclusion: ancestors stay traversable.
+        let exact =
+            PatternFilePathMatcher::new(std::iter::empty::<&str>(), ["dir1/**", "!dir1/dir2/a.yml"])
+                .unwrap();
+        assert!(!exact.is_file_included(Path::new("dir1/other.txt")));
+        assert!(exact.is_file_included(Path::new("dir1/dir2/a.yml")));
+        assert!(exact.is_dir_included(Path::new("dir1")));
+        assert!(exact.is_dir_included(Path::new("dir1/dir2")));
+
+        // Brace-alternation negation contributes every branch to ancestry checks.
+        let braced = PatternFilePathMatcher::new(
+            std::iter::empty::<&str>(),
+            ["a/**", "!a/{b/c,d}/keep.txt"],
+        )
+        .unwrap();
+        assert!(braced.is_file_included(Path::new("a/b/c/keep.txt")));
+        assert!(braced.is_file_included(Path::new("a/d/keep.txt")));
+        assert!(!braced.is_file_included(Path::new("a/b/drop.txt")));
+        assert!(braced.is_dir_included(Path::new("a/b")));
+        assert!(braced.is_dir_included(Path::new("a/d")));
     }
 
     #[test]

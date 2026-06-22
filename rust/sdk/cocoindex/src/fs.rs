@@ -70,7 +70,9 @@ pub use live::LiveDirWalker;
 mod live {
     use super::{DirWalker, FileEntry};
     use crate::error::{Error, Result};
-    use crate::live_component::{LiveMapFeed, LiveMapSubscriber, LiveMapView};
+    use crate::live_component::{
+        LiveMapFeed, LiveMapSubscriber, LiveMapView, SingleWatcherGuard,
+    };
     use async_trait::async_trait;
     use notify::{RecursiveMode, Watcher};
     use std::path::PathBuf;
@@ -86,6 +88,7 @@ mod live {
         watch_root: PathBuf,
         recursive: bool,
         poll_interval: std::time::Duration,
+        watch_guard: SingleWatcherGuard,
     }
 
     impl DirWalker {
@@ -103,6 +106,7 @@ mod live {
                 watch_root,
                 recursive,
                 poll_interval: std::time::Duration::from_secs(1),
+                watch_guard: SingleWatcherGuard::new("LiveDirWalker"),
             }
         }
     }
@@ -125,6 +129,7 @@ mod live {
     #[async_trait]
     impl LiveMapFeed<String, FileEntry> for LiveDirWalker {
         async fn watch(&self, subscriber: LiveMapSubscriber<String, FileEntry>) -> Result<()> {
+            let _watch_token = self.watch_guard.enter()?;
             use notify::{Config, PollWatcher};
 
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<()>();

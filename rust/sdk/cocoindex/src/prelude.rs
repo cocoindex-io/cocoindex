@@ -21,10 +21,13 @@ pub use crate::id::{
 };
 pub use crate::live_component::{
     ExceptionContext, ExceptionHandler, LiveComponent, LiveComponentOperator, LiveMapFeed,
-    LiveMapSubscriber, LiveMapView, MountKind,
+    LiveMapSubscriber, LiveMapView, MountKind, SingleWatcherGuard, SingleWatcherToken,
 };
 pub use crate::resources::chunk::{Chunk, TextPosition};
 pub use crate::resources::embedder::Embedder;
+pub use crate::resources::live_map::LiveMap;
+pub use crate::resources::rate_limit::RateLimiter;
+pub use crate::user_state::{IntoStateKey, StateHandle};
 pub use crate::resources::schema::{
     MultiVectorSchema, MultiVectorSchemaProvider, VectorElementType, VectorSchema,
     VectorSchemaProvider,

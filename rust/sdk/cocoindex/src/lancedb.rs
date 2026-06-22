@@ -191,6 +191,8 @@ impl TableSchema {
 pub struct LanceTableTarget {
     table_name: Arc<str>,
     table_schema: TableSchema,
+    managed_by: ManagedBy,
+    table_provider: TargetStateProvider<TableSpec>,
     rows: TargetStateProvider<RowState>,
 }
 
@@ -259,6 +261,7 @@ pub fn declare_table_target(
         ManagedTargetOptions::default(),
     )?;
     let spec = target_state.value().clone();
+    let table_provider = target_state.provider().clone();
     let schema_fp = Fingerprint::from(&table_tracking_record(&spec)).map_err(Error::from)?;
     declare_target_state(ctx, target_state)?;
     let rows = register_root_target_states_provider(
@@ -269,14 +272,13 @@ pub fn declare_table_target(
             table_name,
             schema_fp
         ),
-        RowHandler {
-            db_key: db.name().to_string(),
-            spec: spec.clone(),
-        },
+        RowHandler::new(db.name().to_string(), spec.clone()),
     )?;
     Ok(LanceTableTarget {
         table_name: Arc::from(table_name),
         table_schema: spec.table_schema,
+        managed_by: spec.managed_by,
+        table_provider,
         rows,
     })
 }
@@ -313,10 +315,13 @@ pub async fn mount_table_target_with_options(
     let target_state =
         table_target_with_options(ctx, db, table_name.clone(), table_schema.clone(), options)?;
     let spec = target_state.value().clone();
+    let table_provider = target_state.provider().clone();
     let rows = mount_target::<TableSpec, RowState>(ctx, target_state).await?;
     Ok(LanceTableTarget {
         table_name: Arc::from(table_name),
         table_schema: spec.table_schema,
+        managed_by: spec.managed_by,
+        table_provider,
         rows,
     })
 }
@@ -333,6 +338,99 @@ impl LanceTableTarget {
         let fields = row_state(row, &self.table_schema)?;
         let key = pk_stable_key(&fields, self.table_schema.primary_key())?;
         declare_target_state(ctx, self.rows.target_state(key, RowState { fields }))
+    }
+
+    fn column_type(&self, column: &str) -> Option<&ColumnType> {
+        self.table_schema
+            .columns
+            .iter()
+            .find(|(n, _)| n == column)
+            .map(|(_, d)| &d.col_type)
+    }
+
+    /// Declare a vector index on `column` as an attachment of this table. The
+    /// index is created/recreated/dropped to match the declared options. The
+    /// column must be a [`ColumnType::Vector`].
+    pub fn declare_vector_index(
+        &self,
+        ctx: &Ctx,
+        column: &str,
+        options: VectorIndexOptions,
+    ) -> Result<()> {
+        validate_identifier(column)?;
+        match self.column_type(column) {
+            Some(ColumnType::Vector(_)) => {}
+            Some(_) => {
+                return Err(Error::engine(format!(
+                    "LanceDB vector index column {column:?} is not a vector column"
+                )));
+            }
+            None => {
+                return Err(Error::engine(format!(
+                    "LanceDB vector index column {column:?} is not in the table schema"
+                )));
+            }
+        }
+        let name = options.name.unwrap_or_else(|| format!("{column}_idx"));
+        validate_identifier(&name)?;
+        let provider: TargetStateProvider<VectorIndexSpec> =
+            self.table_provider.attachment(ctx, "vector_index")?;
+        let spec = VectorIndexSpec {
+            table_name: self.table_name.to_string(),
+            name: name.clone(),
+            column: column.to_string(),
+            metric: options.metric.to_string(),
+            index_type: options.index_type.to_string(),
+            num_partitions: options.num_partitions,
+            num_sub_vectors: options.num_sub_vectors,
+            num_bits: options.num_bits,
+            m: options.m,
+            ef_construction: options.ef_construction,
+            managed_by: self.managed_by,
+        };
+        declare_target_state(
+            ctx,
+            provider.target_state(StableKey::Str(Arc::from(name)), spec),
+        )
+    }
+
+    /// Declare a full-text-search (inverted) index on `column` as an attachment
+    /// of this table. The column must be [`ColumnType::Text`].
+    pub fn declare_fts_index(
+        &self,
+        ctx: &Ctx,
+        column: &str,
+        options: FtsIndexOptions,
+    ) -> Result<()> {
+        validate_identifier(column)?;
+        match self.column_type(column) {
+            Some(ColumnType::Text) => {}
+            Some(_) => {
+                return Err(Error::engine(format!(
+                    "LanceDB FTS index column {column:?} is not a text column"
+                )));
+            }
+            None => {
+                return Err(Error::engine(format!(
+                    "LanceDB FTS index column {column:?} is not in the table schema"
+                )));
+            }
+        }
+        let name = options.name.unwrap_or_else(|| format!("{column}_fts_idx"));
+        validate_identifier(&name)?;
+        let provider: TargetStateProvider<FtsIndexSpec> =
+            self.table_provider.attachment(ctx, "fts_index")?;
+        let spec = FtsIndexSpec {
+            table_name: self.table_name.to_string(),
+            name: name.clone(),
+            column: column.to_string(),
+            with_position: options.with_position,
+            managed_by: self.managed_by,
+        };
+        declare_target_state(
+            ctx,
+            provider.target_state(StableKey::Str(Arc::from(name)), spec),
+        )
     }
 }
 
@@ -479,6 +577,23 @@ impl TargetHandler<TableSpec> for TableHandler {
             }
         }
     }
+
+    fn attachments(&self) -> Result<Vec<(String, ChildTargetDef)>> {
+        Ok(vec![
+            (
+                "vector_index".to_string(),
+                ChildTargetDef::new::<VectorIndexSpec, _>(VectorIndexHandler {
+                    db_key: self.db_key.clone(),
+                }),
+            ),
+            (
+                "fts_index".to_string(),
+                ChildTargetDef::new::<FtsIndexSpec, _>(FtsIndexHandler {
+                    db_key: self.db_key.clone(),
+                }),
+            ),
+        ])
+    }
 }
 
 impl TableHandler {
@@ -499,10 +614,9 @@ impl TableHandler {
                                 if spec.managed_by.is_system() {
                                     ensure_table(&db, &spec, a.recreate).await?;
                                 }
-                                out.push(Some(ChildTargetDef::new::<RowState, _>(RowHandler {
-                                    db_key: db_key.clone(),
-                                    spec,
-                                })));
+                                out.push(Some(ChildTargetDef::new::<RowState, _>(
+                                    RowHandler::new(db_key.clone(), spec),
+                                )));
                             }
                             TargetAction::Delete(a) => {
                                 drop_table(&db, &a.table_name).await?;
@@ -617,9 +731,26 @@ struct RowAction {
     state: Option<RowState>,
 }
 
+/// Number of applied row mutations after which the table is optimized
+/// (compaction + index maintenance), mirroring Python's default.
+const ROWS_BEFORE_OPTIMIZE: u64 = 50;
+
 struct RowHandler {
     db_key: String,
     spec: TableSpec,
+    /// Shared across this handler's per-batch sinks: counts applied mutations so
+    /// the table is periodically optimized (see [`ROWS_BEFORE_OPTIMIZE`]).
+    optimize_counter: Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl RowHandler {
+    fn new(db_key: String, spec: TableSpec) -> Self {
+        Self {
+            db_key,
+            spec,
+            optimize_counter: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        }
+    }
 }
 
 impl TargetHandler<RowState> for RowHandler {
@@ -660,10 +791,12 @@ impl RowHandler {
     fn row_sink(&self) -> TargetActionSink<RowAction> {
         let db_key = self.db_key.clone();
         let spec = self.spec.clone();
+        let optimize_counter = self.optimize_counter.clone();
         TargetActionSink::from_async_fn_with_ctx(
             move |host_ctx, actions: Vec<TargetAction<RowAction>>| {
                 let db_key = db_key.clone();
                 let spec = spec.clone();
+                let optimize_counter = optimize_counter.clone();
                 async move {
                     let db = resolve_db(&host_ctx, &db_key)?;
                     let mut upserts: Vec<Map<String, JsonValue>> = Vec::new();
@@ -679,7 +812,7 @@ impl RowHandler {
                             None => deletes.push(row.pk),
                         }
                     }
-                    apply_rows(&db, &spec, upserts, deletes).await
+                    apply_rows(&db, &spec, upserts, deletes, &optimize_counter).await
                 }
             },
         )
@@ -691,10 +824,14 @@ async fn apply_rows(
     spec: &TableSpec,
     upserts: Vec<Map<String, JsonValue>>,
     deletes: Vec<Vec<JsonValue>>,
+    optimize_counter: &std::sync::atomic::AtomicU64,
 ) -> Result<()> {
+    use std::sync::atomic::Ordering;
+
     if upserts.is_empty() && deletes.is_empty() {
         return Ok(());
     }
+    let mutations = (upserts.len() + deletes.len()) as u64;
     // Rows imply the table exists for system-managed targets. User-managed
     // targets intentionally leave DDL to the caller and let open_table surface
     // missing/incompatible tables.
@@ -733,6 +870,18 @@ async fn apply_rows(
             .delete(&predicate)
             .await
             .map_err(|e| Error::engine(format!("lancedb delete: {e}")))?;
+    }
+
+    // Periodically compact + fold new rows into existing indices. Done inline
+    // (rather than Python's debounced background task) once enough mutations have
+    // accumulated, so it amortizes across many batches without a detached task.
+    let total = optimize_counter.fetch_add(mutations, Ordering::Relaxed) + mutations;
+    if total >= ROWS_BEFORE_OPTIMIZE {
+        optimize_counter.store(0, Ordering::Relaxed);
+        table
+            .optimize(lancedb::table::OptimizeAction::All)
+            .await
+            .map_err(|e| Error::engine(format!("lancedb optimize: {e}")))?;
     }
     Ok(())
 }
@@ -1013,6 +1162,364 @@ fn array_value_to_json(array: &ArrayRef, row: usize) -> JsonValue {
         DataType::Utf8 => JsonValue::from(array.as_string::<i32>().value(row).to_string()),
         _ => JsonValue::Null,
     }
+}
+
+// ---------------------------------------------------------------------------
+// Vector / FTS index attachments
+// ---------------------------------------------------------------------------
+
+/// Options for [`LanceTableTarget::declare_vector_index`].
+#[derive(Clone, Debug)]
+pub struct VectorIndexOptions {
+    /// Index name; defaults to `<column>_idx`.
+    pub name: Option<String>,
+    /// Distance metric: `"cosine"`, `"l2"`, or `"dot"`.
+    pub metric: &'static str,
+    /// Index type: `"ivf_pq"` or `"ivf_hnsw_pq"`.
+    pub index_type: &'static str,
+    /// IVF: number of partitions (clusters). `None` lets LanceDB choose.
+    pub num_partitions: Option<u32>,
+    /// PQ: number of sub-vectors. `None` lets LanceDB choose from the dimension.
+    pub num_sub_vectors: Option<u32>,
+    /// PQ: number of bits per sub-vector. `None` uses the LanceDB default.
+    pub num_bits: Option<u32>,
+    /// HNSW (`ivf_hnsw_pq` only): number of edges per node. `None` uses default.
+    pub m: Option<u32>,
+    /// HNSW (`ivf_hnsw_pq` only): construction-time search width. `None` default.
+    pub ef_construction: Option<u32>,
+}
+
+impl Default for VectorIndexOptions {
+    fn default() -> Self {
+        Self {
+            name: None,
+            metric: "cosine",
+            index_type: "ivf_pq",
+            num_partitions: None,
+            num_sub_vectors: None,
+            num_bits: None,
+            m: None,
+            ef_construction: None,
+        }
+    }
+}
+
+/// Options for [`LanceTableTarget::declare_fts_index`].
+#[derive(Clone, Debug, Default)]
+pub struct FtsIndexOptions {
+    /// Index name; defaults to `<column>_fts_idx`.
+    pub name: Option<String>,
+    /// Record token positions (enables phrase queries) at the cost of a larger
+    /// index. Defaults to `false`.
+    pub with_position: bool,
+}
+
+/// Spec for a LanceDB vector index (an attachment of a table). Used as both the
+/// declared value and the tracking record (equality = no change).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct VectorIndexSpec {
+    table_name: String,
+    name: String,
+    column: String,
+    metric: String,
+    index_type: String,
+    num_partitions: Option<u32>,
+    num_sub_vectors: Option<u32>,
+    num_bits: Option<u32>,
+    m: Option<u32>,
+    ef_construction: Option<u32>,
+    #[serde(default)]
+    managed_by: ManagedBy,
+}
+
+/// Spec for a LanceDB full-text-search index (an attachment of a table).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FtsIndexSpec {
+    table_name: String,
+    name: String,
+    column: String,
+    with_position: bool,
+    #[serde(default)]
+    managed_by: ManagedBy,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct VectorIndexAction {
+    /// `Some` to (re)create the index, `None` to drop it.
+    spec: Option<VectorIndexSpec>,
+    /// Index name, retained for the drop path when `spec` is `None`.
+    name: String,
+    table_name: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct FtsIndexAction {
+    spec: Option<FtsIndexSpec>,
+    name: String,
+    table_name: String,
+}
+
+struct VectorIndexHandler {
+    db_key: String,
+}
+
+impl TargetHandler<VectorIndexSpec> for VectorIndexHandler {
+    type TrackingRecord = VectorIndexSpec;
+    type Action = VectorIndexAction;
+
+    fn reconcile(
+        &self,
+        _key: StableKey,
+        desired: Option<VectorIndexSpec>,
+        prev: Vec<VectorIndexSpec>,
+        prev_may_be_missing: bool,
+    ) -> Result<Option<TargetReconcileOutput<VectorIndexAction, VectorIndexSpec>>> {
+        let prev_same = desired
+            .as_ref()
+            .is_some_and(|d| prev.iter().any(|p| p == d));
+        if desired.is_some() && prev_same && !prev_may_be_missing {
+            return Ok(None);
+        }
+        if desired.is_none() && prev.is_empty() && !prev_may_be_missing {
+            return Ok(None);
+        }
+        let (name, table_name) = desired
+            .as_ref()
+            .map(|s| (s.name.clone(), s.table_name.clone()))
+            .or_else(|| prev.first().map(|p| (p.name.clone(), p.table_name.clone())))
+            .unwrap_or_default();
+        Ok(Some(TargetReconcileOutput {
+            action: TargetAction::Update(VectorIndexAction {
+                spec: desired.clone(),
+                name,
+                table_name,
+            }),
+            sink: self.sink(),
+            tracking_record: desired,
+            child_invalidation: None,
+        }))
+    }
+}
+
+impl VectorIndexHandler {
+    fn sink(&self) -> TargetActionSink<VectorIndexAction> {
+        let db_key = self.db_key.clone();
+        TargetActionSink::from_async_fn_with_ctx(
+            move |host_ctx, actions: Vec<TargetAction<VectorIndexAction>>| {
+                let db_key = db_key.clone();
+                async move {
+                    let db = resolve_db(&host_ctx, &db_key)?;
+                    for action in actions {
+                        let action = match action {
+                            TargetAction::Create(a)
+                            | TargetAction::Update(a)
+                            | TargetAction::Delete(a) => a,
+                        };
+                        apply_vector_index(&db, action).await?;
+                    }
+                    Ok(())
+                }
+            },
+        )
+    }
+}
+
+struct FtsIndexHandler {
+    db_key: String,
+}
+
+impl TargetHandler<FtsIndexSpec> for FtsIndexHandler {
+    type TrackingRecord = FtsIndexSpec;
+    type Action = FtsIndexAction;
+
+    fn reconcile(
+        &self,
+        _key: StableKey,
+        desired: Option<FtsIndexSpec>,
+        prev: Vec<FtsIndexSpec>,
+        prev_may_be_missing: bool,
+    ) -> Result<Option<TargetReconcileOutput<FtsIndexAction, FtsIndexSpec>>> {
+        let prev_same = desired
+            .as_ref()
+            .is_some_and(|d| prev.iter().any(|p| p == d));
+        if desired.is_some() && prev_same && !prev_may_be_missing {
+            return Ok(None);
+        }
+        if desired.is_none() && prev.is_empty() && !prev_may_be_missing {
+            return Ok(None);
+        }
+        let (name, table_name) = desired
+            .as_ref()
+            .map(|s| (s.name.clone(), s.table_name.clone()))
+            .or_else(|| prev.first().map(|p| (p.name.clone(), p.table_name.clone())))
+            .unwrap_or_default();
+        Ok(Some(TargetReconcileOutput {
+            action: TargetAction::Update(FtsIndexAction {
+                spec: desired.clone(),
+                name,
+                table_name,
+            }),
+            sink: self.sink(),
+            tracking_record: desired,
+            child_invalidation: None,
+        }))
+    }
+}
+
+impl FtsIndexHandler {
+    fn sink(&self) -> TargetActionSink<FtsIndexAction> {
+        let db_key = self.db_key.clone();
+        TargetActionSink::from_async_fn_with_ctx(
+            move |host_ctx, actions: Vec<TargetAction<FtsIndexAction>>| {
+                let db_key = db_key.clone();
+                async move {
+                    let db = resolve_db(&host_ctx, &db_key)?;
+                    for action in actions {
+                        let action = match action {
+                            TargetAction::Create(a)
+                            | TargetAction::Update(a)
+                            | TargetAction::Delete(a) => a,
+                        };
+                        apply_fts_index(&db, action).await?;
+                    }
+                    Ok(())
+                }
+            },
+        )
+    }
+}
+
+fn lance_distance_type(metric: &str) -> Result<lancedb::DistanceType> {
+    match metric.to_ascii_lowercase().as_str() {
+        "cosine" => Ok(lancedb::DistanceType::Cosine),
+        "l2" | "euclidean" => Ok(lancedb::DistanceType::L2),
+        "dot" | "ip" => Ok(lancedb::DistanceType::Dot),
+        other => Err(Error::engine(format!(
+            "unsupported LanceDB vector metric {other:?} (expected cosine, l2, or dot)"
+        ))),
+    }
+}
+
+/// Open the table and drop `name` if it currently exists (LanceDB errors when
+/// dropping an index that isn't there).
+async fn drop_index_if_exists(table: &lancedb::table::Table, name: &str) -> Result<()> {
+    let indices = table
+        .list_indices()
+        .await
+        .map_err(|e| Error::engine(format!("lancedb list_indices: {e}")))?;
+    if indices.iter().any(|i| i.name == name) {
+        table
+            .drop_index(name)
+            .await
+            .map_err(|e| Error::engine(format!("lancedb drop_index {name:?}: {e}")))?;
+    }
+    Ok(())
+}
+
+async fn apply_vector_index(db: &LanceDatabase, action: VectorIndexAction) -> Result<()> {
+    use lancedb::index::Index;
+    use lancedb::index::vector::{IvfHnswPqIndexBuilder, IvfPqIndexBuilder};
+
+    // User-managed indexes: CocoIndex does not own the DDL.
+    if let Some(spec) = &action.spec {
+        if spec.managed_by.is_user() {
+            return Ok(());
+        }
+    }
+    if !table_exists(db, &action.table_name).await? {
+        return Ok(());
+    }
+    let table = db
+        .conn
+        .open_table(&action.table_name)
+        .execute()
+        .await
+        .map_err(|e| Error::engine(format!("lancedb open table for vector index: {e}")))?;
+
+    let Some(spec) = action.spec else {
+        return drop_index_if_exists(&table, &action.name).await;
+    };
+
+    let distance = lance_distance_type(&spec.metric)?;
+    let index = match spec.index_type.as_str() {
+        "ivf_pq" => {
+            let mut b = IvfPqIndexBuilder::default().distance_type(distance);
+            if let Some(v) = spec.num_partitions {
+                b = b.num_partitions(v);
+            }
+            if let Some(v) = spec.num_sub_vectors {
+                b = b.num_sub_vectors(v);
+            }
+            if let Some(v) = spec.num_bits {
+                b = b.num_bits(v);
+            }
+            Index::IvfPq(b)
+        }
+        "ivf_hnsw_pq" => {
+            let mut b = IvfHnswPqIndexBuilder::default().distance_type(distance);
+            if let Some(v) = spec.num_partitions {
+                b = b.num_partitions(v);
+            }
+            if let Some(v) = spec.num_sub_vectors {
+                b = b.num_sub_vectors(v);
+            }
+            if let Some(v) = spec.num_bits {
+                b = b.num_bits(v);
+            }
+            if let Some(v) = spec.m {
+                b = b.num_edges(v);
+            }
+            if let Some(v) = spec.ef_construction {
+                b = b.ef_construction(v);
+            }
+            Index::IvfHnswPq(b)
+        }
+        other => {
+            return Err(Error::engine(format!(
+                "unsupported LanceDB vector index type {other:?} (expected ivf_pq or ivf_hnsw_pq)"
+            )));
+        }
+    };
+    table
+        .create_index(&[spec.column.as_str()], index)
+        .name(spec.name.clone())
+        .replace(true)
+        .execute()
+        .await
+        .map_err(|e| Error::engine(format!("lancedb create vector index {:?}: {e}", spec.name)))
+}
+
+async fn apply_fts_index(db: &LanceDatabase, action: FtsIndexAction) -> Result<()> {
+    use lancedb::index::Index;
+    use lancedb::index::scalar::FtsIndexBuilder;
+
+    if let Some(spec) = &action.spec {
+        if spec.managed_by.is_user() {
+            return Ok(());
+        }
+    }
+    if !table_exists(db, &action.table_name).await? {
+        return Ok(());
+    }
+    let table = db
+        .conn
+        .open_table(&action.table_name)
+        .execute()
+        .await
+        .map_err(|e| Error::engine(format!("lancedb open table for fts index: {e}")))?;
+
+    let Some(spec) = action.spec else {
+        return drop_index_if_exists(&table, &action.name).await;
+    };
+
+    let params = FtsIndexBuilder::default().with_position(spec.with_position);
+    table
+        .create_index(&[spec.column.as_str()], Index::FTS(params))
+        .name(spec.name.clone())
+        .replace(true)
+        .execute()
+        .await
+        .map_err(|e| Error::engine(format!("lancedb create fts index {:?}: {e}", spec.name)))
 }
 
 #[cfg(test)]
