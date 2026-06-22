@@ -1,6 +1,6 @@
 ---
 title: Turn Podcasts into a Knowledge Graph
-description: 'Turn YouTube podcasts into a queryable knowledge graph with CocoIndex V1 — transcription with speaker diarization, two-step LLM extraction, entity resolution with embeddings, and a SurrealDB graph, in plain async Python.'
+description: 'Turn YouTube podcasts into a queryable knowledge graph with CocoIndex V1 — transcription with speaker diarization, two-step LLM extraction, entity resolution with embeddings, and a SurrealDB graph.'
 slug: podcast-to-knowledge-graph
 image: https://cocoindex.io/blobs/docs-v1/img/examples/podcast-to-knowledge-graph/cover.png
 tags: [knowledge-graph, llm-extraction]

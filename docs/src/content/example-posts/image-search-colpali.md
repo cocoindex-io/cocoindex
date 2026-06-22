@@ -1,6 +1,6 @@
 ---
 title: Image Search with *ColPali*
-description: 'Build a higher-fidelity image search engine with CocoIndex V1 — embed images and queries with the multi-vector ColPali model, store every patch vector in Qdrant, and rank with MaxSim through a FastAPI + React app. Plain async Python, live updates.'
+description: 'Build a higher-fidelity image search engine with CocoIndex V1 — embed images and queries with the multi-vector ColPali model, store every patch vector in Qdrant, and rank with MaxSim through a FastAPI + React app.'
 slug: image-search-colpali
 image: https://cocoindex.io/blobs/docs-v1/img/examples/image-search-colpali/cover.png
 tags: [multimodal, image-search]

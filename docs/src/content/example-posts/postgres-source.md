@@ -1,6 +1,6 @@
 ---
 title: Postgres as a *Source*
-description: 'Use an existing Postgres table as a CocoIndex source — read product rows, derive fields, embed each row, and write the vectors back to Postgres with pgvector. Plain async Python, incremental, ~8 minutes.'
+description: 'Use an existing Postgres table as a CocoIndex source — read product rows, derive fields, embed each row, and write the vectors back to Postgres with pgvector.'
 slug: postgres-source
 image: https://cocoindex.io/blobs/docs-v1/img/examples/postgres-source/cover.png
 tags: [postgres-source, vector-index]

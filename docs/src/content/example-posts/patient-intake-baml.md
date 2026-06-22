@@ -1,6 +1,6 @@
 ---
 title: Patient Intake Forms to Typed JSON with *BAML*
-description: 'Extract structured patient records from intake-form PDFs with CocoIndex V1 — define the output schema in BAML, run one type-safe Gemini vision extraction per PDF, and write a validated JSON file per patient. Plain async Python, incremental by default.'
+description: 'Extract structured patient records from intake-form PDFs with CocoIndex V1 — define the output schema in BAML, run one type-safe Gemini vision extraction per PDF, and write a validated JSON file per patient.'
 slug: patient-intake-baml
 image: https://cocoindex.io/blobs/docs-v1/img/examples/patient-intake-baml/cover.png
 tags: [structured-extraction, baml]
