@@ -180,6 +180,90 @@ impl Pattern {
         self.matches_in_tree(&tree, source)
     }
 
+    /// For every containment in the pattern, find the descendants its INNER matches —
+    /// once, up front — keyed by INNER item position (`open + 1`), as `(start_leaf,
+    /// candidate_index)` sorted by `start_leaf`. `match_contains` then binary-searches
+    /// the bracketed node's extent for a hit instead of re-scanning every candidate on
+    /// every outer position, turning containment from O(N²) (O(N³) when nested) into
+    /// O(N·log N).
+    ///
+    /// Built per containment, gated by `containment_inner_cacheable`: only an INNER
+    /// whose captured names never appear outside its bracket is cached (its matches are
+    /// then independent of outer bindings, so the empty-`bound` precompute is valid).
+    /// Others — a backref into the outside — stay uncached and `match_contains` scans.
+    ///
+    /// INNER ranges are processed innermost-first (largest `open` index first) so a
+    /// nested containment's entry is already present when the enclosing INNER is
+    /// resolved against each candidate.
+    fn build_contains_cache(&self, idx: &Indexed, source: &str) -> HashMap<usize, Vec<(u32, u32)>> {
+        let mut cache: HashMap<usize, Vec<(u32, u32)>> = HashMap::new();
+        let mut opens: Vec<(usize, usize)> = self
+            .items
+            .iter()
+            .enumerate()
+            .filter_map(|(pi, it)| match it {
+                PatternItem::ContainsOpen { close } => Some((pi, *close)),
+                _ => None,
+            })
+            .collect();
+        opens.sort_by(|a, b| b.0.cmp(&a.0)); // innermost (largest open) first
+        for (open, close) in opens {
+            // Cache this containment only when its INNER is self-contained — see
+            // `containment_inner_cacheable`. A nested INNER whose name is bound by an
+            // *enclosing* INNER (`\{{ \X(\*) \{{ return \X \}} \}}`) stays uncached and
+            // falls back to the scan; the enclosing, self-contained INNER still caches.
+            if !self.containment_inner_cacheable(open, close) {
+                continue;
+            }
+            let inner = open + 1;
+            let mut hits: Vec<(u32, u32)> = Vec::new();
+            for (ci, cand) in idx.candidates.iter().enumerate() {
+                let mut ctx = Ctx {
+                    items: &self.items,
+                    idx,
+                    source,
+                    use_memo: self.use_memo,
+                    no_dups: self.no_dups,
+                    bound: HashMap::new(),
+                    fail: HashSet::new(),
+                    stops: HashSet::new(),
+                    matched_end: 0,
+                    tolerant_end: None,
+                    contains_cache: &cache,
+                };
+                if ctx.inner_matches_candidate(inner, close, cand) {
+                    hits.push((cand.start_leaf as u32, ci as u32));
+                }
+            }
+            hits.sort_by_key(|&(s, _)| s);
+            cache.insert(inner, hits);
+        }
+        cache
+    }
+
+    /// Whether `\{{ INNER \}}` bracketed by `items[open]`..`items[close]` can use the
+    /// precomputed cache: yes iff no name INNER captures also appears *outside* the
+    /// bracket. Then INNER's matches don't depend on any outer binding (so the
+    /// empty-`bound` precompute is valid) and its captures aren't referenced after the
+    /// containment (so existence, not a specific descendant, suffices). A name repeated
+    /// *within* INNER is fine — that backref resolves inside the INNER match. A name
+    /// shared with the outside (`def foo(\P): \{{ return \P \}}`, or a nested INNER's
+    /// `\X` bound by its enclosing INNER) is not, and keeps that level on the scan.
+    fn containment_inner_cacheable(&self, open: usize, close: usize) -> bool {
+        let name_at = |i: usize| match &self.items[i] {
+            PatternItem::Meta { name: Some(n), .. } => Some(n.as_str()),
+            _ => None,
+        };
+        let inner_names: HashSet<&str> = (open + 1..close).filter_map(name_at).collect();
+        if inner_names.is_empty() {
+            return true;
+        }
+        !(0..open)
+            .chain(close + 1..self.items.len())
+            .filter_map(name_at)
+            .any(|n| inner_names.contains(n))
+    }
+
     /// Match against an already-parsed `tree`, so one compiled AST can be reused
     /// across calls (e.g. shared with the chunk splitter instead of re-parsing).
     /// The tree MUST come from the same grammar as this pattern's
@@ -189,6 +273,10 @@ impl Pattern {
     pub fn matches_in_tree<'s>(&self, tree: &Tree, source: &'s str) -> Vec<Match<'s>> {
         let idx = index_tree(tree.root_node(), source.as_bytes());
         let n_items = self.items.len();
+        // Resolve every containment's INNER against all descendants once, up front, so
+        // the per-candidate DP answers a containment by binary search instead of a
+        // fresh O(N) descendant scan (see `build_contains_cache`).
+        let contains_cache = self.build_contains_cache(&idx, source);
 
         let mut out = Vec::new();
         for cand in &idx.candidates {
@@ -217,6 +305,7 @@ impl Pattern {
                 stops,
                 matched_end: 0,
                 tolerant_end: None,
+                contains_cache: &contains_cache,
             };
 
             // Start positions: each child-start; a leaf candidate has none, so use
@@ -454,6 +543,14 @@ struct Ctx<'a, 's> {
     /// `\{{ throw \}}` matches its `throw_statement`, just like a top-level `throw`.
     /// `None` otherwise (every other sub-pattern end must land exactly on `hi`).
     tolerant_end: Option<usize>,
+    /// Precomputed containment index: INNER item position (`open + 1`) → the
+    /// descendants it matches, as `(start_leaf, candidate_index)` sorted by
+    /// `start_leaf`. Built once per `matches_in_tree` (see `build_contains_cache`),
+    /// so a containment is answered by binary-searching the bracketed node's extent
+    /// instead of re-scanning every candidate per outer position — O(N·log N), not
+    /// O(N²). Empty when the pattern repeats a name (`!no_dups`): INNER then depends
+    /// on outer bindings, so `match_contains` falls back to the per-call scan.
+    contains_cache: &'a HashMap<usize, Vec<(u32, u32)>>,
 }
 
 impl<'s> Ctx<'_, 's> {
@@ -678,6 +775,9 @@ impl<'s> Ctx<'_, 's> {
         let inner = pi + 1; // first INNER item
         let cont = close + 1; // first outer item after `\}}`
         let idx = self.idx;
+        // The precomputed INNER hits (present iff `no_dups`); a Copy reference so the
+        // `&mut self` calls below don't conflict with this borrow.
+        let cached = self.contains_cache.get(&inner);
         // `li` can be the end-exclusive position (`== leaves.len()`, e.g. a preceding
         // `\*` consumed everything up to the candidate end) — there's no node starting
         // there to bracket, so nothing contains INNER.
@@ -691,10 +791,60 @@ impl<'s> Ctx<'_, 's> {
             if next > hi || !idx.single_child(li, next) {
                 continue;
             }
-            if self.contains_then_continue(inner, close, cont, end, li, next, hi) {
+            let matched = match cached {
+                Some(hits) => {
+                    self.contains_region_cached(inner, close, cont, end, li, next, hi, hits)
+                }
+                None => self.contains_then_continue(inner, close, cont, end, li, next, hi),
+            };
+            if matched {
                 return true;
             }
         }
+        false
+    }
+
+    /// Cached containment for a fixed bracketed region `[reg_lo, reg_hi)` (one node):
+    /// the INNER-matching descendants are precomputed (`hits`, sorted by `start_leaf`),
+    /// so we binary-search for one inside the extent rather than re-scanning. A node
+    /// starting inside the extent is, by tree nesting, fully inside it — so a start in
+    /// `[reg_lo, reg_hi)` is enough. Existence is sufficient because under `no_dups` the
+    /// continuation can't depend on INNER's (never-reused) captures, so if it succeeds
+    /// for one matching descendant it succeeds for all; we re-bind INNER on the leftmost
+    /// hit only to expose its report-only captures.
+    #[allow(clippy::too_many_arguments)]
+    fn contains_region_cached(
+        &mut self,
+        inner: usize,
+        inner_end: usize,
+        cont: usize,
+        cont_end: usize,
+        reg_lo: usize,
+        reg_hi: usize,
+        hi: usize,
+        hits: &[(u32, u32)],
+    ) -> bool {
+        let idx = self.idx;
+        let rep = hits.partition_point(|&(s, _)| (s as usize) < reg_lo);
+        if let Some(&(s, ci)) = hits.get(rep)
+            && (s as usize) < reg_hi
+        {
+            let snapshot = self.bound.clone();
+            let cand = &idx.candidates[ci as usize];
+            if self.inner_matches_candidate(inner, inner_end, cand)
+                && self.dp(cont, cont_end, reg_hi, hi)
+            {
+                return true;
+            }
+            self.bound = snapshot; // undo INNER bindings from a failed continuation
+        }
+        // INNER matches zero nodes (all-optional INNER, e.g. `\{{ \? \}}`): match the
+        // empty leaf range, then continue. Not a candidate, so not in `hits`.
+        let snapshot = self.bound.clone();
+        if self.dp(inner, inner_end, reg_lo, reg_lo) && self.dp(cont, cont_end, reg_hi, hi) {
+            return true;
+        }
+        self.bound = snapshot;
         false
     }
 

@@ -1018,3 +1018,30 @@ fn containment_inner_leading_fragment_at_any_depth() {
         "INNER must reach a throw nested several levels deep",
     );
 }
+
+#[test]
+fn containment_scales_near_linearly() {
+    // Guards the precomputed containment index (`build_contains_cache`). Before it,
+    // each containment re-scanned every candidate per outer position — O(N²), O(N³)
+    // when nested — so `\{{ \{{ \X = \Y \}} \}}` over a large file took *seconds*. The
+    // index resolves INNER once, turning it near-linear. The 2s bound is deliberately
+    // loose (the real time is tens of ms, even on a slow CI box) so this only fires on
+    // a genuine regression to super-linear scanning, never on timing noise.
+    use std::time::Instant;
+    let mut src = String::from("def f():\n");
+    for i in 0..900 {
+        src.push_str(&format!("    a{i} = b{i} + c{i}\n"));
+    }
+    let t = Instant::now();
+    let ms = matches(lang::python(), r"\{{ \{{ \X = \Y \}} \}}", &src);
+    let elapsed = t.elapsed();
+    assert!(
+        !ms.is_empty(),
+        "the nested containment should match the assignments"
+    );
+    assert!(
+        elapsed.as_secs_f64() < 2.0,
+        "nested containment over 900 statements took {elapsed:?} — expected near-linear; \
+         the containment index likely regressed to a per-position scan",
+    );
+}
