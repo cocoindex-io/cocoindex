@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import fnmatch as _fnmatch
 import inspect
 import traceback
 from collections.abc import AsyncIterator
@@ -28,6 +29,7 @@ from .component_ctx import (
 from .function import AnyCallable, create_core_component_processor
 from .environment import Environment
 from .serde import deserialize, serialize
+from .stable_path import stable_path_to_selector
 from .typing import StableKey
 
 if TYPE_CHECKING:
@@ -501,7 +503,14 @@ class LiveMapSubscriber(Generic[_K, _V]):
     provide keys and values instead of component subpaths and processor functions.
     """
 
-    __slots__ = ("_operator", "_fn", "_args", "_kwargs")
+    __slots__ = (
+        "_operator",
+        "_fn",
+        "_args",
+        "_kwargs",
+        "_component_selector",
+        "_child_path",
+    )
 
     def __init__(
         self,
@@ -509,11 +518,16 @@ class LiveMapSubscriber(Generic[_K, _V]):
         fn: Any,
         args: tuple[Any, ...],
         kwargs: dict[str, Any],
+        *,
+        component_selector: tuple[str, ...] | None = None,
+        child_path: Any = None,  # core.StablePath
     ) -> None:
         self._operator = operator
         self._fn = fn
         self._args = args
         self._kwargs = kwargs
+        self._component_selector = component_selector
+        self._child_path = child_path
 
     async def update_all(self) -> None:
         """Trigger a full re-iteration of all items."""
@@ -525,6 +539,15 @@ class LiveMapSubscriber(Generic[_K, _V]):
 
     async def update(self, key: _K, value: _V) -> ComponentMountHandle:
         """Incrementally update a single entry."""
+        if self._component_selector is not None and self._child_path is not None:
+            # Need a StablePath from the key — concat onto the child_path.
+            # The key is a StableKey; component_subpath concat gives the full path.
+            item_path = self._child_path.concat(key)
+            if not _selector_matches(item_path, self._component_selector):
+                # Return a no-op handle for skipped keys.
+                from .api import ComponentMountHandle as _ComponentMountHandle
+
+                return _ComponentMountHandle([])
         return await self._operator.update(  # type: ignore[no-any-return]
             ComponentSubpath(key),  # type: ignore[arg-type]
             self._fn,
@@ -558,6 +581,17 @@ class LiveMapSubscriber(Generic[_K, _V]):
         await self._operator.write_committed_state(key, value)
 
 
+def _selector_matches(
+    path: Any,  # core.StablePath
+    component_selector: tuple[str, ...],
+) -> bool:
+    """Check whether *path* matches any pattern in *component_selector*."""
+    if not component_selector:
+        return True
+    selector_str = stable_path_to_selector(path)
+    return any(_fnmatch.fnmatch(selector_str, pat) for pat in component_selector)
+
+
 class _MountEachLiveComponent:
     """Internal LiveComponent created by mount_each() for LiveMapFeed/LiveMapView items."""
 
@@ -567,11 +601,18 @@ class _MountEachLiveComponent:
         fn: Any,
         args: tuple[Any, ...],
         kwargs: dict[str, Any],
+        child_path: Any = None,  # core.StablePath
     ) -> None:
         self._items = items
         self._fn = fn
         self._args = args
         self._kwargs = kwargs
+        self._child_path = child_path
+        # Capture the selector at construction time so it's available even
+        # after the original App.update() call returns.
+        from .component_ctx import _current_component_selector
+
+        self._component_selector = _current_component_selector
 
     async def process(self) -> None:
         if not isinstance(self._items, LiveMapView):
@@ -583,13 +624,22 @@ class _MountEachLiveComponent:
         from .api import mount
 
         async for key, value in self._items:
+            if self._component_selector is not None and self._child_path is not None:
+                item_path = self._child_path.concat(key)
+                if not _selector_matches(item_path, self._component_selector):
+                    continue
             await mount(
                 ComponentSubpath(key), self._fn, value, *self._args, **self._kwargs
             )  # type: ignore[arg-type]
 
     async def process_live(self, operator: LiveComponentOperator) -> None:
         subscriber: LiveMapSubscriber[Any, Any] = LiveMapSubscriber(
-            operator, self._fn, self._args, self._kwargs
+            operator,
+            self._fn,
+            self._args,
+            self._kwargs,
+            component_selector=self._component_selector,
+            child_path=self._child_path,
         )
         await self._items.watch(subscriber)
 

@@ -42,6 +42,14 @@ class ExceptionHandlerChain(NamedTuple):
 # ContextVar for the current ComponentContext
 _context_var: ContextVar[ComponentContext] = ContextVar("coco_component_context")
 
+# Active component selector, set by App.update() / App.update_blocking().
+# This is a plain module attribute (not a ContextVar) because the Python
+# function callbacks from Rust tokio tasks may not share the asyncio
+# ContextVar of the event-loop task that called App.update(). However,
+# they DO share the same thread (the asyncio event-loop thread), so a
+# plain module-level variable works across this boundary.
+_current_component_selector: tuple[str, ...] | None = None
+
 MountKind: TypeAlias = Literal[
     "mount", "mount_each", "delete_background", "process_live"
 ]
@@ -356,6 +364,20 @@ def get_context_from_ctx() -> ComponentContext:
         "No ComponentContext available. This function must be called from within "
         "an active component context (inside a mount/use_mount call or App.update)."
     )
+
+
+def get_component_selector() -> tuple[str, ...] | None:
+    """Return the active component selector, or ``None`` if not set.
+
+    The component selector is set by :meth:`App.update()` when a
+    ``component_selector`` argument is provided. It is a tuple of
+    ``fnmatch``-style glob patterns that select which components to
+    execute.
+
+    Returns:
+        Tuple of selector patterns, or ``None`` (run everything).
+    """
+    return _current_component_selector
 
 
 def build_child_path(

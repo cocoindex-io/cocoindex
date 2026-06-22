@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import fnmatch as _fnmatch
 from collections.abc import AsyncIterable, Coroutine
 from typing import (
     Any,
@@ -27,14 +28,16 @@ from .component_ctx import (
     ComponentSubpath,
     ExceptionContext,
     ExceptionHandler,
+    _current_component_selector,
     build_child_path,
+    get_component_selector,
     get_context_from_ctx,
     exception_handler,
     stats_group,
 )
 
 
-from .stable_path import StableKey
+from .stable_path import StableKey, stable_path_to_selector
 from .function import (
     AnyCallable,
     AsyncCallable,
@@ -450,13 +453,17 @@ async def mount_each(*pos_args: Any, **kwargs: Any) -> ComponentMountHandle:
 
     parent_ctx = get_context_from_ctx()
     child_path = build_child_path(parent_ctx, subpath)
+    # Read directly from the canonical module to avoid import-binding staleness
+    from . import component_ctx as _cc
+
+    component_selector = _cc._current_component_selector
 
     if isinstance(items, LiveMapFeed):
         # Live data source: the per-item `fn` (whether a plain function or a
         # LiveComponent class) is dispatched through `mount()` / `operator.update()`
         # inside `_MountEachLiveComponent`, both of which already handle live
         # component classes — so no special-casing of `fn` is needed here.
-        instance = _MountEachLiveComponent(items, fn, extra_args, kwargs)
+        instance = _MountEachLiveComponent(items, fn, extra_args, kwargs, child_path)
         return await _mount_live_component(parent_ctx, child_path, instance)
 
     # Static data source: mount one component per item. When `fn` is a
@@ -467,6 +474,12 @@ async def mount_each(*pos_args: Any, **kwargs: Any) -> ComponentMountHandle:
 
     async def _mount_one(key: StableKey, item: Any) -> None:
         item_path = child_path.concat(key)
+        if component_selector is not None:
+            item_selector = stable_path_to_selector(item_path)
+            if not any(
+                _fnmatch.fnmatch(item_selector, pat) for pat in component_selector
+            ):
+                return  # skip — doesn't match selector
         if fn_is_live:
             instance = fn(item, *extra_args, **kwargs)
             handle = await _mount_live_component(parent_ctx, item_path, instance)

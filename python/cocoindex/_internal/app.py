@@ -16,6 +16,7 @@ from typing import (
 )
 
 from . import core
+from . import component_ctx as _component_ctx_module
 from .environment import Environment, LazyEnvironment, _default_env
 from .function import (
     AnyCallable,
@@ -65,6 +66,7 @@ class UpdateHandle(Generic[R]):
         self._core_handle: core.UpdateHandle | None = None
         self._main_fn = main_fn  # used for return type inspection
         self._preview = preview
+        self._component_selector: tuple[str, ...] | None = None
 
     async def _ensure_started(self) -> core.UpdateHandle:
         if self._core_handle is None:
@@ -102,42 +104,56 @@ class UpdateHandle(Generic[R]):
         """
         if self._preview:
             raise TypeError("watch() is not supported when preview=True")
-        handle = await self._ensure_started()
-        last_version = 0
-        while True:
-            version = await handle.changed()
+        # Set the selector BEFORE spawning the tokio task (inside _init),
+        # so that Python callbacks see it regardless of when they run.
+        prev_selector = _component_ctx_module._current_component_selector
+        _component_ctx_module._current_component_selector = self._component_selector
+        try:
+            handle = await self._ensure_started()
+            last_version = 0
+            while True:
+                version = await handle.changed()
 
-            # Check termination before dedup — notify_terminated() sends
-            # TERMINATED_VERSION on the watch channel without updating the
-            # stats version, so the dedup check would skip it.
-            if version >= _TERMINATED_VERSION:
+                # Check termination before dedup — notify_terminated() sends
+                # TERMINATED_VERSION on the watch channel without updating the
+                # stats version, so the dedup check would skip it.
+                if version >= _TERMINATED_VERSION:
+                    snap = self._snapshot_from_handle(handle)
+                    pyvalue: Any = await handle.result()
+                    result: R = pyvalue.get(fn_ret_deserializer(self._main_fn))
+                    if snap.stats is not None:
+                        yield UpdateSnapshot(
+                            stats=snap.stats, status=UpdateStatus.READY, result=result
+                        )
+                    return
+
+                # Snapshot the actual stats (version may differ from notification)
                 snap = self._snapshot_from_handle(handle)
-                pyvalue: Any = await handle.result()
-                result: R = pyvalue.get(fn_ret_deserializer(self._main_fn))
+
+                if snap.version == last_version:
+                    continue  # no actual change since last yield
+                last_version = snap.version
+
                 if snap.stats is not None:
-                    yield UpdateSnapshot(
-                        stats=snap.stats, status=UpdateStatus.READY, result=result
-                    )
-                return
-
-            # Snapshot the actual stats (version may differ from notification)
-            snap = self._snapshot_from_handle(handle)
-
-            if snap.version == last_version:
-                continue  # no actual change since last yield
-            last_version = snap.version
-
-            if snap.stats is not None:
-                status = UpdateStatus.READY if snap.ready else UpdateStatus.RUNNING
-                yield UpdateSnapshot(stats=snap.stats, status=status, result=None)
+                    status = UpdateStatus.READY if snap.ready else UpdateStatus.RUNNING
+                    yield UpdateSnapshot(stats=snap.stats, status=status, result=None)
+        finally:
+            _component_ctx_module._current_component_selector = prev_selector
 
     async def result(self) -> R:
         """Await the update result. Raises on error."""
-        handle = await self._ensure_started()
-        if self._preview:
-            await handle.result()
-            return handle.take_preview_actions()  # type: ignore[return-value]
-        pyvalue: Any = await handle.result()
+        # Set the selector BEFORE spawning the tokio task (inside _init),
+        # so that Python callbacks see it regardless of when they run.
+        prev_selector = _component_ctx_module._current_component_selector
+        _component_ctx_module._current_component_selector = self._component_selector
+        try:
+            handle = await self._ensure_started()
+            if self._preview:
+                await handle.result()
+                return handle.take_preview_actions()  # type: ignore[return-value]
+            pyvalue: Any = await handle.result()
+        finally:
+            _component_ctx_module._current_component_selector = prev_selector
         return pyvalue.get(fn_ret_deserializer(self._main_fn))  # type: ignore[no-any-return]
 
     def __await__(self) -> Any:
@@ -277,6 +293,7 @@ class App(Generic[P, R]):
         full_reprocess: bool = False,
         live: bool = False,
         preview: bool = False,
+        component_selector: list[str] | None = None,
     ) -> UpdateHandle[R]:
         """
         Start an update and return a handle for tracking progress and awaiting the result.
@@ -290,10 +307,16 @@ class App(Generic[P, R]):
                 after mark_ready).
             preview: If True, compute target actions without applying them.
                 The handle's result will be a list of raw action objects.
+            component_selector: Optional list of ``fnmatch``-style glob patterns
+                to select which components to execute. Only ``mount_each``
+                children whose selector path matches any pattern are mounted.
+                ``use_mount`` and the root component always run.
 
         Returns:
             An UpdateHandle that provides access to stats(), watch(), and result().
         """
+
+        selector = tuple(component_selector) if component_selector else None
 
         async def _init() -> core.UpdateHandle:
             env, core_app = await self._get_core_env_app()
@@ -309,7 +332,11 @@ class App(Generic[P, R]):
                 host_ctx=env._context_provider,
             )
 
-        return UpdateHandle(_init(), main_fn=self._main_fn, preview=preview)
+        handle: UpdateHandle[R] = UpdateHandle(
+            _init(), main_fn=self._main_fn, preview=preview
+        )
+        handle._component_selector = selector
+        return handle
 
     def update_blocking(
         self,
@@ -318,6 +345,7 @@ class App(Generic[P, R]):
         full_reprocess: bool = False,
         live: bool = False,
         preview: bool = False,
+        component_selector: list[str] | None = None,
     ) -> R | list[Any]:
         """
         Update the app synchronously (run the app once to process all pending changes).
@@ -331,25 +359,40 @@ class App(Generic[P, R]):
                 after mark_ready).
             preview: If True, compute target actions without applying them.
                 Returns a list of raw action objects instead of the main function result.
+            component_selector: Optional list of ``fnmatch``-style glob patterns
+                to select which components to execute. Only ``mount_each``
+                children whose selector path matches any pattern are mounted.
+                ``use_mount`` and the root component always run.
 
         Returns:
             The result of the main function, or a list of actions in preview mode.
         """
+        global _current_component_selector
+
+        selector = tuple(component_selector) if component_selector else None
+
         env, core_app = self._get_core_env_app_sync()
         root_path = core.StablePath()
         processor = create_core_component_processor(
             self._main_fn, env, root_path, self._app_args, self._app_kwargs
         )
         report, refresh_interval_secs = _resolve_report_to_stdout(report_to_stdout)
-        pyvalue: Any = core_app.update(
-            processor,
-            full_reprocess=full_reprocess,
-            host_ctx=env._context_provider,
-            report_to_stdout=report,
-            refresh_interval_secs=refresh_interval_secs,
-            live=live,
-            preview=preview,
-        )
+
+        prev_selector = _component_ctx_module._current_component_selector
+        _component_ctx_module._current_component_selector = selector
+        try:
+            pyvalue: Any = core_app.update(
+                processor,
+                full_reprocess=full_reprocess,
+                host_ctx=env._context_provider,
+                report_to_stdout=report,
+                refresh_interval_secs=refresh_interval_secs,
+                live=live,
+                preview=preview,
+            )
+        finally:
+            _component_ctx_module._current_component_selector = prev_selector
+
         if preview:
             return pyvalue  # type: ignore[no-any-return]
         return pyvalue.get(fn_ret_deserializer(self._main_fn))  # type: ignore[no-any-return]
