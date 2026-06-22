@@ -187,7 +187,7 @@ impl Pattern {
     /// workspace-wide, so a tree the splitter parsed for the same language is
     /// compatible.
     pub fn matches_in_tree<'s>(&self, tree: &Tree, source: &'s str) -> Vec<Match<'s>> {
-        let idx = index_tree(tree.root_node(), source.as_bytes(), &self.cfg);
+        let idx = index_tree(tree.root_node(), source.as_bytes());
         let n_items = self.items.len();
 
         let mut out = Vec::new();
@@ -251,8 +251,9 @@ impl Pattern {
                 // Whole-node coverage spans the entire candidate → the whole node, no
                 // ≥2 gate. Otherwise a fragment: it must span **≥2** direct children,
                 // except a single child that is one anonymous leaf (a keyword/punct
-                // like `if` — never a candidate on its own; see §4). A single *named*
-                // child defers to its own candidate, so it isn't reported here.
+                // like `if` or an operator like `=>` — never a candidate on its own;
+                // see §4). A single *named* child defers to its own candidate, so it
+                // isn't reported here.
                 let range = if a == cand.start_leaf && b == hi {
                     Some((cand.start_byte, cand.end_byte))
                 } else if b > a {
@@ -297,10 +298,9 @@ fn detect_dup_names(items: &[PatternItem]) -> bool {
     false
 }
 
-fn index_tree(root: Node, src: &[u8], cfg: &LangConfig) -> Indexed {
+fn index_tree(root: Node, src: &[u8]) -> Indexed {
     let mut c = Collector {
         src,
-        cfg,
         leaves: Vec::new(),
         spans: Vec::new(),
         cs_pairs: Vec::new(),
@@ -364,7 +364,6 @@ fn index_tree(root: Node, src: &[u8], cfg: &LangConfig) -> Indexed {
 /// ownership in a single pass.
 struct Collector<'a> {
     src: &'a [u8],
-    cfg: &'a LangConfig,
     leaves: Vec<Leaf>,
     spans: Vec<Span>,
     cs_pairs: Vec<(usize, u32)>, // (child_start_leaf, parent_id)
@@ -385,26 +384,17 @@ impl Collector<'_> {
 
         if node.child_count() == 0 {
             let text = node.utf8_text(self.src).unwrap_or("").to_string();
-            if self.cfg.is_splittable(&text) {
-                let mut b = node.start_byte();
-                for ch in text.chars() {
-                    let cl = ch.len_utf8();
-                    self.leaves.push(Leaf {
-                        text: ch.to_string(),
-                        anon: true,
-                        start_byte: b,
-                        end_byte: b + cl,
-                    });
-                    b += cl;
-                }
-            } else {
-                self.leaves.push(Leaf {
-                    text,
-                    anon: !node.is_named(),
-                    start_byte: node.start_byte(),
-                    end_byte: node.end_byte(),
-                });
-            }
+            // Keep tree-sitter's own leaf intact — a compound operator like `=>`
+            // stays one anonymous leaf. The *pattern* side splits compounds into
+            // single chars (see `config::detect_splittable`); the matcher's
+            // `match_token_run` reconciles the two by letting a pattern char-run
+            // match one source leaf's text.
+            self.leaves.push(Leaf {
+                text,
+                anon: !node.is_named(),
+                start_byte: node.start_byte(),
+                end_byte: node.end_byte(),
+            });
         } else {
             let mut cursor = node.walk();
             let children: Vec<Node> = node.children(&mut cursor).collect();
@@ -502,9 +492,7 @@ impl<'s> Ctx<'_, 's> {
         // doesn't borrow `self`, leaving `self` free for the `&mut self` calls.
         let items = self.items;
         let ok = match &items[pi] {
-            PatternItem::Token(t) => {
-                li < hi && &self.idx.leaves[li].text == t && self.dp(pi + 1, end, li + 1, hi)
-            }
+            PatternItem::Token(_) => self.match_token_run(pi, end, li, hi),
             PatternItem::Str(s) => self.match_literal(pi, end, li, hi, s),
             PatternItem::Meta { name, card, regex } => match card {
                 Cardinality::One => {
@@ -532,6 +520,42 @@ impl<'s> Ctx<'_, 's> {
             self.fail.insert((pi, li));
         }
         ok
+    }
+
+    /// Match a run of consecutive literal `Token`s against a single source leaf.
+    ///
+    /// A keyword/operator pattern token normally matches one source leaf one-to-one
+    /// (`if` ⟹ `if`, `>` ⟹ a generic-close `>`). But a compound operator is split
+    /// on the pattern side only (`=>` → `=` `>`; `config::detect_splittable`), while
+    /// the source keeps tree-sitter's single `=>` leaf — so we accumulate consecutive
+    /// pattern tokens until their concatenation equals the source leaf's text, then
+    /// consume that one leaf. Stopping at the first exact equality keeps the
+    /// one-to-one path (`>` then `>` over two source `>` leaves) intact; the
+    /// multi-token path only engages when a single source leaf is longer (`=` `>` ⟹
+    /// `=>`, or `>` `>` ⟹ a `>>` shift). A non-`Token` item or a divergent prefix
+    /// ends the run.
+    fn match_token_run(&mut self, pi: usize, end: usize, li: usize, hi: usize) -> bool {
+        if li >= hi {
+            return false;
+        }
+        let items = self.items;
+        let target = &self.idx.leaves[li].text; // `idx` is a Copy ref → not a `self` borrow
+        let mut acc = String::new();
+        let mut j = pi;
+        while j < end {
+            let PatternItem::Token(t) = &items[j] else {
+                break;
+            };
+            acc.push_str(t);
+            if acc.len() > target.len() || !target.starts_with(&acc) {
+                return false;
+            }
+            j += 1;
+            if acc == *target {
+                return self.dp(j, end, li + 1, hi);
+            }
+        }
+        false
     }
 
     fn match_literal(&mut self, pi: usize, end: usize, li: usize, hi: usize, s: &str) -> bool {

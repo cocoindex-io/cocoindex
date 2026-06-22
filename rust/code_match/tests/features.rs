@@ -1,6 +1,7 @@
 //! Engine-feature tests (language-agnostic behavior, illustrated in whatever
 //! language is convenient): balancing, precedence, the wildcard DP, cardinality,
-//! metavar equality, the `>>` split, number-lexing limits, and the sigil config.
+//! metavar equality, compound-operator alignment, number-lexing limits, and the
+//! sigil config.
 
 mod common;
 use common::*;
@@ -898,6 +899,9 @@ fn prefilter_passes_comment_text_but_the_matcher_skips_it() {
 #[test]
 fn alignment_operators_and_generics() {
     let ok = |cfg, frag, src| !matches(cfg, frag, src).is_empty();
+    // The pattern splits `>>` into `>` `>`; the source keeps tree-sitter's own
+    // leaves. A `>>` *shift* is one source leaf (the run matches it whole); a
+    // double generic close is two `>` leaves (the run matches them one-to-one).
     assert!(ok(lang::cpp(), "a >> b", "int n = a >> b;"));
     assert!(ok(
         lang::cpp(),
@@ -911,6 +915,52 @@ fn alignment_operators_and_generics() {
         "fn m(){ std::mem::swap(); }"
     ));
     assert!(ok(lang::typescript(), "a === b", "if (a === b) {}"));
+}
+
+#[test]
+fn bare_compound_operator_matches_its_node() {
+    // A *bare* compound operator is split on the pattern side (`=>` → `=` `>`) while
+    // the source keeps tree-sitter's single `=>` leaf. `match_token_run` reconciles
+    // them by letting the pattern char-run match that one leaf. Regression: these
+    // used to find nothing (the run only matched inside a named `string_fragment`).
+    assert!(has_kind(
+        &matches(lang::typescript(), "=>", "const f = (x) => x + 1;"),
+        "arrow_function"
+    ));
+    assert!(has_kind(
+        &matches(lang::typescript(), "==", "if (a == b) {}"),
+        "binary_expression"
+    ));
+    assert!(has_kind(
+        &matches(lang::typescript(), "===", "if (a === b) {}"),
+        "binary_expression"
+    ));
+    assert!(has_kind(
+        &matches(lang::typescript(), "&&", "if (a && b) {}"),
+        "binary_expression"
+    ));
+    // The keyword case is the one-char instance of the same rule.
+    assert!(has_kind(
+        &matches(lang::typescript(), r"if \*", "if (a == b) {}"),
+        "if_statement"
+    ));
+}
+
+#[test]
+fn named_all_anonymous_child_is_not_a_parent_fragment() {
+    // `()` / `{}` are *named* nodes (`arguments` / `statement_block`) whose leaves are
+    // all anonymous. A parent fragment must span ≥2 children or a single anonymous
+    // *leaf* — never a named child — so matching `()` reports only the `arguments`
+    // node, not a spurious `call_expression` fragment of the same span.
+    let parens = matches(lang::typescript(), "()", "foo();");
+    assert!(has_kind(&parens, "arguments"));
+    assert!(
+        !has_kind(&parens, "call_expression"),
+        "a named all-anon child must not be reported as its parent's fragment"
+    );
+    let braces = matches(lang::typescript(), "{}", "function f() {}");
+    assert!(has_kind(&braces, "statement_block"));
+    assert!(!has_kind(&braces, "function_declaration"));
 }
 
 #[test]
