@@ -94,6 +94,12 @@ pub enum PatternItem {
     ContainsOpen { close: usize },
     /// `\}}` — closes the containment opened by the matching `ContainsOpen`.
     ContainsClose,
+    /// `\{` — opens a whole-node boundary `\{ P \}` ("is"): `P` must match an
+    /// *entire* node (anchored, no leading/trailing tolerance). Same flat
+    /// back-patched representation as `ContainsOpen`; `P` is `items[self+1 .. close]`.
+    WholeOpen { close: usize },
+    /// `\}` — closes the whole-node boundary opened by the matching `WholeOpen`.
+    WholeClose,
 }
 
 pub fn lex(pattern: &str, cfg: &LangConfig) -> Result<Vec<PatternItem>> {
@@ -142,6 +148,19 @@ pub fn lex(pattern: &str, cfg: &LangConfig) -> Result<Vec<PatternItem>> {
             if pattern[after..].starts_with("}}") {
                 out.push(PatternItem::ContainsClose);
                 i = after + 2;
+                continue;
+            }
+            // whole-node boundary markers `\{` / `\}` (single brace; the doubled
+            // `\{{`/`\}}` above already consumed the containment form). Back-patched
+            // alongside the containment markers by `resolve_brackets`.
+            if pattern[after..].starts_with('{') {
+                out.push(PatternItem::WholeOpen { close: 0 });
+                i = after + 1;
+                continue;
+            }
+            if pattern[after..].starts_with('}') {
+                out.push(PatternItem::WholeClose);
+                i = after + 1;
                 continue;
             }
             if let Some((item, next)) = lex_metavar(pattern, bytes, after, cfg.meta_char)? {
@@ -211,23 +230,41 @@ pub fn lex(pattern: &str, cfg: &LangConfig) -> Result<Vec<PatternItem>> {
         i += clen;
     }
 
-    resolve_contains(&mut out)?;
+    resolve_brackets(&mut out)?;
     Ok(out)
 }
 
-/// Pair up `\{{` / `\}}` markers and back-patch each `ContainsOpen.close` with the
-/// index of its matching `ContainsClose`. A `client` error on any unbalanced
-/// marker (the pattern is malformed). Nesting is handled by the stack.
-fn resolve_contains(items: &mut [PatternItem]) -> Result<()> {
-    let mut stack: Vec<usize> = Vec::new();
+/// Pair up the bracket markers — containment `\{{`/`\}}` and whole-node `\{`/`\}` —
+/// back-patching each open's `close` with its matching close index. A **typed** stack
+/// enforces proper nesting per kind: a `\}` must close a `\{`, a `\}}` a `\{{` (so
+/// `\{{ … \} … \}}` is the malformed cross-nesting it looks like). Any unmatched or
+/// crossed marker is a `client` error (the pattern is malformed).
+fn resolve_brackets(items: &mut [PatternItem]) -> Result<()> {
+    // (open index, is_containment)
+    let mut stack: Vec<(usize, bool)> = Vec::new();
     for idx in 0..items.len() {
         match &items[idx] {
-            PatternItem::ContainsOpen { .. } => stack.push(idx),
+            PatternItem::ContainsOpen { .. } => stack.push((idx, true)),
+            PatternItem::WholeOpen { .. } => stack.push((idx, false)),
             PatternItem::ContainsClose => {
-                let open = stack
+                let (open, is_cont) = stack
                     .pop()
                     .ok_or_else(|| Error::client("unmatched `\\}}` in pattern"))?;
+                if !is_cont {
+                    return Err(Error::client("`\\}}` closing a `\\{` in pattern"));
+                }
                 if let PatternItem::ContainsOpen { close } = &mut items[open] {
+                    *close = idx;
+                }
+            }
+            PatternItem::WholeClose => {
+                let (open, is_cont) = stack
+                    .pop()
+                    .ok_or_else(|| Error::client("unmatched `\\}` in pattern"))?;
+                if is_cont {
+                    return Err(Error::client("`\\}` closing a `\\{{` in pattern"));
+                }
+                if let PatternItem::WholeOpen { close } = &mut items[open] {
                     *close = idx;
                 }
             }
@@ -235,7 +272,7 @@ fn resolve_contains(items: &mut [PatternItem]) -> Result<()> {
         }
     }
     if !stack.is_empty() {
-        return Err(Error::client("unmatched `\\{{` in pattern"));
+        return Err(Error::client("unmatched `\\{` or `\\{{` in pattern"));
     }
     Ok(())
 }
