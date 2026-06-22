@@ -1,6 +1,6 @@
 ---
 title: Patient Intake Extraction with *DSPy*
-description: 'Turn a folder of patient intake PDFs into structured JSON with CocoIndex V1 — render each page to an image, extract a typed Pydantic Patient with a DSPy ChainOfThought vision module on Gemini, and write one JSON file per form. Plain async Python.'
+description: 'Turn a folder of patient intake PDFs into structured JSON with CocoIndex V1 — render each page to an image, extract a typed Pydantic Patient with a DSPy ChainOfThought vision module on Gemini, and write one JSON file per form.'
 slug: patient-intake-dspy
 image: https://cocoindex.io/blobs/docs-v1/img/examples/patient-intake-dspy/cover.png
 tags: [structured-extraction, dspy]

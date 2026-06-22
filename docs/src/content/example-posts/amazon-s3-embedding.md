@@ -1,6 +1,6 @@
 ---
 title: Embed Markdown from *Amazon S3*
-description: 'The Semantic Search 101 pipeline with Amazon S3 as the source instead of a local folder — list Markdown objects from a bucket, chunk and embed each one, and store the vectors in Postgres with pgvector. Plain async Python.'
+description: 'The Semantic Search 101 pipeline with Amazon S3 as the source instead of a local folder — list Markdown objects from a bucket, chunk and embed each one, and store the vectors in Postgres with pgvector.'
 slug: amazon-s3-embedding
 image: https://cocoindex.io/blobs/docs-v1/img/examples/amazon-s3-embedding/cover.png
 tags: [vector-index, amazon-s3]

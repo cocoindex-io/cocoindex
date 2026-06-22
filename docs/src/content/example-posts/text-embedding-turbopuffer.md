@@ -1,6 +1,6 @@
 ---
 title: Semantic Search with *Turbopuffer*
-description: 'The Semantic Search 101 pipeline with CocoIndex V1, pointed at a managed vector store — chunk Markdown, embed each chunk, and upsert the vectors into a Turbopuffer namespace, all in plain async Python.'
+description: 'The Semantic Search 101 pipeline with CocoIndex V1, pointed at a managed vector store — chunk Markdown, embed each chunk, and upsert the vectors into a Turbopuffer namespace.'
 slug: text-embedding-turbopuffer
 image: https://cocoindex.io/blobs/docs-v1/img/examples/text-embedding-turbopuffer/cover.png
 tags: [vector-index, turbopuffer]

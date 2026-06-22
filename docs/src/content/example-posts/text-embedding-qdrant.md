@@ -1,6 +1,6 @@
 ---
 title: Semantic Search with *Qdrant*
-description: 'The Semantic Search 101 pipeline with Qdrant as the vector store — chunk Markdown, embed each chunk, and upsert the vectors into a managed Qdrant collection, incrementally, in plain async Python.'
+description: 'The Semantic Search 101 pipeline with Qdrant as the vector store — chunk Markdown, embed each chunk, and upsert the vectors into a managed Qdrant collection, incrementally.'
 slug: text-embedding-qdrant
 image: https://cocoindex.io/blobs/docs-v1/img/examples/text-embedding-qdrant/cover.png
 tags: [vector-index, qdrant]

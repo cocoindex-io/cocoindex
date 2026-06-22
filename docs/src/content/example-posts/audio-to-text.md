@@ -1,6 +1,6 @@
 ---
 title: Audio to Text with *LiteLLM*
-description: 'Transcribe a folder of local audio files with CocoIndex V1 — call a LiteLLM speech-to-text model on each file and store one transcript row per file in Postgres, keyed by filename. Plain async Python, ~12 minutes.'
+description: 'Transcribe a folder of local audio files with CocoIndex V1 — call a LiteLLM speech-to-text model on each file and store one transcript row per file in Postgres, keyed by filename.'
 slug: audio-to-text
 image: https://cocoindex.io/blobs/docs-v1/img/examples/audio-to-text/cover.png
 tags: [transcription, litellm]

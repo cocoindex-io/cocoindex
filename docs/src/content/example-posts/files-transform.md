@@ -1,6 +1,6 @@
 ---
 title: Transform a *Folder of Files*
-description: 'The smallest end-to-end CocoIndex V1 pipeline — watch a directory of Markdown, render each file to HTML with markdown-it-py, and write the .html outputs to a local folder incrementally. Plain async Python, no external services.'
+description: 'The smallest end-to-end CocoIndex V1 pipeline — watch a directory of Markdown, render each file to HTML with markdown-it-py, and write the .html outputs to a local folder incrementally.'
 slug: files-transform
 image: https://cocoindex.io/blobs/docs-v1/img/examples/files-transform/cover.png
 tags: [file-transform, incremental]

@@ -1,6 +1,6 @@
 ---
 title: Index Academic Papers and Extract Metadata
-description: 'Turn a folder of academic PDFs into structured metadata with CocoIndex V1 — read the first page, LLM-extract title, authors, and abstract into typed rows, embed the title and abstract for semantic search, and store it all in Postgres with pgvector. Plain async Python.'
+description: 'Turn a folder of academic PDFs into structured metadata with CocoIndex V1 — read the first page, LLM-extract title, authors, and abstract into typed rows, embed the title and abstract for semantic search, and store it all in Postgres with pgvector.'
 slug: paper-metadata
 image: https://cocoindex.io/blobs/docs-v1/img/examples/paper-metadata/cover.png
 tags: [llm-extraction, pdf]

@@ -1,6 +1,6 @@
 ---
 title: Semantic Search 101
-description: 'The simplest end-to-end vector index with CocoIndex V1 — chunk Markdown files, embed each chunk, store the vectors in Postgres with pgvector, and search them in natural language. Plain async Python, ~6 minutes.'
+description: 'The simplest end-to-end vector index with CocoIndex V1 — chunk Markdown files, embed each chunk, store the vectors in Postgres with pgvector, and search them in natural language.'
 slug: text-embedding
 image: https://cocoindex.io/blobs/docs-v1/img/examples/text-embedding/cover.png
 tags: [vector-index, semantic-search]

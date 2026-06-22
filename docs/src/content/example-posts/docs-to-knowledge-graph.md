@@ -1,6 +1,6 @@
 ---
 title: Turn Docs into a Knowledge Graph
-description: 'Build a concept knowledge graph from Markdown docs with CocoIndex V1 and Neo4j — LLM relationship extraction with instructor + LiteLLM, declarative graph targets, and incremental sync as docs change, in plain async Python.'
+description: 'Build a concept knowledge graph from Markdown docs with CocoIndex V1 and Neo4j — LLM relationship extraction with instructor + LiteLLM, declarative graph targets, and incremental sync as docs change.'
 slug: docs-to-knowledge-graph
 image: https://cocoindex.io/blobs/docs-v1/img/examples/docs-to-knowledge-graph/cover.png
 tags: [knowledge-graph, llm-extraction]

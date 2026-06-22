@@ -1,6 +1,6 @@
 ---
 title: Search Your *AI Coding Sessions*
-description: 'Build a semantic search index over AI coding sessions captured by Entire with CocoIndex V1 — read transcripts, prompts, and context summaries, embed them with sentence-transformers, and store the vectors in Postgres with pgvector, then search every session in natural language. Plain async Python.'
+description: 'Build a semantic search index over AI coding sessions captured by Entire with CocoIndex V1 — read transcripts, prompts, and context summaries, embed them with sentence-transformers, and store the vectors in Postgres with pgvector, then search every session in natural language.'
 slug: entire-session-search
 image: https://cocoindex.io/blobs/docs-v1/img/examples/entire-session-search/cover.png
 tags: [vector-index, ai-sessions]
