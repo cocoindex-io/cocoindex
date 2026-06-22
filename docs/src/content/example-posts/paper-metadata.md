@@ -324,6 +324,6 @@ The same machinery covers **logic** changes too: tweak the prompt, swap `gpt-4o`
 
 ## Run it
 
-The full, runnable example is in the CocoIndex repo: [examples/paper_metadata](https://github.com/cocoindex-io/cocoindex/tree/main/examples/paper_metadata). If you just want to search PDFs by meaning without the structured extraction, [Semantic Search over PDFs](https://cocoindex.io/docs/examples/pdf-embedding/) chunks and embeds the full text instead; if you want the Markdown itself as the output, see [PDF → Markdown](https://cocoindex.io/docs/examples/pdf-to-markdown/).
+The full, runnable example is in the CocoIndex repo: [examples/paper_metadata](https://github.com/cocoindex-io/cocoindex/tree/main/examples/paper_metadata). If you just want to search PDFs by meaning without the structured extraction, [Semantic Search over PDFs](https://github.com/cocoindex-io/cocoindex/tree/main/examples/pdf_embedding) chunks and embeds the full text instead; if you want the Markdown itself as the output, see [PDF → Markdown](https://cocoindex.io/docs/examples/pdf-to-markdown/).
 
 Got a folder of papers, reports, or filings you want to turn into structured, searchable rows? Come tell us on [Discord](https://discord.com/invite/zpA9S2DR7s) — and if this was useful, [star CocoIndex on GitHub](https://github.com/cocoindex-io/cocoindex).

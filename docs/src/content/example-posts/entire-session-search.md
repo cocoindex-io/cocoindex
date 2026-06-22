@@ -310,6 +310,6 @@ The same machinery covers **logic** changes too: tune the chunk size or swap the
 
 ## Run it
 
-The full, runnable example is in the CocoIndex repo: [examples/entire_session_search](https://github.com/cocoindex-io/cocoindex/tree/main/examples/entire_session_search). If your inputs are plain text or Markdown rather than session checkpoints, [Semantic Search 101](https://cocoindex.io/docs/examples/text-embedding/) is the same flow without the per-file routing; to search a folder of PDFs, see [Semantic Search over PDFs](https://cocoindex.io/docs/examples/pdf-embedding/).
+The full, runnable example is in the CocoIndex repo: [examples/entire_session_search](https://github.com/cocoindex-io/cocoindex/tree/main/examples/entire_session_search). If your inputs are plain text or Markdown rather than session checkpoints, [Semantic Search 101](https://cocoindex.io/docs/examples/text-embedding/) is the same flow without the per-file routing; to search a folder of PDFs, see [Semantic Search over PDFs](https://github.com/cocoindex-io/cocoindex/tree/main/examples/pdf_embedding).
 
 Want to search your own AI coding history by meaning? Come tell us on [Discord](https://discord.com/invite/zpA9S2DR7s) — and if this was useful, [star CocoIndex on GitHub](https://github.com/cocoindex-io/cocoindex).
