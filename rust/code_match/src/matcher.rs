@@ -582,11 +582,16 @@ impl<'s> Ctx<'_, 's> {
                     return true;
                 }
                 // Trailing tolerance *into* the last child: if the tail landed inside a
-                // child with only statement **terminators** (`;`) between it and the
+                // child with only statement **delimiters** (`;`, `,`) between it and the
                 // next child boundary, consume them to that boundary. This is what lets
                 // `if (\X) return \Y` match `if (c) return foo;` — `\Y` binds `foo` and
                 // the `;` is free, the same tolerance `return \Y` gets at the top level.
-                // Terminators only, never closers, so `f(\X` still won't match `f(a)`.
+                // Applies equally to a containment INNER (this branch covers both, via
+                // `tolerant_end`): the integral-fragment rule for whole match *and* INNER
+                // exists to avoid precedence violations (extracting `a+b` from `a+b*c`),
+                // which an insignificant trailing delimiter can't cause — so skipping it
+                // is sound there too. Delimiters only, never closers, so `f(\X` still
+                // won't match `f(a)`.
                 if let Some(&s) = self.stops.iter().filter(|&&s| s > li).min()
                     && (li..s).all(|l| {
                         let leaf = &self.idx.leaves[l];

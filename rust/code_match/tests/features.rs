@@ -1088,4 +1088,17 @@ fn trailing_tolerance_skips_delimiters_not_closers() {
         ),
         "return_statement",
     ));
+    // The same tolerance applies to a containment INNER: `if (\X) return \Y` as INNER
+    // matches the `if_statement` through its trailing `;`, so the containment matches.
+    // (An insignificant trailing delimiter can't cause the precedence violation the
+    // integral-fragment rule guards against, so skipping it is sound for INNER too.)
+    assert!(
+        !matches(
+            lang::typescript(),
+            r"\{{ if (\X) return \Y \}}",
+            "function f(c) { if (c) return foo; }",
+        )
+        .is_empty(),
+        "containment INNER gets the same trailing-delimiter tolerance",
+    );
 }
