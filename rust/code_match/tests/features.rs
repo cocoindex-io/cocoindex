@@ -1102,3 +1102,48 @@ fn trailing_tolerance_skips_delimiters_not_closers() {
         "containment INNER gets the same trailing-delimiter tolerance",
     );
 }
+
+#[test]
+fn single_node_term_matches_anonymous_leaf() {
+    // A keyword/operator is a node like any other — a literal matches it, a `\*` run
+    // spans it (`f(\(A*\))` captures the `,` separators), and a literal alternation
+    // matches it. So a single-node *term* (`\/re/`, `\_`, `\X`) must too, not only named
+    // subtrees. Regex over keyword text now finds the keyword it couldn't before:
+    let kw = matches(
+        lang::typescript(),
+        r"\/if|while/",
+        "function g(x){ if (x) {} while (x) {} }",
+    );
+    let texts: Vec<&str> = kw.iter().map(|m| m.text).collect();
+    assert!(
+        texts.contains(&"if") && texts.contains(&"while"),
+        "regex matches the keyword leaves, got {kw:?}",
+    );
+    // `\_` (the anonymous any-node) matches an operator leaf:
+    assert!(has_kind(
+        &matches(lang::typescript(), r"a \_ b", "let z = a + b;"),
+        "binary_expression",
+    ));
+    // and a named regex capture binds it:
+    assert_eq!(
+        cap(
+            &matches(lang::typescript(), r"a \(OP:/[-+]/\) b", "let z = a + b;"),
+            "OP",
+        )
+        .as_deref(),
+        Some("+"),
+    );
+    // Greedy-largest-first is preserved: a bare `\X` still binds the enclosing *named*
+    // subtree, not a token — the leaf is only a backtrack fallback.
+    assert!(has_kind(
+        &matches(lang::typescript(), r"\X(\*)", "foo(x);"),
+        "call_expression",
+    ));
+    // The leaf fallback is anon-only, so named identifiers aren't double-matched:
+    let asg = matches(lang::typescript(), r"\A = \B", "a = b;");
+    assert!(has_kind(&asg, "assignment_expression"));
+    assert!(
+        !has_kind(&asg, "expression_statement"),
+        "the leaf fallback must not re-report named-leaf nodes",
+    );
+}
