@@ -76,7 +76,7 @@ a:hover { text-decoration: underline; }
   box-shadow: inset 0 0 0 1px var(--rule);
 }
 .mobile-tabs button[disabled] { opacity: .35; cursor: not-allowed; }
-.mobile-tabs button:focus-visible { outline: 2px solid var(--coral); outline-offset: 2px; }
+.mobile-tabs button:focus-visible { outline: var(--focus); outline-offset: var(--focus-offset); }
 
 .mobile-empty {
   margin: 16px 14px; color: var(--muted);

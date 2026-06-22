@@ -613,6 +613,10 @@ const breadcrumbLd = {
     color: var(--coral);
     background: var(--paper);
   }
+  /* Shared interaction contract — canonical focus ring (inset, since these sit
+     inside the bordered split control). */
+  .ai-primary:focus-visible,
+  .ai-toggle:focus-visible { outline: var(--focus); outline-offset: -2px; }
   .ai-primary :global(svg) {
     width: 14px;
     height: 14px;
@@ -664,8 +668,8 @@ const breadcrumbLd = {
   .ai-item:hover,
   .ai-item:focus-visible {
     background: color-mix(in oklab, var(--coral) 8%, transparent);
-    outline: none;
   }
+  .ai-item:focus-visible { outline: var(--focus); outline-offset: -2px; }
   .ai-ic {
     flex: none;
     display: grid;
