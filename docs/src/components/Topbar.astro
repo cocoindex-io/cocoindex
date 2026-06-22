@@ -1,6 +1,7 @@
 ---
 // Docs header: the shared <Nav> bar from @cocoindex/brand, fed this site's
-// links — including the v1/v0 version dropdowns on Examples + Documentation.
+// links. v1 is the only version in the header; the legacy v0 docs are linked
+// from the footer instead.
 // The phone drawer (tabbed sidebar + TOC) is MobileSheet.astro, opened by the
 // bar's hamburger; pass `mobileSheetId` to render that hamburger.
 import Nav from '@cocoindex/brand/Nav.astro';
@@ -15,25 +16,11 @@ const { mobileSheetId } = Astro.props as Props;
 const base = import.meta.env.BASE_URL.replace(/\/$/, '') || '/';
 const DOCS = base;
 const EXAMPLES_V1 = `${base}/examples`;
-const DOCS_V0 = `${SITE_MAIN}/docs-v0`;
-const EXAMPLES_V0 = `${SITE_MAIN}/docs-v0/examples/`;
 
 const links = [
   { href: `${SITE_MAIN}/cocoindex-code`, label: 'CocoIndex Code' },
-  {
-    href: EXAMPLES_V1, label: 'Examples',
-    versions: [
-      { href: EXAMPLES_V1, label: 'v1', current: true },
-      { href: EXAMPLES_V0, label: 'v0', tag: 'legacy' },
-    ],
-  },
-  {
-    href: DOCS, label: 'Documentation',
-    versions: [
-      { href: DOCS, label: 'v1', current: true },
-      { href: DOCS_V0, label: 'v0', tag: 'legacy' },
-    ],
-  },
+  { href: EXAMPLES_V1, label: 'Examples' },
+  { href: DOCS, label: 'Documentation' },
   { href: `${SITE_MAIN}/enterprise`, label: 'Enterprise' },
   { href: SITE_BLOG, label: 'Blog' },
 ];
