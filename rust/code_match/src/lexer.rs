@@ -8,15 +8,16 @@
 //!   `S NAME`        single, named (sugar for `S(NAME S)`)
 //!   `S(NAME S)`     single, named
 //!   `S(NAME* S)`    many   (zero or more **same-level** sibling nodes)
+//!   `S(NAME+ S)`    one-or-more (one or more **same-level** sibling nodes)
 //!   `S(NAME? S)`    optional (zero or one node)
 //!   `S_` / `S(_ S)` anonymous single        `S*` / `S(* S)`  anonymous many
-//!   `S?` / `S(? S)` anonymous optional
+//!   `S+` / `S(+ S)` anonymous one-or-more   `S?` / `S(? S)`  anonymous optional
 //!   `S(NAME:/re/ S)` single, regex-constrained — see below
 //!   `S(/re/ S)` / `S/re/`  regex-constrained, **anonymous** (filter, don't capture)
 //!   `S{{ INNER S}}` containment: INNER must match some descendant of one node
 //!                   here (DESIGN §12). Paired; may nest.
 //!   `SS`            a doubled sigil is one **literal** sigil (e.g. `\\` → `\`)
-//! `*` is **same-level** (one parent's direct siblings); a cross-level skip is
+//! `*`/`+` are **same-level** (one parent's direct siblings); a cross-level skip is
 //! written as multiple `*`, one per grammar level.
 //! Names are `[A-Za-z0-9_]+` (upper/lower/digit, sed-like `\1`); UPPERCASE is a
 //! readability convention, not a rule. With the `\` sigil, lowercase `\foo` only
@@ -44,6 +45,8 @@ pub enum Cardinality {
     One,
     /// `\(X*\)` — zero or more sibling nodes
     Many,
+    /// `\(X+\)` — one or more sibling nodes (like `Many`, but non-empty)
+    OneOrMore,
     /// `\(X?\)` — zero or one node
     Optional,
 }
@@ -250,8 +253,9 @@ fn lex_metavar(
     Ok(match bytes.get(s).copied() {
         // qualified form: \( ... \)
         Some(b'(') => return lex_qualified(pattern, bytes, s + 1, meta_char),
-        // anonymous short forms: \*  \?
+        // anonymous short forms: \*  \+  \?
         Some(b'*') => Some((meta(None, Cardinality::Many, None), s + 1)),
+        Some(b'+') => Some((meta(None, Cardinality::OneOrMore, None), s + 1)),
         Some(b'?') => Some((meta(None, Cardinality::Optional, None), s + 1)),
         // anonymous regex short form: \/re/  (≡ \(/re/\))
         Some(b'/') => {
@@ -284,6 +288,10 @@ fn lex_qualified(
         Some(b'*') => {
             k += 1;
             Cardinality::Many
+        }
+        Some(b'+') => {
+            k += 1;
+            Cardinality::OneOrMore
         }
         Some(b'?') => {
             k += 1;
