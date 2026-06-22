@@ -1045,3 +1045,47 @@ fn containment_scales_near_linearly() {
          the containment index likely regressed to a per-position scan",
     );
 }
+
+#[test]
+fn trailing_tolerance_skips_delimiters_not_closers() {
+    // A pattern whose tail lands inside the last child, just before a statement
+    // terminator (`;`), still matches — the `;` is free, the same trailing tolerance
+    // `return \Y` gets at the top level. Without this, `if (\X) return \Y` (a very
+    // natural pattern) silently matched nothing.
+    assert!(
+        has_kind(
+            &matches(
+                lang::typescript(),
+                r"if (\X) return \Y",
+                "function g(c){ if (c) return foo; }",
+            ),
+            "if_statement",
+        ),
+        "the `;` terminating the return is free trailing context",
+    );
+    // also reaches through a containment INNER (same tolerance there):
+    assert!(has_kind(
+        &matches(
+            lang::typescript(),
+            r"switch (\X) \{{ case \Y: return \Z \}}",
+            "function f(t){ switch (t) { case 1: return 0.5; } }",
+        ),
+        "switch_statement",
+    ));
+    // A *closer* is never skipped: `f(\X` (no `)`) must NOT match `f(a)` — else
+    // `foo(\X)` would creep onto `foo(a).bar()` and the child-alignment invariant
+    // would be lost.
+    assert!(
+        matches(lang::typescript(), r"f(\X", "f(a);").is_empty(),
+        "the `)` closer must not be skipped",
+    );
+    // Top-level matching is unchanged (the tolerance already applied there).
+    assert!(has_kind(
+        &matches(
+            lang::typescript(),
+            r"return \Y",
+            "function g(){ return foo; }"
+        ),
+        "return_statement",
+    ));
+}

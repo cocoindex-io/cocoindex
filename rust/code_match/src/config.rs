@@ -223,6 +223,14 @@ pub struct LangConfig {
     /// Bitmask of modes that **preserve** whitespace (the lexer does not skip it)
     /// — e.g. HTML text content. Default 0 (whitespace skipped in every mode).
     pub ws_preserve: u8,
+    /// Anonymous **delimiters** — statement terminators (`;`) and separators (`,`) —
+    /// that trailing tolerance may skip when a pattern's tail lands inside the last
+    /// child just before one, so `if (\X) return \Y` matches `if (c) return foo;`.
+    /// These carry no meaning of their own (pure punctuation), unlike *closers*
+    /// (`}`/`]`/`)`), which are deliberately excluded: skipping a closer would let
+    /// `f(\X` match `f(a)` or `foo(\X)` match `foo(a).bar()`. Grammar-gated (only
+    /// tokens the language actually defines).
+    pub trailing_delimiters: HashSet<String>,
 }
 
 impl LangConfig {
@@ -238,6 +246,13 @@ impl LangConfig {
         let splittable = detect_splittable(&language, &single_char);
         let op_tokens = derive_op_tokens(&language, &splittable);
         let keywords = derive_keywords(&language);
+        // `;` and `,`, each only if the grammar defines it as a token (so a language
+        // missing one carries no meaningless entry).
+        let trailing_delimiters: HashSet<String> = [";", ","]
+            .into_iter()
+            .filter(|t| single_char.contains(*t))
+            .map(String::from)
+            .collect();
         LangConfig {
             language,
             op_tokens,
@@ -246,6 +261,7 @@ impl LangConfig {
             tokenizers,
             transitions: Vec::new(),
             ws_preserve: 0,
+            trailing_delimiters,
         }
     }
 

@@ -230,6 +230,7 @@ impl Pattern {
                     matched_end: 0,
                     tolerant_end: None,
                     contains_cache: &cache,
+                    delimiters: &self.cfg.trailing_delimiters,
                 };
                 if ctx.inner_matches_candidate(inner, close, cand) {
                     hits.push((cand.start_leaf as u32, ci as u32));
@@ -306,6 +307,7 @@ impl Pattern {
                 matched_end: 0,
                 tolerant_end: None,
                 contains_cache: &contains_cache,
+                delimiters: &self.cfg.trailing_delimiters,
             };
 
             // Start positions: each child-start; a leaf candidate has none, so use
@@ -551,6 +553,9 @@ struct Ctx<'a, 's> {
     /// O(N²). Empty when the pattern repeats a name (`!no_dups`): INNER then depends
     /// on outer bindings, so `match_contains` falls back to the per-call scan.
     contains_cache: &'a HashMap<usize, Vec<(u32, u32)>>,
+    /// Delimiters (`;`, `,`) trailing tolerance may skip inside the last child
+    /// (see `LangConfig::trailing_delimiters`).
+    delimiters: &'a HashSet<String>,
 }
 
 impl<'s> Ctx<'_, 's> {
@@ -574,6 +579,21 @@ impl<'s> Ctx<'_, 's> {
                 // child-end boundaries (`stops`), not only at the very end.
                 if li == hi || self.stops.contains(&li) {
                     self.matched_end = li;
+                    return true;
+                }
+                // Trailing tolerance *into* the last child: if the tail landed inside a
+                // child with only statement **terminators** (`;`) between it and the
+                // next child boundary, consume them to that boundary. This is what lets
+                // `if (\X) return \Y` match `if (c) return foo;` — `\Y` binds `foo` and
+                // the `;` is free, the same tolerance `return \Y` gets at the top level.
+                // Terminators only, never closers, so `f(\X` still won't match `f(a)`.
+                if let Some(&s) = self.stops.iter().filter(|&&s| s > li).min()
+                    && (li..s).all(|l| {
+                        let leaf = &self.idx.leaves[l];
+                        leaf.anon && self.delimiters.contains(&leaf.text)
+                    })
+                {
+                    self.matched_end = s;
                     return true;
                 }
                 return false;
