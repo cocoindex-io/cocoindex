@@ -206,9 +206,6 @@ pub struct LangConfig {
     /// Anonymous punctuation/operator tokens, longest-first, excluding the
     /// splittable compounds. Derived from the grammar; used for maximal munch.
     pub op_tokens: Vec<String>,
-    /// Compound operators normalized to single chars on both sides (e.g. `>>` ->
-    /// `>` `>`). Auto-detected from the grammar.
-    pub splittable: HashSet<String>,
     /// The grammar's word-shaped anonymous symbols — its keywords (`if`, `return`,
     /// contextual ones like TS `type`). Complement of `op_tokens` among anonymous
     /// symbols. Used by the prefilter to exclude keywords from identifier terms.
@@ -226,6 +223,14 @@ pub struct LangConfig {
     /// Bitmask of modes that **preserve** whitespace (the lexer does not skip it)
     /// — e.g. HTML text content. Default 0 (whitespace skipped in every mode).
     pub ws_preserve: u8,
+    /// Anonymous **delimiters** — statement terminators (`;`) and separators (`,`) —
+    /// that trailing tolerance may skip when a pattern's tail lands inside the last
+    /// child just before one, so `if (\X) return \Y` matches `if (c) return foo;`.
+    /// These carry no meaning of their own (pure punctuation), unlike *closers*
+    /// (`}`/`]`/`)`), which are deliberately excluded: skipping a closer would let
+    /// `f(\X` match `f(a)` or `foo(\X)` match `foo(a).bar()`. Grammar-gated (only
+    /// tokens the language actually defines).
+    pub trailing_delimiters: HashSet<String>,
 }
 
 impl LangConfig {
@@ -241,15 +246,22 @@ impl LangConfig {
         let splittable = detect_splittable(&language, &single_char);
         let op_tokens = derive_op_tokens(&language, &splittable);
         let keywords = derive_keywords(&language);
+        // `;` and `,`, each only if the grammar defines it as a token (so a language
+        // missing one carries no meaningless entry).
+        let trailing_delimiters: HashSet<String> = [";", ","]
+            .into_iter()
+            .filter(|t| single_char.contains(*t))
+            .map(String::from)
+            .collect();
         LangConfig {
             language,
             op_tokens,
-            splittable,
             keywords,
             meta_char: '\\',
             tokenizers,
             transitions: Vec::new(),
             ws_preserve: 0,
+            trailing_delimiters,
         }
     }
 
@@ -266,10 +278,6 @@ impl LangConfig {
     pub fn with_meta_char(mut self, c: char) -> Self {
         self.meta_char = c;
         self
-    }
-
-    pub fn is_splittable(&self, text: &str) -> bool {
-        self.splittable.contains(text)
     }
 
     /// Whether mode `m` preserves whitespace (the lexer should not skip it).
@@ -318,9 +326,12 @@ fn single_char_punct_tokens(lang: &Language) -> HashSet<String> {
 }
 
 /// A compound token is splittable when it is all-punctuation, longer than one
-/// char, and every character is itself a single-char token. Splitting it on both
-/// sides aligns context-sensitive tokenizations like C++/Rust `>>`. Over-split
-/// (e.g. `==`) is safe — both sides normalize identically.
+/// char, and every character is itself a single-char token. Excluding it from
+/// `op_tokens` makes the *pattern* lexer emit its chars separately (`>>` → `>`
+/// `>`); the source side keeps tree-sitter's own leaves, and the matcher lets a
+/// run of those pattern chars match one source leaf by text (`>` `>` ⟹ a `>>`
+/// shift) or several (`>` `>` ⟹ two generic-close `>`). Over-detecting (e.g.
+/// `==`) is harmless — a single source `==` leaf absorbs the `=` `=` run.
 fn detect_splittable(lang: &Language, single_char: &HashSet<String>) -> HashSet<String> {
     let mut set = HashSet::new();
     for id in 0..lang.node_kind_count() as u16 {

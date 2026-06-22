@@ -1,6 +1,7 @@
 //! Engine-feature tests (language-agnostic behavior, illustrated in whatever
 //! language is convenient): balancing, precedence, the wildcard DP, cardinality,
-//! metavar equality, the `>>` split, number-lexing limits, and the sigil config.
+//! metavar equality, compound-operator alignment, number-lexing limits, and the
+//! sigil config.
 
 mod common;
 use common::*;
@@ -898,6 +899,9 @@ fn prefilter_passes_comment_text_but_the_matcher_skips_it() {
 #[test]
 fn alignment_operators_and_generics() {
     let ok = |cfg, frag, src| !matches(cfg, frag, src).is_empty();
+    // The pattern splits `>>` into `>` `>`; the source keeps tree-sitter's own
+    // leaves. A `>>` *shift* is one source leaf (the run matches it whole); a
+    // double generic close is two `>` leaves (the run matches them one-to-one).
     assert!(ok(lang::cpp(), "a >> b", "int n = a >> b;"));
     assert!(ok(
         lang::cpp(),
@@ -911,6 +915,52 @@ fn alignment_operators_and_generics() {
         "fn m(){ std::mem::swap(); }"
     ));
     assert!(ok(lang::typescript(), "a === b", "if (a === b) {}"));
+}
+
+#[test]
+fn bare_compound_operator_matches_its_node() {
+    // A *bare* compound operator is split on the pattern side (`=>` → `=` `>`) while
+    // the source keeps tree-sitter's single `=>` leaf. `match_token_run` reconciles
+    // them by letting the pattern char-run match that one leaf. Regression: these
+    // used to find nothing (the run only matched inside a named `string_fragment`).
+    assert!(has_kind(
+        &matches(lang::typescript(), "=>", "const f = (x) => x + 1;"),
+        "arrow_function"
+    ));
+    assert!(has_kind(
+        &matches(lang::typescript(), "==", "if (a == b) {}"),
+        "binary_expression"
+    ));
+    assert!(has_kind(
+        &matches(lang::typescript(), "===", "if (a === b) {}"),
+        "binary_expression"
+    ));
+    assert!(has_kind(
+        &matches(lang::typescript(), "&&", "if (a && b) {}"),
+        "binary_expression"
+    ));
+    // The keyword case is the one-char instance of the same rule.
+    assert!(has_kind(
+        &matches(lang::typescript(), r"if \*", "if (a == b) {}"),
+        "if_statement"
+    ));
+}
+
+#[test]
+fn named_all_anonymous_child_is_not_a_parent_fragment() {
+    // `()` / `{}` are *named* nodes (`arguments` / `statement_block`) whose leaves are
+    // all anonymous. A parent fragment must span ≥2 children or a single anonymous
+    // *leaf* — never a named child — so matching `()` reports only the `arguments`
+    // node, not a spurious `call_expression` fragment of the same span.
+    let parens = matches(lang::typescript(), "()", "foo();");
+    assert!(has_kind(&parens, "arguments"));
+    assert!(
+        !has_kind(&parens, "call_expression"),
+        "a named all-anon child must not be reported as its parent's fragment"
+    );
+    let braces = matches(lang::typescript(), "{}", "function f() {}");
+    assert!(has_kind(&braces, "statement_block"));
+    assert!(!has_kind(&braces, "function_declaration"));
 }
 
 #[test]
@@ -967,4 +1017,75 @@ fn containment_inner_leading_fragment_at_any_depth() {
         ),
         "INNER must reach a throw nested several levels deep",
     );
+}
+
+#[test]
+fn containment_scales_near_linearly() {
+    // Guards the precomputed containment index (`build_contains_cache`). Before it,
+    // each containment re-scanned every candidate per outer position — O(N²), O(N³)
+    // when nested — so `\{{ \{{ \X = \Y \}} \}}` over a large file took *seconds*. The
+    // index resolves INNER once, turning it near-linear. The 2s bound is deliberately
+    // loose (the real time is tens of ms, even on a slow CI box) so this only fires on
+    // a genuine regression to super-linear scanning, never on timing noise.
+    use std::time::Instant;
+    let mut src = String::from("def f():\n");
+    for i in 0..900 {
+        src.push_str(&format!("    a{i} = b{i} + c{i}\n"));
+    }
+    let t = Instant::now();
+    let ms = matches(lang::python(), r"\{{ \{{ \X = \Y \}} \}}", &src);
+    let elapsed = t.elapsed();
+    assert!(
+        !ms.is_empty(),
+        "the nested containment should match the assignments"
+    );
+    assert!(
+        elapsed.as_secs_f64() < 2.0,
+        "nested containment over 900 statements took {elapsed:?} — expected near-linear; \
+         the containment index likely regressed to a per-position scan",
+    );
+}
+
+#[test]
+fn trailing_tolerance_skips_delimiters_not_closers() {
+    // A pattern whose tail lands inside the last child, just before a statement
+    // terminator (`;`), still matches — the `;` is free, the same trailing tolerance
+    // `return \Y` gets at the top level. Without this, `if (\X) return \Y` (a very
+    // natural pattern) silently matched nothing.
+    assert!(
+        has_kind(
+            &matches(
+                lang::typescript(),
+                r"if (\X) return \Y",
+                "function g(c){ if (c) return foo; }",
+            ),
+            "if_statement",
+        ),
+        "the `;` terminating the return is free trailing context",
+    );
+    // also reaches through a containment INNER (same tolerance there):
+    assert!(has_kind(
+        &matches(
+            lang::typescript(),
+            r"switch (\X) \{{ case \Y: return \Z \}}",
+            "function f(t){ switch (t) { case 1: return 0.5; } }",
+        ),
+        "switch_statement",
+    ));
+    // A *closer* is never skipped: `f(\X` (no `)`) must NOT match `f(a)` — else
+    // `foo(\X)` would creep onto `foo(a).bar()` and the child-alignment invariant
+    // would be lost.
+    assert!(
+        matches(lang::typescript(), r"f(\X", "f(a);").is_empty(),
+        "the `)` closer must not be skipped",
+    );
+    // Top-level matching is unchanged (the tolerance already applied there).
+    assert!(has_kind(
+        &matches(
+            lang::typescript(),
+            r"return \Y",
+            "function g(){ return foo; }"
+        ),
+        "return_statement",
+    ));
 }
