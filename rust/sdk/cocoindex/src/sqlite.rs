@@ -811,29 +811,30 @@ async fn apply_column_actions(
             }
             DiffAction::Insert | DiffAction::Upsert => {
                 if let Some(col) = schema.columns().get(col_name) {
-                    let null = if col.nullable { "" } else { " NOT NULL" };
+                    // Add the column as NULLABLE even when the schema declares it
+                    // NOT NULL: SQLite rejects `ADD COLUMN … NOT NULL` on a table
+                    // that already has rows (no default to backfill), which would
+                    // fail here and leave the table missing a column that
+                    // `upsert_sql` then references. This mirrors the Postgres
+                    // connector, which also adds columns nullable. The NOT NULL
+                    // constraint is only applied on a full table (re)create.
                     run_best_effort(
                         db,
-                        &format!(
-                            "ALTER TABLE {table} ADD COLUMN {col_ident} {}{null}",
-                            col.sqlite_type
-                        ),
+                        &format!("ALTER TABLE {table} ADD COLUMN {col_ident} {}", col.sqlite_type),
                     )
                     .await;
                 }
             }
             DiffAction::Replace => {
-                // SQLite has no `ALTER COLUMN TYPE`; drop then re-add.
+                // SQLite has no `ALTER COLUMN TYPE`; drop then re-add. Re-add as
+                // nullable for the same reason as the Insert/Upsert arm (a NOT
+                // NULL add fails on a populated table).
                 if let Some(col) = schema.columns().get(col_name) {
                     run_best_effort(db, &format!("ALTER TABLE {table} DROP COLUMN {col_ident}"))
                         .await;
-                    let null = if col.nullable { "" } else { " NOT NULL" };
                     run_best_effort(
                         db,
-                        &format!(
-                            "ALTER TABLE {table} ADD COLUMN {col_ident} {}{null}",
-                            col.sqlite_type
-                        ),
+                        &format!("ALTER TABLE {table} ADD COLUMN {col_ident} {}", col.sqlite_type),
                     )
                     .await;
                 }
@@ -1040,6 +1041,11 @@ fn pk_predicate(spec: &TableSpec, fields: &Map<String, JsonValue>) -> Result<Str
 // ---------------------------------------------------------------------------
 
 fn row_state<R: Serialize>(row: &R, schema: &TableSchema) -> Result<Map<String, JsonValue>> {
+    // Reject non-finite floats up front: `serde_json` would turn NaN/±Inf into
+    // JSON null, silently corrupting the value (or failing a NOT NULL column with
+    // a misleading "got null" error).
+    crate::finite::ensure_finite(row)
+        .map_err(|e| Error::engine(format!("SQLite target row has a {e}")))?;
     let value = serde_json::to_value(row)
         .map_err(|e| Error::engine(format!("serialize SQLite target row: {e}")))?;
     let JsonValue::Object(mut fields) = value else {
@@ -1122,9 +1128,11 @@ fn sql_literal(value: &JsonValue, col: &ColumnDef) -> Result<String> {
         return match value {
             JsonValue::Number(n) if n.is_i64() || n.is_u64() => Ok(n.to_string()),
             JsonValue::Bool(b) => Ok(if *b { "1" } else { "0" }.to_string()),
-            JsonValue::Number(n) => Ok(n.to_string()),
+            // A fractional number (e.g. 1.5) must NOT be silently stored — SQLite
+            // affinity would keep it as a REAL in an INTEGER column, violating the
+            // declared schema. Reject it instead.
             _ => Err(Error::engine(format!(
-                "integer column {} requires a number",
+                "integer column {} requires an integer value",
                 col.sqlite_type
             ))),
         };
@@ -1326,6 +1334,16 @@ mod tests {
     fn delete_sql_uses_primary_key_literal() {
         let sql = delete_sql(&spec(schema()), &[JsonValue::from(9)]).unwrap();
         assert_eq!(sql, "DELETE FROM \"items\" WHERE \"id\" = 9");
+    }
+
+    #[test]
+    fn integer_column_rejects_fractional_number() {
+        let col = ColumnDef::new("INTEGER");
+        // Integer values (and bools) are fine.
+        assert_eq!(sql_literal(&JsonValue::from(7), &col).unwrap(), "7");
+        assert_eq!(sql_literal(&JsonValue::from(true), &col).unwrap(), "1");
+        // A fractional number must be rejected, not stored as REAL in an INTEGER column.
+        assert!(sql_literal(&JsonValue::from(1.5), &col).is_err());
     }
 
     #[test]

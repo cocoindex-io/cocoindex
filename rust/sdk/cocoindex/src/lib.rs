@@ -12,6 +12,15 @@ pub mod error;
 #[cfg(feature = "falkordb")]
 pub mod falkordb;
 pub mod file;
+// Rejects non-finite floats before the JSON round-trip in target connectors that
+// serialize rows through `serde_json` (which maps NaN/±Inf to null).
+#[cfg(any(
+    feature = "sqlite",
+    feature = "postgres",
+    feature = "doris",
+    feature = "surrealdb"
+))]
+mod finite;
 pub mod fs;
 #[cfg(feature = "google_drive")]
 pub mod gdrive;
