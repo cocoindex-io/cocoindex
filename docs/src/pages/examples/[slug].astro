@@ -191,8 +191,8 @@ const introItems = [
            strip under a hairline rule. -->
       <section class="hero">
         <div class="pill-row">
-          {ex.tags.slice(0, 4).map((t) => <span class="pill"><span class="dot"></span>{t.label}</span>)}
-          <span class="pill dark"><span class="dot"></span>Production ready</span>
+          {ex.tags.slice(0, 4).map((t) => <span class="t-pill t-pill-lg"><span class="dt"></span>{t.label}</span>)}
+          <span class="t-status t-status-dark"><span class="dt"></span>Production ready</span>
         </div>
 
         <h1 class="hero-h" set:html={titleMarkup(ex.title)} />
@@ -330,10 +330,8 @@ const introItems = [
          from globals.css so example pages carry the same rhythm as docs. */
       body.ex-detail .hero { padding: 32px 0 32px; position: relative; }
       body.ex-detail .hero .pill-row { display: flex; gap: 10px; flex-wrap: wrap; margin: 0 0 20px; }
-      body.ex-detail .hero .pill { display: inline-flex; align-items: center; gap: 8px; font-family: var(--mono); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; padding: 7px 14px; border-radius: 999px; background: var(--cream); border: 1px solid var(--rule); color: var(--maroon); }
-      body.ex-detail .hero .pill .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--coral); flex: none; }
-      body.ex-detail .hero .pill.dark { background: var(--maroon-ink); color: var(--cream); border-color: var(--maroon-ink); }
-      body.ex-detail .hero .pill.dark .dot { background: var(--palm); }
+      /* Hero tags use the shared chip set: .t-pill .t-pill-lg (+ .dt) and the
+         .t-status .t-status-dark "Production ready" flag (@cocoindex/brand/tags.css). */
       body.ex-detail h1.hero-h { font-family: var(--serif); font-weight: 400; font-size: clamp(40px, 4.6vw, 60px); line-height: 1.02; letter-spacing: -0.03em; margin: 0 0 18px; }
       body.ex-detail h1.hero-h em { font-style: italic; color: var(--coral); }
       body.ex-detail .hero .lede { font-family: var(--sans); font-size: clamp(17px, 1.4vw, 20px); font-weight: 400; line-height: 1.5; letter-spacing: -0.005em; color: var(--maroon-ink); max-width: 62ch; margin: 0 0 14px; }

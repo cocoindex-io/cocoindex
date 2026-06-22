@@ -17,7 +17,7 @@ const { ex, href } = Astro.props;
     <h3 set:html={titleMarkup(ex.title + '.')} />
     <p>{ex.description}</p>
     <div class="chips">
-      {ex.tags.map((t) => <span class="chip">{t.label}</span>)}
+      {ex.tags.map((t) => <span class="t-overlay">{t.label}</span>)}
     </div>
     <div class="foot">
       <span>{ex.footMeta}</span>
