@@ -123,6 +123,24 @@ impl Default for UpdateStatus {
 }
 
 impl UpdateStats {
+    /// The coarse [`RunStats`] aggregate derived from *this* snapshot.
+    ///
+    /// Prefer this over a separate `stats_snapshot()` call when you need both the
+    /// detailed and coarse views together: each handle snapshot is taken
+    /// independently, so on a live pipeline two separate calls can observe
+    /// different engine versions. Deriving from one [`UpdateStats`] keeps them
+    /// consistent. `elapsed` is zero here (it is only set by `App::run`).
+    pub fn run_stats(&self) -> RunStats {
+        let total = self.total();
+        RunStats {
+            processed: total.num_processed(),
+            skipped: total.num_unchanged,
+            written: total.num_adds + total.num_reprocesses,
+            deleted: total.num_deletes,
+            elapsed: Duration::ZERO,
+        }
+    }
+
     /// Aggregate stats summed across every component.
     pub fn total(&self) -> ComponentStats {
         let mut total = ComponentStats::default();

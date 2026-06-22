@@ -604,15 +604,23 @@ async fn create_index(
     Ok(())
 }
 
-/// Drop the index if present. A not-found error (already removed externally) is
-/// ignored.
+/// Drop the index if present. An "unknown index" error (already removed
+/// externally) is ignored; any other error (transport, auth, …) propagates so it
+/// is not masked by a later, more confusing failure. Mirrors Python's narrow
+/// `RequestError` swallow.
 async fn drop_index(db: &Valkey, index_name: &str) -> Result<()> {
     let mut conn = db.conn.lock().await;
-    let _: redis::RedisResult<redis::Value> = redis::cmd("FT.DROPINDEX")
+    let result: redis::RedisResult<redis::Value> = redis::cmd("FT.DROPINDEX")
         .arg(index_name)
         .query_async(&mut *conn)
         .await;
-    Ok(())
+    match result {
+        Ok(_) => Ok(()),
+        Err(e) if e.to_string().to_ascii_lowercase().contains("unknown index") => Ok(()),
+        Err(e) => Err(Error::engine(format!(
+            "valkey FT.DROPINDEX {index_name}: {e}"
+        ))),
+    }
 }
 
 /// Delete every hash key under the index prefix via a `SCAN`/`DEL` loop.

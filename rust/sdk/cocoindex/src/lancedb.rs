@@ -426,6 +426,7 @@ impl LanceTableTarget {
             name: name.clone(),
             column: column.to_string(),
             with_position: options.with_position,
+            language: options.language,
             managed_by: self.managed_by,
         };
         declare_target_state(
@@ -1221,6 +1222,9 @@ pub struct FtsIndexOptions {
     /// Record token positions (enables phrase queries) at the cost of a larger
     /// index. Defaults to `false`.
     pub with_position: bool,
+    /// Stemming/stop-word language (e.g. `"English"`, `"French"`). `None` uses
+    /// LanceDB's default (English), matching the Python connector.
+    pub language: Option<String>,
 }
 
 /// Spec for a LanceDB vector index (an attachment of a table). Used as both the
@@ -1249,6 +1253,8 @@ pub struct FtsIndexSpec {
     column: String,
     with_position: bool,
     #[serde(default)]
+    language: Option<String>,
+    #[serde(default)]
     managed_by: ManagedBy,
 }
 
@@ -1259,6 +1265,9 @@ struct VectorIndexAction {
     /// Index name, retained for the drop path when `spec` is `None`.
     name: String,
     table_name: String,
+    /// Retained (from `prev` on the drop path) so a user-managed index is never
+    /// dropped by CocoIndex — it doesn't own that DDL.
+    managed_by: ManagedBy,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1266,6 +1275,8 @@ struct FtsIndexAction {
     spec: Option<FtsIndexSpec>,
     name: String,
     table_name: String,
+    /// See [`VectorIndexAction::managed_by`].
+    managed_by: ManagedBy,
 }
 
 struct VectorIndexHandler {
@@ -1292,16 +1303,20 @@ impl TargetHandler<VectorIndexSpec> for VectorIndexHandler {
         if desired.is_none() && prev.is_empty() && !prev_may_be_missing {
             return Ok(None);
         }
-        let (name, table_name) = desired
+        let (name, table_name, managed_by) = desired
             .as_ref()
-            .map(|s| (s.name.clone(), s.table_name.clone()))
-            .or_else(|| prev.first().map(|p| (p.name.clone(), p.table_name.clone())))
+            .map(|s| (s.name.clone(), s.table_name.clone(), s.managed_by))
+            .or_else(|| {
+                prev.first()
+                    .map(|p| (p.name.clone(), p.table_name.clone(), p.managed_by))
+            })
             .unwrap_or_default();
         Ok(Some(TargetReconcileOutput {
             action: TargetAction::Update(VectorIndexAction {
                 spec: desired.clone(),
                 name,
                 table_name,
+                managed_by,
             }),
             sink: self.sink(),
             tracking_record: desired,
@@ -1357,16 +1372,20 @@ impl TargetHandler<FtsIndexSpec> for FtsIndexHandler {
         if desired.is_none() && prev.is_empty() && !prev_may_be_missing {
             return Ok(None);
         }
-        let (name, table_name) = desired
+        let (name, table_name, managed_by) = desired
             .as_ref()
-            .map(|s| (s.name.clone(), s.table_name.clone()))
-            .or_else(|| prev.first().map(|p| (p.name.clone(), p.table_name.clone())))
+            .map(|s| (s.name.clone(), s.table_name.clone(), s.managed_by))
+            .or_else(|| {
+                prev.first()
+                    .map(|p| (p.name.clone(), p.table_name.clone(), p.managed_by))
+            })
             .unwrap_or_default();
         Ok(Some(TargetReconcileOutput {
             action: TargetAction::Update(FtsIndexAction {
                 spec: desired.clone(),
                 name,
                 table_name,
+                managed_by,
             }),
             sink: self.sink(),
             tracking_record: desired,
@@ -1429,11 +1448,11 @@ async fn apply_vector_index(db: &LanceDatabase, action: VectorIndexAction) -> Re
     use lancedb::index::Index;
     use lancedb::index::vector::{IvfHnswPqIndexBuilder, IvfPqIndexBuilder};
 
-    // User-managed indexes: CocoIndex does not own the DDL.
-    if let Some(spec) = &action.spec {
-        if spec.managed_by.is_user() {
-            return Ok(());
-        }
+    // User-managed indexes: CocoIndex owns neither their creation nor their
+    // drop. Guard on the action's `managed_by` (carried from `prev` on the drop
+    // path) so an undeclared user-managed index is not dropped.
+    if action.managed_by.is_user() {
+        return Ok(());
     }
     if !table_exists(db, &action.table_name).await? {
         return Ok(());
@@ -1502,10 +1521,10 @@ async fn apply_fts_index(db: &LanceDatabase, action: FtsIndexAction) -> Result<(
     use lancedb::index::Index;
     use lancedb::index::scalar::FtsIndexBuilder;
 
-    if let Some(spec) = &action.spec {
-        if spec.managed_by.is_user() {
-            return Ok(());
-        }
+    // See `apply_vector_index`: user-managed indexes are never created or dropped
+    // by CocoIndex; guard on the action's `managed_by` so the drop path respects it.
+    if action.managed_by.is_user() {
+        return Ok(());
     }
     if !table_exists(db, &action.table_name).await? {
         return Ok(());
@@ -1521,7 +1540,12 @@ async fn apply_fts_index(db: &LanceDatabase, action: FtsIndexAction) -> Result<(
         return drop_index_if_exists(&table, &action.name).await;
     };
 
-    let params = FtsIndexBuilder::default().with_position(spec.with_position);
+    let mut params = FtsIndexBuilder::default().with_position(spec.with_position);
+    if let Some(language) = &spec.language {
+        params = params
+            .language(language)
+            .map_err(|e| Error::engine(format!("lancedb fts index language {language:?}: {e}")))?;
+    }
     table
         .create_index(&[spec.column.as_str()], Index::FTS(params))
         .name(spec.name.clone())

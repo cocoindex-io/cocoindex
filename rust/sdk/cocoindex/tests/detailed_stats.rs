@@ -79,6 +79,35 @@ fn update_stats_total_aggregates_components() {
 }
 
 #[test]
+fn update_stats_run_stats_derives_coarse_view() {
+    let mut by_component = std::collections::BTreeMap::new();
+    by_component.insert(
+        "a".to_string(),
+        ComponentStats {
+            num_unchanged: 4,
+            num_adds: 3,
+            num_reprocesses: 2,
+            num_deletes: 1,
+            num_errors: 5, // errors are excluded from processed/written
+            num_execution_starts: 15,
+        },
+    );
+    let stats = UpdateStats {
+        by_component,
+        status: UpdateStatus::Ready,
+    };
+    let run = stats.run_stats();
+    // Same mapping as the engine→RunStats conversion: skipped=unchanged,
+    // written=adds+reprocesses, deleted=deletes, processed=their sum.
+    assert_eq!(run.skipped, 4);
+    assert_eq!(run.written, 5); // adds(3) + reprocesses(2)
+    assert_eq!(run.deleted, 1);
+    assert_eq!(run.processed, 10); // 4 + 3 + 2 + 1
+    assert_eq!(run.processed, run.written + run.skipped + run.deleted);
+    assert!(run.elapsed.is_zero());
+}
+
+#[test]
 fn update_status_default_is_running() {
     assert_eq!(UpdateStatus::default(), UpdateStatus::Running);
     assert_eq!(UpdateStats::default().status, UpdateStatus::Running);
