@@ -95,13 +95,13 @@ impl Prefilter {
                         }
                     }
                 }
-                // A regex literal is required only on a `One` metavar: an `Optional`
-                // node may be absent (so its regex isn't required — extracting it
-                // would be a false negative, e.g. `f(\(A?:/^x/\))` matching `f()`),
-                // and `Many` ignores the regex entirely.
+                // A regex literal is required on `One` and on `OneOrMore` (a `+` run
+                // is ≥1 node *each* matching `re`, so the literal must occur). It is
+                // NOT required on `Optional` or `Many`, which can be empty (extracting
+                // it would be a false negative, e.g. `f(\(A?:/^x/\))` matching `f()`).
                 PatternItem::Meta {
                     regex: Some(re),
-                    card: Cardinality::One,
+                    card: Cardinality::One | Cardinality::OneOrMore,
                     ..
                 } => {
                     for alts in regex_required_literals(re.as_str()) {
