@@ -1,33 +1,9 @@
-/* Palette + scales lifted verbatim from design_guidelines/CocoIndex Docs.html
-   so the rendered site matches the mock 1:1. When you tweak a value, keep
-   it in sync with the brand guidelines sheet next door. */
+/* Shared design tokens (:root) — from @cocoindex/brand (packages/brand/tokens.json),
+   the single source of truth across home, blog, and docs. */
+@import '@cocoindex/brand/tokens.css';
+
+/* Docs-specific layout tokens (3-pane shell). Brand tokens come from the import above. */
 :root {
-  --maroon: #532638;
-  --maroon-deep: #401E2B;
-  --maroon-ink: #2A121B;
-  --coral: #BE5133;
-  --peach: #E59A63;
-  --cream: #FCF3D8;
-  --cream-soft: #F6F4E9;
-  --pink: #FB6A76;
-  --palm: #27E62B;      /* live signal · dark bg only */
-  --palm-ink: #16A534;  /* live signal · light bg (a11y) */
-  --berry: #6A1E23;
-  --paper: #FBF6E8;
-  --rule: rgba(42, 18, 27, 0.14);
-  --rule-strong: rgba(42, 18, 27, 0.35);
-  --muted: rgba(42, 18, 27, 0.58);
-  /* Code-block exceptions — only valid inside fenced code on maroon-ink.
-     Single source of truth: design_guidelines/ui/color.html § 04 — Code. */
-  --gold:     #F5D76E;  /* numbers + True/False/None */
-  --lavender: #C9B8F5;  /* types + classes */
-  --taupe:    #978A74;  /* comments (italic) */
-  --stone:    #C5B7A0;  /* punctuation */
-
-  --serif: "Source Serif 4", ui-serif, Georgia, serif;
-  --sans: "Inter", -apple-system, BlinkMacSystemFont, "Helvetica Neue", Helvetica, Arial, sans-serif;
-  --mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
-
   --side: 280px;
   --toc: 240px;
 }
