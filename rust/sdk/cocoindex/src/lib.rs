@@ -18,7 +18,9 @@ pub mod file;
     feature = "sqlite",
     feature = "postgres",
     feature = "doris",
-    feature = "surrealdb"
+    feature = "surrealdb",
+    feature = "neo4j",
+    feature = "falkordb"
 ))]
 mod finite;
 pub mod fs;
