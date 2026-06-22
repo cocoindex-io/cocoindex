@@ -117,10 +117,17 @@ impl Indexed {
 pub struct Pattern {
     items: Vec<PatternItem>,
     cfg: LangConfig,
-    /// Whether the `(pi, li)` fail-memo is sound. It isn't when forward-threaded
-    /// bindings can change whether a `(pi, li)` matches: a repeated metavar name,
-    /// or a containment (`\{{ \}}`), whose INNER binds names per descendant.
+    /// Whether the `(pi, li)` fail-memo is sound *globally*. It isn't when
+    /// forward-threaded bindings can change whether a `(pi, li)` matches: a repeated
+    /// metavar name, or a containment (`\{{ \}}`), whose INNER is matched against many
+    /// descendants with **different `stops`**.
     use_memo: bool,
+    /// No repeated metavar name → bindings never change whether a `(pi, li)` matches.
+    /// Lets the containment use a *fresh per-descendant* memo for INNER (the descendant's
+    /// `stops` are fixed, so it's sound there) even when `use_memo` is off for the whole
+    /// pattern — so INNER's leading-tolerance starts collapse to one pass, like the
+    /// top-level. (Repeated names — the "backreference" case — keep it off.)
+    no_dups: bool,
 }
 
 impl Pattern {
@@ -131,11 +138,13 @@ impl Pattern {
         let has_contains = items
             .iter()
             .any(|it| matches!(it, PatternItem::ContainsOpen { .. }));
-        let use_memo = !detect_dup_names(&items) && !has_contains;
+        let no_dups = !detect_dup_names(&items);
+        let use_memo = no_dups && !has_contains;
         Ok(Pattern {
             items,
             cfg: cfg.clone(),
             use_memo,
+            no_dups,
         })
     }
 
@@ -202,10 +211,12 @@ impl Pattern {
                 idx: &idx,
                 source,
                 use_memo: self.use_memo,
+                no_dups: self.no_dups,
                 bound: HashMap::new(),
                 fail: HashSet::new(),
                 stops,
                 matched_end: 0,
+                tolerant_end: None,
             };
 
             // Start positions: each child-start; a leaf candidate has none, so use
@@ -429,6 +440,9 @@ struct Ctx<'a, 's> {
     idx: &'a Indexed,
     source: &'s str,
     use_memo: bool,
+    /// No repeated names (see `Pattern::no_dups`) — lets `inner_matches_candidate`
+    /// turn on a fresh per-descendant memo while the global `use_memo` stays off.
+    no_dups: bool,
     bound: HashMap<String, Capture<'s>>,
     fail: HashSet<(usize, usize)>,
     /// Valid end positions for the **whole pattern** when matching against the
@@ -444,6 +458,12 @@ struct Ctx<'a, 's> {
     /// Set to the stop position when the top-level base case succeeds, so the caller
     /// learns where the (possibly partial) match ended.
     matched_end: usize,
+    /// While matching a containment's INNER against a descendant candidate, the INNER
+    /// end (`close`). The base case then applies the same whole-node/fragment trailing
+    /// tolerance (via `stops`) to INNER as to the whole pattern — so a bare keyword
+    /// `\{{ throw \}}` matches its `throw_statement`, just like a top-level `throw`.
+    /// `None` otherwise (every other sub-pattern end must land exactly on `hi`).
+    tolerant_end: Option<usize>,
 }
 
 impl<'s> Ctx<'_, 's> {
@@ -461,13 +481,17 @@ impl<'s> Ctx<'_, 's> {
             // so caching the states that lead here stays sound across start
             // positions. A containment-inner sub-pattern (`end < items.len()`) must
             // still land exactly on `hi`.
-            if end == self.items.len() {
+            if end == self.items.len() || self.tolerant_end == Some(end) {
+                // Whole pattern, or a containment INNER matched against a candidate
+                // (`tolerant_end`): the match may stop at any of the candidate's
+                // child-end boundaries (`stops`), not only at the very end.
                 if li == hi || self.stops.contains(&li) {
                     self.matched_end = li;
                     return true;
                 }
                 return false;
             }
+            // Any other sub-pattern end must land exactly on `hi`.
             return li == hi;
         }
         if self.use_memo && self.fail.contains(&(pi, li)) {
@@ -630,7 +654,13 @@ impl<'s> Ctx<'_, 's> {
         let inner = pi + 1; // first INNER item
         let cont = close + 1; // first outer item after `\}}`
         let idx = self.idx;
-        for sp in &idx.spans_by_start[li] {
+        // `li` can be the end-exclusive position (`== leaves.len()`, e.g. a preceding
+        // `\*` consumed everything up to the candidate end) — there's no node starting
+        // there to bracket, so nothing contains INNER.
+        let Some(spans) = idx.spans_by_start.get(li) else {
+            return false;
+        };
+        for sp in spans {
             let next = sp.end_leaf + 1;
             // the region must be exactly one direct-child node (not a multi-child
             // span like a root `module` covering all its statements)
@@ -672,7 +702,7 @@ impl<'s> Ctx<'_, 's> {
             // Snapshot is the *pre-containment* bindings (captures inside INNER haven't
             // happened yet) — usually empty or tiny, so the clone is cheap.
             let snapshot = self.bound.clone();
-            if self.dp(inner, inner_end, cand.start_leaf, cand.end_leaf + 1)
+            if self.inner_matches_candidate(inner, inner_end, cand)
                 && self.dp(cont, cont_end, reg_hi, hi)
             {
                 return true;
@@ -687,6 +717,59 @@ impl<'s> Ctx<'_, 's> {
         }
         self.bound = snapshot;
         false
+    }
+
+    /// Does INNER (`items[lo..hi_items]`) match the descendant candidate `cand` as a
+    /// **whole node or a valid (child-aligned) fragment** — the *same* whole-node /
+    /// leading+trailing tolerance a top-level match gives, so a bare keyword
+    /// `\{{ throw \}}` matches its `throw_statement`, and `\{{ fn clone(self) \}}`
+    /// matches a `pub fn clone(self){}`. `cand`'s child-end boundaries become the
+    /// trailing-tolerance `stops` and `tolerant_end` flags the INNER end so the base
+    /// case honors them; the leading-tolerance starts are `cand`'s child-starts. (Every
+    /// start/stop is a child boundary, so any match is child-aligned by construction —
+    /// no ≥2-vs-anon classification needed; a single-named-child fragment is redundantly
+    /// covered by that child's own candidate.)
+    ///
+    /// Cost: a **fresh per-descendant fail-memo** (sound because `cand`'s `stops` are
+    /// fixed; on only when `no_dups`) makes the leading-tolerance starts share work —
+    /// O(candidate leaves · INNER) total, the same as the old single whole-node DP. So
+    /// no complexity increase, *except* the repeated-name ("backreference") case, where
+    /// the memo is unsound and off → the starts cost an extra O(children) factor.
+    ///
+    /// On a hit INNER's bindings stay (threaded to the continuation); on a miss the DP
+    /// self-unwinds (and the caller's snapshot wraps INNER + cont anyway).
+    fn inner_matches_candidate(&mut self, lo: usize, hi_items: usize, cand: &Span) -> bool {
+        let cand_hi = cand.end_leaf + 1;
+        let stops: HashSet<usize> = cand
+            .child_bounds
+            .iter()
+            .map(|&(_, e)| e + 1)
+            .chain(std::iter::once(cand_hi))
+            .collect();
+        // leading-tolerance starts: the candidate's start + each child start.
+        let starts: Vec<usize> = std::iter::once(cand.start_leaf)
+            .chain(cand.child_bounds.iter().map(|&(s, _)| s))
+            .collect();
+        let saved_stops = std::mem::replace(&mut self.stops, stops);
+        let saved_tol = self.tolerant_end.replace(hi_items);
+        // A fresh memo for *this* descendant (its `stops` are fixed → sound); taken/
+        // restored so nesting is fine. Off when the pattern repeats a name.
+        let saved_fail = std::mem::take(&mut self.fail);
+        let saved_use_memo = std::mem::replace(&mut self.use_memo, self.no_dups);
+        let mut ok = false;
+        for a in starts {
+            let snap = self.bound.clone();
+            if self.dp(lo, hi_items, a, cand_hi) {
+                ok = true;
+                break;
+            }
+            self.bound = snap; // undo bindings before trying the next start
+        }
+        self.use_memo = saved_use_memo;
+        self.fail = saved_fail;
+        self.stops = saved_stops;
+        self.tolerant_end = saved_tol;
+        ok
     }
 
     /// `\(X?\)` — match zero or one node. Greedy: try one node first, then none
