@@ -139,12 +139,7 @@ const introItems = [
     <script type="application/ld+json" set:html={JSON.stringify(breadcrumbLd)} />
 
     <link rel="icon" href={`${base}/img/favicon.ico`} />
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      rel="stylesheet"
-      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&family=Source+Serif+4:ital,wght@0,400;1,400&display=swap"
-    />
+    <!-- Fonts self-hosted via @fontsource in src/styles/globals.css (GUIDELINE §5.2). -->
   </head>
   <body class="ex-detail">
     <Topbar mobileSheetId="mobileSheet" />
@@ -457,14 +452,14 @@ const introItems = [
       body.ex-detail .code-bar .name { margin-left: 8px; }
       body.ex-detail .code-bar .lang { margin-left: auto; opacity: 0.65; }
       body.ex-detail .code pre { margin: 0; padding: 16px 18px 20px; overflow-x: auto; white-space: pre; tab-size: 4; color: var(--cream); }
-      body.ex-detail .code .kw { color: #E59A63; }
-      body.ex-detail .code .dec { color: #E59A63; }
-      body.ex-detail .code .fn { color: #FF9B8A; }
-      body.ex-detail .code .str { color: #8EF09E; }
-      body.ex-detail .code .num { color: #D4B86A; }
-      body.ex-detail .code .tp { color: #C9A0FF; }
+      body.ex-detail .code .kw { color: var(--code-keyword); }
+      body.ex-detail .code .dec { color: var(--code-decorator); }
+      body.ex-detail .code .fn { color: var(--code-function); }
+      body.ex-detail .code .str { color: var(--code-string); }
+      body.ex-detail .code .num { color: var(--code-number); }
+      body.ex-detail .code .tp { color: var(--code-type); }
       body.ex-detail .code .dim { opacity: 0.48; }
-      body.ex-detail .code .comment { color: #978A74; font-style: italic; opacity: 0.75; }
+      body.ex-detail .code .comment { color: var(--code-comment); font-style: italic; opacity: 0.75; }
       body.ex-detail .code.terminal .prompt::before { content: "$ "; color: var(--peach); }
 
       body.ex-detail .callout { border: 1px solid var(--rule-strong); border-radius: 8px; padding: 14px 18px; background: var(--cream); display: flex; flex-direction: column; gap: 6px; font-size: 13px; line-height: 1.5; }
