@@ -44,7 +44,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'text-embedding',
     title: 'Semantic Search *101*',
-    index: '01 / 06',
+    index: '01 / 07',
     category: 'search',
     thumbLabel: 'Markdown · embeddings',
     motif: MOTIFS.textVec,
@@ -61,7 +61,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'index-codebase',
     title: 'Index Your *Codebase*',
-    index: '02 / 06',
+    index: '02 / 07',
     category: 'search',
     thumbLabel: 'Code · Tree-sitter',
     motif: MOTIFS.codeChunks,
@@ -78,7 +78,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'multi-codebase-summarization',
     title: 'Multi-codebase *Summarization*',
-    index: '03 / 06',
+    index: '03 / 07',
     category: 'llm',
     thumbLabel: 'Code · structured output',
     motif: MOTIFS.repos,
@@ -97,7 +97,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'pdf-to-markdown',
     title: 'PDF → *Markdown*',
-    index: '04 / 06',
+    index: '04 / 07',
     category: 'ingest',
     thumbLabel: 'PDF · custom blocks',
     motif: MOTIFS.pdfToMd,
@@ -113,7 +113,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'podcast-to-knowledge-graph',
     title: 'Podcasts → *Knowledge Graph*',
-    index: '05 / 06',
+    index: '05 / 07',
     category: 'agents',
     thumbLabel: 'YouTube · LLM + graph',
     motif: MOTIFS.graph,
@@ -131,7 +131,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'docs-to-knowledge-graph',
     title: 'Docs → *Knowledge Graph*',
-    index: '06 / 06',
+    index: '06 / 07',
     category: 'agents',
     thumbLabel: 'Markdown · LLM + Neo4j',
     motif: MOTIFS.graph,
@@ -144,6 +144,24 @@ export const examples: ExampleCard[] = [
     ],
     footMeta: '~20 min',
     sourceSlug: 'docs_to_knowledge_graph',
+  },
+  {
+    slug: 'meeting-notes-to-knowledge-graph',
+    title: 'Meeting Notes → *Knowledge Graph*',
+    index: '07 / 07',
+    category: 'agents',
+    thumbLabel: 'Google Drive · LLM + Neo4j',
+    motif: MOTIFS.graph,
+    description: 'Turn Google Drive meeting notes into a Neo4j knowledge graph — LLM extraction of organizers, attendees, and tasks, plus embedding-based person entity resolution, kept in sync as notes change.',
+    tags: [
+      { kind: 'src', label: 'Google Drive' },
+      { kind: 'llm', label: 'Any LLM' },
+      { kind: 'ops', label: 'Entity resolution' },
+      { kind: 'tgt', label: 'Neo4j' },
+      { kind: 'lvl', label: 'Intermediate' },
+    ],
+    footMeta: '~25 min',
+    sourceSlug: 'meeting_notes_graph_neo4j',
   },
 ];
 
@@ -169,6 +187,7 @@ export const POPULAR: Array<{ slug: string; label: string; count: string }> = [
   { slug: 'pdf-to-markdown', label: 'PDF → Markdown', count: '★' },
   { slug: 'podcast-to-knowledge-graph', label: 'Podcasts → Knowledge Graph', count: '★' },
   { slug: 'docs-to-knowledge-graph', label: 'Docs → Knowledge Graph', count: '★' },
+  { slug: 'meeting-notes-to-knowledge-graph', label: 'Meeting Notes → Knowledge Graph', count: '★' },
 ];
 
 // Full catalog of runnable examples in the cocoindex monorepo, used to build the
@@ -206,6 +225,7 @@ export const EXAMPLE_CATALOG_GROUPS: ExampleCatalogGroup[] = [
       { dir: 'pdf_to_markdown', docs: 'pdf-to-markdown', title: 'PDF → Markdown', description: 'Incrementally convert a folder of local PDFs to Markdown with docling.', run: RUN_MAIN },
       { dir: 'conversation_to_knowledge', docs: 'podcast-to-knowledge-graph', title: 'Podcasts → Knowledge Graph', description: 'Turn YouTube podcasts into a SurrealDB knowledge graph: diarized transcription, two-step LLM extraction, and embedding-based entity resolution.', run: 'cocoindex update conv_knowledge.app' },
       { dir: 'docs_to_knowledge_graph', docs: 'docs-to-knowledge-graph', title: 'Docs → Knowledge Graph', description: 'Turn a folder of Markdown docs into a Neo4j concept graph: LLM-extracted (subject, predicate, object) triples, declared as nodes and edges that stay in sync.', run: RUN_MAIN },
+      { dir: 'meeting_notes_graph_neo4j', docs: 'meeting-notes-to-knowledge-graph', title: 'Meeting Notes → Knowledge Graph', description: 'Turn Google Drive meeting notes into a Neo4j knowledge graph: LLM extraction of organizers, attendees, and tasks, plus embedding-based person entity resolution.', run: RUN_MAIN },
     ],
   },
   {
@@ -247,7 +267,6 @@ export const EXAMPLE_CATALOG_GROUPS: ExampleCatalogGroup[] = [
     title: 'Knowledge graphs',
     blurb: 'Extract entities and relationships into graph databases that stay in sync.',
     entries: [
-      { dir: 'meeting_notes_graph_neo4j', title: 'Meeting Notes → Knowledge Graph · Neo4j', description: 'Extract structured info from Google Drive meeting notes into a Neo4j knowledge graph.' },
       { dir: 'meeting_notes_graph_falkordb', title: 'Meeting Notes → Knowledge Graph · FalkorDB', description: 'Extract structured info from Google Drive meeting notes into a FalkorDB knowledge graph.' },
     ],
   },
