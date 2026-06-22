@@ -480,8 +480,10 @@ impl<'s> Ctx<'_, 's> {
                 Cardinality::One => {
                     self.match_single(pi, end, li, hi, name.as_deref(), regex.as_ref())
                 }
-                // Many ignores the regex (sibling runs are out of the single-node scope).
-                Cardinality::Many => self.match_multi(pi, end, li, hi, name.as_deref()),
+                // Many/OneOrMore ignore the regex (sibling runs are out of the
+                // single-node scope). `OneOrMore` is `Many` with a non-empty run.
+                Cardinality::Many => self.match_multi(pi, end, li, hi, name.as_deref(), false),
+                Cardinality::OneOrMore => self.match_multi(pi, end, li, hi, name.as_deref(), true),
                 Cardinality::Optional => {
                     self.match_optional(pi, end, li, hi, name.as_deref(), regex.as_ref())
                 }
@@ -565,11 +567,16 @@ impl<'s> Ctx<'_, 's> {
         li: usize,
         hi: usize,
         name: Option<&str>,
+        nonempty: bool,
     ) -> bool {
         let idx = self.idx;
         let reach = reachable(li, hi, idx); // descending => greedy longest first
         for next in reach {
-            // a same-level `*` run must be a single parent's sibling slice
+            // `\+` (one-or-more) requires at least one node; `\*` allows the empty run
+            if nonempty && next == li {
+                continue;
+            }
+            // a same-level `*`/`+` run must be a single parent's sibling slice
             if !idx.same_level(li, next) {
                 continue;
             }

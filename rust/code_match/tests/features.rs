@@ -137,6 +137,33 @@ fn optional_metavar() {
 }
 
 #[test]
+fn one_or_more_metavar() {
+    // `\(NAME+\)` / `\+` — one or more same-level siblings; like `\*` but non-empty.
+    let src = "f(a, b); g();";
+    // named: captures the (non-empty) argument run
+    let ms = matches(lang::typescript(), r"f(\(ARGS+\))", src);
+    assert_eq!(cap(&ms, "ARGS").as_deref(), Some("a, b"));
+    // anonymous short form `\+` matches the multi-arg call
+    assert!(has_kind(
+        &matches(lang::typescript(), r"f(\+)", src),
+        "call_expression"
+    ));
+    // `+` must REJECT the zero-arg call `g()` (the run is empty)…
+    assert!(
+        !has_kind(
+            &matches(lang::typescript(), r"g(\(A+\))", src),
+            "call_expression"
+        ),
+        "`+` must require at least one node",
+    );
+    // …whereas `*` accepts it — the difference between the two.
+    assert!(has_kind(
+        &matches(lang::typescript(), r"g(\(A*\))", src),
+        "call_expression"
+    ));
+}
+
+#[test]
 fn anonymous_metavars() {
     // `\_` single + `\*` anonymous many: matches but captures nothing.
     let src = "obj.method(1, 2, 3);";
