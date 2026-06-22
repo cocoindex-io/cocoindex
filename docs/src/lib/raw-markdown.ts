@@ -120,7 +120,13 @@ function buildGuard(slug: string, lead: string, extra = ''): string {
   return (
     `> ${lead}\n` +
     `>\n` +
-    `> Source: ${pageUrl(slug)} · Docs index: ${LLMS_TXT_URL} · Agent skill: ${SKILL_MD_URL}${extra}`
+    `> Source: ${pageUrl(slug)} · Docs index: ${LLMS_TXT_URL} · Agent skill: ${SKILL_MD_URL}${extra}\n` +
+    `>\n` +
+    `> v0→v1 quick map — if you reach for these v0 symbols, stop and use the v1 form: ` +
+    `\`@cocoindex.flow_def\`/\`FlowBuilder\` → \`coco.App\` + a \`@coco.fn\` main function; ` +
+    `\`add_collector()\`/\`collect()\`/\`export()\` → declare target states (\`declare_row\`, \`declare_file\`); ` +
+    `\`cocoindex.sources/functions/targets.*\` → connector APIs (\`localfs.walk_dir\`, \`coco.ops.*\`, \`postgres.declare_table_target\`). ` +
+    `Full mapping + API reference: ${SKILL_MD_URL}.`
   );
 }
 

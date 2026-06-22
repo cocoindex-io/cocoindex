@@ -30,7 +30,16 @@ You [declare the transformation logic](https://cocoindex.io/docs/programming_gui
 
 ## Setup
 
-- A running Kafka broker. Any broker the [`confluent_kafka`](https://github.com/confluentinc/confluent-kafka-python) client can reach works — a local `localhost:9092`, or a managed one like [StreamNative](https://streamnative.io/) with SASL.
+- A running Kafka broker. Any broker the [`confluent_kafka`](https://github.com/confluentinc/confluent-kafka-python) client can reach works — a local `localhost:9092`, or a managed one like [StreamNative](https://streamnative.io/) with SASL. If you don't have one, a single-container [Redpanda](https://redpanda.com/) (Kafka-API compatible) is the quickest local broker:
+
+  ```sh
+  docker run -d --name redpanda -p 9092:9092 redpandadata/redpanda:latest \
+    redpanda start --mode dev-container --smp 1 \
+    --kafka-addr PLAINTEXT://0.0.0.0:9092 --advertise-kafka-addr PLAINTEXT://localhost:9092
+
+  # CocoIndex never creates topics — create the one it produces into:
+  docker exec redpanda rpk topic create cocoindex-csv-rows
+  ```
 
 - Install CocoIndex with the Kafka extra:
 

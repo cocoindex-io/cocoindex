@@ -144,8 +144,8 @@ Edit the `app` definition in `main.py`:
 
 ```python
 app = coco.App(
-    app_main,
     coco.AppConfig(name="MultiCodebaseSummarization"),
+    app_main,
     root_dir=pathlib.Path("./your_projects_dir"),
     output_dir=pathlib.Path("./your_output_dir"),
 )
