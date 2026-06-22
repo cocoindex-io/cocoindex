@@ -105,6 +105,10 @@
       "sourcePath": "contributing/setup_dev_environment.md",
       "reviewedTs": 1780444800
     },
+    "examples/csv-to-kafka": {
+      "sourcePath": "example-posts/csv-to-kafka.md",
+      "reviewedTs": 1782129600
+    },
     "examples/docs-to-knowledge-graph": {
       "sourcePath": "example-posts/docs-to-knowledge-graph.md",
       "reviewedTs": 1781265600
