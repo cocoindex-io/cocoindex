@@ -224,6 +224,74 @@
     "connectors/turbopuffer": {
       "sourcePath": "connectors/turbopuffer.mdx",
       "reviewedTs": 1780444800
+    },
+    "examples/audio-to-text": {
+      "sourcePath": "example-posts/audio-to-text.md",
+      "reviewedTs": 1782129600
+    },
+    "examples/hackernews-trending-topics": {
+      "sourcePath": "example-posts/hackernews-trending-topics.md",
+      "reviewedTs": 1782129600
+    },
+    "examples/paper-metadata": {
+      "sourcePath": "example-posts/paper-metadata.md",
+      "reviewedTs": 1782129600
+    },
+    "examples/patient-intake-baml": {
+      "sourcePath": "example-posts/patient-intake-baml.md",
+      "reviewedTs": 1782129600
+    },
+    "examples/patient-intake-dspy": {
+      "sourcePath": "example-posts/patient-intake-dspy.md",
+      "reviewedTs": 1782129600
+    },
+    "examples/postgres-source": {
+      "sourcePath": "example-posts/postgres-source.md",
+      "reviewedTs": 1782129600
+    },
+    "examples/files-transform": {
+      "sourcePath": "example-posts/files-transform.md",
+      "reviewedTs": 1782129600
+    },
+    "examples/kafka-to-lancedb": {
+      "sourcePath": "example-posts/kafka-to-lancedb.md",
+      "reviewedTs": 1782129600
+    },
+    "examples/entire-session-search": {
+      "sourcePath": "example-posts/entire-session-search.md",
+      "reviewedTs": 1782129600
+    },
+    "examples/image-search-colpali": {
+      "sourcePath": "example-posts/image-search-colpali.md",
+      "reviewedTs": 1782129600
+    },
+    "examples/text-embedding-qdrant": {
+      "sourcePath": "example-posts/text-embedding-qdrant.md",
+      "reviewedTs": 1782129600
+    },
+    "examples/text-embedding-lancedb": {
+      "sourcePath": "example-posts/text-embedding-lancedb.md",
+      "reviewedTs": 1782129600
+    },
+    "examples/text-embedding-turbopuffer": {
+      "sourcePath": "example-posts/text-embedding-turbopuffer.md",
+      "reviewedTs": 1782129600
+    },
+    "examples/amazon-s3-embedding": {
+      "sourcePath": "example-posts/amazon-s3-embedding.md",
+      "reviewedTs": 1782129600
+    },
+    "examples/google-drive-embedding": {
+      "sourcePath": "example-posts/google-drive-embedding.md",
+      "reviewedTs": 1782129600
+    },
+    "examples/oci-object-storage-embedding": {
+      "sourcePath": "example-posts/oci-object-storage-embedding.md",
+      "reviewedTs": 1782129600
+    },
+    "examples/code-embedding-lancedb": {
+      "sourcePath": "example-posts/code-embedding-lancedb.md",
+      "reviewedTs": 1782129600
     }
   }
 }
