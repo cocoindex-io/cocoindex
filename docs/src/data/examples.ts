@@ -44,7 +44,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'text-embedding',
     title: 'Semantic Search *101*',
-    index: '01 / 08',
+    index: '01 / 09',
     category: 'search',
     thumbLabel: 'Markdown · embeddings',
     motif: MOTIFS.textVec,
@@ -61,7 +61,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'index-codebase',
     title: 'Index Your *Codebase*',
-    index: '02 / 08',
+    index: '02 / 09',
     category: 'search',
     thumbLabel: 'Code · Tree-sitter',
     motif: MOTIFS.codeChunks,
@@ -78,7 +78,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'multi-codebase-summarization',
     title: 'Multi-codebase *Summarization*',
-    index: '03 / 08',
+    index: '03 / 09',
     category: 'llm',
     thumbLabel: 'Code · structured output',
     motif: MOTIFS.repos,
@@ -97,7 +97,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'pdf-to-markdown',
     title: 'PDF → *Markdown*',
-    index: '04 / 08',
+    index: '04 / 09',
     category: 'ingest',
     thumbLabel: 'PDF · custom blocks',
     motif: MOTIFS.pdfToMd,
@@ -113,7 +113,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'podcast-to-knowledge-graph',
     title: 'Podcasts → *Knowledge Graph*',
-    index: '05 / 08',
+    index: '05 / 09',
     category: 'agents',
     thumbLabel: 'YouTube · LLM + graph',
     motif: MOTIFS.graph,
@@ -131,7 +131,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'docs-to-knowledge-graph',
     title: 'Docs → *Knowledge Graph*',
-    index: '06 / 08',
+    index: '06 / 09',
     category: 'agents',
     thumbLabel: 'Markdown · LLM + Neo4j',
     motif: MOTIFS.graph,
@@ -148,7 +148,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'meeting-notes-to-knowledge-graph',
     title: 'Meeting Notes → *Knowledge Graph*',
-    index: '07 / 08',
+    index: '07 / 09',
     category: 'agents',
     thumbLabel: 'Google Drive · LLM + Neo4j',
     motif: MOTIFS.graph,
@@ -166,7 +166,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'csv-to-kafka',
     title: 'CSV → *Kafka*',
-    index: '08 / 08',
+    index: '08 / 09',
     category: 'ingest',
     thumbLabel: 'CSV · live Kafka target',
     motif: MOTIFS.pdfToMd,
@@ -179,6 +179,23 @@ export const examples: ExampleCard[] = [
     ],
     footMeta: '~12 min',
     sourceSlug: 'csv_to_kafka',
+  },
+  {
+    slug: 'pdf-embedding',
+    title: 'Semantic Search over *PDFs*',
+    index: '09 / 09',
+    category: 'search',
+    thumbLabel: 'PDF · docling + embeddings',
+    motif: MOTIFS.textVec,
+    description: 'Convert local PDFs to Markdown with docling on a GPU runner, chunk, embed, and store the vectors in Postgres — then query in natural language. A vector index over your documents.',
+    tags: [
+      { kind: 'src', label: 'PDF' },
+      { kind: 'tgt', label: 'Postgres' },
+      { kind: 'ops', label: 'docling + embeddings' },
+      { kind: 'lvl', label: 'Starter' },
+    ],
+    footMeta: '~12 min',
+    sourceSlug: 'pdf_embedding',
   },
 ];
 
@@ -206,6 +223,7 @@ export const POPULAR: Array<{ slug: string; label: string; count: string }> = [
   { slug: 'docs-to-knowledge-graph', label: 'Docs → Knowledge Graph', count: '★' },
   { slug: 'meeting-notes-to-knowledge-graph', label: 'Meeting Notes → Knowledge Graph', count: '★' },
   { slug: 'csv-to-kafka', label: 'CSV → Kafka', count: '★' },
+  { slug: 'pdf-embedding', label: 'Semantic Search over PDFs', count: '★' },
 ];
 
 // Full catalog of runnable examples in the cocoindex monorepo, used to build the
@@ -245,6 +263,7 @@ export const EXAMPLE_CATALOG_GROUPS: ExampleCatalogGroup[] = [
       { dir: 'docs_to_knowledge_graph', docs: 'docs-to-knowledge-graph', title: 'Docs → Knowledge Graph', description: 'Turn a folder of Markdown docs into a Neo4j concept graph: LLM-extracted (subject, predicate, object) triples, declared as nodes and edges that stay in sync.', run: RUN_MAIN },
       { dir: 'meeting_notes_graph_neo4j', docs: 'meeting-notes-to-knowledge-graph', title: 'Meeting Notes → Knowledge Graph', description: 'Turn Google Drive meeting notes into a Neo4j knowledge graph: LLM extraction of organizers, attendees, and tasks, plus embedding-based person entity resolution.', run: RUN_MAIN },
       { dir: 'csv_to_kafka', docs: 'csv-to-kafka', title: 'CSV → Kafka', description: 'Watch a folder of CSV files and publish each row as a JSON message to a Kafka topic: declarative target states, only-changed-rows produces, and live mode.', run: 'cocoindex update -L main.py' },
+      { dir: 'pdf_embedding', docs: 'pdf-embedding', title: 'Semantic Search over PDFs', description: 'Convert local PDFs to Markdown with docling (on a GPU runner), chunk, embed, and store the vectors in Postgres (pgvector); natural-language query demo.', run: RUN_MAIN },
     ],
   },
   {
@@ -255,7 +274,6 @@ export const EXAMPLE_CATALOG_GROUPS: ExampleCatalogGroup[] = [
       { dir: 'text_embedding_lancedb', title: 'Text Embedding · LanceDB', description: 'Embed local Markdown files and store the chunks + vectors in LanceDB; semantic-search demo.' },
       { dir: 'text_embedding_turbopuffer', title: 'Text Embedding · Turbopuffer', description: 'Embed local Markdown files into a Turbopuffer namespace; semantic-search demo.' },
       { dir: 'code_embedding_lancedb', title: 'Code Embedding · LanceDB', description: 'Extract code chunks from Python/Rust/TOML/Markdown and store code + vectors in LanceDB; semantic code search.' },
-      { dir: 'pdf_embedding', title: 'PDF Embedding', description: 'Convert local PDFs to Markdown, chunk, embed, and store in Postgres (pgvector); query demo.' },
       { dir: 'entire_session_search', title: 'Entire Session Search', description: 'Semantic search over AI coding sessions captured by Entire — transcripts, prompts, and context summaries into Postgres (pgvector).' },
       { dir: 'amazon_s3_embedding', title: 'Amazon S3 Embedding', description: 'Embed Markdown files from an S3 bucket into Postgres (pgvector); semantic-search demo.' },
       { dir: 'gdrive_text_embedding', title: 'Google Drive Text Embedding', description: 'Embed text files from Google Drive into Postgres (pgvector); query demo.' },
