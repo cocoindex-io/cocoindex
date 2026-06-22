@@ -221,6 +221,14 @@ impl ComponentRunOutcome {
         self.has_exception |= other.has_exception;
         self.logic_deps.extend(other.logic_deps);
     }
+
+    /// Consume the outcome and yield its accumulated logic-dependency set
+    /// (own fp ∪ all descendants, post-#2142). Used by the live machinery to
+    /// surface a root build's full subtree deps out of `run_in_background` —
+    /// a root has `parent_context: None`, so no readiness guard rolls them up.
+    pub(crate) fn into_logic_deps(self) -> HashSet<Fingerprint> {
+        self.logic_deps
+    }
 }
 
 struct ComponentBgChildReadinessInner {
@@ -566,7 +574,9 @@ impl<Prof: EngineProfile> Component<Prof> {
             parent_ctx.host_ctx().clone(),
             on_error.clone(),
         )?;
-        self.run_in_background(processor, child_ctx, on_error, pre_execute_check)
+        // Foreground mount has a parent context, so its outcome rolls up via
+        // the readiness guard — no outcome sink needed.
+        self.run_in_background(processor, child_ctx, on_error, pre_execute_check, None)
             .await
     }
 
@@ -704,6 +714,12 @@ impl<Prof: EngineProfile> Component<Prof> {
         context: ComponentProcessorContext<Prof>,
         on_error: Option<OnError>,
         pre_execute_check: Option<Box<dyn FnOnce() -> bool + Send>>,
+        // Optional side-channel for a root build (no parent readiness guard) to
+        // surface its full subtree logic deps. Orthogonal to the readiness/error
+        // future the handle awaits — used by the live machinery to persist the
+        // aggregate `S` after a scan. `None` for components that roll up to a
+        // parent guard instead.
+        outcome_sink: Option<tokio::sync::oneshot::Sender<ComponentRunOutcome>>,
     ) -> Result<ComponentExecutionHandle> {
         // TODO: Skip building and reuse cached result if the component is already built and up to date.
 
@@ -737,6 +753,9 @@ impl<Prof: EngineProfile> Component<Prof> {
                     drop(self);
                     if let Some(guard) = child_readiness_guard {
                         guard.resolve(ComponentRunOutcome::default());
+                    } else if let Some(sink) = outcome_sink {
+                        // Receiver treats a dropped/empty send as "no deps" (failure-safe).
+                        let _ = sink.send(ComponentRunOutcome::default());
                     }
                     return Ok(());
                 }
@@ -782,8 +801,14 @@ impl<Prof: EngineProfile> Component<Prof> {
             drop(processor);
             drop(context);
             drop(self);
+            // A non-root component rolls its outcome up to the parent's
+            // readiness guard. A root build (live `update_full` / `run_op`) has
+            // no guard; if a sink was provided, hand it the full subtree deps.
+            // Guard and sink are mutually exclusive (guard ⇔ parent_context).
             if let Some(guard) = child_readiness_guard {
                 guard.resolve(outcome);
+            } else if let Some(sink) = outcome_sink {
+                let _ = sink.send(outcome);
             }
             task_result
         });

@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::future::Future;
 
+use std::collections::HashSet;
+
 use crate::engine::component::{
     Component, ComponentBgChildReadinessChildGuard, ComponentExecutionHandle, OnError,
 };
@@ -12,6 +14,7 @@ use crate::prelude::*;
 use crate::state::stable_path::{StableKey, StablePath};
 use crate::state::target_state_path::TargetStatePath;
 use cocoindex_utils::error::{SharedError, SharedResult};
+use cocoindex_utils::fingerprint::Fingerprint;
 
 use tokio::sync::oneshot;
 
@@ -577,13 +580,22 @@ impl<Prof: EngineProfile> LiveComponentController<Prof> {
             ),
         );
 
+        let (deps_tx, deps_rx) = oneshot::channel();
         let handle = self
             .component
             .clone()
-            .run_in_background(processor, context, on_error, None)
+            .run_in_background(processor, context, on_error, None, Some(deps_tx))
             .await?;
 
         handle.ready().await?;
+
+        // The root build has no parent readiness guard; its full subtree logic
+        // deps arrive via the sink (sent before the spawned task returns, so
+        // already available once `ready()` resolves). Recompute-and-replace so
+        // a fingerprint whose code was edited away drops out of the aggregate.
+        if let Ok(outcome) = deps_rx.await {
+            persist_logic_deps_replace(&self.component, &outcome.into_logic_deps()).await?;
+        }
 
         Ok(())
     }
@@ -1146,6 +1158,79 @@ async fn drain_task_body<Prof: EngineProfile>(
     }
 }
 
+/// Framework-reserved key under which a live component persists the aggregate
+/// logic-dependency set `S` of its processed subtree (own fp ∪ all descendants)
+/// in the `Live` keyspace. Read back on a later run to decide whether the
+/// processing logic is unchanged. Uses the `Symbol` namespace so it cannot
+/// collide with a user committed-state key.
+fn logic_deps_state_key() -> StableKey {
+    StableKey::Symbol(Arc::from("sys/live_logic_deps"))
+}
+
+/// Serialize the aggregate set deterministically (sorted) for stable storage.
+fn encode_logic_deps(deps: &HashSet<Fingerprint>) -> Result<Vec<u8>> {
+    let mut sorted: Vec<Fingerprint> = deps.iter().copied().collect();
+    sorted.sort();
+    Ok(rmp_serde::to_vec_named(&sorted)?)
+}
+
+fn decode_logic_deps(bytes: &[u8]) -> Result<Vec<Fingerprint>> {
+    Ok(rmp_serde::from_slice(bytes)?)
+}
+
+/// Persist `deps` as the new aggregate `S`, replacing any prior value. Used by
+/// `update_full`, which recomputes the whole subtree authoritatively — so a
+/// fingerprint whose code was edited away simply drops out of the set.
+async fn persist_logic_deps_replace<Prof: EngineProfile>(
+    component: &Component<Prof>,
+    deps: &HashSet<Fingerprint>,
+) -> Result<()> {
+    let encoded = encode_logic_deps(deps)?;
+    component
+        .app_ctx()
+        .app_store()
+        .write_user_state_standalone(
+            component.stable_path(),
+            db_schema::StateKind::Live,
+            &logic_deps_state_key(),
+            &encoded,
+        )
+        .await
+}
+
+/// Extend the aggregate `S` with `deps`, used by an incremental `update` op: a
+/// streamed item is an existing item on the next restart, so its subtree code
+/// must be in `S`. Skips the write when `deps` is already covered (steady
+/// state: the same functions process every item), keeping incremental ops cheap.
+async fn persist_logic_deps_extend<Prof: EngineProfile>(
+    component: &Component<Prof>,
+    deps: &HashSet<Fingerprint>,
+) -> Result<()> {
+    let app_store = component.app_ctx().app_store();
+    let key = logic_deps_state_key();
+    let existing = app_store
+        .read_user_state(component.stable_path(), db_schema::StateKind::Live, &key)
+        .await?;
+    let mut merged: HashSet<Fingerprint> = match &existing {
+        Some(bytes) => decode_logic_deps(bytes)?.into_iter().collect(),
+        None => HashSet::new(),
+    };
+    // Common case: every new dep is already stored — nothing to persist.
+    if deps.iter().all(|fp| merged.contains(fp)) {
+        return Ok(());
+    }
+    merged.extend(deps.iter().copied());
+    let encoded = encode_logic_deps(&merged)?;
+    app_store
+        .write_user_state_standalone(
+            component.stable_path(),
+            db_schema::StateKind::Live,
+            &key,
+            &encoded,
+        )
+        .await
+}
+
 /// Execute a single op. Returns `Result<()>` from the underlying child
 /// `run_in_background` / `delete` flow.
 async fn run_op<Prof: EngineProfile>(
@@ -1182,10 +1267,18 @@ async fn run_op<Prof: EngineProfile>(
                     None,
                 ),
             );
+            let (deps_tx, deps_rx) = oneshot::channel();
             let inner_handle = child
-                .run_in_background(processor, context, on_error, None)
+                .run_in_background(processor, context, on_error, None, Some(deps_tx))
                 .await?;
-            inner_handle.ready().await
+            inner_handle.ready().await?;
+            // Extend the aggregate `S` with this item's subtree deps. `component`
+            // is the live root that owns the `Live` keyspace (a child build's
+            // deps roll up to the root's persisted set).
+            if let Ok(outcome) = deps_rx.await {
+                persist_logic_deps_extend(component, &outcome.into_logic_deps()).await?;
+            }
+            Ok(())
         }
         Op::Delete { on_error } => {
             let context = child.new_processor_context_for_delete(
