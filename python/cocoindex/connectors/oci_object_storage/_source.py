@@ -59,11 +59,6 @@ _OBJECT_EVENT_PREFIX = "com.oraclecloud.objectstorage."
 # concrete need emerges (per AGENTS.md "Minimize API surface").
 _SKEW_TOLERANCE = timedelta(seconds=5)
 
-# Committed-state key under which the live view records the user-declared
-# ``logic_version`` after a successful full scan. Read back on a later run to
-# decide whether the startup scan can be skipped. See ``list_objects``.
-_SCAN_VERSION_KEY = "__coco_oci_scan_version__"
-
 
 def _parse_event_time(s: Any) -> datetime | None:
     """Parse an OCI event ``eventTime`` (ISO-8601). Returns ``None`` on
@@ -264,7 +259,7 @@ class OCIWalker:
     _path_matcher: file.FilePathMatcher
     _max_file_size: int | None
     _live_stream: LiveStream[bytes] | None
-    _logic_version: str | None
+    _durable_stream: bool
 
     def __init__(
         self,
@@ -276,7 +271,7 @@ class OCIWalker:
         path_matcher: file.FilePathMatcher | None = None,
         max_file_size: int | None = None,
         live_stream: LiveStream[bytes] | None = None,
-        logic_version: str | None = None,
+        durable_stream: bool = False,
     ) -> None:
         self._client = client
         self._namespace = namespace
@@ -285,7 +280,7 @@ class OCIWalker:
         self._path_matcher = path_matcher or file.MatchAllFilePathMatcher()
         self._max_file_size = max_file_size
         self._live_stream = live_stream
-        self._logic_version = logic_version
+        self._durable_stream = durable_stream
 
     @property
     def namespace(self) -> str:
@@ -380,12 +375,13 @@ class _LiveOCIItems:
        ``send()`` calls parked on ``_ready_complete``.
     6. Await the stream task; it runs until cancellation.
 
-    Skip-scan mode (opt-in via ``OCIWalker(logic_version=...)``): when a prior
-    run committed the same ``logic_version``, steps 1+3 are replaced — the scan
-    is skipped and ``cutoff`` is ``None`` so the durable stream's replayed
+    Skip-scan mode (opt-in via ``OCIWalker(durable_stream=True)``): when the
+    framework reports the processing logic unchanged since the last committed
+    scan (``subscriber.processing_unchanged()``), steps 1+3 are replaced — the
+    scan is skipped and ``cutoff`` is ``None`` so the durable stream's replayed
     backlog (resumed from its committed cursor) is processed rather than
-    dropped. The committed version is (re)written after step 4 on any run that
-    actually scans.
+    dropped. The logic-change signal is framework-computed; the connector only
+    asserts the stream is durable.
     """
 
     __slots__ = ("_walker", "_live_stream", "_watch_guard")
@@ -408,11 +404,13 @@ class _LiveOCIItems:
             await self._watch(subscriber)
 
     async def _watch(self, subscriber: LiveMapSubscriber[str, OCIFile]) -> None:
-        logic_version = self._walker._logic_version
-        skip_scan = False
-        if logic_version is not None:
-            stored = await subscriber.read_committed_state(_SCAN_VERSION_KEY)
-            skip_scan = stored == logic_version
+        # Skip the startup scan only when the user asserts a durable stream AND
+        # the framework reports the processing logic unchanged since the last
+        # committed scan. The framework persists the subtree's logic-dependency
+        # set after each committed scan, so no manual version is needed.
+        skip_scan = (
+            self._walker._durable_stream and await subscriber.processing_unchanged()
+        )
 
         # With no scan, the wall-clock cutoff must not fire: the durable stream
         # (resumed from its committed cursor) replays the downtime backlog, and
@@ -425,10 +423,6 @@ class _LiveOCIItems:
             if not skip_scan:
                 await subscriber.update_all()
             await subscriber.mark_ready()
-            # Record the version only after mark_ready (the scan has committed),
-            # so a later run skips only when the bootstrap durably landed.
-            if not skip_scan and logic_version is not None:
-                await subscriber.write_committed_state(_SCAN_VERSION_KEY, logic_version)
             adapter.mark_ready_complete()
             await stream_task
         finally:
@@ -646,7 +640,7 @@ def list_objects(
     path_matcher: file.FilePathMatcher | None = None,
     max_file_size: int | None = None,
     live_stream: LiveStream[bytes] | None = None,
-    logic_version: str | None = None,
+    durable_stream: bool = False,
 ) -> OCIWalker:
     """List objects in an OCI bucket and yield file entries.
 
@@ -666,14 +660,15 @@ def list_objects(
             path, after prefix stripping).
         max_file_size: Skip objects larger than this size in bytes.
         live_stream: Optional ``LiveStream[bytes]`` of OCI Object Storage events.
-        logic_version: Opt into skipping the startup full scan on reruns. When
-            set, the live view records this version after a successful scan and,
-            on a later run, skips the scan if the recorded version matches —
-            relying on the durable stream to replay the downtime backlog from
-            its committed cursor. You MUST bump this whenever your processing
-            logic changes (otherwise stale state is silently kept), and the
-            stream MUST be durable (e.g. a Kafka consumer with a stable
-            ``group_id`` and committed offsets). Leave unset (``None``) to always
+        durable_stream: Opt into skipping the startup full scan on reruns. When
+            ``True``, the scan is skipped on a later run if the framework reports
+            the processing logic unchanged since the last committed scan —
+            relying on the durable stream to replay the downtime backlog from its
+            committed cursor. The logic-change check is automatic (no manual
+            version to bump). You are responsible for the durability guarantee:
+            the stream MUST resume from a committed cursor (e.g. a Kafka consumer
+            with a stable ``group_id`` and committed offsets); otherwise the
+            downtime backlog is lost. Leave ``False`` (the default) to always
             scan on startup.
     """
     return OCIWalker(
@@ -684,5 +679,5 @@ def list_objects(
         path_matcher=path_matcher,
         max_file_size=max_file_size,
         live_stream=live_stream,
-        logic_version=logic_version,
+        durable_stream=durable_stream,
     )

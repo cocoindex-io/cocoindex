@@ -201,9 +201,6 @@ from cocoindex.connectors.oci_object_storage import (  # noqa: E402
     list_objects,
     read,
 )
-from cocoindex.connectors.oci_object_storage._source import (  # noqa: E402
-    _SCAN_VERSION_KEY,
-)
 from cocoindex.resources.file import PatternFilePathMatcher  # noqa: E402
 
 
@@ -360,16 +357,17 @@ async def test_oci_exists_false_on_404(
 class _MockMapSubscriber:
     """Records LiveMapSubscriber calls; auto-resolved handles.
 
-    ``committed`` backs the ``read_committed_state`` / ``write_committed_state``
-    primitives; pass a shared dict to simulate state persisting across runs.
+    ``processing_unchanged`` is the framework-computed logic-change signal the
+    skip-scan path gates on; pass ``True`` to simulate a rerun whose processing
+    logic is unchanged since the last committed scan.
     """
 
-    def __init__(self, committed: dict[Any, Any] | None = None) -> None:
+    def __init__(self, processing_unchanged: bool = False) -> None:
         self.update_all_called = False
         self.mark_ready_called = False
         self.updates: list[tuple[str, OCIFile]] = []
         self.deletes: list[str] = []
-        self.committed: dict[Any, Any] = {} if committed is None else committed
+        self._processing_unchanged = processing_unchanged
 
     async def update_all(self) -> None:
         self.update_all_called = True
@@ -377,11 +375,8 @@ class _MockMapSubscriber:
     async def mark_ready(self) -> None:
         self.mark_ready_called = True
 
-    async def read_committed_state(self, key: Any) -> Any | None:
-        return self.committed.get(key)
-
-    async def write_committed_state(self, key: Any, value: Any) -> None:
-        self.committed[key] = value
+    async def processing_unchanged(self) -> bool:
+        return self._processing_unchanged
 
     async def update(self, key: str, value: OCIFile) -> ReadyAwaitable:
         self.updates.append((key, value))
@@ -720,73 +715,70 @@ async def test_oci_live_view_cross_bucket_event_filtered(
 
 
 # ===========================================================================
-# Live view — skip-full-scan on unchanged logic (logic_version)
+# Live view — skip-full-scan on unchanged logic (durable_stream)
 # ===========================================================================
 
 
 @pytest.mark.asyncio
-async def test_oci_live_view_no_logic_version_always_scans(
+async def test_oci_live_view_not_durable_always_scans(
     oci_client: MockObjectStorageClient,
 ) -> None:
-    """Without ``logic_version`` the startup scan always runs and nothing is
-    persisted (behavior unchanged)."""
+    """Without ``durable_stream`` the startup scan always runs, even when the
+    processing logic is unchanged — the durability opt-in gates the skip."""
     oci_client.put("a.txt", b"a")
     stream = _ManualLiveStream()
     walker = list_objects(oci_client, "ns", "bucket", live_stream=stream)
 
-    sub = _MockMapSubscriber()
+    sub = _MockMapSubscriber(processing_unchanged=True)
     items = _live_items(walker)
     watch_task = asyncio.create_task(items.watch(sub))  # type: ignore[arg-type]
 
     await _drive_to_ready(stream, sub)
 
     assert sub.update_all_called
-    assert sub.committed == {}
 
     stream.end()
     await watch_task
 
 
 @pytest.mark.asyncio
-async def test_oci_live_view_first_run_scans_and_records_version(
+async def test_oci_live_view_durable_scans_when_logic_changed(
     oci_client: MockObjectStorageClient,
 ) -> None:
-    """First run with ``logic_version`` set (nothing committed yet) scans, then
-    records the version once the scan has committed."""
+    """With ``durable_stream=True`` but the logic changed (or never scanned),
+    ``processing_unchanged()`` is False, so the startup scan still runs."""
     oci_client.put("a.txt", b"a")
     stream = _ManualLiveStream()
     walker = list_objects(
-        oci_client, "ns", "bucket", live_stream=stream, logic_version="v1"
+        oci_client, "ns", "bucket", live_stream=stream, durable_stream=True
     )
 
-    sub = _MockMapSubscriber()
+    sub = _MockMapSubscriber(processing_unchanged=False)
     items = _live_items(walker)
     watch_task = asyncio.create_task(items.watch(sub))  # type: ignore[arg-type]
 
     await _drive_to_ready(stream, sub)
 
-    assert sub.update_all_called
-    assert sub.committed == {_SCAN_VERSION_KEY: "v1"}
+    assert sub.update_all_called  # logic changed (or first run) → full scan
 
     stream.end()
     await watch_task
 
 
 @pytest.mark.asyncio
-async def test_oci_live_view_skips_scan_when_version_matches(
+async def test_oci_live_view_durable_skips_scan_when_unchanged(
     oci_client: MockObjectStorageClient,
 ) -> None:
-    """A rerun whose committed version matches skips the scan, and the cutoff is
-    disabled so the replayed backlog (here a far-past event) is still processed.
-    """
+    """With ``durable_stream=True`` and the logic unchanged, the scan is skipped
+    and the cutoff is disabled so the replayed backlog (here a far-past event)
+    is still processed."""
     oci_client.put("a.txt", b"a")
     stream = _ManualLiveStream()
     walker = list_objects(
-        oci_client, "ns", "bucket", live_stream=stream, logic_version="v1"
+        oci_client, "ns", "bucket", live_stream=stream, durable_stream=True
     )
 
-    # Simulate a prior run having bootstrapped at "v1".
-    sub = _MockMapSubscriber(committed={_SCAN_VERSION_KEY: "v1"})
+    sub = _MockMapSubscriber(processing_unchanged=True)
     items = _live_items(walker)
     watch_task = asyncio.create_task(items.watch(sub))  # type: ignore[arg-type]
 
@@ -799,31 +791,6 @@ async def test_oci_live_view_skips_scan_when_version_matches(
     # dispatched (the durable stream's replayed backlog is authoritative).
     await stream.send_event(_event("ns", "bucket", "a.txt", event_time=_FAR_PAST))
     assert sub.updates and sub.updates[-1][0] == "a.txt"
-
-    stream.end()
-    await watch_task
-
-
-@pytest.mark.asyncio
-async def test_oci_live_view_rescans_when_version_changed(
-    oci_client: MockObjectStorageClient,
-) -> None:
-    """A rerun whose ``logic_version`` differs from the committed one rescans and
-    records the new version."""
-    oci_client.put("a.txt", b"a")
-    stream = _ManualLiveStream()
-    walker = list_objects(
-        oci_client, "ns", "bucket", live_stream=stream, logic_version="v2"
-    )
-
-    sub = _MockMapSubscriber(committed={_SCAN_VERSION_KEY: "v1"})
-    items = _live_items(walker)
-    watch_task = asyncio.create_task(items.watch(sub))  # type: ignore[arg-type]
-
-    await _drive_to_ready(stream, sub)
-
-    assert sub.update_all_called  # logic changed → full scan
-    assert sub.committed == {_SCAN_VERSION_KEY: "v2"}
 
     stream.end()
     await watch_task
