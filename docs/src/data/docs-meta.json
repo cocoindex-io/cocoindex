@@ -113,6 +113,10 @@
       "sourcePath": "example-posts/index-codebase.md",
       "reviewedTs": 1781092800
     },
+    "examples/meeting-notes-to-knowledge-graph": {
+      "sourcePath": "example-posts/meeting-notes-to-knowledge-graph.md",
+      "reviewedTs": 1782129600
+    },
     "examples/multi-codebase-summarization": {
       "sourcePath": "example-posts/multi-codebase-summarization.md",
       "reviewedTs": 1781092800
