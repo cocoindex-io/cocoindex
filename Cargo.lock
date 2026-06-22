@@ -1994,6 +1994,7 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "chrono",
+ "cocoindex_code_match",
  "cocoindex_core",
  "cocoindex_macros",
  "cocoindex_ops_text",
@@ -2026,9 +2027,51 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "tree-sitter",
  "uuid",
  "walkdir",
  "wiremock",
+]
+
+[[package]]
+name = "cocoindex_code_match"
+version = "999.0.0"
+dependencies = [
+ "aho-corasick",
+ "cocoindex_utils",
+ "regex",
+ "regex-syntax",
+ "tree-sitter",
+ "tree-sitter-bash",
+ "tree-sitter-c",
+ "tree-sitter-c-sharp",
+ "tree-sitter-cmake",
+ "tree-sitter-cpp",
+ "tree-sitter-css",
+ "tree-sitter-elm",
+ "tree-sitter-fortran",
+ "tree-sitter-go",
+ "tree-sitter-hcl",
+ "tree-sitter-html",
+ "tree-sitter-java",
+ "tree-sitter-javascript",
+ "tree-sitter-json",
+ "tree-sitter-julia",
+ "tree-sitter-kotlin-ng",
+ "tree-sitter-pascal",
+ "tree-sitter-php",
+ "tree-sitter-python",
+ "tree-sitter-r",
+ "tree-sitter-ruby",
+ "tree-sitter-rust",
+ "tree-sitter-scala",
+ "tree-sitter-sequel",
+ "tree-sitter-solidity",
+ "tree-sitter-swift",
+ "tree-sitter-toml-ng",
+ "tree-sitter-typescript",
+ "tree-sitter-xml",
+ "tree-sitter-yaml",
 ]
 
 [[package]]
@@ -2126,6 +2169,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "bytes",
+ "cocoindex_code_match",
  "cocoindex_core",
  "cocoindex_ops_text",
  "cocoindex_py_utils",
@@ -2136,6 +2180,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "tree-sitter",
  "uuid",
 ]
 

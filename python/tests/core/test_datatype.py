@@ -1,6 +1,6 @@
 import dataclasses
 from collections.abc import Mapping, Sequence
-from typing import Annotated, NamedTuple
+from typing import Annotated, Any, NamedTuple
 
 import numpy as np
 from numpy.typing import NDArray
@@ -60,6 +60,39 @@ def test_ndarray_int64_no_dim() -> None:
     assert result.nullable is False
     assert get_origin(result.core_type) == np.ndarray
     assert get_args(result.core_type)[1] == np.dtype[np.int64]
+
+
+def test_ndarray_pep695_type_alias() -> None:
+    """numpy>=2.5 defines ``numpy.typing.NDArray`` as a PEP 695 ``type`` alias
+    (``typing.TypeAliasType``) instead of a plain generic alias, so unwrapping
+    must resolve the alias to recover ``numpy.ndarray`` and its dtype.
+
+    Regression for https://github.com/cocoindex-io/cocoindex-code/issues/198.
+    """
+    import typing
+    from typing import get_args, get_origin
+
+    type_alias_type = getattr(typing, "TypeAliasType", None)
+    if type_alias_type is None:
+        import pytest
+
+        pytest.skip("PEP 695 type aliases require Python 3.12+")
+
+    ScalarT = typing.TypeVar("ScalarT", bound=np.generic)
+    # Mirror numpy>=2.5: ``type NDArray[ScalarT] = np.ndarray[Any, np.dtype[ScalarT]]``.
+    # Built dynamically (the value/alias are runtime objects, not static types).
+    alias_value: Any = np.ndarray[tuple[Any, ...], np.dtype[ScalarT]]  # type: ignore[valid-type]
+    ndarray_alias: Any = type_alias_type("NDArray", alias_value, type_params=(ScalarT,))
+
+    marker = object()
+    typ: Any = Annotated[ndarray_alias[np.float32], marker]
+    result = analyze_type_info(typ)
+    assert isinstance(result.variant, SequenceType)
+    assert result.variant.elem_type == np.float32
+    assert result.nullable is False
+    assert get_origin(result.core_type) == np.ndarray
+    assert get_args(result.core_type)[1] == np.dtype[np.float32]
+    assert marker in result.annotations
 
 
 def test_nullable_ndarray() -> None:

@@ -34,10 +34,14 @@ use cocoindex_core::engine::component::OnError;
 use cocoindex_core::engine::live_component::LiveComponentController;
 use cocoindex_core::state::stable_path::{StableKey, StablePath};
 
+use serde::Serialize;
+use serde::de::DeserializeOwned;
+
 use crate::app::AppInner;
 use crate::ctx::Ctx;
 use crate::error::{Error, Result};
 use crate::profile::{BoxedProcessor, RustProfile, Value};
+use crate::user_state::{IntoStateKey, decode_state, encode_state};
 
 type CoreError = cocoindex_utils::error::Error;
 
@@ -292,6 +296,49 @@ impl LiveComponentOperator {
     pub fn is_live(&self) -> bool {
         self.controller.is_live()
     }
+
+    /// Read this live component's committed state for `key`, or `None` if it has
+    /// none yet. Callable from `process_live` — e.g. before the first
+    /// `update_full` — to decide whether a startup full scan can be skipped
+    /// (a durable connector that persisted a bootstrap flag + logic version).
+    ///
+    /// This reads the live keyspace, isolated from the state that
+    /// [`Ctx::use_state`](crate::Ctx::use_state) writes in `process()`, and does
+    /// not participate in any commit, so it is safe in the non-committing
+    /// `process_live` context. Pair it with [`write_committed_state`].
+    ///
+    /// [`write_committed_state`]: LiveComponentOperator::write_committed_state
+    pub async fn read_committed_state<K: IntoStateKey, T: DeserializeOwned>(
+        &self,
+        key: K,
+    ) -> Result<Option<T>> {
+        let key = key.into_state_key();
+        let raw = self
+            .controller
+            .read_committed_state(&key)
+            .await
+            .map_err(engine_err)?;
+        raw.map(|bytes| decode_state(&bytes)).transpose()
+    }
+
+    /// Commit `value` under `key` in this live component's persistent state, read
+    /// back by [`read_committed_state`] on a later run. Written independently of
+    /// any component build's flush, so the live machinery can persist a bootstrap
+    /// flag / logic version without going through [`Ctx::use_state`].
+    ///
+    /// [`read_committed_state`]: LiveComponentOperator::read_committed_state
+    /// [`Ctx::use_state`]: crate::Ctx::use_state
+    pub async fn write_committed_state<K: IntoStateKey, T: Serialize>(
+        &self,
+        key: K,
+        value: &T,
+    ) -> Result<()> {
+        let key = key.into_state_key();
+        self.controller
+            .write_committed_state(&key, encode_state(value)?)
+            .await
+            .map_err(engine_err)
+    }
 }
 
 /// Internal constructor used by `Ctx::mount_live`. Kept here so the operator's
@@ -371,6 +418,97 @@ impl<K: Display, V: Send + 'static> LiveMapSubscriber<K, V> {
     pub fn is_live(&self) -> bool {
         self.operator.is_live()
     }
+
+    /// Read this feed's committed state for `key` (see
+    /// [`LiveComponentOperator::read_committed_state`]).
+    pub async fn read_committed_state<Key: IntoStateKey, T: DeserializeOwned>(
+        &self,
+        key: Key,
+    ) -> Result<Option<T>> {
+        self.operator.read_committed_state(key).await
+    }
+
+    /// Commit `value` under `key` for this feed (see
+    /// [`LiveComponentOperator::write_committed_state`]).
+    pub async fn write_committed_state<Key: IntoStateKey, T: Serialize>(
+        &self,
+        key: Key,
+        value: &T,
+    ) -> Result<()> {
+        self.operator.write_committed_state(key, value).await
+    }
+}
+
+/// Enforces the single-active-subscriber contract for a [`LiveMapFeed::watch`]
+/// feed.
+///
+/// The live feeds consumed by [`crate::Ctx::mount_each_live`] are
+/// single-subscriber: a `watch()` typically owns an exclusive underlying
+/// resource (a broker consumer subscription, an OS file watch, a single
+/// in-memory change channel) that cannot be safely fanned out to two concurrent
+/// callers — two subscriptions would race one consumer's offset commits. A feed
+/// holds one guard and enters it at the top of `watch()`; a second concurrent
+/// `watch()` returns an error instead of silently corrupting the first:
+///
+/// ```ignore
+/// struct MyFeed { watch_guard: SingleWatcherGuard, /* ... */ }
+///
+/// #[async_trait]
+/// impl LiveMapFeed<String, Vec<u8>> for MyFeed {
+///     async fn watch(&self, subscriber: LiveMapSubscriber<String, Vec<u8>>) -> Result<()> {
+///         let _token = self.watch_guard.enter()?;
+///         // ... body ...
+///     }
+/// }
+/// ```
+///
+/// The flag resets when the returned token drops — on normal return, error, or
+/// cancellation (a cancelled `await` inside `watch()` unwinds through the
+/// token's `Drop`). This guard only enforces single-*concurrent*-entry; it does
+/// not by itself make a feed re-watchable, since a feed may also consume a
+/// one-shot resource (a change channel, an event stream) that is not restored on
+/// drop. A plain atomic flag (no lock) suffices because the framework's live
+/// consumer drives `watch()` on a single task.
+#[derive(Debug)]
+pub struct SingleWatcherGuard {
+    label: String,
+    active: std::sync::atomic::AtomicBool,
+}
+
+impl SingleWatcherGuard {
+    /// Create a guard. `label` names the feed in the error raised on a second
+    /// concurrent `watch()`.
+    pub fn new(label: impl Into<String>) -> Self {
+        Self {
+            label: label.into(),
+            active: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    /// Mark the feed as being watched, returning a token that clears the flag on
+    /// drop. Errors if a watch is already active.
+    pub fn enter(&self) -> Result<SingleWatcherToken<'_>> {
+        if self.active.swap(true, std::sync::atomic::Ordering::AcqRel) {
+            return Err(Error::engine(format!(
+                "{} supports a single active watch() at a time.",
+                self.label
+            )));
+        }
+        Ok(SingleWatcherToken { flag: &self.active })
+    }
+}
+
+/// RAII token from [`SingleWatcherGuard::enter`]; clears the watching flag on drop.
+#[derive(Debug)]
+#[must_use = "the watch flag clears when this token drops; hold it for the whole watch() body"]
+pub struct SingleWatcherToken<'a> {
+    flag: &'a std::sync::atomic::AtomicBool,
+}
+
+impl Drop for SingleWatcherToken<'_> {
+    fn drop(&mut self) {
+        self.flag.store(false, std::sync::atomic::Ordering::Release);
+    }
 }
 
 /// A watch-only change feed (e.g. a Kafka topic): it can stream changes to a
@@ -380,6 +518,20 @@ pub trait LiveMapFeed<K, V>: Send + Sync + 'static {
     /// Stream changes to `subscriber` until cancelled. Call
     /// [`LiveMapSubscriber::mark_ready`] once caught up.
     async fn watch(&self, subscriber: LiveMapSubscriber<K, V>) -> Result<()>;
+
+    /// Whether the framework should skip the initial catch-up scan
+    /// (`update_full`) before [`watch`](LiveMapFeed::watch). Defaults to `false`
+    /// (always scan), so existing feeds are unchanged.
+    ///
+    /// A durable feed can override this to consult committed state via
+    /// `operator` (e.g. [`LiveComponentOperator::read_committed_state`]) and
+    /// resume from its persisted cursor instead of rescanning — the Rust
+    /// analogue of the OCI source's `logic_version` skip-scan. When it returns
+    /// `true`, `watch()` must process the replayed backlog itself rather than
+    /// relying on a scan to cover it.
+    async fn skip_initial_scan(&self, _operator: &LiveComponentOperator) -> Result<bool> {
+        Ok(false)
+    }
 }
 
 /// A change feed that also has a scannable current state (e.g. a local
@@ -440,7 +592,10 @@ where
         // mode `mark_ready` terminates the component here, so the `watch` loop
         // below only runs in live mode — matching Python, where a view's
         // `watch` drives `update_all` + `mark_ready` before its event loop.
-        operator.update_full().await?;
+        // A durable feed may skip the scan and replay from its committed cursor.
+        if !self.feed.skip_initial_scan(&operator).await? {
+            operator.update_full().await?;
+        }
         operator.mark_ready().await;
         let subscriber = LiveMapSubscriber {
             operator,
@@ -448,5 +603,24 @@ where
             _key: PhantomData,
         };
         self.feed.watch(subscriber).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SingleWatcherGuard;
+
+    #[test]
+    fn single_watcher_guard_blocks_concurrent_then_resets() {
+        let guard = SingleWatcherGuard::new("TestFeed");
+
+        let token = guard.enter().expect("first enter succeeds");
+        // A second concurrent enter is rejected with a labeled error.
+        let err = guard.enter().expect_err("second enter blocked");
+        assert!(err.to_string().contains("TestFeed"));
+
+        // Dropping the token clears the flag, so a later watch can re-enter.
+        drop(token);
+        let _token2 = guard.enter().expect("re-enter after drop succeeds");
     }
 }

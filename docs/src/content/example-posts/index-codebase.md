@@ -1,6 +1,6 @@
 ---
 title: Index Your Codebase for AI Agents
-description: 'Index a codebase for RAG and AI coding agents with CocoIndex V1 and Tree-sitter — language-aware chunking, embeddings, semantic search, and a live vector index, in plain async Python.'
+description: 'Index a codebase for RAG and AI coding agents with CocoIndex V1 and Tree-sitter — language-aware chunking, embeddings, semantic search, and a live vector index.'
 slug: index-codebase
 image: https://cocoindex.io/blobs/docs-v1/img/examples/index-codebase/cover.png
 tags: [data-indexing, semantic-search]

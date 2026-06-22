@@ -505,3 +505,282 @@ async fn lancedb_adds_vector_column_additively() -> Result<()> {
     assert_eq!(h2[0]["text"], "b", "the added vector column is queryable");
     Ok(())
 }
+
+async fn index_names(db: &LanceDatabase, table_name: &str) -> Vec<String> {
+    db.connection()
+        .open_table(table_name)
+        .execute()
+        .await
+        .unwrap()
+        .list_indices()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|i| i.name)
+        .collect()
+}
+
+/// An FTS index attachment is created when declared and dropped when the
+/// declaration is removed (the attachment reconcile create/delete path). FTS is
+/// used because, unlike PQ vector indexes, it needs no training data and so is
+/// reliable on a tiny hermetic table.
+#[tokio::test]
+async fn lancedb_fts_index_created_then_dropped() -> Result<()> {
+    let tempdir = tempfile::tempdir().unwrap();
+    let uri = tempdir.path().join("lancedb_data");
+    let db = LanceDatabase::connect(uri.to_str().unwrap()).await?;
+    let coco_db_path = tempdir.path().join(".cocoindex_db");
+
+    let run = |declare_index: bool| {
+        let db = db.clone();
+        let coco_db_path = coco_db_path.clone();
+        async move {
+            let app = Environment::builder()
+                .db_path(&coco_db_path)
+                .provide_key(&DB, db)
+                .build()
+                .await
+                .unwrap()
+                .app("LanceFtsTest")
+                .await
+                .unwrap();
+            app.run(move |ctx| async move {
+                let table = lancedb::mount_table_target(&ctx, &DB, TABLE, schema()).await?;
+                for id in 0..5i64 {
+                    table.declare_row(
+                        &ctx,
+                        &Row {
+                            id,
+                            text: format!("document number {id}"),
+                            embedding: vec![0.0, 0.0, 0.0],
+                        },
+                    )?;
+                }
+                if declare_index {
+                    table.declare_fts_index(&ctx, "text", lancedb::FtsIndexOptions::default())?;
+                }
+                Ok(())
+            })
+            .await
+            .unwrap();
+        }
+    };
+
+    // Run 1: declare the FTS index → it is created.
+    run(true).await;
+    let names = index_names(&db, TABLE).await;
+    assert!(
+        names.iter().any(|n| n == "text_fts_idx"),
+        "fts index created, got {names:?}"
+    );
+
+    // Run 2: stop declaring it → the orphaned attachment is dropped.
+    run(false).await;
+    let names = index_names(&db, TABLE).await;
+    assert!(
+        !names.iter().any(|n| n == "text_fts_idx"),
+        "fts index dropped, got {names:?}"
+    );
+    Ok(())
+}
+
+/// A user-managed FTS index must NOT be dropped by CocoIndex when it stops being
+/// declared — CocoIndex doesn't own user-managed DDL. Regression test for the
+/// drop path not carrying `managed_by`.
+#[tokio::test]
+async fn lancedb_user_managed_fts_index_not_dropped_on_undeclare() -> Result<()> {
+    let tempdir = tempfile::tempdir().unwrap();
+    let uri = tempdir.path().join("lancedb_data");
+    let db = LanceDatabase::connect(uri.to_str().unwrap()).await?;
+
+    // Stage 1: a system-managed run physically creates the table + FTS index.
+    {
+        let coco = tempdir.path().join(".coco_system");
+        let app = Environment::builder()
+            .db_path(&coco)
+            .provide_key(&DB, db.clone())
+            .build()
+            .await?
+            .app("LanceSysSetup")
+            .await?;
+        app.run(move |ctx| async move {
+            let table = lancedb::mount_table_target(&ctx, &DB, TABLE, schema()).await?;
+            table.declare_row(
+                &ctx,
+                &Row {
+                    id: 1,
+                    text: "hello world".to_string(),
+                    embedding: vec![0.0, 0.0, 0.0],
+                },
+            )?;
+            table.declare_fts_index(&ctx, "text", lancedb::FtsIndexOptions::default())?;
+            Ok(())
+        })
+        .await?;
+    }
+    assert!(
+        index_names(&db, TABLE)
+            .await
+            .iter()
+            .any(|n| n == "text_fts_idx"),
+        "system setup should have created the index"
+    );
+
+    // Stage 2: a *user-managed* CocoIndex deployment (separate tracking db) adopts
+    // the existing table + index, then stops declaring the index. The index must
+    // survive — CocoIndex doesn't own it.
+    let coco_user = tempdir.path().join(".coco_user");
+    let run_user = |declare_index: bool| {
+        let db = db.clone();
+        let coco_user = coco_user.clone();
+        async move {
+            let app = Environment::builder()
+                .db_path(&coco_user)
+                .provide_key(&DB, db)
+                .build()
+                .await
+                .unwrap()
+                .app("LanceUserManaged")
+                .await
+                .unwrap();
+            app.run(move |ctx| async move {
+                let table = lancedb::mount_table_target_with_options(
+                    &ctx,
+                    &DB,
+                    TABLE,
+                    schema(),
+                    ManagedTargetOptions::user_managed(),
+                )
+                .await?;
+                if declare_index {
+                    table.declare_fts_index(&ctx, "text", lancedb::FtsIndexOptions::default())?;
+                }
+                Ok(())
+            })
+            .await
+            .unwrap();
+        }
+    };
+
+    run_user(true).await; // adopt the index as user-managed
+    run_user(false).await; // stop declaring it
+    assert!(
+        index_names(&db, TABLE)
+            .await
+            .iter()
+            .any(|n| n == "text_fts_idx"),
+        "user-managed FTS index must NOT be dropped on undeclare, got {:?}",
+        index_names(&db, TABLE).await
+    );
+    Ok(())
+}
+
+/// An FTS index can be created with an explicit stemming language (parity with
+/// the Python connector's `language` option).
+#[tokio::test]
+async fn lancedb_fts_index_with_language() -> Result<()> {
+    let tempdir = tempfile::tempdir().unwrap();
+    let uri = tempdir.path().join("lancedb_data");
+    let db = LanceDatabase::connect(uri.to_str().unwrap()).await?;
+    let app = Environment::builder()
+        .db_path(tempdir.path().join(".cocoindex_db"))
+        .provide_key(&DB, db.clone())
+        .build()
+        .await?
+        .app("LanceFtsLangTest")
+        .await?;
+    app.run(move |ctx| async move {
+        let table = lancedb::mount_table_target(&ctx, &DB, TABLE, schema()).await?;
+        table.declare_row(
+            &ctx,
+            &Row {
+                id: 1,
+                text: "running runs runner".to_string(),
+                embedding: vec![0.0, 0.0, 0.0],
+            },
+        )?;
+        table.declare_fts_index(
+            &ctx,
+            "text",
+            lancedb::FtsIndexOptions {
+                language: Some("English".to_string()),
+                ..Default::default()
+            },
+        )?;
+        Ok(())
+    })
+    .await?;
+    assert!(
+        index_names(&db, TABLE)
+            .await
+            .iter()
+            .any(|n| n == "text_fts_idx"),
+        "fts index with a language should be created"
+    );
+    Ok(())
+}
+
+/// A destructive table replace (dim-3 → dim-4 vector column) drops and recreates
+/// the underlying table, destroying its indices. A still-declared FTS index must
+/// be rebuilt on the new table — not silently lost. Regression test for the
+/// index-attachment-on-the-wrong-provider bug.
+#[tokio::test]
+async fn lancedb_fts_index_survives_destructive_table_replace() -> Result<()> {
+    let tempdir = tempfile::tempdir().unwrap();
+    let uri = tempdir.path().join("lancedb_data");
+    let db = LanceDatabase::connect(uri.to_str().unwrap()).await?;
+    let coco_db_path = tempdir.path().join(".cocoindex_db");
+
+    let run = |schema: TableSchema, embedding: Vec<f32>| {
+        let db = db.clone();
+        let coco_db_path = coco_db_path.clone();
+        async move {
+            let app = Environment::builder()
+                .db_path(&coco_db_path)
+                .provide_key(&DB, db)
+                .build()
+                .await
+                .unwrap()
+                .app("LanceFtsReplaceTest")
+                .await
+                .unwrap();
+            app.run(move |ctx| {
+                let embedding = embedding.clone();
+                async move {
+                    let table = lancedb::mount_table_target(&ctx, &DB, TABLE, schema).await?;
+                    table.declare_row(
+                        &ctx,
+                        &Row {
+                            id: 1,
+                            text: "hello world".to_string(),
+                            embedding,
+                        },
+                    )?;
+                    table.declare_fts_index(&ctx, "text", lancedb::FtsIndexOptions::default())?;
+                    Ok(())
+                }
+            })
+            .await
+            .unwrap();
+        }
+    };
+
+    // Run 1: dim-3 schema + FTS index → created.
+    run(schema(), vec![1.0, 0.0, 0.0]).await;
+    assert!(
+        index_names(&db, TABLE)
+            .await
+            .iter()
+            .any(|n| n == "text_fts_idx"),
+        "fts index should exist after the first run"
+    );
+
+    // Run 2: dim-4 schema forces a destructive table replace; index still declared.
+    run(schema_dim4(), vec![1.0, 0.0, 0.0, 0.0]).await;
+    let names = index_names(&db, TABLE).await;
+    assert!(
+        names.iter().any(|n| n == "text_fts_idx"),
+        "fts index must be rebuilt after a destructive table replace, got {names:?}"
+    );
+    Ok(())
+}

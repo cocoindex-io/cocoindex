@@ -8,59 +8,9 @@ import remarkCodeTitles from './scripts/remark-code-titles.mjs';
 import remarkMermaid from './scripts/remark-mermaid.mjs';
 import remarkLinkChecker from './scripts/remark-link-checker.mjs';
 import { redirects } from './src/data/docs-sidebar.ts';
-
-// Shiki theme — canonical token palette from
-// design_guidelines/ui/color.html §04 (.code-showcase .tk-*). Saturated brand
-// accents are softened for ten-line snippets: pink→salmon for fn names,
-// gold→muted-amber for numbers/booleans. Background is maroon-ink.
-const cocoindexCodeTheme = {
-  name: 'cocoindex-dark',
-  type: 'dark',
-  colors: {
-    'editor.background': '#2A121B',
-    'editor.foreground': '#FCF3D8',
-  },
-  tokenColors: [
-    {
-      scope: ['comment', 'punctuation.definition.comment', 'string.comment'],
-      settings: { foreground: '#978A74', fontStyle: 'italic' }
-    },
-    {
-      scope: ['keyword', 'keyword.control', 'keyword.operator.new',
-        'storage', 'storage.type', 'storage.modifier'],
-      settings: { foreground: '#E59A63' }
-    },
-    {
-      scope: ['entity.name.function', 'meta.function-call', 'support.function',
-        'variable.function'],
-      settings: { foreground: '#FF9B8A' }
-    },
-    {
-      scope: ['string', 'string.quoted', 'string.template',
-        'punctuation.definition.string'],
-      settings: { foreground: '#8EF09E' }
-    },
-    {
-      scope: ['constant.numeric', 'constant.language',
-        'constant.language.boolean', 'constant.language.null'],
-      settings: { foreground: '#D4B86A' }
-    },
-    {
-      scope: ['entity.name.type', 'entity.name.class', 'support.type',
-        'support.class', 'meta.type.annotation'],
-      settings: { foreground: '#C9A0FF' }
-    },
-    {
-      scope: ['meta.decorator', 'variable.other.decorator', 'entity.name.decorator',
-        'punctuation.definition.decorator'],
-      settings: { foreground: '#E59A63' }
-    },
-    {
-      scope: ['variable', 'variable.other', 'variable.parameter'],
-      settings: { foreground: '#FCF3D8' }
-    },
-  ],
-};
+// One shared Shiki theme (the readability-tuned --code-* palette) so docs and
+// blog highlight code identically — single source of truth (GUIDELINE §5.5).
+import { cocoindexCodeTheme } from '@cocoindex/brand/code-theme';
 
 // V1 docs are served from https://cocoindex.io/docs/, matching the
 // Docusaurus URLs on the v1 branch (`baseUrl: '/docs/'` in

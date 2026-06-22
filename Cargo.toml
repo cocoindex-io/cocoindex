@@ -5,6 +5,7 @@ members = [
     "rust/py",
     "rust/py_utils",
     "rust/ops_text",
+    "rust/code_match",
     "rust/sdk/cocoindex",
     "rust/sdk/cocoindex_macros",
 ]
@@ -17,6 +18,7 @@ rust-version = "1.89"
 license = "Apache-2.0"
 
 [workspace.dependencies]
+aho-corasick = "1.1.4"
 anyhow = { version = "1.0.100", features = ["std"] }
 async-stream = "0.3.6"
 async-trait = "0.1.89"
@@ -53,6 +55,7 @@ pyo3-async-runtimes = { version = "0.27.0", features = ["tokio-runtime"] }
 pythonize = "0.27.0"
 rand = "0.9.2"
 regex = "1.12.2"
+regex-syntax = "0.8.10"
 reqwest = { version = "0.12.24", default-features = false, features = [
     "json",
     "rustls-tls",

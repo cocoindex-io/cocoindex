@@ -82,7 +82,13 @@ pub(crate) fn serialize_context_memo_states<Prof: EngineProfile>(
 pub(crate) async fn use_or_invalidate_component_memoization<Prof: EngineProfile>(
     comp_ctx: &ComponentProcessorContext<Prof>,
     processor_fp: Option<Fingerprint>,
-) -> Result<Option<(Prof::FunctionData, MemoStatesPayload<Prof>)>> {
+) -> Result<
+    Option<(
+        Prof::FunctionData,
+        MemoStatesPayload<Prof>,
+        Vec<Fingerprint>,
+    )>,
+> {
     // Short-circuit to miss under full_reprocess
     if comp_ctx.full_reprocess() {
         return Ok(None);
@@ -112,12 +118,18 @@ pub(crate) async fn use_or_invalidate_component_memoization<Prof: EngineProfile>
                         let context_memo_states = deserialize_context_memo_states::<Prof>(
                             &memo_info.context_memo_states,
                         )?;
+                        // Carry the stored logic deps out so the cache-hit path
+                        // can still report this subtree's dependency set to the
+                        // parent — otherwise a parent that mounts this component
+                        // would not depend on it (or its descendants) and would
+                        // wrongly stay a memo hit when their code changes.
                         return Ok(Some((
                             ret,
                             MemoStatesPayload {
                                 positional: memo_states,
                                 by_context_fp: context_memo_states,
                             },
+                            memo_info.logic_deps.to_vec(),
                         )));
                     }
                     Err(e) => {
@@ -1712,6 +1724,7 @@ pub(crate) async fn post_submit_for_build<Prof: EngineProfile>(
         &'_ Prof::FunctionData,
         &'_ MemoStatesPayload<Prof>,
     )>,
+    logic_deps: &HashSet<Fingerprint>,
 ) -> Result<()> {
     let Some((fp, ret, memo_states)) = comp_memo else {
         return Ok(());
@@ -1721,10 +1734,14 @@ pub(crate) async fn post_submit_for_build<Prof: EngineProfile>(
     let memo_states_serialized = serialize_memo_values::<Prof>(&memo_states.positional)?;
     let context_memo_states_serialized =
         serialize_context_memo_states::<Prof>(&memo_states.by_context_fp)?;
+    // Sorted for deterministic storage. Only reached when actually memoizing
+    // (after the early return above), so non-memoized builds pay no sort.
+    let mut logic_deps_sorted: Vec<Fingerprint> = logic_deps.iter().copied().collect();
+    logic_deps_sorted.sort();
     let memo_info = db_schema::ComponentMemoizationInfo {
         processor_fp: fp,
         return_value: db_schema::MemoizedValue::Inlined(Cow::Borrowed(ret_bytes.as_ref())),
-        logic_deps: comp_ctx.take_logic_deps(),
+        logic_deps: logic_deps_sorted,
         memo_states: memo_states_serialized,
         context_memo_states: context_memo_states_serialized,
     };

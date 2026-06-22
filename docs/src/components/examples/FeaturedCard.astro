@@ -1,0 +1,30 @@
+---
+// The large featured card at the top of the examples listing. Markup extracted
+// from examples/index.astro; styling stays in that page's `body.ex-listing
+// .feat-card` block.
+import { titleMarkup } from '../../consts';
+import { type ExampleCard } from '../../data/examples';
+
+interface Props {
+  ex: ExampleCard;
+  href: string;
+}
+const { ex, href } = Astro.props;
+---
+<a class="feat-card" href={href}>
+  <div class="feat-body">
+    <span class="ribbon"><span class="tick"></span>{ex.thumbLabel} · <span class="idx">{ex.index}</span></span>
+    <h3 set:html={titleMarkup(ex.title + '.')} />
+    <p>{ex.description}</p>
+    <div class="chips">
+      {ex.tags.map((t) => <span class="t-overlay">{t.label}</span>)}
+    </div>
+    <div class="foot">
+      <span>{ex.footMeta}</span>
+      <span class="go">Open example
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M2 6h8m-3-3 3 3-3 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </span>
+    </div>
+  </div>
+  <div class="feat-viz" aria-hidden="true" set:html={ex.motif ?? ''} />
+</a>

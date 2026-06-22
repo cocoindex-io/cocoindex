@@ -287,7 +287,7 @@ When adding new functionality that involves I/O or concurrency:
 
 ## Versioning
 
-The current codebase is for CocoIndex v1, which is a fundamental redesign from CocoIndex v0. Currently the `v1` branch is the main branch for CocoIndex v1 code.
+The current codebase is for CocoIndex v1, which is a fundamental redesign from CocoIndex v0. CocoIndex v1 lives on the `main` branch; the legacy v0 code is preserved on the `v0` branch.
 
 ## Docs diagrams
 

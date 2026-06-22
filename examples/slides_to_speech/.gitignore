@@ -1,0 +1,7 @@
+.env
+cocoindex.db
+.venv-test/
+__pycache__/
+lancedb_data/
+*.onnx
+*.onnx.json

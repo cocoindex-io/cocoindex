@@ -1213,6 +1213,11 @@ async fn apply_record<C: CypherExecutor>(graph: &C, action: &RecordAction) -> Re
 }
 
 fn record_state<R: Serialize>(row: &R) -> Result<RecordState> {
+    // Reject non-finite floats: `serde_json` turns NaN/±Inf into JSON null, which
+    // would be written as a null property (Bolt) / `null` literal (FalkorDB),
+    // silently corrupting numeric/vector properties.
+    crate::finite::ensure_finite(row)
+        .map_err(|e| Error::engine(format!("graph target record has a {e}")))?;
     let value = serde_json::to_value(row).map_err(|e| Error::engine(e.to_string()))?;
     let fields = match value {
         JsonValue::Object(map) => map,

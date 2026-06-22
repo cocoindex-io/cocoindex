@@ -152,8 +152,8 @@ const id = `coco-tabs-${crypto.randomUUID().slice(0, 8)}`;
 .coco-tabs-radio:nth-of-type(3):focus-visible ~ .coco-tabs-bar > .coco-tabs-label:nth-of-type(3),
 .coco-tabs-radio:nth-of-type(4):focus-visible ~ .coco-tabs-bar > .coco-tabs-label:nth-of-type(4),
 .coco-tabs-radio:nth-of-type(5):focus-visible ~ .coco-tabs-bar > .coco-tabs-label:nth-of-type(5) {
-  outline: 2px solid var(--coral);
-  outline-offset: 2px;
+  outline: var(--focus);
+  outline-offset: var(--focus-offset);
 }
 
 .coco-tabs-panel :global(img) {

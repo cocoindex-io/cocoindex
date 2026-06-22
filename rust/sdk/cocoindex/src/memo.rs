@@ -53,15 +53,24 @@ where
     Fut: Future<Output = Result<T>> + Send + 'static,
 {
     let fp = key_fingerprint_result(key)?;
-    cached_by_fingerprint(ctx, fp, f).await
+    cached_by_fingerprint(ctx, fp, true, f).await
 }
 
 /// Fast path for generated macros that have already built the memo fingerprint.
 ///
 /// `f` receives a `Ctx` scoped to this memo call; use it for `get_key` so
 /// change-detection dependencies attach to this memo entry.
+///
+/// `propagate_children_fn_logic` is the function's `logic_tracking` mode: `true`
+/// for `"full"` (transitively-called functions' logic changes invalidate this
+/// memo entry), `false` for `"self"`/`"none"` (only this function's own body).
 #[doc(hidden)]
-pub async fn cached_by_fingerprint<T, F, Fut>(ctx: &Ctx, fp: Fingerprint, f: F) -> Result<T>
+pub async fn cached_by_fingerprint<T, F, Fut>(
+    ctx: &Ctx,
+    fp: Fingerprint,
+    propagate_children_fn_logic: bool,
+    f: F,
+) -> Result<T>
 where
     T: Serialize + for<'de> Deserialize<'de> + Send + 'static,
     F: FnOnce(Ctx) -> Fut + Send + 'static,
@@ -84,7 +93,7 @@ where
     }
 
     // Cache miss (or memo disabled) — we are the resolver. Execute and commit.
-    let fn_ctx = Arc::new(FnCallContext::default());
+    let fn_ctx = Arc::new(FnCallContext::new(propagate_children_fn_logic));
     let _guard = fn_call_guard(comp_ctx, fn_ctx.clone());
     let result = f(ctx.with_fn_ctx(fn_ctx.clone())).await?;
     let value = Value::from_serializable(&result)
@@ -103,6 +112,7 @@ where
 pub async fn cached_by_fingerprint_with_state<T, F, Fut, S, SFut>(
     ctx: &Ctx,
     fp: Fingerprint,
+    propagate_children_fn_logic: bool,
     state_fn: S,
     f: F,
 ) -> Result<T>
@@ -153,7 +163,7 @@ where
         return Ok(value);
     }
 
-    let fn_ctx = Arc::new(FnCallContext::default());
+    let fn_ctx = Arc::new(FnCallContext::new(propagate_children_fn_logic));
     let _guard = fn_call_guard(comp_ctx, fn_ctx.clone());
     let result = f(ctx.with_fn_ctx(fn_ctx.clone())).await?;
     let value = Value::from_serializable(&result)

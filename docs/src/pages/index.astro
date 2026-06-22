@@ -92,12 +92,7 @@ const ICONS: Record<string, string> = {
     <meta name="description" content={description} />
     <link rel="canonical" href={canonical} />
     <link rel="icon" href={`${base}/img/favicon.ico`} />
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      rel="stylesheet"
-      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&family=Source+Serif+4:ital,wght@0,400;1,400&display=swap"
-    />
+    <!-- Fonts self-hosted via @fontsource in src/styles/globals.css (GUIDELINE §5.2). -->
   </head>
   <body class="docs-home">
     <Topbar mobileSheetId="mobileSheet" />
@@ -111,7 +106,7 @@ const ICONS: Record<string, string> = {
         <section class="dh-hero">
           <div class="hero-grid">
             <div class="hero-copy">
-              <span class="eyb"><span class="dot" aria-hidden="true"></span>Documentation · v1</span>
+              <span class="t-eyebrow"><span class="dt" aria-hidden="true"></span>Documentation · v1</span>
               <h1 class="hero-h" set:html={titleMarkup('Fresh data views for *agents.*')} />
               <p class="hero-sub">
                 CocoIndex is an ultra-performant framework for building data pipelines for AI, with
@@ -344,14 +339,9 @@ app.update_blocking()</code></pre>
       /* ── HERO ── */
       body.docs-home .dh-hero { padding: 8px 0 8px; }
       body.docs-home .hero-grid { display: grid; grid-template-columns: 1.1fr 0.9fr; gap: 48px; align-items: center; }
-      body.docs-home .hero-copy .eyb {
-        font-family: var(--mono); font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase;
-        color: var(--coral); display: inline-flex; align-items: center; gap: 9px; margin-bottom: 20px;
-      }
-      body.docs-home .hero-copy .eyb .dot {
-        width: 7px; height: 7px; border-radius: 50%; background: var(--palm-ink);
-        animation: dh-pulse 2.4s ease-in-out infinite;
-      }
+      /* Hero eyebrow uses the shared .t-eyebrow (@cocoindex/brand/tags.css);
+         add bottom margin in this hero layout. */
+      body.docs-home .hero-copy .t-eyebrow { margin-bottom: 20px; }
       @keyframes dh-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
       body.docs-home h1.hero-h {
         font-family: var(--serif); font-weight: 400;
@@ -380,10 +370,15 @@ app.update_blocking()</code></pre>
         font-family: var(--mono); font-size: 11px; letter-spacing: 0.04em;
         color: var(--cream); background: transparent;
         border: 1px solid rgba(252, 243, 216, 0.25); border-radius: 5px;
-        padding: 4px 10px; cursor: pointer; transition: background .15s, border-color .15s;
+        padding: 4px 10px; cursor: pointer; transition: background .15s, border-color .15s, transform .12s var(--ease);
       }
       body.docs-home .install .copy:hover,
       body.docs-home .codeblk .copy:hover { background: rgba(252, 243, 216, 0.12); border-color: rgba(252, 243, 216, 0.5); }
+      /* Shared interaction contract — canonical focus ring + press. */
+      body.docs-home .install .copy:active,
+      body.docs-home .codeblk .copy:active { transform: translateY(1px); }
+      body.docs-home .install .copy:focus-visible,
+      body.docs-home .codeblk .copy:focus-visible { outline: var(--focus); outline-offset: var(--focus-offset); }
 
       body.docs-home .hero-meta {
         display: flex; flex-wrap: wrap; gap: 6px 18px; margin-top: 22px;
@@ -548,7 +543,6 @@ app.update_blocking()</code></pre>
         body.docs-home .split { grid-template-columns: 1fr; gap: 26px; }
       }
       @media (prefers-reduced-motion: reduce) {
-        body.docs-home .hero-copy .eyb .dot { animation: none; }
         body.docs-home .card, body.docs-home .card h3 .ar { transition: none; }
       }
     </style>

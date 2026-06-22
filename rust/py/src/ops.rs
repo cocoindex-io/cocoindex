@@ -35,7 +35,7 @@ pub struct PyChunk {
 }
 
 impl PyChunk {
-    fn from_chunk(chunk: &Chunk) -> Self {
+    pub(crate) fn from_chunk(chunk: &Chunk) -> Self {
         Self {
             start_byte: chunk.range.start,
             end_byte: chunk.range.end,
