@@ -12,7 +12,7 @@ Edit `.env` to set your Kafka connection:
 
 ```
 KAFKA_BOOTSTRAP_SERVERS=localhost:9092
-KAFKA_TOPIC=csv-rows
+KAFKA_TOPIC=cocoindex-csv-rows
 ```
 
 ## Run
@@ -29,4 +29,4 @@ Run the pipeline in live mode so changes to CSV files are picked up automaticall
 cocoindex update -L main.py
 ```
 
-Each row is published as a JSON message with key `{filename}/{first_column_value}`. For example, a row in `products.csv` with SKU `SKU001` gets key `products.csv/SKU001`.
+Each row is published as a JSON message keyed by its first column value, with the full row as the JSON value. For example, a row in `products.csv` with SKU `SKU001` is published with key `SKU001` and value `{"sku": "SKU001", "name": "Wireless Mouse", ...}`.

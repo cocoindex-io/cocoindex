@@ -13,7 +13,7 @@ Copy `.env.example` to `.env` and edit as needed:
 
 ```
 KAFKA_BOOTSTRAP_SERVERS=localhost:9092
-KAFKA_TOPIC=cocoindex-example-csv-rows
+KAFKA_TOPIC=cocoindex-csv-rows
 KAFKA_GROUP_ID=kafka-to-lancedb
 LANCEDB_URI=./lancedb_data
 ```
