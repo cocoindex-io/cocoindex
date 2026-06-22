@@ -574,6 +574,8 @@ pub fn function(attr: TokenStream, item: TokenStream) -> TokenStream {
                 }
             }
         } else {
+            // No `&Ctx`: a pure logic-tracked helper, typically a batch impl for
+            // `coco::Batched`.
             quote! {
                 #[doc(hidden)]
                 pub const #hash_const_name: u64 = #hash_const_value;
