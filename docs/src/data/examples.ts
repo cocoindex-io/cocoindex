@@ -44,7 +44,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'text-embedding',
     title: 'Semantic Search *101*',
-    index: '01 / 09',
+    index: '01 / 10',
     category: 'search',
     thumbLabel: 'Markdown · embeddings',
     motif: MOTIFS.textVec,
@@ -61,7 +61,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'index-codebase',
     title: 'Index Your *Codebase*',
-    index: '02 / 09',
+    index: '02 / 10',
     category: 'search',
     thumbLabel: 'Code · Tree-sitter',
     motif: MOTIFS.codeChunks,
@@ -78,7 +78,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'multi-codebase-summarization',
     title: 'Multi-codebase *Summarization*',
-    index: '03 / 09',
+    index: '03 / 10',
     category: 'llm',
     thumbLabel: 'Code · structured output',
     motif: MOTIFS.repos,
@@ -97,7 +97,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'pdf-to-markdown',
     title: 'PDF → *Markdown*',
-    index: '04 / 09',
+    index: '04 / 10',
     category: 'ingest',
     thumbLabel: 'PDF · custom blocks',
     motif: MOTIFS.pdfToMd,
@@ -113,7 +113,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'podcast-to-knowledge-graph',
     title: 'Podcasts → *Knowledge Graph*',
-    index: '05 / 09',
+    index: '05 / 10',
     category: 'agents',
     thumbLabel: 'YouTube · LLM + graph',
     motif: MOTIFS.graph,
@@ -131,7 +131,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'docs-to-knowledge-graph',
     title: 'Docs → *Knowledge Graph*',
-    index: '06 / 09',
+    index: '06 / 10',
     category: 'agents',
     thumbLabel: 'Markdown · LLM + Neo4j',
     motif: MOTIFS.graph,
@@ -148,7 +148,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'meeting-notes-to-knowledge-graph',
     title: 'Meeting Notes → *Knowledge Graph*',
-    index: '07 / 09',
+    index: '07 / 10',
     category: 'agents',
     thumbLabel: 'Google Drive · LLM + Neo4j',
     motif: MOTIFS.graph,
@@ -166,7 +166,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'csv-to-kafka',
     title: 'CSV → *Kafka*',
-    index: '08 / 09',
+    index: '08 / 10',
     category: 'ingest',
     thumbLabel: 'CSV · live Kafka target',
     motif: MOTIFS.pdfToMd,
@@ -183,7 +183,7 @@ export const examples: ExampleCard[] = [
   {
     slug: 'pdf-embedding',
     title: 'Semantic Search over *PDFs*',
-    index: '09 / 09',
+    index: '09 / 10',
     category: 'search',
     thumbLabel: 'PDF · docling + embeddings',
     motif: MOTIFS.textVec,
@@ -196,6 +196,23 @@ export const examples: ExampleCard[] = [
     ],
     footMeta: '~12 min',
     sourceSlug: 'pdf_embedding',
+  },
+  {
+    slug: 'image-search',
+    title: 'Search Images by *Text*',
+    index: '10 / 10',
+    category: 'image',
+    thumbLabel: 'Images · CLIP + Qdrant',
+    motif: MOTIFS.textVec,
+    description: 'Embed images with CLIP, store the vectors in Qdrant, and search your photos in natural language through a FastAPI + React app — live updates, no tags or captions.',
+    tags: [
+      { kind: 'src', label: 'Local FS' },
+      { kind: 'ops', label: 'CLIP' },
+      { kind: 'tgt', label: 'Qdrant' },
+      { kind: 'lvl', label: 'Intermediate' },
+    ],
+    footMeta: '~15 min',
+    sourceSlug: 'image_search',
   },
 ];
 
@@ -224,6 +241,7 @@ export const POPULAR: Array<{ slug: string; label: string; count: string }> = [
   { slug: 'meeting-notes-to-knowledge-graph', label: 'Meeting Notes → Knowledge Graph', count: '★' },
   { slug: 'csv-to-kafka', label: 'CSV → Kafka', count: '★' },
   { slug: 'pdf-embedding', label: 'Semantic Search over PDFs', count: '★' },
+  { slug: 'image-search', label: 'Search Images by Text', count: '★' },
 ];
 
 // Full catalog of runnable examples in the cocoindex monorepo, used to build the
@@ -264,6 +282,7 @@ export const EXAMPLE_CATALOG_GROUPS: ExampleCatalogGroup[] = [
       { dir: 'meeting_notes_graph_neo4j', docs: 'meeting-notes-to-knowledge-graph', title: 'Meeting Notes → Knowledge Graph', description: 'Turn Google Drive meeting notes into a Neo4j knowledge graph: LLM extraction of organizers, attendees, and tasks, plus embedding-based person entity resolution.', run: RUN_MAIN },
       { dir: 'csv_to_kafka', docs: 'csv-to-kafka', title: 'CSV → Kafka', description: 'Watch a folder of CSV files and publish each row as a JSON message to a Kafka topic: declarative target states, only-changed-rows produces, and live mode.', run: 'cocoindex update -L main.py' },
       { dir: 'pdf_embedding', docs: 'pdf-embedding', title: 'Semantic Search over PDFs', description: 'Convert local PDFs to Markdown with docling (on a GPU runner), chunk, embed, and store the vectors in Postgres (pgvector); natural-language query demo.', run: RUN_MAIN },
+      { dir: 'image_search', docs: 'image-search', title: 'Search Images by Text', description: 'Embed images with CLIP, store the vectors in Qdrant, and search your photos in natural language through a FastAPI + React app; live updates.', run: 'python -m uvicorn api:app --reload --host 0.0.0.0 --port 8000' },
     ],
   },
   {
@@ -285,7 +304,6 @@ export const EXAMPLE_CATALOG_GROUPS: ExampleCatalogGroup[] = [
     title: 'Multimodal',
     blurb: 'Images and audio — same declarative flow, different encoder.',
     entries: [
-      { dir: 'image_search', title: 'Image Search (CLIP)', description: 'Build an image-search index with CLIP embeddings and Qdrant; query in natural language via FastAPI + React.', run: 'python -m uvicorn api:app --reload --host 0.0.0.0 --port 8000' },
       { dir: 'image_search_colpali', title: 'Image Search (ColPali)', description: 'Image search using the ColPali multi-vector model with Qdrant MaxSim; natural-language queries via FastAPI.', run: 'python -m uvicorn api:app --reload --host 0.0.0.0 --port 8000' },
       { dir: 'audio_to_text', title: 'Audio → Text', description: 'Transcribe local audio files with LiteLLM and store one row per file in Postgres, keyed by filename.', run: RUN_MAIN_PY },
     ],
