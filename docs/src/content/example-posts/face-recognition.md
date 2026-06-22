@@ -1,6 +1,6 @@
 ---
 title: Build Your Own Photo Face Search
-description: 'Detect every face in a folder of photos with CocoIndex V1, embed each face into a 128-d vector with face_recognition (dlib), and index them in Qdrant — then search your photos by face. Plain async Python, live updates.'
+description: 'Detect every face in a folder of photos with CocoIndex V1, embed each face into a 128-d vector with face_recognition (dlib), and index them in Qdrant — then search your photos by face.'
 slug: face-recognition
 image: https://cocoindex.io/blobs/docs-v1/img/examples/face-recognition/cover.png
 tags: [multimodal, face-recognition]
