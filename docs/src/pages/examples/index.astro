@@ -155,9 +155,9 @@ const breadcrumbLd = {
             </p>
 
             <div class="hero-filters" id="filters">
-              <button class="filter-chip on" data-filter="all">All <span class="cnt">{total}</span></button>
+              <button class="t-filter on" data-filter="all">All <span class="cnt">{total}</span></button>
               {activeCats.map((c) => (
-                <button class="filter-chip" data-filter={c}>
+                <button class="t-filter" data-filter={c}>
                   {CATEGORY_META[c].label}{CATEGORY_META[c].em ?? ''} <span class="cnt">{catCount(c)}</span>
                 </button>
               ))}
@@ -189,17 +189,17 @@ const breadcrumbLd = {
 
           <div class="side-group">
             <h6>By target</h6>
-            <div class="tags-row">{SIDEBAR_TARGETS.map((t) => <span class="mini-tag">{t}</span>)}</div>
+            <div class="tags-row">{SIDEBAR_TARGETS.map((t) => <span class="t-pill">{t}</span>)}</div>
           </div>
 
           <div class="side-group">
             <h6>By source</h6>
-            <div class="tags-row">{SIDEBAR_SOURCES.map((t) => <span class="mini-tag">{t}</span>)}</div>
+            <div class="tags-row">{SIDEBAR_SOURCES.map((t) => <span class="t-pill">{t}</span>)}</div>
           </div>
 
           <div class="side-group">
             <h6>By LLM</h6>
-            <div class="tags-row">{SIDEBAR_LLMS.map((t) => <span class="mini-tag">{t}</span>)}</div>
+            <div class="tags-row">{SIDEBAR_LLMS.map((t) => <span class="t-pill">{t}</span>)}</div>
           </div>
 
           <div class="side-group">
@@ -271,7 +271,7 @@ const breadcrumbLd = {
                         <p>{ex.description}</p>
                         <div class="ex-tags">
                           {ex.tags.map((t) => (
-                            <span class={`tag ${t.kind}`}><span class="dt"></span>{t.label}</span>
+                            <span class={`t-pill ${t.kind}`}><span class="dt"></span>{t.label}</span>
                           ))}
                         </div>
                         <div class="ex-foot">
@@ -305,7 +305,7 @@ const breadcrumbLd = {
     <script is:inline>
       // Category filter chips — toggle visibility of category sections.
       (function(){
-        const chips = document.querySelectorAll('#filters .filter-chip');
+        const chips = document.querySelectorAll('#filters .t-filter');
         const sections = document.querySelectorAll('section.cat[data-cat]');
         const feat = document.querySelector('section.feat');
 
@@ -383,18 +383,7 @@ const breadcrumbLd = {
       body.ex-listing .hero-sub b { font-weight: 600; color: var(--maroon); }
 
       body.ex-listing .hero-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
-      body.ex-listing .filter-chip {
-        font-family: var(--sans); font-size: 13px; font-weight: 500;
-        padding: 8px 14px; border-radius: 999px;
-        background: var(--cream); color: var(--maroon-ink);
-        border: 1px solid var(--rule); cursor: pointer;
-        transition: background .15s, color .15s, border-color .15s;
-        display: inline-flex; gap: 6px; align-items: center;
-      }
-      body.ex-listing .filter-chip:hover { background: var(--paper); border-color: var(--rule-strong); }
-      body.ex-listing .filter-chip.on { background: var(--maroon); color: var(--cream); border-color: var(--maroon); }
-      body.ex-listing .filter-chip .cnt { font-family: var(--mono); font-size: 11px; opacity: 0.6; letter-spacing: 0; }
-      body.ex-listing .filter-chip.on .cnt { opacity: 0.8; }
+      /* .t-filter comes from @cocoindex/brand/tags.css (consistent coral hover). */
 
       body.ex-listing .hero-viz { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; aspect-ratio: 3/2; }
       body.ex-listing .hero-viz .t {
@@ -469,12 +458,7 @@ const breadcrumbLd = {
         color: var(--muted); margin: 0 0 10px;
       }
       body.ex-listing .side-group .tags-row { display: flex; flex-wrap: wrap; gap: 5px; }
-      body.ex-listing .side-group .mini-tag {
-        font-family: var(--mono); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
-        color: var(--maroon-ink);
-        padding: 4px 9px; border-radius: 999px;
-        background: var(--cream); border: 1px solid var(--rule);
-      }
+      /* Sidebar mini-tags use @cocoindex/brand .t-pill. */
       body.ex-listing .side-group .links { display: flex; flex-direction: column; gap: 4px; }
       body.ex-listing .side-group .links a {
         text-decoration: none; color: var(--maroon-ink);
@@ -599,8 +583,8 @@ const breadcrumbLd = {
         transition: background-image .18s ease;
       }
       body.ex-listing .ex-card:hover {
-        background-image: radial-gradient(circle, rgba(42, 18, 27, 0.1) 1.2px, transparent 1.6px);
-        background-size: 14px 14px;
+        background-image: var(--dot-reveal);
+        background-size: var(--dot-reveal-size) var(--dot-reveal-size);
       }
       body.ex-listing .ex-thumb {
         aspect-ratio: 16/7;
@@ -657,19 +641,13 @@ const breadcrumbLd = {
       body.ex-listing .ex-body p { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.5; flex: 1; }
 
       body.ex-listing .ex-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
-      body.ex-listing .ex-tags .tag {
-        font-family: var(--mono); font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase;
-        padding: 4px 10px; border-radius: 999px;
-        background: var(--paper); color: var(--maroon);
-        border: 1px solid var(--rule);
-        display: inline-flex; gap: 6px; align-items: center;
-      }
-      body.ex-listing .ex-tags .tag .dt { width: 5px; height: 5px; border-radius: 50%; background: var(--coral); }
-      body.ex-listing .ex-tags .tag.src .dt { background: var(--peach); }
-      body.ex-listing .ex-tags .tag.tgt .dt { background: var(--pink); }
-      body.ex-listing .ex-tags .tag.llm .dt { background: var(--palm-ink); }
-      body.ex-listing .ex-tags .tag.ops .dt { background: var(--coral); }
-      body.ex-listing .ex-tags .tag.lvl .dt { background: var(--maroon); }
+      /* Tags use @cocoindex/brand .t-pill; the leading dot's colour is the
+         example category, set via the --dt custom property (default coral). */
+      body.ex-listing .ex-tags .t-pill.src { --dt: var(--peach); }
+      body.ex-listing .ex-tags .t-pill.tgt { --dt: var(--pink); }
+      body.ex-listing .ex-tags .t-pill.llm { --dt: var(--palm-ink); }
+      body.ex-listing .ex-tags .t-pill.ops { --dt: var(--coral); }
+      body.ex-listing .ex-tags .t-pill.lvl { --dt: var(--maroon); }
 
       body.ex-listing .ex-foot {
         display: flex; justify-content: space-between; align-items: center;
