@@ -14,3 +14,20 @@
    lives in one place. Docs-only brand files (home/blog don't import them). */
 @import '@cocoindex/brand/docs-layout.css';
 @import '@cocoindex/brand/docsearch.css';
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Typography — align the display sizes to the Hum-07 brand reference. Fonts
+   already match it (Plus Jakarta Sans + JetBrains Mono); these two tokens just
+   bring the hero and the section/article titles down to the Hum-07 scale.
+   Driven through the scale tokens (not per-selector) so the change cascades
+   everywhere reliably. Weights stay at the brand 600. Docs-scoped — home/blog
+   keep their own globals.
+   ───────────────────────────────────────────────────────────────────────── */
+:root {
+  /* Hero — Hum-07 --display, exact. Was clamp(2.75rem, 5vw + 1rem, 5.25rem)
+     (~84px at 1440px); this caps at 4.9rem (~78px) and starts smaller. */
+  --text-display: clamp(2.6rem, 5.2vw + 0.6rem, 4.9rem);
+  /* Section + article titles (the only --text-3xl users) — Hum-07 --h2: fluid,
+     ceiling 3rem. Was a fixed 3.05rem that stayed oversized on narrow screens. */
+  --text-3xl: clamp(1.9rem, 3.2vw + 0.4rem, 3rem);
+}
