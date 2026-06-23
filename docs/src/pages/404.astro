@@ -110,7 +110,7 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, '') || '/';
       .nf .nf-title {
         font-family: var(--serif);
         font-weight: 600;
-        font-size: clamp(var(--text-4xl), 10vw, var(--text-display));
+        font-size: var(--text-display);
         line-height: 0.86;
         letter-spacing: -0.035em;
         margin: 24px 0 24px;
@@ -123,7 +123,7 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, '') || '/';
       }
 
       .nf .nf-lead {
-        font-size: clamp(var(--text-base), 1.3vw, var(--text-md));
+        font-size: var(--text-md);
         line-height: 1.55;
         color: rgba(42, 18, 27, 0.78);
         max-width: 52ch;
