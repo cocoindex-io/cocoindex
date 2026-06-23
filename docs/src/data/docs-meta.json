@@ -65,6 +65,10 @@
       "sourcePath": "connectors/google_drive.mdx",
       "reviewedTs": 1782216000
     },
+    "connectors/iggy": {
+      "sourcePath": "connectors/iggy.mdx",
+      "reviewedTs": 1782216000
+    },
     "connectors/kafka": {
       "sourcePath": "connectors/kafka.mdx",
       "reviewedTs": 1782216000
@@ -75,6 +79,10 @@
     },
     "connectors/localfs": {
       "sourcePath": "connectors/localfs.mdx",
+      "reviewedTs": 1782216000
+    },
+    "connectors/neo4j": {
+      "sourcePath": "connectors/neo4j.mdx",
       "reviewedTs": 1782216000
     },
     "connectors/oci_object_storage": {
@@ -97,12 +105,28 @@
       "sourcePath": "connectors/surrealdb.mdx",
       "reviewedTs": 1782216000
     },
+    "connectors/turbopuffer": {
+      "sourcePath": "connectors/turbopuffer.mdx",
+      "reviewedTs": 1782216000
+    },
+    "connectors/zvec": {
+      "sourcePath": "connectors/zvec.mdx",
+      "reviewedTs": 1782216000
+    },
     "contributing/guide": {
       "sourcePath": "contributing/guide.md",
       "reviewedTs": 1782216000
     },
     "contributing/setup_dev_environment": {
       "sourcePath": "contributing/setup_dev_environment.md",
+      "reviewedTs": 1782216000
+    },
+    "examples/amazon-s3-embedding": {
+      "sourcePath": "example-posts/amazon-s3-embedding.md",
+      "reviewedTs": 1782216000
+    },
+    "examples/audio-to-text": {
+      "sourcePath": "example-posts/audio-to-text.md",
       "reviewedTs": 1782216000
     },
     "examples/csv-to-kafka": {
@@ -113,24 +137,76 @@
       "sourcePath": "example-posts/docs-to-knowledge-graph.md",
       "reviewedTs": 1782216000
     },
+    "examples/entire-session-search": {
+      "sourcePath": "example-posts/entire-session-search.md",
+      "reviewedTs": 1782216000
+    },
+    "examples/face-recognition": {
+      "sourcePath": "example-posts/face-recognition.md",
+      "reviewedTs": 1782216000
+    },
+    "examples/files-transform": {
+      "sourcePath": "example-posts/files-transform.md",
+      "reviewedTs": 1782216000
+    },
+    "examples/google-drive-embedding": {
+      "sourcePath": "example-posts/google-drive-embedding.md",
+      "reviewedTs": 1782216000
+    },
+    "examples/hackernews-trending-topics": {
+      "sourcePath": "example-posts/hackernews-trending-topics.md",
+      "reviewedTs": 1782216000
+    },
     "examples/image-search": {
       "sourcePath": "example-posts/image-search.md",
+      "reviewedTs": 1782216000
+    },
+    "examples/image-search-colpali": {
+      "sourcePath": "example-posts/image-search-colpali.md",
       "reviewedTs": 1782216000
     },
     "examples/index-codebase": {
       "sourcePath": "example-posts/index-codebase.md",
       "reviewedTs": 1782216000
     },
+    "examples/kafka-to-lancedb": {
+      "sourcePath": "example-posts/kafka-to-lancedb.md",
+      "reviewedTs": 1782216000
+    },
+    "examples/manuals-llm-extraction": {
+      "sourcePath": "example-posts/manuals-llm-extraction.md",
+      "reviewedTs": 1782216000
+    },
     "examples/meeting-notes-to-knowledge-graph": {
       "sourcePath": "example-posts/meeting-notes-to-knowledge-graph.md",
       "reviewedTs": 1782216000
     },
-    "examples/pdf-embedding": {
-      "sourcePath": "example-posts/pdf-embedding.md",
-      "reviewedTs": 1782216000
-    },
     "examples/multi-codebase-summarization": {
       "sourcePath": "example-posts/multi-codebase-summarization.md",
+      "reviewedTs": 1782216000
+    },
+    "examples/multi-format-indexing": {
+      "sourcePath": "example-posts/multi-format-indexing.md",
+      "reviewedTs": 1782216000
+    },
+    "examples/oci-object-storage-embedding": {
+      "sourcePath": "example-posts/oci-object-storage-embedding.md",
+      "reviewedTs": 1782216000
+    },
+    "examples/paper-metadata": {
+      "sourcePath": "example-posts/paper-metadata.md",
+      "reviewedTs": 1782216000
+    },
+    "examples/patient-intake-baml": {
+      "sourcePath": "example-posts/patient-intake-baml.md",
+      "reviewedTs": 1782216000
+    },
+    "examples/patient-intake-dspy": {
+      "sourcePath": "example-posts/patient-intake-dspy.md",
+      "reviewedTs": 1782216000
+    },
+    "examples/pdf-embedding": {
+      "sourcePath": "example-posts/pdf-embedding.md",
       "reviewedTs": 1782216000
     },
     "examples/pdf-to-markdown": {
@@ -139,6 +215,34 @@
     },
     "examples/podcast-to-knowledge-graph": {
       "sourcePath": "example-posts/podcast-to-knowledge-graph.md",
+      "reviewedTs": 1782216000
+    },
+    "examples/postgres-source": {
+      "sourcePath": "example-posts/postgres-source.md",
+      "reviewedTs": 1782216000
+    },
+    "examples/product-recommendation": {
+      "sourcePath": "example-posts/product-recommendation.md",
+      "reviewedTs": 1782216000
+    },
+    "examples/sec-edgar-analytics": {
+      "sourcePath": "example-posts/sec-edgar-analytics.md",
+      "reviewedTs": 1782216000
+    },
+    "examples/slides-to-speech": {
+      "sourcePath": "example-posts/slides-to-speech.md",
+      "reviewedTs": 1782216000
+    },
+    "examples/text-embedding-lancedb": {
+      "sourcePath": "example-posts/text-embedding-lancedb.md",
+      "reviewedTs": 1782216000
+    },
+    "examples/text-embedding-qdrant": {
+      "sourcePath": "example-posts/text-embedding-qdrant.md",
+      "reviewedTs": 1782216000
+    },
+    "examples/text-embedding-turbopuffer": {
+      "sourcePath": "example-posts/text-embedding-turbopuffer.md",
       "reviewedTs": 1782216000
     },
     "faq": {
@@ -211,106 +315,6 @@
     },
     "programming_guide/target_state": {
       "sourcePath": "programming_guide/target_state.md",
-      "reviewedTs": 1782216000
-    },
-    "connectors/iggy": {
-      "sourcePath": "connectors/iggy.mdx",
-      "reviewedTs": 1782216000
-    },
-    "connectors/neo4j": {
-      "sourcePath": "connectors/neo4j.mdx",
-      "reviewedTs": 1782216000
-    },
-    "connectors/turbopuffer": {
-      "sourcePath": "connectors/turbopuffer.mdx",
-      "reviewedTs": 1782216000
-    },
-    "examples/audio-to-text": {
-      "sourcePath": "example-posts/audio-to-text.md",
-      "reviewedTs": 1782216000
-    },
-    "examples/hackernews-trending-topics": {
-      "sourcePath": "example-posts/hackernews-trending-topics.md",
-      "reviewedTs": 1782216000
-    },
-    "examples/paper-metadata": {
-      "sourcePath": "example-posts/paper-metadata.md",
-      "reviewedTs": 1782216000
-    },
-    "examples/patient-intake-baml": {
-      "sourcePath": "example-posts/patient-intake-baml.md",
-      "reviewedTs": 1782216000
-    },
-    "examples/patient-intake-dspy": {
-      "sourcePath": "example-posts/patient-intake-dspy.md",
-      "reviewedTs": 1782216000
-    },
-    "examples/postgres-source": {
-      "sourcePath": "example-posts/postgres-source.md",
-      "reviewedTs": 1782216000
-    },
-    "examples/files-transform": {
-      "sourcePath": "example-posts/files-transform.md",
-      "reviewedTs": 1782216000
-    },
-    "examples/kafka-to-lancedb": {
-      "sourcePath": "example-posts/kafka-to-lancedb.md",
-      "reviewedTs": 1782216000
-    },
-    "examples/entire-session-search": {
-      "sourcePath": "example-posts/entire-session-search.md",
-      "reviewedTs": 1782216000
-    },
-    "examples/image-search-colpali": {
-      "sourcePath": "example-posts/image-search-colpali.md",
-      "reviewedTs": 1782216000
-    },
-    "examples/text-embedding-qdrant": {
-      "sourcePath": "example-posts/text-embedding-qdrant.md",
-      "reviewedTs": 1782216000
-    },
-    "examples/text-embedding-lancedb": {
-      "sourcePath": "example-posts/text-embedding-lancedb.md",
-      "reviewedTs": 1782216000
-    },
-    "examples/text-embedding-turbopuffer": {
-      "sourcePath": "example-posts/text-embedding-turbopuffer.md",
-      "reviewedTs": 1782216000
-    },
-    "examples/amazon-s3-embedding": {
-      "sourcePath": "example-posts/amazon-s3-embedding.md",
-      "reviewedTs": 1782216000
-    },
-    "examples/google-drive-embedding": {
-      "sourcePath": "example-posts/google-drive-embedding.md",
-      "reviewedTs": 1782216000
-    },
-    "examples/oci-object-storage-embedding": {
-      "sourcePath": "example-posts/oci-object-storage-embedding.md",
-      "reviewedTs": 1782216000
-    },
-    "examples/face-recognition": {
-      "sourcePath": "example-posts/face-recognition.md",
-      "reviewedTs": 1782216000
-    },
-    "examples/product-recommendation": {
-      "sourcePath": "example-posts/product-recommendation.md",
-      "reviewedTs": 1782216000
-    },
-    "examples/manuals-llm-extraction": {
-      "sourcePath": "example-posts/manuals-llm-extraction.md",
-      "reviewedTs": 1782216000
-    },
-    "examples/multi-format-indexing": {
-      "sourcePath": "example-posts/multi-format-indexing.md",
-      "reviewedTs": 1782216000
-    },
-    "examples/slides-to-speech": {
-      "sourcePath": "example-posts/slides-to-speech.md",
-      "reviewedTs": 1782216000
-    },
-    "examples/sec-edgar-analytics": {
-      "sourcePath": "example-posts/sec-edgar-analytics.md",
       "reviewedTs": 1782216000
     }
   }
