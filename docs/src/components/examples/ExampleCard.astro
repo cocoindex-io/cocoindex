@@ -1,33 +1,25 @@
 ---
-// One card in the examples listing grid. Markup extracted from
-// examples/index.astro's per-category loop; styling stays in that page's
-// `body.ex-listing .ex-card` block (tags use the shared .t-pill + --dt).
-import { titleMarkup } from '../../consts';
-import { CATEGORY_META, type ExampleCard } from '../../data/examples';
+// One card in the examples listing grid, styled like the homepage "Built with
+// CocoIndex" cards: a dark artwork thumb (tag pill + window dots + a pipeline
+// illustration) on top, with the title and description in the light body below.
+// The artwork SVG (hosted in the blobs repo) carries no title text itself.
+import { titleText } from '../../consts';
+import { exampleCardImg, type ExampleCard } from '../../data/examples';
 
 interface Props {
   ex: ExampleCard;
   href: string;
 }
 const { ex, href } = Astro.props;
+const title = titleText(ex.title);
 ---
 <a class="ex-card" href={href}>
-  <div class={`ex-thumb ${ex.thumbClass ?? CATEGORY_META[ex.category].thumbClass}`}>
-    <span class="tl">{ex.thumbLabel}</span>
-    <span class="tr">{ex.index}</span>
-    <div class="motif" set:html={ex.motif ?? ''} />
+  <div class="ex-art">
+    <img class="ex-art-img" src={exampleCardImg(ex.slug)} alt={`${title} pipeline`} width="480" height="300" loading="lazy" decoding="async" data-card={ex.slug} />
+    <span class="ex-open">Open example →</span>
   </div>
   <div class="ex-body">
-    <h3 set:html={titleMarkup(ex.title)} />
+    <h3>{title}</h3>
     <p>{ex.description}</p>
-    <div class="ex-tags">
-      {ex.tags.map((t) => (
-        <span class={`t-pill ${t.kind}`}><span class="dt"></span>{t.label}</span>
-      ))}
-    </div>
-    <div class="ex-foot">
-      <span>{ex.footMeta}</span>
-      <span class="go">Open →</span>
-    </div>
   </div>
 </a>
