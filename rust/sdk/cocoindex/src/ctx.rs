@@ -25,7 +25,7 @@ use crate::live_component::{
     MountKind, build_chained_on_error, new_operator, start_process_live,
 };
 use crate::profile::{BoxedHandler, BoxedProcessor, RustProfile, Value};
-use crate::user_state::{IntoStateKey, StateHandle, decode_state, encode_state};
+use crate::user_state::{IntoStateKey, StateHandle};
 
 type ContextFingerprinter<T> = Arc<dyn Fn(&str, &T) -> Result<Fingerprint> + Send + Sync>;
 
@@ -422,9 +422,9 @@ impl Ctx {
         };
         let key = key.into_state_key();
         let stored = comp_ctx
-            .use_state(key.clone(), encode_state(&initial_value)?)
+            .use_state(key.clone(), Value::from_serializable(&initial_value)?)
             .map_err(Error::from)?;
-        let value = decode_state(&stored)?;
+        let value = stored.deserialize()?;
         Ok(StateHandle::new(key, value, comp_ctx.clone()))
     }
 

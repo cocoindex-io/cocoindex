@@ -15,6 +15,30 @@ _source_items: list[str] = []
 _captured: dict[str, object] = {}
 
 
+@coco.serialize_by_pickle
+class _SerCounter:
+    """Counts its own (de)serializations to assert when encoding happens.
+
+    `__getstate__` runs on every pickle and `__setstate__` on every unpickle,
+    so the counters reflect how many times the value was actually encoded to /
+    decoded from bytes.
+    """
+
+    serialize_count = 0
+    deserialize_count = 0
+
+    def __init__(self, n: int) -> None:
+        self.n = n
+
+    def __getstate__(self) -> dict[str, int]:
+        type(self).serialize_count += 1
+        return {"n": self.n}
+
+    def __setstate__(self, state: dict[str, int]) -> None:
+        type(self).deserialize_count += 1
+        self.n = state["n"]
+
+
 @coco.fn
 async def _root(items: list[str]) -> None:
     for item in items:
@@ -134,6 +158,190 @@ def test_use_state_defaults_to_none() -> None:
 
     app.update_blocking()
     assert _captured["a"] == "set"  # second run: stored value returned
+
+
+def test_use_state_writes_serialize_once_at_flush() -> None:
+    # Assigning state.value repeatedly must NOT serialize on each write.
+    # Serialization is deferred to commit, so N writes in one run cost
+    # exactly one serialization (of the final value).
+    _source_items.clear()
+
+    _seen: dict[str, object] = {}
+
+    @coco.fn
+    def _process_writes(item: str) -> None:
+        s = coco.use_state("obj")  # initial None — does not touch the counter
+        _seen[item] = s.value
+        for i in range(5):
+            s.value = _SerCounter(i)
+
+    @coco.fn
+    async def _root_writes(items: list[str]) -> None:
+        for item in items:
+            await coco.mount(coco.component_subpath(item), _process_writes, item)
+
+    app = coco.App(  # type: ignore[type-arg]
+        coco.AppConfig(name="use_state_write_serialize", environment=coco_env),
+        _root_writes,
+        items=_source_items,
+    )
+    _source_items[:] = ["a"]
+
+    _SerCounter.serialize_count = 0
+    app.update_blocking()
+    assert _seen["a"] is None  # first run: no stored value
+    assert _SerCounter.serialize_count == 1  # 5 writes → 1 serialize at commit
+
+    _SerCounter.serialize_count = 0
+    app.update_blocking()
+    loaded = _seen["a"]
+    assert isinstance(loaded, _SerCounter)
+    assert loaded.n == 4  # persisted final value from the previous run
+    assert _SerCounter.serialize_count == 1  # again, one serialize at commit
+
+
+def test_use_state_initial_not_serialized_when_stored_value_exists() -> None:
+    # Passing an initial_value to use_state must not serialize it when
+    # a value is already stored for the key — the initial is discarded.
+    _source_items.clear()
+
+    _seen: dict[str, object] = {}
+
+    @coco.fn
+    def _process_initial(item: str) -> None:
+        # A fresh initial object each run; from run 2 on it is discarded.
+        s = coco.use_state("init_obj", _SerCounter(7))
+        _seen[item] = s.value
+
+    @coco.fn
+    async def _root_initial(items: list[str]) -> None:
+        for item in items:
+            await coco.mount(coco.component_subpath(item), _process_initial, item)
+
+    app = coco.App(  # type: ignore[type-arg]
+        coco.AppConfig(name="use_state_initial_serialize", environment=coco_env),
+        _root_initial,
+        items=_source_items,
+    )
+    _source_items[:] = ["a"]
+
+    app.update_blocking()  # first run: initial becomes the stored value
+
+    _SerCounter.serialize_count = 0
+    app.update_blocking()  # second run: a stored value already exists
+    # The initial passed this run is dropped without being serialized.
+    assert _SerCounter.serialize_count == 0
+    loaded = _seen["a"]
+    assert isinstance(loaded, _SerCounter)
+    assert loaded.n == 7  # stored value wins, initial ignored
+
+
+def test_use_state_first_run_reuses_initial_object_without_roundtrip() -> None:
+    # On the first run the handle must return the very object passed as
+    # initial_value — no serialize/deserialize round-trip. Serialization is
+    # deferred to commit, so nothing is encoded while the component runs.
+    _source_items.clear()
+
+    sentinel = _SerCounter(123)
+    _info: dict[str, object] = {}
+
+    @coco.fn
+    def _proc(item: str) -> None:
+        s = coco.use_state("rt", sentinel)
+        _info["is_same"] = s.value is sentinel
+        _info["ser_during"] = _SerCounter.serialize_count
+        _info["deser_during"] = _SerCounter.deserialize_count
+
+    @coco.fn
+    async def _root_rt(items: list[str]) -> None:
+        for item in items:
+            await coco.mount(coco.component_subpath(item), _proc, item)
+
+    app = coco.App(  # type: ignore[type-arg]
+        coco.AppConfig(name="use_state_roundtrip", environment=coco_env),
+        _root_rt,
+        items=_source_items,
+    )
+    _source_items[:] = ["a"]
+
+    _SerCounter.serialize_count = 0
+    _SerCounter.deserialize_count = 0
+    app.update_blocking()
+
+    assert _info["is_same"] is True  # same object — no round-trip
+    assert _info["ser_during"] == 0  # nothing serialized while running
+    assert _info["deser_during"] == 0  # nothing deserialized while running
+    assert _SerCounter.serialize_count == 1  # serialized once, at commit
+
+
+def test_use_state_reload_deserializes_lazily_once() -> None:
+    # On a reload, a stored value is deserialized at most once, on first
+    # .value access, and the decoded object is cached for repeated reads.
+    _source_items.clear()
+
+    _info: dict[str, int] = {}
+
+    @coco.fn
+    def _proc(item: str) -> None:
+        s = coco.use_state("lazy", _SerCounter(5))
+        before = _SerCounter.deserialize_count
+        _ = s.value
+        _ = s.value
+        _ = s.value
+        _info[item] = _SerCounter.deserialize_count - before
+
+    @coco.fn
+    async def _root_lazy(items: list[str]) -> None:
+        for item in items:
+            await coco.mount(coco.component_subpath(item), _proc, item)
+
+    app = coco.App(  # type: ignore[type-arg]
+        coco.AppConfig(name="use_state_lazy_deser", environment=coco_env),
+        _root_lazy,
+        items=_source_items,
+    )
+    _source_items[:] = ["a"]
+
+    app.update_blocking()  # first run: stores the value
+    app.update_blocking()  # second run: reload, read .value three times
+    assert _info["a"] == 1  # deserialized exactly once despite three reads
+
+
+def test_use_state_unserializable_value_errors_at_commit_with_key() -> None:
+    # Serialization is deferred to commit, so a non-serializable state value
+    # fails there (not at assignment). The failure must reach the exception
+    # handler (i.e. not be silently dropped) and name the offending key.
+    _source_items.clear()
+
+    class _Unserializable:  # not registered for serialization
+        pass
+
+    captured: list[BaseException] = []
+
+    @coco.fn
+    def _process_bad(item: str) -> None:
+        s = coco.use_state("bad_key")
+        s.value = _Unserializable()  # no error here — deferred to commit
+
+    @coco.fn
+    async def _root_bad(items: list[str]) -> None:
+        def handler(exc: BaseException, ctx: coco.ExceptionContext) -> None:
+            captured.append(exc)
+
+        async with coco.exception_handler(handler):
+            for item in items:
+                await coco.mount(coco.component_subpath(item), _process_bad, item)
+
+    app = coco.App(  # type: ignore[type-arg]
+        coco.AppConfig(name="use_state_unserializable", environment=coco_env),
+        _root_bad,
+        items=_source_items,
+    )
+    _source_items[:] = ["a"]
+    app.update_blocking()
+
+    assert len(captured) == 1
+    assert "bad_key" in str(captured[0])  # error identifies the failing key
 
 
 def test_use_state_raises_inside_memoized_function() -> None:
