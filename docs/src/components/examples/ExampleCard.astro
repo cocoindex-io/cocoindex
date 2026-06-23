@@ -1,0 +1,33 @@
+---
+// One card in the examples listing grid. Markup extracted from
+// examples/index.astro's per-category loop; styling stays in that page's
+// `body.ex-listing .ex-card` block (tags use the shared .t-pill + --dt).
+import { titleMarkup } from '../../consts';
+import { CATEGORY_META, type ExampleCard } from '../../data/examples';
+
+interface Props {
+  ex: ExampleCard;
+  href: string;
+}
+const { ex, href } = Astro.props;
+---
+<a class="ex-card" href={href}>
+  <div class={`ex-thumb ${ex.thumbClass ?? CATEGORY_META[ex.category].thumbClass}`}>
+    <span class="tl">{ex.thumbLabel}</span>
+    <span class="tr">{ex.index}</span>
+    <div class="motif" set:html={ex.motif ?? ''} />
+  </div>
+  <div class="ex-body">
+    <h3 set:html={titleMarkup(ex.title)} />
+    <p>{ex.description}</p>
+    <div class="ex-tags">
+      {ex.tags.map((t) => (
+        <span class={`t-pill ${t.kind}`}><span class="dt"></span>{t.label}</span>
+      ))}
+    </div>
+    <div class="ex-foot">
+      <span>{ex.footMeta}</span>
+      <span class="go">Open →</span>
+    </div>
+  </div>
+</a>

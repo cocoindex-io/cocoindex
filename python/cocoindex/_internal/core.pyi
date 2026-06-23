@@ -192,6 +192,52 @@ class StablePathInfoAsyncIterator:
     def __aiter__(self) -> StablePathInfoAsyncIterator: ...
     def __anext__(self) -> Awaitable[StablePathInfo]: ...
 
+class TargetStateVersion:
+    version: int
+    state: str
+
+class ProviderGeneration:
+    provider_id: int
+    provider_schema_version: int
+
+class TargetStateInfoItemSummary:
+    target_state_path: str
+    key: StableKey
+    states: list[TargetStateVersion]
+    provider_schema_version: int
+    provider_generation: ProviderGeneration | None
+
+class StablePathDetail:
+    """Detailed information about a stable path from LMDB."""
+
+    path: StablePath
+    node_type: StablePathNodeType
+    version: int
+    processor_name: str
+    target_state_count: int
+    has_memoization: bool
+    target_state_items: list[TargetStateInfoItemSummary]
+
+def get_stable_path_detail(app: App, path: StablePath) -> StablePathDetail | None: ...
+def get_stable_path_detail_by_name(
+    env: Any, app_name: str, path: StablePath
+) -> StablePathDetail | None: ...
+def query_stable_path_details(
+    app: App,
+    path: StablePath,
+    include_children: bool,
+    recursive: bool,
+    include_parents: bool,
+) -> list[StablePathDetail]: ...
+def query_stable_path_details_by_name(
+    env: Any,
+    app_name: str,
+    path: StablePath,
+    include_children: bool,
+    recursive: bool,
+    include_parents: bool,
+) -> list[StablePathDetail]: ...
+
 # --- UpdateHandle ---
 class UpdateHandle:
     def stats_snapshot(self) -> tuple[int, bool, dict[str, dict[str, int]]]: ...
@@ -444,6 +490,51 @@ class PatternMatcher:
     ) -> "PatternMatcher": ...
     def is_dir_included(self, path: str) -> bool: ...
     def is_file_included(self, path: str) -> bool: ...
+
+# --- CodeAst (structural matching over a reusable parsed AST) ---
+class CodeMatch:
+    @property
+    def kind(self) -> str: ...
+    @property
+    def chunks(self) -> list[Chunk]: ...
+    @property
+    def captures(self) -> dict[str, list[Chunk]]: ...
+
+class CodePattern:
+    def __new__(
+        cls, pattern: str, language: str, min_len: int = 3
+    ) -> "CodePattern": ...
+    @property
+    def language(self) -> str: ...
+    def might_match(self, source: str) -> bool: ...
+    def match_source(self, source: str) -> list[CodeMatch]: ...
+    def match_file(self, path: str) -> "FileMatch | None": ...
+
+class FileMatch:
+    @property
+    def path(self) -> str: ...
+    @property
+    def ast(self) -> "CodeAst": ...
+    @property
+    def matches(self) -> list[CodeMatch]: ...
+
+class CodeAst:
+    def __new__(cls, source: str, language: str) -> "CodeAst": ...
+    @property
+    def language(self) -> str: ...
+    @property
+    def source(self) -> str: ...
+    def matches(self, pattern: str | CodePattern) -> list[CodeMatch]: ...
+    def split(
+        self,
+        chunk_size: int,
+        min_chunk_size: int | None = None,
+        chunk_overlap: int | None = None,
+    ) -> list[Chunk]: ...
+    def index_terms(self, min_len: int = 3) -> list[str]: ...
+
+def match_code(pattern: str, source: str, language: str) -> list[CodeMatch]: ...
+def index_terms(source: str, language: str, min_len: int = 3) -> list[str]: ...
 
 ########################################################
 # Synchronization Primitives

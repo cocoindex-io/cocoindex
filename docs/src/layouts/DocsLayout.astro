@@ -178,15 +178,8 @@ const breadcrumbLd = {
     <script type="application/ld+json" set:html={JSON.stringify(breadcrumbLd)} />
 
     <link rel="icon" href={`${base}/img/favicon.ico`} />
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <!-- Trimmed Inter weights: the site uses 400/500/600 only (no 300/700 in CSS).
-         Source Serif 4 is italic-only, used exclusively for the H1 italic-coral
-         accent. JetBrains Mono weights reduced to the two we actually render. -->
-    <link
-      rel="stylesheet"
-      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&family=Source+Serif+4:ital,wght@0,400;1,400&display=swap"
-    />
+    <!-- Fonts self-hosted via @fontsource in src/styles/globals.css (GUIDELINE §5.2) —
+         no Google CDN, identical rendering to home + blog. -->
   </head>
   <body>
     <Topbar mobileSheetId="mobileSheet" />
@@ -601,7 +594,7 @@ const breadcrumbLd = {
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    font: 500 13px/1 var(--sans);
+    font: 500 var(--text-sm)/1 var(--sans);
     color: var(--maroon-ink);
     background: transparent;
     border: 0;
@@ -620,6 +613,10 @@ const breadcrumbLd = {
     color: var(--coral);
     background: var(--paper);
   }
+  /* Shared interaction contract — canonical focus ring (inset, since these sit
+     inside the bordered split control). */
+  .ai-primary:focus-visible,
+  .ai-toggle:focus-visible { outline: var(--focus); outline-offset: -2px; }
   .ai-primary :global(svg) {
     width: 14px;
     height: 14px;
@@ -671,8 +668,8 @@ const breadcrumbLd = {
   .ai-item:hover,
   .ai-item:focus-visible {
     background: color-mix(in oklab, var(--coral) 8%, transparent);
-    outline: none;
   }
+  .ai-item:focus-visible { outline: var(--focus); outline-offset: -2px; }
   .ai-ic {
     flex: none;
     display: grid;
@@ -698,7 +695,7 @@ const breadcrumbLd = {
     display: inline-flex;
     align-items: center;
     gap: 5px;
-    font: 500 14px/1.25 var(--sans);
+    font: 500 var(--text-sm)/1.25 var(--sans);
     color: var(--maroon-ink);
   }
   .ai-t :global(.ext) {
@@ -707,7 +704,7 @@ const breadcrumbLd = {
     opacity: 0.5;
   }
   .ai-d {
-    font: 400 12px/1.3 var(--sans);
+    font: 400 var(--text-sm)/1.3 var(--sans);
     color: var(--muted);
   }
   .ai-item.copied .ai-d {

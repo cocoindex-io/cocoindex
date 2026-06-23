@@ -4,8 +4,16 @@ on:
   pull_request:
     branches: [main, v1]
     paths:
-      - docs/**
+      - "docs/**"
       - ".github/workflows/docs_test.yml"
+      - "uv.lock"
+  push:
+    branches: [main, v1]
+    paths:
+      - "docs/**"
+      - ".github/workflows/docs_test.yml"
+      - "uv.lock"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -14,7 +22,7 @@ jobs:
   test-build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 1
       - uses: actions/setup-node@v6
@@ -26,3 +34,18 @@ jobs:
         run: npm --prefix docs ci
       - name: Build docs site
         run: npm --prefix docs run build
+      - name: Verify docs build output exists
+        run: |
+          if [ ! -d "docs/dist" ]; then
+            echo "Error: docs/dist directory not found after build"
+            exit 1
+          fi
+          echo "Docs build output verified successfully"
+      - name: Check for index.html in build output
+        run: |
+          # Find any index.html in the dist folder as verification
+          if ! find docs/dist -name "index.html" -type f | grep -q .; then
+            echo "Error: No index.html found in docs/dist"
+            exit 1
+          fi
+          echo "Docs pages verified: index.html found"

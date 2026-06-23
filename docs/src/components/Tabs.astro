@@ -78,7 +78,7 @@ const id = `coco-tabs-${crypto.randomUUID().slice(0, 8)}`;
   gap: 6px;
   padding: 9px 16px;
   font-family: var(--sans);
-  font-size: 13.5px;
+  font-size: var(--text-sm);
   font-weight: 500;
   color: var(--muted);
   cursor: pointer;
@@ -152,8 +152,8 @@ const id = `coco-tabs-${crypto.randomUUID().slice(0, 8)}`;
 .coco-tabs-radio:nth-of-type(3):focus-visible ~ .coco-tabs-bar > .coco-tabs-label:nth-of-type(3),
 .coco-tabs-radio:nth-of-type(4):focus-visible ~ .coco-tabs-bar > .coco-tabs-label:nth-of-type(4),
 .coco-tabs-radio:nth-of-type(5):focus-visible ~ .coco-tabs-bar > .coco-tabs-label:nth-of-type(5) {
-  outline: 2px solid var(--coral);
-  outline-offset: 2px;
+  outline: var(--focus);
+  outline-offset: var(--focus-offset);
 }
 
 .coco-tabs-panel :global(img) {
@@ -169,6 +169,6 @@ const id = `coco-tabs-${crypto.randomUUID().slice(0, 8)}`;
 
 @media (max-width: 640px) {
   .coco-tabs-panels { padding: 18px; }
-  .coco-tabs-label { padding: 8px 12px; font-size: 13px; }
+  .coco-tabs-label { padding: 8px 12px; font-size: var(--text-sm); }
 }
 </style>

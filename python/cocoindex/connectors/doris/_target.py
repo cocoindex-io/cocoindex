@@ -574,7 +574,12 @@ async def _stream_load(
     if not rows:
         return {"Status": "Success", "NumberLoadedRows": 0}
 
-    session = managed_conn._ensure_session()
+    # Create a session bound to the current event loop. _apply_actions may run
+    # on a fresh per-thread loop, so a session cached on the connection (and its
+    # original loop) cannot be reused here without "attached to a different loop".
+    session = aiohttp_mod.ClientSession(
+        auth=aiohttp_mod.BasicAuth(config.username, config.password)
+    )
     protocol = "https" if config.enable_https else "http"
     url = f"{protocol}://{config.fe_host}:{config.fe_http_port}/api/{config.database}/{table_name}/_stream_load"
 
@@ -661,9 +666,12 @@ async def _stream_load(
         base_delay=config.retry_base_delay,
         max_delay=config.retry_max_delay,
     )
-    return await _with_retry(
-        do_stream_load, retry_config, f"Stream Load to {table_name}"
-    )
+    try:
+        return await _with_retry(
+            do_stream_load, retry_config, f"Stream Load to {table_name}"
+        )
+    finally:
+        await session.close()
 
 
 async def _execute_delete(
@@ -855,7 +863,13 @@ class _RowHandler(coco.TargetHandler[_RowValue, _RowFingerprint]):
         config = self._managed_conn.config
         pk_cols = self._table_schema.primary_key
 
-        loop = asyncio.get_event_loop()
+        # This sync method may be invoked from a worker thread with no event
+        # loop (Python 3.12 no longer auto-creates one); fall back to a fresh loop.
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
 
         if upserts:
             # Build rows for stream load

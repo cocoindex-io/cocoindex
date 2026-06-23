@@ -24,6 +24,11 @@ try:
 except ImportError:
     PYDANTIC_AVAILABLE = False
 
+# PEP 695 ``type`` aliases (``typing.TypeAliasType``) only exist on Python 3.12+.
+# numpy >= 2.5 defines ``numpy.typing.NDArray`` as one, so we must transparently
+# unwrap it to reach the underlying ``numpy.ndarray[...]`` type.
+_TypeAliasType = getattr(typing, "TypeAliasType", None)
+
 
 def extract_ndarray_elem_dtype(ndarray_type: Any) -> Any:
     args = typing.get_args(ndarray_type)
@@ -210,6 +215,16 @@ def analyze_type_info(t: Any, *, nullable: bool = False) -> DataTypeInfo:
         if base_type is Annotated:
             annotations += t.__metadata__
             t = t.__origin__
+        elif _TypeAliasType is not None and isinstance(t, _TypeAliasType):
+            # Bare PEP 695 ``type`` alias (e.g. unsubscripted ``numpy.typing.NDArray``):
+            # resolve to the aliased type and continue unwrapping.
+            t = t.__value__
+        elif _TypeAliasType is not None and isinstance(base_type, _TypeAliasType):
+            # Subscripted PEP 695 ``type`` alias (e.g. ``NDArray[np.float32]`` on
+            # numpy >= 2.5): substitute the type arguments into the alias value so
+            # the underlying ``numpy.ndarray[...]`` (with its dtype) is recovered.
+            type_args = typing.get_args(t)
+            t = base_type.__value__[type_args] if type_args else base_type.__value__
         else:
             if base_type is None:
                 base_type = t

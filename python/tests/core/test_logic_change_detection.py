@@ -407,6 +407,156 @@ def test_transitive_component_mounts_bar_comp_memo() -> None:
 
 
 # ============================================================================
+# Memoized parent across the mount boundary — child's change must invalidate
+# the parent (its persisted logic_deps must include the mounted subtree).
+#
+# The memoized parent is defined here at module level (never reloaded), so its
+# own logic fingerprint stays stably registered across the v1->v2 transition.
+# This isolates the case "only the mounted child's code changed" — unlike the
+# tests above where the parent is a plain (non-memoized) component that always
+# re-runs and relies on the *child's* own memo to catch the change.
+# ============================================================================
+
+
+_mount_parent_metrics: list[Any] = []
+_mount_parent_child: list[Any] = []
+
+
+@coco.fn(memo=True)
+async def _memo_parent_mounts_child(key: str, value: str) -> None:
+    _mount_parent_metrics[0].increment("memo_parent")
+    await coco.mount(coco.component_subpath(key), _mount_parent_child[0], key, value)
+
+
+def test_memo_parent_invalidated_when_mounted_child_changes() -> None:
+    """A memoized parent that mounts a child must invalidate when only the
+    child's code changes — regression for the dropped mount-boundary deps."""
+    GlobalDictTarget.store.clear()
+    metrics = Metrics()
+    current_module: list[Any] = []
+    _mount_parent_metrics.clear()
+    _mount_parent_metrics.append(metrics)
+
+    @coco.fn
+    async def app_main() -> None:
+        await coco.mount(
+            coco.component_subpath("A"), _memo_parent_mounts_child, "A", "value1"
+        )
+
+    app = coco.App(
+        coco.AppConfig(
+            name="test_memo_parent_invalidated_when_mounted_child_changes",
+            environment=coco_env,
+        ),
+        app_main,
+    )
+
+    # v1: first run — memoized parent and child both execute
+    mod = _load_module(_V1_PATH, metrics, current_module)
+    _mount_parent_child.clear()
+    _mount_parent_child.append(mod.bar_comp_plain)
+    app.update_blocking()
+    assert metrics.collect() == {"memo_parent": 1, "bar_comp_plain": 1}
+    assert GlobalDictTarget.store.data["A"].data == "bar_v1: value1"
+
+    # v1: second run — parent memo hit, nothing runs
+    app.update_blocking()
+    assert metrics.collect() == {}
+
+    # v2: ONLY the mounted child's body changed. The memoized parent's stored
+    # logic_deps must include the child's fingerprint, so the parent invalidates,
+    # re-runs, and re-mounts the child — refreshing the output.
+    mod = _load_module(_V2_PATH, metrics, current_module, old_module=mod)
+    _mount_parent_child.clear()
+    _mount_parent_child.append(mod.bar_comp_plain)
+    app.update_blocking()
+    assert metrics.collect() == {"memo_parent": 1, "bar_comp_plain": 1}
+    assert GlobalDictTarget.store.data["A"].data == "bar_v2: value1"
+
+    # v2: second run — parent memo hit again
+    app.update_blocking()
+    assert metrics.collect() == {}
+
+
+# ============================================================================
+# Cache-hit propagation across the mount boundary — a memoized child that is a
+# cache *hit* (while its parent rebuilds for an unrelated reason) must still
+# report its dependency set to the rebuilt parent. Otherwise the parent's
+# refreshed memo loses the child's subtree, and a later change to the child
+# would wrongly leave the parent a memo hit.
+# ============================================================================
+
+
+_cachehit_metrics: list[Any] = []
+_cachehit_child: list[Any] = []
+_cachehit_value: list[str] = []
+
+
+@coco.fn(memo=True)
+async def _memo_parent_mounts_memo_child(key: str, value: str) -> None:
+    # `value` is part of this memo'd parent's key, so changing it forces a
+    # rebuild — but the child below is always mounted with FIXED args, so it
+    # stays a cache hit across that rebuild.
+    _cachehit_metrics[0].increment("cachehit_parent")
+    await coco.mount(coco.component_subpath("C"), _cachehit_child[0], "C", "fixed")
+
+
+def test_memo_child_cache_hit_still_propagates_deps_to_rebuilt_parent() -> None:
+    """When a memoized parent rebuilds (unrelated reason) and its memo child is
+    a cache hit, the child's deps must still flow into the parent's refreshed
+    memo — so a later change to the child invalidates the parent."""
+    GlobalDictTarget.store.clear()
+    metrics = Metrics()
+    current_module: list[Any] = []
+    _cachehit_metrics.clear()
+    _cachehit_metrics.append(metrics)
+    _cachehit_value.clear()
+    _cachehit_value.append("x1")
+
+    @coco.fn
+    async def app_main() -> None:
+        await coco.mount(
+            coco.component_subpath("P"),
+            _memo_parent_mounts_memo_child,
+            "P",
+            _cachehit_value[0],
+        )
+
+    app = coco.App(
+        coco.AppConfig(
+            name="test_memo_child_cache_hit_still_propagates_deps_to_rebuilt_parent",
+            environment=coco_env,
+        ),
+        app_main,
+    )
+
+    # Run 1 (child v1, value x1): parent + child both build.
+    mod = _load_module(_V1_PATH, metrics, current_module)
+    _cachehit_child.clear()
+    _cachehit_child.append(mod.bar_comp_memo)
+    app.update_blocking()
+    assert metrics.collect() == {"cachehit_parent": 1, "bar_comp_memo": 1}
+    assert GlobalDictTarget.store.data["C"].data == "bar_v1: fixed"
+
+    # Run 2 (child still v1, value x2): parent's key changed → parent rebuilds;
+    # child is unchanged → cache HIT. The child must still propagate its deps to
+    # the rebuilt parent (the `reused` outcome path).
+    _cachehit_value[0] = "x2"
+    app.update_blocking()
+    assert metrics.collect() == {"cachehit_parent": 1}  # child cached, didn't run
+
+    # Run 3 (child v2, value x2): only the child's code changed. Parent's key
+    # matches run 2, but its stored deps must include the child's (v1) fp, so the
+    # parent invalidates, rebuilds, and re-mounts the now-changed child.
+    mod = _load_module(_V2_PATH, metrics, current_module, old_module=mod)
+    _cachehit_child.clear()
+    _cachehit_child.append(mod.bar_comp_memo)
+    app.update_blocking()
+    assert metrics.collect() == {"cachehit_parent": 1, "bar_comp_memo": 1}
+    assert GlobalDictTarget.store.data["C"].data == "bar_v2: fixed"
+
+
+# ============================================================================
 # Explicit version bump invalidates memo (identical function body)
 # ============================================================================
 

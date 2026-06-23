@@ -1,0 +1,16 @@
+[project]
+name = "manuals-llm-extraction"
+version = "0.1.0"
+description = "CocoIndex example: convert PDF manuals to Markdown with docling, LLM-extract structured module info, store in Postgres."
+requires-python = ">=3.11"
+dependencies = [
+    "cocoindex[postgres]>=1.0.7",
+    "docling>=2.0.0",
+    "instructor>=1.0.0",
+    "litellm>=1.0.0",
+    "pydantic>=2.0.0",
+    "asyncpg>=0.29.0",
+]
+
+[tool.setuptools]
+packages = []

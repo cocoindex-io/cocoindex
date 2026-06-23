@@ -930,12 +930,16 @@ impl<Prof: EngineProfile> ComponentProcessorContext<Prof> {
         self.inner.logic_deps.lock().unwrap().extend(deps);
     }
 
-    /// Take the accumulated logic deps as a sorted Vec for deterministic storage.
-    pub(crate) fn take_logic_deps(&self) -> Vec<Fingerprint> {
-        let deps = std::mem::take(&mut *self.inner.logic_deps.lock().unwrap());
-        let mut v: Vec<_> = deps.into_iter().collect();
-        v.sort();
-        v
+    /// Take the accumulated logic deps (own fp ∪ all descendants merged so far)
+    /// out of this context. This is an O(1) move — the single full set serves
+    /// both consumers in `execute_once`: this component's own memo (sorted for
+    /// deterministic storage at the call site) and the `ComponentRunOutcome`
+    /// reported to the parent across the mount boundary (so the parent's memo
+    /// depends on this whole subtree's logic). Callers must invoke this only
+    /// after everything that reads the set (e.g. `collect_context_initial_states`
+    /// during cache-miss memo-state collection) has run.
+    pub(crate) fn take_logic_deps(&self) -> HashSet<Fingerprint> {
+        std::mem::take(&mut *self.inner.logic_deps.lock().unwrap())
     }
 
     /// Collect initial memo states for the change-detection context fingerprints

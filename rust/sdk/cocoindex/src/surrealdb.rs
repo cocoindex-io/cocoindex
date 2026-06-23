@@ -1630,6 +1630,10 @@ async fn apply_records(
 // ---------------------------------------------------------------------------
 
 fn record_state<R: Serialize>(row: &R) -> Result<RecordState> {
+    // Reject non-finite floats up front: `serde_json` would turn NaN/±Inf into
+    // JSON null, silently corrupting the value.
+    crate::finite::ensure_finite(row)
+        .map_err(|e| Error::engine(format!("SurrealDB target record has a {e}")))?;
     let value = serde_json::to_value(row)
         .map_err(|e| Error::engine(format!("serialize SurrealDB target record: {e}")))?;
     let fields = match value {

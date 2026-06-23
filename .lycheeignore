@@ -4,6 +4,10 @@
 # internal doc links - docusaurus validates these during build
 ^file://
 
+# internal example-walkthrough self-links - validated at build time; a newly
+# added /docs/examples/<slug>/ page 404s in CI until the site redeploys
+^https://cocoindex\.io/docs/examples/
+
 # used in the docs (as part of setup/launch instructions)
 ^http://localhost
 ^https://localhost

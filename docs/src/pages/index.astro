@@ -92,12 +92,7 @@ const ICONS: Record<string, string> = {
     <meta name="description" content={description} />
     <link rel="canonical" href={canonical} />
     <link rel="icon" href={`${base}/img/favicon.ico`} />
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      rel="stylesheet"
-      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&family=Source+Serif+4:ital,wght@0,400;1,400&display=swap"
-    />
+    <!-- Fonts self-hosted via @fontsource in src/styles/globals.css (GUIDELINE §5.2). -->
   </head>
   <body class="docs-home">
     <Topbar mobileSheetId="mobileSheet" />
@@ -111,7 +106,7 @@ const ICONS: Record<string, string> = {
         <section class="dh-hero">
           <div class="hero-grid">
             <div class="hero-copy">
-              <span class="eyb"><span class="dot" aria-hidden="true"></span>Documentation · v1</span>
+              <span class="t-eyebrow"><span class="dt" aria-hidden="true"></span>Documentation · v1</span>
               <h1 class="hero-h" set:html={titleMarkup('Fresh data views for *agents.*')} />
               <p class="hero-sub">
                 CocoIndex is an ultra-performant framework for building data pipelines for AI, with
@@ -344,23 +339,19 @@ app.update_blocking()</code></pre>
       /* ── HERO ── */
       body.docs-home .dh-hero { padding: 8px 0 8px; }
       body.docs-home .hero-grid { display: grid; grid-template-columns: 1.1fr 0.9fr; gap: 48px; align-items: center; }
-      body.docs-home .hero-copy .eyb {
-        font-family: var(--mono); font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase;
-        color: var(--coral); display: inline-flex; align-items: center; gap: 9px; margin-bottom: 20px;
-      }
-      body.docs-home .hero-copy .eyb .dot {
-        width: 7px; height: 7px; border-radius: 50%; background: var(--palm-ink);
-        animation: dh-pulse 2.4s ease-in-out infinite;
-      }
+      /* Hero eyebrow uses the shared .t-eyebrow (@cocoindex/brand/tags.css);
+         add bottom margin in this hero layout. */
+      body.docs-home .hero-copy .t-eyebrow { margin-bottom: 20px; }
       @keyframes dh-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
       body.docs-home h1.hero-h {
-        font-family: var(--serif); font-weight: 400;
-        font-size: clamp(38px, 4.4vw, 60px); line-height: 1.0; letter-spacing: -0.03em;
-        margin: 0 0 20px; max-width: 13ch;
+        font-family: var(--serif); font-weight: 600;
+        /* Hum 7 --text-display, exact */
+        font-size: var(--text-display); line-height: 1; letter-spacing: -0.025em;
+        margin: 0 0 20px; max-width: 13ch; overflow-wrap: anywhere; min-width: 0;
       }
-      body.docs-home h1.hero-h em { font-style: italic; color: var(--coral); }
+      body.docs-home h1.hero-h em { font-style: normal; font-weight: 600; color: var(--coral); }
       body.docs-home .hero-sub {
-        font-size: clamp(15.5px, 1.2vw, 18px); line-height: 1.55; color: var(--maroon-ink);
+        font-size: var(--text-base); line-height: 1.55; color: var(--maroon-ink);
         max-width: 52ch; margin: 0 0 24px;
       }
       body.docs-home .hero-sub b { font-weight: 600; color: var(--maroon); }
@@ -371,23 +362,28 @@ app.update_blocking()</code></pre>
         background: var(--maroon-ink); border-radius: 8px; padding: 11px 12px 11px 16px;
       }
       body.docs-home .install code {
-        font-family: var(--mono); font-size: 13.5px; color: var(--cream);
+        font-family: var(--mono); font-size: var(--text-sm); color: var(--cream);
         background: transparent; padding: 0; border: none;
       }
       body.docs-home .install code .p { color: var(--peach); margin-right: 8px; }
       body.docs-home .install .copy,
       body.docs-home .codeblk .copy {
-        font-family: var(--mono); font-size: 11px; letter-spacing: 0.04em;
+        font-family: var(--mono); font-size: var(--text-xs); letter-spacing: 0.04em;
         color: var(--cream); background: transparent;
         border: 1px solid rgba(252, 243, 216, 0.25); border-radius: 5px;
-        padding: 4px 10px; cursor: pointer; transition: background .15s, border-color .15s;
+        padding: 4px 10px; cursor: pointer; transition: background .15s, border-color .15s, transform .12s var(--ease);
       }
       body.docs-home .install .copy:hover,
       body.docs-home .codeblk .copy:hover { background: rgba(252, 243, 216, 0.12); border-color: rgba(252, 243, 216, 0.5); }
+      /* Shared interaction contract — canonical focus ring + press. */
+      body.docs-home .install .copy:active,
+      body.docs-home .codeblk .copy:active { transform: translateY(1px); }
+      body.docs-home .install .copy:focus-visible,
+      body.docs-home .codeblk .copy:focus-visible { outline: var(--focus); outline-offset: var(--focus-offset); }
 
       body.docs-home .hero-meta {
         display: flex; flex-wrap: wrap; gap: 6px 18px; margin-top: 22px;
-        font-family: var(--mono); font-size: 11px; letter-spacing: 0.03em; color: var(--muted);
+        font-family: var(--mono); font-size: var(--text-xs); letter-spacing: 0.03em; color: var(--muted);
       }
       body.docs-home .hero-meta b { color: var(--maroon); font-weight: 600; }
 
@@ -397,7 +393,7 @@ app.update_blocking()</code></pre>
         padding: 24px 22px;
       }
       body.docs-home .viz-label {
-        font-family: var(--mono); font-size: 11px; letter-spacing: 0.06em; color: var(--muted);
+        font-family: var(--mono); font-size: var(--text-xs); letter-spacing: 0.06em; color: var(--muted);
         margin-bottom: 16px; text-align: center;
       }
       body.docs-home .viz-flow { display: flex; flex-direction: column; align-items: stretch; gap: 8px; }
@@ -406,9 +402,9 @@ app.update_blocking()</code></pre>
         background: var(--paper); display: flex; flex-direction: column; gap: 3px; text-align: center;
       }
       body.docs-home .node .nt {
-        font-family: var(--mono); font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted);
+        font-family: var(--mono); font-size: var(--text-xs); letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted);
       }
-      body.docs-home .node .nv { font-size: 13px; font-weight: 600; color: var(--maroon-ink); }
+      body.docs-home .node .nv { font-size: var(--text-sm); font-weight: 600; color: var(--maroon-ink); }
       body.docs-home .node.src .nv { color: var(--maroon); }
       body.docs-home .node.tgt .nv { color: var(--coral); }
       body.docs-home .node.eng { background: var(--maroon); border-color: var(--maroon); }
@@ -417,7 +413,7 @@ app.update_blocking()</code></pre>
       body.docs-home .viz-arrow { text-align: center; color: var(--coral); font-family: var(--mono); line-height: 1; }
       body.docs-home .viz-delta {
         margin: 6px auto 0; display: inline-flex; align-items: center; gap: 7px;
-        font-family: var(--mono); font-size: 11px; color: var(--palm-ink);
+        font-family: var(--mono); font-size: var(--text-xs); color: var(--palm-ink);
         background: color-mix(in oklab, var(--palm) 16%, var(--cream));
         border: 1px solid color-mix(in oklab, var(--palm-ink) 30%, transparent);
         border-radius: 999px; padding: 4px 12px;
@@ -430,15 +426,15 @@ app.update_blocking()</code></pre>
       body.docs-home .sec-head { margin-bottom: 32px; max-width: 64ch; }
       body.docs-home .sec-head.no-mb { margin-bottom: 0; }
       body.docs-home .sec-head .idx {
-        font-family: var(--mono); font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase;
+        font-family: var(--mono); font-size: var(--text-xs); letter-spacing: 0.14em; text-transform: uppercase;
         color: var(--coral); display: block; margin-bottom: 14px;
       }
       body.docs-home .sec-head h2 {
-        font-family: var(--sans); font-weight: 600; font-size: clamp(24px, 2.6vw, 34px);
-        line-height: 1.1; letter-spacing: -0.025em; margin: 0 0 12px;
+        font-family: var(--sans); font-weight: 600; font-size: var(--text-xl);
+        line-height: 1.2; letter-spacing: -0.025em; margin: 0 0 12px;
       }
-      body.docs-home .sec-head h2 em { font-style: italic; color: var(--coral); }
-      body.docs-home .sec-head p { margin: 0; font-size: 16px; color: var(--maroon-ink); line-height: 1.55; max-width: 62ch; }
+      body.docs-home .sec-head h2 em { font-style: normal; font-weight: 600; color: var(--coral); }
+      body.docs-home .sec-head p { margin: 0; font-size: var(--text-base); color: var(--maroon-ink); line-height: 1.55; max-width: 62ch; }
 
       /* card grid — auto-fit so it always fits the (narrower) main column */
       body.docs-home .card-grid { display: grid; gap: 16px; }
@@ -473,17 +469,17 @@ app.update_blocking()</code></pre>
       }
       body.docs-home .card .ico svg { width: 20px; height: 20px; }
       body.docs-home .card h3 {
-        margin: 0 0 6px; font-size: 16px; font-weight: 600; letter-spacing: -0.01em;
+        margin: 0 0 6px; font-size: var(--text-base); font-weight: 600; letter-spacing: -0.01em;
         display: flex; align-items: center; gap: 6px; color: var(--maroon-ink);
       }
       body.docs-home .card h3 .ar { color: var(--coral); transition: transform .18s ease; }
       body.docs-home .card:hover h3 .ar { transform: translateX(3px); }
-      body.docs-home .card p { margin: 0; font-size: 13.5px; color: var(--muted); line-height: 1.5; }
+      body.docs-home .card p { margin: 0; font-size: var(--text-sm); color: var(--muted); line-height: 1.55; }
       body.docs-home .card .meta {
-        display: block; margin-top: 14px; font-family: var(--mono); font-size: 10.5px;
+        display: block; margin-top: 14px; font-family: var(--mono); font-size: var(--text-xs);
         letter-spacing: 0.1em; text-transform: uppercase; color: var(--coral);
       }
-      body.docs-home .card.build h3 { font-size: 17px; }
+      body.docs-home .card.build h3 { font-size: var(--text-base); }
 
       /* steps */
       body.docs-home .steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 18px; }
@@ -493,10 +489,10 @@ app.update_blocking()</code></pre>
       }
       body.docs-home .step .num {
         width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center;
-        background: var(--maroon); color: var(--cream); font-family: var(--serif); font-size: 20px;
+        background: var(--maroon); color: var(--cream); font-family: var(--serif); font-weight: 600; font-size: var(--text-md);
       }
-      body.docs-home .step h4 { margin: 2px 0 8px; font-size: 17px; font-weight: 600; letter-spacing: -0.01em; }
-      body.docs-home .step p { margin: 0; font-size: 14px; color: var(--muted); line-height: 1.55; }
+      body.docs-home .step h4 { margin: 2px 0 8px; font-size: var(--text-base); font-weight: 600; letter-spacing: -0.01em; }
+      body.docs-home .step p { margin: 0; font-size: var(--text-sm); color: var(--muted); line-height: 1.55; }
 
       /* code split */
       body.docs-home .split { display: grid; grid-template-columns: 0.85fr 1.15fr; gap: 44px; align-items: center; }
@@ -509,11 +505,11 @@ app.update_blocking()</code></pre>
         border-bottom: 1px solid rgba(252, 243, 216, 0.12);
       }
       body.docs-home .codeblk .bar .d { width: 11px; height: 11px; border-radius: 50%; }
-      body.docs-home .codeblk .bar .fname { margin-left: 6px; font-family: var(--mono); font-size: 12px; color: var(--stone); }
+      body.docs-home .codeblk .bar .fname { margin-left: 6px; font-family: var(--mono); font-size: var(--text-sm); color: var(--stone); }
       body.docs-home .codeblk .bar .copy { margin-left: auto; }
       body.docs-home .codeblk pre { margin: 0; padding: 22px 24px; overflow-x: auto; }
       body.docs-home .codeblk code {
-        font-family: var(--mono); font-size: 12.5px; line-height: 1.75; color: var(--cream);
+        font-family: var(--mono); font-size: var(--text-sm); line-height: 1.6; color: var(--cream);
         background: transparent; padding: 0; border: none;
       }
       body.docs-home .codeblk .cm { color: var(--taupe); font-style: italic; }
@@ -527,12 +523,12 @@ app.update_blocking()</code></pre>
       /* building blocks */
       body.docs-home .bb { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 22px; }
       body.docs-home .bb-col h4 {
-        font-family: var(--mono); font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase;
+        font-family: var(--mono); font-size: var(--text-xs); letter-spacing: 0.14em; text-transform: uppercase;
         color: var(--coral); margin: 0 0 14px; padding-bottom: 10px; border-bottom: 1px solid var(--rule);
       }
       body.docs-home .chips { display: flex; flex-wrap: wrap; gap: 8px; }
       body.docs-home .chip {
-        font-family: var(--mono); font-size: 12px; padding: 6px 11px;
+        font-family: var(--mono); font-size: var(--text-sm); padding: 6px 11px;
         border: 1px solid var(--rule-strong); border-radius: 999px; color: var(--maroon);
         text-decoration: none; transition: background .15s, border-color .15s, color .15s;
       }
@@ -548,7 +544,6 @@ app.update_blocking()</code></pre>
         body.docs-home .split { grid-template-columns: 1fr; gap: 26px; }
       }
       @media (prefers-reduced-motion: reduce) {
-        body.docs-home .hero-copy .eyb .dot { animation: none; }
         body.docs-home .card, body.docs-home .card h3 .ar { transition: none; }
       }
     </style>

@@ -361,7 +361,7 @@ where
             .collect::<Result<Vec<_>>>()?;
         let children = self
             .inner
-            .apply(&(), Arc::new(()), actions)
+            .apply(&(), Arc::new(crate::ctx::ContextStore::default()), actions)
             .await
             .map_err(|e| crate::error::Error::engine(e.to_string()))?;
         Ok(children.map(|children| {

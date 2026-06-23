@@ -38,7 +38,7 @@ pub use ::iggy::prelude;
 
 use crate::ctx::Ctx;
 use crate::error::{Error, Result};
-use crate::live_component::{LiveMapFeed, LiveMapSubscriber, LiveMapView};
+use crate::live_component::{LiveMapFeed, LiveMapSubscriber, LiveMapView, SingleWatcherGuard};
 use crate::target_state::{
     StableKey, TargetAction, TargetActionSink, TargetHandler, TargetReconcileOutput,
     TargetStateProvider, declare_target_state, register_root_target_states_provider,
@@ -458,6 +458,7 @@ pub struct IggyTopicMap {
     is_deletion: Option<IggyIsDeletionFn>,
     /// Offset `watch` resumes from — the offset `scan` reached.
     watch_start: Arc<tokio::sync::Mutex<u64>>,
+    watch_guard: SingleWatcherGuard,
 }
 
 /// Build an [`IggyTopicMap`] over `stream`/`topic` keyed by `key_fn`.
@@ -492,6 +493,7 @@ pub fn topic_as_map_with_options(
         key_fn,
         is_deletion: options.is_deletion,
         watch_start: Arc::new(tokio::sync::Mutex::new(0)),
+        watch_guard: SingleWatcherGuard::new("IggyTopicMap"),
     }
 }
 
@@ -585,6 +587,7 @@ impl LiveMapView<String, Vec<u8>> for IggyTopicMap {
 #[crate::async_trait]
 impl LiveMapFeed<String, Vec<u8>> for IggyTopicMap {
     async fn watch(&self, subscriber: LiveMapSubscriber<String, Vec<u8>>) -> Result<()> {
+        let _watch_token = self.watch_guard.enter()?;
         let (stream, topic) = self.ids()?;
         let consumer = Self::consumer()?;
         let mut offset = *self.watch_start.lock().await;
@@ -634,6 +637,7 @@ pub struct IggyTopicStream {
     /// Per-partition offset `watch` resumes from — the offset `scan` reached for
     /// each partition.
     watch_start: Arc<tokio::sync::Mutex<BTreeMap<u32, u64>>>,
+    watch_guard: SingleWatcherGuard,
 }
 
 /// Build an [`IggyTopicStream`] over all partitions of `stream`/`topic` (keyless
@@ -648,6 +652,7 @@ pub fn topic_as_stream(
         stream: stream.into(),
         topic: topic.into(),
         watch_start: Arc::new(tokio::sync::Mutex::new(BTreeMap::new())),
+        watch_guard: SingleWatcherGuard::new("IggyTopicStream"),
     }
 }
 
@@ -748,6 +753,7 @@ impl LiveMapView<String, Vec<u8>> for IggyTopicStream {
 #[crate::async_trait]
 impl LiveMapFeed<String, Vec<u8>> for IggyTopicStream {
     async fn watch(&self, subscriber: LiveMapSubscriber<String, Vec<u8>>) -> Result<()> {
+        let _watch_token = self.watch_guard.enter()?;
         let (stream, topic) = self.ids()?;
         let consumer = IggyTopicMap::consumer()?;
         let mut offsets = self.watch_start.lock().await.clone();
