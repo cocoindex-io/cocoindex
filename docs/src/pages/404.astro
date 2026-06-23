@@ -93,7 +93,7 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, '') || '/';
 
       .nf .nf-eyebrow {
         display: inline-flex; align-items: center; gap: 10px;
-        font-family: var(--mono); font-size: 11px;
+        font-family: var(--mono); font-size: var(--text-xs);
         letter-spacing: 0.16em; text-transform: uppercase;
         color: var(--muted);
         padding: 8px 14px;
@@ -109,8 +109,8 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, '') || '/';
 
       .nf .nf-title {
         font-family: var(--serif);
-        font-weight: 700;
-        font-size: clamp(64px, 10vw, 152px);
+        font-weight: 600;
+        font-size: clamp(var(--text-4xl), 10vw, var(--text-display));
         line-height: 0.86;
         letter-spacing: -0.035em;
         margin: 24px 0 24px;
@@ -118,12 +118,12 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, '') || '/';
       }
       .nf .nf-title em {
         font-style: normal;
-        font-weight: 700;
+        font-weight: 600;
         color: var(--coral);
       }
 
       .nf .nf-lead {
-        font-size: clamp(16px, 1.3vw, 19px);
+        font-size: clamp(var(--text-base), 1.3vw, var(--text-md));
         line-height: 1.55;
         color: rgba(42, 18, 27, 0.78);
         max-width: 52ch;
@@ -141,7 +141,7 @@ const base = import.meta.env.BASE_URL.replace(/\/$/, '') || '/';
         display: inline-flex; align-items: center; gap: 12px;
         padding: 10px 14px;
         border-left: 2px solid var(--coral);
-        font-size: 14px;
+        font-size: var(--text-sm);
         color: var(--muted);
       }
       .nf .nf-tip .caps {
