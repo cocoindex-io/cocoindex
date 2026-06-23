@@ -102,6 +102,12 @@ const next = i >= 0 && i < flat.length - 1 ? flat[i + 1] : null;
 
     <title>{fullTitle}</title>
     {description && <meta name="description" content={description} />}
+    <!-- v0 is in maintenance mode; keep it out of the index so it can't
+         cannibalize the current v1 docs for branded queries. `follow` so
+         crawlers still traverse the in-page links to v1. Self-canonical is
+         intentional (v0/v1 pages aren't 1:1, so cross-canonicalizing would
+         misattribute distinct content). -->
+    <meta name="robots" content="noindex, follow" />
     <link rel="canonical" href={canonical} />
 
     <link rel="icon" href={`${base}/img/favicon.ico`} />

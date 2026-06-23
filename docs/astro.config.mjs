@@ -1,7 +1,6 @@
 // @ts-check
 import { defineConfig } from 'astro/config';
 import mdx from '@astrojs/mdx';
-import sitemap from '@astrojs/sitemap';
 import remarkDirective from 'remark-directive';
 import remarkAdmonitions from './scripts/remark-admonitions.mjs';
 import remarkLinkChecker from './scripts/remark-link-checker.mjs';
@@ -93,7 +92,9 @@ export default defineConfig({
       // .mdx content collection pages get them for sure.
       remarkPlugins,
     }),
-    sitemap(),
+    // No sitemap for v0: it's in maintenance mode and every page is
+    // `noindex`, so we don't submit these URLs for indexing. (Submitting
+    // noindexed pages is contradictory and was helping v0 cannibalize v1.)
   ],
   markdown: {
     remarkPlugins,

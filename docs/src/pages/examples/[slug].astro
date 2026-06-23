@@ -58,6 +58,8 @@ const tocHeadings = (rendered?.headings ?? []).filter((h) => h.depth === 2);
     <meta name="theme-color" content="#FBF6E8" />
     <title>{fullTitle}</title>
     <meta name="description" content={ex.description} />
+    <!-- v0 maintenance mode: keep out of the index (see DocsLayout note). -->
+    <meta name="robots" content="noindex, follow" />
     <link rel="canonical" href={canonical} />
     <link rel="icon" href={`${base}/img/favicon.ico`} />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
