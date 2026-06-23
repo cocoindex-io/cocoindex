@@ -106,6 +106,53 @@ export function mdxToMarkdown(body: string): string {
   return out;
 }
 
+// Extract `### question` / answer pairs from an MDX FAQ body for FAQPage
+// JSON-LD (Google's FAQ rich result). Questions are H3 headings; the answer is
+// everything up to the next H2/H3. Bodies run through mdxToMarkdown first (code
+// + admonitions handled), then we flatten the answer to readable plain text so
+// the schema `text` stays close to the visible prose. Returns [] for non-FAQ
+// bodies, so callers can gate on length.
+export function extractFaqEntries(body: string): Array<{ q: string; a: string }> {
+  const md = mdxToMarkdown(body);
+  const lines = md.split('\n');
+  const entries: Array<{ q: string; a: string }> = [];
+  let q: string | null = null;
+  let buf: string[] = [];
+
+  const flush = () => {
+    if (q === null) return;
+    const a = buf
+      .join('\n')
+      .replace(/```[\s\S]*?```/g, ' ') // drop code blocks from the answer text
+      .replace(/`([^`]+)`/g, '$1') // unwrap inline code
+      .replace(/!\[[^\]]*\]\([^)]*\)/g, '') // drop images
+      .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1') // links → text
+      .replace(/^[ \t]*[-*]\s+/gm, '') // list bullets → plain lines
+      .replace(/[*_>#]/g, '') // residual markdown emphasis / quote / heading marks
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (a) entries.push({ q, a });
+    q = null;
+    buf = [];
+  };
+
+  for (const line of lines) {
+    const h3 = line.match(/^###\s+(.+?)\s*$/);
+    if (h3) {
+      flush();
+      q = h3[1].replace(/[*_`]/g, '').trim();
+      continue;
+    }
+    if (/^##\s+/.test(line)) {
+      flush(); // section heading ends the current answer
+      continue;
+    }
+    if (q !== null) buf.push(line);
+  }
+  flush();
+  return entries;
+}
+
 // Single source for the docs-page route map, shared by the HTML route
 // ([...slug].astro) and the Markdown twin ([...slug].md.ts) so the two can
 // never enumerate different page sets.

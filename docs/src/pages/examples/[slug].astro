@@ -14,7 +14,7 @@ import ScarfPixel from '../../components/ScarfPixel.astro';
 import Foot from '../../components/Foot.astro';
 import { SITE_URL, titleMarkup, titleText, SCARF_PIXEL_ID, OG_IMAGE_EXAMPLES, OG_IMAGE_WIDTH, OG_IMAGE_HEIGHT, OG_IMAGE_EXAMPLES_ALT } from '../../consts';
 import { examples, findExample, CATEGORY_META, type Category } from '../../data/examples';
-import { reviewedDate } from '../../data/review-meta';
+import { reviewedDate, reviewedTs } from '../../data/review-meta';
 import { getEntry, render } from 'astro:content';
 
 // Group examples by category for the left sidebar, in the same order as
@@ -66,6 +66,7 @@ const sourceUrl = `https://github.com/cocoindex-io/cocoindex/tree/main/examples/
 // Structured data: a TechArticle for the example plus a BreadcrumbList
 // (Docs › Examples › <example>), mirroring DocsLayout so agents and search
 // engines understand the page and its place in the hierarchy.
+const reviewedSeconds = reviewedTs(`examples/${slug}`);
 const articleLd = {
   '@context': 'https://schema.org',
   '@type': 'TechArticle',
@@ -74,7 +75,14 @@ const articleLd = {
   url: canonical,
   inLanguage: 'en',
   image: ogImage,
+  ...(reviewedSeconds ? { dateModified: new Date(reviewedSeconds * 1000).toISOString() } : {}),
   isPartOf: { '@type': 'WebSite', name: 'CocoIndex Docs', url: docsHome },
+  publisher: {
+    '@type': 'Organization',
+    name: 'CocoIndex',
+    url: SITE_URL,
+    logo: { '@type': 'ImageObject', url: `${SITE_URL}/images/cocoindex.svg` },
+  },
 };
 const breadcrumbLd = {
   '@context': 'https://schema.org',
@@ -118,6 +126,11 @@ const introItems = [
     <title>{fullTitle}</title>
     <meta name="description" content={ex.description} />
     <link rel="canonical" href={canonical} />
+
+    <!-- Raw-Markdown twin of this page, for agents that prefer Markdown over
+         scraping HTML. Advertised here so they don't have to guess the URL
+         (mirrors the doc pages, which already do this). -->
+    <link rel="alternate" type="text/markdown" href={new URL(`${base}/examples/${slug}.md`, SITE_URL).toString()} title="Markdown" />
 
     <!-- Open Graph / Twitter — link previews on social, Slack, iMessage, etc. -->
     <meta property="og:type" content="article" />

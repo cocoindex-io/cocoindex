@@ -16,7 +16,7 @@ import ICON_EXT from '../icons/external.svg?raw';
 import ICON_CHATGPT from '../icons/chatgpt.svg?raw';
 import ICON_CLAUDE from '../icons/claude.svg?raw';
 import { flatten, sidebar, type SidebarItem } from '../data/docs-sidebar';
-import { docsVersion, reviewedDate } from '../data/review-meta';
+import { docsVersion, reviewedDate, reviewedTs } from '../data/review-meta';
 
 export interface IntroMeta {
   time?: string;
@@ -36,6 +36,9 @@ export interface Props {
   sourcePath?: string;
   /** Per-page intro-meta strip (Time / Language / Requires) from frontmatter. */
   introMeta?: IntroMeta;
+  /** Extra JSON-LD nodes a route can inject (e.g. FAQPage on the FAQ page).
+   *  Rendered after the page's TechArticle + BreadcrumbList. */
+  extraJsonLd?: unknown[];
 }
 
 const {
@@ -46,6 +49,7 @@ const {
   headings,
   sourcePath,
   introMeta,
+  extraJsonLd = [],
 } = Astro.props;
 const base = import.meta.env.BASE_URL.replace(/\/$/, '');
 
@@ -117,6 +121,10 @@ const next = i >= 0 && i < flat.length - 1 ? flat[i + 1] : null;
 // Structured data: a TechArticle for the page plus a BreadcrumbList built from
 // the same `crumbs` used in the visible breadcrumb. Helps search engines and
 // agents understand the page and its place in the docs hierarchy.
+// `dateModified` comes from the human-set "Last reviewed" timestamp — a real
+// freshness signal for search and AI answer engines. `reviewedTs` is 0 when a
+// page has no stamp, in which case the field is omitted rather than faked.
+const reviewedSeconds = reviewedTs(slug);
 const articleLd = {
   '@context': 'https://schema.org',
   '@type': 'TechArticle',
@@ -125,7 +133,14 @@ const articleLd = {
   url: canonical,
   inLanguage: 'en',
   image: ogImage,
+  ...(reviewedSeconds ? { dateModified: new Date(reviewedSeconds * 1000).toISOString() } : {}),
   isPartOf: { '@type': 'WebSite', name: 'CocoIndex Docs', url: docsHome },
+  publisher: {
+    '@type': 'Organization',
+    name: 'CocoIndex',
+    url: SITE_URL,
+    logo: { '@type': 'ImageObject', url: `${SITE_URL}/images/cocoindex.svg` },
+  },
 };
 const breadcrumbLd = {
   '@context': 'https://schema.org',
@@ -176,6 +191,9 @@ const breadcrumbLd = {
     <!-- Structured data for search engines and agents. -->
     <script type="application/ld+json" set:html={JSON.stringify(articleLd)} />
     <script type="application/ld+json" set:html={JSON.stringify(breadcrumbLd)} />
+    {extraJsonLd.map((node) => (
+      <script type="application/ld+json" set:html={JSON.stringify(node)} />
+    ))}
 
     <link rel="icon" href={`${base}/img/favicon.ico`} />
     <!-- Fonts self-hosted via @fontsource in src/styles/globals.css (GUIDELINE §5.2) —

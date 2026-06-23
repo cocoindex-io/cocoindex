@@ -1,8 +1,8 @@
 ---
 import { render, type CollectionEntry } from 'astro:content';
 import DocsLayout from '../layouts/DocsLayout.astro';
-import { docSlug, titleText } from '../consts';
-import { docStaticPaths } from '../lib/raw-markdown';
+import { docSlug, titleText, pageUrl } from '../consts';
+import { docStaticPaths, extractFaqEntries } from '../lib/raw-markdown';
 
 export const getStaticPaths = docStaticPaths;
 
@@ -25,6 +25,24 @@ const metaTitle = titleText(rawTitle);
 const description =
   typeof doc.data.description === 'string' ? doc.data.description : undefined;
 const introMeta = doc.data.meta;
+
+// FAQ pages (### question / answer prose) become FAQPage JSON-LD so the
+// answers are eligible for Google's FAQ rich result — the same win the blog
+// gets from its faq.json. Built from the page body; empty for every other doc.
+const faqEntries = slug === 'faq' || slug.endsWith('/faq') ? extractFaqEntries(doc.body) : [];
+const faqJsonLd =
+  faqEntries.length > 0
+    ? [{
+        '@context': 'https://schema.org',
+        '@type': 'FAQPage',
+        url: pageUrl(slug),
+        mainEntity: faqEntries.map((e) => ({
+          '@type': 'Question',
+          name: e.q,
+          acceptedAnswer: { '@type': 'Answer', text: e.a },
+        })),
+      }]
+    : [];
 ---
 
 <DocsLayout
@@ -35,6 +53,7 @@ const introMeta = doc.data.meta;
   headings={mdHeadings}
   sourcePath={sourcePath}
   introMeta={introMeta}
+  extraJsonLd={faqJsonLd}
 >
   <Content />
 </DocsLayout>

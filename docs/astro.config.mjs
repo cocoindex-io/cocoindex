@@ -8,6 +8,7 @@ import remarkCodeTitles from './scripts/remark-code-titles.mjs';
 import remarkMermaid from './scripts/remark-mermaid.mjs';
 import remarkLinkChecker from './scripts/remark-link-checker.mjs';
 import { redirects } from './src/data/docs-sidebar.ts';
+import docsMeta from './src/data/docs-meta.json';
 // One shared Shiki theme (the readability-tuned --code-* palette) so docs and
 // blog highlight code identically — single source of truth (GUIDELINE §5.5).
 import { cocoindexCodeTheme } from '@cocoindex/brand/code-theme';
@@ -51,7 +52,31 @@ export default defineConfig({
       // explicitly so .mdx content collection pages get them for sure.
       remarkPlugins,
     }),
-    sitemap(),
+    sitemap({
+      // Emit a real per-page `lastmod` from the human-set "Last reviewed"
+      // timestamp in docs-meta.json (the same value the on-page stamp uses),
+      // plus a higher priority for the entry pages. Without this every URL
+      // ships bare `<loc>`, so Google has no per-page freshness signal to
+      // decide what to re-crawl. Slug is the path between `/docs/` and the
+      // trailing slash; pages with no recorded review date (examples, index)
+      // simply omit lastmod rather than claiming a bogus build-time date.
+      serialize(item) {
+        const m = item.url.match(/\/docs\/(.*?)\/?$/);
+        const slug = m ? m[1] : '';
+        const ts = docsMeta.files?.[slug]?.reviewedTs;
+        if (ts) item.lastmod = new Date(ts * 1000).toISOString();
+        if (slug === '') {
+          item.priority = 1.0;
+          item.changefreq = 'weekly';
+        } else if (slug.startsWith('getting_started')) {
+          item.priority = 0.9;
+          item.changefreq = 'weekly';
+        } else {
+          item.changefreq = 'weekly';
+        }
+        return item;
+      },
+    }),
   ],
   markdown: {
     remarkPlugins,
